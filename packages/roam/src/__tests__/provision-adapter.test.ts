@@ -45,7 +45,24 @@ function fixture(short = false) {
   const destination = { home, agentDir, npmPrefix, supervisor: join(releaseRoot, "dist", "roam", "supervisor.mjs") };
   const calls = join(root, "systemctl-calls"), writes: { path: string; bytes: Buffer }[] = [], requests: { action: string; argv: string[] }[] = [], launches: string[] = [];
   const launchState = { loseReply: false, dropBefore: 0, terminalOnly: false }, terminalFile = join(root, "release-terminals.json");
-  writeFileSync(join(bin, "hc"), `#!${process.execPath}\nimport fs from 'node:fs'; const a=process.argv.slice(2); console.log(JSON.stringify(a[0]==='server'?{core:{id:'fixture-core'},pid:4321,version:'0.1.16'}:(fs.existsSync(${JSON.stringify(terminalFile)})?JSON.parse(fs.readFileSync(${JSON.stringify(terminalFile)},'utf8')):{terminals:[]})));\n`, { mode: 0o700 });
+  const fakeCore = `#!${process.execPath}\nimport fs from 'node:fs';
+const args = process.argv.slice(2);
+if (args[0] === 'server') console.log(JSON.stringify({core:{id:'fixture-core'},pid:4321,version:'0.1.16'}));
+else {
+  const file = ${JSON.stringify(terminalFile)};
+  const data = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {terminals:[]};
+  const filters = args.flatMap((arg, index) => arg === '--label' ? [args[index + 1]] : []);
+  const terminals = data.terminals.filter(item => filters.every(filter => {
+    const split = filter.indexOf('=');
+    return split > 0 && item.labels?.[filter.slice(0, split)] === filter.slice(split + 1);
+  })).map(item => ({
+    address:'box-1.invalid/t1', agent:'', cwd:'', state:item.state, turn:0,
+    ...(item.state === 'finished' ? {exit_code:0, reason:'exit'} : {}),
+    ...(Object.hasOwn(item, 'returnedLabels') ? {labels:item.returnedLabels} : {}),
+  }));
+  console.log(JSON.stringify({terminals}));
+}\n`;
+  writeFileSync(join(bin, "hc"), fakeCore, { mode: 0o700 });
   writeFileSync(join(bin, "systemctl"), `#!${process.execPath}\nimport fs from 'node:fs'; fs.appendFileSync(${JSON.stringify(calls)},JSON.stringify(process.argv.slice(2))+'\\n');\n`, { mode: 0o700 });
   const transport: Transport = {
     async resolve(value) { return value; }, async bootstrapProbe() { throw new Error("unexpected probe"); },
@@ -187,7 +204,7 @@ it("does not retry a release launch that is definitely refused", async () => {
   expect(f.launches).toHaveLength(1);
 }, 5000);
 
-it("does not relaunch when a labelled terminal exists and records its unfinished failure", async () => {
+it("does not relaunch when filtered terminal evidence has no returned labels", async () => {
   expect(create).toBeTypeOf("function"); expect(remoteProgram).toBeTypeOf("string");
   const f = fixture(); f.launchState.terminalOnly = true;
   const adapter = create!({ ...f.options, limits: { ...f.options.limits, importMs: 100, retryDelaysMs: [1] } });
@@ -199,6 +216,50 @@ it("does not relaunch when a labelled terminal exists and records its unfinished
   const receipt = JSON.parse(readFileSync(join(f.globalRoot, "roam", "provision", "op-1", "release-receipt.json"), "utf8"));
   expect(receipt).toMatchObject({ state: "failed", reason: "installer-interrupted" });
 }, 5000);
+
+it("ignores a terminal with different server-side labels", async () => {
+  const f = fixture(), adapter = create!(f.options), log = releaseNpm(f);
+  writeFileSync(f.terminalFile, JSON.stringify({ terminals: [{ state: "live", labels: {
+    "spider.operation": "another-op", "spider.machine": f.peer.machineId,
+  } }] }));
+  await expect(adapter.installRelease(f.peer, f.input)).resolves.toEqual({
+    pi: f.peer.pi, cli: f.peer.cli, supervisor: f.destination.supervisor,
+  });
+  expect(f.launches).toHaveLength(1);
+  expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(2);
+}, 10_000);
+
+it.each([
+  ["wrong operation", { "spider.operation": "another-op", "spider.machine": "11111111-1111-4111-8111-111111111111" }],
+  ["wrong machine", { "spider.operation": "op-1", "spider.machine": "22222222-2222-4222-8222-222222222222" }],
+  ["missing machine", { "spider.operation": "op-1" }],
+  ["null labels", null],
+  ["array labels", []],
+])("rejects terminal evidence with %s when labels are returned", async (_name, returnedLabels) => {
+  const f = fixture(), adapter = create!(f.options);
+  writeFileSync(f.terminalFile, JSON.stringify({ terminals: [{ state: "finished", labels: {
+    "spider.operation": "op-1", "spider.machine": f.peer.machineId,
+  }, returnedLabels }] }));
+  await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "release-evidence-unavailable" });
+  expect(f.launches).toEqual([]);
+}, 10_000);
+
+it("accepts terminal evidence when returned labels match", async () => {
+  const f = fixture(), adapter = create!(f.options);
+  const labels = { "spider.operation": "op-1", "spider.machine": f.peer.machineId };
+  writeFileSync(f.terminalFile, JSON.stringify({ terminals: [{ state: "finished", labels, returnedLabels: labels }] }));
+  await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "installer-interrupted" });
+  expect(f.launches).toEqual([]);
+}, 10_000);
+
+it("rejects terminal evidence with an unknown state even when labels are absent", async () => {
+  const f = fixture(), adapter = create!(f.options);
+  writeFileSync(f.terminalFile, JSON.stringify({ terminals: [{ state: "unknown", labels: {
+    "spider.operation": "op-1", "spider.machine": f.peer.machineId,
+  } }] }));
+  await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "release-evidence-unavailable" });
+  expect(f.launches).toEqual([]);
+}, 10_000);
 
 it("blocks another operation while a prior background release is unresolved", async () => {
   expect(create).toBeTypeOf("function"); expect(remoteProgram).toBeTypeOf("string");

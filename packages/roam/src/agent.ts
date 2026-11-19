@@ -605,7 +605,7 @@ async function dispatchParsedOperation(operation: Operation, request: Request, p
       const problems: JsonObject[] = [];
       const stores = listStoreKeys(openStore(ports, "global", true).db, { onIncomplete: () => { incomplete = true; },
         onProblem: entry => { problems.push({ entry, reason: "Unsafe or unreadable store skipped" }); } });
-      if (incomplete) throw new Error("Store inventory is incomplete");
+      if (incomplete) return outcome(1, "store-inventory-incomplete", id);
       value = { protocol: 1, schema: 14, machineId: ports.config.machineId, stores, problems };
     } else if (request.kind === "inventory") value = inventory(ports, request.key);
     else if (request.kind === "enable-capture") {

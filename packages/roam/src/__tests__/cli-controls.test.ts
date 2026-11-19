@@ -1,4 +1,7 @@
 import { migrate, openDb } from "@spider/db-core";
+import { localEntries } from "@spider/db-core/roam/local-state";
+import { HerdrError } from "@spider/herdr/client/parse";
+import { disabledIntercom } from "../contracts";
 import * as remoteObservations from "../remote-observations";
 import * as diagnostics from "../diagnostics";
 import * as launchd from "../launchd";
@@ -52,6 +55,76 @@ async function fixture(identity = HUB, reply?: HubControlReply, withSocket = tru
   const out: string[] = [], err: string[] = [];
   return { root, calls, out, err, invoke: (args: string[]) => main(args, { out: text => out.push(text), err: text => err.push(text) }) };
 }
+
+it("doctor warns with missing store paths and prune removes only missing registrations once", async () => {
+  const f = await fixture(HUB, undefined, false), db = openDb(join(f.root, "spider.db"));
+  migrate(db, "global", { machineId: HUB, globalRoot: f.root });
+  const gone = join(f.root, "gone", ".spider", "project.db"), common = join(f.root, "gone", ".git");
+  db.prepare("INSERT INTO projects(project_key,real_path,db_path,git_common_dir,created_at,last_seen_at) VALUES ('gone',?,?,?,1,1)")
+    .run(join(f.root, "gone"), gone, common);
+  db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES ('live',?,?,1,1)").run(f.root, db.raw.name);
+  const planned = join(f.root, "planned"); mkdirSync(planned);
+  db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','planned',?)").run(planned);
+  const report = await localDiagnostics.runLocalDoctor({ root: f.root });
+  const missing = report.diagnostics.filter(row => row.reason.startsWith("store-missing:"));
+  expect(missing).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "warning", reason: expect.stringContaining(gone), repairCommand: "spider roam stores prune" }),
+    expect.objectContaining({ severity: "warning", reason: expect.stringContaining(join(common, "spider", "repo.db")) }),
+    expect.objectContaining({ severity: "warning", reason: expect.stringContaining(join(planned, ".spider", "project.db")) }),
+  ]));
+  expect(report.diagnostics.filter(row => row.severity === "block" && /Cannot inspect.*store/.test(row.reason))).toEqual([]);
+  expect(await f.invoke(["roam", "stores", "prune", "--json"])).toBe(0);
+  expect(db.prepare("SELECT project_key FROM projects ORDER BY project_key").all()).toEqual([{ project_key: "live" }]);
+  expect(db.prepare("SELECT path FROM roam_workspace_maps").all()).toEqual([{ path: planned }]);
+  const audit = localEntries(db, "store-prune");
+  expect(audit).toHaveLength(1);
+  expect(await f.invoke(["roam", "stores", "prune", "--json"])).toBe(0);
+  expect(localEntries(db, "store-prune")).toEqual(audit);
+  db.close();
+}, 5000);
+
+it.each(["missing", "corrupt", "transport", "invalid-doctor"] as const)("enable and doctor distinguish a %s store peer from an unreachable box", async mode => {
+  const f = await fixture(HUB, undefined, false), file = join(f.root, "roam/config.json");
+  const config = JSON.parse(readFileSync(file, "utf8")); config.peers[0].alias = "box-1.invalid";
+  writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  const remote = join(f.root, "remote"); mkdirSync(join(remote, "roam"), { recursive: true });
+  writeFileSync(join(remote, "roam", "config.json"), JSON.stringify({ ...config, machineId: BOX, role: "box", peers: [] }), { mode: 0o600 });
+  const db = openDb(join(remote, "spider.db")); migrate(db, "global", { machineId: BOX, globalRoot: remote });
+  const common = join(remote, "deleted", ".git");
+  db.prepare("INSERT INTO projects(project_key,real_path,db_path,git_common_dir,created_at,last_seen_at) VALUES ('gone',?,?,?,1,1)")
+    .run(join(remote, "deleted"), join(remote, "deleted", ".spider", "project.db"), common);
+  if (mode === "corrupt") { mkdirSync(join(common, "spider"), { recursive: true }); writeFileSync(join(common, "spider", "repo.db"), "not sqlite"); }
+  db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','planned',?)").run(join(remote, "planned"));
+  const ports = { config: { ...localRuntime.readLocalIdentity(f.root), machineId: BOX, role: "box" as const, peers: [], intercom: disabledIntercom() },
+    root: join(remote, "roam", "staging"), journal: openJournal(join(remote, "roam", "journal.db")), openStore() { return { db }; } };
+  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/home/fixture/hc" } } as never);
+  vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: unknown) {
+    if (mode === "transport") throw new HerdrError("machine-not-found", "unreachable"); return peer;
+  }, async exec(_peer: unknown, argv: string[]) {
+    if (argv[1] === "agent") return Buffer.from(JSON.stringify(await agent.handleAgentOperation(JSON.parse(argv[2]), ports as never)));
+    if (mode === "invalid-doctor") return Buffer.from("{}");
+    return Buffer.from(JSON.stringify({ version: 1, machineId: BOX, kind: "doctor", value: await localDiagnostics.runLocalDoctor({ root: remote }) }));
+  } } as never);
+  expect(await f.invoke(["roam", "enable", "--json"])).toBe(1);
+  const enabled = f.out.join("");
+  if (mode === "transport") expect(enabled).toContain("box-unreachable:box-1.invalid");
+  else {
+    expect(enabled).not.toContain("box-unreachable"); expect(enabled).not.toContain("spider roam forget");
+    if (mode === "corrupt") expect(enabled).toContain("preflight-failed:box-1.invalid:store-inventory-incomplete");
+    if (mode === "invalid-doctor") expect(enabled).toContain("preflight-failed:box-1.invalid:peer-response-invalid");
+  }
+  f.out.length = 0;
+  await f.invoke(["roam", "doctor", "box-1.invalid", "--json"]);
+  const doctor = f.out.join("");
+  if (mode === "transport") expect(doctor).toContain("box-unreachable:box-1.invalid");
+  else {
+    expect(doctor).not.toContain("box-unreachable"); expect(doctor).not.toContain("spider roam forget");
+    if (mode === "missing") expect(doctor).toContain("store-missing:repo:enoent:");
+    if (mode === "corrupt") expect(doctor).toContain("store-uninspectable:repo:sqlite-notadb:");
+    if (mode === "invalid-doctor") expect(doctor).toContain("preflight-failed:box-1.invalid:peer-response-invalid");
+  }
+  db.close();
+}, 5000);
 
 it("help explains recovery, JSON, non-interactive consent and the forget warning", async () => {
   const f = await fixture(HUB, undefined, false);

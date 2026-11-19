@@ -73,7 +73,7 @@ function safeReason(error: unknown): string {
     "auth-cleanup-pending", "auth-install-failed", "auth-preview-changed", "invalid-destination-settings", "settings-preview-changed", "settings-preview-failed", "invalid-settings-preview", "unsafe-destination",
     "release-digest-mismatch", "invalid-release-path", "core-unit-required", "peer-core-unit-required", "peer-core-unit-ambiguous", "provider-consent-required", "credential-file-requires-consent",
     "enrollment-conflict", "unsafe-enrollment", "enrollment-identity-mismatch", "enrollment-publication-pending", "invalid-enrollment",
-    "release-pending", "release-launch-failed", "release-arguments-changed", "operation-arguments-changed", "short-write-pending", "release-evidence-unavailable", "release-in-progress",
+    "release-pending", "release-launch-failed", "release-arguments-changed", "operation-arguments-changed", "short-write-pending", "release-evidence-unavailable", "release-evidence-unfiltered", "release-in-progress",
     "installer-interrupted", "release-abandoned", "release-install-failed", "command-failed", "npm-not-found", "npm-install-failed", "release-hash-mismatch", "incomplete-release", "pi-version-mismatch"]);
   if (typeof code === "string" && allowed.has(code)) return code;
   const message = error instanceof Error ? error.message : "";

@@ -15,7 +15,7 @@ export interface InstalledRelease { pi: string; cli: string; supervisor: string 
 const RELEASE_NPM_CODES = ["1", "E404", "ELIFECYCLE", "ENOTFOUND", "ETIMEDOUT", "EACCES", "ENOENT", "EPERM",
   "ECONNRESET", "ECONNREFUSED", "EAI_AGAIN", "E401", "E403", "E500", "E502", "E503", "EINTEGRITY", "EBADENGINE", "EBADPLATFORM"] as const;
 export type NpmCode = typeof RELEASE_NPM_CODES[number];
-export type NpmDiagnostic = { step: "pi" | "release"; npmCode: NpmCode | null; packageName: string | null } &
+export type NpmDiagnostic = { step: "pi" | "release"; npmCode: NpmCode | null; packageName: string | null; timedOut?: true } &
   ({ exitCode: number; signal: null } | { exitCode: null; signal: NodeJS.Signals | null });
 export type ReleaseReason = "installer-interrupted" | "release-abandoned" | "release-install-failed" | "command-failed" | "npm-not-found" | "npm-install-failed" | "release-hash-mismatch" | "incomplete-release" | "pi-version-mismatch";
 export type ReleaseObservation = { state: "absent" } | { state: "started" } |
@@ -72,7 +72,8 @@ function releaseNpmPackageName(value: unknown): value is string {
 function releaseNpmDiagnostic(value: unknown): value is NpmDiagnostic {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const row = value as NpmDiagnostic;
-  return Object.keys(row).length === 5 && (row.step === "pi" || row.step === "release") &&
+  return (Object.keys(row).length === 5 && !Object.hasOwn(row, "timedOut") || Object.keys(row).length === 6 && row.timedOut === true) &&
+    (row.step === "pi" || row.step === "release") &&
     (row.exitCode === null || Number.isSafeInteger(row.exitCode) && row.exitCode >= 0 && row.exitCode <= 255) &&
     (row.signal === null || typeof row.signal === "string" && Object.hasOwn(releaseOsConstants.signals, row.signal)) &&
     !(row.exitCode !== null && row.signal !== null) && (row.npmCode === null || releaseNpmCode(row.npmCode)) &&

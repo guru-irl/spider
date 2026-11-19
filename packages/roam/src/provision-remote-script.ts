@@ -174,10 +174,33 @@ async function npmCommand(step: NpmDiagnostic["step"], file: string, argv: strin
     catch { try { child.kill(signal); } catch { /* The process has already exited. */ } }
   };
   const result = await new Promise<{ status: number | null; signal: NodeJS.Signals | null; error?: NodeJS.ErrnoException }>(resolve => {
-    let hardKill: NodeJS.Timeout | undefined, error: NodeJS.ErrnoException | undefined;
+    let hardKill: NodeJS.Timeout | undefined, error: NodeJS.ErrnoException | undefined, interrupted = false;
+    const signals = ["SIGHUP", "SIGTERM", "SIGINT"] as const;
+    const onExit = () => stop("SIGKILL");
+    const handlers = signals.map(signal => {
+      const handle = () => {
+        if (interrupted) return;
+        interrupted = true; clearTimeout(timer); if (hardKill) clearTimeout(hardKill);
+        stop("SIGTERM");
+        hardKill = setTimeout(() => {
+          stop("SIGKILL");
+          for (const [name, handler] of handlers) process.removeListener(name, handler);
+          process.kill(process.pid, signal);
+        }, 1000);
+      };
+      return [signal, handle] as const;
+    });
+    for (const [signal, handler] of handlers) process.on(signal, handler);
+    process.once("exit", onExit);
     const timer = setTimeout(() => { timedOut = true; stop("SIGTERM"); hardKill = setTimeout(() => stop("SIGKILL"), 1000); }, timeout);
     child.once("error", (failure: NodeJS.ErrnoException) => { error = failure; });
-    child.once("close", (status, signal) => { clearTimeout(timer); if (hardKill) clearTimeout(hardKill); resolve({ status, signal, error }); });
+    child.once("close", (status, signal) => {
+      if (interrupted) return;
+      clearTimeout(timer); if (hardKill) clearTimeout(hardKill);
+      for (const [name, handler] of handlers) process.removeListener(name, handler);
+      process.removeListener("exit", onExit);
+      resolve({ status, signal, error });
+    });
   });
   const fields = capture.finish();
   if (result.error && ["ENOENT", "ENOTDIR"].includes(result.error.code ?? "")) {
@@ -190,7 +213,7 @@ async function npmCommand(step: NpmDiagnostic["step"], file: string, argv: strin
     const exit = exitCode === null
       ? { exitCode: null, signal: result.signal && Object.hasOwn(releaseOsConstants.signals, result.signal) ? result.signal : null }
       : { exitCode, signal: null };
-    throw new NpmInstallFailure({ step, ...exit, ...fields });
+    throw new NpmInstallFailure({ step, ...exit, ...fields, ...(timedOut ? { timedOut: true as const } : {}) });
   }
 }
 function releaseRuntimeOwner(): ReleaseOwner {
@@ -242,12 +265,23 @@ function releaseTerminals(core: string, coreId: string, operationId: string, mac
   if (list.status !== 0) bad("release-evidence-unavailable");
   let rows: unknown;
   try { rows = JSON.parse(list.stdout).terminals; } catch { bad("release-evidence-unavailable"); }
-  // The core applies both label filters even when its terminal rows omit labels.
+  // Herdr 0.1.16 applies both filters but omits labels in terminal rows.
   if (!Array.isArray(rows) || rows.some(row => !row || typeof row !== "object" || Array.isArray(row) ||
       ("labels" in row && (!row.labels || typeof row.labels !== "object" || Array.isArray(row.labels) ||
         row.labels["spider.operation"] !== operationId || row.labels["spider.machine"] !== machineId)) ||
       !["live", "finished"].includes(row.state))) {
     bad("release-evidence-unavailable");
+  }
+  if (rows.some(row => !("labels" in row))) {
+    let probeOperation: string;
+    do { probeOperation = releaseUuid(); } while (probeOperation === operationId);
+    const probe = spawnSync(core, ["ls", "--all", "--json", "--label", "spider.operation=" + probeOperation, "--label", "spider.machine=" + machineId],
+      { encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+    if (probe.status !== 0) bad("release-evidence-unavailable");
+    let control: unknown;
+    try { control = JSON.parse(probe.stdout).terminals; } catch { bad("release-evidence-unavailable"); }
+    if (!Array.isArray(control)) bad("release-evidence-unavailable");
+    if (control.length !== 0) bad("release-evidence-unfiltered");
   }
   releaseCore(core, coreId);
   return rows.some(row => row.state === "live") ? "live" : rows.length ? "finished" : "none";
@@ -541,7 +575,7 @@ async function run(): Promise<unknown> {
       if (cli !== expectedCli || supervisor !== expectedSupervisor || text("pi") !== join(npmPrefix, "bin", "pi")) bad("invalid-release");
       const npm = join(dirname(node), "npm");
       const env = { ...process.env, PATH: dirname(node) + ":" + (process.env.PATH ?? ""), SPIDER_GLOBAL_ROOT: globalRoot,
-        npm_config_update_notifier: "false", npm_config_onnxruntime_node_install_cuda: "skip" };
+        npm_config_update_notifier: "false", npm_config_onnxruntime_node_install_cuda: "skip", npm_config_color: "false", npm_config_loglevel: "notice" };
       const timeout = Number.isSafeInteger(request.timeout) && request.timeout > 0 ? request.timeout : 600_000;
       await npmCommand("pi", npm, ["install", "--global", "--prefix", npmPrefix, "--no-audit", "--no-fund", "@earendil-works/pi-coding-agent@1.2.0"], env, timeout);
       await npmCommand("release", npm, ["install", "--prefix", installPrefix, "--no-audit", "--no-fund", archive], env, timeout);

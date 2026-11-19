@@ -708,7 +708,8 @@ async function run(): Promise<unknown> {
   if (action === "systemctl") {
     const argv = request.argv;
     if (!Array.isArray(argv) || (JSON.stringify(argv) !== JSON.stringify(["--user", "daemon-reload"]) &&
-      JSON.stringify(argv) !== JSON.stringify(["--user", "enable", "spider-roam-supervisor.service"]))) bad("invalid-systemctl");
+      JSON.stringify(argv) !== JSON.stringify(["--user", "enable", "spider-roam-supervisor.service"]) &&
+      JSON.stringify(argv) !== JSON.stringify(["--user", "disable", "spider-roam-supervisor.service"]))) bad("invalid-systemctl");
     command("systemctl", argv, process.env, 30_000);
     return true;
   }

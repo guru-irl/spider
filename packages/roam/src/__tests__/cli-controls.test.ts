@@ -11,7 +11,8 @@ import * as launchd from "../launchd";
 import { peerEnabledDiagnostics } from "../peer-enabled";
 import { openJournal } from "../journal";
 import { afterEach, expect, it, vi } from "vitest";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { main } from "../cli";
 import { startHubControl, type HubControlReply, type HubControlRequest } from "../control-socket";
@@ -575,6 +576,19 @@ it("disable completes interrupted service removal and retries each box flag", as
   expect(removal).toHaveBeenCalledOnce(); expect(existsSync(plist)).toBe(false);
   expect(requests.map(request => [request.machineId, request.enabled])).toEqual([[BOX, false], [other.machineId, false]]);
   expect(f.out.join("")).toContain("box-2.invalid");
+  expect(JSON.parse(readFileSync(file, "utf8")).enabled).toBe(false);
+}, 5000);
+
+it("disable finds an owned service at its root-scoped path", async () => {
+  const f = await fixture(), file = join(f.root, "roam/config.json");
+  const config = JSON.parse(readFileSync(file, "utf8")); config.peers = []; writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  const directory = join(f.root, "Library/LaunchAgents"); mkdirSync(directory, { recursive: true });
+  const label = `com.spider.roam.hub.${createHash("sha256").update(realpathSync(f.root)).digest("hex").slice(0, 16)}`;
+  const plist = join(directory, `${label}.plist`);
+  writeFileSync(plist, `<plist><dict><key>Label</key><string>${label}</string><key>ProgramArguments</key><array><string>/home/fixture/node</string><string>/home/fixture/cli</string><string>roam</string><string>hub</string></array><key>SPIDER_GLOBAL_ROOT</key><string>${f.root}</string></dict></plist>`, { mode: 0o600 });
+  const binary = join(f.root, "launchctl"); writeFileSync(binary, "#!/bin/sh\nexit 0\n", { mode: 0o700 }); vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", binary);
+  expect(await f.invoke(["roam", "disable", "--json"])).toBe(0);
+  expect(existsSync(plist)).toBe(false);
   expect(JSON.parse(readFileSync(file, "utf8")).enabled).toBe(false);
 }, 5000);
 

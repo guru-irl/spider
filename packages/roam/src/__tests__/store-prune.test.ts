@@ -13,27 +13,67 @@ it("prunes missing mapped directories and their redirects, retaining planned emp
   f.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('gone','deleted',?),('gone','planned',?)").run(join(f.root, "deleted-worktree"), planned);
   writeLocal(f.db, "mapping-redirect", "repo:gone", join(f.root, "deleted", "repo.db"));
   writeLocal(f.db, "mapping-redirect", "worktree:gone:deleted", join(f.root, "deleted-worktree", "project.db"));
-  expect(pruneMissingStores(f.db)).toBe(2);
+  expect(pruneMissingStores(f.db, true).removed).toHaveLength(2);
   expect(f.db.prepare("SELECT * FROM roam_repo_maps").all()).toEqual([]);
   expect(f.db.prepare("SELECT workspace_id FROM roam_workspace_maps").all()).toEqual([{ workspace_id: "planned" }]);
   expect(readLocal(f.db, "mapping-redirect", "repo:gone")).toBeUndefined();
   expect(readLocal(f.db, "mapping-redirect", "worktree:gone:deleted")).toBeUndefined();
   expect(localEntries(f.db, "store-prune")).toHaveLength(1);
-  expect(pruneMissingStores(f.db)).toBe(0);
+  expect(pruneMissingStores(f.db, true).removed).toEqual([]);
   expect(localEntries(f.db, "store-prune")).toHaveLength(1);
 });
 it("rolls back earlier deletions and the audit if any registered path is inaccessible", () => {
-  const f = fixture(), denied = join(f.root, "denied"); mkdirSync(denied);
+  const f = fixture(), denied = join(f.root, "denied"); mkdirSync(denied); mkdirSync(join(f.root, "gone"));
   f.db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES ('gone',?,?,1,1),('denied',?,?,1,1)")
     .run(join(f.root, "gone"), join(f.root, "gone", "project.db"), denied, join(denied, "project.db"));
   chmodSync(denied, 0);
-  try { expect(() => pruneMissingStores(f.db)).toThrow(); } finally { chmodSync(denied, 0o700); }
+  try { expect(() => pruneMissingStores(f.db, true)).toThrow(); } finally { chmodSync(denied, 0o700); }
   expect(f.db.prepare("SELECT project_key FROM projects ORDER BY project_key").all()).toEqual([{ project_key: "denied" }, { project_key: "gone" }]);
   expect(localEntries(f.db, "store-prune")).toEqual([]);
 });
 it("does not mistake a dangling final symlink for an absent registration", () => {
   const f = fixture(), file = join(f.root, "linked.db"); symlinkSync(join(f.root, "gone.db"), file);
   f.db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES ('linked',?,?,1,1)").run(f.root, file);
-  expect(pruneMissingStores(f.db)).toBe(0);
+  expect(pruneMissingStores(f.db, true).removed).toEqual([]);
   expect(f.db.prepare("SELECT project_key FROM projects").all()).toEqual([{ project_key: "linked" }]);
+});
+
+it.each(["missing-parent", "broken-parent"])("does not prune an unavailable %s", mode => {
+  const f = fixture(), parent = join(f.root, "unavailable"), file = join(parent, "project.db");
+  if (mode === "broken-parent") symlinkSync(join(f.root, "unmounted"), parent);
+  f.db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES ('keep',?,?,1,1)").run(parent, file);
+  const result = pruneMissingStores(f.db, true);
+  expect(result).toMatchObject({ candidates: [], removed: [], unavailable: [expect.objectContaining({ path: file, repair: expect.stringMatching(/mount or restore/i) })] });
+  expect(f.db.prepare("SELECT project_key FROM projects").all()).toEqual([{ project_key: "keep" }]);
+  expect(localEntries(f.db, "store-prune")).toEqual([]);
+});
+it("lists a dry run and preserves full rows and redirects when confirmed", () => {
+  const f = fixture(), path = join(f.root, "deleted");
+  f.db.prepare("INSERT INTO roam_repo_maps(repo_key,path,origin_fingerprint,root_fingerprint,worktree_command_json) VALUES ('gone',?,'origin-digest','root-digest','[]')").run(path);
+  f.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path,snapshot_json) VALUES ('gone','deleted',?,?)").run(join(f.root, "deleted-worktree"), JSON.stringify({ branch: "fixture" }));
+  const rows = { repo: f.db.prepare("SELECT * FROM roam_repo_maps").get(), workspace: f.db.prepare("SELECT * FROM roam_workspace_maps").get() };
+  writeLocal(f.db, "mapping-redirect", "repo:gone", join(path, "repo.db"));
+  expect(pruneMissingStores(f.db)).toMatchObject({ candidates: [expect.objectContaining({ key: "repo:gone", path }), expect.objectContaining({ key: "worktree:gone:deleted" })], removed: [] });
+  expect(f.db.prepare("SELECT * FROM roam_repo_maps").get()).toEqual(rows.repo);
+  expect(localEntries(f.db, "store-prune")).toEqual([]);
+  expect(pruneMissingStores(f.db, true).removed).toHaveLength(2);
+  const audit = localEntries<{ removed: unknown[] }>(f.db, "store-prune");
+  expect(audit).toHaveLength(1);
+  expect(audit[0].value.removed).toEqual(expect.arrayContaining([
+    expect.objectContaining({ table: "roam_repo_maps", row: rows.repo, redirect: join(path, "repo.db") }),
+    expect.objectContaining({ table: "roam_workspace_maps", row: rows.workspace }),
+  ]));
+  expect(pruneMissingStores(f.db, true).removed).toEqual([]);
+  expect(localEntries(f.db, "store-prune")).toEqual(audit);
+});
+
+it.each(["home", "action"])("keeps a missing workspace required by a live %s", mode => {
+  const f = fixture(), path = join(f.root, "deleted-workspace");
+  f.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','active',?)").run(path);
+  f.db.prepare("INSERT INTO roam_locations(session_id,stores_json) VALUES ('session-active',?)").run(JSON.stringify(["worktree:fixture-repo:active"]));
+  if (mode === "home") f.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,updated_at) VALUES ('session-active','00000000-0000-4000-8000-000000000001',1,1)").run();
+  else f.db.prepare("INSERT INTO roam_home_actions(move_id,session_id,expected_epoch,args_digest) VALUES ('move-active','session-active',1,'fixture-digest')").run();
+  expect(pruneMissingStores(f.db, true)).toMatchObject({ candidates: [], removed: [], unavailable: [expect.objectContaining({ check: "session-in-use", path })] });
+  expect(f.db.prepare("SELECT path FROM roam_workspace_maps").all()).toEqual([{ path }]);
+  expect(localEntries(f.db, "store-prune")).toEqual([]);
 });

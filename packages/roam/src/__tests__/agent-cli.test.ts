@@ -1,3 +1,4 @@
+import { writeLocal } from "@spider/db-core/roam/local-state";
 import { unexpectedBootstrapProbe } from "./transport-fixture";
 import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
@@ -130,16 +131,17 @@ it("the packaged agent rechecks diagnosed duplicate todos before clearing roamab
   } finally { worktree.close(); f.db.close(); }
 }, 5000);
 
-it("the packaged agent refuses an incomplete mapped-store inventory", () => {
+it("the packaged agent reports a corrupt mapped store without refusing readable stores", () => {
   const f = fixture();
   try {
     const path = join(f.root, "corrupt-checkout"); mkdirSync(join(path, ".spider"), { recursive: true });
     writeFileSync(join(path, ".spider", "repo.db"), "not sqlite");
     f.db.prepare("INSERT INTO roam_repo_maps(repo_key,path) VALUES (?,?)").run("corrupt-repo", path);
+    writeLocal(f.db, "mapping-redirect", "repo:corrupt-repo", join(path, ".spider", "repo.db"));
     const operation = { id: "stores-1", machineId: BOX, expectedEpoch: null, kind: "stores", args: {} };
     const result = f.invoke(["roam", "agent", JSON.stringify(operation)]);
     expect(result.status).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({ code: 1, operationId: "stores-1" });
+    expect(JSON.parse(result.stdout)).toMatchObject({ code: 0, operationId: "stores-1", value: { stores: ["global"], ungathered: [expect.objectContaining({ key: "repo:corrupt-repo", code: "corrupt" })] } });
     expect(f.db.prepare("SELECT capture_enabled FROM roam_meta").get()).toEqual({ capture_enabled: 0 });
   } finally { f.db.close(); }
 }, 5000);

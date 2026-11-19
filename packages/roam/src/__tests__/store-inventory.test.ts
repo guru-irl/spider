@@ -1,3 +1,5 @@
+import { createStorePort } from "../stores";
+import { readLocal } from "@spider/db-core/roam/local-state";
 import { afterEach, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
@@ -77,7 +79,7 @@ it("omits deleted registered databases and a mapped worktree awaiting capture", 
   worktree.db.close(); unlinkSync(worktree.db.raw.name);
   const problems: Array<{ entry: string; error: unknown }> = [], incomplete: string[] = [];
   expect(listStoreKeys(global.db, { onProblem: (entry, error) => problems.push({ entry, error }), onIncomplete: entry => incomplete.push(entry) })).toEqual(["global"]);
-  expect(incomplete).toEqual([]);
+  expect(incomplete).toEqual([worktree.db.raw.name, join(common, "spider", "repo.db"), join(path, ".spider", "project.db")]);
   expect(problems).toEqual(expect.arrayContaining([
     { entry: worktree.db.raw.name, error: expect.objectContaining({ code: "store-missing", scope: "worktree" }) },
     { entry: join(common, "spider", "repo.db"), error: expect.objectContaining({ code: "store-missing", scope: "repo" }) },
@@ -87,7 +89,7 @@ it("omits deleted registered databases and a mapped worktree awaiting capture", 
   expect(result).toMatchObject({ code: 0, value: { stores: ["global"] } });
 }, 5000);
 
-it.each(["EACCES", "SQLITE_CORRUPT"])("keeps registered inspect failure %s blocking with its path", code => {
+it.each(["EACCES", "SQLITE_CORRUPT"])("marks registered inspect failure %s ungathered with its path", code => {
   const { global, worktree } = fixture(), incomplete: string[] = [], problems: unknown[] = [];
   expect(listStoreKeys(global.db, { open() { throw Object.assign(new Error("private detail"), { code }); },
     onProblem: (_entry, error) => problems.push(error), onIncomplete: entry => incomplete.push(entry) })).toEqual(["global"]);
@@ -95,7 +97,7 @@ it.each(["EACCES", "SQLITE_CORRUPT"])("keeps registered inspect failure %s block
   expect(problems).toEqual([expect.objectContaining({ code: "store-uninspectable", check: code.toLowerCase().replaceAll("_", "-"), path: worktree.db.raw.name })]);
 });
 
-it("blocks an unexpected file type with the affected database path", () => {
+it("marks an unexpected file type ungathered with its database path", () => {
   const { global } = fixture();
   const file = join(global.root, "wrong-type.db"); mkdirSync(file);
   global.db.prepare("UPDATE projects SET db_path=?").run(file);
@@ -105,7 +107,7 @@ it("blocks an unexpected file type with the affected database path", () => {
   expect(problems).toEqual([expect.objectContaining({ code: "store-uninspectable", check: "store-path-type", path: file })]);
 });
 
-it("blocks an unexpected mapped database file type with its path", () => {
+it("marks an unexpected mapped database file type ungathered with its path", () => {
   const { global } = fixture(), path = join(global.root, "mapped");
   const file = join(path, ".spider", "project.db"); mkdirSync(file, { recursive: true });
   global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','planned',?)").run(path);
@@ -135,22 +137,22 @@ it("marks a registered store incomplete if it disappears before the read-only op
   expect(incomplete).toEqual([worktree.db.raw.name]);
 }, 5000);
 
-it("warns rather than blocking when a registered file vanishes before read-only open", () => {
+it("marks a registered file ungathered when it vanishes before read-only open", () => {
   const { global, worktree } = fixture(), incomplete: string[] = [], problems: unknown[] = [];
   worktree.db.close();
   expect(listStoreKeys(global.db, { open(file) { unlinkSync(file); return undefined; },
     onProblem: (_entry, error) => problems.push(error), onIncomplete: entry => incomplete.push(entry) })).toEqual(["global"]);
-  expect(incomplete).toEqual([]);
+  expect(incomplete).toEqual([worktree.db.raw.name]);
   expect(problems).toEqual([expect.objectContaining({ code: "store-missing", check: "enoent", path: worktree.db.raw.name })]);
 });
 
-it("inventory refuses an unreadable owned replica instead of claiming completeness", async () => {
+it("inventory reports an unreadable owned replica as ungathered", async () => {
   const { global, ports } = fixture();
   const directory = join(global.root, "roam", "stores"); mkdirSync(directory, { recursive: true, mode: 0o700 });
   writeFileSync(join(directory, `${"a".repeat(64)}.db`), "not a database", { mode: 0o600 });
   const result = await handleAgentOperation({ id: "unreadable", machineId: BOX, expectedEpoch: null, kind: "stores", args: {} }, ports);
-  expect(result.code).toBe(1);
-  expect(result.value).toBeNull();
+  expect(result.code).toBe(0);
+  expect(result.value).toMatchObject({ stores: ["global", expect.any(String)], ungathered: [expect.objectContaining({ scope: "replica", key: null, code: "corrupt" })] });
 }, 5000);
 
 it("inventory ignores mismatched hashes and never follows replica symlinks", async () => {
@@ -163,3 +165,30 @@ it("inventory ignores mismatched hashes and never follows replica symlinks", asy
   expect(result).toMatchObject({ code: 0, value: { stores: ["global", worktree.storeKey] } });
   expect(JSON.stringify(result)).not.toContain(foreign.root);
 }, 5000);
+
+it.each(["missing", "corrupt"])("reports a %s mapped scope without refusing readable stores", async mode => {
+  const { global, worktree, ports } = fixture();
+  const path = join(global.root, "unavailable"), file = join(path, ".spider", "project.db");
+  if (mode === "corrupt") { mkdirSync(join(path, ".spider"), { recursive: true }); writeFileSync(file, "not sqlite"); }
+  global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','hidden',?)").run(path);
+  const result = await handleAgentOperation({ id: "ungathered", machineId: BOX, expectedEpoch: null, kind: "stores", args: {} }, ports);
+  expect(result).toMatchObject({ code: 0, value: { stores: ["global", worktree.storeKey], ungathered: [
+    { key: "worktree:fixture-repo:hidden", scope: "worktree", path: file, code: mode === "missing" ? "missing" : "corrupt" },
+  ] } });
+}, 5000);
+
+it("reports a mapped identity once when its missing path is also registered", async () => {
+  const { global, ports } = fixture(), path = join(global.root, "missing-checkout"), file = join(path, ".spider", "project.db");
+  global.db.prepare("UPDATE projects SET db_path=?").run(file);
+  global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','hidden',?)").run(path);
+  const result = await handleAgentOperation({ id: "known-missing", machineId: BOX, expectedEpoch: null, kind: "stores", args: {} }, ports);
+  expect(result.value).toMatchObject({ stores: ["global"], ungathered: [expect.objectContaining({ key: "worktree:fixture-repo:hidden", path: file, code: "missing" })] });
+});
+
+it("persists the coded inventory cause in local store problems", () => {
+  const { global, ports } = fixture(), file = join(global.root, "corrupt.db"); writeFileSync(file, "not sqlite");
+  global.db.prepare("UPDATE projects SET db_path=?").run(file);
+  const stores = createStorePort(ports.config, global.db);
+  try { expect(stores.list(HUB)).toEqual(["global"]); } finally { stores.close(); }
+  expect(readLocal(global.db, "store-problem", file)).toEqual({ reason: "store-uninspectable:worktree:sqlite-notadb" });
+});

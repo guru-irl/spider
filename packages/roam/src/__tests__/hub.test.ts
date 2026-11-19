@@ -429,7 +429,7 @@ it("keeps a recreated session even when its catalog still says the store is empt
   expect(state.slots.map(slot => slot.session)).toEqual(["recreated"]);
 }, 5000);
 
-it("retains a deleted-session slot while a mapped store is unavailable", async () => {
+it.each(["missing", "corrupt"])("retains a deleted-session slot while a mapped store is %s", async mode => {
   const h = fixture();
   const key = h.f.remotes.get(BOX)!.worktree.storeKey;
   const worktree = h.f.stores.openStore(key).db;
@@ -437,8 +437,9 @@ it("retains a deleted-session slot while a mapped store is unavailable", async (
   catalogReplica(h.f.global.db, key, worktree);
   worktree.prepare("DELETE FROM sessions WHERE id='possibly-removed'").run();
   catalogReplica(h.f.global.db, key, worktree);
-  const unavailable = join(h.runtimeRoot, "corrupt-checkout"); mkdirSync(join(unavailable, ".spider"), { recursive: true });
-  writeFileSync(join(unavailable, ".spider", "project.db"), "not sqlite");
+  const unavailable = join(h.runtimeRoot, "unavailable-checkout");
+  if (mode === "corrupt") { mkdirSync(join(unavailable, ".spider"), { recursive: true });
+    writeFileSync(join(unavailable, ".spider", "project.db"), "not sqlite"); }
   h.f.global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES (?,?,?)")
     .run("unavailable-repo", "workspace", unavailable);
   const stateRoot = join(h.f.global.root, "roam", "placement");

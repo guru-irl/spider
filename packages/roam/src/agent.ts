@@ -658,7 +658,7 @@ async function dispatchParsedOperation(operation: Operation, request: Request, p
       if (Buffer.byteLength(JSON.stringify(failure)) <= ports.config.limits.replyBytes) return failure;
     }
     if (error && typeof error === "object" && "retryable" in error && error.retryable === true) {
-      return outcome(3, error instanceof Error ? error.message : "Agent operation is retryable", id);
+      return { ...outcome(3, "Agent operation failed", id), operationKind: request.kind, causeCode: causeCode(error, request.kind) };
     }
     return { ...outcome(1, "Agent operation failed", id), operationKind: request.kind, causeCode: causeCode(error, request.kind) };
   }

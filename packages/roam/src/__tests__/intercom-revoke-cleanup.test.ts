@@ -8,6 +8,7 @@ import { createIntercomRegistry } from "../intercom-registry";
 import { runIntercomRevokeCli } from "../intercom-cli";
 import { runLocalDoctor } from "../local-diagnostics";
 import { cleanupPairScenarios, scenario } from "./intercom-pair-fixture";
+import { withHopExchange } from "./intercom-hop-fixture";
 
 const HUB = "00000000-0000-4000-8000-000000000001";
 const A = "00000000-0000-4000-8000-000000000002", B = "00000000-0000-4000-8000-000000000003";
@@ -16,6 +17,7 @@ afterEach(async () => { for (const bridge of bridges.splice(0)) await bridge.sto
 
 async function livePair() {
   const f = await scenario(), endpoints = new Map<string, IntercomBridge>();
+  let generation = 0;
   for (const machine of [f.source, f.target]) {
     const bridge = createIntercomBridge({ machineId: machine.machineId, machineAlias: machine.alias, edges: [],
       store: f.queues.get(machine.machineId)!, clock: { now: () => 1000, later: () => () => {} },
@@ -25,11 +27,15 @@ async function livePair() {
     local.enrollBridge = async input => {
       const value = input as { peer: string; edgeEpoch: string; operationId: string; graphDigest: string; expectedFenceId: string | null };
       await bridge.enrollPair({ peer: machine.machineId === A ? f.target : f.source, edgeEpoch: value.edgeEpoch, initiator: false }, value);
+      await bridge.exchange({ version: 1, holdMs: 0, deadlineMs: 5000,
+        exchange: withHopExchange({ protocol: 5, senderMachine: value.peer, recipientMachine: machine.machineId,
+          generation: { edgeEpoch: value.edgeEpoch, channel: "push", generation: ++generation },
+          frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] }) });
       return { machineId: machine.machineId, ...value, applied: true };
     };
     local.inspectBridge = async input => {
       const value = input as { peer: string; edgeEpoch: string };
-      return { machineId: machine.machineId, ...value, status: f.queues.get(machine.machineId)!.pairFence(value.peer) ? "blocked" : "live", reason: null };
+      return { machineId: machine.machineId, ...value, status: f.queues.get(machine.machineId)!.edgeState(value.peer, value.edgeEpoch).status, reason: null };
     };
   }
   const transport = { ...f.transport, transport: { ...f.transport.transport, async exec(machine, argv, options) {

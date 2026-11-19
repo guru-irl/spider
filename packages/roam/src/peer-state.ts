@@ -7,6 +7,7 @@ export interface PendingBatch {
   batch: BatchArtifact | null; exported: JsonObject | null;
 }
 export interface PeerState {
+  ungathered?: import("./store-inventory").UngatheredStore[]; readablePulled?: boolean;
   failures: number; pulled: boolean; targetBytes: number; pending: Record<string, PendingBatch>; observation?: PeerObservation;
   gathered?: Record<string, boolean>; unknownSessions?: Record<string, string[]>;
 }

@@ -236,7 +236,7 @@ function openLocalInventory(input: { root: string }) {
   const readOptions = { globalPath: join(root, "spider.db"), open, onProblem(entry: string, error?: unknown) {
     if (problems.has(entry)) return;
     problems.add(entry);
-    const diagnostic = storeInventoryDiagnostic(entry, error);
+    const diagnostic = storeInventoryDiagnostic(entry, error, "warning");
     inventory.push({ ...diagnostic, reason: diagnostic.reason + snapshotProblem(error) });
   } };
   const add = (file: string, scope: Scope, label: string): void => {
@@ -253,7 +253,7 @@ function openLocalInventory(input: { root: string }) {
       }
       opened.set(source, db);
       stores.push({ key, scope, db });
-    } catch (error) { db?.close(); inventory.push({ severity, reason: `${label}: cannot inspect the registered store ${file.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 512)}.${snapshotProblem(error)}`, repairCommand: null }); }
+    } catch (error) { db?.close(); inventory.push({ severity: scope === "global" ? severity : "warning", reason: `${label}: cannot inspect the registered store ${file.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 512)}.${snapshotProblem(error)}`, repairCommand: null }); }
   };
   try {
     add(join(root, "spider.db"), "global", "global");
@@ -276,7 +276,7 @@ function openLocalInventory(input: { root: string }) {
             if (opened.has(source)) { db.close(); continue; }
             opened.set(source, db);
             stores.push({ key, scope: key.startsWith("repo:") ? "repo" : "worktree", db });
-          } catch (error) { db?.close(); inventory.push({ severity, reason: `${key}: cannot inspect the mapped store.${snapshotProblem(error)}`, repairCommand: null }); }
+          } catch (error) { db?.close(); inventory.push({ severity: "warning", reason: `${key}: cannot inspect the mapped store.${snapshotProblem(error)}`, repairCommand: null }); }
         }
       }
     }
@@ -313,6 +313,25 @@ export function localHostingWarningDiagnostics(root: string): Diagnostic[] {
   try { db = openOwned(join(root, "spider.db")); return db ? hostingWarningDiagnostics(db) : []; }
   catch { return [{ severity: "warning", reason: "Cannot inspect hosting warnings.", repairCommand: null }]; }
   finally { db?.close(); }
+}
+
+/** Disabled doctor inspects store inventory without probing services or move bindings. */
+export function localStoreInventoryDiagnostics(root: string): Diagnostic[] {
+  let db: Db | undefined;
+  const diagnostics: Diagnostic[] = [], seen = new Set<string>();
+  try {
+    const path = join(root, "spider.db"); db = openOwned(path);
+    if (!db || Number(db.pragma("user_version")) !== 14) return diagnostics;
+    const projects = db.prepare("SELECT project_key,db_path,git_common_dir FROM projects ORDER BY project_key").all() as DoctorProject[];
+    const catalog = readDoctorCatalog(db, projects, path); db.close(); db = undefined;
+    listStoreKeys(catalog, { open: openOwned, onProblem(entry, error) {
+      if (seen.has(entry)) return; seen.add(entry);
+      const diagnostic = storeInventoryDiagnostic(entry, error, "warning");
+      diagnostics.push({ ...diagnostic, reason: diagnostic.reason + snapshotProblem(error) });
+    } });
+  } catch { diagnostics.push({ severity: "warning", reason: "Cannot inspect the local store inventory.", repairCommand: "spider roam doctor" }); }
+  finally { db?.close(); }
+  return diagnostics;
 }
 
 /** Inspect registered local stores without modifying them. */
@@ -363,7 +382,7 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
       }
       seen.add(source);
       inspect({ key, scope, db });
-    } catch (error) { inventory.push({ severity, reason: `${label}: cannot inspect the registered store ${file.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 512)}.${snapshotProblem(error)}`, repairCommand: null }); }
+    } catch (error) { inventory.push({ severity: scope === "global" ? severity : "warning", reason: `${label}: cannot inspect the registered store ${file.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 512)}.${snapshotProblem(error)}`, repairCommand: null }); }
     finally { db?.close(); }
   };
 
@@ -404,7 +423,7 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
     const readOptions = { globalPath, open, onProblem(entry: string, error?: unknown) {
       if (problems.has(entry)) return;
       problems.add(entry);
-      const diagnostic = storeInventoryDiagnostic(entry, error);
+      const diagnostic = storeInventoryDiagnostic(entry, error, "warning");
       inventory.push({ ...diagnostic, reason: diagnostic.reason + snapshotProblem(error) });
     } };
     for (const key of listStoreKeys(catalogData, readOptions)) {
@@ -417,7 +436,7 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
         if (!db) continue;
         seen.add(origins.get(db)!);
         inspect({ key, scope: key.startsWith("repo:") ? "repo" : "worktree", db });
-      } catch (error) { inventory.push({ severity, reason: `${key}: cannot inspect the mapped store.${snapshotProblem(error)}`, repairCommand: null }); }
+      } catch (error) { inventory.push({ severity: "warning", reason: `${key}: cannot inspect the mapped store.${snapshotProblem(error)}`, repairCommand: null }); }
       finally { db?.close(); }
     }
   }
@@ -574,7 +593,7 @@ export function runLocalStatus(input: { root: string; now?: number }): RoamStatu
     try { journal = openOwned(join(local.root, "roam", "journal.db")); }
     catch { journalAvailable = false; local.inventory.push({ severity, reason: "Cannot inspect the local operation journal.", repairCommand: null }); }
     const status = readStatus(local.config, { globalDb, stores: usable, journalDb: journal ?? null, now, observations,
-      inventoryComplete: local.inventory.every(row => row.reason.startsWith("store-missing:")), journalAvailable });
+      inventoryComplete: local.inventory.length === 0, journalAvailable });
     status.diagnostics.push(...local.inventory);
     return status;
   } finally { journal?.close(); local.close(); }

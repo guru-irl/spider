@@ -506,6 +506,7 @@ it.each(["missing", "corrupt"])("%s mapped scopes defer first homes and writes w
   expect(f.global.db.prepare("SELECT session_id,machine_id FROM session_homes ORDER BY session_id").all()).toEqual([{ session_id: "healthy-session", machine_id: BOX2 }]);
   expect(f.calls.filter(call => call.machine === BOX2 && call.operation.kind === "inventory").map(call => call.operation.args.storeKey)).toContain("global");
   expect(peerState.loadPeerState(f.global.db, BOX2, 4096).gathered?.[key]).toBe(false);
+  expect(peerState.loadPeerState(f.global.db, BOX2, 4096).observation?.lastSyncAt).toBeNull();
   expect(f.calls.filter(call => call.operation.args.storeKey === key)).toEqual([]);
   expect(existing.prepare("SELECT name FROM sessions WHERE id='hidden-session'").get()).toEqual({ name: "portable" });
 }, 5000);

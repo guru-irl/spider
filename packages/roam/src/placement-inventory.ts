@@ -29,7 +29,7 @@ export function removedPlacementSessions(globalDb: Db, sessions: readonly string
     }
     if (!removed.size) return removed;
     let incomplete = false;
-    const keys = listStoreKeys(globalDb, { open: openOwned, onIncomplete: () => { incomplete = true; } });
+    const keys = listStoreKeys(globalDb, { open: openOwned, onProblem: () => { incomplete = true; } });
     if (incomplete) return new Set();
     const seenPaths = new Set<string>(), seenKeys = new Set<string>();
     const inspect = (db: Db): void => {

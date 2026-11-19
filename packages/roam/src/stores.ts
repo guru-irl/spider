@@ -11,8 +11,9 @@ import { localEntries, writeLocal } from "@spider/db-core/roam/local-state";
 import { openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
 import type { ApplyReceipt, BatchArtifact, StoreBarrier, StoreKey } from "@spider/db-core/roam/types";
 import type { AgentPorts, RoamConfig, StorePort } from "./contracts";
+import { enableMemoryCapture } from "@spider/db-core/roam/seed";
 import { sessionHome } from "./homes";
-import { listStoreKeys } from "./store-inventory";
+import { listStoreKeys, StoreInventoryError } from "./store-inventory";
 import { acquireTransferLease, defaultStagingRoot, openStaging, openOutgoingStaging, privateDirectory, readPrivate, hash } from "./staging";
 
 export function batchReceipt(db: Db, batch: BatchArtifact): ApplyReceipt | null {
@@ -107,6 +108,8 @@ export function createStorePort(config: RoamConfig, globalDb: Db, options: { all
         handles.set(file, db);
       } catch (error) { db.close(); throw error; }
     }
+    if (config.enabled && config.role === "hub" && scope !== "worktree" &&
+        (db.prepare("SELECT capture_enabled FROM roam_meta WHERE id=1").get() as { capture_enabled: number }).capture_enabled === 0) enableMemoryCapture(db, key);
     return { db, effects, policy };
   }
   function cleanReceipt(artifact: BatchArtifact, staging: ReturnType<typeof openStaging>): void {
@@ -142,7 +145,7 @@ export function createStorePort(config: RoamConfig, globalDb: Db, options: { all
     list() {
       registryFingerprint = undefined;
       return listStoreKeys(globalDb, { onProblem: (file, error) => writeLocal(globalDb, "store-problem", file,
-        { reason: error instanceof Error ? error.message : "Unsafe or unreadable registered store" }) });
+        { reason: error instanceof StoreInventoryError ? `${error.code}:${error.scope}:${error.check}` : "store-uninspectable:replica:inspect-failed" }) });
     },
     cursor(key, machine, stream) {
       if (!machine) return 0;

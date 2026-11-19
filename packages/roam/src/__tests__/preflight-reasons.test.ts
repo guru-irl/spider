@@ -8,6 +8,7 @@ import { moveSession } from "../move";
 import { handleAgentOperation } from "../agent";
 import { createProductionRecoveryPorts } from "../recovery-transport";
 import { assignInitialHome } from "../homes";
+import { recordLocation } from "@spider/db-core/roam/catalog";
 import type { MovePorts } from "../contracts";
 import { network, BOX, HUB } from "./sync-fixture";
 
@@ -60,6 +61,26 @@ it("correlates an agent exception to its safe operation kind and original ID thr
   const output = safeControlOutcome({ code: 1, reason: "Synchronization needs attention", operationId: "sync-a", home: null, epoch: null, repairCommand: null, value: { outcomes: results } });
   expect(output.value).toMatchObject({ outcomes: [{ code: 1, reason: "agent-operation-failed", operationId: request.id, operationKind: "stores", causeCode: "ENOENT" }] });
   expect(JSON.stringify(output)).not.toContain("missing-private-file");
+});
+
+it("retains a real mirror-export agent exception and its operation ID through sync", async () => {
+  const f = fixture(), remote = f.remotes.get(BOX)!;
+  remote.global.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run("mirror-session", BOX);
+  const home = { sessionId: "mirror-session", machineId: BOX, epoch: 1, moveId: null, updatedAt: 1 };
+  recordLocation(remote.global.db, { sessionId: "mirror-session", stores: [remote.worktree.storeKey], home,
+    file: join(f.root, "missing-private-mirror"), cwd: remote.worktree.root });
+  const operation = { id: "mirror-failure", machineId: BOX, expectedEpoch: 1, kind: "mirror-export",
+    args: { sourceMachine: HUB, sessionId: "mirror-session", moveId: null } };
+  expect(await handleAgentOperation(operation, remote.ports)).toMatchObject({ code: 1, reason: "Agent operation failed", operationKind: "mirror-export", causeCode: "ENOENT", operationId: operation.id });
+  expect(assignInitialHome(f.global.db, "mirror-session", BOX, HUB)).not.toBe("conflict");
+  const recovery = createProductionRecoveryPorts({ root: f.global.root, config: f.config, globalDb: f.global.db, journal: f.journal, transport: f.transport });
+  const sync = createSync({ config: f.config, globalDb: f.global.db, transport: f.transport, journal: f.journal, clock: f.clock, stores: f.stores, ...recovery });
+  const results = await sync.sync(BOX); sync.stop();
+  const request = f.calls.find(call => call.operation.kind === "mirror-export")!.operation;
+  const output = safeControlOutcome({ code: 1, reason: "Synchronization needs attention", operationId: "sync-a", home: null, epoch: null, repairCommand: null, value: { outcomes: results } });
+  expect(output.value).toMatchObject({ outcomes: expect.arrayContaining([expect.objectContaining({ code: 1, reason: "agent-operation-failed",
+    operationKind: "mirror-export", operationId: request.id, causeCode: "ENOENT" })]) });
+  expect(JSON.stringify(output)).not.toContain("missing-private-mirror");
 });
 
 it.each(["roaming-disabled", "mirror-home-changed", "private"] as const)("sync retains only a correlated safe recovery refusal: %s", async reason => {

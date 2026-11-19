@@ -563,7 +563,7 @@ it("disable completes interrupted service removal and retries each box flag", as
   const other = { ...config.peers[0], machineId: "00000000-0000-4000-8000-000000000003", alias: "box-2.invalid" };
   config.peers.push(other); writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
   openJournal(join(f.root, "roam/journal.db"));
-  const plist = join(f.root, "Library/LaunchAgents/com.spider.roam.hub.plist");
+  const plist = launchd.hubServiceFile(f.root, join(f.root, "Library/LaunchAgents"));
   mkdirSync(join(f.root, "Library/LaunchAgents"), { recursive: true }); writeFileSync(plist, "fixture");
   const launchctl = join(f.root, "launchctl"); writeFileSync(launchctl, "fixture", { mode: 0o700 }); vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", launchctl);
   const removal = vi.spyOn(launchd, "removeHubService").mockImplementation(async () => { unlinkSync(plist); });
@@ -602,7 +602,7 @@ it.each([
 ] as const)("disable converges only when %s", async (_name, bootout, print, removed) => {
   const f = await fixture(), file = join(f.root, "roam/config.json");
   const config = JSON.parse(readFileSync(file, "utf8")); config.peers = []; writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
-  const plistDir = join(f.root, "Library/LaunchAgents"), plist = join(plistDir, "com.spider.roam.hub.plist");
+  const plistDir = join(f.root, "Library/LaunchAgents"), plist = launchd.hubServiceFile(f.root, plistDir);
   await launchd.installHubService({ node: process.execPath, cli: process.execPath, globalRoot: f.root, pi: process.execPath }, { plistDir, async launchctl() {} });
   const binary = join(f.root, "launchctl");
   writeFileSync(binary, `#!/bin/sh\nif [ "$1" = print ]; then ${print}; else ${bootout}; fi\n`, { mode: 0o700 });
@@ -618,7 +618,7 @@ it.each([
 it("disable does not boot out or delete a service owned by another root", async () => {
   const f = await fixture(), file = join(f.root, "roam/config.json");
   const config = JSON.parse(readFileSync(file, "utf8")); config.peers = []; writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
-  const plistDir = join(f.root, "Library/LaunchAgents"), plist = join(plistDir, "com.spider.roam.hub.plist"), marker = join(f.root, "called");
+  const plistDir = join(f.root, "Library/LaunchAgents"), plist = launchd.hubServiceFile(f.root, plistDir), marker = join(f.root, "called");
   await launchd.installHubService({ node: process.execPath, cli: process.execPath, globalRoot: f.root, pi: process.execPath }, { plistDir, async launchctl() {} });
   writeFileSync(plist, readFileSync(plist, "utf8").replace(f.root, "/home/fixture/other"));
   const binary = join(f.root, "launchctl"); writeFileSync(binary, `#!/bin/sh\necho called > '${marker}'\nexit 0\n`, { mode: 0o700 });
@@ -632,7 +632,7 @@ it("disable does not boot out or delete a service owned by another root", async 
 it("disable reports a real filesystem cause and keeps its enabled flag", async () => {
   const f = await fixture(), file = join(f.root, "roam/config.json");
   const config = JSON.parse(readFileSync(file, "utf8")); config.peers = []; writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
-  const plist = join(f.root, "Library/LaunchAgents/com.spider.roam.hub.plist");
+  const plist = launchd.hubServiceFile(f.root, join(f.root, "Library/LaunchAgents"));
   mkdirSync(join(f.root, "Library/LaunchAgents"), { recursive: true }); writeFileSync(plist, "fixture");
   const launchctl = join(f.root, "launchctl"); writeFileSync(launchctl, "fixture", { mode: 0o700 }); vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", launchctl);
   vi.spyOn(launchd, "removeHubService").mockImplementation(async () => { readFileSync(join(f.root, "missing-private-file")); });
@@ -650,7 +650,7 @@ it("disable reports a real filesystem cause and keeps its enabled flag", async (
 it("disable leaves the enabled flag on when hub-service removal fails", async () => {
   const f = await fixture(), file = join(f.root, "roam/config.json");
   const config = JSON.parse(readFileSync(file, "utf8")); config.peers = []; writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
-  const plist = join(f.root, "Library/LaunchAgents/com.spider.roam.hub.plist");
+  const plist = launchd.hubServiceFile(f.root, join(f.root, "Library/LaunchAgents"));
   mkdirSync(join(f.root, "Library/LaunchAgents"), { recursive: true }); writeFileSync(plist, "fixture");
   const launchctl = join(f.root, "launchctl"); writeFileSync(launchctl, "fixture", { mode: 0o700 }); vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", launchctl);
   vi.spyOn(launchd, "removeHubService").mockRejectedValue(new Error("service removal failed"));

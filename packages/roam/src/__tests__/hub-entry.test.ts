@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { startTestBroker, stopTestBroker } from "@spider/intercom/test-support";
 // @ts-expect-error The shim is an executable JavaScript build helper.
@@ -84,6 +85,10 @@ function fixture(capture = true) {
     { ...process.env, SPIDER_ROAM_PI: process.execPath, HOME: root, SPIDER_GLOBAL_ROOT: root, HC_SOCKET: join(root, "absent-core.sock") };
   const cli = join(built, "roam", "cli.mjs"), socket = join(root, "roam", "hub.sock");
   return { root, marker, env, cli, socket };
+}
+function servicePlist(root: string): string {
+  const suffix = createHash("sha256").update(realpathSync(root)).digest("hex").slice(0, 16);
+  return join(root, "Library", "LaunchAgents", `com.spider.roam.hub.${suffix}.plist`);
 }
 function start(f: ReturnType<typeof fixture>): ChildProcess {
   const child = spawn(process.execPath, [f.cli, "roam", "hub"], { cwd: f.root, env: f.env, stdio: ["ignore", "pipe", "pipe"] });
@@ -288,17 +293,17 @@ it("packaged enable checks live consumers before seeding and installing the isol
     expect(db.prepare("SELECT entity,row_key FROM roam_changes").all()).toEqual([{ entity: "global_memory", row_key: "memory-a" }]);
   } finally { db.close(); }
   expect(JSON.parse(readFileSync(join(f.root, "roam", "config.json"), "utf8")).enabled).toBe(true);
-  expect(existsSync(join(f.root, "Library", "LaunchAgents", "com.spider.roam.hub.plist"))).toBe(true);
+  expect(existsSync(servicePlist(f.root))).toBe(true);
   expect(readFileSync(calls, "utf8").trim().split("\n").map(line => JSON.parse(line)[0])).toEqual(["bootout", "bootstrap"]);
   writeFileSync(failFile, "fail once");
   expect((await command(f, ["roam", "disable"])).code).toBe(3);
-  expect(existsSync(join(f.root, "Library", "LaunchAgents", "com.spider.roam.hub.plist"))).toBe(true);
+  expect(existsSync(servicePlist(f.root))).toBe(true);
   const callsBeforeRetry = readFileSync(calls, "utf8"), repeated = await command(f, ["roam", "disable"]);
   expect(repeated.code, repeated.err).toBe(0); expect(repeated.out).toContain("Roaming hub disabled");
   const retryCalls = readFileSync(calls, "utf8").slice(callsBeforeRetry.length).trim().split("\n").map(line => JSON.parse(line));
   expect(retryCalls).toHaveLength(1); expect(retryCalls[0][0]).toBe("bootout");
   expect(JSON.parse(readFileSync(join(f.root, "roam", "config.json"), "utf8")).enabled).toBe(false);
-  expect(existsSync(join(f.root, "Library", "LaunchAgents", "com.spider.roam.hub.plist"))).toBe(false);
+  expect(existsSync(servicePlist(f.root))).toBe(false);
   db = openDb(join(f.root, "spider.db"));
   try { expect(db.prepare("SELECT capture_enabled FROM roam_meta").get()).toEqual({ capture_enabled: 1 }); }
   finally { db.close(); }
@@ -374,7 +379,7 @@ it("disabled retries finish service removal only after the hub and pending move 
   f.env.PATH = bin; f.env.SPIDER_TEST_ROAM_LAUNCHCTL = launchctl;
   writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify({ enabled: false, role: "hub", machineId: HUB,
     hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture" }), { mode: 0o600 });
-  const plist = join(f.root, "Library", "LaunchAgents", "com.spider.roam.hub.plist");
+  const plist = servicePlist(f.root);
   try {
     expect((await command(f, ["roam", "enable"])).code).toBe(0);
     writeFileSync(failFile, "fail once");
@@ -758,5 +763,5 @@ it("enable refuses a missing participant executable before capture or service ef
   try { expect(db.prepare("SELECT capture_enabled FROM roam_meta").get()).toEqual({ capture_enabled: 0 }); }
   finally { db.close(); }
   expect(existsSync(marker)).toBe(false);
-  expect(existsSync(join(f.root, "Library", "LaunchAgents", "com.spider.roam.hub.plist"))).toBe(false);
+  expect(existsSync(servicePlist(f.root))).toBe(false);
 }, 5000);

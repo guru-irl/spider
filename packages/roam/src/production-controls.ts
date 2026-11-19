@@ -19,7 +19,7 @@ import { withProcessLock, writePrivateJson } from "@spider/herdr/sessions/regist
 import type { Operation, Peer, RoamConfig, Transport } from "./contracts";
 import { requestHubControl } from "./control-socket";
 import { assertCompatibleConsumers } from "./diagnostics";
-import { installHubService, removeHubService, type LaunchdPorts } from "./launchd";
+import { hubServiceExists, hubServiceFile, installHubService, removeHubService, type LaunchdPorts } from "./launchd";
 import { createLocalDiagnosticPorts } from "./local-diagnostics";
 import { homeChangeInProgress, loadHerdrConfig } from "./production-hub";
 import { compatibleConsumerPorts } from "./remote-observations";
@@ -248,11 +248,12 @@ export async function disableRoaming(root: string): Promise<ControlResult> {
     if (initial.role !== "hub") return { code: 1, reason: "mac-hub-required", message: "Run this command on the Mac hub." };
     return await locked(root, initial, async () => {
       const config = readLocalIdentity(root), socket = join(root, "roam", "hub.sock"), journalFile = join(root, "roam", "journal.db");
-      const plist = join(homedir(), "Library", "LaunchAgents", "com.spider.roam.hub.plist");
+      const plistDir = join(homedir(), "Library", "LaunchAgents"), plist = hubServiceFile(root, plistDir);
       assertTestConfigPath(plist);
+      const servicePresent = () => hubServiceExists(root, plistDir);
       const finish = async (): Promise<ControlResult> => {
         // Unload KeepAlive before publishing the disabled flag, so a failed unload can be retried.
-        if (existsSync(plist)) { step = "disable-service"; changed = true; await removeHubService({ globalRoot: root }, servicePorts()); }
+        if (servicePresent()) { step = "disable-service"; changed = true; await removeHubService({ globalRoot: root }, servicePorts()); }
         if (config.enabled) { step = "disable-config"; changed = true; await writeEnabled(root, config, false); }
         const unconfirmed: string[] = [];
         if (config.peers.length) {
@@ -275,7 +276,7 @@ export async function disableRoaming(root: string): Promise<ControlResult> {
         // A missing journal proves a no-op only for a disabled hub with no service.
         return locked(root, config, async () => {
           const hasJournal = existsSync(journalFile);
-          if (hasJournal ? homeChangeInProgress(journalFile) !== false : config.enabled || existsSync(plist))
+          if (hasJournal ? homeChangeInProgress(journalFile) !== false : config.enabled || servicePresent())
             return { code: 3 as const, reason: "disable-safety-unverified", message: "Cannot verify the hub is safe to disable. Run spider roam doctor." };
           return finish();
         }, "roam-hub", 1000);

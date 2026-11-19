@@ -1,4 +1,5 @@
 import { corePinDiagnostics } from "./core-pin-diagnostics";
+import { hubServiceExists, hubServiceFile } from "./launchd";
 import { inspectSupervisorCorePin } from "./enrollment";
 import { hostingWarningReason, readHostingWarnings } from "./hosting-warning";
 import { execFile, execFileSync } from "node:child_process";
@@ -133,8 +134,9 @@ export async function probeLocal(pid: number, usage: boolean, options: {
   return absentOrUnknown(pid);
 }
 
-function serviceExecutables(): { label: string; file: string }[] {
-  const file = join(homedir(), "Library", "LaunchAgents", "com.spider.roam.hub.plist");
+function serviceExecutables(root: string): { label: string; file: string }[] {
+  const directory = join(homedir(), "Library", "LaunchAgents"), scoped = hubServiceFile(root, directory);
+  const file = existsSync(scoped) || !hubServiceExists(root, directory) ? scoped : join(directory, "com.spider.roam.hub.plist");
   let text: string;
   try {
     const stat = lstatSync(file);
@@ -174,7 +176,7 @@ export function createLocalDiagnosticPorts(root: string, stores: readonly Diagno
       try { return execFileSync("sqlite3", ["--version"], { encoding: "utf8", timeout: 2000, maxBuffer: 1024 }).trim(); }
       catch { return null; }
     },
-    async listExecutables(machine) { localOnly(machine); return serviceExecutables(); },
+    async listExecutables(machine) { localOnly(machine); return serviceExecutables(root); },
     async executable(machine, file) {
       localOnly(machine);
       try { const stat = lstatSync(file); if (!stat.isFile() || stat.isSymbolicLink()) return false; accessSync(file, constants.X_OK); return true; }

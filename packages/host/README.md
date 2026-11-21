@@ -35,6 +35,12 @@ subagents, and the organism live there, and those packages register their
 handlers through `registerAction`. Host resolves the databases and the model
 router once per dispatch, then hands control to those packages.
 
+When roaming is enabled, `/move` uses one footer status while the control
+request is pending. It keeps the start and result notices but has no periodic
+progress notifications. A lost reply returns pending code `3` with the known
+operation ID and exact `spider roam recover <operation-id>` command. The footer
+status clears when the request ends.
+
 ## Key modules
 
 | File | What it does |
@@ -71,6 +77,7 @@ router once per dispatch, then hands control to those packages.
 | `herdr/mount.ts` | `mountHerdr` reads `herdr.enabled` and the configuration file, checks for a live core and owner, and composes the `@spider/herdr` registrations with host's adapters for a top-level session. It also records process presence and reports once when the integration is off. |
 | `herdr/child.ts` | `mountChildHerdr` composes remote execution, agent consoles, and the SSH check for a subagent child. |
 | `herdr/ports.ts` | Production ports for the setup CLI, the viewer and observer programs, process inventory, and job journals. |
+| `roam/move-command.ts` | The user-only `/move` command, persistent progress status, and operation-ID recovery after a lost reply. |
 
 Pi saves the injected global and repo memory section in session files. An
 unchanged section does not add another patch. Changes and compaction

@@ -18,12 +18,12 @@ const config = (enabled = true, role: "hub" | "box" = "hub"): RoamConfig => ({ e
   peers: role === "hub" ? [{ machineId: BOX, alias: "box-1.invalid", node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/cli", core: "/fixture/core", globalRoot: "/fixture/global" }] : [],
   discoveryRoots: [], coreUnit: "fixture", syncMs: 1000, limits: DEFAULT_LIMITS,
   intercom: { enabled: false, mode: "hub-only", machineAlias: "hub.invalid", protocolFeature: "federation-v1", routes: [], limits: DEFAULT_INTERCOM_LIMITS } });
-const context = (): ExtensionCommandContext => ({ mode: "tui", hasUI: true, cwd: "/fixture/workspace", ui: { notify: vi.fn() },
+const context = (): ExtensionCommandContext => ({ mode: "tui", hasUI: true, cwd: "/fixture/workspace", ui: { notify: vi.fn(), setStatus: vi.fn() },
   sessionManager: { getSessionId: () => "session-a", getSessionFile: () => "/fixture/session.jsonl", getHeader: () => ({ type: "session", id: "session-a", version: 3, cwd: "/fixture/workspace" }) } } as unknown as ExtensionCommandContext);
 const result = (code: 0 | 1 | 2 | 3 = 0): Outcome<MoveResult> => ({ code, reason: code === 3 ? "destination-unknown" : "complete", operationId: "move-a",
   home: { sessionId: "session-a", machineId: BOX, epoch: 2, moveId: "move-a", updatedAt: 1 }, epoch: 2, repairCommand: "spider roam recover move-a",
   value: code === 0 ? { sourceCleanup: { status: "done" }, home: { sessionId: "session-a", machineId: BOX, epoch: 2, moveId: "move-a", updatedAt: 1 }, terminal: "terminal-a", intercomAddress: "session-a@box-1.invalid", warnings: ["route-unavailable:peer.invalid", "tool-auth-missing:fixture-tool"] } : null });
-afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
 it("Mac slash move targets only persistent top-level current session", async () => {
   const requests: MoveRequest[] = [], handler = createMoveCommand(async input => { requests.push(input); return result(); }, () => config());
@@ -78,6 +78,37 @@ it("reports progress before waiting, names the destination alias and avoids unpr
   expect((await pending).text).toContain("box-1.invalid");
   const lock = await createMoveCommand(async () => ({ ...result(3), reason: "move-lock-pending" }), () => config())("box-1.invalid", context());
   expect(lock.text).not.toContain("The source is paused");
+}, 5000);
+
+it("lost control replies retain the known operation ID and exact recovery command", async () => {
+  const ctx = context(); let operationId = "";
+  const value = await createMoveCommand(async input => { operationId = input.operation.id; throw new Error("synthetic lost reply"); }, () => config())("box-1.invalid", ctx);
+  expect(value).toMatchObject({ code: 3, reason: "move-control-unavailable", operationId, repairCommand: `spider roam recover ${operationId}` });
+  expect(operationId).not.toBe("");
+  expect(value.text).toContain(operationId);
+  expect(value.text).toContain(`spider roam recover ${operationId}`);
+  expect(value.text).not.toContain("The source is paused");
+  expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("roam-move", undefined);
+}, 5000);
+
+it("long moves use one persistent status without periodic notifications", async () => {
+  vi.useFakeTimers();
+  const ctx = context(); let finish!: (value: Outcome<MoveResult>) => void, operationId = "";
+  const move = createMoveCommand(input => { operationId = input.operation.id; return new Promise(resolve => { finish = resolve; }); }, () => config());
+  const pending = move("box-1.invalid", ctx);
+  expect(ctx.ui.setStatus).toHaveBeenCalledWith("roam-move", expect.stringContaining(operationId));
+  await vi.advanceTimersByTimeAsync(15 * 60_000);
+  expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
+  expect(vi.getTimerCount()).toBe(0);
+  const completed = result(); completed.operationId = operationId;
+  finish(completed); expect((await pending).code).toBe(0);
+  expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("roam-move", undefined);
+}, 5000);
+
+it("an answered invalid success remains a refusal rather than a transport outage", async () => {
+  const invalid = { ...result(), home: null };
+  const value = await createMoveCommand(async () => invalid, () => config())("box-1.invalid", context());
+  expect(value).toMatchObject({ code: 1, reason: "invalid-move-control-reply", repairCommand: null });
 }, 5000);
 
 it("distinguishes an unreadable roaming config from disabled roaming", async () => {

@@ -1,7 +1,20 @@
 // SPDX-License-Identifier: MIT
 import type { JournalJob } from './store.js';
+import { HerdrError } from '../client/parse.js';
+import { isHerdrConnectivityFailure } from '../client/availability.js';
+
+export function isCleanupConnectivityFailure(error: unknown): boolean {
+  if (isHerdrConnectivityFailure(error)) return true;
+  if (!(error instanceof HerdrError)) return false;
+  if (error.code === 'core-unavailable' || error.code === 'cleanup-timeout') return true;
+  return error.code === 'machine-unavailable' && (error.details as { reason?: unknown } | undefined)?.reason === 'disconnected';
+}
 
 export const MAX_FAILED_TERMINAL_CLEANUP_ATTEMPTS = 3;
+export const MAX_CLEANUP_CONNECTIVITY_FAILURES = 8;
+export function cleanupConnectivityDelay(failures: number): number {
+  return Math.min(3_600_000, 30_000 * 2 ** (failures - 1));
+}
 export function needsFailedCleanup(job: JournalJob): boolean {
   return job.phase.kind === 'launch-failed' && !job.settledMarked && !job.uncertain && !job.evidenceConflict && !job.handoffCancelled
     && (Boolean(job.terminalReleased) || Boolean(job.failedTerminalCleanup && !job.failedTerminalCleanup.exhausted));

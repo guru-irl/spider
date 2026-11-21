@@ -14,12 +14,13 @@ import * as transportModule from "../transport";
 import * as productionHub from "../production-hub";
 import { enrollFixtureCore } from "./supervisor-core-fixture";
 
-const bundleUrl = pathToFileURL(resolve("dist/extension.js"));
 const HUB = "00000000-0000-4000-8000-000000000001", BOX = "00000000-0000-4000-8000-000000000002";
 const roots: string[] = [], databases: ReturnType<typeof openDb>[] = [];
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); for (const db of databases.splice(0)) db.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 async function fixture() {
   const root = mkdtempSync(join(resolve(".spider/scratch"), "pending-controls-")); roots.push(root);
+  const release = join(root, "release.js"), bundleUrl = pathToFileURL(release);
+  writeFileSync(release, "// SPIDER_BUILD_ID=01234567@2026-01-01T00:00:00.000Z v0.1.0\n", { mode: 0o600 });
   const remote = join(root, "remote"); mkdirSync(join(remote, "roam"), { recursive: true, mode: 0o700 }); mkdirSync(join(root, "roam"), { mode: 0o700 });
   const config = { enabled: false, role: "hub" as const, machineId: HUB, hubMachineId: HUB, peers: [{ machineId: BOX, alias: "box-1.invalid", node: "/home/fixture/node", pi: "/home/fixture/pi", cli: "/home/fixture/spider", core: "/home/fixture/hc", globalRoot: "/home/fixture/global" }], discoveryRoots: [], coreUnit: "fixture.service", intercom: disabledIntercom() };
   const box = { ...config, role: "box" as const, machineId: BOX, peers: [] };

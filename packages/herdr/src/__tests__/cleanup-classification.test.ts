@@ -10,7 +10,7 @@ it.each([
   new HerdrError('cleanup-timeout', 'Cleanup call timed out'),
   new HerdrError('core-unavailable', 'Local core is down'),
   new HerdrError('cli-exit', 'CLI exited', { stderr: 'connection reset' }),
-  new HerdrError('cli-exit', 'CLI exited', { stderr: 'ssh: no route to host' }),
+  new HerdrError('cli-exit', 'CLI exited', { stderr: 'no route to host' }),
   new HerdrError('cli-exit', 'CLI exited', { stderr: 'remote host connection timed out' }),
   new HerdrError('machine-unavailable', 'Destination disconnected', { reason: 'disconnected' }),
 ])('preserves the budget for a connectivity failure: $code', error => {

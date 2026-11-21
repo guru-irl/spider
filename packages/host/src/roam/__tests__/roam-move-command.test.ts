@@ -100,7 +100,8 @@ it("long moves use one persistent status without periodic notifications", async 
   await vi.advanceTimersByTimeAsync(15 * 60_000);
   expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
   expect(vi.getTimerCount()).toBe(0);
-  const completed = result(); completed.operationId = operationId;
+  const completed = result(); completed.operationId = operationId; completed.home!.moveId = operationId;
+  completed.value!.home.moveId = operationId; completed.reason = "moved"; completed.repairCommand = null;
   finish(completed); expect((await pending).code).toBe(0);
   expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("roam-move", undefined);
 }, 5000);

@@ -15,7 +15,7 @@ import { createClientFixture } from '../../../herdr/src/__tests__/testutil.js';
 import { createProcessPresence } from '../../../herdr/src/sessions/presence.js';
 import { createTerminalRegistry } from '../../../herdr/src/sessions/registry.js';
 import { createSessionIpcClient } from '../../../herdr/src/feed/ipc-client.js';
-import type { HcClient, HcEvent, HcRunRequest, JobId, RunId, TerminalAddress, TerminalSummary } from '../../../herdr/src/contracts.js';
+import type { HcEvent, HcRunRequest, JobId, RunId, TerminalAddress, TerminalSummary } from '../../../herdr/src/contracts.js';
 import { RunStore } from '../../../subagents/src/run-store.js';
 import { mountHerdr } from '../herdr/mount.js';
 import { controlConfig } from '../control.js';
@@ -51,7 +51,7 @@ async function fixture(child = false) {
   const runCalls: HcRunRequest[] = [], remoteFiles = new Map<string, Buffer>();
   const eventListeners = new Set<(event: HcEvent) => void>();
   let allowRemote = false, terminalSequence = 0;
-  const client: HcClient & { dispose(): void } = {
+  const client: ReturnType<typeof hcModule.createHcClient> = {
     identity: async () => identity, caller: async () => caller,
     machines: async () => [{ id: 'remote-core' as never, name: machine.name as never, aliases: [], state: 'connected', sessionNamespace: 'remote', runtime: null }],
     get: async address => { const result = terminals.get(address); if (!result) throw Object.assign(new Error('missing terminal'), { code: 'not_found' }); return result; },
@@ -78,7 +78,8 @@ async function fixture(child = false) {
       if (!bytes) throw Object.assign(new Error('missing file'), { code: 'not_found' });
       return bytes;
     },
-    fileWrite: async (on, path, bytes) => { if (on !== machine.name) throw new Error('Fixture refuses unconfigured writes'); remoteFiles.set(path, Buffer.from(bytes)); }, dispose() {},
+    fileWrite: async (on, path, bytes) => { if (on !== machine.name) throw new Error('Fixture refuses unconfigured writes'); remoteFiles.set(path, Buffer.from(bytes)); },
+    onMachineAvailable: () => () => {}, dispose() {},
   };
   vi.spyOn(hcModule, 'createHcClient').mockImplementation(() => client);
   vi.spyOn(hostPorts, 'coreStartedAt').mockResolvedValue(1234);

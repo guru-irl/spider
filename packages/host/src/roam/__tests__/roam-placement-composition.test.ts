@@ -10,7 +10,7 @@ import { openJournal } from '@spider/roam/journal';
 import { createClientFixture } from '../../../../herdr/src/__tests__/testutil.js';
 import * as hcModule from '@spider/herdr/client/hc';
 import * as appModule from '@spider/herdr/client/app';
-import type { HcClient, HcRunRequest } from '@spider/herdr/contracts';
+import type { HcRunRequest } from '@spider/herdr/contracts';
 import { parsePaneTarget } from '@spider/herdr/panes/codec';
 import { createProductionHerdrCliPorts } from '../../herdr/ports.js';
 import { createHostRoamPlacement } from '../readiness.js';
@@ -32,7 +32,8 @@ it.each(['core-only', 'full'] as const)('%s production sync starts a presentatio
   const launches: HcRunRequest[] = [];
   const client = { identity: async () => ({ coreId: 'local-core', socket: f.localSocket, sessionNamespace: f.namespace }),
     events: () => ({ ready: Promise.resolve(), subscribe: () => () => {}, dispose() {} }),
-    run: async (request: HcRunRequest) => { launches.push(request); throw Error('Helper launch refused by fixture'); }, dispose: async () => {} } as unknown as HcClient & { dispose(): Promise<void> };
+    run: async (request: HcRunRequest) => { launches.push(request); throw Error('Helper launch refused by fixture'); }, onMachineAvailable: () => () => {},
+    dispose: async () => {} } as unknown as ReturnType<typeof hcModule.createHcClient>;
   vi.spyOn(hcModule, 'createHcClient').mockReturnValue(client);
   const app = vi.spyOn(appModule, 'createAppClient');
   const globalDb = openDbAt(join(root, 'global.db'), 'global'); cleanups.push(async () => { globalDb.close(); });

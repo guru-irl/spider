@@ -72,6 +72,14 @@ after its definition proves it belongs to the selected root. A missing service
 is safe to remove; after a failed bootout, a service-specific `launchctl print`
 can confirm absence. An unrelated error does not prove absence.
 
+If the Mac is disabled but box participation flags cannot be confirmed,
+`spider roam disable` returns `roaming-disabled-partial` with exit code `3`.
+The result names the unconfirmed boxes and the exact retry command,
+`spider roam disable`. Captures and homes remain intact. A retry reuses each
+box's latest matching pending disable operation ID and its consent record.
+A newer enable decision prevents replay of an older pending disable operation.
+Code `0` means both local disable and every box flag are confirmed.
+
 When enable or disable needs reconciliation, text and JSON include a bounded
 `causeCode`. Sync agent refusals and intercom enrollment pending results also
 report bounded causes, using `unexpected-<step>` when the error has no known

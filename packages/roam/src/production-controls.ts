@@ -11,7 +11,7 @@ import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { assertTestConfigPath } from "@spider/db-core";
+import { assertTestConfigPath, openDbReadOnly } from "@spider/db-core";
 import { storeScope } from "@spider/db-core/roam/codec";
 import { enableMemoryCapture } from "@spider/db-core/roam/seed";
 import type { JsonObject, StoreKey } from "@spider/db-core/roam/types";
@@ -244,6 +244,21 @@ export async function enableRoaming(root: string, cli: string, bundleUrl?: URL):
   }
 }
 
+function pendingPeerDisable(file: string, peer: Peer): string | undefined {
+  const db = openDbReadOnly(file);
+  if (!db) throw new Error("peer-enabled-unconfirmed");
+  try {
+    const row = db.prepare(`SELECT o.operation_id, o.result_json, a.result_json AS consent
+      FROM roam_operations o JOIN roam_operation_actions a ON a.operation_id=o.operation_id
+      WHERE o.kind='explicit-participant-control' AND o.machine_id=? AND a.action='provision-consent'
+      ORDER BY a.seq DESC LIMIT 1`).get(peer.machineId) as { operation_id: string; result_json: string | null; consent: string } | undefined;
+    if (!row || row.result_json !== null) return undefined;
+    const consent = JSON.parse(row.consent) as JsonObject;
+    return consent.approved === true && consent.scope === "roaming-enabled" && consent.target === peer.alias &&
+      consent.machineId === peer.machineId && consent.enabled === false && consent.restoreAutostart !== true ? row.operation_id : undefined;
+  } finally { db.close(); }
+}
+
 export async function disableRoaming(root: string): Promise<ControlResult> {
   let changed = false, step: CauseStep = "disable";
   try {
@@ -264,14 +279,15 @@ export async function disableRoaming(root: string): Promise<ControlResult> {
             const herdr = loadHerdrConfig(root), journal = openJournal(journalFile);
             const provisioning = createProvisionTransport({ binary: herdr.core.binary, env: process.env, enrolled: config.peers }, journal);
             for (const peer of config.peers) {
-              try { await setEnrolledPeerEnabled({ config, peer, enabled: false, journal, transport: provisioning }); }
+              try { await setEnrolledPeerEnabled({ config, peer, enabled: false, operationId: pendingPeerDisable(journalFile, peer), journal, transport: provisioning }); }
               catch { unconfirmed.push(peer.alias); }
             }
           } catch { unconfirmed.push(...config.peers.map(peer => peer.alias)); }
         }
-        const warning = unconfirmed.length ? ` Box flags unconfirmed: ${unconfirmed.map(clean).join(", ")}; retry spider roam disable.` : "";
-        return { code: 0, reason: "roaming-disabled", message: `Roaming hub disabled. Captures and homes were retained.${warning} Reload open pi sessions (/reload) to pick up /move.`,
+        if (unconfirmed.length) return { code: 3, reason: "roaming-disabled-partial",
+          message: `Mac roaming is disabled. Box flags unconfirmed: ${unconfirmed.map(clean).join(", ")}. Captures and homes were retained. Retry spider roam disable.`,
           issues: unconfirmed.map(name => ({ reason: `peer-enabled-unconfirmed:${clean(name)}`, repairCommand: "spider roam disable" })) };
+        return { code: 0, reason: "roaming-disabled", message: "Roaming hub disabled. Captures and homes were retained. Reload open pi sessions (/reload) to pick up /move.", issues: [] };
       };
       let reply;
       try { reply = await requestHubControl(socket, { op: "disable" }); }

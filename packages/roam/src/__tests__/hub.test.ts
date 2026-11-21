@@ -24,6 +24,7 @@ import * as mappingApi from "@spider/db-core/roam/repo-map";
 import * as storeApi from "../stores";
 import * as cleanupApi from "../cleanup";
 import * as syncApi from "../sync";
+import * as moveRuntimeApi from "../move-runtime-service";
 import { network, HUB, BOX } from "./sync-fixture";
 
 const handles: Array<{ stop(): Promise<void> }> = [];
@@ -136,6 +137,61 @@ it("verified peer recovery schedules one full pass outside sync and drains it on
   release(); await stopping;
   expect(passes).toEqual([BOX]);
   expect(stopped).toBe(true);
+}, 5000);
+
+it("standalone cleanup is bounded and shutdown drains it before closing stores", async () => {
+  const h = fixture();
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; }), held = new Promise<void>(resolve => { release = resolve; });
+  const order: string[] = [];
+  vi.spyOn(moveRuntimeApi, "createMoveRuntimeService").mockReturnValue({ async control() { return { code: 1, reason: "fixture-unused", value: null }; }, async recover() {}, async recoverCleanup() { order.push("cleanup-start"); enter(); await held; order.push("cleanup-end"); } });
+  const makeStores = storeApi.createStorePort;
+  vi.spyOn(storeApi, "createStorePort").mockImplementation((...args) => {
+    const stores = makeStores(...args), close = stores.close.bind(stores);
+    stores.close = () => { order.push("stores-close"); close(); }; return stores;
+  });
+  const hub = await runStandaloneHub({ ...h.ports, async moveFactory() { throw new Error("fixture-unused"); } }); handles.push(hub);
+  try {
+    await h.request("sync"); await h.request("sync"); await h.request("sync");
+    expect(h.timers.filter(timer => !timer.cancelled && timer.delay === 0)).toHaveLength(1);
+    h.fire(0); await entered;
+    await h.request("sync"); await h.request("sync");
+    expect(h.timers.filter(timer => !timer.cancelled && timer.delay === 0)).toHaveLength(0);
+  } finally { release(); await hub.stop(); }
+  expect(order).toEqual(["cleanup-start", "cleanup-end", "stores-close"]);
+  expect(h.timers.filter(timer => !timer.cancelled && timer.delay === 0)).toHaveLength(0);
+}, 5000);
+
+it("standalone stop cancels deferred cleanup before it mounts a runtime", async () => {
+  const h = fixture(), cleanup = vi.fn(async () => {});
+  vi.spyOn(moveRuntimeApi, "createMoveRuntimeService").mockReturnValue({ async control() { return { code: 1, reason: "fixture-unused", value: null }; }, async recover() {}, recoverCleanup: cleanup });
+  const hub = await runStandaloneHub({ ...h.ports, async moveFactory() { throw new Error("fixture-unused"); } }); handles.push(hub);
+  await h.request("sync");
+  expect(h.timers.filter(timer => !timer.cancelled && timer.delay === 0)).toHaveLength(1);
+  await hub.stop();
+  expect(h.timers.filter(timer => !timer.cancelled && timer.delay === 0)).toHaveLength(0);
+  expect(cleanup).not.toHaveBeenCalled();
+}, 5000);
+
+it("a reconnect recovery can request real sync while cleanup shares its writer", async () => {
+  const h = fixture(); let complete!: () => void, flight: Promise<void> | undefined;
+  const completed = new Promise<void>(resolve => { complete = resolve; });
+  vi.spyOn(moveRuntimeApi, "createMoveRuntimeService").mockImplementation(input => ({
+    async control() { return { code: 1, reason: "fixture-unused", value: null }; },
+    async recover(machineId) {
+      if (!machineId) return;
+      flight = input.sync.sync(machineId).then(() => { complete(); });
+      await flight;
+    },
+    async recoverCleanup() { await flight; },
+  }));
+  const hub = await runStandaloneHub({ ...h.ports, async moveFactory() { throw new Error("fixture-unused"); } }); handles.push(hub);
+  h.unreachable(); await h.request("sync");
+  h.reachable(); expect((await h.request("sync")).code).toBe(0);
+  h.fire(0);
+  await completed;
+  await hub.stop();
+  expect(h.timers.filter(timer => !timer.cancelled && timer.delay === 0)).toHaveLength(0);
 }, 5000);
 
 it("move recovery failure prevents hub startup and new controls", async () => {

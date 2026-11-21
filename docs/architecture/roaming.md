@@ -530,7 +530,10 @@ launch failure and retirement, then a higher home epoch.
 When an unreachable peer becomes connected and completes a verified sync round,
 the running hub schedules one full recovery pass for pending moves involving
 that peer. The pass runs after sync, not inside its callback. Full recovery and
-cleanup share one writer. Repeated reachable observations do not start more
+cleanup share one writer. Successful-sync cleanup is deferred with one coalesced
+timer and one flight. Disable and shutdown cancel queued cleanup and drain the
+active flight before closing stores. Sync callbacks never wait on recovery,
+because recovery can request a sync barrier. Repeated reachable observations do not start more
 full passes. Each pass uses finite snapshots of retained journal work and does
 not retry failed moves in a loop. Unknown login or identity state cannot trigger recovery.
 An unknown launch outcome stays pending until the existing ownership and

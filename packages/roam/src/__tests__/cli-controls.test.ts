@@ -706,7 +706,7 @@ it("disable does not replay an old pending operation after a newer enable", asyn
   expect(await f.invoke(["roam", "disable", "--json"])).toBe(3);
   loseReply = false;
   const config = localRuntime.readLocalIdentity(f.root), journal = openJournal(join(f.root, "roam/journal.db"));
-  await setEnrolledPeerEnabled({ config, peer: config.peers[0], enabled: true, operationId: "enable-later", journal, transport: transport as never });
+  await setEnrolledPeerEnabled({ config, peer: config.peers[0], enabled: true, operationId: "00000000-0000-4000-8000-000000000004", journal, transport: transport as never });
   expect(enabled).toBe(true);
   expect(await f.invoke(["roam", "disable", "--json"])).toBe(0);
   expect(enabled).toBe(false);

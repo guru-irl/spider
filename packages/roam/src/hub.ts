@@ -28,6 +28,8 @@ const LOCK = "roam-hub";
 type PeerResult = readonly Outcome<ApplyReceipt>[];
 export interface HubObservation {
   reachability: "reachable" | "unreachable" | "unknown";
+  /** A connected peer with a complete successful current sync round. */
+  syncVerified?: boolean;
   warnings?: readonly SessionHostingWarning[] | null;
   /** Null means the terminal inventory could not be observed. */
   readiness: readonly Readiness[] | null;
@@ -122,6 +124,7 @@ function validObservation(value: unknown): value is HubObservation {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const row = value as HubObservation;
   return ["reachable", "unreachable", "unknown"].includes(row.reachability) &&
+    (row.syncVerified === undefined || typeof row.syncVerified === "boolean") &&
     (row.warnings === undefined || row.warnings === null || validHostingWarnings(row.warnings)) &&
     (row.readiness === null || Array.isArray(row.readiness) && row.readiness.every(validReadiness)) &&
     (row.suspensions === null || Array.isArray(row.suspensions) && row.suspensions.every(item => item && plain(item.sessionId) && Number.isSafeInteger(item.epoch) && item.epoch > 0));
@@ -241,7 +244,7 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
         if (state.since === null) { state.since = clock.now(); saveStatus(db, peer.machineId, state); }
         await unreachable(peer); return;
       }
-      if (results.every(result => result.code === 0) && unreachablePeers.delete(peer.machineId)) {
+      if (observation.syncVerified === true && results.every(result => result.code === 0) && unreachablePeers.delete(peer.machineId)) {
         pendingRecoveries.add(peer.machineId); scheduleRecovery();
       }
       cancelTimer(peer.machineId);

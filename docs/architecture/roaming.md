@@ -365,8 +365,12 @@ an unavailable observation never authorizes clearing a fence.
 The hub treats native `disconnected`, `unreachable`, and `stopped` machine
 states as unreachable. A machine with hosted sessions gets one hosting alert
 after ten minutes. `needs_login`, `needs-login`, and other uncertain states
-neither start an outage nor clear one. Clearing requires literal `connected`
-plus a successful current sync round with verified peer connectivity.
+neither start an outage nor clear one. Literal `connected` clears the hosting
+outage alert even when the peer refuses sync content. Sync refusals retain
+their own diagnostics and do not reset an established sync backoff.
+Live move recovery requires a separate proof: literal `connected` plus a
+successful current sync round with verified peer connectivity and a complete
+store pull. An incomplete pull never schedules move recovery.
 
 Machine-intercom initialization retries failed setup after 1, 2, 5, 10, and
 then 30 seconds. Its status stays pending during the outage. Successful setup

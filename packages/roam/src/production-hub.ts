@@ -88,7 +88,7 @@ export function homeChangeInProgress(file: string): boolean | null {
 
 export function parseMachineReachability(state: unknown, synced: boolean): HubObservation["reachability"] {
   if (state === "disconnected" || state === "unreachable" || state === "stopped") return "unreachable";
-  return state === "connected" && synced ? "reachable" : "unknown";
+  return state === "connected" ? "reachable" : "unknown";
 }
 
 export async function startProductionHub(root: string, options: { intercomClock?: Clock; moveFactory?: import("./move-runtime-contracts").MoveRuntimeFactory; placementFactory?: PlacementFactory } = {}): Promise<{ stop(): Promise<void> }> {
@@ -133,8 +133,9 @@ export async function startProductionHub(root: string, options: { intercomClock?
           syncState.observation?.connected === true;
         const reachability = parseMachineReachability(state, reached);
         if (reachability !== "reachable") return { reachability, readiness: null, suspensions: null };
-        try { const hosting = await remoteHosting(transport, peer, core.config); return { reachability, ...hosting }; }
-        catch { return { reachability, readiness: null, suspensions: null }; }
+        if (!reached) return { reachability, syncVerified: false, readiness: null, suspensions: null };
+        try { const hosting = await remoteHosting(transport, peer, core.config); return { reachability, syncVerified: true, ...hosting }; }
+        catch { return { reachability, syncVerified: true, readiness: null, suspensions: null }; }
       } catch { return { reachability: "unknown", readiness: null, suspensions: null }; }
     };
     placement = options.placementFactory?.({ root, globalDb: core.db, config: core.config });

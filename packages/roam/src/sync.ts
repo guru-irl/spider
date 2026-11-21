@@ -372,7 +372,9 @@ export function createSync(ports: SyncPorts): SyncAdapter {
       completed = pulled && globalReady && state.ungathered.length === 0 && !keys.some(blocked) && results.every(result => result.code === 0);
     } catch (error) { results.push(failure(error, peer.machineId)); }
     const uncertain = results.some(result => result.code === 3);
-    state.failures = uncertain ? state.failures + 1 : 0;
+    const outage = uncertain || results.some(result => result.code === 1 && isPeerFailureReason(result.reason));
+    if (outage) state.failures++;
+    else if (completed) state.failures = 0;
     state.observation = { machineId: peer.machineId, observedAt, connected: uncertain ? null : connected,
       lastSyncAt: completed ? clock.now() : Number.isSafeInteger(previousSync) && previousSync! >= 0 ? previousSync! : null,
       cursors: uncertain ? [] : cursors, failure: results.find(result => result.code === 1 && isPeerFailureReason(result.reason))?.reason ?? null };

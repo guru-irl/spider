@@ -58,6 +58,8 @@ export interface HubRuntimePorts extends HubPorts {
   prepare: Prepare;
   /** Mounted with move handlers. Await startup recovery of pending moves and active reservations before serving. */
   reconcileMoves?(): Promise<void>;
+  /** One finite recovery pass after an unreachable peer has a verified successful sync. */
+  recoverPeerMoves?(machineId: string): Promise<void>;
   moveControl?: MoveControlHandler;
   drain(): Promise<void>;
   closeStores(): void | Promise<void>;
@@ -80,6 +82,7 @@ export interface StandaloneHubPorts {
   artifactActive(value: string): boolean | null;
   /** Production move composition supplies the same recovery callback as HubRuntimePorts. */
   reconcileMoves?(): Promise<void>;
+  recoverPeerMoves?(machineId: string): Promise<void>;
   moveControl?: MoveControlHandler;
   intercom?: IntercomLifecycle;
 }
@@ -143,6 +146,26 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
   const timers = new Map<string, () => void>();
   const queues = new Map<string, Promise<void>>();
   let stopping = false, disabled = false, disabling = false, activeMoveControls = 0;
+  const unreachablePeers = new Set<string>(), pendingRecoveries = new Set<string>();
+  let cancelRecovery: (() => void) | undefined, recoveryFlight: Promise<void> | undefined;
+  function scheduleRecovery(): void {
+    if (stopping || disabled || !ports.recoverPeerMoves || cancelRecovery || recoveryFlight || !pendingRecoveries.size) return;
+    cancelRecovery = clock.later(0, () => {
+      cancelRecovery = undefined;
+      if (stopping || disabled || recoveryFlight) return;
+      const machines = [...pendingRecoveries]; pendingRecoveries.clear();
+      const task = Promise.resolve().then(async () => {
+        for (const machine of machines) {
+          if (stopping || disabled) break;
+          try { await ports.recoverPeerMoves!(machine); } catch { /* Keep journal proofs for the next explicit recovery or reconnect. */ }
+        }
+      }).finally(() => {
+        if (recoveryFlight === task) recoveryFlight = undefined;
+        scheduleRecovery();
+      });
+      recoveryFlight = task;
+    });
+  }
 
   function queue(peer: Peer, work: () => Promise<void>): Promise<void> {
     const prior = queues.get(peer.machineId) ?? Promise.resolve();
@@ -210,12 +233,16 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
       if (!validObservation(observation) || observation.reachability === "unknown") return;
       let state = peerStatus(db, peer.machineId);
       if (observation.reachability === "unreachable") {
+        unreachablePeers.add(peer.machineId);
         if (!hasHomes(db, peer.machineId)) {
           state.since = null; if (state.unreachable) state.unreachable.clearing = true;
           saveStatus(db, peer.machineId, state); cancelTimer(peer.machineId); await flushAlerts(peer); return;
         }
         if (state.since === null) { state.since = clock.now(); saveStatus(db, peer.machineId, state); }
         await unreachable(peer); return;
+      }
+      if (results.every(result => result.code === 0) && unreachablePeers.delete(peer.machineId)) {
+        pendingRecoveries.add(peer.machineId); scheduleRecovery();
       }
       cancelTimer(peer.machineId);
       if (observation.warnings !== null && observation.suspensions !== null)
@@ -271,7 +298,8 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
         try { moving = await ports.homeChangeInProgress(); } catch { moving = null; }
         if (moving !== false) return { code: 1, reason: "A home change is in progress or unknown", value: null };
         disabled = true; ports.sync.stop(); for (const peer of config.peers) cancelTimer(peer.machineId);
-        await ports.drain();
+        cancelRecovery?.(); cancelRecovery = undefined; pendingRecoveries.clear();
+        await ports.drain(); await recoveryFlight;
         return { code: 0, reason: "Hub scheduling disabled", value: null };
       } finally { disabling = false; }
     }
@@ -304,11 +332,13 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
       await hold;
     } finally {
       stopping = true; ports.sync.stop();
+      cancelRecovery?.(); cancelRecovery = undefined; pendingRecoveries.clear();
       for (const peer of config.peers) cancelTimer(peer.machineId);
       try {
         await endpoint?.close();
         await ports.drain();
         await Promise.allSettled([...queues.values()]);
+        await recoveryFlight;
       } finally {
         try { await ports.intercom?.stop(); } finally { await ports.closeStores(); }
       }
@@ -366,6 +396,7 @@ export async function runStandaloneHub(ports: StandaloneHubPorts): Promise<{ sto
     get revocationDb() { return revocationDb; },
     moveControl: ports.moveControl ?? (request => moves ? moves.control(request) : Promise.resolve({ code: 1, reason: "adapter-unbound:moveControl", value: null })),
     reconcileMoves: async () => { await ports.reconcileMoves?.(); await moves?.recover(); },
+    recoverPeerMoves: async machineId => { await ports.recoverPeerMoves?.(machineId); await moves?.recover(machineId); },
     async prepare(onPeerSync) {
       if (!revocationDb) revocationDb = ownedRevocationDb = openDb(join(dirname(resolve(ports.globalDb.raw.name)), "roam", "journal.db"), { fileMustExist: true, checkpointOnClose: false });
       await resumePendingMappings(ports.globalDb);

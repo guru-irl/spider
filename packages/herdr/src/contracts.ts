@@ -90,8 +90,6 @@ export interface HcClient {
 	setLabels(address: TerminalAddress, labels: Readonly<Record<string, string | null>>): Promise<void>;
 	fileRead(on: MachineName, path: string): Promise<Buffer>;
 	fileWrite(on: MachineName, path: string, bytes: Buffer, options?: HcCallOptions): Promise<void>;
-	/** Successful remote file operations, not cached machine metadata. */
-	onMachineAvailable?(listener: (machine: MachineName) => void): () => void;
 	events(): HcEventStream;
 }
 export interface AppClientOptions { binary: string; env: Readonly<NodeJS.ProcessEnv> }

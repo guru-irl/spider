@@ -60,6 +60,7 @@ export interface JobMonitorOptions {
   reportError?(error: unknown): void;
   recordCleanupError?(error: unknown): void;
   reportConsoleError?(error: unknown): void;
+  onMachineAvailable?(listener: (machine: MachineName) => void): () => void;
 }
 export interface JobMonitor extends JobPort {
   activate(owner: Owner, signal?: AbortSignal): Promise<void>;
@@ -594,7 +595,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
     });
     const identity = await options.hc.identity();
     if (identity.coreId !== nextOwner.terminal.coreId || identity.socket !== nextOwner.terminal.socket || identity.sessionNamespace !== nextOwner.terminal.sessionNamespace) throw new HerdrError('job-owner-mismatch', 'Owning terminal is on another core');
-    unsubscribeAvailability = options.hc.onMachineAvailable?.(wakeFailedCleanup);
+    unsubscribeAvailability = options.onMachineAvailable?.(wakeFailedCleanup);
     stream = options.hc.events();
     unsubscribe = stream.subscribe(event => {
       // Capture identity immediately; a created/finished pair can arrive while run() is still awaiting its reply.

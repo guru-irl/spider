@@ -128,8 +128,9 @@ export async function startProductionHub(root: string, options: { intercomClock?
         const matches = machines.filter(row => row && typeof row === "object" && !Array.isArray(row) && row.name === peer.alias);
         if (matches.length !== 1) throw new Error("Unknown machine");
         const state = matches[0].state;
-        const reached = results.every(result => result.code === 0) &&
-          loadPeerState(core.db, peer.machineId, core.config.limits.targetBatchBytes).observation?.connected === true;
+        const syncState = loadPeerState(core.db, peer.machineId, core.config.limits.targetBatchBytes);
+        const reached = results.every(result => result.code === 0) && syncState.pulled === true &&
+          syncState.observation?.connected === true;
         const reachability = parseMachineReachability(state, reached);
         if (reachability !== "reachable") return { reachability, readiness: null, suspensions: null };
         try { const hosting = await remoteHosting(transport, peer, core.config); return { reachability, ...hosting }; }

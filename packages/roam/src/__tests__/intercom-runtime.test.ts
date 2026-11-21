@@ -785,6 +785,77 @@ it("waits for an in-flight local delivery before closing its queue", async () =>
   expect(stopped).toBe(true);
 }, 5000);
 
+it("backs off failed initialization for fifteen fake minutes without changing pending status", async () => {
+  const f = machineFixture(); let now = 0, attempts = 0;
+  const timers: Array<{ at: number; fn(): void; cancelled: boolean }> = [];
+  let scheduled!: () => void;
+  let scheduling = new Promise<void>(resolve => { scheduled = resolve; });
+  const clock: Clock = { now: () => now, later(ms, fn) {
+    const timer = { at: now + ms, fn, cancelled: false }; timers.push(timer); scheduled();
+    return () => { timer.cancelled = true; };
+  } };
+  const service = await makeMachine({ ...f.options, clock, async ensureBroker() {
+    attempts++; throw new Error("unsupported-broker");
+  } });
+  await service.start(); await scheduling;
+  const pending = { state: "pending", reason: "unsupported-broker" };
+  expect(service.readiness()).toEqual(pending);
+  const deadline = 15 * 60_000;
+  while (true) {
+    const timer = timers.find(row => !row.cancelled && row.at <= deadline);
+    if (!timer) break;
+    scheduling = new Promise<void>(resolve => { scheduled = resolve; });
+    now = timer.at; timer.cancelled = true; timer.fn();
+    await scheduling;
+    expect(timers.at(-1)!.at - now).toBe([1000, 2000, 5000, 10_000, 30_000][Math.min(attempts - 1, 4)]);
+    expect(service.readiness()).toEqual(pending);
+    await Promise.resolve();
+  }
+  expect(attempts).toBe(34);
+  expect(timers.slice(0, 5).map(row => row.at)).toEqual([1000, 3000, 8000, 18_000, 48_000]);
+  expect(timers.filter(row => !row.cancelled).map(row => row.at)).toEqual([918_000]);
+  await service.stop();
+  expect(timers.filter(row => !row.cancelled)).toEqual([]);
+  expect(f.broker.registrations).toEqual([]);
+}, 5000);
+
+it("recovers initialization on a later successful setup without restarting the runtime", async () => {
+  const f = machineFixture(); let now = 0, attempts = 0, unavailable = true;
+  const timers: Array<{ at: number; fn(): void; cancelled: boolean }> = [];
+  let scheduled!: () => void;
+  let scheduling = new Promise<void>(resolve => { scheduled = resolve; });
+  const clock: Clock = { now: () => now, later(ms, fn) {
+    const timer = { at: now + ms, fn, cancelled: false }; timers.push(timer); scheduled();
+    return () => { timer.cancelled = true; };
+  } };
+  let published!: () => void;
+  const ready = new Promise<void>(resolve => { published = resolve; });
+  const publish = f.broker.publishPresence.bind(f.broker);
+  f.broker.publishPresence = entries => { publish(entries); published(); };
+  const service = await makeMachine({ ...f.options, clock, async ensureBroker() {
+    attempts++; if (unavailable) throw new Error("unsupported-broker");
+  } });
+  await service.start();
+  for (let i = 0; i < 4; i++) {
+    await scheduling; await Promise.resolve();
+    const timer = timers.find(row => !row.cancelled)!;
+    scheduling = new Promise<void>(resolve => { scheduled = resolve; });
+    now = timer.at; timer.cancelled = true; timer.fn();
+  }
+  await scheduling; await Promise.resolve();
+  expect(attempts).toBe(5);
+  expect(service.readiness()).toEqual({ state: "pending", reason: "unsupported-broker" });
+  unavailable = false;
+  const retry = timers.find(row => !row.cancelled)!;
+  now = retry.at; retry.cancelled = true; retry.fn();
+  await ready; await Promise.resolve();
+  expect(service.readiness()).toEqual({ state: "ready", reason: null });
+  expect(await service.move.bridge({ sessionId: "session-1", scopeId: null })).toEqual({ asks: [], pendingDispatch: [], unknownOutcomes: [], unobservedReceipts: [] });
+  expect(attempts).toBe(6);
+  expect(f.broker.registrations).toHaveLength(1);
+  expect(timers.filter(row => !row.cancelled && row.at <= now + 30_000)).toEqual([]);
+}, 5000);
+
 it("legacy broker blocks federation without forced replacement", async () => {
   const f = machineFixture(), directory = join(f.agentDir, "intercom"); mkdirSync(directory, { mode: 0o700 });
   const pid = join(directory, "broker.pid"); writeFileSync(pid, "legacy-owner", { mode: 0o600 });

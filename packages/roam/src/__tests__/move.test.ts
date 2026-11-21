@@ -1,10 +1,13 @@
 import { createMoveRuntimeService } from "../move-runtime-service";
 import { recoverMove, cancelMove } from "../move-recovery";
+import { runHub, type HubRuntimePorts } from "../hub";
+import { readLocal } from "@spider/db-core/roam/local-state";
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { appendFileSync, chmodSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createReplica, scratchDbPath } from "@spider/db-core/testutil";
@@ -272,7 +275,7 @@ function fixture(initial = false, sourceMachine = HUB, destinationMachine = BOX)
       const observed = await snapshotWorkspace({ root: source, cwd: source, repoKey: snapshot.repoKey, workspaceId: snapshot.workspaceId,
         moveId: snapshot.moveId, stage: "final", writers: [] }, capture);
       for (const key of ["head", "branch", "indexTree", "workingTree", "sparsePatterns", "worktreeConfig", "normalization", "sparse"] as const) {
-        if (JSON.stringify(observed[key]) !== JSON.stringify(snapshot[key])) throw new Error("source-workspace-changed");
+        if (!isDeepStrictEqual(observed[key], snapshot[key])) throw new Error("source-workspace-changed");
       }
       const manifest = await inspectSession(file, SESSION, ack.leaf);
       await verifyFrozenSession({ ...manifest, size: ack.size, sha256: ack.sha256, cwd: ack.cwd });
@@ -335,6 +338,83 @@ function fixture(initial = false, sourceMachine = HUB, destinationMachine = BOX)
     sourceGitCalls: () => sourceGitCalls, destinationGitCalls: () => destinationGitCalls,
     states() { return journal.read(request.operation.id).filter(row => row.action === "move-state").map(row => row.result.state); } };
 }
+
+it.each(["frozen", "transferred", "home-committed", "unknown-start"] as const)("a running hub recovers an offline move after %s without a second launch", async interruption => {
+  const f = fixture();
+  mkdirSync(join(f.root, "roam"));
+  const journal = openFreezeJournal(join(f.root, "roam", "journal.db")); f.ports.journal = journal;
+  const peer = { machineId: BOX, alias: "box-1.invalid", node: "/home/fixture/node", pi: "/home/fixture/pi", cli: "/home/fixture/spider", core: "/home/fixture/core", globalRoot: "/home/fixture/global" };
+  f.ports.config.peers = [peer];
+  let reachable = true, observation: "reachable" | "unreachable" | "unknown" = "reachable", interrupted = false;
+  const record = journal.record.bind(journal);
+  journal.record = (id, action, result) => {
+    record(id, action, result);
+    if (!interrupted && action === "move-state" && result.state === interruption) {
+      interrupted = true; reachable = false; throw new Error("synthetic transport outage");
+    }
+  };
+  for (const name of ["transfer", "inspect", "replicateHome", "start", "retire"] as const) {
+    const effect = f.ports[name] as (...args: never[]) => Promise<unknown>;
+    Object.assign(f.ports, { [name]: async (...args: never[]) => {
+      if (!reachable) throw new Error("synthetic transport outage");
+      return effect(...args);
+    } });
+  }
+  if (interruption === "unknown-start") f.ports.start = async (home, _prepared, operation) => {
+    f.events.push("start"); reachable = false;
+    return { code: 3, reason: "unknown", operationId: operation.id, home, epoch: home.epoch, repairCommand: null, value: null };
+  };
+  let active = 0, maximum = 0;
+  const service = createMoveRuntimeService({ root: f.root, config: f.ports.config, globalDb: f.global.db, journal, transport: {} as Transport }, async () => {
+    active++; maximum = Math.max(maximum, active);
+    return { ports: f.ports, bindings: {}, control: async () => ({ code: 1, reason: "unused", value: null }), recover: async () => [], async close() { active--; } };
+  });
+  let afterSync!: Parameters<HubRuntimePorts["prepare"]>[0], finished!: () => void;
+  const recovered = new Promise<void>(resolve => { finished = resolve; });
+  const timers: Array<{ ms: number; fn(): void; cancelled: boolean }> = [];
+  const recoveryTimers = () => timers.filter(timer => timer.ms === 0);
+  let passes = 0;
+  const hub = await runHub({ config: f.ports.config, globalDb: f.global.db, journal, clock: {
+    now: () => 1, later(ms, fn) { const timer = { ms, fn, cancelled: false }; timers.push(timer); return () => { timer.cancelled = true; }; } },
+    runtimeRoot: f.root, socketPath: join(f.root, "hub.sock"), identity: { pid: 42, startIdentity: "fixture-start" },
+    async probe() { return { kind: "live", startIdentity: "fixture-start" }; },
+    sync: { start() {}, stop() {}, async sync() { return []; }, async barriers() { return false; } },
+    placement: { async reconcile() { return { pending: [] }; } },
+    async prepare(callback) { afterSync = callback; }, async drain() {}, async closeStores() {},
+    async homeChangeInProgress() { return journal.lookupOperation(f.request.operation.id)?.state === "pending"; },
+    async observe() { return { reachability: observation, readiness: null, suspensions: null }; },
+    notices: { async publish() {}, async clear() {} },
+    reconcileMoves: () => service.recover(),
+    async recoverPeerMoves(machineId) { passes++; try { await service.recover(machineId); } finally { finished(); } },
+  });
+  try {
+    expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 3 });
+    expect(f.worktree.db.prepare("SELECT state FROM roam_sessions WHERE session_id=?").get(SESSION)).toEqual({ state: "frozen" });
+    observation = "unreachable"; await afterSync(peer, []);
+    observation = "unknown"; await afterSync(peer, []);
+    expect(recoveryTimers()).toEqual([]);
+    reachable = true; observation = "reachable";
+    await afterSync(peer, []); await afterSync(peer, []);
+    expect(recoveryTimers()).toHaveLength(1); expect(passes).toBe(0);
+    recoveryTimers()[0].cancelled = true; recoveryTimers()[0].fn(); await recovered;
+    expect(passes).toBe(1); expect(maximum).toBe(1);
+    if (interruption === "unknown-start") {
+      expect(journal.lookupOperation(f.request.operation.id)?.state).toBe("pending");
+      expect(readLocal(f.global.db, "recovery-diagnostic", f.request.operation.id)).toEqual({ reason: "move-destination-pending" });
+      expect(f.events).not.toContain("retire");
+      expect(f.registryRemovals).toEqual([]);
+    } else {
+      expect(journal.lookupOperation(f.request.operation.id)?.state, JSON.stringify({ diagnostic: readLocal(f.global.db, "recovery-diagnostic", f.request.operation.id), events: f.events, last: journal.read(f.request.operation.id).slice(-3) })).toBe("done");
+      expect(sessionHome(f.global.db, SESSION)).toMatchObject({ machineId: BOX, epoch: 2 });
+      expect(f.events.filter(event => event === "retire")).toHaveLength(1);
+      expect(f.registryRemovals).toEqual([{ id: "source-terminal", provedRemoved: true }]);
+    }
+    expect(f.events.filter(event => event === "start")).toHaveLength(1);
+    expect(f.ownersAtEveryObservation.every(n => n <= 1)).toBe(true);
+    await afterSync(peer, []);
+    expect(recoveryTimers()).toHaveLength(1);
+  } finally { await hub.stop(); }
+}, 5000);
 
 it("same-home request is a verified no-op", async () => {
   const f = fixture(); f.request.destinationMachine = HUB; f.request.operation.args.destinationMachine = HUB;

@@ -11,6 +11,7 @@ import { stageArtifact } from "../artifacts";
 import { assignInitialHome } from "../homes";
 import { revokeMachine } from "../revocation";
 import { runHub, runStandaloneHub } from "../hub";
+import { parseMachineReachability } from "../production-hub";
 import { requestHubControl } from "../control-socket";
 import type { Clock } from "../contracts";
 import * as staging from "../staging";
@@ -46,6 +47,7 @@ function fixture() {
   const timers: { at: number; delay: number; fn(): void; cancelled: boolean }[] = [];
   const clock: Clock = { now: () => now, later(delay, fn) { const timer = { at: now + delay, delay, fn, cancelled: false }; timers.push(timer); return () => { timer.cancelled = true; }; } };
   let reachability: "reachable" | "unreachable" | "unknown" = "reachable";
+  let nativeState: unknown;
   let readiness: readonly typeof ready[] | null = [];
   let suspended: readonly { sessionId: string; epoch: number }[] | null = [];
   let pending: readonly string[] = [];
@@ -59,7 +61,9 @@ function fixture() {
     identity: { pid: 12345, startIdentity: "fixture-process" },
     async probe() { return { kind: "live" as const, startIdentity: "fixture-process" }; },
     placement: { async reconcile(rows: readonly typeof ready[]) { placements.push([...rows]); if (failPlacement) throw new Error("unknown launch outcome"); return { pending }; } },
-    async observe() { return { reachability, readiness, suspensions: suspended }; },
+    async observe(_peer: unknown, results: readonly { code: number }[]) {
+      return { reachability: nativeState === undefined ? reachability : parseMachineReachability(nativeState, results.every(row => row.code === 0)), readiness, suspensions: suspended };
+    },
     notices: {
       async publish(notice: Notice) { publishCalls.push(notice.id); if (!notified.has(notice.id)) { notified.add(notice.id); notices.push(notice); for (const waiter of noticeWaiters.splice(0)) waiter(); } },
       async clear(id: string) { clears.push(id); },
@@ -80,6 +84,7 @@ function fixture() {
     unreachable() { reachability = "unreachable"; f.unavailable.add(BOX); },
     reachable() { reachability = "reachable"; f.unavailable.delete(BOX); },
     unknown() { reachability = "unknown"; },
+    setNativeState(state: unknown) { nativeState = state; },
     setReadiness(rows: readonly typeof ready[] | null) { readiness = rows; },
     setSuspended(rows: readonly { sessionId: string; epoch: number }[] | null) { suspended = rows; },
     setPending(rows: readonly string[]) { pending = rows; },
@@ -258,6 +263,31 @@ it("unreachable home notifies once and clears on recovery", async () => {
   expect(h.clears).toContain(noticesAfterTenMinutes[0].id);
   expect((await h.request("status")).value).toMatchObject({ warnings: [] });
 }, 5000);
+
+it.each(["disconnected", "unreachable", "stopped"])("native %s alerts after ten minutes and clears only after verified connection", async state => {
+  const h = fixture(); h.home(); h.unreachable(); h.setNativeState(state);
+  await h.start(); await h.request("sync");
+  expect(h.notices).toEqual([]);
+  h.fire(600_000); await h.noticeReady();
+  expect(h.notices).toHaveLength(1);
+  for (const uncertainty of ["needs_login", "needs-login", "connecting", "unknown", "connected"]) {
+    h.setNativeState(uncertainty); await h.request("sync");
+    expect(h.clears).toEqual([]);
+    expect((await h.request("status")).value).toMatchObject({ warnings: [{ kind: "unreachable" }] });
+  }
+  h.reachable(); h.setNativeState("connected"); await h.request("sync");
+  expect(h.clears).toEqual([h.notices[0].id]);
+  expect((await h.request("status")).value).toMatchObject({ warnings: [] });
+}, 5000);
+
+it.each([
+  ["disconnected", false, "unreachable"], ["unreachable", true, "unreachable"], ["stopped", false, "unreachable"],
+  ["connected", true, "reachable"], ["connected", false, "unknown"],
+  ["needs_login", true, "unknown"], ["needs-login", true, "unknown"], ["connecting", true, "unknown"],
+  ["identity-mismatch", true, "unknown"], [null, true, "unknown"], [{ state: "connected" }, true, "unknown"],
+] as const)("parses native state %j with sync proof %s as %s", (state, synced, expected) => {
+  expect(parseMachineReachability(state, synced)).toBe(expected);
+});
 
 it("link-only outage coalesces hosting notices across retries and restart", async () => {
   const h = fixture(); h.home(); h.unreachable();

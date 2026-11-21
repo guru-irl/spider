@@ -349,6 +349,13 @@ an unavailable observation never authorizes clearing a fence.
 
 ## Box hosting and recovery
 
+The hub treats native `disconnected`, `unreachable`, and `stopped` machine
+states as unreachable. A machine with hosted sessions gets one hosting alert
+after ten minutes. `needs_login`, `needs-login`, and other uncertain states
+neither start an outage nor clear one. Clearing requires literal `connected`
+plus a successful current sync round with verified peer connectivity.
+
+
 Production hosting stays disabled until phase 4 acceptance succeeds. Provisioning
 installs only the supervisor service and leaves the running core and its terminals
 unchanged. It enables the service under `default.target` only when the box passes

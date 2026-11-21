@@ -362,8 +362,15 @@ an unavailable observation never authorizes clearing a fence.
 
 ## Box hosting and recovery
 
-The hub treats native `disconnected`, `unreachable`, and `stopped` machine
-states as unreachable. A machine with hosted sessions gets one hosting alert
+The hub treats native `disconnected`, plain `unreachable`, and `stopped`
+machine states as unreachable. The exception is native `unreachable` with
+the exact reason `a different core answers there ("<core-id>")`. That means
+a remote core was replaced, not that transport was lost. The hub and machine
+UI use one shared classifier for this case. A local core identity change
+during inventory also remains unknown. Unknown observations pause pending
+hosting notifications and retain existing outage state and delivered alerts.
+They never schedule move recovery. A later plain unreachable observation
+resumes the retained outage. A machine with hosted sessions gets one hosting alert
 after ten minutes. `needs_login`, `needs-login`, and other uncertain states
 neither start an outage nor clear one. Literal `connected` clears the hosting
 outage alert even when the peer refuses sync content. Sync refusals retain

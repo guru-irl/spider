@@ -40,6 +40,7 @@ This package does not own:
 | `src/setup/` | `runHerdrCli`, the transactional installer, backups, rollback, and the doctor. |
 | `assets/mods/spider/` | The spider panel mod. It is plain JavaScript and uses no Node APIs. |
 | `assets/shared/feed.js` | The feed parser shared by the mods. Setup copies it into each mod that uses it. |
+| `assets/agents/connections.js` | Native machine state classification shared by the machine UI and roaming hub through `@spider/herdr/machine-connections`. |
 | `assets/agents/children.js` | The projection of runs, consoles, and jobs into sidebar rows. Setup copies it into the cloned agents mod. |
 | `assets/look/`, `assets/themes/`, `assets/fonts/` | Patches, layout edits, the Herdr and pi themes, and the bundled fonts. |
 | `assets/keys.json` | The five terminal key bindings. |
@@ -81,6 +82,15 @@ Each part runs in its own process:
 - A viewer or remote observer runs as a separate Node program in a local `hc` terminal.
 - The remote runtime runs on the destination machine, for each job and for each agent console. It uses only Node built-ins and never imports pi, SQLite, or `@spider/context`.
 - Setup runs from a plain shell. The admin command runs from a plain shell or from an agent's wrapper script.
+
+## Native machine identity
+
+Native `unreachable` with the exact reason `a different core answers there
+("<core-id>")` identifies a replaced remote core. `machineState` reports it as
+`unknown`, not `disconnected`, and connection snapshots retain the reason.
+Plain `unreachable` remains disconnected. The roaming hub uses the same
+classifier and does not treat core replacement as outage or move recovery
+evidence. Arbitrary reason text does not prove an identity change.
 
 ## Notes
 

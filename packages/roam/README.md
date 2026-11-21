@@ -7,8 +7,16 @@ ownership contracts.
 ## Machine reachability
 
 The production hub parses native machine states at the inventory boundary.
-`disconnected`, `unreachable`, and `stopped` mean transport is unavailable.
-Login or identity uncertainty remains unknown and cannot clear an outage.
+`disconnected`, plain `unreachable`, and `stopped` mean transport is unavailable.
+Native `unreachable` with the exact reason `a different core answers there
+("<core-id>")` is a replaced remote core, not a transport outage. The hub and
+machine UI share this classification. It remains unknown, as does a local
+core identity change during inventory. Unknown observations pause pending
+hosting notifications without starting or clearing an outage or scheduling
+move recovery. Existing delivered alerts remain. A later plain unreachable
+observation resumes the retained outage. Other identity refusals keep their
+sync diagnostics; this parser does not infer identity changes from arbitrary
+reason text.
 Literal `connected` clears the hosting outage alert even if sync refuses
 content. Such refusals keep their separate sync diagnostics and backoff.
 Move recovery requires `connected` plus a successful current sync round that

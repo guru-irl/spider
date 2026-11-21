@@ -95,6 +95,11 @@ entry names its path, scope, known store key, and a code such as `missing`,
 read has a null key. A mapped key takes precedence when both entries name the
 same path. Discovery remains successful for the other stores, including global.
 
+Sync connectivity failures with code `1` or code `3` back off after 30, 60,
+and then 120 seconds, even when `syncMs` is shorter. Only a complete successful
+round resets an existing outage backoff. Answered identity or content refusals
+do not start that backoff and keep their refusal codes.
+
 Sync gathers every enrolled box's inventory before transferring store batches.
 An ungathered mapped key cannot receive imports, exports, or an initial session
 home on any box. Other keys keep syncing. When a registered project store has no

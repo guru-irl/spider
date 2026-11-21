@@ -161,6 +161,71 @@ it("disconnected retries remain independent and capped", async () => {
   for (let i = 0; i < 4; i++) { const timer = f.timers.find(t => !t.cancelled)!; timer.cancelled = true; timer.fn(); await sync.sync(BOX); retryDelays.push(f.timers.filter(t => !t.cancelled).at(-1)!.ms); }
   sync.stop(); expect(retryDelays).toEqual([30_000, 60_000, 120_000, 120_000]);
 }, 5000);
+it.each([1, 3] as const)("code-%s transport outages back off under a short sync cadence and reset after success", async code => {
+  const f = fixture(); f.config.syncMs = 1000; let now = 0;
+  f.clock.now = () => now;
+  if (code === 1) f.hook(() => { throw new HerdrError("connection-closed", "synthetic outage", { exitCode: 1 }); });
+  else f.unavailable.add(BOX);
+  const sync = service(f); sync.start();
+  const delays: number[] = [];
+  for (let i = 0; i < 4; i++) {
+    const timer = f.timers.find(row => !row.cancelled)!;
+    now += timer.ms; timer.cancelled = true; timer.fn();
+    expect(await sync.sync(BOX)).toMatchObject([{ code }]);
+    delays.push(f.timers.find(row => !row.cancelled)!.ms);
+  }
+  expect(delays).toEqual([30_000, 60_000, 120_000, 120_000]);
+  f.hook(null); f.unavailable.delete(BOX);
+  const reconnect = f.timers.find(row => !row.cancelled)!;
+  now += reconnect.ms; reconnect.cancelled = true; reconnect.fn();
+  expect((await sync.sync(BOX)).every(row => row.code === 0)).toBe(true);
+  expect(f.timers.find(row => !row.cancelled)!.ms).toBe(1000);
+  expect(peerState.loadPeerState(f.global.db, BOX, f.config.limits.targetBatchBytes).failures).toBe(0);
+  f.unavailable.add(BOX);
+  const next = f.timers.find(row => !row.cancelled)!;
+  now += next.ms; next.cancelled = true; next.fn();
+  expect(await sync.sync(BOX)).toMatchObject([{ code: 3 }]);
+  expect(f.timers.find(row => !row.cancelled)!.ms).toBe(30_000);
+  sync.stop();
+}, 5000);
+
+it("resets an outage backoff only after a successful round", async () => {
+  const f = fixture(); f.config.syncMs = 1000; f.unavailable.add(BOX);
+  const sync = service(f); sync.start();
+  expect(await sync.sync(BOX)).toMatchObject([{ code: 3 }]);
+  f.unavailable.delete(BOX);
+  f.replyHook((_peer, op, bytes) => {
+    if (op.kind !== "stores") return bytes;
+    const reply = JSON.parse(bytes.toString()); reply.value.machineId = HUB;
+    return Buffer.from(JSON.stringify(reply));
+  });
+  expect(await sync.sync(BOX)).toMatchObject([{ code: 1 }]);
+  expect(f.timers.find(row => !row.cancelled)!.ms).toBe(30_000);
+  f.replyHook(null);
+  expect((await sync.sync(BOX)).every(row => row.code === 0)).toBe(true);
+  expect(f.timers.find(row => !row.cancelled)!.ms).toBe(1000);
+  sync.stop();
+}, 5000);
+
+it.each(["identity", "content"])("an answered %s failure retains its refusal and normal cadence", async failure => {
+  const f = fixture(); f.config.syncMs = 1000;
+  f.replyHook((_peer, op, bytes) => {
+    if (op.kind !== "stores") return bytes;
+    const reply = JSON.parse(bytes.toString());
+    if (failure === "identity") reply.value.machineId = HUB;
+    else reply.value.stores = "not-a-list";
+    return Buffer.from(JSON.stringify(reply));
+  });
+  const sync = service(f); sync.start();
+  const timer = f.timers.find(row => !row.cancelled)!; timer.cancelled = true; timer.fn();
+  expect(await sync.sync(BOX)).toMatchObject([{ code: 1 }]);
+  expect(f.timers.find(row => !row.cancelled)!.ms).toBe(1000);
+  expect(peerState.loadPeerState(f.global.db, BOX, f.config.limits.targetBatchBytes).failures).toBe(0);
+  expect(f.global.db.prepare("SELECT * FROM session_homes").all()).toEqual([]);
+  expect(f.calls.some(call => call.operation.kind === "export" || call.operation.kind === "import")).toBe(false);
+  sync.stop();
+}, 5000);
+
 it("adaptive bytes include lexical apply duration", () => {
   const first = sizedBytes(4 * 1024 * 1024, 500, 250, 4 * 1024 * 1024);
   const unavailable = sizedBytes(first, null, 250, 4 * 1024 * 1024);

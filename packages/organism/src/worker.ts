@@ -1,10 +1,13 @@
 import type { Db, ProjectInfo } from "@spider/db-core";
+import { randomUUID } from "node:crypto";
 import { listActive, waitForEmbedder, type Embedder } from "@spider/memory";
 import { emitLog } from "@spider/subagents";
 import { drainSession, type DrainOpts } from "./drain.js";
 import { applyDigest } from "./apply.js";
 import { loadSkillReviewContext, type SkillReviewOptions } from "./skill-review.js";
 import { runSkillReviewQueue } from "./skill-review-queue.js";
+import { DrainRetryStore, type DeferredDrain } from "./drain-retry.js";
+import { isConnectivityFailure } from "./connectivity.js";
 import { SkillStore } from "./skill-usage.js";
 import {
   runCuratorDecay, curatorShouldRun, consolidateSkills,
@@ -17,7 +20,7 @@ import { learningPass } from "./passes/learning.js";
 import { consolidationPass } from "./passes/consolidation.js";
 import { reflectionPass } from "./passes/reflection.js";
 import { emptyResult } from "./types.js";
-import type { AppliedSummary, DigestModel, DigestResult, DrainReason, DrainReport, PassName } from "./types.js";
+import type { AppliedSummary, DigestBundle, DigestModel, DigestResult, DrainReason, DrainReport, PassName } from "./types.js";
 import type { OrganismConfig } from "./config.js";
 
 export interface CurateResult extends DecayResult { consolidated: boolean; skipReason?: "disabled" | "paused" | "interval" }
@@ -69,10 +72,13 @@ export class OrganismWorker {
   readonly #deps: WorkerDeps;
   #inflight: Promise<unknown> = Promise.resolve();
   #queuedWork = 0;
+  #pendingDrains = new Map<string, Promise<AppliedSummary>>();
   #lastDrain: DrainReport | undefined;
   #reviewTask: Promise<void> | undefined;
   #reviewController: AbortController | undefined;
   #reviewTimer: ReturnType<typeof setTimeout> | undefined;
+  #drainRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  #drainRetryAt: number | undefined;
   #shuttingDown = false;
   #paused = false;
   #resumeReviews = false;
@@ -97,8 +103,49 @@ export class OrganismWorker {
   async stopSkillReviews(): Promise<void> {
     this.#shuttingDown = true;
     if (this.#reviewTimer) { clearTimeout(this.#reviewTimer); this.#reviewTimer = undefined; }
+    if (this.#drainRetryTimer) { clearTimeout(this.#drainRetryTimer); this.#drainRetryTimer = undefined; this.#drainRetryAt = undefined; }
     this.#reviewController?.abort();
     await this.#reviewTask; // Abort is bounded by the shared gate even for an uncooperative provider.
+  }
+
+  /** Restore pending work when a live session starts, including after a restart. */
+  startDeferredDrains(): void {
+    if (process.env.PI_SUBAGENT_CHILD === "1" || this.#shuttingDown || this.#paused || !this.#deps.org.enabled) return;
+    const store = new DrainRetryStore(this.#deps.worktreeDb);
+    if (store.next()) this.#scheduleDrainRetry(store.outage()?.retryAt ?? Date.now());
+  }
+
+  #scheduleDrainRetry(retryAt: number): void {
+    if (this.#shuttingDown || this.#paused) return;
+    if (this.#drainRetryTimer && this.#drainRetryAt !== undefined && this.#drainRetryAt <= retryAt) return;
+    if (this.#drainRetryTimer) clearTimeout(this.#drainRetryTimer);
+    this.#drainRetryAt = retryAt;
+    this.#drainRetryTimer = setTimeout(() => {
+      this.#drainRetryTimer = undefined; this.#drainRetryAt = undefined;
+      if (this.#shuttingDown || this.#paused) return;
+      void this.#serialize(() => this.#retryDeferredDrains()).catch(() => undefined);
+    }, Math.max(1, retryAt - Date.now()));
+    this.#drainRetryTimer.unref();
+  }
+
+  async #retryDeferredDrains(): Promise<void> {
+    const store = new DrainRetryStore(this.#deps.worktreeDb);
+    if (!store.next()) return;
+    const owner = randomUUID();
+    const duration = Math.max(1, this.#deps.drainTimeoutMs ?? ORGANISM_DRAIN_TIMEOUT_MS) + 5000;
+    const lease = store.acquire(owner, duration);
+    if (!lease.acquired) { this.#scheduleDrainRetry(lease.retryAt); return; }
+    try {
+      while (!this.#shuttingDown && !this.#paused && store.renew(owner, duration)) {
+        const outage = store.outage();
+        if (outage && outage.retryAt > Date.now()) { this.#scheduleDrainRetry(outage.retryAt); return; }
+        const pending = store.next();
+        if (!pending) return;
+        await this.#doRunDrain(pending.bundle.sessionId, pending.bundle.reason, undefined, pending, owner);
+        const next = store.next();
+        if (next && JSON.stringify(next) === JSON.stringify(pending)) return;
+      }
+    } finally { store.release(owner); }
   }
 
   constructor(deps: WorkerDeps) { this.#deps = deps; }
@@ -111,7 +158,7 @@ export class OrganismWorker {
   resume(): void {
     if (!this.#paused) return;
     this.#paused = false;
-    if (this.#resumeReviews) { this.#shuttingDown = false; this.startSkillReviews(); }
+    if (this.#resumeReviews) { this.#shuttingDown = false; this.startSkillReviews(); this.startDeferredDrains(); }
     this.#resumeReviews = false;
   }
 
@@ -132,13 +179,27 @@ export class OrganismWorker {
   }
 
   runDrain(sessionId: string, reason: DrainReason, opts?: DrainOpts): Promise<AppliedSummary> {
-    return this.#serialize(() => this.#doRunDrain(sessionId, reason, opts));
+    if (this.#paused || process.env.PI_SUBAGENT_CHILD === "1") return this.#serialize(() => this.#doRunDrain(sessionId, reason, opts));
+    let key: string;
+    try {
+      const db = this.#deps.worktreeDb;
+      const version = db.raw.pragma("data_version", { simple: true });
+      const changes = db.prepare("SELECT total_changes() AS n").get();
+      key = JSON.stringify([sessionId, reason, opts, version, changes]);
+    } catch { return this.#serialize(() => this.#doRunDrain(sessionId, reason, opts)); }
+    const existing = this.#pendingDrains.get(key);
+    if (existing) return existing;
+    const run = this.#serialize(() => this.#doRunDrain(sessionId, reason, opts));
+    this.#pendingDrains.set(key, run);
+    const release = () => { if (this.#pendingDrains.get(key) === run) this.#pendingDrains.delete(key); };
+    void run.then(release, release);
+    return run;
   }
   runCurate(now?: number, opts?: { force?: boolean; consolidate?: boolean }): Promise<CurateResult> {
     return this.#serialize(() => this.#doRunCurate(now, opts));
   }
 
-  async #doRunDrain(sessionId: string, reason: DrainReason, opts?: DrainOpts): Promise<AppliedSummary> {
+  async #doRunDrain(sessionId: string, reason: DrainReason, opts?: DrainOpts, deferred?: DeferredDrain, retryOwner?: string): Promise<AppliedSummary> {
     if (process.env.PI_SUBAGENT_CHILD === "1") throw new Error("organism is disabled in subagent sessions");
     const { db, globalDb, org, project, worktreeDb } = this.#deps;
     const summary = zeroSummary();
@@ -152,39 +213,71 @@ export class OrganismWorker {
       return summary; // Master-off means no automatic model calls or DB writes.
     }
 
-    const fail = (phase: string, error: unknown) => { report.errors.push({ phase, message: safeError(error) }); };
+    let connectivity: { error: unknown; phase: string } | undefined;
+    let calledProvider = false;
+    let held = false;
+    let suppressReceipt = false;
+    let bundle: DigestBundle | undefined;
+    let retryStore: DrainRetryStore | undefined;
+    const providerPasses: PassName[] = ["runMemoryTodo", "todoMemory", "learning", "consolidation", "reflection"];
+    const required = (deferred?.passes ?? providerPasses).filter(name => org.passes[name]);
+    const completed = new Set<PassName>();
+    const fail = (phase: string, error: unknown) => {
+      report.errors.push({ phase, message: safeError(error) });
+      if (connectivity && connectivity.error === error) connectivity.phase = phase;
+    };
     const controller = new AbortController();
     const timeout = this.#deps.drainTimeoutMs ?? ORGANISM_DRAIN_TIMEOUT_MS;
     const timer = setTimeout(() => controller.abort(new Error("organism drain timed out")), Math.max(1, timeout));
     timer.unref();
     let successfulPasses = 0;
     try {
-      const bundle = drainSession(worktreeDb, sessionId, reason, opts);
+      retryStore = new DrainRetryStore(worktreeDb);
+      const input = deferred?.bundle ?? drainSession(worktreeDb, sessionId, reason, opts);
+      bundle = input;
       report.inputs = {
-        messages: bundle.transcript.length, runs: bundle.runs.length, runEvents: bundle.runEvents.length,
-        events: bundle.events.length, completedTodos: bundle.todos.filter(t => t.done).length,
+        messages: input.transcript.length, runs: input.runs.length, runEvents: input.runEvents.length,
+        events: input.events.length, completedTodos: input.todos.filter(t => t.done).length,
       };
       if (Object.values(report.inputs).every(n => n === 0)) {
         report.status = "skipped"; report.skipReason = "no-input";
         return summary;
       }
+      const outage = retryStore.outage();
+      if (outage && (!deferred || outage.retryAt > Date.now())) {
+        const pending = retryStore.defer(input, required);
+        if (pending) {
+          held = true; suppressReceipt = !pending.first;
+          report.errors.push({ phase: pending.outage.phase, message: pending.outage.message });
+          report.outage = { retryAt: pending.outage.retryAt, occurrences: pending.outage.occurrences };
+          this.#scheduleDrainRetry(pending.outage.retryAt);
+          if (org.passes.insights) {
+            try { buildLearningGraph(db, globalDb, { persist: true }); }
+            catch (e) { fail("insights", e); suppressReceipt = false; }
+          }
+          return summary;
+        }
+      }
 
       let rawModel: DigestModel | null;
       try { rawModel = this.#deps.makeModel(controller.signal); }
-      catch (e) { fail("model", e); return summary; }
+      catch (e) { if (isConnectivityFailure(e)) connectivity = { error: e, phase: "model" }; fail("model", e); return summary; }
       if (!rawModel) { report.status = "skipped"; report.skipReason = "no-model"; return summary; }
       const model: DigestModel = {
         complete: async (system, messages) => {
           controller.signal.throwIfAborted();
-          report.modelCalls++;
-          return abortable(Promise.resolve().then(() => rawModel!.complete(system, messages)), controller.signal);
+          if (retryOwner && !retryStore!.owns(retryOwner)) throw new Error("Deferred drain ownership expired");
+          report.modelCalls++; calledProvider = true;
+          try { return await abortable(Promise.resolve().then(() => rawModel!.complete(system, messages)), controller.signal); }
+          catch (error) { if (isConnectivityFailure(error)) connectivity = { error, phase: "model" }; throw error; }
         },
       };
       const runPass = async (name: PassName, fn: () => Promise<DigestResult>): Promise<DigestResult> => {
-        if (controller.signal.aborted) return emptyResult();
+        if (controller.signal.aborted || connectivity || !required.includes(name) || (retryOwner && !retryStore!.owns(retryOwner))) return emptyResult();
         const before = report.modelCalls;
         try {
           const result = await fn();
+          completed.add(name);
           if (result.capDropped) report.capDroppedByPass![name] = result.capDropped;
           if (report.modelCalls > before) successfulPasses++;
           return result;
@@ -192,24 +285,24 @@ export class OrganismWorker {
       };
       const results: DigestResult[] = [];
       let consolidated: DigestResult | undefined;
-      if (org.passes.runMemoryTodo) results.push(await runPass("runMemoryTodo", () => runMemoryTodoPass(bundle, model, org.maxMemoryProposals)));
-      if (org.passes.todoMemory) results.push(await runPass("todoMemory", () => todoMemoryPass(bundle, model, org.maxMemoryProposals)));
-      if (org.passes.learning && bundle.transcript.length > 0) {
+      if (org.passes.runMemoryTodo) results.push(await runPass("runMemoryTodo", () => runMemoryTodoPass(input, model, org.maxMemoryProposals)));
+      if (org.passes.todoMemory) results.push(await runPass("todoMemory", () => todoMemoryPass(input, model, org.maxMemoryProposals)));
+      if (org.passes.learning && input.transcript.length > 0 && !connectivity && required.includes("learning")) {
         let context = null;
         if (this.#deps.skillReview?.reviewer) {
           try { context = (this.#deps.skillReview.loadContext ?? loadSkillReviewContext)(new SkillStore(db)); }
           catch (error) { try { this.#deps.skillReview.onReviewError?.(safeError(error), undefined); } catch { /* Diagnostics only. */ } }
         }
-        results.push(await runPass("learning", () => learningPass(bundle, model, org.maxMemoryProposals, [
+        results.push(await runPass("learning", () => learningPass(input, model, org.maxMemoryProposals, [
           ...listActive(globalDb, "global", { limit: 60 }).map(({ content }) => ({ scope: "global" as const, content })),
           ...listActive(db, "repo", { limit: 60 }).map(({ content }) => ({ scope: "repo" as const, content })),
         ], context)));
       }
       if (org.passes.consolidation) {
-        consolidated = await runPass("consolidation", () => consolidationPass(bundle, model));
+        consolidated = await runPass("consolidation", () => consolidationPass(input, model));
       }
-      if (org.passes.reflection) {
-        if (controller.signal.aborted) {
+      if (org.passes.reflection && required.includes("reflection")) {
+        if (controller.signal.aborted || connectivity) {
           results.push(emptyResult());
         } else {
           const beforeCalls = report.modelCalls;
@@ -224,6 +317,7 @@ export class OrganismWorker {
               },
             });
             results.push(result);
+            completed.add("reflection");
             if (result.capDropped) report.capDroppedByPass!.reflection = result.capDropped;
             // A modelCalls-diff alone cannot tell success from failure here (every
             // cluster calls model.complete regardless of whether its reply
@@ -237,6 +331,7 @@ export class OrganismWorker {
         }
       }
 
+      if (retryOwner && !retryStore.owns(retryOwner)) { held = true; suppressReceipt = true; return summary; }
       const merged = emptyResult();
       for (const r of results) {
         merged.memory.push(...r.memory); merged.todos.push(...r.todos); merged.skills.push(...r.skills);
@@ -253,7 +348,7 @@ export class OrganismWorker {
           merged, { max: org.autoWriteBudget, used: 0 },
         ));
         summary.dropped += capDropped;
-      } catch (e) { summary.dropped += capDropped; fail("apply", e); }
+      } catch (e) { completed.clear(); summary.dropped += capDropped; fail("apply", e); }
       this.#persistConsolidation(sessionId, merged, fail);
       if (org.passes.insights) {
         try { buildLearningGraph(db, globalDb, { persist: true }); }
@@ -265,12 +360,29 @@ export class OrganismWorker {
       return summary;
     } finally {
       clearTimeout(timer);
+      if (retryStore && bundle) {
+        try {
+          if (retryOwner && !retryStore.owns(retryOwner)) { held = true; suppressReceipt = true; }
+          if (connectivity && !held) {
+            const pending = retryStore.failure(bundle, required.filter(name => !completed.has(name)), connectivity.phase, safeError(connectivity.error));
+            report.outage = { retryAt: pending.outage.retryAt, occurrences: pending.outage.occurrences };
+            suppressReceipt = !pending.first;
+            this.#scheduleDrainRetry(pending.outage.retryAt);
+          } else if (!held) {
+            if (deferred && (calledProvider || report.skipReason === "no-input" || required.length === 0)) retryStore.finish(deferred.bundle);
+            if (calledProvider) {
+              retryStore.clearOutage();
+              if (!deferred && retryStore.next()) this.#scheduleDrainRetry(Date.now());
+            }
+          }
+        } catch (error) { fail("retry", error); suppressReceipt = false; }
+      }
       Object.assign(report, summary, { finishedAt: Date.now() });
       if (report.errors.length) {
         report.status = successfulPasses > 0 || summary.memoryStaged + summary.skillsStaged + (summary.skillsQueued ?? 0) + summary.todosAdded > 0
           ? "partial" : "failed";
       }
-      try {
+      if (!suppressReceipt) try {
         emitLog(worktreeDb, {
           sessionId,
           summary: `organism drain (${reason}): ${report.status}${report.skipReason ? ` (${report.skipReason})` : ""}; ` +

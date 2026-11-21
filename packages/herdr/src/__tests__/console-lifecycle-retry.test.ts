@@ -239,6 +239,25 @@ it('does not treat a console get ENOENT as a definite missing terminal', async (
   expect(f.terminals.has(address)).toBe(false);
 });
 
+it('bounds console cleanup wakeups when machine metadata flaps but the destination stays offline', async () => {
+  fakeClock(); vi.setSystemTime(0);
+  const f = makeFixture(); await f.start();
+  const address = f.create(A, 'flapping', 'alpha.invalid', 'flapping-run');
+  f.getError(target => target === address ? new HerdrError('unavailable', 'Destination unavailable') : undefined);
+  f.online('alpha.invalid', false); f.finish(A, 'flapping-run'); await settle();
+  const before = f.attempts.get(address) ?? 0; expect(before).toBeGreaterThan(0);
+  for (let i = 0; i < 10; i++) {
+    f.online('alpha.invalid', true); f.signalInventory(); await settle();
+    f.online('alpha.invalid', false); f.signalInventory(); await settle();
+    await vi.advanceTimersByTimeAsync(2000);
+  }
+  expect((f.attempts.get(address) ?? 0) - before).toBe(1);
+  expect(f.terminals.has(address)).toBe(true);
+  await vi.advanceTimersByTimeAsync(10_000);
+  f.online('alpha.invalid', true); f.signalInventory(); await settle();
+  expect((f.attempts.get(address) ?? 0) - before).toBe(2);
+});
+
 it('retries only the reconnected machine without bypassing a connected machine backoff', async () => {
   fakeClock(); const f = makeFixture(); await f.start();
   const alpha = f.create(A, 'alpha', 'alpha.invalid', 'alpha-run');
@@ -301,6 +320,7 @@ it('keeps cleanup after repeated disconnected inventory results', async () => {
   for (let i = 0; i < 30; i++) {
     f.online(machine, false); f.signalInventory(); await settle();
     f.online(machine, true); f.signalInventory(); await settle();
+    await vi.advanceTimersByTimeAsync(30_000);
   }
   expect(f.attempts.get(address)).toBeGreaterThan(24);
   expect(f.terminals.has(address)).toBe(true);

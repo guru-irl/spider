@@ -529,7 +529,9 @@ launch failure and retirement, then a higher home epoch.
 
 When an unreachable peer becomes connected and completes a verified sync round,
 the running hub schedules one full recovery pass for pending moves involving
-that peer. The pass runs after sync, not inside its callback. Full recovery and
+that peer. An answered inventory with an incomplete store pull is still unknown,
+even when the round returned no apply results. The pass runs after sync, not
+inside its callback. Full recovery and
 cleanup share one writer. Successful-sync cleanup is deferred with one coalesced
 timer and one flight. Disable and shutdown cancel queued cleanup and drain the
 active flight before closing stores. Sync callbacks never wait on recovery,

@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { participantLaunchId, participantLaunchSuccessor } from "./participant-launch";
+import { participantLaunchId, participantLaunchSuccessor, recordParticipantRestart } from "./participant-launch";
 import { execFile } from "node:child_process";
 import { dirname, join } from "node:path";
 import type { JsonObject, Readiness, StoreKey } from "@spider/db-core/roam/types";
@@ -8,7 +8,7 @@ import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { parseLocationStores } from "@spider/db-core/roam/catalog";
 import { readSessionHeader } from "@spider/herdr/sessions/launcher";
 import { localBootId, inspectIdLock } from "@spider/herdr/sessions/id-lock";
-import { createSessionLeases, type ProcessProbe } from "@spider/herdr/sessions/lease";
+import { createSessionLeases } from "@spider/herdr/sessions/lease";
 import { observeCoreIdentity } from "@spider/herdr/client/hc";
 import { createIntentStore } from "./intent";
 import { sessionHome } from "./homes";
@@ -16,7 +16,7 @@ import type { AgentPorts, Operation, Outcome } from "./contracts";
 import { assertBoxEnrollment, participantCaptureInitialized, createRunningIntentAuthority, readReadiness, recordReadiness, startParticipant } from "./session-control";
 import { readLocalIdentity } from "./runtime";
 import { createLocalDiagnosticPorts, runLocalDoctor } from "./local-diagnostics";
-import { adoptedOwnerExited } from "./launcher";
+import { adoptedOwnerExited, createProductionLocalExactHc, settlePendingLaunch, type PendingLaunchRecovery } from "./launcher";
 import { readSupervisorCorePin, supervisorCoreEnvironment } from "./enrollment";
 
 export function wakeSupervisor(systemctl: (argv: readonly string[]) => Promise<void> = argv => new Promise((done, reject) => {
@@ -25,7 +25,7 @@ export function wakeSupervisor(systemctl: (argv: readonly string[]) => Promise<v
 
 /** Enrollment is loaded independently of the request. hc provides access control; these checks reject misrouting. */
 export async function handleSessionOperation(operation: Operation, ports: AgentPorts, options: { wake?(): Promise<void>;
-  launchRecovery?: { bootId(): Promise<string>; probe(pid: number): Promise<ProcessProbe> } } = {}): Promise<Outcome<JsonObject>> {
+  launchRecovery?: PendingLaunchRecovery } = {}): Promise<Outcome<JsonObject>> {
   const result = (code: 0 | 1 | 2 | 3, reason: string): Outcome<JsonObject> => ({ code, reason, operationId: operation?.id ?? "", home: null, epoch: null, repairCommand: null, value: null });
   if (!operation || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(operation.id) || !operation.args ||
       Object.keys(operation.args).sort().join() !== "sessionId,sourceMachine" || typeof operation.args.sessionId !== "string" || !operation.args.sessionId ||
@@ -69,8 +69,46 @@ export async function handleSessionOperation(operation: Operation, ports: AgentP
       await authority.set({ sessionId: id, epoch: home.epoch, file: location.file, cwd: location.cwd, moveId: home.moveId,
         desired: operation.kind === "session-stop" ? "stopped" : "running", suspended: null }, operation.id, { kind: "box-participant", hubMachineId: pinned.hubMachineId, machineId: pinned.machineId });
     }
-    if (operation.kind === "session-stop") await authority.stop(id);
-    else {
+    if (operation.kind === "session-stop") {
+      await authority.stop(id);
+      const intents = createIntentStore(root), current = await intents.get(id), lock = await inspectIdLock(join(root, "herdr"), id);
+      if (lock?.pendingOperationId) {
+        const local = { machineId: pinned.machineId, label: "local machine", peer: null };
+        const recovery = options.launchRecovery ?? { bootId: localBootId, probe: (pid: number) => createLocalDiagnosticPorts(root, []).probeProcess(local, pid) };
+        let hc = options.launchRecovery?.hc, dispose: (() => Promise<void>) | undefined, settled = false;
+        try {
+          if (!hc) {
+            const pin = readSupervisorCorePin(root);
+            const transport = createProductionLocalExactHc({ binary: pin.binary, env: supervisorCoreEnvironment(pin, process.env), probe: recovery.probe });
+            dispose = () => transport.dispose();
+            hc = { ...transport, async coreId(signal) {
+              const core = await transport.coreId(signal);
+              if (core !== pin.coreId || !isDeepStrictEqual(pin, readSupervisorCorePin(root))) throw new Error("core-pin-changed");
+              return core;
+            } };
+          }
+          const file = (await authority.get(id))?.file;
+          if (file) settled = await settlePendingLaunch({ root: join(root, "herdr"), sessionId: id, operationId: lock.pendingOperationId, file,
+            journal: ports.journal, leases: createSessionLeases(join(root, "herdr")), recovery: { ...recovery, hc,
+              clock: options.launchRecovery?.clock ?? { now: Date.now, wait: (ms, signal) => new Promise<void>((resolve, reject) => {
+                const timer = setTimeout(resolve, ms); signal.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted")); }, { once: true });
+              }) } } });
+        } catch { /* Missing terminal or process proof must preserve pending ownership. */ }
+        finally { await dispose?.(); }
+        if (!settled) return { ...result(3, "launch-reconciliation-required"), repairCommand: `spider roam doctor ${pinned.machineId}` };
+      }
+      const released = current?.value.supervision.kind === "launching" && ports.journal.read(current.value.supervision.operationId).some(row =>
+        row.action === "exact-launch-settled" && row.result.sessionId === id && row.result.file === current.value.intent.file);
+      if (!lock && current?.value.supervision.kind === "launching" && current.value.supervision.phase === "invoking" && !released)
+        return { ...result(3, "launch-reconciliation-required"), repairCommand: `spider roam doctor ${pinned.machineId}` };
+      if (current && released) {
+        const intent = await authority.get(id), operationId = authority.operationId(id);
+        if (!intent || !operationId) return result(3, "intent-reconciliation-required");
+        recordParticipantRestart(ports.journal, pinned.machineId, intent, operationId, current.value.supervision);
+        if ((await intents.update(id, current.version, { intent, failures: [], supervision: { kind: "idle", nextAttemptAt: null } })).kind !== "updated")
+          return result(3, "intent-reconciliation-required");
+      }
+    } else {
       const intents = createIntentStore(root), current = await intents.get(id);
       if (current?.value.supervision.kind === "launching") {
         const local = { machineId: pinned.machineId, label: "local machine", peer: null };

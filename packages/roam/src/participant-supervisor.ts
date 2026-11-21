@@ -3,12 +3,12 @@ import { parseLocationStores } from "@spider/db-core/roam/catalog";
 import { startPrivateControl, requestPrivateControl } from "./control-socket";
 import type { IntercomLifecycle, Operation, RoamConfig } from "./contracts";
 import type { SupervisorPorts } from "./supervisor";
-import { participantLaunchId } from "./participant-launch";
+import { participantRestartHistory, recordParticipantRestart } from "./participant-launch";
 import { isDeepStrictEqual } from "node:util";
 import { join } from "node:path";
 import { openDbReadOnly, type Db } from "@spider/db-core";
 import { readSessionState } from "@spider/db-core/roam/state";
-import type { Probe, HubOperationReadiness, JsonObject, StoreKey } from "@spider/db-core/roam/types";
+import type { Probe, HubOperationReadiness, StoreKey } from "@spider/db-core/roam/types";
 import type { AgentPorts, Clock, Diagnostic, HostIntent, Outcome } from "./contracts";
 import { createIntentStore } from "./intent";
 import { assertBoxEnrollment, participantCaptureInitialized, createRunningIntentAuthority } from "./session-control";
@@ -78,12 +78,7 @@ export function createParticipantSupervisor(input: {
   const restartHistory = (intent: HostIntent) => {
     const operationId = authority.operationId(intent.sessionId);
     if (!operationId) throw new Error("participant-intent-unavailable");
-    const launchId = participantLaunchId(input.agent.config.machineId, intent.sessionId, intent.epoch, operationId), id = `${launchId}-restarts`;
-    input.agent.journal.begin({ id, kind: "participant-restarts", machineId: input.agent.config.machineId, expectedEpoch: intent.epoch,
-      args: { sessionId: intent.sessionId, operationId, file: intent.file, cwd: intent.cwd, moveId: intent.moveId } });
-    const entries = input.agent.journal.read(id).filter(row => row.action === "restart");
-    if (entries.some((row, index) => row.result.sequence !== index + 1)) throw new Error("participant-restart-journal-invalid");
-    return { id, launchId, entries };
+    return participantRestartHistory(input.agent.journal, input.agent.config.machineId, intent, operationId);
   };
   const launch = createDurableLaunchPort({ intents,
     async authorize(intent) {
@@ -103,13 +98,9 @@ export function createParticipantSupervisor(input: {
     inspect, launch,
     async hostingWarning(id, warning) { writeLocal(global, HOSTING_WARNING_CODE, id, warning ?? undefined); },
     async restart(intent, previous) {
-      if (previous.kind === "idle") throw new Error("participant-restart-unproved");
-      const { id, entries } = restartHistory(intent);
-      const proof: JsonObject = previous.kind === "launching" ? { ...previous } : { kind: previous.kind, stableSince: previous.stableSince,
-        identity: { bootId: previous.identity.bootId, pid: previous.identity.pid, startTime: previous.identity.startTime } };
-      if (!entries.some(row => isDeepStrictEqual(row.result.previous, proof))) {
-        input.agent.journal.record(id, "restart", { sequence: entries.length + 1, previous: proof });
-      }
+      const operationId = authority.operationId(intent.sessionId);
+      if (!operationId) throw new Error("participant-intent-unavailable");
+      recordParticipantRestart(input.agent.journal, input.agent.config.machineId, intent, operationId, previous);
     },
     async stop(id) {
       const intent = await trusted.get(id), before = intent ? await input.owner(intent) : { kind: "uncertain" as const };

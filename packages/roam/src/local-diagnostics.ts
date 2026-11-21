@@ -14,7 +14,7 @@ import { readLocal } from "@spider/db-core/roam/local-state";
 import type { Scope, StoreKey } from "@spider/db-core/roam/types";
 import { createProcessPresence, type PresenceBuild, type PresenceRecord } from "@spider/herdr/sessions/presence";
 import { inspectRoamPlacement } from "@spider/herdr/roam-placement";
-import { listPendingIdLocks, localBootId } from "@spider/herdr/sessions/id-lock";
+import { bootIdChanged, inspectIdLock, listPendingIdLocks, localBootId } from "@spider/herdr/sessions/id-lock";
 import { createSessionLeases } from "@spider/herdr/sessions/lease";
 import type { ProcessProbe } from "@spider/herdr/sessions/lease";
 import { parseBuildId } from "../../../scripts/build-id.mjs";
@@ -46,9 +46,9 @@ export async function inspectSupervisorAutostart(): Promise<SupervisorAutostart>
     });
   });
 }
-function resumeCommand(id: string): string {
+function sessionCommand(id: string, action: "resume" | "stop" = "resume"): string {
   const argument = /^[A-Za-z0-9_][A-Za-z0-9._:-]*$/.test(id) ? id : `'${id.replaceAll("'", "'\\''")}'`;
-  return `spider roam resume ${id.startsWith("-") ? "-- " : ""}${argument}`;
+  return `spider roam ${action} ${id.startsWith("-") ? "-- " : ""}${argument}`;
 }
 function snapshotProblem(error: unknown): string {
   if (error instanceof StoreInventoryError) return snapshotProblem(error.cause);
@@ -348,6 +348,11 @@ export function localStoreInventoryDiagnostics(root: string): Diagnostic[] {
   return diagnostics;
 }
 
+export function isPendingLaunchDiagnostic(row: Diagnostic): boolean {
+  return row.reason.startsWith("Session ") && row.reason.includes(": exact launch ") && row.reason.includes(" is pending;") ||
+    row.reason === "Cannot inspect pending exact-launch handoffs." || row.reason === "Cannot inspect pending launch reservations.";
+}
+
 /** Inspect registered local stores without modifying them. */
 export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; currentCore?: () => Promise<string | null>; inspectIntercomDoctor?: boolean;
   launchRecovery?: { bootId(): Promise<string>; probe(pid: number): Promise<ProcessProbe> };
@@ -480,8 +485,20 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
       const detail = !core || !handoff.coreId ? "core identity is unavailable"
         : core !== handoff.coreId ? "destination core changed"
         : "awaiting reconciliation";
+      const local = { machineId: config.machineId, label: "local machine", peer: null };
+      const recovery = input.launchRecovery ?? { bootId: localBootId, probe: (pid: number) => createLocalDiagnosticPorts(root, []).probeProcess(local, pid) };
+      let launcher = "launcher exit evidence is unavailable";
+      try {
+        const lock = await inspectIdLock(join(root, "herdr"), handoff.sessionId), boot = await recovery.bootId();
+        if (lock?.pendingOperationId === handoff.operationId && lock.bootId && boot) {
+          const owner = bootIdChanged(lock.bootId, boot) ? { kind: "absent" as const } : await recovery.probe(lock.identity.pid);
+          launcher = owner.kind === "absent" || owner.kind === "live" && owner.startIdentity !== lock.identity.startIdentity ? "launcher exited"
+            : owner.kind === "live" ? "launcher is alive" : launcher;
+        }
+      } catch { /* Missing process evidence remains blocking. */ }
       reportedHandoffs.add(`${handoff.sessionId}\0${handoff.operationId}`);
-      inventory.push({ severity, reason: `Session ${safe(handoff.sessionId)}: exact launch ${safe(handoff.operationId)} is pending; ${detail}.`, repairCommand: null });
+      inventory.push({ severity: "block", reason: `Session ${safe(handoff.sessionId)}: exact launch ${safe(handoff.operationId)} is pending; ${detail}; ${launcher}. Inspect the launcher PID and boot ID and the operation-labelled terminal on the destination; stop retries only after exit is proved.`,
+        repairCommand: sessionCommand(handoff.sessionId, "stop") });
     }
   } catch { inventory.push({ severity, reason: "Cannot inspect pending exact-launch handoffs.", repairCommand: null }); }
   try {
@@ -494,15 +511,15 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
       try { exited = await adoptedOwnerExited({ root: join(root, "herdr"), sessionId: reservation.sessionId, operationId: reservation.operationId,
         file: reservation.file, leases: createSessionLeases(join(root, "herdr")), ...recovery }); } catch { /* Missing evidence remains pending. */ }
       if (exited) inventory.push({ severity: "warning", reason: `Session ${safe(reservation.sessionId)}: exact launch ${safe(reservation.operationId)} exited before readiness was recorded.`,
-        repairCommand: resumeCommand(reservation.sessionId) });
-      else inventory.push({ severity, reason: `Session ${safe(reservation.sessionId)}: exact launch ${safe(reservation.operationId)} is pending; handoff and core evidence are unavailable.`, repairCommand: null });
+        repairCommand: sessionCommand(reservation.sessionId) });
+      else inventory.push({ severity: "block", reason: `Session ${safe(reservation.sessionId)}: exact launch ${safe(reservation.operationId)} is pending; handoff and core evidence are unavailable. Inspect the launch reservation, ID lock, file lease and operation-labelled terminal on the destination.`, repairCommand: sessionCommand(reservation.sessionId, "stop") });
     }
   } catch { inventory.push({ severity, reason: "Cannot inspect pending launch reservations.", repairCommand: null }); }
   try {
     for (const suspended of await inspectSuspendedIntents(root)) {
       const safe = (value: string) => value.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 256);
       const id = suspended.sessionId;
-      inventory.push({ severity: "warning", reason: `Session ${safe(id)} is suspended: ${safe(suspended.reason)}.`, repairCommand: resumeCommand(id) });
+      inventory.push({ severity: "warning", reason: `Session ${safe(id)} is suspended: ${safe(suspended.reason)}.`, repairCommand: sessionCommand(id) });
     }
   } catch { inventory.push({ severity, reason: "Cannot inspect suspended hosting intents.", repairCommand: null }); }
   try {

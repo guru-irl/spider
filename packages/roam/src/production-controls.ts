@@ -20,7 +20,7 @@ import type { Operation, Peer, RoamConfig, Transport } from "./contracts";
 import { requestHubControl } from "./control-socket";
 import { assertCompatibleConsumers } from "./diagnostics";
 import { hubServiceExists, hubServiceFile, installHubService, removeHubService, type LaunchdPorts } from "./launchd";
-import { createLocalDiagnosticPorts } from "./local-diagnostics";
+import { createLocalDiagnosticPorts, isPendingLaunchDiagnostic } from "./local-diagnostics";
 import { homeChangeInProgress, loadHerdrConfig } from "./production-hub";
 import { compatibleConsumerPorts } from "./remote-observations";
 import { recheckWorktree } from "./recheck";
@@ -173,7 +173,7 @@ export async function enableRoaming(root: string, cli: string, bundleUrl?: URL):
             if (/^(?:intercom-legacy-drained|intercom-federation): (?:intercom-broker-unavailable|intercom-broker-not-spider|intercom-agent-unsafe|intercom-directory-unsafe|intercom-socket-unsafe|federation-feature-missing)/.test(row.reason) ||
                 row.reason.startsWith("intercom-readiness-unavailable:")) brokerFailure();
             const check = preflightCheck(row.reason), detail = preflightDetail(row.reason);
-            failures.push({ reason: `preflight-failed:${name}:${check}`, repairCommand: row.reason.startsWith("store-") ? `spider roam doctor ${argument}` : `spider roam provision ${argument}`, ...(detail ? { detail } : {}) });
+            failures.push({ reason: `preflight-failed:${name}:${check}`, repairCommand: isPendingLaunchDiagnostic(row) ? row.repairCommand ?? `spider roam doctor ${argument}` : row.reason.startsWith("store-") ? `spider roam doctor ${argument}` : `spider roam provision ${argument}`, ...(detail ? { detail } : {}) });
           }
         } catch (error) { failures.push(peerPreflightIssue(error, name, argument)); }
       }

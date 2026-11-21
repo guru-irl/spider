@@ -587,6 +587,8 @@ A bell heads the panel, with the number of items that need you. The panel shows 
 
 Click a session card to focus its pane. Click the memory card to open memory review in the panel. Use the dismiss control to hide a card until its underlying state changes. The panel never polls machines.
 
+Intentional notifications that arrive after an outage remain visible. A sound plays only if the occurrence was created within the previous 15 seconds; older arrivals are marked seen silently. Muted arrivals do not sound later when sound is enabled.
+
 ### Sessions
 
 The **Sessions** list has one row per session in the space. A session that has no tab in any space appears in every space. A row shows a terminal icon, the session name, small counts for live subagents and open todos, and the session's credits this month in the **Credits** column. The word `unavailable` means spider could not read the session's credits. While spider refreshes the figure, the row keeps showing the previous one. The row shows no status, because the sidebar shows it. A session that is not live has a dimmed name, and its tooltip names the state. A session counts as disconnected after more than 20 seconds without a matching heartbeat.

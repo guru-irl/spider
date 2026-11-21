@@ -28,6 +28,15 @@ waiting on itself. Full recovery and cleanup share a single writer. The pass
 uses the existing forward-only journal proofs and never retries failed moves
 in a loop. Shutdown cancels scheduled full passes and drains an active pass.
 
+## Partial disable
+
+When local disable succeeds but box flags are unconfirmed, the command returns
+`roaming-disabled-partial` with code `3`. Its issues name each box and the exact
+`spider roam disable` retry command. Retrying reuses the latest matching pending
+peer operation ID without appending another consent record. A newer enable
+operation prevents reuse of an older pending disable. Code `0` means all flags
+are confirmed. Captures and homes are retained in either case.
+
 ## Intercom initialization
 
 Failed machine-intercom setup retries after 1, 2, 5, 10, and then 30 seconds.

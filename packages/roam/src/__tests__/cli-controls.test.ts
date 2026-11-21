@@ -8,7 +8,7 @@ import { disabledIntercom } from "../contracts";
 import * as remoteObservations from "../remote-observations";
 import * as diagnostics from "../diagnostics";
 import * as launchd from "../launchd";
-import { peerEnabledDiagnostics } from "../peer-enabled";
+import { peerEnabledDiagnostics, setEnrolledPeerEnabled } from "../peer-enabled";
 import { openJournal } from "../journal";
 import { afterEach, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
@@ -654,11 +654,72 @@ it("disable completes interrupted service removal and retries each box flag", as
   vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: { async resolve(peer: unknown) { return peer; } }, async executeProvision(peer: { machineId: string }, request: Record<string, unknown>) {
     requests.push(request); if (peer.machineId === other.machineId) throw new Error("offline"); return { enabled: request.enabled };
   } } as never);
-  expect(await f.invoke(["roam", "disable"])).toBe(0);
+  expect(await f.invoke(["roam", "disable"])).toBe(3);
   expect(removal).toHaveBeenCalledOnce(); expect(existsSync(plist)).toBe(false);
   expect(requests.map(request => [request.machineId, request.enabled])).toEqual([[BOX, false], [other.machineId, false]]);
-  expect(f.out.join("")).toContain("box-2.invalid");
+  expect(f.err.join("")).toContain("box-2.invalid");
+  expect(f.err.join("")).toContain("spider roam disable");
   expect(JSON.parse(readFileSync(file, "utf8")).enabled).toBe(false);
+}, 5000);
+
+it("partial disable retains the peer operation ID across a lost reply and reconnect", async () => {
+  const f = await fixture(), requests: Record<string, unknown>[] = [];
+  let loseReply = true, writes = 0, boxEnabled = true;
+  const receipts = new Map<unknown, { enabled: boolean }>();
+  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/home/fixture/hc" } } as never);
+  vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: { async resolve(peer: unknown) { return peer; } }, async executeProvision(_peer: unknown, request: Record<string, unknown>) {
+    requests.push(request);
+    let receipt = receipts.get(request.operationId);
+    if (!receipt) { writes++; boxEnabled = request.enabled === true; receipt = { enabled: boxEnabled }; receipts.set(request.operationId, receipt); }
+    if (loseReply) throw new Error("synthetic lost reply");
+    return receipt;
+  } } as never);
+  for (let i = 0; i < 3; i++) {
+    f.out.length = 0;
+    expect(await f.invoke(["roam", "disable", "--json"])).toBe(3);
+    expect(JSON.parse(f.out.join(""))).toMatchObject({ reason: "roaming-disabled-partial", value: { issues: [{ reason: "peer-enabled-unconfirmed:-box-1.invalid", repairCommand: "spider roam disable" }] } });
+    expect(JSON.parse(readFileSync(join(f.root, "roam/config.json"), "utf8")).enabled).toBe(false);
+  }
+  expect(new Set(requests.map(request => request.operationId)).size).toBe(1);
+  expect(writes).toBe(1); expect(boxEnabled).toBe(false);
+  const journal = openJournal(join(f.root, "roam/journal.db")), id = requests[0].operationId as string;
+  expect(journal.read(id).filter(row => row.action === "provision-consent")).toHaveLength(1);
+  loseReply = false; f.out.length = 0;
+  expect(await f.invoke(["roam", "disable", "--json"])).toBe(0);
+  expect(new Set(requests.map(request => request.operationId)).size).toBe(1);
+  expect(writes).toBe(1);
+  expect(journal.lookupOperation(id)?.state).toBe("done");
+}, 5000);
+
+it("disable does not replay an old pending operation after a newer enable", async () => {
+  const f = await fixture(), requests: Record<string, unknown>[] = [];
+  let loseReply = true, enabled = true;
+  const receipts = new Map<unknown, { enabled: boolean }>();
+  const transport = { transport: { async resolve(peer: unknown) { return peer; } }, async executeProvision(_peer: unknown, request: Record<string, unknown>) {
+    requests.push(request);
+    if (!receipts.has(request.operationId)) { enabled = request.enabled === true; receipts.set(request.operationId, { enabled }); }
+    if (loseReply) throw new Error("synthetic lost reply");
+    return receipts.get(request.operationId);
+  } };
+  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/home/fixture/hc" } } as never);
+  vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue(transport as never);
+  expect(await f.invoke(["roam", "disable", "--json"])).toBe(3);
+  loseReply = false;
+  const config = localRuntime.readLocalIdentity(f.root), journal = openJournal(join(f.root, "roam/journal.db"));
+  await setEnrolledPeerEnabled({ config, peer: config.peers[0], enabled: true, operationId: "enable-later", journal, transport: transport as never });
+  expect(enabled).toBe(true);
+  expect(await f.invoke(["roam", "disable", "--json"])).toBe(0);
+  expect(enabled).toBe(false);
+  expect(requests.at(-1)!.operationId).not.toBe(requests[0].operationId);
+}, 5000);
+
+it("an answered wrong box flag remains explicitly unconfirmed", async () => {
+  const f = await fixture();
+  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/home/fixture/hc" } } as never);
+  vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: { async resolve(peer: unknown) { return peer; } }, async executeProvision() { return { enabled: true }; } } as never);
+  expect(await f.invoke(["roam", "disable", "--json"])).toBe(3);
+  expect(JSON.parse(f.out.join(""))).toMatchObject({ reason: "roaming-disabled-partial", value: { issues: [{ repairCommand: "spider roam disable" }] } });
+  expect(localRuntime.readLocalIdentity(f.root).enabled).toBe(false);
 }, 5000);
 
 it("disable finds an owned service at its root-scoped path", async () => {
@@ -777,10 +838,10 @@ it.each([true, false])("Mac disable propagates to a reachable box and retains an
   vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: { async resolve(peer: unknown) { return peer; } }, async executeProvision(_peer: unknown, request: Record<string, unknown>) {
     requests.push(request); if (!reachable) throw new Error("offline"); return { enabled: request.enabled };
   } } as never);
-  expect(await f.invoke(["roam", "disable"])).toBe(0);
+  expect(await f.invoke(["roam", "disable"])).toBe(reachable ? 0 : 3);
   expect(JSON.parse(readFileSync(join(f.root, "roam/config.json"), "utf8")).enabled).toBe(false);
   expect(requests).toEqual([expect.objectContaining({ action: "roaming-enabled", machineId: BOX, hubMachineId: HUB, enabled: false })]);
-  if (!reachable) expect(f.out.join("")).toContain("unconfirmed");
+  if (!reachable) expect(f.err.join("")).toContain("unconfirmed");
   expect(await f.invoke(["move", "session-a", "box"])).toBe(1);
   expect(f.err.join("")).toContain("roaming-disabled");
 }, 5000);

@@ -27,7 +27,6 @@ async function fixture(initial: 'offline' | 'invalid' | 'foreign') {
     identity: async () => owner.terminal, caller: async () => owner.terminal,
     // A cached inventory can claim the machine is connected during an outage.
     machines: async () => [{ id: 'remote-core' as never, name: machine, aliases: [], state: 'connected', sessionNamespace: 'fixture', runtime: null }],
-    onMachineAvailable: listener => { available.add(listener); return () => { available.delete(listener); }; },
     events: () => ({ ready: Promise.resolve(), lookup: async () => terminal, subscribe: () => () => {}, dispose: () => {} }),
     get: async () => {
       lookups++;
@@ -49,6 +48,7 @@ async function fixture(initial: 'offline' | 'invalid' | 'foreign') {
   const store = createJobStore(root, owner.sessionId);
   await store.write({ version: 1, sessionId: owner.sessionId, revision: 0, updatedAt: Date.now(), jobs: [job] });
   const options: JobMonitorOptions = { hc, journalRoot: root, clock: Date.now, observedJobMessages: async () => [], notifier: () => {}, recordCleanupError: error => { failures.push(error); },
+    onMachineAvailable: listener => { available.add(listener); return () => { available.delete(listener); }; },
     outputCollector: { prepare: async program => ({ program, nonce: 'fixture-nonce' }), collect: async () => ({ complete: false, summary: '', receipt: null }) } };
   let monitor = createJobMonitor(options); monitors.push(monitor);
   await monitor.activate(owner); await monitor.finishCleanup();

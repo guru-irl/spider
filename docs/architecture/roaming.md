@@ -437,6 +437,29 @@ terminals. The supervisor restores an eligible running session from its exact
 file, while a deliberate stop remains stopped. Repeated crashes suspend the
 session until a successful doctor and resume.
 
+A pending exact launch blocks doctor and enable even when roaming is disabled.
+Doctor names the launch operation and offers `spider roam stop <session>` on the
+hub, not provision. Stop preserves the stopped intent and never relaunches the
+session. It releases the pending ID lock, launch handoff, and file lease only
+when both checks succeed:
+
+- The recorded launcher has exited, using its boot ID and PID probe. PID reuse
+  must have a different process start identity.
+- The exact-launch reconciler proves that no terminal started or that the
+  operation's terminal exited without adopting the session ID lock.
+
+The pending record belongs to the launcher, usually the supervisor, before
+adoption. Its exit alone does not prove that the Pi child exited. A live launcher,
+a live terminal, missing boot evidence, or an uncertain terminal keeps the launch
+blocking. Stop returns `launch-reconciliation-required` and points to doctor.
+On the destination, inspect the recorded launcher PID, boot ID, ID lock, file
+lease, and the terminal labelled `spider.roam.operation=<operation>`, using the
+pinned core. Do not delete ownership files or launch another copy to repair it.
+After stop settles the handoff, retry doctor and enable, then resume the session.
+A repeated stop also finishes a cleanup interrupted after the lease or handoff
+was released. The launch journal retains the failed outcome. Stop records the
+existing restart proof before clearing the reservation, so a later resume uses
+a new launch operation rather than reusing the completed one.
 
 A stopped box-local origin remains stopped even if a replacement native process
 has a different PID or core. A local home does not grant that replacement launch

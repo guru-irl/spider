@@ -370,7 +370,9 @@ The console shows each command's header, its stdout, its stderr with a label, an
 
 When the runtime changes, the next command replaces an older console only after that agent's jobs on the machine have finished. The console labels include `spider.kind`, `spider.session`, `spider.owner-core`, `spider.owner-terminal`, `spider.machine`, `spider.display-name`, `spider.runtime`, and, for a subagent, `spider.run`. The `spider.runtime` value is the runtime's SHA-256 digest.
 
-A subagent's consoles stay open while its run is active, even if the parent pi exits. When you resume the same session, spider recognizes those consoles and closes them when the run ends. A session's own consoles close when you quit that session or replace it with `/new`, `/resume`, or a fork. `/reload` keeps those consoles open and closes run consoles only when the run is known to have ended. If a machine is unavailable, spider retries closing its consoles while pi is running and after the machine reconnects, up to 24 failed attempts. A later startup removes abandoned consoles only when their owning session and run are both gone.
+A subagent's consoles stay open while its run is active, even if the parent pi exits. When you resume the same session, spider recognizes those consoles and closes them when the run ends. A session's own consoles close when you quit that session or replace it with `/new`, `/resume`, or a fork. `/reload` keeps those consoles open and closes run consoles only when the run is known to have ended. If a machine is unavailable, spider keeps console cleanup pending and retries after reconnecting. Connectivity failures do not use the 24-attempt limit; other failures do. A later startup removes abandoned consoles only when their owning session and run are both gone.
+
+Cleanup of a failed launch also stays pending during a connection outage. Its retry delay doubles from 30 seconds to one hour. A successful remote file operation can wake it sooner, at most once every 30 seconds. Other cleanup failures still use the three-attempt limit, and spider checks terminal identity before removal.
 
 ### Background jobs and timeouts
 

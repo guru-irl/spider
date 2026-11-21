@@ -39,7 +39,7 @@ it.each(['invalid-reply', 'caller-mismatch', 'machine-not-found', 'cli-aborted']
   expect(error.availability).toBeUndefined();
 });
 
-it.each(['authentication failed', 'permission denied', 'unrecognized argument --wrong', 'usage: hc command'])('does not scope a non-connectivity CLI exit: %s', async stderr => {
+it.each(['authentication failed', 'permission denied', 'identity mismatch while offline', 'unexpected argument --wrong', 'unrecognized argument --wrong', 'usage: hc command'])('does not scope a non-connectivity CLI exit: %s', async stderr => {
   const original = new HerdrError('cli-exit', 'CLI exited', { exitCode: 1, stderr });
   const error = await trackAvailability(scope, async () => { throw original; }).catch(caught => caught);
   expect(error).toBe(original);
@@ -48,7 +48,8 @@ it.each(['authentication failed', 'permission denied', 'unrecognized argument --
 
 it('does not report recovery for cached metadata, terminal metadata, or a malformed remote reply', async () => {
   vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
-  const available: string[] = [], hc = client(key => available.push(key));
+  const available: string[] = [], connected: string[] = [], hc = client(key => available.push(key));
+  const unsubscribe = hc.onMachineAvailable!(machine => connected.push(machine));
   try {
     await expect(hc.fileRead('box-1.invalid' as MachineName, '/home/fixture/input')).rejects.toMatchObject({ code: 'cli-timeout' });
     await hc.get('box-1.invalid/t1' as TerminalAddress);
@@ -56,8 +57,23 @@ it('does not report recovery for cached metadata, terminal metadata, or a malfor
     await expect(hc.fileRead('box-1.invalid' as MachineName, '/home/fixture/input')).rejects.toMatchObject({ code: 'invalid-reply' });
     expect(boundary.calls.filter(args => args[0] === 'machine')).toHaveLength(1);
     expect(available).not.toContain(scope.key);
+    expect(connected).toEqual([]);
     boundary.mode = 'success';
     expect((await hc.fileRead('box-1.invalid' as MachineName, '/home/fixture/input')).toString()).toBe('fresh remote content');
     expect(available.filter(key => key === scope.key)).toHaveLength(1);
+    expect(connected).toEqual(['box-1.invalid']);
+    unsubscribe(); await hc.fileRead('box-1.invalid' as MachineName, '/home/fixture/input');
+    expect(connected).toEqual(['box-1.invalid']);
+  } finally { await hc.dispose(); }
+});
+
+it('keeps a successful remote read successful when a recovery subscriber throws', async () => {
+  boundary.mode = 'success';
+  const hc = client(() => {}), seen: string[] = [];
+  hc.onMachineAvailable!(() => { throw new Error('Subscriber failed'); });
+  hc.onMachineAvailable!(machine => seen.push(machine));
+  try {
+    expect((await hc.fileRead('box-1.invalid' as MachineName, '/home/fixture/input')).toString()).toBe('fresh remote content');
+    expect(seen).toEqual(['box-1.invalid']);
   } finally { await hc.dispose(); }
 });

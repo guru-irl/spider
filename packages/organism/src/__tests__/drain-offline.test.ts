@@ -67,6 +67,8 @@ it("stops after the first transport failure, keeps one receipt, and retries dist
   await vi.advanceTimersByTimeAsync(1);
   expect(delivered.some(messages => messages.includes(first.transcript[0].content))).toBe(true);
   expect(delivered.some(messages => messages.includes(second.transcript[0].content))).toBe(true);
+  expect(delivered.filter(messages => messages.includes(first.transcript[0].content))).toHaveLength(2);
+  expect(delivered.filter(messages => messages.includes(second.transcript[0].content))).toHaveLength(2);
   expect(worker.getLastDrain()).toMatchObject({ status: "completed", errors: [] });
 });
 

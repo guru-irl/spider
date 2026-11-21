@@ -57,6 +57,39 @@ it("startup recovers pending moves by their journaled sessions, not every catalo
   expect(f.mounted).toEqual(["session-a", "session-b"]);
   expect(f.replayed).toEqual([]);
 }, 5000);
+it("peer recovery mounts only pending moves involving that source or destination", async () => {
+  const f = await fixture();
+  for (const [sessionId, source, destination] of [["session-a", HUB, BOX], ["session-b", BOX, OTHER], ["session-c", HUB, OTHER]] as const) {
+    const operation = { id: `move-${sessionId}`, kind: "move", machineId: HUB, expectedEpoch: 1, args: { sessionId, destinationMachine: destination } };
+    f.journal.begin(operation);
+    f.journal.record(operation.id, "move-request", { sessionId, destinationMachine: destination, operation });
+    f.journal.record(operation.id, "move-action-complete", { action: "check", value: { source: { sessionId, machineId: source }, destinationMachine: destination } });
+  }
+  await f.service.recover(BOX);
+  expect(f.mounted).toEqual(["session-a", "session-b"]);
+}, 5000);
+
+it("full peer recovery and cleanup share one writer and coalesce concurrent requests", async () => {
+  const f = await fixture();
+  const operation = { id: "move-session-a", kind: "move", machineId: HUB, expectedEpoch: 1, args: { sessionId: "session-a", destinationMachine: OTHER } };
+  f.journal.begin(operation);
+  f.journal.record(operation.id, "move-request", { sessionId: "session-a", destinationMachine: OTHER, operation });
+  let entered!: () => void, release!: () => void, active = 0, maximum = 0;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const hold = new Promise<void>(resolve => { release = resolve; });
+  const service = createMoveRuntimeService({ root: f.root, globalDb: f.global.db, config: f.ports.config, journal: f.journal, transport: {} as Transport }, async input => {
+    active++; maximum = Math.max(maximum, active); entered(); await hold;
+    const mounted = await f.factory(input);
+    return { ...mounted, async close() { active--; await mounted.close(); } };
+  });
+  const first = service.recover(OTHER); await started;
+  const second = service.recover(OTHER), cleanup = service.recoverCleanup(OTHER);
+  expect(active).toBe(1);
+  release(); await Promise.all([first, second, cleanup]);
+  expect(maximum).toBe(1);
+  expect(f.mounted).toEqual(["session-a"]);
+}, 5000);
+
 it("startup replays a completed move's pending source view through only its recorded session", async () => {
   const f = await fixture(), moveId = "present-move-a", taskId = presentationTaskId(moveId);
   f.ports.config.peers = f.ports.config.peers.map(peer => ({ ...peer, node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/spider" }));

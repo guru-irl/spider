@@ -511,7 +511,19 @@ The hub freezes the source before it changes the home. A timeout does not
 unfreeze the source or prove that the destination never started. Use
 `spider roam recover <operation-id>` to reconcile a pending move. Cancellation
 cannot return ownership after destination readiness. Rollback requires proved
-launch failure and retirement, then a higher home epoch. Opening a copied
+launch failure and retirement, then a higher home epoch.
+
+When an unreachable peer becomes connected and completes a verified sync round,
+the running hub schedules one full recovery pass for pending moves involving
+that peer. The pass runs after sync, not inside its callback. Full recovery and
+cleanup share one writer. Repeated reachable observations do not start more
+full passes. Each pass uses finite snapshots of retained journal work and does
+not retry failed moves in a loop. Unknown login or identity state cannot trigger recovery.
+An unknown launch outcome stays pending until the existing ownership and
+readiness proofs permit progress. Recovery never grants a second launch or
+retirement from connectivity alone.
+
+Opening a copied
 participating transcript never grants ordinary work to a nonowner.
 
 A local agent stays native. Outward moves convert its remembered Mac space and

@@ -10,7 +10,7 @@ import { handleAgentOperation } from "../agent";
 import { stageArtifact } from "../artifacts";
 import { assignInitialHome } from "../homes";
 import { revokeMachine } from "../revocation";
-import { runHub, runStandaloneHub } from "../hub";
+import { runHub, runStandaloneHub, type HubRuntimePorts } from "../hub";
 import { parseMachineReachability } from "../production-hub";
 import { requestHubControl } from "../control-socket";
 import type { Clock } from "../contracts";
@@ -103,6 +103,39 @@ it("refuses a staging root that belongs to a different global database", async (
   await expect(started).rejects.toThrow(/staging root.*global database/i);
   expect(existsSync(wrongRoot)).toBe(false);
   expect(existsSync(h.socketPath)).toBe(false);
+}, 5000);
+
+it("verified peer recovery schedules one full pass outside sync and drains it on stop", async () => {
+  const h = fixture(); const peer = h.f.config.peers[0];
+  let afterSync!: Parameters<HubRuntimePorts["prepare"]>[0];
+  let entered!: () => void, release!: () => void;
+  const recovering = new Promise<void>(resolve => { entered = resolve; });
+  const hold = new Promise<void>(resolve => { release = resolve; });
+  const passes: string[] = [];
+  const hub = await runHub({ ...h.ports,
+    sync: { start() {}, stop() {}, async sync() { return []; }, async barriers() { return false; } },
+    async prepare(callback) { afterSync = callback; }, async drain() {}, async closeStores() {},
+    async recoverPeerMoves(machineId: string) { passes.push(machineId); entered(); await hold; },
+  } as HubRuntimePorts); handles.push(hub);
+  h.unreachable(); await afterSync(peer, []);
+  h.unknown(); await afterSync(peer, []);
+  expect(h.timers.filter(timer => !timer.cancelled && timer.delay === 0)).toEqual([]);
+  h.reachable();
+  await afterSync(peer, [{ code: 1, reason: "invalid-peer", operationId: "op-1", home: null, epoch: null, repairCommand: null, value: null }]);
+  expect(h.timers.filter(timer => !timer.cancelled && timer.delay === 0)).toEqual([]);
+  await afterSync(peer, []); await afterSync(peer, []);
+  expect(passes).toEqual([]);
+  expect(h.timers.filter(timer => !timer.cancelled && timer.delay === 0)).toHaveLength(1);
+  h.fire(0); await recovering;
+  await afterSync(peer, []);
+  expect(passes).toEqual([BOX]);
+  let stopped = false;
+  const stopping = hub.stop().then(() => { stopped = true; });
+  await Promise.resolve();
+  expect(stopped).toBe(false);
+  release(); await stopping;
+  expect(passes).toEqual([BOX]);
+  expect(stopped).toBe(true);
 }, 5000);
 
 it("move recovery failure prevents hub startup and new controls", async () => {

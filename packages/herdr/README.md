@@ -102,6 +102,8 @@ evidence. Arbitrary reason text does not prove an identity change.
 - `sessions/launcher.ts` calls `beforeSpawn` only after both handoffs are durable and the final file check succeeds. `admitted` permits spawn. `pending` or an exception retains the preparation for reconciliation. `cancelled` releases the launcher's own uninvoked preparation. Roaming records operation-bound proof before this callback and never settles an invoking reservation with a missing ID lock.
 
 - Remote connectivity failures carry their destination scope to the host's per-session outage latch. A successful remote file read or write clears that scope; cached machine and terminal metadata do not.
+- Remote connectivity failures carry their destination scope to the host's per-session outage latch. A successful remote file read or write clears that scope and can wake pending failed-launch cleanup; cached machine and terminal metadata do not.
+- Console and failed-launch cleanup keep connectivity failures outside their permanent attempt budgets. Failed-launch outage retries double from 30 seconds to one hour and keep their due time in the job journal.
 - Feeds are written atomically with user-only permissions. Readers reject symlinks, oversized files, and unknown versions.
 - The IPC endpoint is a Unix socket under `herdr/ipc` with a per-generation capability file. It has no TCP listener and allows only `ping`, `openView`, `openRun`, `openJob`, `subscribeRun`, and `steerRun`.
 - Mods reach pi only through the IPC client, started with Herdr's bounded `exec`. No path in this package writes text into a pi terminal's input.

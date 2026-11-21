@@ -80,7 +80,8 @@ export function createHcClient(options: HcClientOptions, available?: (key: strin
     const on = flags.indexOf('--on');
     const machine = on >= 0 ? flags[on + 1] : ['get', 'read', 'kill', 'rm', 'label'].includes(argv[0]) && argv[1]?.includes('/') ? argv[1].split('/')[0] : undefined;
     const key = machine ? `machine:${machine}` : `hc:${argv[0]}:${['server', 'machine', 'file'].includes(argv[0]) ? argv[1] : ''}`;
-    return trackAvailability({ key, ...(machine ? { machine } : {}) }, () => invokeCli(options.binary, argv, env, options.maxReplyBytes, input, callOptions), available);
+    // A CLI success or metadata lookup alone does not prove that the destination recovered.
+    return trackAvailability({ key, ...(machine ? { machine } : {}) }, () => invokeCli(options.binary, argv, env, options.maxReplyBytes, input, callOptions), machine ? undefined : available);
   };
   let selectedCore: CoreId | undefined = options.isolationProof?.coreIds[options.isolationProof.sockets.indexOf(selectedSocket(env))];
   const identity = async (callOptions?: HcCallOptions): Promise<CoreIdentity> => {
@@ -195,8 +196,8 @@ export function createHcClient(options: HcClientOptions, available?: (key: strin
         throw new HerdrError('invalid-labels', 'Expected canonical Herdr labels with valid values');
       await call(['label', address, ...entries.map(([key, value]) => `${key}=${value ?? ''}`), '--json']);
     },
-    fileRead: async (on, path) => { await machine(on); const reply = object(await call(['file', 'read', '--json', '--on', on, path])); if (typeof reply.text !== 'string') throw new HerdrError('invalid-reply', 'Expected text file'); return Buffer.from(reply.text); },
-    fileWrite: async (on, path, bytes, callOptions) => { await machine(on, callOptions); await call(['file', 'write', '--json', '--on', on, path], bytes, callOptions); },
+    fileRead: async (on, path) => { await machine(on); const reply = object(await call(['file', 'read', '--json', '--on', on, path])); if (typeof reply.text !== 'string') throw new HerdrError('invalid-reply', 'Expected text file'); available?.(`machine:${on}`); return Buffer.from(reply.text); },
+    fileWrite: async (on, path, bytes, callOptions) => { await machine(on, callOptions); await call(['file', 'write', '--json', '--on', on, path], bytes, callOptions); available?.(`machine:${on}`); },
     events: () => {
       if (disposal) throw new HerdrError('disposed', 'Hc client disposed');
       const source = eventStream ??= createHcEventStream({ ...options, env });

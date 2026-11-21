@@ -497,6 +497,12 @@ session name or ID prefix. Use `mac` as the destination to return home.
 Box-side commands direct you to the Mac without creating a move request.
 Children, transient sessions, and busy sessions cannot move.
 
+`/move` keeps one footer status while it waits, rather than posting periodic
+progress notices. The start and result notices remain. A lost control reply
+returns code `3`, preserves the known operation ID, and prints the exact
+`spider roam recover <operation-id>` command. The outcome stays unknown until
+recovery checks the journal. The progress status clears when the request ends.
+
 The destination needs its own Pi sign-in and a mapped equivalent Git checkout.
 The move preserves the session ID, selected conversation branch, triggers,
 HEAD, staged changes, working changes, and nonignored untracked files. It maps

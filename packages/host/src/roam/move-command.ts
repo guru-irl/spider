@@ -22,12 +22,7 @@ export function createMoveCommand(request: (input: MoveRequest) => Promise<Outco
     if (!destinationMachine) return refuse(2, "machine-not-enrolled");
     const operation = { id: randomUUID(), kind: "move", machineId: pinned.machineId, expectedEpoch: null, args: { sessionId, destinationMachine } };
     ctx.ui.notify("Move started; keep the Mac awake until it finishes.", "info");
-    let progress = 0;
-    const timer = setInterval(() => {
-      if (++progress <= 3) ctx.ui.notify("Move is still in progress.", "info");
-      else clearInterval(timer);
-    }, 30_000);
-    timer.unref();
+    ctx.ui.setStatus("roam-move", `Move in progress. Operation: ${operation.id}`);
     try {
       const safe = safeControlOutcome(await request({ operation, sessionId, destinationMachine }));
       const details = safe.value as { terminal?: string; intercomAddress?: string; warnings?: string[]; sourceCleanup?: SourceCleanup } | null;
@@ -37,8 +32,13 @@ export function createMoveCommand(request: (input: MoveRequest) => Promise<Outco
         ? { home: safe.home, terminal: details?.terminal ?? null, intercomAddress, warnings, sourceCleanup: details.sourceCleanup } : null;
       const alias = safe.home?.machineId === pinned.hubMachineId ? "mac" : pinned.peers.find(peer => peer.machineId === safe.home?.machineId)?.alias;
       return { ...safe, value, text: controlText(safe, alias).trimEnd(), intercomAddress, warnings };
-    } catch { return refuse(1, "move-control-unavailable", "Move control is unavailable. Run spider roam doctor on the Mac."); }
-    finally { clearInterval(timer); }
+    } catch {
+      const repairCommand = `spider roam recover ${operation.id}`;
+      return { code: 3, reason: "move-control-unavailable", operationId: operation.id, home: null, epoch: null,
+        repairCommand, value: null, intercomAddress: null, warnings: [],
+        text: `Move reply was lost; the outcome is unknown.\nOperation: ${operation.id}\n${repairCommand}` };
+    }
+    finally { ctx.ui.setStatus("roam-move", undefined); }
   };
 }
 export function registerMoveCommand(pi: ExtensionAPI, request: (input: MoveRequest) => Promise<Outcome<MoveResult>>): void {

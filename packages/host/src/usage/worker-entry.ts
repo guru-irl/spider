@@ -1,5 +1,5 @@
 import { statSync } from "node:fs";
-import { readPanelUsage } from "./panel-usage.js";
+import { createPanelUsageReader } from "./panel-usage.js";
 import { openDashboardReader } from "./dashboard-reader.js";
 import type { DashboardReader } from "./dashboard-contract.js";
 import { billingPeriod } from "./billing-pace.js";
@@ -43,6 +43,7 @@ export async function bootUsageWorker(
   const ingest = dependencies.ingest ?? ingestOnce;
   let ledger: UsageLedger | undefined, lease: Lease | undefined, poller: CounterPoller | undefined;
   let monthReader: DashboardReader | undefined;
+  const panelReader = createPanelUsageReader(command.roots.ledgerFile);
   let stopped = false, pending = false, task: Promise<void> | undefined, stopping: Promise<void> | undefined;
   let poll = !command.dashboardMode && command.poll;
   let calibrationMode = command.calibration ?? "auto";
@@ -95,9 +96,13 @@ export async function bootUsageWorker(
   }
   // Detach before a fallible close/stop/open, so the next cycle can retry.
   function closeLedger(): void {
-    monthReader?.close(); monthReader = undefined;
-    const previous = ledger; ledger = undefined;
-    previous?.close();
+    const month = monthReader, previous = ledger;
+    monthReader = undefined; ledger = undefined;
+    let failure: { error: unknown } | undefined;
+    try { panelReader.close(); } catch (error) { failure = { error }; }
+    try { month?.close(); } catch (error) { failure ??= { error }; }
+    try { previous?.close(); } catch (error) { failure ??= { error }; }
+    if (failure) throw failure.error;
   }
   async function stopCounter(): Promise<void> {
     const previous = poller; poller = undefined;
@@ -382,7 +387,7 @@ export async function bootUsageWorker(
     if (message?.type === "stop") { void stop(); return; }
     if (stopped) return;
     if (message?.type === "panel-usage") {
-      post({ type: "panel-usage", requestId: message.requestId, data: readPanelUsage(command.roots.ledgerFile, message.now, message.sessionId, message.budget, calibrationMode) });
+      post({ type: "panel-usage", requestId: message.requestId, data: panelReader.read(message.now, message.sessionId, message.budget, calibrationMode) });
       return;
     }
     if (message?.type === "refresh") request();

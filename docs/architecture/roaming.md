@@ -355,6 +355,11 @@ after ten minutes. `needs_login`, `needs-login`, and other uncertain states
 neither start an outage nor clear one. Clearing requires literal `connected`
 plus a successful current sync round with verified peer connectivity.
 
+Machine-intercom initialization retries failed setup after 1, 2, 5, 10, and
+then 30 seconds. Its status stays pending during the outage. Successful setup
+resets that backoff and becomes ready without restarting the hub. Shutdown
+cancels pending setup retries and waits for the current attempt to drain.
+
 
 Production hosting stays disabled until phase 4 acceptance succeeds. Provisioning
 installs only the supervisor service and leaves the running core and its terminals

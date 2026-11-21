@@ -121,7 +121,7 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
   let bridge: IntercomBridge | undefined, store: IntercomStore | undefined, lease: HelperRouteLease | undefined;
   let delivery: HostIntercomDelivery | undefined;
   let startTask: Promise<void> | undefined, stopTask: Promise<void> | undefined, attemptTask: Promise<void> | undefined;
-  let cancelRetry: (() => void) | undefined, stopped = false;
+  let cancelRetry: (() => void) | undefined, stopped = false, setupFailures = 0;
   let recoveryTask: Promise<void> | undefined, cancelRecovery: (() => void) | undefined;
   const recover = (): Promise<void> => {
     if (stopped || !store || !options.recoverRevocations) return Promise.resolve();
@@ -440,6 +440,7 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
         return proof;
       });
       await bridge.start();
+      setupFailures = 0;
       void recover();
       if (!stopped) status = { state: "ready", reason: null };
     } catch (error) {
@@ -447,7 +448,8 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
       if (stopped) return;
       brokerFailure = failureDiagnostic(error);
       status = { state: "pending", reason: error instanceof Error && error.message === "unsupported-broker" ? "unsupported-broker" : "bridge-unavailable" };
-      cancelRetry = options.clock.later(1000, () => {
+      const delay = [1000, 2000, 5000, 10_000, 30_000][Math.min(setupFailures++, 4)]!;
+      cancelRetry = options.clock.later(delay, () => {
         cancelRetry = undefined;
         void runAttempt().catch(() => { if (!stopped) status = { state: "pending", reason: "bridge-unavailable" }; });
       });

@@ -36,7 +36,11 @@ export async function runSkillReviewQueue(db: Db, opts: QueueOptions): Promise<v
     db.prepare("INSERT OR IGNORE INTO skill_review_lock(id,token,lease_until) VALUES (1,'',0)").run();
     return db.prepare("UPDATE skill_review_lock SET token=?,lease_until=? WHERE id=1 AND lease_until<=?").run(owner, leaseUntil(), Date.now()).changes > 0;
   }).immediate();
-  if (!acquired) return;
+  if (!acquired) {
+    const lease = db.prepare("SELECT lease_until FROM skill_review_lock WHERE id=1").get() as { lease_until: number } | undefined;
+    try { opts.onDeferred?.(Math.max(Date.now() + 1, lease?.lease_until ?? 0)); } catch { /* Scheduling is secondary. */ }
+    return;
+  }
   // Must be called in the same immediate transaction as staging and the fence.
   const record = (item: QueuedSkill, result: ReviewedSkillResult) => {
     if (result.reviewSkipped) {

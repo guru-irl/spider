@@ -79,6 +79,21 @@ it("keeps the original candidate through connectivity failures and reviews it af
   } finally { other.close(); vi.useRealTimers(); }
 });
 
+it.each(["Provider temporarily unavailable", "service unavailable"])("keeps a candidate when %s", async message => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+  const skills = fixture(); await enqueue(skills);
+  const reviewer = vi.fn(async () => { throw new Error(message); });
+  try {
+    for (const delay of [300_000, 600_000, 1_200_000]) {
+      await runSkillReviewQueue(ctx.repoDb, { reviewer });
+      expect(ctx.repoDb.prepare("SELECT attempts,body FROM skill_review_queue").get()).toEqual({ attempts: 0, body: candidate.body });
+      await vi.advanceTimersByTimeAsync(delay);
+    }
+    await runSkillReviewQueue(ctx.repoDb, { reviewer: async () => '{"verdict":"new","reason":"reusable"}' });
+    expect(skills.get(candidate.name)?.candidateBody).toBe(candidate.body);
+  } finally { vi.useRealTimers(); }
+});
+
 it("does not spend the content budget when the review timeout aborts the provider", async () => {
   vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
   const skills = fixture(); await enqueue(skills);
@@ -162,6 +177,19 @@ it.each(["malformed", "identity"])("still drops a candidate after three %s revie
   }
   expect(skills.list()).toEqual([]);
   expect(skillReviewQueueStatus(ctx.repoDb).recent[0]).toMatchObject({ verdict: "review_skipped", reason: expect.stringContaining("3 attempts") });
+});
+
+it.each([
+  new Error("authentication failed; provider temporarily unavailable"),
+  Object.assign(new Error("provider temporarily unavailable"), { cause: Object.assign(new Error("unauthorized"), { status: 401 }) }),
+])("does not defer an identity failure hidden behind provider-unavailable wording", async error => {
+  const skills = fixture(); await enqueue(skills);
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await runSkillReviewQueue(ctx.repoDb, { reviewer: async () => { throw error; } });
+    if (attempt < 3) expect(ctx.repoDb.prepare("SELECT attempts FROM skill_review_queue").get()).toEqual({ attempts: attempt });
+    else expect(skillReviewQueueStatus(ctx.repoDb).pending).toBe(0);
+  }
+  expect(skills.list()).toEqual([]);
 });
 
 it("queue serializes across two handles to the same repo DB", async () => {

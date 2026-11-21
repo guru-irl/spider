@@ -5,6 +5,7 @@ import { baselineSkillsDir, pstackSkillsDir } from "@spider/superpowers";
 import { firstThreatMessage, safeReviewError } from "@spider/memory";
 import { SkillStore, type SkillRow } from "./skill-usage.js";
 import type { SkillCandidate, SkillReviewSummary } from "./types.js";
+import { isConnectivityFailure } from "./connectivity.js";
 
 export interface ExistingSkill { name: string; description: string }
 export interface SkillReviewCandidate extends SkillCandidate { origin: "learner" | "curator" | "agent" }
@@ -158,13 +159,15 @@ export function parseSkillVerdict(raw: unknown, skills: ExistingSkill[]): SkillV
 
 export type SkillReviewDecision = SkillVerdict
   | { verdict: "deterministic_failure"; reason?: string }
-  | { reviewSkipped: string; reason: string };
+  | { reviewSkipped: string; reason: string; connectivity?: true };
 
 /** Review without mutating the store, so queued callers can fence the later write. */
 export async function reviewSkillCandidate(store: SkillStore, candidate: SkillReviewCandidate, opts: SkillReviewOptions = {}): Promise<SkillReviewDecision> {
   const check = checkSkillCandidate(candidate);
   if (!check.ok) return { verdict: "deterministic_failure", reason: check.reason };
-  const skip = (reason: string): SkillReviewDecision => ({ reviewSkipped: reason, reason: `review skipped: ${reason}` });
+  const skip = (reason: string, connectivity = false): SkillReviewDecision => ({
+    reviewSkipped: reason, reason: `review skipped: ${reason}`, ...(connectivity ? { connectivity: true as const } : {}),
+  });
   if (!opts.reviewer) return skip(opts.skipReason ?? "reviewer disabled or unavailable");
   if (opts.signal?.aborted) return skip("aborted");
   const ms = typeof opts.timeoutMs === "number" && Number.isInteger(opts.timeoutMs) && opts.timeoutMs >= 1000 && opts.timeoutMs <= 600000 ? opts.timeoutMs : 180000;
@@ -187,7 +190,7 @@ export async function reviewSkillCandidate(store: SkillStore, candidate: SkillRe
       opts.signal?.addEventListener("abort", onAbort, { once: true });
     });
     const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => { reject(Error(`timeout after ${ms} ms`)); controller.abort(); }, ms);
+      timer = setTimeout(() => { reject(Object.assign(Error(`timeout after ${ms} ms`), { name: "TimeoutError" })); controller.abort(); }, ms);
     });
     // Promise.resolve().then also protects synchronous throws from injected reviewers.
     raw = await Promise.race([Promise.resolve().then(() => opts.reviewer!(candidate, context.skills, controller.signal, context.rubric)), abort, timeout]);
@@ -196,7 +199,7 @@ export async function reviewSkillCandidate(store: SkillStore, candidate: SkillRe
     const reason = safeReviewError(error);
     if (opts.signal?.aborted) return skip("aborted");
     try { opts.onReviewError?.(reason, raw); } catch { /* Diagnostics must not change the fail-closed policy. */ }
-    return skip(reason);
+    return skip(reason, isConnectivityFailure(error));
   } finally {
     if (timer) clearTimeout(timer);
     if (onAbort) opts.signal?.removeEventListener("abort", onAbort);
@@ -214,9 +217,10 @@ function storeSkipReason(saved: Extract<ReturnType<SkillStore["stageCandidate"]>
 /** Synchronous commit, suitable for a caller-owned immediate transaction. */
 export function stageReviewedSkill(store: SkillStore, candidate: SkillReviewCandidate, decision: SkillReviewDecision): ReviewedSkillResult {
   if ("reviewSkipped" in decision) {
-    if (candidate.origin !== "agent") return { outcome: "rejected", ...decision };
-    const saved = store.stageCandidate({ ...candidate, reviewReason: decision.reason });
-    return { ...saved, ...decision, reason: saved.outcome === "skipped" ? `${storeSkipReason(saved)}; ${decision.reason}` : decision.reason };
+    const { reviewSkipped, reason } = decision;
+    if (candidate.origin !== "agent") return { outcome: "rejected", reviewSkipped, reason };
+    const saved = store.stageCandidate({ ...candidate, reviewReason: reason });
+    return { ...saved, reviewSkipped, reason: saved.outcome === "skipped" ? `${storeSkipReason(saved)}; ${reason}` : reason };
   }
   if (decision.verdict !== "new") return { outcome: "rejected", ...decision };
   const saved = store.stageCandidate({ ...candidate, reviewReason: decision.reason });

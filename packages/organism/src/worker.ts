@@ -72,6 +72,7 @@ export class OrganismWorker {
   #lastDrain: DrainReport | undefined;
   #reviewTask: Promise<void> | undefined;
   #reviewController: AbortController | undefined;
+  #reviewTimer: ReturnType<typeof setTimeout> | undefined;
   #shuttingDown = false;
   #paused = false;
   #resumeReviews = false;
@@ -79,14 +80,23 @@ export class OrganismWorker {
   /** Fire-and-forget only from live-session lifecycle hooks, never a drain. */
   startSkillReviews(): void {
     if (process.env.PI_SUBAGENT_CHILD === "1" || this.#shuttingDown || this.#reviewTask || !this.#deps.org.enabled) return;
+    if (this.#reviewTimer) { clearTimeout(this.#reviewTimer); this.#reviewTimer = undefined; }
     this.#reviewController = new AbortController();
-    this.#reviewTask = runSkillReviewQueue(this.#deps.db, { ...this.#deps.skillReview, signal: this.#reviewController.signal })
+    const deferred: number[] = [];
+    this.#reviewTask = runSkillReviewQueue(this.#deps.db, { ...this.#deps.skillReview, signal: this.#reviewController.signal, onDeferred: retryAt => deferred.push(retryAt) })
+      .then(() => {
+        const retryAt = deferred[0];
+        if (retryAt === undefined || this.#shuttingDown) return;
+        this.#reviewTimer = setTimeout(() => { this.#reviewTimer = undefined; this.startSkillReviews(); }, Math.max(1, retryAt - Date.now()));
+        this.#reviewTimer.unref();
+      })
       .catch(error => {
         try { this.#deps.skillReview?.onReviewError?.(safeError(error), undefined); } catch { /* Diagnostics are secondary. */ }
       }).finally(() => { this.#reviewTask = undefined; this.#reviewController = undefined; });
   }
   async stopSkillReviews(): Promise<void> {
     this.#shuttingDown = true;
+    if (this.#reviewTimer) { clearTimeout(this.#reviewTimer); this.#reviewTimer = undefined; }
     this.#reviewController?.abort();
     await this.#reviewTask; // Abort is bounded by the shared gate even for an uncooperative provider.
   }

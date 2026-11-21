@@ -27,13 +27,13 @@ const setup = (skillReview: object = {}) => {
     worker: {} as any, skillReview };
 };
 
-it("learner fails closed when review throws, with counted skips and short reasons", async () => {
+it("learner keeps an offline review queued with its reason and budget intact", async () => {
   const deps = setup({ reviewer: async () => { throw Error("model offline"); } });
   const result = await applyDigest(deps, { memory: [], todos: [], skills: [{ name: "tracking-writers", body: body("tracking-writers") }] }, { max: 5, used: 0 });
   expect(result).toMatchObject({ skillsQueued: 1, skillsStaged: 0, rejected: 0 });
   await runSkillReviewQueue(ctx.repoDb, deps.skillReview);
   expect(deps.skills.list()).toHaveLength(0);
-  expect(ctx.repoDb.prepare("SELECT attempts,last_error FROM skill_review_queue").get()).toEqual({ attempts: 1, last_error: "model offline" });
+  expect(ctx.repoDb.prepare("SELECT attempts,last_error FROM skill_review_queue").get()).toEqual({ attempts: 0, last_error: "model offline" });
 });
 
 it("learner counts each rejection verdict without reserving the name", async () => {

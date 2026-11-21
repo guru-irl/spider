@@ -32,23 +32,138 @@ it.each(["new", "duplicate", "not_durable", "low_quality"])("queue only stages n
   expect(skillReviewQueueStatus(ctx.repoDb).pending).toBe(0);
   expect(skillReviewQueueStatus(ctx.repoDb).recent[0]).toMatchObject({ verdict, reason: "deciding rule" });
 });
-it.each(["error", "unparseable", "timeout"])("queue keeps a failed item and drops after three %s attempts", async mode => {
+it.each(["error", "unparseable"])("queue keeps a failed item and drops after three %s attempts", async mode => {
   const skills = fixture(); await enqueue(skills);
   for (let i=1; i<=3; i++) {
-    const controller = new AbortController();
-    const reviewer = async () => { if (mode === "error") throw Error("offline"); if (mode === "unparseable") return "invalid"; controller.abort(); return '{"verdict":"new","reason":"not allowed after abort"}'; };
-    if (mode === "timeout") vi.useFakeTimers();
-    try {
-      const task = runSkillReviewQueue(ctx.repoDb, { timeoutMs: 1000, signal: controller.signal, reviewer: mode === "timeout" ? () => new Promise<never>(() => {}) : reviewer });
-      if (mode === "timeout") await vi.advanceTimersByTimeAsync(1000);
-      await task;
-    } finally { vi.useRealTimers(); }
+    const reviewer = async () => { if (mode === "error") throw Error("reviewer error"); return "invalid"; };
+    await runSkillReviewQueue(ctx.repoDb, { reviewer });
     const row = ctx.repoDb.prepare("SELECT attempts,last_error FROM skill_review_queue").get() as any;
     if (i<3) { expect(row.attempts).toBe(i); expect(row.last_error).toBeTruthy(); } else expect(row).toBeUndefined();
     expect(skills.list()).toEqual([]);
   }
   expect(skillReviewQueueStatus(ctx.repoDb).recent[0].reason).toContain("3 attempts");
 });
+it("keeps the original candidate through connectivity failures and reviews it after recovery", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+  const skills = fixture(); await enqueue(skills);
+  const other = openDbAt(ctx.repoDb.raw.name, "repo");
+  const bodies: string[] = [];
+  const errors = [
+    Object.assign(new Error("fetch failed"), { cause: Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" }) }),
+    Object.assign(new Error("network unreachable"), { code: "ENETUNREACH" }),
+    new Error("model offline"),
+  ];
+  const diagnostics = vi.fn();
+  const reviewer = vi.fn(async (reviewed: typeof candidate) => {
+    bodies.push(reviewed.body);
+    const error = errors.shift();
+    if (error) throw error;
+    return '{"verdict":"new","reason":"reusable"}';
+  });
+  try {
+    for (const [index, delay] of [300_000, 600_000, 1_200_000].entries()) {
+      await runSkillReviewQueue(index === 1 ? other : ctx.repoDb, { reviewer, onReviewError: diagnostics });
+      expect(skillReviewQueueStatus(ctx.repoDb).pending).toBe(1);
+      expect(ctx.repoDb.prepare("SELECT attempts,body FROM skill_review_queue").get()).toEqual({ attempts: 0, body: candidate.body });
+      await runSkillReviewQueue(other, { reviewer, onReviewError: diagnostics });
+      await vi.advanceTimersByTimeAsync(delay - 1);
+      await runSkillReviewQueue(ctx.repoDb, { reviewer, onReviewError: diagnostics });
+      expect(reviewer).toHaveBeenCalledTimes(index + 1);
+      await vi.advanceTimersByTimeAsync(1);
+    }
+    await runSkillReviewQueue(other, { reviewer, onReviewError: diagnostics });
+    expect(bodies).toEqual([candidate.body, candidate.body, candidate.body, candidate.body]);
+    expect(skills.get(candidate.name)).toMatchObject({ status: "staged", candidateBody: candidate.body });
+    expect(skillReviewQueueStatus(ctx.repoDb).pending).toBe(0);
+    expect(diagnostics).toHaveBeenCalledTimes(1);
+  } finally { other.close(); vi.useRealTimers(); }
+});
+
+it("does not spend the content budget when the review timeout aborts the provider", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+  const skills = fixture(); await enqueue(skills);
+  const signals: AbortSignal[] = [];
+  const reviewer = vi.fn(async (_candidate: unknown, _skills: unknown, signal: AbortSignal) => {
+    signals.push(signal);
+    return new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true }));
+  });
+  try {
+    for (const [index, delay] of [300_000, 600_000, 1_200_000].entries()) {
+      const task = runSkillReviewQueue(ctx.repoDb, { timeoutMs: 1000, reviewer });
+      await vi.advanceTimersByTimeAsync(1000); await task;
+      expect(signals[index].aborted).toBe(true);
+      expect(ctx.repoDb.prepare("SELECT attempts,body FROM skill_review_queue").get()).toEqual({ attempts: 0, body: candidate.body });
+      await runSkillReviewQueue(ctx.repoDb, { timeoutMs: 1000, reviewer });
+      expect(reviewer).toHaveBeenCalledTimes(index + 1);
+      await vi.advanceTimersByTimeAsync(delay);
+    }
+    await runSkillReviewQueue(ctx.repoDb, { reviewer: async () => '{"verdict":"new","reason":"reusable"}' });
+    expect(skills.get(candidate.name)).toMatchObject({ status: "staged", candidateBody: candidate.body });
+  } finally { vi.useRealTimers(); }
+});
+
+it("caps review retry delays at six hours without retrying early", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+  const skills = fixture(); await enqueue(skills);
+  const reviewer = vi.fn(async () => { throw new Error("network offline"); });
+  try {
+    for (const [index, minutes] of [5, 10, 20, 40, 80, 160, 320, 360, 360].entries()) {
+      await runSkillReviewQueue(ctx.repoDb, { reviewer });
+      await vi.advanceTimersByTimeAsync(minutes * 60_000 - 1);
+      await runSkillReviewQueue(ctx.repoDb, { reviewer });
+      expect(reviewer).toHaveBeenCalledTimes(index + 1);
+      expect(skillReviewQueueStatus(ctx.repoDb).pending).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+    }
+    await runSkillReviewQueue(ctx.repoDb, { reviewer: async () => '{"verdict":"new","reason":"reusable"}' });
+    expect(skills.get(candidate.name)?.candidateBody).toBe(candidate.body);
+  } finally { vi.useRealTimers(); }
+});
+
+it("retries one deferred review queue in a live session without another lifecycle event", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+  const skills = fixture(); await enqueue(skills);
+  const later = { name: "tracing-readers", body: finalSkillBody("tracing-readers", "Trace reader ownership.") };
+  ctx.repoDb.prepare("INSERT INTO skill_review_queue(name,body,origin,created_at) VALUES (?,?,'learner',?)").run(later.name, later.body, Date.now() + 1);
+  let online = false;
+  const reviewer = vi.fn(async () => {
+    if (!online) throw Object.assign(new Error("fetch failed"), { code: "ECONNREFUSED" });
+    return '{"verdict":"new","reason":"reusable"}';
+  });
+  const worker = new OrganismWorker({ db: ctx.repoDb, worktreeDb: ctx.db, globalDb: ctx.repoDb, project: {} as any, getEmbedder: async () => null,
+    makeModel: () => null, org: ORGANISM_DEFAULTS, curator: CURATOR_DEFAULTS, skillReview: { reviewer } });
+  try {
+    worker.startSkillReviews(); await vi.advanceTimersByTimeAsync(0);
+    expect(reviewer).toHaveBeenCalledTimes(1);
+    expect(skillReviewQueueStatus(ctx.repoDb).pending).toBe(2);
+    worker.startSkillReviews(); await vi.advanceTimersByTimeAsync(0);
+    expect(reviewer).toHaveBeenCalledTimes(1);
+    online = true;
+    await vi.advanceTimersByTimeAsync(300_000 - 1);
+    expect(skills.list()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(reviewer).toHaveBeenCalledTimes(3);
+    expect(skills.get(candidate.name)?.candidateBody).toBe(candidate.body);
+    expect(skills.get(later.name)?.candidateBody).toBe(later.body);
+    expect(skillReviewQueueStatus(ctx.repoDb).pending).toBe(0);
+  } finally { await worker.stopSkillReviews(); vi.useRealTimers(); }
+});
+
+it.each(["malformed", "identity"])("still drops a candidate after three %s review failures", async mode => {
+  const skills = fixture(); await enqueue(skills);
+  const reviewer = async () => {
+    if (mode === "identity") throw Object.assign(new Error("authentication failed while offline"), { status: 401 });
+    return "invalid JSON about a network outage";
+  };
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await runSkillReviewQueue(ctx.repoDb, { reviewer });
+    if (attempt < 3) expect(ctx.repoDb.prepare("SELECT attempts FROM skill_review_queue").get()).toEqual({ attempts: attempt });
+    else expect(skillReviewQueueStatus(ctx.repoDb).pending).toBe(0);
+  }
+  expect(skills.list()).toEqual([]);
+  expect(skillReviewQueueStatus(ctx.repoDb).recent[0]).toMatchObject({ verdict: "review_skipped", reason: expect.stringContaining("3 attempts") });
+});
+
 it("queue serializes across two handles to the same repo DB", async () => {
   const skills = fixture(); await enqueue(skills);
   const other = openDbAt(ctx.repoDb.raw.name, "repo"); let finish!: (value: string) => void;

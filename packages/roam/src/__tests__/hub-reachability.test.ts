@@ -32,8 +32,19 @@ it("a connected native state cannot clear an outage after an unsuccessful round"
   const { loadPeerState, savePeerState } = await import("../peer-state");
   const saved = loadPeerState(h.f.global.db, BOX, h.f.config.limits.targetBatchBytes);
   saved.observation = { machineId: BOX, observedAt: 1, connected: true, lastSyncAt: 1, cursors: [], failure: null };
+  saved.pulled = true;
   savePeerState(h.f.global.db, BOX, saved);
   expect(await h.observe(h.f.config.peers[0], [{ code: 1, reason: "Invalid peer value", operationId: "op-1", home: null, epoch: null, repairCommand: null, value: null }])).toMatchObject({ reachability: "unknown" });
+});
+
+it.each([false, true])("a no-change sync clears only after a complete store pull (pulled: %s)", async pulled => {
+  const h = await observationFixture();
+  const { loadPeerState, savePeerState } = await import("../peer-state");
+  const saved = loadPeerState(h.f.global.db, BOX, h.f.config.limits.targetBatchBytes);
+  saved.pulled = pulled;
+  saved.observation = { machineId: BOX, observedAt: 2, connected: true, lastSyncAt: pulled ? 2 : 1, cursors: [], failure: null };
+  savePeerState(h.f.global.db, BOX, saved);
+  expect(await h.observe(h.f.config.peers[0], [])).toMatchObject({ reachability: pulled ? "reachable" : "unknown" });
 });
 
 it("a core identity change during machine inventory remains unknown", async () => {

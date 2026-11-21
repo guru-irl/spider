@@ -72,7 +72,11 @@ export async function processContainsCaller(pid: unknown, env: Readonly<NodeJS.P
   }
   return false;
 }
-export function createHcClient(options: HcClientOptions, available?: (key: string) => void): HcClient & Disposable {
+export interface HcAvailabilitySource {
+  /** Successful remote file operations, not cached machine metadata. */
+  onMachineAvailable(listener: (machine: MachineName) => void): () => void;
+}
+export function createHcClient(options: HcClientOptions, available?: (key: string) => void): HcClient & Disposable & HcAvailabilitySource {
   guardTestSocket(options);
   const env = Object.freeze({ ...options.env, HC_SOCKET: selectedSocket(options.env) });
   const machineListeners = new Set<(machine: MachineName) => void>();

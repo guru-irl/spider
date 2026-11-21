@@ -635,6 +635,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
     }, environmentPolicy: env => environment(env), logSink: async (job, readerOptions) => need(output).logReader(job.id, readerOptions), clock: Date.now }), hc, () => need(config).machines, () => join(need(config).globalRoot, 'herdr/copy-cleanup')) : undefined;
   }, jobIdsForToolResult,
     monitorOptions: () => ({ hc, ...(app ? { app } : {}), clock: Date.now, journalRoot: journalRoot(), outputCollector: need(output).outputCollector, reportError: report, recordCleanupError: error => options.reportError?.(error),
+      onMachineAvailable: listener => need(client).onMachineAvailable(listener),
       reportConsoleError: error => { if (options.reportError) options.reportError(error); else process.stderr.write(herdrErrorNotice(error) + '\n'); },
       ...(panes ? { panes: { reserve: (...args) => need(panes).reserveRemote(...args), abandon: slot => need(panes).abandon(slot), observe: async job => { throw new HerdrError('explicit-observer-only', `Job ${job.id} must be opened through openJob`); } } } : {}),
     }),

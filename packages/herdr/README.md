@@ -86,6 +86,7 @@ Each part runs in its own process:
 
 - Remote connectivity failures carry their destination scope to the host's per-session outage latch. A successful remote file read or write clears that scope and can wake pending failed-launch cleanup; cached machine and terminal metadata do not.
 - Console and failed-launch cleanup keep connectivity failures outside their permanent attempt budgets. Failed-launch outage retries double from 30 seconds to one hour and keep their due time in the job journal.
+- Intentional notification occurrences older than 15 seconds are claimed silently when they arrive. They remain visible as cards.
 - Feeds are written atomically with user-only permissions. Readers reject symlinks, oversized files, and unknown versions.
 - The IPC endpoint is a Unix socket under `herdr/ipc` with a per-generation capability file. It has no TCP listener and allows only `ping`, `openView`, `openRun`, `openJob`, `subscribeRun`, and `steerRun`.
 - Mods reach pi only through the IPC client, started with Herdr's bounded `exec`. No path in this package writes text into a pi terminal's input.

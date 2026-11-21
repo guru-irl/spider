@@ -7,10 +7,11 @@ import { createHcClient, invokeCli as invokeHcCli, observeCoreIdentity } from "@
 import { invokeCli as invokeTransport } from "@spider/herdr/client/cli-transport";
 import { requireCoreAvailable } from "@spider/herdr/client/liveness";
 import type { ProcessProbe } from "@spider/herdr/sessions/lease";
-import { bootIdChanged, inspectIdLock, inspectReleasedIdLock } from "@spider/herdr/sessions/id-lock";
-import { launchHandoffPath } from "@spider/herdr/sessions/launch-handoff";
+import { bootIdChanged, cancelExitedIdLockHandoff, inspectIdLock, inspectReleasedIdLock } from "@spider/herdr/sessions/id-lock";
+import { canonicalSessionFile } from "@spider/herdr/sessions/registry";
+import { launchHandoffPath, removeLaunchHandoff } from "@spider/herdr/sessions/launch-handoff";
 import type { SessionId } from "@spider/herdr";
-import { launchExactSession } from "@spider/herdr/sessions/launcher";
+import { launchExactSession, provedNoStart } from "@spider/herdr/sessions/launcher";
 import { launchNotStarted } from "@spider/herdr/roam-placement";
 import type { IdLockObservation } from "@spider/herdr/sessions/id-lock";
 import type { ExactSessionLaunchPorts, ExactSessionLaunchRequest, LaunchEvidence, PiSpawnRequest, SessionLaunchResult } from "@spider/herdr/sessions/launcher";
@@ -188,6 +189,41 @@ export async function adoptedOwnerExited(input: {
   if (!first) return last === null;
   return last?.operationId === first.operationId && last.pendingOperationId === null && last.bootId === first.bootId &&
     last.identity.pid === first.identity.pid && last.identity.startIdentity === first.identity.startIdentity;
+}
+
+export interface PendingLaunchRecovery {
+  bootId(): Promise<string>;
+  probe(pid: number): Promise<ProcessProbe>;
+  hc?: LocalExactHc;
+  clock?: LaunchReconcilePorts["clock"];
+}
+
+/** Stop is a repair, not a retry: prove the terminal cannot adopt before releasing any ownership. */
+export async function settlePendingLaunch(input: {
+  root: string; sessionId: string; operationId: string; file: string;
+  journal: Journal; leases: ExactSessionLaunchPorts["leases"];
+  recovery: PendingLaunchRecovery & { hc: LocalExactHc; clock: LaunchReconcilePorts["clock"] };
+}): Promise<boolean> {
+  const { recovery } = input;
+  return cancelExitedIdLockHandoff(input.root, input.sessionId, input.operationId, {
+    bootId: recovery.bootId, probe: recovery.probe,
+    async reconcileAndRelease(lock) {
+      if (lock.pendingFile !== input.file || await canonicalSessionFile(input.file) !== input.file || !lock.pendingCoreId || input.journal.read(input.operationId).some(row => row.action === "ready-durable")) return false;
+      const lease = await input.leases.get(input.file);
+      if (lease && (lease.pid !== lock.identity.pid || lease.startIdentity !== lock.identity.startIdentity || lease.bootId !== lock.bootId)) return false;
+      const reconcile = createLaunchReconciler({ journal: input.journal, inspectLock: () => inspectIdLock(input.root, input.sessionId),
+        coreId: recovery.hc.coreId, bootId: recovery.bootId, terminals: recovery.hc.terminals, clock: recovery.clock });
+      const signal = new AbortController().signal, evidence = await reconcile(input.operationId, { signal });
+      if (!provedNoStart(evidence, input.operationId, lock.pendingCoreId, lock.bootId)) return false;
+      if (lease) await input.leases.release(input.file, lease.token, { mode: "cutover" });
+      await removeLaunchHandoff(input.root, input.operationId);
+      if (!input.journal.read(input.operationId).some(row => row.action === "exact-launch-settled"))
+        input.journal.record(input.operationId, "exact-launch-settled", { sessionId: input.sessionId, file: input.file });
+      input.journal.record(input.operationId, "done", { code: 1, reason: "launch-not-started", operationId: input.operationId,
+        home: null, epoch: null, repairCommand: null, value: null });
+      return true;
+    },
+  });
 }
 
 export type ExactLaunchResult = SessionLaunchResult | { kind: "adopted-exited"; operationId: string };

@@ -131,6 +131,39 @@ export async function listPendingIdLocks(root: string): Promise<Array<{ sessionI
   return pending;
 }
 
+/** Cancel only after the launcher exited and the caller verifies and releases the launch under the ownership mutex. */
+export async function cancelExitedIdLockHandoff(root: string, sessionId: string, operationId: string, input: {
+  bootId(): Promise<string>;
+  probe(pid: number): Promise<ProcessProbe>;
+  reconcileAndRelease(lock: IdLockObservation): Promise<boolean>;
+}): Promise<boolean> {
+  if (!sessionId || sessionId.includes('\0') || !operationIdValid(operationId)) throw new HerdrError('invalid-session-id-lock', 'Session and operation identities are required');
+  const stateRoot = resolve(root), directory = join(stateRoot, 'id-locks'), file = join(directory, `${hash(sessionId)}.json`);
+  const first = await inspectIdLock(stateRoot, sessionId);
+  if (!first || first.pendingOperationId !== operationId) return false;
+  const lockRoot = join(stateRoot, 'locks');
+  await privateDirectory(lockRoot); await checkPrivate(lockRoot, true);
+  const key = `session-id:${sessionId}`, lockDirectory = join(lockRoot, hash(key));
+  await privateDirectory(lockDirectory); await checkPrivate(lockDirectory, true);
+  return withProcessLock(stateRoot, key, async () => {
+    const current = await inspectIdLock(stateRoot, sessionId);
+    if (!current || current.pendingOperationId !== operationId || JSON.stringify(current) !== JSON.stringify(first)) return false;
+    const boot = await input.bootId();
+    if (!boot || !current.bootId) return false;
+    const exited = async () => {
+      if (bootIdChanged(current.bootId, boot)) return true;
+      const owner = await input.probe(current.identity.pid);
+      return owner.kind === 'absent' || owner.kind === 'live' && owner.startIdentity !== current.identity.startIdentity;
+    };
+    if (!await exited() || !await input.reconcileAndRelease(current)) return false;
+    // Adoption and other ID-lock writers use this same mutex. Keep the pending record
+    // until the handoff and file lease have both been released, so crashes can retry.
+    await checkPrivate(directory, true); await checkPrivate(file, false);
+    await unlink(file);
+    return true;
+  });
+}
+
 export async function claimIdLock(root: string, sessionId: string, identity: ProcessIdentity, probe: (pid: number) => Promise<ProcessProbe>, options: { bootId?: () => Promise<string>; handoff?: IdLockHandoff; exclusive?: boolean; recoverPending?: string } = {}): Promise<IdLockHandle> {
   if (typeof sessionId !== 'string' || !sessionId || sessionId.includes('\0') || !validIdentity(identity)) throw new HerdrError('invalid-session-id-lock', 'Session ID and process identity are required');
   const bootId = await (options.bootId ?? localBootId)().then(value => value.trim()).catch(() => '');

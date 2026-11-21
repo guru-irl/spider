@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { loadPublishedSpacesARecipe, loadSpacesAFiles, replaySpacesARecipe, type SpacesAVersion } from './spaces-a-fixture.js';
 import { createNotificationSound } from '../../assets/mods/spider/sound.js';
 import { notificationAgentPatches } from '../look/notification-patches.js';
@@ -55,6 +55,23 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     await a.refresh(); await b.refresh();
     expect([...a.calls, ...b.calls]).toEqual(['blocked']);
     await a.view.close(); await b.view.close();
+  });
+
+  it(`${version}: silences old reconnect batches and sounds a fresh occurrence`, async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = Date.UTC(2026, 0, 1); vi.setSystemTime(start);
+    const a = fixture(version);
+    try {
+      await a.ready();
+      a.state.errors = [{ source: 'sessions', message: 'offline' }]; await a.refresh();
+      vi.setSystemTime(start + 15 * 60_000); a.state.errors = [];
+      a.state.feeds[0].notifications.push({ ...notice('old-one', 'urgent'), createdAt: start + 1_000 }); await a.refresh();
+      a.state.feeds[0].notifications.push({ ...notice('old-two', 'attention'), createdAt: start + 2_000 }); await a.refresh();
+      expect(a.calls).toEqual([]);
+      a.state.feeds[0].notifications.push(notice('fresh', 'low')); await a.refresh(); await a.refresh();
+      expect(a.calls).toEqual(['done']);
+      expect((a.sharedState.get('spider.notifications.sounded') as any).observed.map((entry: any) => entry.token)).toEqual(expect.arrayContaining(['intentional:owner:old-one', 'intentional:owner:old-two', 'intentional:owner:fresh']));
+    } finally { await a.view.close(); vi.useRealTimers(); }
   });
 
   it(`${version}: baselines history, observes muted notices and sounds later low arrivals`, async () => {

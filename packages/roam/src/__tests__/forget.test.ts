@@ -389,7 +389,7 @@ it.each(["cli", "interactive"])("a null-epoch move created by the real %s entry 
     vi.stubEnv("PI_SUBAGENT_CHILD", "0");
     const command = createMoveCommand(request => moveSession(request, f.ports), () => f.ports.config);
     const notifications: string[] = [];
-    const result = await command("box-2.invalid", { mode: "tui", hasUI: true, ui: { notify: (message: string) => notifications.push(message) },
+    const result = await command("box-2.invalid", { mode: "tui", hasUI: true, ui: { notify: (message: string) => notifications.push(message), setStatus() {} },
       sessionManager: { getSessionId: () => "session-a", getSessionFile: () => f.file, getHeader: () => ({ id: "session-a" }) } } as unknown as ExtensionCommandContext);
     expect(notifications).toEqual(["Move started; keep the Mac awake until it finishes."]);
     expect(result.code).toBe(3); operationId = result.operationId;

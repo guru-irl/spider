@@ -441,6 +441,17 @@ The last menu item stops the item in that pane. It reads **Kill subagent**, **Ki
 
 Closing a viewer, console, or observer, or the tab that holds it, never cancels a job or a run. To stop a remote command, abort the call, let its timeout expire, or use `spider kill` with its job ID.
 
+## Remote core replacement
+
+A machine whose native status is `unreachable` with the exact reason
+`a different core answers there ("<core-id>")` has a replaced core. Its machine
+connection is unknown, not a disconnected transport. Plain `unreachable`
+without that reason still means disconnected. The roaming hub uses the same
+classification. Core replacement neither starts nor clears a hosting outage
+alert, and it never triggers move recovery. Pending hosting notifications
+pause while identity is unknown; delivered alerts remain until the machine
+is observed as connected again.
+
 ## Cross-machine panes
 
 The tab plus action, split actions, Go to → New terminal and agent creation actions choose a machine before starting a program. **This computer** is the local choice. The focused agent's machine is preferred when known. Unreachable machines remain visible but disabled. A pane-menu selection carries its original destination and machine choice into the next action; it cannot start the same program twice by reusing that selection.

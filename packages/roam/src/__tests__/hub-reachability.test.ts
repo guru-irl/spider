@@ -73,6 +73,11 @@ it.each([
 it("a replaced remote core neither starts nor advances an outage or recovers moves", async () => {
   const h = await observationFixture(), peer = h.f.config.peers[0];
   assignInitialHome(h.f.global.db, "session-1", BOX, HUB);
+  const { loadPeerState, savePeerState } = await import("../peer-state");
+  const saved = loadPeerState(h.f.global.db, BOX, h.f.config.limits.targetBatchBytes);
+  saved.pulled = true;
+  saved.observation = { machineId: BOX, observedAt: 1, connected: true, lastSyncAt: 1, cursors: [], failure: null };
+  savePeerState(h.f.global.db, BOX, saved);
   let now = 1_000_000, afterSync!: Parameters<hub.HubRuntimePorts["prepare"]>[0];
   const timers: Array<{ at: number; cancelled: boolean; fn(): void }> = [];
   const notices: string[] = [], clears: string[] = [], recoveries: string[] = [];
@@ -91,6 +96,11 @@ it("a replaced remote core neither starts nor advances an outage or recovers mov
   expect(status()).toBeUndefined();
   expect(timers.filter(t => !t.cancelled)).toEqual([]);
   expect(notices).toEqual([]);
+  h.setState("connected");
+  expect(await h.observe(peer, [])).toMatchObject({ reachability: "reachable", syncVerified: true });
+  await observe();
+  expect(timers.filter(t => !t.cancelled)).toEqual([]);
+  expect(recoveries).toEqual([]);
   h.setState("unreachable"); await observe();
   const outage = status();
   expect(timers.filter(t => !t.cancelled)).toHaveLength(1);

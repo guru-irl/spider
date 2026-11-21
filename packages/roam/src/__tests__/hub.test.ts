@@ -64,7 +64,7 @@ function fixture() {
     async probe() { return { kind: "live" as const, startIdentity: "fixture-process" }; },
     placement: { async reconcile(rows: readonly typeof ready[]) { placements.push([...rows]); if (failPlacement) throw new Error("unknown launch outcome"); return { pending }; } },
     async observe(_peer: unknown, results: readonly { code: number }[]) {
-      return { reachability: nativeState === undefined ? reachability : parseMachineReachability(nativeState, results.every(row => row.code === 0)), syncVerified: syncVerified && results.every(row => row.code === 0), readiness, suspensions: suspended };
+      return { reachability: nativeState === undefined ? reachability : parseMachineReachability(nativeState), syncVerified: syncVerified && results.every(row => row.code === 0), readiness, suspensions: suspended };
     },
     notices: {
       async publish(notice: Notice) { publishCalls.push(notice.id); if (!notified.has(notice.id)) { notified.add(notice.id); notices.push(notice); for (const waiter of noticeWaiters.splice(0)) waiter(); } },
@@ -377,12 +377,12 @@ it.each(["disconnected", "unreachable", "stopped"])("native %s alerts after ten 
 }, 5000);
 
 it.each([
-  ["disconnected", false, "unreachable"], ["unreachable", true, "unreachable"], ["stopped", false, "unreachable"],
-  ["connected", true, "reachable"], ["connected", false, "reachable"],
-  ["needs_login", true, "unknown"], ["needs-login", true, "unknown"], ["connecting", true, "unknown"],
-  ["identity-mismatch", true, "unknown"], [null, true, "unknown"], [{ state: "connected" }, true, "unknown"],
-] as const)("parses native state %j with sync proof %s as %s", (state, synced, expected) => {
-  expect(parseMachineReachability(state, synced)).toBe(expected);
+  ["disconnected", undefined, "unreachable"], ["unreachable", undefined, "unreachable"], ["stopped", undefined, "unreachable"],
+  ["connected", undefined, "reachable"], ["connected", 'a different core answers there ("new-core")', "reachable"],
+  ["needs_login", undefined, "unknown"], ["needs-login", undefined, "unknown"], ["connecting", undefined, "unknown"],
+  ["identity-mismatch", undefined, "unknown"], [null, undefined, "unknown"], [{ state: "connected" }, undefined, "unknown"],
+] as const)("parses native state %j with reason %j as %s", (state, why, expected) => {
+  expect(parseMachineReachability(state, why)).toBe(expected);
 });
 
 it("link-only outage coalesces hosting notices across retries and restart", async () => {

@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 
 export type ConnectionState = 'connected' | 'disconnected' | 'needs-login' | 'unknown';
-export interface NativeMachineState { state?: unknown; why?: unknown }
+export interface NativeMachineState { name?: string | null; state?: unknown; why?: unknown }
 export interface MachineRecord {
   name: string; state: string; id?: string; target?: string; via?: boolean; session?: string; temporary?: boolean; why?: string;
 }

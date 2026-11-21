@@ -65,7 +65,7 @@ Background model calls default to `github-copilot/gpt-6-luna` with `low` thinkin
 
 `registerOrganism` attaches three hooks. `pi.on` chains handlers, so these hooks run alongside any other handlers.
 
-- `session_start` starts queued skill review asynchronously in live top-level sessions.
+- `session_start` starts queued skill review and resumes deferred drains asynchronously in live top-level sessions.
 - `session_before_compact` starts a best-effort drain with `reason: "before_compact"`. It does not wait for the drain, and compaction goes ahead regardless. After the drain completes, it starts queued reviews. The handler never returns `false`, never calls a cancel API, and swallows every error, so it cannot block or alter compaction.
 - `session_shutdown` cancels reviews in progress, then awaits a drain with `reason: "shutdown"`, then runs a curator pass if the minimum interval has passed. It swallows errors so that shutdown never breaks.
 
@@ -87,7 +87,7 @@ flowchart TD
 
 ### Passes
 
-The worker runs the passes in order. Each pass runs only when its toggle in `OrganismConfig.passes` is on. If model resolution fails, the drain is recorded as failed, not as a successful empty result. Each pass runs inside its own try/catch. If a pass throws, the worker records an error and continues with the remaining passes, and it reports a failed or partial outcome.
+The worker runs the passes in order. Each pass runs only when its toggle in `OrganismConfig.passes` is on. If model resolution fails, the drain is recorded as failed, not as a successful empty result. A non-connectivity error does not stop the remaining passes. A provider connectivity error stops later model calls, preserves the captured input and unfinished passes, and records the failure. Local insights can still run. A live session retries after five minutes, doubling the delay to at most six hours. Identical pending inputs are coalesced, and a database lease prevents simultaneous retries. Repeated lifecycle events update a count capped at 100 instead of appending the same failure receipt. The first failure for each affected session remains visible.
 
 1. **runMemoryTodo.** Summarizes subagent runs and their run events, and asks the aux model for durable memory candidates and follow-up todo candidates. Every memory candidate goes through the capture guardrail. Emits no skills.
 2. **todoMemory.** Turns completed todos into durable memory candidates. If no todos are done, it returns early without a model call. Emits no skills or todos.

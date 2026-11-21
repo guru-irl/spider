@@ -87,7 +87,8 @@ test('remote IPC failures name the destination and do not conceal a separate loc
   expect(await f.ipc!.openJob(id)).toMatchObject({ ok: false, code: 'not-found' });
   await f.h.scenario({ steps: [{ argvPrefix: ['get', 'remote.invalid/t1'], stderr: failure, exitCode: 5 }] });
   await f.ipc!.openJob(id);
-  expect(f.notices).toHaveLength(3);
+  // Terminal metadata alone cannot prove that the remote machine recovered.
+  expect(f.notices).toHaveLength(2);
 });
 
 

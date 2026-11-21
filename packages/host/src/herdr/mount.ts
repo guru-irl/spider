@@ -51,7 +51,8 @@ import { regenerateGlobalHerdrTemplates, type TemplatePorts } from '@spider/herd
 import { snapshot } from '@spider/herdr/setup/backup';
 import { HerdrError } from '@spider/herdr/client/parse';
 import { trackAvailability } from '@spider/herdr/client/availability';
-import { HERDR_NOTICES, VIEW_ON_MAC_MESSAGE, herdrErrorNotice, herdrErrorNoticeKey, remoteUnavailableNotice, inactiveHerdrNotice, type InactiveReason } from '@spider/herdr/notices';
+import { HERDR_NOTICES, VIEW_ON_MAC_MESSAGE, herdrErrorNotice, remoteUnavailableNotice, inactiveHerdrNotice, type InactiveReason } from '@spider/herdr/notices';
+import { shouldNotifyHerdrError } from './notice-deduper.js';
 import type { HcClient, HerdrConfig, Owner, Disposable, AuxiliaryPanes, RunId, JobId, JobRecord, MachineName, TerminalAddress, RemoteExecutionPort, ExecutionEnvironmentPolicy, SessionFeed, SteerReply, TerminalIdentity, CoreIdentity } from '@spider/herdr';
 import { createHerdrDataSource } from './data-source.js';
 import { createRunTranscriptSource } from './run-transcript.js';
@@ -205,17 +206,9 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
     const messagesBySession = notice.errorNoticeTimes ??= new Map<string, Map<string, number>>();
     const messages = messagesBySession.get(session) ?? new Map<string, number>();
     messagesBySession.set(session, messages);
-    const key = herdrErrorNoticeKey(error), now = Date.now(), last = messages.get(key);
-    if (error instanceof HerdrError && error.code === 'unavailable') {
-      const outages = notice.outages ??= new Map<string, Set<string>>();
-      const active = outages.get(session) ?? new Set<string>(); outages.set(session, active);
-      const scope = error.availability?.key ?? 'unavailable';
-      if (active.has(scope)) return;
-      active.add(scope);
-    } else {
-      if (last !== undefined && now >= last && now - last < 60_000) return;
-      messages.set(key, now);
-    }
+    const outages = notice.outages ??= new Map<string, Set<string>>();
+    const active = outages.get(session) ?? new Set<string>(); outages.set(session, active);
+    if (!shouldNotifyHerdrError(error, active, messages, Date.now())) return;
     const plain = herdrErrorNotice(error);
     if (ctx.hasUI && ctx.ui?.notify) ctx.ui.notify(plain, 'warning');
     else process.stderr.write(plain + '\n');

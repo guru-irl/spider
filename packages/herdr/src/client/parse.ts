@@ -4,7 +4,7 @@ import { isAbsolute, join, win32 } from 'node:path';
 import { readFileSync, statSync } from 'node:fs';
 import { configSocket } from './socket-config.js';
 import type { CoreIdentity, CoreId, TerminalAddress, TerminalSummary, ProgramState, ProgramStatus } from '../contracts.js';
-export interface Availability { key: string; machine?: string }
+export interface Availability { key: string; machine?: string; aliases?: readonly string[] }
 export class HerdrError extends Error {
   constructor(public readonly code: string, message: string, public readonly details?: unknown, public readonly availability?: Availability) { super(message); this.name = 'HerdrError'; }
 }

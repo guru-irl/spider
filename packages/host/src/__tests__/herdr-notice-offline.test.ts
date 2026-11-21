@@ -7,11 +7,17 @@ import { herdrErrorNotice } from '../../../herdr/src/notices.js';
 import { shouldNotifyHerdrError } from '../herdr/notice-deduper.js';
 import type { MachineName, TerminalAddress } from '../../../herdr/src/contracts.js';
 
-const boundary = vi.hoisted(() => ({ modes: {} as Record<string, string> }));
+const boundary = vi.hoisted(() => ({ modes: {} as Record<string, string>, inventoryDown: false }));
 vi.mock('../../../herdr/src/client/liveness.js', () => ({ requireCoreAvailable: async () => {} }));
 vi.mock('../../../herdr/src/client/cli-transport.js', () => ({ invokeCli: async (_binary: string, args: string[]) => {
-  if (args[0] === 'machine') return { machines: [1, 2].map(n => ({ id: `remote-core-${n}`, name: `box-${n}.invalid`, host: `box-${n}.invalid`, target: `box-${n}.invalid`, state: 'connected', session: 'fixture' })) };
-  if (args[0] === 'get') return { address: args[1], labels: {}, parent: null, state: 'live', status: null, exit_code: null, finished_ms: null, reason: null, signal: null };
+  if (args[0] === 'machine') {
+    if (boundary.inventoryDown) throw new HerdrError('core-unavailable', 'Machine inventory unavailable');
+    return { machines: [1, 2].map(n => ({ id: `remote-core-${n}`, name: `box-${n}.invalid`, host: `box-${n}.invalid`, target: `box-${n}.invalid`, state: 'connected', session: 'fixture' })) };
+  }
+  if (args[0] === 'get') {
+    if (boundary.modes[args[1].split('/')[0]] === 'get-timeout') throw new HerdrError('cli-timeout', 'Destination timed out');
+    return { address: args[1], labels: {}, parent: null, state: 'live', status: null, exit_code: null, finished_ms: null, reason: null, signal: null };
+  }
   if (args[0] === 'file' && args[1] === 'read') {
     const mode = boundary.modes[args[args.indexOf('--on') + 1]];
     if (mode === 'timeout') throw new HerdrError('cli-timeout', 'CLI request exceeded its deadline');
@@ -21,7 +27,7 @@ vi.mock('../../../herdr/src/client/cli-transport.js', () => ({ invokeCli: async 
   }
   throw new Error('Unexpected request');
 } }));
-afterEach(() => { boundary.modes = {}; vi.useRealTimers(); });
+afterEach(() => { boundary.modes = {}; boundary.inventoryDown = false; vi.useRealTimers(); });
 
 type Session = { outages: Set<string>; messages: Map<string, number>; notices: string[] };
 const session = (): Session => ({ outages: new Set(), messages: new Map(), notices: [] });
@@ -68,11 +74,45 @@ it('latches mixed failures independently until a real remote read succeeds in th
   } finally { await Promise.all(clients.map(hc => hc.dispose())); }
 });
 
+it('shares a machine outage across its name and core identifier', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+  const s = session(), hc = client(s);
+  try {
+    boundary.modes['remote-core-1'] = 'get-timeout';
+    const first = await hc.get('remote-core-1/t1' as TerminalAddress).then(() => null, error => error);
+    expect(first).toMatchObject({ code: 'cli-timeout', availability: { machine: 'box-1.invalid' } }); report(s, first);
+    boundary.modes['box-1.invalid'] = 'unavailable';
+    const second = await hc.fileRead('box-1.invalid' as MachineName, '/home/fixture/input').then(() => null, error => error);
+    report(s, second); expect(s.notices).toHaveLength(1);
+    boundary.modes['box-1.invalid'] = 'success'; await hc.fileRead('box-1.invalid' as MachineName, '/home/fixture/input');
+    const third = await hc.get('remote-core-1/t1' as TerminalAddress).then(() => null, error => error);
+    report(s, third); expect(s.notices).toHaveLength(2);
+    expect(s.notices.every(text => text.includes('box-1.invalid'))).toBe(true);
+  } finally { await hc.dispose(); }
+});
+
+it.each([['box-1.invalid', 'remote-core-1'], ['remote-core-1', 'box-1.invalid']])('merges an unresolved %s outage with %s once inventory returns', async (firstName, secondName) => {
+  vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+  const s = session(), hc = client(s);
+  try {
+    boundary.inventoryDown = true; boundary.modes[firstName] = 'get-timeout';
+    report(s, await hc.get(`${firstName}/t1` as TerminalAddress).then(() => null, error => error));
+    boundary.inventoryDown = false; boundary.modes[secondName] = 'get-timeout';
+    report(s, await hc.get(`${secondName}/t1` as TerminalAddress).then(() => null, error => error));
+    expect(s.notices).toHaveLength(1);
+    await hc.fileRead('box-1.invalid' as MachineName, '/home/fixture/input');
+    report(s, await hc.get(`${secondName}/t1` as TerminalAddress).then(() => null, error => error));
+    expect(s.notices).toHaveLength(2);
+  } finally { await hc.dispose(); }
+});
+
 it.each([
   new HerdrError('cli-exit', 'CLI exited', { stderr: 'authentication failed' }),
   new HerdrError('cli-exit', 'CLI exited', { stderr: 'unrecognized argument --wrong' }),
   new HerdrError('invalid-reply', 'Malformed JSON'),
   new HerdrError('caller-mismatch', 'Wrong terminal identity'),
+  new HerdrError('unavailable', 'Authentication failed while offline'),
+  new HerdrError('unavailable', 'Permission denied on remote machine', undefined, { key: 'machine:box-1.invalid', machine: 'box-1.invalid' }),
 ])('continues reporting non-connectivity failures after the ordinary throttle: $code', error => {
   const s = session(), start = Date.parse('2026-01-01T00:00:00Z');
   vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(start); report(s, error); report(s, error);

@@ -14,14 +14,14 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
-async function fixture(initial: 'offline' | 'invalid' | 'foreign') {
+async function fixture(initial: 'offline' | 'invalid' | 'foreign' | 'auth') {
   const scratch = join(process.cwd(), '.spider/scratch/failed-cleanup'); await mkdir(scratch, { recursive: true });
   const root = await mkdtemp(join(scratch, 'case-')); roots.push(root);
   const owner = { sessionId: 'session-one', generation: 'generation-one', terminal: { coreId: 'local-core', terminalId: 'owner', address: 'owner', socket: join(root, 'fixture.sock'), sessionNamespace: 'fixture' }, cwd: root, sessionFile: null, name: null } as Owner;
   const machine = 'box-1.invalid' as MachineName, address = 'box-1.invalid/t1' as TerminalAddress, id = 'job-one' as JobId;
   let terminal: TerminalSummary | null = { address, parent: null, state: 'live', status: null, exitCode: null, reason: null, signal: null, finishedAt: null,
     labels: { 'spider.job': id, 'spider.session': owner.sessionId, 'spider.kind': 'exec', 'spider.machine': machine, 'spider.owner-core': owner.terminal.coreId, 'spider.owner-terminal': owner.terminal.terminalId } };
-  let mode: 'offline' | 'invalid' | 'foreign' | 'online' = initial, removals = 0, kills = 0, markerWrites = 0, lookups = 0, probeOnline = false;
+  let mode: 'offline' | 'invalid' | 'foreign' | 'auth' | 'online' = initial, removals = 0, kills = 0, markerWrites = 0, lookups = 0, probeOnline = false;
   const failures: unknown[] = [], available = new Set<(machine: MachineName) => void>();
   const hc: HcClient = {
     identity: async () => owner.terminal, caller: async () => owner.terminal,
@@ -31,6 +31,7 @@ async function fixture(initial: 'offline' | 'invalid' | 'foreign') {
     get: async () => {
       lookups++;
       if (mode === 'offline') throw new HerdrError('unavailable', 'Destination unavailable');
+      if (mode === 'auth') throw new HerdrError('unavailable', 'Authentication failed while offline');
       if (mode === 'invalid') throw new HerdrError('invalid-reply', 'Malformed terminal reply while offline');
       if (!terminal) throw new HerdrError('not_found', 'Terminal absent');
       if (mode === 'foreign') return { ...terminal, labels: { ...terminal.labels, 'spider.job': 'foreign-job' } };
@@ -128,6 +129,17 @@ it('still exhausts the three-attempt budget for a malformed terminal reply', asy
   }
   expect((await f.store.read()).jobs[0].failedTerminalCleanup).toMatchObject({ attempts: 3, exhausted: true });
   f.setMode('online'); vi.setSystemTime(Date.now() + 3_600_000); await retry(f);
+  expect(f.remaining()).toBe(true); expect(f.removals()).toBe(0);
+});
+
+it('still exhausts the three-attempt budget for an authentication failure', async () => {
+  fakeClock(); const f = await fixture('auth');
+  for (let attempt = 1; attempt < 3; attempt++) {
+    const pending = (await f.store.read()).jobs[0].failedTerminalCleanup!;
+    expect(pending.attempts).toBe(attempt);
+    vi.setSystemTime(pending.nextAt); await retry(f);
+  }
+  expect((await f.store.read()).jobs[0].failedTerminalCleanup).toMatchObject({ attempts: 3, exhausted: true });
   expect(f.remaining()).toBe(true); expect(f.removals()).toBe(0);
 });
 

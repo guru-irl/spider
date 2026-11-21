@@ -75,6 +75,13 @@ export async function processContainsCaller(pid: unknown, env: Readonly<NodeJS.P
 export function createHcClient(options: HcClientOptions, available?: (key: string) => void): HcClient & Disposable {
   guardTestSocket(options);
   const env = Object.freeze({ ...options.env, HC_SOCKET: selectedSocket(options.env) });
+  const machineListeners = new Set<(machine: MachineName) => void>();
+  const machineAvailable = (machine: MachineName) => {
+    available?.(`machine:${machine}`);
+    for (const listener of machineListeners) {
+      try { listener(machine); } catch { /* Recovery observers do not own the completed operation. */ }
+    }
+  };
   const call = (argv: readonly string[], input?: Buffer, callOptions?: HcCallOptions) => {
     const separator = argv.indexOf('--'), flags = separator < 0 ? argv : argv.slice(0, separator);
     const on = flags.indexOf('--on');
@@ -196,8 +203,9 @@ export function createHcClient(options: HcClientOptions, available?: (key: strin
         throw new HerdrError('invalid-labels', 'Expected canonical Herdr labels with valid values');
       await call(['label', address, ...entries.map(([key, value]) => `${key}=${value ?? ''}`), '--json']);
     },
-    fileRead: async (on, path) => { await machine(on); const reply = object(await call(['file', 'read', '--json', '--on', on, path])); if (typeof reply.text !== 'string') throw new HerdrError('invalid-reply', 'Expected text file'); available?.(`machine:${on}`); return Buffer.from(reply.text); },
-    fileWrite: async (on, path, bytes, callOptions) => { await machine(on, callOptions); await call(['file', 'write', '--json', '--on', on, path], bytes, callOptions); available?.(`machine:${on}`); },
+    fileRead: async (on, path) => { await machine(on); const reply = object(await call(['file', 'read', '--json', '--on', on, path])); if (typeof reply.text !== 'string') throw new HerdrError('invalid-reply', 'Expected text file'); machineAvailable(on); return Buffer.from(reply.text); },
+    fileWrite: async (on, path, bytes, callOptions) => { await machine(on, callOptions); await call(['file', 'write', '--json', '--on', on, path], bytes, callOptions); machineAvailable(on); },
+    onMachineAvailable: listener => { machineListeners.add(listener); return () => { machineListeners.delete(listener); }; },
     events: () => {
       if (disposal) throw new HerdrError('disposed', 'Hc client disposed');
       const source = eventStream ??= createHcEventStream({ ...options, env });
@@ -233,6 +241,6 @@ export function createHcClient(options: HcClientOptions, available?: (key: strin
         },
       };
     },
-    dispose: () => disposal ??= Promise.resolve(eventStream?.dispose()),
+    dispose: () => disposal ??= Promise.resolve(eventStream?.dispose()).then(() => { machineListeners.clear(); }),
   };
 }

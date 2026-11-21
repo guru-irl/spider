@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { HcClient, HcEvent, MachineName, Owner, RunId, TerminalAddress, TerminalSummary } from '../contracts.js';
 import { closeAgentConsoles, registerAgentConsoleLifecycle } from '../remote/console.js';
+import { HerdrError } from '../client/parse.js';
 
 const owner = (session: string): Owner => ({ sessionId: session, generation: `generation-${session}`, terminal: {
   coreId: 'core', terminalId: 'parent', address: 'parent', socket: '/fixture/core.sock', sessionNamespace: 'fixture',
@@ -269,10 +270,54 @@ it('counts one failed liveness check only once when duplicate events arrive conc
   expect(f.terminals.has(address)).toBe(false);
 });
 
-it('bounds retries for one console even if the machine repeatedly reconnects', async () => {
+it('keeps console cleanup through repeated connectivity failures and removes it after recovery', async () => {
+  fakeClock(); const f = makeFixture(); await f.start();
+  const machine = 'box-1.invalid', address = f.create(A, 'offline', machine, 'run');
+  f.online(machine, true);
+  let offline = true;
+  f.getError(value => value === address && offline ? new HerdrError('cli-timeout', 'Destination timed out') : undefined);
+  f.finish(A, 'run'); await settle();
+  for (let i = 0; i < 30; i++) {
+    f.online(machine, false); f.signalInventory(); await settle();
+    f.online(machine, true); f.signalInventory(); await vi.advanceTimersByTimeAsync(60_000);
+  }
+  expect(f.attempts.get(address)).toBeGreaterThan(24);
+  expect(f.terminals.has(address)).toBe(true);
+  expect(f.quiet.filter(value => (value as { code?: string }).code === 'console-cleanup-exhausted')).toHaveLength(0);
+  expect(f.quiet).toHaveLength(1);
+  offline = false;
+  f.online(machine, false); f.signalInventory(); await settle();
+  f.online(machine, true); f.signalInventory(); await settle();
+  expect(f.terminals.has(address)).toBe(false);
+  expect(f.errors).toEqual([]);
+});
+
+it('keeps cleanup after repeated disconnected inventory results', async () => {
+  fakeClock(); const f = makeFixture(); await f.start();
+  const machine = 'box-1.invalid', address = f.create(A, 'disconnected', machine, 'run');
+  let offline = true; f.online(machine, false);
+  f.onGet(async value => { if (value === address && offline) f.online(machine, false); });
+  f.finish(A, 'run'); await settle();
+  for (let i = 0; i < 30; i++) {
+    f.online(machine, false); f.signalInventory(); await settle();
+    f.online(machine, true); f.signalInventory(); await settle();
+  }
+  expect(f.attempts.get(address)).toBeGreaterThan(24);
+  expect(f.terminals.has(address)).toBe(true);
+  expect(f.quiet.filter(value => (value as { code?: string }).code === 'console-cleanup-exhausted')).toHaveLength(0);
+  expect(f.quiet).toHaveLength(1);
+  offline = false; f.online(machine, false); f.signalInventory(); await settle();
+  f.online(machine, true); f.signalInventory(); await settle();
+  expect(f.terminals.has(address)).toBe(false);
+});
+
+it.each([
+  ['generic failure', new Error('permanent cleanup failure')],
+  ['identity mismatch', new HerdrError('caller-mismatch', 'Wrong terminal identity while offline')],
+])('bounds retries for one console after a %s even if the machine repeatedly reconnects', async (_kind, error) => {
   fakeClock(); const f = makeFixture(); await f.start();
   const address = f.create(A, 'exhausted', 'alpha.invalid', 'run');
-  const error = new Error('permanent cleanup failure'); f.getError(value => value === address ? error : undefined);
+  f.getError(value => value === address ? error : undefined);
   f.finish(A, 'run'); await settle();
   for (let i = 0; i < 30; i++) {
     f.online('alpha.invalid', false); f.signalInventory(); await settle();

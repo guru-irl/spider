@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 const LIFETIME_MS = 7 * 86400000;
+const SOUND_RECENCY_MS = 15000;
 
 /** The built-in Herdr sound for one intentional occurrence. */
 export function notificationSound(urgency) { return urgency === 'low' ? 'done' : 'blocked'; }
@@ -20,7 +21,7 @@ export function observeNotificationSounds(notices, previous, enabled, now, mount
       || !['attention', 'urgent', 'low'].includes(notice.urgency) || !Number.isFinite(notice.createdAt)
       || notice.createdAt > now || now - notice.createdAt >= LIFETIME_MS || seen.has(notice.key)) continue;
     seen.set(notice.key, notice.createdAt);
-    if (valid && enabled && notice.createdAt >= baselineAt && notice.createdAt >= mountedAt) sounds.push(notificationSound(notice.urgency));
+    if (valid && enabled && notice.createdAt >= baselineAt && notice.createdAt >= mountedAt && now - notice.createdAt <= SOUND_RECENCY_MS) sounds.push(notificationSound(notice.urgency));
   }
   return { state: { baselineAt, observed: [...seen].map(([token, createdAt]) => ({ token, createdAt })) }, sounds };
 }

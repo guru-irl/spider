@@ -46,13 +46,36 @@ describe('intentional notification sounds', () => {
     expect(observeNotificationSounds([item('new', 'low', NOW + 4)], muted.state, true, NOW + 5).sounds).toEqual(['done']);
   });
 
-  it('retains observed tokens while feeds are absent and sounds delayed new occurrences', () => {
+  it('retains observed tokens while feeds are absent and claims delayed occurrences silently', () => {
     const baseline = observeNotificationSounds([], null, true, NOW);
     const arrived = observeNotificationSounds([item('one', 'attention', NOW + 1)], baseline.state, true, NOW + 2);
     const missing = observeNotificationSounds([], arrived.state, true, NOW + DAY);
     expect(missing.state.observed).toContainEqual({ token: 'intentional:owner:one', createdAt: NOW + 1 });
     const returned = observeNotificationSounds([item('one', 'attention', NOW + 1), item('delayed', 'urgent', NOW + 10)], missing.state, true, NOW + DAY + 1);
-    expect(returned.sounds).toEqual(['blocked']);
+    expect(returned.sounds).toEqual([]);
+    expect(returned.state.observed).toContainEqual({ token: 'intentional:owner:delayed', createdAt: NOW + 10 });
+  });
+
+  it('claims delayed reconnect batches silently but sounds fresh intentional notices', () => {
+    const baseline = observeNotificationSounds([], null, true, NOW);
+    const reconnectedAt = NOW + 60_000;
+    const first = observeNotificationSounds([item('delayed-one', 'urgent', NOW + 1_000)], baseline.state, true, reconnectedAt);
+    expect(first.sounds).toEqual([]);
+    const second = observeNotificationSounds([item('delayed-two', 'attention', NOW + 2_000)], first.state, true, reconnectedAt + 1_000);
+    expect(second.sounds).toEqual([]);
+    expect(second.state.observed.map(entry => entry.token)).toEqual(expect.arrayContaining(['intentional:owner:delayed-one', 'intentional:owner:delayed-two']));
+    const fresh = observeNotificationSounds([item('fresh', 'low', reconnectedAt + 1_000)], second.state, true, reconnectedAt + 2_000);
+    expect(fresh.sounds).toEqual(['done']);
+    expect(observeNotificationSounds([item('delayed-two', 'attention', NOW + 2_000)], fresh.state, true, reconnectedAt + 3_000).sounds).toEqual([]);
+  });
+
+  it('sounds arrivals at the 15-second boundary and silently claims older ones', () => {
+    const baseline = observeNotificationSounds([], null, true, NOW);
+    const result = observeNotificationSounds([
+      item('within-window', 'low', NOW + 1), item('beyond-window', 'urgent', NOW),
+    ], baseline.state, true, NOW + 15_001);
+    expect(result.sounds).toEqual(['done']);
+    expect(result.state.observed).toHaveLength(2);
   });
 
   it('does not sound old delayed history and expires claims after seven days', () => {

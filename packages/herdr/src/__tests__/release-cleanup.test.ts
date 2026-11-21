@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { createJobStore, parseJobJournal } from '../jobs/store.js';
 import { createJobMonitor } from '../jobs/monitor.js';
 import { createCleanupSweep } from '../jobs/cleanup.js';
+import { HerdrError } from '../client/parse.js';
 import type { RunId } from '../contracts.js';
 import { bounded, cleanup, deferred, monitorFixture, on, program } from './herdr-monitor-fixture.js';
 
@@ -55,7 +56,7 @@ test('does not signal a different terminal during failed-launch cleanup', async 
     if (kills === 1) {
       const terminal = h.terminals.get(address)!;
       h.terminals.set(address, { ...terminal, labels: { ...terminal.labels, 'spider.job': 'foreign-job' } });
-      throw Object.assign(new Error('Kill reply lost'), { code: 'cli-timeout' });
+      throw new HerdrError('cli-timeout', 'Kill reply lost');
     }
   };
   h.hc.rm = async () => { removals++; };
@@ -72,7 +73,7 @@ test('does not remove a terminal whose identity changes after the follow-up sign
   const h = await failedLaunchFixture(), kill = h.hc.kill;
   let kills = 0, removals = 0;
   h.hc.kill = async (address, options) => {
-    if (++kills === 1) throw Object.assign(new Error('Kill reply lost'), { code: 'cli-timeout' });
+    if (++kills === 1) throw new HerdrError('cli-timeout', 'Kill reply lost');
     await kill(address, options);
     const terminal = h.terminals.get(address)!;
     h.terminals.set(address, { ...terminal, labels: { ...terminal.labels, 'spider.job': 'foreign-job' } });
@@ -94,9 +95,9 @@ test('a lost removal reply is not confirmation and is recovered after restart', 
   let removals = 0;
   h.options.recordCleanupError = error => { errors.push(String(error)); };
   h.hc.rm = async (address, options) => {
-    if (++removals === 1) throw Object.assign(new Error('First removal reply lost'), { code: 'cli-timeout' });
+    if (++removals === 1) throw new HerdrError('cli-timeout', 'First removal reply lost');
     await remove(address, options);
-    throw Object.assign(new Error('Second removal reply lost'), { code: 'cli-timeout' });
+    throw new HerdrError('cli-timeout', 'Second removal reply lost');
   };
   const jobs = h.monitor();
   await expect(jobs.start(h.prepare, h.owner, on, {})).rejects.toMatchObject({ code: 'hc-error' });
@@ -121,11 +122,11 @@ test('a lost removal reply is not confirmation and is recovered after restart', 
   expect(h.launches()).toBe(1);
 });
 
-test('a failed cleanup stops after bounded attempts even across a restart', async () => {
+test('a cleanup with invalid replies stops after bounded attempts across a restart', async () => {
   const h = await failedLaunchFixture(), errors: string[] = [];
   let kills = 0;
   h.options.recordCleanupError = error => { errors.push(String(error)); };
-  h.hc.kill = async () => { kills++; throw Object.assign(new Error('Core unavailable'), { code: 'cli-timeout' }); };
+  h.hc.kill = async () => { kills++; throw new HerdrError('invalid-reply', 'Malformed terminal reply'); };
   const jobs = h.monitor();
   await expect(jobs.start(h.prepare, h.owner, on, {})).rejects.toMatchObject({ code: 'hc-error' });
   await expect.poll(() => errors.length, { timeout: 1000, interval: 20 }).toBe(2);
@@ -152,7 +153,7 @@ test('a slow follow-up does not block a different launch', async () => {
   const h = await failedLaunchFixture(), kill = h.hc.kill, blocked = deferred();
   let kills = 0;
   h.hc.kill = async (address, options) => {
-    if (++kills === 1) throw Object.assign(new Error('Kill reply lost'), { code: 'cli-timeout' });
+    if (++kills === 1) throw new HerdrError('cli-timeout', 'Kill reply lost');
     await blocked.promise;
     await kill(address, options);
   };
@@ -171,7 +172,7 @@ test('shutdown interrupts a hung follow-up and the next activation resumes it', 
   const h = await failedLaunchFixture(), kill = h.hc.kill;
   let kills = 0;
   h.hc.kill = async (_address, options) => {
-    if (++kills === 1) throw Object.assign(new Error('Kill reply lost'), { code: 'cli-timeout' });
+    if (++kills === 1) throw new HerdrError('cli-timeout', 'Kill reply lost');
     return new Promise<void>((_resolve, reject) => {
       options?.signal?.addEventListener('abort', () => reject(new Error('Call interrupted')), { once: true });
     });
@@ -195,8 +196,8 @@ test('interrupted cleanup attempts count toward the limit across restarts', asyn
   const h = await failedLaunchFixture();
   let kills = 0;
   h.hc.kill = async (_address, options) => {
-    if (++kills === 1) throw Object.assign(new Error('Kill reply lost'), { code: 'cli-timeout' });
-    if (kills > 4) throw Object.assign(new Error('Unexpected extra cleanup'), { code: 'cli-timeout' });
+    if (++kills === 1) throw new HerdrError('cli-timeout', 'Kill reply lost');
+    if (kills > 4) throw new HerdrError('cli-timeout', 'Unexpected extra cleanup');
     return new Promise<void>((_resolve, reject) => {
       options?.signal?.addEventListener('abort', () => reject(new Error('Call interrupted')), { once: true });
     });
@@ -221,7 +222,7 @@ test('confirms a removal interrupted during the last attempt after restart', asy
   let kills = 0;
   h.options.recordCleanupError = error => { errors.push(String(error)); };
   h.hc.kill = async (address, options) => {
-    if (++kills <= 3) throw Object.assign(new Error('Kill reply lost'), { code: 'cli-timeout' });
+    if (++kills <= 3) throw new HerdrError('invalid-reply', 'Malformed kill reply');
     await kill(address, options);
   };
   h.hc.rm = async (address, options) => {
@@ -252,7 +253,7 @@ test('confirms a removal interrupted during the last attempt after restart', asy
 
 test('rejects invalid failed-terminal retry states in the journal', async () => {
   const h = await failedLaunchFixture();
-  h.hc.kill = async () => { throw Object.assign(new Error('Kill reply lost'), { code: 'cli-timeout' }); };
+  h.hc.kill = async () => { throw new HerdrError('cli-timeout', 'Kill reply lost'); };
   const jobs = h.monitor();
   await expect(jobs.start(h.prepare, h.owner, on, {})).rejects.toMatchObject({ code: 'hc-error' });
   await jobs.shutdown('reload');
@@ -267,7 +268,7 @@ test('a parent resumes a failed child launch cleanup after its writer exits', as
   const h = await failedLaunchFixture(), kill = h.hc.kill;
   let kills = 0;
   h.hc.kill = async (address, options) => {
-    if (++kills === 1) throw Object.assign(new Error('Kill reply lost'), { code: 'cli-timeout' });
+    if (++kills === 1) throw new HerdrError('cli-timeout', 'Kill reply lost');
     await kill(address, options);
   };
   const child = { id: 'run-one' as RunId, pid: process.pid, startIdentity: 'fixture' };

@@ -2,11 +2,16 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 
 export function machineRebuilt(machine) {
-  return machine?.state === 'unreachable' && /^a different core answers there \("[^"]+"\)$/.test(machine.why ?? '');
+  return machine?.state === 'unreachable' && typeof machine.why === 'string' && /^a different core answers there \("[^"]+"\)$/.test(machine.why);
 }
 
 export function machineConnection(machine, snapshot) {
-  const state = snapshot?.find(entry => entry.name === machine)?.state;
+  return machineState(snapshot?.find(entry => entry.name === machine));
+}
+
+export function machineState(machine) {
+  if (machineRebuilt(machine)) return 'unknown';
+  const state = machine?.state;
   if (state === 'connected') return 'connected';
   if (state === 'needs_login' || state === 'needs-login') return 'needs-login';
   if (state === 'disconnected' || state === 'unreachable' || state === 'stopped') return 'disconnected';
@@ -52,7 +57,7 @@ export function createMachineConnections({ hc, storage, notify }) {
     }
     snapshot = [
       ...(coreId ? [{ name: null, state: 'connected' }] : []),
-      ...(observed ?? []).map(machine => ({ name: machine.name, state: machine.state })),
+      ...(observed ?? []).map(machine => ({ name: machine.name, state: machine.state, why: machine.why })),
     ];
     changed();
   };

@@ -1,5 +1,5 @@
 {
   "name": "@spider/herdr", "version": "0.0.0", "type": "module",
   "license": "MIT AND OFL-1.1 AND Apache-2.0", "main": "./src/index.ts",
-  "exports": { ".": "./src/index.ts", "./*": "./src/*.ts" }
+  "exports": { ".": "./src/index.ts", "./machine-connections": "./assets/agents/connections.js", "./*": "./src/*.ts" }
 }

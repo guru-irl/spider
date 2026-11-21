@@ -13,6 +13,7 @@ import { lstatSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { assertTestConfigPath, openDbReadOnly } from "@spider/db-core";
 import { createHcClient, invokeCli } from "@spider/herdr/client/hc";
+import { machineState } from "@spider/herdr/machine-connections";
 
 import { VIEW_ON_MAC_MESSAGE } from "@spider/herdr/notices";
 
@@ -86,9 +87,9 @@ export function homeChangeInProgress(file: string): boolean | null {
   } catch { return null; }
 }
 
-export function parseMachineReachability(state: unknown, synced: boolean): HubObservation["reachability"] {
-  if (state === "disconnected" || state === "unreachable" || state === "stopped") return "unreachable";
-  return state === "connected" ? "reachable" : "unknown";
+export function parseMachineReachability(state: unknown, why?: unknown): HubObservation["reachability"] {
+  const connection = machineState({ state, why });
+  return connection === "disconnected" ? "unreachable" : connection === "connected" ? "reachable" : "unknown";
 }
 
 export async function startProductionHub(root: string, options: { intercomClock?: Clock; moveFactory?: import("./move-runtime-contracts").MoveRuntimeFactory; placementFactory?: PlacementFactory } = {}): Promise<{ stop(): Promise<void> }> {
@@ -131,7 +132,7 @@ export async function startProductionHub(root: string, options: { intercomClock?
         const syncState = loadPeerState(core.db, peer.machineId, core.config.limits.targetBatchBytes);
         const reached = results.every(result => result.code === 0) && syncState.pulled === true &&
           syncState.observation?.connected === true;
-        const reachability = parseMachineReachability(state, reached);
+        const reachability = parseMachineReachability(state, matches[0].why);
         if (reachability !== "reachable") return { reachability, readiness: null, suspensions: null };
         if (!reached) return { reachability, syncVerified: false, readiness: null, suspensions: null };
         try { const hosting = await remoteHosting(transport, peer, core.config); return { reachability, syncVerified: true, ...hosting }; }

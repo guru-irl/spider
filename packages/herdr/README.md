@@ -84,6 +84,7 @@ Each part runs in its own process:
 
 ## Notes
 
+- Remote connectivity failures carry their destination scope to the host's per-session outage latch. A successful remote file read or write clears that scope; cached machine and terminal metadata do not.
 - Feeds are written atomically with user-only permissions. Readers reject symlinks, oversized files, and unknown versions.
 - The IPC endpoint is a Unix socket under `herdr/ipc` with a per-generation capability file. It has no TCP listener and allows only `ping`, `openView`, `openRun`, `openJob`, `subscribeRun`, and `steerRun`.
 - Mods reach pi only through the IPC client, started with Herdr's bounded `exec`. No path in this package writes text into a pi terminal's input.

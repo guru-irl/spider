@@ -15,7 +15,7 @@ import { observeLocalHosting } from "./production-supervisor";
 import { homedir, userInfo } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { inspectLocalConsumers, isPendingLaunchDiagnostic, localStoreInventoryDiagnostics, localHostingWarningDiagnostics, runLocalDoctor, runLocalStatus } from "./local-diagnostics";
+import { inspectLocalConsumers, isPendingLaunchDiagnostic, localPendingLaunchDiagnostics, localStoreInventoryDiagnostics, localHostingWarningDiagnostics, runLocalDoctor, runLocalStatus } from "./local-diagnostics";
 import { requestHubControl } from "./control-socket";
 import { parseRoamJson, storeScope } from "@spider/db-core/roam/codec";
 import { mapRepository } from "@spider/db-core/roam/repo-map";
@@ -545,7 +545,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
           }
           if (config) {
             rows.push(...localStoreInventoryDiagnostics(root));
-            rows.push(...(await runLocalDoctor({ root, bundleUrl: options?.bundleUrl })).diagnostics.filter(isPendingLaunchDiagnostic));
+            rows.push(...await localPendingLaunchDiagnostics({ root, machineId: config.machineId }));
           }
           rows.push(...localHostingWarningDiagnostics(root));
           if (config?.role === "box") {

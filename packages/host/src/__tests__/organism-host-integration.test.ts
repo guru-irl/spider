@@ -497,7 +497,7 @@ describe("the installed pi contract through the full spider extension", () => {
     });
     const entries = f.session.getEntries().filter(e => e.type === "custom" && e.customType === "spider.organism");
     expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({ data: { status: "failed", modelCalls: 2 } });
+    expect(entries[0]).toMatchObject({ data: { status: "failed", modelCalls: 1 } });
     const renderer = f.runner.getEntryRenderer("spider.organism");
     expect(renderer).toBeTypeOf("function");
     const backgrounds: string[] = [];

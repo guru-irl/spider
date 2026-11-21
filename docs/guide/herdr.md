@@ -355,7 +355,9 @@ The console shows each command's header, its stdout, its stderr with a label, an
 
 When the runtime changes, the next command replaces an older console only after that agent's jobs on the machine have finished. The console labels include `spider.kind`, `spider.session`, `spider.owner-core`, `spider.owner-terminal`, `spider.machine`, `spider.display-name`, `spider.runtime`, and, for a subagent, `spider.run`. The `spider.runtime` value is the runtime's SHA-256 digest.
 
-A subagent's consoles stay open while its run is active, even if the parent pi exits. When you resume the same session, spider recognizes those consoles and closes them when the run ends. A session's own consoles close when you quit that session or replace it with `/new`, `/resume`, or a fork. `/reload` keeps those consoles open and closes run consoles only when the run is known to have ended. If a machine is unavailable, spider retries closing its consoles while pi is running and after the machine reconnects, up to 24 failed attempts. A later startup removes abandoned consoles only when their owning session and run are both gone.
+A subagent's consoles stay open while its run is active, even if the parent pi exits. When you resume the same session, spider recognizes those consoles and closes them when the run ends. A session's own consoles close when you quit that session or replace it with `/new`, `/resume`, or a fork. `/reload` keeps those consoles open and closes run consoles only when the run is known to have ended. If a machine is unavailable, spider keeps console cleanup pending and retries after reconnecting. Connectivity failures do not use the 24-attempt limit; other failures do. While a connection failure continues, machine state changes can wake each console cleanup at most once every 30 seconds. A later startup removes abandoned consoles only when their owning session and run are both gone.
+
+Cleanup of a failed launch also stays pending during a connection outage. Its retry delay doubles from 30 seconds to one hour. A successful remote file operation can wake it sooner, at most once every 30 seconds. Other cleanup failures still use the three-attempt limit, and spider checks terminal identity before removal.
 
 ### Background jobs and timeouts
 
@@ -400,6 +402,8 @@ Finished rows are hidden by default. Click **N finished** under a session to sho
 The sidebar uses the owner feed to report run activity for local and remote viewers. A live viewer absent from the feed shows **Unknown**. A running entry in a closed or stale feed shows **Disconnected** because the feed cannot confirm that it is still active. Neither status counts toward the live pills. These rows remain visible for up to `limits.completedHours`, measured from the viewer's creation for an unknown run or the feed's last update for a disconnected run, and are limited to `limits.completedRows`. If a viewer has no creation time, the row limit still applies.
 
 When a machine is unavailable, its console, command, and viewer rows show **Unreachable** and cannot be opened. They do not count toward the live pills. The rows update when the machine reconnects. A finished run keeps its recorded outcome when a reachable owner can open its saved local view. Otherwise an unavailable viewer shows **Unreachable**.
+
+Each session shows one warning per machine during a connection outage, even when requests keep timing out. Known machine names and core IDs share the warning. If local machine information is unavailable, unknown aliases can warn separately until they can be resolved. A successful remote file read or write with a valid reply confirms recovery. If that machine later becomes unreachable again, the session can show a new warning. Machine lists and terminal metadata do not confirm recovery.
 
 Use the chevron to the left of an agent icon to fold its children. The pill on a folded row counts active children and opens the list again. To pin or unpin an agent, hover over its icon and click the pin. The elapsed time stays visible.
 
@@ -555,6 +559,8 @@ The panel shows the space that is selected in the sidebar. It has three parts: t
 A bell heads the panel, with the number of items that need you. The panel shows dismissible cards for a live session that is blocked or failed and for memories waiting for review. A waiting card does not show the question.
 
 Click a session card to focus its pane. Click the memory card to open memory review in the panel. Use the dismiss control to hide a card until its underlying state changes. The panel never polls machines.
+
+Intentional notifications that arrive after an outage remain visible. A sound plays only if the occurrence was created within the previous 15 seconds; older arrivals are marked seen silently. Muted arrivals do not sound later when sound is enabled.
 
 ### Sessions
 

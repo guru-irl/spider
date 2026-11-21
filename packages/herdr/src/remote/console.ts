@@ -8,7 +8,7 @@ import { HERDR_KINDS, HERDR_LABELS, type ConsoleId, type CoreId, type Disposable
 import { atomicRuntimeFile, readBoundedFile, encodeRuntimePublication, parseRuntimePublication, type ConsoleCommand } from './runtime.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { HerdrError } from '../client/parse.js';
-import { createCleanupSweep } from '../jobs/cleanup.js';
+import { createCleanupSweep, isCleanupConnectivityFailure } from '../jobs/cleanup.js';
 import { paneId, paneText, parseConsoleId, parsePaneTarget } from '../panes/codec.js';
 import type { PaneTarget, PaneTerminalFacts } from '../panes/types.js';
 import { herdrErrorNotice } from '../notices.js';
@@ -115,12 +115,13 @@ function ownsConsole(terminal: TerminalSummary, owner: AgentConsoleOwner, on?: M
 }
 async function confirmConsoleMissing(hc: HcClient, address: TerminalSummary['address'], expectedMachine?: string): Promise<void> {
   const slash = address.lastIndexOf('/');
-  if (slash < 0) throw new HerdrError('machine-unavailable', 'Console cleanup requires a qualified remote address');
+  if (slash < 0) throw new HerdrError('machine-unavailable', 'Console cleanup requires a qualified remote address', { reason: 'invalid-address' });
   const name = address.slice(0, slash), machines = await hc.machines();
-  if (!machines.some(machine => {
-    const matches = (value: string) => machine.name === value || machine.aliases.includes(value);
-    return machine.state === 'connected' && matches(name) && (!expectedMachine || matches(expectedMachine));
-  })) throw new HerdrError('machine-unavailable', 'Console cleanup requires the connected destination');
+  const matches = machines.filter(machine => {
+    const matchesName = (value: string) => machine.name === value || machine.aliases.includes(value);
+    return matchesName(name) && (!expectedMachine || matchesName(expectedMachine));
+  });
+  if (!matches.some(machine => machine.state === 'connected')) throw new HerdrError('machine-unavailable', 'Console cleanup requires the connected destination', { reason: matches.length ? 'disconnected' : 'unverified' });
   try { await hc.get(address); }
   catch (error) { if (consoleMissing(error)) return; throw error; }
   throw new HerdrError('console-outcome-unknown', 'Console terminal is still present');
@@ -363,7 +364,7 @@ function registerLifecycle(pi: ExtensionAPI, ports: AgentConsoleLifecyclePorts, 
   let stopWatching = () => {}, closed = false;
   const pending = new Map<string, Promise<void>>();
   const sweep = createCleanupSweep(Date.now, () => {}); sweep.start();
-  const cleanup = new Map<string, { machines: Set<string>; operation: () => Promise<void>; owner?: string; failures: number; revision: number }>();
+  const cleanup = new Map<string, { machines: Set<string>; operation: () => Promise<void>; owner?: string; failures: number; revision: number; connectivity: boolean; lastWake?: number }>();
   const exhausted = new Map<string, string | undefined>(), machineStates = new Map<string, boolean>();
   const maxAttempts = 24, reconnectInterval = 2000;
   let reconnectTimer: ReturnType<typeof setInterval> | undefined, machineCheck: Promise<void> | undefined, recheckMachines = false;
@@ -389,7 +390,16 @@ function registerLifecycle(pi: ExtensionAPI, ports: AgentConsoleLifecyclePorts, 
         if (machineStates.get(name) === false && next) connected.add(name);
         machineStates.set(name, next);
       }
-      if (connected.size) sweep.retry([...cleanup].filter(([, entry]) => !entry.machines.size || [...entry.machines].some(name => connected.has(name))).map(([key]) => key));
+      if (connected.size) {
+        const now = Date.now(), ready: string[] = [];
+        for (const [key, entry] of cleanup) {
+          if (entry.machines.size && ![...entry.machines].some(name => connected.has(name))) continue;
+          if (entry.connectivity && entry.lastWake !== undefined && now >= entry.lastWake && now - entry.lastWake < 30_000) continue;
+          if (entry.connectivity) entry.lastWake = now;
+          ready.push(key);
+        }
+        sweep.retry(ready);
+      }
     }).catch(() => { /* An unavailable inventory is retried by the next check. */ }).finally(() => {
       machineCheck = undefined;
       if (recheckMachines) { recheckMachines = false; observeMachines(); }
@@ -412,10 +422,12 @@ function registerLifecycle(pi: ExtensionAPI, ports: AgentConsoleLifecyclePorts, 
     if (existing) {
       for (const name of names) existing.machines.add(nameKey(name));
       if (owner) { existing.operation = operation; existing.owner = owner; existing.revision++; }
-      if (++existing.failures >= maxAttempts) stopCleanup(key, existing, error);
+      existing.connectivity = isCleanupConnectivityFailure(error);
+      if (!existing.connectivity && ++existing.failures >= maxAttempts) stopCleanup(key, existing, error);
       return;
     }
-    const entry = { machines: new Set(names.map(nameKey)), operation, owner, failures: 1, revision: 0 };
+    const connectivity = isCleanupConnectivityFailure(error);
+    const entry = { machines: new Set(names.map(nameKey)), operation, owner, failures: connectivity ? 0 : 1, revision: 0, connectivity };
     cleanup.set(key, entry); reportCleanup(error);
     if ((error as { code?: string })?.code === 'machine-unavailable') for (const name of entry.machines) machineStates.set(name, false);
     sweep.enqueue(key, async () => {
@@ -426,7 +438,8 @@ function registerLifecycle(pi: ExtensionAPI, ports: AgentConsoleLifecyclePorts, 
         updateReconnectTimer();
       } catch (failure) {
         if (cleanup.get(key) !== entry) return;
-        if (++entry.failures >= maxAttempts) { stopCleanup(key, entry, failure); return; }
+        entry.connectivity = isCleanupConnectivityFailure(failure);
+        if (!entry.connectivity && ++entry.failures >= maxAttempts) { stopCleanup(key, entry, failure); return; }
         throw failure;
       }
     }, { afterFailure: true });

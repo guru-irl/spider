@@ -130,7 +130,7 @@ export function registerOrganism(
   try {
     pi?.on?.("session_start", (_event: unknown, ctx?: ExtensionContext) => {
       if (!admitted() || process.env.PI_SUBAGENT_CHILD === "1" || !ctx?.sessionManager?.getSessionId?.()) return undefined;
-      try { workerFor(ctx).startSkillReviews(); } catch (error) { reportSetupError("resolve", error, ctx); }
+      try { const worker = workerFor(ctx); worker.startSkillReviews(); worker.startDeferredDrains(); } catch (error) { reportSetupError("resolve", error, ctx); }
       return undefined;
     });
   } catch (error) { reportSetupError("register", error); }

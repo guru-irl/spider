@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { createCleanupSweep, MAX_FAILED_TERMINAL_CLEANUP_ATTEMPTS, needsFailedCleanup, type CleanupSweep } from './cleanup.js';
+import { cleanupConnectivityDelay, createCleanupSweep, isCleanupConnectivityFailure, MAX_CLEANUP_CONNECTIVITY_FAILURES, MAX_FAILED_TERMINAL_CLEANUP_ATTEMPTS, needsFailedCleanup, type CleanupSweep } from './cleanup.js';
 import { noticeRecoveryCandidates, recoverJobNotices } from './notices.js';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -60,6 +60,7 @@ export interface JobMonitorOptions {
   reportError?(error: unknown): void;
   recordCleanupError?(error: unknown): void;
   reportConsoleError?(error: unknown): void;
+  onMachineAvailable?(listener: (machine: MachineName) => void): () => void;
 }
 export interface JobMonitor extends JobPort {
   activate(owner: Owner, signal?: AbortSignal): Promise<void>;
@@ -80,7 +81,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
   let persistedState: string | undefined;
   let handoff: JobHandoff | undefined;
   let stream: ReturnType<HcClient['events']> | undefined;
-  let unsubscribe: (() => void) | undefined;
+  let unsubscribe: (() => void) | undefined, unsubscribeAvailability: (() => void) | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
   let activated = false;
   let closed = false;
@@ -119,6 +120,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
   const discovered = new Map<JobId, TerminalAddress>();
   const lostOriginals = new Set<TerminalAddress>(), finishedOriginals = new Set<TerminalAddress>();
   const prunedJobs = new WeakSet<JournalJob>();
+  const availabilityWakes = new WeakMap<JournalJob, number>();
   const activeReleases = new Map<TerminalAddress, number>();
   const holds = new Map<JobId, ReturnType<typeof setTimeout>>();
   const report = (error: unknown) => {
@@ -217,13 +219,14 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
     await boundedHc(callOptions => options.hc.kill(address, callOptions), timeoutMs, signal);
   }
   async function confirmMissing(address: TerminalAddress, bounded = false, expectedMachine?: MachineName, timeoutMs = 1000, signal?: AbortSignal): Promise<void> {
-    if (!address.includes('/')) throw new HerdrError('machine-unavailable', 'Job terminal cleanup requires a qualified remote address');
+    if (!address.includes('/')) throw new HerdrError('machine-unavailable', 'Job terminal cleanup requires a qualified remote address', { reason: 'invalid-address' });
     const name = address.slice(0, address.lastIndexOf('/'));
     const machines = bounded ? await boundedHc(callOptions => options.hc.machines(callOptions), timeoutMs, signal) : await cleanupCall(() => options.hc.machines(cleanupOptions()));
-    if (!machines.some(machine => {
-      const matches = (value: string) => machine.name === value || machine.aliases.some(alias => alias === value);
-      return machine.state === 'connected' && matches(name) && (!expectedMachine || matches(expectedMachine));
-    })) throw new HerdrError('machine-unavailable', 'Job terminal cleanup requires the connected destination');
+    const matches = machines.filter(machine => {
+      const matchesName = (value: string) => machine.name === value || machine.aliases.some(alias => alias === value);
+      return matchesName(name) && (!expectedMachine || matchesName(expectedMachine));
+    });
+    if (!matches.some(machine => machine.state === 'connected')) throw new HerdrError('machine-unavailable', 'Job terminal cleanup requires the connected destination', { reason: matches.length ? 'disconnected' : 'unverified' });
     try {
       if (bounded) await boundedHc(callOptions => options.hc.get(address, callOptions), timeoutMs, signal);
       else await cleanupCall(() => options.hc.get(address, cleanupOptions()));
@@ -310,13 +313,22 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
           else result = await removeFailedTerminal(job, pending.address);
         } catch (error) {
           if (lifetime.signal.aborted) return;
-          await serial(async () => {
-            if (stopping || closed || !journal.jobs.includes(job) || job.failedTerminalCleanup !== pending) return;
+          const connectivity = isCleanupConnectivityFailure(error);
+          const shouldReport = await serial(async () => {
+            if (stopping || closed || !journal.jobs.includes(job) || job.failedTerminalCleanup !== pending) return false;
+            if (connectivity) {
+              if (!started.verifyOnly) pending.attempts--;
+              const first = pending.connectivityFailures === undefined;
+              pending.connectivityFailures = Math.min(MAX_CLEANUP_CONNECTIVITY_FAILURES, (pending.connectivityFailures ?? 0) + 1);
+              pending.nextAt = options.clock() + cleanupConnectivityDelay(pending.connectivityFailures);
+              await persist(); return first;
+            }
+            delete pending.connectivityFailures;
             if (pending.attempts >= MAX_FAILED_TERMINAL_CLEANUP_ATTEMPTS) pending.exhausted = true;
             pending.nextAt = options.clock() + failedCleanupDelay(pending.attempts - 1);
-            await persist();
+            await persist(); return true;
           });
-          options.recordCleanupError?.(error); return;
+          if (shouldReport) options.recordCleanupError?.(error); return;
         }
         if (lifetime.signal.aborted) return;
         await serial(async () => {
@@ -335,6 +347,20 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
         job.settledMarked = true; job.updatedAt = options.clock(); await persist();
       });
     })) scheduleMaintenance();
+  }
+  function wakeFailedCleanup(machine: MachineName): void {
+    void serial(async () => {
+      if (stopping || closed) return;
+      const due: JournalJob[] = [], now = options.clock();
+      for (const job of journal.jobs) {
+        const pending = job.failedTerminalCleanup, lastWake = availabilityWakes.get(job);
+        if (job.machine !== machine || !needsFailedCleanup(job) || !pending || pending.connectivityFailures === undefined || pending.nextAt <= now || lastWake !== undefined && now >= lastWake && now - lastWake < 30_000) continue;
+        availabilityWakes.set(job, now); pending.nextAt = now; due.push(job);
+      }
+      if (!due.length) return;
+      await persist();
+      for (const job of due) queueFailedCleanup(job);
+    }).catch(report);
   }
   function queueRelease(job: JournalJob, save: () => Promise<void> = () => serial(persist)): void {
     if (recoveringNotices.has(job.id) || job.terminalReleased || releaseSkipped.has(job.id) || job.settledMarked && (holds.has(job.id) || job.notice !== 'observed') || job.phase.kind !== 'finished' || !job.output?.complete || job.evidenceConflict || !job.noticeDelivered && !job.terminalExpired || !job.originalFinish && !job.terminalExpired) return;
@@ -569,6 +595,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
     });
     const identity = await options.hc.identity();
     if (identity.coreId !== nextOwner.terminal.coreId || identity.socket !== nextOwner.terminal.socket || identity.sessionNamespace !== nextOwner.terminal.sessionNamespace) throw new HerdrError('job-owner-mismatch', 'Owning terminal is on another core');
+    unsubscribeAvailability = options.onMachineAvailable?.(wakeFailedCleanup);
     stream = options.hc.events();
     unsubscribe = stream.subscribe(event => {
       // Capture identity immediately; a created/finished pair can arrive while run() is still awaiting its reply.
@@ -630,7 +657,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
     if (sharedCleanup) for (const key of cleanupKeys) cleanup.cancel(key);
     cleanupKeys.clear();
     const handoffShutdown = handoff?.shutdown(reason);
-    if (timer) clearInterval(timer); for (const hold of holds.values()) clearTimeout(hold); holds.clear(); unsubscribe?.();
+    if (timer) clearInterval(timer); for (const hold of holds.values()) clearTimeout(hold); holds.clear(); unsubscribe?.(); unsubscribeAvailability?.();
     return shutdownPromise = (async () => {
       // Abort event waits before draining the writer, rather than queue shutdown
       // behind a reconcile waiting for a core that nobody is allowed to start.

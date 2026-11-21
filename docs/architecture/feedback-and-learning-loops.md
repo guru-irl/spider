@@ -277,11 +277,13 @@ available, the drain records a model error and fails with no fallback.
 `reason: "before_compact"` and does not wait for it. The hook never returns
 `false`, never calls a cancel API, and swallows every error, so it cannot block
 or change compaction. `session_shutdown` waits for a drain with
-`reason: "shutdown"` and then runs `runCurate`. The `OrganismWorker` runs every
-entry point through one in-flight chain. Two drains, such as a before-compact
-drain and a shutdown drain, never run against the database at the same time,
-and neither do a drain and a curate. When `organism.enabled` is `false`,
-`runDrain` returns a zeroed summary at once.
+`reason: "shutdown"` and then runs `runCurate`. A live `session_start` also
+resumes deferred drains. The `OrganismWorker` runs every entry point through
+one in-flight chain. Two drains, such as a before-compact drain and a shutdown
+drain, never run against the database at the same time, and neither do a drain
+and a curate. Identical in-flight inputs are coalesced unless the input database
+has changed. When `organism.enabled` is `false`, `runDrain` returns a zeroed
+summary at once.
 
 **Drain.** `drainSession` reads the session's `runs`, `run_events`, `events`,
 and `todos`, its stored name, and the normalized conversation when a transcript
@@ -290,9 +292,16 @@ the event log intact.
 
 **Passes.** The worker runs a set of passes. A per-pass toggle in
 `OrganismConfig.passes` turns each one on or off. An error while resolving the
-model fails the drain and is recorded. Each pass runs inside its own try/catch,
-so a pass that throws does not stop the others. Its error stays in the drain
-report. The passes are:
+model fails the drain and is recorded. A non-connectivity error stays in the
+drain report and does not stop the other passes. A provider connectivity error
+stops later model calls. Provider or service unavailability counts as a
+connectivity failure; explicit authentication and permission failures take
+precedence, including in nested causes. The worktree database retains each
+distinct captured input and its unfinished passes for a live session to retry.
+The delay starts at five minutes and doubles to at most six hours. A lease
+prevents concurrent retries. Each affected session gets one failure receipt per outage. Repeated
+events update an outage count capped at 100. Local insights can still run.
+The passes are:
 
 - **runMemoryTodo.** Summarizes subagent run activity and asks the aux model
   for durable memory and follow-up todo candidates. Emits no skills.
@@ -338,11 +347,17 @@ levels, and plain notices about caps or adjustments, in
 `.spider/logs/reviewer-thinking.jsonl`.
 Only a `new` verdict stages the skill, with its review_reason.
 Spider removes candidates with any other verdict and records them in the
-bounded table of recent results. If the reviewer fails, the candidate stays,
-its attempt count goes up by one, and last_error is set. The third failure
-drops it and records the reason. Doctor shows the queue length and recent
-verdicts. If the rubric or catalog is not available, the learner prompt leaves
-out skill guidance, but memory proposals still go through. Disabling skill
+bounded table of recent results. A malformed reply or other non-connectivity
+failure increments the candidate's attempt count and sets `last_error`. The
+third such failure drops the candidate and records the reason. A connectivity
+failure or timeout preserves the candidate and its attempt count. The runner
+stops the queue and retries after five minutes, doubling the delay to at most
+six hours. The deadline persists across sessions. A live session retries it
+without a reload, and a non-connectivity outcome resets the delay. A session
+that finds another owner holding the review lease retries when the lease expires.
+Doctor shows the queue length and recent verdicts. If the rubric or catalog
+is not available, the learner prompt leaves out skill guidance, but memory
+proposals still go through. Disabling skill
 review also leaves the guidance out. Raw failures go only to the local
 diagnostics log, which rotates at 1 MiB and keeps at most 2 KiB of each raw
 reply.

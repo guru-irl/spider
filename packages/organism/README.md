@@ -65,7 +65,7 @@ Background model calls default to `github-copilot/gpt-6-luna` with `low` thinkin
 
 `registerOrganism` attaches three hooks. `pi.on` chains handlers, so these hooks run alongside any other handlers.
 
-- `session_start` starts queued skill review asynchronously in live top-level sessions.
+- `session_start` starts queued skill review and resumes deferred drains asynchronously in live top-level sessions.
 - `session_before_compact` starts a best-effort drain with `reason: "before_compact"`. It does not wait for the drain, and compaction goes ahead regardless. After the drain completes, it starts queued reviews. The handler never returns `false`, never calls a cancel API, and swallows every error, so it cannot block or alter compaction.
 - `session_shutdown` cancels reviews in progress, then awaits a drain with `reason: "shutdown"`, then runs a curator pass if the minimum interval has passed. It swallows errors so that shutdown never breaks.
 
@@ -87,7 +87,7 @@ flowchart TD
 
 ### Passes
 
-The worker runs the passes in order. Each pass runs only when its toggle in `OrganismConfig.passes` is on. If model resolution fails, the drain is recorded as failed, not as a successful empty result. Each pass runs inside its own try/catch. If a pass throws, the worker records an error and continues with the remaining passes, and it reports a failed or partial outcome.
+The worker runs the passes in order. Each pass runs only when its toggle in `OrganismConfig.passes` is on. If model resolution fails, the drain is recorded as failed, not as a successful empty result. A non-connectivity error does not stop the remaining passes. A provider connectivity error stops later model calls, preserves the captured input and unfinished passes, and records the failure. Provider or service unavailability counts as connectivity; explicit authentication and permission failures take precedence, including in nested causes. Local insights can still run. A live session retries after five minutes, doubling the delay to at most six hours. Identical pending inputs are coalesced, and a database lease prevents simultaneous retries. Repeated lifecycle events update a count capped at 100 instead of appending the same failure receipt. The first failure for each affected session remains visible.
 
 1. **runMemoryTodo.** Summarizes subagent runs and their run events, and asks the aux model for durable memory candidates and follow-up todo candidates. Every memory candidate goes through the capture guardrail. Emits no skills.
 2. **todoMemory.** Turns completed todos into durable memory candidates. If no todos are done, it returns early without a model call. Emits no skills or todos.
@@ -122,7 +122,7 @@ Two different mechanisms decide what survives.
 **Staging** is what `applyDigest` does to the merged candidates. It is fail-closed, so nothing becomes active memory or an active skill directly. Each memory stage and each skill queue insert spends one unit of a shared `WriteBudget` (default maximum 20 per drain), memory first and then skills. When the budget runs out, the remaining stageable candidates are dropped and counted, never discarded silently.
 
 - Memory goes through `stageWrite` with `source: "auto"` and `autoStage: true`. A rejected result is counted and uses no budget.
-- Skills pass deterministic validation and the proposal cap, then go into a durable repo queue. The drain never waits for deep review. The runner in the live session holds a lease on the repo DB, stages only candidates with a `new` verdict, and records the other verdicts. It keeps failed reviews for up to three attempts. Only human approval activates a candidate. Doctor shows the queue length and recent results. The root README covers the reviewer's thinking and timeout settings, origin ceilings, and the limits on prompt and catalog size.
+- Skills pass deterministic validation and the proposal cap, then go into a durable repo queue. The drain never waits for deep review. The runner in the live session holds a lease on the repo DB, stages only candidates with a `new` verdict, and records the other verdicts. A session that finds the lease held retries when it expires, so it can take over if the owner stops. Malformed replies and other non-connectivity failures use a three-attempt budget. Connectivity errors and timeouts keep the candidate and do not use that budget. A live session retries after five minutes, doubling the delay to at most six hours. The deadline persists across sessions and resets after a provider call reaches a non-connectivity outcome. Only human approval activates a candidate. Doctor shows the queue length and recent results. The root README covers the reviewer's thinking and timeout settings, origin ceilings, and the limits on prompt and catalog size.
 - Todos are added directly. They do not use the budget, but they are counted.
 
 `applyDigest` returns an `AppliedSummary` with the counts `memoryStaged`, `todosAdded`, `skillsQueued`, `skillsStaged` (zero in learner drains), `dropped`, and `rejected`.

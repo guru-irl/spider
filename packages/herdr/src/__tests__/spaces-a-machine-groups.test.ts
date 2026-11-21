@@ -104,6 +104,21 @@ it('recognizes a replaced remote core without treating ordinary outages as rebui
   expect(machineRebuilt(null)).toBe(false);
 });
 
+it('keeps remote core replacement unknown instead of showing a transport outage', () => {
+  const replaced = { name: 'box-1.invalid', state: 'unreachable', why: 'a different core answers there ("new-core")' };
+  expect(machineConnection(replaced.name, [replaced])).toBe('unknown');
+  expect(machineConnection(replaced.name, [{ name: replaced.name, state: 'unreachable' }])).toBe('disconnected');
+});
+
+it('preserves native core replacement reasons in the connection snapshot', async () => {
+  const replaced = { name: 'box-1.invalid', state: 'unreachable', why: 'a different core answers there ("new-core")' };
+  const manager = createMachineConnections({ storage: journal(), notify() {}, hc: async (args: string[]) =>
+    args[0] === 'server' ? ok({ core: { id: 'local-core' } }) : ok({ machines: [replaced] }) });
+  await manager.refresh();
+  expect(machineConnection(replaced.name, manager.snapshot)).toBe('unknown');
+  manager.close();
+});
+
 it('uses core availability for the local heading and dims a failed refresh', () => {
   const snapshot = [{ name: null, state: 'connected' }, { name: 'box-1.invalid', state: 'connected' }];
   expect(machineConnection(null, snapshot)).toBe('connected');

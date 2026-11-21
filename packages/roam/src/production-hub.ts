@@ -16,7 +16,7 @@ import { createHcClient, invokeCli } from "@spider/herdr/client/hc";
 
 import { VIEW_ON_MAC_MESSAGE } from "@spider/herdr/notices";
 
-import { runStandaloneHub, type HubNotice, type HubObservation } from "./hub";
+import { runStandaloneHub, type HubNotice, type HubObservation, type StandaloneHubPorts } from "./hub";
 import { createLocalDiagnosticPorts } from "./local-diagnostics";
 import { openJournal } from "./journal";
 import { remoteHosting } from "./remote-observations";
@@ -25,7 +25,7 @@ import { openLocalCore, readLocalIdentity } from "./runtime";
 import { createTransport } from "./transport";
 import { createMachineIntercom } from "./intercom-runtime";
 import { createProductionIntercomMaintenance } from "./intercom-production";
-import type { Clock, Peer, PlacementFactory } from "./contracts";
+import type { Clock, PlacementFactory } from "./contracts";
 import type { ProcessProbe } from "@spider/herdr/sessions/lease";
 export function createHubProcessProbe(probe: (pid: number) => Promise<ProcessProbe>, alive: (pid: number) => void = pid => { process.kill(pid, 0); }) {
   return async (pid: number): Promise<ProcessProbe> => {
@@ -86,6 +86,11 @@ export function homeChangeInProgress(file: string): boolean | null {
   } catch { return null; }
 }
 
+export function parseMachineReachability(state: unknown, synced: boolean): HubObservation["reachability"] {
+  if (state === "disconnected" || state === "unreachable" || state === "stopped") return "unreachable";
+  return state === "connected" && synced ? "reachable" : "unknown";
+}
+
 export async function startProductionHub(root: string, options: { intercomClock?: Clock; moveFactory?: import("./move-runtime-contracts").MoveRuntimeFactory; placementFactory?: PlacementFactory } = {}): Promise<{ stop(): Promise<void> }> {
   const core = openLocalCore(root);
   let hc: ReturnType<typeof createHcClient> | undefined;
@@ -112,7 +117,7 @@ export async function startProductionHub(root: string, options: { intercomClock?
     const intercom = pendingHandoffLifecycle(root, createPendingHandoffControl({ root: join(root, "herdr"), journal,
       authority: createRunningIntentAuthority(core.db), inventory: { leases: createSessionLeases(join(root, "herdr")), probe },
       identity: { pid: process.pid, startIdentity: self.startIdentity }, bootId: localBootId }), machineIntercom);
-    const observe = async (peer: Peer): Promise<HubObservation> => {
+    const observe: StandaloneHubPorts["observe"] = async (peer, results) => {
       try {
         const before = await client.identity();
         const value = await invokeCli(herdr.core.binary, ["machine", "ls", "--json"], env);
@@ -123,8 +128,9 @@ export async function startProductionHub(root: string, options: { intercomClock?
         const matches = machines.filter(row => row && typeof row === "object" && !Array.isArray(row) && row.name === peer.alias);
         if (matches.length !== 1) throw new Error("Unknown machine");
         const state = matches[0].state;
-        const reached = loadPeerState(core.db, peer.machineId, core.config.limits.targetBatchBytes).observation?.connected === true;
-        const reachability = state === "disconnected" ? "unreachable" : state === "connected" && reached ? "reachable" : "unknown";
+        const reached = results.every(result => result.code === 0) &&
+          loadPeerState(core.db, peer.machineId, core.config.limits.targetBatchBytes).observation?.connected === true;
+        const reachability = parseMachineReachability(state, reached);
         if (reachability !== "reachable") return { reachability, readiness: null, suspensions: null };
         try { const hosting = await remoteHosting(transport, peer, core.config); return { reachability, ...hosting }; }
         catch { return { reachability, readiness: null, suspensions: null }; }

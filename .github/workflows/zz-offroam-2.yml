@@ -1,0 +1,13 @@
+name: Offline roaming validation
+
+on:
+  push:
+    branches: [ci/offroam-2]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    uses: ./.github/workflows/ci.yml

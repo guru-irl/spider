@@ -338,10 +338,15 @@ levels, and plain notices about caps or adjustments, in
 `.spider/logs/reviewer-thinking.jsonl`.
 Only a `new` verdict stages the skill, with its review_reason.
 Spider removes candidates with any other verdict and records them in the
-bounded table of recent results. If the reviewer fails, the candidate stays,
-its attempt count goes up by one, and last_error is set. The third failure
-drops it and records the reason. Doctor shows the queue length and recent
-verdicts. If the rubric or catalog is not available, the learner prompt leaves
+bounded table of recent results. A malformed reply or other non-connectivity
+failure increments the candidate's attempt count and sets `last_error`. The
+third such failure drops the candidate and records the reason. A connectivity
+failure or timeout preserves the candidate and its attempt count. The runner
+stops the queue and retries after five minutes, doubling the delay to at most
+six hours. The deadline persists across sessions. A live session retries it
+without a reload, and a non-connectivity outcome resets the delay. Doctor shows
+the queue length and recent verdicts. If the rubric or catalog is not
+available, the learner prompt leaves
 out skill guidance, but memory proposals still go through. Disabling skill
 review also leaves the guidance out. Raw failures go only to the local
 diagnostics log, which rotates at 1 MiB and keeps at most 2 KiB of each raw

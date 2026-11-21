@@ -180,7 +180,7 @@ it("a reconnect recovery can request real sync while cleanup shares its writer",
     async control() { return { code: 1, reason: "fixture-unused", value: null }; },
     async recover(machineId) {
       if (!machineId) return;
-      flight = input.sync.sync(machineId).then(() => { complete(); });
+      flight = input.sync!.sync(machineId).then(() => { complete(); });
       await flight;
     },
     async recoverCleanup() { await flight; },
@@ -804,7 +804,7 @@ it("revocation during an observation prevents presenting its stale target", asyn
   const observe = h.ports.observe;
   try {
     const hub = await runStandaloneHub({ ...h.ports, revocationDb: db,
-      async observe() { revokeMachine(db, BOX); return observe(); },
+      async observe(peer, results) { revokeMachine(db, BOX); return observe(peer, results); },
     }); handles.push(hub);
     await h.request("sync");
     expect(h.placements).toEqual([]);
@@ -838,7 +838,7 @@ it("caches and clears a peer hosting warning independently of suspension and pla
   const observe = h.ports.observe;
   const warnings = [{ sessionId: "session-1", code: "supervisor-hosting-error" as const, check: "inspection" as const, since: 1, count: 3 }];
   let current = warnings;
-  h.ports.observe = async () => ({ ...await observe(), warnings: current });
+  h.ports.observe = async (peer, results) => ({ ...await observe(peer, results), warnings: current });
   await h.start(); await h.request("sync");
   expect(readLocal(h.f.global.db, "peer-hosting-warnings", BOX)).toEqual(warnings);
   expect(h.notices).toEqual([]);

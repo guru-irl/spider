@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { HerdrError } from './client/parse.js';
+import { isHerdrConnectivityFailure } from './client/availability.js';
 
 export const VIEW_ON_MAC_MESSAGE = 'This view is available on the Mac.';
 
@@ -180,7 +181,7 @@ export function herdrErrorNoticeKey(error: unknown): NoticeCode {
 }
 export function herdrErrorNotice(error: unknown): string {
   if (!(error instanceof HerdrError)) return HERDR_NOTICES.generic.text;
-  if (error.code === 'unavailable' && error.availability?.machine) {
+  if (error.availability?.machine && isHerdrConnectivityFailure(error)) {
     const machine = error.availability.machine.replace(/[^a-zA-Z0-9_.-]/g, '?').slice(0, 100);
     return `Spider couldn't reach ${machine}. Spider will keep trying. Local commands and other spider features still work.`;
   }

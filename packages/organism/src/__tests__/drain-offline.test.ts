@@ -72,6 +72,20 @@ it("stops after the first transport failure, keeps one receipt, and retries dist
   expect(worker.getLastDrain()).toMatchObject({ status: "completed", errors: [] });
 });
 
+it("defers the remaining passes when the provider is temporarily unavailable", async () => {
+  let online = false;
+  const complete = vi.fn(async () => { if (!online) throw new Error("Provider temporarily unavailable"); return response; });
+  const worker = fixture(complete), input = snapshot("Keep this captured input.");
+  await worker.runDrain("session", "before_compact", input);
+  await worker.runDrain("session", "before_compact", input);
+  expect(complete).toHaveBeenCalledTimes(1);
+  expect(receipts()).toHaveLength(1);
+  expect(worker.getLastDrain()).toMatchObject({ status: "failed", modelCalls: 0, outage: { occurrences: 2 } });
+  online = true; await vi.advanceTimersByTimeAsync(300_000);
+  expect(complete).toHaveBeenCalledTimes(3);
+  expect(worker.getLastDrain()).toMatchObject({ status: "completed", errors: [] });
+});
+
 it("keeps one failure receipt per affected session during the same outage", async () => {
   databases.db.prepare("INSERT INTO sessions(id,started_at) VALUES ('other',1)").run();
   const complete = vi.fn(async () => { throw offline(); });

@@ -17,7 +17,9 @@ import { ORGANISM_DEFAULTS } from "../config.js";
 const scratch = resolve(".spider/scratch/drain-receipt-reload");
 const roots: string[] = [];
 const handles: Db[] = [];
-afterEach(() => {
+const workers: OrganismWorker[] = [];
+afterEach(async () => {
+  for (const worker of workers.splice(0)) await worker.stopSkillReviews();
   for (const db of handles.splice(0)) db.close();
   for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -44,7 +46,8 @@ function makeWorker(dir: string): { worker: OrganismWorker; worktreeDb: Db; repo
     org: { ...ORGANISM_DEFAULTS, passes: { runMemoryTodo: false, todoMemory: false, learning: true, consolidation: false, reflection: false, insights: false } },
     curator: CURATOR_DEFAULTS,
   };
-  return { worker: new OrganismWorker(deps), worktreeDb, repoDb };
+  const worker = new OrganismWorker(deps); workers.push(worker);
+  return { worker, worktreeDb, repoDb };
 }
 
 const opts = { transcript: [{ role: "user" as const, content: "Persist real receipts across a reload." }] };

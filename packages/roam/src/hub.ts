@@ -384,6 +384,26 @@ export async function runStandaloneHub(ports: StandaloneHubPorts): Promise<{ sto
   }
   let stores: StoreAdapter | undefined, sync: SyncAdapter | undefined;
   let moves: ReturnType<typeof createMoveRuntimeService> | undefined;
+  const cleanupPeers = new Set<string>();
+  let cleanupDraining = false, cancelCleanup: (() => void) | undefined, cleanupFlight: Promise<void> | undefined;
+  function scheduleCleanup(): void {
+    if (cleanupDraining || !moves || cancelCleanup || cleanupFlight || !cleanupPeers.size) return;
+    cancelCleanup = ports.clock.later(0, () => {
+      cancelCleanup = undefined;
+      if (cleanupDraining) return;
+      const machines = [...cleanupPeers]; cleanupPeers.clear();
+      const task = Promise.resolve().then(async () => {
+        for (const machineId of machines) {
+          if (cleanupDraining) break;
+          try { await moves!.recoverCleanup(machineId); } catch { /* Pending cleanup stays journaled. */ }
+        }
+      }).finally(() => {
+        if (cleanupFlight === task) cleanupFlight = undefined;
+        scheduleCleanup();
+      });
+      cleanupFlight = task;
+    });
+  }
   let revocationDb = ports.revocationDb, ownedRevocationDb: Db | undefined;
   const delegated: SyncService = {
     start() { if (!sync) throw new Error("Hub synchronization is not prepared"); sync.start(); },
@@ -417,13 +437,18 @@ export async function runStandaloneHub(ports: StandaloneHubPorts): Promise<{ sto
       sync = createSync({ config: ports.config, globalDb: ports.globalDb, transport: ports.transport,
         journal: ports.journal, clock: ports.clock, stores, async onPeerSync(peer, results) {
           await onPeerSync(peer, results);
-          if (results.every(result => result.code === 0)) ports.clock.later(0, () => { void moves?.recoverCleanup(peer.machineId).catch(() => {}); });
+          if (!cleanupDraining && moves && results.every(result => result.code === 0)) {
+            cleanupPeers.add(peer.machineId); scheduleCleanup();
+          }
         },
         revocationDb, retireOnly: ports.retireOnly, mirrors: ports.mirrors });
       if (ports.moveFactory) moves = createMoveRuntimeService({ root: dirname(resolve(ports.globalDb.raw.name)), globalDb: ports.globalDb, config: ports.config,
         journal: openFreezeJournal(join(dirname(resolve(ports.globalDb.raw.name)), "roam", "journal.db")), transport: ports.transport, sync }, ports.moveFactory);
     },
-    async drain() { await sync?.drain(); },
+    async drain() {
+      cleanupDraining = true; cancelCleanup?.(); cancelCleanup = undefined; cleanupPeers.clear();
+      await sync?.drain(); await cleanupFlight;
+    },
     closeStores() { try { stores?.close(); } finally { ownedRevocationDb?.close(); } },
   });
   const adapter = stores as StoreAdapter | undefined;

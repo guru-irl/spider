@@ -294,10 +294,12 @@ the event log intact.
 `OrganismConfig.passes` turns each one on or off. An error while resolving the
 model fails the drain and is recorded. A non-connectivity error stays in the
 drain report and does not stop the other passes. A provider connectivity error
-stops later model calls. The worktree database retains each distinct captured
-input and its unfinished passes for a live session to retry. The delay starts
-at five minutes and doubles to at most six hours. A lease prevents concurrent
-retries. Each affected session gets one failure receipt per outage. Repeated
+stops later model calls. Provider or service unavailability counts as a
+connectivity failure; explicit authentication and permission failures take
+precedence, including in nested causes. The worktree database retains each
+distinct captured input and its unfinished passes for a live session to retry.
+The delay starts at five minutes and doubles to at most six hours. A lease
+prevents concurrent retries. Each affected session gets one failure receipt per outage. Repeated
 events update an outage count capped at 100. Local insights can still run.
 The passes are:
 

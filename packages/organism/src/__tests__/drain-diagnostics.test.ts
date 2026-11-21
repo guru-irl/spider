@@ -48,7 +48,7 @@ describe("organism drain outcomes", () => {
   });
 
   it("distinguishes failed passes from a healthy model returning no candidates", async () => {
-    const f = fixture({ makeModel: () => ({ complete: async () => { throw new Error("Provider temporarily unavailable"); } }) });
+    const f = fixture({ makeModel: () => ({ complete: async () => { throw new Error("Provider rejected the input"); } }) });
     await f.worker.runDrain("session", "shutdown", options);
     expect(receipt(f.db)).toMatchObject({ status: "failed", modelCalls: 2 });
     expect((receipt(f.db).errors as unknown[])).toHaveLength(2);

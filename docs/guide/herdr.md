@@ -418,7 +418,7 @@ The sidebar uses the owner feed to report run activity for local and remote view
 
 When a machine is unavailable, its console, command, and viewer rows show **Unreachable** and cannot be opened. They do not count toward the live pills. The rows update when the machine reconnects. A finished run keeps its recorded outcome when a reachable owner can open its saved local view. Otherwise an unavailable viewer shows **Unreachable**.
 
-Each session shows one warning per machine during a connection outage, even when requests keep timing out. A successful remote file read or write confirms recovery. If that machine later becomes unreachable again, the session can show a new warning. Machine lists and terminal metadata do not confirm recovery.
+Each session shows one warning per machine during a connection outage, even when requests keep timing out. Known machine names and core IDs share the warning. If local machine information is unavailable, unknown aliases can warn separately until they can be resolved. A successful remote file read or write with a valid reply confirms recovery. If that machine later becomes unreachable again, the session can show a new warning. Machine lists and terminal metadata do not confirm recovery.
 
 Use the chevron to the left of an agent icon to fold its children. The pill on a folded row counts active children and opens the list again. To pin or unpin an agent, hover over its icon and click the pin. The elapsed time stays visible.
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { invokeCli as invokeTransport } from './cli-transport.js';
-import { trackAvailability } from './availability.js';
+import { isHerdrConnectivityFailure, trackAvailability } from './availability.js';
 import { operationObservation } from './operation.js';
 import childProcess from 'node:child_process';
 import { requireCoreAvailable } from './liveness.js';
@@ -79,22 +79,56 @@ export interface HcAvailabilitySource {
 export function createHcClient(options: HcClientOptions, available?: (key: string) => void): HcClient & Disposable & HcAvailabilitySource {
   guardTestSocket(options);
   const env = Object.freeze({ ...options.env, HC_SOCKET: selectedSocket(options.env) });
+  let selectedCore: CoreId | undefined = options.isolationProof?.coreIds[options.isolationProof.sockets.indexOf(selectedSocket(env))];
+  type MachineGroup = { id: string; name: string; names: Set<string>; aliases: Set<string>; keys: string[] };
+  const machineNames = new Map<string, MachineGroup>();
+  const aliasLookups = new Map<string, { retryAt: number; pending?: Promise<void> }>();
+  const nameKey = (name: string) => name.toLowerCase().replace(/\.$/, '');
+  const machineScope = (name: string) => {
+    const group = machineNames.get(nameKey(name));
+    return group ? { key: `machine-core:${nameKey(group.id)}`, machine: group.name, aliases: group.keys }
+      : { key: `machine:${nameKey(name)}`, machine: name };
+  };
   const machineListeners = new Set<(machine: MachineName) => void>();
   const machineAvailable = (machine: MachineName) => {
-    available?.(`machine:${machine}`);
-    for (const listener of machineListeners) {
-      try { listener(machine); } catch { /* Recovery observers do not own the completed operation. */ }
+    const scope = machineScope(machine), names = new Set([machine, ...(machineNames.get(nameKey(machine))?.names ?? [])]);
+    for (const key of [scope.key, ...(scope.aliases ?? [])]) {
+      try { available?.(key); } catch { /* Reporting cannot fail the completed operation. */ }
+    }
+    for (const name of names) for (const listener of machineListeners) {
+      try { listener(name as MachineName); } catch { /* Recovery observers do not own the completed operation. */ }
     }
   };
-  const call = (argv: readonly string[], input?: Buffer, callOptions?: HcCallOptions) => {
+  const call = async (argv: readonly string[], input?: Buffer, callOptions?: HcCallOptions) => {
     const separator = argv.indexOf('--'), flags = separator < 0 ? argv : argv.slice(0, separator);
     const on = flags.indexOf('--on');
-    const machine = on >= 0 ? flags[on + 1] : ['get', 'read', 'kill', 'rm', 'label'].includes(argv[0]) && argv[1]?.includes('/') ? argv[1].split('/')[0] : undefined;
-    const key = machine ? `machine:${machine}` : `hc:${argv[0]}:${['server', 'machine', 'file'].includes(argv[0]) ? argv[1] : ''}`;
-    // A CLI success or metadata lookup alone does not prove that the destination recovered.
-    return trackAvailability({ key, ...(machine ? { machine } : {}) }, () => invokeCli(options.binary, argv, env, options.maxReplyBytes, input, callOptions), machine ? undefined : available);
+    const candidate = on >= 0 ? flags[on + 1] : ['get', 'read', 'kill', 'rm', 'label'].includes(argv[0]) && argv[1]?.includes('/') ? argv[1].split('/')[0] : undefined;
+    const machine = candidate && candidate !== selectedCore ? candidate : undefined;
+    const scope = machine ? machineScope(machine) : { key: `hc:${argv[0]}:${['server', 'machine', 'file'].includes(argv[0]) ? argv[1] : ''}` };
+    try {
+      // A CLI success or metadata lookup alone does not prove that the destination recovered.
+      return await trackAvailability(scope, () => invokeCli(options.binary, argv, env, options.maxReplyBytes, input, callOptions), machine ? undefined : available);
+    } catch (error) {
+      if (machine && error instanceof HerdrError && isHerdrConnectivityFailure(error) && !machineNames.has(nameKey(machine)) && !callOptions?.signal?.aborted) {
+        const key = nameKey(machine), now = Date.now();
+        for (const [name, entry] of aliasLookups) if (!entry.pending && now >= entry.retryAt) aliasLookups.delete(name);
+        let entry = aliasLookups.get(key);
+        if (!entry) {
+          entry = { retryAt: now + 30_000 }; aliasLookups.set(key, entry);
+          const current = entry;
+          current.pending = machines({ timeoutMs: Math.min(callOptions?.timeoutMs ?? 1000, 1000), signal: callOptions?.signal }).then(() => {}, () => {}).finally(() => {
+            if (aliasLookups.get(key) !== current) return;
+            if (machineNames.has(key)) aliasLookups.delete(key);
+            else { current.pending = undefined; current.retryAt = Date.now() + 30_000; }
+          });
+        }
+        await entry.pending;
+        const resolved = machineScope(machine);
+        if (error.availability && resolved.key !== error.availability.key) throw new HerdrError(error.code, error.message, error.details, resolved);
+      }
+      throw error;
+    }
   };
-  let selectedCore: CoreId | undefined = options.isolationProof?.coreIds[options.isolationProof.sockets.indexOf(selectedSocket(env))];
   const identity = async (callOptions?: HcCallOptions): Promise<CoreIdentity> => {
     const core = parseCore(await call(['server', 'status', '--json'], undefined, callOptions), env);
     if (selectedCore !== undefined && selectedCore !== core.coreId) throw new HerdrError('core-mismatch', "this session's Herdr terminal belongs to a core that is no longer running; start a new session in Herdr", core);
@@ -137,10 +171,28 @@ export function createHcClient(options: HcClientOptions, available?: (key: strin
   const machines: HcClient['machines'] = async callOptions => {
     const rows = object(await call(['machine', 'ls', '--json'], undefined, callOptions)).machines;
     if (!Array.isArray(rows)) throw new HerdrError('invalid-reply', 'Expected machine list');
-    return rows.map(value => {
+    const parsed = rows.map(value => {
       const m = object(value); const name = text(m.name);
       return { id: text(m.id) as CoreId, name: name as MachineName, aliases: machineAliases(m), state: m.state === 'connected' ? 'connected' : 'disconnected', sessionNamespace: m.session === null || m.session === undefined ? 'default' : text(m.session), runtime: null } satisfies MachineSummary;
     });
+    const groups = new Map<string, MachineGroup>();
+    for (const row of parsed) {
+      let group = groups.get(row.id);
+      if (!group) groups.set(row.id, group = { id: row.id, name: row.name, names: new Set(), aliases: new Set(), keys: [] });
+      if (row.name < group.name) group.name = row.name;
+      group.names.add(row.name);
+      for (const value of [row.id, row.name, ...row.aliases]) group.aliases.add(nameKey(value));
+    }
+    const aliases = new Map<string, MachineGroup | null>();
+    for (const group of groups.values()) for (const key of group.aliases) {
+      const previous = aliases.get(key);
+      if (previous === null) continue;
+      if (previous && previous.id !== group.id) aliases.set(key, null);
+      else aliases.set(key, group);
+    }
+    machineNames.clear();
+    for (const [key, group] of aliases) if (group) { group.keys.push(`machine:${key}`); machineNames.set(key, group); }
+    return parsed;
   };
   const machineValidations = new Map<MachineName, { promise: Promise<MachineSummary>; expiresAt: number | null }>();
   const selectedMachine = (rows: MachineSummary[], on: MachineName) => {
@@ -208,7 +260,7 @@ export function createHcClient(options: HcClientOptions, available?: (key: strin
       await call(['label', address, ...entries.map(([key, value]) => `${key}=${value ?? ''}`), '--json']);
     },
     fileRead: async (on, path) => { await machine(on); const reply = object(await call(['file', 'read', '--json', '--on', on, path])); if (typeof reply.text !== 'string') throw new HerdrError('invalid-reply', 'Expected text file'); machineAvailable(on); return Buffer.from(reply.text); },
-    fileWrite: async (on, path, bytes, callOptions) => { await machine(on, callOptions); await call(['file', 'write', '--json', '--on', on, path], bytes, callOptions); machineAvailable(on); },
+    fileWrite: async (on, path, bytes, callOptions) => { await machine(on, callOptions); object(await call(['file', 'write', '--json', '--on', on, path], bytes, callOptions)); machineAvailable(on); },
     onMachineAvailable: listener => { machineListeners.add(listener); return () => { machineListeners.delete(listener); }; },
     events: () => {
       if (disposal) throw new HerdrError('disposed', 'Hc client disposed');
@@ -245,6 +297,6 @@ export function createHcClient(options: HcClientOptions, available?: (key: strin
         },
       };
     },
-    dispose: () => disposal ??= Promise.resolve(eventStream?.dispose()).then(() => { machineListeners.clear(); }),
+    dispose: () => disposal ??= Promise.resolve(eventStream?.dispose()).then(() => { machineListeners.clear(); aliasLookups.clear(); }),
   };
 }

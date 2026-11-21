@@ -49,6 +49,7 @@ function fixture() {
   const clock: Clock = { now: () => now, later(delay, fn) { const timer = { at: now + delay, delay, fn, cancelled: false }; timers.push(timer); return () => { timer.cancelled = true; }; } };
   let reachability: "reachable" | "unreachable" | "unknown" = "reachable";
   let nativeState: unknown;
+  let syncVerified = true;
   let readiness: readonly typeof ready[] | null = [];
   let suspended: readonly { sessionId: string; epoch: number }[] | null = [];
   let pending: readonly string[] = [];
@@ -63,7 +64,7 @@ function fixture() {
     async probe() { return { kind: "live" as const, startIdentity: "fixture-process" }; },
     placement: { async reconcile(rows: readonly typeof ready[]) { placements.push([...rows]); if (failPlacement) throw new Error("unknown launch outcome"); return { pending }; } },
     async observe(_peer: unknown, results: readonly { code: number }[]) {
-      return { reachability: nativeState === undefined ? reachability : parseMachineReachability(nativeState, results.every(row => row.code === 0)), readiness, suspensions: suspended };
+      return { reachability: nativeState === undefined ? reachability : parseMachineReachability(nativeState, results.every(row => row.code === 0)), syncVerified: syncVerified && results.every(row => row.code === 0), readiness, suspensions: suspended };
     },
     notices: {
       async publish(notice: Notice) { publishCalls.push(notice.id); if (!notified.has(notice.id)) { notified.add(notice.id); notices.push(notice); for (const waiter of noticeWaiters.splice(0)) waiter(); } },
@@ -86,6 +87,7 @@ function fixture() {
     reachable() { reachability = "reachable"; f.unavailable.delete(BOX); },
     unknown() { reachability = "unknown"; },
     setNativeState(state: unknown) { nativeState = state; },
+    setSyncVerified(value: boolean) { syncVerified = value; },
     setReadiness(rows: readonly typeof ready[] | null) { readiness = rows; },
     setSuspended(rows: readonly { sessionId: string; epoch: number }[] | null) { suspended = rows; },
     setPending(rows: readonly string[]) { pending = rows; },
@@ -124,6 +126,10 @@ it("verified peer recovery schedules one full pass outside sync and drains it on
   h.reachable();
   await afterSync(peer, [{ code: 1, reason: "invalid-peer", operationId: "op-1", home: null, epoch: null, repairCommand: null, value: null }]);
   expect(h.timers.filter(timer => !timer.cancelled && timer.delay === 0)).toEqual([]);
+  h.setSyncVerified(false);
+  await afterSync(peer, []);
+  expect(h.timers.filter(timer => !timer.cancelled && timer.delay === 0)).toEqual([]);
+  h.setSyncVerified(true);
   await afterSync(peer, []); await afterSync(peer, []);
   expect(passes).toEqual([]);
   expect(h.timers.filter(timer => !timer.cancelled && timer.delay === 0)).toHaveLength(1);
@@ -353,25 +359,26 @@ it("unreachable home notifies once and clears on recovery", async () => {
   expect((await h.request("status")).value).toMatchObject({ warnings: [] });
 }, 5000);
 
-it.each(["disconnected", "unreachable", "stopped"])("native %s alerts after ten minutes and clears only after verified connection", async state => {
+it.each(["disconnected", "unreachable", "stopped"])("native %s alerts after ten minutes and clears on connected even when sync fails", async state => {
   const h = fixture(); h.home(); h.unreachable(); h.setNativeState(state);
   await h.start(); await h.request("sync");
   expect(h.notices).toEqual([]);
   h.fire(600_000); await h.noticeReady();
   expect(h.notices).toHaveLength(1);
-  for (const uncertainty of ["needs_login", "needs-login", "connecting", "unknown", "connected"]) {
+  for (const uncertainty of ["needs_login", "needs-login", "connecting", "unknown"]) {
     h.setNativeState(uncertainty); await h.request("sync");
     expect(h.clears).toEqual([]);
     expect((await h.request("status")).value).toMatchObject({ warnings: [{ kind: "unreachable" }] });
   }
-  h.reachable(); h.setNativeState("connected"); await h.request("sync");
+  h.setNativeState("connected");
+  expect((await h.request("sync")).code).not.toBe(0);
   expect(h.clears).toEqual([h.notices[0].id]);
   expect((await h.request("status")).value).toMatchObject({ warnings: [] });
 }, 5000);
 
 it.each([
   ["disconnected", false, "unreachable"], ["unreachable", true, "unreachable"], ["stopped", false, "unreachable"],
-  ["connected", true, "reachable"], ["connected", false, "unknown"],
+  ["connected", true, "reachable"], ["connected", false, "reachable"],
   ["needs_login", true, "unknown"], ["needs-login", true, "unknown"], ["connecting", true, "unknown"],
   ["identity-mismatch", true, "unknown"], [null, true, "unknown"], [{ state: "connected" }, true, "unknown"],
 ] as const)("parses native state %j with sync proof %s as %s", (state, synced, expected) => {

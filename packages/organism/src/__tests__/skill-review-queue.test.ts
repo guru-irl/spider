@@ -244,6 +244,43 @@ it("child session_start and compact do not resolve a runtime or review queue", a
 
 const secondCandidate = { name: "tracing-readers", body: finalSkillBody("tracing-readers", "Trace reader ownership.") };
 const queueSecond = () => ctx.repoDb.prepare("INSERT INTO skill_review_queue(name,body,origin,created_at) VALUES (?,?,'learner',?)").run(secondCandidate.name, secondCandidate.body, Date.now() + 1);
+it("automatically takes over a crashed review owner when its lease expires", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+  const skills = fixture(); await enqueue(skills);
+  ctx.repoDb.prepare("INSERT INTO skill_review_lock(id,token,lease_until) VALUES (1,?,?)").run("crashed-owner", Date.now() + 60_000);
+  const reviewer = vi.fn(async () => '{"verdict":"new","reason":"reusable"}');
+  const worker = new OrganismWorker({ db: ctx.repoDb, worktreeDb: ctx.db, globalDb: ctx.repoDb, project: {} as any, getEmbedder: async () => null,
+    makeModel: () => null, org: ORGANISM_DEFAULTS, curator: CURATOR_DEFAULTS, skillReview: { reviewer } });
+  try {
+    worker.startSkillReviews(); await vi.advanceTimersByTimeAsync(0);
+    expect(reviewer).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(59_999); expect(reviewer).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(reviewer).toHaveBeenCalledTimes(1);
+    expect(skills.get(candidate.name)?.candidateBody).toBe(candidate.body);
+    expect(skillReviewQueueStatus(ctx.repoDb).pending).toBe(0);
+  } finally { await worker.stopSkillReviews(); vi.useRealTimers(); }
+});
+
+it("reschedules a held review lease when its owner renews it", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+  const skills = fixture(); await enqueue(skills);
+  const started = Date.now();
+  ctx.repoDb.prepare("INSERT INTO skill_review_lock(id,token,lease_until) VALUES (1,?,?)").run("live-owner", started + 60_000);
+  const reviewer = vi.fn(async () => '{"verdict":"new","reason":"reusable"}');
+  const worker = new OrganismWorker({ db: ctx.repoDb, worktreeDb: ctx.db, globalDb: ctx.repoDb, project: {} as any, getEmbedder: async () => null,
+    makeModel: () => null, org: ORGANISM_DEFAULTS, curator: CURATOR_DEFAULTS, skillReview: { reviewer } });
+  try {
+    worker.startSkillReviews(); await vi.advanceTimersByTimeAsync(0);
+    ctx.repoDb.prepare("UPDATE skill_review_lock SET lease_until=? WHERE id=1").run(started + 120_000);
+    await vi.advanceTimersByTimeAsync(119_999); expect(reviewer).not.toHaveBeenCalled();
+    expect(skillReviewQueueStatus(ctx.repoDb).pending).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(reviewer).toHaveBeenCalledTimes(1);
+    expect(skills.get(candidate.name)?.candidateBody).toBe(candidate.body);
+  } finally { await worker.stopSkillReviews(); vi.useRealTimers(); }
+});
+
 it("a live foreign lease blocks, and an expired crash lease is taken over and released", async () => {
   const store = fixture(); await enqueue(store);
   ctx.repoDb.prepare("INSERT INTO skill_review_lock(id,token,lease_until) VALUES (1,?,?)").run("crashed-owner", Date.now() + 60_000);

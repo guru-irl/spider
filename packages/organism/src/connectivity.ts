@@ -14,6 +14,7 @@ export function isConnectivityFailure(error: unknown): boolean {
       if (seen.has(current)) break;
       seen.add(current);
       const value = current as { code?: unknown; name?: unknown; message?: unknown; status?: unknown; statusCode?: unknown; cause?: unknown };
+      if (value.name === "OrganismDeadline") return false;
       const status = typeof value.status === "number" ? value.status : value.statusCode;
       if (typeof status === "number" && status >= 400 && status < 500 && status !== 408) return false;
       const code = typeof value.code === "string" ? value.code.toUpperCase() : "";

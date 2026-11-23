@@ -301,6 +301,10 @@ distinct captured input and its unfinished passes for a live session to retry.
 The delay starts at five minutes and doubles to at most six hours. A lease
 prevents concurrent retries. Each affected session gets one failure receipt per outage. Repeated
 events update an outage count capped at 100. Local insights can still run.
+A retry clears the outage unless connectivity fails again. Passes can finish
+without a provider call. An input that cannot progress waits five minutes while
+other inputs run. Fresh drains can probe after the retry deadline. The worker
+yields between saved inputs so lifecycle drains can run.
 The passes are:
 
 - **runMemoryTodo.** Summarizes subagent run activity and asks the aux model

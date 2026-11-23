@@ -296,9 +296,15 @@ model fails the drain and is recorded. A non-connectivity error stays in the
 drain report and does not stop the other passes. A provider connectivity error
 stops later model calls. Provider or service unavailability counts as a
 connectivity failure; explicit authentication and permission failures take
-precedence, including in nested causes. The worktree database retains each
-distinct captured input and its unfinished passes for a live session to retry.
-The delay starts at five minutes and doubles to at most six hours. A lease
+precedence, including in nested causes. The worktree database retains captured
+inputs and unfinished passes for a live session to retry. Inputs with identical
+content coalesce even if their lifecycle reasons differ. The queue retains at
+most two snapshots per session and 64 across the worktree. On access, it drops
+snapshots at least seven days old and the oldest snapshots above the count
+limits. Legacy snapshots use the session row's creation time. Every drop records
+a session, reason, and cause without the transcript. A dropped snapshot can
+contain input that was never stored elsewhere. The delay starts at five minutes
+and doubles to at most six hours. A lease
 prevents concurrent retries. Each affected session gets one failure receipt per outage. Repeated
 events update an outage count capped at 100. Local insights can still run.
 A retry clears the outage unless connectivity fails again. Passes can finish
@@ -307,7 +313,7 @@ other inputs run. Fresh drains can probe after the retry deadline. The worker
 yields between saved inputs so lifecycle drains can run. The 30-second drain
 deadline is a local failure, not a provider outage. After eight connectivity
 retries fail for one saved input, the worker drops that snapshot and records
-`deferredDropped` in its drain receipt. Original session data remains intact.
+`deferredDropped` in its drain receipt. Source session records are not deleted.
 The passes are:
 
 - **runMemoryTodo.** Summarizes subagent run activity and asks the aux model

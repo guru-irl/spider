@@ -173,6 +173,34 @@ it.each(["timeout", "network"])("declares an outage when the next review also fa
     ]);
     await runSkillReviewQueue(ctx.repoDb, { timeoutMs: 1000, reviewer });
     expect(seen).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(300_000);
+    const resumed: string[] = [];
+    await runSkillReviewQueue(ctx.repoDb, { reviewer: async item => {
+      resumed.push(item.name);
+      return '{"verdict":"new","reason":"reusable"}';
+    } });
+    expect(resumed).toEqual(mode === "network" ? [later.name, candidate.name] : [candidate.name, later.name]);
+    expect(skillReviewQueueStatus(ctx.repoDb).pending).toBe(0);
+  } finally { vi.useRealTimers(); }
+});
+
+it("still counts an authentication failure after a different candidate times out", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+  const skills = fixture(); await enqueue(skills);
+  const later = { name: "tracing-readers", body: finalSkillBody("tracing-readers", "Trace reader ownership.") };
+  ctx.repoDb.prepare("INSERT INTO skill_review_queue(name,body,origin,created_at) VALUES (?,?,'learner',?)").run(later.name, later.body, Date.now() + 1);
+  const reviewer = async (item: typeof candidate, _skills: unknown, signal: AbortSignal) => {
+    if (item.name === later.name) throw Object.assign(new Error("authentication failed"), { status: 401 });
+    return new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+  };
+  try {
+    const task = runSkillReviewQueue(ctx.repoDb, { timeoutMs: 1000, reviewer });
+    await vi.advanceTimersByTimeAsync(1000); await task;
+    expect(ctx.repoDb.prepare("SELECT name,attempts FROM skill_review_queue ORDER BY name").all()).toEqual([
+      { name: later.name, attempts: 1 }, { name: candidate.name, attempts: 0 },
+    ]);
+    expect(ctx.repoDb.prepare("SELECT count(*) n FROM skill_review_outage").get()).toEqual({ n: 0 });
+    expect(skills.list()).toEqual([]);
   } finally { vi.useRealTimers(); }
 });
 

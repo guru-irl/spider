@@ -16,9 +16,10 @@ function fixture() {
   const terminals = new Map<TerminalAddress, TerminalSummary>();
   const states = new Map([['alpha.invalid', 'connected'], ['beta.invalid', 'connected']]);
   const listeners = new Set<(event: HcEvent) => void>(), hooks = new Map<string, Function>();
+  const available = new Set<(machine: MachineName) => void>();
   const runEnds = new Map<string, (run: RunId) => void>(), ended = new Set<string>();
   const errors: unknown[] = [], quiet: unknown[] = [], attempts = new Map<string, number>();
-  let current = A, onKill: ((terminal: TerminalSummary) => void) | undefined;
+  let current = A, machineCalls = 0, onKill: ((terminal: TerminalSummary) => void) | undefined;
   let getError: ((address: TerminalAddress) => unknown | undefined) | undefined;
   let onGet: ((address: TerminalAddress) => Promise<void>) | undefined;
   let ownerCheck: (terminal: TerminalSummary) => Promise<boolean | null> = async () => true;
@@ -27,7 +28,7 @@ function fixture() {
   const notFound = () => Object.assign(new Error('terminal not found'), { code: 'not_found' });
   const hc: HcClient = {
     identity: async () => A.terminal, caller: async () => A.terminal,
-    machines: async () => [...states].map(([name, state]) => ({ id: `${name}-core` as never, name: name as MachineName, aliases: [], state: state as 'connected' | 'disconnected', sessionNamespace: 'fixture', runtime: null })),
+    machines: async () => { machineCalls++; return [...states].map(([name, state]) => ({ id: `${name}-core` as never, name: name as MachineName, aliases: [], state: state as 'connected' | 'disconnected', sessionNamespace: 'fixture', runtime: null })); },
     events: () => {
       const subscriptions = new Set<(event: HcEvent) => void>();
       return { ready: Promise.resolve(), lookup: async address => terminals.has(address) ? copy(terminals.get(address)!) : null,
@@ -56,6 +57,7 @@ function fixture() {
     hc, env: { HC_TERMINAL_ID: 'parent' }, currentOwner: () => current,
     ownerIsLive: terminal => ownerCheck(terminal), runIsLive: terminal => runCheck(terminal),
     subscribeRunEnds: (agent, listener) => { runEnds.set(agent.sessionId, listener); return () => runEnds.delete(agent.sessionId); },
+    onMachineAvailable: (listener: (machine: MachineName) => void) => { available.add(listener); return () => { available.delete(listener); }; },
     reportError: error => errors.push(error), reportCleanupError: (error: unknown) => quiet.push(error),
   } as Parameters<typeof registerAgentConsoleLifecycle>[1]);
   const create = (agent: Owner, id: string, machine = 'alpha.invalid', run?: string, notify = true) => {
@@ -71,6 +73,9 @@ function fixture() {
     hc, terminals, errors, quiet, attempts, create,
     useOwner: (value: Owner) => { current = value; },
     online: (machine: string, connected: boolean) => { states.set(machine, connected ? 'connected' : 'disconnected'); },
+    machineCalls: () => machineCalls,
+    availabilitySubscribers: () => available.size,
+    notifyAvailable: (machine: string) => { for (const listener of available) listener(machine as MachineName); },
     signalInventory: () => emit({ type: 'missed', seq: 3, terminals: [] }),
     replay: (address: TerminalAddress) => emit({ type: 'created', seq: 4, terminal: address, data: copy(terminals.get(address)!) }),
     finish: (session: Owner, run: string) => { ended.add(run); runEnds.get(session.sessionId)?.(run as RunId); },
@@ -287,6 +292,79 @@ it('counts one failed liveness check only once when duplicate events arrive conc
   expect(f.quiet.filter(value => (value as { code?: string }).code === 'console-cleanup-exhausted')).toHaveLength(0);
   await vi.advanceTimersByTimeAsync(30000);
   expect(f.terminals.has(address)).toBe(false);
+});
+
+it('polls inventory every 30 seconds when all pending cleanup failures are connectivity errors', async () => {
+  fakeClock(); vi.setSystemTime(0);
+  const f = makeFixture(); await f.start();
+  const address = f.create(A, 'offline-poll', 'alpha.invalid', 'offline-run');
+  f.getError(value => value === address ? new HerdrError('cli-timeout', 'Destination timed out') : undefined);
+  f.finish(A, 'offline-run'); await settle();
+  const before = f.machineCalls();
+  await vi.advanceTimersByTimeAsync(29_999);
+  expect(f.machineCalls()).toBe(before);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(f.machineCalls()).toBe(before + 1);
+  expect(f.terminals.has(address)).toBe(true);
+});
+
+it('keeps the faster inventory cadence for identity errors and slows it when they become connectivity failures', async () => {
+  fakeClock(); vi.setSystemTime(0);
+  const f = makeFixture(); await f.start();
+  const alpha = f.create(A, 'offline', 'alpha.invalid', 'alpha-run');
+  const beta = f.create(A, 'identity', 'beta.invalid', 'beta-run');
+  let betaOffline = false;
+  f.getError(value => value === alpha ? new HerdrError('cli-timeout', 'Destination timed out')
+    : value === beta ? betaOffline ? new HerdrError('cli-timeout', 'Destination timed out') : new HerdrError('caller-mismatch', 'Wrong terminal identity') : undefined);
+  f.finish(A, 'alpha-run'); f.finish(A, 'beta-run'); await settle();
+  const before = f.machineCalls(), betaAttempts = f.attempts.get(beta);
+  f.notifyAvailable('beta.invalid'); await settle();
+  expect(f.attempts.get(beta)).toBe(betaAttempts);
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(f.machineCalls()).toBe(before + 1);
+  betaOffline = true;
+  await vi.advanceTimersByTimeAsync(28_000);
+  const afterTransition = f.machineCalls();
+  await vi.advanceTimersByTimeAsync(29_999);
+  expect(f.machineCalls()).toBe(afterTransition);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(f.machineCalls()).toBe(afterTransition + 1);
+});
+
+it('wakes only the recovered machine on verified availability without an inventory transition', async () => {
+  fakeClock(); vi.setSystemTime(0);
+  const f = makeFixture(); await f.start();
+  const address = f.create(A, 'verified-recovery', 'alpha.invalid', 'recover-run');
+  let offline = true;
+  f.getError(value => value === address && offline ? new HerdrError('cli-timeout', 'Destination timed out') : undefined);
+  f.finish(A, 'recover-run'); await settle();
+  await vi.advanceTimersByTimeAsync(30_000);
+  await vi.advanceTimersByTimeAsync(60_000);
+  const before = f.attempts.get(address);
+  f.notifyAvailable('beta.invalid'); await settle();
+  expect(f.attempts.get(address)).toBe(before);
+  offline = false;
+  f.notifyAvailable('alpha.invalid'); await settle();
+  expect(f.terminals.has(address)).toBe(false);
+  expect(f.attempts.get(address)).toBeGreaterThan(before!);
+  expect(f.availabilitySubscribers()).toBe(1);
+  f.dispose();
+  expect(f.availabilitySubscribers()).toBe(0);
+});
+
+it('limits repeated verified-recovery wakes while connectivity still fails', async () => {
+  fakeClock(); vi.setSystemTime(0);
+  const f = makeFixture(); await f.start();
+  const address = f.create(A, 'recovery-flap', 'alpha.invalid', 'flap-run');
+  f.getError(value => value === address ? new HerdrError('cli-timeout', 'Destination timed out') : undefined);
+  f.finish(A, 'flap-run'); await settle();
+  const before = f.attempts.get(address)!;
+  for (let i = 0; i < 10; i++) {
+    f.notifyAvailable('alpha.invalid'); await settle();
+    await vi.advanceTimersByTimeAsync(2000);
+  }
+  expect(f.attempts.get(address)).toBe(before + 1);
+  expect(f.terminals.has(address)).toBe(true);
 });
 
 it('keeps console cleanup through repeated connectivity failures and removes it after recovery', async () => {

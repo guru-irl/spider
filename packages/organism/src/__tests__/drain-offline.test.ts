@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { OrganismWorker, type WorkerDeps } from "../worker.js";
+import { DrainRetryStore } from "../drain-retry.js";
+import { drainSession } from "../drain.js";
 import { registerOrganism } from "../index.js";
 import { ORGANISM_DEFAULTS } from "../config.js";
 import { CURATOR_DEFAULTS } from "../curator.js";
@@ -247,6 +249,66 @@ it("restores a deferred captured input in the next live session", async () => {
   await vi.advanceTimersByTimeAsync(300_000);
   expect(delivered.some(messages => messages.includes("Keep this captured input after a restart."))).toBe(true);
   expect(next.getLastDrain()).toMatchObject({ status: "completed" });
+});
+
+it("finishes a reflection retry when the embedder stays unavailable and no provider call is needed", async () => {
+  const complete = vi.fn(async () => response);
+  const store = new DrainRetryStore(databases.db);
+  const input = drainSession(databases.db, "session", "before_compact", snapshot("Keep this for reflection."));
+  store.failure(input, ["reflection"], "reflection", "fetch failed");
+  const worker = fixture(complete, {
+    getEmbedder: () => new Promise(() => {}),
+    org: { ...ORGANISM_DEFAULTS, passes: { runMemoryTodo: false, todoMemory: false, learning: false, consolidation: false, reflection: true, insights: false } },
+  });
+  worker.startDeferredDrains();
+  await vi.advanceTimersByTimeAsync(305_000);
+  expect(complete).not.toHaveBeenCalled();
+  expect(store.next()).toBeUndefined();
+  expect(store.outage()).toBeUndefined();
+  expect(worker.getLastDrain()).toMatchObject({ status: "completed", modelCalls: 0 });
+});
+
+it("clears a no-model retry and lets other saved inputs run before trying it again", async () => {
+  databases.db.prepare("INSERT INTO sessions(id,started_at) VALUES ('other',1)").run();
+  const store = new DrainRetryStore(databases.db);
+  const first = drainSession(databases.db, "session", "before_compact", snapshot("First saved input."));
+  const second = drainSession(databases.db, "other", "before_compact", snapshot("Second saved input."));
+  store.failure(first, ["learning"], "learning", "fetch failed");
+  store.defer(second, ["learning"]);
+  const delivered: string[] = [];
+  const complete = vi.fn(async (_system: string, messages: Array<{ content: string }>) => {
+    delivered.push(messages.map(message => message.content).join("\n"));
+    return response;
+  });
+  const makeModel = vi.fn().mockReturnValueOnce(null).mockReturnValue({ complete });
+  const worker = fixture(complete, {
+    makeModel,
+    org: { ...ORGANISM_DEFAULTS, passes: { runMemoryTodo: false, todoMemory: false, learning: true, consolidation: false, reflection: false, insights: false } },
+  });
+  worker.startDeferredDrains();
+  await vi.advanceTimersByTimeAsync(300_000);
+  expect(delivered).toHaveLength(1);
+  expect(delivered[0]).toContain("Second saved input.");
+  expect(store.outage()).toBeUndefined();
+  expect(store.next()?.bundle.sessionId).toBe("session");
+  await vi.advanceTimersByTimeAsync(300_000);
+  expect(delivered).toHaveLength(2);
+  expect(delivered[1]).toContain("First saved input.");
+  expect(store.next()).toBeUndefined();
+});
+
+it("lets a fresh drain probe the provider after the outage deadline", async () => {
+  databases.db.prepare("INSERT INTO sessions(id,started_at) VALUES ('other',1)").run();
+  let online = false;
+  const complete = vi.fn(async () => { if (!online) throw offline(); return response; });
+  const worker = fixture(complete);
+  await worker.runDrain("session", "before_compact", snapshot("Saved before the outage."));
+  vi.setSystemTime(Date.now() + 300_000);
+  online = true;
+  await worker.runDrain("other", "before_compact", snapshot("Fresh input after the retry is due."));
+  expect(complete).toHaveBeenCalledTimes(3);
+  expect(worker.getLastDrain()).toMatchObject({ sessionId: "other", status: "completed", modelCalls: 2 });
+  expect(new DrainRetryStore(databases.db).outage()).toBeUndefined();
 });
 
 it("keeps independent identity failures on the existing per-pass path", async () => {

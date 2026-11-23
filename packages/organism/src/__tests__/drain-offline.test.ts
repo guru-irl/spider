@@ -332,6 +332,44 @@ it("lets a fresh drain probe the provider after the outage deadline", async () =
   expect(new DrainRetryStore(databases.db).outage()).toBeUndefined();
 });
 
+it("treats the drain deadline as a local failure and permits a later drain", async () => {
+  let slow = true;
+  let signal: AbortSignal | undefined;
+  const complete = vi.fn(async () => slow ? new Promise<string>(() => {}) : response);
+  const worker = fixture(complete, { makeModel: s => { signal = s; return { complete }; } });
+  const first = worker.runDrain("session", "before_compact", snapshot("A slow local drain."));
+  await vi.advanceTimersByTimeAsync(30_000);
+  await first;
+  expect(signal?.reason).toMatchObject({ name: "OrganismDeadline", message: "organism drain timed out" });
+  expect(worker.getLastDrain()).toMatchObject({ status: "failed", modelCalls: 1 });
+  const store = new DrainRetryStore(databases.db);
+  expect(store.outage()).toBeUndefined();
+  expect(store.next()).toBeUndefined();
+  slow = false;
+  await worker.runDrain("session", "shutdown", snapshot("A later reachable drain."));
+  expect(complete).toHaveBeenCalledTimes(3);
+  expect(worker.getLastDrain()).toMatchObject({ status: "completed", errors: [] });
+});
+
+it("drops a snapshot after eight connectivity retries without spending another snapshot's budget", async () => {
+  const complete = vi.fn(async () => { throw offline(); });
+  const worker = fixture(complete);
+  await worker.runDrain("session", "before_compact", snapshot("First saved input."));
+  await worker.runDrain("session", "before_compact", snapshot("Second saved input."));
+  const store = new DrainRetryStore(databases.db);
+  const delays = [300_000, 600_000, 1_200_000, 2_400_000, 4_800_000, 9_600_000, 19_200_000, 21_600_000];
+  for (const [index, delay] of delays.entries()) {
+    await vi.advanceTimersByTimeAsync(delay);
+    expect(complete).toHaveBeenCalledTimes(index + 2);
+    if (index < 7) expect(store.next()?.bundle.transcript[0].content).toBe("First saved input.");
+  }
+  expect(store.next()?.bundle.transcript[0].content).toBe("Second saved input.");
+  expect(JSON.parse(receipts().at(-1)!.payload)).toMatchObject({ sessionId: "session", deferredDropped: 1 });
+  await vi.advanceTimersByTimeAsync(21_600_000);
+  expect(complete).toHaveBeenCalledTimes(10);
+  expect(store.next()?.bundle.transcript[0].content).toBe("Second saved input.");
+});
+
 it("keeps independent identity failures on the existing per-pass path", async () => {
   const complete = vi.fn(async () => { throw Object.assign(new Error("authentication failed"), { status: 401 }); });
   const worker = fixture(complete);

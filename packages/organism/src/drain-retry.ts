@@ -107,9 +107,13 @@ export class DrainRetryStore {
     this.db.prepare("UPDATE organism_drain_retry_lock SET owner='',lease_until=0 WHERE id=1 AND owner=?").run(owner);
   }
 
-  next(): DeferredDrain | undefined {
-    const row = this.db.prepare("SELECT session_id FROM organism_deferred_drain ORDER BY created_at,session_id LIMIT 1").get() as { session_id: string } | undefined;
-    return row ? this.snapshots(row.session_id)[0] : undefined;
+  next(excluded: ReadonlySet<string> = new Set()): DeferredDrain | undefined {
+    const rows = this.db.prepare("SELECT session_id FROM organism_deferred_drain ORDER BY created_at,session_id").all() as Array<{ session_id: string }>;
+    for (const row of rows) {
+      const next = this.snapshots(row.session_id).find(item => !excluded.has(JSON.stringify(item.bundle)));
+      if (next) return next;
+    }
+    return undefined;
   }
 
   finish(bundle: DigestBundle): void {

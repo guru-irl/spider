@@ -274,6 +274,7 @@ it("clears a no-model retry and lets other saved inputs run before trying it aga
   const first = drainSession(databases.db, "session", "before_compact", snapshot("First saved input."));
   const second = drainSession(databases.db, "other", "before_compact", snapshot("Second saved input."));
   store.failure(first, ["learning"], "learning", "fetch failed");
+  vi.setSystemTime(Date.now() + 1);
   store.defer(second, ["learning"]);
   const delivered: string[] = [];
   const complete = vi.fn(async (_system: string, messages: Array<{ content: string }>) => {
@@ -281,20 +282,40 @@ it("clears a no-model retry and lets other saved inputs run before trying it aga
     return response;
   });
   const makeModel = vi.fn().mockReturnValueOnce(null).mockReturnValue({ complete });
+  const outagesAfterNoModel: unknown[] = [];
   const worker = fixture(complete, {
     makeModel,
+    onDrainReport: report => { if (report.skipReason === "no-model") outagesAfterNoModel.push(store.outage()); },
     org: { ...ORGANISM_DEFAULTS, passes: { runMemoryTodo: false, todoMemory: false, learning: true, consolidation: false, reflection: false, insights: false } },
   });
   worker.startDeferredDrains();
   await vi.advanceTimersByTimeAsync(300_000);
   expect(delivered).toHaveLength(1);
   expect(delivered[0]).toContain("Second saved input.");
+  expect(outagesAfterNoModel).toEqual([undefined]);
   expect(store.outage()).toBeUndefined();
   expect(store.next()?.bundle.sessionId).toBe("session");
   await vi.advanceTimersByTimeAsync(300_000);
   expect(delivered).toHaveLength(2);
   expect(delivered[1]).toContain("First saved input.");
   expect(store.next()).toBeUndefined();
+});
+
+it("finishes a retry when its remaining passes short-circuit on missing input", async () => {
+  databases.db.prepare("INSERT INTO run_events(session_id,ts,type,summary) VALUES ('session',1,'tool_result','Saved activity')").run();
+  const complete = vi.fn(async () => response);
+  const store = new DrainRetryStore(databases.db);
+  const input = drainSession(databases.db, "session", "before_compact", snapshot(""));
+  input.transcript = [];
+  store.failure(input, ["todoMemory", "learning", "consolidation"], "learning", "fetch failed");
+  const worker = fixture(complete, {
+    org: { ...ORGANISM_DEFAULTS, passes: { runMemoryTodo: false, todoMemory: true, learning: true, consolidation: true, reflection: false, insights: false } },
+  });
+  worker.startDeferredDrains();
+  await vi.advanceTimersByTimeAsync(300_000);
+  expect(complete).not.toHaveBeenCalled();
+  expect(store.next()).toBeUndefined();
+  expect(store.outage()).toBeUndefined();
 });
 
 it("lets a fresh drain probe the provider after the outage deadline", async () => {

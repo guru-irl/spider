@@ -123,7 +123,7 @@ export class OrganismWorker {
     this.#drainRetryTimer = setTimeout(() => {
       this.#drainRetryTimer = undefined; this.#drainRetryAt = undefined;
       if (this.#shuttingDown || this.#paused) return;
-      void this.#serialize(() => this.#retryDeferredDrains()).catch(() => undefined);
+      void this.#retryDeferredDrains().catch(() => undefined);
     }, Math.max(1, retryAt - Date.now()));
     this.#drainRetryTimer.unref();
   }
@@ -136,14 +136,17 @@ export class OrganismWorker {
     const lease = store.acquire(owner, duration);
     if (!lease.acquired) { this.#scheduleDrainRetry(lease.retryAt); return; }
     try {
+      const attempted = new Set<string>();
       while (!this.#shuttingDown && !this.#paused && store.renew(owner, duration)) {
         const outage = store.outage();
         if (outage && outage.retryAt > Date.now()) { this.#scheduleDrainRetry(outage.retryAt); return; }
-        const pending = store.next();
-        if (!pending) return;
-        await this.#doRunDrain(pending.bundle.sessionId, pending.bundle.reason, undefined, pending, owner);
-        const next = store.next();
-        if (next && JSON.stringify(next) === JSON.stringify(pending)) return;
+        const pending = store.next(attempted);
+        if (!pending) {
+          if (store.next()) this.#scheduleDrainRetry(Date.now() + 5 * 60_000);
+          return;
+        }
+        attempted.add(JSON.stringify(pending.bundle));
+        await this.#serialize(() => this.#doRunDrain(pending.bundle.sessionId, pending.bundle.reason, undefined, pending, owner));
       }
     } finally { store.release(owner); }
   }
@@ -244,7 +247,7 @@ export class OrganismWorker {
         return summary;
       }
       const outage = retryStore.outage();
-      if (outage && (!deferred || outage.retryAt > Date.now())) {
+      if (outage && outage.retryAt > Date.now()) {
         const pending = retryStore.defer(input, required);
         if (pending) {
           held = true; suppressReceipt = !pending.first;
@@ -281,7 +284,11 @@ export class OrganismWorker {
           if (result.capDropped) report.capDroppedByPass![name] = result.capDropped;
           if (report.modelCalls > before) successfulPasses++;
           return result;
-        } catch (e) { fail(name, e); return emptyResult(); }
+        } catch (e) {
+          fail(name, e);
+          if (!connectivity) completed.add(name);
+          return emptyResult();
+        }
       };
       const results: DigestResult[] = [];
       let consolidated: DigestResult | undefined;
@@ -297,6 +304,8 @@ export class OrganismWorker {
           ...listActive(globalDb, "global", { limit: 60 }).map(({ content }) => ({ scope: "global" as const, content })),
           ...listActive(db, "repo", { limit: 60 }).map(({ content }) => ({ scope: "repo" as const, content })),
         ], context)));
+      } else if (org.passes.learning && required.includes("learning") && input.transcript.length === 0) {
+        completed.add("learning");
       }
       if (org.passes.consolidation) {
         consolidated = await runPass("consolidation", () => consolidationPass(input, model));
@@ -326,6 +335,7 @@ export class OrganismWorker {
             if (report.modelCalls > beforeCalls && !reflectionAllFailed) successfulPasses++;
           } catch (e) {
             fail("reflection", e);
+            if (!connectivity) completed.add("reflection");
             results.push(emptyResult());
           }
         }
@@ -369,8 +379,8 @@ export class OrganismWorker {
             suppressReceipt = !pending.first;
             this.#scheduleDrainRetry(pending.outage.retryAt);
           } else if (!held) {
-            if (deferred && (calledProvider || report.skipReason === "no-input" || required.length === 0)) retryStore.finish(deferred.bundle);
-            if (calledProvider) {
+            if (deferred && (report.skipReason === "no-input" || required.every(name => completed.has(name)))) retryStore.finish(deferred.bundle);
+            if (deferred || calledProvider) {
               retryStore.clearOutage();
               if (!deferred && retryStore.next()) this.#scheduleDrainRetry(Date.now());
             }

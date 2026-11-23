@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 
 import { join } from "node:path";
 import { createReplica } from "@spider/db-core/testutil";
 import { recordLocation } from "@spider/db-core/roam/catalog";
+import { writeLocal } from "@spider/db-core/roam/local-state";
 import { claimIdLock, inspectIdLock } from "@spider/herdr/sessions/id-lock";
 import { createSessionLeases, type ProcessProbe } from "@spider/herdr/sessions/lease";
 import { createProcessPresence } from "@spider/herdr/sessions/presence";
@@ -11,9 +12,11 @@ import { access } from "node:fs/promises";
 import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import { openJournal } from "../journal";
 import { createIntentStore } from "../intent";
+import * as intentModule from "../intent";
 import { createRunningIntentAuthority } from "../session-control";
 import { handleSessionOperation } from "../participant-runtime";
 import { createParticipantSupervisor } from "../participant-supervisor";
+import { createDurableLaunchPort } from "../supervisor";
 import { runLocalDoctor } from "../local-diagnostics";
 import type { LocalExactHc } from "../launcher";
 import * as launcherModule from "../launcher";
@@ -24,7 +27,7 @@ import { enrollFixtureCore } from "./supervisor-core-fixture";
 const BOX = "00000000-0000-4000-8000-000000000002", HUB = "00000000-0000-4000-8000-000000000001";
 const fixtures: ReturnType<typeof createReplica>[] = [];
 afterEach(() => { for (const f of fixtures.splice(0)) f.close(); vi.restoreAllMocks(); });
-async function fixture(launchId = "launch-1") {
+async function participantFixture() {
   const global = createReplica("global", BOX), worktree = createReplica("worktree", BOX); fixtures.push(global, worktree);
   const root = global.root, stateRoot = join(root, "herdr"), file = join(worktree.root, "session.jsonl");
   const config = { enabled: false, role: "box" as const, machineId: BOX, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture.service", syncMs: 120000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
@@ -42,6 +45,12 @@ async function fixture(launchId = "launch-1") {
   const journal = openJournal(join(root, "roam", "journal.db")), authority = createRunningIntentAuthority(global.db), intents = createIntentStore(root);
   const intent = { sessionId: "session-1", epoch: 1, desired: "running" as const, suspended: null, file, cwd: worktree.root, moveId: null };
   await authority.set(intent, "resume-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
+  const ports = { config, root: join(root, "roam", "staging"), journal, openStore(key: string) { return { db: key === "global" ? global.db : worktree.db, effects: {} as never, policy: {} as never }; } };
+  const operation = { id: "stop-1", kind: "session-stop", machineId: BOX, expectedEpoch: 1, args: { sourceMachine: HUB, sessionId: "session-1" } };
+  return { root, stateRoot, file, global, ports, operation, authority, intents, intent };
+}
+async function fixture(launchId = "launch-1") {
+  const f = await participantFixture(), { root, stateRoot, file, journal, authority, intents, intent } = { ...f, journal: f.ports.journal };
   await authority.stop("session-1");
   await intents.update("session-1", null, { intent, failures: [], supervision: { kind: "launching", phase: "invoking", operationId: launchId } });
   const parent = { pid: 201, startIdentity: "previous-supervisor" };
@@ -63,11 +72,31 @@ async function fixture(launchId = "launch-1") {
     return { complete: true, terminals: [{ id: "terminal-1", state: terminal }] };
   }, async run() { spawns++; throw new Error("repair must never spawn"); } };
   const recovery = { bootId: async () => boot, probe: async () => process, hc, clock: { now: () => now, wait: async (ms: number) => { now += ms; } } };
-  const ports = { config, root: join(root, "roam", "staging"), journal, openStore(key: string) { return { db: key === "global" ? global.db : worktree.db, effects: {} as never, policy: {} as never }; } };
-  const operation = { id: "stop-1", kind: "session-stop", machineId: BOX, expectedEpoch: 1, args: { sourceMachine: HUB, sessionId: "session-1" } };
-  return { root, stateRoot, file, global, ports, operation, authority, intents, leases, hc, recovery, handoff, lock,
+  return { ...f, leases, hc, recovery, handoff, lock,
     terminal(value: typeof terminal) { terminal = value; }, process(value: ProcessProbe) { process = value; }, boot(value: string) { boot = value; }, spawns: () => spawns };
 }
+
+it.each([false, true])("stop clears a reservation before authorization completes: %s", async authorized => {
+  const f = await participantFixture();
+  await f.intents.update("session-1", null, { intent: f.intent, failures: [], supervision: { kind: "idle", nextAttemptAt: null } });
+  let invocations = 0;
+  const launch = createDurableLaunchPort({ intents: f.intents, operationId: () => "reserved-1", async authorize() {
+    await f.global.db.raw.backup(join(f.root, "spider.db"));
+    const before = await runLocalDoctor({ root: f.root });
+    expect(before.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "block", repairCommand: "spider roam stop session-1" })]));
+    expect(await handleSessionOperation(f.operation, f.ports, { wake: async () => {} })).toMatchObject({ code: 0, reason: "stopped-intent" });
+    return authorized;
+  }, async invoke() { invocations++; throw new Error("stopped reservation cannot launch"); } });
+  expect(await launch({ intent: f.intent, mode: "fresh" })).toMatchObject({ code: 2, reason: authorized ? "launch-intent-stale" : "launch-pending" });
+  expect((await f.intents.get("session-1"))?.value).toMatchObject({ intent: { desired: "stopped" }, supervision: { kind: "idle", nextAttemptAt: null } });
+  expect(await f.authority.get("session-1")).toMatchObject({ desired: "stopped" });
+  expect(f.ports.journal.lookupOperation("reserved-1")).toBeNull();
+  expect(f.ports.journal.read(`${participantLaunchId(BOX, "session-1", 1, "resume-1")}-restarts`)).toEqual([]);
+  const after = await runLocalDoctor({ root: f.root });
+  expect(after.diagnostics.filter(row => /exact launch.*pending/i.test(row.reason))).toEqual([]);
+  expect(invocations).toBe(0);
+  expect(await handleSessionOperation({ ...f.operation, id: "stop-2" }, f.ports, { wake: async () => {} })).toMatchObject({ code: 0 });
+});
 
 it("stop settles a disabled stopped participant's exited exact launch without relaunching", async () => {
   const f = await fixture();
@@ -112,6 +141,17 @@ it.each(["live-owner", "live-terminal", "unknown-terminal", "unknown-process", "
   expect(f.spawns()).toBe(0);
 });
 
+it("stop preserves a move launch that is not the participant's reservation", async () => {
+  const f = await fixture("move-launch-1"), current = (await f.intents.get("session-1"))!;
+  await f.intents.update("session-1", current.version, { ...current.value, supervision: { kind: "launching", phase: "invoking", operationId: "launch-1" } });
+  const before = await inspectIdLock(f.stateRoot, "session-1"), lease = await f.leases.get(f.file);
+  expect(await handleSessionOperation(f.operation, f.ports, { wake: async () => {}, launchRecovery: f.recovery })).toMatchObject({ code: 3, reason: "launch-reconciliation-required", repairCommand: `spider roam doctor ${BOX}` });
+  expect(await inspectIdLock(f.stateRoot, "session-1")).toEqual(before);
+  expect(await f.leases.get(f.file)).toEqual(lease);
+  expect(f.ports.journal.lookupOperation("move-launch-1")).toEqual({ machineId: BOX, state: "pending" });
+  expect(f.spawns()).toBe(0);
+});
+
 it("resume after a stop repair launches one new journaled successor", async () => {
   const launchId = participantLaunchId(BOX, "session-1", 1, "resume-1"), f = await fixture(launchId), options = { wake: async () => {}, launchRecovery: f.recovery };
   expect(await handleSessionOperation(f.operation, f.ports, options)).toMatchObject({ code: 0 });
@@ -146,6 +186,15 @@ it("stop refuses to declare an invoking reservation settled when its ID lock is 
   expect(f.spawns()).toBe(0);
 });
 
+it("doctor does not prescribe stop for an invoking reservation without a handoff", async () => {
+  const f = await fixture(); await f.lock.cancelHandoff("launch-1");
+  await f.global.db.raw.backup(join(f.root, "spider.db"));
+  const report = await runLocalDoctor({ root: f.root, currentCore: async () => "core-1", launchRecovery: f.recovery });
+  expect(report.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "block", reason: expect.stringMatching(/session-1.*launch-1.*pending/i), repairCommand: `spider roam doctor ${BOX}` })]));
+  expect(await handleSessionOperation(f.operation, f.ports, { wake: async () => {}, launchRecovery: f.recovery })).toMatchObject({ code: 3, reason: "launch-reconciliation-required" });
+  expect((await f.intents.get("session-1"))?.value.supervision.kind).toBe("launching");
+});
+
 it.each(["matches", "changed", "unavailable", "pin-changed"] as const)("production stop checks the pinned core when its identity %s", async state => {
   const f = await fixture();
   const dispose = vi.fn(async () => {});
@@ -163,6 +212,32 @@ it.each(["matches", "changed", "unavailable", "pin-changed"] as const)("producti
   expect(await inspectIdLock(f.stateRoot, "session-1")).toEqual(state === "matches" ? null : expect.objectContaining({ pendingOperationId: "launch-1" }));
   expect(dispose).toHaveBeenCalledOnce();
   expect(f.spawns()).toBe(0);
+});
+
+it("stop bounds a hung reconciliation without treating timeout as exit proof", async () => {
+  const f = await fixture(), before = await inspectIdLock(f.stateRoot, "session-1"), lease = await f.leases.get(f.file);
+  let enter!: () => void, release!: (core: string) => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const core = new Promise<string>(resolve => { release = resolve; });
+  f.hc.coreId = async () => { enter(); return core; };
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  // Node's timeout signal uses native timers; route only that timer through the fake clock.
+  vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => {
+    const abort = new AbortController(); setTimeout(() => abort.abort(), ms); return abort.signal;
+  });
+  let outcome: Awaited<ReturnType<typeof handleSessionOperation>> | undefined;
+  const stop = handleSessionOperation(f.operation, f.ports, { wake: async () => {}, launchRecovery: f.recovery }).then(value => { outcome = value; });
+  try {
+    await entered;
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(outcome).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(outcome).toMatchObject({ code: 3, reason: "launch-reconciliation-required", repairCommand: `spider roam doctor ${BOX}` }));
+    expect(await inspectIdLock(f.stateRoot, "session-1")).toEqual(before);
+    expect(await f.leases.get(f.file)).toEqual(lease);
+    expect(f.ports.journal.lookupOperation("launch-1")).toEqual({ machineId: BOX, state: "pending" });
+    expect(f.spawns()).toBe(0);
+  } finally { release("core-1"); await stop; vi.useRealTimers(); }
 });
 
 it.each(["exact-launch-settled", "done", "done-reply-lost"])("stop repairs an interrupted %s journal step", async action => {
@@ -186,6 +261,46 @@ it.each(["exact-launch-settled", "done", "done-reply-lost"])("stop repairs an in
   expect(f.spawns()).toBe(0);
 });
 
+it("first stop uses the current intent version after a supervisor sync during settlement", async () => {
+  const f = await fixture(), terminals = f.hc.terminals;
+  let synced = false;
+  f.hc.terminals = async (id, options) => {
+    if (!synced) {
+      synced = true;
+      const current = (await f.intents.get("session-1"))!;
+      await f.intents.update("session-1", current.version, { ...current.value, intent: { ...current.value.intent, desired: "stopped" } });
+    }
+    return terminals(id, options);
+  };
+  expect(await handleSessionOperation(f.operation, f.ports, { wake: async () => {}, launchRecovery: f.recovery })).toMatchObject({ code: 0, reason: "stopped-intent" });
+  expect(await inspectIdLock(f.stateRoot, "session-1")).toBeNull();
+  expect(await f.leases.get(f.file)).toBeNull();
+  expect((await f.intents.get("session-1"))?.value).toMatchObject({ intent: { desired: "stopped" }, supervision: { kind: "idle" } });
+  expect(f.spawns()).toBe(0);
+});
+
+it.each(["stale-cas", "authority-lost"] as const)("settled stop includes a repair when intent reconciliation fails: %s", async state => {
+  const f = await fixture();
+  if (state === "stale-cas") {
+    vi.spyOn(intentModule, "createIntentStore").mockReturnValue({ ...f.intents, async update(id, version, next) {
+      const current = (await f.intents.get(id))!;
+      await f.intents.update(id, current.version, current.value);
+      return f.intents.update(id, version, next);
+    } });
+  } else {
+    const terminals = f.hc.terminals;
+    f.hc.terminals = async (id, options) => {
+      writeLocal(f.global.db, "participant-intent", "session-1", undefined);
+      return terminals(id, options);
+    };
+  }
+  expect(await handleSessionOperation(f.operation, f.ports, { wake: async () => {}, launchRecovery: f.recovery })).toMatchObject({ code: 3, reason: "intent-reconciliation-required", repairCommand: "spider roam stop session-1" });
+  expect(await inspectIdLock(f.stateRoot, "session-1")).toBeNull();
+  expect(await f.leases.get(f.file)).toBeNull();
+  expect((await f.intents.get("session-1"))?.value.supervision.kind).toBe("launching");
+  expect(f.spawns()).toBe(0);
+});
+
 it("stop repeats one committed restart proof after a lost reply", async () => {
   const f = await fixture(), record = f.ports.journal.record;
   let crash = true;
@@ -202,6 +317,17 @@ it("stop repeats one committed restart proof after a lost reply", async () => {
   expect(f.ports.journal.read(history).filter(row => row.action === "restart")).toHaveLength(1);
   expect((await f.intents.get("session-1"))?.value.supervision.kind).toBe("idle");
   expect(f.spawns()).toBe(0);
+});
+
+it.each(["unprobed", "matches", "unavailable", "changed"] as const)("disabled pending-launch doctor reports only observed core state: %s", async state => {
+  const f = await fixture();
+  const report = await localDiagnostics.localPendingLaunchDiagnostics({ root: f.root, machineId: BOX, launchRecovery: f.recovery,
+    ...(state === "unprobed" ? {} : { currentCore: async () => state === "unavailable" ? null : state === "changed" ? "other-core" : "core-1" }) });
+  const pending = report.find(row => /session-1.*launch-1.*pending/i.test(row.reason));
+  expect(pending).toMatchObject({ severity: "block", repairCommand: "spider roam stop session-1" });
+  const detail = { unprobed: "core identity has not been checked", matches: "awaiting reconciliation", unavailable: "core identity is unavailable", changed: "destination core changed" }[state];
+  expect(pending?.reason).toContain(detail);
+  if (state !== "unavailable") expect(pending?.reason).not.toContain("core identity is unavailable");
 });
 
 it("disabled doctor reports the same pending-launch block that enable must refuse", async () => {

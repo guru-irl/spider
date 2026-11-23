@@ -71,8 +71,12 @@ export async function handleSessionOperation(operation: Operation, ports: AgentP
     }
     if (operation.kind === "session-stop") {
       await authority.stop(id);
-      const intents = createIntentStore(root), current = await intents.get(id), lock = await inspectIdLock(join(root, "herdr"), id);
+      const intents = createIntentStore(root);
+      let current = await intents.get(id);
+      const lock = await inspectIdLock(join(root, "herdr"), id);
       if (lock?.pendingOperationId) {
+        if (current?.value.supervision.kind !== "launching" || current.value.supervision.operationId !== lock.pendingOperationId)
+          return { ...result(3, "launch-reconciliation-required"), repairCommand: `spider roam doctor ${pinned.machineId}` };
         const local = { machineId: pinned.machineId, label: "local machine", peer: null };
         const recovery = options.launchRecovery ?? { bootId: localBootId, probe: (pid: number) => createLocalDiagnosticPorts(root, []).probeProcess(local, pid) };
         let hc = options.launchRecovery?.hc, dispose: (() => Promise<void>) | undefined, settled = false;
@@ -96,17 +100,19 @@ export async function handleSessionOperation(operation: Operation, ports: AgentP
         } catch { /* Missing terminal or process proof must preserve pending ownership. */ }
         finally { await dispose?.(); }
         if (!settled) return { ...result(3, "launch-reconciliation-required"), repairCommand: `spider roam doctor ${pinned.machineId}` };
+        current = await intents.get(id);
       }
       const released = current?.value.supervision.kind === "launching" && ports.journal.read(current.value.supervision.operationId).some(row =>
         row.action === "exact-launch-settled" && row.result.sessionId === id && row.result.file === current.value.intent.file);
       if (!lock && current?.value.supervision.kind === "launching" && current.value.supervision.phase === "invoking" && !released)
         return { ...result(3, "launch-reconciliation-required"), repairCommand: `spider roam doctor ${pinned.machineId}` };
-      if (current && released) {
+      const reserved = !lock && current?.value.supervision.kind === "launching" && current.value.supervision.phase === "reserved";
+      if (current && (released || reserved)) {
         const intent = await authority.get(id), operationId = authority.operationId(id);
-        if (!intent || !operationId) return result(3, "intent-reconciliation-required");
-        recordParticipantRestart(ports.journal, pinned.machineId, intent, operationId, current.value.supervision);
+        if (!intent || !operationId) return { ...result(3, "intent-reconciliation-required"), repairCommand: `spider roam stop ${id}` };
+        if (released) recordParticipantRestart(ports.journal, pinned.machineId, intent, operationId, current.value.supervision);
         if ((await intents.update(id, current.version, { intent, failures: [], supervision: { kind: "idle", nextAttemptAt: null } })).kind !== "updated")
-          return result(3, "intent-reconciliation-required");
+          return { ...result(3, "intent-reconciliation-required"), repairCommand: `spider roam stop ${id}` };
       }
     } else {
       const intents = createIntentStore(root), current = await intents.get(id);

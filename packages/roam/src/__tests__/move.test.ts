@@ -1,10 +1,12 @@
 import { createMoveRuntimeService } from "../move-runtime-service";
 import { recoverMove, cancelMove } from "../move-recovery";
 import { runHub, type HubRuntimePorts } from "../hub";
+import { createSync } from "../sync";
+import { noChangeSyncFixture, productionObservationFixture } from "./production-observation-fixture";
 import { readLocal } from "@spider/db-core/roam/local-state";
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -124,6 +126,7 @@ beforeAll(async () => {
 }, 5000);
 afterAll(() => { if (template) rmSync(template, { recursive: true, force: true }); });
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(fixtureIO.splice(0));
   for (const release of pendingPower.splice(0)) await release();
   for (const f of replicas.splice(0)) f.close();
@@ -345,7 +348,9 @@ it.each(["frozen", "transferred", "home-committed", "unknown-start"] as const)("
   const journal = openFreezeJournal(join(f.root, "roam", "journal.db")); f.ports.journal = journal;
   const peer = { machineId: BOX, alias: "box-1.invalid", node: "/home/fixture/node", pi: "/home/fixture/pi", cli: "/home/fixture/spider", core: "/home/fixture/core", globalRoot: "/home/fixture/global" };
   f.ports.config.peers = [peer];
-  let reachable = true, observation: "reachable" | "unreachable" | "unknown" = "reachable", interrupted = false;
+  const wire = noChangeSyncFixture(f.ports.config);
+  let reachable = true, interrupted = false;
+  const native = await productionObservationFixture(f.root, f.ports.config, f.global.db, wire.transport);
   const record = journal.record.bind(journal);
   journal.record = (id, action, result) => {
     record(id, action, result);
@@ -374,15 +379,18 @@ it.each(["frozen", "transferred", "home-committed", "unknown-start"] as const)("
   const timers: Array<{ ms: number; fn(): void; cancelled: boolean }> = [];
   const recoveryTimers = () => timers.filter(timer => timer.ms === 0);
   let passes = 0;
+  const sync = createSync({ config: f.ports.config, globalDb: f.global.db, journal, stores: wire.stores, transport: wire.transport,
+    clock: { now: () => 1, later() { return () => {}; } },
+    onPeerSync: (current, results) => afterSync(current, results) });
   const hub = await runHub({ config: f.ports.config, globalDb: f.global.db, journal, clock: {
     now: () => 1, later(ms, fn) { const timer = { ms, fn, cancelled: false }; timers.push(timer); return () => { timer.cancelled = true; }; } },
     runtimeRoot: f.root, socketPath: join(f.root, "hub.sock"), identity: { pid: 42, startIdentity: "fixture-start" },
     async probe() { return { kind: "live", startIdentity: "fixture-start" }; },
-    sync: { start() {}, stop() {}, async sync() { return []; }, async barriers() { return false; } },
+    sync,
     placement: { async reconcile() { return { pending: [] }; } },
-    async prepare(callback) { afterSync = callback; }, async drain() {}, async closeStores() {},
+    async prepare(callback) { afterSync = callback; }, drain: () => sync.drain(), async closeStores() {},
     async homeChangeInProgress() { return journal.lookupOperation(f.request.operation.id)?.state === "pending"; },
-    async observe() { return { reachability: observation, readiness: null, suspensions: null }; },
+    observe: native.observe,
     notices: { async publish() {}, async clear() {} },
     reconcileMoves: () => service.recover(),
     async recoverPeerMoves(machineId) { passes++; try { await service.recover(machineId); } finally { finished(); } },
@@ -390,11 +398,30 @@ it.each(["frozen", "transferred", "home-committed", "unknown-start"] as const)("
   try {
     expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 3 });
     expect(f.worktree.db.prepare("SELECT state FROM roam_sessions WHERE session_id=?").get(SESSION)).toEqual({ state: "frozen" });
-    observation = "unreachable"; await afterSync(peer, []);
-    observation = "unknown"; await afterSync(peer, []);
+    wire.setUnavailable(true); native.setState("unreachable"); await sync.sync(BOX);
+    native.setState("connecting"); await sync.sync(BOX);
     expect(recoveryTimers()).toEqual([]);
-    reachable = true; observation = "reachable";
-    await afterSync(peer, []); await afterSync(peer, []);
+    wire.setUnavailable(false); reachable = true; native.setState("connected");
+    wire.setIncomplete(true);
+    const incomplete = await sync.sync(BOX);
+    expect(incomplete).toEqual([]);
+    expect(await native.observe(peer, incomplete)).toMatchObject({ reachability: "reachable", syncVerified: false });
+    expect(recoveryTimers()).toEqual([]);
+    wire.setIncomplete(false); wire.setRefused(true);
+    const refused = await sync.sync(BOX);
+    expect(refused.some(result => result.code !== 0)).toBe(true);
+    expect(await native.observe(peer, refused)).toMatchObject({ reachability: "reachable", syncVerified: false });
+    expect(recoveryTimers()).toEqual([]);
+    wire.setRefused(false); wire.setReplaced(true);
+    const replaced = await sync.sync(BOX);
+    expect(replaced.some(result => result.code !== 0)).toBe(true);
+    expect(await native.observe(peer, replaced)).toMatchObject({ reachability: "reachable", syncVerified: false });
+    expect(recoveryTimers()).toEqual([]);
+    wire.setReplaced(false);
+    const verified = await sync.sync(BOX);
+    expect(verified.every(result => result.code === 0), JSON.stringify(verified)).toBe(true);
+    expect(await native.observe(peer, verified)).toMatchObject({ reachability: "reachable", syncVerified: true });
+    await sync.sync(BOX);
     expect(recoveryTimers()).toHaveLength(1); expect(passes).toBe(0);
     recoveryTimers()[0].cancelled = true; recoveryTimers()[0].fn(); await recovered;
     expect(passes).toBe(1); expect(maximum).toBe(1);
@@ -411,9 +438,9 @@ it.each(["frozen", "transferred", "home-committed", "unknown-start"] as const)("
     }
     expect(f.events.filter(event => event === "start")).toHaveLength(1);
     expect(f.ownersAtEveryObservation.every(n => n <= 1)).toBe(true);
-    await afterSync(peer, []);
+    await sync.sync(BOX);
     expect(recoveryTimers()).toHaveLength(1);
-  } finally { await hub.stop(); }
+  } finally { await hub.stop(); await native.stop(); }
 }, 5000);
 
 it("same-home request is a verified no-op", async () => {

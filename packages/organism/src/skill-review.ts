@@ -159,14 +159,15 @@ export function parseSkillVerdict(raw: unknown, skills: ExistingSkill[]): SkillV
 
 export type SkillReviewDecision = SkillVerdict
   | { verdict: "deterministic_failure"; reason?: string }
-  | { reviewSkipped: string; reason: string; connectivity?: true };
+  | { reviewSkipped: string; reason: string; connectivity?: true; timedOut?: true };
 
 /** Review without mutating the store, so queued callers can fence the later write. */
 export async function reviewSkillCandidate(store: SkillStore, candidate: SkillReviewCandidate, opts: SkillReviewOptions = {}): Promise<SkillReviewDecision> {
   const check = checkSkillCandidate(candidate);
   if (!check.ok) return { verdict: "deterministic_failure", reason: check.reason };
-  const skip = (reason: string, connectivity = false): SkillReviewDecision => ({
-    reviewSkipped: reason, reason: `review skipped: ${reason}`, ...(connectivity ? { connectivity: true as const } : {}),
+  const skip = (reason: string, connectivity = false, timedOut = false): SkillReviewDecision => ({
+    reviewSkipped: reason, reason: `review skipped: ${reason}`,
+    ...(connectivity ? { connectivity: true as const } : {}), ...(timedOut ? { timedOut: true as const } : {}),
   });
   if (!opts.reviewer) return skip(opts.skipReason ?? "reviewer disabled or unavailable");
   if (opts.signal?.aborted) return skip("aborted");
@@ -199,7 +200,8 @@ export async function reviewSkillCandidate(store: SkillStore, candidate: SkillRe
     const reason = safeReviewError(error);
     if (opts.signal?.aborted) return skip("aborted");
     try { opts.onReviewError?.(reason, raw); } catch { /* Diagnostics must not change the fail-closed policy. */ }
-    return skip(reason, isConnectivityFailure(error));
+    const connectivity = isConnectivityFailure(error);
+    return skip(reason, connectivity, connectivity && error instanceof Error && error.name === "TimeoutError");
   } finally {
     if (timer) clearTimeout(timer);
     if (onAbort) opts.signal?.removeEventListener("abort", onAbort);

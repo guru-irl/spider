@@ -25,6 +25,9 @@ export async function runSkillReviewQueue(db: Db, opts: QueueOptions): Promise<v
   // Organism-owned state is created lazily so older sessions can still open the repo DB.
   db.exec(`CREATE TABLE IF NOT EXISTS skill_review_outage (
     id INTEGER PRIMARY KEY CHECK (id=1), retry_at INTEGER NOT NULL, failures INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS skill_review_timeout (
+    name TEXT PRIMARY KEY, retry_at INTEGER NOT NULL, failures INTEGER NOT NULL
   )`);
   const store = new SkillStore(db);
   const owner = randomUUID();
@@ -63,9 +66,14 @@ export async function runSkillReviewQueue(db: Db, opts: QueueOptions): Promise<v
       try { opts.onDeferred?.(outage.retry_at); } catch { /* Scheduling is secondary. */ }
       return;
     }
+    db.prepare("DELETE FROM skill_review_timeout WHERE name NOT IN (SELECT name FROM skill_review_queue)").run();
+    const timeouts = new Map((db.prepare("SELECT name,retry_at FROM skill_review_timeout").all() as Array<{ name: string; retry_at: number }>)
+      .map(row => [row.name, row.retry_at]));
     const items = db.prepare("SELECT * FROM skill_review_queue ORDER BY created_at,name").all() as QueuedSkill[];
+    let previousTimeout = false;
     for (const item of items) {
       if (opts.signal?.aborted || process.env.PI_SUBAGENT_CHILD === "1") break;
+      if ((timeouts.get(item.name) ?? 0) > Date.now()) continue;
       if (!renew()) break;
       try {
         const candidate: SkillReviewCandidate = { name: item.name, category: item.category ?? undefined, body: item.body, origin: item.origin, related: JSON.parse(item.related ?? "[]") };
@@ -77,12 +85,23 @@ export async function runSkillReviewQueue(db: Db, opts: QueueOptions): Promise<v
           onReviewError: (error, raw) => { diagnostics.push({ error, raw }); },
         });
         if (opts.signal?.aborted) break;
+        const timedOut = "reviewSkipped" in decision && decision.connectivity === true && decision.timedOut === true;
         let deferredUntil: number | undefined;
         let firstOutage = false;
+        let firstTimeout = false;
         const committed = db.raw.transaction(() => {
           if (!ownsLease()) return false;
           if (!db.prepare("SELECT name FROM skill_review_queue WHERE name=?").get(item.name)) return true;
           if ("reviewSkipped" in decision && decision.connectivity) {
+            if (timedOut) {
+              const prior = db.prepare("SELECT failures FROM skill_review_timeout WHERE name=?").get(item.name) as { failures: number } | undefined;
+              const failures = Math.min(8, (prior?.failures ?? 0) + 1);
+              const retryAt = Date.now() + Math.min(6 * 60 * 60_000, 5 * 60_000 * 2 ** (failures - 1));
+              firstTimeout = !prior;
+              db.prepare("INSERT INTO skill_review_timeout(name,retry_at,failures) VALUES (?,?,?) ON CONFLICT(name) DO UPDATE SET retry_at=excluded.retry_at,failures=excluded.failures").run(item.name, retryAt, failures);
+              db.prepare("UPDATE skill_review_queue SET last_error=?,created_at=(SELECT COALESCE(MAX(created_at),0)+1 FROM skill_review_queue) WHERE name=?").run(decision.reviewSkipped.slice(0, 500), item.name);
+              if (!previousTimeout) return true;
+            }
             const previous = db.prepare("SELECT failures FROM skill_review_outage WHERE id=1").get() as { failures: number } | undefined;
             const failures = Math.min(8, (previous?.failures ?? 0) + 1);
             deferredUntil = Date.now() + Math.min(6 * 60 * 60_000, 5 * 60_000 * 2 ** (failures - 1));
@@ -90,6 +109,7 @@ export async function runSkillReviewQueue(db: Db, opts: QueueOptions): Promise<v
             db.prepare("INSERT INTO skill_review_outage(id,retry_at,failures) VALUES (1,?,?) ON CONFLICT(id) DO UPDATE SET retry_at=excluded.retry_at,failures=excluded.failures").run(deferredUntil, failures);
             db.prepare("UPDATE skill_review_queue SET last_error=? WHERE name=?").run(decision.reviewSkipped.slice(0, 500), item.name);
           } else {
+            db.prepare("DELETE FROM skill_review_timeout WHERE name=?").run(item.name);
             if (attempted) db.prepare("DELETE FROM skill_review_outage WHERE id=1").run();
             record(item, stageReviewedSkill(store, candidate, decision));
           }
@@ -97,13 +117,14 @@ export async function runSkillReviewQueue(db: Db, opts: QueueOptions): Promise<v
         }).immediate();
         if (!committed) break;
         const diagnostic = diagnostics[0];
-        if (diagnostic && (deferredUntil === undefined || firstOutage)) {
+        if (diagnostic && (timedOut ? firstTimeout || firstOutage : deferredUntil === undefined || firstOutage)) {
           try { opts.onReviewError?.(diagnostic.error, diagnostic.raw); } catch { /* Diagnostics are secondary. */ }
         }
         if (deferredUntil !== undefined) {
           try { opts.onDeferred?.(deferredUntil); } catch { /* Scheduling is secondary. */ }
           return;
         }
+        if (attempted) previousTimeout = timedOut;
       } catch (error) {
         if (opts.signal?.aborted) break;
         const reason = safeReviewError(error);
@@ -114,6 +135,13 @@ export async function runSkillReviewQueue(db: Db, opts: QueueOptions): Promise<v
         }).immediate();
         if (!committed) break;
         try { opts.onReviewError?.(`skill review queue ${item.name}: ${reason}`, undefined); } catch { /* Diagnostics are secondary. */ }
+      }
+    }
+    if (!opts.signal?.aborted) {
+      const next = db.prepare(`SELECT MIN(t.retry_at) AS retry_at FROM skill_review_timeout t
+        JOIN skill_review_queue q ON q.name=t.name`).get() as { retry_at: number | null };
+      if (next.retry_at !== null) {
+        try { opts.onDeferred?.(Math.max(Date.now() + 1, next.retry_at)); } catch { /* Scheduling is secondary. */ }
       }
     }
   } finally {

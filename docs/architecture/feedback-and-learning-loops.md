@@ -357,11 +357,14 @@ Spider removes candidates with any other verdict and records them in the
 bounded table of recent results. A malformed reply or other non-connectivity
 failure increments the candidate's attempt count and sets `last_error`. The
 third such failure drops the candidate and records the reason. A connectivity
-failure or timeout preserves the candidate and its attempt count. The runner
-stops the queue and retries after five minutes, doubling the delay to at most
-six hours. The deadline persists across sessions. A live session retries it
-without a reload, and a non-connectivity outcome resets the delay. A session
-that finds another owner holding the review lease retries when the lease expires.
+failure or timeout preserves the candidate and its attempt count. A timeout
+moves the candidate behind the others and gives it an individual retry deadline.
+The runner tries the next candidate before declaring an outage. If that call
+also fails on connectivity, the runner stops the queue. Other transport failures
+can stop it immediately. Retry delays start at five minutes and double to at
+most six hours. The deadlines persist across sessions. A non-connectivity
+outcome resets the timed-out candidate's delay. A session that finds another
+owner holding the review lease retries when the lease expires.
 Doctor shows the queue length and recent verdicts. If the rubric or catalog
 is not available, the learner prompt leaves out skill guidance, but memory
 proposals still go through. Disabling skill

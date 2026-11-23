@@ -6,7 +6,7 @@ import { drainSession, type DrainOpts } from "./drain.js";
 import { applyDigest } from "./apply.js";
 import { loadSkillReviewContext, type SkillReviewOptions } from "./skill-review.js";
 import { runSkillReviewQueue } from "./skill-review-queue.js";
-import { DrainRetryStore, type DeferredDrain } from "./drain-retry.js";
+import { deferredDrainKey, DrainRetryStore, type DeferredDrain } from "./drain-retry.js";
 import { isConnectivityFailure } from "./connectivity.js";
 import { SkillStore } from "./skill-usage.js";
 import {
@@ -150,7 +150,7 @@ export class OrganismWorker {
           if (store.next()) this.#scheduleDrainRetry(Date.now() + 5 * 60_000);
           return;
         }
-        attempted.add(JSON.stringify(pending.bundle));
+        attempted.add(deferredDrainKey(pending.bundle));
         await this.#serialize(() => this.#doRunDrain(pending.bundle.sessionId, pending.bundle.reason, undefined, pending, owner));
       }
     } finally { store.release(owner); }
@@ -255,7 +255,8 @@ export class OrganismWorker {
       if (outage && outage.retryAt > Date.now()) {
         const pending = retryStore.defer(input, required);
         if (pending) {
-          held = true; suppressReceipt = !pending.first;
+          held = true; suppressReceipt = !pending.first && !pending.dropped;
+          if (pending.dropped) report.deferredDropped = pending.dropped;
           report.errors.push({ phase: pending.outage.phase, message: pending.outage.message });
           report.outage = { retryAt: pending.outage.retryAt, occurrences: pending.outage.occurrences };
           this.#scheduleDrainRetry(pending.outage.retryAt);
@@ -346,7 +347,9 @@ export class OrganismWorker {
         }
       }
 
-      if (retryOwner && !retryStore.owns(retryOwner)) { held = true; suppressReceipt = true; return summary; }
+      if (retryOwner && (!retryStore.owns(retryOwner) || (deferred && !retryStore.contains(deferred.bundle)))) {
+        held = true; suppressReceipt = true; return summary;
+      }
       const merged = emptyResult();
       for (const r of results) {
         merged.memory.push(...r.memory); merged.todos.push(...r.todos); merged.skills.push(...r.skills);

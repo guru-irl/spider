@@ -117,6 +117,65 @@ it("does not spend the content budget when the review timeout aborts the provide
   } finally { vi.useRealTimers(); }
 });
 
+it("moves a repeatedly timed-out candidate behind others without declaring an outage", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+  const skills = fixture(); await enqueue(skills);
+  const later = { name: "tracing-readers", body: finalSkillBody("tracing-readers", "Trace reader ownership.") };
+  ctx.repoDb.prepare("INSERT INTO skill_review_queue(name,body,origin,created_at) VALUES (?,?,'learner',?)").run(later.name, later.body, Date.now() + 1);
+  let recovered = false;
+  const seen: string[] = [];
+  const reviewer = vi.fn(async (item: typeof candidate, _skills: unknown, signal: AbortSignal) => {
+    seen.push(item.name);
+    if (item.name === candidate.name && !recovered) {
+      return new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true }));
+    }
+    return '{"verdict":"new","reason":"reusable"}';
+  });
+  const deferred: number[] = [];
+  try {
+    for (const [index, delay] of [300_000, 600_000, 1_200_000].entries()) {
+      const task = runSkillReviewQueue(ctx.repoDb, { timeoutMs: 1000, reviewer, onDeferred: at => deferred.push(at) });
+      await vi.advanceTimersByTimeAsync(1000); await task;
+      expect(skills.get(later.name)).toMatchObject({ status: "staged", candidateBody: later.body });
+      expect(ctx.repoDb.prepare("SELECT attempts,body FROM skill_review_queue WHERE name=?").get(candidate.name)).toEqual({ attempts: 0, body: candidate.body });
+      expect(ctx.repoDb.prepare("SELECT count(*) n FROM skill_review_outage").get()).toEqual({ n: 0 });
+      expect(deferred[index] - Date.now()).toBe(delay);
+      await runSkillReviewQueue(ctx.repoDb, { timeoutMs: 1000, reviewer });
+      expect(seen).toHaveLength(index + 2);
+      await vi.advanceTimersByTimeAsync(delay);
+    }
+    recovered = true;
+    await runSkillReviewQueue(ctx.repoDb, { timeoutMs: 1000, reviewer });
+    expect(skills.get(candidate.name)).toMatchObject({ status: "staged", candidateBody: candidate.body });
+    expect(skillReviewQueueStatus(ctx.repoDb).pending).toBe(0);
+    expect(seen).toEqual([candidate.name, later.name, candidate.name, candidate.name, candidate.name]);
+  } finally { vi.useRealTimers(); }
+});
+
+it.each(["timeout", "network"])("declares an outage when the next review also fails on %s", async mode => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+  const skills = fixture(); await enqueue(skills);
+  const later = { name: "tracing-readers", body: finalSkillBody("tracing-readers", "Trace reader ownership.") };
+  ctx.repoDb.prepare("INSERT INTO skill_review_queue(name,body,origin,created_at) VALUES (?,?,'learner',?)").run(later.name, later.body, Date.now() + 1);
+  const seen: string[] = [];
+  const reviewer = vi.fn(async (item: typeof candidate, _skills: unknown, signal: AbortSignal) => {
+    seen.push(item.name);
+    if (item.name === later.name && mode === "network") throw Object.assign(new Error("fetch failed"), { code: "ECONNREFUSED" });
+    return new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true }));
+  });
+  try {
+    const task = runSkillReviewQueue(ctx.repoDb, { timeoutMs: 1000, reviewer });
+    await vi.advanceTimersByTimeAsync(mode === "timeout" ? 2000 : 1000); await task;
+    expect(seen).toEqual([candidate.name, later.name]);
+    expect(ctx.repoDb.prepare("SELECT failures FROM skill_review_outage").get()).toEqual({ failures: 1 });
+    expect(ctx.repoDb.prepare("SELECT name,attempts FROM skill_review_queue ORDER BY name").all()).toEqual([
+      { name: later.name, attempts: 0 }, { name: candidate.name, attempts: 0 },
+    ]);
+    await runSkillReviewQueue(ctx.repoDb, { timeoutMs: 1000, reviewer });
+    expect(seen).toHaveLength(2);
+  } finally { vi.useRealTimers(); }
+});
+
 it("caps review retry delays at six hours without retrying early", async () => {
   vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
   const skills = fixture(); await enqueue(skills);

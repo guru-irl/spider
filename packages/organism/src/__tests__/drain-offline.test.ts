@@ -370,6 +370,74 @@ it("drops a snapshot after eight connectivity retries without spending another s
   expect(store.next()?.bundle.transcript[0].content).toBe("Second saved input.");
 });
 
+it("merges the same saved input across compaction and shutdown", async () => {
+  const complete = vi.fn(async () => { throw offline(); });
+  const worker = fixture(complete);
+  const input = snapshot("The same captured conversation.");
+  await worker.runDrain("session", "before_compact", input);
+  await worker.runDrain("session", "shutdown", input);
+  const row = databases.db.prepare("SELECT snapshots FROM organism_deferred_drain WHERE session_id='session'").get() as { snapshots: string };
+  expect(JSON.parse(row.snapshots)).toHaveLength(1);
+  expect(complete).toHaveBeenCalledTimes(1);
+});
+
+it("retains the two newest saved inputs per session and records the oldest drop", async () => {
+  const complete = vi.fn(async () => { throw offline(); });
+  const worker = fixture(complete);
+  await worker.runDrain("session", "before_compact", snapshot("First input."));
+  vi.setSystemTime(Date.now() + 1);
+  await worker.runDrain("session", "before_compact", snapshot("Second input."));
+  vi.setSystemTime(Date.now() + 1);
+  await worker.runDrain("session", "before_compact", snapshot("Third input."));
+  const row = databases.db.prepare("SELECT snapshots FROM organism_deferred_drain WHERE session_id='session'").get() as { snapshots: string };
+  const saved = JSON.parse(row.snapshots) as Array<{ bundle: { transcript: Array<{ content: string }> } }>;
+  expect(saved.map(item => item.bundle.transcript[0].content)).toEqual(["Second input.", "Third input."]);
+  expect(worker.getLastDrain()).toMatchObject({ deferredDropped: 1 });
+  const drops = databases.db.prepare("SELECT session_id,payload FROM run_events WHERE summary LIKE 'organism deferred drain dropped%'").all() as Array<{ session_id: string; payload: string }>;
+  expect(drops.map(row => ({ sessionId: row.session_id, ...JSON.parse(row.payload) }))).toEqual([
+    expect.objectContaining({ sessionId: "session", cause: "session-cap", dropped: 1 }),
+  ]);
+});
+
+it("keeps at most 64 saved inputs across sessions and records each global drop", () => {
+  const store = new DrainRetryStore(databases.db);
+  const first = drainSession(databases.db, "session", "before_compact", snapshot("First global input."));
+  store.failure(first, ["learning"], "learning", "fetch failed");
+  for (let i = 1; i <= 32; i++) {
+    const id = `session-${String(i).padStart(2, "0")}`;
+    databases.db.prepare("INSERT INTO sessions(id,started_at) VALUES (?,1)").run(id);
+    for (const suffix of ["a", "b"]) {
+      vi.setSystemTime(Date.now() + 1);
+      store.defer(drainSession(databases.db, id, "before_compact", snapshot(`Input ${i}${suffix}.`)), ["learning"]);
+    }
+  }
+  const rows = databases.db.prepare("SELECT snapshots FROM organism_deferred_drain").all() as Array<{ snapshots: string }>;
+  expect(rows.reduce((total, row) => total + JSON.parse(row.snapshots).length, 0)).toBe(64);
+  expect(store.next()?.bundle.sessionId).toBe("session-01");
+  const drops = databases.db.prepare("SELECT session_id,payload FROM run_events WHERE summary LIKE 'organism deferred drain dropped%'").all() as Array<{ session_id: string; payload: string }>;
+  expect(drops.map(row => ({ sessionId: row.session_id, ...JSON.parse(row.payload) }))).toEqual([
+    expect.objectContaining({ sessionId: "session", cause: "global-cap", dropped: 1 }),
+  ]);
+});
+
+it.each(["saved", "legacy"])("expires %s snapshots after seven days and records the drop", kind => {
+  const store = new DrainRetryStore(databases.db);
+  const input = drainSession(databases.db, "session", "before_compact", snapshot("Expiring input."));
+  store.failure(input, ["learning"], "learning", "fetch failed");
+  if (kind === "legacy") {
+    databases.db.prepare("UPDATE organism_deferred_drain SET snapshots=? WHERE session_id='session'").run(JSON.stringify([{ bundle: input, passes: ["learning"] }]));
+  }
+  vi.setSystemTime(Date.now() + 7 * 24 * 60 * 60_000 - 1);
+  expect(store.next()?.bundle.sessionId).toBe("session");
+  vi.setSystemTime(Date.now() + 1);
+  expect(store.next()).toBeUndefined();
+  const drops = databases.db.prepare("SELECT session_id,payload FROM run_events WHERE summary LIKE 'organism deferred drain dropped%'").all() as Array<{ session_id: string; payload: string }>;
+  expect(drops.map(row => ({ sessionId: row.session_id, ...JSON.parse(row.payload) }))).toEqual([
+    expect.objectContaining({ sessionId: "session", cause: "age", dropped: 1 }),
+  ]);
+  expect(drops[0].payload).not.toContain("Expiring input.");
+});
+
 it("keeps independent identity failures on the existing per-pass path", async () => {
   const complete = vi.fn(async () => { throw Object.assign(new Error("authentication failed"), { status: 401 }); });
   const worker = fixture(complete);

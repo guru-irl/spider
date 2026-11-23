@@ -304,7 +304,10 @@ events update an outage count capped at 100. Local insights can still run.
 A retry clears the outage unless connectivity fails again. Passes can finish
 without a provider call. An input that cannot progress waits five minutes while
 other inputs run. Fresh drains can probe after the retry deadline. The worker
-yields between saved inputs so lifecycle drains can run.
+yields between saved inputs so lifecycle drains can run. The 30-second drain
+deadline is a local failure, not a provider outage. After eight connectivity
+retries fail for one saved input, the worker drops that snapshot and records
+`deferredDropped` in its drain receipt. Original session data remains intact.
 The passes are:
 
 - **runMemoryTodo.** Summarizes subagent run activity and asks the aux model

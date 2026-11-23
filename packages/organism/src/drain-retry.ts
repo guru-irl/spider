@@ -8,7 +8,9 @@ export interface DrainOutage {
   phase: string;
   message: string;
 }
-export interface DeferredDrain { bundle: DigestBundle; passes: PassName[] }
+export interface DeferredDrain { bundle: DigestBundle; passes: PassName[]; connectivityRetries?: number }
+
+const MAX_CONNECTIVITY_RETRIES = 8;
 
 /** Worktree-owned retry state is separate from append-only drain receipts. */
 export class DrainRetryStore {
@@ -42,17 +44,25 @@ export class DrainRetryStore {
     return parsed as DeferredDrain[];
   }
 
-  private save(bundle: DigestBundle, passes: PassName[], replace: boolean): void {
+  private save(bundle: DigestBundle, passes: PassName[], replace: boolean, retrying = false): number {
     const snapshots = this.snapshots(bundle.sessionId);
     const key = JSON.stringify(bundle);
     const index = snapshots.findIndex(item => JSON.stringify(item.bundle) === key);
-    if (index < 0) snapshots.push({ bundle, passes });
-    else if (replace) snapshots[index] = { bundle, passes };
+    const retries = (index < 0 ? 0 : snapshots[index].connectivityRetries ?? 0) + (retrying ? 1 : 0);
+    if (retrying && retries >= MAX_CONNECTIVITY_RETRIES) {
+      if (index >= 0) snapshots.splice(index, 1);
+      if (snapshots.length) this.db.prepare("UPDATE organism_deferred_drain SET snapshots=? WHERE session_id=?").run(JSON.stringify(snapshots), bundle.sessionId);
+      else this.db.prepare("DELETE FROM organism_deferred_drain WHERE session_id=?").run(bundle.sessionId);
+      return 1;
+    }
+    if (index < 0) snapshots.push({ bundle, passes, connectivityRetries: retries });
+    else if (replace) snapshots[index] = { bundle, passes, connectivityRetries: retries };
     this.db.prepare(`INSERT INTO organism_deferred_drain(session_id,snapshots,created_at) VALUES (?,?,?)
       ON CONFLICT(session_id) DO UPDATE SET snapshots=excluded.snapshots`).run(bundle.sessionId, JSON.stringify(snapshots), Date.now());
+    return 0;
   }
 
-  failure(bundle: DigestBundle, passes: PassName[], phase: string, message: string): { outage: DrainOutage; first: boolean } {
+  failure(bundle: DigestBundle, passes: PassName[], phase: string, message: string, retrying = false): { outage: DrainOutage; first: boolean; dropped: number } {
     return this.db.raw.transaction(() => {
       const previous = this.outage();
       const first = !this.hasSession(bundle.sessionId);
@@ -61,12 +71,12 @@ export class DrainRetryStore {
         retryAt: Date.now() + Math.min(6 * 60 * 60_000, 5 * 60_000 * 2 ** (failures - 1)),
         failures, occurrences: Math.min(100, (previous?.occurrences ?? 0) + 1), phase, message,
       };
-      this.save(bundle, passes, true);
+      const dropped = this.save(bundle, passes, true, retrying);
       this.db.prepare(`INSERT INTO organism_provider_outage(id,retry_at,failures,occurrences,phase,message) VALUES (1,?,?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET retry_at=excluded.retry_at,failures=excluded.failures,
         occurrences=excluded.occurrences,phase=excluded.phase,message=excluded.message`)
         .run(outage.retryAt, outage.failures, outage.occurrences, outage.phase, outage.message);
-      return { outage, first };
+      return { outage, first, dropped };
     }).immediate();
   }
 

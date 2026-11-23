@@ -27,6 +27,11 @@ export interface CurateResult extends DecayResult { consolidated: boolean; skipR
 
 export const ORGANISM_DRAIN_TIMEOUT_MS = 30_000;
 
+class OrganismDeadline extends Error {
+  override name = "OrganismDeadline";
+  constructor() { super("organism drain timed out"); }
+}
+
 /** Each worker owns one serialized session/project pipeline. The host owns DB lifetime. */
 export interface WorkerDeps {
   db: Db; // repo: memory, skills, curator state
@@ -231,7 +236,7 @@ export class OrganismWorker {
     };
     const controller = new AbortController();
     const timeout = this.#deps.drainTimeoutMs ?? ORGANISM_DRAIN_TIMEOUT_MS;
-    const timer = setTimeout(() => controller.abort(new Error("organism drain timed out")), Math.max(1, timeout));
+    const timer = setTimeout(() => controller.abort(new OrganismDeadline()), Math.max(1, timeout));
     timer.unref();
     let successfulPasses = 0;
     try {
@@ -374,9 +379,10 @@ export class OrganismWorker {
         try {
           if (retryOwner && !retryStore.owns(retryOwner)) { held = true; suppressReceipt = true; }
           if (connectivity && !held) {
-            const pending = retryStore.failure(bundle, required.filter(name => !completed.has(name)), connectivity.phase, safeError(connectivity.error));
+            const pending = retryStore.failure(bundle, required.filter(name => !completed.has(name)), connectivity.phase, safeError(connectivity.error), !!deferred);
             report.outage = { retryAt: pending.outage.retryAt, occurrences: pending.outage.occurrences };
-            suppressReceipt = !pending.first;
+            if (pending.dropped) report.deferredDropped = pending.dropped;
+            suppressReceipt = !pending.first && !pending.dropped;
             this.#scheduleDrainRetry(pending.outage.retryAt);
           } else if (!held) {
             if (deferred && (report.skipReason === "no-input" || required.every(name => completed.has(name)))) retryStore.finish(deferred.bundle);
@@ -397,7 +403,7 @@ export class OrganismWorker {
           sessionId,
           summary: `organism drain (${reason}): ${report.status}${report.skipReason ? ` (${report.skipReason})` : ""}; ` +
             `mem=${summary.memoryStaged} todos=${summary.todosAdded} skillsQueued=${summary.skillsQueued ?? 0} ` +
-            `dropped=${summary.dropped} rejected=${summary.rejected} errors=${report.errors.length}`,
+            `dropped=${summary.dropped}${report.deferredDropped ? ` deferredDropped=${report.deferredDropped}` : ""} rejected=${summary.rejected} errors=${report.errors.length}`,
           payload: report,
         });
       } catch (e) {

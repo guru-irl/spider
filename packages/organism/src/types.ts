@@ -70,5 +70,6 @@ export interface DrainReport extends AppliedSummary {
   inputs: { messages: number; runs: number; runEvents: number; events: number; completedTodos: number };
   errors: DrainError[];
   outage?: { retryAt: number; occurrences: number };
+  deferredDropped?: number;
   capDroppedByPass?: Partial<Record<PassName, number>>;
 }

@@ -438,6 +438,56 @@ it.each(["saved", "legacy"])("expires %s snapshots after seven days and records 
   expect(drops[0].payload).not.toContain("Expiring input.");
 });
 
+it("lets a fresh lifecycle drain run between saved inputs", async () => {
+  databases.db.prepare("INSERT INTO sessions(id,started_at) VALUES ('other',1),('fresh',1)").run();
+  let online = false;
+  let release!: () => void;
+  const delivered: string[] = [];
+  const complete = vi.fn(async (_system: string, messages: Array<{ content: string }>) => {
+    if (!online) throw offline();
+    const content = messages[0].content;
+    delivered.push(content);
+    if (content === "First saved input.") return new Promise<string>(resolve => { release = () => resolve(response); });
+    return response;
+  });
+  const worker = fixture(complete, {
+    org: { ...ORGANISM_DEFAULTS, passes: { runMemoryTodo: false, todoMemory: false, learning: true, consolidation: false, reflection: false, insights: false } },
+  });
+  await worker.runDrain("session", "before_compact", snapshot("First saved input."));
+  vi.setSystemTime(Date.now() + 1);
+  await worker.runDrain("other", "before_compact", snapshot("Second saved input."));
+  online = true;
+  await vi.advanceTimersByTimeAsync(300_000);
+  expect(delivered).toEqual(["First saved input."]);
+  const fresh = worker.runDrain("fresh", "shutdown", snapshot("Fresh lifecycle input."));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(delivered).toEqual(["First saved input."]);
+  release(); await fresh; await vi.advanceTimersByTimeAsync(0);
+  expect(delivered).toEqual(["First saved input.", "Fresh lifecycle input.", "Second saved input."]);
+});
+
+it("does not apply an in-flight snapshot evicted by another worker", async () => {
+  let online = false;
+  let release!: () => void;
+  const complete = vi.fn(async () => {
+    if (!online) throw offline();
+    return new Promise<string>(resolve => { release = () => resolve('{"summary":"Evicted input was applied."}'); });
+  });
+  const org = { ...ORGANISM_DEFAULTS, passes: { runMemoryTodo: false, todoMemory: false, learning: false, consolidation: true, reflection: false, insights: false } };
+  const first = fixture(complete, { org });
+  await first.runDrain("session", "before_compact", snapshot("First input."));
+  vi.setSystemTime(Date.now() + 1);
+  await first.runDrain("session", "before_compact", snapshot("Second input."));
+  online = true;
+  await vi.advanceTimersByTimeAsync(300_000);
+  const other = fixture(async () => { throw offline(); }, { org });
+  await other.runDrain("session", "before_compact", snapshot("Third input."));
+  release(); await vi.advanceTimersByTimeAsync(0);
+  expect(databases.db.prepare("SELECT summary FROM sessions WHERE id='session'").get()).toEqual({ summary: null });
+  const row = databases.db.prepare("SELECT snapshots FROM organism_deferred_drain WHERE session_id='session'").get() as { snapshots: string };
+  expect((JSON.parse(row.snapshots) as Array<{ bundle: { transcript: Array<{ content: string }> } }>).map(item => item.bundle.transcript[0].content)).toEqual(["Second input.", "Third input."]);
+});
+
 it("keeps independent identity failures on the existing per-pass path", async () => {
   const complete = vi.fn(async () => { throw Object.assign(new Error("authentication failed"), { status: 401 }); });
   const worker = fixture(complete);

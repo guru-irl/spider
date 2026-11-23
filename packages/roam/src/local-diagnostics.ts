@@ -366,7 +366,8 @@ export async function localPendingLaunchDiagnostics(input: {
     if (pending.length && input.currentCore) { try { core = await input.currentCore(); } catch { /* An unavailable core is not proof. */ } }
     for (const handoff of pending) {
       const safe = (value: string) => value.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 256);
-      const detail = !core || !handoff.coreId ? "core identity is unavailable"
+      const detail = !input.currentCore ? "core identity has not been checked"
+        : !core || !handoff.coreId ? "core identity is unavailable"
         : core !== handoff.coreId ? "destination core changed"
         : "awaiting reconciliation";
       const local = { machineId: input.machineId, label: "local machine", peer: null };
@@ -396,7 +397,7 @@ export async function localPendingLaunchDiagnostics(input: {
         file: reservation.file, leases: createSessionLeases(join(root, "herdr")), ...recovery }); } catch { /* Missing evidence remains pending. */ }
       if (exited) inventory.push({ severity: "warning", reason: `Session ${safe(reservation.sessionId)}: exact launch ${safe(reservation.operationId)} exited before readiness was recorded.`,
         repairCommand: sessionCommand(reservation.sessionId) });
-      else inventory.push({ severity: "block", reason: `Session ${safe(reservation.sessionId)}: exact launch ${safe(reservation.operationId)} is pending; handoff and core evidence are unavailable. Inspect the launch reservation, ID lock, file lease and operation-labelled terminal on the destination.`, repairCommand: sessionCommand(reservation.sessionId, "stop") });
+      else inventory.push({ severity: "block", reason: `Session ${safe(reservation.sessionId)}: exact launch ${safe(reservation.operationId)} is pending; handoff and core evidence are unavailable. Inspect the launch reservation, ID lock, file lease and operation-labelled terminal on the destination.`, repairCommand: reservation.phase === "reserved" ? sessionCommand(reservation.sessionId, "stop") : `spider roam doctor ${input.machineId}` });
     }
   } catch { inventory.push({ severity, reason: "Cannot inspect pending launch reservations.", repairCommand: null }); }
   return inventory;

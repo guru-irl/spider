@@ -438,10 +438,17 @@ file, while a deliberate stop remains stopped. Repeated crashes suspend the
 session until a successful doctor and resume.
 
 A pending exact launch blocks doctor and enable even when roaming is disabled.
-Doctor names the launch operation and offers `spider roam stop <session>` on the
-hub, not provision. Stop preserves the stopped intent and never relaunches the
-session. It releases the pending ID lock, launch handoff, and file lease only
-when both checks succeed:
+Doctor names the launch operation. For a reservation that has not reached the
+`invoking` phase and has no ID lock, doctor offers `spider roam stop <session>`
+on the hub. Stop clears that reservation to idle without a restart proof,
+because the launch never began. If an invoking reservation has lost its ID lock,
+stop keeps it blocked and doctor offers inspection, not another stop.
+
+For a pending handoff, doctor offers `spider roam stop <session>` on the hub,
+not provision. Stop preserves the stopped intent and never relaunches the
+session. Stop refuses to settle a handoff whose operation differs from the
+session's launch reservation, including a move's launch. It releases the pending
+ID lock, launch handoff, and file lease only when both checks succeed:
 
 - The recorded launcher has exited, using its boot ID and PID probe. PID reuse
   must have a different process start identity.
@@ -454,12 +461,21 @@ a live terminal, missing boot evidence, or an uncertain terminal keeps the launc
 blocking. Stop returns `launch-reconciliation-required` and points to doctor.
 On the destination, inspect the recorded launcher PID, boot ID, ID lock, file
 lease, and the terminal labelled `spider.roam.operation=<operation>`, using the
-pinned core. Do not delete ownership files or launch another copy to repair it.
+pinned core. The pinned core must be running to inspect its terminal evidence.
+An absent terminal row alone is not exit proof. When disabled doctor has not
+probed the core, it reports an unchecked identity rather than an unavailable
+identity. A probe still distinguishes an unavailable core from a changed core.
+Do not delete ownership files or launch another copy to repair it.
+Reconciliation waits at most 60 seconds while holding the session ID lock.
+Timeout preserves pending ownership and returns a doctor repair command.
 After stop settles the handoff, retry doctor and enable, then resume the session.
 A repeated stop also finishes a cleanup interrupted after the lease or handoff
 was released. The launch journal retains the failed outcome. Stop records the
-existing restart proof before clearing the reservation, so a later resume uses
-a new launch operation rather than reusing the completed one.
+existing restart proof before clearing an invoked reservation, so a later resume
+uses a new launch operation rather than reusing the completed one.
+Stop re-reads the intent version after settlement. If another intent update
+still races with that write, stop returns `intent-reconciliation-required` with
+`spider roam stop <session>` as the repair command.
 
 A stopped box-local origin remains stopped even if a replacement native process
 has a different PID or core. A local home does not grant that replacement launch

@@ -213,7 +213,7 @@ export async function settlePendingLaunch(input: {
       if (lease && (lease.pid !== lock.identity.pid || lease.startIdentity !== lock.identity.startIdentity || lease.bootId !== lock.bootId)) return false;
       const reconcile = createLaunchReconciler({ journal: input.journal, inspectLock: () => inspectIdLock(input.root, input.sessionId),
         coreId: recovery.hc.coreId, bootId: recovery.bootId, terminals: recovery.hc.terminals, clock: recovery.clock });
-      const signal = new AbortController().signal, evidence = await reconcile(input.operationId, { signal });
+      const signal = AbortSignal.timeout(60_000), evidence = await reconcile(input.operationId, { signal });
       if (!provedNoStart(evidence, input.operationId, lock.pendingCoreId, lock.bootId)) return false;
       if (lease) await input.leases.release(input.file, lease.token, { mode: "cutover" });
       await removeLaunchHandoff(input.root, input.operationId);

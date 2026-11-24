@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { migrate, openDb, paths } from "@spider/db-core";
 import * as repoMap from "@spider/db-core/roam/repo-map";
 import { readLocal } from "@spider/db-core/roam/local-state";
-import { scratchDbPath } from "@spider/db-core/testutil";
+import { createReplica, scratchDbPath } from "@spider/db-core/testutil";
 import { parseConfig } from "@spider/roam/config";
 import { openFreezeJournal, openJournal } from "@spider/roam/journal";
 import { runLocalDoctor } from "@spider/roam/local-diagnostics";
@@ -27,7 +27,7 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-type Failure = "freeze" | "cwd" | "header" | "invalid-header" | "mapping" | "stores" | "seed" | "unknown";
+type Failure = "freeze" | "cwd" | "header" | "cwd-header" | "invalid-header" | "mapping" | "stores" | "seed" | "unknown" | "success";
 function fixture(failure: Failure, participant = false) {
   vi.stubEnv("PI_SUBAGENT_CHILD", "0");
   const parent = dirname(scratchDbPath("preparation-causes"));
@@ -38,9 +38,11 @@ function fixture(failure: Failure, participant = false) {
   db.prepare("UPDATE roam_meta SET store_key='global',capture_enabled=1 WHERE id=1").run();
   const config = parseConfig({ role: "box", machineId: BOX, hubMachineId: HUB, coreUnit: "fixture.service" });
   const journal = openJournal(join(root, "roam", "journal.db"));
+  const worktree = failure === "success" ? createReplica("worktree", BOX) : null;
   if (failure === "freeze") openFreezeJournal(join(root, "roam", "journal.db")).beginFreeze(SESSION, "move-1", 1);
   const file = join(root, "session.jsonl");
-  writeFileSync(file, failure === "invalid-header" ? "invalid" : JSON.stringify({ type: "session", id: failure === "header" ? "other-session" : SESSION, cwd: root, version: 3 }) + "\n");
+  writeFileSync(file, failure === "invalid-header" ? "invalid" : JSON.stringify({ type: "session", id: failure === "header" ? "other-session" : SESSION,
+    cwd: failure === "cwd-header" ? "/home/fixture/other" : root, version: 3 }) + "\n");
   const hooks = createParticipantAdmission({ cwd: () => failure === "cwd" ? undefined : root,
     async open() {
       if (failure === "unknown") throw new Error("private-content /home/fixture/private");
@@ -48,7 +50,7 @@ function fixture(failure: Failure, participant = false) {
         async stores() {
           if (failure === "mapping") throw new MoveCompositionError("participant-store-mapping-failed");
           if (failure === "stores") throw new Error("private-content /home/fixture/private");
-          return [];
+          return worktree ? [{ db: worktree.db, key: worktree.storeKey }] : [];
         } };
     },
     async terminal() { throw new Error("Unexpected terminal lookup"); },
@@ -61,15 +63,16 @@ function fixture(failure: Failure, participant = false) {
     lock: async () => async () => {}, setupDiagnostic: (id, value) => recordMoveSetupFailure(db, id, value),
   };
   const gate = registerAdmission(host.pi as never, ports);
-  cleanups.push(async () => { await gate.close(); db.close(); rmSync(root, { recursive: true, force: true }); });
+  cleanups.push(async () => { await gate.close(); db.close(); worktree?.close(); rmSync(root, { recursive: true, force: true }); });
   const start = async () => { for (const handler of host.hooks.get("session_start") ?? []) await handler({}, host.ctx); };
-  return { db, root, gate, start };
+  return { db, root, gate, start, worktree };
 }
 
 it.each([
   ["freeze", "participant-freeze-unfinished"],
   ["cwd", "participant-cwd-unavailable"],
   ["header", "participant-header-mismatch"],
+  ["cwd-header", "participant-header-mismatch"],
   ["invalid-header", "participant-header-invalid"],
   ["mapping", "participant-store-mapping-failed"],
   ["stores", "participant-stores-unavailable"],
@@ -90,6 +93,15 @@ it.each([
   expect(diagnostic?.reason).toContain("2023-11-14T22:13:50.000Z");
   expect(diagnostic?.reason).not.toContain(f.root);
   expect(diagnostic?.reason).not.toContain("private");
+});
+
+it("seeds a valid participant without leaving a setup diagnostic", async () => {
+  const f = fixture("success");
+  await f.start();
+  expect(f.gate.inspect()).toMatchObject({ kind: "ordinary" });
+  expect(f.gate.inspect().setupFailure).toBeUndefined();
+  expect(f.worktree!.db.prepare("SELECT state,epoch FROM roam_sessions WHERE session_id=?").get(SESSION)).toEqual({ state: "active", epoch: 1 });
+  expect(readLocal(f.db, "move-setup", "admission")).toBeUndefined();
 });
 
 it("classifies a production repository mapping failure through admission", async () => {

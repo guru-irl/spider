@@ -24,6 +24,7 @@ import { createAppClient } from "@spider/herdr/client/app";
 import { createRoamPlacement } from "@spider/herdr/roam-placement";
 import { createTerminalRegistry } from "@spider/herdr/sessions/registry";
 import { removedPlacementSessions } from "@spider/roam/placement-inventory";
+import { MoveCompositionError } from "@spider/roam/move-failure";
 
 export function createHostRoamPlacement(input: { root: string; globalDb: Db; config: RoamConfig }): PlacementPort & { dispose(): Promise<void> } {
   const herdr = loadHerdrConfig(input.root), env = { ...process.env, SPIDER_GLOBAL_ROOT: input.root };
@@ -121,12 +122,20 @@ export function createParticipantAdmission(input: {
         if (runtime.config.role !== "box" || !participantCaptureInitialized(runtime.db, runtime.config.machineId, "global")) return;
         assertBoxEnrollment(runtime.config);
         if (runtime.db.prepare("SELECT 1 FROM session_homes WHERE session_id=?").get(sessionId)) return;
-        if (unfinishedFreeze(dirname(runtime.db.raw.name), sessionId)) throw new Error("Participant has an unfinished freeze");
-        const cwd = input.cwd(); if (!cwd) throw new Error("Participant cwd unavailable");
-        const header = await readSessionHeader(file);
-        if (header.id !== sessionId || header.cwd !== cwd) throw new Error("Participant exact file mismatch");
-        seedNewParticipant({ globalDb: runtime.db, machineId: runtime.config.machineId, sessionId, file, cwd,
-          stores: await runtime.stores(sessionId), limit: runtime.config.limits.targetBatchBytes });
+        if (unfinishedFreeze(dirname(runtime.db.raw.name), sessionId)) throw new MoveCompositionError("participant-freeze-unfinished");
+        const cwd = input.cwd(); if (!cwd) throw new MoveCompositionError("participant-cwd-unavailable");
+        let header: Awaited<ReturnType<typeof readSessionHeader>>;
+        try { header = await readSessionHeader(file); } catch { throw new MoveCompositionError("participant-header-invalid"); }
+        if (header.id !== sessionId || header.cwd !== cwd) throw new MoveCompositionError("participant-header-mismatch");
+        let stores: Awaited<ReturnType<AdmissionRuntime["stores"]>>;
+        try { stores = await runtime.stores(sessionId); }
+        catch (error) {
+          if (error instanceof MoveCompositionError && error.code === "participant-store-mapping-failed") throw error;
+          throw new MoveCompositionError("participant-stores-unavailable");
+        }
+        try { seedNewParticipant({ globalDb: runtime.db, machineId: runtime.config.machineId, sessionId, file, cwd,
+          stores, limit: runtime.config.limits.targetBatchBytes }); }
+        catch { throw new MoveCompositionError("participant-seed-failed"); }
       } finally { runtime.close(); }
     },
     async ready(sessionId, file, epoch, home) {
@@ -202,11 +211,13 @@ export function productionParticipantAdmission(cwd: () => string | undefined): P
           const meta = db.prepare("SELECT store_key FROM roam_meta WHERE id=1").get() as { store_key: StoreKey | null };
           let key = meta.store_key;
           if (!key) {
-            const repoKey = resolveRepositoryKey(global, root);
-            let workspaceId = readLocal<string>(db, "workspace", "id");
-            if (!workspaceId) { workspaceId = randomUUID(); db.raw.transaction(() => writeLocal(db, "workspace", "id", workspaceId)).immediate(); }
-            key = `worktree:${repoKey}:${workspaceId}`;
-            await mapWorkspace(global, { repoKey, workspaceId, path: root });
+            try {
+              const repoKey = resolveRepositoryKey(global, root);
+              let workspaceId = readLocal<string>(db, "workspace", "id");
+              if (!workspaceId) { workspaceId = randomUUID(); db.raw.transaction(() => writeLocal(db, "workspace", "id", workspaceId)).immediate(); }
+              key = `worktree:${repoKey}:${workspaceId}`;
+              await mapWorkspace(global, { repoKey, workspaceId, path: root });
+            } catch { throw new MoveCompositionError("participant-store-mapping-failed"); }
           }
           stores.push({ db, key });
         }

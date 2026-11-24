@@ -19,7 +19,7 @@ import { withProcessLock, writePrivateJson } from "@spider/herdr/sessions/regist
 import type { Operation, Peer, RoamConfig, Transport } from "./contracts";
 import { requestHubControl } from "./control-socket";
 import { assertCompatibleConsumers } from "./diagnostics";
-import { hubServiceExists, hubServiceFile, installHubService, removeHubService, type LaunchdPorts } from "./launchd";
+import { hubCoreSelection, hubServiceExists, hubServiceFile, installHubService, removeHubService, type LaunchdPorts } from "./launchd";
 import { createLocalDiagnosticPorts, isPendingLaunchDiagnostic } from "./local-diagnostics";
 import { homeChangeInProgress, loadHerdrConfig } from "./production-hub";
 import { compatibleConsumerPorts } from "./remote-observations";
@@ -140,10 +140,12 @@ export async function enableRoaming(root: string, cli: string, bundleUrl?: URL):
   try {
     const initial = readLocalIdentity(root);
     if (initial.role !== "hub") return { code: 1, reason: "mac-hub-required", message: "Run this command on the Mac hub." };
+    const sourceEnv = { ...process.env }, selection = hubCoreSelection(sourceEnv);
+    const env = Object.freeze({ ...sourceEnv, HC_SESSION: selection.session, HC_SOCKET: selection.socket });
     return await locked(root, initial, async () => {
       const config = readLocalIdentity(root), herdr = loadHerdrConfig(root);
       if (config.machineId !== initial.machineId || config.role !== "hub") throw new Error("Roaming configuration changed during the operation");
-      const transport = createTransport({ binary: herdr.core.binary, env: process.env, enrolled: config.peers });
+      const transport = createTransport({ binary: herdr.core.binary, env, enrolled: config.peers });
       const inventories: Array<{ peer: Peer; keys: StoreKey[] }> = [], failures: Array<{ reason: string; repairCommand: string; detail?: string; causeCode?: string }> = [];
       const information: Array<{ machine: string; reason: string }> = [];
       for (const peer of config.peers) {
@@ -225,14 +227,14 @@ export async function enableRoaming(root: string, cli: string, bundleUrl?: URL):
       } finally { local.close(); }
       if (config.peers.length) {
         const journal = openJournal(join(root, "roam", "journal.db"));
-        const provisioning = createProvisionTransport({ binary: herdr.core.binary, env: process.env, enrolled: config.peers }, journal);
+        const provisioning = createProvisionTransport({ binary: herdr.core.binary, env, enrolled: config.peers }, journal);
         step = "enable-peer-flag";
         for (const peer of config.peers) { changed = true; await setEnrolledPeerEnabled({ config, peer, enabled: true, restoreAutostart: true, journal, transport: provisioning }); }
       }
       step = "enable-config";
       if (!config.enabled) { changed = true; await writeEnabled(root, config, true); }
       step = "enable-service";
-      await installHubService({ node: process.execPath, cli, globalRoot: root, pi }, ports);
+      await installHubService({ node: process.execPath, cli, globalRoot: root, pi, env }, ports);
       if (!await waitReady(join(root, "roam", "hub.sock"))) return { code: 3, reason: "hub-startup-pending", information, message: ["Hub service startup is pending. Run spider roam doctor.", infoText()].filter(Boolean).join("\n") };
       return { code: 0, reason: "roaming-enabled", information, message: ["Roaming hub enabled. Reload open pi sessions (/reload) to pick up /move.", infoText()].filter(Boolean).join("\n") };
     });

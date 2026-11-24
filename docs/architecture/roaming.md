@@ -72,6 +72,17 @@ after its definition proves it belongs to the selected root. A missing service
 is safe to remove; after a failed bootout, a service-specific `launchctl print`
 can confirm absence. An unrelated error does not prove absence.
 
+Enable resolves the current `hc` session and socket before contacting peers. It
+pins non-default selections in the hub service, including sockets selected by
+`HC_SOCKET`, `HC_SESSION`, XDG settings, or the core config. The service uses
+the scoped global root as its working directory, not the enabling checkout.
+The unconfigured default keeps the existing service environment. At startup,
+`hub-core-selection` logs the socket selection class, not the socket path.
+Doctor compares the installed selection, including older service definitions,
+with the current environment. If they differ, run `spider roam enable` again
+from the environment that should select the hub's core. If doctor cannot inspect
+the service definition, it reports that the selection is unavailable.
+
 If the Mac is disabled but box participation flags cannot be confirmed,
 `spider roam disable` returns `roaming-disabled-partial` with exit code `3`.
 The result names the unconfirmed boxes and the exact retry command,

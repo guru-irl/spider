@@ -9,6 +9,7 @@ import { isPeerFailureReason } from "./peer-errors";
 import { INTERCOM_UNIQUENESS_DESCRIPTION } from "./intercom-readiness";
 import { storeScope } from "@spider/db-core/roam/codec";
 import { isPermissionRepairCommand, isPermissionTighteningCount, isAgentModeRepairs, isAgentModeRefusal } from "./provision-permissions";
+import { parseFirstHomeWithheld } from "./first-home-diagnostics";
 
 export type PublicControl =
   | { kind: "status" | "sync" | "doctor" | "enable" | "disable"; machine?: string }
@@ -103,7 +104,10 @@ export function controlWarningText(value: string): string {
 /** Do not serialize arbitrary participant values or error messages at a public boundary. */
 export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknown }): SafeControlOutcome {
   const home = safeHome(result.home);
-  const moveCause = safeMoveCause(result.causeCode);
+  const rawRefusal = result.refusal && typeof result.refusal === "object" && !Array.isArray(result.refusal) ? result.refusal as Record<string, unknown> : null;
+  const withheld = result.code !== 0 && result.reason === "move-source-home-mismatch" ? parseFirstHomeWithheld(rawRefusal?.firstHomeWithheld) : null;
+  const candidate = safeMoveCause(result.causeCode);
+  const moveCause = candidate === "move-first-home-withheld" && !withheld ? undefined : candidate;
   const causeCode = moveCause ?? safeCauseCode(result.causeCode);
   // provision.ts is the sole producer of permission repairs and binds them to the destination home.
   const safeRepair = (value: unknown): string | null => typeof value === "string" && (moveCause === "move-workspace-unmapped" && value === "spider roam repo map <repo> <path>" || /^spider roam (?:recover|doctor|cancel|claim|provision|forget|disable|stop)(?: [A-Za-z0-9._-]+)?$/.test(value) ||
@@ -193,7 +197,8 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
         ? { code: rawWarning.code, check: rawWarning.check, since: rawWarning.since, count: rawWarning.count } : undefined;
       const message = MOVE_REFUSAL_MESSAGES[code as MoveRefusalCode] + (moveCause ? ` ${moveFailureRepair(moveCause)}` : "") + (warning ? ` ${hostingWarningText(warning)}` : "");
       if (rawRefusal.message === message) try {
-        refusal = { code: code as MoveRefusalCode, message, blockers: rawRefusal.blockers.map(validateBlockerId), ...(warning ? { hostingWarning: warning } : {}) };
+        refusal = { code: code as MoveRefusalCode, message, blockers: rawRefusal.blockers.map(validateBlockerId), ...(warning ? { hostingWarning: warning } : {}),
+          ...(moveCause === "move-first-home-withheld" && withheld ? { firstHomeWithheld: withheld } : {}) };
       } catch { /* Invalid blocker identities are never printed. */ }
     }
   }
@@ -216,7 +221,9 @@ export function controlText(result: SafeControlOutcome, destinationAlias?: strin
   const diagnosticText = value?.diagnostics?.map(row => `\n${row.reason}${row.repairCommand ? `\n${row.repairCommand}` : ""}`).join("") ?? "";
   const explanation = result.refusal?.message, pause = ["destination-unknown", "move-destination-pending"].includes(result.reason) && !explanation?.includes("The source is paused")
     ? "\nThe source is paused to avoid running two copies." : "";
-  return `${result.reason === "mac-hub-required" ? "Run this command on the Mac hub." : result.reason}${explanation ? `\n${explanation}` : ""}${result.refusal?.blockers.length ? `\nBlockers: ${result.refusal.blockers.join(", ")}` : ""}${result.home ? `\nCurrent home: ${result.home.machineId} (epoch ${result.home.epoch}).` : ""}${pause}${diagnosticText}${result.repairCommand ? `\n${result.repairCommand}` : ""}${value?.candidates?.length ? `\nCandidates: ${value.candidates.join(", ")}` : ""}\n`;
+  const withheld = result.causeCode === "move-first-home-withheld" ? result.refusal?.firstHomeWithheld : undefined;
+  const withheldText = withheld ? `\nmove-first-home-withheld: ${withheld.machineId} (${withheld.storeKind} store).` : "";
+  return `${result.reason === "mac-hub-required" ? "Run this command on the Mac hub." : result.reason}${explanation ? `\n${explanation}` : ""}${withheldText}${result.refusal?.blockers.length ? `\nBlockers: ${result.refusal.blockers.join(", ")}` : ""}${result.home ? `\nCurrent home: ${result.home.machineId} (epoch ${result.home.epoch}).` : ""}${pause}${diagnosticText}${result.repairCommand ? `\n${result.repairCommand}` : ""}${value?.candidates?.length ? `\nCandidates: ${value.candidates.join(", ")}` : ""}\n`;
 }
 
 export function sourceCleanupStatusText(item: NonNullable<RoamStatus['sourceCleanups']>[number]): string {

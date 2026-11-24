@@ -15,6 +15,7 @@ import type { DestinationObservation, FreezeAck, Journal, MoveCheck, MovePorts, 
 import { casHome, sessionHome } from "./homes";
 import { isMachineId } from "./machine-id";
 import { acquireMovePower, movePowerKey, releaseMovePower } from "./power";
+import { parseFirstHomeWithheld, readFirstHomeWithheld, type FirstHomeWithheld } from "./first-home-diagnostics";
 
 export const MOVE_STATES = ["checked", "frozen", "transferred", "home-committed", "destination-ready", "source-stopped", "done"] as const;
 export type MoveState = typeof MOVE_STATES[number];
@@ -24,6 +25,10 @@ export class MoveError extends Error {
     super(MOVE_REFUSAL_MESSAGES[code]);
     this.refusal = { code, blockers, message: MOVE_REFUSAL_MESSAGES[code] };
   }
+}
+class FirstHomeWithheldError extends MoveError {
+  readonly code = "move-first-home-withheld" as const;
+  constructor(readonly firstHomeWithheld: FirstHomeWithheld) { super("move-source-home-mismatch"); }
 }
 function refuse(code: MoveRefusalCode, blockers: readonly ValidatedBlockerId[] = []): never { throw new MoveError(code, blockers); }
 export function validateBlockerId(value: unknown): ValidatedBlockerId {
@@ -94,14 +99,15 @@ function endpointReply(endpoint: SessionEndpoint, fence: IntercomIntakeFence, cu
       endpoint.machineId !== current.machineId || endpoint.homeEpoch !== current.epoch || !text(endpoint.activationEpoch)) refuse("intercom-endpoint-not-ready");
 }
 function json(value: unknown): JsonObject { return JSON.parse(JSON.stringify(value)) as JsonObject; }
-function outcome(request: MoveRequest, ports: MovePorts, code: Outcome<MoveResult>["code"], reason: MoveRefusalCode | "moved" | "same-home", value: MoveResult | null = null, blockers: readonly ValidatedBlockerId[] = [], cause?: MoveCauseCode): MoveSessionOutcome {
+function outcome(request: MoveRequest, ports: MovePorts, code: Outcome<MoveResult>["code"], reason: MoveRefusalCode | "moved" | "same-home", value: MoveResult | null = null, blockers: readonly ValidatedBlockerId[] = [], cause?: MoveCauseCode, firstHomeWithheld?: FirstHomeWithheld): MoveSessionOutcome {
   const current = sessionHome(ports.globalDb, request?.sessionId ?? "");
   const envelope = { code, reason, operationId: text(request?.operation?.id) ? request.operation.id : "invalid-move", home: current === "unknown" ? null : current,
     epoch: current && current !== "unknown" ? current.epoch : null, repairCommand: reason === "initial-home-conflict" ? "spider roam claim" : code === 3 && text(request?.operation?.id) ? `spider roam recover ${request.operation.id}` : null };
   if (code === 0 && value) return { ...envelope, code: 0, ok: true, value };
   if (code === 0 || reason === "moved" || reason === "same-home") refuse("move-journal-invalid");
   return { ...envelope, ...(cause ? { causeCode: cause, repairCommand: envelope.repairCommand ?? (cause === "move-workspace-unmapped" ? "spider roam repo map <repo> <path>" : "spider roam doctor") } : {}), code, ok: false, value: null,
-    refusal: { code: reason, blockers, message: MOVE_REFUSAL_MESSAGES[reason] + (cause ? ` ${moveFailureRepair(cause)}` : "") } };
+    refusal: { code: reason, blockers, message: MOVE_REFUSAL_MESSAGES[reason] + (cause ? ` ${moveFailureRepair(cause)}` : ""),
+      ...(firstHomeWithheld ? { firstHomeWithheld } : {}) } };
 }
 export function parseSourceCleanup(value: unknown): SourceCleanup {
   if (!value || typeof value !== 'object' || Array.isArray(value) || !('status' in value)) refuse('move-journal-invalid');
@@ -132,6 +138,9 @@ function completedOutcome(value: unknown, id: string): MoveSessionOutcome {
   } else if (result.ok === false) {
     if (result.code === 0 || result.value !== null || !result.refusal || !Object.hasOwn(MOVE_REFUSAL_MESSAGES, result.refusal.code) ||
         result.reason !== result.refusal.code || result.refusal.message !== MOVE_REFUSAL_MESSAGES[result.refusal.code] + (cause ? ` ${moveFailureRepair(cause)}` : "") || !Array.isArray(result.refusal.blockers)) refuse("move-journal-invalid");
+    const withheld = parseFirstHomeWithheld(result.refusal.firstHomeWithheld);
+    if (cause === "move-first-home-withheld" ? result.reason !== "move-source-home-mismatch" || !withheld || !isDeepStrictEqual(withheld, result.refusal.firstHomeWithheld)
+      : result.refusal.firstHomeWithheld !== undefined) refuse("move-journal-invalid");
     try { result.refusal.blockers.forEach(validateBlockerId); } catch { refuse("move-journal-invalid"); }
   } else refuse("move-journal-invalid");
   return result as MoveSessionOutcome;
@@ -302,6 +311,10 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
       const initial = sessionHome(ports.globalDb, request.sessionId);
       const marker = ports.globalDb.prepare("SELECT machine_id FROM session_homes WHERE session_id=?").get(request.sessionId) as { machine_id: string } | undefined;
       if (marker?.machine_id === "") refuse("initial-home-conflict");
+      if (!initial) {
+        const withheld = readFirstHomeWithheld(ports.globalDb, request.sessionId);
+        if (withheld) throw new FirstHomeWithheldError(withheld);
+      }
       if (!initial || initial === "unknown" || !sameHome(initial, check.source)) refuse("move-source-home-mismatch");
       await action("initial-home", () => initial);
       await action("source-home-replicate", () => ports.replicateHome(initial));
@@ -394,8 +407,10 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
     const code = checked || ["move-journal-invalid", "move-journal-unavailable"].includes(reason) ? 3 : reason === "move-operation-conflict" ? 2 : 1;
     const blockers = error instanceof MoveError ? error.refusal.blockers : reason === "move-preflight-refused"
       ? [validateBlockerId(error instanceof MoveCompositionError ? error.code : peerErrorCode(error) ?? "preflight-check-unavailable")] : [];
-    const cause = error instanceof MoveCompositionError ? error.code : error instanceof MoveError && "code" in error ? safeMoveCause(error.code) : undefined;
-    const result = outcome(request, ports, code, reason, null, blockers, cause);
+    const firstHomeWithheld = error instanceof FirstHomeWithheldError ? error.firstHomeWithheld : undefined;
+    const candidate = error instanceof MoveCompositionError ? error.code : error instanceof MoveError && "code" in error ? safeMoveCause(error.code) : undefined;
+    const cause = candidate === "move-first-home-withheld" && !firstHomeWithheld ? undefined : candidate;
+    const result = outcome(request, ports, code, reason, null, blockers, cause, firstHomeWithheld);
     if (!checked && (begunNew || recovering) && code !== 3) {
       ports.journal.record(id, "done", json(result));
       if (slot) ports.journal.record(slot, "released", { moveId: id });

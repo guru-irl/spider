@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
 import type { Db } from "@spider/db-core";
 import { CursorMismatchError } from "@spider/db-core/roam/apply";
-import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
+import { localEntries, readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { assertBatchHeader, isRoamUuid, parseRoamJson, storeScope } from "@spider/db-core/roam/codec";
 import type { ApplyReceipt, Home, JsonObject, StoreKey } from "@spider/db-core/roam/types";
 import { pullArtifact, readManifestPages, stageArtifact, transferArtifact } from "./artifacts";
@@ -18,6 +18,7 @@ import { agentFailureCode, isPeerConnectivityError, isPeerFailureReason, isSyncC
 import { loadPeerState, receiptMatches, savePeerState, sizedBytes, type PeerState, type PendingBatch } from "./peer-state";
 import { acquireTransferLease, defaultStagingRoot, openOutgoingStaging, openStaging } from "./staging";
 import { removeOutgoing, type StoreAdapter } from "./stores";
+import { parseFirstHomeWithheld, type FirstHomeWithheld } from "./first-home-diagnostics";
 
 export interface SyncPorts {
   config: RoamConfig; globalDb: Db; transport: Transport; journal: Journal; clock: Clock; stores: StorePort;
@@ -279,20 +280,31 @@ export function createSync(ports: SyncPorts): SyncAdapter {
     }
   }
   function assignHomes() {
-    const states = config.peers.map(peer => loadPeerState(globalDb, peer.machineId, config.limits.targetBatchBytes));
-    const gathered = states.every(state => state.pulled || state.readablePulled);
-    const unavailable = [...localUngathered, ...states.flatMap(state => state.ungathered ?? [])];
-    const unknown = new Set(states.flatMap(state => Object.values(state.unknownSessions ?? {}).flat()));
+    const states = config.peers.map(peer => ({ machineId: peer.machineId, state: loadPeerState(globalDb, peer.machineId, config.limits.targetBatchBytes) }));
+    const gathered = states.every(({ state }) => state.pulled || state.readablePulled);
+    const unavailable = [...localUngathered.map(store => ({ machineId: config.machineId, store })),
+      ...states.flatMap(({ machineId, state }) => (state.ungathered ?? []).map(store => ({ machineId, store })))];
+    const unknown = new Set(states.flatMap(({ state }) => Object.values(state.unknownSessions ?? {}).flat()));
     const adapter = stores as Partial<StoreAdapter>;
     if (!adapter.origins) return;
     for (const [id, origins] of adapter.origins()) {
+      let withheld: FirstHomeWithheld | null = null;
       if (origins.size > 1) markInitialConflict(globalDb, id, config.hubMachineId);
-      else if (gathered && origins.size === 1 && !unknown.has(id) && !unavailable.some(store => {
-        if (store.scope !== "worktree" && store.scope !== "replica") return false;
-        if (store.key === null) return true;
-        const row = globalDb.prepare("SELECT stores_json FROM roam_locations WHERE session_id=?").get(id) as { stores_json: string } | undefined;
-        return !row || (JSON.parse(row.stores_json) as string[]).includes(store.key);
-      })) assignInitialHome(globalDb, id, [...origins][0], config.hubMachineId);
+      else if (gathered && origins.size === 1 && !unknown.has(id)) {
+        const missing = unavailable.find(({ store }) => {
+          if (store.scope !== "worktree" && store.scope !== "replica") return false;
+          if (store.key === null) return true;
+          const row = globalDb.prepare("SELECT stores_json FROM roam_locations WHERE session_id=?").get(id) as { stores_json: string } | undefined;
+          return !row || (JSON.parse(row.stores_json) as string[]).includes(store.key);
+        });
+        if (!missing) assignInitialHome(globalDb, id, [...origins][0], config.hubMachineId);
+        else try {
+          if (!globalDb.prepare("SELECT 1 FROM session_homes WHERE session_id=?").get(id))
+            withheld = parseFirstHomeWithheld({ machineId: missing.machineId, storeKind: missing.store.scope });
+        } catch { /* The diagnostic must not change synchronization. */ }
+      }
+      try { globalDb.raw.transaction(() => writeLocal(globalDb, "first-home-withheld", id, withheld ?? undefined)).immediate(); }
+      catch { /* Diagnostic storage must not change home assignment. */ }
     }
   }
   async function mirrorHomes(peer: Peer): Promise<void> {
@@ -403,6 +415,9 @@ export function createSync(ports: SyncPorts): SyncAdapter {
   let localUngathered: UngatheredStore[] = [];
   function gatherInventories(): Promise<Map<string, JsonObject | Error>> {
     if (inventoryRound) return inventoryRound;
+    try { globalDb.raw.transaction(() => {
+      for (const entry of localEntries(globalDb, "first-home-withheld")) writeLocal(globalDb, "first-home-withheld", entry.key, undefined);
+    }).immediate(); } catch { /* Missing diagnostic cleanup never blocks synchronization. */ }
     localUngathered = [];
     listStoreKeys(globalDb, { onUngathered: store => localUngathered.push(store) });
     const round = Promise.all(config.peers.map(peer => slot(async () => {

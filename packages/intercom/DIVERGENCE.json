@@ -50,6 +50,12 @@
       "upstreamHash": null
     },
     {
+      "path": "helper-errors.ts",
+      "task": "4.7",
+      "reason": "Hold the helper exchange error list without imports, so plain Node children that load roaming sources with types stripped can read it. protocol.ts re-exports it.",
+      "upstreamHash": null
+    },
+    {
       "path": "index.ts",
       "task": "3.6a",
       "reason": "Export the public federation contracts alongside the adopted extension registration.",

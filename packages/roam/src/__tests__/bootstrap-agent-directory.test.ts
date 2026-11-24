@@ -18,10 +18,10 @@ function fixture() {
   const systemctl = join(bin, "systemctl");
   writeFileSync(systemctl, '#!/bin/sh\n[ "$1" = --user ] && [ "$2" = show-environment ] || exit 2\n[ "$FIXTURE_SYSTEMD_FAIL" = 1 ] && exit 1\nprintf "%s" "$FIXTURE_SYSTEMD_ENV"\n');
   chmodSync(systemctl, 0o700);
-  function run(agentDir?: string, manager = "", fail = false, requestedHome = home, cwd = home, configured?: string) {
+  function run(agentDir?: string, manager = "", fail = false, requestedHome = home, cwd = home, configured?: string, prelude = "") {
     const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, PATH: bin, FIXTURE_SYSTEMD_ENV: manager, FIXTURE_SYSTEMD_FAIL: fail ? "1" : "0" };
     if (agentDir === undefined) delete env.PI_CODING_AGENT_DIR; else env.PI_CODING_AGENT_DIR = agentDir;
-    const child = spawnSync(process.execPath, ["-e", source!], { input: JSON.stringify({ home: requestedHome, ...(configured ? { agentDir: configured } : {}) }), cwd, env, encoding: "utf8", timeout: 3000 });
+    const child = spawnSync(process.execPath, ["-e", prelude + source!], { input: JSON.stringify({ home: requestedHome, ...(configured ? { agentDir: configured } : {}) }), cwd, env, encoding: "utf8", timeout: 3000 });
     expect(child.status).toBe(0); expect(child.stderr).toBe("");
     return { reply: JSON.parse(child.stdout) as { version: number; kind: string; value: string }, output: child.stdout };
   }
@@ -133,10 +133,10 @@ it("requires the configured directory to exist and match the launching process",
   expect(f.run(agent, `PI_CODING_AGENT_DIR=${agent}\n`, true, f.home, f.home, agent).reply.value).toBe("unknown");
 }, 5000);
 
-it("reports an unsafe configured agent directory without changing it", () => {
+it("accepts a repairable configured agent directory without changing it", () => {
   const f = fixture(), agent = join(f.home, "custom-agent"); mkdirSync(agent, { mode: 0o700 }); chmodSync(agent, 0o775);
   expect(f.run(agent, `PI_CODING_AGENT_DIR=${agent}\n`, false, f.home, f.home, agent).reply)
-    .toEqual({ version: 1, kind: "agent-directory", error: "destination-permissions-unsafe", path: agent });
+    .toEqual({ version: 1, kind: "agent-directory", value: "default" });
   expect(lstatSync(agent).mode & 0o777).toBe(0o775);
   expect(f.run(join(f.home, "wrong"), "", false, f.home, f.home, agent).reply.value).toBe("custom");
   chmodSync(agent, 0o755);
@@ -153,9 +153,18 @@ it.each(["\u009b", "\u061c", "\u202e"])("does not report a display-spoofing conf
 it("does not offer a permission repair for a symlinked configured agent directory", () => {
   const f = fixture(), target = join(f.home, "other"), agent = join(f.home, "custom-agent");
   mkdirSync(target, { mode: 0o700 }); chmodSync(target, 0o775); symlinkSync(target, agent);
-  expect(f.run(agent, "", false, f.home, f.home, agent).reply.value).toBe("custom");
+  expect(f.run(agent, "", false, f.home, f.home, agent).reply).toEqual({ version: 1, kind: "agent-directory", error: "unsafe-destination",
+    details: { path: agent, mode: lstatSync(agent).mode & 0o7777, uid: process.getuid!(), problem: "symlink" } });
   expect(lstatSync(target).mode & 0o777).toBe(0o775);
 }, 5000);
+
+it("names a foreign owner of the configured agent root", () => {
+  const f = fixture(), agent = join(f.home, "custom-agent"), uid = process.getuid!() + 1; mkdirSync(agent, { mode: 0o700 }); chmodSync(agent, 0o775);
+  const prelude = `const pfs=require('node:fs'), original=pfs.lstatSync; pfs.lstatSync=(file,...args)=>{const stat=original(file,...args);if(file===${JSON.stringify(agent)})Object.defineProperty(stat,'uid',{value:${uid}});return stat;};\n`;
+  expect(f.run(agent, "", false, f.home, f.home, agent, prelude).reply).toEqual({ version: 1, kind: "agent-directory", error: "unsafe-destination",
+    details: { path: agent, mode: 0o775, uid, problem: "owner" } });
+  expect(lstatSync(agent).mode & 0o777).toBe(0o775);
+});
 
 it("verifies destination sign-in by metadata without reading credential contents", () => {
   const f = fixture(), agentDir = join(f.home, "agent"), globalRoot = join(f.home, "state"), prefix = join(f.home, "prefix");

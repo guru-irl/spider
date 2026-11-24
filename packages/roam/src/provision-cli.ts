@@ -20,7 +20,7 @@ import { parseBuildId } from "../../../scripts/build-id.mjs";
 import { describeSelectedFiles, prepareSelectedFiles, readPrivateBytes, SelectedFilesError } from "./selected-files";
 import { AuthError, previewPiAuthBytes } from "./auth";
 import type { ProvisionPreview, ProvisionResult } from "./provision-contracts";
-import { isPermissionTighteningCount, MAX_PERMISSION_TIGHTENINGS } from "./provision-permissions";
+import { isPermissionTighteningCount, MAX_PERMISSION_TIGHTENINGS, isAgentModeRepairs } from "./provision-permissions";
 
 interface ConsentRequest { operationId: string; target: string; machineId: string; hubMachineId: string;
   files: readonly { path: string; size: number; mode: number }[]; releaseHash: string; providers?: readonly string[]; selectionDigest?: string;
@@ -227,6 +227,8 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
     journal.begin(consentOperation(request));
     if (completed && completed.contextDigest !== contextDigest) throw new Error("Operation ID already has different arguments");
     if (completed) {
+      const repairs = (done!.value as Record<string, unknown>).privateModeRepairs;
+      if (repairs !== undefined && !isAgentModeRepairs(repairs, home, agentDir)) throw new Error("invalid-journal-result");
       try { await setProvisionParticipation({ root: input.root, hubMachineId: config.machineId, peer, ready: null, journal, transport }); }
       catch { io.err("provision-participation-unconfirmed. Retry provisioning or run spider roam disable.\n"); return refused(3, "provision-participation-unconfirmed"); }
       await removeProvisionSource(input.root, operationId);
@@ -235,7 +237,7 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
       reportPermissionTightening(permissionTightenings, io.out);
       io.out(`${safe(done!.reason as string)}\n`);
       return { code: 0, reason: done!.reason as string, operationId: done!.operationId as string, home: null, epoch: null, repairCommand: null,
-        value: { hostingReady: saved.hostingReady, permissionTightenings } };
+        value: { hostingReady: saved.hostingReady, permissionTightenings, ...(repairs !== undefined ? { privateModeRepairs: repairs } : {}) } };
     }
     let shownSettings: { fingerprint: string | null; keys: readonly string[] } = { fingerprint: null, keys: [] };
     const ports = createProductionProvisionPorts({ root: input.root, hubMachineId: config.machineId, peer, operationId: `${operationId}-install`, transport, journal, limits: config.limits,

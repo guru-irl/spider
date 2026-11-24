@@ -20,7 +20,7 @@ import * as hcModule from "@spider/herdr/client/hc";
 import { handleSessionOperation } from "../participant-runtime";
 import { provision } from "../provision";
 import type { ProvisionPorts } from "../provision-contracts";
-import { inspectDestinationSettings, installSelectedFiles } from "../selected-files";
+import { inspectDestinationSettings, inspectAgentPrivateModes, installSelectedFiles } from "../selected-files";
 import { createRunningIntentAuthority } from "../session-control";
 import { enterHostingEnvironment } from "../../../herdr/e2e/fixtures/roam-hosting";
 import { bootstrapPeer, healthyInventory } from "./bootstrap-fixture";
@@ -88,6 +88,7 @@ function provisionFixture() {
       async claimIdentity() { actions.push("identity"); return { machineId: BOX, coreId: "box-core" }; },
     },
     transfer: {
+      async repairAgentDirectory() { return inspectAgentPrivateModes(destination, true); },
       async setEnabled(_peer, _hub, enabled) { actions.push(`enabled:${enabled}`); },
       async enroll() { actions.push("enroll"); }, async cleanupSecrets() { actions.push("cleanup"); },
       async installRelease() { actions.push("release"); return { pi: peer.pi, cli: peer.cli, supervisor }; },

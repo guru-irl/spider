@@ -207,6 +207,33 @@ it("omits settings from the preview and transfer when requested", async () => {
   expect(errors).toBe("");
 }, 5000);
 
+it("retains private-mode repair evidence in initial and completed CLI JSON", async () => {
+  const f = fixture(), agent = join(f.root, "agent"); mkdirSync(agent, { mode: 0o700 });
+  writeFileSync(join(agent, "auth.json"), JSON.stringify({ "github-copilot": { type: "oauth", access: "fixture" } }), { mode: 0o600 });
+  writeFileSync(join(agent, "settings.json"), "{}", { mode: 0o600 });
+  writeFileSync(join(f.root, "roam", "machine.json"), JSON.stringify({ machineId: HUB }), { mode: 0o600 });
+  writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify({ enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB,
+    peers: [{ machineId: f.request.machineId, alias: f.request.target, node: "/home/fixture/node", pi: "/home/fixture/.local/bin/pi", cli: "/home/fixture/cli", core: "/home/fixture/hc", globalRoot: "/home/fixture/.pi/agent/spider" }], coreUnit: "fixture.service" }), { mode: 0o600 });
+  vi.stubEnv("PI_CODING_AGENT_DIR", agent); vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root);
+  vi.spyOn(hubModule, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
+  vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: { async resolve(peer: unknown) { return peer; } } } as never);
+  const privateModeRepairs = [{ path: "/home/fixture/.pi/agent/settings.json", uid: 1000, before: 0o664, after: 0o600 as const }];
+  const install = vi.spyOn(provisionModule, "provision").mockImplementation(async (request, ports) => {
+    await ports.confirm(request.peer.alias, request.confirmedProviders); await ports.persistPeer(request.peer);
+    const result = { code: 0 as const, reason: "installed", operationId: request.operation.id, home: null, epoch: null, repairCommand: null,
+      value: { hostingReady: true, permissionTightenings: 0, privateModeRepairs } };
+    ports.journal.begin({ ...request.operation, args: { fixture: true } }); ports.journal.record(request.operation.id, "done", result as never);
+    return result;
+  });
+  const args = ["roam", "provision", f.request.target, "--yes", "--consent", "copilot-auth", "--operation-id", "private-mode-json", "--json"];
+  let output = ""; const io = { out(text: string) { output += text; }, err(_text: string) {} };
+  expect(await main([...args.slice(0, -1), "--release", f.release, "--json"], io)).toBe(0);
+  expect(JSON.parse(output)).toMatchObject({ code: 0, value: { hostingReady: true, privateModeRepairs } });
+  output = ""; expect(await main(args, io)).toBe(0);
+  expect(JSON.parse(output)).toMatchObject({ code: 0, value: { hostingReady: true, privateModeRepairs } });
+  expect(install).toHaveBeenCalledTimes(1);
+}, 5000);
+
 it("prunes the completed source snapshot and safely replays without repacking", async () => {
   const f = fixture(), agent = join(f.root, "agent"); mkdirSync(agent, { mode: 0o700 });
   writeFileSync(join(agent, "auth.json"), JSON.stringify({ "github-copilot": { type: "oauth", access: "fixture" } }), { mode: 0o600 });
@@ -315,14 +342,14 @@ it("names the private npm diagnostic receipt after an installation failure", asy
   expect(errors).toMatch(/new operation/i);
 }, 5000);
 
-it("reports preview permissions before mutation through the CLI", async () => {
+it("reports shared-parent preview permissions before mutation through the CLI", async () => {
   const previous = process.umask(0o002);
   try {
     const f = fixture(), sourceAgent = join(f.root, "source-agent"), home = join(f.root, "remote-home");
     const socket = join(process.env.SPIDER_GLOBAL_ROOT!, "provision-cli.sock");
     const agent = join(home, ".pi", "agent"), globalRoot = join(agent, "spider"), extensions = join(agent, "extensions");
     mkdirSync(sourceAgent, { mode: 0o700 }); mkdirSync(join(globalRoot, "roam"), { recursive: true, mode: 0o700 });
-    mkdirSync(extensions, { mode: 0o700 }); chmodSync(extensions, 0o775);
+    mkdirSync(extensions, { mode: 0o700 }); const sharedParent = join(home, ".pi"); chmodSync(sharedParent, 0o775);
     writeFileSync(join(agent, "auth.json"), "{}", { mode: 0o600 });
     writeFileSync(join(globalRoot, "roam", "machine.json"), JSON.stringify({ machineId: f.request.machineId }), { mode: 0o600 });
     const sha = createHash("sha256").update(readFileSync(f.release)).digest("hex");
@@ -394,12 +421,13 @@ it("reports preview permissions before mutation through the CLI", async () => {
       return Buffer.from(JSON.stringify(reply));
     });
     const base = ["roam", "provision", f.request.target, "--release", f.release, "--yes", "--use-destination-auth"];
-    const repair = "chmod go-w '/home/fixture/.pi/agent/extensions'";
+    const repair = "chmod go-w '/home/fixture/.pi'";
     let output = "", errors = "";
     const io = { out(text: string) { output += text; }, err(text: string) { errors += text; } };
     expect(await main([...base, "--operation-id", "permissions-text"], io)).toBe(1);
     expect(errors).toContain("destination-permissions-unsafe"); expect(errors).toContain(repair);
-    expect(lstatSync(extensions).mode & 0o777).toBe(0o775);
+    expect(lstatSync(sharedParent).mode & 0o777).toBe(0o775);
+    expect(lstatSync(extensions).mode & 0o777).toBe(0o700);
     expect(existsSync(join(extensions, "spider.ts"))).toBe(false);
     expect(existsSync(join(globalRoot, "roam", "provision", "permissions-text-install", "release-receipt.json"))).toBe(false);
     expect(mutations).toEqual([]);

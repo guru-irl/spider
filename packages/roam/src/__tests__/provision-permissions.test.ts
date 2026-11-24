@@ -1,5 +1,23 @@
 import { expect, it } from "vitest";
+import { safeControlOutcome } from "../commands";
 import { destinationPermissionPath, isPermissionRepairCommand, permissionRepairCommand } from "../provision-permissions";
+
+it("keeps private-mode repairs and hosting readiness in provisioning JSON", () => {
+  const repairs = [{ path: "/home/fixture/agent/settings.json", uid: 1000, before: 0o664, after: 0o600 }];
+  const result = { code: 0 as const, reason: "installed", operationId: "op-1", home: null, epoch: null, repairCommand: null,
+    value: { hostingReady: true, permissionTightenings: 0, privateModeRepairs: repairs } };
+  expect(safeControlOutcome(result).value).toEqual(result.value);
+  expect(safeControlOutcome({ ...result, value: { ...result.value, privateModeRepairs: [{ ...repairs[0], path: "/home/fixture/agent/spoof\u202e" }] } }).value)
+    .toEqual({ hostingReady: true, permissionTightenings: 0 });
+});
+
+it("keeps only exact generated private-mode refusal advice in public JSON", () => {
+  const reason = "unsafe-destination (/home/fixture/agent/settings.json; mode 0664; uid 1001; owner). Have the owner move '/home/fixture/agent/settings.json' out of the agent tree, then reprovision.";
+  const result = { code: 1 as const, reason, operationId: "op-1", home: null, epoch: null, repairCommand: null, value: null };
+  expect(safeControlOutcome(result).reason).toBe(reason);
+  expect(safeControlOutcome({ ...result, reason: reason + " arbitrary output" }).reason).toBe("control-failed");
+  expect(safeControlOutcome({ ...result, reason: reason.replace("settings.json;", "settings\u202e.json;") }).reason).toBe("control-failed");
+});
 
 it("accepts recursive repairs only for exact package tree roots", () => {
   const pi = "/home/fixture/prefix/lib/node_modules/@earendil-works/pi-coding-agent";

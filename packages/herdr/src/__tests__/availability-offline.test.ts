@@ -60,6 +60,9 @@ it.each([
   'remote file not found: /home/fixture/downloads/file',
   'remote file not found: /home/fixture/lost+found/file',
   'remote command rejected during shutdown',
+  'network download directory is missing',
+  'host downloading a file failed',
+  'broken pipeline configuration',
   'remote file not found: /home/fixture/report-503',
   'missing record 502',
 ])('does not treat a content error as a transport outage: %s', async stderr => {

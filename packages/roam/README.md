@@ -43,7 +43,9 @@ After startup recovery, peers with pending moves also wait for their first
 verified sync. This covers a peer reconnecting before the first observation.
 A later verified successful sync schedules a peer-scoped full recovery pass
 outside the sync callback, so recovery can request sync barriers without
-waiting on itself. Full recovery and cleanup share a single writer. The pass
+waiting on itself. Full recovery and cleanup share a single writer. Requests
+for the same peer while a pass runs coalesce into one follow-up pass, so new
+pending moves are not missed. The pass
 uses the existing forward-only journal proofs and never retries failed moves
 in a loop. Successful-sync cleanup uses one coalesced timer and one flight.
 Disable and shutdown cancel scheduled work and drain active recovery and cleanup

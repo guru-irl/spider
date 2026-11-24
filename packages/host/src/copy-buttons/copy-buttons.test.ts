@@ -35,6 +35,11 @@ function markdown(assistant: AssistantMessageComponent): Markdown {
   return result;
 }
 function render(md: Markdown): string[] { return md.render(90).map(stripTerminalSequences); }
+function hover(md: Markdown) {
+  const lines = render(md);
+  const event: TuiMouseEvent = { type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width: 90, height: lines.length, shift: false, alt: false, ctrl: false };
+  (md as Component).handleMouse?.(event);
+}
 function click(md: Markdown, row: number, label: "⧉ text" | "⧉ md") {
   const lines = render(md);
   const at = lines[row].indexOf(label);
@@ -51,6 +56,7 @@ describe("copy buttons", () => {
     const { assistant, copied } = fixture();
     assistant.updateContent(message(source), false);
     const md = markdown(assistant);
+    hover(md);
     const lines = render(md);
     const pairs = lines.map((line, row) => line.includes("⧉ text") && line.includes("⧉ md") ? row : -1).filter(row => row >= 0);
     expect(pairs).toHaveLength(4);
@@ -77,6 +83,7 @@ describe("copy buttons", () => {
     const input = "```ts\n\treturn 1;\n```\n\n> **hello**\tworld\n\nEnd";
     assistant.updateContent(message(input), false);
     const md = markdown(assistant);
+    hover(md);
     const rows = render(md).map((line, row) => line.includes("⧉ text") ? row : -1).filter(row => row >= 0);
     expect(rows).toHaveLength(3);
     click(md, rows[0], "⧉ md"); await Promise.resolve();
@@ -91,6 +98,7 @@ describe("copy buttons", () => {
     const { assistant, copied } = fixture();
     assistant.updateContent(message("$$\nx^2\n$$\n\n```js\nhello()\n```\n\nEnd"), false);
     const md = markdown(assistant);
+    hover(md);
     const rows = render(md).map((line, row) => line.includes("⧉ md") ? row : -1).filter(row => row >= 0);
     expect(rows).toHaveLength(2);
     click(md, rows[0], "⧉ md"); await Promise.resolve();
@@ -102,6 +110,7 @@ describe("copy buttons", () => {
     const assistant = new AssistantMessageComponent(undefined, false, theme, undefined, 0, [input => input.replace("original()", "displayed()")]);
     assistant.updateContent(message("```js\noriginal()\n```\n\nEnd"), false);
     const md = markdown(assistant);
+    hover(md);
     const row = render(md).findIndex(line => line.includes("⧉ md"));
     click(md, row, "⧉ md"); await Promise.resolve();
     expect(copied.at(-1)).toBe("```js\noriginal()\n```");
@@ -113,6 +122,7 @@ describe("copy buttons", () => {
     const { assistant, copied } = fixture();
     assistant.updateContent(message("**Bold**"), false);
     const md = markdown(assistant);
+    hover(md);
     const lines = render(md);
     const row = lines.findIndex(line => line.includes("⧉ md"));
     const x = visibleWidth(lines[row].slice(0, lines[row].indexOf("⧉ md")));
@@ -132,6 +142,7 @@ describe("copy buttons", () => {
     const assistant = new AssistantMessageComponent(undefined, false, theme, undefined, 0);
     assistant.updateContent(message("Hello"), false);
     const md = markdown(assistant);
+    hover(md);
     const row = render(md).findIndex(line => line.includes("⧉ text"));
     expect(() => click(md, row, "⧉ text")).not.toThrow();
     expect(errors).toHaveLength(1);
@@ -152,6 +163,7 @@ describe("copy buttons", () => {
     const { assistant, render: requestRender } = fixture();
     assistant.updateContent(message("Hello"), false);
     const md = markdown(assistant);
+    hover(md);
     const row = render(md).findIndex(line => line.includes("⧉ text"));
     const before = render(md)[row];
     click(md, row, "⧉ text"); await Promise.resolve();
@@ -191,6 +203,7 @@ describe("copy buttons", () => {
     const input = "Intro\n\n```js\nx()\n```";
     assistant.updateContent(message(input), false);
     const md = markdown(assistant);
+    hover(md);
     const lines = render(md);
     const rows = lines.map((line, row) => line.includes("⧉ text") ? row : -1).filter(row => row >= 0);
     expect(rows).toHaveLength(2);
@@ -213,6 +226,7 @@ describe("copy buttons", () => {
     const assistant = new AssistantMessageComponent(undefined, false, theme, undefined, 0);
     assistant.updateContent(message("Hello"), false);
     const md = markdown(assistant);
+    hover(md);
     const row = render(md).findIndex(line => line.includes("⧉ md"));
     click(md, row, "⧉ md"); await Promise.resolve();
     expect(copied).toEqual(["Hello"]);
@@ -226,6 +240,7 @@ describe("copy buttons", () => {
     const context = { hasUI: false, mode: "tui", cwd: "/project", ui: { setWidget, notify: vi.fn() } };
     existing.assistant.updateContent(message("Previous"), false);
     const previous = markdown(existing.assistant);
+    hover(previous);
     expect(render(previous).join("\n")).toContain("⧉ text");
     registerCopyButtons(pi as never, { AssistantMessageComponent, Markdown }, () => ({ "copyButtons.enabled": false }), async () => {});
     events.get("session_start")?.({}, context);
@@ -288,6 +303,7 @@ describe("copy buttons", () => {
     const second = fixture();
     first.assistant.updateContent(message("Hello"), false);
     const md = markdown(first.assistant);
+    hover(md);
     const lines = render(md);
     expect(lines.join("\n").match(/⧉ text/g)).toHaveLength(1);
     click(md, lines.findIndex(line => line.includes("⧉ text")), "⧉ text");

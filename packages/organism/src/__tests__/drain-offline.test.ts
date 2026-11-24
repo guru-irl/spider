@@ -74,6 +74,22 @@ it("stops after the first transport failure, keeps one receipt, and retries dist
   expect(worker.getLastDrain()).toMatchObject({ status: "completed", errors: [] });
 });
 
+it("defers a drain when a provider wraps a nested network error", async () => {
+  let online = false;
+  const complete = vi.fn(async () => {
+    if (!online) throw Object.assign(new Error("request failed"), { cause: Object.assign(new Error("connection failed"), { code: "ECONNREFUSED" }) });
+    return response;
+  });
+  const worker = fixture(complete), store = new DrainRetryStore(databases.db);
+  await worker.runDrain("session", "before_compact", snapshot("Keep the nested transport input."));
+  expect(complete).toHaveBeenCalledTimes(1);
+  expect(store.next()?.bundle.transcript[0].content).toBe("Keep the nested transport input.");
+  online = true; await vi.advanceTimersByTimeAsync(300_000);
+  expect(complete).toHaveBeenCalledTimes(3);
+  expect(store.next()).toBeUndefined();
+  expect(store.outage()).toBeUndefined();
+});
+
 it("defers the remaining passes when the provider is temporarily unavailable", async () => {
   let online = false;
   const complete = vi.fn(async () => { if (!online) throw new Error("Provider temporarily unavailable"); return response; });

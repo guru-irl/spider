@@ -57,6 +57,20 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     await a.view.close(); await b.view.close();
   });
 
+  it(`${version}: sounds a fresh notification from a producer clock 60 seconds behind`, async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = Date.UTC(2026, 0, 1); vi.setSystemTime(start);
+    const a = fixture(version); a.state.feeds[0].updatedAt = start - 60_000;
+    try {
+      await a.ready();
+      vi.setSystemTime(start + 2_000);
+      a.state.feeds[0].updatedAt = start - 58_000;
+      a.state.feeds[0].notifications.push({ ...notice('skewed', 'urgent'), createdAt: start - 59_000 });
+      await a.refresh(); await a.refresh();
+      expect(a.calls).toEqual(['blocked']);
+    } finally { await a.view.close(); vi.useRealTimers(); }
+  });
+
   it(`${version}: silences old reconnect batches and sounds a fresh occurrence`, async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const start = Date.UTC(2026, 0, 1); vi.setSystemTime(start);

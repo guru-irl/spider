@@ -5,7 +5,7 @@ import { baselineSkillsDir, pstackSkillsDir } from "@spider/superpowers";
 import { firstThreatMessage, safeReviewError } from "@spider/memory";
 import { SkillStore, type SkillRow } from "./skill-usage.js";
 import type { SkillCandidate, SkillReviewSummary } from "./types.js";
-import { isConnectivityFailure } from "./connectivity.js";
+import { classifyConnectivityFailure } from "./connectivity.js";
 
 export interface ExistingSkill { name: string; description: string }
 export interface SkillReviewCandidate extends SkillCandidate { origin: "learner" | "curator" | "agent" }
@@ -200,8 +200,8 @@ export async function reviewSkillCandidate(store: SkillStore, candidate: SkillRe
     const reason = safeReviewError(error);
     if (opts.signal?.aborted) return skip("aborted");
     try { opts.onReviewError?.(reason, raw); } catch { /* Diagnostics must not change the fail-closed policy. */ }
-    const connectivity = isConnectivityFailure(error);
-    return skip(reason, connectivity, connectivity && error instanceof Error && error.name === "TimeoutError");
+    const { connectivity, timedOut } = classifyConnectivityFailure(error);
+    return skip(reason, connectivity, timedOut);
   } finally {
     if (timer) clearTimeout(timer);
     if (onAbort) opts.signal?.removeEventListener("abort", onAbort);

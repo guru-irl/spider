@@ -369,9 +369,11 @@ Spider removes candidates with any other verdict and records them in the
 bounded table of recent results. A malformed reply or other non-connectivity
 failure increments the candidate's attempt count and sets `last_error`. The
 third such failure drops the candidate and records the reason. A connectivity
-failure or timeout preserves the candidate and its attempt count. A timeout
+failure or timeout preserves the candidate and its attempt count. A timeout,
+including a provider timeout code or a `timed out` message in a nested cause,
 moves the candidate behind the others and gives it an individual retry deadline.
-The runner tries the next candidate before declaring an outage. If that call
+Authentication failures still take precedence. The runner tries the next
+candidate before declaring an outage. If that call
 also fails on connectivity, the runner stops the queue. Other transport failures
 can stop it immediately. Retry delays start at five minutes and double to at
 most six hours. The deadlines persist across sessions. A non-connectivity

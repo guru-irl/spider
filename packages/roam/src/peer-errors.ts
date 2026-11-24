@@ -7,7 +7,8 @@ export function recoveryRefusalCode(value: unknown): RecoveryRefusal | undefined
   return typeof value === "string" && (recoveryRefusals as readonly string[]).includes(value) ? value as RecoveryRefusal : undefined;
 }
 export class RecoveryArtifactError extends Error {
-  constructor(readonly code: 1 | 2 | 3, reason: string) { super(reason); }
+  readonly code: 1 | 2 | 3;
+  constructor(code: 1 | 2 | 3, reason: string) { super(reason); this.code = code; }
 }
 
 export class RecoveryResponseError extends Error {

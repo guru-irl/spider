@@ -5,6 +5,7 @@ import { createReplica } from "@spider/db-core/testutil";
 import { DEFAULT_LIMITS, disabledIntercom, type MovePorts } from "../contracts";
 import { openFreezeJournal } from "../journal";
 import { moveEvidence, resumeMove } from "../move";
+import { MoveAdapterError } from "../move-ports";
 import { MoveCompositionError } from "../move-failure";
 
 it("a failed workspace preflight names the missing Pi and its repair", async () => {
@@ -24,6 +25,10 @@ it("a failed workspace preflight names the missing Pi and its repair", async () 
     if (result.ok) throw new Error("Expected a move refusal");
     expect(result.refusal.message).toContain("SPIDER_ROAM_PI");
     expect(await resumeMove(request, ports)).toEqual(result);
+    ports.check = async () => { throw new MoveAdapterError("participant-pi-unavailable"); };
+    expect(await resumeMove({ ...request, operation: { ...request.operation, id: "move-b" } }, ports))
+      .toMatchObject({ code: 1, causeCode: "participant-pi-unavailable", repairCommand: "spider roam doctor",
+        refusal: { blockers: ["participant-pi-unavailable"] } });
     expect(moveEvidence.outcome(request, ports, 3, "move-pending", null, [], "participant-pi-unavailable").repairCommand)
       .toBe("spider roam recover move-a");
     expect(() => moveEvidence.completedOutcome({ ...result, causeCode: "private-forged-cause",

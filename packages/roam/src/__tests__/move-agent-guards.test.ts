@@ -46,6 +46,11 @@ it.each([
   expect(result).toMatchObject({ code: 1, reason: expected, causeCode: expected, repairCommand: "spider roam doctor", operationId: f.operation.id });
   expect(JSON.stringify(result)).not.toContain("private");
 });
+it("a named failure for an epoch-bound participant operation retains its epoch", async () => {
+  const f = fixture("session-inspect");
+  f.ports.move = async () => { throw Object.assign(new Error("private detail"), { code: "participant-pi-unavailable" }); };
+  expect(await handleAgentOperation(f.operation, f.ports)).toMatchObject({ code: 1, causeCode: "participant-pi-unavailable", epoch: 1 });
+});
 
 it("real enrollment stays disabled until explicit provision enables it, then only its enrolled hub is accepted", async () => {
   const replica = createReplica("global", BOX), file = join(replica.root, "roam/config.json");

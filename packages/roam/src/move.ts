@@ -393,7 +393,8 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
     const code = checked || ["move-journal-invalid", "move-journal-unavailable"].includes(reason) ? 3 : reason === "move-operation-conflict" ? 2 : 1;
     const blockers = error instanceof MoveError ? error.refusal.blockers : reason === "move-preflight-refused"
       ? [validateBlockerId(error instanceof MoveCompositionError ? error.code : peerErrorCode(error) ?? "preflight-check-unavailable")] : [];
-    const result = outcome(request, ports, code, reason, null, blockers, error instanceof MoveCompositionError ? error.code : undefined);
+    const cause = error instanceof MoveCompositionError ? error.code : error instanceof MoveError && "code" in error ? safeMoveCause(error.code) : undefined;
+    const result = outcome(request, ports, code, reason, null, blockers, cause);
     if (!checked && (begunNew || recovering) && code !== 3) {
       ports.journal.record(id, "done", json(result));
       if (slot) ports.journal.record(slot, "released", { moveId: id });

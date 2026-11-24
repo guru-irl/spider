@@ -47,6 +47,13 @@ else process.exit(2);
     const result = JSON.parse((await transport.exec(await transport.resolve(peer), ["roam", "agent", JSON.stringify(request)],
       { timeoutMs: 10000, maxBytes: DEFAULT_LIMITS.replyBytes })).toString());
     if (available) expect(result).toMatchObject({ code: 0, operationId: "map-a", value: mapped });
-    else expect(result).toMatchObject({ code: 1, reason: "participant-pi-unavailable", causeCode: "participant-pi-unavailable", operationId: "map-a", value: null });
+    else {
+      expect(result).toMatchObject({ code: 1, reason: "participant-pi-unavailable", causeCode: "participant-pi-unavailable", operationId: "map-a", value: null });
+      const inspect = { ...request, id: "inspect-a", kind: "session-inspect", expectedEpoch: 1,
+        args: { sessionId: "session-a", moveId: "move-a", sourceMachine: HUB } };
+      const failed = JSON.parse((await transport.exec(await transport.resolve(peer), ["roam", "agent", JSON.stringify(inspect)],
+        { timeoutMs: 10000, maxBytes: DEFAULT_LIMITS.replyBytes })).toString());
+      expect(failed).toMatchObject({ code: 1, causeCode: "participant-pi-unavailable", epoch: 1, operationId: "inspect-a" });
+    }
   } finally { db.close(); await f.close(); }
 });

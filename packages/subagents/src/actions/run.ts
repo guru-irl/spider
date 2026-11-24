@@ -31,8 +31,7 @@ function formatCompactionCount(compactionCount?: number): string {
   return (compactionCount ?? 0) > 0 ? ` · ${compactionCount} compaction${compactionCount === 1 ? "" : "s"}` : "";
 }
 
-/** Async-completion notifier: injects a message the parent agent sees next turn (so it
- *  learns a background subagent finished) + a human toast. Best-effort; never throws. */
+/** Inject a completion message; retain UI notifications outside the TUI. Best-effort. */
 export function makeAsyncNotifier(ctx: { formatRunCost?: (costs: readonly { provider?: string; cost: number }[]) => string; [key: string]: any }): (run: any, status: string, result?: string) => void {
   return (run, status, result) => {
     const local = (row: any): boolean => {
@@ -129,7 +128,7 @@ export function makeAsyncNotifier(ctx: { formatRunCost?: (costs: readonly { prov
         }
         if (!delivered) return;
       } else deliver();
-      ctx.ui?.notify?.(`subagent "${name}" ${status}`, status === "failed" ? "error" : "info");
+      if (ctx.mode !== "tui") ctx.ui?.notify?.(`subagent "${name}" ${status}`, status === "failed" ? "error" : "info");
     } catch { /* best-effort; saved completions remain recoverable */ }
   };
 }

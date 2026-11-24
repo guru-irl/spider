@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createReplica } from "@spider/db-core/testutil";
+import { openDb } from "@spider/db-core";
 import { recordLocation } from "@spider/db-core/roam/catalog";
 import { writeLocal } from "@spider/db-core/roam/local-state";
 import { claimIdLock, inspectIdLock } from "@spider/herdr/sessions/id-lock";
@@ -15,6 +16,7 @@ import { createIntentStore } from "../intent";
 import * as intentModule from "../intent";
 import { createRunningIntentAuthority } from "../session-control";
 import { handleSessionOperation } from "../participant-runtime";
+import { handleAgentOperation } from "../agent";
 import { createParticipantSupervisor } from "../participant-supervisor";
 import { createDurableLaunchPort } from "../supervisor";
 import { runLocalDoctor } from "../local-diagnostics";
@@ -23,10 +25,25 @@ import * as launcherModule from "../launcher";
 import * as localDiagnostics from "../local-diagnostics";
 import { participantLaunchId } from "../participant-launch";
 import { enrollFixtureCore } from "./supervisor-core-fixture";
+import * as participantSupervisor from "../participant-supervisor";
+import * as productionSupervisor from "../production-supervisor";
+import * as runtimeModule from "../runtime";
+import * as productionHub from "../production-hub";
+import * as hcModule from "@spider/herdr/client/hc";
+import * as cliTransport from "@spider/herdr/client/cli-transport";
+import * as transportModule from "../transport";
+import { main } from "../cli";
+import { pathToFileURL, fileURLToPath } from "node:url";
+import * as fsModule from "node:fs";
+
+vi.mock("node:fs", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, openSync: vi.fn(actual.openSync) };
+});
 
 const BOX = "00000000-0000-4000-8000-000000000002", HUB = "00000000-0000-4000-8000-000000000001";
 const fixtures: ReturnType<typeof createReplica>[] = [];
-afterEach(() => { for (const f of fixtures.splice(0)) f.close(); vi.restoreAllMocks(); });
+afterEach(() => { for (const f of fixtures.splice(0)) f.close(); vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 async function participantFixture() {
   const global = createReplica("global", BOX), worktree = createReplica("worktree", BOX); fixtures.push(global, worktree);
   const root = global.root, stateRoot = join(root, "herdr"), file = join(worktree.root, "session.jsonl");
@@ -49,6 +66,316 @@ async function participantFixture() {
   const operation = { id: "stop-1", kind: "session-stop", machineId: BOX, expectedEpoch: 1, args: { sourceMachine: HUB, sessionId: "session-1" } };
   return { root, stateRoot, file, global, ports, operation, authority, intents, intent };
 }
+// Keep reservation, exact launcher, ownership files and stop real. Only the
+// native core transport and process inventory are external doubles.
+async function productionLaunchFixture(boundary?: "crash" | "stale" | "lost-invoking-reply") {
+  const f = await participantFixture();
+  const agentDirectory = join(f.root, "agent"); mkdirSync(agentDirectory, { mode: 0o700 });
+  writeFileSync(join(agentDirectory, "auth.json"), JSON.stringify({ fixture: { type: "api_key", key: "fixture-only" } }), { mode: 0o600 });
+  await f.global.db.raw.backup(join(f.root, "spider.db"));
+  let preflightFails = !boundary, spawns = 0, faulted = false, processIdentity = "supervisor-1";
+  let coreProbe: (() => Promise<string>) | undefined, nativeRun: LocalExactHc["run"] | undefined;
+  const prepared: Array<{ phase: string; operationId: string }> = [], reservations: string[] = [];
+  const realIntentStore = intentModule.createIntentStore;
+  vi.spyOn(intentModule, "createIntentStore").mockImplementation(root => {
+    const store = realIntentStore(root);
+    return { ...store, async update(id, version, next) {
+      if (next.supervision.kind === "launching" && next.supervision.phase === "reserved" && (await store.get(id))?.value.supervision.kind === "idle") {
+        reservations.push(next.supervision.operationId);
+      }
+      if (boundary && next.supervision.kind === "launching" && next.supervision.phase === "invoking" && !faulted) {
+        faulted = true;
+        const current = (await store.get(id))!;
+        const lock = await inspectIdLock(f.stateRoot, id);
+        expect(lock?.pendingOperationId).toBe(next.supervision.operationId);
+        await access(launchHandoffPath(f.stateRoot, next.supervision.operationId));
+        if (current.value.supervision.kind !== "launching") throw new Error("missing-reservation");
+        prepared.push({ phase: current.value.supervision.phase, operationId: next.supervision.operationId });
+        if (boundary === "lost-invoking-reply") await store.update(id, version, next);
+        if (boundary === "stale") return { kind: "stale", currentVersion: current.version };
+        throw new Error("fixture-boundary-crash");
+      }
+      return store.update(id, version, next);
+    } };
+  });
+  const leases = createSessionLeases(f.stateRoot);
+  const inventory = { leases, presence: createProcessPresence(f.stateRoot), processes: async () => [],
+    probe: async (pid: number): Promise<ProcessProbe> => pid === process.pid ? { kind: "live", startIdentity: processIdentity } : { kind: "absent" } };
+  const hc: LocalExactHc = { async coreId() { if (coreProbe) return coreProbe(); if (preflightFails) throw new Error("fixture-preflight-failed"); return "core-1"; },
+    async terminals() { return { complete: true, terminals: [] }; }, async run(request, observer) { spawns++; if (nativeRun) return nativeRun(request, observer); throw new Error("unexpected-spawn"); } };
+  vi.stubEnv("SPIDER_ROAM_PI", "/home/fixture/pi");
+  vi.spyOn(cliTransport, "invokeCli").mockResolvedValue({ version: "0.1.16", core: { id: "core-1" }, pid: 4321 });
+  vi.spyOn(hcModule, "createHcClient").mockReturnValue({ events() { return { subscribe() { return () => {}; }, dispose() {} }; }, async dispose() {} } as never);
+  vi.spyOn(runtimeModule, "openLocalRuntime").mockReturnValue({ config: f.ports.config, db: f.global.db, journal: f.ports.journal, agent: f.ports, close() {} } as never);
+  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ agentDirectory, core: { binary: "/home/fixture/hc" } } as never);
+  vi.spyOn(launcherModule, "createProductionLocalExactHc").mockReturnValue({ ...hc, async dispose() {} });
+  const realAdapter = launcherModule.createExactLaunchAdapter;
+  vi.spyOn(launcherModule, "createExactLaunchAdapter").mockImplementation(input => {
+    let now = 100;
+    return realAdapter({ ...input, base: { ...input.base, now: () => now, wait: async () => { now += 60_000; } } });
+  });
+  const realSupervisor = participantSupervisor.createParticipantSupervisor;
+  let supervisor!: ReturnType<typeof createParticipantSupervisor>;
+  vi.spyOn(participantSupervisor, "createParticipantSupervisor").mockImplementation(input => {
+    supervisor = realSupervisor(input);
+    // Drive reconciliation explicitly; no background scheduler races the fault.
+    return { ...supervisor, start() {} };
+  });
+  const start = () => productionSupervisor.startProductionSupervisor(f.root, { clock: { now: () => 100, later: () => () => {} },
+    system: { inventory, bootId: async () => "boot-1", limits: async () => ({ soft: 1024, hard: 1024 }), shell: "/bin/sh" } });
+  let service = await start();
+  const recovery = { hc: { ...hc, coreId: async () => "core-1" }, bootId: async () => "boot-1", probe: inventory.probe,
+    clock: { now: () => 100, wait: async () => {} } };
+  const hub = createReplica("global", HUB); fixtures.push(hub);
+  mkdirSync(join(hub.root, "roam"), { mode: 0o700 });
+  const hubConfig = { ...f.ports.config, role: "hub", machineId: HUB, peers: [{ machineId: BOX, alias: "box-1.invalid", node: "/home/fixture/node",
+    pi: "/home/fixture/pi", cli: "/home/fixture/spider", core: "/home/fixture/hc", globalRoot: "/home/fixture/global" }] };
+  writeFileSync(join(hub.root, "roam", "machine.json"), JSON.stringify({ machineId: HUB }), { mode: 0o600 });
+  writeFileSync(join(hub.root, "roam", "config.json"), JSON.stringify(hubConfig), { mode: 0o600 });
+  hub.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run("session-1", BOX);
+  await hub.db.raw.backup(join(hub.root, "spider.db"));
+  const release = join(hub.root, "release.js");
+  writeFileSync(release, "// SPIDER_BUILD_ID=01234567@2026-01-01T00:00:00.000Z v0.1.0\n", { mode: 0o600 });
+  const bundleUrl = pathToFileURL(release);
+  vi.stubEnv("SPIDER_GLOBAL_ROOT", hub.root);
+  vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: unknown) { return peer; }, async exec(_peer: unknown, argv: string[]) {
+    if (argv[1] === "agent") {
+      const operation = JSON.parse(argv[2]);
+      return Buffer.from(JSON.stringify(await (operation.kind.startsWith("session-") ?
+        handleSessionOperation(operation, f.ports, { wake: async () => {}, launchRecovery: recovery }) : handleAgentOperation(operation, f.ports))));
+    }
+    expect(argv).toEqual(["roam", "observe", "doctor"]);
+    return Buffer.from(JSON.stringify({ version: 1, machineId: BOX, kind: "doctor", value: await runLocalDoctor({ root: f.root, bundleUrl, currentCore: async () => "core-1", launchRecovery: recovery }) }));
+  } } as never);
+  const invokeHub = async (command: "stop" | "enable") => {
+    const out: string[] = [], err: string[] = [];
+    const code = await main(["roam", command, ...(command === "stop" ? ["session-1"] : []), "--json"], { out: text => out.push(text), err: text => err.push(text) }, { bundleUrl });
+    expect(err).toEqual([]);
+    return { code, result: JSON.parse(out.join("")) };
+  };
+  return { ...f, leases, release, invokeHub, nativeRun(run: LocalExactHc["run"]) { nativeRun = run; }, coreProbe(probe: () => Promise<string>) { coreProbe = probe; }, get supervisor() { return supervisor; }, get service() { return service; }, recovery, prepared, reservations, spawns: () => spawns,
+    allowPreflight() { preflightFails = false; },
+    async restart() { await service.stop(); processIdentity = "supervisor-2"; service = await start(); } };
+}
+
+it.each(["same-process", "restart", "lost-stop-reply"] as const)("production preflight failure stays stoppable while disabled: %s", async state => {
+  const f = await productionLaunchFixture();
+  try {
+    await f.supervisor.reconcile();
+    const row = (await f.intents.get("session-1"))!;
+    expect(row.value.supervision).toMatchObject({ kind: "launching", phase: "reserved" });
+    const launchId = participantLaunchId(BOX, "session-1", 1, "resume-1");
+    expect(row.value.supervision).toMatchObject({ operationId: launchId });
+    expect(f.ports.journal.lookupOperation(launchId)).toBeNull();
+    expect(await inspectIdLock(f.stateRoot, "session-1")).toBeNull();
+    if (state === "restart") { await f.restart(); await f.supervisor.reconcile(); }
+    expect(f.reservations).toEqual([launchId]);
+    const options = { wake: async () => {}, launchRecovery: f.recovery };
+    if (state === "lost-stop-reply") {
+      const record = f.ports.journal.record;
+      let lost = false;
+      f.ports.journal.record = (id, action, result) => {
+        record(id, action, result);
+        if (id === "stop-1" && action === "done" && !lost) { lost = true; throw new Error("lost-stop-reply"); }
+      };
+      await expect(handleSessionOperation(f.operation, f.ports, options)).rejects.toThrow("lost-stop-reply");
+    }
+    const beforeEnable = await f.invokeHub("enable");
+    if (state !== "lost-stop-reply") expect(beforeEnable.result.value.issues).toEqual(expect.arrayContaining([expect.objectContaining({ reason: expect.stringContaining("exact-launch") })]));
+    expect(await f.invokeHub("stop")).toMatchObject({ code: 0, result: { reason: "stopped-intent" } });
+    expect((await f.intents.get("session-1"))?.value).toMatchObject({ intent: { desired: "stopped" }, supervision: { kind: "idle", nextAttemptAt: null } });
+    expect(await f.authority.get("session-1")).toMatchObject({ desired: "stopped" });
+    await f.supervisor.reconcile();
+    expect(f.spawns()).toBe(0);
+    const report = await runLocalDoctor({ root: f.root, currentCore: async () => "core-1", launchRecovery: f.recovery });
+    expect(report.diagnostics.filter(row => /exact launch.*pending/i.test(row.reason))).toEqual([]);
+    const enable = await f.invokeHub("enable");
+    expect((enable.result.value?.issues ?? []).filter((row: { reason: string }) => row.reason.includes("exact-launch"))).toEqual([]);
+  } finally { await f.service.stop(); }
+});
+
+it.each(["crash", "stale", "lost-invoking-reply"] as const)("prepared production handoff survives %s without a late or duplicate spawn", async fault => {
+  const f = await productionLaunchFixture(fault);
+  try {
+    await f.supervisor.reconcile();
+    const launchId = participantLaunchId(BOX, "session-1", 1, "resume-1");
+    expect(f.prepared).toEqual([{ phase: "reserved", operationId: launchId }]);
+    expect(f.spawns()).toBe(0);
+    expect(await inspectIdLock(f.stateRoot, "session-1")).toMatchObject({ pendingOperationId: launchId, pendingCoreId: "core-1" });
+    await access(launchHandoffPath(f.stateRoot, launchId));
+    expect(f.ports.journal.lookupOperation(launchId)).toEqual({ machineId: BOX, state: "pending" });
+    // Recreate both the durable port and the production launcher from disk.
+    await f.restart();
+    await f.supervisor.reconcile();
+    expect(f.reservations).toEqual([launchId]);
+    expect(f.ports.journal.read(launchId).filter(row => row.action === "exact-launch-prepared")).toHaveLength(1);
+    expect((await f.intents.get("session-1"))?.value.supervision).toMatchObject({ kind: "launching", operationId: launchId });
+    const beforeEnable = await f.invokeHub("enable");
+    expect(beforeEnable.result.value.issues).toEqual(expect.arrayContaining([expect.objectContaining({ reason: expect.stringContaining("exact-launch") })]));
+    expect(await f.invokeHub("stop")).toMatchObject({ code: 0, result: { reason: "stopped-intent" } });
+    expect(await inspectIdLock(f.stateRoot, "session-1")).toBeNull();
+    expect(await f.leases.get(f.file)).toBeNull();
+    expect((await f.intents.get("session-1"))?.value).toMatchObject({ intent: { desired: "stopped" }, supervision: { kind: "idle" } });
+    expect(f.ports.journal.read(launchId).filter(row => row.action === "exact-launch-settled")).toHaveLength(1);
+    expect(f.ports.journal.lookupOperation(launchId)).toEqual({ machineId: BOX, state: "done" });
+    expect(f.spawns()).toBe(0);
+  } finally { await f.service.stop(); }
+});
+
+it.each(["normal", "lost-cancel-reply"] as const)("hub stop during production preflight fences the delayed launcher: %s", async reply => {
+  const f = await productionLaunchFixture();
+  let enter!: () => void, release!: (core: string) => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; }), core = new Promise<string>(resolve => { release = resolve; });
+  f.coreProbe(async () => { enter(); return core; });
+  if (reply === "lost-cancel-reply") {
+    const record = f.ports.journal.record, launchId = participantLaunchId(BOX, "session-1", 1, "resume-1");
+    let lost = false;
+    f.ports.journal.record = (id, action, result) => {
+      record(id, action, result);
+      if (id === launchId && action === "done" && !lost) { lost = true; throw new Error("lost-cancel-reply"); }
+    };
+  }
+  const launching = f.supervisor.reconcile();
+  try {
+    await entered;
+    expect(await f.invokeHub("stop")).toMatchObject({ code: 0, result: { reason: "stopped-intent" } });
+    release("core-1"); await launching;
+    expect(f.spawns()).toBe(0);
+    expect(await inspectIdLock(f.stateRoot, "session-1")).toBeNull();
+    expect(await f.leases.get(f.file)).toBeNull();
+    expect((await f.intents.get("session-1"))?.value).toMatchObject({ intent: { desired: "stopped" }, supervision: { kind: "idle" } });
+    const enable = await f.invokeHub("enable");
+    expect((enable.result.value?.issues ?? []).filter((row: { reason: string }) => row.reason.includes("exact-launch"))).toEqual([]);
+  } finally { release("core-1"); await launching; await f.service.stop(); }
+});
+
+it("production spawns only with an invoking reservation and a durable exact handoff", async () => {
+  const f = await productionLaunchFixture();
+  f.allowPreflight();
+  const observed: unknown[] = [];
+  let spawned!: () => void;
+  const spawnObserved = new Promise<void>(resolve => { spawned = resolve; });
+  f.nativeRun(async request => {
+    const current = (await f.intents.get("session-1"))!;
+    observed.push(current.value.supervision);
+    const operationId = request.terminal!.labels["spider.roam.operation"];
+    expect(await inspectIdLock(f.stateRoot, "session-1")).toMatchObject({ pendingOperationId: operationId });
+    await access(launchHandoffPath(f.stateRoot, operationId));
+    spawned();
+    throw new Error("fixture-unknown-launch-reply");
+  });
+  try {
+    await f.supervisor.reconcile();
+    const launchId = participantLaunchId(BOX, "session-1", 1, "resume-1");
+    await spawnObserved;
+    expect(observed).toEqual([{ kind: "launching", phase: "invoking", operationId: launchId }]);
+    expect(f.reservations).toEqual([launchId]);
+    expect(f.spawns()).toBe(1);
+    await f.restart();
+    expect(await f.invokeHub("stop")).toMatchObject({ code: 3, result: { reason: "launch-reconciliation-required" } });
+    expect(await inspectIdLock(f.stateRoot, "session-1")).toMatchObject({ pendingOperationId: launchId });
+    expect(f.ports.journal.read(launchId).some(row => row.action === "exact-launch-settled")).toBe(false);
+    expect(f.spawns()).toBe(1);
+  } finally { await f.service.stop(); }
+});
+
+it("hub stop repeats a prepared-only settlement after its committed reply is lost", async () => {
+  const f = await productionLaunchFixture("crash");
+  try {
+    await f.supervisor.reconcile(); await f.restart();
+    const launchId = participantLaunchId(BOX, "session-1", 1, "resume-1"), record = f.ports.journal.record;
+    let lost = false;
+    f.ports.journal.record = (id, action, result) => {
+      record(id, action, result);
+      if (id === launchId && action === "done" && !lost) { lost = true; throw new Error("lost-settlement-reply"); }
+    };
+    expect(await f.invokeHub("stop")).toMatchObject({ code: 3, result: { reason: "launch-reconciliation-required" } });
+    expect(await inspectIdLock(f.stateRoot, "session-1")).toMatchObject({ pendingOperationId: launchId });
+    expect(await f.invokeHub("stop")).toMatchObject({ code: 0, result: { reason: "stopped-intent" } });
+    expect(f.ports.journal.read(launchId).filter(row => row.action === "exact-launch-settled")).toHaveLength(1);
+    expect((await f.intents.get("session-1"))?.value).toMatchObject({ intent: { desired: "stopped" }, supervision: { kind: "idle" } });
+    expect(await f.leases.get(f.file)).toBeNull();
+    expect(f.spawns()).toBe(0);
+  } finally { await f.service.stop(); }
+});
+
+it("prepared-only proof refuses contradictory recorded core identity", async () => {
+  const f = await productionLaunchFixture("crash");
+  try {
+    await f.supervisor.reconcile(); await f.restart();
+    const launchId = participantLaunchId(BOX, "session-1", 1, "resume-1");
+    f.ports.journal.record(launchId, "exact-core", { coreId: "core-2" });
+    expect(await f.invokeHub("stop")).toMatchObject({ code: 3, result: { reason: "launch-reconciliation-required" } });
+    expect(await inspectIdLock(f.stateRoot, "session-1")).toMatchObject({ pendingOperationId: launchId });
+    expect(f.ports.journal.read(launchId).some(row => row.action === "exact-launch-settled")).toBe(false);
+    expect(f.spawns()).toBe(0);
+  } finally { await f.service.stop(); }
+});
+
+it.each(["session", "core", "boot", "file", "launcher"] as const)("prepared settlement refuses changed %s authority", async field => {
+  const f = await productionLaunchFixture("crash");
+  try {
+    await f.supervisor.reconcile(); await f.restart();
+    const launchId = participantLaunchId(BOX, "session-1", 1, "resume-1");
+    const proof = f.ports.journal.read(launchId).find(row => row.action === "exact-launch-prepared")!.result;
+    const changed = { ...proof, ...(field === "session" ? { sessionId: "session-2" } : field === "core" ? { coreId: "core-2" } :
+      field === "boot" ? { bootId: "boot-2" } : field === "file" ? { file: "/home/fixture/other.jsonl" } : { launcher: { pid: 9999, startIdentity: "other-launcher" } }) };
+    const db = openDb(join(f.root, "roam", "journal.db"));
+    try { db.prepare("UPDATE roam_operation_actions SET result_json=? WHERE operation_id=? AND action='exact-launch-prepared'").run(JSON.stringify(changed), launchId); }
+    finally { db.close(); }
+    expect(await f.invokeHub("stop")).toMatchObject({ code: 3, result: { reason: "launch-reconciliation-required" } });
+    expect(await inspectIdLock(f.stateRoot, "session-1")).toMatchObject({ pendingOperationId: launchId });
+    expect(await f.leases.get(f.file)).not.toBeNull();
+    expect(f.spawns()).toBe(0);
+  } finally { await f.service.stop(); }
+});
+
+it("a failed preparation record cannot leave an unreconcilable reserved handoff", async () => {
+  const f = await productionLaunchFixture(); f.allowPreflight();
+  const record = f.ports.journal.record;
+  let interrupted = false;
+  f.ports.journal.record = (id, action, result) => {
+    if (action === "exact-launch-prepared" && !interrupted) { interrupted = true; throw new Error("preparation-record-failed"); }
+    record(id, action, result);
+  };
+  try {
+    await f.supervisor.reconcile();
+    const launchId = participantLaunchId(BOX, "session-1", 1, "resume-1");
+    expect((await f.intents.get("session-1"))?.value.supervision).toEqual({ kind: "launching", operationId: launchId, phase: "reserved" });
+    expect(interrupted).toBe(true);
+    await f.restart(); await f.supervisor.reconcile();
+    expect(f.reservations).toEqual([launchId]);
+    expect(f.spawns()).toBe(0);
+    expect(await f.invokeHub("stop")).toMatchObject({ code: 0, result: { reason: "stopped-intent" } });
+    expect(await inspectIdLock(f.stateRoot, "session-1")).toBeNull();
+    expect(await f.leases.get(f.file)).toBeNull();
+    expect((await f.intents.get("session-1"))?.value.supervision.kind).toBe("idle");
+  } finally { await f.service.stop(); }
+});
+
+it("supported participant resume reaches the durable production boundary before disabled hub stop", async () => {
+  const f = await productionLaunchFixture();
+  try {
+    await f.authority.stop("session-1");
+    await f.global.db.raw.backup(join(f.root, "spider.db"));
+    vi.spyOn(hcModule, "observeCoreIdentity").mockResolvedValue({ coreId: "core-1", socket: join(f.root, "core.sock"), sessionNamespace: "fixture" } as never);
+    // Redirect only the packaged build read. Doctor's checks remain real.
+    const packagedBuild = fileURLToPath(new URL("../../extension.js", import.meta.url));
+    const open = (await vi.importActual<typeof import("node:fs")>("node:fs")).openSync;
+    vi.spyOn(fsModule, "openSync").mockImplementation((file, flags, mode) => open(file === packagedBuild ? f.release : file, flags, mode));
+    const resumed = await handleSessionOperation({ ...f.operation, id: "resume-2", kind: "session-resume" }, f.ports, { wake: async () => {}, launchRecovery: f.recovery });
+    expect(resumed).toEqual(expect.objectContaining({ code: 0, reason: "resumed-intent" }));
+    await f.supervisor.reconcile();
+    // Resume retains the participant's original admission operation.
+    const launchId = participantLaunchId(BOX, "session-1", 1, "resume-1");
+    expect(f.reservations).toEqual([launchId]);
+    expect((await f.intents.get("session-1"))?.value.supervision).toMatchObject({ kind: "launching", operationId: launchId, phase: "reserved" });
+    expect(await f.invokeHub("stop")).toMatchObject({ code: 0, result: { reason: "stopped-intent" } });
+    expect((await f.intents.get("session-1"))?.value).toMatchObject({ intent: { desired: "stopped" }, supervision: { kind: "idle" } });
+    expect(f.spawns()).toBe(0);
+  } finally { await f.service.stop(); }
+});
+
 async function fixture(launchId = "launch-1") {
   const f = await participantFixture(), { root, stateRoot, file, journal, authority, intents, intent } = { ...f, journal: f.ports.journal };
   await authority.stop("session-1");

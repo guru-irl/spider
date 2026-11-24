@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { ExactLaunchAdmission } from "@spider/herdr/sessions/launcher";
 import type { Home, MachineId, Probe, HubOperationReadiness, SessionState } from "@spider/db-core/roam/types";
 import type { Clock, Diagnostic, HostIntent, Journal, Outcome } from "./contracts";
 import type { IntentState, IntentStore, VersionedIntent } from "./intent";
@@ -43,6 +44,11 @@ export interface RunningIntentSource {
   subscribe(listener: () => void): () => void;
 }
 export interface LaunchReservation { operationId: string }
+export interface LaunchInvocation {
+  intent: HostIntent; mode: "initial" | "reconcile"; reservation: LaunchReservation;
+  /** Called only after the exact handoff is durable, immediately before spawn. */
+  beforeSpawn(): Promise<ExactLaunchAdmission>;
+}
 export type SupervisorLaunch = { intent: HostIntent; mode: "fresh" } |
   { intent: HostIntent; mode: "reconcile"; reservation: LaunchReservation };
 export interface SupervisorPorts {
@@ -72,7 +78,7 @@ function sameAuthority(a: HostIntent, b: HostIntent): boolean {
 export function createDurableLaunchPort(input: {
   intents: IntentStore;
   authorize(intent: HostIntent): Promise<boolean>;
-  invoke(request: { intent: HostIntent; mode: "initial" | "reconcile"; reservation: LaunchReservation }): Promise<Outcome<HubOperationReadiness>>;
+  invoke(request: LaunchInvocation): Promise<Outcome<HubOperationReadiness>>;
   operationId?: (intent: HostIntent) => string;
 }): SupervisorPorts["launch"] {
   const result = (intent: HostIntent, reason: string, operationId = ""): Outcome<HubOperationReadiness> =>
@@ -103,11 +109,16 @@ export function createDurableLaunchPort(input: {
     }
     if (pending.phase === "reserved") {
       if (!await input.authorize(intent)) return result(intent, "launch-pending", pending.operationId);
-      const next: IntentState = { ...row.value, supervision: { ...pending, phase: "invoking" } };
-      if ((await input.intents.update(intent.sessionId, row.version, next)).kind !== "updated") return result(intent, "launch-intent-stale", pending.operationId);
-      return input.invoke({ intent, mode: "initial", reservation: { operationId: pending.operationId } });
+      const current = await input.intents.get(intent.sessionId);
+      if (!current || current.version !== row.version) return result(intent, "launch-intent-stale", pending.operationId);
     }
-    return input.invoke({ intent, mode: "reconcile", reservation: { operationId: pending.operationId } });
+    const admitted = row;
+    return input.invoke({ intent, mode: pending.phase === "reserved" ? "initial" : "reconcile",
+      reservation: { operationId: pending.operationId }, async beforeSpawn() {
+        if (!await input.authorize(intent)) return "cancelled";
+        const next: IntentState = { ...admitted.value, supervision: { ...pending, phase: "invoking" } };
+        return (await input.intents.update(intent.sessionId, admitted.version, next)).kind === "updated" ? "admitted" : "pending";
+      } });
   };
 }
 

@@ -595,6 +595,12 @@ terminals. The supervisor restores an eligible running session from its exact
 file, while a deliberate stop remains stopped. Repeated crashes suspend the
 session until a successful doctor and resume.
 
+Launch prerequisites run while the reservation remains `reserved`. The launcher
+durably prepares the exact operation's ID-lock handoff and launch handoff before
+the supervisor changes the reservation to `invoking`. Spawn requires that change
+to succeed. This boundary prevents new invoking reservations without handoff
+evidence when a prerequisite fails.
+
 A pending exact launch blocks doctor and enable even when roaming is disabled.
 Doctor names the launch operation. For a reservation that has not reached the
 `invoking` phase and has no ID lock, doctor offers `spider roam stop <session>`
@@ -639,6 +645,16 @@ ID lock, launch handoff, and file lease only when both checks succeed:
 - The exact-launch reconciler proves that no terminal started, that the
   operation's terminal exited without adopting the session ID lock, or that a
   recorded start has since ended without adoption.
+
+The journal records `exact-launch-prepared` before any ownership handoff write.
+That record does not permit spawn. After the handoffs are durable, a successful
+invoking update permits `exact-invocation-admitted` and then spawn. If a restart interrupts that update,
+reconciliation retains the prepared handoff for stop without another spawn.
+A matching prepared record with no admission or spawn attempt proves
+`prepared-not-invoked`. Stop still requires the recorded launcher to have exited
+and the pending ID lock to match the session, operation, file, boot, and core.
+Canceled authorization lets the launcher release its own uninvoked preparation.
+It records `launch-not-invoked` after that cleanup.
 
 The pending record belongs to the launcher, usually the supervisor, before
 adoption. Its exit alone does not prove that the Pi child exited. A live launcher,

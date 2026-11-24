@@ -63,6 +63,7 @@ export function createHcProvisionAdapter(options: AdapterOptions): HcProvisionAd
   const stage = join(peer.globalRoot, "roam", "provision", operationId);
   let resolved: Peer | null = null;
   const installedFiles = new Map<string, 0o600 | 0o700>();
+  let pairUnitRepairNeeded = false;
   async function handle(target: Peer): Promise<Peer> {
     if (!samePeer(peer, target)) throw new HerdrError("machine-mismatch", "Provision target changed");
     if (!resolved) resolved = await transport.transport.resolve(peer);
@@ -189,8 +190,11 @@ export function createHcProvisionAdapter(options: AdapterOptions): HcProvisionAd
   };
   return {
     async reconcilePairUnits(target) {
+      if (!samePeer(peer, target)) throw new HerdrError("machine-mismatch", "Provision target changed");
+      if (pairUnitRepairNeeded === false) return;
       if (await action(target, "pair-unit-repair", { timeout: Math.min(limits.controlMs, 60_000) }) !== true)
         throw new HerdrError("invalid-provision-reply", "Invalid pair-unit repair reply");
+      pairUnitRepairNeeded = false;
     },
     async repairAgentDirectory(target) {
       const value = await action(target, "agent-private-modes");
@@ -259,7 +263,11 @@ export function createHcProvisionAdapter(options: AdapterOptions): HcProvisionAd
     auth,
     async verifyPeer() {
       const files = [...installedFiles].map(([path, mode]) => ({ path, mode }));
-      return await action(peer, "verify", { providers: options.piProviders, files }) as ProvisionVerification;
+      pairUnitRepairNeeded = false;
+      const value = await action(peer, "verify", { providers: options.piProviders, files, inspectPairUnits: true }) as ProvisionVerification & { pairUnitRepair?: boolean | null };
+      const { pairUnitRepair, ...verification } = value;
+      pairUnitRepairNeeded = pairUnitRepair === true;
+      return verification;
     },
     async switchover(target: Peer, requestedOperationId: string) {
       if (requestedOperationId !== operationId) throw new HerdrError("invalid-operation", "Provisioning operation changed");

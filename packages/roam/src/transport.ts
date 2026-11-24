@@ -435,7 +435,10 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
       } else if (request.action === 'verify') {
         const value = object(reply.value), keys = ['piSignedIn', 'nativeSqlite', 'extensionLoaded', 'exactSession', 'privateModes',
           'bundledIntercom', 'intercomUnique', 'legacyDrained', 'federation'];
-        if (Object.keys(value).length !== keys.length + 2 || !isCorePinStatus(value.corePin) || keys.some(key => typeof value[key] !== 'boolean') || !validIntercomReadiness(value)) {
+        const inspectPairUnits = request.inspectPairUnits === true;
+        if (Object.keys(value).length !== keys.length + 2 + (inspectPairUnits ? 1 : 0) ||
+            inspectPairUnits && !(typeof value.pairUnitRepair === 'boolean' || value.pairUnitRepair === null) ||
+            !isCorePinStatus(value.corePin) || keys.some(key => typeof value[key] !== 'boolean') || !validIntercomReadiness(value)) {
           throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
         }
       } else if (reply.value !== true) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');

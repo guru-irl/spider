@@ -158,6 +158,23 @@ export async function inspectPairUnit(pair: IntercomEnrollmentPair, side: "host"
   const current = await showUnit(unit, ports), process = (ports.process ?? nativeProcess)(current.pid);
   return current.state === "active" && current.pid > 0 && process.kind === "live" && !!current.controlGroup && members(current.controlGroup, ports).includes(current.pid);
 }
+/** Find a stopped recorded unit without changing services or adopting an unverified unit. */
+export async function stoppedPairUnitNeedsRepair(ports: PairResourcePorts): Promise<boolean | null> {
+  const registry = createIntercomRegistry(ports.root);
+  let unknown = false;
+  for (const record of await registry.list()) {
+    if (record.state !== "active" || !("sshUser" in record.pair)) continue;
+    const pair = record.pair;
+    const side = pair.source.machineId === ports.machineId ? "connect" : pair.target.machineId === ports.machineId ? "host" : null;
+    if (!side || (side === "connect" ? pair.source.globalRoot : pair.target.globalRoot) !== ports.root) continue;
+    if (!record.resources || !record.unit || record.unit.name !== unitName(pair.pairId, side)) { unknown = true; continue; }
+    try {
+      if ((await showUnit(record.unit, ports)).state !== "active") return true;
+    } catch { unknown = true; }
+  }
+  return unknown ? null : false;
+}
+
 /** Reconcile active pair records without creating, replacing, or reviving foreign or fenced units. */
 export async function reconcilePairUnits(ports: PairResourcePorts): Promise<void> {
   const registry = createIntercomRegistry(ports.root);

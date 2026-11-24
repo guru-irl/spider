@@ -1036,11 +1036,15 @@ Doctor requires each active pair's recorded unit to be running. If enable
 reports `intercom-pair-unit-unavailable`, run `spider roam provision <machine>`
 on the hub for each affected box, using the usual authentication options, then
 retry `spider roam enable`. After consent, identity checks, and release
-installation, provisioning reconciles stopped units for active owned pairs.
-It checks the recorded unit and loaded service before enabling or starting it.
-A mismatched or fenced active pair refuses repair; revoked pairs are skipped
-and foreign units are not changed. A new provisioning operation checks the
-units again. Replaying a completed operation returns its saved result without
+installation, provisioning inspects active pair units and reconciles a stopped,
+recorded owned unit. With no stopped owned unit, it does not request repair.
+If the inspection is unavailable, provisioning keeps its existing outcome and
+leaves the unit unchanged. Doctor and enable still report an unverified unit.
+
+Repair checks the recorded unit and loaded service before enabling or starting
+it. A mismatched or fenced active pair refuses repair; revoked pairs are
+skipped and foreign units are not changed. A new provisioning operation checks
+the units again. Replaying a completed operation returns its saved result without
 repeating the repair. Doctor remains read-only. While roaming is disabled,
 this repair may start pair connectors but does not enable participation, start
 the broker or supervisor, or start hosted sessions.

@@ -132,6 +132,20 @@ it("keeps a candidate when an aggregate contains a transport failure", async () 
   } finally { vi.useRealTimers(); }
 });
 
+it("handles a cyclic aggregate containing a transport failure", async () => {
+  vi.stubEnv("PI_SUBAGENT_CHILD", "0"); vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+  const skills = fixture(); await enqueue(skills);
+  const error = new AggregateError([], "request failed");
+  error.errors.push(error, Object.assign(new Error("unreachable"), { code: "ENETUNREACH" }));
+  try {
+    await runSkillReviewQueue(ctx.repoDb, { reviewer: async () => { throw error; } });
+    expect(ctx.repoDb.prepare("SELECT attempts,body FROM skill_review_queue").get()).toEqual({ attempts: 0, body: candidate.body });
+    await vi.advanceTimersByTimeAsync(300_000);
+    await runSkillReviewQueue(ctx.repoDb, { reviewer: async () => '{"verdict":"new","reason":"reusable"}' });
+    expect(skills.get(candidate.name)?.candidateBody).toBe(candidate.body);
+  } finally { vi.useRealTimers(); }
+});
+
 it("spends the review budget when an aggregate contains authentication failure", async () => {
   vi.stubEnv("PI_SUBAGENT_CHILD", "0");
   const skills = fixture(); await enqueue(skills);

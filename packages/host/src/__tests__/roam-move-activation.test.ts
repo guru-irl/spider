@@ -128,7 +128,7 @@ async function fixture(beforeMapping = true, bound = false, box = false, worktre
   const activate = (admission: AdmissionGate = gate) => createMoveActivation({ root: global.root, sessionId, file, context: () => context, gate: admission, usage: inert, embeddings: inert, organism: inert, others: [], activity: { busy: () => false, bashRunning: () => false, promptOpen: () => false } } as never);
   const transport = { async resolve(peer: unknown) { return peer; }, async exec(_peer: unknown, argv: string[]) {
     const op: Operation = JSON.parse(argv[2]);
-    const value = op.kind === "move-workspace-map" ? "/fixture/destination" : op.kind === "move-diagnostics" ? [] : (() => { throw new Error(`Unexpected remote operation: ${op.kind}`); })();
+    const value = op.kind === "move-workspace-map" ? { kind: "mapped", path: "/fixture/destination" } : op.kind === "move-diagnostics" ? [] : (() => { throw new Error(`Unexpected remote operation: ${op.kind}`); })();
     return Buffer.from(JSON.stringify({ operationId: op.id, code: 0, epoch: op.expectedEpoch, value }));
   } };
   const compose = () => createHostMoveBindings({ root: global.root, globalDb: global.db, config, journal, sessionId, transport: transport as never, sync: { async sync() { return []; }, async barriers() { throw new Error("Unexpected remote barrier request"); } } });

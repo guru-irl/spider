@@ -3,7 +3,7 @@ import { createSync } from "../sync";
 import * as staging from "../staging";
 import { migrate, openDb } from "@spider/db-core";
 import { localEntries, writeLocal } from "@spider/db-core/roam/local-state";
-import { HerdrError } from "@spider/herdr/client/parse";
+import { HerdrError, selectedSocket } from "@spider/herdr/client/parse";
 import { disabledIntercom } from "../contracts";
 import * as remoteObservations from "../remote-observations";
 import * as diagnostics from "../diagnostics";
@@ -59,6 +59,35 @@ async function fixture(identity = HUB, reply?: HubControlReply, withSocket = tru
   const out: string[] = [], err: string[] = [];
   return { root, calls, out, err, invoke: (args: string[]) => main(args, { out: text => out.push(text), err: text => err.push(text) }) };
 }
+
+it.each([true, false])("public doctor reports installed core drift when enabled=%s", async enabled => {
+  const f = await fixture(HUB, undefined, false), file = join(f.root, "roam/config.json");
+  const config = JSON.parse(readFileSync(file, "utf8")); config.enabled = enabled; config.peers = [];
+  writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  const plistDir = join(f.root, "Library/LaunchAgents"), ports = { plistDir, async launchctl() {} };
+  vi.stubEnv("HC_SOCKET", join(f.root, "selected.sock")); vi.stubEnv("HC_SESSION", "team");
+  await launchd.installHubService({ node: process.execPath, cli: process.execPath, globalRoot: f.root, pi: process.execPath }, ports);
+  vi.stubEnv("HC_SOCKET", join(f.root, "changed.sock"));
+  await f.invoke(["roam", "doctor", "--json"]);
+  const first = JSON.parse(f.out.join(""));
+  expect(first.value.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ reason: expect.stringContaining("hub-core-selection-mismatch"), repairCommand: "spider roam enable" })]));
+  await launchd.installHubService({ node: process.execPath, cli: process.execPath, globalRoot: f.root, pi: process.execPath }, ports);
+  f.out.length = 0; await f.invoke(["roam", "doctor", "--json"]);
+  expect(JSON.parse(f.out.join("")).value.diagnostics.filter((row: { reason: string }) => row.reason.includes("hub-core-selection"))).toEqual([]);
+});
+
+it("rejects an invalid core selection before enable contacts peers or changes state", async () => {
+  const f = await fixture(HUB, undefined, false), file = join(f.root, "roam/config.json"), before = readFileSync(file, "utf8");
+  vi.stubEnv("HC_SOCKET", "relative.sock");
+  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/home/fixture/hc" } } as never);
+  const transport = vi.spyOn(transportModule, "createTransport").mockImplementation(() => { throw new Error("unexpected peer work"); });
+  expect(await f.invoke(["roam", "enable", "--json"])).toBe(1);
+  expect(transport).not.toHaveBeenCalled();
+  expect(readFileSync(file, "utf8")).toBe(before);
+  expect(JSON.parse(f.out.join(""))).toMatchObject({ reason: "enable-unavailable" });
+  expect(await f.invoke(["roam", "enable"])).toBe(1);
+  expect(f.err.join("")).toContain("Invalid hc socket selection: an absolute path");
+});
 
 it.each(["missing", "invalid"] as const)("remote doctor reports %s local configuration without inventing a peer failure", async mode => {
   const f = await fixture(HUB, undefined, false), file = join(f.root, "roam/config.json");
@@ -460,8 +489,12 @@ it("production hub composes intercom independently from replication peers", asyn
     await ports.intercom?.start();
     return { async stop() { await ports.intercom?.stop(); }, agentPorts: {} as never };
   });
+  vi.stubEnv("HC_SOCKET", "/home/fixture/private-core.sock");
+  const startupLog = vi.spyOn(console, "error").mockImplementation(() => {});
   const service = await productionHub.startProductionHub(f.root);
   try {
+    expect(startupLog).toHaveBeenCalledWith("hub-core-selection: socket=explicit");
+    expect(JSON.stringify(startupLog.mock.calls)).not.toContain("/home/fixture/private-core.sock");
     expect(factory).toHaveBeenCalledOnce();
     expect(factory.mock.calls[0][0]).toMatchObject({ root: f.root, agentDir, config: { machineId: HUB } });
     const roamingEnabled = factory.mock.calls[0][0].roamingEnabled;
@@ -794,7 +827,7 @@ it("disable does not boot out or delete a service owned by another root", async 
   const config = JSON.parse(readFileSync(file, "utf8")); config.peers = []; writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
   const plistDir = join(f.root, "Library/LaunchAgents"), plist = launchd.hubServiceFile(f.root, plistDir), marker = join(f.root, "called");
   await launchd.installHubService({ node: process.execPath, cli: process.execPath, globalRoot: f.root, pi: process.execPath }, { plistDir, async launchctl() {} });
-  writeFileSync(plist, readFileSync(plist, "utf8").replace(f.root, "/home/fixture/other"));
+  writeFileSync(plist, readFileSync(plist, "utf8").replace(`<key>SPIDER_GLOBAL_ROOT</key><string>${f.root}</string>`, "<key>SPIDER_GLOBAL_ROOT</key><string>/home/fixture/other</string>"));
   const binary = join(f.root, "launchctl"); writeFileSync(binary, `#!/bin/sh\necho called > '${marker}'\nexit 0\n`, { mode: 0o700 });
   vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", binary);
   expect(await f.invoke(["roam", "disable", "--json"])).toBe(3);
@@ -911,6 +944,48 @@ it("reports pending enable before flags or capture if a broker cannot start afte
   expect(result.value.issues).toContainEqual({ reason: result.reason, repairCommand: "spider roam doctor box-1.invalid" });
   expect(operations).toEqual(["stores"]); expect(flags).toEqual([]); expect(service).not.toHaveBeenCalled();
   expect(JSON.parse(readFileSync(file, "utf8")).enabled).toBe(false);
+}, 5000);
+
+it("enable installs the same core selection used for peer preflight", async () => {
+  const f = await fixture(HUB, { code: 0, reason: "ready", value: { enabled: true } }), file = join(f.root, "roam/config.json");
+  const config = JSON.parse(readFileSync(file, "utf8")); config.enabled = false; config.peers = [];
+  writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  const db = openDb(join(f.root, "spider.db")); migrate(db, "global", { machineId: HUB, globalRoot: f.root }); db.close();
+  const binary = join(f.root, "launchctl"); writeFileSync(binary, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", binary); vi.stubEnv("SPIDER_ROAM_PI", process.execPath);
+  const selected = join(f.root, "selected.sock"), changed = join(f.root, "changed.sock");
+  vi.stubEnv("HC_SOCKET", selected);
+  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/home/fixture/hc" } } as never);
+  vi.spyOn(transportModule, "createTransport").mockImplementation(input => {
+    expect(input.env.HC_SOCKET).toBe(selected); vi.stubEnv("HC_SOCKET", changed); return {} as never;
+  });
+  vi.spyOn(diagnostics, "assertCompatibleConsumers").mockResolvedValue(undefined);
+  expect(await f.invoke(["roam", "enable", "--json"])).toBe(0);
+  const text = readFileSync(launchd.hubServiceFile(f.root, join(f.root, "Library/LaunchAgents")), "utf8");
+  expect(text).toContain(`<key>HC_SOCKET</key><string>${selected}</string>`);
+  expect(text).not.toContain(changed);
+}, 5000);
+
+it("enable pins a config-selected socket before preflight can change its config", async () => {
+  const f = await fixture(HUB, { code: 0, reason: "ready", value: { enabled: true } }), file = join(f.root, "roam/config.json");
+  const config = JSON.parse(readFileSync(file, "utf8")); config.enabled = false; config.peers = [];
+  writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  const db = openDb(join(f.root, "spider.db")); migrate(db, "global", { machineId: HUB, globalRoot: f.root }); db.close();
+  const binary = join(f.root, "launchctl"); writeFileSync(binary, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", binary); vi.stubEnv("SPIDER_ROAM_PI", process.execPath); vi.stubEnv("HC_SOCKET", undefined);
+  const configDir = join(f.root, "hc-config"), selected = join(f.root, "selected.sock"), changed = join(f.root, "changed.sock");
+  mkdirSync(join(configDir, "herdr-core"), { recursive: true });
+  const coreConfig = join(configDir, "herdr-core", "config.toml"); writeFileSync(coreConfig, `socket = "${selected}"\n`);
+  vi.stubEnv("XDG_CONFIG_HOME", configDir);
+  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/home/fixture/hc" } } as never);
+  vi.spyOn(transportModule, "createTransport").mockImplementation(input => {
+    expect(selectedSocket(input.env)).toBe(selected); writeFileSync(coreConfig, `socket = "${changed}"\n`); return {} as never;
+  });
+  vi.spyOn(diagnostics, "assertCompatibleConsumers").mockResolvedValue(undefined);
+  expect(await f.invoke(["roam", "enable", "--json"])).toBe(0);
+  const text = readFileSync(launchd.hubServiceFile(f.root, join(f.root, "Library/LaunchAgents")), "utf8");
+  expect(text).toContain(`<key>HC_SOCKET</key><string>${selected}</string>`);
+  expect(text).not.toContain(changed);
 }, 5000);
 
 it("enable reports a real transport cause after mutation in JSON and text", async () => {

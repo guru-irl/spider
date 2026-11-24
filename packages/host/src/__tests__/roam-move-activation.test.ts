@@ -324,7 +324,7 @@ it("a restarted hub admits ordinary tools with a cataloged worktree and no repos
   vi.stubEnv("PI_SUBAGENT_CHILD", "0");
   const f = await fixture(true, false, false, true);
   const hooks = new Map<string, (event: never, context: ExtensionContext) => unknown>();
-  const pi = { on: (event: string, handler: (event: never, context: ExtensionContext) => unknown) => hooks.set(event, handler) } as ExtensionAPI;
+  const pi = { on: (event: string, handler: (event: never, context: ExtensionContext) => unknown) => hooks.set(event, handler) } as unknown as ExtensionAPI;
   let activation: Awaited<ReturnType<typeof f.activate>>;
   f.global.db.prepare("INSERT INTO session_homes VALUES(?,?,1,NULL,1)").run(f.sessionId, HUB);
   seedSession(f.worktree, f.sessionId, 1, WORKTREE, f.config.limits.targetBatchBytes);

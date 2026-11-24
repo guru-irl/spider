@@ -108,7 +108,7 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
   } catch (error) { throw Object.assign(new MoveCompositionError("participant-stores-unavailable"), { cause: error }); }
   const openMoveStore = (key: StoreKey): Db => {
     try {
-      if (!stores.list().includes(key)) throw new Error("participant-stores-unavailable");
+      if (!stores.list(config.machineId).includes(key)) throw new Error("participant-stores-unavailable");
       return stores.openStore(key).db;
     } catch (error) { throw Object.assign(new MoveCompositionError("participant-stores-unavailable"), { cause: error }); }
   };

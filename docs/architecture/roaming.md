@@ -696,10 +696,12 @@ Catalog discovery can record a worktree-only session location. Before a move,
 source composition completes that list with the mapped current worktree,
 `global`, and a repository store for every required worktree. Separately bound
 worktrees remain in the roster, and duplicate keys are removed. Live activation
-and dormant composition use the same rule for opening stores and recording
-the location. The first-move seed creates worktree membership. Freeze records
-a barrier for every roster key, but freezes session state only in worktree stores.
-Missing required stores or barriers still refuse the move.
+and dormant composition record that complete location. A box can start with
+only its worktree store before its repository store arrives. Live freeze opens
+the complete roster on demand, including stores received after activation.
+The first-move seed creates worktree membership. Freeze records a barrier for
+every roster key, but freezes session state only in worktree stores. Missing
+required stores or barriers still refuse the move.
 
 The hub freezes the source before it changes the home. A timeout does not
 unfreeze the source or prove that the destination never started. Use

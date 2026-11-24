@@ -103,9 +103,11 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
       .filter(row => resolve(row.path) === resolve(dirname(paths.projectRoot(cwd)))) : [];
     requiredKeys = completeSource ? completeMoveRoster(JSON.parse(known.stores_json), mapped.length === 1 ? mapped[0] : undefined)
       : parseLocationStores(requestedKeys ?? (known ? JSON.parse(known.stores_json) : keys));
-    if (requiredKeys.some(key => !keys.includes(key))) throw new Error("participant-stores-unavailable");
+    // Boxes may host a worktree before receiving its move-only repository store.
+    // Keep that key in the catalog; seed and freeze still require the full roster.
+    if (requiredKeys.some(key => !keys.includes(key) && !(config.role === "box" && key.startsWith("repo:")))) throw new Error("participant-stores-unavailable");
   } catch (error) { throw Object.assign(new MoveCompositionError("participant-stores-unavailable"), { cause: error }); }
-  const roster = requiredKeys.map(key => ({ key, db: stores.openStore(key).db }));
+  const roster = requiredKeys.filter(key => keys.includes(key)).map(key => ({ key, db: stores.openStore(key).db }));
   if (completeSource) recordLocation(globalDb, { sessionId, stores: requiredKeys, home: sourceHome });
   const clock: Clock = { now: () => Date.now(), later(ms, fn) { const timer = setTimeout(fn, ms); timer.unref(); return () => clearTimeout(timer); } };
   const sync = input.sync ?? createSync({ config, globalDb, journal, transport, clock, stores });

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, fstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "@spider/db-core";
 import { afterEach, expect, it, vi } from "vitest";

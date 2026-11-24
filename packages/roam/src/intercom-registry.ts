@@ -112,8 +112,13 @@ function checkPrivateFile(file: string): boolean {
   } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
 }
 
-/** Read methods create nothing. Mutations serialize within this machine's private state root. */
-export function createIntercomRegistry(root: string) {
+interface LiveFenceReader {
+  machineId: string;
+  read(peer: string): Promise<{ machineId: string; peer: string; fence: { edgeEpoch: string; fenceId: string } | null }>;
+}
+
+/** Diagnostic reads create nothing. Endpoint mutations use the live queue owner's fence under the peer lock. */
+export function createIntercomRegistry(root: string, live?: LiveFenceReader) {
   if (!isAbsolute(root) || resolve(root) !== root) throw new Error("unsafe-intercom-registry");
   assertTestConfigPath(root);
   const base = join(root, "roam", "intercom"), directory = join(base, "enrollments");
@@ -122,17 +127,30 @@ export function createIntercomRegistry(root: string) {
     const path = file(pairId); if (!checkPrivateFile(path)) return null;
     const value = await readPrivateJson(path); return value === null ? null : validate(value, pairId);
   };
-  const pending = (existing: IntercomPairRecord | null, candidate?: IntercomEnrollmentPlan, peer?: string): boolean => {
+  const pending = async (existing: IntercomPairRecord | null, candidate?: IntercomEnrollmentPlan, peer?: string): Promise<boolean> => {
     if (existing?.state === "revoking" || existing?.cleanupReason) return true;
     const scope = existing?.pair ?? candidate; if (!scope && !peer) return false;
     if (peer !== undefined && !isMachineId(peer)) throw new Error("invalid-intercom-peer");
-    const snapshot = openDiagnosticSnapshot(join(base, "queue.db")); if (!snapshot) return false;
+    const queue = join(base, "queue.db");
+    if (live && !checkPrivateFile(queue)) return false;
+    const snapshot = live ? undefined : openDiagnosticSnapshot(queue); if (!live && !snapshot) return false;
     try {
-      const meta = snapshot.prepare("SELECT machine_id,version FROM intercom_meta WHERE id=1").get() as { machine_id: string; version: number } | undefined;
-      if (!meta || !isMachineId(meta.machine_id) || meta.version !== 3 && meta.version !== 4 && meta.version !== 5 && meta.version !== 6 && meta.version !== 7 && meta.version !== 8 && meta.version !== 9) throw new Error("intercom-fence-unavailable");
-      const other = scope ? meta.machine_id === scope.source.machineId ? scope.target.machineId : meta.machine_id === scope.target.machineId ? scope.source.machineId : null : peer;
+      let machineId = live?.machineId;
+      if (snapshot) {
+        const meta = snapshot.prepare("SELECT machine_id,version FROM intercom_meta WHERE id=1").get() as { machine_id: string; version: number } | undefined;
+        if (!meta || !isMachineId(meta.machine_id) || meta.version !== 3 && meta.version !== 4 && meta.version !== 5 && meta.version !== 6 && meta.version !== 7 && meta.version !== 8 && meta.version !== 9) throw new Error("intercom-fence-unavailable");
+        machineId = meta.machine_id;
+      }
+      if (!isMachineId(machineId)) throw new Error("intercom-fence-unavailable");
+      const other = scope ? machineId === scope.source.machineId ? scope.target.machineId : machineId === scope.target.machineId ? scope.source.machineId : null : peer;
       if (!other) return false;
-      const fence = snapshot.prepare("SELECT edge_epoch,fence_id FROM intercom_pair_fences WHERE peer=?").get(other) as { edge_epoch: string; fence_id: string } | undefined;
+      let fence: { edge_epoch: string; fence_id: string } | undefined;
+      if (live) {
+        const observed = await live.read(other);
+        if (observed.machineId !== live.machineId || observed.peer !== other || !(observed.fence === null ||
+            id(observed.fence?.edgeEpoch) && isMachineId(observed.fence?.fenceId))) throw new Error("intercom-fence-unavailable");
+        if (observed.fence) fence = { edge_epoch: observed.fence.edgeEpoch, fence_id: observed.fence.fenceId };
+      } else fence = snapshot!.prepare("SELECT edge_epoch,fence_id FROM intercom_pair_fences WHERE peer=?").get(other) as typeof fence;
       if (fence && (!id(fence.edge_epoch) || !isMachineId(fence.fence_id))) throw new Error("intercom-fence-unavailable");
       if (!fence) return false;
       if (existing?.state === "revoked" && existing.fenceId === fence.fence_id && (existing.revocationEpoch ?? existing.pair.edgeEpoch) === fence.edge_epoch) return false;
@@ -140,7 +158,7 @@ export function createIntercomRegistry(root: string) {
       if ((existing?.state === "pending" || existing?.state === "cancelled") && existing.fenceId === fence.fence_id &&
           existing.pair.edgeEpoch !== fence.edge_epoch && candidate?.edgeEpoch !== fence.edge_epoch) return false;
       return true;
-    } finally { snapshot.close(); }
+    } finally { snapshot?.close(); }
   };
   const save = async (item: IntercomPairRecord): Promise<void> => {
     const path = file(item.pair.pairId); checkPrivateFile(path);
@@ -174,9 +192,9 @@ export function createIntercomRegistry(root: string) {
       if (!id(operationId) || !hash(graphDigest)) throw new Error("invalid-intercom-enrollment");
       await withIntercomPeerLock(root, candidate.source.machineId, candidate.target.machineId, () => locked(async () => {
         const existing = await get(candidate.pairId);
-        if (pending(existing, candidate)) throw new Error("revocation-pending");
+        if (await pending(existing, candidate)) throw new Error("revocation-pending");
         const reuse = canReuseRevokedPairId(existing, candidate);
-        if (reuse && pending(null, candidate)) throw new Error("revocation-pending");
+        if (reuse && await pending(null, candidate)) throw new Error("revocation-pending");
         if (existing) {
           if (!reuse && (existing.pair.source.machineId !== candidate.source.machineId || existing.pair.target.machineId !== candidate.target.machineId)) throw new Error("intercom-pair-conflict");
           if (existing.state === "revoked" || existing.state === "cancelled") {

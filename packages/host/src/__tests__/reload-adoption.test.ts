@@ -6,15 +6,19 @@ import { RunStore, registerShared, setSink, detachShared, getShared, resetShared
 import { clearActions } from "../dispatch";
 import { openSessionRunDb } from "../session-run-db";
 import spiderExtension from "../extension";
+import { getCoordinators } from "../../../subagents/src/coordinators";
 
 function fakePi() {
   const hooks = new Map<string, ((...args: any[]) => unknown)[]>();
   const sendMessage = vi.fn();
   return {
-    hooks, sendMessage,
+    hooks, sendMessage, getSessionName: () => undefined,
     registerTool: () => {}, registerCommand: () => {}, registerShortcut: () => {},
     registerMessageRenderer: () => {}, registerEntryRenderer: () => {},
-    on: (name: string, fn: (...args: any[]) => unknown) => { hooks.set(name, [...hooks.get(name) ?? [], fn]); },
+    on: (name: string, fn: (...args: any[]) => unknown) => {
+      hooks.set(name, [...hooks.get(name) ?? [], fn]);
+      return () => hooks.set(name, (hooks.get(name) ?? []).filter((handler) => handler !== fn));
+    },
     async emit(name: string, event: unknown, ctx?: unknown) { for (const fn of hooks.get(name) ?? []) await fn(event, ctx); },
   };
 }
@@ -69,6 +73,42 @@ it("session_start adopts a detached child despite invalid childMode config and n
   expect(notices[0][0].content).toContain("survived the reload");
   expect((db.prepare("SELECT status FROM runs WHERE id=?").get(id) as any).status).toBe("done");
   expect(getShared(id)).toBeUndefined();
+});
+
+it.each(["tui", "rpc"] as const)("adopted notices use the session's %s delivery mode", async (mode) => {
+  const sessionId = `${scratch}:${mode}`;
+  const notify = vi.fn();
+  const ctx = { cwd: scratch, mode, ui: { notify, setFooter: () => {} }, getContextUsage: () => null,
+    sessionManager: { getSessionId: () => sessionId, getSessionFile: () => undefined, getEntries: () => [] } };
+  const { db, dbPath } = openSessionRunDb(scratch, sessionId);
+  const store = new RunStore(db);
+  const { id } = store.create({ sessionId, agent: "worker", name: "bg", task: "t" });
+  store.start(id);
+  let exit!: (value: { exitCode: number; result: string }) => void;
+  const done = new Promise<{ exitCode: number; result: string }>((resolve) => { exit = resolve; });
+  const handle: SharedHandle = { wait: () => done, kill: () => {}, killAsync: async () => {} };
+  registerShared({ runId: id, sessionId, dbPath, mode: "rpc", handle, survivable: true });
+  setSink(id, () => { throw new Error("old activation"); });
+  await detachShared(sessionId, { ttlMs: 60_000 });
+  writeFileSync(join(scratch, ".spider", "config.json"), JSON.stringify({ "usage.footer": false, "usage.counter.poll": false, "usage.calibration": "off" }));
+
+  const pi = fakePi(); hosts.push(pi);
+  spiderExtension(withPiEvents(pi as never), hostUnitPorts);
+  vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  await pi.emit("session_start", { type: "session_start", reason: "reload" }, ctx);
+  db.prepare("INSERT INTO run_events (run_id,session_id,ts,type,summary,payload) VALUES (?,?,?,?,?,?)")
+    .run(id, sessionId, Date.now(), "escalation", "Needs attention", JSON.stringify({ severity: "warning" }));
+  getCoordinators(sessionId, () => { throw new Error("missing tailer"); }).tailer!.poll();
+  exit({ exitCode: 0, result: "finished" });
+  await tick();
+
+  expect(pi.sendMessage.mock.calls.filter((call) => call[0]?.customType === "spider.escalation")).toHaveLength(1);
+  expect(pi.sendMessage.mock.calls.filter((call) => call[0]?.customType === "spider.subagent_done")).toHaveLength(1);
+  if (mode === "tui") expect(notify).not.toHaveBeenCalled();
+  else {
+    expect(notify).toHaveBeenCalledWith("Needs attention", "warning");
+    expect(notify).toHaveBeenCalledWith('subagent "bg" done', "info");
+  }
 });
 
 it("session_start does nothing when no child is waiting", async () => {

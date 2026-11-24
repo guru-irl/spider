@@ -28,7 +28,7 @@ import { isPeerFailureReason } from "./peer-errors";
 import { RUNNING_INTENT_SOURCE_UNAVAILABLE } from "./supervisor";
 import { createRunningIntentAuthority } from "./session-control";
 import { inspectIntentReservations, inspectSuspendedIntents } from "./intent";
-import { adoptedOwnerExited } from "./launcher";
+import { inspectAdoptedOwner } from "./launcher";
 import { createIntercomRegistry } from "./intercom-registry";
 import { inspectLocalIntercomDoctor } from "./intercom-doctor";
 import { inspectIntercomReadiness, intercomReadinessDiagnostics, validIntercomReadiness, type IntercomReadiness } from "./intercom-readiness";
@@ -361,10 +361,12 @@ export async function localPendingLaunchDiagnostics(input: {
   const root = input.root, severity = "block";
   const inventory: Diagnostic[] = [];
   const reportedHandoffs = new Set<string>();
+  let coreObservation: Promise<string | null> | undefined, pinStatus: ReturnType<typeof inspectSupervisorCorePin> | undefined;
+  const currentCore = () => coreObservation ??= Promise.resolve().then(() => input.currentCore?.() ?? null).catch(() => null);
   try {
     const pending = await listPendingIdLocks(join(root, "herdr"));
     let core: string | null = null;
-    if (pending.length && input.currentCore) { try { core = await input.currentCore(); } catch { /* An unavailable core is not proof. */ } }
+    if (pending.length && input.currentCore) core = await currentCore();
     for (const handoff of pending) {
       const safe = (value: string) => value.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 256);
       const detail = !input.currentCore ? "core identity has not been checked"
@@ -393,12 +395,43 @@ export async function localPendingLaunchDiagnostics(input: {
       const safe = (value: string) => value.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 256);
       const local = { machineId: input.machineId, label: "local machine", peer: null };
       const recovery = input.launchRecovery ?? { bootId: localBootId, probe: (pid: number) => createLocalDiagnosticPorts(root, []).probeProcess(local, pid) };
-      let exited = false;
-      try { exited = await adoptedOwnerExited({ root: join(root, "herdr"), sessionId: reservation.sessionId, operationId: reservation.operationId,
-        file: reservation.file, leases: createSessionLeases(join(root, "herdr")), ...recovery }); } catch { /* Missing evidence remains pending. */ }
-      if (exited) inventory.push({ severity: "warning", reason: `Session ${safe(reservation.sessionId)}: exact launch ${safe(reservation.operationId)} exited before readiness was recorded.`,
-        repairCommand: sessionCommand(reservation.sessionId) });
-      else inventory.push({ severity: "block", reason: `Session ${safe(reservation.sessionId)}: exact launch ${safe(reservation.operationId)} is pending; handoff and core evidence are unavailable. Inspect the launch reservation, ID lock, file lease and operation-labelled terminal on the destination.`, repairCommand: reservation.phase === "reserved" ? sessionCommand(reservation.sessionId, "stop") : `spider roam doctor ${input.machineId}` });
+      const owner = await inspectAdoptedOwner({ root: join(root, "herdr"), sessionId: reservation.sessionId, operationId: reservation.operationId,
+        file: reservation.file, leases: createSessionLeases(join(root, "herdr")), ...recovery });
+      const session = `Session ${safe(reservation.sessionId)}: exact launch ${safe(reservation.operationId)}`;
+      const stop = sessionCommand(reservation.sessionId, "stop");
+      switch (owner.kind) {
+        case "exited":
+          inventory.push({ severity: "warning", reason: `${session} exited before readiness was recorded.`,
+            repairCommand: owner.released ? stop : sessionCommand(reservation.sessionId) });
+          break;
+        case "live":
+          inventory.push({ severity, reason: `${session} is pending; the adopted owner is still running. Close that session through its supported shutdown path, then run ${stop}.`, repairCommand: null });
+          break;
+        case "lease-live":
+          inventory.push({ severity, reason: `${session} is pending; the file lease is still held by a live process. Close its session through its supported shutdown path, then run ${stop}.`, repairCommand: null });
+          break;
+        case "unavailable":
+          inventory.push({ severity, reason: `${session} is pending; the owner's status is unavailable. Restore local process and boot identity inspection, then run ${stop}.`, repairCommand: null });
+          break;
+        case "missing": {
+          if (reservation.phase === "reserved") {
+            inventory.push({ severity, reason: `${session} is pending; the launch has not been invoked. Stop cancels this reservation without launching.`, repairCommand: stop });
+            break;
+          }
+          pinStatus ??= inspectSupervisorCorePin(root, process.env);
+          const pinRepair = corePinDiagnostics(pinStatus, input.machineId)[0];
+          if (pinRepair && pinStatus !== "core-pin-unreachable") {
+            inventory.push({ severity, reason: `${session} is pending; ${pinRepair.reason}`, repairCommand: pinRepair.repairCommand });
+            break;
+          }
+          const core = await currentCore();
+          const detail = !input.currentCore ? "core identity has not been checked. Start the pinned core through its supported startup path and inspect the operation-labelled terminal and ownership records before stopping again."
+            : !core || pinStatus === "core-pin-unreachable" ? "core identity is unavailable. Start the pinned core through its supported startup path, then inspect the operation-labelled terminal and ownership records before stopping again."
+            : "adopted-owner evidence is unavailable; the pinned core is available. Inspect the operation-labelled terminal, ID lock and file lease on the destination and restore ownership evidence before stopping again.";
+          inventory.push({ severity, reason: `${session} is pending; ${detail}`, repairCommand: null });
+          break;
+        }
+      }
     }
   } catch { inventory.push({ severity, reason: "Cannot inspect pending launch reservations.", repairCommand: null }); }
   return inventory;

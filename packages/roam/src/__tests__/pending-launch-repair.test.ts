@@ -298,7 +298,8 @@ it("doctor does not prescribe stop for an invoking reservation without a handoff
   const f = await fixture(); await f.lock.cancelHandoff("launch-1");
   await f.global.db.raw.backup(join(f.root, "spider.db"));
   const report = await runLocalDoctor({ root: f.root, currentCore: async () => "core-1", launchRecovery: f.recovery });
-  expect(report.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "block", reason: expect.stringMatching(/session-1.*launch-1.*pending/i), repairCommand: `spider roam doctor ${BOX}` })]));
+  expect(report.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "block",
+    reason: expect.stringMatching(/session-1.*launch-1.*pending.*adopted-owner evidence is unavailable.*pinned core is available.*restore ownership evidence/i), repairCommand: null })]));
   expect(await handleSessionOperation(f.operation, f.ports, { wake: async () => {}, launchRecovery: f.recovery })).toMatchObject({ code: 3, reason: "launch-reconciliation-required" });
   expect((await f.intents.get("session-1"))?.value.supervision.kind).toBe("launching");
 });

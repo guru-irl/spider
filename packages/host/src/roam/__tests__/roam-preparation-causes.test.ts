@@ -6,6 +6,10 @@ import * as repoMap from "@spider/db-core/roam/repo-map";
 import { readLocal } from "@spider/db-core/roam/local-state";
 import { createReplica, scratchDbPath } from "@spider/db-core/testutil";
 import { parseConfig } from "@spider/roam/config";
+import { main as roamCli } from "@spider/roam/cli";
+import type { Peer, Transport } from "@spider/roam/contracts";
+import * as productionHub from "@spider/roam/production-hub";
+import * as transport from "@spider/roam/transport";
 import { openFreezeJournal, openJournal } from "@spider/roam/journal";
 import { runLocalDoctor } from "@spider/roam/local-diagnostics";
 import { MoveCompositionError } from "@spider/roam/move-failure";
@@ -14,6 +18,20 @@ import { recordMoveSetupFailure } from "@spider/roam/setup-diagnostics";
 import { createHostSessionFixture } from "../../__tests__/fixtures/pi-events";
 import { registerAdmission, type AdmissionPorts } from "../admission";
 import { createParticipantAdmission, productionParticipantAdmission } from "../readiness";
+
+vi.mock("node:child_process", async importOriginal => {
+  const original = await importOriginal<typeof import("node:child_process")>();
+  const blocked = () => { throw new Error("Unexpected process launch in fixture"); };
+  const execFileSync = (file: unknown, args: unknown) => {
+    if ((file === "ps" || file === "/bin/ps") && Array.isArray(args) && args[0] === "-p" &&
+        args[1] === String(process.pid) && args[2] === "-o" && args[3] === "lstart=") return "fixture-start";
+    if (file === "sqlite3" && JSON.stringify(args) === JSON.stringify(["--version"])) return "3.42.0";
+    return blocked();
+  };
+  const safe = { exec: blocked, execFile: blocked, execFileSync, execSync: blocked, fork: blocked, spawn: blocked, spawnSync: blocked };
+  return { ...original, ...safe, default: { ...original, ...safe } };
+});
+vi.mock("child_process", async () => await import("node:child_process"));
 
 const BOX = "00000000-0000-4000-8000-000000000002";
 const HUB = "00000000-0000-4000-8000-000000000001";
@@ -132,6 +150,64 @@ it("keeps a known participant blocked after a named preparation failure", async 
   const f = fixture("mapping", true);
   await f.start();
   expect(f.gate.inspect()).toMatchObject({ kind: "blocked", setupFailure: { stage: "preparation", causeCode: "participant-store-mapping-failed" } });
+});
+
+it("shows the retained admission failure in public doctor while roaming is disabled", async () => {
+  const f = fixture("cwd");
+  await f.start();
+  const snapshot = readLocal<{ firstAt: number; lastAt: number }>(f.db, "move-setup", "admission")!;
+  const directory = join(f.root, "roam");
+  writeFileSync(join(directory, "config.json"), JSON.stringify({ enabled: false, role: "box", machineId: BOX,
+    hubMachineId: HUB, coreUnit: "fixture.service" }), { mode: 0o600 });
+  writeFileSync(join(directory, "machine.json"), JSON.stringify({ machineId: BOX }), { mode: 0o600 });
+  vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root);
+  let out = "";
+  await roamCli(["roam", "doctor", "--json"], { out: text => { out += text; }, err: () => {} });
+  const report = JSON.parse(out) as { value: { diagnostics: Array<{ reason: string }> } };
+  expect(report.value.diagnostics).toContainEqual(expect.objectContaining({ reason: expect.stringContaining("participant-cwd-unavailable") }));
+  const diagnostic = report.value.diagnostics.find(row => row.reason.includes("participant-cwd-unavailable"));
+  expect(diagnostic?.reason).toContain(SESSION);
+  expect(diagnostic?.reason).toContain(new Date(snapshot.firstAt).toISOString());
+  expect(diagnostic?.reason).toContain(new Date(snapshot.lastAt).toISOString());
+  expect(out).not.toContain(f.root);
+});
+
+it("shows a safe admission diagnostic from a disabled remote box", async () => {
+  const f = fixture("cwd");
+  await f.start();
+  const boxDirectory = join(f.root, "roam");
+  writeFileSync(join(boxDirectory, "config.json"), JSON.stringify({ enabled: false, role: "box", machineId: BOX,
+    hubMachineId: HUB, coreUnit: "fixture.service" }), { mode: 0o600 });
+  writeFileSync(join(boxDirectory, "machine.json"), JSON.stringify({ machineId: BOX }), { mode: 0o600 });
+  const hub = mkdtempSync(join(dirname(f.root), "doctor-hub-")), directory = join(hub, "roam");
+  cleanups.push(async () => { rmSync(hub, { recursive: true, force: true }); });
+  mkdirSync(directory, { mode: 0o700 });
+  const peer: Peer = { machineId: BOX, alias: "box-1.invalid", node: "/home/fixture/node", pi: "/home/fixture/pi",
+    cli: "/home/fixture/cli", core: "/home/fixture/core", globalRoot: f.root };
+  writeFileSync(join(directory, "config.json"), JSON.stringify({ enabled: false, role: "hub", machineId: HUB,
+    hubMachineId: HUB, coreUnit: "fixture.service", peers: [peer] }), { mode: 0o600 });
+  writeFileSync(join(directory, "machine.json"), JSON.stringify({ machineId: HUB }), { mode: 0o600 });
+  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/home/fixture/core" } } as never);
+  vi.spyOn(transport, "createTransport").mockReturnValue({
+    async resolve(value: Peer) { return value; },
+    async exec(_value: Peer, argv: readonly string[]) {
+      expect(argv).toEqual(["roam", "observe", "doctor"]);
+      let out = "";
+      expect(await roamCli(["--global-root", f.root, ...argv], { out: text => { out += text; }, err: () => {} })).toBe(0);
+      const reply = JSON.parse(out);
+      reply.value.diagnostics.push({ severity: "warning", repairCommand: "spider roam doctor",
+        reason: "Move setup failed at preparation (setup-unavailable). Run spider roam doctor, repair the local setup, then reload this session. Session /home/fixture/private." });
+      return Buffer.from(JSON.stringify(reply));
+    },
+  } as unknown as Transport);
+  vi.stubEnv("SPIDER_GLOBAL_ROOT", hub);
+  let out = "";
+  await roamCli(["roam", "doctor", "box-1.invalid", "--json"], { out: text => { out += text; }, err: () => {} });
+  const report = JSON.parse(out) as { value: { diagnostics: Array<{ reason: string }> } };
+  expect(report.value.diagnostics).toContainEqual(expect.objectContaining({ reason: expect.stringContaining("participant-cwd-unavailable") }));
+  expect(out).toContain(SESSION);
+  expect(out).not.toContain("/home/fixture/private");
+  expect(out).not.toContain(f.root);
 });
 
 it("keeps unknown preparation exceptions private and classified as unavailable", async () => {

@@ -1,4 +1,5 @@
 import { constants as osConstants } from "node:os";
+import { HELPER_EXCHANGE_ERRORS } from "@spider/intercom/protocol";
 
 const nativeHcCodes = new Set<string>(["unreachable", "not_found", "machine_not_found", "invalid_params", "server_stopped"]);
 const causeCodes = new Set<string>([
@@ -17,6 +18,8 @@ const causeCodes = new Set<string>([
   "diagnostic-snapshot-wal-index-missing", "diagnostic-snapshot-unsafe",
   "missing-hc", "spawn-error", "spawn_failed", "stdin-error", "cli-error", "cli-aborted", "cli-exit", "cli-timeout",
   "active-release-unavailable", "active-release-layout-invalid", "invalid-intercom-readiness",
+  ...HELPER_EXCHANGE_ERRORS, "broker-unavailable", "helper-timeout", "bridge-exchange-failed", "unsafe-helper-route",
+  "intercom-mode-not-peers", "intercom-route-missing", "intercom-edge-must-be-revoked", "invalid-intercom-config",
   "broker-start-timeout", "broker-start-aborted", "broker-start-exited", "broker-start-failed", "unsafe-broker-start", "unsupported-broker",
   "intercom-broker-unavailable", "intercom-broker-not-spider", "intercom-agent-unsafe", "intercom-directory-unsafe", "intercom-socket-unsafe", "federation-feature-missing",
   "legacy-pending-asks", "legacy-pending-asks-unavailable", "settings-unavailable", "settings-resolution-unavailable", "legacy-extension-declared",

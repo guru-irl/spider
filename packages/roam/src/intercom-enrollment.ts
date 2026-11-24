@@ -2,13 +2,14 @@ import { createHash } from "node:crypto";
 import { authorizedPairLine } from "./intercom-pair-files";
 import { posix } from "node:path";
 import { causeCode, safeCauseCode, type CauseStep } from "./cause-codes";
+import { PublicationError, parsePublicationFailure, recordPublicationFailure, type PublicationFailure } from "./intercom-publication";
 import type { Outcome, Peer } from "./contracts";
 import { isMachineId } from "./machine-id";
 import type { IntercomEnrollmentPair, IntercomEnrollmentPlan, IntercomEnrollmentPorts, IntercomEnrollmentPreview, IntercomEnrollmentRequest, IntercomMachinePin, IntercomRevocationCleanupReason, IntercomRevocationPorts, IntercomSshHostKey } from "./provision-contracts";
 
 export const INTERCOM_CONSENT = "Enrolling this pair lets the initiating box execute commands as your user on its peer. A compromised initiating box can access every box reachable through enrolled pairs. This approval is separate from copying pi authentication. Pair keys verify their pair and epoch, but shared loopback SSH does not bind a key to one tunnel. Revoke with `spider roam intercom revoke <pair>` to stop the pair host and remove its key. Deleting the key alone does not close open connections.";
 
-export interface EnrollmentResult { pairs: readonly string[]; pending?: readonly { pairId: string; reason: string; causeCode?: string }[] }
+export interface EnrollmentResult { pairs: readonly string[]; pending?: readonly { pairId: string; reason: string; causeCode?: string; publication?: PublicationFailure }[] }
 
 export function enrollmentCauseCode(error: unknown): string {
   return error && typeof error === "object" && "code" in error ? safeCauseCode(error.code) ?? "unknown" : "unknown";
@@ -142,7 +143,7 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
         return "link-down";
       };
       const keys = new Set<string>(), completed: string[] = [], pending: Array<NonNullable<EnrollmentResult["pending"]>[number]> = [];
-      const enroll = async (plan: IntercomEnrollmentPlan): Promise<string | { reason: string; causeCode: string } | null> => {
+      const enroll = async (plan: IntercomEnrollmentPlan): Promise<string | { reason: string; causeCode?: string; publication?: PublicationFailure } | null> => {
         if (cancelled.has(plan.pairId)) return "intercom-enrollment-cancelled";
         let step: CauseStep = "enrollment";
         try {
@@ -225,6 +226,7 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
           if (!transport || transport.sourceMachineId !== pair.source.machineId || transport.targetMachineId !== pair.target.machineId ||
               transport.connector !== true || transport.key !== true || transport.route !== true) return "intercom-verification-pending";
           step = "publish-pair"; await ports.publishPair(pair, pairPins); record(pair.pairId, "published");
+          recordPublicationFailure(ports.journal, operationId, pair.pairId, null);
           step = "verify-pair";
           const checked = await ports.verifyPair(pair, pairPins);
           if (!checked || checked.sourceMachineId !== pair.source.machineId || checked.targetMachineId !== pair.target.machineId ||
@@ -232,13 +234,20 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
           record(pair.pairId, "verified");
           return null;
         } catch (error) {
-          if (error instanceof Error && ["fresh-peer-consent-required", "host-key-changed", "revocation-pending", "intercom-ssh-host-unverified"].includes(error.message)) return error.message;
-          return { reason: "intercom-enrollment-pending", causeCode: causeCode(error, step) };
+          const publication = error instanceof PublicationError ? parsePublicationFailure(error.publication) : null;
+          if (publication) recordPublicationFailure(ports.journal, operationId, plan.pairId, publication);
+          if (error instanceof Error && ["fresh-peer-consent-required", "host-key-changed", "revocation-pending", "intercom-ssh-host-unverified"].includes(error.message)) {
+            return publication ? { reason: error.message, publication } : error.message;
+          }
+          return { reason: "intercom-enrollment-pending", causeCode: causeCode(error, step), ...(publication ? { publication } : {}) };
         }
       };
       for (const pair of snapshot.pairs) {
         const failure = await enroll(pair);
-        if (failure) pending.push({ pairId: pair.pairId, ...(typeof failure === "string" ? { reason: failure } : failure) }); else completed.push(pair.pairId);
+        if (failure) {
+          if (typeof failure === "string" || !failure.publication) recordPublicationFailure(ports.journal, operationId, pair.pairId, null);
+          pending.push({ pairId: pair.pairId, ...(typeof failure === "string" ? { reason: failure } : failure) });
+        } else completed.push(pair.pairId);
       }
       if (pending.length) {
         const result = outcome(operationId, 3, pending.length === 1 && completed.length === 0 ? pending[0].reason : "intercom-enrollment-pending", { pairs: completed, pending });

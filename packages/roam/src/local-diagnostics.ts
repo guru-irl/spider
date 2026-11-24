@@ -9,7 +9,7 @@ import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, ope
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Db } from "@spider/db-core";
+import { SCHEMA_VERSION, type Db } from "@spider/db-core";
 import { openRoamStoreReadOnly, type RoamCatalog } from "@spider/db-core/roam/reads";
 import { isRoamUuid, storeScope } from "@spider/db-core/roam/codec";
 import { readLocal } from "@spider/db-core/roam/local-state";
@@ -30,8 +30,9 @@ import { RUNNING_INTENT_SOURCE_UNAVAILABLE } from "./supervisor";
 import { createRunningIntentAuthority } from "./session-control";
 import { inspectIntentReservations, inspectSuspendedIntents } from "./intent";
 import { inspectAdoptedOwner } from "./launcher";
-import { createIntercomRegistry } from "./intercom-registry";
+import { createIntercomRegistry, type IntercomPairRecord } from "./intercom-registry";
 import { inspectLocalIntercomDoctor } from "./intercom-doctor";
+import { publicationDiagnostics } from "./intercom-publication";
 import { inspectIntercomReadiness, intercomReadinessDiagnostics, validIntercomReadiness, type IntercomReadiness } from "./intercom-readiness";
 import { readPrivateBytes } from "./selected-files";
 
@@ -331,6 +332,29 @@ export function localHostingWarningDiagnostics(root: string): Diagnostic[] {
   finally { db?.close(); }
 }
 
+/** Read the latest setup failure without starting a participant. */
+export function localMoveSetupDiagnostics(root: string): Diagnostic[] {
+  let db: Db | undefined;
+  try { db = openOwned(join(root, "spider.db")); return db && Number(db.pragma("user_version")) === SCHEMA_VERSION ? readMoveSetupDiagnostics(db) : []; }
+  catch { return [{ severity: "warning", reason: "Move setup diagnostic unavailable. Run spider roam doctor and retry setup.", repairCommand: "spider roam doctor" }]; }
+  finally { db?.close(); }
+}
+
+function pendingPublicationDiagnostics(root: string, records: readonly IntercomPairRecord[]): Diagnostic[] {
+  if (!records.some(record => record.state === "pending")) return [];
+  let journal: Db | undefined;
+  try {
+    journal = openOwned(join(root, "roam", "journal.db"));
+    return journal ? publicationDiagnostics(journal, records) : [];
+  } catch { return [{ severity: "warning", reason: "intercom-publication-diagnostics-unavailable: Publication evidence could not be inspected.", repairCommand: null }]; }
+  finally { journal?.close(); }
+}
+/** Read pending publication evidence without starting intercom. */
+export async function localPublicationDiagnostics(root: string): Promise<Diagnostic[]> {
+  try { return pendingPublicationDiagnostics(root, await createIntercomRegistry(root).list()); }
+  catch { return [{ severity: "warning", reason: "intercom-registry-unavailable: Pair enrollment state could not be inspected.", repairCommand: null }]; }
+}
+
 /** Disabled doctor inspects store inventory without probing services or move bindings. */
 export function localStoreInventoryDiagnostics(root: string): Diagnostic[] {
   let db: Db | undefined;
@@ -584,6 +608,7 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
   } catch { inventory.push({ severity, reason: "Cannot inspect suspended hosting intents.", repairCommand: null }); }
   try {
     const records = await createIntercomRegistry(root).list();
+    inventory.push(...pendingPublicationDiagnostics(root, records));
     let snapshot: Db | undefined;
     const localPairs = records.filter(record => [record.pair.source.machineId, record.pair.target.machineId].includes(config.machineId));
     const fences = new Map<string, { edgeEpoch: string; fenceId: string }>();

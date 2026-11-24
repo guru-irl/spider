@@ -6,6 +6,18 @@ import { moveSetupMessage, parseMoveSetupFailure, type MoveSetupFailure } from "
 interface SetupSnapshot { sessionId: string; failure: MoveSetupFailure; firstAt?: number; lastAt?: number }
 const safeSession = (id: unknown): string => typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(id) ? id : "<session>";
 const validTime = (time: unknown): time is number => Number.isSafeInteger(time) && (time as number) >= 0 && (time as number) <= 8_640_000_000_000_000;
+const instant = "(?:\\d{4}|\\+\\d{6})-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z";
+const setupDetails = new RegExp(`^(?:[A-Za-z0-9][A-Za-z0-9._-]{0,255}|<session>)\\.(?: First ${instant}; last ${instant}\\.)?$`);
+/** Match the entire generated diagnostic before accepting it from a peer. */
+export function isMoveSetupDiagnostic(row: Diagnostic): boolean {
+  if (row.severity !== "warning" || row.repairCommand !== "spider roam doctor") return false;
+  if (row.reason === "Move setup diagnostic unavailable. Run spider roam doctor and retry setup.") return true;
+  const match = /^Move setup failed at ([a-z-]+) \(([A-Za-z0-9_-]+)\)\./.exec(row.reason);
+  const failure = match && parseMoveSetupFailure({ stage: match[1], causeCode: match[2] });
+  if (!failure) return false;
+  const prefix = `${moveSetupMessage(failure)} Session `;
+  return row.reason.startsWith(prefix) && setupDetails.test(row.reason.slice(prefix.length));
+}
 /** The latest failure is machine-local metadata, not portable session content. */
 export function recordMoveSetupFailure(db: Db, sessionId: string, failure: MoveSetupFailure | null): void {
   db.transaction(() => {

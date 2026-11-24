@@ -93,16 +93,22 @@ export async function recoverWorkspaceRestores(restores: readonly WorkspaceResto
 }
 async function reconcile(id: string, ports: MovePorts, cancel: boolean): Promise<MoveSessionOutcome> {
   let pendingWarning: DestinationObservation["hostingWarning"];
+  let failureReason: "move-journal-unavailable" | "move-lock-failed" = "move-journal-unavailable";
   let request: MoveRequest = { sessionId: "", destinationMachine: "", operation: { id, kind: "move", machineId: ports.config.hubMachineId, expectedEpoch: null, args: {} } };
   try {
     if (!ports.config.enabled) return evidence.outcome(request, ports, 1, "roaming-disabled");
     if (ports.config.role !== "hub" || ports.config.machineId !== ports.config.hubMachineId) return evidence.outcome(request, ports, 1, "move-requires-hub");
     request = requestFor(id, ports);
+    failureReason = "move-lock-failed";
     return await withMoveLock(request.sessionId, ports, async () => {
       const rows = ports.journal.read(id);
-      if (!rows.some(row => row.action === "done") && rows.some(row => row.action === "move-action-start" && row.result.action === "freeze"))
-        await acquireMovePower(movePowerKey(ports, id), ports.power);
-      try { return await locked(request, ports, cancel, warning => { pendingWarning = warning; }); }
+      try {
+        if (!rows.some(row => row.action === "done") && rows.some(row => row.action === "move-action-start" && row.result.action === "freeze")) {
+          try { await acquireMovePower(movePowerKey(ports, id), ports.power); }
+          catch { throw new MoveError("move-power-pending"); }
+        }
+        return await locked(request, ports, cancel, warning => { pendingWarning = warning; });
+      }
       catch (error) {
         const result = evidence.outcome(request, ports, 3, error instanceof MoveError ? error.refusal.code : "move-pending");
         if (!result.ok && result.reason === "move-destination-pending" && pendingWarning) {
@@ -112,7 +118,10 @@ async function reconcile(id: string, ports: MovePorts, cancel: boolean): Promise
         return result;
       }
     });
-  } catch (error) { return evidence.outcome(request, ports, 3, error instanceof MoveError ? error.refusal.code : "move-lock-pending"); }
+  } catch (error) {
+    const occupied = error instanceof Error && error.name === "HerdrError" && "code" in error && error.code === "lock-occupied";
+    return evidence.outcome(request, ports, 3, error instanceof MoveError ? error.refusal.code : occupied ? "move-lock-pending" : failureReason);
+  }
 }
 async function complete(request: MoveRequest, ports: MovePorts, result: MoveSessionOutcome): Promise<MoveSessionOutcome> {
   await releaseMovePower(movePowerKey(ports, request.operation.id));

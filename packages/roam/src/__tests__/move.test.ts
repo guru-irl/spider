@@ -33,6 +33,7 @@ import { inspectSession, installSession, stageSession, verifyFrozenSession } fro
 import { openOutgoingStaging, sourceChunk } from "../staging";
 import { MoveError, moveSession, moveSessionSlot, readMoveReservation, validateBlockerId } from "../move";
 import { createMovePower, releaseMovePower, movePowerKey } from "../power";
+import { HerdrError } from "../../../herdr/src/client/parse";
 
 const HUB = "00000000-0000-4000-8000-000000000001", BOX = "00000000-0000-4000-8000-000000000002";
 const OTHER = "00000000-0000-4000-8000-000000000003", SESSION = "session-a";
@@ -489,6 +490,31 @@ it.each([false, true])("peer recovery skips a concurrent move without a doctor w
     expect(status.diagnostics).toEqual([]);
     expect(f.events.filter(event => event === "start")).toHaveLength(1);
   } finally { db.close(); }
+}, 5000);
+
+it.each([
+  ["journal", "move-journal-unavailable"], ["lock-io", "move-lock-failed"], ["power", "move-power-pending"],
+] as const)("peer recovery reports %s errors instead of quietly skipping them", async (kind, reason) => {
+  const f = fixture(); mkdirSync(join(f.root, "roam"));
+  const journal = openFreezeJournal(join(f.root, "roam", "journal.db")); f.ports.journal = journal;
+  journal.begin(f.request.operation); journal.record(f.request.operation.id, "move-request", f.request as unknown as JsonObject);
+  if (kind === "journal") vi.spyOn(journal, "begin").mockImplementation(() => { throw new Error("synthetic journal I/O failure"); });
+  if (kind === "lock-io") {
+    const locks = await import("@spider/herdr/sessions/registry");
+    vi.spyOn(locks, "withProcessLock").mockRejectedValue(new HerdrError("unsafe-state-path", "synthetic lock I/O failure"));
+  }
+  if (kind === "power") {
+    journal.record(f.request.operation.id, "move-action-start", { action: "freeze" });
+    f.ports.power = async () => { throw new Error("synthetic power assertion failure"); };
+  }
+  expect(await recoverMove(f.request.operation.id, f.ports)).toMatchObject({ code: 3, reason,
+    repairCommand: `spider roam recover ${f.request.operation.id}` });
+  const service = createMoveRuntimeService({ root: f.root, config: f.ports.config, globalDb: f.global.db, journal, transport: {} as Transport }, async () => ({
+    ports: f.ports, bindings: {}, control: async () => ({ code: 1, reason: "unused", value: null }), recover: async () => [], async close() {},
+  }));
+  await service.recover(BOX);
+  expect(readLocal(f.global.db, "recovery-diagnostic", f.request.operation.id)).toEqual({ reason });
+  expect(journal.lookupOperation(f.request.operation.id)?.state).toBe("pending");
 }, 5000);
 
 it("same-home request is a verified no-op", async () => {

@@ -254,3 +254,11 @@ it("disabled local box doctor still returns a pending-launch block", async () =>
   expect(doctor.value.reason).toBe("doctor-blocked");
   expect(doctor.value.value.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "block", reason: expect.stringMatching(/session-1.*launch-1.*pending/i), repairCommand: "spider roam stop session-1" })]));
 });
+
+it("local box doctor directs pending-launch stop repairs to the Mac hub", async () => {
+  const f = await fixture(); vi.stubEnv("SPIDER_GLOBAL_ROOT", f.remote);
+  const doctor = await f.invoke(["roam", "doctor", "--json"]);
+  const issue = doctor.value.value.diagnostics.find((row: { repairCommand: string | null }) => row.repairCommand === "spider roam stop session-1");
+  expect(issue).toMatchObject({ severity: "block", repairCommand: "spider roam stop session-1" });
+  expect(issue.reason).toContain("Run this repair command on the Mac hub.");
+});

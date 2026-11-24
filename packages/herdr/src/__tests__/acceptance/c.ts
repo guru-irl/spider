@@ -1,3 +1,4 @@
+import { buildRuntimeArtifact } from '../runtime-artifact.js';
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { expect } from 'vitest';
@@ -5,7 +6,6 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { stripTypeScriptTypes } from 'node:module';
 import { prepareRemoteProgram } from '../../../../context/src/remote-plan.js';
 import { registerExecActions } from '../../../../context/src/actions/exec.js';
 import { createRemoteExecutor, type RemoteExecutionPorts } from '../../remote/execute.js';
@@ -24,7 +24,7 @@ export async function createRemoteTestFixture(h: HerdrHarness): Promise<RemoteTe
   if (!h.owner) throw new Error('Start the isolated harness before remote tests');
   const on = 'remote.invalid' as RuntimeTarget['on']; const runtimePath = join(h.directories.remote, 'remote-runtime.mjs');
   if (h.mode === 'fake') await h.scenario({ steps: [{ argvPrefix: ['file', 'read'], argvIncludes: [runtimePath], once: true, stderr: { error: { kind: 'not_found', message: 'Runtime is not installed' } }, exitCode: 3 }] }, 'remote');
-  const runtimeBytes = Buffer.from(stripTypeScriptTypes(await readFile(fileURLToPath(new URL('../../remote/runtime.ts', import.meta.url)), 'utf8')));
+  const runtimeBytes = await buildRuntimeArtifact();
   await ensureRemoteRuntime(h.hc, on, runtimePath, runtimeBytes, sha256(runtimeBytes));
   const stream = h.hc.events(); await stream.ready;
   const programRoot = join(h.directories.remote, 'programs');

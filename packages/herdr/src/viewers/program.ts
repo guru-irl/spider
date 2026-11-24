@@ -416,4 +416,9 @@ export async function runViewer<Client extends ViewerStreamClient>(options: View
     clearInterval(leaseTimer); clearInterval(timer); clearInterval(stateTimer); clearTimeout(lifecycleTimer); unsubscribe(); composer?.close(); runDb?.close(); options.signal?.removeEventListener('abort', stop); await options.release?.();
   }
 }
+/** Stop the terminal even if discovery, streaming or release fails. */
+export async function runPresentedViewer<Client extends ViewerStreamClient>(options: ViewerOptions<Client>, presentation?: { presenter: ViewerPresenter; dispose(): void }): Promise<void> {
+  try { await runViewer({ ...options, presenter: presentation?.presenter }); }
+  finally { presentation?.dispose(); }
+}
 function safe(text: string): string { return new TranscriptSanitizer().push(text); }

@@ -40,6 +40,7 @@ import { pairScopedRecipe, inspectPairUnit } from "./intercom-pair-resources";
 import type { IntercomCliOptions } from "./intercom-cli";
 import { DEFAULT_SSH, DEFAULT_SSH_KEYGEN, DEFAULT_SSH_KEYSCAN } from "./intercom-ssh-defaults";
 import { enrollmentCauseCode } from "./intercom-enrollment";
+import { brokerStartupCause } from "./cause-codes";
 
 const HELP = `Usage: spider <command>
 
@@ -212,9 +213,10 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       const info = lstatSync(agentDir);
       if (config.role !== "box" || !isAbsolute(agentDir) || resolve(agentDir) !== agentDir || realpathSync(agentDir) !== agentDir ||
           !info.isDirectory() || info.isSymbolicLink() || (info.mode & 0o022) !== 0 || typeof process.getuid === "function" && info.uid !== process.getuid()) throw new Error("unsafe-broker-start");
-      await spawnBrokerIfNeeded("npx", ["--no-install", "tsx"], { agentDir });
-      io.out(`${JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: true, machineId: config.machineId })}\n`);
-    } catch { io.out(`${JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: false, reason: "intercom-broker-unavailable" })}\n`); }
+      const doctor = await runLocalDoctor({ root, inspectIntercomDoctor: true,
+        ensureIntercomBroker: () => spawnBrokerIfNeeded("npx", ["--no-install", "tsx"], { agentDir }) });
+      io.out(`${JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: true, machineId: config.machineId, doctor })}\n`);
+    } catch (error) { io.out(`${JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: false, causeCode: brokerStartupCause(error) })}\n`); }
     return 0;
   }
   if (argv[0] === "roam" && argv[1] === "intercom" && argv[2] === "enroll") {

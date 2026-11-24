@@ -16,6 +16,11 @@ const causeCodes = new Set<string>([
   "ROAM_MAPPING_FENCED", "diagnostic-snapshot-changing", "diagnostic-snapshot-wal-invalid", "diagnostic-snapshot-wal-unpublished",
   "diagnostic-snapshot-wal-index-missing", "diagnostic-snapshot-unsafe",
   "missing-hc", "spawn-error", "spawn_failed", "stdin-error", "cli-error", "cli-aborted", "cli-exit", "cli-timeout",
+  "active-release-unavailable", "active-release-layout-invalid", "invalid-intercom-readiness",
+  "broker-start-timeout", "broker-start-aborted", "broker-start-exited", "broker-start-failed", "unsafe-broker-start", "unsupported-broker",
+  "intercom-broker-unavailable", "intercom-broker-not-spider", "intercom-agent-unsafe", "intercom-directory-unsafe", "intercom-socket-unsafe", "federation-feature-missing",
+  "legacy-pending-asks", "legacy-pending-asks-unavailable", "settings-unavailable", "settings-resolution-unavailable", "legacy-extension-declared",
+  "settings-spider-invalid", "settings-spider-missing", "settings-spider-duplicate", "broker-readiness-unconfirmed",
   "connection-refused", "connection-closed", "machine-not-found", "machine-ambiguous", "machine-not-enrolled", "machine-mismatch",
   "peer-invalidated", "core-unavailable", "core-changed", "reply-too-large", "invalid-reply", "invalid-config", "invalid-operation",
   "invalid-byte-limit", "invalid-cli-deadline", "unresolved-peer", "service-not-loaded", "service-failed", "service-timeout", "service-spawn-error",
@@ -30,7 +35,7 @@ export function safeAgentOperationKind(value: unknown): AgentOperationKind | und
 }
 
 const additionalSteps = [
-  "enable", "enable-peer-capture", "enable-local-capture", "enable-peer-flag", "enable-config", "enable-service",
+  "enable", "enable-broker", "enable-peer-capture", "enable-local-capture", "enable-peer-flag", "enable-config", "enable-service",
   "disable", "disable-service", "disable-config", "disable-peer-flag",
   "enrollment", "read-fences", "notify-peers", "record-enrollment", "register-pair", "check-connector", "inspect-ssh", "bind-pair", "host-connector", "connect-connector",
   "ensure-key", "write-known-host", "authorize", "approve-pair", "add-machine", "verify-transport", "publish-pair", "verify-pair",
@@ -46,6 +51,20 @@ export function safeNativeHcCode(value: unknown): string | undefined {
 /** Only named codes and fixed operation steps can cross a machine or CLI boundary. */
 export function safeCauseCode(value: unknown): string | undefined {
   return typeof value === "string" && (causeCodes.has(value) || fallbackCodes.has(value)) ? value : undefined;
+}
+/** Classify startup failures without exposing the broker's captured stderr. */
+export function brokerStartupCause(error: unknown): string {
+  const native = error && typeof error === "object" && "cause" in error ? error.cause : undefined;
+  const code = native && typeof native === "object" && "code" in native ? safeCauseCode(native.code) : undefined;
+  if (code) return code;
+  if (error instanceof Error) {
+    const message = error.message.split("\n", 1)[0];
+    if (["unsafe-broker-start", "unsupported-broker", "broker-start-aborted", "active-release-unavailable", "active-release-layout-invalid", "invalid-intercom-readiness"].includes(message)) return message;
+    if (message === "Broker failed to start within timeout") return "broker-start-timeout";
+    if (message.startsWith("Intercom broker exited before startup")) return "broker-start-exited";
+  }
+  const direct = causeCode(error, "enable-broker");
+  return direct === "unexpected-enable-broker" ? "broker-start-failed" : direct;
 }
 export function causeCode(error: unknown, step: CauseStep): string {
   const code = error && typeof error === "object" && "code" in error ? safeCauseCode(error.code) : undefined;

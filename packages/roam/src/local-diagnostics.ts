@@ -407,6 +407,7 @@ export async function localPendingLaunchDiagnostics(input: {
 export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; currentCore?: () => Promise<string | null>; inspectIntercomDoctor?: boolean;
   launchRecovery?: { bootId(): Promise<string>; probe(pid: number): Promise<ProcessProbe> };
   intercomReadiness?: () => Promise<IntercomReadiness>;
+  ensureIntercomBroker?: () => Promise<void>;
   supervisorAutostart?: () => Promise<SupervisorAutostart>;
   intercomDoctor?: (input: { root: string; config: RoamConfig; agentDir: string }) => Promise<Diagnostic[]> }): Promise<{ enabled: boolean; diagnostics: readonly Diagnostic[]; consumers: LoadedConsumer[] }> {
   if (!isAbsolute(input.root)) throw new Error("The roaming root must be absolute");
@@ -564,6 +565,12 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
     }
     for (const peer of fences.keys()) if (!localPairs.some(record => [record.pair.source.machineId, record.pair.target.machineId].includes(peer))) inventory.push({ severity: "block", reason: `revocation-pending: An unmatched durable fence remains for ${peer}. Keep both boxes reachable. No repair command is available without the pair record; restore it before cleanup.`, repairCommand: null });
   } catch { inventory.push({ severity: "warning", reason: "intercom-registry-unavailable: Pair enrollment state could not be inspected.", repairCommand: null }); }
+  const ports = createLocalDiagnosticPorts(root, [], input.bundleUrl);
+  const localDiagnostics = await doctorLocal(config, ports, consumers);
+  if (input.inspectIntercomDoctor && config.intercom.enabled) try {
+    const inspect = input.intercomDoctor ?? inspectLocalIntercomDoctor;
+    inventory.push(...await inspect({ root, config, agentDir: process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent") }));
+  } catch { inventory.push({ severity: "warning", reason: "intercom-diagnostics-unavailable: Intercom readiness could not be inspected.", repairCommand: null }); }
   if (input.inspectIntercomDoctor && config.role === "box") {
     try {
       let readiness: IntercomReadiness;
@@ -577,18 +584,16 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
         if (!layout) throw new Error("active-release-layout-invalid");
         const home = homedir(), agentDir = process.env.PI_CODING_AGENT_DIR || join(home, ".pi", "agent");
         const sdk = join(layout[1], "lib", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "index.js");
-        readiness = await inspectIntercomReadiness({ agentDir, release, sdk, cwd: home });
+        readiness = await inspectIntercomReadiness({ agentDir, release, sdk, cwd: home, ensureBroker: input.ensureIntercomBroker });
       }
       if (!validIntercomReadiness(readiness)) throw new Error("invalid-intercom-readiness");
       inventory.push(...intercomReadinessDiagnostics(readiness));
-    } catch { inventory.push({ severity: "block", reason: "intercom-readiness-unavailable: Global settings and broker evidence could not be inspected.", repairCommand: null }); }
+    } catch (error) {
+      if (input.ensureIntercomBroker) throw error;
+      inventory.push({ severity: "block", reason: "intercom-readiness-unavailable: Global settings and broker evidence could not be inspected.", repairCommand: null });
+    }
   }
-  if (input.inspectIntercomDoctor && config.intercom.enabled) try {
-    const inspect = input.intercomDoctor ?? inspectLocalIntercomDoctor;
-    inventory.push(...await inspect({ root, config, agentDir: process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent") }));
-  } catch { inventory.push({ severity: "warning", reason: "intercom-diagnostics-unavailable: Intercom readiness could not be inspected.", repairCommand: null }); }
-  const ports = createLocalDiagnosticPorts(root, [], input.bundleUrl);
-  return { enabled: config.enabled, diagnostics: [...await doctorLocal(config, ports, consumers), ...storeDiagnostics, ...inventory, ...peerFailures], consumers };
+  return { enabled: config.enabled, diagnostics: [...localDiagnostics, ...storeDiagnostics, ...inventory, ...peerFailures], consumers };
 }
 
 function cachedObservation(db: Db, machineId: string, now: number): PeerObservation | undefined {

@@ -5,6 +5,21 @@ hub synchronization, machine intercom and session moves. See
 [Roaming architecture](../../docs/architecture/roaming.md) for configuration,
 operator commands and ownership contracts.
 
+## Enable and broker readiness
+
+`production-controls.ts` completes read-only peer preflight before starting
+services. The private box startup command runs doctor checks and resolves
+settings before `spawnBrokerIfNeeded`, then validates broker health and returns
+its doctor report. Enable validates the machine identity and report and uses
+that observation without a second doctor call.
+
+This ordering keeps slow settings resolution outside the sessionless broker's
+idle lifetime. Startup still uses the existing deadlines. An unavailable broker,
+invalid readiness evidence, or a startup error leaves enable pending before
+capture and participation flags change. The response includes an allowlisted
+`causeCode` without broker stderr, exception text, or private paths. A broker
+that answers health but lacks federation support remains blocked.
+
 ## Stop and pending launches
 
 `supervisor.ts` reserves a launch before authorization. It changes the

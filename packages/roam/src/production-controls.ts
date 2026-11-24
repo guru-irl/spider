@@ -3,7 +3,7 @@ import { causeCode, safeCauseCode, type CauseStep } from "./cause-codes";
 import { agentFailureCode, AgentResponseError, peerPreflightIssue } from "./peer-errors";
 import { setEnrolledPeerEnabled } from "./peer-enabled";
 import { openJournal } from "./journal";
-import { remoteDoctor } from "./remote-observations";
+import { parseDoctorReport, remoteDoctor } from "./remote-observations";
 import { INTERCOM_UNIQUENESS_DESCRIPTION } from "./intercom-readiness";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -116,14 +116,22 @@ async function agent(transport: Transport, peer: Peer, config: RoamConfig, kind:
   if (!result.value || typeof result.value !== "object" || Array.isArray(result.value)) throw new AgentResponseError("peer-response-invalid");
   return result.value as JsonObject;
 }
-async function startPeerBroker(transport: Transport, peer: Peer, config: RoamConfig): Promise<void> {
+async function startPeerBroker(transport: Transport, peer: Peer, config: RoamConfig): Promise<Awaited<ReturnType<typeof remoteDoctor>>> {
   const handle = await transport.resolve(peer);
-  const bytes = await transport.exec(handle, ["roam", "intercom", "start-broker"], { timeoutMs: config.limits.controlMs, maxBytes: 4096 });
-  const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("intercom-broker-unavailable");
+  const bytes = await transport.exec(handle, ["roam", "intercom", "start-broker"], { timeoutMs: config.limits.controlMs, maxBytes: config.limits.replyBytes });
+  const invalid = () => Object.assign(new Error("Invalid broker startup response"), { code: "invalid-reply" });
+  let value: unknown;
+  try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); } catch { throw invalid(); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid();
   const result = value as Record<string, unknown>;
-  if (Object.keys(result).length !== 4 || result.version !== 1 || result.kind !== "intercom-broker-start" || result.ok !== true || result.machineId !== peer.machineId)
-    throw new Error("intercom-broker-unavailable");
+  if (result.version !== 1 || result.kind !== "intercom-broker-start") throw invalid();
+  if (result.ok === false && Object.keys(result).length === 4) {
+    const cause = safeCauseCode(result.causeCode);
+    if (!cause) throw invalid();
+    throw Object.assign(new Error("Broker startup failed"), { causeCode: cause });
+  }
+  if (Object.keys(result).length !== 5 || result.ok !== true || result.machineId !== peer.machineId) throw invalid();
+  try { return parseDoctorReport(result.doctor); } catch { throw invalid(); }
 }
 async function waitReady(file: string): Promise<boolean> {
   const end = Date.now() + 4000;
@@ -192,13 +200,22 @@ export async function enableRoaming(root: string, cli: string, bundleUrl?: URL):
       // start only after this proceed decision; failures from here are pending.
       for (const { peer } of inventories) {
         changed = true;
+        const name = clean(peer.alias), repairCommand = `spider roam doctor ${/^[A-Za-z0-9_]/.test(peer.alias) ? name : peer.machineId}`;
         try {
-          await startPeerBroker(transport, peer, config);
-          const report = await remoteDoctor(transport, peer, config);
-          if (report.diagnostics.some(row => row.severity === "block")) throw new Error("broker-readiness-unconfirmed");
-        } catch {
-          const reason = `preflight-failed:${clean(peer.alias)}:intercom-broker`, repairCommand = `spider roam doctor ${/^[A-Za-z0-9_]/.test(peer.alias) ? clean(peer.alias) : peer.machineId}`;
-          return { code: 3 as const, reason, issues: [{ reason, repairCommand }], information, message: `${reason}: Enable is pending after broker startup (${repairCommand}).` };
+          // Startup resolves settings before starting the broker and returns its
+          // final health observation. Another doctor pass could outlive idle shutdown.
+          const report = await startPeerBroker(transport, peer, config);
+          const issues = report.diagnostics.filter(row => row.severity === "block").map(row => {
+            const evidence = /^(?:intercom-legacy-drained|intercom-federation|intercom-settings-unique): ([a-z][a-z0-9-]+)/.exec(row.reason)?.[1];
+            return { reason: `preflight-failed:${name}:${preflightCheck(row.reason)}`, repairCommand,
+              causeCode: safeCauseCode(evidence) ?? "broker-readiness-unconfirmed" };
+          });
+          if (issues.length) return { code: 3 as const, reason: issues[0].reason, causeCode: issues[0].causeCode, issues, information,
+            message: issues.map(issue => `${issue.reason}: Broker startup readiness failed (${issue.causeCode}); enable needs reconciliation (${repairCommand}).`).join("; ") };
+        } catch (error) {
+          const reason = `preflight-failed:${name}:intercom-broker`, cause = causeCode(error, "enable-broker");
+          return { code: 3 as const, reason, causeCode: cause, issues: [{ reason, repairCommand, causeCode: cause }], information,
+            message: `${reason}: Broker startup failed (${cause}); enable needs reconciliation (${repairCommand}).` };
         }
       }
       for (const { peer, keys } of inventories) {

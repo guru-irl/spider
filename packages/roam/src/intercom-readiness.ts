@@ -156,8 +156,11 @@ function irOfflineLegacy(directory: string): string {
 }
 
 /** Protocol-validated within the user-owned, non-group/world-writable agent directory; not cryptographic authentication. */
-export async function inspectIntercomReadiness(input: { agentDir: string; release: string; sdk: string; cwd: string }): Promise<IntercomReadiness> {
+export async function inspectIntercomReadiness(input: { agentDir: string; release: string; sdk: string; cwd: string; ensureBroker?: () => Promise<void> }): Promise<IntercomReadiness> {
   const { settings, otherExtensions } = await irSettings(input.agentDir, input.release, input.sdk, input.cwd);
+  // Settings resolution can outlive a sessionless broker. Start only when those
+  // checks finish, then prove health before returning the startup observation.
+  if (settings === "settings-unique") await input.ensureBroker?.();
   let legacy = "intercom-broker-unavailable", federation = "intercom-broker-unavailable";
   try { irDirectory(input.agentDir); }
   catch { legacy = federation = "intercom-agent-unsafe"; return { intercomUnique: settings === "settings-unique", legacyDrained: false, federation: false, intercomEvidence: { settings, legacy, federation, otherExtensions } }; }

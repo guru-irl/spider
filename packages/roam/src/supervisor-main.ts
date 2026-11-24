@@ -1,7 +1,8 @@
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { startProductionSupervisor } from "./production-supervisor";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { RUNNING_INTENT_SOURCE_UNAVAILABLE } from "./supervisor";
 
 export { startProductionSupervisor };
@@ -37,7 +38,11 @@ export async function main(argv: readonly string[], io: { out(text: string): voi
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+const isMain = (() => {
+  try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
+  catch { return false; }
+})();
+if (isMain) {
   main(process.argv.slice(2), { out: text => process.stdout.write(text), err: text => process.stderr.write(text) })
     .then(code => { process.exitCode = code; }, () => { process.stderr.write("Supervisor failed.\n"); process.exitCode = 1; });
 }

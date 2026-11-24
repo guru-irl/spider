@@ -5,6 +5,7 @@ import { isCleanupConnectivityFailure } from '../jobs/cleanup.js';
 
 it.each([
   new HerdrError('unavailable', 'Destination unavailable'),
+  new HerdrError('unavailable', 'Destination unavailable', { hint: 'Authentication failed' }),
   new HerdrError('unreachable', 'Destination unreachable'),
   new HerdrError('cli-timeout', 'Transport timed out'),
   new HerdrError('cleanup-timeout', 'Cleanup call timed out'),
@@ -22,7 +23,6 @@ it.each([
   new HerdrError('machine-unavailable', 'Wrong destination', { reason: 'unverified' }),
   new HerdrError('caller-mismatch', 'Wrong identity while offline'),
   new HerdrError('unavailable', 'Authentication failed while offline'),
-  new HerdrError('unavailable', 'Destination unavailable', { hint: 'Authentication failed' }),
   new HerdrError('unreachable', 'Permission denied during connection'),
   new HerdrError('cli-timeout', 'Identity mismatch while offline'),
   new HerdrError('invalid-reply', 'Malformed reply while offline'),

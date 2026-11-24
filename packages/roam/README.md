@@ -22,7 +22,9 @@ reason text.
 Literal `connected` clears the hosting outage alert even if sync refuses
 content. Such refusals keep their separate sync diagnostics and backoff.
 Hosting checks, placement and suspension warnings need only native `connected`
-and a reply from the enrolled peer. Ungathered or refused stores do not suppress them.
+and a reply from the enrolled peer. Ungathered or refused stores and mid-round
+peer command exits do not suppress them. A code-3 connectivity failure makes
+the reply uncertain and suppresses hosting checks for that round.
 Move recovery requires `connected` and an answer from the enrolled peer with
 no connectivity failure in the current round. Ungathered and refused stores
 do not block this proof. The move's own journal proofs still control recovery.

@@ -11,6 +11,22 @@ function equalWidths(text: string[], nerd: string[]): void {
 }
 
 describe("host icon rendering", () => {
+  it("keeps the skill list and curator headings, and their fallback glyphs, off the card", () => {
+    const rows = [{ name: "brainstorming", source: "bundled", state: "active", status: "ok", useCount: 2, tier: "global" }];
+    const curate = { toStale: [], toArchived: [], skipped: [] };
+    for (const iconStyle of ["text", "nerd"] as const) {
+      const list = renderSpiderResult({ details: rows }, {}, theme, { args: { action: "skill", op: "list" }, iconStyle }).render(100).join("\n");
+      const curator = renderSpiderResult({ details: curate }, {}, theme, { args: { action: "control", command: "skill", sub: "curate" }, iconStyle }).render(100).join("\n");
+      expect(list).toContain("- brainstorming (bundled, active, ok, use=2)");
+      expect(curator).toContain("- stale: 0");
+      for (const card of [list, curator]) {
+        expect(card).not.toContain("🕸");
+        expect(card).not.toContain("🧹");
+        expect(card).not.toContain("## ");
+      }
+    }
+  });
+
   it("uses the agent icon in the tool call", () => {
     const args = { action: "run" };
     const text = renderSpiderCall(args, theme, style("text")).render(100);

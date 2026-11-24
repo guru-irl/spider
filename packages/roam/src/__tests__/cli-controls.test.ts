@@ -236,7 +236,7 @@ it("enable pending retains the real peer agent cause after broker startup", asyn
   vi.spyOn(diagnostics, "assertCompatibleConsumers").mockResolvedValue(undefined);
   vi.spyOn(remoteObservations, "remoteDoctor").mockResolvedValue({ diagnostics: [] } as never);
   vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: unknown) { return peer; }, async exec(_peer: unknown, argv: string[]) {
-    if (argv[1] === "intercom") return Buffer.from(JSON.stringify({ kind: "intercom-broker-start", version: 1, ok: true, machineId: BOX }));
+    if (argv[1] === "intercom") return Buffer.from(JSON.stringify({ kind: "intercom-broker-start", version: 1, ok: true, machineId: BOX, doctor: { enabled: false, diagnostics: [], consumers: [] } }));
     const operation = JSON.parse(argv[2]); operationKind = operation.kind;
     return Buffer.from(JSON.stringify(await agent.handleAgentOperation(operation, ports as never)));
   } } as never);
@@ -857,7 +857,7 @@ it("enable reports every box precondition before changing capture or flags", asy
   vi.spyOn(diagnostics, "assertCompatibleConsumers").mockResolvedValue(undefined);
   const service = vi.spyOn(launchd, "installHubService").mockResolvedValue(undefined), operations: string[] = [], starts: string[] = [], flags: unknown[] = [];
   vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: unknown) { return peer; }, async exec(peer: { machineId: string }, argv: string[]) {
-    if (argv[1] === "intercom") { starts.push(peer.machineId); return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: true, machineId: peer.machineId })); }
+    if (argv[1] === "intercom") { starts.push(peer.machineId); return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: true, machineId: peer.machineId, doctor: { enabled: false, diagnostics: [], consumers: [] } })); }
     const op = JSON.parse(argv[2]); operations.push(op.kind);
     if (peer.machineId === other.machineId) throw new HerdrError("machine-not-found", "offline");
     return Buffer.from(JSON.stringify({ operationId: op.id, code: 0, value: op.kind === "stores" ? { protocol: 1, schema: 14, machineId: BOX, stores: ["global"] } : { complete: true } }));
@@ -908,7 +908,7 @@ it("reports pending enable before flags or capture if a broker cannot start afte
   expect(await f.invoke(["roam", "enable", "--json"])).toBe(3);
   const result = JSON.parse(f.out.join(""));
   expect(result.reason).toBe("preflight-failed:box-1.invalid:intercom-broker");
-  expect(result.value.issues).toContainEqual({ reason: result.reason, repairCommand: "spider roam doctor box-1.invalid" });
+  expect(result.value.issues).toContainEqual({ reason: result.reason, repairCommand: "spider roam doctor box-1.invalid", causeCode: "unexpected-enable-broker" });
   expect(operations).toEqual(["stores"]); expect(flags).toEqual([]); expect(service).not.toHaveBeenCalled();
   expect(JSON.parse(readFileSync(file, "utf8")).enabled).toBe(false);
 }, 5000);
@@ -945,7 +945,7 @@ it("explicit Mac enable requires box preflight before authorizing its flag", asy
   vi.spyOn(launchd, "installHubService").mockResolvedValue(undefined);
   const starts: string[] = [];
   vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: unknown) { return peer; }, async exec(_peer: unknown, argv: string[]) {
-    if (argv[1] === "intercom") { starts.push(BOX); return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: true, machineId: BOX })); }
+    if (argv[1] === "intercom") { starts.push(BOX); return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: true, machineId: BOX, doctor: { enabled: false, diagnostics: [], consumers: [] } })); }
     const op = JSON.parse(argv[2]); return Buffer.from(JSON.stringify({ operationId: op.id, code: 0, value: op.kind === "stores" ? { protocol: 1, schema: 14, machineId: BOX, stores: ["global"] } : { complete: true } }));
   } } as never);
   vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: { async resolve(peer: unknown) { return peer; } }, async executeProvision(_peer: unknown, request: Record<string, unknown>) { requests.push(request); return { enabled: request.enabled }; } } as never);
@@ -959,6 +959,58 @@ it("explicit Mac enable requires box preflight before authorizing its flag", asy
   expect(starts).toEqual([BOX]);
   expect(requests).toEqual([expect.objectContaining({ action: "roaming-enabled", enabled: true, machineId: BOX, hubMachineId: HUB })]);
 }, 5000);
+it.each(["ready", "unavailable", "startup-timeout", "transport-timeout", "wrong-identity"] as const)
+("enable consumes the final broker startup observation (%s)", async mode => {
+  const f = await fixture(HUB, { code: 0, reason: "ready", value: { enabled: true } }), file = join(f.root, "roam/config.json");
+  const config = JSON.parse(readFileSync(file, "utf8")); config.enabled = false; config.peers[0].alias = "box-1.invalid";
+  writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  const db = openDb(join(f.root, "spider.db")); migrate(db, "global", { machineId: HUB, globalRoot: f.root }); db.close();
+  const launchctl = join(f.root, "launchctl"); writeFileSync(launchctl, "fixture", { mode: 0o700 });
+  vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", launchctl); vi.stubEnv("SPIDER_ROAM_PI", process.execPath);
+  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/home/fixture/hc" } } as never);
+  vi.spyOn(diagnostics, "assertCompatibleConsumers").mockResolvedValue(undefined);
+  const service = vi.spyOn(launchd, "installHubService").mockResolvedValue(undefined), operations: string[] = [], flags: unknown[] = [];
+  // A second settings/doctor pass can outlive a sessionless broker's idle lifetime.
+  let preflight = true;
+  vi.spyOn(remoteObservations, "remoteDoctor").mockImplementation(async () => {
+    if (!preflight) throw new HerdrError("cli-timeout", "private doctor stderr");
+    preflight = false; return { enabled: false, diagnostics: [], consumers: [] };
+  });
+  let release!: () => void, started!: () => void;
+  const health = new Promise<void>(resolve => { release = resolve; }), starting = new Promise<void>(resolve => { started = resolve; });
+  vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: unknown) { return peer; }, async exec(_peer: unknown, argv: string[]) {
+    if (argv[1] === "intercom") {
+      started(); await health;
+      if (mode === "transport-timeout") throw new HerdrError("cli-timeout", "private startup stderr");
+      if (mode === "startup-timeout") return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: false, causeCode: "broker-start-timeout" }));
+      return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: true, machineId: mode === "wrong-identity" ? HUB : BOX,
+        doctor: { enabled: false, consumers: [], diagnostics: mode === "unavailable" ? [
+          { severity: "block", reason: "intercom-federation: intercom-broker-unavailable.", repairCommand: null },
+        ] : [] } }));
+    }
+    const op = JSON.parse(argv[2]); operations.push(op.kind);
+    return Buffer.from(JSON.stringify({ operationId: op.id, code: 0, value: op.kind === "stores" ? { protocol: 1, schema: 14, machineId: BOX, stores: ["global"] } : { complete: true } }));
+  } } as never);
+  vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: { async resolve(peer: unknown) { return peer; } },
+    async executeProvision(_peer: unknown, request: unknown) { flags.push(request); return { enabled: true }; } } as never);
+  const enabling = f.invoke(["roam", "enable", "--json"]);
+  await starting;
+  expect(f.out).toEqual([]); expect(operations).toEqual(["stores"]); expect(flags).toEqual([]);
+  release();
+  expect(await enabling).toBe(mode === "ready" ? 0 : 3);
+  const result = JSON.parse(f.out.join(""));
+  if (mode === "ready") {
+    expect(result.reason).toBe("roaming-enabled"); expect(operations).toEqual(["stores", "enable-capture"]); expect(flags).toHaveLength(1);
+  } else {
+    const expected = mode === "unavailable" ? "intercom-broker-unavailable" : mode === "startup-timeout" ? "broker-start-timeout" : mode === "transport-timeout" ? "cli-timeout" : "invalid-reply";
+    expect(result).toMatchObject({ causeCode: expected });
+    expect(result.value.issues).toContainEqual(expect.objectContaining({ causeCode: expected }));
+    expect(JSON.stringify(result)).not.toContain("private");
+    expect(operations).toEqual(["stores"]); expect(flags).toEqual([]); expect(service).not.toHaveBeenCalled();
+    expect(JSON.parse(readFileSync(file, "utf8")).enabled).toBe(false);
+  }
+}, 5000);
+
 it("doctor reports enabled flag drift and preserves both configurations", async () => {
   const f = await fixture(), config = localRuntime.readLocalIdentity(f.root), before = readFileSync(join(f.root, "roam/config.json"), "utf8");
   vi.spyOn(remoteObservations, "remoteDoctor").mockResolvedValue({ enabled: false, diagnostics: [], consumers: [] });
@@ -1000,7 +1052,7 @@ it("enable warns for an absent store and sync enables capture when it returns", 
   vi.spyOn(launchd, "installHubService").mockResolvedValue(undefined);
   vi.spyOn(remoteObservations, "remoteDoctor").mockResolvedValue({ enabled: false, diagnostics: [], consumers: [] });
   vi.spyOn(transportModule, "createTransport").mockReturnValue({ ...net.transport, async resolve() { return net.transport.resolve(net.peers[0]); }, async exec(peer, argv, options) {
-    if (argv[1] === "intercom") return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: true, machineId: BOX }));
+    if (argv[1] === "intercom") return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: true, machineId: BOX, doctor: { enabled: false, diagnostics: [], consumers: [] } }));
     return net.transport.exec(peer, argv, options);
   } });
   vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: { async resolve(peer: unknown) { return peer; } }, async executeProvision() { return { enabled: true }; } } as never);

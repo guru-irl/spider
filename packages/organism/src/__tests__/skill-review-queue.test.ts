@@ -119,6 +119,34 @@ it("keeps a candidate for a nested provider statusCode 500", async () => {
   } finally { vi.useRealTimers(); }
 });
 
+it("keeps a candidate when an aggregate contains a transport failure", async () => {
+  vi.stubEnv("PI_SUBAGENT_CHILD", "0"); vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+  const skills = fixture(); await enqueue(skills);
+  const error = new AggregateError([new Error("provider error"), Object.assign(new Error("unreachable"), { code: "ENETUNREACH" })], "request failed");
+  try {
+    await runSkillReviewQueue(ctx.repoDb, { reviewer: async () => { throw error; } });
+    expect(ctx.repoDb.prepare("SELECT attempts,body FROM skill_review_queue").get()).toEqual({ attempts: 0, body: candidate.body });
+    await vi.advanceTimersByTimeAsync(300_000);
+    await runSkillReviewQueue(ctx.repoDb, { reviewer: async () => '{"verdict":"new","reason":"reusable"}' });
+    expect(skills.get(candidate.name)?.candidateBody).toBe(candidate.body);
+  } finally { vi.useRealTimers(); }
+});
+
+it("spends the review budget when an aggregate contains authentication failure", async () => {
+  vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  const skills = fixture(); await enqueue(skills);
+  const error = new AggregateError([
+    Object.assign(new Error("connection reset"), { code: "ECONNRESET" }),
+    Object.assign(new Error("authentication failed"), { status: 401 }),
+  ], "fetch failed");
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await runSkillReviewQueue(ctx.repoDb, { reviewer: async () => { throw error; } });
+    if (attempt < 3) expect(ctx.repoDb.prepare("SELECT attempts FROM skill_review_queue").get()).toEqual({ attempts: attempt });
+    else expect(skillReviewQueueStatus(ctx.repoDb).pending).toBe(0);
+  }
+  expect(skills.list()).toEqual([]);
+});
+
 it("spends the review budget when a rate-limit error wraps an authentication failure", async () => {
   vi.stubEnv("PI_SUBAGENT_CHILD", "0");
   const skills = fixture(); await enqueue(skills);

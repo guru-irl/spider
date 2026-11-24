@@ -1,4 +1,5 @@
 import { MoveCompositionError } from "@spider/roam/move-failure";
+import { checkoutName, resolveMoveCheckout, type MoveCheckout } from "@spider/roam/move-checkout";
 import { readHostingWarnings } from "@spider/roam/hosting-warning";
 import { pendingWorkspaceTransitions } from "@spider/roam/move-recovery";
 import { recordMoveBindings } from "@spider/roam/move-diagnostics";
@@ -7,14 +8,14 @@ import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { openDb, paths, type Db } from "@spider/db-core";
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { parseLocationStores, recordLocation } from "@spider/db-core/roam/catalog";
 import { completeMoveRoster } from "./move-roster";
 import { parseHubReadiness } from "@spider/db-core/roam/readiness";
 import type { Blocker, Home, HubOperationReadiness, JsonObject, Probe, StoreKey } from "@spider/db-core/roam/types";
-import type { Clock, Diagnostic, GitPorts, Operation, RoamConfig, Transport, WorkspaceSnapshot } from "@spider/roam/contracts";
+import type { Clock, Diagnostic, GitPorts, MoveCheck, Operation, RoamConfig, Transport, WorkspaceSnapshot } from "@spider/roam/contracts";
 import { createMovePorts, createHubMoveEvidencePorts, createPushedMoveEvidencePorts, createMoveWorkspacePorts, handleMoveParticipantOperation, recoverMoveAdapters, unboundMoveEffects, moveEffectReason, readMovePresentation, type MoveAdapterBindings } from "@spider/roam/move-ports";
 import { openFreezeJournal, type FreezeJournal } from "@spider/roam/journal";
 import { machineMoveProxy } from "@spider/roam/machine-move-socket";
@@ -41,6 +42,7 @@ import { createUsageIngestThrough } from "./usage-ingest";
 
 import { createExactLaunchAdapter, createProductionLocalExactHc, createLaunchReconciler, resolveParticipantPi } from "@spider/roam/launcher";
 import { inspectSession } from "@spider/roam/session-file";
+import { moveEvidence } from "@spider/roam/move";
 import { verifyWorkspace } from "@spider/roam/workspace-import";
 import { createMoveControlHandler } from "@spider/roam/adapter-controls";
 import { recordMoveLaunchAbsence } from "./launch-observation";
@@ -84,12 +86,24 @@ export interface HostMoveRuntime {
 export async function createHostMoveBindings(input: HostMoveInput): Promise<HostMoveRuntime> {
   const { root, globalDb, config, journal, sessionId, transport } = input;
   const pi = resolveParticipantPi();
+  let unmappedWorktree: StoreKey | undefined;
+  if (input.operation?.kind === "move-import") {
+    const operation = input.operation, check = operation.args.check as unknown as MoveCheck;
+    if (operation.machineId !== config.machineId || operation.args.sourceMachine !== config.hubMachineId) throw new MoveCompositionError("move-adapter-unavailable");
+    moveEvidence.checkReply(check, { sessionId, destinationMachine: config.machineId, operation: operation.args.parent as unknown as Operation });
+    const checkout = await resolveMoveCheckout({ globalDb, root, repoKey: check.repoKey, workspaceId: check.workspaceId,
+      sourceName: checkoutName(basename(check.sourceRoot), "checkout"), moveId: String(operation.args.moveId), git: { run: gitRun }, journal });
+    if (checkout.path !== check.destinationRoot) throw new MoveCompositionError("move-checkout-conflict");
+    if (checkout.kind === "create") unmappedWorktree = `worktree:${check.repoKey}:${check.workspaceId}`;
+  }
   const privateDb = openDb(join(root, "roam", "journal.db"), { fileMustExist: true, checkpointOnClose: false });
   let closeStores: (() => void) | undefined;
   try {
   const presentations = createHostRoamPresentationPorts({ root, globalDb, revocationDb: privateDb, config });
-  const stores = createStorePort(config, globalDb, { allowUnassignedGlobal: true });
+  const stores = createStorePort(config, globalDb, { allowUnassignedGlobal: true, unmappedWorktree });
   closeStores = () => stores.close();
+  // The normal mapping API merges this replica into the checkout after preparation.
+  if (unmappedWorktree) stores.openStore(unmappedWorktree);
   const keys = listStoreKeys(globalDb);
   const known = globalDb.prepare("SELECT stores_json,cwd FROM roam_locations WHERE session_id=?").get(sessionId) as { stores_json: string; cwd: string | null } | undefined;
   const checkKeys = (input.operation?.args.check as { storeKeys?: unknown } | undefined)?.storeKeys;
@@ -249,12 +263,21 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
       const source = mapped.filter(row => loc.stores.includes(`worktree:${row.repo_key}:${row.workspace_id}` as StoreKey) && (sourceMachine !== config.machineId || !relative(row.path, loc.cwd).startsWith("..")));
       if (source.length !== 1) return null;
       const row = source[0];
-      const rootFor = (machineId: string) => machineId === config.machineId ? Promise.resolve(row.path) : evidenceCall<string>("move-workspace-map", { ...request.operation, args: { sessionId, moveId: request.operation.id, repoKey: row.repo_key, workspaceId: row.workspace_id, destinationMachine: machineId } });
-      const sourceRoot = await rootFor(sourceMachine);
-      if (!sourceRoot || !isAbsolute(sourceRoot) || relative(sourceRoot, loc.cwd).startsWith("..")) return null;
-      const destination = await rootFor(request.destinationMachine);
-      if (!destination || !isAbsolute(destination)) return null;
-      return { repoKey: row.repo_key, workspaceId: row.workspace_id, sourceRoot, destinationRoot: destination, destinationCwd: join(destination, relative(sourceRoot, loc.cwd)) };
+      const rootFor = async (machineId: string, sourceName?: string): Promise<MoveCheckout | null> => {
+        const args = { sessionId, moveId: request.operation.id, repoKey: row.repo_key, workspaceId: row.workspace_id, destinationMachine: machineId,
+          ...(sourceName ? { sourceCheckoutName: sourceName } : {}) };
+        const checkout = machineId === config.machineId
+          ? await resolveMoveCheckout({ globalDb, root, repoKey: row.repo_key, workspaceId: row.workspace_id, sourceName, moveId: request.operation.id, git, journal })
+          : await evidenceCall<MoveCheckout>("move-workspace-map", { ...request.operation, args });
+        if (!checkout || !["mapped", "create"].includes(checkout.kind) || !isAbsolute(checkout.path) || checkout.path.length > 4096 || /[\u0000-\u001f\u007f]/.test(checkout.path) ||
+            sourceName === undefined && checkout.kind !== "mapped") throw new MoveCompositionError("move-adapter-unavailable");
+        return checkout;
+      };
+      const sourceCheckout = await rootFor(sourceMachine), sourceRoot = sourceCheckout?.path;
+      if (!sourceRoot || relative(sourceRoot, loc.cwd).startsWith("..")) return null;
+      const destination = await rootFor(request.destinationMachine, checkoutName(basename(sourceRoot), "checkout"));
+      if (!destination) return null;
+      return { repoKey: row.repo_key, workspaceId: row.workspace_id, sourceRoot, destinationRoot: destination.path, destinationCwd: join(destination.path, relative(sourceRoot, loc.cwd)) };
     },
     participant: { pi, config, root, globalDb, runtimeRoot, stores: roster, withBothLocks, probe, git,
       exit: { async exited(identity) {
@@ -421,8 +444,13 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
         return result(await bindings.handoff!.readyTarget(home));
       }
       if (operation.kind === "move-workspace-map") {
-        const rows = globalDb.prepare("SELECT path FROM roam_workspace_maps WHERE repo_key=? AND workspace_id=?").all(operation.args.repoKey, operation.args.workspaceId) as { path: string }[];
-        return result(rows.length === 1 && isAbsolute(rows[0].path) ? rows[0].path : null);
+        try {
+          return result(await resolveMoveCheckout({ globalDb, root, repoKey: String(operation.args.repoKey), workspaceId: String(operation.args.workspaceId),
+            sourceName: operation.args.sourceCheckoutName, moveId: String(operation.args.moveId), git, journal }));
+        } catch (error) {
+          if (!(error instanceof MoveCompositionError)) throw error;
+          return { ...result(null), code: 1, causeCode: error.code, repairCommand: "spider roam doctor" };
+        }
       }
       if (["move-abort-authority", "move-retire-authority", "move-rollback-authority", "move-presentation-authority"].includes(operation.kind)) {
         if (config.role !== "hub") return result(null);

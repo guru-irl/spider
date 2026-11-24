@@ -216,6 +216,19 @@ it("does not recognize or renew an expired retry lease before another owner acqu
   expect(store.owns("second")).toBe(true);
 });
 
+it("leaves a saved input for a new owner when the finishing lease has expired", () => {
+  const store = new DrainRetryStore(databases.db);
+  const bundle = drainSession(databases.db, "session", "before_compact", snapshot("Keep until the lease owner finishes."));
+  store.failure(bundle, ["learning"], "learning", "offline");
+  expect(store.acquire("first", 35_000).acquired).toBe(true);
+  vi.setSystemTime(Date.now() + 35_000);
+  expect(store.finish(bundle, "first")).toBe(false);
+  expect(store.contains(bundle)).toBe(true);
+  expect(store.acquire("second", 35_000).acquired).toBe(true);
+  expect(store.finish(bundle, "second")).toBe(true);
+  expect(store.contains(bundle)).toBe(false);
+});
+
 it("does not apply a retry if the wall clock passes its lease before completion", async () => {
   databases.db.prepare("INSERT INTO runs(id,session_id,agent,status) VALUES ('run','session','worker','done')").run();
   let online = false;

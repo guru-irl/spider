@@ -158,15 +158,16 @@ export async function ensurePairUnit(pair: IntercomEnrollmentPair, side: "host" 
     return { status: "ready" };
   });
 }
-export async function inspectPairUnit(pair: IntercomEnrollmentPair, side: "host" | "connect", ports: PairResourcePorts): Promise<"ready" | "intercom-pair-unit-missing" | "intercom-pair-unit-unavailable"> {
+/** Present units retain boolean readiness; a missing recorded file is a distinct unready state. */
+export async function inspectPairUnit(pair: IntercomEnrollmentPair, side: "host" | "connect", ports: PairResourcePorts): Promise<boolean | "intercom-pair-unit-missing"> {
   const record = await createIntercomRegistry(ports.root).get(pair.pairId), unit = record?.unit;
-  if (!record?.resources || !unit || unit.name !== unitName(pair.pairId, side)) return "intercom-pair-unit-unavailable";
-  if (ports.recipe && (unit.localPort !== pairLocalPort(parseConnectorRecipe(ports.recipe), pair.pairId) || unit.contents !== unitContents(pair, side, parseConnectorRecipe(ports.recipe)))) return "intercom-pair-unit-unavailable";
+  if (!record?.resources || !unit || unit.name !== unitName(pair.pairId, side)) return false;
+  if (ports.recipe && (unit.localPort !== pairLocalPort(parseConnectorRecipe(ports.recipe), pair.pairId) || unit.contents !== unitContents(pair, side, parseConnectorRecipe(ports.recipe)))) return false;
   let current: UnitObservation;
   try { current = await showUnit(unit, ports); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "intercom-pair-unit-missing") return "intercom-pair-unit-missing"; throw error; }
   const process = (ports.process ?? nativeProcess)(current.pid);
-  return current.state === "active" && current.pid > 0 && process.kind === "live" && !!current.controlGroup && members(current.controlGroup, ports).includes(current.pid) ? "ready" : "intercom-pair-unit-unavailable";
+  return current.state === "active" && current.pid > 0 && process.kind === "live" && !!current.controlGroup && members(current.controlGroup, ports).includes(current.pid);
 }
 /** Find a stopped recorded unit without changing services or adopting an unverified unit. */
 export async function stoppedPairUnitNeedsRepair(ports: PairResourcePorts): Promise<boolean | null> {
@@ -201,7 +202,9 @@ export async function reconcilePairUnits(ports: PairResourcePorts): Promise<void
       const peer = side === "connect" ? pair.target.machineId : pair.source.machineId;
       if (current.fenceId !== null || await registry.revocationPending(pair.pairId, peer)) throw new Error("revocation-pending");
       if (!current.resources || !current.unit || current.unit.closedFenceId !== null) throw new Error("intercom-unit-unavailable");
-      if (await inspectPairUnit(current.pair, side, ports)) return;
+      const ready = await inspectPairUnit(current.pair, side, ports);
+      if (ready === "intercom-pair-unit-missing") throw new Error(ready);
+      if (ready === true) return;
       if ((await ensurePairUnit(current.pair, side, ports)).status !== "ready") throw new Error("connector-not-pair-scoped");
     });
   }

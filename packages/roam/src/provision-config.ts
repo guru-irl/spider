@@ -29,7 +29,7 @@ export async function persistProvisionPeer(root: string, peer: Peer, options: Pr
   }, options);
 }
 
-/** Publish one previously approved direct edge; do not enable intercom or alter replication. */
+/** Publish routing for one approved pair; do not enable intercom or alter replication. */
 export async function persistIntercomPairRoute(root: string, pair: IntercomEnrollmentPair, operationId: string, graphDigest: string): Promise<void> {
   const initial = readLocalIdentity(root), directory = join(root, "roam"), file = join(directory, "config.json");
   const local = initial.machineId, remote = local === pair.source.machineId ? pair.target : local === pair.target.machineId ? pair.source : null;
@@ -44,13 +44,17 @@ export async function persistIntercomPairRoute(root: string, pair: IntercomEnrol
         registered?.hostKey?.base64 !== pair.hostKey.base64) throw new Error("peer-consent-required");
     const previous = current.intercom.routes.find(route => route.peer.machineId === remote.machineId);
     if (current.intercom.mode === "hub-only") {
-      if (!previous || previous.kind !== "relay" || previous.via !== current.hubMachineId) throw new Error("intercom-route-missing");
-      // The approved registry holds the staged direct edge. Only the durable hub switch changes routing mode.
-      return;
-    }
-    if (previous && (previous.kind !== "direct" || previous.edgeEpoch !== pair.edgeEpoch) && !record.fenceId) throw new Error("intercom-edge-must-be-revoked");
+      if (previous) {
+        if (previous.kind !== "relay" || previous.via !== current.hubMachineId) throw new Error("intercom-route-missing");
+        return;
+      }
+      if (!current.intercom.routes.some(route => route.kind === "direct" && route.peer.machineId === current.hubMachineId)) throw new Error("intercom-route-missing");
+    } else if (previous && (previous.kind !== "direct" || previous.edgeEpoch !== pair.edgeEpoch) && !record.fenceId) throw new Error("intercom-edge-must-be-revoked");
     const transportPeer = local === pair.source.machineId && record.resources ? { ...remote, alias: record.resources.route.name } : remote;
-    const route = { kind: "direct" as const, peer: transportPeer, edgeEpoch: pair.edgeEpoch };
+    // The registry stages the direct edge. Only the durable hub switch activates it.
+    const route = current.intercom.mode === "hub-only"
+      ? { kind: "relay" as const, peer: remote, via: current.hubMachineId }
+      : { kind: "direct" as const, peer: transportPeer, edgeEpoch: pair.edgeEpoch };
     if (previous && JSON.stringify(previous) === JSON.stringify(route)) return;
     const raw: unknown = JSON.parse(readFileSync(file, "utf8"));
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("invalid-intercom-config");

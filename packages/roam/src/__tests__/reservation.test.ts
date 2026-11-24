@@ -24,7 +24,7 @@ function fixture(state: IntentState = initial) {
       if (request.mode === "initial") expect(await request.beforeSpawn()).toBe("admitted");
       calls.push({ mode: request.mode, operationId: request.reservation.operationId }); return answer;
     } });
-  return { launch, calls, state: async () => (await intents.get("s1"))!.value,
+  return { launch, calls, intents, state: async () => (await intents.get("s1"))!.value,
     setAnswer(value: Outcome<typeof ready>) { answer = value; }, setAuthorized(value: boolean) { authorized = value; } };
 }
 const reserved: IntentState = { ...initial, supervision: { kind: "launching", operationId: "op-1", phase: "reserved" } };
@@ -62,6 +62,19 @@ it("keeps an uninvoked reservation if authority changes before launch", async ()
   const f = fixture(); f.setAuthorized(false);
   expect((await f.launch({ intent, mode: "fresh" })).reason).toBe("launch-pending");
   expect(f.calls).toEqual([]);
+  expect((await f.state()).supervision).toEqual(reserved.supervision);
+}, 5000);
+
+it("recovers a reserved operation's readiness without authorizing another spawn", async () => {
+  const f = fixture(reserved);
+  const launch = createDurableLaunchPort({ intents: f.intents, authorize: async () => false,
+    async invoke(request) {
+      expect(request.mode).toBe("reconcile");
+      expect(request.reservation.operationId).toBe("op-1");
+      expect(await request.beforeSpawn()).toBe("cancelled");
+      return outcome("ready", ready);
+    } });
+  expect(await launch({ intent, mode: "reconcile", reservation: { operationId: "op-1" } })).toEqual(outcome("ready", ready));
   expect((await f.state()).supervision).toEqual(reserved.supervision);
 }, 5000);
 

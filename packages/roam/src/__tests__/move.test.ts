@@ -548,6 +548,63 @@ it.each([
   } finally { db.close(); }
 }, 5000);
 
+it.each([false, true])("a quiet lock skip retries once on verified sync only while the move is pending (%s)", async unfinished => {
+  const f = fixture(); mkdirSync(join(f.root, "roam"));
+  const journal = openFreezeJournal(join(f.root, "roam", "journal.db")); f.ports.journal = journal;
+  const peer = { machineId: BOX, alias: "box-1.invalid", node: "/home/fixture/node", pi: "/home/fixture/pi", cli: "/home/fixture/spider", core: "/home/fixture/core", globalRoot: "/home/fixture/global" };
+  f.ports.config.peers = [peer];
+  const wire = noChangeSyncFixture(f.ports.config), native = await productionObservationFixture(f.root, f.ports.config, f.global.db, wire.transport);
+  const service = createMoveRuntimeService({ root: f.root, config: f.ports.config, globalDb: f.global.db, journal, transport: {} as Transport }, async () => ({
+    ports: f.ports, bindings: {}, control: async () => ({ code: 1, reason: "unused", value: null }), recover: async () => [], async close() {},
+  }));
+  let afterSync!: Parameters<HubRuntimePorts["prepare"]>[0], finished!: () => void, passes = 0;
+  const timers: Array<{ ms: number; cancelled: boolean; fn(): void }> = [];
+  const sync = createSync({ config: f.ports.config, globalDb: f.global.db, journal, stores: wire.stores, transport: wire.transport,
+    clock: { now: () => 1, later() { return () => {}; } }, onPeerSync: (current, results) => afterSync(current, results) });
+  const hub = await runHub({ config: f.ports.config, globalDb: f.global.db, journal, runtimeRoot: f.root, socketPath: join(f.root, "hub.sock"),
+    identity: { pid: 42, startIdentity: "fixture-start" }, async probe() { return { kind: "live", startIdentity: "fixture-start" }; },
+    clock: { now: () => 1, later(ms, fn) { const timer = { ms, cancelled: false, fn }; timers.push(timer); return () => { timer.cancelled = true; }; } },
+    sync, observe: native.observe, async prepare(callback) { afterSync = callback; }, drain: () => sync.drain(), async closeStores() {},
+    async homeChangeInProgress() { return false; }, placement: { async reconcile() { return { pending: [] }; } }, notices: { async publish() {}, async clear() {} },
+    async recoverPeerMoves(id) { passes++; try { await service.recover(id); } finally { finished(); } },
+    hasSkippedPeerMoves: id => service.hasSkippedPeerMoves(id),
+  });
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; }), held = new Promise<void>(resolve => { release = resolve; });
+  const transfer = f.ports.transfer;
+  f.ports.transfer = async (...args) => { entered(); await held; if (unfinished) throw new Error("synthetic transfer interrupted"); return transfer(...args); };
+  const locks = await import("@spider/herdr/sessions/registry"), lock = locks.withProcessLock;
+  const fireRecovery = async () => {
+    const pending = timers.filter(timer => !timer.cancelled && timer.ms === 0);
+    expect(pending).toHaveLength(1);
+    const done = new Promise<void>(resolve => { finished = resolve; });
+    pending[0].cancelled = true; pending[0].fn(); await done;
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+  };
+  const moving = moveSession(f.request, f.ports); await started;
+  const probe = vi.spyOn(locks, "withProcessLock").mockImplementation((root, id, effect, options) => lock(root, id, effect, { ...options, timeoutMs: 0 }));
+  try {
+    wire.setUnavailable(true); native.setState("unreachable"); await sync.sync(BOX);
+    wire.setUnavailable(false); native.setState("connected"); await sync.sync(BOX); await fireRecovery();
+    expect(passes).toBe(1);
+    expect(readLocal(f.global.db, "recovery-diagnostic", f.request.operation.id)).toBeUndefined();
+    expect(timers.filter(timer => !timer.cancelled && timer.ms === 0)).toEqual([]);
+    probe.mockRestore(); release();
+    expect(await moving).toMatchObject({ code: unfinished ? 3 : 0 }); f.ports.transfer = transfer;
+    wire.setRefused(true); await sync.sync(BOX);
+    expect(timers.filter(timer => !timer.cancelled && timer.ms === 0)).toEqual([]);
+    wire.setRefused(false); await sync.sync(BOX); await sync.sync(BOX);
+    expect(timers.filter(timer => !timer.cancelled && timer.ms === 0)).toHaveLength(unfinished ? 1 : 0);
+    if (unfinished) await fireRecovery();
+    expect(passes).toBe(unfinished ? 2 : 1);
+    expect(journal.lookupOperation(f.request.operation.id)?.state).toBe("done");
+    expect(f.events.filter(event => event === "start")).toHaveLength(1);
+    expect(readLocal(f.global.db, "recovery-diagnostic", f.request.operation.id)).toBeUndefined();
+    await sync.sync(BOX);
+    expect(timers.filter(timer => !timer.cancelled && timer.ms === 0)).toEqual([]);
+  } finally { probe.mockRestore(); release(); await moving; await hub.stop(); await native.stop(); }
+}, 5000);
+
 it("same-home request is a verified no-op", async () => {
   const f = fixture(); f.request.destinationMachine = HUB; f.request.operation.args.destinationMachine = HUB;
   const before = sessionHome(f.global.db, SESSION), result = await moveSession(f.request, f.ports);

@@ -423,6 +423,21 @@ it.each(['wrong-operation', 'changed-before', 'changed-first', 'changed-second',
   expect(await f.leases.get(f.file)).toMatchObject(launcher);
 }, 5000);
 
+it('started-then-ended evidence does not clear or retry an ordinary exact launch', async () => {
+  const f = await exactFixture();
+  f.ports.spawnPi = async request => { f.spawned.push(request); f.wake(); throw new Error('lost reply'); };
+  f.ports.reconcileLaunch = async operationId => ({ receipt: 'started', terminal: 'absent', proof: {
+    kind: 'started-launch-ended', operationId, attemptId: 'attempt-1', terminalId: 't7', coreId: 'destination-core', bootId: 'boot-1', launcher,
+    first: { coreId: 'destination-core', issuedAt: 100, terminal: 'absent' },
+    second: { coreId: 'destination-core', issuedAt: 350, terminal: 'absent' }, confirmationBoundMs: 250,
+  } });
+  await expect(launchExactSession(f.request, f.ports)).rejects.toMatchObject({ code: 'launch-pending' });
+  await expect(launchExactSession(f.request, f.ports)).rejects.toMatchObject({ code: 'launch-pending' });
+  expect(f.spawned).toHaveLength(1);
+  expect(await f.leases.get(f.file)).toMatchObject(launcher);
+  expect(await readLaunchHandoff(f.stateRoot, join(f.stateRoot, 'handoffs', `${launchOperation(f.spawned[0])}.json`), 'session-1', f.file)).not.toBeNull();
+}, 5000);
+
 it('a core-mismatch error with launch details is not a pre-call proof', async () => {
   const f = await exactFixture();
   f.ports.spawnPi = async request => { f.spawned.push(request); f.wake(); throw new Error('lost reply'); };

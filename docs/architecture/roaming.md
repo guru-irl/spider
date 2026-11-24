@@ -452,8 +452,9 @@ ID lock, launch handoff, and file lease only when both checks succeed:
 
 - The recorded launcher has exited, using its boot ID and PID probe. PID reuse
   must have a different process start identity.
-- The exact-launch reconciler proves that no terminal started or that the
-  operation's terminal exited without adopting the session ID lock.
+- The exact-launch reconciler proves that no terminal started, that the
+  operation's terminal exited without adopting the session ID lock, or that a
+  recorded start has since ended without adoption.
 
 The pending record belongs to the launcher, usually the supervisor, before
 adoption. Its exit alone does not prove that the Pi child exited. A live launcher,
@@ -462,9 +463,33 @@ blocking. Stop returns `launch-reconciliation-required` and points to doctor.
 On the destination, inspect the recorded launcher PID, boot ID, ID lock, file
 lease, and the terminal labelled `spider.roam.operation=<operation>`, using the
 pinned core. The pinned core must be running to inspect its terminal evidence.
-An absent terminal row alone is not exit proof. When disabled doctor has not
-probed the core, it reports an unchecked identity rather than an unavailable
-identity. A probe still distinguishes an unavailable core from a changed core.
+An absent terminal row alone is not exit proof. Stop can settle a recorded start
+whose terminal history disappeared after a restart of the same pinned core.
+This `started-launch-ended` proof requires all of these facts:
+
+- The launcher's boot ID is unchanged, and its PID is absent or has a different
+  process start identity.
+- The file lease is absent or still names that exited launcher. A child-owned
+  lease or a `ready-durable` journal record prevents settlement.
+- Every recorded `exact-core` and every current core observation matches the
+  handoff's `pendingCoreId`. The core is reachable throughout the listings.
+- Two complete finished-inclusive listing samples, at least 250 milliseconds
+  apart, show no live terminal with the operation, latest attempt, or session
+  label. Each sample combines three `hc ls --all --json --label` queries because
+  multiple labels in one query select their intersection, not their union.
+
+Finished history for other terminals does not block settlement. If the recorded
+terminal appears finished, its existing terminal-exit proof applies instead.
+Failed or incomplete listings, a changed core or boot, or uncertain process
+ownership preserve the pending handoff. The journal records
+`exact-started-launch-ended` with identities and sample times, without session
+contents or launch environment values. Its outcome is `launch-ended`, not
+`launch-not-started`. Ordinary launch reconciliation does not use this proof to
+retry a launch. Stop retains the stopped intent and applies the existing ended
+launch cleanup without starting another session.
+
+When disabled doctor has not probed the core, it reports an unchecked identity
+rather than an unavailable identity. A probe still distinguishes an unavailable core from a changed core.
 Do not delete ownership files or launch another copy to repair it.
 Reconciliation waits at most 60 seconds while holding the session ID lock.
 Timeout preserves pending ownership and returns a doctor repair command.

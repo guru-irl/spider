@@ -11,7 +11,7 @@ import { claimIdLock, inspectIdLock } from "@spider/herdr/sessions/id-lock";
 import { readLaunchHandoff, removeLaunchHandoff } from "@spider/herdr/sessions/launch-handoff";
 import { createSessionLeases, type ProcessInventoryPorts, type ProcessProbe } from "@spider/herdr/sessions/lease";
 import { createProcessPresence } from "@spider/herdr/sessions/presence";
-import type { PiSpawnRequest } from "@spider/herdr/sessions/launcher";
+import { provedNoStart, type PiSpawnRequest, type LaunchEvidence } from "@spider/herdr/sessions/launcher";
 import type { SessionId } from "@spider/herdr";
 import type { JsonObject } from "@spider/db-core/roam/types";
 import { HerdrError } from "@spider/herdr/client/parse";
@@ -105,6 +105,24 @@ it.each([
   expect(tracker.failed("op-1", new HerdrError(code, "fixture", details))).toBe(false);
   expect((await module.createLaunchReconciler(f.ports)("op-1", { signal: new AbortController().signal })).proof).toBeUndefined();
 }, 5000);
+
+it("keeps ordinary started receipts pending when terminal history is absent", async () => {
+  const f = fixture();
+  f.actions.unshift({ action: "exact-attempt", result: { attemptId: "attempt-1" } });
+  f.actions.push({ action: "exact-terminal", result: { terminalId: "terminal-1" } });
+  const evidence = await launcher.createLaunchReconciler(f.ports)("op-1", { signal: new AbortController().signal });
+  expect(evidence).toEqual({ receipt: "started", terminal: "absent" });
+  expect(provedNoStart(evidence, "op-1", "core-1", "boot-1")).toBe(false);
+});
+
+it("does not authorize a no-start retry from started-then-ended evidence", () => {
+  const evidence: LaunchEvidence = { receipt: "started", terminal: "absent", proof: {
+    kind: "started-launch-ended", operationId: "op-1", attemptId: "attempt-1", terminalId: "terminal-1", coreId: "core-1", bootId: "boot-1",
+    launcher: { pid: 91, startIdentity: "supervisor-start" },
+    first: { coreId: "core-1", issuedAt: 100, terminal: "absent" }, second: { coreId: "core-1", issuedAt: 350, terminal: "absent" }, confirmationBoundMs: 250,
+  } };
+  expect(provedNoStart(evidence, "op-1", "core-1", "boot-1")).toBe(false);
+});
 
 it("proves a labelled terminal exited without ever adopting the pending lock", async () => {
   const module = await launcherModule(); if (!module) return;

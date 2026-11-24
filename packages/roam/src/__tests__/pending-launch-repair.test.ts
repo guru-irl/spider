@@ -18,7 +18,7 @@ import { handleSessionOperation } from "../participant-runtime";
 import { createParticipantSupervisor } from "../participant-supervisor";
 import { createDurableLaunchPort } from "../supervisor";
 import { runLocalDoctor } from "../local-diagnostics";
-import type { LocalExactHc } from "../launcher";
+import { createLocalExactHc, type LocalExactHc } from "../launcher";
 import * as launcherModule from "../launcher";
 import * as localDiagnostics from "../local-diagnostics";
 import { participantLaunchId } from "../participant-launch";
@@ -75,6 +75,114 @@ async function fixture(launchId = "launch-1") {
   return { ...f, leases, hc, recovery, handoff, lock,
     terminal(value: typeof terminal) { terminal = value; }, process(value: ProcessProbe) { process = value; }, boot(value: string) { boot = value; }, spawns: () => spawns };
 }
+
+async function missingStartedTerminalFixture() {
+  const f = await fixture();
+  let sample = 0, currentCore = "core-1", incomplete = false, failed = false;
+  const rows: Array<{ address: string; state: "live" | "finished"; labels: Record<string, string>; reason: string | null; exit_code: number | null }> = [];
+  const queries: Array<{ argv: readonly string[]; at: number }> = [];
+  const local = createLocalExactHc({ coreId: async () => currentCore, async invoke(argv) {
+    queries.push({ argv, at: f.recovery.clock.now() });
+    if (failed) throw new Error("core-unavailable");
+    if (incomplete) return {};
+    expect(argv.slice(0, 3)).toEqual(["ls", "--all", "--json"]);
+    const labels = argv.flatMap((value, index) => value === "--label" ? [argv[index + 1]] : []);
+    if (labels.length === 1 && labels[0] === "spider.roam.operation=launch-1") sample++;
+    return { terminals: rows.filter(row => labels.every(label => {
+      const index = label.indexOf("="); return row.labels[label.slice(0, index)] === label.slice(index + 1);
+    })).map(({ labels: _labels, ...row }) => row) };
+  }, async invokeTracked() { throw new Error("stop must not invoke hc run"); } });
+  f.recovery.hc = local;
+  return { ...f, rows, queries, samples: () => sample, core(value: string) { currentCore = value; },
+    incomplete() { incomplete = true; }, failed() { failed = true; } };
+}
+
+it.each(["launcher-lease", "absent-lease", "reused-pid"] as const)("stop settles a started launch whose terminal history is gone: %s", async ownership => {
+  const f = await missingStartedTerminalFixture();
+  if (ownership === "absent-lease") { const lease = (await f.leases.get(f.file))!; await f.leases.release(f.file, lease.token, { mode: "cutover" }); }
+  if (ownership === "reused-pid") f.process({ kind: "live", startIdentity: "reused-process" });
+  await f.global.db.raw.backup(join(f.root, "spider.db"));
+  expect((await runLocalDoctor({ root: f.root, currentCore: async () => "core-1", launchRecovery: f.recovery })).diagnostics)
+    .toEqual(expect.arrayContaining([expect.objectContaining({ reason: expect.stringMatching(/exact launch.*pending/i) })]));
+  expect(await handleSessionOperation(f.operation, f.ports, { wake: async () => {}, launchRecovery: f.recovery })).toMatchObject({ code: 0, reason: "stopped-intent" });
+  expect(await inspectIdLock(f.stateRoot, "session-1")).toBeNull();
+  expect(await f.leases.get(f.file)).toBeNull();
+  await expect(access(launchHandoffPath(f.stateRoot, "launch-1"))).rejects.toMatchObject({ code: "ENOENT" });
+  const actions = f.ports.journal.read("launch-1");
+  expect(actions.filter(row => row.action === "exact-started-launch-ended")).toEqual([{ action: "exact-started-launch-ended", result: {
+    kind: "started-launch-ended", operationId: "launch-1", attemptId: "attempt-1", terminalId: "terminal-1", coreId: "core-1", bootId: "boot-1",
+    launcher: { pid: 201, startIdentity: "previous-supervisor" },
+    first: { coreId: "core-1", issuedAt: 100, terminal: "absent" }, second: { coreId: "core-1", issuedAt: 350, terminal: "absent" }, confirmationBoundMs: 250,
+  } }]);
+  expect(actions.find(row => row.action === "done")?.result).toMatchObject({ reason: "launch-ended", value: null });
+  expect(f.ports.journal.lookupOperation("launch-1")).toEqual({ machineId: BOX, state: "done" });
+  expect((await f.intents.get("session-1"))?.value).toMatchObject({ intent: { desired: "stopped" }, supervision: { kind: "idle", nextAttemptAt: null } });
+  expect(await f.authority.get("session-1")).toMatchObject({ desired: "stopped" });
+  expect((await runLocalDoctor({ root: f.root, currentCore: async () => "core-1", launchRecovery: f.recovery })).diagnostics.filter(row => /exact launch.*pending/i.test(row.reason))).toEqual([]);
+  expect(f.spawns()).toBe(0);
+  expect(await handleSessionOperation({ ...f.operation, id: "stop-2" }, f.ports, { wake: async () => {}, launchRecovery: f.recovery })).toMatchObject({ code: 0 });
+  expect(f.ports.journal.read("launch-1").filter(row => row.action === "exact-started-launch-ended")).toHaveLength(1);
+});
+
+it.each(["unrelated-live", "old-finished-history", "recorded-finished"] as const)("stop handles missing started terminal listings with %s", async state => {
+  const f = await missingStartedTerminalFixture();
+  f.rows.push({ address: state === "recorded-finished" ? "terminal-1" : "other-terminal", state: state === "unrelated-live" ? "live" : "finished", reason: "exited", exit_code: 0,
+    labels: state === "unrelated-live" ? { "spider.session": "other-session" } : { "spider.session": "session-1" } });
+  expect(await handleSessionOperation(f.operation, f.ports, { wake: async () => {}, launchRecovery: f.recovery })).toMatchObject({ code: 0, reason: "stopped-intent" });
+  const actions = f.ports.journal.read("launch-1");
+  expect(actions.some(row => row.action === "exact-started-launch-ended")).toBe(state !== "recorded-finished");
+  expect(actions.find(row => row.action === "done")?.result.reason).toBe(state === "recorded-finished" ? "launch-not-started" : "launch-ended");
+  expect(await inspectIdLock(f.stateRoot, "session-1")).toBeNull();
+  expect(f.spawns()).toBe(0);
+});
+
+it.each(["operation", "attempt", "session"] as const)("stop refuses a live terminal carrying only the %s label on the second absence sample", async label => {
+  const f = await missingStartedTerminalFixture(), wait = f.recovery.clock.wait;
+  f.recovery.clock.wait = async ms => {
+    f.rows.push({ address: "other-terminal", state: "live", reason: null, exit_code: null, labels: {
+      [label === "operation" ? "spider.roam.operation" : label === "attempt" ? "spider.roam.attempt" : "spider.session"]:
+        label === "operation" ? "launch-1" : label === "attempt" ? "attempt-1" : "session-1",
+    } });
+    await wait(ms);
+  };
+  const before = await inspectIdLock(f.stateRoot, "session-1"), lease = await f.leases.get(f.file);
+  expect(await handleSessionOperation(f.operation, f.ports, { wake: async () => {}, launchRecovery: f.recovery })).toMatchObject({ code: 3, reason: "launch-reconciliation-required" });
+  expect(f.queries.some(query => query.at >= 350)).toBe(true);
+  expect(await inspectIdLock(f.stateRoot, "session-1")).toEqual(before);
+  expect(await f.leases.get(f.file)).toEqual(lease);
+  expect(f.ports.journal.read("launch-1").some(row => row.action === "exact-started-launch-ended")).toBe(false);
+  expect(f.spawns()).toBe(0);
+});
+
+it.each(["child-lease", "ready-durable", "changed-core", "recorded-core-changed", "incomplete", "failed-listing", "live-launcher", "unknown-launcher", "lease-adopted-during-samples", "ready-during-samples", "boot-during-samples", "incomplete-second", "failed-second", "core-changed-second", "early-second"] as const)("stop preserves a missing started terminal with %s", async state => {
+  const f = await missingStartedTerminalFixture();
+  const adopt = async () => { const lease = (await f.leases.get(f.file))!; await f.leases.transfer(f.file, lease.token, { pid: 202, startIdentity: "child-start" }); };
+  if (state === "child-lease") await adopt();
+  if (state === "ready-durable") f.ports.journal.record("launch-1", "ready-durable", { sessionId: "session-1" });
+  if (state === "changed-core") f.core("core-2");
+  if (state === "recorded-core-changed") f.ports.journal.record("launch-1", "exact-core", { coreId: "core-2" });
+  if (state === "incomplete") f.incomplete();
+  if (state === "failed-listing") f.failed();
+  if (state === "live-launcher") f.process({ kind: "live", startIdentity: "previous-supervisor" });
+  if (state === "unknown-launcher") f.process({ kind: "unknown" });
+  const wait = f.recovery.clock.wait;
+  f.recovery.clock.wait = async ms => {
+    if (state === "lease-adopted-during-samples") await adopt();
+    if (state === "ready-during-samples") f.ports.journal.record("launch-1", "ready-durable", { sessionId: "session-1" });
+    if (state === "boot-during-samples") f.boot("boot-2");
+    if (state === "incomplete-second") f.incomplete();
+    if (state === "failed-second") f.failed();
+    if (state === "core-changed-second") f.core("core-2");
+    if (state !== "early-second") await wait(ms);
+  };
+  const before = await inspectIdLock(f.stateRoot, "session-1");
+  expect(await handleSessionOperation(f.operation, f.ports, { wake: async () => {}, launchRecovery: f.recovery })).toMatchObject({ code: 3, reason: "launch-reconciliation-required" });
+  expect(await inspectIdLock(f.stateRoot, "session-1")).toEqual(before);
+  expect(await f.leases.get(f.file)).not.toBeNull();
+  expect(f.ports.journal.lookupOperation("launch-1")).toEqual({ machineId: BOX, state: "pending" });
+  expect(f.ports.journal.read("launch-1").some(row => row.action === "exact-started-launch-ended")).toBe(false);
+  expect(f.spawns()).toBe(0);
+});
 
 it.each([false, true])("stop clears a reservation before authorization completes: %s", async authorized => {
   const f = await participantFixture();

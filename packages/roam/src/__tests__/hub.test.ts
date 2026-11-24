@@ -108,6 +108,26 @@ it("refuses a staging root that belongs to a different global database", async (
   expect(existsSync(h.socketPath)).toBe(false);
 }, 5000);
 
+it.each(["pending", "completed", "unrelated"])("the first verified startup sync recovers only %s moves for that peer", async state => {
+  const h = fixture(), moveId = "startup-move";
+  const destination = state === "unrelated" ? "00000000-0000-4000-8000-000000000099" : BOX;
+  const operation = { id: moveId, kind: "move", machineId: HUB, expectedEpoch: 1, args: { sessionId: "session-1", destinationMachine: destination } };
+  h.f.journal.begin(operation);
+  h.f.journal.record(moveId, "move-request", { operation, sessionId: "session-1", destinationMachine: destination });
+  if (state === "completed") h.f.journal.record(moveId, "done", {});
+  const peers: string[] = [];
+  const hub = await runStandaloneHub({ ...h.ports,
+    async moveFactory() { throw new Error("synthetic peer offline during startup"); },
+    async recoverPeerMoves(peer) { peers.push(peer); },
+  }); handles.push(hub);
+  await h.request("sync");
+  for (const timer of h.timers.filter(timer => !timer.cancelled && timer.delay === 0)) { timer.cancelled = true; timer.fn(); }
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  expect(peers).toEqual(state === "pending" ? [BOX] : []);
+  await h.request("sync");
+  expect(peers).toEqual(state === "pending" ? [BOX] : []);
+}, 5000);
+
 it("unknown observations do not cancel a pending outage alert", async () => {
   const h = fixture(); h.home(); let afterSync!: Parameters<HubRuntimePorts["prepare"]>[0];
   const hub = await runHub({ ...h.ports,
@@ -168,7 +188,7 @@ it("standalone cleanup is bounded and shutdown drains it before closing stores",
   let enter!: () => void, release!: () => void;
   const entered = new Promise<void>(resolve => { enter = resolve; }), held = new Promise<void>(resolve => { release = resolve; });
   const order: string[] = [];
-  vi.spyOn(moveRuntimeApi, "createMoveRuntimeService").mockReturnValue({ async control() { return { code: 1, reason: "fixture-unused", value: null }; }, async recover() {}, async recoverCleanup() { order.push("cleanup-start"); enter(); await held; order.push("cleanup-end"); } });
+  vi.spyOn(moveRuntimeApi, "createMoveRuntimeService").mockReturnValue({ async control() { return { code: 1, reason: "fixture-unused", value: null }; }, async recover() {}, pendingPeers() { return []; }, async recoverCleanup() { order.push("cleanup-start"); enter(); await held; order.push("cleanup-end"); } });
   const makeStores = storeApi.createStorePort;
   vi.spyOn(storeApi, "createStorePort").mockImplementation((...args) => {
     const stores = makeStores(...args), close = stores.close.bind(stores);
@@ -188,7 +208,7 @@ it("standalone cleanup is bounded and shutdown drains it before closing stores",
 
 it("standalone stop cancels deferred cleanup before it mounts a runtime", async () => {
   const h = fixture(), cleanup = vi.fn(async () => {});
-  vi.spyOn(moveRuntimeApi, "createMoveRuntimeService").mockReturnValue({ async control() { return { code: 1, reason: "fixture-unused", value: null }; }, async recover() {}, recoverCleanup: cleanup });
+  vi.spyOn(moveRuntimeApi, "createMoveRuntimeService").mockReturnValue({ async control() { return { code: 1, reason: "fixture-unused", value: null }; }, async recover() {}, pendingPeers() { return []; }, recoverCleanup: cleanup });
   const hub = await runStandaloneHub({ ...h.ports, async moveFactory() { throw new Error("fixture-unused"); } }); handles.push(hub);
   await h.request("sync");
   expect(h.timers.filter(timer => !timer.cancelled && timer.delay === 0)).toHaveLength(1);
@@ -207,6 +227,7 @@ it("a reconnect recovery can request real sync while cleanup shares its writer",
       flight = input.sync!.sync(machineId).then(() => { complete(); });
       await flight;
     },
+    pendingPeers() { return []; },
     async recoverCleanup() { await flight; },
   }));
   const hub = await runStandaloneHub({ ...h.ports, async moveFactory() { throw new Error("fixture-unused"); } }); handles.push(hub);

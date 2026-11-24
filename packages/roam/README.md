@@ -39,6 +39,8 @@ An identity mismatch cannot prove the enrolled peer answered.
 ## Move recovery
 
 The hub tracks unreachable peers even when they have no hosted homes yet.
+After startup recovery, peers with pending moves also wait for their first
+verified sync. This covers a peer reconnecting before the first observation.
 A later verified successful sync schedules a peer-scoped full recovery pass
 outside the sync callback, so recovery can request sync barriers without
 waiting on itself. Full recovery and cleanup share a single writer. The pass

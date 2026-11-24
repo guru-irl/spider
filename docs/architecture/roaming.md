@@ -611,8 +611,10 @@ unfreeze the source or prove that the destination never started. Use
 cannot return ownership after destination readiness. Rollback requires proved
 launch failure and retirement, then a higher home epoch.
 
-When an unreachable peer becomes connected and completes a verified sync round,
-the running hub schedules one full recovery pass for pending moves involving
+After startup reconciliation, peers still involved in pending moves wait for
+their first verified sync. This catches a peer reconnecting before the first
+sync observation. When an unreachable peer becomes connected and completes a
+verified sync round, the running hub schedules one full recovery pass for pending moves involving
 that peer. Ungathered and refused stores do not prevent connectivity proof,
 even when the round returned no apply results. The pass runs after sync, not
 inside its callback. A peer pass skips `move-lock-pending` without recording

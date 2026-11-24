@@ -26,7 +26,7 @@ vi.mock("node:fs", async importOriginal => {
 });
 
 const A = "00000000-0000-4000-8000-000000000001", B = "00000000-0000-4000-8000-000000000002";
-const FENCE = "00000000-0000-4000-8000-000000000003";
+const FENCE = "00000000-0000-4000-8000-000000000003", C = "00000000-0000-4000-8000-000000000004";
 const roots: string[] = [], queues: IntercomStore[] = [];
 afterEach(() => {
   publication.index = null;
@@ -112,6 +112,32 @@ it("observes the authoritative pair fence during queue WAL publication", async (
     { stdin: Buffer.from(JSON.stringify({ version: 1, action: "inspect-fence", machineId: A, peer: B, pairId: "pair-1" })),
       fencePort: async (_root, input) => f.ports.inspectFence!(input) });
   expect(JSON.parse(out)).toMatchObject({ ok: true, value: { machineId: A, peer: B, fence: null, revocationPending: false } });
+});
+
+it.each([
+  { state: "clear", pending: false },
+  { state: "fenced", pending: true },
+  { state: "cleanup-pending", pending: true },
+] as const)("observes the requested new peer after pair retirement when it is $state", async ({ state, pending }) => {
+  const f = fixture(), registry = createIntercomRegistry(f.sourceRoot);
+  await registry.register(f.plan, f.approval.operationId, f.approval.graphDigest);
+  await registry.bind(f.pair, f.approval.operationId);
+  const retired = f.queue.fencePair(B, "edge-1", FENCE).fence;
+  await registry.beginRevocation("pair-1", FENCE);
+  await registry.finishRevocation("pair-1", state === "cleanup-pending" ? "intercom-revocation-cleanup-pending" : null);
+  // Even a matching epoch and fence ID belong to another peer, not this receipt.
+  const nextFence = state === "fenced" ? f.queue.fencePair(C, "edge-1", FENCE).fence : null;
+  const before = readFileSync(join(f.sourceRoot, "roam", "intercom", "enrollments", "pair-1.json"));
+  holdDiagnosticPublication(f);
+  let out = "";
+  await main(["--global-root", f.sourceRoot, "roam", "intercom", "observe-fence"], { out(text) { out += text; }, err() {} },
+    { stdin: Buffer.from(JSON.stringify({ version: 1, action: "inspect-fence", machineId: A, peer: C, pairId: "pair-1" })),
+      fencePort: async (_root, input) => f.ports.inspectFence!(input) });
+  expect(JSON.parse(out)).toMatchObject({ ok: true, value: { machineId: A, peer: C,
+    fence: nextFence ? { edgeEpoch: "edge-1", fenceId: FENCE } : null, revocationPending: pending } });
+  expect(f.queue.pairFence(B)).toEqual(retired);
+  expect(f.queue.pairFence(C)).toEqual(nextFence);
+  expect(readFileSync(join(f.sourceRoot, "roam", "intercom", "enrollments", "pair-1.json"))).toEqual(before);
 });
 
 it("still blocks registration for a real queue fence during WAL publication", async () => {

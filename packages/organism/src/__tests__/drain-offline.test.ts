@@ -231,10 +231,10 @@ it("leaves a saved input for a new owner when the finishing lease has expired", 
 
 it("does not apply a retry if the wall clock passes its lease before completion", async () => {
   databases.db.prepare("INSERT INTO runs(id,session_id,agent,status) VALUES ('run','session','worker','done')").run();
-  let online = false;
+  let online = false, retried = false;
   const complete = vi.fn(async () => {
     if (!online) throw offline();
-    vi.setSystemTime(Date.now() + 35_001);
+    if (!retried) { retried = true; vi.setSystemTime(Date.now() + 35_001); }
     return '{"memory":[],"skills":[],"todos":[{"text":"Do not apply a stale result."}]}';
   });
   const worker = fixture(complete, { org: { ...ORGANISM_DEFAULTS, selfNaming: false, passes: { runMemoryTodo: true, todoMemory: false, learning: false, consolidation: false, reflection: false, insights: false } } });
@@ -243,6 +243,9 @@ it("does not apply a retry if the wall clock passes its lease before completion"
   await vi.advanceTimersByTimeAsync(300_000);
   expect(databases.db.prepare("SELECT text FROM todos WHERE session_id='session'").all()).toEqual([]);
   expect(databases.db.prepare("SELECT session_id FROM organism_deferred_drain").all()).toEqual([{ session_id: "session" }]);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(databases.db.prepare("SELECT text FROM todos WHERE session_id='session'").all()).toEqual([{ text: "Do not apply a stale result." }]);
+  expect(databases.db.prepare("SELECT session_id FROM organism_deferred_drain").all()).toEqual([]);
 });
 
 it("fences an expired retry owner after another worker finishes the saved input", async () => {

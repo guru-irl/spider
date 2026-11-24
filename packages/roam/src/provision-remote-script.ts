@@ -460,6 +460,26 @@ async function run(): Promise<unknown> {
     unlock = () => endShortWrite(lockInput, claim.token);
   }
   try {
+  if (action === "agent-private-modes") {
+    if (dirname(agentDir) !== home) ensurePrivate(home, dirname(agentDir), false, true);
+    if (!exists(agentDir)) mkdirSync(agentDir, { mode: 0o700 });
+    const receipt = "agent-private-modes.json", bytes = readPrivateBytes(stage, receipt, 2 * 1024 * 1024);
+    let repairs: AgentPrivateModeRepair[] = [];
+    if (bytes) try {
+      const prior = JSON.parse(bytes.toString("utf8"));
+      if (!isAgentModeRepairs(prior, home, agentDir)) bad("unsafe-staging");
+      repairs = [...prior];
+    } finally { bytes.fill(0); }
+    // Validate the whole tree first, so known foreign entries cannot cause partial repair.
+    inspectAgentPrivateModes(agentDir);
+    inspectAgentPrivateModes(agentDir, true, entry => {
+      if (!repairs.some(prior => prior.path === entry.path)) repairs.push(entry);
+      const saved = Buffer.from(JSON.stringify(repairs));
+      try { if (saved.length > 2 * 1024 * 1024) bad("too-large"); atomicWrite(join(stage, receipt), saved, 0o600, false); }
+      finally { saved.fill(0); }
+    });
+    return repairs;
+  }
   if (action === "enrollment") {
     const pid = releaseCore(text("core"), text("coreId"));
     if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) bad("core-unavailable");
@@ -886,7 +906,9 @@ catch (error) {
     typeof error.operationId === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(error.operationId) ? error.operationId : undefined;
   const path = code === "destination-permissions-unsafe" && error instanceof SelectedFilesError && error.files.length === 1 &&
     isAbsolute(error.files[0]) && error.files[0].length <= 4096 && !/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(error.files[0]) ? error.files[0] : undefined;
-  process.stdout.write(JSON.stringify({ kind: "provision", version: 1, error: code, ...(operationId ? { operationId } : {}), ...(path ? { path, ...("recursive" in error && error.recursive === true ? { recursive: true } : {}) } : {}) }));
+  const details = code === "unsafe-destination" && error && typeof error === "object" && "details" in error &&
+    typeof request.home === "string" && typeof request.agentDir === "string" && isAgentModeFailure(error.details, request.home, request.agentDir) ? error.details : undefined;
+  process.stdout.write(JSON.stringify({ kind: "provision", version: 1, error: code, ...(operationId ? { operationId } : {}), ...(path ? { path, ...("recursive" in error && error.recursive === true ? { recursive: true } : {}) } : {}), ...(details ? { details } : {}) }));
 }
 `;
 

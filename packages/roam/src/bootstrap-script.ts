@@ -7,6 +7,7 @@ export const BOOTSTRAP_HOME_SCRIPT = `process.stdout.write(JSON.stringify(requir
 export const BOOTSTRAP_SETTINGS_SCRIPT: string = selectedRemoteSource + String.raw`
 import { readFileSync as bootstrapSettingsRead } from "node:fs";
 import { homedir as bootstrapSettingsHome } from "node:os";
+let bootstrapSettingsRoot: string | undefined;
 try {
   const raw = bootstrapSettingsRead(0);
   if (raw.length > 2 * 1024 * 1024) throw new Error("request");
@@ -15,7 +16,8 @@ try {
       !["agentDir,home,maximum,paths", "agentDir,home,maximum,paths,selectedPaths"].includes(Object.keys(input).sort().join(",")) ||
       typeof input.home !== "string" || input.home !== bootstrapSettingsHome() ||
       typeof input.agentDir !== "string") throw new Error("request");
-  const value = inspectDestinationSettingsDigests({ home: input.home, destinationRoot: input.agentDir, paths: input.paths, maximum: input.maximum, selectedPaths: input.selectedPaths });
+  bootstrapSettingsRoot = input.agentDir;
+  const value = inspectDestinationSettingsDigests({ home: input.home, destinationRoot: input.agentDir, paths: input.paths, maximum: input.maximum, selectedPaths: input.selectedPaths, repairablePrivateModes: true });
   process.stdout.write(JSON.stringify({ version: 1, kind: "settings-preview", value }));
 } catch (error) {
   const allowed = new Set(["invalid-destination-settings", "unsafe-destination", "invalid-settings-preview", "destination-permissions-unsafe"]);
@@ -23,7 +25,10 @@ try {
   const path = code === "destination-permissions-unsafe" && error instanceof SelectedFilesError && error.files.length === 1 &&
     isAbsolute(error.files[0]) && error.files[0].length <= 4096 && !/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(error.files[0]) ? error.files[0] : undefined;
   if (code === "destination-permissions-unsafe" && !path) code = "unsafe-destination";
-  process.stdout.write(JSON.stringify({ version: 1, kind: "settings-preview", error: code, ...(path ? { path } : {}) }));
+  const details = code === "unsafe-destination" && error && typeof error === "object" && "details" in error &&
+    error.details && typeof error.details === "object" && "path" in error.details &&
+    typeof bootstrapSettingsRoot === "string" && isAgentModeFailure(error.details, bootstrapSettingsHome(), bootstrapSettingsRoot) ? error.details : undefined;
+  process.stdout.write(JSON.stringify({ version: 1, kind: "settings-preview", error: code, ...(path ? { path } : {}), ...(details ? { details } : {}) }));
 }
 `;
 
@@ -349,8 +354,12 @@ try {
       for (const part of path.relative(home, expected).split(path.sep)) {
         cursor = path.join(cursor, part);
         const stat = fs.lstatSync(cursor);
+        if (cursor === expected && (stat.isSymbolicLink() || stat.uid !== process.getuid() || !stat.isDirectory())) {
+          return { safe: false, failure: { path: cursor, mode: stat.mode & 0o7777, uid: stat.uid,
+            problem: stat.isSymbolicLink() ? 'symlink' : stat.uid !== process.getuid() ? 'owner' : 'type' } };
+        }
         if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid()) return { safe: false };
-        if ((stat.mode & 0o022) !== 0) return { safe: false, path: cursor };
+        if (cursor !== expected && (stat.mode & 0o022) !== 0) return { safe: false, path: cursor };
       }
       return { safe: fs.realpathSync(expected) === expected };
     } catch { return { safe: false }; }
@@ -358,7 +367,8 @@ try {
   if (input.home !== home || !isDefault(process.env.PI_CODING_AGENT_DIR, process.cwd())) reply('custom');
   else {
     const status = configuredDirectoryStatus();
-    if (status.path) process.stdout.write(JSON.stringify({ version: 1, kind: 'agent-directory', error: 'destination-permissions-unsafe', path: status.path }) + '\n');
+    if (status.failure) process.stdout.write(JSON.stringify({ version: 1, kind: 'agent-directory', error: 'unsafe-destination', details: status.failure }) + '\n');
+    else if (status.path) process.stdout.write(JSON.stringify({ version: 1, kind: 'agent-directory', error: 'destination-permissions-unsafe', path: status.path }) + '\n');
     else if (!status.safe) reply('custom');
     else {
       const manager = spawnSync('systemctl', ['--user', 'show-environment'],

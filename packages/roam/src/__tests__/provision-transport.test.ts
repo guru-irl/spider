@@ -65,6 +65,45 @@ function fixture(peer: Peer = bootstrapPeer) {
   return { actions, calls, controlCalls, events, state, journal, options, consent };
 }
 
+it("accepts only destination-bound private-mode preview plans", async () => {
+  const f = fixture(), port = create!(f.options, f.journal), home = "/home/fixture", root = `${home}/.pi/agent`;
+  const agentModes = { authPresent: true, repairs: [{ path: `${root}/settings.json`, uid: 1000, before: 0o664, after: 0o600 }] };
+  f.state.settingsReply = { version: 1, kind: "settings-preview", value: { fingerprint: "a".repeat(64), digests: [], agentModes } };
+  await expect(port.previewSettings(bootstrapPeer, home, [], 1024, coreFence)).resolves.toEqual({ fingerprint: "a".repeat(64), changedKeys: [], agentModes });
+  for (const repairs of [
+    [{ ...agentModes.repairs[0], path: "/etc/fixture" }], [{ ...agentModes.repairs[0], before: 0o464 }], [{ ...agentModes.repairs[0], uid: -1 }],
+    [{ ...agentModes.repairs[0], path: `${root}/spoof\u202e` }], [{ ...agentModes.repairs[0], after: 0o644 }],
+  ]) {
+    f.state.settingsReply = { version: 1, kind: "settings-preview", value: { fingerprint: "a".repeat(64), digests: [], agentModes: { authPresent: true, repairs } } };
+    await expect(port.previewSettings(bootstrapPeer, home, [], 1024, coreFence)).rejects.toMatchObject({ code: "invalid-bootstrap-reply" });
+  }
+});
+
+it("consent-fences private-mode repair and validates its per-path JSON result", async () => {
+  const f = fixture(), port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
+  const request = { action: "agent-private-modes", operationId: "op-1", machineId: bootstrapPeer.machineId, globalRoot: bootstrapPeer.globalRoot,
+    node: bootstrapPeer.node, pi: bootstrapPeer.pi, cli: bootstrapPeer.cli, home: "/home/fixture", agentDir: "/home/fixture/.pi/agent" };
+  await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "consent-required" });
+  f.consent(); const repairs = [{ path: `${request.agentDir}/settings.json`, uid: 1000, before: 0o664, after: 0o600 }];
+  f.state.provisionReply = { version: 1, kind: "provision", value: repairs };
+  await expect(port.executeProvision(handle, request)).resolves.toEqual(repairs);
+  f.state.provisionReply = { version: 1, kind: "provision", value: [{ ...repairs[0], path: "/etc/fixture" }] };
+  await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "invalid-provision-reply" });
+});
+
+it("preserves validated agent-mode refusals from previews and installer replies", async () => {
+  const f = fixture(), port = create!(f.options, f.journal), details = { path: "/home/fixture/.pi/agent/settings.json", mode: 0o664, uid: 1001, problem: "owner" };
+  f.state.settingsReply = { version: 1, kind: "settings-preview", error: "unsafe-destination", details };
+  await expect(port.previewSettings(bootstrapPeer, "/home/fixture", [], 1024, coreFence)).rejects.toMatchObject({ code: "unsafe-destination", details });
+  f.consent(); const handle = await port.transport.resolve(bootstrapPeer);
+  const request = { action: "agent-private-modes", operationId: "op-1", machineId: bootstrapPeer.machineId, globalRoot: bootstrapPeer.globalRoot,
+    node: bootstrapPeer.node, pi: bootstrapPeer.pi, cli: bootstrapPeer.cli, home: "/home/fixture", agentDir: "/home/fixture/.pi/agent" };
+  f.state.provisionReply = { version: 1, kind: "provision", error: "unsafe-destination", details };
+  await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "unsafe-destination", details });
+  f.state.provisionReply = { version: 1, kind: "provision", error: "unsafe-destination", details: { ...details, path: "/etc/fixture" } };
+  await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "invalid-provision-reply" });
+});
+
 it("checks the target agent directory read-only before enrollment and rejects untrusted replies", async () => {
   const f = fixture(), port = create!(f.options, f.journal);
   expect(port.probeAgentDirectory).toBeTypeOf("function");
@@ -83,6 +122,15 @@ it("checks the target agent directory read-only before enrollment and rejects un
   f.state.agentDirectoryReply = { version: 1, kind: "agent-directory", value: "default" }; f.state.replaceDuringCall = true;
   await expect(port.probeAgentDirectory(bootstrapPeer, "/home/fixture")).rejects.toMatchObject({ code: "core-changed" });
 }, 5000);
+
+it("preserves safe configured-root owner refusals", async () => {
+  const peer = { ...bootstrapPeer, agentDir: "/home/fixture/custom-agent" }, f = fixture(peer), port = create!(f.options, f.journal);
+  const details = { path: peer.agentDir, mode: 0o775, uid: 1001, problem: "owner" };
+  f.state.agentDirectoryReply = { version: 1, kind: "agent-directory", error: "unsafe-destination", details };
+  await expect(port.probeAgentDirectory(peer, "/home/fixture")).rejects.toMatchObject({ code: "unsafe-destination", details });
+  f.state.agentDirectoryReply = { version: 1, kind: "agent-directory", error: "unsafe-destination", details: { ...details, path: "/etc/fixture" } };
+  await expect(port.probeAgentDirectory(peer, "/home/fixture")).rejects.toMatchObject({ code: "invalid-bootstrap-reply" });
+});
 
 it("validates configured agent-directory permission errors", async () => {
   const peer = { ...bootstrapPeer, agentDir: "/home/fixture/custom-agent" }, f = fixture(peer), port = create!(f.options, f.journal);
@@ -121,7 +169,7 @@ it("runs the actual settings probe through transport without sending source-valu
   } finally { rmSync(root, { recursive: true, force: true }); }
 }, 5000);
 
-it("reports an unsafe agent directory from the real settings preview without changing it", async () => {
+it("plans an agent directory repair read-only but refuses a writable shared parent", async () => {
   const root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "settings-mode-")), home = join(root, "home"), agent = join(home, ".pi", "agent");
   mkdirSync(agent, { recursive: true, mode: 0o700 }); chmodSync(agent, 0o775);
   try {
@@ -133,11 +181,14 @@ it("reports an unsafe agent directory from the real settings preview without cha
       expect(child.status).toBe(0); expect(child.stderr).toBe(""); return Buffer.from(child.stdout);
     });
     await expect(port.previewSettings(bootstrapPeer, home, [], 1024 * 1024, coreFence))
-      .rejects.toMatchObject({ code: "destination-permissions-unsafe", details: { path: agent } });
+      .resolves.toMatchObject({ agentModes: { authPresent: false, repairs: [{ path: agent, uid: process.getuid!(), before: 0o775, after: 0o700 }] } });
     expect(lstatSync(agent).mode & 0o777).toBe(0o775);
     chmodSync(agent, 0o755);
     await expect(port.previewSettings(bootstrapPeer, home, [], 1024 * 1024, coreFence))
-      .resolves.toMatchObject({ changedKeys: [] });
+      .resolves.toMatchObject({ changedKeys: [], agentModes: { repairs: [{ path: agent, uid: process.getuid!(), before: 0o755, after: 0o700 }] } });
+    chmodSync(join(home, ".pi"), 0o775);
+    await expect(port.previewSettings(bootstrapPeer, home, [], 1024 * 1024, coreFence))
+      .rejects.toMatchObject({ code: "destination-permissions-unsafe", details: { path: join(home, ".pi") } });
   } finally { rmSync(root, { recursive: true, force: true }); }
 }, 5000);
 
@@ -153,8 +204,8 @@ it.each(["extensions", "themes", "skills/sample"])("discovers writable %s in the
       expect(child.status).toBe(0); expect(child.stderr).toBe(""); return Buffer.from(child.stdout);
     });
     const selected = relative === "extensions" ? [] : [`${relative}/sample.json`];
-    await expect(port.previewSettings(bootstrapPeer, home, [], 1024, coreFence, selected)).rejects.toMatchObject({
-      code: "destination-permissions-unsafe", details: { path: unsafe } });
+    await expect(port.previewSettings(bootstrapPeer, home, [], 1024, coreFence, selected)).resolves.toMatchObject({
+      agentModes: { repairs: [{ path: unsafe, uid: process.getuid!(), before: 0o775, after: 0o700 }] } });
     expect(lstatSync(unsafe).mode & 0o777).toBe(0o775);
     expect(f.actions).toEqual([]);
     expect(() => lstatSync(join(agent, "settings.json"))).toThrow();

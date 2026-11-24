@@ -46,6 +46,25 @@ again to reinstall its service with the correct entry. The packaged
 release, including with preserved main symlinks. `scripts/check-roam-bundle.mjs`
 rejects remote runtime and pane endpoint main bodies in the built roam entries.
 
+## Provisioning private agent modes
+
+The settings preview checks the requested destination agent tree without
+changing files. After consent, provisioning tightens same-uid regular files
+and directories to private modes. Sign-in-created `0664` files become `0600`,
+and `0775` directories become `0700`. Owner-executable files retain `0700`.
+`--no-settings` omits the settings copy but still checks and repairs existing
+files. Permission repair does not change their contents.
+
+The JSON result lists each repair in `value.privateModeRepairs`, with its path,
+uid, and numeric `before` and `after` modes. The destination stores a private
+receipt so retries return the same repair evidence. Installer-tree changes
+remain in the separate `value.permissionTightenings` count.
+
+The walk never follows symlinks or repairs foreign-owned entries. Hard links,
+special files, and incompatible owner permissions also refuse. Refusals name
+the path, mode, uid, and repair advice. Shared parents outside the agent tree
+retain their existing explicit repair requirement.
+
 ## Stop and pending launches
 
 `supervisor.ts` reserves a launch before authorization. It changes the

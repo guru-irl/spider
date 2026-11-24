@@ -10,7 +10,7 @@ import { doctorPeer } from "./resource-doctor";
 import { describeSelectedFiles, prepareSelectedFiles, readPrivateBytes, selectedSettingsDigests, SelectedFilesError } from "./selected-files";
 import type { PreparedFiles, SelectedFileMetadata } from "./selected-files";
 import { renderSupervisorUnit } from "./systemd";
-import { destinationPermissionPath, isPermissionTighteningCount, permissionRepairCommand, permissionTreeRoot } from "./provision-permissions";
+import { destinationPermissionPath, isPermissionTighteningCount, permissionRepairCommand, permissionTreeRoot, isAgentModeFailure, isAgentModeRepairs, agentModeRefusal } from "./provision-permissions";
 
 const unitName = "spider-roam-supervisor.service";
 function selectedFileDigests(selected: PreparedFiles) {
@@ -113,7 +113,8 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
     try { agentDirectory = await ports.bootstrap.probeAgentDirectory(peer, ports.destination.home); }
     catch (error) {
       const reason = safeReason(error);
-      if (reason === "destination-permissions-unsafe") throw error;
+      if (reason === "destination-permissions-unsafe" || reason === "unsafe-destination" && error && typeof error === "object" &&
+          "details" in error && isAgentModeFailure(error.details, ports.destination.home, ports.destination.agentDir)) throw error;
       return result(operationId, 3, reason === "provision-failed" ? "agent-directory-unverified" : reason, null);
     }
     if (agentDirectory.status === "custom") return result(operationId, 1, peer.agentDir ? "agent-directory-mismatch" : "custom-agent-directory-unsupported", null);
@@ -146,7 +147,8 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
     const observed = await inventory(peer, ports.transport, { timeoutMs: ports.limits.controlMs, maxBytes: ports.limits.replyBytes,
       expectedCore: agentDirectory.core, ...(ports.configuredClis ? { configuredClis: ports.configuredClis } : {}),
       ...(ports.coreUnit ? { coreUnit: ports.coreUnit } : {}) });
-    if (input.requireDestinationAuth && (!observed.auth.pi.present || !observed.auth.pi.readable || !observed.auth.pi.modeSafe)) {
+    if (input.requireDestinationAuth && (checkedSettings.agentModes ? !checkedSettings.agentModes.authPresent :
+        !observed.auth.pi.present || !observed.auth.pi.readable || !observed.auth.pi.modeSafe)) {
       throw Object.assign(new Error("Destination sign-in required"), { code: observed.auth.pi.present ? "destination-auth-unsafe" : "destination-auth-missing" });
     }
     if (observed.roaming.identityExists && observed.roaming.machineId !== peer.machineId) {
@@ -164,13 +166,15 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
       const saved = prior.result;
       if (!saved || saved.code !== 0 || !saved.value || typeof saved.value !== "object" || Array.isArray(saved.value) ||
           typeof saved.value.hostingReady !== "boolean" ||
-          saved.value.permissionTightenings != null && !isPermissionTighteningCount(saved.value.permissionTightenings)) {
+          saved.value.permissionTightenings != null && !isPermissionTighteningCount(saved.value.permissionTightenings) ||
+          saved.value.privateModeRepairs !== undefined && !isAgentModeRepairs(saved.value.privateModeRepairs, ports.destination.home, ports.destination.agentDir)) {
         return result(operationId, 3, "invalid-journal-result", null);
       }
       mutated = true;
       await ports.setParticipation(peer, null);
       return result(operationId, 0, typeof saved.reason === "string" ? saved.reason : "installed", {
         hostingReady: saved.value.hostingReady, permissionTightenings: saved.value.permissionTightenings ?? null,
+        ...(saved.value.privateModeRepairs !== undefined ? { privateModeRepairs: saved.value.privateModeRepairs } : {}),
       });
     }
     const consent = ports.journal.read(operationId).find(({ action, result: receipt }) => action === "provision-consent" &&
@@ -209,6 +213,7 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
     if (identity.machineId !== peer.machineId) throw Object.assign(new Error("Identity mismatch"), { code: "machine-mismatch" });
     if (identity.coreId !== agentDirectory.core.remote) throw Object.assign(new Error("Core changed"), { code: "core-changed" });
     mutated = true;
+    const privateModeRepairs = currentSettings.agentModes ? await ports.transfer.repairAgentDirectory(peer) : undefined;
     if (input.replaceCorePin) await ports.assertCorePinReplaceIdle(peer);
     const replacement = await ports.transfer.enroll(peer, ports.hubMachineId, coreUnit, input.replaceCorePin);
     if (input.replaceCorePin) {
@@ -240,11 +245,12 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
     await ports.systemd.systemctl(["--user", hostingReady ? "enable" : "disable", unitName]);
     await ports.setParticipation(peer, hostingReady);
     const permissionTightenings = await ports.permissionTightening(peer).catch(() => null);
-    const outcome = result(operationId, 0, hostingReady ? "installed" : "installed-hosting-disabled", { hostingReady, permissionTightenings });
+    const outcome = result(operationId, 0, hostingReady ? "installed" : "installed-hosting-disabled", { hostingReady, permissionTightenings, ...(privateModeRepairs !== undefined ? { privateModeRepairs } : {}) });
     ports.journal.record(operationId, "done", outcome as unknown as JsonObject);
     return outcome;
   } catch (error) {
-    const reason = safeReason(error);
+    const details = error && typeof error === "object" && "details" in error ? error.details : undefined;
+    const reason = isAgentModeFailure(details, ports.destination.home, ports.destination.agentDir) ? agentModeRefusal(details) : safeReason(error);
     const outcome = result(operationId, reason === "core-changed" || mutated && reason !== "machine-mismatch" ? 3 : 1, reason, null);
     if (["core-pin-changed", "core-pin-conflict"].includes(reason)) {
       const target = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,255}$/.test(input.peer.alias) ? input.peer.alias : input.peer.machineId;

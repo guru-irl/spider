@@ -1,5 +1,6 @@
 import { readMoveSetupDiagnostics } from "./setup-diagnostics";
 import { corePinDiagnostics } from "./core-pin-diagnostics";
+import { hubStartupDiagnostics, inspectHubService, type HubServiceObservation } from "./hub-service-diagnostics";
 import { hubServiceExists, hubServiceFile } from "./launchd";
 import { inspectSupervisorCorePin } from "./enrollment";
 import { hostingWarningReason, readHostingWarnings } from "./hosting-warning";
@@ -401,11 +402,13 @@ export async function localPendingLaunchDiagnostics(input: {
       else inventory.push({ severity: "block", reason: `Session ${safe(reservation.sessionId)}: exact launch ${safe(reservation.operationId)} is pending; handoff and core evidence are unavailable. Inspect the launch reservation, ID lock, file lease and operation-labelled terminal on the destination.`, repairCommand: reservation.phase === "reserved" ? sessionCommand(reservation.sessionId, "stop") : `spider roam doctor ${input.machineId}` });
     }
   } catch { inventory.push({ severity, reason: "Cannot inspect pending launch reservations.", repairCommand: null }); }
-  return inventory;
+  return inventory.map(row => row.repairCommand?.startsWith("spider roam stop ")
+    ? { ...row, reason: `${row.reason} Run this repair command on the Mac hub.` } : row);
 }
 
 /** Inspect registered local stores without modifying them. */
 export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; currentCore?: () => Promise<string | null>; inspectIntercomDoctor?: boolean;
+  hubService?: () => Promise<HubServiceObservation>;
   launchRecovery?: { bootId(): Promise<string>; probe(pid: number): Promise<ProcessProbe> };
   intercomReadiness?: () => Promise<IntercomReadiness>;
   ensureIntercomBroker?: () => Promise<void>;
@@ -418,6 +421,7 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
   const config = existsSync(configFile) ? loadConfig(configFile) : disabledConfig();
   const required = localCaptureRequired(config), severity = required ? "block" : "warning";
   const inventory: Diagnostic[] = [], storeDiagnostics: Diagnostic[] = [], peerFailures: Diagnostic[] = [], consumers: LoadedConsumer[] = [];
+  if (config.enabled && config.role === "hub") inventory.push(...hubStartupDiagnostics(root, await (input.hubService ?? (() => inspectHubService(root)))()));
   if (config.role === "box") {
     if (config.enabled && (input.supervisorAutostart || process.platform === "linux")) {
       let autostart: SupervisorAutostart = "unknown";

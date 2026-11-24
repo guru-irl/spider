@@ -29,6 +29,7 @@ This package does not own:
 | `src/status/` | `registerHerdrStatusContribution` wraps pi's program-status setter so pending subagent runs keep the session `working`. |
 | `src/feed/` | The session feed publisher, the IPC server, and the IPC client. |
 | `src/remote/` | Remote execution, agent consoles, chunked output transfer, and the remote runtime that runs on the destination machine. |
+| `src/remote/runtime.ts`, `src/remote/runtime-entry.ts` | The reusable runtime library and the dedicated executable that builds `dist/herdr/remote-runtime.mjs`. Importing the library never consumes command-line arguments or starts a runtime. |
 | `src/jobs/` | `registerHerdrJobs`, the job monitor and journal, the handoff of a finished child's jobs to its session, pane placement, and remote observers. |
 | `src/ssh/` | `registerHerdrRouting`, the SSH parser, policy, transport checks, machine cache, `PATH` shim, and the audited admin command. |
 | `src/viewers/` | `registerHerdrViewers`, the viewer program, transcript paging, and steering. |
@@ -80,7 +81,8 @@ Each part runs in its own process:
 - The status adapter, feed publisher, IPC endpoint, and job monitor run inside the owning pi process. A subagent child runs its own job monitor and remote executor.
 - The mods run inside the Herdr app.
 - A viewer or remote observer runs as a separate Node program in a local `hc` terminal.
-- The remote runtime runs on the destination machine, for each job and for each agent console. It uses only Node built-ins and never imports pi, SQLite, or `@spider/context`.
+- The remote runtime runs on the destination machine, for each job and for each agent console. It uses only Node built-ins and never imports pi, SQLite, or `@spider/context`. Its dedicated entry retains request-file execution, `--install`, `--probe`, and `--console`.
+- The host pane endpoint has a separate executable entry, `host/src/herdr/bin/pane-endpoint-main.ts`. Its library exports remain safe to import into the roaming CLI.
 - Setup runs from a plain shell. The admin command runs from a plain shell or from an agent's wrapper script.
 
 ## Native machine identity

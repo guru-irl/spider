@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { openDbReadOnly } from '@spider/db-core';
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -92,16 +90,4 @@ export function createProductionPaneEndpointPorts(buildDigest: string, env: Read
     openConsole: async (...args) => (await effects()).openConsole(...args),
     closeSession: async (...args) => (await effects()).closeSession(...args),
   };
-}
-
-if ((import.meta as ImportMeta & { spiderPaneEndpointEntry?: boolean }).spiderPaneEndpointEntry !== false && process.argv[1] && (() => { try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; } })()) {
-  try {
-    const bytes = await readFile(fileURLToPath(import.meta.url));
-    const digest = createHash('sha256').update(bytes).digest('hex');
-    const output = await runPaneEndpointCli(process.argv.slice(2), async () => createProductionPaneEndpointPorts(digest));
-    process.stdout.write(output + '\n');
-  } catch (error) {
-    const code = error instanceof HerdrError ? error.code : 'pane-endpoint-failed';
-    process.stderr.write(`${code}\n`); process.exitCode = 1;
-  }
 }

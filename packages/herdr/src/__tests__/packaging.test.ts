@@ -241,6 +241,23 @@ else { console.error('Publish requires a checked tarball path'); process.exit(1)
     expect(JSON.parse(probe)).toMatchObject({ directory, mode: 0o700, nodePath: process.execPath });
   });
 
+  it('the shipped runtime preserves its library API without running main on import', () => {
+    const artifact = join(packedRoot, 'package/dist/herdr/remote-runtime.mjs');
+    const code = readFileSync(artifact).toString('base64');
+    const script = `const {pathToFileURL}=await import('node:url');
+process.argv[2]='missing-request.json';
+const file=await import(pathToFileURL(${JSON.stringify(artifact)}).href);
+const data=await import('data:text/javascript;base64,${code}');
+console.log(JSON.stringify([Object.keys(file).sort(),Object.keys(data).sort()]));`;
+    const expected = [
+      'RAW_CHUNK_BYTES', 'RemoteRuntimeError', 'atomicRuntimeFile', 'destinationEnvironment',
+      'encodeRuntimePublication', 'installRuntimeDirectory', 'parseRuntimePublication',
+      'parseRuntimeRequest', 'probeRuntimeDirectory', 'pruneSettledPrograms', 'readBoundedFile',
+      'runRemoteConsole', 'runRemoteRuntime', 'sha256', 'signalHint', 'verifyProgramMarker',
+    ].sort();
+    expect(JSON.parse(run(['--input-type=module', '-e', script], packedRoot))).toEqual([expected, expected]);
+  });
+
   it.each(['file', 'directory', 'preserved main'])('the shipped remote runtime enters main through a symlinked %s', kind => {
     const executable = join(packedRoot, 'package/dist/herdr/remote-runtime.mjs');
     const link = join(packedRoot, `linked-${kind.replaceAll(' ', '-')}`);

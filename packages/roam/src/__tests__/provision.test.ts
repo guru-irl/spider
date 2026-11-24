@@ -439,7 +439,7 @@ it("recovers autostart when enable follows transiently blocked reprovision", asy
       if (request.enabled && request.restoreAutostart) f.state.supervisorEnabled = true;
       return { enabled: request.enabled };
     } } as never);
-  const enabled = await controls.enableRoaming(f.root, process.execPath);
+  const enabled = await controls.enableRoaming(f.root, () => process.execPath);
   expect(enabled).toMatchObject({ code: 3, reason: "enable-pending" });
   expect(f.state.boxEnabled).toBe(true); expect(f.state.supervisorEnabled).toBe(true);
 }, 5000);

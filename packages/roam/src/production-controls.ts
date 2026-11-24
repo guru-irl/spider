@@ -122,11 +122,12 @@ async function startPeerBroker(transport: Transport, peer: Peer, config: RoamCon
   if (Object.keys(result).length !== 5 || result.ok !== true || result.machineId !== peer.machineId) throw invalid();
   try { return parseDoctorReport(result.doctor); } catch { throw invalid(); }
 }
-export async function enableRoaming(root: string, cli: string, bundleUrl?: URL): Promise<ControlResult> {
+export async function enableRoaming(root: string, resolveCli: () => string, bundleUrl?: URL): Promise<ControlResult> {
   let changed = false, step: CauseStep = "enable";
   try {
     const initial = readLocalIdentity(root);
     if (initial.role !== "hub") return { code: 1, reason: "mac-hub-required", message: "Run this command on the Mac hub." };
+    const cli = resolveCli();
     return await locked(root, initial, async () => {
       const config = readLocalIdentity(root), herdr = loadHerdrConfig(root);
       if (config.machineId !== initial.machineId || config.role !== "hub") throw new Error("Roaming configuration changed during the operation");

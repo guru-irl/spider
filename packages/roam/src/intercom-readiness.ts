@@ -82,6 +82,7 @@ async function irSettings(agentDir: string, release: string, sdk: string, cwd: s
       return irLegacyPath(source.replace(/^[+!-]/, ""));
     });
     const shim = irJoin(agentDir, "extensions", "spider.ts"), bundle = irJoin(release, "dist", "extension.js");
+    const packageEntry = irJoin(release, "scripts", "package-extension.ts");
     const child = irSpawn(process.execPath, ["--input-type=module", "-e", irResolveScript, sdk, irJoin(release, "scripts", "intercom-switchover.mjs"),
       irJoin(release, "scripts", "extension-shim.mjs"), cwd, agentDir, JSON.stringify(roots), bundle],
       { cwd, env: { ...process.env, PI_OFFLINE: "1", PI_CODING_AGENT_DIR: agentDir }, input: raw, encoding: "utf8", timeout: 15_000, maxBuffer: 2 * 1024 * 1024 });
@@ -107,7 +108,7 @@ async function irSettings(agentDir: string, release: string, sdk: string, cwd: s
       if (irResolve(resource.path) === irResolve(shim)) {
         if (irReadOwned(shim) !== resolved.shim) spiderInvalid = true;
         spiders++;
-      } else if (irResolve(resource.path) === irResolve(bundle)) spiders++;
+      } else if (irResolve(resource.path) === irResolve(bundle) || irResolve(resource.path) === irResolve(packageEntry)) spiders++;
       else names.add(name.replace(/[^A-Za-z0-9@._/-]/g, "?").slice(0, 128));
       if (names.size > 256 || [...names].some(item => !/^[A-Za-z0-9@._/-]{1,128}$/.test(item))) return result("settings-resolution-unavailable");
     }

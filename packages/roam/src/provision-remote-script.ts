@@ -777,9 +777,9 @@ async function run(): Promise<unknown> {
         { cwd: probe, env, stdio: "ignore", timeout: 15_000 }).status === 0; } catch { /* Missing evidence is not readiness. */ }
       const sdk = join(npmPrefix, "lib", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "index.js");
       Object.assign(verification, await inspectIntercomReadiness({ agentDir, release, sdk, cwd: home }));
-      const extensionScript = "import {pathToFileURL} from 'node:url'; const p=await import(pathToFileURL(process.argv[1]).href); const l=new p.DefaultResourceLoader({cwd:process.argv[3],agentDir:process.argv[4],additionalExtensionPaths:[process.argv[2]],noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,noContextFiles:true}); await l.reload(); const v=l.getExtensions(); if(v.errors.length||!v.extensions.some(e=>e.tools.has('spider')))process.exitCode=1;";
-      try { verification.extensionLoaded = spawnSync(process.execPath, ["--input-type=module", "-e", extensionScript, sdk,
-        join(release, "dist", "extension.js"), probe, agent], { cwd: probe, env, stdio: "ignore", timeout: 20_000 }).status === 0; }
+      const extensionScript = "(async()=>{const {pathToFileURL}=await import('node:url'); const p=await import(pathToFileURL(process.argv[1]).href); const l=new p.DefaultResourceLoader({cwd:process.argv[3],agentDir:process.argv[4],additionalExtensionPaths:[process.argv[2]],noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,noContextFiles:true}); await l.reload(); const v=l.getExtensions(); if(v.errors.length||!v.extensions.some(e=>e.tools.has('spider')))process.exitCode=1;})().catch(()=>{process.exitCode=1});";
+      try { verification.extensionLoaded = spawnSync(process.execPath, ["-e", extensionScript, sdk,
+        join(release, "scripts", "package-extension.ts"), probe, agent], { cwd: probe, env, stdio: "ignore", timeout: 20_000 }).status === 0; }
       catch { /* Missing evidence is not readiness. */ }
       try {
         const sessionId = randomUUID(), sessionFile = join(probe, "exact.jsonl");

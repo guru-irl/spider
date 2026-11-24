@@ -2,11 +2,12 @@ import { afterEach, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { runLocalDoctor } from "../local-diagnostics";
-import { inspectHubService } from "../hub-service-diagnostics";
+import { inspectHubService, hubStartupDiagnostics } from "../hub-service-diagnostics";
+import * as controlSocket from "../control-socket";
 import { main } from "../cli";
 
 const roots: string[] = [];
-afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function fixture(enabled = true, role = "hub") {
   const root = mkdtempSync(join(resolve(".spider/scratch"), "hubd-")); roots.push(root);
   mkdirSync(join(root, "roam/logs"), { recursive: true, mode: 0o700 });
@@ -26,7 +27,10 @@ it.each([
   const root = fixture(), before = readFileSync(join(root, "roam/config.json"), "utf8");
   const report = await runLocalDoctor({ root, hubService: async () => state });
   const issue = report.diagnostics.find(row => row.reason.startsWith("hub-startup-pending:"));
-  expect(issue).toMatchObject({ severity: "block", repairCommand: "spider roam enable" });
+  expect(issue).toMatchObject({ severity: "block" });
+  expect(issue?.repairCommand).toBeNull();
+  expect(issue?.reason).toContain("Check the hub service and its error log");
+  expect(issue?.reason).not.toMatch(/spider roam (enable|doctor)/);
   expect(issue?.reason).toContain(`Last exit code: ${state.lastExitCode}`);
   expect(issue?.reason).toContain(join(root, "roam/logs/hub.err.log"));
   expect(JSON.stringify(report)).not.toContain("private fixture log contents");
@@ -53,8 +57,74 @@ it.each([
   { code: null, stdout: "", running: null, lastExitCode: null },
   { code: 0, stdout: "", running: null, lastExitCode: null },
 ])("service metadata is distinguished from missing or unknown state: %j", async row => {
+  const root = fixture(); vi.useFakeTimers();
+  vi.spyOn(controlSocket, "requestHubControl").mockRejectedValue(new Error("No answering hub"));
+  const pending = inspectHubService(root, async () => row);
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(await pending).toEqual({ running: row.running, lastExitCode: row.lastExitCode, socketAvailable: false });
+});
+
+it("a starting service becomes healthy when its status probe answers within the bound", async () => {
+  vi.useFakeTimers();
   const root = fixture();
-  expect(await inspectHubService(root, async () => row)).toEqual({ running: row.running, lastExitCode: row.lastExitCode, socketAvailable: false });
+  const probe = vi.spyOn(controlSocket, "requestHubControl").mockImplementation(async (file, request, options) => {
+    expect(file).toBe(join(root, "roam/hub.sock"));
+    expect(request).toEqual({ op: "status" });
+    expect(options?.timeoutMs).toBeLessThanOrEqual(500);
+    if (Date.now() < 100) throw new Error("Socket not created yet");
+    return { code: 0, reason: "ready", value: { enabled: true } };
+  });
+  vi.setSystemTime(0);
+  const pending = inspectHubService(root, async () => ({ code: 0, stdout: "state = running\npid = 123\n" }));
+  await vi.advanceTimersByTimeAsync(100);
+  const state = await pending;
+  expect(state).toMatchObject({ running: true, socketAvailable: true });
+  expect(hubStartupDiagnostics(root, state)).toEqual([]);
+  expect(probe).toHaveBeenCalled();
+});
+
+it("a real ready control socket is healthy and receives only a status request", async () => {
+  const root = fixture(), before = readFileSync(join(root, "roam/config.json"), "utf8");
+  const requests: controlSocket.HubControlRequest[] = [];
+  const socket = await controlSocket.startHubControl(join(root, "roam/hub.sock"), async request => {
+    requests.push(request); return { code: 0, reason: "ready", value: { enabled: true } };
+  });
+  try {
+    const state = await inspectHubService(root, async () => ({ code: 0, stdout: "state = running\npid = 123\n" }));
+    expect(hubStartupDiagnostics(root, state)).toEqual([]);
+    expect(requests).toEqual([{ op: "status" }]);
+    expect(readFileSync(join(root, "roam/config.json"), "utf8")).toBe(before);
+  } finally { await socket.close(); }
+});
+
+it.each([
+  null,
+  { code: 0, reason: "disabled", value: { enabled: false } },
+  { code: 1, reason: "unavailable", value: null },
+])("an existing socket without a ready hub is blocked after bounded status probes: %j", async reply => {
+  const root = fixture(), socket = await controlSocket.startHubControl(join(root, "roam/hub.sock"), async () => reply as controlSocket.HubControlReply ?? { code: 1, reason: "unavailable", value: null });
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const probe = vi.spyOn(controlSocket, "requestHubControl");
+  if (reply) probe.mockResolvedValue(reply as controlSocket.HubControlReply);
+  else probe.mockRejectedValue(Object.assign(new Error("Stale socket"), { code: "ECONNREFUSED" }));
+  try {
+    const pending = inspectHubService(root, async () => ({ code: 0, stdout: "state = running\npid = 123\n" }));
+    await vi.advanceTimersByTimeAsync(2000);
+    const state = await pending;
+    expect(state).toMatchObject({ running: true, socketAvailable: false });
+    expect(hubStartupDiagnostics(root, state)).toContainEqual(expect.objectContaining({ severity: "block" }));
+    expect(Date.now()).toBe(2000);
+    expect(probe.mock.calls.length).toBeLessThanOrEqual(40);
+  } finally { await socket.close(); }
+});
+
+it("unknown service metadata and a missing status reply warn instead of blocking", async () => {
+  const root = fixture(); vi.useFakeTimers();
+  vi.spyOn(controlSocket, "requestHubControl").mockRejectedValue(new Error("No answering hub"));
+  const pending = inspectHubService(root, async () => ({ code: null, stdout: "" }));
+  await vi.advanceTimersByTimeAsync(2000);
+  const state = await pending;
+  expect(hubStartupDiagnostics(root, state)).toContainEqual(expect.objectContaining({ severity: "warning", reason: expect.stringContaining("hub-startup-unverified:") }));
 });
 
 it("doctor's default observer reports a failed service without opening the error log", async () => {
@@ -62,7 +132,8 @@ it("doctor's default observer reports a failed service without opening the error
   writeFileSync(binary, "#!/bin/sh\nprintf 'state = spawn scheduled\\nlast exit code = 1\\n'\n", { mode: 0o700 });
   vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", binary);
   const report = await runLocalDoctor({ root });
-  expect(report.diagnostics).toContainEqual(expect.objectContaining({ severity: "block", reason: expect.stringContaining("Last exit code: 1"), repairCommand: "spider roam enable" }));
+  expect(report.diagnostics).toContainEqual(expect.objectContaining({ severity: "block", reason: expect.stringContaining("Last exit code: 1") }));
+  expect(report.diagnostics.find(row => row.reason.startsWith("hub-startup"))?.repairCommand).toBeNull();
   expect(JSON.stringify(report)).not.toContain("private fixture log contents");
 });
 
@@ -74,7 +145,8 @@ it("the public JSON doctor returns a blocked startup issue with exit metadata an
   expect(await main(["roam", "doctor", "--json"], { out: text => out.push(text), err: text => err.push(text) })).toBe(1);
   const report = JSON.parse(out.join(""));
   expect(report).toMatchObject({ code: 1, reason: "doctor-blocked", value: { enabled: true } });
-  expect(report.value.diagnostics).toContainEqual(expect.objectContaining({ severity: "block", reason: expect.stringContaining("hub-startup-pending:"), repairCommand: "spider roam enable" }));
+  expect(report.value.diagnostics).toContainEqual(expect.objectContaining({ severity: "block", reason: expect.stringContaining("hub-startup-pending:") }));
+  expect(report.value.diagnostics.find((row: { reason: string }) => row.reason.startsWith("hub-startup"))?.repairCommand).toBeNull();
   expect(out.join("")).toContain("Last exit code: 1"); expect(out.join("")).toContain(join(root, "roam/logs/hub.err.log"));
   expect(out.join("") + err.join("")).not.toContain("private fixture log contents");
 });

@@ -93,8 +93,9 @@ else {
         timeout: request.action === "verify" ? 4900 : 4000,
         env: { ...process.env, HOME: home, PATH: bin, SPIDER_GLOBAL_ROOT: globalRoot } });
       if (child.status !== 0) throw new Error("fixture remote program failed");
-      const reply = JSON.parse(child.stdout) as { error?: string; operationId?: string; path?: string; recursive?: true; value?: unknown };
+      const reply = JSON.parse(child.stdout) as { error?: string; operationId?: string; path?: string; recursive?: true; value?: unknown; details?: unknown };
       if (reply.error) throw Object.assign(new Error("remote request failed"), { code: reply.error,
+        ...(reply.details ? { details: reply.details } : {}),
         ...(reply.operationId ? { details: { blockingOperationId: reply.operationId } } : {}),
         ...(reply.path ? { details: { path: reply.path, ...(reply.recursive ? { recursive: true } : {}) } } : {}) });
       return reply.value;
@@ -141,6 +142,7 @@ if (${oldUmask}) for(let i=0;i<250;i++) write(path.join(prefix,'old-'+i,'file'),
 if(args.includes('--global')) {
   write(path.join(prefix,'lib/node_modules/@earendil-works/pi-coding-agent/cli.js'),${JSON.stringify(executable)},0o777);
   fs.mkdirSync(path.join(prefix,'bin'),{recursive:true,mode:0o777});
+  if(fs.existsSync(path.join(prefix,'bin/pi'))) fs.unlinkSync(path.join(prefix,'bin/pi'));
   fs.symlinkSync('../lib/node_modules/@earendil-works/pi-coding-agent/cli.js',path.join(prefix,'bin/pi'));
 } else {
   const root=path.join(prefix,'node_modules/@guru-irl/spider');
@@ -185,12 +187,18 @@ it("installs a non-writable tree under umask 002 that inventory can read", async
     expect(installedInventory(f)).toMatchObject({ pi: f.peer.pi, piVersion: "1.2.0", spider: { installed: true } });
     const bin = join(f.npmPrefix, "bin"), before = lstatSync(bin).mode & 0o777;
     chmodSync(bin, before | 0o020);
-    expect(installedInventory(f)).toMatchObject({ pi: null, piVersion: null, spider: { installed: true } });
+    expect(installedInventory(f)).toMatchObject({ pi: f.peer.pi, piVersion: "1.2.0", spider: { installed: true } });
+    expect(lstatSync(bin).mode & 0o777).toBe(before | 0o020);
     chmodSync(bin, before);
     const modules = join(f.npmPrefix, "spider-releases", f.input.sha256, "node_modules"), mode = lstatSync(modules).mode & 0o777;
     chmodSync(modules, mode | 0o020);
-    expect(installedInventory(f)).toMatchObject({ pi: f.peer.pi, piVersion: "1.2.0", spider: { installed: false } });
+    expect(installedInventory(f)).toMatchObject({ pi: f.peer.pi, piVersion: "1.2.0", spider: { installed: true } });
+    expect(lstatSync(modules).mode & 0o777).toBe(mode | 0o020);
     chmodSync(modules, mode);
+    chmodSync(f.npmPrefix, 0o775);
+    expect(installedInventory(f)).toMatchObject({ pi: null, piVersion: null, spider: { installed: false } });
+    expect(lstatSync(f.npmPrefix).mode & 0o777).toBe(0o775);
+    chmodSync(f.npmPrefix, 0o700);
   } finally { process.umask(previous); }
 }, 10_000);
 
@@ -253,6 +261,26 @@ it("summarizes real installer permission tightening without exposing paths", asy
   await expect(adapter.permissionTightening(f.peer)).rejects.toMatchObject({ code: "unsafe-staging" });
 }, 10_000);
 
+it("installs through a retained 0775 bin and executable inside a private prefix", async () => {
+  const f = fixture(), bin = join(f.npmPrefix, "bin"), releases = join(f.npmPrefix, "spider-releases");
+  mkdirSync(bin, { mode: 0o700 }); chmodSync(bin, 0o775); mkdirSync(releases, { mode: 0o700 }); chmodSync(releases, 0o775);
+  writeFileSync(join(f.bin, "systemctl"), `#!${process.execPath}\nconsole.log('Transient=no\\nFragmentPath=\\nMainPID=0');\n`, { mode: 0o700 });
+  writeFileSync(f.peer.pi, "retained", { mode: 0o700 }); chmodSync(f.peer.pi, 0o775);
+  releaseNpmWithDefaultModes(f);
+  await expect(create!(f.options).installRelease(f.peer, f.input)).resolves.toMatchObject({ pi: f.peer.pi, cli: f.peer.cli });
+  expect(lstatSync(bin).mode & 0o7777).toBe(0o775); expect(lstatSync(releases).mode & 0o7777).toBe(0o775);
+  expect(installedInventory(f)).toMatchObject({ pi: f.peer.pi, spider: { installed: true } });
+}, 10_000);
+
+it("preserves named install failures and exact repair through the adapter", async () => {
+  const f = fixture(), details = { path: f.npmPrefix, mode: 0o775, uid: process.getuid!(), problem: "writable-parent" };
+  f.remote.executeProvision = async () => { throw Object.assign(new Error("refused"), { code: "unsafe-destination", details }); };
+  const caught = await create!(f.options).installRelease(f.peer, f.input).catch(error => error);
+  expect(caught).toMatchObject({ code: "unsafe-destination", details });
+  expect(caught.message).toContain("mode 0775"); expect(caught.message).toContain(`uid ${process.getuid!()}`);
+  expect(caught.message).toContain(`Run chmod go-w '${f.npmPrefix}', then reprovision.`);
+});
+
 it("repairs old-umask npm output in both installer trees in one provisioning round", async () => {
   const f = fixture(); rmSync(f.npmPrefix, { recursive: true }); releaseNpmWithDefaultModes(f, true);
   writeFileSync(join(f.bin, "systemctl"), `#!${process.execPath}\nconsole.log('Transient=no\\nFragmentPath=\\nMainPID=0');\n`, { mode: 0o700 });
@@ -282,6 +310,10 @@ it("tightens an installer release inside a pre-existing user prefix", async () =
   expect(lstatSync(f.npmPrefix).mode & 0o777).toBe(0o700);
 }, 10_000);
 
+function unprotectInstallParents(prefix: string, target: string): void {
+  for (let dir = dirname(target); dir === prefix || dir.startsWith(prefix + "/"); dir = dirname(dir)) chmodSync(dir, 0o755);
+}
+
 it("does not claim a replaced prefix from a stale creation receipt", async () => {
   const f = fixture(); rmSync(f.npmPrefix, { recursive: true }); releaseNpmWithDefaultModes(f);
   const adapter = create!(f.options); await adapter.installRelease(f.peer, f.input);
@@ -289,8 +321,9 @@ it("does not claim a replaced prefix from a stale creation receipt", async () =>
   const piRoot = join(f.npmPrefix, "lib/node_modules/@earendil-works/pi-coding-agent");
   mkdirSync(piRoot, { recursive: true, mode: 0o700 });
   const file = join(piRoot, "user.js"); writeFileSync(file, "user", { mode: 0o600 }); chmodSync(file, 0o666);
+  unprotectInstallParents(f.npmPrefix, file);
   await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({
-    code: "destination-permissions-unsafe", details: { path: piRoot, recursive: true } });
+    code: "unsafe-destination", details: { path: file, mode: 0o666, uid: process.getuid!(), problem: "writable-parent" } });
   expect(lstatSync(file).mode & 0o777).toBe(0o666);
 }, 10_000);
 
@@ -308,17 +341,18 @@ it("does not chmod an entry reported as owned by another uid", async () => {
   // Model an unavailable foreign uid at the filesystem boundary, without requiring root.
   f.launchState.prelude = `import fs from 'node:fs'; import {syncBuiltinESMExports} from 'node:module';
     const original = fs.lstatSync; fs.lstatSync = (...args) => {const stat = original(...args); if(String(args[0]) === ${JSON.stringify(foreign)}) stat.uid += 1; return stat;}; syncBuiltinESMExports();\n`;
-  await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "unsafe-path" });
+  await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "unsafe-destination", details: { path: foreign, mode: 0o666, uid: process.getuid!() + 1, problem: "owner" } });
   expect(lstatSync(foreign).mode & 0o777).toBe(0o666);
 }, 10_000);
 
-it("reports an unmarked user package root for one recursive repair", async () => {
+it("reports an unprotected user package file and accepts the advised repair", async () => {
   const f = fixture(), piRoot = join(f.npmPrefix, "lib/node_modules/@earendil-works/pi-coding-agent");
   mkdirSync(piRoot, { recursive: true, mode: 0o700 });
   for (let i = 0; i < 250; i++) { const file = join(piRoot, `file-${i}`); writeFileSync(file, "user", { mode: 0o600 }); chmodSync(file, 0o666); }
+  unprotectInstallParents(f.npmPrefix, join(piRoot, "file-0"));
   releaseNpmWithDefaultModes(f);
   await expect(create!(f.options).installRelease(f.peer, f.input)).rejects.toMatchObject({
-    code: "destination-permissions-unsafe", details: { path: piRoot, recursive: true } });
+    code: "unsafe-destination", details: { path: join(piRoot, "file-0"), mode: 0o666, uid: process.getuid!(), problem: "writable-parent" } });
   expect(lstatSync(join(piRoot, "file-0")).mode & 0o777).toBe(0o666);
   expect(spawnSync("/bin/chmod", ["-R", "go-w", piRoot]).status).toBe(0);
   await expect(create!(f.options).installRelease(f.peer, f.input)).resolves.toMatchObject({ cli: f.peer.cli });
@@ -329,7 +363,7 @@ it("rejects an outside symlink in a proven installer tree without chmodding its 
   const adapter = create!(f.options); await adapter.installRelease(f.peer, f.input);
   const outside = join(f.home, "outside"); writeFileSync(outside, "user", { mode: 0o600 }); chmodSync(outside, 0o666);
   symlinkSync(outside, join(f.npmPrefix, "outside-link"));
-  await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "unsafe-path" });
+  await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "unsafe-destination", details: { path: join(f.npmPrefix, "outside-link"), problem: "symlink" } });
   expect(lstatSync(outside).mode & 0o777).toBe(0o666);
 }, 10_000);
 
@@ -345,10 +379,10 @@ it.each(["\u009b", "\u061c", "\u202e"])("does not report a display-spoofing path
   expect(lstatSync(agentDir).mode & 0o777).toBe(0o775); expect(existsSync(join(agentDir, "AGENTS.md"))).toBe(false);
 });
 
-it("reports a symlinked prefix component with a coded unsafe-path error", async () => {
+it("reports a symlinked prefix component with a named refusal", async () => {
   const f = fixture(), outside = join(f.home, "outside"); mkdirSync(outside, { mode: 0o700 });
   symlinkSync(outside, join(f.npmPrefix, "lib")); releaseNpmWithDefaultModes(f);
-  await expect(create!(f.options).installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "unsafe-path" });
+  await expect(create!(f.options).installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "unsafe-destination", details: { path: join(f.npmPrefix, "lib"), problem: "symlink" } });
 });
 
 it.each(["prefix", "release", "release-child", "pi-file"] as const)("refuses an unsafe retained %s path", async kind => {
@@ -359,10 +393,10 @@ it.each(["prefix", "release", "release-child", "pi-file"] as const)("refuses an 
       ? join(releasePrefix, "node_modules", "@guru-irl") : join(f.npmPrefix, "lib", "node_modules", "@earendil-works", "pi-coding-agent", "partial.js");
     if (kind === "pi-file") { mkdirSync(dirname(unsafe), { recursive: true, mode: 0o700 }); writeFileSync(unsafe, "old", { mode: 0o600 }); chmodSync(unsafe, 0o664); }
     else { mkdirSync(unsafe, { recursive: true, mode: 0o700 }); chmodSync(unsafe, 0o775); }
+    unprotectInstallParents(f.npmPrefix, unsafe);
     const log = releaseNpmWithDefaultModes(f), adapter = create!(f.options);
-    await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "destination-permissions-unsafe", details: {
-      path: kind === "release-child" ? releasePrefix : kind === "pi-file" ? dirname(unsafe) : unsafe,
-      ...(kind === "prefix" ? {} : { recursive: true }),
+    await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "unsafe-destination", details: {
+      path: unsafe, mode: kind === "pi-file" ? 0o664 : 0o775, uid: process.getuid!(), problem: "writable-parent",
     } });
     expect(lstatSync(unsafe).mode & 0o777).toBe(kind === "pi-file" ? 0o664 : 0o775);
     expect(existsSync(log)).toBe(false);
@@ -376,9 +410,10 @@ it("refuses an unsafe retained pi executable before running npm", async () => {
   try {
     const f = fixture(), bin = join(f.npmPrefix, "bin"); mkdirSync(bin, { mode: 0o700 });
     writeFileSync(f.peer.pi, "retained", { mode: 0o700 }); chmodSync(f.peer.pi, 0o775);
+    unprotectInstallParents(f.npmPrefix, f.peer.pi);
     const log = releaseNpmWithDefaultModes(f);
     await expect(create!(f.options).installRelease(f.peer, f.input)).rejects.toMatchObject({
-      code: "destination-permissions-unsafe", details: { path: f.peer.pi } });
+      code: "unsafe-destination", details: { path: f.peer.pi, mode: 0o775, uid: process.getuid!(), problem: "writable-parent" } });
     expect(lstatSync(f.peer.pi).mode & 0o777).toBe(0o775);
     expect(readFileSync(f.peer.pi, "utf8")).toBe("retained"); expect(existsSync(log)).toBe(false);
   } finally { process.umask(previous); }

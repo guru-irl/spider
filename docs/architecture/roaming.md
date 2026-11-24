@@ -294,6 +294,26 @@ many. If the count cannot be read, provisioning succeeds with a `null` count.
 A completed operation saved before this count was reported also returns `null`
 on replay. The public count never includes paths.
 
+Pre-existing install paths also accept private ancestor protection. Every
+component from the destination home to the prefix must be a same-uid real
+directory without group or other write bits. A directory with mode exactly
+`0700` at or below the prefix protects its descendants. Those descendants may
+have group or other write bits because other users cannot traverse the private
+ancestor. A writable component before that protection starts still refuses;
+a later private directory cannot prevent replacement of an earlier component.
+Private ancestors outside the prefix do not relax its checks.
+
+This rule covers `bin`, the pi executable, pi package files, and release trees.
+Foreign owners, hard-linked files, special mode bits, unsafe types, and escaping
+symlinks still refuse. Internal npm links remain allowed without chmod or
+traversal; their targets stay inside the checked package tree. The inventory
+probe uses the same private-ancestor rule for runtime files, so doctor can find
+a successfully provisioned executable under a `0775` bin.
+
+Protected pre-existing install entries need no permission change. They add
+nothing to `privateModeRepairs` or `permissionTightenings`. Installer-created
+trees still use their existing receipt-backed tightening rule.
+
 The requested agent tree has a separate private-mode rule. The settings
 preview checks its existing files and directories without changing them,
 even when no settings are selected. After consent and identity verification,
@@ -319,24 +339,21 @@ not the safety check or permission repair of an existing settings file.
 Reprovisioning now repairs these modes, so doctor's reprovision advice no
 longer repeats the sign-in permission refusal.
 
-`destination-permissions-unsafe` identifies a shared parent or an unmarked
-package path with group or other write access. Automatic agent repair never
-extends to parents outside the requested agent tree. For an unmarked pi
-package or release tree, the reported
-`chmod -R go-w '<root>'` repairs the entire tree in one command. Recursive repair
-is accepted only for those exact package roots, never their shared parents or
-children. Shared parents keep a single-path `chmod go-w` repair. These include
-parents of the agent directory and prefix parents such as `~/.local/bin`.
-The read-only preview checks shared parents before consent, including a
-configured `PI_CODING_AGENT_DIR` chain. The installer checks them again before
-writing.
+Automatic agent repair never extends to parents outside the requested agent
+tree. Its read-only preview reports writable shared parents as
+`destination-permissions-unsafe`, including a configured
+`PI_CODING_AGENT_DIR` chain. The installer checks its shared parents again.
+Install refusals use `unsafe-destination` with the exact path, found mode, uid,
+and problem. An unprotected writable install path includes the shell-quoted
+`chmod go-w '<path>'` command in its reason. Owner, link, and type refusals give
+replacement advice rather than suggesting a chmod that cannot fix them.
 
-Run the reported shell-quoted command on the box and retry with the same
-options. Several writable user-owned parent directories can require separate
-repairs. Paths with control or bidi characters never produce a repair command.
-A later `pi update` under umask `0002` can reintroduce writable entries.
-Installer-created trees are tightened on reuse. Unmarked user-owned package
-trees need the recursive repair again.
+Run the reported repair on the destination and retry with the same options.
+Several unprotected writable paths can require separate repairs. Paths with
+control or bidi characters never produce repair evidence. A later update under
+umask `0002` can reintroduce writable entries. Protected paths remain safe to
+reuse; installer-created trees are tightened on reuse. Creating a later private
+directory never excuses an earlier writable shared parent.
 
 Release evidence relies on the core's server-side label filters. Herdr 0.1.16
 omits labels from terminal rows, so when a row has no labels, provisioning also

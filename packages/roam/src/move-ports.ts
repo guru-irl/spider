@@ -410,6 +410,7 @@ export function createMovePorts(config: RoamConfig, transport: Transport, journa
         home = { sessionId: request.sessionId, machineId: config.machineId, epoch: 1, moveId: null, updatedAt: 0 };
       }
       if (home.machineId !== config.machineId) local = checkedLocation(successful(await call<unknown>(home, request.operation, "move-location")));
+      else for (const key of local.stores) bindings.stores!.open(key);
       const mapped = await bindings.mapping!(request, local);
       if (!mapped) throw new MoveAdapterError("workspace-repository-unmapped");
       const inspection = successful(await call<{ blockers: readonly Blocker[] }>(home, request.operation, "session-inspect"));
@@ -590,10 +591,13 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
   if (operation.kind === "move-location") {
     const current = sessionHome(participant.globalDb, id);
     if (!current || current === "unknown" || current.machineId !== home.machineId || current.epoch !== home.epoch) throw new MoveAdapterError("participant-home-mismatch");
-    return result(location(participant.globalDb, id));
+    const local = location(participant.globalDb, id);
+    for (const key of local.stores) required(bindings.stores, "stores").open(key);
+    return result(local);
   }
   if (["session-inspect", "session-freeze", "session-unfreeze", "session-shutdown", "session-retire"].includes(operation.kind)) {
     const feeds = evidence(bindings), intercom = required(bindings.intercom, "intercom"), local = location(participant.globalDb, id);
+    if (operation.kind === "session-freeze") for (const key of local.stores) required(bindings.stores, "stores").open(key);
     const now = bindings.clock?.now ?? Date.now, budget = participant.config.limits.controlMs;
     const deadline = now() + budget - Math.min(250, Math.floor(budget / 4));
     const control = async (op: Operation): Promise<Outcome<JsonObject>> => controlSession(op, {
@@ -646,6 +650,7 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
     const local = location(participant.globalDb, id), keys = operation.args.keys as StoreKey[];
     if (!Array.isArray(keys) || keys.length !== local.stores.length || keys.some(key => !local.stores.includes(key))) throw new MoveAdapterError("participant-stores-unavailable");
     const stores = required(bindings.stores, "stores");
+    for (const key of keys) stores.open(key);
     for (const key of keys) if (storeScope(key) === "worktree") {
       let seeded;
       do {

@@ -1,3 +1,4 @@
+import { MoveCompositionError } from "@spider/roam/move-failure";
 import { redactErrorDetail } from "@spider/roam/machine-move-socket";
 import { storeScope } from "@spider/db-core/roam/codec";
 import { readSessionState } from "@spider/db-core/roam/state";
@@ -169,6 +170,8 @@ export async function serveSessionControl(input: { sessionId: string; runtimeRoo
       if (error instanceof FreezeBlockedError || error instanceof IntercomFenceError) return result(3, "freeze-blocked", {
         ...controlFailure(operation, ports, error), blockers: sanitizedBlockers(error.blockers) });
       if (error instanceof AbortAuthorizationPendingError) return result(3, error.message);
+      if (error instanceof MoveCompositionError && error.code === "participant-stores-unavailable")
+        return result(3, error.code, controlFailure(operation, ports, error));
       return result(1, "session-control-refused", controlFailure(operation, ports, error));
     }
   });

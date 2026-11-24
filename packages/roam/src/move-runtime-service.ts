@@ -55,7 +55,7 @@ export function createMoveRuntimeService(input: Omit<MoveRuntimeInput, "sessionI
           try {
             const result = await recoverMove(operation_id, mounted.ports);
             if (machineId && result.reason === "move-lock-pending") continue;
-            if (result.code !== 0 || result.reason !== "moved") diagnostic(operation_id, result.reason);
+            if ((result.code !== 0 || result.reason !== "moved") && !journal.read(operation_id).some(row => row.action === "done")) diagnostic(operation_id, result.reason);
             else writeLocal(input.globalDb, "recovery-diagnostic", operation_id, undefined);
           } finally { await mounted.close(); }
         } catch (error) {
@@ -134,7 +134,7 @@ export function createMoveRuntimeService(input: Omit<MoveRuntimeInput, "sessionI
           try {
             const result = await (journal.read(moveId).some(row => row.action === "move-abort-start") ? cancelMove : recoverMove)(moveId, mounted.ports);
             if (machineId && result.reason === "move-lock-pending") continue;
-            if (result.code !== 0) diagnostic(moveId, result.reason);
+            if (result.code !== 0 && !journal.read(moveId).some(row => row.action === "done")) diagnostic(moveId, result.reason);
           } finally { await mounted.close(); }
         } catch { diagnostic(moveId, "move-recovery-pending"); }
       }

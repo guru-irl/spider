@@ -517,6 +517,37 @@ it.each([
   expect(journal.lookupOperation(f.request.operation.id)?.state).toBe("pending");
 }, 5000);
 
+it.each([
+  ["full", true], ["cleanup", true], ["full", false], ["cleanup", false],
+] as const)("%s recovery keeps doctor accurate for terminal=%s outcomes", async (mode, terminal) => {
+  const f = fixture(); mkdirSync(join(f.root, "roam"));
+  const journal = openFreezeJournal(join(f.root, "roam", "journal.db")); f.ports.journal = journal;
+  journal.begin(f.request.operation); journal.record(f.request.operation.id, "move-request", f.request as unknown as JsonObject);
+  journal.record(f.request.operation.id, "move-action-complete", { action: "check", value: JSON.parse(JSON.stringify(await f.ports.check(f.request))) });
+  if (!terminal) journal.record(f.request.operation.id, "move-action-start", { action: "freeze" });
+  if (mode === "cleanup") journal.record(f.request.operation.id, "move-source-cleanup-pending", { sourceMachine: BOX });
+  casHome(f.global.db, f.sourceHome, OTHER, "superseding-move", HUB);
+  writeLocal(f.global.db, "recovery-diagnostic", f.request.operation.id, { reason: "move-pending" });
+  const service = createMoveRuntimeService({ root: f.root, config: f.ports.config, globalDb: f.global.db, journal, transport: {} as Transport }, async () => ({
+    ports: f.ports, bindings: {}, control: async () => ({ code: 1, reason: "unused", value: null }), recover: async () => [], async close() {},
+  }));
+  await (mode === "full" ? service.recover(BOX) : service.recoverCleanup(BOX));
+  expect(journal.lookupOperation(f.request.operation.id)?.state).toBe(terminal ? "done" : "pending");
+  const { readStatus } = await import("../diagnostics"), { openDb } = await import("@spider/db-core");
+  const db = openDb(join(f.root, "roam", "journal.db"));
+  try {
+    const status = readStatus(f.ports.config, { globalDb: f.global.db, journalDb: db, stores: [], now: 10, observations: [] });
+    if (terminal) {
+      expect(readLocal(f.global.db, "recovery-diagnostic", f.request.operation.id)).toBeUndefined();
+      expect(status.diagnostics).toEqual([]);
+      expect(status.incompleteOperations?.filter(row => row.kind === "move")).toEqual([]);
+    } else {
+      expect(readLocal(f.global.db, "recovery-diagnostic", f.request.operation.id)).toEqual({ reason: "move-home-changed" });
+      expect(status.diagnostics).toContainEqual(expect.objectContaining({ repairCommand: `spider roam recover ${f.request.operation.id}` }));
+    }
+  } finally { db.close(); }
+}, 5000);
+
 it("same-home request is a verified no-op", async () => {
   const f = fixture(); f.request.destinationMachine = HUB; f.request.operation.args.destinationMachine = HUB;
   const before = sessionHome(f.global.db, SESSION), result = await moveSession(f.request, f.ports);

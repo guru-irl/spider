@@ -206,6 +206,32 @@ it("runs only one deferred retry across live workers sharing a database", async 
   expect(receipts()).toHaveLength(2);
 });
 
+it("does not recognize or renew an expired retry lease before another owner acquires it", () => {
+  const store = new DrainRetryStore(databases.db);
+  expect(store.acquire("first", 35_000).acquired).toBe(true);
+  vi.setSystemTime(Date.now() + 35_000);
+  expect(store.owns("first")).toBe(false);
+  expect(store.renew("first", 35_000)).toBe(false);
+  expect(store.acquire("second", 35_000).acquired).toBe(true);
+  expect(store.owns("second")).toBe(true);
+});
+
+it("does not apply a retry if the wall clock passes its lease before completion", async () => {
+  databases.db.prepare("INSERT INTO runs(id,session_id,agent,status) VALUES ('run','session','worker','done')").run();
+  let online = false;
+  const complete = vi.fn(async () => {
+    if (!online) throw offline();
+    vi.setSystemTime(Date.now() + 35_001);
+    return '{"memory":[],"skills":[],"todos":[{"text":"Do not apply a stale result."}]}';
+  });
+  const worker = fixture(complete, { org: { ...ORGANISM_DEFAULTS, selfNaming: false, passes: { runMemoryTodo: true, todoMemory: false, learning: false, consolidation: false, reflection: false, insights: false } } });
+  await worker.runDrain("session", "before_compact", snapshot("Keep a fenced retry."));
+  online = true;
+  await vi.advanceTimersByTimeAsync(300_000);
+  expect(databases.db.prepare("SELECT text FROM todos WHERE session_id='session'").all()).toEqual([]);
+  expect(databases.db.prepare("SELECT session_id FROM organism_deferred_drain").all()).toEqual([{ session_id: "session" }]);
+});
+
 it("fences an expired retry owner after another worker finishes the saved input", async () => {
   let online = false;
   let release!: () => void;

@@ -15,8 +15,10 @@ import { BOX, BOX2, HUB, network } from "./sync-fixture";
 vi.mock("node:child_process", async importOriginal => {
   const original = await importOriginal<typeof import("node:child_process")>();
   const blocked = () => { throw new Error("Unexpected process launch"); };
-  return { ...original, exec: blocked, execFile: blocked, execFileSync: blocked, execSync: blocked, fork: blocked, spawn: blocked, spawnSync: blocked };
+  const safe = { exec: blocked, execFile: blocked, execFileSync: blocked, execSync: blocked, fork: blocked, spawn: blocked, spawnSync: blocked };
+  return { ...original, ...safe, default: { ...original, ...safe } };
 });
+vi.mock("child_process", async () => await import("node:child_process"));
 
 const SESSION = "session-a";
 const fixtures: ReturnType<typeof network>[] = [];

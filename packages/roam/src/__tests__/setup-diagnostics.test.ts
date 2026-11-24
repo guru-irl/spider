@@ -4,8 +4,23 @@ import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { scratchDbPath } from "@spider/db-core/testutil";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { main as roamCli } from "../cli";
 import { runLocalDoctor } from "../local-diagnostics";
 import { recordMoveSetupFailure, readMoveSetupDiagnostics } from "../setup-diagnostics";
+
+vi.mock("node:child_process", async importOriginal => {
+  const original = await importOriginal<typeof import("node:child_process")>();
+  const blocked = () => { throw new Error("Unexpected process launch in fixture"); };
+  const execFileSync = (file: unknown, args: unknown) => {
+    if ((file === "ps" || file === "/bin/ps") && Array.isArray(args) && args[0] === "-p" &&
+        args[1] === String(process.pid) && args[2] === "-o" && args[3] === "lstart=") return "fixture-start";
+    if (file === "sqlite3" && JSON.stringify(args) === JSON.stringify(["--version"])) return "3.42.0";
+    return blocked();
+  };
+  const safe = { exec: blocked, execFile: blocked, execFileSync, execSync: blocked, fork: blocked, spawn: blocked, spawnSync: blocked };
+  return { ...original, ...safe, default: { ...original, ...safe } };
+});
+vi.mock("child_process", async () => await import("node:child_process"));
 
 it("setup snapshots replace previous failures and only their session can clear them", () => {
   const db = openDb(scratchDbPath("setup-snapshot"));
@@ -47,6 +62,19 @@ it("does not retain an unsafe session identifier or display invalid timestamps",
     expect(readMoveSetupDiagnostics(db)[0].reason).toContain("diagnostic unavailable");
     expect(JSON.stringify(readMoveSetupDiagnostics(db))).not.toContain("private");
   } finally { const file = db.raw.name; db.close(); rmSync(file, { force: true }); }
+});
+
+it("does not report a setup diagnostic for an unmigrated database", async () => {
+  const parent = dirname(scratchDbPath("setup-unmigrated")); mkdirSync(parent, { recursive: true });
+  const root = mkdtempSync(join(parent, "setup-")), db = openDb(join(root, "spider.db"));
+  db.close();
+  try {
+    vi.stubEnv("SPIDER_GLOBAL_ROOT", root);
+    let out = "";
+    await roamCli(["roam", "doctor", "--json"], { out: text => { out += text; }, err: () => {} });
+    const report = JSON.parse(out) as { value: { diagnostics: Array<{ reason: string }> } };
+    expect(report.value.diagnostics.some(row => row.reason.includes("Move setup diagnostic unavailable"))).toBe(false);
+  } finally { vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); }
 });
 
 it.each(["preparation", "ownership", "move-bindings", "live-freeze", "socket-publication"])("doctor names the safe %s setup failure with a repair", async stage => {

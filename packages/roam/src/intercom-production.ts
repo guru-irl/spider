@@ -16,6 +16,7 @@ import type { ProvisionTransport } from "./transport";
 import type { PairConsentProof } from "./intercom-local-ops";
 import { createIntercomRegistry } from "./intercom-registry";
 import { enrollmentCauseCode, validPublicKey, revokeIntercomPair } from "./intercom-enrollment";
+import { PublicationError, type PublicationSide, type PublicationStep } from "./intercom-publication";
 import type { IntercomStore } from "./intercom-contracts";
 import { pairResources, inspectPairUnit } from "./intercom-pair-resources";
 import { isMachineId } from "./machine-id";
@@ -164,9 +165,13 @@ export function createProductionIntercomEnrollmentPorts(input: EnrollmentOptions
     },
     async publishPair(pair, pins) {
       const approval = approvals.get(pair.pairId); if (!approval) throw new Error("peer-consent-required");
-      await call(pair.source, pins.source, "publish-config", pair); await call(pair.target, pins.target, "publish-config", pair);
-      await call(pair.target, pins.target, "enroll-live", pair, { expectedFenceId: approval.expectedFenceId });
-      await call(pair.source, pins.source, "enroll-live", pair, { expectedFenceId: approval.expectedFenceId });
+      const publish = async (step: PublicationStep, side: PublicationSide, extra: Record<string, unknown> = {}) => {
+        try { await call(pair[side], pins[side], step, pair, extra); }
+        catch (error) { throw new PublicationError(step, side, error); }
+      };
+      await publish("publish-config", "source"); await publish("publish-config", "target");
+      await publish("enroll-live", "target", { expectedFenceId: approval.expectedFenceId });
+      await publish("enroll-live", "source", { expectedFenceId: approval.expectedFenceId });
     },
     async verifyPair(pair, pins) {
       const first = await call<{ federation: boolean }>(pair.source, pins.source, "verify-federation", pair);

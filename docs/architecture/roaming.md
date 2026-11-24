@@ -143,6 +143,17 @@ result retains the `unreachable` cause. Each attempt rechecks the existing route
 and pinned peer identity. Other native failures are not retried, and the reported
 cause contains no command stderr.
 
+After transport verification, pair enrollment publishes configuration on the
+source and target, then enrolls the target and source helpers. If a call fails,
+`spider roam intercom enroll` keeps the existing refusal and names the failed
+step and side. It also reports an allowlisted inner cause when one is known.
+An unknown cause remains `unexpected-publish-pair`. Doctor on the hub reports
+the latest unresolved publication failure for a pending pair, even while roaming
+is disabled. A later successful publication or a failure at another step clears
+that evidence. Repeated identical failures do not add duplicate diagnostic
+records. Diagnostic storage is best
+effort and never changes enrollment or its retry. Exception text is not retained.
+
 Store inventory never treats an unreadable store as deleted. The agent's
 `stores` reply includes readable keys and an `ungathered` list. Each ungathered
 entry names its path, scope, known store key, and a code such as `missing`,
@@ -162,6 +173,13 @@ home on any box. Other keys keep syncing. When a registered project store has no
 readable identity, initial worktree homes wait conservatively until its identity
 can be established. Existing homes do not become unassigned. Placement retains
 unconfirmed session slots while any registered or mapped store is ungathered.
+
+When a relevant unreadable worktree or replica prevents the first home, a move
+still refuses with `move-source-home-mismatch`. It adds the cause
+`move-first-home-withheld`, the responsible machine ID, and the store kind.
+The retained evidence contains no store key or path. Use the store-inventory
+diagnostics to find and restore the store, then sync and retry the move. A new
+inventory replaces the old evidence without changing the home assignment gate.
 
 Enable succeeds with warnings that name each ungathered scope and path. Doctor
 reports `store-missing:<scope>:enoent` or
@@ -680,10 +698,21 @@ uncertain owner.
 Move setup failures retain a safe stage and cause in admission and doctor.
 The stages are `preparation`, `ownership`, `move-bindings`, `live-freeze`, and
 `socket-publication`. Doctor reads one latest machine-local failure snapshot.
-A successful setup clears that snapshot only for the session that recorded it.
-The diagnostic includes a repair but excludes exception text, paths, and prompts.
-A never-homed ordinary session can keep working after setup fails. A known
-participant or exact handoff still requires verified ownership and readiness.
+New snapshots include a safe session ID and the first and last occurrence times
+for the same session, stage, and cause. A successful setup clears that snapshot
+only for the session that recorded it. Local doctor and remote doctor on the hub
+show the retained failure even while roaming is disabled. The diagnostic includes
+a repair but excludes exception text, paths, and prompts. A never-homed ordinary
+session can keep working after setup fails. A known participant or exact handoff
+still requires verified ownership and readiness.
+
+Preparation names an unfinished freeze as `participant-freeze-unfinished` and
+a missing cwd as `participant-cwd-unavailable`. An unreadable or mismatched
+session header reports `participant-header-invalid` or
+`participant-header-mismatch`. Store mapping, store access, and seeding report
+`participant-store-mapping-failed`, `participant-stores-unavailable`, and
+`participant-seed-failed`, respectively. Unknown errors remain
+`setup-unavailable`.
 
 Initial admission failures name the stage, such as
 `admission-readiness-failed`, and an allowlisted participant reason when available.

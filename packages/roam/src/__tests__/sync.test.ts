@@ -1,12 +1,14 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { readFileSync, appendFileSync, writeFileSync, chmodSync, existsSync, mkdirSync, readdirSync, symlinkSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync, appendFileSync, writeFileSync, chmodSync, existsSync, mkdirSync, readdirSync, symlinkSync, mkdtempSync, rmSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { replicaPath } from "@spider/db-core/roam/catalog";
 import { mapWorkspace } from "@spider/db-core/roam/repo-map";
 import { supervisorRetirementLifecycle } from "../participant-supervisor";
 import { createProductionRecoveryPorts } from "../recovery-transport";
 import { recordLocation } from "@spider/db-core/roam/catalog";
 import { createSync } from "../sync";
+import { runHub, type HubRuntimePorts } from "../hub";
+import { productionObservationFixture } from "./production-observation-fixture";
 import { sizedBytes } from "../peer-state";
 import * as peerState from "../peer-state";
 import * as storeApi from "../stores";
@@ -560,6 +562,68 @@ it("production recovery mirrors peer session bytes through the artifact port on 
   writeFileSync(file, bytes.replace("mirrored", "rewritten"));
   expect(await sync.sync(BOX)).toContainEqual(expect.objectContaining({ code: 1, reason: "mirror-source-rewritten:full-copy" }));
   expect(readFileSync(updated.file)).toEqual(committed);
+}, 5000);
+
+it.each([
+  ["export-timeout", true], ["export-reset", true], ["export-dns", true], ["export-refused", false],
+  ["copy-timeout", true], ["copy-closed", true], ["copy-corrupt", false],
+] as const)("mirror %s after inventory preserves connectivity proof and retry cadence", async (kind, outage) => {
+  const f = fixture(); f.config.syncMs = 1000; f.config.limits.retryDelaysMs = [];
+  const remote = f.remotes.get(BOX)!, file = join(remote.global.root, "session-a.jsonl");
+  writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: "session-a", cwd: remote.worktree.root, timestamp: "2026-01-01T00:00:00Z" }) + "\n" +
+    JSON.stringify({ type: "message", id: "leaf-a", parentId: null, timestamp: "2026-01-01T00:00:00Z", message: { role: "user", content: "portable", timestamp: 1 } }) + "\n", { mode: 0o600 });
+  const home = assignInitialHome(f.global.db, "session-a", BOX, HUB);
+  if (home === "conflict") throw new Error("fixture home conflict");
+  recordLocation(remote.global.db, { sessionId: "session-a", file, cwd: remote.worktree.root, stores: [remote.worktree.storeKey], home });
+  const recovery = createProductionRecoveryPorts({ root: f.global.root, config: f.config, globalDb: f.global.db, journal: f.journal, transport: f.transport });
+  const native = await productionObservationFixture(f.global.root, f.config, f.global.db, f.transport);
+  let afterSync!: Parameters<HubRuntimePorts["prepare"]>[0];
+  const recoveries: string[] = [], timers: Array<{ ms: number; cancelled: boolean; fn(): void }> = [];
+  const sync = createSync({ config: f.config, globalDb: f.global.db, journal: f.journal, stores: f.stores, transport: f.transport,
+    clock: f.clock, ...recovery, onPeerSync: (peer, results) => afterSync(peer, results) });
+  const hubRoot = mkdtempSync(join(resolve(".spider/scratch"), "hub-"));
+  const hub = await runHub({ config: f.config, globalDb: f.global.db, journal: f.journal, runtimeRoot: hubRoot, socketPath: join(hubRoot, "hub.sock"),
+    identity: { pid: process.pid, startIdentity: "process-1" }, async probe() { return { kind: "live", startIdentity: "process-1" }; },
+    clock: { now: f.clock.now, later(ms, fn) { const timer = { ms, cancelled: false, fn }; timers.push(timer); return () => { timer.cancelled = true; }; } },
+    sync, observe: native.observe, async prepare(callback) { afterSync = callback; }, drain: () => sync.drain(), async closeStores() {},
+    async recoverPeerMoves(id) { recoveries.push(id); }, async homeChangeInProgress() { return false; },
+    placement: { async reconcile() { return { pending: [] }; } }, notices: { async publish() {}, async clear() {} } });
+  try {
+    f.unavailable.add(BOX); native.setState("unreachable");
+    expect(await sync.sync(BOX)).toMatchObject([{ code: 3 }]);
+    expect(peerState.loadPeerState(f.global.db, BOX, f.config.limits.targetBatchBytes).failures).toBe(1);
+    f.unavailable.delete(BOX); native.setState("connected");
+    f.hook((_peer, op) => {
+      if (op.kind !== "mirror-export") return;
+      if (kind === "export-timeout") throw new HerdrError("cli-timeout", "synthetic timeout");
+      if (kind === "export-reset") throw Object.assign(new Error("synthetic reset"), { code: "ECONNRESET" });
+      if (kind === "export-dns") throw Object.assign(new Error("synthetic dns failure"), { code: "ENOTFOUND" });
+    });
+    f.replyHook((_peer, op, bytes) => {
+      if (op.kind !== "mirror-export" || kind !== "export-refused") return bytes;
+      const reply = JSON.parse(bytes.toString()); reply.code = 1; reply.reason = "mirror-home-changed"; reply.value = null;
+      return Buffer.from(JSON.stringify(reply));
+    });
+    const read = f.transport.read.bind(f.transport);
+    vi.spyOn(f.transport, "read").mockImplementation(async (...args) => {
+      if (kind === "copy-timeout") throw new HerdrError("cli-timeout", "synthetic timeout");
+      if (kind === "copy-closed") throw new HerdrError("connection-closed", "synthetic closed connection", { exitCode: 1 });
+      if (kind === "copy-corrupt") return Buffer.from("corrupt");
+      return read(...args);
+    });
+    const results = await sync.sync(BOX);
+    expect(results).toContainEqual(expect.objectContaining({ code: outage ? kind === "copy-closed" ? 1 : 3 : 1,
+      reason: kind === "copy-closed" ? "Peer command failed (connection-closed)" : kind.startsWith("copy-") ? "Artifact pull is pending" : outage ? "Peer operation is pending reconciliation" : "mirror-home-changed" }));
+    expect(f.calls.some(call => call.operation.kind === "inventory")).toBe(true);
+    expect(peerState.loadPeerState(f.global.db, BOX, f.config.limits.targetBatchBytes)).toMatchObject({ failures: outage ? 2 : 0 });
+    expect(await native.observe(f.peers[0], results)).toMatchObject({ syncVerified: !outage });
+    expect(f.timers.find(timer => !timer.cancelled)?.ms).toBe(outage ? 60_000 : 1000);
+    const pending = timers.filter(timer => !timer.cancelled && timer.ms === 0);
+    expect(pending).toHaveLength(outage ? 0 : 1);
+    for (const timer of pending) { timer.cancelled = true; timer.fn(); }
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(recoveries).toEqual(outage ? [] : [BOX]);
+  } finally { await hub.stop(); await native.stop(); rmSync(hubRoot, { recursive: true, force: true }); }
 }, 5000);
 
 it("production retire-only delivery reaches the surviving supervisor before any peer sync", async () => {

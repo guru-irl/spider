@@ -14,7 +14,7 @@ import { appendMirror, type MirrorSource } from "./mirrors";
 import { isRevoked, syncHandshake, type SyncHandshake } from "./revocation";
 import { assignInitialHome, markInitialConflict } from "./homes";
 import { readOnlyOperation, releaseJournalArtifact, type ArtifactJournal } from "./journal";
-import { agentFailureCode, isPeerFailureReason, isSyncConnectivityFailure, peerFailureReason, RecoveryResponseError } from "./peer-errors";
+import { agentFailureCode, isPeerConnectivityError, isPeerFailureReason, isSyncConnectivityFailure, peerFailureReason, RecoveryArtifactError, RecoveryResponseError } from "./peer-errors";
 import { loadPeerState, receiptMatches, savePeerState, sizedBytes, type PeerState, type PendingBatch } from "./peer-state";
 import { acquireTransferLease, defaultStagingRoot, openOutgoingStaging, openStaging } from "./staging";
 import { removeOutgoing, type StoreAdapter } from "./stores";
@@ -382,6 +382,11 @@ export function createSync(ports: SyncPorts): SyncAdapter {
     return results;
   }
   function failure(error: unknown, id: string): Outcome<ApplyReceipt> {
+    const peerFailure = peerFailureReason(error);
+    if (peerFailure) return outcome(1, peerFailure, id);
+    if (isPeerConnectivityError(error) || error instanceof Error && error.name === "HerdrError")
+      return outcome(3, "Peer operation is pending reconciliation", id);
+    if (error instanceof RecoveryArtifactError) return outcome(error.code, error.message, id);
     if (error instanceof RecoveryResponseError) return { ...outcome(error.code, error.reason, error.operationId), operationKind: error.operationKind,
       ...(error.causeCode ? { causeCode: error.causeCode } : {}) };
     return { ...outcome(error instanceof SyncFailure ? error.code : error && typeof error === "object" && "retryable" in error && error.retryable ? 3 : 1,

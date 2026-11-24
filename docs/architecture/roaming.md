@@ -386,7 +386,9 @@ state is `connected` and the enrolled peer answered, even with ungathered or
 refused stores.
 Live move recovery requires a separate proof: literal `connected` plus an
 answer from the enrolled peer without a connectivity failure in the current
-round. Ungathered or refused stores do not block this proof. Recovery still
+round. Session mirror export and copy failures also count as connectivity
+failures when the transport stops answering. An answered mirror refusal does
+not block connectivity proof. Ungathered or refused stores do not block this proof. Recovery still
 checks the move's own journal and ownership evidence before making progress.
 
 Machine-intercom initialization retries failed setup after 1, 2, 5, 10, and

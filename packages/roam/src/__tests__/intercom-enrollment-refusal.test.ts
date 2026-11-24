@@ -38,6 +38,37 @@ it.each([A, B])("refuses a delayed setup write after a crash committed only the 
 }, 5000);
 });
 
+describe.sequential("pair ID reassignment after completed revocation", () => {
+  let f: Awaited<ReturnType<typeof scenario>>;
+  beforeAll(async () => {
+    f = await scenario();
+    expect(await provisionIntercomEnrollment(f.request, f.enrollment)).toMatchObject({ code: 0 });
+  }, 5000);
+  afterAll(cleanupPairScenarios);
+  it("completes endpoint cleanup before pair ID reassignment", async () => {
+    expect(await revokeIntercomPair("pair-1", f.revokePorts)).toMatchObject({ code: 0, value: { cleanupReason: null } });
+  }, 5000);
+  it("records completed cleanup on the hub before pair ID reassignment", async () => {
+    const config = parseConfig({ role: "hub", machineId: HUB, hubMachineId: HUB, coreUnit: "fixture.service", peers: [f.source, f.target], intercom: { enabled: true, mode: "peers", machineAlias: "hub.invalid" } });
+    expect(await createProductionIntercomMaintenance({ root: f.root, config, binary: "/fixture/hc", env: {}, transport: f.transport }).recoverRevocations({ pairFence: () => null })).toMatchObject([{ code: 0, value: { cleanupReason: null } }]);
+  }, 5000);
+  it("enrolls a new endpoint pair without clearing the retired peer's fence", async () => {
+    const retiredFence = f.queues.get(B)!.pairFence(A), request = { ...f.request, operation: { ...f.request.operation, id: "enroll-new-pair" },
+      pairs: [{ ...f.request.pairs[0], source: f.otherSource, edgeEpoch: "edge-2" }] };
+    expect(retiredFence).not.toBeNull();
+    let consents = 0;
+    const ports = createProductionIntercomEnrollmentPorts({ root: f.root, journal: f.journal, transport: f.transport, request, actor: "fixture", now: () => 1000,
+      present: async () => {}, approve: async () => { consents++; return true; }, notify: async () => {}, warn: async () => {} });
+    expect(await ports.readPairFences(request.pairs)).toEqual({ "pair-1": null });
+    expect(await provisionIntercomEnrollment(request, ports)).toMatchObject({ code: 0, reason: "intercom-enrolled" });
+    expect(consents).toBe(1); expect(f.queues.get(B)!.pairFence(A)).toEqual(retiredFence);
+    expect(f.queues.get(B)!.pairFence(f.otherSource.machineId)).toBeNull();
+    for (const root of [f.root, f.otherSource.globalRoot, f.target.globalRoot]) {
+      expect(await createIntercomRegistry(root).get("pair-1")).toMatchObject({ state: "active", fenceId: null, pair: { source: { machineId: f.otherSource.machineId }, edgeEpoch: "edge-2" } });
+    }
+  }, 5000);
+});
+
 describe.sequential("fresh enrollment after completed revocation", () => {
   let f: Awaited<ReturnType<typeof scenario>>;
   beforeAll(async () => {

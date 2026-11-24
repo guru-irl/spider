@@ -1098,6 +1098,24 @@ Unconfirmed cleanup means closure evidence is missing, not that the target
 is necessarily offline. A completed revoke permits fresh enrollment with a
 new epoch and fresh consent.
 
+A completed pair record can release its pair ID for a different endpoint
+identity pair when both new endpoint fences are null. At least one machine ID
+must differ. The new enrollment needs a new operation, a new epoch, and fresh
+consent. Its registry row does not inherit the retired pair's fence or resources.
+Completion requires `state: "revoked"`, a recorded `revocationEpoch`, and a null
+`cleanupReason`. Resource metadata remains in completed rows as cleanup receipts;
+its presence does not mean cleanup is pending.
+
+A revoked row without its completion epoch returns
+`intercom-pair-revocation-incomplete`. A conflicting central fence or unequal
+endpoint fences return `intercom-pair-fence-conflict`. Pending revocation still
+returns `revocation-pending`. These refusals prevent pair setup. A retry refreshes
+only refused fence observations and asks for consent again without losing
+successful pairs' recorded fence consent. The same-operation pending fence can
+still be recovered after recorded command approval. Restoring the same endpoint
+identities still requires consent to the recorded fence, even when both endpoint
+observations return null.
+
 Enrollment grants command access as the peer user, including access through
 that peer's enrolled pairs. SSH ignores user configuration with `-F /dev/null`.
 Each key has a forced command that verifies its pair, edge epoch, and current

@@ -24,6 +24,7 @@ const causeCodes = new Set<string>([
   "intercom-broker-unavailable", "intercom-broker-not-spider", "intercom-agent-unsafe", "intercom-directory-unsafe", "intercom-socket-unsafe", "federation-feature-missing",
   "legacy-pending-asks", "legacy-pending-asks-unavailable", "settings-unavailable", "settings-resolution-unavailable", "legacy-extension-declared",
   "settings-spider-invalid", "settings-spider-missing", "settings-spider-duplicate", "broker-readiness-unconfirmed",
+  "intercom-pair-revocation-incomplete", "intercom-pair-fence-conflict",
   "connection-refused", "connection-closed", "machine-not-found", "machine-ambiguous", "machine-not-enrolled", "machine-mismatch",
   "peer-invalidated", "core-unavailable", "core-changed", "reply-too-large", "invalid-reply", "invalid-config", "invalid-operation",
   "invalid-byte-limit", "invalid-cli-deadline", "unresolved-peer", "service-not-loaded", "service-failed", "service-timeout", "service-spawn-error",

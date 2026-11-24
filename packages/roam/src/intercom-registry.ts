@@ -30,6 +30,11 @@ export interface IntercomPairRecord {
   resources?: IntercomPairResources; unit?: IntercomUnitRecord; revocationEpoch?: string;
   commandApprovalFenceId?: string | null;
 }
+/** Resources remain as cleanup receipts. A recorded epoch and no obligation prove completion. */
+export function canReuseRevokedPairId(record: IntercomPairRecord | null, candidate: IntercomEnrollmentPlan): boolean {
+  return record?.state === "revoked" && record.revocationEpoch !== undefined && record.cleanupReason === null &&
+    (record.pair.source.machineId !== candidate.source.machineId || record.pair.target.machineId !== candidate.target.machineId);
+}
 const reasons = new Set(["intercom-revocation-unconfirmed", "intercom-revocation-peer-unreachable", "intercom-revocation-identity-mismatch", "intercom-revocation-shared-jobs",
   "intercom-revocation-access-open", "intercom-revocation-verification-pending", "intercom-revocation-remote-fence-pending", "intercom-revocation-cleanup-pending"]);
 const id = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
@@ -170,8 +175,10 @@ export function createIntercomRegistry(root: string) {
       await withIntercomPeerLock(root, candidate.source.machineId, candidate.target.machineId, () => locked(async () => {
         const existing = await get(candidate.pairId);
         if (pending(existing, candidate)) throw new Error("revocation-pending");
+        const reuse = canReuseRevokedPairId(existing, candidate);
+        if (reuse && pending(null, candidate)) throw new Error("revocation-pending");
         if (existing) {
-          if (existing.pair.source.machineId !== candidate.source.machineId || existing.pair.target.machineId !== candidate.target.machineId) throw new Error("intercom-pair-conflict");
+          if (!reuse && (existing.pair.source.machineId !== candidate.source.machineId || existing.pair.target.machineId !== candidate.target.machineId)) throw new Error("intercom-pair-conflict");
           if (existing.state === "revoked" || existing.state === "cancelled") {
             if (existing.operationId === operationId || existing.state === "revoked" && existing.pair.edgeEpoch === candidate.edgeEpoch) throw new Error("fresh-peer-consent-required");
           } else {
@@ -179,7 +186,7 @@ export function createIntercomRegistry(root: string) {
             throw new Error("intercom-pair-conflict");
           }
         }
-        await save({ version: 1, pair: candidate, state: "pending", operationId, graphDigest, fenceId: existing?.fenceId ?? null, cleanupReason: existing?.cleanupReason ?? null });
+        await save({ version: 1, pair: candidate, state: "pending", operationId, graphDigest, fenceId: reuse ? null : existing?.fenceId ?? null, cleanupReason: existing?.cleanupReason ?? null });
       }));
     },
     async cancelPending(pairId: string, operationId: string, graphDigest: string): Promise<void> {

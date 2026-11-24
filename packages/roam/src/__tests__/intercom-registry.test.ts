@@ -67,6 +67,47 @@ it("requires a fresh operation and edge epoch before a revoked pair can be repin
   await state.activate("pair-1", "approval-2"); expect(await state.fences([next])).toEqual({ "pair-1": null });
 }, 5000);
 
+it("reuses a completed revoked pair ID for new endpoints without inheriting its fence or resources", async () => {
+  const f = fixture(), state = await registry(f.root), fenceId = "00000000-0000-4000-8000-000000000004";
+  const { pairResources } = await import("../intercom-pair-resources");
+  f.pair.source.globalRoot = join(f.root, "source"); f.pair.target.globalRoot = join(f.root, "target");
+  await state.register(f.plan, "approval-1", "a".repeat(64)); await state.bind(f.pair, "approval-1");
+  await state.bindResources("pair-1", "approval-1", pairResources(f.pair, "core-1"));
+  await state.beginRevocation("pair-1", fenceId); await state.finishRevocation("pair-1", null);
+  expect(await state.get("pair-1")).toMatchObject({ state: "revoked", revocationEpoch: "edge-1", cleanupReason: null, resources: { route: { targetCoreId: "core-1" } } });
+  const next = { ...f.plan, source: { ...f.plan.source, machineId: "00000000-0000-4000-8000-000000000005" },
+    target: { ...f.plan.target, machineId: "00000000-0000-4000-8000-000000000006" }, edgeEpoch: "edge-2" };
+  await state.register(next, "approval-2", "b".repeat(64));
+  const saved = await state.get("pair-1");
+  expect(saved).toMatchObject({ state: "pending", pair: next, operationId: "approval-2", graphDigest: "b".repeat(64), fenceId: null, cleanupReason: null });
+  expect(saved?.resources).toBeUndefined(); expect(saved?.revocationEpoch).toBeUndefined();
+  await expect(state.register(next, "approval-2", "b".repeat(64))).resolves.toBeUndefined();
+}, 5000);
+
+it("does not reassign a revoked pair ID without its completion epoch", async () => {
+  const f = fixture(), state = await registry(f.root), fenceId = "00000000-0000-4000-8000-000000000004";
+  await state.register(f.plan, "approval-1", "a".repeat(64)); await state.bind(f.pair, "approval-1");
+  await state.beginRevocation("pair-1", fenceId); await state.finishRevocation("pair-1", null);
+  const file = join(f.root, "roam", "intercom", "enrollments", "pair-1.json"), saved = JSON.parse(readFileSync(file, "utf8"));
+  delete saved.revocationEpoch; writeFileSync(file, JSON.stringify(saved), { mode: 0o600 });
+  const before = readFileSync(file), next = { ...f.plan, target: { ...f.plan.target, machineId: "00000000-0000-4000-8000-000000000005" }, edgeEpoch: "edge-2" };
+  await expect(state.register(next, "approval-2", "b".repeat(64))).rejects.toThrow("intercom-pair-conflict");
+  expect(readFileSync(file)).toEqual(before);
+}, 5000);
+
+it("checks the new peer's durable fence before reassigning a completed pair ID", async () => {
+  const f = fixture(), state = await registry(f.root), fenceId = "00000000-0000-4000-8000-000000000004", nextPeer = "00000000-0000-4000-8000-000000000005";
+  await state.register(f.plan, "approval-1", "a".repeat(64)); await state.bind(f.pair, "approval-1");
+  await state.beginRevocation("pair-1", fenceId); await state.finishRevocation("pair-1", null);
+  const queue = openIntercomStore({ file: join(f.root, "roam", "intercom", "queue.db"), machineId: A, clock: { now: () => 1000 } });
+  try {
+    const fence = queue.fencePair(nextPeer, "edge-2").fence, before = await state.get("pair-1");
+    const next = { ...f.plan, target: { ...f.plan.target, machineId: nextPeer }, edgeEpoch: "edge-3" };
+    await expect(state.register(next, "approval-2", "b".repeat(64))).rejects.toThrow("revocation-pending");
+    expect(await state.get("pair-1")).toEqual(before); expect(queue.pairFence(nextPeer)).toEqual(fence);
+  } finally { queue.close(); }
+}, 5000);
+
 it.each(["intercom-revocation-unconfirmed", "intercom-revocation-cleanup-pending"] as const)("never replaces a pending revocation obligation %s", async reason => {
   const f = fixture(), state = await registry(f.root), fenceId = "00000000-0000-4000-8000-000000000004";
   await state.register(f.plan, "approval-1", "a".repeat(64)); await state.bind(f.pair, "approval-1"); await state.beginRevocation("pair-1", fenceId); await state.finishRevocation("pair-1", reason);

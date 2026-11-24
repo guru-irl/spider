@@ -253,6 +253,20 @@ operation prevents reuse of an older pending disable. Code `0` means all flags
 are confirmed. Captures and homes are retained in either case. Both outcomes
 tell open pi sessions to use `/reload` to pick up the local change.
 
+## Intercom pair ID reuse
+
+`intercom-registry.ts` permits a different endpoint identity pair to reuse a
+completed revoked pair ID. Both endpoint fences must be null. Enrollment uses a
+new operation, a new epoch, and fresh consent without inheriting the retired
+fence or resources. The completed record has a revocation epoch and no cleanup
+obligation. Resource metadata remains as a cleanup receipt.
+
+`intercom-production.ts` reports `intercom-pair-revocation-incomplete` when the
+completion epoch is missing, and `intercom-pair-fence-conflict` for conflicting
+fences. Pending revocation keeps `revocation-pending`. Same-endpoint restores
+still need consent to the recorded fence. `intercom-enrollment.ts` refreshes
+refused observations on retry while retaining successful pairs' fence consent.
+
 ## Intercom initialization
 
 Failed machine-intercom setup retries after 1, 2, 5, 10, and then 30 seconds.

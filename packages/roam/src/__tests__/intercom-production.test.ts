@@ -8,6 +8,7 @@ import { provisionIntercomEnrollment } from "../intercom-enrollment";
 import type { Peer } from "../contracts";
 
 const HUB = "00000000-0000-4000-8000-000000000001", A = "00000000-0000-4000-8000-000000000002", B = "00000000-0000-4000-8000-000000000003";
+const C = "00000000-0000-4000-8000-000000000004", D = "00000000-0000-4000-8000-000000000005";
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true }); });
 const peer = (machineId: string, alias: string, root: string): Peer => ({ machineId, alias, node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/cli", core: "/fixture/hc", globalRoot: join(root, alias) });
@@ -28,14 +29,14 @@ function fixture(approved: boolean) {
       if (!journal.read(request.operation.id).some(row => row.action === "intercom-peer-consent" && row.result.approved === true)) throw new Error("setup before consent");
       let value: unknown = { ok: true };
       if (input.action === "check-connector" || input.action === "host-connector" || input.action === "connect-connector") value = { status: "ready" };
-      if (input.action === "inspect-ssh") value = { targetMachineId: B, sshUser: "fixture", hostKeys: [hostKey] };
+      if (input.action === "inspect-ssh") value = { targetMachineId: input.pair.target.machineId, sshUser: "fixture", hostKeys: [hostKey] };
       if (input.action === "ensure-key") value = { publicKey, privateMode: 0o600, privateOwned: true };
-      if (input.action === "verify-transport") value = { sourceMachineId: A, targetMachineId: B, connector: true, key: true, route: true };
-      if (input.action === "verify-federation") value = { sourceMachineId: A, targetMachineId: B, federation: true };
+      if (input.action === "verify-transport") value = { sourceMachineId: input.pair.source.machineId, targetMachineId: input.pair.target.machineId, connector: true, key: true, route: true };
+      if (input.action === "verify-federation") value = { sourceMachineId: input.pair.source.machineId, targetMachineId: input.pair.target.machineId, federation: true };
       return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-setup", ok: true, machineId: machine.machineId, value }));
     } },
   };
-  return { root, journal, request, calls, previews, transport, approved };
+  return { root, journal, request, calls, previews, transport, approved, hostKey };
 }
 function retryClock() {
   let time = 0;
@@ -54,6 +55,113 @@ it("does not run connector or key commands without separate human approval", asy
   expect(result).toMatchObject({ code: 1, reason: "peer-consent-required" });
   expect(f.calls.every(call => call.command === "observe-fence")).toBe(true);
   expect(f.previews).toHaveLength(1);
+}, 5000);
+
+async function retiredPair(f: ReturnType<typeof fixture>) {
+  const { createIntercomRegistry } = await import("../intercom-registry"), { pairResources } = await import("../intercom-pair-resources");
+  const registry = createIntercomRegistry(f.root), plan = structuredClone(f.request.pairs[0]);
+  const pair = { ...plan, sshUser: "fixture", hostKey: f.hostKey, hostKeyAlias: `spider-${"a".repeat(32)}` };
+  await registry.register(plan, "retired-1", "a".repeat(64)); await registry.bind(pair, "retired-1");
+  await registry.bindResources("pair-1", "retired-1", pairResources(pair, "core-retired"));
+  await registry.beginRevocation("pair-1", "00000000-0000-4000-8000-000000000006");
+  await registry.finishRevocation("pair-1", null);
+  return registry;
+}
+
+it.each([[C, D], [A, D]])("fresh endpoints reuse a completed pair ID with null consent fences (%s, %s)", async (sourceId, targetId) => {
+  const f = fixture(false), registry = await retiredPair(f), before = await registry.get("pair-1");
+  f.request.pairs[0] = { ...f.request.pairs[0], source: peer(sourceId, "box-3.invalid", f.root), target: peer(targetId, "box-4.invalid", f.root), edgeEpoch: "edge-2" };
+  const input = await ports(f);
+  expect(await input.readPairFences(f.request.pairs)).toEqual({ "pair-1": null });
+  expect(await provisionIntercomEnrollment(f.request, input)).toMatchObject({ code: 1, reason: "peer-consent-required" });
+  expect(f.previews).toHaveLength(1); expect(await registry.get("pair-1")).toEqual(before);
+  expect(f.calls.every(call => call.command === "observe-fence")).toBe(true);
+  f.approved = true;
+  expect(await provisionIntercomEnrollment(f.request, input)).toMatchObject({ code: 0, reason: "intercom-enrolled" });
+  expect(f.journal.read("production-1").find(row => row.action === "intercom-peer-consent")?.result.fences).toEqual({ "pair-1": null });
+  expect(await registry.get("pair-1")).toMatchObject({ state: "active", fenceId: null, pair: { source: { machineId: sourceId }, target: { machineId: targetId }, edgeEpoch: "edge-2" } });
+}, 5000);
+
+it("names a revoked row without its completion epoch and refreshes consent after cleanup completes", async () => {
+  const f = fixture(true), registry = await retiredPair(f), file = join(f.root, "roam", "intercom", "enrollments", "pair-1.json");
+  const saved = JSON.parse(readFileSync(file, "utf8")); delete saved.revocationEpoch;
+  writeFileSync(file, JSON.stringify(saved), { mode: 0o600 });
+  f.request.pairs[0] = { ...f.request.pairs[0], source: peer(C, "box-3.invalid", f.root), target: peer(D, "box-4.invalid", f.root), edgeEpoch: "edge-2" };
+  const input = await ports(f);
+  expect(await provisionIntercomEnrollment(f.request, input)).toMatchObject({ code: 3, reason: "intercom-pair-revocation-incomplete" });
+  expect(f.calls.every(call => call.command === "observe-fence")).toBe(true); expect(await registry.get("pair-1")).toMatchObject({ state: "revoked", operationId: "retired-1" });
+  await registry.beginRevocation("pair-1", saved.fenceId, "edge-1"); await registry.finishRevocation("pair-1", null);
+  f.approved = false;
+  expect(await provisionIntercomEnrollment(f.request, input)).toMatchObject({ code: 1, reason: "peer-consent-required" });
+  expect(f.calls.every(call => call.command === "observe-fence")).toBe(true);
+  f.approved = true;
+  expect(await provisionIntercomEnrollment(f.request, input)).toMatchObject({ code: 0, reason: "intercom-enrolled" });
+  expect(f.journal.read("production-1").filter(row => row.action === "intercom-peer-consent").at(-1)?.result.fences).toEqual({ "pair-1": null });
+}, 5000);
+
+it.each(["active", "revoked", "pending"] as const)("names a conflicting %s central fence when both endpoint fences are null", async state => {
+  const f = fixture(true), registry = await retiredPair(f), file = join(f.root, "roam", "intercom", "enrollments", "pair-1.json");
+  const saved = JSON.parse(readFileSync(file, "utf8")); saved.state = state; writeFileSync(file, JSON.stringify(saved), { mode: 0o600 });
+  const before = readFileSync(file);
+  expect(await provisionIntercomEnrollment(f.request, await ports(f))).toMatchObject({ code: 3, reason: "intercom-pair-fence-conflict" });
+  expect(readFileSync(file)).toEqual(before); expect(f.calls.every(call => call.command === "observe-fence")).toBe(true);
+}, 5000);
+
+it("does not reuse a live central fence for different endpoints", async () => {
+  const f = fixture(true); await retiredPair(f);
+  const file = join(f.root, "roam", "intercom", "enrollments", "pair-1.json"), saved = JSON.parse(readFileSync(file, "utf8"));
+  saved.state = "active"; writeFileSync(file, JSON.stringify(saved), { mode: 0o600 });
+  f.request.pairs[0] = { ...f.request.pairs[0], source: peer(C, "box-3.invalid", f.root), target: peer(D, "box-4.invalid", f.root), edgeEpoch: "edge-2" };
+  expect(await (await ports(f)).readPairFences(f.request.pairs)).toEqual({ "pair-1": "intercom-pair-fence-conflict" });
+}, 5000);
+
+it.each(["intercom-revocation-cleanup-pending", "intercom-revocation-unconfirmed"] as const)("keeps a central cleanup obligation pending: %s", async reason => {
+  const f = fixture(true), registry = await retiredPair(f);
+  await registry.finishRevocation("pair-1", reason);
+  expect(await provisionIntercomEnrollment(f.request, await ports(f))).toMatchObject({ code: 3, reason: "revocation-pending" });
+  expect(f.calls).toEqual([]); expect(f.previews).toEqual([]);
+}, 5000);
+
+it("retains a same-operation pending fence only after recorded command approval", async () => {
+  const f = fixture(true), registry = await retiredPair(f);
+  const next = { ...f.request.pairs[0], edgeEpoch: "edge-2" };
+  await registry.register(next, f.request.operation.id, "b".repeat(64)); f.request.pairs[0] = next;
+  f.journal.begin(f.request.operation);
+  f.journal.record(f.request.operation.id, "intercom-setup", { pairId: "pair-1", stage: "fence-approved" });
+  expect(await (await ports(f)).readPairFences(f.request.pairs)).toEqual({ "pair-1": "00000000-0000-4000-8000-000000000006" });
+}, 5000);
+
+it("refuses a same-operation pending fence without recorded command approval", async () => {
+  const f = fixture(true), registry = await retiredPair(f);
+  const next = { ...f.request.pairs[0], edgeEpoch: "edge-2" };
+  await registry.register(next, f.request.operation.id, "b".repeat(64)); f.request.pairs[0] = next;
+  expect(await (await ports(f)).readPairFences(f.request.pairs)).toEqual({ "pair-1": "intercom-pair-fence-conflict" });
+}, 5000);
+
+it("keeps endpoint revocation pending even when the other fence observation fails", async () => {
+  const f = fixture(true);
+  f.transport.transport.exec = async (machine, _argv, options) => {
+    if (machine.machineId === A) throw new Error("offline");
+    const input = JSON.parse(options.stdin.toString());
+    return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-fence", ok: true,
+      value: { machineId: machine.machineId, peer: input.peer, fence: null, revocationPending: true } }));
+  };
+  expect(await provisionIntercomEnrollment(f.request, await ports(f))).toMatchObject({ code: 3, reason: "revocation-pending" });
+  expect(f.previews).toEqual([]);
+}, 5000);
+
+it.each(["unequal", "central-mismatch"] as const)("names %s endpoint fence conflicts without enrollment effects", async kind => {
+  const f = fixture(true); await retiredPair(f);
+  const original = f.transport.transport.exec;
+  f.transport.transport.exec = async (machine, argv, options) => {
+    if (argv[2] !== "observe-fence") return original(machine, argv, options);
+    const input = JSON.parse(options.stdin.toString());
+    const fenceId = kind === "unequal" && machine.machineId === A ? null : "00000000-0000-4000-8000-000000000007";
+    return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-fence", ok: true,
+      value: { machineId: machine.machineId, peer: input.peer, fence: fenceId ? { fenceId } : null, revocationPending: false } }));
+  };
+  expect(await provisionIntercomEnrollment(f.request, await ports(f))).toMatchObject({ code: 3, reason: "intercom-pair-fence-conflict" });
+  expect(await (await import("../intercom-registry")).createIntercomRegistry(f.root).get("pair-1")).toMatchObject({ state: "revoked", operationId: "retired-1" });
 }, 5000);
 
 function cliGraph(f: ReturnType<typeof fixture>): string {
@@ -232,6 +340,8 @@ it.each([
   ["ghp" + "_" + "synthetic".padEnd(39, "0"), "unknown"],
   ["ERR_STREAM_DESTROYED", "ERR_STREAM_DESTROYED"],
   ["SQLITE_BUSY", "SQLITE_BUSY"],
+  ["intercom-pair-revocation-incomplete", "intercom-pair-revocation-incomplete"],
+  ["intercom-pair-fence-conflict", "intercom-pair-fence-conflict"],
 ])("reports only a safe helper error code on retry: %s", async (code, expected) => {
   const f = fixture(true), graph = cliGraph(f), original = f.transport.transport.exec;
   let retrying = false;

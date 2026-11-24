@@ -14,7 +14,7 @@ import { parseCore, selectedSocket } from "@spider/herdr/client/parse";
 import type { IntercomEnrollmentPair, IntercomEnrollmentPlan, IntercomEnrollmentPorts, IntercomEnrollmentRequest, IntercomMachinePin, IntercomPairPins } from "./provision-contracts";
 import type { ProvisionTransport } from "./transport";
 import type { PairConsentProof } from "./intercom-local-ops";
-import { createIntercomRegistry } from "./intercom-registry";
+import { canReuseRevokedPairId, createIntercomRegistry } from "./intercom-registry";
 import { enrollmentCauseCode, validPublicKey, revokeIntercomPair } from "./intercom-enrollment";
 import { PublicationError, type PublicationSide, type PublicationStep } from "./intercom-publication";
 import type { IntercomStore } from "./intercom-contracts";
@@ -90,9 +90,11 @@ export function createProductionIntercomEnrollmentPorts(input: EnrollmentOptions
           const first = observations[0], second = observations[1]; if (first.status !== "fulfilled" || second.status !== "fulfilled") throw new Error("intercom-fence-unavailable");
           const a = first.value.fenceId, b = second.value.fenceId, central = await registry.get(pair.pairId);
           const approvedBefore = input.journal.read(request.operation.id).some(row => row.action === "intercom-setup" && row.result.pairId === pair.pairId && row.result.stage === "fence-approved");
-          if (a !== b) result[pair.pairId] = "unavailable";
-          else if (a === null && central?.fenceId) result[pair.pairId] = central.state === "pending" && central.operationId === request.operation.id && approvedBefore ? central.fenceId : "unavailable";
-          else if (central?.fenceId && central.fenceId !== a) result[pair.pairId] = "unavailable";
+          if (a !== b) result[pair.pairId] = "intercom-pair-fence-conflict";
+          else if (central?.state === "revoked" && central.revocationEpoch === undefined) result[pair.pairId] = "intercom-pair-revocation-incomplete";
+          else if (a === null && canReuseRevokedPairId(central, pair)) result[pair.pairId] = null;
+          else if (a === null && central?.fenceId) result[pair.pairId] = central.state === "pending" && central.operationId === request.operation.id && approvedBefore ? central.fenceId : "intercom-pair-fence-conflict";
+          else if (central?.fenceId && central.fenceId !== a) result[pair.pairId] = "intercom-pair-fence-conflict";
           else result[pair.pairId] = a;
         } catch { result[pair.pairId] = "unavailable"; }
       }

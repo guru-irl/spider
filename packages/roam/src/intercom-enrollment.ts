@@ -11,6 +11,12 @@ export const INTERCOM_CONSENT = "Enrolling this pair lets the initiating box exe
 
 export interface EnrollmentResult { pairs: readonly string[]; pending?: readonly { pairId: string; reason: string; causeCode?: string; publication?: PublicationFailure }[] }
 
+function fenceRefusal(value: unknown): string | undefined {
+  if (value === "unavailable") return "intercom-fence-unavailable";
+  if (value === "intercom-pair-revocation-incomplete" || value === "intercom-pair-fence-conflict") return value;
+  return undefined;
+}
+
 export function enrollmentCauseCode(error: unknown): string {
   return error && typeof error === "object" && "code" in error ? safeCauseCode(error.code) ?? "unknown" : "unknown";
 }
@@ -102,10 +108,10 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
       const consent = ports.journal.read(operationId).findLast(({ action, result }) => action === "intercom-peer-consent" &&
         result.approved === true && result.graphDigest === digest);
       const refreshConsent = consent && consent.result.fences && typeof consent.result.fences === "object" &&
-        Object.values(consent.result.fences).includes("unavailable");
+        Object.values(consent.result.fences).some(value => fenceRefusal(value) !== undefined);
       const savedFences = consent?.result.fences as Record<string, string | null> | undefined;
       outerStep = "read-fences";
-      const fences = refreshConsent ? { ...savedFences, ...await ports.readPairFences(remaining.filter(pair => savedFences?.[pair.pairId] === "unavailable")) }
+      const fences = refreshConsent ? { ...savedFences, ...await ports.readPairFences(remaining.filter(pair => fenceRefusal(savedFences?.[pair.pairId]) !== undefined)) }
         : consent ? consent.result.fences : await ports.readPairFences(snapshot.pairs);
       if (!fences || typeof fences !== "object" || Array.isArray(fences) || Object.keys(fences).length !== snapshot.pairs.length ||
           snapshot.pairs.some(pair => !Object.hasOwn(fences, pair.pairId) || !((fences as Record<string, unknown>)[pair.pairId] === null || identifier((fences as Record<string, unknown>)[pair.pairId])))) {
@@ -148,9 +154,12 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
         let step: CauseStep = "enrollment";
         try {
           const expectedFenceId = (fences as Record<string, string | null>)[plan.pairId];
-          if (expectedFenceId === "unavailable") return "intercom-fence-unavailable";
+          const refusal = fenceRefusal(expectedFenceId);
+          if (refusal) return refusal;
           step = "read-fences";
           const currentFences = await ports.readPairFences([plan]), currentFence = currentFences[plan.pairId];
+          const currentRefusal = fenceRefusal(currentFence);
+          if (currentRefusal) return currentRefusal;
           const approvedBefore = ports.journal.read(operationId).some(row => row.action === "intercom-setup" && row.result.pairId === plan.pairId && row.result.stage === "fence-approved");
           if (currentFence !== expectedFenceId && !(currentFence === null && approvedBefore)) return "fresh-peer-consent-required";
           step = "register-pair";

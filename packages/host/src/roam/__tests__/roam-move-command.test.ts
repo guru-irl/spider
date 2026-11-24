@@ -87,6 +87,7 @@ it("lost control replies retain the known operation ID and exact recovery comman
   expect(operationId).not.toBe("");
   expect(value.text).toContain(operationId);
   expect(value.text).toContain(`spider roam recover ${operationId}`);
+  expect(value.text).toContain("may not have reached the hub");
   expect(value.text).not.toContain("The source is paused");
   expect(ctx.ui.setStatus).toHaveBeenLastCalledWith("roam-move", undefined);
 }, 5000);

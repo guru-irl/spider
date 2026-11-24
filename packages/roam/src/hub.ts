@@ -28,7 +28,7 @@ const LOCK = "roam-hub";
 type PeerResult = readonly Outcome<ApplyReceipt>[];
 export interface HubObservation {
   reachability: "reachable" | "unreachable" | "unknown";
-  /** A connected peer with a complete successful current sync round. */
+  /** The enrolled peer answered this round without a connectivity failure. */
   syncVerified?: boolean;
   warnings?: readonly SessionHostingWarning[] | null;
   /** Null means the terminal inventory could not be observed. */
@@ -245,7 +245,7 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
         if (state.since === null) { state.since = clock.now(); saveStatus(db, peer.machineId, state); }
         await unreachable(peer); return;
       }
-      if (observation.syncVerified === true && results.every(result => result.code === 0) && unreachablePeers.delete(peer.machineId)) {
+      if (observation.syncVerified === true && unreachablePeers.delete(peer.machineId)) {
         pendingRecoveries.add(peer.machineId); scheduleRecovery();
       }
       cancelTimer(peer.machineId);

@@ -21,17 +21,18 @@ Literal `connected` clears the hosting outage alert even if sync refuses
 content. Such refusals keep their separate sync diagnostics and backoff.
 Hosting checks, placement and suspension warnings need only native `connected`
 and a reply from the enrolled peer. Ungathered or refused stores do not suppress them.
-Move recovery requires `connected` plus a successful current sync round that
-proves peer connectivity and a complete store pull. An incomplete pull cannot
-trigger move recovery even when there are no apply results. Hosting alerts
-retain the ten-minute delay.
+Move recovery requires `connected` and an answer from the enrolled peer with
+no connectivity failure in the current round. Ungathered and refused stores
+do not block this proof. The move's own journal proofs still control recovery.
+Hosting alerts retain the ten-minute delay.
 
 ## Sync retries
 
 Transport failures, whether code `1` or code `3`, retry after 30, 60, and
 then 120 seconds. A short configured `syncMs` cannot bypass this schedule.
-A successful complete round resets the backoff. Answered identity or content
-refusals do not start an outage backoff or reset an existing one.
+An answered round without a connectivity failure resets the backoff even when
+a store is ungathered or refused. Those stores keep their own diagnostics.
+An identity mismatch cannot prove the enrolled peer answered.
 
 ## Move recovery
 

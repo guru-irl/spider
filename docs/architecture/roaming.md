@@ -104,9 +104,10 @@ read has a null key. A mapped key takes precedence when both entries name the
 same path. Discovery remains successful for the other stores, including global.
 
 Sync connectivity failures with code `1` or code `3` back off after 30, 60,
-and then 120 seconds, even when `syncMs` is shorter. Only a complete successful
-round resets an existing outage backoff. Answered identity or content refusals
-do not start that backoff and keep their refusal codes.
+and then 120 seconds, even when `syncMs` is shorter. A round resets that
+backoff when the enrolled peer answers and no result reports a connectivity
+failure. Ungathered and refused stores keep their own diagnostics but do not
+block the reset. An identity mismatch cannot prove the enrolled peer answered.
 
 Sync gathers every enrolled box's inventory before transferring store batches.
 An ungathered mapped key cannot receive imports, exports, or an initial session
@@ -374,13 +375,15 @@ resumes the retained outage. A machine with hosted sessions gets one hosting ale
 after ten minutes. `needs_login`, `needs-login`, and other uncertain states
 neither start an outage nor clear one. Literal `connected` clears the hosting
 outage alert even when the peer refuses sync content. Sync refusals retain
-their own diagnostics and do not reset an established sync backoff.
+their own diagnostics. An answered round without a connectivity failure resets
+an established sync backoff.
 Hosting checks, placement and suspension warnings still run when the native
 state is `connected` and the enrolled peer answered, even with ungathered or
 refused stores.
-Live move recovery requires a separate proof: literal `connected` plus a
-successful current sync round with verified peer connectivity and a complete
-store pull. An incomplete pull never schedules move recovery.
+Live move recovery requires a separate proof: literal `connected` plus an
+answer from the enrolled peer without a connectivity failure in the current
+round. Ungathered or refused stores do not block this proof. Recovery still
+checks the move's own journal and ownership evidence before making progress.
 
 Machine-intercom initialization retries failed setup after 1, 2, 5, 10, and
 then 30 seconds. Its status stays pending during the outage. Successful setup
@@ -543,7 +546,7 @@ launch failure and retirement, then a higher home epoch.
 
 When an unreachable peer becomes connected and completes a verified sync round,
 the running hub schedules one full recovery pass for pending moves involving
-that peer. An answered inventory with an incomplete store pull is still unknown,
+that peer. Ungathered and refused stores do not prevent connectivity proof,
 even when the round returned no apply results. The pass runs after sync, not
 inside its callback. Full recovery and
 cleanup share one writer. Successful-sync cleanup is deferred with one coalesced

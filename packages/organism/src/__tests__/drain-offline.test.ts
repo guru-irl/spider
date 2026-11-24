@@ -101,6 +101,34 @@ it("keeps one failure receipt per affected session during the same outage", asyn
   expect(rows.map(row => JSON.parse(row.payload).status)).toEqual(["failed", "failed"]);
 });
 
+it("retains and replays a deferred input after a partial apply failure", async () => {
+  databases.db.prepare("INSERT INTO runs(id,session_id,agent,status) VALUES ('run','session','worker','done')").run();
+  let online = false;
+  const complete = vi.fn(async () => {
+    if (!online) throw offline();
+    return '{"memory":[],"skills":[],"todos":[{"text":"First saved todo."},{"text":"Second saved todo."}]}';
+  });
+  const worker = fixture(complete, { org: { ...ORGANISM_DEFAULTS, selfNaming: false, passes: { runMemoryTodo: true, todoMemory: false, learning: false, consolidation: false, reflection: false, insights: false } } });
+  await worker.runDrain("session", "before_compact", snapshot("Keep until apply succeeds."));
+  const originalPrepare = databases.db.prepare.bind(databases.db);
+  let inserts = 0;
+  const prepare = vi.spyOn(databases.db, "prepare").mockImplementation(sql => {
+    if (sql.includes("INSERT INTO todos (") && ++inserts === 2) throw new Error("todo write failed");
+    return originalPrepare(sql);
+  });
+  try {
+    online = true; await vi.advanceTimersByTimeAsync(300_000);
+    expect(databases.db.prepare("SELECT text FROM todos WHERE session_id='session' ORDER BY seq").all()).toEqual([{ text: "First saved todo." }]);
+    expect(databases.db.prepare("SELECT session_id FROM organism_deferred_drain").all()).toEqual([{ session_id: "session" }]);
+    expect(worker.getLastDrain()?.errors).toContainEqual({ phase: "apply", message: "todo write failed" });
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(databases.db.prepare("SELECT text FROM todos WHERE session_id='session' ORDER BY seq").all()).toEqual([
+      { text: "First saved todo." }, { text: "First saved todo." }, { text: "Second saved todo." },
+    ]);
+    expect(databases.db.prepare("SELECT session_id FROM organism_deferred_drain").all()).toEqual([]);
+  } finally { prepare.mockRestore(); }
+});
+
 it("does not repeat a successful pass when a later provider call fails", async () => {
   databases.db.prepare("INSERT INTO runs(id,session_id,agent,status) VALUES ('run','session','worker','done')").run();
   let online = false;

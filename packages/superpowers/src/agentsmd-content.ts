@@ -25,7 +25,7 @@ precedence over skills.
 
 ## pstack skills
 
-spider also ships 31 skills adapted from pstack. Use them alongside the
+spider also ships 33 skills adapted from pstack. Use them alongside the
 superpowers skills above; they replace none of them.
 
 - \`how\`: how code works, a walkthrough before changing it, or where code should
@@ -38,6 +38,7 @@ superpowers skills above; they replace none of them.
   when asked.
 - \`show-me-your-work\`: keep its decision log for long, unattended or
   multi-phase work.
+- \`ketchup\`, \`ketchup-video\`: chat catch-up and waiting calls, in text or video.
 - \`principle-*\`: each description says when it applies. When a decision
   matches one, read that skill in full first. In your reply, name each
   principle you applied and the choice it changed.

@@ -692,6 +692,15 @@ The result includes the new machine-qualified intercom address and actual route
 warnings. If source cleanup is pending, the destination line and warnings still
 appear first, followed by the cleanup reason and `spider roam status`.
 
+Catalog discovery can record a worktree-only session location. Before a move,
+source composition completes that list with the mapped current worktree,
+`global`, and a repository store for every required worktree. Separately bound
+worktrees remain in the roster, and duplicate keys are removed. Live activation
+and dormant composition use the same rule for opening stores and recording
+the location. The first-move seed creates worktree membership. Freeze records
+a barrier for every roster key, but freezes session state only in worktree stores.
+Missing required stores or barriers still refuse the move.
+
 The hub freezes the source before it changes the home. A timeout does not
 unfreeze the source or prove that the destination never started. Use
 `spider roam recover <operation-id>` to reconcile a pending move. Cancellation

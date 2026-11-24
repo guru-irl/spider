@@ -7,7 +7,7 @@ import { paths } from "@spider/db-core";
 import { recordLocation } from "@spider/db-core/roam/catalog";
 import { readLocal } from "@spider/db-core/roam/local-state";
 import { readSessionState } from "@spider/db-core/roam/state";
-import type { Home, HubOperationReadiness, StoreKey } from "@spider/db-core/roam/types";
+import type { Home, HubOperationReadiness } from "@spider/db-core/roam/types";
 import { openFreezeJournal } from "@spider/roam/journal";
 import { openLocalCore, readLocalIdentity } from "@spider/roam/runtime";
 import { participantCaptureReady } from "@spider/roam/production-supervisor";
@@ -20,6 +20,7 @@ import type { AdmissionGate } from "./admission";
 import { createLiveFreezePorts, inspectLiveOwner, type LiveFreezeInput } from "./live";
 import { serveSessionControl } from "./control";
 import { createHostMoveBindings } from "./move-runtime";
+import { completeMoveRoster } from "./move-roster";
 import { readmitLiveSession } from "./readmit";
 
 export interface MoveActivationInput extends Pick<LiveFreezeInput, "usage" | "embeddings" | "organism" | "others" | "activity" | "bootId"> {
@@ -37,16 +38,17 @@ export async function createMoveActivation(input: MoveActivationInput): Promise<
     closeCore = () => core.close();
     const journal = openFreezeJournal(join(input.root, "roam", "journal.db"));
     const herdr = loadHerdrConfig(input.root), transport = createTransport({ binary: herdr.core.binary, env: process.env, enrolled: config.peers });
-    mounted = await createHostMoveBindings({ root: input.root, globalDb: core.db, config, journal, sessionId: input.sessionId, transport });
     stage = "live-freeze";
-    const bindings = mounted.bindings, participant = bindings.participant!, context = input.context();
+    const context = input.context();
     if (!context || context.sessionManager.getSessionId() !== input.sessionId || context.sessionManager.getSessionFile() !== input.file) throw new Error("participant-context-unavailable");
     const old = core.db.prepare("SELECT stores_json FROM roam_locations WHERE session_id=?").get(input.sessionId) as { stores_json: string } | undefined;
     const maps = core.db.prepare("SELECT repo_key,workspace_id,path FROM roam_workspace_maps").all() as { repo_key: string; workspace_id: string; path: string }[];
     const current = maps.filter(row => resolve(row.path) === resolve(dirname(paths.projectRoot(context.cwd))));
-    const expectedStores: StoreKey[] = old ? JSON.parse(old.stores_json) : current.length === 1 ? ["global", `repo:${current[0].repo_key}`, `worktree:${current[0].repo_key}:${current[0].workspace_id}`] : ["global"];
-    const stores = expectedStores.map(key => ({ key, db: bindings.stores!.open(key) }));
-    participant.stores = stores;
+    const expectedStores = completeMoveRoster(old ? JSON.parse(old.stores_json) : ["global"], current.length === 1 ? current[0] : undefined);
+    stage = "move-bindings";
+    mounted = await createHostMoveBindings({ root: input.root, globalDb: core.db, config, journal, sessionId: input.sessionId, transport, storeKeys: expectedStores });
+    stage = "live-freeze";
+    const bindings = mounted.bindings, participant = bindings.participant!, stores = participant.stores;
     const home = sessionHome(core.db, input.sessionId); if (home === "unknown") throw new Error("participant-home-unavailable");
     if (current.length === 1 || old) recordLocation(core.db, { sessionId: input.sessionId, stores: expectedStores, home, file: input.file, cwd: context.cwd });
     const address = bindings.intercom!.address;
@@ -87,6 +89,7 @@ export async function createMoveActivation(input: MoveActivationInput): Promise<
     return { async close() { try { await socket.close(); } finally { await mounted!.close(); core.close(); } }, async ready(file, epoch, home) { if (config.role === "hub") await ready(file, epoch, home); } };
   } catch (error) {
     const failure = new MoveSetupError(stage, error);
+    if (failure.code === "participant-stores-unavailable") failure.message = failure.code;
     try { try { await mounted?.close(); } finally { closeCore?.(); } }
     catch { /* Retain the setup cause, not a secondary cleanup exception. */ }
     throw failure;

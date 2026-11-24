@@ -752,6 +752,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
   };
 
   const agentConsoles = registerAgentConsoleLifecycle(registrationPi, { hc, currentOwner: () => owner, reportError: report,
+    onMachineAvailable: listener => need(client).onMachineAvailable(listener),
     reportCleanupError: error => { if (options.reportError) options.reportError(error); else process.stderr.write((error instanceof HerdrError && error.code === 'console-cleanup-exhausted' ? error.message : herdrErrorNotice(error)) + '\n'); },
     beforeReap: async console => {
       const labels = console.labels, runId = labels[HERDR_LABELS.run], sessionId = labels[HERDR_LABELS.session];

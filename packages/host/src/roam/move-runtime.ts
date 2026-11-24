@@ -6,9 +6,11 @@ import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { isAbsolute, join, relative } from "node:path";
-import { openDb, type Db } from "@spider/db-core";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { openDb, paths, type Db } from "@spider/db-core";
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
+import { parseLocationStores, recordLocation } from "@spider/db-core/roam/catalog";
+import { completeMoveRoster } from "./move-roster";
 import { parseHubReadiness } from "@spider/db-core/roam/readiness";
 import type { Blocker, Home, HubOperationReadiness, JsonObject, Probe, StoreKey } from "@spider/db-core/roam/types";
 import type { Clock, Diagnostic, GitPorts, Operation, RoamConfig, Transport, WorkspaceSnapshot } from "@spider/roam/contracts";
@@ -58,6 +60,8 @@ export function moveBindingDiagnostics(bindings: MoveAdapterBindings): Diagnosti
 export interface HostMoveInput {
   root: string; globalDb: Db; config: RoamConfig; journal: FreezeJournal; sessionId: string; transport: Transport;
   sync?: NonNullable<MoveAdapterBindings["sync"]>; operation?: Operation;
+  /** Live activation supplies its already completed source roster. */
+  storeKeys?: readonly StoreKey[];
 }
 function gitRun(cwd: string, argv: readonly string[], options?: { env?: Readonly<NodeJS.ProcessEnv>; stdin?: Buffer }): Promise<Buffer> {
   return new Promise((done, reject) => {
@@ -83,11 +87,24 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
   const presentations = createHostRoamPresentationPorts({ root, globalDb, revocationDb: privateDb, config });
   const stores = createStorePort(config, globalDb, { allowUnassignedGlobal: true });
   const keys = listStoreKeys(globalDb);
-  const known = globalDb.prepare("SELECT stores_json FROM roam_locations WHERE session_id=?").get(sessionId) as { stores_json: string } | undefined;
+  const known = globalDb.prepare("SELECT stores_json,cwd FROM roam_locations WHERE session_id=?").get(sessionId) as { stores_json: string; cwd: string | null } | undefined;
   const checkKeys = (input.operation?.args.check as { storeKeys?: unknown } | undefined)?.storeKeys;
-  const requiredKeys: unknown = Array.isArray(checkKeys) ? checkKeys : Array.isArray(input.operation?.args.keys) ? input.operation!.args.keys : known ? JSON.parse(known.stores_json) : keys;
-  if (!Array.isArray(requiredKeys) || requiredKeys.some(key => typeof key !== "string" || !keys.includes(key as StoreKey))) throw new Error("participant-stores-unavailable");
-  const roster = keys.filter(key => requiredKeys.includes(key)).map(key => ({ key, db: stores.openStore(key).db }));
+  const requestedKeys = input.storeKeys ?? (Array.isArray(checkKeys) ? checkKeys : Array.isArray(input.operation?.args.keys) ? input.operation!.args.keys : undefined);
+  const sourceHome = sessionHome(globalDb, sessionId);
+  const completeSource = known && requestedKeys === undefined && sourceHome !== "unknown" && (!sourceHome || sourceHome.machineId === config.machineId);
+  let requiredKeys: StoreKey[];
+  try {
+    const cwd = known?.cwd;
+    const mapped = completeSource && cwd ? (globalDb.prepare("SELECT repo_key,workspace_id,path FROM roam_workspace_maps").all() as { repo_key: string; workspace_id: string; path: string }[])
+      .filter(row => resolve(row.path) === resolve(dirname(paths.projectRoot(cwd)))) : [];
+    requiredKeys = completeSource ? completeMoveRoster(JSON.parse(known.stores_json), mapped.length === 1 ? mapped[0] : undefined)
+      : parseLocationStores(requestedKeys ?? (known ? JSON.parse(known.stores_json) : keys));
+    if (requiredKeys.some(key => !keys.includes(key))) throw new Error("participant-stores-unavailable");
+  } catch (error) { privateDb.close(); stores.close(); throw new Error("participant-stores-unavailable", { cause: error }); }
+  let roster: { key: StoreKey; db: Db }[];
+  try { roster = requiredKeys.map(key => ({ key, db: stores.openStore(key).db })); }
+  catch (error) { privateDb.close(); stores.close(); throw error; }
+  if (completeSource) recordLocation(globalDb, { sessionId, stores: requiredKeys, home: sourceHome });
   const clock: Clock = { now: () => Date.now(), later(ms, fn) { const timer = setTimeout(fn, ms); timer.unref(); return () => clearTimeout(timer); } };
   const sync = input.sync ?? createSync({ config, globalDb, journal, transport, clock, stores });
   const inventory = createProcessInventory(join(root, "herdr"));

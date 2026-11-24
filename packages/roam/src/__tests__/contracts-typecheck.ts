@@ -92,7 +92,8 @@ type _FreezeAck = Assert<Equal<FreezeAck, {
 type _MoveRequest = Assert<Equal<MoveRequest, { operation: Operation; sessionId: string; destinationMachine: MachineId }>>;
 type _MoveResult = Assert<Equal<MoveResult, { home: Home; terminal: string | null; intercomAddress: string; warnings: readonly string[]; sourceCleanup: import("../contracts").SourceCleanup; destinationRoot?: string }>>;
 type _MoveRefusalCode = Assert<Equal<MoveRefusalCode, keyof typeof import("../contracts").MOVE_REFUSAL_MESSAGES>>;
-type _MoveRefusal = Assert<Equal<MoveRefusal, { code: MoveRefusalCode; blockers: readonly ValidatedBlockerId[]; message: string; hostingWarning?: HostingWarning }>>;
+type _MoveRefusal = Assert<Equal<MoveRefusal, { code: MoveRefusalCode; blockers: readonly ValidatedBlockerId[]; message: string; hostingWarning?: HostingWarning;
+  firstHomeWithheld?: { machineId: string; storeKind: "worktree" | "replica" } }>>;
 type _MoveOutcome = Assert<Equal<MoveOutcome, { ok: true; value: MoveResult } | { ok: false; refusal: MoveRefusal }>>;
 type _MoveSessionOutcome = Assert<Equal<MoveSessionOutcome, Outcome<MoveResult> & (
   ({ code: 0 } & Extract<MoveOutcome, { ok: true }>) |

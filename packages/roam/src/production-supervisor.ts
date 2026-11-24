@@ -363,7 +363,7 @@ async function startEnrolledSupervisor(root: string, options: { coreState: Super
       events: createSupervisorEvents(runtime.db.raw.name, eventClient),
       async beforeInspect(sessionId) { await observeHosting({ ...hosting, sessionId }); },
       owner: intent => owner(root, intent, system),
-      async launch(intent, operationId, mode) {
+      async launch(intent, operationId, mode, beforeSpawn) {
         const currentCore = await hc.coreId(new AbortController().signal);
         const bytes = await readFile(intent.file), absolutePi = env.SPIDER_ROAM_PI;
         if (!absolutePi || !isAbsolute(absolutePi)) throw new Error("provisioned-pi-unavailable");
@@ -373,7 +373,7 @@ async function startEnrolledSupervisor(root: string, options: { coreState: Super
             env, machineId: runtime.config.machineId, core: { coreId: currentCore, session: env.HC_SESSION ?? "", socket: env.HC_SOCKET ?? "" },
             bootId: system.bootId, limits: system.limits, shell: system.shell ?? "/bin/sh", sessionBytes: runtime.config.limits.sessionBytes } });
         const launched = await adapter.launch({ sessionId: intent.sessionId, file: intent.file, cwd: intent.cwd, epoch: intent.epoch, moveId: intent.moveId,
-          pi: absolutePi, sha256: createHash("sha256").update(bytes).digest("hex"), operationId }, { mode: mode === "initial" ? "fresh" : "reconcile" });
+          pi: absolutePi, sha256: createHash("sha256").update(bytes).digest("hex"), operationId }, { mode: mode === "initial" ? "fresh" : "reconcile", beforeSpawn });
         if ("kind" in launched && launched.kind === "adopted-exited") {
           return { code: 1, reason: "adopted-exited", operationId, home: null, epoch: intent.epoch, repairCommand: null, value: null };
         }

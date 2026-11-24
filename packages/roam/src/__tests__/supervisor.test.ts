@@ -63,7 +63,8 @@ function fixture() {
   };
   ports.launch = createDurableLaunchPort({ intents, operationId: () => `launch-${++sequence}`,
     async authorize(value) { return JSON.stringify(authoritative) === JSON.stringify(value); },
-    async invoke({ intent: value, reservation }) {
+    async invoke({ intent: value, reservation, beforeSpawn }) {
+      expect(await beforeSpawn()).toBe("admitted");
       launches.push({ intent: value, at: now });
       owner = { kind: "live", identity: { bootId: "boot-1", pid: 100 + launches.length, startTime: `start-${launches.length}` } };
       return { code: 0, reason: "ready", operationId: reservation.operationId, home: typeof home === "object" ? home : null,
@@ -335,7 +336,8 @@ it("counts owners that exit before readiness as crashes and suspends after five"
   const module = await supervisorModule(); if (!module) return;
   const f = fixture(); let attempts = 0;
   f.ports.launch = createDurableLaunchPort({ intents: f.intents, operationId: () => `early-${++attempts}`, authorize: async () => true,
-    async invoke({ intent: value, mode, reservation }) {
+    async invoke({ intent: value, mode, reservation, beforeSpawn }) {
+      if (mode === "initial") expect(await beforeSpawn()).toBe("admitted");
       return { code: mode === "initial" ? 3 : 1, reason: mode === "initial" ? "readiness-pending" : "adopted-exited",
         operationId: reservation.operationId, home: null, epoch: value.epoch, repairCommand: null, value: null };
     } });

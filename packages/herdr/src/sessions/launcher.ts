@@ -73,6 +73,7 @@ export interface ExactSessionLaunchRequest {
   sessionId: string; file: string; cwd: string; sha256: string; epoch: number; moveId: string | null; pi: string; operationId?: string;
 }
 export type LaunchNoStartProof =
+  | { kind: 'prepared-not-invoked'; operationId: string; coreId: string; bootId: string; beforeLaunch: true }
   | ({ kind: 'prelaunch-error'; operationId: string; beforeLaunch: true } &
       ({ errorCode: 'core-unavailable' | 'core-mismatch' } | { errorCode: 'missing-hc' | 'spawn-error'; hcPid: null }))
   | { kind: 'no-terminal-after-hc-exit'; operationId: string; coreIdBefore: string; hcExitedAt: number;
@@ -91,6 +92,10 @@ export interface LaunchEvidence {
 export function provedNoStart(value: LaunchEvidence, operationId: string, coreId: string, expectedBootId: string): boolean {
   const proof = value.proof;
   if (!proof || proof.operationId !== operationId) return false;
+  if (proof.kind === 'prepared-not-invoked') {
+    return proof.beforeLaunch === true && proof.coreId === coreId && proof.bootId === expectedBootId &&
+      value.receipt === 'absent' && value.terminal === 'absent';
+  }
   if (proof.kind === 'prelaunch-error') {
     const safeError = proof.errorCode === 'core-unavailable' || proof.errorCode === 'core-mismatch' ||
       (proof.errorCode === 'missing-hc' || proof.errorCode === 'spawn-error') && proof.hcPid === null;
@@ -119,11 +124,14 @@ export function provedNoStart(value: LaunchEvidence, operationId: string, coreId
 const ACTIVE_EXACT = Symbol.for('spider.herdr.exact-launch.active');
 const launchRuntime = globalThis as typeof globalThis & { [ACTIVE_EXACT]?: Set<string> };
 const activeExact = launchRuntime[ACTIVE_EXACT] ??= new Set<string>();
+export type ExactLaunchAdmission = 'admitted' | 'pending' | 'cancelled';
 export interface ExactSessionLaunchPorts extends SessionLaunchPorts {
   bootId(): Promise<string>; limits(): Promise<{ soft: number; hard: number }>; shell: string;
   machineId: string; core: { session: string; socket: string; coreId: string };
   /** Reconcile the same operation against its receipt, labelled terminal and authoritative proof. */
   reconcileLaunch(operationId: string, options: { signal: AbortSignal }): Promise<LaunchEvidence>;
+  /** Durable admission after the handoff and final file check, before any spawn. */
+  beforeSpawn?(operationId: string): Promise<ExactLaunchAdmission>;
   sessionBytes?: number; launchMs?: number; reconcileMs?: number; retainProvedHandoff?: boolean; now?(): number; wait?(ms: number): Promise<void>;
 }
 
@@ -210,7 +218,7 @@ export async function launchExactSession(request: ExactSessionLaunchRequest, por
     if (!boot) throw new HerdrError('process-identity-unavailable', 'Cannot verify the local boot identity');
     const id = await claimIdLock(root, request.sessionId, ports.processIdentity, ports.processInventory.probe,
       { bootId: async () => boot, exclusive: true, ...(recoverPending ? { recoverPending } : {}) });
-    let lease: Awaited<ReturnType<SessionLeases['claim']>> | undefined, operationId: string | undefined, handoffFile: string | undefined, starting = false;
+    let lease: Awaited<ReturnType<SessionLeases['claim']>> | undefined, operationId: string | undefined, handoffFile: string | undefined, starting = false, retainPrepared = false;
     let ownPending = Boolean(previous?.pendingOperationId && previous.bootId === boot && previous.identity.pid === ports.processIdentity.pid && previous.identity.startIdentity === ports.processIdentity.startIdentity);
     try {
       if (previous?.pendingOperationId && previous.pendingFile) {
@@ -244,6 +252,14 @@ export async function launchExactSession(request: ExactSessionLaunchRequest, por
       const rechecked = await verifyExactFile(request, sessionBytes);
       if (rechecked.device !== verified.device || rechecked.inode !== verified.inode) {
         throw new HerdrError('session-file-invalid', 'Exact session file was replaced before launch');
+      }
+      if (ports.beforeSpawn) {
+        retainPrepared = true;
+        const admission = await ports.beforeSpawn(operationId);
+        if (admission !== 'admitted') {
+          if (admission === 'cancelled') retainPrepared = false;
+          throw new HerdrError('launch-intent-stale', 'Exact launch admission changed before invocation');
+        }
       }
       starting = true;
       void Promise.resolve().then(() => ports.spawnPi({ sessionFile: file, sessionId, cwd: request.cwd, environment, argv, env, terminal }))
@@ -282,7 +298,7 @@ export async function launchExactSession(request: ExactSessionLaunchRequest, por
       }
       throw new HerdrError('launch-pending', 'Exact session launch needs reconciliation');
     } catch (error) {
-      if (!starting && !ownPending) {
+      if (!starting && !retainPrepared && !ownPending) {
         if (!operationId || !await id.cancelHandoff(operationId)) await id.release();
         try { if (handoffFile && operationId) await removeLaunchHandoff(root, operationId); }
         finally { if (lease) await ports.leases.release(file, lease.token, { mode: 'cutover' }); }

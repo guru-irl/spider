@@ -242,7 +242,7 @@ it("uses the fixture shell for a supervised exact launch", async () => {
     const service = await productionSupervisor.startProductionSupervisor(global.root, { system });
     try {
       if (!launch) throw new Error("supervisor did not register a launch port");
-      await launch({ sessionId: "session-1", epoch: 1, desired: "running", suspended: null, file, cwd: global.root, moveId: null }, "launch-1", "initial");
+      await launch({ sessionId: "session-1", epoch: 1, desired: "running", suspended: null, file, cwd: global.root, moveId: null }, "launch-1", "initial", async () => "admitted");
       expect(adapter.mock.calls[0][0].base.shell).toBe("/fixture/shell");
     } finally { await service.stop(); }
   } finally { global.close(); }

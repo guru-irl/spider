@@ -57,9 +57,11 @@ The startup diagnostic identifies the selection class without logging the path.
 
 ## Stop and pending launches
 
-`supervisor.ts` reserves a launch before authorization. It changes the
-reservation from `reserved` to `invoking` through a compare-and-swap before
-calling the exact-launch adapter.
+`supervisor.ts` reserves a launch before authorization. Production prerequisites
+and exact handoff preparation run while the reservation remains `reserved`.
+After the handoff is durable, the launcher calls the supervisor's `beforeSpawn`
+admission callback. Spawn requires a successful compare-and-swap to `invoking`.
+Canceled authorization releases the launcher's own uninvoked preparation.
 
 `participant-runtime.ts` persists a stopped intent independently of the roaming
 enable switch. Stop clears a `reserved` reservation with no ID lock to idle,
@@ -85,6 +87,13 @@ launch runs on this path.
 
 A pending ID lock must match the participant's launch operation before stop can
 settle it. Stop never settles a different operation, such as a move launch.
+
+`launcher.ts` records `exact-launch-prepared` before ownership handoff writes.
+After both handoffs are durable, successful admission permits
+`exact-invocation-admitted` and then spawn. A restart between those steps retains
+the same operation for reconciliation, without another spawn. A prepared record
+with matching session, file, launcher, boot, and core and no admission or spawn
+attempt proves `prepared-not-invoked`.
 
 `launcher.ts` settles ownership only after proving launcher exit and proving
 that the terminal cannot adopt. Reconciliation has a 60-second deadline.

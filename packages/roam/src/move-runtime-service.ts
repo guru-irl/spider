@@ -154,9 +154,7 @@ export function createMoveRuntimeService(input: Omit<MoveRuntimeInput, "sessionI
     try { return await mounted.control(request); } finally { await mounted.close(); }
   });
   const requested = new Map<string | undefined, boolean>();
-  let current: { machineId: string | undefined; full: boolean } | undefined;
   const requestRecovery = (machineId: string | undefined, full: boolean): Promise<void> => {
-    if (full && current?.full && (current.machineId === undefined || current.machineId === machineId)) return recoveryFlight!;
     requested.set(machineId, full || requested.get(machineId) === true);
     if (recoveryFlight) return recoveryFlight;
     return recoveryFlight = Promise.resolve().then(async () => {
@@ -164,9 +162,7 @@ export function createMoveRuntimeService(input: Omit<MoveRuntimeInput, "sessionI
         while (requested.size) {
           const entries = [...requested]; requested.clear();
           for (const [machineId, full] of entries) {
-            current = { machineId, full };
-            try { await (full ? recoverOnce(machineId) : recoverCleanupOnce(machineId)); }
-            finally { current = undefined; }
+            await (full ? recoverOnce(machineId) : recoverCleanupOnce(machineId));
           }
         }
       } finally { recoveryFlight = null; }

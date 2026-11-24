@@ -90,6 +90,29 @@ it("full peer recovery and cleanup share one writer and coalesce concurrent requ
   expect(f.mounted).toEqual(["session-a"]);
 }, 5000);
 
+it("a running full peer pass queues exactly one follow-up snapshot", async () => {
+  const f = await fixture();
+  const add = (sessionId: string) => {
+    const operation = { id: `move-${sessionId}`, kind: "move", machineId: HUB, expectedEpoch: 1, args: { sessionId, destinationMachine: OTHER } };
+    f.journal.begin(operation); f.journal.record(operation.id, "move-request", { sessionId, destinationMachine: OTHER, operation });
+  };
+  add("session-a");
+  let entered!: () => void, release!: () => void, active = 0, maximum = 0;
+  const started = new Promise<void>(resolve => { entered = resolve; }), held = new Promise<void>(resolve => { release = resolve; });
+  const calls: string[] = [];
+  const service = createMoveRuntimeService({ root: f.root, globalDb: f.global.db, config: f.ports.config, journal: f.journal, transport: {} as Transport }, async input => {
+    active++; maximum = Math.max(maximum, active); calls.push(input.sessionId);
+    try { if (calls.length === 1) { entered(); await held; } throw new Error("synthetic participant still pending"); }
+    finally { active--; }
+  });
+  const first = service.recover(OTHER); await started;
+  add("session-b");
+  const second = service.recover(OTHER), third = service.recover(OTHER), fourth = service.recover(OTHER);
+  release(); await Promise.all([first, second, third, fourth]);
+  expect(calls).toEqual(["session-a", "session-a", "session-b"]);
+  expect(maximum).toBe(1);
+}, 5000);
+
 it("startup replays a completed move's pending source view through only its recorded session", async () => {
   const f = await fixture(), moveId = "present-move-a", taskId = presentationTaskId(moveId);
   f.ports.config.peers = f.ports.config.peers.map(peer => ({ ...peer, node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/spider" }));

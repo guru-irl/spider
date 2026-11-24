@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { hostingWarningText } from "./hosting-warning";
+import { writeLocal } from "@spider/db-core/roam/local-state";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { Home, JsonObject } from "@spider/db-core/roam/types";
@@ -119,6 +120,7 @@ async function complete(request: MoveRequest, ports: MovePorts, result: MoveSess
   if (begun.kind !== "done") ports.journal.record(request.operation.id, "done", evidence.json(result));
   if (readMoveReservation(request.sessionId, ports.journal)?.moveId === request.operation.id)
     ports.journal.record(moveSessionSlot(request.sessionId), "released", { moveId: request.operation.id });
+  writeLocal(ports.globalDb, "recovery-diagnostic", request.operation.id, undefined);
   return result;
 }
 async function locked(request: MoveRequest, ports: MovePorts, cancel: boolean, warn: (warning: DestinationObservation["hostingWarning"]) => void): Promise<MoveSessionOutcome> {

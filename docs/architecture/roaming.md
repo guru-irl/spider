@@ -548,7 +548,9 @@ When an unreachable peer becomes connected and completes a verified sync round,
 the running hub schedules one full recovery pass for pending moves involving
 that peer. Ungathered and refused stores do not prevent connectivity proof,
 even when the round returned no apply results. The pass runs after sync, not
-inside its callback. Full recovery and
+inside its callback. A peer pass skips `move-lock-pending` without recording
+a warning. A later pass can pick up the move if it remains pending. Terminal
+recovery clears the move's saved recovery diagnostic. Full recovery and
 cleanup share one writer. Successful-sync cleanup is deferred with one coalesced
 timer and one flight. Disable and shutdown cancel queued cleanup and drain the
 active flight before closing stores. Sync callbacks never wait on recovery,

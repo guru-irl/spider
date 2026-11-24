@@ -43,7 +43,9 @@ waiting on itself. Full recovery and cleanup share a single writer. The pass
 uses the existing forward-only journal proofs and never retries failed moves
 in a loop. Successful-sync cleanup uses one coalesced timer and one flight.
 Disable and shutdown cancel scheduled work and drain active recovery and cleanup
-before closing stores.
+before closing stores. A peer pass skips an occupied session move lock without
+recording a warning. A later pass can retry it if the move is still pending.
+Terminal recovery clears that move's saved recovery diagnostic.
 
 ## Partial disable
 

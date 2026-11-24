@@ -74,6 +74,36 @@ async function stoppedFixture(side: "host" | "connect" = "host") {
   return { ...f, api, doctor, runRepair };
 }
 
+it.each(["host", "connect"] as const)("inspects a stopped or running owned %s unit without changing it", async side => {
+  const f = await stoppedFixture(side);
+  const inspect = async () => {
+    let out = "", err = "";
+    const code = await main(["--global-root", f.root, "roam", "intercom", "inspect-units"],
+      { out: text => { out += text; }, err: text => { err += text; } },
+      { pairPorts: { ...f.ports, node: process.execPath, ssh: "/fixture/ssh", keygen: "/fixture/keygen" } });
+    expect(code, out + err).toBe(0);
+    return JSON.parse(out);
+  };
+  const before = f.calls.length;
+  expect(await inspect()).toEqual({ version: 1, kind: "intercom-unit-inspect", ok: true, machineId: f.ports.machineId, needsRepair: true });
+  expect(f.calls.slice(before).some(argv => ["enable", "start", "stop"].includes(argv[2]))).toBe(false);
+  expect((await f.runRepair()).code).toBe(0);
+  const after = f.calls.length;
+  expect(await inspect()).toEqual({ version: 1, kind: "intercom-unit-inspect", ok: true, machineId: f.ports.machineId, needsRepair: false });
+  expect(f.calls.slice(after).some(argv => ["enable", "start", "stop"].includes(argv[2]))).toBe(false);
+}, 5000);
+
+it("reports an unverified unit as unknown without changing it", async () => {
+  const f = await stoppedFixture(); f.mismatch(); const before = f.calls.length;
+  let out = "", err = "";
+  const code = await main(["--global-root", f.root, "roam", "intercom", "inspect-units"],
+    { out: text => { out += text; }, err: text => { err += text; } },
+    { pairPorts: { ...f.ports, node: process.execPath, ssh: "/fixture/ssh", keygen: "/fixture/keygen" } });
+  expect(code, out + err).toBe(0);
+  expect(JSON.parse(out)).toEqual({ version: 1, kind: "intercom-unit-inspect", ok: true, machineId: f.ports.machineId, needsRepair: null });
+  expect(f.calls.slice(before).some(argv => ["enable", "start", "stop"].includes(argv[2]))).toBe(false);
+}, 5000);
+
 it.each(["host", "connect"] as const)("repairs a stopped owned %s unit and keeps doctor blocking until it is active", async side => {
   const f = await stoppedFixture(side), foreign = join(f.home, ".config/systemd/user/foreign.service");
   writeFileSync(foreign, "foreign unit", { mode: 0o600 });

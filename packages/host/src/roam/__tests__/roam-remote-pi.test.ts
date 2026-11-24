@@ -46,7 +46,7 @@ else process.exit(2);
       args: { sessionId: "session-a", moveId: "move-a", sourceMachine: HUB, repoKey: "fixture", workspaceId: "workspace-a" } };
     const result = JSON.parse((await transport.exec(await transport.resolve(peer), ["roam", "agent", JSON.stringify(request)],
       { timeoutMs: 10000, maxBytes: DEFAULT_LIMITS.replyBytes })).toString());
-    if (available) expect(result).toMatchObject({ code: 0, operationId: "map-a", value: mapped });
+    if (available) expect(result).toMatchObject({ code: 0, operationId: "map-a", value: { kind: "mapped", path: mapped } });
     else {
       expect(result).toMatchObject({ code: 1, reason: "participant-pi-unavailable", causeCode: "participant-pi-unavailable", operationId: "map-a", value: null });
       const inspect = { ...request, id: "inspect-a", kind: "session-inspect", expectedEpoch: 1,

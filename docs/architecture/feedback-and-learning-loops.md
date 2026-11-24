@@ -294,8 +294,9 @@ the event log intact.
 `OrganismConfig.passes` turns each one on or off. An error while resolving the
 model fails the drain and is recorded. A non-connectivity error stays in the
 drain report and does not stop the other passes. A provider connectivity error
-stops later model calls. Provider or service unavailability counts as a
-connectivity failure; explicit authentication and permission failures take
+stops later model calls. Provider or service unavailability and HTTP 408, 429,
+500, 502, 503, 504, and 529 count as connectivity failures. A bare mention of a
+timeout does not. Explicit authentication and permission failures take
 precedence, including in nested causes. The worktree database retains captured
 inputs and unfinished passes for a live session to retry. Inputs with identical
 content coalesce even if their lifecycle reasons differ. The queue retains at

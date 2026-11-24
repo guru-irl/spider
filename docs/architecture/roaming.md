@@ -84,8 +84,11 @@ Hubs enabled on an earlier release must run `spider roam enable` again after
 upgrading, to reinstall the service with the correct entry.
 
 An enabled flag does not prove that the hub started. Doctor uses the same
-read-only status probe as enable, with a two-second bound. A starting service
-can become ready during that window; a socket file alone does not prove readiness.
+read-only status probe as enable. Service metadata and readiness checks share a
+two-second deadline. If service state is unknown and the socket is absent, doctor
+reports immediately instead of retrying. A starting service can become ready in
+the remaining time; a socket file alone does not prove readiness. Control request
+deadlines also apply while a peer sends an incomplete reply.
 Doctor reports `hub-startup-pending` when the service is not running, or when a
 running service still does not answer a ready status probe after the bound.
 Unknown service metadata produces a `hub-startup-unverified` warning, not a block.

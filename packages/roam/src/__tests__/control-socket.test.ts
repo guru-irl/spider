@@ -1,12 +1,13 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { chmodSync, lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { createConnection } from "node:net";
+import { createConnection, createServer, type Socket } from "node:net";
 import { join, resolve } from "node:path";
 import { requestHubControl, startHubControl } from "../control-socket";
 
 const roots: string[] = [];
 const endpoints: Array<{ close(): Promise<void> }> = [];
 afterEach(async () => {
+  vi.useRealTimers();
   for (const endpoint of endpoints.splice(0)) await endpoint.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -32,6 +33,30 @@ it("uses a private socket for local requests and closes it cleanly", async () =>
   await endpoint.close();
   await expect(requestHubControl(file, { op: "status" })).rejects.toThrow();
 }, 5000);
+
+it("times out a partial control reply at the request deadline", async () => {
+  const { file } = fixture();
+  let accept!: (socket: Socket) => void;
+  const accepted = new Promise<Socket>(resolve => { accept = resolve; });
+  const server = createServer(accept);
+  await new Promise<void>(resolve => server.listen(file, resolve));
+  chmodSync(file, 0o600);
+  vi.useFakeTimers();
+  const pending = requestHubControl(file, { op: "status" }, { timeoutMs: 500 }).then(
+    () => "answered", error => (error as Error).message);
+  const peer = await accepted;
+  try {
+    peer.write("{");
+    await vi.advanceTimersByTimeAsync(250);
+    peer.write("\"code\":");
+    await vi.advanceTimersByTimeAsync(250);
+    const outcome = await Promise.race([pending, Promise.resolve("still waiting")]);
+    expect(outcome).toBe("Hub control timed out");
+  } finally {
+    peer.destroy();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
 
 it("rejects malformed, oversized, and multiple requests before dispatch", async () => {
   const { file } = fixture(); const observed: string[] = [];

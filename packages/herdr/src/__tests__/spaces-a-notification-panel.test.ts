@@ -144,7 +144,9 @@ function panelHost(options: { checking?: boolean; hidden?: boolean; parked?: boo
     exec: async (command: string, args: string[]) => { calls.push(['exec', command, args]); if (args.includes('panes')) return { code: 0, stdout: JSON.stringify({ version: 1, kind: 'outcome', outcome: { status: 'complete', reason: 'presented', presentation: null } }) }; const request = JSON.parse(args[args.indexOf('--request') + 1]);
       return state.reply ? state.reply(request) : { code: 0, stdout: JSON.stringify({ ok: true, op: request.op, ...(request.op === 'openSession' ? { terminal: 'owner' } : { viewer: 'viewer' }) }) }; },
   };
-  const createFeedReader = () => ({ read: async () => { calls.push(['read']); if (state.readGate) await state.readGate; if (state.failRead) throw new Error('offline'); return { feeds: structuredClone(state.feeds), errors: structuredClone(state.snapshotErrors ?? []) }; }, close: async () => { calls.push(['closeReader']); } });
+  const createFeedReader = () => ({ read: async () => { calls.push(['read']); if (state.readGate) await state.readGate; if (state.failRead) throw new Error('offline');
+    for (const feed of state.feeds) for (const notice of feed.notifications) feed.updatedAt = Math.max(feed.updatedAt, notice.createdAt);
+    return { feeds: structuredClone(state.feeds), errors: structuredClone(state.snapshotErrors ?? []) }; }, close: async () => { calls.push(['closeReader']); } });
   const api = { ...kit, ...base, ...data, ...sound, ...herdr, ...paneServiceState, herdr, createFeedReader, projectNavigation: options.navigation ?? projectNavigation, indexPaneNavigation, validatePaneSnapshot: indexPaneNavigation, describeOpenFailure, FEED_DISCONNECT_MS, FEED_REFRESH_MS, panelIpcArgv, parseSessionIpcReply, requestPaneService: options.paneService ?? requestPaneService };
   const text = (options.panelSource ?? readFileSync(resolve('packages/herdr/assets/mods/spider/main.js'), 'utf8')).replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)*import .*;\s*$/gm, '').replace('export default class SpiderPanel', 'class SpiderPanel');
   const Panel = new Function('api', `const { ${Object.keys(api).join(', ')} } = api; ${text}; return SpiderPanel;`)(api);
@@ -272,6 +274,7 @@ it('shares arrival claims between Agents and a hidden or visible panel', async (
   const agentSound = sound.createNotificationSound({ shared: h.herdr.shared, setShared: h.herdr.setShared, playSound: h.herdr.playSound, props: () => h.config, report: () => {} });
   agentSound.observe({ feeds: h.state.feeds, errors: [] });
   h.state.feeds[0].notifications.push(notice(h.state.feeds[0], 'hidden-mixed-low', 'low', Date.now()), notice(h.state.feeds[0], 'hidden-mixed-urgent', 'urgent', Date.now()));
+  h.state.feeds[0].updatedAt = Date.now();
   agentSound.observe({ feeds: h.state.feeds, errors: [] }); await h.view.reload(h.cx);
   expect(h.calls.filter(call => call[0] === 'playSound')).toEqual([['playSound', 'blocked']]);
   h.state.layout.hidden = false; await h.view.reload(h.cx);
@@ -658,7 +661,9 @@ it('does not open when the occurrence disappears during owner identity verificat
 });
 
 it('keeps stale owner cards dismissible without dispatch', async () => {
-  const h = panelHost(); h.state.feeds[0].updatedAt = Date.now() - 60000; await h.ready; await h.drain();
+  const h = panelHost(); h.state.feeds[0].updatedAt = Date.now() - 60000;
+  h.state.feeds[0].notifications[0].createdAt = h.state.feeds[0].updatedAt;
+  await h.ready; await h.drain();
   const root = h.view.render(h.cx), body = byId(root, 'need-intentional:owner:notice-1'), dismiss = byId(root, 'dismiss-intentional:owner:notice-1');
   expect(body.events.on_click).toBeUndefined(); expect(body.styles.tooltip).toEqual(['Owner unavailable']); expect(dismiss.events.on_click).toBeTypeOf('function');
   dismiss.events.on_click({}, h.cx); expect(h.calls.filter(call => call[0] === 'run')).toEqual([]);

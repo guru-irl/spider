@@ -358,7 +358,8 @@ async function outages(suite: Suite): Promise<void> {
       state => state?.status === 'recovering' && state.failures === 1, deadline(30_000));
     expect((await sessions[0].events()).some(event => event.type === 'tool_execution_end' && event.toolCallId === 'outage-ask')).toBe(false);
     const down = await waitFor('packaged hub marks the failed edge down after its retry', () => edge(hub, box), state => state?.status === 'down', deadline(60_000));
-    const downRoster = await hub.probe.listSessions();
+    const downRoster = await waitFor('packaged hub roster reports the helper down', () => hub.probe.listSessions(),
+      roster => { const helper = roster.find(session => session.id === ids[1]); return helper !== undefined && 'reachability' in helper && helper.reachability === 'down'; }, deadline(30_000));
     expect(downRoster.find(session => session.id === ids[1])).toMatchObject({ name: 'helper', machineAlias: 'box-1.invalid', reachability: 'down' });
     const failedAsk = await sessions[0].toolResult('outage-ask', deadline(30_000));
     expect(failedAsk.isError).toBe(true);

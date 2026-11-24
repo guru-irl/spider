@@ -24,7 +24,8 @@ function child(sessionId: string, runId: string, survivable: boolean, durable: b
   const kill = vi.fn();
   const unbindEvents = vi.fn();
   const handle = { durable, wait: () => new Promise<{ exitCode: number }>(() => {}), kill, unbindEvents };
-  const entry = registerShared({ sessionId, runId, survivable, handle, mode: "rpc", dbPath: "" });
+  const db = dbFixture();
+  const entry = registerShared({ sessionId, runId, survivable, handle, mode: "rpc", dbPath: db.raw.name });
   const sink = vi.fn();
   setSink(runId, sink);
   return { entry, kill, unbindEvents, sink };

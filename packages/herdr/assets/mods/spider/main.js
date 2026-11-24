@@ -8,7 +8,7 @@ import { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply, 
 import { panelSessionState, projectSpacePanel, projectNotifications, pruneDismissed, readDismissed, notificationBadge, panelIsShown, projectMemoryReview, projectSessionView, selectedSpace, notificationText, panelConfigProblem, soundPreference, describePanelProblems, describeFeedError, doctorCommand } from './data.js';
 import { projectNavigation } from './shared/navigation.js';
 import { describeOpenFailure } from './shared/open-failure.js';
-import { observeNotificationSounds } from './sound.js';
+import { observeNotificationSounds, soundNotifications } from './sound.js';
 
 // Neutral chrome: colour only marks failure (danger) and needs-you (amber).
 const HAIRLINE = '#2f2f32', FAINT = '#232325', RAIL = '#3a3a3d', TRACK = '#242426', HATCH = '#55555a', TODAY = '#8a8a8e', INK = '#e6e6e8', DANGER = '#ff6b6b', AMBER = '#f2c063';
@@ -136,7 +136,7 @@ export default class SpiderPanel extends View {
   observeSounds(cx) {
     if (this.closed || !this.soundSnapshotReady || herdr.checking?.()) return;
     try {
-      const now = Date.now(); let notices = projectNotifications(this.feeds, now);
+      const now = Date.now(); let notices = soundNotifications(this.feeds, now);
       if (!this.soundHistory) this.soundHistory = new Map(notices.map(notice => [notice.key, notice.expiresAt]));
       if (!panelIsShown(herdr.layout(), this.config.modId)) { this.soundWasHidden = true; return; }
       if (this.soundWasHidden) {

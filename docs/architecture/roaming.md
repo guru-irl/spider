@@ -76,14 +76,19 @@ Enable resolves `dist/roam/cli.mjs` from the installed package and uses it for
 `roam hub`. The imported `cli-main.mjs` module is not an executable service
 entry. Runtime and pane endpoint libraries never execute their CLI on import.
 Their dedicated entries retain the packaged remote runtime and pane commands.
+Hubs enabled on an earlier release must run `spider roam enable` again after
+upgrading, to reinstall the service with the correct entry.
 
-An enabled flag does not prove that the hub started. Doctor reports
-`hub-startup-pending` when the service is not running or its socket is missing.
+An enabled flag does not prove that the hub started. Doctor uses the same
+read-only status probe as enable, with a two-second bound. A starting service
+can become ready during that window; a socket file alone does not prove readiness.
+Doctor reports `hub-startup-pending` when the service is not running, or when a
+running service still does not answer a ready status probe after the bound.
+Unknown service metadata produces a `hub-startup-unverified` warning, not a block.
 The diagnostic includes the service's last exit code, or `unknown`, and its
-error log path without reading the log. Run `spider roam enable` on the Mac hub
-to reinstall and start the packaged entry. If the socket exists but service
-state cannot be read, doctor reports `hub-startup-unverified` as a warning.
-Doctor never changes the enabled flag or starts a service.
+error log path without reading the log. Check the hub service and that error
+log on the Mac hub before retrying. Doctor never changes the enabled flag,
+starts a service, or prescribes a restart for a slow startup.
 
 When enable or disable needs reconciliation, text and JSON include a bounded
 `causeCode`. Sync agent refusals and intercom enrollment pending results also

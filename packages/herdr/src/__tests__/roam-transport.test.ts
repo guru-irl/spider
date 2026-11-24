@@ -460,7 +460,7 @@ test('resolves one machine identity per transfer', async () => {
     expect(calls.filter(call => call.argv[0] === 'exec' && call.argv.includes(identityPath))).toHaveLength(1);
     const argv = calls.find(call => call.argv.includes('inspect'))?.argv ?? [];
     const seconds = nativeDeadline(argv, 60_000, elapsed);
-    expect(argv).toEqual(['exec', '--on', peer.alias, '--timeout', seconds, '--', peer.node, peer.cli, 'inspect', "x'; literal"]);
+    expect(argv).toEqual(['exec', '--on', peer.alias, '--timeout', seconds, '--', '/usr/bin/env', `SPIDER_ROAM_PI=${peer.pi}`, peer.node, peer.cli, 'inspect', "x'; literal"]);
   } finally {
     await fixture.close();
   }
@@ -476,10 +476,28 @@ test('agent refusal retains its bounded JSON reply on exit zero and uses the enr
     const resolved = await transport.resolve(peer);
     expect(await transport.exec(resolved, ['roam', 'agent', '{}'], { timeoutMs: 1000, maxBytes: 1024 })).toEqual(reply);
     const call = (await fixture.calls()).find(entry => entry.argv.includes('agent'));
-    expect(call?.argv).toEqual(['exec', '--on', peer.alias, '--timeout', '1', '--', peer.node, peer.cli,
+    expect(call?.argv).toEqual(['exec', '--on', peer.alias, '--timeout', '1', '--', '/usr/bin/env', `SPIDER_ROAM_PI=${peer.pi}`, peer.node, peer.cli,
       '--global-root', peer.globalRoot, 'roam', 'agent', '{}']);
     await fixture.configure({ roamFixture: { execReplyBase64: reply.toString('base64'), execExitCode: 1 } });
     await expect(transport.exec(resolved, ['inspect'], { timeoutMs: 1000, maxBytes: 1024 })).rejects.toMatchObject({ code: 'cli-exit' });
+  } finally { await fixture.close(); }
+}, 5000);
+
+test.each(['agent', 'intercom'] as const)('%s helper receives configured pi and agent directory in its child environment', async kind => {
+  const fixture = await createClientFixture();
+  try {
+    const globalRoot = join(fixture.root, 'remote'), agentDir = join(fixture.root, 'agent');
+    const cli = join(fixture.root, 'environment.mjs');
+    await mkdir(globalRoot); await mkdir(agentDir);
+    await writeFile(cli, 'console.log(JSON.stringify({ pi: process.env.SPIDER_ROAM_PI, agentDir: process.env.PI_CODING_AGENT_DIR, globalRoot: process.env.SPIDER_GLOBAL_ROOT }));\n');
+    const target = { ...peer, node: process.execPath, pi: "/fixture/pi with ' literal", cli, globalRoot, agentDir };
+    await fixture.configure({ machines: [machine], roamFixture: { [kind === 'agent' ? 'executeAgentFixture' : 'executeIntercomFixture']: true } });
+    await fixture.writeRoamFile(target.alias, join(globalRoot, 'roam', 'machine.json'), Buffer.from(JSON.stringify({ machineId: target.machineId })));
+    const transport = createTransport({ binary: fixture.hcBinary, env: fixture.localEnv, enrolled: [target] });
+    const resolved = await transport.resolve(target);
+    const argv = kind === 'agent' ? ['roam', 'agent', '{}'] : ['roam', 'intercom', 'exchange'];
+    const reply = await transport.exec(resolved, argv, { timeoutMs: 3000, maxBytes: 1024 });
+    expect(JSON.parse(reply.toString('utf8'))).toEqual({ pi: "/fixture/pi with ' literal", agentDir, globalRoot });
   } finally { await fixture.close(); }
 }, 5000);
 

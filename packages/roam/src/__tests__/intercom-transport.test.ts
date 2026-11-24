@@ -33,7 +33,7 @@ it("exact argv carries stdin and configured global root without message text", a
     const options = { timeoutMs: 20_000, maxBytes: 512 * 1024, stdin: body, remoteTimeoutMs: 10_000, postReserveMs: 5_000 };
     expect(await transport.exec(handle, ["roam", "intercom", "exchange"], options)).toEqual(Buffer.from("reply"));
     const call = (await fixture.calls()).find(entry => entry.argv.includes("exchange"));
-    expect(call?.argv).toEqual(["exec", "--on", peer.alias, "--timeout", "10", "--stdin", "--", peer.node, peer.cli,
+    expect(call?.argv).toEqual(["exec", "--on", peer.alias, "--timeout", "10", "--stdin", "--", "/usr/bin/env", `SPIDER_ROAM_PI=${peer.pi}`, peer.node, peer.cli,
       "--global-root", peer.globalRoot, "roam", "intercom", "exchange"]);
     expect(JSON.stringify(call?.argv)).not.toContain(body.toString());
   } finally { await fixture.close(); }

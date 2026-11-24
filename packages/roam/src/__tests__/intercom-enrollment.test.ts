@@ -319,7 +319,7 @@ it("an unavailable authoritative fence does not block an independent pair", asyn
 it.each(["intercom-pair-revocation-incomplete", "intercom-pair-fence-conflict"])("a named %s refusal does not block an independent pair or lose its fence consent", async reason => {
   const f = fixture(); f.state.allow = true; let blocked = true;
   f.request.pairs.push({ pairId: "pair-2", source: peer(THIRD, "box-3.invalid"), target: peer(FOURTH, "box-4.invalid"), edgeEpoch: "edge-2",
-    connector: { tunnelId: "tunnel-2", remotePort: 2223, session: "default" } });
+    connector: { tunnelId: "tunnel-2", remotePort: 2422, session: "default" } });
   f.state.fences.set("pair-2", "predecessor-fence");
   const ports = { ...f.ports, async readPairFences(pairs: readonly IntercomEnrollmentPair[]) {
     return Object.fromEntries(pairs.map(pair => [pair.pairId, pair.pairId === "pair-1" && blocked ? reason : f.state.fences.get(pair.pairId) ?? null]));

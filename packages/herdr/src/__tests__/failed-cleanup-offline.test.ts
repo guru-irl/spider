@@ -4,17 +4,27 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createJobMonitor, type JobMonitorOptions } from '../jobs/monitor.js';
 import { createJobStore, type JournalJob } from '../jobs/store.js';
+import { createHcClient, type HcAvailabilitySource } from '../client/hc.js';
 import { HerdrError } from '../client/parse.js';
 import type { HcClient, JobId, MachineName, Owner, TerminalAddress, TerminalSummary } from '../contracts.js';
 
+const recoveryTransport = vi.hoisted(() => ({ mode: 'success' as 'success' | 'invalid' }));
+vi.mock('../client/liveness.js', () => ({ requireCoreAvailable: async () => {} }));
+vi.mock('../client/cli-transport.js', () => ({ invokeCli: async (_binary: string, args: string[]) => {
+  if (args[0] === 'machine') return { machines: [{ id: 'remote-core', name: 'box-1.invalid', host: 'box-1.invalid', target: 'box-1.invalid', state: 'connected', session: 'fixture' }] };
+  if (args[0] === 'file' && args[1] === 'read') return { text: recoveryTransport.mode === 'invalid' ? 42 : 'fresh content' };
+  throw new Error('Unexpected request');
+} }));
+
 const roots: string[] = [], monitors: ReturnType<typeof createJobMonitor>[] = [];
 afterEach(async () => {
+  recoveryTransport.mode = 'success';
   for (const monitor of monitors.splice(0)) await monitor.shutdown('reload');
   vi.useRealTimers();
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
-async function fixture(initial: 'offline' | 'invalid' | 'foreign' | 'auth') {
+async function fixture(initial: 'offline' | 'invalid' | 'foreign' | 'auth', recoverySource?: HcAvailabilitySource) {
   const scratch = join(process.cwd(), '.spider/scratch/failed-cleanup'); await mkdir(scratch, { recursive: true });
   const root = await mkdtemp(join(scratch, 'case-')); roots.push(root);
   const owner = { sessionId: 'session-one', generation: 'generation-one', terminal: { coreId: 'local-core', terminalId: 'owner', address: 'owner', socket: join(root, 'fixture.sock'), sessionNamespace: 'fixture' }, cwd: root, sessionFile: null, name: null } as Owner;
@@ -49,7 +59,10 @@ async function fixture(initial: 'offline' | 'invalid' | 'foreign' | 'auth') {
   const store = createJobStore(root, owner.sessionId);
   await store.write({ version: 1, sessionId: owner.sessionId, revision: 0, updatedAt: Date.now(), jobs: [job] });
   const options: JobMonitorOptions = { hc, journalRoot: root, clock: Date.now, observedJobMessages: async () => [], notifier: () => {}, recordCleanupError: error => { failures.push(error); },
-    onMachineAvailable: listener => { available.add(listener); return () => { available.delete(listener); }; },
+    onMachineAvailable: listener => {
+      if (recoverySource) return recoverySource.onMachineAvailable(listener);
+      available.add(listener); return () => { available.delete(listener); };
+    },
     outputCollector: { prepare: async program => ({ program, nonce: 'fixture-nonce' }), collect: async () => ({ complete: false, summary: '', receipt: null }) } };
   let monitor = createJobMonitor(options); monitors.push(monitor);
   await monitor.activate(owner); await monitor.finishCleanup();
@@ -96,6 +109,32 @@ it('wakes delayed cleanup after a verified remote read, not cached inventory', a
   await retry(f); await f.monitor.finishCleanup();
   expect(Date.now()).toBe(now);
   expect(f.remaining()).toBe(false); expect(f.removals()).toBe(1);
+});
+
+it('wakes delayed failed-launch cleanup from a real hc client after a validated remote read', async () => {
+  fakeClock();
+  const client = createHcClient({ binary: 'fixture', env: { HC_SOCKET: join(process.cwd(), '.spider/scratch/failed-cleanup-client.sock'), HC_SESSION: 'fixture' } });
+  try {
+    const f = await fixture('offline', client);
+    for (let i = 0; i < 4; i++) {
+      const pending = (await f.store.read()).jobs[0].failedTerminalCleanup!;
+      vi.setSystemTime(pending.nextAt); await retry(f);
+    }
+    const due = (await f.store.read()).jobs[0].failedTerminalCleanup!.nextAt, now = Date.now();
+    expect(due - now).toBeGreaterThan(30_000);
+    const lookups = f.lookups();
+    await client.machines(); await retry(f);
+    expect(f.remaining()).toBe(true); expect(f.lookups()).toBe(lookups);
+    expect((await f.store.read()).jobs[0].failedTerminalCleanup!.nextAt).toBe(due);
+    recoveryTransport.mode = 'invalid';
+    await expect(client.fileRead('box-1.invalid' as MachineName, '/home/fixture/input')).rejects.toMatchObject({ code: 'invalid-reply' });
+    await retry(f); expect(f.remaining()).toBe(true); expect(f.lookups()).toBe(lookups);
+    recoveryTransport.mode = 'success'; f.setMode('online');
+    expect((await client.fileRead('box-1.invalid' as MachineName, '/home/fixture/input')).toString()).toBe('fresh content');
+    await retry(f); await f.monitor.finishCleanup();
+    expect(Date.now()).toBe(now);
+    expect(f.remaining()).toBe(false); expect(f.removals()).toBe(1);
+  } finally { await client.dispose(); }
 });
 
 it('bounds recovery wakeups but allows a later verified recovery to retry again', async () => {

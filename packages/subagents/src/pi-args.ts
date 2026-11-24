@@ -18,11 +18,9 @@ export const STRUCTURED_OUTPUT_CAPTURE_ENV = "PI_SUBAGENT_STRUCTURED_OUTPUT_CAPT
 type JsonSchemaObject = Record<string, unknown>;
 
 const TASK_ARG_LIMIT = 8000;
-// The spider subagent CHILD loads the spider extension bundle itself; in child mode
-// (PI_SUBAGENT_CHILD=1) it self-attaches the run-event reporter (see subagents/index.ts).
-// When bundled, every module collapses into dist/extension.js, so import.meta.url here IS
-// the extension entry. (The upstream subagent-prompt-runtime.ts / fanout-child.ts helper
-// extensions were never ported into spider — referencing them made every child fail to start.)
+// In child mode (PI_SUBAGENT_CHILD=1), spider attaches the run-event reporter.
+// Bundled modules share dist/extension.js as import.meta.url; Pi must instead
+// load the sibling package entry so it can provide its host classes to spider.
 
 export const SUBAGENT_CHILD_ENV = "PI_SUBAGENT_CHILD";
 export const SUBAGENT_ORCHESTRATOR_TARGET_ENV = "PI_SUBAGENT_ORCHESTRATOR_TARGET";
@@ -316,8 +314,8 @@ export interface BuildChildSpawnSpecInput {
 	scratchRoot: string;
 	orchestratorTarget?: string;
 	intercomSessionName?: string;
-	/** Extension the child loads (the spider bundle). Defaults to this module's own
-	 * bundled entry (dist/extension.js). Injectable for tests. */
+	/** Extension the child loads. Defaults to the Pi-facing package entry when bundled.
+	 * Injectable for tests. */
 	childExtensionPath?: string;
 	/** Working directory the child process should be spawned in. Callers (the
 	 * production Runner) resolve this once per run and must thread it through so
@@ -350,7 +348,10 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 	const isFork = input.context === "fork";
 	// Disable extension discovery. Load the spider reporter plus only explicitly
 	// configured non-intercom resources. Intercom comes from the spider bundle.
-	const spiderExtension = input.childExtensionPath ?? fileURLToPath(import.meta.url);
+	const modulePath = fileURLToPath(import.meta.url);
+	const defaultExtension = path.basename(modulePath) === "extension.js" && path.basename(path.dirname(modulePath)) === "dist"
+		? path.join(path.dirname(modulePath), "..", "scripts", "package-extension.ts") : modulePath;
+	const spiderExtension = input.childExtensionPath ?? defaultExtension;
 	// Pi rejects --fork with --session. Forks select their own ID and directory;
 	// pi writes a timestamped filename there. Fresh children retain the fixed path.
 	// Session flags stay in baseArgs so directory creation remains best-effort.

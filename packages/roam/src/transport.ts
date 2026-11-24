@@ -55,7 +55,7 @@ function snapshotCall(options: CallOptions): CallOptions {
 }
 function privateProtocol(argv: readonly string[]): boolean {
   return argv[0] === 'roam' && (argv[1] === 'agent' || argv[1] === 'observe' || argv[1] === 'artifact' && argv[2] === 'receive' ||
-    argv[1] === 'intercom' && (argv[2] === 'exchange' || argv[2] === 'revoke-local' || argv[2] === 'setup-local' || argv[2] === 'observe-fence' || argv[2] === 'cleanup-local' || argv[2] === 'start-broker'));
+    argv[1] === 'intercom' && (argv[2] === 'exchange' || argv[2] === 'revoke-local' || argv[2] === 'setup-local' || argv[2] === 'observe-fence' || argv[2] === 'cleanup-local' || argv[2] === 'start-broker' || argv[2] === 'repair-units'));
 }
 function remoteArgs(peer: Peer, argv: readonly string[]): string[] {
   return ['/usr/bin/env', `SPIDER_ROAM_PI=${peer.pi}`, ...(peer.agentDir ? [`PI_CODING_AGENT_DIR=${peer.agentDir}`] : []),
@@ -312,7 +312,7 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
     },
     async executeProvision(peer, request) {
       const state = resolved(peer);
-      const actions = new Set(['roaming-enabled', 'enrollment', 'prepare', 'secret-chunk', 'cleanup', 'install-files', 'auth-install', 'release-prepare', 'release-observe', 'unit-write', 'systemctl', 'switchover', 'verify', 'clear-secrets', 'permission-summary', 'agent-private-modes']);
+      const actions = new Set(['roaming-enabled', 'enrollment', 'prepare', 'secret-chunk', 'cleanup', 'install-files', 'auth-install', 'release-prepare', 'release-observe', 'unit-write', 'systemctl', 'switchover', 'verify', 'clear-secrets', 'permission-summary', 'agent-private-modes', 'pair-unit-repair']);
       if (!request || typeof request !== 'object' || typeof request.action !== 'string' || !actions.has(request.action) ||
           typeof request.operationId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(request.operationId) ||
           request.machineId !== state.peer.machineId || request.globalRoot !== state.peer.globalRoot || request.node !== state.peer.node ||
@@ -384,7 +384,8 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
           'credential-file-requires-consent', 'provider-consent-required', 'invalid-providers', 'invalid-auth', 'unsafe-auth', 'provider-unavailable',
           'unsupported-credential-command', 'invalid-release-request', 'invalid-release-receipt', 'release-arguments-changed',
           'release-evidence-unavailable', 'release-evidence-unfiltered', 'release-in-progress', 'process-identity-unavailable', 'operation-arguments-changed', 'short-write-pending', 'core-unavailable', 'core-changed',
-          'destination-permissions-unsafe']);
+          'destination-permissions-unsafe', 'invalid-provision-reply', 'intercom-unit-unavailable', 'intercom-unit-mismatch',
+          'connector-not-pair-scoped', 'revocation-pending', 'intercom-unit-repair-unavailable']);
         if (typeof reply.error !== 'string' || !allowed.has(reply.error)) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
         if (reply.error === 'core-changed') { invalidate(state.peer.alias, state, 'core-changed'); throw coreChanged(); }
         throw new HerdrError(reply.error, agentFailure ? agentModeRefusal(agentFailure) : blocked ? `Provisioning is blocked by operation ${reply.operationId}` : 'Provisioning operation failed',

@@ -1,10 +1,15 @@
 import { afterEach, expect, it } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "@spider/db-core";
 import { createIntercomRegistry } from "../intercom-registry";
 import type { NativeProcess } from "../intercom-exclusion";
 import type { IntercomEnrollmentPair } from "../provision-contracts";
+import { main } from "../cli";
+import { inspectLocalIntercomDoctor } from "../intercom-doctor";
+import { openIntercomStore } from "../intercom-store";
+import { parseConfig } from "../config";
+import { FEDERATION_NOTICE_ACK_FEATURE, HELPER_EXCHANGE_FEATURE } from "@spider/intercom/protocol";
 
 const A = "00000000-0000-4000-8000-000000000001", B = "00000000-0000-4000-8000-000000000002";
 const FENCE = "00000000-0000-4000-8000-000000000003";
@@ -43,6 +48,118 @@ it("creates and records a pair host with literal argv and explicit control-group
   await api.ensurePairUnit(f.pair, "host", f.ports);
   expect(f.calls.filter(argv => argv[2] === "start")).toHaveLength(1);
   expect(f.calls.some(argv => argv[2] === "enable" && argv[3] === "spider-pair-pair-1-host.service")).toBe(true);
+}, 5000);
+
+async function stoppedFixture(side: "host" | "connect" = "host") {
+  const f = await fixture(side), api = await import("../intercom-pair-resources");
+  await f.registry.bindResources("pair-1", "enroll-1", api.pairResources(f.pair, "core-b"));
+  await api.ensurePairUnit(f.pair, side, f.ports); await f.registry.activate("pair-1", "enroll-1");
+  const machineId = f.ports.machineId;
+  const config = { enabled: false, role: "box", machineId, hubMachineId: "00000000-0000-4000-8000-000000000004", peers: [], discoveryRoots: [], coreUnit: "fixture",
+    intercom: { enabled: true, mode: "peers", machineAlias: side === "host" ? "box-b.invalid" : "box-a.invalid", routes: [], connector: f.ports.recipe } };
+  writeFileSync(join(f.root, "roam", "machine.json"), JSON.stringify({ machineId }), { mode: 0o600 });
+  writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify(config), { mode: 0o600 });
+  await f.ports.run(["/fixture/systemctl", "--user", "stop", `spider-pair-pair-1-${side}.service`]);
+  const doctor = () => inspectLocalIntercomDoctor({ root: f.root, config: parseConfig(config), agentDir: f.home, resourcePorts: f.ports,
+    run: f.ports.run, features: async () => [HELPER_EXCHANGE_FEATURE, FEDERATION_NOTICE_ACK_FEATURE],
+    inspectSsh: async pair => ({ targetMachineId: B, sshUser: "fixture", hostKeys: [pair.hostKey] }),
+    link: async () => ({ status: "live", reason: null }) });
+  const runRepair = async () => {
+    let out = "", err = "";
+    const code = await main(["--global-root", f.root, "roam", "intercom", "repair-units"],
+      { out: text => { out += text; }, err: text => { err += text; } },
+      { pairPorts: { ...f.ports, node: process.execPath, ssh: "/fixture/ssh", keygen: "/fixture/keygen" } });
+    return { code, out, err };
+  };
+  return { ...f, api, doctor, runRepair };
+}
+
+it.each(["host", "connect"] as const)("repairs a stopped owned %s unit and keeps doctor blocking until it is active", async side => {
+  const f = await stoppedFixture(side), foreign = join(f.home, ".config/systemd/user/foreign.service");
+  writeFileSync(foreign, "foreign unit", { mode: 0o600 });
+  expect(await f.api.inspectPairUnit(f.pair, side, f.ports)).toBe(false);
+  expect(await f.doctor()).toContainEqual(expect.objectContaining({ severity: "block", reason: expect.stringContaining("intercom-pair-unit-unavailable") }));
+  const first = await f.runRepair();
+  expect(first.code, first.out + first.err).toBe(0);
+  expect(JSON.parse(first.out)).toMatchObject({ version: 1, kind: "intercom-unit-repair", ok: true, machineId: f.ports.machineId });
+  expect(await f.api.inspectPairUnit(f.pair, side, f.ports)).toBe(true);
+  expect((await f.doctor()).some(row => row.reason.startsWith("intercom-pair-unit-unavailable"))).toBe(false);
+  const starts = f.calls.filter(argv => argv[2] === "start").length;
+  const second = await f.runRepair();
+  expect(second.code, second.out + second.err).toBe(0);
+  expect(JSON.parse(second.out)).toMatchObject({ ok: true });
+  expect(f.calls.filter(argv => argv[2] === "start")).toHaveLength(starts);
+  expect(readFileSync(foreign, "utf8")).toBe("foreign unit");
+  expect(f.calls.some(argv => argv.includes("foreign.service"))).toBe(false);
+}, 5000);
+
+it("refuses a foreign loaded unit before enabling or starting it", async () => {
+  const f = await stoppedFixture(); f.mismatch(); const before = f.calls.length;
+  const result = await f.runRepair();
+  expect(result.code, result.out + result.err).toBe(0);
+  expect(JSON.parse(result.out)).toMatchObject({ version: 1, kind: "intercom-unit-repair", ok: false });
+  expect(f.calls.slice(before).some(argv => ["enable", "start"].includes(argv[2]))).toBe(false);
+  expect(f.connected()).toBe(false);
+}, 5000);
+
+it("does not enable a foreign loaded unit when ensuring the recorded pair", async () => {
+  const f = await stoppedFixture(); f.mismatch(); const before = f.calls.length;
+  await expect(f.api.ensurePairUnit(f.pair, "host", f.ports)).rejects.toThrow("intercom-unit-mismatch");
+  expect(f.calls.slice(before).some(argv => ["enable", "start"].includes(argv[2]))).toBe(false);
+  expect(f.connected()).toBe(false);
+}, 5000);
+
+it("does not restart a pair being revoked", async () => {
+  const f = await stoppedFixture(); await f.registry.beginRevocation("pair-1", FENCE); const before = f.calls.length;
+  const result = await f.runRepair();
+  expect(result.code, result.out + result.err).toBe(0);
+  expect(JSON.parse(result.out)).toMatchObject({ ok: true });
+  expect(f.calls.slice(before).some(argv => ["enable", "start"].includes(argv[2]))).toBe(false);
+  expect(f.connected()).toBe(false);
+}, 5000);
+
+it("refuses a missing recorded unit rather than recreating it during repair", async () => {
+  const f = await stoppedFixture(); unlinkSync(f.file); const before = f.calls.length;
+  const result = await f.runRepair();
+  expect(result.code, result.out + result.err).toBe(0);
+  expect(JSON.parse(result.out)).toMatchObject({ ok: false });
+  expect(existsSync(f.file)).toBe(false);
+  expect(f.calls.slice(before).some(argv => ["enable", "start"].includes(argv[2]))).toBe(false);
+}, 5000);
+
+it("does not adopt a unit without its recorded ownership metadata", async () => {
+  const f = await stoppedFixture(), file = join(f.root, "roam/intercom/enrollments/pair-1.json");
+  const record = JSON.parse(readFileSync(file, "utf8")); delete record.unit; writeFileSync(file, JSON.stringify(record), { mode: 0o600 });
+  const before = f.calls.length, result = await f.runRepair();
+  expect(result.code, result.out + result.err).toBe(0);
+  expect(JSON.parse(result.out)).toMatchObject({ ok: false });
+  expect(f.calls.slice(before).some(argv => ["enable", "start"].includes(argv[2]))).toBe(false);
+  expect(f.connected()).toBe(false);
+}, 5000);
+
+it("ignores a pair record belonging to another machine root", async () => {
+  const f = await stoppedFixture(), other = { ...f.pair, pairId: "pair-2", edgeEpoch: "edge-2",
+    target: { ...f.pair.target, globalRoot: join(f.root, "foreign") } };
+  await f.registry.register(other, "enroll-2", "b".repeat(64)); await f.registry.bind(other, "enroll-2");
+  await f.registry.bindResources("pair-2", "enroll-2", f.api.pairResources(other, "core-b")); await f.registry.activate("pair-2", "enroll-2");
+  const result = await f.runRepair();
+  expect(result.code, result.out + result.err).toBe(0);
+  expect(JSON.parse(result.out)).toMatchObject({ ok: true });
+  expect(f.calls.some(argv => argv.includes("spider-pair-pair-2-host.service"))).toBe(false);
+  expect(existsSync(join(f.home, ".config/systemd/user/spider-pair-pair-2-host.service"))).toBe(false);
+}, 5000);
+
+it("does not restart an active registry entry with a durable revocation fence", async () => {
+  const f = await stoppedFixture(), queue = openIntercomStore({ file: join(f.root, "roam", "intercom", "queue.db"), machineId: B,
+    clock: { now: () => 1000 } });
+  try {
+    queue.fencePair(A, "edge-1", FENCE); const before = f.calls.length;
+    const result = await f.runRepair();
+    expect(result.code, result.out + result.err).toBe(0);
+    expect(JSON.parse(result.out)).toMatchObject({ ok: false, reason: "revocation-pending" });
+    expect(f.calls.slice(before).some(argv => ["enable", "start"].includes(argv[2]))).toBe(false);
+    expect(f.connected()).toBe(false);
+  } finally { queue.close(); }
 }, 5000);
 
 it("substitutes the approved remote port into the host command", async () => {

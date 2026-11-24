@@ -20,6 +20,15 @@ capture and participation flags change. The response includes an allowlisted
 `causeCode` without broker stderr, exception text, or private paths. A broker
 that answers health but lacks federation support remains blocked.
 
+If enable reports `intercom-pair-unit-unavailable`, reprovision each affected
+box with `spider roam provision <machine>` and retry enable. After consent and
+identity checks, provisioning reconciles stopped, recorded active pair units.
+It refuses mismatched or fenced units, skips revoked pairs, and leaves foreign
+units alone. Use a new provisioning operation after a later stop; replaying a
+completed operation returns its saved result. Doctor stays read-only. With
+roaming disabled, pair connectors may restart, but provisioning does not enable
+the box or start its broker, supervisor, or hosted sessions.
+
 ## Packaged hub service
 
 `package-layout.ts` resolves the installed `dist/roam/cli.mjs` dispatcher for
@@ -69,10 +78,13 @@ uid, and numeric `before` and `after` modes. The destination stores a private
 receipt so retries return the same repair evidence. Installer-tree changes
 remain in the separate `value.permissionTightenings` count.
 
-The walk never follows symlinks or repairs foreign-owned entries. Hard links,
-special files, and incompatible owner permissions also refuse. Refusals name
-the path, mode, uid, and repair advice. Shared parents outside the agent tree
-retain their existing explicit repair requirement.
+The walk never follows symlinks or repairs foreign-owned entries. It preserves
+only the exact `intercom/broker.sock` socket when the socket is same-uid and
+`0600` and its canonical parent is same-uid and `0700`. It does not open,
+chmod, replace, unlink, or report a repair for that socket. Other special
+files, hard links, and incompatible owner permissions refuse. Refusals name the
+path, mode, uid, and repair advice. Shared parents outside the agent tree retain
+their existing explicit repair requirement.
 
 ## Provisioning protected install paths
 

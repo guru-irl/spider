@@ -171,6 +171,7 @@ export interface ProvisionPorts extends DoctorPorts {
   systemd: DoctorPorts["systemd"] & { writeUnit(name: string, contents: string): Promise<void> };
   transfer: {
     repairAgentDirectory(peer: Peer): Promise<readonly AgentPrivateModeRepair[]>;
+    reconcilePairUnits(peer: Peer): Promise<void>;
     enroll(peer: Peer, hubMachineId: string, coreUnit: string, replaceCorePin?: boolean): Promise<import("./enrollment").CorePinReplacement | void>;
     setEnabled(peer: Peer, hubMachineId: string, enabled: boolean): Promise<void>;
     cleanupSecrets(peer: Peer): Promise<void>;

@@ -82,7 +82,8 @@ function safeReason(error: unknown): string {
     "spawn-error", "stdin-error", "too-large", "unresolved-peer", "unsafe-context", "unsafe-path", "unsafe-release", "unsafe-staging", "invalid-operation",
     "invalid-provision-options", "invalid-provision-request", "staging-cleanup-pending", "invalid-bootstrap-reply", "invalid-bootstrap-request", "invalid-bootstrap-kind",
     "invalid-byte-limit", "invalid-cli-deadline", "invalid-reply", "bootstrap-probe-failed", "agent-directory-probe-failed", "provision-transport-failed", "invalid-release-request",
-    "destination-permissions-unsafe", "invalid-limits", "invalid-staging-name", "unknown-provision-action"]);
+    "destination-permissions-unsafe", "invalid-limits", "invalid-staging-name", "unknown-provision-action", "intercom-unit-unavailable",
+    "intercom-unit-mismatch", "connector-not-pair-scoped", "revocation-pending", "intercom-unit-repair-unavailable"]);
   if (typeof code === "string" && allowed.has(code)) return code;
   const message = error instanceof Error ? error.message : "";
   if (message === "Operation ID already has different arguments") return "operation-arguments-changed";
@@ -239,6 +240,7 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
       agentDir: ports.destination.agentDir, pi: peer.pi });
     await ports.systemd.writeUnit(unitName, unit);
     await ports.systemd.systemctl(["--user", "daemon-reload"]);
+    await ports.transfer.reconcilePairUnits(peer);
     const diagnostics = await doctorPeer(peer, ports);
     await ports.report(diagnostics);
     const hostingReady = diagnostics.every(item => item.severity !== "block");

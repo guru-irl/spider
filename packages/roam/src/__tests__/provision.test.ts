@@ -96,6 +96,7 @@ function fixture() {
       return { machineId: claimMachineIdentity(global, peer.machineId), coreId: "fixture-core" };
     } },
     transfer: {
+      async reconcilePairUnits(_peer: Peer) {},
       async repairAgentDirectory(_peer: Peer) {
         events.push("private-mode-repair");
         const repairs = inspectAgentPrivateModes(destination, true).map(entry => ({ ...entry, path: entry.path.replace(destination, virtual.agentDir) }));
@@ -166,6 +167,99 @@ it("reprovisioning repairs sign-in modes with no settings selected and records e
   expect(f.events.indexOf("private-mode-repair")).toBeGreaterThan(f.events.indexOf("confirm"));
   expect(f.events.indexOf("private-mode-repair")).toBeLessThan(f.events.indexOf("release"));
   expect(await provision!(request, f.ports)).toMatchObject({ code: 0, value: { privateModeRepairs: expected } });
+});
+
+it("reprovision repairs a stopped enrolled pair so enable succeeds", async () => {
+  const f = fixture(), { scenario, cleanupPairScenarios } = await import("./intercom-pair-fixture");
+  const pair = await scenario();
+  let hubSocket: { close(): Promise<void> } | undefined;
+  try {
+    const { provisionIntercomEnrollment } = await import("../intercom-enrollment");
+    const { inspectLocalIntercomDoctor } = await import("../intercom-doctor");
+    const { HELPER_EXCHANGE_FEATURE, FEDERATION_NOTICE_ACK_FEATURE } = await import("@spider/intercom/protocol");
+    const { parseConfig } = await import("../config"), { main } = await import("../cli");
+    const { openDb, migrate } = await import("@spider/db-core"), { startHubControl } = await import("../control-socket");
+    const controls = await import("../production-controls"), productionHub = await import("../production-hub");
+    const transport = await import("../transport"), diagnostics = await import("../diagnostics");
+    const observations = await import("../remote-observations"), launchd = await import("../launchd");
+    expect((await provisionIntercomEnrollment(pair.request, pair.enrollment)).code).toBe(0);
+    const local = pair.locals.get(pair.target.machineId)!, name = "spider-pair-pair-1-host.service";
+    await local.run(["/fixture/systemctl", "--user", "stop", name], { timeoutMs: 1000, maxBytes: 4096 });
+    const owned = pair.units.get(`${pair.target.machineId}/${name}`)!;
+    const foreign = { name: "foreign.service", file: "/home/fixture/foreign.service", pid: 0, state: "inactive", members: [] };
+    pair.units.set(`${pair.target.machineId}/foreign.service`, foreign);
+    const peer = { ...bootstrapPeer, machineId: pair.target.machineId }, hub = pair.request.operation.machineId;
+    const config = parseConfig(JSON.parse(readFileSync(join(pair.target.globalRoot, "roam/config.json"), "utf8")));
+    const doctor = () => inspectLocalIntercomDoctor({ root: pair.target.globalRoot, config, agentDir: local.home, resourcePorts: local, run: local.run,
+      features: async () => [HELPER_EXCHANGE_FEATURE, FEDERATION_NOTICE_ACK_FEATURE],
+      inspectSsh: async enrolled => ({ targetMachineId: pair.target.machineId, sshUser: "fixture", hostKeys: [enrolled.hostKey] }),
+      link: async () => ({ status: "live", reason: null }) });
+    mkdirSync(join(f.root, "roam"), { mode: 0o700 });
+    f.write(f.root, "roam/machine.json", JSON.stringify({ machineId: hub }));
+    f.write(f.root, "roam/config.json", JSON.stringify({ enabled: false, role: "hub", machineId: hub, hubMachineId: hub,
+      peers: [peer], discoveryRoots: [], coreUnit: "fixture.service" }));
+    const db = openDb(join(f.root, "spider.db")); migrate(db, "global", { machineId: hub, globalRoot: f.root }); db.close();
+    hubSocket = await startHubControl(join(f.root, "roam/hub.sock"), async () => ({ code: 0, reason: "ready", value: { enabled: true } }));
+    const launcher = f.write(f.root, "launchctl", "fixture");
+    vi.stubEnv("HOME", f.root); vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root); vi.stubEnv("SPIDER_ROAM_PI", process.execPath); vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", launcher);
+    vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/home/fixture/core" } } as never);
+    vi.spyOn(diagnostics, "assertCompatibleConsumers").mockResolvedValue(undefined);
+    vi.spyOn(launchd, "installHubService").mockResolvedValue(undefined);
+    vi.spyOn(observations, "remoteDoctor").mockImplementation(async () => ({ enabled: false, diagnostics: await doctor(), consumers: [] }));
+    vi.spyOn(transport, "createTransport").mockReturnValue({ async resolve(target: Peer) { return target; }, async exec(_target: Peer, argv: string[]) {
+      if (argv[1] === "intercom") return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: true, machineId: peer.machineId,
+        doctor: { enabled: false, diagnostics: await doctor(), consumers: [] } }));
+      const op = JSON.parse(argv[2]);
+      return Buffer.from(JSON.stringify({ operationId: op.id, code: 0, value: op.kind === "stores"
+        ? { protocol: 1, schema: 14, machineId: peer.machineId, stores: ["global"] } : { complete: true } }));
+    } } as never);
+    vi.spyOn(transport, "createProvisionTransport").mockReturnValue({ transport: { async resolve(target: Peer) { return target; } },
+      async executeProvision(_target: Peer, request: { enabled: boolean }) { return { enabled: request.enabled }; } } as never);
+    const blocked = await controls.enableRoaming(f.root, () => process.execPath);
+    expect(blocked).toMatchObject({ code: 1, reason: "preflight-failed:box-1.invalid:intercom-pair-unit-unavailable",
+      issues: [expect.objectContaining({ repairCommand: "spider roam provision box-1.invalid" })] });
+    expect(owned.state).toBe("inactive");
+    f.state.verified = true; f.state.hubEnabled = false;
+    const transfer = { ...f.ports.transfer, async reconcilePairUnits(target: Peer) {
+      expect(target.machineId).toBe(pair.target.machineId);
+      let out = "";
+      expect(await main(["--global-root", pair.target.globalRoot, "roam", "intercom", "repair-units"],
+        { out: text => { out += text; }, err: () => {} }, { pairPorts: local })).toBe(0);
+      const reply = JSON.parse(out);
+      if (!reply.ok) throw Object.assign(new Error("pair repair failed"), { code: reply.reason });
+    } };
+    const request = { ...f.request("repair-pair", false, [], []), peer,
+      operation: { ...f.request("repair-pair").operation, machineId: peer.machineId } };
+    expect(await provision!(request, { ...f.ports, transfer })).toMatchObject({ code: 0 });
+    expect(owned.state).toBe("active");
+    await local.run(["/fixture/systemctl", "--user", "stop", name], { timeoutMs: 1000, maxBytes: 4096 });
+    expect(await provision!(request, { ...f.ports, transfer })).toMatchObject({ code: 0 });
+    expect(owned.state).toBe("inactive"); // A completed operation replays without repeating its effects.
+    const fresh = { ...request, operation: { ...request.operation, id: "repair-pair-again" } };
+    expect(await provision!(fresh, { ...f.ports, transfer })).toMatchObject({ code: 0 });
+    expect(owned.state).toBe("active");
+    expect(foreign).toEqual({ name: "foreign.service", file: "/home/fixture/foreign.service", pid: 0, state: "inactive", members: [] });
+    expect(pair.calls.some(call => call.includes("foreign.service"))).toBe(false);
+    expect(await controls.enableRoaming(f.root, () => process.execPath)).toMatchObject({ code: 0, reason: "roaming-enabled" });
+  } finally { await hubSocket?.close(); cleanupPairScenarios(); }
+}, 5000);
+
+it.each(["intercom-unit-mismatch", "revocation-pending"])("keeps provisioning incomplete when pair-unit repair reports %s", async code => {
+  const f = fixture(); f.state.verified = true; f.write(f.source, "settings.json", "{}");
+  f.ports.transfer.reconcilePairUnits = async () => { throw Object.assign(new Error("fixture refusal"), { code }); };
+  const outcome = await provision!(f.request(`pair-refusal-${code}`), f.ports);
+  expect(outcome).toMatchObject({ code: 3, reason: code });
+  expect(f.systemctl).not.toContainEqual(["--user", "enable", "spider-roam-supervisor.service"]);
+  expect(f.state.boxEnabled).toBe(false);
+  expect(f.journal.read(`pair-refusal-${code}`).some(row => row.action === "done")).toBe(false);
+});
+
+it("declining consent does not attempt pair-unit repair", async () => {
+  const f = fixture(); let repairs = 0; f.write(f.source, "settings.json", "{}");
+  f.ports.confirm = async () => false;
+  f.ports.transfer.reconcilePairUnits = async () => { repairs++; };
+  expect(await provision!(f.request("pair-no-consent"), f.ports)).toMatchObject({ code: 1, reason: "consent-refused" });
+  expect(repairs).toBe(0);
 });
 
 it("declining consent leaves repairable destination modes unchanged", async () => {

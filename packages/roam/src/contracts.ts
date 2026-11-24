@@ -232,7 +232,8 @@ export const MOVE_REFUSAL_MESSAGES = {
   "move-abort-pending": "Waiting for the hub to confirm the cancelled move.",
 } as const;
 export type MoveRefusalCode = keyof typeof MOVE_REFUSAL_MESSAGES;
-export interface MoveRefusal { code: MoveRefusalCode; blockers: readonly ValidatedBlockerId[]; message: string; hostingWarning?: import("./hosting-warning").HostingWarning }
+export interface MoveRefusal { code: MoveRefusalCode; blockers: readonly ValidatedBlockerId[]; message: string; hostingWarning?: import("./hosting-warning").HostingWarning;
+  firstHomeWithheld?: import("./first-home-diagnostics").FirstHomeWithheld }
 export type MoveOutcome = { ok: true; value: MoveResult } | { ok: false; refusal: MoveRefusal };
 /** The existing command envelope is retained; consumers never parse reason to recover refusal structure. */
 export type MoveSessionOutcome = Outcome<MoveResult> & (

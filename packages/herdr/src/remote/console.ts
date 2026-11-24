@@ -26,6 +26,7 @@ export interface AgentConsoleLifecyclePorts {
   /** False keeps a crashed child's console open until its foreground cleanup is confirmed. */
   beforeReap?(console: TerminalSummary): Promise<boolean>;
   subscribeRunEnds?(owner: Owner, listener: (runId: RunId) => void): () => void;
+  onMachineAvailable?(listener: (machine: MachineName) => void): () => void;
   reportError?(error: unknown): void;
   reportCleanupError?(error: unknown): void;
 }
@@ -361,13 +362,15 @@ function registerLifecycle(pi: ExtensionAPI, ports: AgentConsoleLifecyclePorts, 
   const env = ports.env ?? process.env;
   if ((env.PI_SUBAGENT_CHILD === '1') !== child) return { dispose() {} };
   let previous: AgentConsoleOwner | null = null;
-  let stopWatching = () => {}, closed = false;
+  let stopWatching = () => {}, stopAvailability = () => {}, closed = false;
   const pending = new Map<string, Promise<void>>();
   const sweep = createCleanupSweep(Date.now, () => {}); sweep.start();
-  const cleanup = new Map<string, { machines: Set<string>; operation: () => Promise<void>; owner?: string; failures: number; revision: number; connectivity: boolean; lastWake?: number }>();
+  type CleanupEntry = { machines: Set<string>; operation: () => Promise<void>; owner?: string; failures: number; revision: number; connectivity: boolean; lastWake?: number; wakeTimer?: ReturnType<typeof setTimeout> };
+  const cleanup = new Map<string, CleanupEntry>();
   const exhausted = new Map<string, string | undefined>(), machineStates = new Map<string, boolean>();
-  const maxAttempts = 24, reconnectInterval = 2000;
-  let reconnectTimer: ReturnType<typeof setInterval> | undefined, machineCheck: Promise<void> | undefined, recheckMachines = false;
+  const maxAttempts = 24, reconnectInterval = 2000, offlineReconnectInterval = 30_000;
+  let reconnectTimer: ReturnType<typeof setInterval> | undefined, reconnectDelay: number | undefined, machineCheck: Promise<void> | undefined, recheckMachines = false;
+  let watchingEvents = false, cleanupEvents: ReturnType<HcClient['events']> | undefined, stopCleanupEvents = () => {};
   const nameKey = (name: string) => name.toLowerCase().replace(/\.$/, '');
   const addressKey = (address: string) => `console:${address}`;
   const reportCleanup = (error: unknown) => {
@@ -375,6 +378,33 @@ function registerLifecycle(pi: ExtensionAPI, ports: AgentConsoleLifecyclePorts, 
       if (ports.reportCleanupError) ports.reportCleanupError(error);
       else process.stderr.write((error instanceof HerdrError && error.code === 'console-cleanup-exhausted' ? error.message : herdrErrorNotice(error)) + '\n');
     } catch { /* Diagnostics must not interrupt lifecycle setup. */ }
+  };
+  const cancelWake = (entry: CleanupEntry) => {
+    if (entry.wakeTimer) clearTimeout(entry.wakeTimer);
+    entry.wakeTimer = undefined;
+  };
+  const wakeCleanup = (names: ReadonlySet<string>, connectivityOnly = false) => {
+    if (closed || !names.size) return;
+    const now = Date.now(), ready: string[] = [];
+    for (const [key, entry] of cleanup) {
+      if (connectivityOnly && !entry.connectivity) continue;
+      if (entry.machines.size && ![...entry.machines].some(name => names.has(name))) continue;
+      if (entry.connectivity && entry.lastWake !== undefined && now >= entry.lastWake && now - entry.lastWake < 30_000) {
+        if (!entry.wakeTimer) {
+          entry.wakeTimer = setTimeout(() => {
+            entry.wakeTimer = undefined;
+            if (closed || cleanup.get(key) !== entry || !entry.connectivity) return;
+            entry.lastWake = Date.now(); sweep.retry([key]);
+          }, 30_000 - (now - entry.lastWake));
+          entry.wakeTimer.unref();
+        }
+        continue;
+      }
+      cancelWake(entry);
+      if (entry.connectivity) entry.lastWake = now;
+      ready.push(key);
+    }
+    sweep.retry(ready);
   };
   const observeMachines = () => {
     if (closed || !cleanup.size) return;
@@ -390,30 +420,33 @@ function registerLifecycle(pi: ExtensionAPI, ports: AgentConsoleLifecyclePorts, 
         if (machineStates.get(name) === false && next) connected.add(name);
         machineStates.set(name, next);
       }
-      if (connected.size) {
-        const now = Date.now(), ready: string[] = [];
-        for (const [key, entry] of cleanup) {
-          if (entry.machines.size && ![...entry.machines].some(name => connected.has(name))) continue;
-          if (entry.connectivity && entry.lastWake !== undefined && now >= entry.lastWake && now - entry.lastWake < 30_000) continue;
-          if (entry.connectivity) entry.lastWake = now;
-          ready.push(key);
-        }
-        sweep.retry(ready);
-      }
+      wakeCleanup(connected);
     }).catch(() => { /* An unavailable inventory is retried by the next check. */ }).finally(() => {
       machineCheck = undefined;
       if (recheckMachines) { recheckMachines = false; observeMachines(); }
     });
   };
   const updateReconnectTimer = () => {
-    if (!closed && cleanup.size && !reconnectTimer) {
-      reconnectTimer = setInterval(observeMachines, reconnectInterval); reconnectTimer.unref();
-    } else if ((closed || !cleanup.size) && reconnectTimer) {
-      clearInterval(reconnectTimer); reconnectTimer = undefined;
+    const needsEvents = !closed && cleanup.size > 0 && !watchingEvents;
+    if (!needsEvents && cleanupEvents) stopCleanupEvents();
+    else if (needsEvents && !cleanupEvents) {
+      try {
+        const stream = ports.hc.events();
+        cleanupEvents = stream;
+        const off = stream.subscribe(event => { if (event.type === 'snapshot' || event.type === 'missed') observeMachines(); });
+        stopCleanupEvents = () => { cleanupEvents = undefined; off(); void stream.dispose(); };
+        void stream.ready.catch(() => {});
+      } catch { /* The timer still retries if event subscription is unavailable. */ }
     }
+    const next = closed || !cleanup.size ? undefined
+      : [...cleanup.values()].every(entry => entry.connectivity) ? offlineReconnectInterval : reconnectInterval;
+    if (next === reconnectDelay) return;
+    if (reconnectTimer) clearInterval(reconnectTimer);
+    reconnectTimer = undefined; reconnectDelay = next;
+    if (next !== undefined) { reconnectTimer = setInterval(observeMachines, next); reconnectTimer.unref(); }
   };
-  const stopCleanup = (key: string, entry: { owner?: string }, error: unknown) => {
-    cleanup.delete(key); exhausted.set(key, entry.owner); sweep.cancel(key); updateReconnectTimer();
+  const stopCleanup = (key: string, entry: CleanupEntry, error: unknown) => {
+    cancelWake(entry); cleanup.delete(key); exhausted.set(key, entry.owner); sweep.cancel(key); updateReconnectTimer();
     reportCleanup(new HerdrError('console-cleanup-exhausted', `Console cleanup stopped after ${maxAttempts} failures`, { key, cause: error }));
   };
   const queueCleanup = (key: string, names: readonly string[], operation: () => Promise<void>, error: unknown, owner?: string) => {
@@ -423,7 +456,9 @@ function registerLifecycle(pi: ExtensionAPI, ports: AgentConsoleLifecyclePorts, 
       for (const name of names) existing.machines.add(nameKey(name));
       if (owner) { existing.operation = operation; existing.owner = owner; existing.revision++; }
       existing.connectivity = isCleanupConnectivityFailure(error);
+      if (!existing.connectivity) cancelWake(existing);
       if (!existing.connectivity && ++existing.failures >= maxAttempts) stopCleanup(key, existing, error);
+      else updateReconnectTimer();
       return;
     }
     const connectivity = isCleanupConnectivityFailure(error);
@@ -434,12 +469,14 @@ function registerLifecycle(pi: ExtensionAPI, ports: AgentConsoleLifecyclePorts, 
       try {
         let revision: number;
         do { revision = entry.revision; await entry.operation(); } while (cleanup.get(key) === entry && revision !== entry.revision);
-        if (cleanup.get(key) === entry) cleanup.delete(key);
+        if (cleanup.get(key) === entry) { cancelWake(entry); cleanup.delete(key); }
         updateReconnectTimer();
       } catch (failure) {
         if (cleanup.get(key) !== entry) return;
         entry.connectivity = isCleanupConnectivityFailure(failure);
+        if (!entry.connectivity) cancelWake(entry);
         if (!entry.connectivity && ++entry.failures >= maxAttempts) { stopCleanup(key, entry, failure); return; }
+        updateReconnectTimer();
         throw failure;
       }
     }, { afterFailure: true });
@@ -447,7 +484,7 @@ function registerLifecycle(pi: ExtensionAPI, ports: AgentConsoleLifecyclePorts, 
   };
   const cancelOwnerCleanup = (owner: AgentConsoleOwner) => {
     const key = agentKey(owner);
-    for (const [id, entry] of cleanup) if (entry.owner === key) { cleanup.delete(id); sweep.cancel(id); }
+    for (const [id, entry] of cleanup) if (entry.owner === key) { cancelWake(entry); cleanup.delete(id); sweep.cancel(id); }
     for (const [id, ownerKey] of exhausted) if (ownerKey === key) exhausted.delete(id);
     updateReconnectTimer();
   };
@@ -517,8 +554,10 @@ function registerLifecycle(pi: ExtensionAPI, ports: AgentConsoleLifecyclePorts, 
   const offs = [
     pi.on('session_start', async (_event, ctx) => {
       stopWatching(); stopWatching = () => {};
+      stopAvailability(); stopAvailability = () => {};
       if (!env.HC_TERMINAL_ID) return;
       const owner = current(ctx); if (!owner) { previous = null; return; }
+      stopAvailability = ports.onMachineAvailable?.(machine => wakeCleanup(new Set([nameKey(machine)]), true)) ?? (() => {});
       const old = previous;
       previous = owner; endedAgents.delete(agentKey(owner)); cancelOwnerCleanup(owner);
       if (old && agentKey(old) !== agentKey(owner)) await closeOrRetry(old);
@@ -533,6 +572,7 @@ function registerLifecycle(pi: ExtensionAPI, ports: AgentConsoleLifecyclePorts, 
         catch { /* The address lock queues the failed check before it is released. */ }
       };
       const stream = ports.hc.events();
+      watchingEvents = true; updateReconnectTimer();
       const offEvents = stream.subscribe(event => {
         if (!watching) return;
         if (event.type === 'snapshot' || event.type === 'missed') observeMachines();
@@ -542,7 +582,7 @@ function registerLifecycle(pi: ExtensionAPI, ports: AgentConsoleLifecyclePorts, 
       const offRuns = ports.subscribeRunEnds?.(owner, runId => {
         void snapshot(ports.hc).then(terminals => watching ? Promise.all(terminals.filter(t => t.labels[HERDR_LABELS.session] === owner.sessionId && t.labels[HERDR_LABELS.run] === runId).map(terminal => reapOrRetry(terminal))) : undefined).catch(error => { if (watching) ports.reportError?.(error); });
       }) ?? (() => {});
-      stopWatching = () => { watching = false; offEvents(); offRuns(); void stream.dispose(); };
+      stopWatching = () => { watching = false; watchingEvents = false; offEvents(); offRuns(); void stream.dispose(); updateReconnectTimer(); };
       await stream.ready;
       for (const terminal of await snapshot(ports.hc)) {
         if (_event?.reason !== 'reload' || terminal.labels[HERDR_LABELS.run]) await reapOrRetry(terminal, _event?.reason === 'reload');
@@ -554,9 +594,10 @@ function registerLifecycle(pi: ExtensionAPI, ports: AgentConsoleLifecyclePorts, 
       if (!env.HC_TERMINAL_ID || !reason || reason === 'reload' || child && reason !== 'quit') return;
       const active = current(ctx), owner = active ? previous ?? active : null;
       previous = null; if (owner) await closeOrRetry(owner);
+      observeMachines();
     }),
   ];
-  return { dispose() { closed = true; stopWatching(); for (const off of offs) off?.(); cleanup.clear(); updateReconnectTimer(); void sweep.dispose(); } };
+  return { dispose() { closed = true; stopWatching(); stopAvailability(); for (const off of offs) off?.(); for (const entry of cleanup.values()) cancelWake(entry); cleanup.clear(); updateReconnectTimer(); void sweep.dispose(); } };
 }
 export function registerAgentConsoleLifecycle(pi: ExtensionAPI, ports: AgentConsoleLifecyclePorts): Disposable {
   return registerLifecycle(pi, ports, false);

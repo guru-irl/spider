@@ -158,19 +158,25 @@ it("production move evidence queries the connected machine service broker", asyn
 }, 5000);
 
 async function inspectProductionActivation(initializeScratch: boolean) {
-  const { paths } = await import("@spider/db-core"), control = await import("../control");
+  const { paths, migrate } = await import("@spider/db-core"), control = await import("../control");
   const { createBothLocks } = await import("@spider/roam/session-control");
   const { startMachineMoveSocket } = await import("@spider/roam/machine-move-socket");
   const { createSessionLeases } = await import("@spider/herdr/sessions/lease");
   const { createProcessPresence } = await import("@spider/herdr/sessions/presence");
   const { processStartTime } = await import("../../../../subagents/src/process-identity");
-  const { recordLocation } = await import("@spider/db-core/roam/catalog");
+  const { recordLocation, replicaPath } = await import("@spider/db-core/roam/catalog");
   const { spawn } = await import("node:child_process");
   const global = createReplica("global", HUB), worktree = createReplica("worktree", HUB); fixtures.push(global, worktree);
   vi.stubEnv("HC_SOCKET", join(process.cwd(), ".spider/scratch/move-composition.sock"));
   vi.stubEnv("HC_TERMINAL_SOCKET", join(process.cwd(), ".spider/scratch/move-composition.sock"));
   vi.stubEnv("HC_SESSION", "move-composition");
   mkdirSync(join(global.root, "roam"), { mode: 0o700 });
+  mkdirSync(join(global.root, "roam", "stores"), { mode: 0o700 });
+  const repository = openDb(replicaPath(global.db, "repo:fixture-repo"));
+  try {
+    migrate(repository, "repo", { machineId: HUB, globalRoot: global.root });
+    repository.prepare("UPDATE roam_meta SET store_key='repo:fixture-repo' WHERE id=1").run();
+  } finally { repository.close(); }
   const config: RoamConfig = { enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture", syncMs: 1000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
   mkdirSync(join(global.root, "herdr", "jobs"), { recursive: true, mode: 0o700 });
   writeFileSync(join(global.root, "herdr", "config.json"), JSON.stringify({ mode: "core-only", globalRoot: global.root, core: { binary: join(global.root, "hc"), config: join(global.root, "core.json") }, agentDirectory: join(global.root, "agent"), shellRc: join(global.root, "shell.rc"), machines: [] }), { mode: 0o600 });

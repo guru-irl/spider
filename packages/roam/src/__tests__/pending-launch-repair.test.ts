@@ -355,6 +355,8 @@ it("a failed preparation record cannot leave an unreconcilable reserved handoff"
 
 it("supported participant resume reaches the durable production boundary before disabled hub stop", async () => {
   const f = await productionLaunchFixture();
+  // Keep the doctor's real service discovery inside the fixture on every host.
+  vi.stubEnv("HOME", f.root);
   try {
     await f.authority.stop("session-1");
     await f.global.db.raw.backup(join(f.root, "spider.db"));

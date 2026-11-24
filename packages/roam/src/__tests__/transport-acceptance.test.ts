@@ -64,7 +64,10 @@ case "\${1:-}" in
       [ "$last" = ${quote(join(box, "roam", "machine.json"))} ] || exit 2
       exec cat "$last"
     fi
-    [ "$#" -ge 4 ] || exit 2
+    [ "$#" -ge 6 ] || exit 2
+    [ "$1" = /usr/bin/env ] && [ "$2" = ${quote(`SPIDER_ROAM_PI=${process.execPath}`)} ] || exit 2
+    export SPIDER_ROAM_PI=${quote(process.execPath)}
+    shift 2
     [ "$1" = ${quote(process.execPath)} ] && [ "$2" = ${quote(cli)} ] &&
       [ "$3" = --global-root ] && [ "$4" = ${quote(box)} ] || exit 2
     export HOME=${quote(box)}

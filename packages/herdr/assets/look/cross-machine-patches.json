@@ -708,7 +708,7 @@
     "0.1.13": {
       "recordsHash": "283df1315e4d36aa7afbfb9392614e9ffec634777f39e426bd051ba6b17d1401",
       "inputHashes": {
-        "agents/main.js": "660cc7a970f44f981b707ce5288a5c43c81f98f73d4d51ecea8ebda6e6b23816",
+        "agents/main.js": "e2d5e5dc842b2669a9a3cf7fd4f0ef8435e9cd448677963fa06beac44d44f30d",
         "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
         "menu/main.js": "f9c0799068984fe289df2b8aa50231435977c7269ee15cea4544d52f31d3bd25",
         "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
@@ -729,7 +729,7 @@
         "tabs/win-restore.svg": "69ccde33c78d83ce39972ef129e158dd09fb19d3002bd709047801802fbad51d"
       },
       "outputHashes": {
-        "agents/main.js": "065907b08030cccbf3aec1336e93a4d755a75b73ba772f0dda1a6a128195a67b",
+        "agents/main.js": "3227a006a7f1a5ea7f5a331fdef3f732b26da1ed500216c9d8b5a146ae39db4f",
         "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
         "menu/main.js": "5ef45102f05cebae0a617564613f195e993130c42d0f0ad56797f6e82c9d09e0",
         "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
@@ -759,7 +759,7 @@
     "0.1.16": {
       "recordsHash": "d63e2c5bee2a4fe0b526a662f02d5115cede14d645b4379fb794c0373b1293e7",
       "inputHashes": {
-        "agents/main.js": "b47e7aa570dea810b5a3a59772167c652f5505ad8d9c08f409685139c78fd545",
+        "agents/main.js": "340b1a2680a5065be440b7d1ebd45411ccccd3178824c84dae43b3aa07f5d066",
         "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
         "menu/main.js": "1c27a92ca6378feb166a34adef317aaa2a4f4ee0e969d2fd3737cc3850ac84eb",
         "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
@@ -780,7 +780,7 @@
         "tabs/win-restore.svg": "69ccde33c78d83ce39972ef129e158dd09fb19d3002bd709047801802fbad51d"
       },
       "outputHashes": {
-        "agents/main.js": "32e41230ed45415a87322979a29c301c4f180b62fd5762e5cbf020c2c1d1cc1c",
+        "agents/main.js": "c6b6f3765fc5853baa4252240602fcee1818d83506960a0be9f49ed2ba0fa8cc",
         "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
         "menu/main.js": "06bc53750bb00caf29578d72a134229171d3fd167bdae3c89fe38bc8137929dd",
         "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",

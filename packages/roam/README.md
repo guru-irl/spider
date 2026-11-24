@@ -46,6 +46,15 @@ again to reinstall its service with the correct entry. The packaged
 release, including with preserved main symlinks. `scripts/check-roam-bundle.mjs`
 rejects remote runtime and pane endpoint main bodies in the built roam entries.
 
+## Hub service selection
+
+Enable captures the resolved `hc` socket and session before peer preflight.
+Non-default selections are pinned in the hub service; the unconfigured default
+keeps the existing environment. The service runs from the scoped global root.
+Doctor compares the installed selection with the current environment. To repair
+a mismatch, run `spider roam enable` again from the intended environment.
+The startup diagnostic identifies the selection class without logging the path.
+
 ## Stop and pending launches
 
 `supervisor.ts` reserves a launch before authorization. It changes the

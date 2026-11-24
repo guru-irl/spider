@@ -1,7 +1,7 @@
 import { readMoveSetupDiagnostics } from "./setup-diagnostics";
 import { corePinDiagnostics } from "./core-pin-diagnostics";
 import { hubStartupDiagnostics, inspectHubService, type HubServiceObservation } from "./hub-service-diagnostics";
-import { hubServiceExists, hubServiceFile } from "./launchd";
+import { hubServiceExists, hubServiceFile, hubServiceSelectionMatches } from "./launchd";
 import { inspectSupervisorCorePin } from "./enrollment";
 import { hostingWarningReason, readHostingWarnings } from "./hosting-warning";
 import { execFile, execFileSync } from "node:child_process";
@@ -439,6 +439,15 @@ export async function localPendingLaunchDiagnostics(input: {
     ? { ...row, reason: `${row.reason} Run this repair command on the Mac hub.` } : row);
 }
 
+export function localHubServiceDiagnostics(root: string): Diagnostic[] {
+  try {
+    const matches = hubServiceSelectionMatches(root, join(homedir(), "Library", "LaunchAgents"), process.env);
+    return matches === false ? [{ severity: "warning", reason: "hub-core-selection-mismatch: The hub service selects a different core. Run spider roam enable again from the intended environment.", repairCommand: "spider roam enable" }] : [];
+  } catch {
+    return [{ severity: "warning", reason: "hub-core-selection-unavailable: Cannot inspect the hub service core selection.", repairCommand: null }];
+  }
+}
+
 /** Inspect registered local stores without modifying them. */
 export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; currentCore?: () => Promise<string | null>; inspectIntercomDoctor?: boolean;
   hubService?: () => Promise<HubServiceObservation>;
@@ -455,6 +464,7 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
   const required = localCaptureRequired(config), severity = required ? "block" : "warning";
   const inventory: Diagnostic[] = [], storeDiagnostics: Diagnostic[] = [], peerFailures: Diagnostic[] = [], consumers: LoadedConsumer[] = [];
   if (config.enabled && config.role === "hub") inventory.push(...hubStartupDiagnostics(root, await (input.hubService ?? (() => inspectHubService(root)))()));
+  if (config.role === "hub") inventory.push(...localHubServiceDiagnostics(root));
   if (config.role === "box") {
     if (config.enabled && (input.supervisorAutostart || process.platform === "linux")) {
       let autostart: SupervisorAutostart = "unknown";

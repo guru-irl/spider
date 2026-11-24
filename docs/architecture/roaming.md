@@ -368,9 +368,10 @@ machine states as unreachable. The exception is native `unreachable` with
 the exact reason `a different core answers there ("<core-id>")`. That means
 a remote core was replaced, not that transport was lost. The hub and machine
 UI use one shared classifier for this case. A local core identity change
-during inventory also remains unknown. Unknown observations pause pending
-hosting notifications and retain existing outage state and delivered alerts.
-They never schedule move recovery. A replaced remote core discards the old
+during inventory also remains unknown. Generic unknown observations retain an
+already scheduled outage alert, existing outage state and delivered alerts.
+A replaced remote core cancels the pending alert timer. Neither observation
+schedules move recovery. A replaced remote core discards the old
 peer's pending reconnect trigger. Its next connected observation is not a
 reconnect. A later plain unreachable observation
 resumes the retained outage. A machine with hosted sessions gets one hosting alert

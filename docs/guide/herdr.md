@@ -448,9 +448,10 @@ A machine whose native status is `unreachable` with the exact reason
 connection is unknown, not a disconnected transport. Plain `unreachable`
 without that reason still means disconnected. The roaming hub uses the same
 classification. Core replacement neither starts nor clears a hosting outage
-alert, and it never triggers move recovery. Pending hosting notifications
-pause while identity is unknown; delivered alerts remain until the machine
-is observed as connected again.
+alert, and it never triggers move recovery. It discards the old reconnect
+trigger and cancels pending hosting notifications. Delivered alerts remain
+until the machine is observed as connected again. Other unknown observations
+do not cancel an already scheduled outage alert.
 
 ## Cross-machine panes
 

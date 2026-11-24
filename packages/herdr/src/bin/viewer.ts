@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { createViewerPorts } from '../viewers/ports.js';
 import { bundleDirectoryOf, piPackageRoot, piVersion, resolvePiFrom, supportedPiVersion } from '../viewers/pi-loader.js';
 import { TranscriptSanitizer } from '../viewers/transcript.js';
-import { readViewerDisplayLease, runViewer } from '../viewers/program.js';
+import { readViewerDisplayLease, runPresentedViewer } from '../viewers/program.js';
 import { herdrErrorNotice } from '../notices.js';
 
 const controller = new AbortController();
@@ -37,8 +37,8 @@ try {
       ports.stdout.write(`Pi view unavailable. ${reason} Using the text view.\n`);
     }
     starting = false;
-    try { await runViewer({ ...ports, presenter: presentation?.presenter }); }
-    finally { clearInterval(leaseTimer); presentation?.dispose(); }
+    try { await runPresentedViewer(ports, presentation); }
+    finally { clearInterval(leaseTimer); }
   }
 } catch (error) {
   process.stderr.write(`${herdrErrorNotice(error)}\n`); code = 1;

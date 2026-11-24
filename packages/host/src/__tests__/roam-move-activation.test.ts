@@ -1,10 +1,10 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths, openDbAt, type Db } from "@spider/db-core";
 import { createReplica } from "@spider/db-core/testutil";
-import { catalogReplica } from "@spider/db-core/roam/catalog";
+import { catalogReplica, recordLocation, replicaPath } from "@spider/db-core/roam/catalog";
 import { mapRepository, mapWorkspace } from "@spider/db-core/roam/repo-map";
 import { enableMemoryCapture, seedSession } from "@spider/db-core/roam/seed";
 import { readSessionState } from "@spider/db-core/roam/state";
@@ -26,7 +26,8 @@ import * as usageMount from "../usage/mount";
 import { createMoveActivation } from "../roam/move-activation";
 import { createHostMoveBindings } from "../roam/move-runtime";
 import { freezeParticipant } from "../roam/freeze";
-import type { AdmissionGate } from "../roam/admission";
+import { registerAdmission, type AdmissionGate } from "../roam/admission";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { fixtureIntercom } from "../roam/__tests__/intercom-move-fixture";
 
 const HUB = "00000000-0000-4000-8000-000000000001";
@@ -38,7 +39,7 @@ const ROSTER: StoreKey[] = ["global", `repo:${REPO}`, WORKTREE];
 const fixtures: ReturnType<typeof createReplica>[] = [], dbs: Db[] = [];
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const db of dbs.splice(0)) db.close(); for (const f of fixtures.splice(0)) f.close(); });
 
-async function fixture(beforeMapping = true, bound = false, box = false) {
+async function fixture(beforeMapping = true, bound = false, box = false, worktreeOnly = false) {
   const machineId = box ? BOX : HUB;
   const global = createReplica("global", machineId); fixtures.push(global);
   vi.stubEnv("HC_SOCKET", join(process.cwd(), ".spider/scratch/move-roster.sock"));
@@ -65,7 +66,7 @@ async function fixture(beforeMapping = true, bound = false, box = false) {
     enableMemoryCapture(repository, `repo:${REPO}`);
     await mapRepository(global.db, { repoKey: REPO, path: cwd });
   };
-  if (!box) await mountRepository();
+  if (!box && !worktreeOnly) await mountRepository();
   const worktree = openDbAt(join(cwd, ".spider", "project.db"), "worktree"); dbs.push(worktree);
   worktree.prepare("UPDATE roam_meta SET machine_id=? WHERE id=1").run(machineId);
   const sessionId = "ordinary-source", file = join(cwd, "session.jsonl");
@@ -124,7 +125,7 @@ async function fixture(beforeMapping = true, bound = false, box = false) {
   const context = { cwd, mode: "tui", hasUI: true, ui: { getEditorText: () => "" }, isIdle: () => true, hasPendingMessages: () => false,
     sessionManager: { getSessionId: () => sessionId, getSessionFile: () => file, getLeafId: () => "leaf-1", getHeader: () => ({ id: sessionId }) } };
   const inert = { async pause() {}, async resume() {} };
-  const activate = () => createMoveActivation({ root: global.root, sessionId, file, context: () => context, gate, usage: inert, embeddings: inert, organism: inert, others: [], activity: { busy: () => false, bashRunning: () => false, promptOpen: () => false } } as never);
+  const activate = (admission: AdmissionGate = gate) => createMoveActivation({ root: global.root, sessionId, file, context: () => context, gate: admission, usage: inert, embeddings: inert, organism: inert, others: [], activity: { busy: () => false, bashRunning: () => false, promptOpen: () => false } } as never);
   const transport = { async resolve(peer: unknown) { return peer; }, async exec(_peer: unknown, argv: string[]) {
     const op: Operation = JSON.parse(argv[2]);
     const value = op.kind === "move-workspace-map" ? "/fixture/destination" : op.kind === "move-diagnostics" ? [] : (() => { throw new Error(`Unexpected remote operation: ${op.kind}`); })();
@@ -134,7 +135,7 @@ async function fixture(beforeMapping = true, bound = false, box = false) {
   const startIdentity = processStartTime(process.pid)!, leases = createSessionLeases(join(global.root, "herdr"));
   const inventory = { presence: createProcessPresence(leases.root), leases, processes: async () => [], probe: async () => ({ kind: "live" as const, startIdentity }) };
   const locks = createBothLocks({ root: leases.root, file: async () => file, inventory, identity: { pid: process.pid, startIdentity } });
-  return { global, config, worktree, sessionId, file, cwd, location, boundKeys, boundDbs, journal, machine, activate, compose, mountRepository, live: () => live, locks };
+  return { global, config, worktree, sessionId, file, cwd, context, gate, location, boundKeys, boundDbs, journal, machine, activate, compose, mountRepository, live: () => live, freezeControl: (operation: Operation) => handler({ op: "freeze", operation }), locks };
 }
 
 it.each(["activation", "composition"])("%s starts a capture-ready box with a worktree-only location", async path => {
@@ -162,11 +163,14 @@ it("a box cannot freeze without its move-only store and includes it after it arr
     const op: Operation = { id: "box-freeze", kind: "session-freeze", machineId: BOX, expectedEpoch: 1,
       args: { sessionId: f.sessionId, moveId: "box-move", sourceMachine: HUB } };
     await f.locks(f.sessionId, async () => {
-      await expect(freezeParticipant(op, live)).rejects.toThrow("Store has no local mapping");
+      await expect(freezeParticipant(op, live)).rejects.toMatchObject({ code: "participant-stores-unavailable" });
+      expect(f.gate.inspect().kind).toBe("ordinary");
+      expect(f.journal.readFreeze(f.sessionId, "box-move")).toBeNull();
       expect(readSessionState(f.worktree, f.sessionId)).toBeNull();
       expect(f.journal.read(op.id).some(row => row.action === "done")).toBe(false);
       const seed: Operation = { ...op, id: "box-seed", kind: "move-seed", args: { ...op.args, keys: ROSTER } };
-      await expect(mounted!.dispatch(seed)).rejects.toThrow("Store has no local mapping");
+      await expect(mounted!.dispatch(seed)).rejects.toMatchObject({ code: "participant-stores-unavailable" });
+      expect(readSessionState(f.worktree, f.sessionId)).toBeNull();
       await f.mountRepository();
       const seeded = await mounted!.dispatch(seed);
       expect(seeded).toMatchObject({ code: 0, value: ROSTER.map(storeKey => expect.objectContaining({ storeKey })) });
@@ -278,15 +282,73 @@ it.each([
   } finally { await f.machine.close(); }
 }, 10000);
 
-it.each(["activation", "composition"])("%s refuses an unavailable required repository store before seed", async path => {
-  const f = await fixture();
+it.each(["activation", "composition"])("%s admits a hub with no repository store but refuses the move", async path => {
+  const f = await fixture(true, false, false, true);
+  let mounted: Awaited<ReturnType<typeof f.activate>> | Awaited<ReturnType<typeof f.compose>>;
   try {
-    f.global.db.prepare("DELETE FROM roam_repo_maps WHERE repo_key=?").run(REPO);
-    let reason: unknown;
-    try { const mounted = await (path === "activation" ? f.activate() : f.compose()); await mounted?.close(); } catch (error) { reason = error; }
-    expect(reason).toBeInstanceOf(Error);
-    expect((reason as Error).message).toBe("participant-stores-unavailable");
-    expect(f.location()).toEqual([WORKTREE]);
+    f.global.db.prepare("INSERT INTO session_homes VALUES(?,?,1,NULL,1)").run(f.sessionId, HUB);
+    const home = sessionHome(f.global.db, f.sessionId);
+    if (!home || home === "unknown") throw new Error("Fixture home unavailable");
+    recordLocation(f.global.db, { sessionId: f.sessionId, stores: [WORKTREE], home, file: f.file, cwd: f.cwd });
+    mounted = await (path === "activation" ? f.activate() : f.compose());
+    expect(mounted).not.toBeNull();
+    expect(f.location()).toEqual(ROSTER);
+    if (path === "activation") {
+      const op: Operation = { id: "missing-store-freeze", kind: "session-freeze", machineId: HUB, expectedEpoch: 1,
+        args: { sessionId: f.sessionId, moveId: "missing-store-move", sourceMachine: HUB } };
+      await expect(freezeParticipant(op, f.live())).rejects.toMatchObject({ code: "participant-stores-unavailable" });
+      expect(f.gate.inspect().kind).toBe("ordinary");
+      expect(await f.freezeControl(op)).toMatchObject({ code: 3, reason: "participant-stores-unavailable" });
+      expect(f.gate.inspect().kind).toBe("ordinary");
+      expect(f.journal.readIntercomFence(f.sessionId, "missing-store-move")).toBeNull();
+      expect(f.journal.readFreeze(f.sessionId, "missing-store-move")).toBeNull();
+    } else {
+      const runtime = mounted as Awaited<ReturnType<typeof f.compose>>;
+      const request = { sessionId: f.sessionId, destinationMachine: BOX,
+        operation: { id: "missing-store-move", kind: "move", machineId: HUB, expectedEpoch: 1, args: { sessionId: f.sessionId } } };
+      await expect(runtime.ports.check(request)).rejects.toMatchObject({ code: "participant-stores-unavailable" });
+      const op: Operation = { id: "missing-store-seed", kind: "move-seed", machineId: HUB, expectedEpoch: 1,
+        args: { sessionId: f.sessionId, moveId: request.operation.id, sourceMachine: HUB, keys: ROSTER } };
+      await expect(runtime.dispatch(op)).rejects.toMatchObject({ code: "participant-stores-unavailable" });
+      await expect(runtime.dispatch({ ...op, id: "missing-store-location", kind: "move-location" })).rejects.toMatchObject({ code: "participant-stores-unavailable" });
+      await expect(runtime.dispatch({ ...op, id: "missing-store-dormant-freeze", kind: "session-freeze" })).rejects.toMatchObject({ code: "participant-stores-unavailable" });
+    }
+    expect(sessionHome(f.global.db, f.sessionId)).toEqual(home);
     expect(readSessionState(f.worktree, f.sessionId)).toBeNull();
-  } finally { await f.machine.close(); }
+    expect(f.global.db.prepare("SELECT repo_key FROM roam_repo_maps").all()).toEqual([]);
+    expect(existsSync(replicaPath(f.global.db, `repo:${REPO}`))).toBe(false);
+  } finally { await mounted!?.close(); await f.machine.close(); }
+}, 10000);
+
+it("a restarted hub admits ordinary tools with a cataloged worktree and no repository store", async () => {
+  vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  const f = await fixture(true, false, false, true);
+  const hooks = new Map<string, (event: never, context: ExtensionContext) => unknown>();
+  const pi = { on: (event: string, handler: (event: never, context: ExtensionContext) => unknown) => hooks.set(event, handler) } as ExtensionAPI;
+  let activation: Awaited<ReturnType<typeof f.activate>>;
+  f.global.db.prepare("INSERT INTO session_homes VALUES(?,?,1,NULL,1)").run(f.sessionId, HUB);
+  seedSession(f.worktree, f.sessionId, 1, WORKTREE, f.config.limits.targetBatchBytes);
+  const home = sessionHome(f.global.db, f.sessionId);
+  if (!home || home === "unknown") throw new Error("Fixture home unavailable");
+  const gate = registerAdmission(pi, {
+    expectedEpoch: null, localMachine: async () => HUB, knownParticipant: () => true, warnOnce() {},
+    load: async () => ({ home, states: [readSessionState(f.worktree, f.sessionId)!], origin: HUB,
+      participating: true, captureSafe: true, unfinishedFreeze: false, initialConflict: false }),
+    async lock() { activation = await f.activate(gate); return async () => { await activation?.close(); }; },
+  });
+  try {
+    expect(f.location()).toEqual([WORKTREE]);
+    await hooks.get("session_start")!({} as never, f.context as unknown as ExtensionContext);
+    expect(gate.inspect()).toEqual({ kind: "ordinary", home, blockers: [] });
+    expect(hooks.get("tool_call")!({} as never, f.context as unknown as ExtensionContext)).toBeUndefined();
+    const op: Operation = { id: "resumed-missing-store-freeze", kind: "session-freeze", machineId: HUB, expectedEpoch: 1,
+      args: { sessionId: f.sessionId, moveId: "resumed-move", sourceMachine: HUB } };
+    expect(await f.freezeControl(op)).toMatchObject({ code: 3, reason: "participant-stores-unavailable" });
+    expect(gate.inspect()).toEqual({ kind: "ordinary", home, blockers: [] });
+    expect(hooks.get("tool_call")!({} as never, f.context as unknown as ExtensionContext)).toBeUndefined();
+    expect(f.journal.readFreeze(f.sessionId, "resumed-move")).toBeNull();
+    expect(f.location()).toEqual(ROSTER);
+    expect(f.global.db.prepare("SELECT repo_key FROM roam_repo_maps").all()).toEqual([]);
+    expect(existsSync(replicaPath(f.global.db, `repo:${REPO}`))).toBe(false);
+  } finally { await gate.close(); await f.machine.close(); }
 }, 10000);

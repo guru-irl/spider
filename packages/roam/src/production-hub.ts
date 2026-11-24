@@ -102,6 +102,7 @@ export async function startProductionHub(root: string, options: { intercomClock?
     if (!core.config.enabled || core.config.role !== "hub") throw new Error("Hub synchronization is disabled");
     const herdr = loadHerdrConfig(root), env = Object.freeze({ ...process.env });
     if (herdr.mode === "core-only") throw new Error(VIEW_ON_MAC_MESSAGE);
+    console.error(`hub-core-selection: socket=${env.HC_SOCKET ? "explicit" : "resolved"}`);
     hc = createHcClient({ binary: herdr.core.binary, env });
     const client = hc;
     const transport = createTransport({ binary: herdr.core.binary, env, enrolled: core.config.peers });

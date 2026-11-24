@@ -15,7 +15,7 @@ import { observeLocalHosting } from "./production-supervisor";
 import { homedir, userInfo } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { roamingCliEntry } from "./package-layout";
-import { inspectLocalConsumers, isPendingLaunchDiagnostic, localPendingLaunchDiagnostics, localStoreInventoryDiagnostics, localHostingWarningDiagnostics, runLocalDoctor, runLocalStatus } from "./local-diagnostics";
+import { inspectLocalConsumers, isPendingLaunchDiagnostic, localHubServiceDiagnostics, localPendingLaunchDiagnostics, localStoreInventoryDiagnostics, localHostingWarningDiagnostics, runLocalDoctor, runLocalStatus } from "./local-diagnostics";
 import { requestHubControl } from "./control-socket";
 import { parseRoamJson, storeScope } from "@spider/db-core/roam/codec";
 import { mapRepository } from "@spider/db-core/roam/repo-map";
@@ -550,6 +550,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
             rows.push(...await localPendingLaunchDiagnostics({ root, machineId: config.machineId }));
           }
           rows.push(...localHostingWarningDiagnostics(root));
+          if (config?.role === "hub") rows.push(...localHubServiceDiagnostics(root));
           if (config?.role === "box") {
             rows.push(...corePinDiagnostics(inspectSupervisorCorePin(root, process.env), config.machineId));
             rows.push({ severity: "info", reason: `Recorded core unit ${config.coreUnit ?? "unavailable"} (diagnostic only).`, repairCommand: null });

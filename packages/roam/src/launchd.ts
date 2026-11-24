@@ -2,14 +2,18 @@ import { resolveParticipantPi } from "./launcher";
 import { createHash, randomBytes } from "node:crypto";
 import { accessSync, closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { assertTestConfigPath } from "@spider/db-core";
+import { selectedSocket } from "@spider/herdr/client/parse";
+import { configSocket } from "@spider/herdr/client/socket-config";
 import { privateDirectory } from "./staging";
 
 const LABEL = "com.spider.roam.hub";
 
 export interface LaunchdPorts {
   plistDir: string;
+  /** Override the service manager's home in isolated fixtures. */
+  serviceHome?: string;
   /** Implementations normalize an absent service to the code `service-not-loaded`. */
   launchctl(argv: readonly string[]): Promise<void>;
 }
@@ -68,7 +72,32 @@ function openLog(file: string): void {
 function xml(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 }
-function definition(node: string, cli: string, root: string, out: string, err: string, pi: string, label: string): string {
+type CoreSelection = { session: string; socket: string };
+/** Resolve all hc socket inputs once, rather than passing through unrelated environment. */
+export function hubCoreSelection(env: Readonly<NodeJS.ProcessEnv>): CoreSelection {
+  const raw = env.HC_SESSION ?? "";
+  if (/[\u0000-\u001f\u007f\ud800-\udfff\ufffe\uffff]/u.test(raw)) throw new Error("Invalid HC_SESSION");
+  const session = raw.trim() || "default";
+  if (session === "." || session === ".." || /[\/\\:*?"<>|]/.test(session)) throw new Error("Invalid HC_SESSION");
+  const socket = selectedSocket({ ...env, HC_SESSION: session });
+  if (!isAbsolute(socket) || /[\u0000-\u001f\u007f\ud800-\udfff\ufffe\uffff]/u.test(socket)) throw new Error("Invalid hc socket selection: an absolute path without invalid characters is required");
+  return { session, socket: resolve(socket) };
+}
+function serviceManagerHome(): string {
+  // Test fixtures must never consult the real account's configuration.
+  return absolute(process.env.SPIDER_TEST_FIXTURE_CHECKOUT ? homedir() : userInfo().homedir);
+}
+function selectionEnvironment(selection: CoreSelection, serviceHome: string): string {
+  // An explicit selection can work even when the default configuration is invalid.
+  let standard: CoreSelection | undefined;
+  try { standard = hubCoreSelection({ HOME: serviceHome }); } catch { /* Pin the usable selection. */ }
+  let configured = false;
+  try { configured = configSocket(readFileSync(join(serviceHome, ".config", "herdr-core", "config.toml"), "utf8")) !== undefined; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") configured = true; }
+  if (!configured && standard && selection.session === standard.session && selection.socket === standard.socket) return "";
+  return `<key>HC_SESSION</key><string>${xml(selection.session)}</string><key>HC_SOCKET</key><string>${xml(selection.socket)}</string>`;
+}
+function definition(node: string, cli: string, root: string, out: string, err: string, pi: string, label: string, selection: CoreSelection, serviceHome: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -76,7 +105,8 @@ function definition(node: string, cli: string, root: string, out: string, err: s
 <key>ProgramArguments</key><array><string>${xml(node)}</string><string>${xml(cli)}</string><string>roam</string><string>hub</string></array>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><true/>
-<key>EnvironmentVariables</key><dict><key>SPIDER_GLOBAL_ROOT</key><string>${xml(root)}</string><key>SPIDER_ROAM_PI</key><string>${xml(pi)}</string></dict>
+<key>WorkingDirectory</key><string>${xml(root)}</string>
+<key>EnvironmentVariables</key><dict><key>SPIDER_GLOBAL_ROOT</key><string>${xml(root)}</string><key>SPIDER_ROAM_PI</key><string>${xml(pi)}</string>${selectionEnvironment(selection, serviceHome)}</dict>
 <key>StandardOutPath</key><string>${xml(out)}</string>
 <key>StandardErrorPath</key><string>${xml(err)}</string>
 <key>Umask</key><integer>63</integer>
@@ -124,8 +154,9 @@ function writeDefinition(file: string, contents: string, root: string, label: st
   }
 }
 
-/** No service manager or user path is selected unless the caller supplies it. */
-export async function installHubService(input: { node: string; cli: string; globalRoot: string; pi?: string }, ports: LaunchdPorts): Promise<void> {
+/** Install only into the supplied service directory and scoped global root. */
+export async function installHubService(input: { node: string; cli: string; globalRoot: string; pi?: string; env?: Readonly<NodeJS.ProcessEnv> }, ports: LaunchdPorts): Promise<void> {
+  const selection = hubCoreSelection(input.env ?? process.env), serviceHome = absolute(ports.serviceHome ?? serviceManagerHome());
   const node = executable(input.node, true), cli = executable(input.cli, false);
   const root = absolute(input.globalRoot), directory = absolute(ports.plistDir), label = hubServiceLabel(root);
   const file = hubServiceFile(root, directory), logDirectory = join(root, "roam", "logs");
@@ -141,7 +172,7 @@ export async function installHubService(input: { node: string; cli: string; glob
   if (!pi) throw new Error("participant-pi-unavailable");
   const participant = executable(pi, true);
   if (label !== LABEL) await removeDefinition(join(directory, `${LABEL}.plist`), root, LABEL, ports, true);
-  writeDefinition(file, definition(node, cli, root, out, err, participant, label), root, label, previous);
+  writeDefinition(file, definition(node, cli, root, out, err, participant, label, selection, serviceHome), root, label, previous);
   const domain = `gui/${uid}`;
   try { await ports.launchctl(["bootout", domain, file]); }
   catch (error) { if ((error as { code?: unknown } | null)?.code !== "service-not-loaded") throw error; }
@@ -168,6 +199,33 @@ export function hubServiceExists(globalRoot: string, plistDir: string): boolean 
   const legacy = join(directory, `${LABEL}.plist`);
   assertTestConfigPath(legacy);
   return label !== LABEL && managedDefinition(legacy, root, LABEL, true) !== null;
+}
+
+/** Compare the managed service's effective hc selection, including older plists. */
+export function hubServiceSelectionMatches(globalRoot: string, plistDir: string, env: Readonly<NodeJS.ProcessEnv>, serviceHome: string = serviceManagerHome()): boolean | null {
+  const root = absolute(globalRoot), directory = absolute(plistDir), label = hubServiceLabel(root), file = hubServiceFile(root, directory);
+  assertTestConfigPath(file);
+  let definition = managedDefinition(file, root, label);
+  if (!definition && label !== LABEL) {
+    const legacy = join(directory, `${LABEL}.plist`);
+    assertTestConfigPath(legacy);
+    definition = managedDefinition(legacy, root, LABEL, true);
+  }
+  if (!definition) return null;
+  const section = /<key>\s*EnvironmentVariables\s*<\/key>\s*<dict>([\s\S]*?)<\/dict>/.exec(definition.text)?.[1];
+  if (section === undefined) throw new Error("Invalid service environment");
+  const values: Record<string, string> = Object.create(null);
+  const pattern = /<key>([^<]*)<\/key>\s*<string>([^<]*)<\/string>/g;
+  let consumed = "";
+  for (const match of section.matchAll(pattern)) {
+    if (Object.hasOwn(values, match[1]) || /&(?!amp;|lt;|gt;|quot;|apos;)/.test(match[2])) throw new Error("Invalid service environment");
+    values[match[1]] = match[2].replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+    consumed += match[0];
+  }
+  if (consumed.replace(/\s/g, "") !== section.replace(/\s/g, "")) throw new Error("Invalid service environment");
+  const installed = hubCoreSelection({ HOME: absolute(serviceHome), HC_SESSION: values.HC_SESSION, HC_SOCKET: values.HC_SOCKET });
+  const current = hubCoreSelection(env);
+  return installed.session === current.session && installed.socket === current.socket;
 }
 
 /** A service with another definition or root is not ours to remove. */

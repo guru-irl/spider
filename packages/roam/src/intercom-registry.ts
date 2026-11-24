@@ -142,7 +142,8 @@ export function createIntercomRegistry(root: string, live?: LiveFenceReader) {
         machineId = meta.machine_id;
       }
       if (!isMachineId(machineId)) throw new Error("intercom-fence-unavailable");
-      const other = scope ? machineId === scope.source.machineId ? scope.target.machineId : machineId === scope.target.machineId ? scope.source.machineId : null : peer;
+      const scopedPeer = scope ? machineId === scope.source.machineId ? scope.target.machineId : machineId === scope.target.machineId ? scope.source.machineId : null : undefined;
+      const other = peer ?? scopedPeer;
       if (!other) return false;
       let fence: { edge_epoch: string; fence_id: string } | undefined;
       if (live) {
@@ -153,6 +154,8 @@ export function createIntercomRegistry(root: string, live?: LiveFenceReader) {
       } else fence = snapshot!.prepare("SELECT edge_epoch,fence_id FROM intercom_pair_fences WHERE peer=?").get(other) as typeof fence;
       if (fence && (!id(fence.edge_epoch) || !isMachineId(fence.fence_id))) throw new Error("intercom-fence-unavailable");
       if (!fence) return false;
+      // A predecessor receipt only accounts for the peer recorded on that pair.
+      if (other !== scopedPeer) return true;
       if (existing?.state === "revoked" && existing.fenceId === fence.fence_id && (existing.revocationEpoch ?? existing.pair.edgeEpoch) === fence.edge_epoch) return false;
       // A pending fresh enrollment may retain its completed predecessor until approved admission clears it.
       if ((existing?.state === "pending" || existing?.state === "cancelled") && existing.fenceId === fence.fence_id &&

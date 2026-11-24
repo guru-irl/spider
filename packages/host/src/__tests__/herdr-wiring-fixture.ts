@@ -3,7 +3,7 @@ import { expect, vi } from 'vitest';
 import { resolve, join } from 'node:path';
 import { configFixtureCwd } from './herdr-config-fixture.js';
 
-export async function mountedFixture(mode: 'fake' | 'hc' = 'fake', sessionMode = 'tui', hasUI = true, child = false, hcOwner = true, launches = false, requested: boolean | 'auto' = true, deadSocket = false, failShortcutRegistration = false, coreAvailable = true, killAction?: (ctx: any, id: string) => Promise<unknown>, options: { automaticSubagentPanes?: boolean; admitted?: () => boolean; allowMissingFeed?: boolean; fastInactive?: boolean } = {}): Promise<{
+export async function mountedFixture(mode: 'fake' | 'hc' = 'fake', sessionMode = 'tui', hasUI = true, child = false, hcOwner = true, launches = false, requested: boolean | 'auto' = true, deadSocket = false, failShortcutRegistration = false, coreAvailable = true, killAction?: (ctx: any, id: string) => Promise<unknown>, options: { automaticSubagentPanes?: boolean; admitted?: () => boolean; allowMissingFeed?: boolean; fastInactive?: boolean; beforeStart?: (h: import('@spider/herdr/__tests__/isolated').HerdrHarness) => Promise<void> } = {}): Promise<{
     h: import("@spider/herdr/__tests__/isolated").HerdrHarness;
     pi: {
         getSessionName: () => undefined;
@@ -140,7 +140,7 @@ export async function mountedFixture(mode: 'fake' | 'hc' = 'fake', sessionMode =
   const ctx = { cwd: h.directories.local, mode: sessionMode, hasUI, isIdle: () => true, ui: { notify(message: string) { notices.push(message); }, setStatus(key: string, text: string | undefined) { statusValues.set(key, text); if (key === 'spider-herdr' && text !== undefined) statusMessages.push(text); }, setWidget(name: string, factory: unknown) { if (name === 'spider-herdr-status' && typeof factory === 'function') captured.push(name); if (typeof factory === 'function') factory({ terminal }); } }, sessionManager: { getSessionId: () => h.owner!.sessionId, getSessionFile: () => undefined, getEntries: () => [], getBranch: () => [] } };
   const registrations = { tools: [] as string[], shortcuts: [] as string[] };
   const pi = { getSessionName: () => undefined, registerTool(tool: { name: string }) { registrations.tools.push(tool.name); }, registerShortcut(key: string) { registrations.shortcuts.push(key); if (failShortcutRegistration) throw new Error('No shortcut API in this embedding'); }, on(name: string, handler: Function) { if (!hooks.has(name)) hooks.set(name, new Set()); hooks.get(name)!.add(handler); return () => hooks.get(name)!.delete(handler); }, sendMessage(message: unknown) { notices.push(message); } };
-  const { admitted, allowMissingFeed, fastInactive: _fastInactive, ...configOptions } = options;
+  const { admitted, allowMissingFeed, fastInactive: _fastInactive, beforeStart, ...configOptions } = options;
   const config = { ...configOptions, enabled: requested, app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.root, 'core.toml') }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [{ name: 'remote.invalid', aliases: ['managed.example.invalid'], runtime: { cwd: null, directory: join(h.directories.remote, 'programs'), commands: {} }, nodePath: process.execPath }], limits: { auxiliaryPanes: 2, completedRows: 50, completedHours: 24 }, retention: { foregroundDays: 7 }, admin: { wrappers: [] } };
 
   const callLog = join(h.root, 'host-hc-calls.jsonl'); await writeFile(callLog, '');
@@ -176,6 +176,7 @@ for (const signal of ['SIGINT','SIGTERM','SIGHUP']) process.once(signal, () => c
     dataSource: { resolveRunDb: () => ({ db: openDbAt(dbPath, 'worktree'), dbPath }), openApprovalDbs: () => ({ global: openDbAt(globalPath, 'global'), repo: null }), readUsage: async () => ({ snapshots: [], budget: undefined, correctedMonth: null, correctedWindow: null, updatedAt: null }), scheduler: { listTriggers: () => [], subscribe: () => () => {} } },
   });
   const emit = async (name: string, event: unknown = {}) => { let result: unknown; for (const handler of [...hooks.get(name) ?? []]) { const next = await handler(event, ctx); if (next !== undefined) result = next; } return result; };
+  await beforeStart?.(h);
   await emit('session_start', { reason: 'startup' });
   const owner = mount.owner();
   const descriptor = mount.execution().environmentPolicy(process.env).SPIDER_HERDR_SSH_DESCRIPTOR;

@@ -142,7 +142,11 @@ export class OrganismWorker {
     if (!lease.acquired) { this.#scheduleDrainRetry(lease.retryAt); return; }
     try {
       const attempted = new Set<string>();
-      while (!this.#shuttingDown && !this.#paused && store.renew(owner, duration)) {
+      while (!this.#shuttingDown && !this.#paused) {
+        if (!store.renew(owner, duration)) {
+          if (store.next()) this.#scheduleDrainRetry(Date.now());
+          return;
+        }
         const outage = store.outage();
         if (outage && outage.retryAt > Date.now()) { this.#scheduleDrainRetry(outage.retryAt); return; }
         const pending = store.next(attempted);
@@ -347,7 +351,7 @@ export class OrganismWorker {
         }
       }
 
-      if (retryOwner && (!retryStore.owns(retryOwner) || (deferred && !retryStore.contains(deferred.bundle)))) {
+      if (retryOwner && (!retryStore.renew(retryOwner, Math.max(1, timeout) + 5000) || (deferred && !retryStore.contains(deferred.bundle)))) {
         held = true; suppressReceipt = true; return summary;
       }
       const merged = emptyResult();
@@ -388,8 +392,10 @@ export class OrganismWorker {
             suppressReceipt = !pending.first && !pending.dropped;
             this.#scheduleDrainRetry(pending.outage.retryAt);
           } else if (!held) {
-            if (deferred && (report.skipReason === "no-input" || required.every(name => completed.has(name)))) retryStore.finish(deferred.bundle);
-            if (deferred || calledProvider) {
+            if (deferred && (report.skipReason === "no-input" || required.every(name => completed.has(name)))) {
+              if (!retryOwner || !retryStore.finish(deferred.bundle, retryOwner)) { held = true; suppressReceipt = true; }
+            }
+            if (!held && (deferred || calledProvider)) {
               retryStore.clearOutage();
               if (!deferred && retryStore.next()) this.#scheduleDrainRetry(Date.now());
             }

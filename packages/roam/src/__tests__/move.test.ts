@@ -469,7 +469,8 @@ it.each([false, true])("peer recovery skips a concurrent move without a doctor w
   }));
   const moving = moveSession(f.request, f.ports); await started;
   // Keep the real filesystem lock. A held lock must fail immediately in this test.
-  const probe = vi.spyOn(locks, "withProcessLock").mockImplementation((root, id, effect, options) => lock(root, id, effect, { ...options, timeoutMs: 0 }));
+  const immediateLock: typeof lock = (root, id, effect, options) => lock(root, id, effect, { ...options, timeoutMs: 0 });
+  const probe = vi.spyOn(locks, "withProcessLock").mockImplementation(immediateLock);
   try {
     await service.recover(BOX);
     expect(journal.lookupOperation(f.request.operation.id)?.state).toBe("pending");

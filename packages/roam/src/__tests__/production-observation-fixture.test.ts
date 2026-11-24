@@ -1,10 +1,10 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { runHub, type HubRuntimePorts } from "../hub";
 import { assignInitialHome } from "../homes";
 import { readLocal } from "@spider/db-core/roam/local-state";
-import { createReplica } from "@spider/db-core/testutil";
+import { createReplica, scratchDbPath } from "@spider/db-core/testutil";
 import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import type { RoamConfig } from "../contracts";
 import { openJournal } from "../journal";
@@ -23,8 +23,9 @@ it("a peer reply supplies production sync proof despite ungathered or refused st
     discoveryRoots: [], coreUnit: "core", syncMs: 120_000, limits: { ...DEFAULT_LIMITS }, intercom: disabledIntercom() };
   const wire = noChangeSyncFixture(config);
   const native = await productionObservationFixture(local.root, config, local.db, wire.transport);
+  const journal = openJournal(join(local.root, "sync.db"));
   const sync = createSync({ config, globalDb: local.db, stores: wire.stores, transport: wire.transport,
-    journal: openJournal(join(local.root, "sync.db")), clock: { now: () => 1, later() { return () => {}; } } });
+    journal, clock: { now: () => 1, later() { return () => {}; } } });
   try {
     expect(await native.observe(peer, [])).toMatchObject({ reachability: "reachable", syncVerified: false });
     wire.setIncomplete(true);
@@ -32,15 +33,16 @@ it("a peer reply supplies production sync proof despite ungathered or refused st
     expect(incomplete).toEqual([]);
     const readiness = { origin: "hub-operation", opId: "op-1", sessionId: "session-1", epoch: 1,
       cwd: "/home/fixture/work", file: "/home/fixture/session.jsonl", core: "core-1", terminal: "box-1.invalid/t1" };
-    wire.setHosting({ readiness: [{ ...readiness, terminal: "t1" }], suspensions: [{ sessionId: "session-1", epoch: 1 }] });
+    const warning = { code: "supervisor-hosting-error", check: "inspection", sessionId: "session-1", since: 1, count: 3 };
+    wire.setHosting({ readiness: [{ ...readiness, terminal: "t1" }], suspensions: [{ sessionId: "session-1", epoch: 1 }], warnings: [warning] });
     expect(await native.observe(peer, incomplete)).toMatchObject({ reachability: "reachable", syncVerified: true,
-      readiness: [readiness], suspensions: [{ sessionId: "session-1", epoch: 1 }] });
+      readiness: [readiness], suspensions: [{ sessionId: "session-1", epoch: 1 }], warnings: [warning] });
     assignInitialHome(local.db, "session-1", peer.machineId, machineId);
-    const root = mkdtempSync(join(resolve(".spider/scratch"), "hosting-"));
+    const root = mkdtempSync(join(dirname(scratchDbPath("hosting")), "hosting-"));
     let afterSync!: Parameters<HubRuntimePorts["prepare"]>[0];
     const placements: unknown[] = [], notices: string[] = [], recoveries: string[] = [];
     const timers: Array<{ cancelled: boolean; fn(): void }> = [];
-    const hub = await runHub({ config, globalDb: local.db, runtimeRoot: root, socketPath: join(root, "hub.sock"),
+    const hub = await runHub({ config, journal, globalDb: local.db, runtimeRoot: root, socketPath: join(root, "hub.sock"),
       identity: { pid: process.pid, startIdentity: "process-1" }, async probe() { return { kind: "live", startIdentity: "process-1" }; },
       clock: { now: () => 1, later(_ms, fn) { const timer = { cancelled: false, fn }; timers.push(timer); return () => { timer.cancelled = true; }; } }, observe: native.observe,
       async recoverPeerMoves(id) { recoveries.push(id); },
@@ -54,7 +56,7 @@ it("a peer reply supplies production sync proof despite ungathered or refused st
       await afterSync(peer, incomplete);
       expect(placements).toEqual([readiness]);
       expect(notices).toEqual(["suspended"]);
-      expect(readLocal(local.db, "peer-hosting-warnings", peer.machineId)).toEqual([]);
+      expect(readLocal(local.db, "peer-hosting-warnings", peer.machineId)).toEqual([warning]);
       native.setState("unreachable"); wire.setUnavailable(true);
       const outage = await sync.sync(peer.machineId);
       expect(outage).toMatchObject([{ code: 3 }]);

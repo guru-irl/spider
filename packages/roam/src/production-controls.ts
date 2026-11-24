@@ -11,7 +11,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
+import { waitReady } from "./hub-readiness";
 import { assertTestConfigPath, openDbReadOnly } from "@spider/db-core";
 import { storeScope } from "@spider/db-core/roam/codec";
 import { enableMemoryCapture } from "@spider/db-core/roam/seed";
@@ -122,16 +122,6 @@ async function startPeerBroker(transport: Transport, peer: Peer, config: RoamCon
   if (Object.keys(result).length !== 5 || result.ok !== true || result.machineId !== peer.machineId) throw invalid();
   try { return parseDoctorReport(result.doctor); } catch { throw invalid(); }
 }
-async function waitReady(file: string): Promise<boolean> {
-  const end = Date.now() + 4000;
-  while (Date.now() < end) {
-    try { const result = await requestHubControl(file, { op: "status" }, { timeoutMs: 500 }); if (result.code === 0 && result.value?.enabled === true) return true; }
-    catch { /* The service may still be starting. */ }
-    await delay(50);
-  }
-  return false;
-}
-
 export async function enableRoaming(root: string, cli: string, bundleUrl?: URL): Promise<ControlResult> {
   let changed = false, step: CauseStep = "enable";
   try {

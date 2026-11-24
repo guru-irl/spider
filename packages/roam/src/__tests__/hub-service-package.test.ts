@@ -16,7 +16,7 @@ beforeAll(async () => {
   await buildRoamEntries(join(packageRoot, "dist/roam"));
   writeFileSync(join(packageRoot, "dist/extension.js"), "// SPIDER_BUILD_ID=aaaaaaaa@2026-01-01T00:00:00.000Z v0.1.0\n");
   for (const mode of ["remote-runtime", "pane-endpoint"]) await build({ configFile: resolve("vite.herdr.config.mjs"), mode, logLevel: "error", build: { outDir: join(packageRoot, "dist/herdr") } });
-}, 5000);
+});
 afterAll(() => { vi.unstubAllEnvs(); if (root) rmSync(root, { recursive: true, force: true }); });
 
 it("packaged enable installs the executable CLI dispatcher rather than its imported module", async () => {
@@ -53,7 +53,7 @@ it("packaged enable installs the executable CLI dispatcher rather than its impor
     expect(entry.stderr).not.toContain("ENOENT");
     expect(entry.stderr).not.toContain("runtime request");
   } finally { await socket.close(); }
-}, 5000);
+});
 
 it("executing the bundled CLI library never starts a remote runtime", () => {
   const result = spawnSync(process.execPath, [join(packageRoot, "dist/roam/cli-main.mjs"), "roam", "hub", "--help"],

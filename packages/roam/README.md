@@ -110,12 +110,10 @@ live file-lease holder. It directs the operator to supported session shutdown
 or restored process and boot identity inspection before stopping again. Once
 the released owner has positively exited, doctor offers stop. A reservation
 without adoption evidence checks the actual pin and core before reporting a
-core problem. These repairs do not send the operator back to doctor.
-
-identities. Pending launches remain blocking in all three cases. Doctor offers
-stop for an unstarted reservation, but inspection for an invoking reservation
-without a handoff. Stop repair diagnostics name the Mac hub as where to run the
-command, including when doctor runs locally on a box.
+core problem. These repairs do not send the operator back to doctor. Doctor
+offers stop for an unstarted reservation, but inspection for an invoking
+reservation without a handoff. Stop repair diagnostics name the Mac hub as
+where to run the command, including when doctor runs locally on a box.
 
 ## Machine reachability
 

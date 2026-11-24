@@ -7,9 +7,11 @@ import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { isAbsolute, join, relative } from "node:path";
-import { openDb, type Db } from "@spider/db-core";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { openDb, paths, type Db } from "@spider/db-core";
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
+import { parseLocationStores, recordLocation } from "@spider/db-core/roam/catalog";
+import { completeMoveRoster } from "./move-roster";
 import { parseHubReadiness } from "@spider/db-core/roam/readiness";
 import type { Blocker, Home, HubOperationReadiness, JsonObject, Probe, StoreKey } from "@spider/db-core/roam/types";
 import type { Clock, Diagnostic, GitPorts, Operation, RoamConfig, Transport, WorkspaceSnapshot } from "@spider/roam/contracts";
@@ -59,6 +61,8 @@ export function moveBindingDiagnostics(bindings: MoveAdapterBindings): Diagnosti
 export interface HostMoveInput {
   root: string; globalDb: Db; config: RoamConfig; journal: FreezeJournal; sessionId: string; transport: Transport;
   sync?: NonNullable<MoveAdapterBindings["sync"]>; operation?: Operation;
+  /** Live activation supplies its already completed source roster. */
+  storeKeys?: readonly StoreKey[];
 }
 function gitRun(cwd: string, argv: readonly string[], options?: { env?: Readonly<NodeJS.ProcessEnv>; stdin?: Buffer }): Promise<Buffer> {
   return new Promise((done, reject) => {
@@ -81,14 +85,28 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
   const { root, globalDb, config, journal, sessionId, transport } = input;
   const pi = resolveParticipantPi();
   const privateDb = openDb(join(root, "roam", "journal.db"), { fileMustExist: true, checkpointOnClose: false });
+  let closeStores: (() => void) | undefined;
+  try {
   const presentations = createHostRoamPresentationPorts({ root, globalDb, revocationDb: privateDb, config });
   const stores = createStorePort(config, globalDb, { allowUnassignedGlobal: true });
+  closeStores = () => stores.close();
   const keys = listStoreKeys(globalDb);
-  const known = globalDb.prepare("SELECT stores_json FROM roam_locations WHERE session_id=?").get(sessionId) as { stores_json: string } | undefined;
+  const known = globalDb.prepare("SELECT stores_json,cwd FROM roam_locations WHERE session_id=?").get(sessionId) as { stores_json: string; cwd: string | null } | undefined;
   const checkKeys = (input.operation?.args.check as { storeKeys?: unknown } | undefined)?.storeKeys;
-  const requiredKeys: unknown = Array.isArray(checkKeys) ? checkKeys : Array.isArray(input.operation?.args.keys) ? input.operation!.args.keys : known ? JSON.parse(known.stores_json) : keys;
-  if (!Array.isArray(requiredKeys) || requiredKeys.some(key => typeof key !== "string" || !keys.includes(key as StoreKey))) throw new MoveCompositionError("participant-stores-unavailable");
-  const roster = keys.filter(key => requiredKeys.includes(key)).map(key => ({ key, db: stores.openStore(key).db }));
+  const requestedKeys = input.storeKeys ?? (Array.isArray(checkKeys) ? checkKeys : Array.isArray(input.operation?.args.keys) ? input.operation!.args.keys : undefined);
+  const sourceHome = sessionHome(globalDb, sessionId);
+  const completeSource = known && requestedKeys === undefined && sourceHome !== "unknown" && (!sourceHome || sourceHome.machineId === config.machineId);
+  let requiredKeys: StoreKey[];
+  try {
+    const cwd = known?.cwd;
+    const mapped = completeSource && cwd ? (globalDb.prepare("SELECT repo_key,workspace_id,path FROM roam_workspace_maps").all() as { repo_key: string; workspace_id: string; path: string }[])
+      .filter(row => resolve(row.path) === resolve(dirname(paths.projectRoot(cwd)))) : [];
+    requiredKeys = completeSource ? completeMoveRoster(JSON.parse(known.stores_json), mapped.length === 1 ? mapped[0] : undefined)
+      : parseLocationStores(requestedKeys ?? (known ? JSON.parse(known.stores_json) : keys));
+    if (requiredKeys.some(key => !keys.includes(key))) throw new Error("participant-stores-unavailable");
+  } catch (error) { throw Object.assign(new MoveCompositionError("participant-stores-unavailable"), { cause: error }); }
+  const roster = requiredKeys.map(key => ({ key, db: stores.openStore(key).db }));
+  if (completeSource) recordLocation(globalDb, { sessionId, stores: requiredKeys, home: sourceHome });
   const clock: Clock = { now: () => Date.now(), later(ms, fn) { const timer = setTimeout(fn, ms); timer.unref(); return () => clearTimeout(timer); } };
   const sync = input.sync ?? createSync({ config, globalDb, journal, transport, clock, stores });
   const inventory = createProcessInventory(join(root, "herdr"));
@@ -385,7 +403,7 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
   const installOnly = !config.enabled && input.operation?.kind === "restore-destroyed-home";
   const diagnostics = moveBindingDiagnostics(bindings).filter(row => !installOnly || !["participant-pi-unavailable", "adapter-unbound:start", "adapter-unbound:readmitSource"].includes(row.reason));
   recordMoveBindings(globalDb, bindings);
-  if (diagnostics.length) { privateDb.close(); stores.close(); throw new MoveCompositionError(diagnostics[0].reason); }
+  if (diagnostics.length) throw new MoveCompositionError(diagnostics[0].reason);
   return { bindings, ports, async recover() { return recoverMoveAdapters(ports, bindings); },
     async dispatch(operation) {
       const result = (value: unknown): import("@spider/roam/contracts").Outcome<JsonObject> => ({ code: value === null ? 3 : 0, reason: value === null ? "move-evidence-missing" : "complete", operationId: operation.id, home: localHome(sessionId), epoch: operation.expectedEpoch, repairCommand: value === null ? `spider roam recover ${operation.args.moveId}` : null, value: value as JsonObject | null });
@@ -410,4 +428,9 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
     },
     control: createMoveControlHandler({ config, globalDb, journal, transport, ports }),
     async close() { await presentations.dispose(); if (!input.sync) { const adapter = sync as ReturnType<typeof createSync>; adapter.stop(); await adapter.drain(); } stores.close(); privateDb.close(); } };
+  } catch (error) {
+    try { closeStores?.(); } catch { /* Retain the composition failure. */ }
+    try { privateDb.close(); } catch { /* Retain the composition failure. */ }
+    throw error;
+  }
 }

@@ -97,6 +97,8 @@ An unavailable installed entry on a hub returns `enable-unavailable` without
 changing configuration. The imported `cli-main.mjs` module is not an executable
 service entry. Runtime and pane endpoint libraries never execute their CLI on import.
 Their dedicated entries retain the packaged remote runtime and pane commands.
+The packaged box supervisor compares real paths at startup, so file or directory
+symlinks to a release still run its executable entry.
 Hubs enabled on an earlier release must run `spider roam enable` again after
 upgrading, to reinstall the service with the correct entry.
 

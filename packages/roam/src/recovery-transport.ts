@@ -13,7 +13,7 @@ import { pullArtifact } from "./artifacts";
 import { verifyFrozenSession } from "./session-file";
 import { sessionHome } from "./homes";
 import { syncHandshake, type SyncHandshake } from "./revocation";
-import { agentFailureCode, RecoveryResponseError, recoveryRefusalCode } from "./peer-errors";
+import { agentFailureCode, isPeerFailureReason, RecoveryArtifactError, RecoveryResponseError, recoveryRefusalCode } from "./peer-errors";
 import { causeCode, safeCauseCode } from "./cause-codes";
 export interface ProductionRecoveryPorts {
   mirrors: NonNullable<import("./sync").SyncPorts["mirrors"]>;
@@ -59,7 +59,8 @@ export function createProductionRecoveryPorts(input: { root: string; config: Roa
         if (value.mode !== "full" && value.mode !== "append" || value.mode === "full" && value.offset !== 0 || value.mode === "append" && (!prefix || value.offset !== prefix.size) ||
             !value.artifact || value.artifact.kind !== "session" || value.artifact.byteLength !== value.source.size - value.offset || value.mode === "full" && value.artifact.sha256 !== value.source.sha256) throw new Error("mirror-session-mismatch");
         const pulled = await pullArtifact(peer, value.artifact, { transport, journal, limits: config.limits, root: join(root, "roam", "staging") });
-        if (pulled.code !== 0 || !pulled.value) throw new Error(pulled.reason);
+        if (pulled.code !== 0 || !pulled.value) throw new RecoveryArtifactError(pulled.code === 0 ? 3 : pulled.code,
+          isPeerFailureReason(pulled.reason) ? pulled.reason : "Artifact pull is pending");
         let file = pulled.value.file;
         if (value.mode === "append") {
           const directory = join(root, "roam", "mirror-snapshots"); privateDirectory(directory);

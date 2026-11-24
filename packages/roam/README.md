@@ -34,7 +34,9 @@ Transport failures, whether code `1` or code `3`, retry after 30, 60, and
 then 120 seconds. A short configured `syncMs` cannot bypass this schedule.
 An answered round without a connectivity failure resets the backoff even when
 a store is ungathered or refused. Those stores keep their own diagnostics.
-An identity mismatch cannot prove the enrolled peer answered.
+An identity mismatch cannot prove the enrolled peer answered. A session mirror
+export or copy that loses connectivity also retains the backoff and cannot
+verify the round. An answered mirror refusal keeps its own diagnostic.
 
 ## Move recovery
 

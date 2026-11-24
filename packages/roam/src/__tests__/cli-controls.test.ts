@@ -659,6 +659,7 @@ it("disable completes interrupted service removal and retries each box flag", as
   expect(requests.map(request => [request.machineId, request.enabled])).toEqual([[BOX, false], [other.machineId, false]]);
   expect(f.err.join("")).toContain("box-2.invalid");
   expect(f.err.join("")).toContain("spider roam disable");
+  expect(f.err.join("")).toContain("Reload open pi sessions (/reload) to pick up /move.");
   expect(JSON.parse(readFileSync(file, "utf8")).enabled).toBe(false);
 }, 5000);
 

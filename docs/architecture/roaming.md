@@ -78,7 +78,8 @@ The result names the unconfirmed boxes and the exact retry command,
 `spider roam disable`. Captures and homes remain intact. A retry reuses each
 box's latest matching pending disable operation ID and its consent record.
 A newer enable decision prevents replay of an older pending disable operation.
-Code `0` means both local disable and every box flag are confirmed.
+Code `0` means both local disable and every box flag are confirmed. Both
+outcomes tell open pi sessions to use `/reload` to pick up the local change.
 
 When enable or disable needs reconciliation, text and JSON include a bounded
 `causeCode`. Sync agent refusals and intercom enrollment pending results also

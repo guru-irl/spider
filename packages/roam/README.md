@@ -60,7 +60,8 @@ When local disable succeeds but box flags are unconfirmed, the command returns
 `spider roam disable` retry command. Retrying reuses the latest matching pending
 peer operation ID without appending another consent record. A newer enable
 operation prevents reuse of an older pending disable. Code `0` means all flags
-are confirmed. Captures and homes are retained in either case.
+are confirmed. Captures and homes are retained in either case. Both outcomes
+tell open pi sessions to use `/reload` to pick up the local change.
 
 ## Intercom initialization
 

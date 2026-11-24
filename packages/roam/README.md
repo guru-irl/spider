@@ -29,8 +29,11 @@ that entry. A box returns `mac-hub-required`; a hub with an unavailable
 installed entry returns `enable-unavailable` without changing configuration.
 
 `hub-service-diagnostics.ts` reads service metadata and uses the read-only
-status probe in `hub-readiness.ts`, shared with enable. Doctor allows two
-seconds for a running service to become ready. A stale socket is not readiness.
+status probe in `hub-readiness.ts`, shared with enable. Doctor gives service
+metadata and readiness probes a combined two-second deadline. If service state
+is unknown and the socket is absent, it reports immediately instead of retrying.
+A running service can become ready in the remaining time. A stale socket is not
+readiness. Control requests use elapsed-time deadlines, even during partial replies.
 It blocks with `hub-startup-pending` only when the service is stopped, or when
 a running service still fails the probe after that bound. Unknown service
 metadata produces a `hub-startup-unverified` warning. The diagnostic names

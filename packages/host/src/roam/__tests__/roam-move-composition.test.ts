@@ -1,4 +1,6 @@
 import { readLocal } from "@spider/db-core/roam/local-state";
+import { mapRepository, mapWorkspace } from "@spider/db-core/roam/repo-map";
+import { execFileSync } from "node:child_process";
 import { readMoveBindingDiagnostics } from "@spider/roam/move-diagnostics";
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -450,6 +452,18 @@ it("source cleanup rejects a replacement lock token even for the same process id
 }, 5000);
 
 
+it("an absent workspace mapping has a finite cause distinct from runtime construction failure", async () => {
+  const global = createReplica("global", HUB); fixtures.push(global);
+  mkdirSync(join(global.root, "roam"), { mode: 0o700 });
+  const config: RoamConfig = { enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture", syncMs: 1000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
+  const mounted = await createHostMoveBindings({ root: global.root, globalDb: global.db, config, journal: openFreezeJournal(join(global.root, "roam", "journal.db")), sessionId: "session-a", transport: {} as never });
+  try {
+    expect(await mounted.dispatch({ id: "map-a", kind: "move-workspace-map", machineId: HUB, expectedEpoch: 1,
+      args: { sessionId: "session-a", repoKey: "fixture", workspaceId: "workspace", moveId: "move-a" } }))
+      .toMatchObject({ code: 1, causeCode: "move-workspace-unmapped", value: null });
+  } finally { await mounted.close(); }
+}, 5000);
+
 it.each(["00000000-0000-4000-8000-000000000002", HUB, null])("mapping uses the actual source root with home %s", async sourceMachine => {
   const BOX = "00000000-0000-4000-8000-000000000002", global = createReplica("global", HUB); fixtures.push(global);
   mkdirSync(join(global.root, "roam"), { mode: 0o700 });
@@ -460,10 +474,13 @@ it.each(["00000000-0000-4000-8000-000000000002", HUB, null])("mapping uses the a
   const { recordLocation } = await import("@spider/db-core/roam/catalog");
   recordLocation(global.db, { sessionId, stores: ["global"], home: null, file: join(global.root, "session.jsonl"), cwd: localRoot });
   if (sourceMachine) global.db.prepare("INSERT INTO session_homes VALUES(?,?,2,NULL,1)").run(sessionId, sourceMachine);
-  global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path,snapshot_json) VALUES(?,?,?,NULL)").run("fixture", "workspace", localRoot);
+  execFileSync("git", ["init", "-q", "--initial-branch=main"], { cwd: localRoot, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], { cwd: localRoot, stdio: "ignore" });
+  await mapRepository(global.db, { repoKey: "fixture", path: localRoot });
+  await mapWorkspace(global.db, { repoKey: "fixture", workspaceId: "workspace", path: localRoot });
   const requests: unknown[] = [], transport = { async resolve(value: unknown) { return value; }, async exec(_peer: unknown, argv: string[]) {
     const operation = JSON.parse(argv[2]); requests.push(operation);
-    return Buffer.from(JSON.stringify({ operationId: operation.id, code: 0, value: "/fixture/remote/checkout" }));
+    return Buffer.from(JSON.stringify({ operationId: operation.id, code: 0, value: { kind: "mapped", path: "/fixture/remote/checkout" } }));
   } };
   const mounted = await createHostMoveBindings({ root: global.root, globalDb: global.db, config, journal: openFreezeJournal(join(global.root, "roam", "journal.db")), sessionId, transport: transport as never });
   try {

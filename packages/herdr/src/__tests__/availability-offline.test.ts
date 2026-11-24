@@ -56,6 +56,48 @@ it.each(['authentication failed', 'permission denied', 'identity mismatch while 
   expect(error.availability).toBeUndefined();
 });
 
+it.each([
+  'remote file not found: /home/fixture/downloads/file',
+  'remote file not found: /home/fixture/lost+found/file',
+  'remote command rejected during shutdown',
+  'remote file not found: /home/fixture/report-503',
+  'missing record 502',
+])('does not treat a content error as a transport outage: %s', async stderr => {
+  const original = new HerdrError('cli-exit', 'CLI exited', { exitCode: 1, stderr });
+  const error = await trackAvailability(scope, async () => { throw original; }).catch(caught => caught);
+  expect(error).toBe(original);
+  expect(error.availability).toBeUndefined();
+});
+
+it.each([
+  'remote host is down',
+  'connection was reset',
+  'HTTP 502 Bad Gateway',
+  'HTTP/1.1 503 Service Unavailable',
+  'status: 504',
+])('recognizes actual transport evidence: %s', async stderr => {
+  const error = await trackAvailability(scope, async () => { throw new HerdrError('cli-exit', 'CLI exited', { stderr }); }).catch(caught => caught);
+  expect(error.availability).toEqual(scope);
+});
+
+it.each([
+  { code: 'unavailable', message: 'Destination unavailable', details: { hint: 'Authentication failed' } },
+  { code: 'cli-exit', message: 'CLI exited', details: { stderr: 'connection reset', hint: 'usage: check authentication' } },
+  { code: 'cli-exit', message: 'CLI exited', details: { stderr: 'connection reset', stdout: 'HTTP 403 forbidden' } },
+])('does not mistake hint or stdout content for an authentication error: $code', async ({ code, message, details }) => {
+  const error = await trackAvailability(scope, async () => { throw new HerdrError(code, message, details); }).catch(caught => caught);
+  expect(error.availability).toEqual(scope);
+});
+
+it.each([
+  new HerdrError('cli-exit', 'Authentication failed', { stderr: 'connection reset' }),
+  new HerdrError('cli-exit', 'CLI exited', { stderr: 'authentication failed while connection reset' }),
+])('still treats authentication in the message or stderr as a non-connectivity failure', async original => {
+  const error = await trackAvailability(scope, async () => { throw original; }).catch(caught => caught);
+  expect(error).toBe(original);
+  expect(error.availability).toBeUndefined();
+});
+
 it('does not report recovery for cached metadata, terminal metadata, or a malformed remote reply', async () => {
   vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
   const available: string[] = [], connected: string[] = [], hc = client(key => available.push(key));

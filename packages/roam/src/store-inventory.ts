@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { openDbReadOnly, validateRoamLayout, type Db } from "@spider/db-core";
-import { storeScope } from "@spider/db-core/roam/codec";
+import { isRoamUuid, storeScope } from "@spider/db-core/roam/codec";
 import { catalogPath, openRoamPathReadOnly, roamStorePath, type ReadStoreOptions, type RoamCatalogSource } from "@spider/db-core/roam/reads";
 import type { StoreKey } from "@spider/db-core/roam/types";
 import type { Diagnostic } from "./contracts";
@@ -59,12 +59,16 @@ export function storeInventoryDiagnostic(entry: string, error?: unknown, severit
     reason: `${problem.code}:${problem.scope}:${problem.check}: ${problem.code === "store-uninspectable" ? "Cannot inspect store " : ""}${path}${problem.code === "store-missing" ? ". Ungathered: restore or mount the path. Planned stores stay registered until created; prune only a confirmed deletion." : ""}`,
     repairCommand: problem.code === "store-missing" ? "Restore or mount the path; use spider roam stores prune for a confirmed deletion. Planned stores must be created before capture."
       : problem.check.startsWith("diagnostic-snapshot-") ? "Open the store with its writer to publish or recover its WAL, then rerun spider roam doctor."
+      : problem.check === "store-machine-mismatch" ? "This store belongs to another machine identity. Use a matching machine catalog, then rerun spider roam doctor."
       : "Restore the store or repair its permissions or database, then rerun spider roam doctor." };
 }
 function ungathered(issue: StoreInventoryError, key: StoreKey | null, options: InventoryOptions): void {
   const code = issue.code === "store-missing" ? "missing" : (issue.check.startsWith("store-path-") || issue.check === "store-layout-unsafe") ? "unsafe"
     : /^(?:sqlite-(?:corrupt|notadb))/.test(issue.check) ? "corrupt" : /^(?:eacces|eperm)$/.test(issue.check) ? "unreadable" : "uninspectable";
   options.onUngathered?.({ key, scope: issue.scope, path: issue.path, code, check: issue.check });
+}
+function foreignMachine(recorded: unknown, local: unknown): boolean {
+  return isRoamUuid(recorded) && isRoamUuid(local) && recorded !== local;
 }
 function keyAt(file: string, machine: string, open: (file: string) => Db | undefined, options: InventoryOptions, replica = false, scope: "repo" | "worktree" | "replica" = "replica"): StoreKey | null {
   let db: Db | undefined;
@@ -85,7 +89,7 @@ function keyAt(file: string, machine: string, open: (file: string) => Db | undef
     if (Number(db.pragma("user_version")) !== 14) { if (replica) problem(); return null; }
     const row = db.prepare("SELECT machine_id, store_key FROM roam_meta WHERE id = 1").get() as { machine_id: string; store_key: StoreKey | null };
     if (row.machine_id !== machine || row.store_key === null) {
-      if (row.machine_id !== machine || replica) problem(undefined, !replica || row.store_key === null);
+      if (row.machine_id !== machine || replica) problem(!replica && foreignMachine(row.machine_id, machine) ? { code: "STORE_MACHINE_MISMATCH" } : undefined, !replica || row.store_key === null);
       return null;
     }
     storeScope(row.store_key);
@@ -141,8 +145,10 @@ export function listStoreKeys(source: RoamCatalogSource, options: InventoryOptio
         catch (error) { if (error && typeof error === "object" && "code" in error) throw error; }
         if (!safe) { problem({ code: "STORE_LAYOUT_UNSAFE" }); continue; }
       }
-      if (row && (row.store_key === key || row.store_key === null) && row.machine_id === machine) keys.add(key);
-      else problem();
+      if (row && (row.store_key === key || row.store_key === null)) {
+        if (row.machine_id === machine) keys.add(key);
+        else problem(foreignMachine(row.machine_id, machine) ? { code: "STORE_MACHINE_MISMATCH" } : undefined);
+      } else problem();
     } catch (error) { problem(error); }
     finally { db?.close(); }
   }

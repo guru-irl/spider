@@ -828,6 +828,134 @@ it("retire-only durably stops every local session through the bounded stop port"
   expect(f.worktree.db.prepare("SELECT state FROM roam_sessions WHERE session_id='s-1'").get()).toEqual({ state: "retired" });
 }, 5000);
 
+async function productionLaunchFixture(exitCode: number | null, signal: number | null, pi = "/home/fixture/pi") {
+  const f = fixture(), agentDir = join(f.global.root, "agent"), operationId = "launch-fixture";
+  mkdirSync(agentDir, { mode: 0o700 });
+  await f.global.db.raw.backup(join(f.global.root, "spider.db"));
+  vi.stubEnv("SPIDER_ROAM_PI", pi);
+  vi.spyOn(runtimeModule, "openLocalRuntime").mockReturnValue({ config: f.ports.config, db: f.global.db, journal: f.ports.journal, agent: f.ports, close() {} } as never);
+  vi.spyOn(hubModule, "loadHerdrConfig").mockReturnValue({ agentDirectory: agentDir, core: { binary: "/home/fixture/hc" } } as never);
+  const terminal = { address: "terminal-1", parent: null, labels: { "spider.kind": "session", "spider.session": "s-1", "spider.machine": BOX,
+    "spider.roam.epoch": "2", "spider.roam.operation": operationId, "spider.roam.attempt": "attempt-1" },
+    state: "finished", status: null, reason: signal === null ? "exited" : "signaled", exitCode, signal, finishedAt: 123 };
+  const eventClient = { async identity() { return { coreId: "core-1", sessionNamespace: "fixture", socket: "/home/fixture/socket" }; },
+    async get() { return structuredClone(terminal); }, events() { return { subscribe() { return () => {}; }, dispose() {} }; }, async dispose() {} };
+  vi.spyOn(hcModule, "createHcClient").mockReturnValue(eventClient as never);
+  const localHc = { async coreId(_signal: AbortSignal) { return "core-1"; }, async dispose() {} };
+  vi.spyOn(launcherModule, "createProductionLocalExactHc").mockReturnValue(localHc as never);
+  vi.spyOn(launcherModule, "createExactLaunchAdapter").mockReturnValue({ async launch() { return { kind: "adopted-exited", operationId }; } } as never);
+  let input!: Parameters<typeof participantSupervisor.createParticipantSupervisor>[0];
+  vi.spyOn(participantSupervisor, "createParticipantSupervisor").mockImplementation(value => {
+    input = value; return { start() {}, async stop() {}, async reconcile() {} };
+  });
+  f.ports.journal.begin({ id: operationId, machineId: BOX, expectedEpoch: 2, kind: "exact-session-launch", args: { sessionId: "s-1" } });
+  f.ports.journal.record(operationId, "exact-attempt", { attemptId: "attempt-1" });
+  f.ports.journal.record(operationId, "exact-core", { coreId: "core-1" });
+  f.ports.journal.record(operationId, "exact-terminal", { terminalId: "terminal-1" });
+  const probe = async () => ({ kind: "live" as const, startIdentity: "fixture-start" });
+  const service = await startProductionSupervisor(f.global.root, { system: { bootId: async () => "boot-1", inventory: { probe } } as never,
+    clock: { now: () => 100, later: () => () => {} } });
+  const intent = { sessionId: "s-1", epoch: 2, desired: "running" as const, suspended: null,
+    file: join(f.worktree.root, "s.jsonl"), cwd: f.worktree.root, moveId: "move-1" };
+  return { f, input, intent, operationId, terminal, eventClient, localHc, service };
+}
+
+it.each([
+  [23, null, { exitCode: 23 }],
+  [null, 9, { signal: 9 }],
+])("production carries a recorded participant terminal exit into supervision", async (exitCode, signal, launchExit) => {
+  const f = await productionLaunchFixture(exitCode, signal);
+  try {
+    expect(await f.input.launch(f.intent, f.operationId, "reconcile")).toMatchObject({ reason: "adopted-exited", launchExit });
+  } finally { await f.service.stop(); vi.unstubAllEnvs(); }
+});
+
+it.each([
+  "other operation", "other attempt", "other session", "other machine", "other epoch", "other kind", "other terminal",
+  "live terminal", "changed core", "core wrong before lookup", "changed core during lookup", "journal changed", "duplicate terminal",
+  "newer attempt", "invalid exit", "invalid signal", "lookup unavailable",
+] as const)("does not attribute %s to the participant launch", async condition => {
+  const f = await productionLaunchFixture(23, null);
+  try {
+    if (condition === "other operation") f.terminal.labels["spider.roam.operation"] = "other-launch";
+    if (condition === "other attempt") f.terminal.labels["spider.roam.attempt"] = "other-attempt";
+    if (condition === "other session") f.terminal.labels["spider.session"] = "other-session";
+    if (condition === "other machine") f.terminal.labels["spider.machine"] = HUB;
+    if (condition === "other epoch") f.terminal.labels["spider.roam.epoch"] = "3";
+    if (condition === "other kind") f.terminal.labels["spider.kind"] = "other-kind";
+    if (condition === "other terminal") f.terminal.address = "other-terminal";
+    if (condition === "live terminal") f.terminal.state = "live";
+    if (condition === "changed core") f.localHc.coreId = async () => "other-core";
+    if (condition === "core wrong before lookup") {
+      let first = true, lookedUp = false;
+      const get = f.eventClient.get;
+      f.eventClient.get = async () => { lookedUp = true; return get(); };
+      f.localHc.coreId = async () => {
+        if (first) { first = false; return "core-1"; }
+        return lookedUp ? "core-1" : "other-core";
+      };
+    }
+    if (condition === "changed core during lookup") {
+      let calls = 0;
+      f.localHc.coreId = async () => ++calls >= 3 ? "other-core" : "core-1";
+    }
+    if (condition === "journal changed") f.eventClient.get = async () => {
+      f.f.ports.journal.record(f.operationId, "new-evidence", {}); return structuredClone(f.terminal);
+    };
+    if (condition === "duplicate terminal") f.f.ports.journal.record(f.operationId, "exact-terminal", { terminalId: "other-terminal" });
+    if (condition === "newer attempt") f.f.ports.journal.record(f.operationId, "exact-attempt", { attemptId: "attempt-2" });
+    if (condition === "invalid exit") f.terminal.exitCode = 256;
+    if (condition === "invalid signal") { f.terminal.exitCode = null; f.terminal.signal = 0; }
+    if (condition === "lookup unavailable") f.eventClient.get = async () => { throw new Error("private detail"); };
+    const result = await f.input.launch(f.intent, f.operationId, "reconcile");
+    expect(result.reason).toBe("adopted-exited");
+    expect(result.launchExit).toEqual({});
+    expect(JSON.stringify(result)).not.toContain("private detail");
+  } finally { await f.service.stop(); vi.unstubAllEnvs(); }
+});
+
+it("does not label an owner exit as before readiness after a readiness receipt", async () => {
+  const f = await productionLaunchFixture(23, null);
+  recordReadiness(f.f.ports.journal, { origin: "hub-operation", opId: f.operationId, sessionId: f.intent.sessionId,
+    epoch: f.intent.epoch, file: f.intent.file, cwd: f.intent.cwd, core: "core-1", terminal: "terminal-1" });
+  try {
+    const result = await f.input.launch(f.intent, f.operationId, "reconcile");
+    expect(result.reason).toBe("adopted-exited");
+    expect(result.launchExit).toBeUndefined();
+  } finally { await f.service.stop(); vi.unstubAllEnvs(); }
+});
+
+it("names an unavailable configured pi in a production launch", async () => {
+  const f = await productionLaunchFixture(null, null, "");
+  try {
+    await expect(f.input.launch(f.intent, f.operationId, "reconcile")).rejects.toMatchObject({ code: "provisioned-pi-unavailable" });
+  } finally { await f.service.stop(); vi.unstubAllEnvs(); }
+});
+
+it.each([
+  ["launch-pending", "launch-pending"], ["EACCES", "EACCES"], ["private-code", "launch-unavailable"], [undefined, "launch-unavailable"],
+])("attaches a recorded terminal exit to a thrown production launch error: %s", async (code, cause) => {
+  const f = await productionLaunchFixture(23, null);
+  vi.mocked(launcherModule.createExactLaunchAdapter).mockReturnValue({ async launch() {
+    throw Object.assign(new Error("private launch detail"), { code });
+  } } as never);
+  try {
+    const error = await f.input.launch(f.intent, f.operationId, "reconcile").then(() => null, error => error);
+    expect(error).toMatchObject({ code: cause, launchExit: { exitCode: 23 } });
+    expect(JSON.stringify({ message: error.message, ...error })).not.toContain("private launch detail");
+  } finally { await f.service.stop(); vi.unstubAllEnvs(); }
+});
+
+it.each(["already ready", "terminal unavailable"] as const)("keeps the original launch error when %s", async condition => {
+  const f = await productionLaunchFixture(23, null), failure = Object.assign(new Error("private detail"), { code: "EACCES" });
+  vi.mocked(launcherModule.createExactLaunchAdapter).mockReturnValue({ async launch() { throw failure; } } as never);
+  if (condition === "already ready") recordReadiness(f.f.ports.journal, { origin: "hub-operation", opId: f.operationId,
+    sessionId: f.intent.sessionId, epoch: f.intent.epoch, file: f.intent.file, cwd: f.intent.cwd, core: "core-1", terminal: "terminal-1" });
+  else f.eventClient.get = async () => { throw new Error("terminal unavailable"); };
+  try { await expect(f.input.launch(f.intent, f.operationId, "reconcile")).rejects.toBe(failure); }
+  finally { await f.service.stop(); vi.unstubAllEnvs(); }
+});
+
 it("an enabled production box launches and restarts a reserved session without dialing the hub", async () => {
   const f = fixture(), agentDir = join(f.global.root, "agent");
   mkdirSync(agentDir, { mode: 0o700 }); writeFileSync(join(agentDir, "auth.json"), '{"fixture":{}}', { mode: 0o600 });

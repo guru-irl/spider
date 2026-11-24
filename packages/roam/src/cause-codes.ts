@@ -26,6 +26,7 @@ const causeCodes = new Set<string>([
   "settings-spider-invalid", "settings-spider-missing", "settings-spider-duplicate", "broker-readiness-unconfirmed",
   "intercom-pair-revocation-incomplete", "intercom-pair-fence-conflict",
   "connection-refused", "connection-closed", "machine-not-found", "machine-ambiguous", "machine-not-enrolled", "machine-mismatch",
+  "launch-unavailable", "launch-pending", "provisioned-pi-unavailable", "participant-exited-before-readiness",
   "peer-invalidated", "core-unavailable", "core-changed", "reply-too-large", "invalid-reply", "invalid-config", "invalid-operation",
   "invalid-byte-limit", "invalid-cli-deadline", "unresolved-peer", "service-not-loaded", "service-failed", "service-timeout", "service-spawn-error",
 ]);

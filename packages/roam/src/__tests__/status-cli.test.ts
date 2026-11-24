@@ -331,6 +331,27 @@ it("shows disabled, unavailable cached state without creating files", async () =
 }, 5000);
 
 
+it("shows launch causes and terminal status in doctor and cached status", async () => {
+  const root = fixture(); configure(root, false);
+  const global = openDb(join(root, "spider.db"));
+  try {
+    migrate(global, "global", { machineId: HUB, globalRoot: root });
+    writeLocal(global, "supervisor-hosting-error", "session-local", { code: "supervisor-hosting-error", check: "launch", since: 1,
+      count: 3, causeCode: "launch-pending", exitCode: 23 });
+    writeLocal(global, "peer-hosting-warnings", BOX, [{ sessionId: "session-remote", code: "supervisor-hosting-error", check: "launch", since: 1,
+      count: 1, causeCode: "participant-exited-before-readiness", signal: 9 }]);
+    for (const command of ["doctor", "status"]) {
+      const out: string[] = [];
+      await main(["roam", command, "--json"], { out: text => out.push(text), err() {} });
+      const parsed = JSON.parse(out.join("")), diagnostics = command === "doctor" ? parsed.value.diagnostics : parsed.diagnostics;
+      expect(diagnostics).toContainEqual(expect.objectContaining({ code: "supervisor-hosting-error", severity: "warning",
+        reason: expect.stringMatching(/session-local.*launch-pending.*exit code 23/) }));
+      if (command === "status") expect(diagnostics).toContainEqual(expect.objectContaining({ code: "supervisor-hosting-error",
+        reason: expect.stringMatching(/session-remote.*participant-exited-before-readiness.*signal 9/) }));
+    }
+  } finally { global.close(); }
+});
+
 it.each([true, false])("shows non-stopping hosting warnings in doctor and text and JSON status without modifying state; enabled=%s", async enabled => {
   const root = fixture(); configure(root, enabled);
   const global = openDb(join(root, "spider.db"));

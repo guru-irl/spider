@@ -8,7 +8,7 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { assertTestConfigPath, openDbReadOnly } from "@spider/db-core";
 import type { HcClient, TerminalAddress } from "@spider/herdr";
 import type { HostingObservation } from "./hosting";
-import type { HostIntent, Clock, Diagnostic, IntercomLifecycle } from "./contracts";
+import type { HostIntent, Clock, Diagnostic, IntercomLifecycle, Journal } from "./contracts";
 import { readLocal } from "@spider/db-core/roam/local-state";
 import type { BoxLocalOrigin } from "./session-control";
 import type { Probe, Readiness } from "@spider/db-core/roam/types";
@@ -18,7 +18,9 @@ import { createSessionLeases, type ProcessIdentity, type ProcessInventoryPorts, 
 import { createProcessPresence } from "@spider/herdr/sessions/presence";
 import { withProcessLock } from "@spider/herdr/sessions/registry";
 import { createIntentStore } from "./intent";
-import { createExactLaunchAdapter, createProductionLocalExactHc } from "./launcher";
+import { createExactLaunchAdapter, createProductionLocalExactHc, type LocalExactHc } from "./launcher";
+import { safeLaunchExit, type LaunchExit } from "./hosting-warning";
+import { safeCauseCode } from "./cause-codes";
 import { createLocalDiagnosticPorts } from "./local-diagnostics";
 import { loadHerdrConfig } from "./production-hub";
 import { createParticipantSupervisor, retireParticipantSessions, supervisorRetirementLifecycle } from "./participant-supervisor";
@@ -66,6 +68,29 @@ export async function assertSupervisorCoreCurrent(core: SupervisorCore, signal?:
     if (error instanceof CoreProcessReplaced || error instanceof HerdrError && error.code === "core-pin-changed") throw error;
     throw new HerdrError("core-lost", "The hosting core was lost; the supervisor must restart");
   }
+}
+
+async function recordedLaunchExit(journal: Journal, hc: LocalExactHc, client: Pick<HcClient, "get">,
+  intent: HostIntent, operationId: string, machineId: string): Promise<LaunchExit | undefined> {
+  try {
+    const actions = journal.read(operationId);
+    let index = -1;
+    for (let i = 0; i < actions.length; i++) if (actions[i].action === "exact-attempt") index = i;
+    if (index < 0) return undefined;
+    const attempt = actions[index].result.attemptId, current = actions.slice(index + 1);
+    const one = (action: string) => { const matches = current.filter(row => row.action === action); return matches.length === 1 ? matches[0].result : undefined; };
+    const core = one("exact-core")?.coreId, terminalId = one("exact-terminal")?.terminalId;
+    const text = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 256 && !/[\u0000-\u001f\u007f/]/.test(value);
+    if (!text(attempt) || !text(core) || !text(terminalId)) return undefined;
+    const signal = AbortSignal.timeout(5_000);
+    if (await hc.coreId(signal) !== core) return undefined;
+    const terminal = await client.get(terminalId as TerminalAddress, { signal });
+    if (await hc.coreId(signal) !== core || terminal.address !== terminalId || terminal.state !== "finished" ||
+        terminal.labels["spider.kind"] !== "session" || terminal.labels["spider.session"] !== intent.sessionId || terminal.labels["spider.machine"] !== machineId ||
+        terminal.labels["spider.roam.epoch"] !== String(intent.epoch) || terminal.labels["spider.roam.operation"] !== operationId ||
+        terminal.labels["spider.roam.attempt"] !== attempt || JSON.stringify(journal.read(operationId)) !== JSON.stringify(actions)) return undefined;
+    return safeLaunchExit(terminal);
+  } catch { return undefined; }
 }
 
 const supervisorClock: Clock = { now: () => Date.now(), later(ms, fn) { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
@@ -366,16 +391,33 @@ async function startEnrolledSupervisor(root: string, options: { coreState: Super
       async launch(intent, operationId, mode) {
         const currentCore = await hc.coreId(new AbortController().signal);
         const bytes = await readFile(intent.file), absolutePi = env.SPIDER_ROAM_PI;
-        if (!absolutePi || !isAbsolute(absolutePi)) throw new Error("provisioned-pi-unavailable");
+        if (!absolutePi || !isAbsolute(absolutePi)) throw new HerdrError("provisioned-pi-unavailable", "The provisioned pi is unavailable");
         const adapter = createExactLaunchAdapter({ journal: runtime.journal, hc,
           clock: { now: clock.now, async wait(ms, signal) { await new Promise<void>((done, reject) => { const timer = setTimeout(done, ms); signal.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted")); }, { once: true }); }); } },
           base: { leases: system.inventory.leases, processInventory: system.inventory, processIdentity: { pid: process.pid, startIdentity: identity.startIdentity },
             env, machineId: runtime.config.machineId, core: { coreId: currentCore, session: env.HC_SESSION ?? "", socket: env.HC_SOCKET ?? "" },
             bootId: system.bootId, limits: system.limits, shell: system.shell ?? "/bin/sh", sessionBytes: runtime.config.limits.sessionBytes } });
-        const launched = await adapter.launch({ sessionId: intent.sessionId, file: intent.file, cwd: intent.cwd, epoch: intent.epoch, moveId: intent.moveId,
-          pi: absolutePi, sha256: createHash("sha256").update(bytes).digest("hex"), operationId }, { mode: mode === "initial" ? "fresh" : "reconcile" });
+        let launched: Awaited<ReturnType<typeof adapter.launch>>;
+        try {
+          launched = await adapter.launch({ sessionId: intent.sessionId, file: intent.file, cwd: intent.cwd, epoch: intent.epoch, moveId: intent.moveId,
+            pi: absolutePi, sha256: createHash("sha256").update(bytes).digest("hex"), operationId }, { mode: mode === "initial" ? "fresh" : "reconcile" });
+        } catch (error) {
+          let beforeReadiness = false;
+          try { beforeReadiness = !readReadiness(runtime.journal, operationId); } catch { /* Missing diagnostic evidence does not alter the launch error. */ }
+          if (beforeReadiness) {
+            const launchExit = await recordedLaunchExit(runtime.journal, hc, eventClient, intent, operationId, runtime.config.machineId);
+            if (launchExit) {
+              const cause = error && typeof error === "object" && "code" in error ? safeCauseCode(error.code) : undefined;
+              throw Object.assign(new Error("Participant launch failed"), { code: cause ?? "launch-unavailable", launchExit });
+            }
+          }
+          throw error;
+        }
         if ("kind" in launched && launched.kind === "adopted-exited") {
-          return { code: 1, reason: "adopted-exited", operationId, home: null, epoch: intent.epoch, repairCommand: null, value: null };
+          const beforeReadiness = !readReadiness(runtime.journal, operationId);
+          const launchExit = beforeReadiness ? await recordedLaunchExit(runtime.journal, hc, eventClient, intent, operationId, runtime.config.machineId) : undefined;
+          return { code: 1, reason: "adopted-exited", operationId, home: null, epoch: intent.epoch, repairCommand: null, value: null,
+            ...(beforeReadiness ? { launchExit: launchExit ?? {} } : {}) };
         }
         const ready = readReadiness(runtime.journal, operationId);
         return { code: ready ? 0 : 3, reason: ready ? "ready" : "readiness-pending", operationId, home: null, epoch: intent.epoch, repairCommand: null, value: ready };

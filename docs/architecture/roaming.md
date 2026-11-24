@@ -189,6 +189,12 @@ path, or repair its permissions or database. WAL diagnostics retain their
 writer-open and recovery guidance. One broken project store does not block the
 box's other stores. An unreadable global catalog still prevents discovery.
 
+A registered or mapped store with a different machine identity reports
+`store-uninspectable:<scope>:store-machine-mismatch`, without printing either
+machine ID. It remains ungathered and retains the same first-home fence. Use a
+matching machine catalog or a fresh isolated catalog; an existing foreign store
+has no supported in-place adoption or prune command.
+
 A mapped worktree can exist before capture creates its project database.
 `mapWorkspace` accepts this state when no replica needs merging. Inventory does
 not create a database to inspect it. Planned stores remain ungathered until
@@ -594,6 +600,18 @@ does not make those repairs or restart the core. A core restart kills its
 terminals. The supervisor restores an eligible running session from its exact
 file, while a deliberate stop remains stopped. Repeated crashes suspend the
 session until a successful doctor and resume.
+
+A launch exception after three consecutive failed hosting checks produces a
+hosting warning. It includes an allowlisted error code or `launch-unavailable`.
+If the recorded terminal for that launch has finished before readiness, the warning
+can include its exit code or signal. A confirmed adopted-owner exit before
+readiness reports `participant-exited-before-readiness` immediately. The
+warning survives backoff and supervisor restarts, and clears after a successful
+launch or a deliberate stop. Crash backoff and suspension limits do not change.
+Doctor reports the same cause without exception text or terminal output.
+Immediate warnings travel in the optional `earlyWarnings` observation field.
+Older hubs ignore that field and continue to receive readiness and the existing
+three-check warnings. Current hubs validate and combine both warning lists.
 
 A pending exact launch blocks doctor and enable even when roaming is disabled.
 Doctor names the launch operation. For a reservation that has not reached the

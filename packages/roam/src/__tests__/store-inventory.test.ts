@@ -12,7 +12,7 @@ import { createReplica } from "@spider/db-core/testutil";
 import { handleAgentOperation } from "../agent";
 import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import { openJournal } from "../journal";
-import { listStoreKeys } from "../store-inventory";
+import { listStoreKeys, storeInventoryDiagnostic, type UngatheredStore } from "../store-inventory";
 import { mapWorkspace } from "@spider/db-core/roam/repo-map";
 
 const BOX = "00000000-0000-4000-8000-000000000002";
@@ -183,6 +183,116 @@ it("reports a mapped identity once when its missing path is also registered", as
   global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','hidden',?)").run(path);
   const result = await handleAgentOperation({ id: "known-missing", machineId: BOX, expectedEpoch: null, kind: "stores", args: {} }, ports);
   expect(result.value).toMatchObject({ stores: ["global"], ungathered: [expect.objectContaining({ key: "worktree:fixture-repo:hidden", path: file, code: "missing" })] });
+});
+
+it.each([
+  ["registered", false], ["mapped", false], ["registered and mapped", false], ["mapped", true],
+] as const)("reports a foreign-machine %s worktree as ungathered, assigned=%s", async (source, assigned) => {
+  const { global, worktree, ports } = fixture(), key = worktree.storeKey, file = worktree.db.raw.name;
+  worktree.db.prepare("UPDATE roam_meta SET machine_id=?,store_key=? WHERE id=1").run(HUB, assigned ? key : null);
+  if (source === "mapped") global.db.prepare("DELETE FROM projects").run();
+  if (source !== "registered") {
+    global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','fixture-workspace',?)").run(worktree.root);
+    writeLocal(global.db, "mapping-redirect", key, file);
+  }
+  const problems: unknown[] = [], incomplete: string[] = [], ungathered: UngatheredStore[] = [];
+  expect(listStoreKeys(global.db, { onProblem: (_entry, error) => problems.push(error),
+    onIncomplete: entry => incomplete.push(entry), onUngathered: store => ungathered.push(store) })).toEqual(["global"]);
+  expect(incomplete).toContain(file);
+  expect(problems.length).toBeGreaterThan(0);
+  for (const error of problems) expect(error).toMatchObject({ code: "store-uninspectable", check: "store-machine-mismatch" });
+  expect(ungathered).toEqual([{ key: source === "registered" ? null : key, scope: "worktree", path: file,
+    code: "uninspectable", check: "store-machine-mismatch" }]);
+  const rows = problems.map(error => storeInventoryDiagnostic(file, error));
+  expect(rows).toEqual(expect.arrayContaining([expect.objectContaining({ reason: expect.stringContaining("store-uninspectable:worktree:store-machine-mismatch"),
+    repairCommand: expect.stringContaining("belongs to another machine identity") })]));
+  expect(JSON.stringify(rows)).not.toContain(HUB); expect(JSON.stringify(rows)).not.toContain(BOX);
+  const result = await handleAgentOperation({ id: "foreign-store", machineId: BOX, expectedEpoch: null, kind: "stores", args: {} }, ports);
+  expect(result).toMatchObject({ code: 0, value: { stores: ["global"], ungathered } });
+  expect(worktree.db.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get()).toEqual({ machine_id: HUB, store_key: assigned ? key : null });
+});
+
+it.each(["registered", "mapped", "registered and mapped"] as const)("a same-machine unassigned %s store is not reported as foreign", source => {
+  const { global, worktree } = fixture(), key = worktree.storeKey, file = worktree.db.raw.name;
+  worktree.db.prepare("UPDATE roam_meta SET store_key=NULL WHERE id=1").run();
+  if (source === "mapped") global.db.prepare("DELETE FROM projects").run();
+  if (source !== "registered") {
+    global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','fixture-workspace',?)").run(worktree.root);
+    writeLocal(global.db, "mapping-redirect", key, file);
+  }
+  const problems: unknown[] = [], incomplete: string[] = [], ungathered: UngatheredStore[] = [];
+  expect(listStoreKeys(global.db, { onProblem: (_entry, error) => problems.push(error),
+    onIncomplete: entry => incomplete.push(entry), onUngathered: store => ungathered.push(store) }))
+    .toEqual(source === "registered" ? ["global"] : ["global", key]);
+  expect({ problems, incomplete, ungathered }).toEqual({ problems: [], incomplete: [], ungathered: [] });
+  expect(worktree.db.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get()).toEqual({ machine_id: BOX, store_key: null });
+});
+
+it.each(["registered", "mapped", "registered and mapped"] as const)("keeps a malformed machine identity as an inspection failure for a %s store", source => {
+  const { global, worktree } = fixture(), key = worktree.storeKey, file = worktree.db.raw.name;
+  worktree.db.prepare("UPDATE roam_meta SET machine_id='invalid-machine',store_key=NULL WHERE id=1").run();
+  if (source === "mapped") global.db.prepare("DELETE FROM projects").run();
+  if (source !== "registered") {
+    global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','fixture-workspace',?)").run(worktree.root);
+    writeLocal(global.db, "mapping-redirect", key, file);
+  }
+  const ungathered: UngatheredStore[] = [], problems: unknown[] = [], incomplete: string[] = [];
+  expect(listStoreKeys(global.db, { onProblem: (_entry, error) => problems.push(error),
+    onIncomplete: entry => incomplete.push(entry), onUngathered: store => ungathered.push(store) })).toEqual(["global"]);
+  expect(incomplete).toContain(file);
+  for (const error of problems) expect(error).toMatchObject({ code: "store-uninspectable", check: "inspect-failed" });
+  expect(ungathered).toEqual([{ key: source === "registered" ? null : key, scope: "worktree", path: file, code: "uninspectable", check: "inspect-failed" }]);
+  expect(JSON.stringify(problems.map(error => storeInventoryDiagnostic(file, error)))).not.toContain("invalid-machine");
+});
+
+it.each(["registered", "mapped"] as const)("keeps an invalid inspecting identity as an inspection failure for a %s store", source => {
+  const { global, worktree } = fixture(), key = worktree.storeKey, file = worktree.db.raw.name;
+  global.db.prepare("UPDATE roam_meta SET machine_id='invalid-catalog' WHERE id=1").run();
+  if (source === "mapped") {
+    global.db.prepare("DELETE FROM projects").run();
+    global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','fixture-workspace',?)").run(worktree.root);
+    writeLocal(global.db, "mapping-redirect", key, file);
+  }
+  const ungathered: UngatheredStore[] = [], incomplete: string[] = [];
+  expect(listStoreKeys(global.db, { onIncomplete: entry => incomplete.push(entry), onUngathered: store => ungathered.push(store) })).toEqual(["global"]);
+  expect(incomplete).toContain(file);
+  expect(ungathered).toEqual([{ key: source === "registered" ? null : key, scope: "worktree", path: file, code: "uninspectable", check: "inspect-failed" }]);
+});
+
+it.each(["same", "foreign"] as const)("retains the generic inspection failure for a mapped store with the wrong key and %s machine", machine => {
+  const { global, worktree } = fixture(), file = worktree.db.raw.name, mapped = "worktree:fixture-repo:other-workspace";
+  if (machine === "foreign") worktree.db.prepare("UPDATE roam_meta SET machine_id=? WHERE id=1").run(HUB);
+  global.db.prepare("DELETE FROM projects").run();
+  global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','other-workspace',?)").run(worktree.root);
+  writeLocal(global.db, "mapping-redirect", mapped, file);
+  const ungathered: UngatheredStore[] = [], incomplete: string[] = [];
+  expect(listStoreKeys(global.db, { onUngathered: store => ungathered.push(store), onIncomplete: entry => incomplete.push(entry) })).toEqual(["global"]);
+  expect(incomplete).toContain(file);
+  expect(ungathered).toEqual([{ key: mapped, scope: "worktree", path: file, code: "uninspectable", check: "inspect-failed" }]);
+});
+
+it("keeps an unsafe mapped layout classified as unsafe even when its machine differs", () => {
+  const { global } = fixture(), wrong = createReplica("global", HUB); fixtures.push(wrong);
+  wrong.db.prepare("UPDATE roam_meta SET store_key=NULL WHERE id=1").run();
+  global.db.prepare("DELETE FROM projects").run();
+  global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','unsafe',?)").run(wrong.root);
+  writeLocal(global.db, "mapping-redirect", "worktree:fixture-repo:unsafe", wrong.db.raw.name);
+  const ungathered: UngatheredStore[] = [];
+  expect(listStoreKeys(global.db, { onUngathered: store => ungathered.push(store) })).toEqual(["global"]);
+  expect(ungathered).toEqual([{ key: "worktree:fixture-repo:unsafe", scope: "worktree", path: wrong.db.raw.name,
+    code: "unsafe", check: "store-layout-unsafe" }]);
+});
+
+it("does not mark an assigned foreign replica as an incomplete owned store", async () => {
+  const { global, worktree } = fixture(), foreign = createReplica("repo", HUB); fixtures.push(foreign);
+  const directory = join(global.root, "roam", "stores"); mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const file = join(directory, `${createHash("sha256").update(foreign.storeKey).digest("hex")}.db`);
+  await foreign.db.raw.backup(file); chmodSync(file, 0o600);
+  const ungathered: UngatheredStore[] = [], incomplete: string[] = [];
+  expect(listStoreKeys(global.db, { onUngathered: store => ungathered.push(store), onIncomplete: entry => incomplete.push(entry) }))
+    .toEqual(["global", worktree.storeKey]);
+  expect(incomplete).toEqual([]);
+  expect(ungathered).toEqual([{ key: null, scope: "replica", path: file, code: "uninspectable", check: "inspect-failed" }]);
 });
 
 it("persists the coded inventory cause in local store problems", () => {

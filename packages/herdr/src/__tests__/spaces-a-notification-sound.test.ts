@@ -69,6 +69,22 @@ describe('intentional notification sounds', () => {
     expect(observeNotificationSounds([item('delayed-two', 'attention', NOW + 2_000)], fresh.state, true, reconnectedAt + 3_000).sounds).toEqual([]);
   });
 
+  it('uses each producer heartbeat to sound fresh arrivals despite clock skew', () => {
+    const baseline = observeNotificationSounds([], null, true, NOW);
+    const now = NOW + 2_000, behind = now - 60_000, ahead = now + 60_000;
+    const notices = [
+      { ...item('behind', 'attention', behind - 1_000), feedUpdatedAt: behind },
+      { ...item('ahead', 'low', ahead - 1_000), feedUpdatedAt: ahead },
+      { ...item('old', 'urgent', behind - 60_000), feedUpdatedAt: behind },
+    ];
+    const arrived = observeNotificationSounds(notices, baseline.state, true, now, NOW);
+    expect(arrived.sounds).toEqual(['blocked', 'done']);
+    expect(arrived.state.observed.map(entry => entry.token)).toEqual(expect.arrayContaining([
+      'intentional:owner:behind', 'intentional:owner:ahead', 'intentional:owner:old',
+    ]));
+    expect(observeNotificationSounds(notices, arrived.state, true, now + 1_000, NOW).sounds).toEqual([]);
+  });
+
   it('sounds arrivals at the 15-second boundary and silently claims older ones', () => {
     const baseline = observeNotificationSounds([], null, true, NOW);
     const result = observeNotificationSounds([

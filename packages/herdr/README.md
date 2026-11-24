@@ -94,6 +94,8 @@ evidence. Arbitrary reason text does not prove an identity change.
 
 ## Notes
 
+- `sessions/launch-limits.ts` exports the absolute launch executable as `SPIDER_ROAM_PI` inside the exact terminal command. The hc client's environment does not supply the terminal's executable configuration. Ordinary extension discovery and exact ownership checks remain unchanged.
+
 - `sessions/id-lock.ts` keeps pending exact-launch cancellation under the same ownership mutex as adoption. `cancelExitedIdLockHandoff` requires boot and process evidence that the launcher exited, then runs the caller's terminal reconciliation and lease cleanup before deleting the ID lock. Failed cleanup leaves the pending record for a retry. The roaming stop action supplies the terminal proof; launcher exit alone never authorizes cancellation. See [roaming session control](../../docs/architecture/roaming.md).
 - Feeds are written atomically with user-only permissions. Readers reject symlinks, oversized files, and unknown versions.
 - The IPC endpoint is a Unix socket under `herdr/ipc` with a per-generation capability file. It has no TCP listener and allows only `ping`, `openView`, `openRun`, `openJob`, `subscribeRun`, and `steerRun`.

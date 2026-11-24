@@ -2,6 +2,9 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { openDbReadOnlyAt } from '@spider/db-core';
+import { parseHubReadiness } from '@spider/db-core/roam/readiness';
+import { inspectIdLock } from '../../src/sessions/id-lock.js';
 import { expect } from 'vitest';
 import { digestFile, hasFile, hostingFixture, type HostedOwner, type HostingFixture } from '../fixtures/roam-hosting.js';
 import { mark, parentTurns, runChild, text, tool } from '../fixtures/child-scripts.js';
@@ -99,13 +102,29 @@ async function restartAndRestore(suite: Suite): Promise<void> {
     expect((await suite.hc(['get', first.terminal, '--json'])).json).toMatchObject({ state: 'live' });
     await runTool(fixture, first, 'schedule', 'schedule-trigger');
     await event(fixture, first, 'agent_settled', () => true);
+    suite.cores!.local.env.PATH = '/usr/bin:/bin';
+    delete suite.cores!.local.env.SPIDER_ROAM_PI;
     await fixture.restartCore();
+    const ambient = await suite.hc(['exec', '--timeout', '5', '--', '/bin/sh', '-c',
+      'if command -v pi >/dev/null 2>&1; then exit 41; fi; [ "${SPIDER_ROAM_PI+x}" != x ]']);
+    expect(ambient.exitCode, ambient.stderr).toBe(0);
     await waitFor('restart records the lost owner', fixture.state, row => row?.value.supervision.kind === 'idle' && row.value.failures.length === 1, deadline(30_000));
     fixture.advance(5_000);
     const restored = await fixture.waitOwner(first.pid);
     expect(restored.pid).not.toBe(first.pid);
     expect(restored.terminal).not.toBe(first.terminal);
     expect(restored.file).toBe(first.file); expect(restored.sessionId).toBe(first.sessionId);
+    const adopted = await inspectIdLock(join(fixture.root, 'herdr'), restored.sessionId);
+    expect(adopted).toMatchObject({ identity: { pid: restored.pid }, pendingOperationId: null });
+    const journal = openDbReadOnlyAt(join(fixture.root, 'roam', 'journal.db'));
+    if (!journal) throw new Error('exact launch journal unavailable');
+    try {
+      const row = journal.prepare("SELECT result_json FROM roam_operation_actions WHERE operation_id=? AND action='ready-durable'")
+        .get(adopted!.operationId) as { result_json: string } | undefined;
+      expect(row).toBeDefined();
+      expect(parseHubReadiness(JSON.parse(row!.result_json))).toMatchObject({ opId: adopted!.operationId,
+        sessionId: restored.sessionId, file: restored.file, cwd: restored.cwd, terminal: restored.terminal });
+    } finally { journal.close(); }
     const ownersAfterRestart = await fixture.owners(); expect(ownersAfterRestart).toHaveLength(1);
     const listing = await runTool(fixture, restored, 'list', 'list-triggers');
     expect(JSON.stringify(listing.result)).toContain('fixture-wakeup');

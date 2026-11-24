@@ -9,6 +9,7 @@ import type { Home, HubOperationReadiness, JsonObject, Probe, StoreBarrier } fro
 import type { IntercomIntakeFence, SessionEndpoint } from "@spider/intercom/protocol";
 import { validHostingWarning } from "./hosting-warning";
 import { peerErrorCode } from "./peer-errors";
+import { MoveCompositionError, safeMoveCause, moveFailureRepair, type MoveCauseCode } from "./move-failure";
 import { MOVE_REFUSAL_MESSAGES } from "./contracts";
 import type { DestinationObservation, FreezeAck, Journal, MoveCheck, MovePorts, MoveRequest, MoveResult, SourceCleanup, MoveRefusal, MoveRefusalCode, MoveSessionOutcome, ValidatedBlockerId, Operation, Outcome, PreparedMove } from "./contracts";
 import { casHome, sessionHome } from "./homes";
@@ -93,13 +94,14 @@ function endpointReply(endpoint: SessionEndpoint, fence: IntercomIntakeFence, cu
       endpoint.machineId !== current.machineId || endpoint.homeEpoch !== current.epoch || !text(endpoint.activationEpoch)) refuse("intercom-endpoint-not-ready");
 }
 function json(value: unknown): JsonObject { return JSON.parse(JSON.stringify(value)) as JsonObject; }
-function outcome(request: MoveRequest, ports: MovePorts, code: Outcome<MoveResult>["code"], reason: MoveRefusalCode | "moved" | "same-home", value: MoveResult | null = null, blockers: readonly ValidatedBlockerId[] = []): MoveSessionOutcome {
+function outcome(request: MoveRequest, ports: MovePorts, code: Outcome<MoveResult>["code"], reason: MoveRefusalCode | "moved" | "same-home", value: MoveResult | null = null, blockers: readonly ValidatedBlockerId[] = [], cause?: MoveCauseCode): MoveSessionOutcome {
   const current = sessionHome(ports.globalDb, request?.sessionId ?? "");
   const envelope = { code, reason, operationId: text(request?.operation?.id) ? request.operation.id : "invalid-move", home: current === "unknown" ? null : current,
     epoch: current && current !== "unknown" ? current.epoch : null, repairCommand: reason === "initial-home-conflict" ? "spider roam claim" : code === 3 && text(request?.operation?.id) ? `spider roam recover ${request.operation.id}` : null };
   if (code === 0 && value) return { ...envelope, code: 0, ok: true, value };
   if (code === 0 || reason === "moved" || reason === "same-home") refuse("move-journal-invalid");
-  return { ...envelope, code, ok: false, value: null, refusal: { code: reason, blockers, message: MOVE_REFUSAL_MESSAGES[reason] } };
+  return { ...envelope, ...(cause ? { causeCode: cause, repairCommand: envelope.repairCommand ?? "spider roam doctor" } : {}), code, ok: false, value: null,
+    refusal: { code: reason, blockers, message: MOVE_REFUSAL_MESSAGES[reason] + (cause ? ` ${moveFailureRepair(cause)}` : "") } };
 }
 export function parseSourceCleanup(value: unknown): SourceCleanup {
   if (!value || typeof value !== 'object' || Array.isArray(value) || !('status' in value)) refuse('move-journal-invalid');
@@ -116,8 +118,10 @@ export function parseSourceCleanup(value: unknown): SourceCleanup {
 
 function completedOutcome(value: unknown, id: string): MoveSessionOutcome {
   const result = value as Outcome<MoveResult> & { ok: boolean; refusal?: MoveRefusal };
+  const cause = safeMoveCause(result?.causeCode);
   if (!result || ![0, 1, 2, 3].includes(result.code) || result.operationId !== id || !text(result.reason) ||
-      !(result.repairCommand === null || text(result.repairCommand))) refuse("move-journal-invalid");
+      !(result.repairCommand === null || text(result.repairCommand)) ||
+      result.causeCode !== undefined && !cause) refuse("move-journal-invalid");
   if (result.home !== null) { try { home(result.home); } catch { refuse("move-journal-invalid"); } }
   if (result.epoch !== (result.home?.epoch ?? null)) refuse("move-journal-invalid");
   if (result.ok === true) {
@@ -126,7 +130,7 @@ function completedOutcome(value: unknown, id: string): MoveSessionOutcome {
     try { home(result.value.home); warnings(result.value.warnings); parseSourceCleanup(result.value.sourceCleanup); } catch { refuse("move-journal-invalid"); }
   } else if (result.ok === false) {
     if (result.code === 0 || result.value !== null || !result.refusal || !Object.hasOwn(MOVE_REFUSAL_MESSAGES, result.refusal.code) ||
-        result.reason !== result.refusal.code || result.refusal.message !== MOVE_REFUSAL_MESSAGES[result.refusal.code] || !Array.isArray(result.refusal.blockers)) refuse("move-journal-invalid");
+        result.reason !== result.refusal.code || result.refusal.message !== MOVE_REFUSAL_MESSAGES[result.refusal.code] + (cause ? ` ${moveFailureRepair(cause)}` : "") || !Array.isArray(result.refusal.blockers)) refuse("move-journal-invalid");
     try { result.refusal.blockers.forEach(validateBlockerId); } catch { refuse("move-journal-invalid"); }
   } else refuse("move-journal-invalid");
   return result as MoveSessionOutcome;
@@ -388,8 +392,8 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
       : committed?.committed_home_json ? 'move-destination-pending' : freezeStarted || checked ? 'move-pending' : 'move-preflight-refused';
     const code = checked || ["move-journal-invalid", "move-journal-unavailable"].includes(reason) ? 3 : reason === "move-operation-conflict" ? 2 : 1;
     const blockers = error instanceof MoveError ? error.refusal.blockers : reason === "move-preflight-refused"
-      ? [validateBlockerId(peerErrorCode(error) ?? "preflight-check-unavailable")] : [];
-    const result = outcome(request, ports, code, reason, null, blockers);
+      ? [validateBlockerId(error instanceof MoveCompositionError ? error.code : peerErrorCode(error) ?? "preflight-check-unavailable")] : [];
+    const result = outcome(request, ports, code, reason, null, blockers, error instanceof MoveCompositionError ? error.code : undefined);
     if (!checked && (begunNew || recovering) && code !== 3) {
       ports.journal.record(id, "done", json(result));
       if (slot) ports.journal.record(slot, "released", { moveId: id });

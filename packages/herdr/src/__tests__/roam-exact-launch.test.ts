@@ -126,6 +126,36 @@ it('passes a private operation-named file to the child and removes it after adop
   await f.releaseChild();
 }, 5000);
 
+it('the hc terminal command pins its configured Pi before exact ownership adoption', async () => {
+  const { createLocalExactHc } = await import('../../../roam/src/launcher');
+  const { spawnSync } = await import('node:child_process');
+  const f = await exactFixture();
+  await mkdir(join(root, 'bin'), { recursive: true });
+  await writeFile(f.pi, `#!${process.execPath}\nprocess.stdout.write(JSON.stringify({pi:process.env.SPIDER_ROAM_PI,argv:process.argv.slice(2)}));\n`, { mode: 0o700 });
+  await chmod(f.pi, 0o700);
+  let terminalEnvironment: { pi: string; argv: string[] } | undefined;
+  f.ports.spawnPi = async request => {
+    const hc = createLocalExactHc({ coreId: async () => 'destination-core', invoke: async () => ({ terminals: [] }),
+      async invokeTracked(argv) {
+        const command = argv.slice(argv.indexOf('--') + 1);
+        // The terminal inherits the core environment, not the hc client's env.
+        const result = spawnSync(command[0], [...command.slice(1)], { env: { PATH: '/usr/bin:/bin' }, encoding: 'utf8' });
+        expect(result.status, result.stderr).toBe(0);
+        terminalEnvironment = JSON.parse(result.stdout);
+        expect(terminalEnvironment).toEqual({ pi: f.pi, argv: ['--session', f.file] });
+        await f.adopt(request);
+        return { address: 'terminal-1' };
+      },
+    });
+    try { await hc.run(request, { started() {}, exited() {} }); } finally { f.wake(); }
+  };
+  try {
+    const result = await launchExactSession(f.request, f.ports);
+    expect(result).toMatchObject({ ...firstChild, sessionId: 'session-1', sessionFile: f.file });
+    expect(terminalEnvironment?.pi).toBe(f.pi);
+  } finally { await f.releaseChild(); }
+}, 5000);
+
 it('launches an exact session in the destination core after both locks are adopted', async () => {
   const module = await import('../sessions/launcher.js');
   expect(typeof module.launchExactSession).toBe('function');

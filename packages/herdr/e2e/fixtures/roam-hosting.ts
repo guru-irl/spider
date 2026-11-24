@@ -120,7 +120,7 @@ export async function hostingFixture(suite: Suite, name = 'hosting'): Promise<Ho
   // The launch shell records the requested limit instead of changing an operating-system limit.
   const systemctl = join(suite.root, 'bin', 'systemctl');
   await writeFile(systemctl, `#!/bin/sh\ncase "$*" in '--user start spider-roam-supervisor.service'|'--user enable spider-roam-supervisor.service'|'--user daemon-reload') ;; *) exit 1 ;; esac\nprintf '%s\\n' "$*" >> ${quote(systemctlLog)}\n`, { mode: 0o700 });
-  await writeFile(shell, `#!/bin/sh\n[ "$1" = '-c' ] || exit 90\nshift 2\n[ "$1" = "$0" ] || exit 91\nshift\nprintf '%s\\n' "$1" >> ${quote(shellLog)}\nshift\n[ "$1" = ${quote(root)} ] && [ "$2" = ${quote(agent)} ] || exit 92\nexport SPIDER_GLOBAL_ROOT="$1" PI_CODING_AGENT_DIR="$2" SPIDER_HERDR_HANDOFF_FILE="$3"\nunset SPIDER_HERDR_HANDOFF_OPERATION_ID SPIDER_HERDR_HANDOFF_NONCE SPIDER_HERDR_LEASE_TOKEN SPIDER_HERDR_LEASE_FILE SPIDER_HERDR_SSH_BYPASS PI_SUBAGENT_CHILD\nshift 3\n[ "$1" = ${quote(suite.pi.launcher)} ] && [ "$2" = '--session' ] || exit 93\ncase "$3" in ${quote(suite.root)}/*) ;; *) exit 94 ;; esac\nexec "$@"\n`, { mode: 0o700 });
+  await writeFile(shell, `#!/bin/sh\n[ "$1" = '-c' ] || exit 90\nscript=$2\nshift 2\n[ "$1" = "$0" ] || exit 91\nprintf '%s\\n' "$2" >> ${quote(shellLog)}\n[ "$3" = ${quote(root)} ] && [ "$4" = ${quote(agent)} ] || exit 92\n[ "$6" = ${quote(suite.pi.launcher)} ] && [ "$7" = '--session' ] || exit 93\ncase "$8" in ${quote(suite.root)}/*) ;; *) exit 94 ;; esac\nexec /bin/sh -c 'ulimit() { return 0; }; '"$script" "$@"\n`, { mode: 0o700 });
   for (const script of [systemctl, shell]) await chmod(script, 0o700);
 
   const db = openDb(join(root, 'spider.db')), worktree = openDb(join(projectRoot, 'project.db'));

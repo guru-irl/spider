@@ -36,6 +36,17 @@ it("guarded agent forwards the immutable typed operation without exposing a mode
   expect(f.move).toHaveBeenCalledExactlyOnceWith(f.operation);
 });
 
+it.each([
+  ["participant-pi-unavailable", "participant-pi-unavailable"],
+  ["private-cause", "move-adapter-unavailable"],
+] as const)("a validated adapter failure retains only the allowlisted %s cause", async (code, expected) => {
+  const f = fixture("move-workspace-map"); f.operation.expectedEpoch = null;
+  f.ports.move = async () => { throw Object.assign(new Error("private path and prompt must not escape"), { code }); };
+  const result = await handleAgentOperation(f.operation, f.ports);
+  expect(result).toMatchObject({ code: 1, reason: expected, causeCode: expected, repairCommand: "spider roam doctor", operationId: f.operation.id });
+  expect(JSON.stringify(result)).not.toContain("private");
+});
+
 it("real enrollment stays disabled until explicit provision enables it, then only its enrolled hub is accepted", async () => {
   const replica = createReplica("global", BOX), file = join(replica.root, "roam/config.json");
   try {

@@ -145,6 +145,8 @@ Slash commands use the same `dispatch` path. They render through the same
 
 ## Notes
 
+- Move activation retains the failing `move-bindings`, `live-freeze`, or `socket-publication` stage through cleanup. Admission also records `preparation` and `ownership` failures. Doctor reports the latest local stage and allowlisted cause with a repair, without exception text, paths, or prompts. A never-homed ordinary session can continue after setup fails. Known participants and exact handoffs still require verified ownership and readiness.
+
 - `execute` and every hook ignore their own failures where they can.
   Registration is wrapped, so a failure in routing, the agents UI, superpowers,
   or the organism never breaks extension load. The drain and shutdown path

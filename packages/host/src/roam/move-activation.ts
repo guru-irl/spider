@@ -1,3 +1,4 @@
+import { MoveSetupError, type MoveSetupStage } from "@spider/roam/setup-failure";
 import { publishOwnedMoveReadiness } from "./move-readiness";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { dirname, join, resolve } from "node:path";
@@ -28,11 +29,16 @@ export async function createMoveActivation(input: MoveActivationInput): Promise<
   let config;
   try { config = readLocalIdentity(input.root); } catch { return null; }
   if (!(config.role === "hub" && config.enabled || config.role === "box" && participantCaptureReady(input.root, config.machineId))) return null;
-  const core = openLocalCore(input.root), journal = openFreezeJournal(join(input.root, "roam", "journal.db"));
-  const herdr = loadHerdrConfig(input.root), transport = createTransport({ binary: herdr.core.binary, env: process.env, enrolled: config.peers });
   let mounted: Awaited<ReturnType<typeof createHostMoveBindings>> | undefined;
+  let closeCore: (() => void) | undefined;
+  let stage: MoveSetupStage = "move-bindings";
   try {
+    const core = openLocalCore(input.root);
+    closeCore = () => core.close();
+    const journal = openFreezeJournal(join(input.root, "roam", "journal.db"));
+    const herdr = loadHerdrConfig(input.root), transport = createTransport({ binary: herdr.core.binary, env: process.env, enrolled: config.peers });
     mounted = await createHostMoveBindings({ root: input.root, globalDb: core.db, config, journal, sessionId: input.sessionId, transport });
+    stage = "live-freeze";
     const bindings = mounted.bindings, participant = bindings.participant!, context = input.context();
     if (!context || context.sessionManager.getSessionId() !== input.sessionId || context.sessionManager.getSessionFile() !== input.file) throw new Error("participant-context-unavailable");
     const old = core.db.prepare("SELECT stores_json FROM roam_locations WHERE session_id=?").get(input.sessionId) as { stores_json: string } | undefined;
@@ -76,7 +82,13 @@ export async function createMoveActivation(input: MoveActivationInput): Promise<
       proof: op => bindings.evidence!.rollback!(op), owner: async () => ({ kind: "live", identity: await inspectLiveOwner(join(input.root, "herdr"), input.sessionId, input.file, input.bootId) }),
       async readmit(home, op) { if (!input.gate.readmit) throw new Error("move-rollback-proof-missing"); await input.gate.readmit(String(op.args.moveId), op.args.source as unknown as Home, home); const result = await ready(input.file, home.epoch, home, op.id); if (!result) throw new Error("move-rollback-proof-missing"); return result; },
       reopen: bindings.intercom!.rollback.reopen, resume: live.resume });
+    stage = "socket-publication";
     const socket = await serveSessionControl({ sessionId: input.sessionId, runtimeRoot: participant.runtimeRoot, ports: live });
     return { async close() { try { await socket.close(); } finally { await mounted!.close(); core.close(); } }, async ready(file, epoch, home) { if (config.role === "hub") await ready(file, epoch, home); } };
-  } catch (error) { try { await mounted?.close(); } finally { core.close(); } throw error; }
+  } catch (error) {
+    const failure = new MoveSetupError(stage, error);
+    try { try { await mounted?.close(); } finally { closeCore?.(); } }
+    catch { /* Retain the setup cause, not a secondary cleanup exception. */ }
+    throw failure;
+  }
 }

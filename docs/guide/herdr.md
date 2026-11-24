@@ -186,6 +186,19 @@ Setup identifies a live session by its session ID, current feed and heartbeat, a
 
 Setup adopts recorded sessions that you merged into one tab. It keeps the names you chose for the space and tab. Other panes stay in place and are not recorded as owned. Rollback refuses to close a tab containing those panes.
 
+### Exact roaming sessions
+
+An exact roaming launch exports its configured absolute Pi executable as
+`SPIDER_ROAM_PI` inside the terminal command. Pi does not need to be on the
+core's `PATH` for move setup. The terminal must adopt its reserved ownership
+and publish durable readiness before the launch is ready.
+
+If move setup fails, run `spider roam doctor`. Doctor reports a safe setup stage
+and cause with a repair. For `participant-pi-unavailable`, install Pi or set
+`SPIDER_ROAM_PI` to its executable, then retry the move. A never-homed ordinary
+session can keep working after setup fails. Do not open another copy of a
+participating session or remove its ownership records to bypass the refusal.
+
 ### Undo an upgrade
 
 To restore the local installation files from before the latest upgrade, run:

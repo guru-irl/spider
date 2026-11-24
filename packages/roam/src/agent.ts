@@ -1,5 +1,6 @@
 import { openDbReadOnly } from "@spider/db-core";
 import { causeCode } from "./cause-codes";
+import { moveFailureCause } from "./move-failure";
 import { syncHandshake } from "./revocation";
 import { inspectSession, verifyFrozenSession } from "./session-file";
 import { exportMirrorRange, type MirrorPrefix } from "./mirrors";
@@ -536,7 +537,12 @@ async function dispatchAgentOperation(operation: Operation, ports: AgentPorts): 
           typeof operation.args.moveId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(operation.args.moveId)) return outcome(2, "move-request-invalid", id);
       if (!ports.config.enabled) return outcome(1, "roaming-disabled", id);
       if (authority ? typeof requester !== "string" || !(requester === ports.config.machineId || ports.config.peers.some(peer => peer.machineId === requester)) : operation.args.sourceMachine !== ports.config.hubMachineId) return outcome(1, "move-authority-unavailable", id);
-      return ports.move ? await ports.move(operation) : outcome(1, "adapter-unbound:moveControl", id);
+      if (!ports.move) return outcome(1, "adapter-unbound:moveControl", id);
+      try { return await ports.move(operation); }
+      catch (error) {
+        const cause = moveFailureCause(error);
+        return { ...outcome(1, cause, id), causeCode: cause, repairCommand: "spider roam doctor" };
+      }
     }
     if (["session-start", "session-stop", "session-resume"].includes(operation.kind)) {
       const { handleSessionOperation } = await import("./participant-runtime");

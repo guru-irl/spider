@@ -627,7 +627,9 @@ even when the round returned no apply results. The pass runs after sync, not
 inside its callback. A peer pass skips `move-lock-pending` without recording
 a warning only for a real lock wait. Journal I/O, lock inspection, and power
 assertion failures keep their own warning and recovery command.
-A later pass can pick up the move if it remains pending. Terminal
+A quiet skip arms one pass on the peer's next verified sync round if the
+skipped move remains pending. No timer retries the occupied lock, and a move
+that finishes before that round does not trigger a pass. Terminal
 recovery clears the move's saved recovery diagnostic, including a terminal
 refusal. An unfinished move keeps its warning and exact recovery command.
 Full recovery and
@@ -636,8 +638,9 @@ coalesce into one follow-up pass with a new snapshot. Successful-sync cleanup
 is deferred with one coalesced
 timer and one flight. Disable and shutdown cancel queued cleanup and drain the
 active flight before closing stores. Sync callbacks never wait on recovery,
-because recovery can request a sync barrier. Repeated reachable observations do not start more
-full passes. Each pass uses finite snapshots of retained journal work and does
+because recovery can request a sync barrier. Repeated reachable observations
+do not start more full passes unless a prior pass quietly skipped a still-pending
+move lock. Each pass uses finite snapshots of retained journal work and does
 not retry failed moves in a loop. Unknown login or identity state cannot trigger recovery.
 An unknown launch outcome stays pending until the existing ownership and
 readiness proofs permit progress. Recovery never grants a second launch or

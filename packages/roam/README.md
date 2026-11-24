@@ -55,8 +55,9 @@ in a loop. Successful-sync cleanup uses one coalesced timer and one flight.
 Disable and shutdown cancel scheduled work and drain active recovery and cleanup
 before closing stores. A peer pass skips an occupied session move lock without
 recording a warning. Journal I/O, lock inspection, and power assertion failures
-keep their own warning and recovery command. A later pass can retry a skipped
-move if it is still pending.
+keep their own warning and recovery command. A quiet skip arms one later pass
+on the peer's next verified sync round while that skipped move remains pending.
+There is no timer retry loop, and completed moves do not trigger a later pass.
 Terminal recovery, including a terminal refusal, clears that move's saved
 recovery diagnostic. Unfinished moves keep their warning and recovery command.
 

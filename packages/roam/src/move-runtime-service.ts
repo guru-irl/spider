@@ -12,7 +12,7 @@ import { recoverMove, cancelMove, pendingWorkspaceTransitions, recoverWorkspaceR
 import { MoveError, readMoveReservation } from "./move";
 import { recoverMovePresentation } from "./move-ports";
 
-export function createMoveRuntimeService(input: Omit<MoveRuntimeInput, "sessionId">, factory: MoveRuntimeFactory): { control: MoveControlHandler; recover(machineId?: string): Promise<void>; recoverCleanup(machineId?: string): Promise<void> } {
+export function createMoveRuntimeService(input: Omit<MoveRuntimeInput, "sessionId">, factory: MoveRuntimeFactory): { control: MoveControlHandler; recover(machineId?: string): Promise<void>; recoverCleanup(machineId?: string): Promise<void>; pendingPeers(): readonly string[] } {
   const { config, journal } = input;
   const runtime = (sessionId: string) => factory({ ...input, sessionId });
   const requestSession = (moveId: string): string | null => {
@@ -24,6 +24,13 @@ export function createMoveRuntimeService(input: Omit<MoveRuntimeInput, "sessionI
     const request = rows.find(row => row.action === "move-request")?.result;
     const check = rows.find(row => row.action === "move-action-complete" && row.result.action === "check")?.result.value as unknown as import("./contracts").MoveCheck | undefined;
     return request?.destinationMachine === machineId || check?.source?.machineId === machineId;
+  };
+  const pendingPeers = (): readonly string[] => {
+    const db = openDb(join(input.root, "roam", "journal.db"), { fileMustExist: true, checkpointOnClose: false });
+    try {
+      const moves = db.prepare("SELECT operation_id FROM roam_operations WHERE kind='move' AND result_json IS NULL").all() as { operation_id: string }[];
+      return config.peers.filter(peer => moves.some(row => involvesPeer(row.operation_id, peer.machineId))).map(peer => peer.machineId);
+    } finally { db.close(); }
   };
   const diagnostic = (id: string, reason: string) => writeLocal(input.globalDb, "recovery-diagnostic", id, { reason });
   const forget: MoveControlHandler = async request => {
@@ -165,5 +172,5 @@ export function createMoveRuntimeService(input: Omit<MoveRuntimeInput, "sessionI
       } finally { recoveryFlight = null; }
     });
   };
-  return { control, recover: machineId => requestRecovery(machineId, true), recoverCleanup: machineId => requestRecovery(machineId, false) };
+  return { control, pendingPeers, recover: machineId => requestRecovery(machineId, true), recoverCleanup: machineId => requestRecovery(machineId, false) };
 }

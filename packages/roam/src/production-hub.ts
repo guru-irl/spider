@@ -13,7 +13,7 @@ import { lstatSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { assertTestConfigPath, openDbReadOnly } from "@spider/db-core";
 import { createHcClient, invokeCli } from "@spider/herdr/client/hc";
-import { machineState } from "@spider/herdr/machine-connections";
+import { machineRebuilt, machineState } from "@spider/herdr/machine-connections";
 
 import { VIEW_ON_MAC_MESSAGE } from "@spider/herdr/notices";
 
@@ -89,6 +89,7 @@ export function homeChangeInProgress(file: string): boolean | null {
 }
 
 export function parseMachineReachability(state: unknown, why?: unknown): HubObservation["reachability"] {
+  if (machineRebuilt({ state, why })) return "identity";
   const connection = machineState({ state, why });
   return connection === "disconnected" ? "unreachable" : connection === "connected" ? "reachable" : "unknown";
 }

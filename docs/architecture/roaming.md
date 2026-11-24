@@ -370,7 +370,9 @@ a remote core was replaced, not that transport was lost. The hub and machine
 UI use one shared classifier for this case. A local core identity change
 during inventory also remains unknown. Unknown observations pause pending
 hosting notifications and retain existing outage state and delivered alerts.
-They never schedule move recovery. A later plain unreachable observation
+They never schedule move recovery. A replaced remote core discards the old
+peer's pending reconnect trigger. Its next connected observation is not a
+reconnect. A later plain unreachable observation
 resumes the retained outage. A machine with hosted sessions gets one hosting alert
 after ten minutes. `needs_login`, `needs-login`, and other uncertain states
 neither start an outage nor clear one. Literal `connected` clears the hosting

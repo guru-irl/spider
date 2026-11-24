@@ -13,7 +13,9 @@ Native `unreachable` with the exact reason `a different core answers there
 machine UI share this classification. It remains unknown, as does a local
 core identity change during inventory. Unknown observations pause pending
 hosting notifications without starting or clearing an outage or scheduling
-move recovery. Existing delivered alerts remain. A later plain unreachable
+move recovery. A replaced remote core also discards the old peer's pending
+reconnect trigger, so its next connected observation is not a reconnect.
+Existing delivered alerts remain. A later plain unreachable
 observation resumes the retained outage. Other identity refusals keep their
 sync diagnostics; this parser does not infer identity changes from arbitrary
 reason text.

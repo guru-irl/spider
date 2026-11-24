@@ -97,7 +97,7 @@ export async function inspectLocalIntercomDoctor(input: DoctorOptions): Promise<
       if (state === "intercom-pair-unit-missing") diagnostics.push({ severity: "block",
         reason: `intercom-pair-unit-missing: The ${side} unit for ${pair.pairId} is missing. Run the repair on the hub.`,
         repairCommand: item.state === "pending" ? `spider roam intercom enroll --graph "$GRAPH_FILE" --operation ${item.operationId}` : `spider roam intercom revoke ${pair.pairId}` });
-      else if (item.state === "active" && state !== "ready") diagnostics.push({ severity: "block", reason: `intercom-pair-unit-unavailable: Verify the pair unit for ${pair.pairId}.`, repairCommand: null });
+      else if (item.state === "active" && state !== true) diagnostics.push({ severity: "block", reason: `intercom-pair-unit-unavailable: Verify the pair unit for ${pair.pairId}.`, repairCommand: null });
     } catch { diagnostics.push({ severity: "block", reason: `intercom-pair-unit-unavailable: The pair unit for ${pair.pairId} could not be verified.`, repairCommand: null }); }
     if (item.state !== "active") continue;
     if (localSource && item.resources) try {

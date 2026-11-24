@@ -109,8 +109,8 @@ export async function requestPrivateControl<Request>(file: string, request: Requ
     throw new Error("Unsafe or nonprivate control socket");
   return new Promise((done, reject) => {
     const socket = createConnection(path); let input = Buffer.alloc(0), finished = false;
-    const fail = (error: Error) => { if (!finished) { finished = true; socket.destroy(); reject(error); } };
-    socket.setTimeout(timeoutMs, () => fail(new Error("Hub control timed out")));
+    const fail = (error: Error) => { if (!finished) { finished = true; clearTimeout(timer); socket.destroy(); reject(error); } };
+    const timer = setTimeout(() => fail(new Error("Hub control timed out")), timeoutMs);
     socket.on("error", fail);
     socket.on("connect", () => socket.write(encoded));
     socket.on("data", bytes => { input = Buffer.concat([input, bytes]); if (input.length > MAX_REPLY) fail(new Error("Hub control reply is too large")); });
@@ -122,7 +122,7 @@ export async function requestPrivateControl<Request>(file: string, request: Requ
         const reply = value as HubControlReply;
         if (![0, 1, 2, 3].includes(reply.code) || typeof reply.reason !== "string" ||
             !(reply.value === null || typeof reply.value === "object" && !Array.isArray(reply.value))) throw new Error();
-        finished = true; done(reply);
+        finished = true; clearTimeout(timer); done(reply);
       } catch { fail(new Error("Invalid hub control reply")); }
     });
   });

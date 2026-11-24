@@ -50,6 +50,36 @@ it("disabled roaming does not query or diagnose hub startup", async () => {
   expect(report.diagnostics.filter(row => row.reason.startsWith("hub-startup"))).toEqual([]);
 });
 
+it("a missing socket with unknown service state is reported without waiting", async () => {
+  const root = fixture(); vi.useFakeTimers(); vi.setSystemTime(0);
+  let state: Awaited<ReturnType<typeof inspectHubService>> | undefined;
+  void inspectHubService(root, async () => ({ code: null, stdout: "" })).then(value => { state = value; });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(state).toEqual({ running: null, socketAvailable: false, lastExitCode: null });
+});
+
+it("doctor reports an unanswered hub within its two-second deadline including metadata", async () => {
+  const root = fixture(); vi.useFakeTimers(); vi.setSystemTime(0);
+  vi.spyOn(controlSocket, "requestHubControl").mockImplementation((_file, _request, options) =>
+    new Promise((_resolve, reject) => setTimeout(() => reject(new Error("Hub control timed out")), options!.timeoutMs)));
+  let observed: Awaited<ReturnType<typeof inspectHubService>> | undefined;
+  const pending = runLocalDoctor({ root, hubService: () => inspectHubService(root, () => new Promise(resolve =>
+    setTimeout(() => resolve({ code: 0, stdout: "state = running\npid = 123\nlast exit code = 0\n" }), 1200)))
+    .then(value => { observed = value; return value; }) });
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(observed).toEqual({ running: true, socketAvailable: false, lastExitCode: 0 });
+  const report = await pending;
+  expect(report.diagnostics).toContainEqual(expect.objectContaining({ severity: "block", reason: expect.stringContaining("hub-startup-pending:") }));
+});
+
+it("reports unavailable service metadata within the same two-second deadline", async () => {
+  const root = fixture(); vi.useFakeTimers(); vi.setSystemTime(0);
+  let state: Awaited<ReturnType<typeof inspectHubService>> | undefined;
+  void inspectHubService(root, () => new Promise(() => {})).then(value => { state = value; });
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(state).toEqual({ running: null, socketAvailable: false, lastExitCode: null });
+});
+
 it.each([
   { code: 0, stdout: "state = spawn scheduled\nlast exit code = 1\n", running: false, lastExitCode: 1 },
   { code: 0, stdout: "state = running\npid = 123\nlast exit code = 0\n", running: true, lastExitCode: 0 },

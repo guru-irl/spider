@@ -19,6 +19,8 @@ sync diagnostics; this parser does not infer identity changes from arbitrary
 reason text.
 Literal `connected` clears the hosting outage alert even if sync refuses
 content. Such refusals keep their separate sync diagnostics and backoff.
+Hosting checks, placement and suspension warnings need only native `connected`
+and a reply from the enrolled peer. Ungathered or refused stores do not suppress them.
 Move recovery requires `connected` plus a successful current sync round that
 proves peer connectivity and a complete store pull. An incomplete pull cannot
 trigger move recovery even when there are no apply results. Hosting alerts

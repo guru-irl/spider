@@ -189,7 +189,7 @@ it.each([1, 3] as const)("code-%s transport outages back off under a short sync 
   sync.stop();
 }, 5000);
 
-it("resets an outage backoff only after a successful round", async () => {
+it("an identity mismatch cannot reset an outage backoff", async () => {
   const f = fixture(); f.config.syncMs = 1000; f.unavailable.add(BOX);
   const sync = service(f); sync.start();
   expect(await sync.sync(BOX)).toMatchObject([{ code: 3 }]);
@@ -204,6 +204,30 @@ it("resets an outage backoff only after a successful round", async () => {
   f.replyHook(null);
   expect((await sync.sync(BOX)).every(row => row.code === 0)).toBe(true);
   expect(f.timers.find(row => !row.cancelled)!.ms).toBe(1000);
+  sync.stop();
+}, 5000);
+
+it.each(["ungathered", "refused", "pending-store"])("an answered round with %s stores resets outage backoff", async kind => {
+  const f = fixture(); f.config.syncMs = 120_000; let now = 0;
+  f.clock.now = () => now;
+  f.unavailable.add(BOX);
+  const sync = service(f); sync.start();
+  const fire = () => { const timer = f.timers.find(row => !row.cancelled)!; now += timer.ms; timer.cancelled = true; timer.fn(); };
+  fire(); expect(await sync.sync(BOX)).toMatchObject([{ code: 3 }]);
+  expect(f.timers.find(row => !row.cancelled)!.ms).toBe(30_000);
+  f.unavailable.delete(BOX);
+  f.replyHook((_peer, op, bytes) => {
+    const reply = JSON.parse(bytes.toString());
+    if (kind === "ungathered" && op.kind === "stores") reply.value.ungathered = [
+      { key: null, scope: "worktree", path: "/home/fixture/missing", code: "missing", check: "stat" }];
+    if (kind !== "ungathered" && op.kind === "inventory") { reply.code = kind === "refused" ? 1 : 3; reply.reason = "Roaming capture is unsafe for this store"; reply.value = null; }
+    return Buffer.from(JSON.stringify(reply));
+  });
+  fire(); const results = await sync.sync(BOX);
+  if (kind === "ungathered") expect(results).toEqual([]);
+  else expect(results).toMatchObject([{ code: kind === "refused" ? 1 : 3, reason: "capture-unsafe" }]);
+  expect(f.timers.find(row => !row.cancelled)!.ms).toBe(120_000);
+  expect(peerState.loadPeerState(f.global.db, BOX, f.config.limits.targetBatchBytes)).toMatchObject({ failures: 0, observation: { connected: true } });
   sync.stop();
 }, 5000);
 

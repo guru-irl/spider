@@ -14,7 +14,7 @@ import { noChangeSyncFixture, productionObservationFixture } from "./production-
 
 afterEach(() => vi.restoreAllMocks());
 
-it("a no-change round supplies production sync proof only for a complete successful pull", async () => {
+it("a peer reply supplies production sync proof despite ungathered or refused stores", async () => {
   const machineId = "00000000-0000-4000-8000-000000000001";
   const peer = { machineId: "00000000-0000-4000-8000-000000000002", alias: "box-1.invalid", node: "/home/fixture/node",
     pi: "/home/fixture/pi", cli: "/home/fixture/spider", core: "/home/fixture/core", globalRoot: "/home/fixture/global" };
@@ -33,15 +33,17 @@ it("a no-change round supplies production sync proof only for a complete success
     const readiness = { origin: "hub-operation", opId: "op-1", sessionId: "session-1", epoch: 1,
       cwd: "/home/fixture/work", file: "/home/fixture/session.jsonl", core: "core-1", terminal: "box-1.invalid/t1" };
     wire.setHosting({ readiness: [{ ...readiness, terminal: "t1" }], suspensions: [{ sessionId: "session-1", epoch: 1 }] });
-    expect(await native.observe(peer, incomplete)).toMatchObject({ reachability: "reachable", syncVerified: false,
+    expect(await native.observe(peer, incomplete)).toMatchObject({ reachability: "reachable", syncVerified: true,
       readiness: [readiness], suspensions: [{ sessionId: "session-1", epoch: 1 }] });
     assignInitialHome(local.db, "session-1", peer.machineId, machineId);
     const root = mkdtempSync(join(resolve(".spider/scratch"), "hosting-"));
     let afterSync!: Parameters<HubRuntimePorts["prepare"]>[0];
-    const placements: unknown[] = [], notices: string[] = [];
+    const placements: unknown[] = [], notices: string[] = [], recoveries: string[] = [];
+    const timers: Array<{ cancelled: boolean; fn(): void }> = [];
     const hub = await runHub({ config, globalDb: local.db, runtimeRoot: root, socketPath: join(root, "hub.sock"),
       identity: { pid: process.pid, startIdentity: "process-1" }, async probe() { return { kind: "live", startIdentity: "process-1" }; },
-      clock: { now: () => 1, later() { return () => {}; } }, observe: native.observe,
+      clock: { now: () => 1, later(_ms, fn) { const timer = { cancelled: false, fn }; timers.push(timer); return () => { timer.cancelled = true; }; } }, observe: native.observe,
+      async recoverPeerMoves(id) { recoveries.push(id); },
       sync: { start() {}, stop() {}, async sync() { return []; }, async barriers() { return false; } },
       placement: { async reconcile(rows) { placements.push(...rows); return { pending: [] }; } },
       notices: { async publish(notice) { notices.push(notice.kind); }, async clear() {} },
@@ -53,12 +55,24 @@ it("a no-change round supplies production sync proof only for a complete success
       expect(placements).toEqual([readiness]);
       expect(notices).toEqual(["suspended"]);
       expect(readLocal(local.db, "peer-hosting-warnings", peer.machineId)).toEqual([]);
-      wire.setStoreRefused(true);
+      native.setState("unreachable"); wire.setUnavailable(true);
+      const outage = await sync.sync(peer.machineId);
+      expect(outage).toMatchObject([{ code: 3 }]);
+      await afterSync(peer, outage);
+      native.setState("connected"); wire.setUnavailable(false); wire.setStoreRefused(true);
       const storeRefused = await sync.sync(peer.machineId);
       expect(storeRefused).toMatchObject([{ code: 1 }]);
-      expect(await native.observe(peer, storeRefused)).toMatchObject({ readiness: [readiness] });
+      expect(await native.observe(peer, storeRefused)).toMatchObject({ syncVerified: true, readiness: [readiness] });
       await afterSync(peer, storeRefused);
       expect(placements).toEqual([readiness, readiness]);
+      const pending = timers.filter(timer => !timer.cancelled);
+      expect(pending).toHaveLength(1);
+      pending[0].cancelled = true; pending[0].fn();
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      expect(recoveries).toEqual([peer.machineId]);
+      await afterSync(peer, storeRefused);
+      expect(timers.filter(timer => !timer.cancelled)).toEqual([]);
+      expect(recoveries).toEqual([peer.machineId]);
     } finally { await hub.stop(); rmSync(root, { recursive: true, force: true }); }
     wire.setStoreRefused(false);
     wire.setIncomplete(false); wire.setRefused(true);

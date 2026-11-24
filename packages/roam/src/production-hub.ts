@@ -22,6 +22,7 @@ import { createLocalDiagnosticPorts } from "./local-diagnostics";
 import { openJournal } from "./journal";
 import { remoteHosting } from "./remote-observations";
 import { loadPeerState } from "./peer-state";
+import { isSyncConnectivityFailure } from "./peer-errors";
 import { openLocalCore, readLocalIdentity } from "./runtime";
 import { createTransport } from "./transport";
 import { createMachineIntercom } from "./intercom-runtime";
@@ -130,8 +131,7 @@ export async function startProductionHub(root: string, options: { intercomClock?
         if (matches.length !== 1) throw new Error("Unknown machine");
         const state = matches[0].state;
         const syncState = loadPeerState(core.db, peer.machineId, core.config.limits.targetBatchBytes);
-        const reached = results.every(result => result.code === 0) && syncState.pulled === true &&
-          syncState.observation?.connected === true;
+        const reached = syncState.observation?.connected === true && !results.some(isSyncConnectivityFailure);
         const reachability = parseMachineReachability(state, matches[0].why);
         if (reachability !== "reachable") return { reachability, readiness: null, suspensions: null };
         if (syncState.observation?.connected !== true) return { reachability, syncVerified: false, readiness: null, suspensions: null };

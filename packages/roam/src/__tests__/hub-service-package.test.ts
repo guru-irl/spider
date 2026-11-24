@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { buildRoamEntries } from "../../../../scripts/build-roam.mjs";
+import { assertRoamBundle } from "../../../../scripts/check-roam-bundle.mjs";
 import { startHubControl } from "../control-socket";
 import { openDb, migrate } from "@spider/db-core";
 import { build } from "vite";
@@ -94,6 +95,24 @@ it("the dedicated packaged remote runtime still installs and probes a fixture di
   expect(missing.status).toBe(127); expect(missing.stderr).toContain("A runtime request file is required");
   const consoleUsage = spawnSync(process.execPath, [entry, "--console", directory, "fixture", "--unknown", "fixture"], { encoding: "utf8", timeout: 2000 });
   expect(consoleUsage.status).toBe(127); expect(consoleUsage.stderr).toContain("Invalid console view arguments");
+});
+
+it.each(["cli-main.mjs", "cli.mjs", "intercom-helper.mjs", "supervisor.mjs"])("the bundle check rejects a remote main body in %s", entry => {
+  const file = join(packageRoot, "dist/roam", entry), original = readFileSync(file, "utf8");
+  expect(() => assertRoamBundle(packageRoot)).not.toThrow();
+  try {
+    writeFileSync(file, original + '\nif (process.argv[1]) process.stderr.write("A runtime request file is required\\n");\n');
+    expect(() => assertRoamBundle(packageRoot)).toThrow(/unexpected remote runtime main/i);
+  } finally { writeFileSync(file, original); }
+});
+
+it.each(["cli-main.mjs", "cli.mjs", "intercom-helper.mjs", "supervisor.mjs"])("the bundle check rejects a pane main body in %s", entry => {
+  const file = join(packageRoot, "dist/roam", entry), original = readFileSync(file, "utf8");
+  expect(() => assertRoamBundle(packageRoot)).not.toThrow();
+  try {
+    writeFileSync(file, original + '\nif (process.argv[1]) await runPaneEndpointCli(process.argv.slice(2), () => ({}));\n');
+    expect(() => assertRoamBundle(packageRoot)).toThrow(/unexpected pane endpoint main/i);
+  } finally { writeFileSync(file, original); }
 });
 
 it("the dedicated pane endpoint rejects invalid CLI input and preserves its import API", () => {

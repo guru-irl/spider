@@ -37,17 +37,104 @@ function fixture() {
     unitDir, limits: { ...DEFAULT_LIMITS, chunkBytes: 32 }, transport: remote, piProviders: [] };
   return { root, home, globalRoot, agentDir, peer, options, requests };
 }
-function fakePairRepairCli(f: ReturnType<typeof fixture>, reply: string, exit = 0): string {
+function fakePairRepairCli(f: ReturnType<typeof fixture>, reply: string, exit = 0, stopped = false): string {
   const calls = join(f.root, "pair-repair-calls.json");
+  if (stopped) {
+    f.peer.cli = join(f.options.destination.npmPrefix, "lib", "spider", "dist", "roam", "cli.mjs");
+    mkdirSync(join(f.globalRoot, "roam", "intercom", "enrollments"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(f.globalRoot, "roam", "intercom", "enrollments", "pair-1.json"), "{}", { mode: 0o600 });
+  }
   symlinkSync(process.execPath, f.peer.node);
   mkdirSync(dirname(f.peer.cli), { recursive: true, mode: 0o700 });
-  writeFileSync(f.peer.cli, `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(calls)}, JSON.stringify({args:process.argv.slice(2), agentDir:process.env.PI_CODING_AGENT_DIR})); process.stdout.write(${JSON.stringify(reply)}); process.exitCode=${exit};\n`, { mode: 0o600 });
+  writeFileSync(f.peer.cli, `import fs from 'node:fs';
+if (process.argv.includes('inspect-units')) process.stdout.write(JSON.stringify({version:1,kind:'intercom-unit-inspect',ok:true,machineId:${JSON.stringify(f.peer.machineId)},needsRepair:true}));
+else { fs.writeFileSync(${JSON.stringify(calls)}, JSON.stringify({args:process.argv.slice(2), agentDir:process.env.PI_CODING_AGENT_DIR})); process.stdout.write(${JSON.stringify(reply)}); process.exitCode=${exit}; }\n`, { mode: 0o600 });
   return calls;
 }
 
-it("runs pair-unit repair through the generated program on the pinned destination", async () => {
-  const f = fixture(), calls = fakePairRepairCli(f, JSON.stringify({ version: 1, kind: "intercom-unit-repair", ok: true, machineId: f.peer.machineId }));
+it("does not request pair repair without a stopped-unit observation", async () => {
+  const f = fixture(), adapter = createHcProvisionAdapter(f.options);
+  await expect(adapter.reconcilePairUnits(f.peer)).resolves.toBeUndefined();
+  expect(f.requests).not.toContain("pair-unit-repair");
+});
+
+it("does not request pair repair when verification finds no pair records", async () => {
+  const f = fixture(); f.peer.cli = join(f.options.destination.npmPrefix, "lib", "spider", "dist", "roam", "cli.mjs");
   const adapter = createHcProvisionAdapter(f.options);
+  await adapter.verifyPeer();
+  await expect(adapter.reconcilePairUnits(f.peer)).resolves.toBeUndefined();
+  expect(f.requests).not.toContain("pair-unit-repair");
+});
+
+it("does not start the pair CLI when the destination has no pair records", async () => {
+  const f = fixture(); f.peer.cli = join(f.options.destination.npmPrefix, "lib", "spider", "dist", "roam", "cli.mjs");
+  const calls = fakePairRepairCli(f, "unexpected");
+  writeFileSync(f.peer.cli, `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(calls)}, 'called'); process.stdout.write('unexpected');\n`, { mode: 0o600 });
+  const adapter = createHcProvisionAdapter(f.options);
+  await adapter.verifyPeer();
+  await expect(adapter.reconcilePairUnits(f.peer)).resolves.toBeUndefined();
+  expect(existsSync(calls)).toBe(false);
+  expect(f.requests).not.toContain("pair-unit-repair");
+});
+
+it("does not request repair for a verified running pair", async () => {
+  const f = fixture(), calls = join(f.root, "commands.jsonl");
+  f.peer.cli = join(f.options.destination.npmPrefix, "lib", "spider", "dist", "roam", "cli.mjs");
+  symlinkSync(process.execPath, f.peer.node);
+  mkdirSync(dirname(f.peer.cli), { recursive: true, mode: 0o700 });
+  mkdirSync(join(f.globalRoot, "roam", "intercom", "enrollments"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(f.globalRoot, "roam", "intercom", "enrollments", "pair-1.json"), "{}", { mode: 0o600 });
+  writeFileSync(f.peer.cli, `import fs from 'node:fs'; fs.appendFileSync(${JSON.stringify(calls)},JSON.stringify(process.argv.slice(2))+'\\n');
+process.stdout.write(JSON.stringify({version:1,kind:'intercom-unit-inspect',ok:true,machineId:${JSON.stringify(f.peer.machineId)},needsRepair:false}));\n`, { mode: 0o600 });
+  const adapter = createHcProvisionAdapter(f.options);
+  await adapter.verifyPeer();
+  await expect(adapter.reconcilePairUnits(f.peer)).resolves.toBeUndefined();
+  expect(f.requests).not.toContain("pair-unit-repair");
+  expect(readFileSync(calls, "utf8").trim().split("\n")).toHaveLength(1);
+});
+
+it.each([
+  ["wrong machine", JSON.stringify({ version: 1, kind: "intercom-unit-inspect", ok: true, machineId: "00000000-0000-4000-8000-000000000009", needsRepair: true }), 0],
+  ["inspector failure", "", 1],
+] as const)("does not request repair for an unavailable observation: %s", async (_name, reply, exit) => {
+  const f = fixture(); f.peer.cli = join(f.options.destination.npmPrefix, "lib", "spider", "dist", "roam", "cli.mjs");
+  symlinkSync(process.execPath, f.peer.node);
+  mkdirSync(dirname(f.peer.cli), { recursive: true, mode: 0o700 });
+  mkdirSync(join(f.globalRoot, "roam", "intercom", "enrollments"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(f.globalRoot, "roam", "intercom", "enrollments", "pair-1.json"), "{}", { mode: 0o600 });
+  writeFileSync(f.peer.cli, `process.stdout.write(${JSON.stringify(reply)}); process.exitCode=${exit};\n`, { mode: 0o600 });
+  const adapter = createHcProvisionAdapter(f.options);
+  await adapter.verifyPeer();
+  await expect(adapter.reconcilePairUnits(f.peer)).resolves.toBeUndefined();
+  expect(f.requests).not.toContain("pair-unit-repair");
+});
+
+it("repairs an observed stopped owned pair after verification", async () => {
+  const f = fixture(), calls = join(f.root, "commands.jsonl");
+  f.peer.cli = join(f.options.destination.npmPrefix, "lib", "spider", "dist", "roam", "cli.mjs");
+  symlinkSync(process.execPath, f.peer.node);
+  mkdirSync(dirname(f.peer.cli), { recursive: true, mode: 0o700 });
+  mkdirSync(join(f.globalRoot, "roam", "intercom", "enrollments"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(f.globalRoot, "roam", "intercom", "enrollments", "pair-1.json"), "{}", { mode: 0o600 });
+  writeFileSync(f.peer.cli, `import fs from 'node:fs';
+const args=process.argv.slice(2); fs.appendFileSync(${JSON.stringify(calls)},JSON.stringify(args)+'\\n');
+process.stdout.write(JSON.stringify(args.includes('inspect-units')
+  ? {version:1,kind:'intercom-unit-inspect',ok:true,machineId:${JSON.stringify(f.peer.machineId)},needsRepair:true}
+  : {version:1,kind:'intercom-unit-repair',ok:true,machineId:${JSON.stringify(f.peer.machineId)}}));\n`, { mode: 0o600 });
+  const adapter = createHcProvisionAdapter(f.options);
+  await adapter.verifyPeer();
+  await expect(adapter.reconcilePairUnits(f.peer)).resolves.toBeUndefined();
+  await expect(adapter.reconcilePairUnits(f.peer)).resolves.toBeUndefined();
+  expect(f.requests.filter(action => action === "pair-unit-repair")).toHaveLength(1);
+  const commands = readFileSync(calls, "utf8").trim().split("\n").map(line => JSON.parse(line));
+  expect(commands).toContainEqual(["--global-root", f.globalRoot, "roam", "intercom", "inspect-units"]);
+  expect(commands).toContainEqual(["--global-root", f.globalRoot, "roam", "intercom", "repair-units"]);
+});
+
+it("runs pair-unit repair through the generated program on the pinned destination", async () => {
+  const f = fixture(), calls = fakePairRepairCli(f, JSON.stringify({ version: 1, kind: "intercom-unit-repair", ok: true, machineId: f.peer.machineId }), 0, true);
+  const adapter = createHcProvisionAdapter(f.options);
+  await adapter.verifyPeer();
   await expect(adapter.reconcilePairUnits(f.peer)).resolves.toBeUndefined();
   expect(JSON.parse(readFileSync(calls, "utf8"))).toEqual({ args: ["--global-root", f.globalRoot, "roam", "intercom", "repair-units"], agentDir: f.agentDir });
   expect(f.requests).toContain("pair-unit-repair");
@@ -63,13 +150,17 @@ it.each([
   ["malformed reply", "not-json", 0, "invalid-provision-reply"],
   ["process failure", "", 1, "intercom-unit-repair-unavailable"],
 ] as const)("pair-unit repair refuses a %s", async (_name, reply, exit, code) => {
-  const f = fixture(); fakePairRepairCli(f, reply, exit);
-  await expect(createHcProvisionAdapter(f.options).reconcilePairUnits(f.peer)).rejects.toMatchObject({ code });
+  const f = fixture(); fakePairRepairCli(f, reply, exit, true);
+  const adapter = createHcProvisionAdapter(f.options);
+  await adapter.verifyPeer();
+  await expect(adapter.reconcilePairUnits(f.peer)).rejects.toMatchObject({ code });
 });
 
 it("does not run pair-unit repair when the destination identity changed", async () => {
-  const f = fixture(), calls = fakePairRepairCli(f, JSON.stringify({ version: 1, kind: "intercom-unit-repair", ok: true, machineId: f.peer.machineId }));
+  const f = fixture(), calls = fakePairRepairCli(f, JSON.stringify({ version: 1, kind: "intercom-unit-repair", ok: true, machineId: f.peer.machineId }), 0, true);
+  const adapter = createHcProvisionAdapter(f.options);
+  await adapter.verifyPeer();
   writeFileSync(join(f.globalRoot, "roam", "machine.json"), JSON.stringify({ machineId: "00000000-0000-4000-8000-000000000009" }), { mode: 0o600 });
-  await expect(createHcProvisionAdapter(f.options).reconcilePairUnits(f.peer)).rejects.toMatchObject({ code: "machine-mismatch" });
+  await expect(adapter.reconcilePairUnits(f.peer)).rejects.toMatchObject({ code: "machine-mismatch" });
   expect(existsSync(calls)).toBe(false);
 });

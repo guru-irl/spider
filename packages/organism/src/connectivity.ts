@@ -5,10 +5,12 @@ const NETWORK_CODES = new Set([
 ]);
 
 /** Classify errors from the provider call, not the content returned by it. */
-export function isConnectivityFailure(error: unknown): boolean {
+export function classifyConnectivityFailure(error: unknown): { connectivity: boolean; timedOut: boolean } {
   const seen = new Set<object>();
   const pending: unknown[] = [error];
   let connectivity = false;
+  let timedOut = false;
+  const notConnectivity = { connectivity: false, timedOut: false };
   for (let index = 0; index < pending.length; index++) {
     const current = pending[index];
     if (current == null) continue;
@@ -16,24 +18,36 @@ export function isConnectivityFailure(error: unknown): boolean {
       if (seen.has(current)) continue;
       seen.add(current);
       const value = current as { code?: unknown; name?: unknown; message?: unknown; status?: unknown; statusCode?: unknown; cause?: unknown; errors?: unknown };
-      if (value.name === "OrganismDeadline") return false;
+      if (value.name === "OrganismDeadline") return notConnectivity;
       const status = typeof value.status === "number" ? value.status : value.statusCode;
       const transientStatus = typeof status === "number" && [408, 429, 500, 502, 503, 504, 529].includes(status);
-      if (typeof status === "number" && status >= 400 && status < 500 && !transientStatus) return false;
+      if (typeof status === "number" && status >= 400 && status < 500 && !transientStatus) return notConnectivity;
       const code = typeof value.code === "string" ? value.code.toUpperCase() : "";
-      if (["UNAUTHORIZED", "FORBIDDEN", "AUTHENTICATION_ERROR", "INVALID_API_KEY", "PERMISSION_DENIED"].includes(code)) return false;
-      if (typeof value.message === "string" && identityMessage(value.message)) return false;
-      if (NETWORK_CODES.has(code) || value.name === "TimeoutError" || value.name === "AbortError" || transientStatus || typeof value.message === "string" && connectivityMessage(value.message)) connectivity = true;
+      if (["UNAUTHORIZED", "FORBIDDEN", "AUTHENTICATION_ERROR", "INVALID_API_KEY", "PERMISSION_DENIED"].includes(code)) return notConnectivity;
+      if (typeof value.message === "string" && identityMessage(value.message)) return notConnectivity;
+      const timeout = value.name === "TimeoutError" || timeoutMessage(code) || typeof value.message === "string" && timeoutMessage(value.message);
+      timedOut ||= timeout;
+      if (NETWORK_CODES.has(code) || timeout || value.name === "AbortError" || transientStatus || typeof value.message === "string" && connectivityMessage(value.message)) connectivity = true;
       const children = Array.isArray(value.errors) ? value.errors : [];
-      if (pending.length + children.length + (value.cause == null ? 0 : 1) > 64) return false;
+      if (pending.length + children.length + (value.cause == null ? 0 : 1) > 64) return notConnectivity;
       if (value.cause != null) pending.push(value.cause);
       pending.push(...children);
     } else if (typeof current === "string") {
-      if (identityMessage(current)) return false;
-      connectivity ||= connectivityMessage(current);
+      if (identityMessage(current)) return notConnectivity;
+      const timeout = timeoutMessage(current);
+      timedOut ||= timeout;
+      connectivity ||= timeout || connectivityMessage(current);
     }
   }
-  return connectivity;
+  return { connectivity, timedOut };
+}
+
+export function isConnectivityFailure(error: unknown): boolean {
+  return classifyConnectivityFailure(error).connectivity;
+}
+
+function timeoutMessage(message: string): boolean {
+  return /\b(?:timed out|etimedout|und_err_(?:connect|headers|body)_timeout)\b/i.test(message);
 }
 
 function identityMessage(message: string): boolean {

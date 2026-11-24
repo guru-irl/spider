@@ -294,6 +294,15 @@ backoff. Stop cancels the pending retry and drains setup before closing resource
 
 ## Pair publication
 
+A box in `hub-only` mode can start with only its direct hub edge. After the
+exact pair consent and identity checks, `persistIntercomPairRoute` adds a
+missing relay route to the approved peer through that hub edge. Publication
+preserves the box's mode, unrelated routes, and the registry's approved direct
+edge. A missing hub edge or an incompatible existing route remains a refusal.
+The existing locked configuration write validates and durably stores the route
+with private permissions. The live helper can then enroll the staged direct
+edge. Only the hub's drain and switch control activate direct routing.
+
 After transport verification, `intercom-production.ts` publishes configuration
 on both sides and enrolls both live helpers. A failure keeps the original
 pending or precise refusal. Enrollment output and hub doctor name the step,

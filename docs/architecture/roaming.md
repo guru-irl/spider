@@ -1186,6 +1186,15 @@ Activating peer mode requires the hub, the recorded enrollment consent, and the
 same machine identities and access graph. Retries derive the same transition ID
 from that approval. They do not append to a completed enrollment operation.
 
+A hub-only box needs no preconfigured route to its first approved peer.
+After exact consent and identity checks, publication creates the missing relay
+route through the box's existing direct hub edge. The locked configuration
+write validates and durably stores that route with private permissions. It
+preserves unrelated routes and hub-only mode. A matching relay is unchanged
+on retry. A missing hub edge or an incompatible existing route is refused.
+The pair registry retains the approved direct edge for live enrollment and
+the later switch.
+
 The private queue database records a transition with `draining`, `switching`,
 and `complete` states and a pending or switched status for each box.
 

@@ -71,6 +71,12 @@ export function peerFailureReason(error: unknown): string | null {
   return null;
 }
 
+/** Store refusals and local pending work do not prove a connectivity failure. */
+export function isSyncConnectivityFailure(result: { code: number; reason: string }): boolean {
+  return (result.code === 1 || result.code === 3) && (isPeerFailureReason(result.reason) ||
+    result.code === 3 && ["Peer operation is pending reconciliation", "Artifact pull is pending", "Artifact push is pending"].includes(result.reason));
+}
+
 export function isPeerFailureReason(reason: unknown): reason is string {
   return typeof reason === "string" && /^Peer command failed \((?:[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}|exit [1-9][0-9]{0,2}|signal SIG[A-Z0-9]{1,16})\)$/.test(reason);
 }

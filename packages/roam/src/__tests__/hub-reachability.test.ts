@@ -37,17 +37,17 @@ it("a connected native state clears an outage even when sync refuses content", a
   saved.observation = { machineId: BOX, observedAt: 1, connected: true, lastSyncAt: 1, cursors: [], failure: null };
   saved.pulled = true;
   savePeerState(h.f.global.db, BOX, saved);
-  expect(await h.observe(h.f.config.peers[0], [{ code: 1, reason: "Invalid peer value", operationId: "op-1", home: null, epoch: null, repairCommand: null, value: null }])).toMatchObject({ reachability: "reachable", syncVerified: false });
+  expect(await h.observe(h.f.config.peers[0], [{ code: 1, reason: "Invalid peer value", operationId: "op-1", home: null, epoch: null, repairCommand: null, value: null }])).toMatchObject({ reachability: "reachable", syncVerified: true });
 });
 
-it.each([false, true])("a connected no-change sync verifies moves only after a complete store pull (pulled: %s)", async pulled => {
+it.each([false, true])("a connected no-change sync verifies moves regardless of missing stores (pulled: %s)", async pulled => {
   const h = await observationFixture();
   const { loadPeerState, savePeerState } = await import("../peer-state");
   const saved = loadPeerState(h.f.global.db, BOX, h.f.config.limits.targetBatchBytes);
   saved.pulled = pulled;
   saved.observation = { machineId: BOX, observedAt: 2, connected: true, lastSyncAt: pulled ? 2 : 1, cursors: [], failure: null };
   savePeerState(h.f.global.db, BOX, saved);
-  expect(await h.observe(h.f.config.peers[0], [])).toMatchObject({ reachability: "reachable", syncVerified: pulled });
+  expect(await h.observe(h.f.config.peers[0], [])).toMatchObject({ reachability: "reachable", syncVerified: true });
 });
 
 it("a core identity change during machine inventory remains unknown", async () => {

@@ -14,7 +14,7 @@ import { appendMirror, type MirrorSource } from "./mirrors";
 import { isRevoked, syncHandshake, type SyncHandshake } from "./revocation";
 import { assignInitialHome, markInitialConflict } from "./homes";
 import { readOnlyOperation, releaseJournalArtifact, type ArtifactJournal } from "./journal";
-import { agentFailureCode, isPeerFailureReason, peerFailureReason, RecoveryResponseError } from "./peer-errors";
+import { agentFailureCode, isPeerFailureReason, isSyncConnectivityFailure, peerFailureReason, RecoveryResponseError } from "./peer-errors";
 import { loadPeerState, receiptMatches, savePeerState, sizedBytes, type PeerState, type PendingBatch } from "./peer-state";
 import { acquireTransferLease, defaultStagingRoot, openOutgoingStaging, openStaging } from "./staging";
 import { removeOutgoing, type StoreAdapter } from "./stores";
@@ -372,10 +372,10 @@ export function createSync(ports: SyncPorts): SyncAdapter {
       completed = pulled && globalReady && state.ungathered.length === 0 && !keys.some(blocked) && results.every(result => result.code === 0);
     } catch (error) { results.push(failure(error, peer.machineId)); }
     const uncertain = results.some(result => result.code === 3);
-    const outage = uncertain || results.some(result => result.code === 1 && isPeerFailureReason(result.reason));
+    const outage = results.some(isSyncConnectivityFailure);
     if (outage) state.failures++;
-    else if (completed) state.failures = 0;
-    state.observation = { machineId: peer.machineId, observedAt, connected: uncertain ? null : connected,
+    else if (connected === true) state.failures = 0;
+    state.observation = { machineId: peer.machineId, observedAt, connected: outage ? null : connected,
       lastSyncAt: completed ? clock.now() : Number.isSafeInteger(previousSync) && previousSync! >= 0 ? previousSync! : null,
       cursors: uncertain ? [] : cursors, failure: results.find(result => result.code === 1 && isPeerFailureReason(result.reason))?.reason ?? null };
     savePeerState(globalDb, peer.machineId, state);

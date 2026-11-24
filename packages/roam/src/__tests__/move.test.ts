@@ -402,12 +402,7 @@ it.each(["frozen", "transferred", "home-committed", "unknown-start"] as const)("
     native.setState("connecting"); await sync.sync(BOX);
     expect(recoveryTimers()).toEqual([]);
     wire.setUnavailable(false); reachable = true; native.setState("connected");
-    wire.setIncomplete(true);
-    const incomplete = await sync.sync(BOX);
-    expect(incomplete).toEqual([]);
-    expect(await native.observe(peer, incomplete)).toMatchObject({ reachability: "reachable", syncVerified: false });
-    expect(recoveryTimers()).toEqual([]);
-    wire.setIncomplete(false); wire.setRefused(true);
+    wire.setRefused(true);
     const refused = await sync.sync(BOX);
     expect(refused.some(result => result.code !== 0)).toBe(true);
     expect(await native.observe(peer, refused)).toMatchObject({ reachability: "reachable", syncVerified: false });
@@ -417,7 +412,11 @@ it.each(["frozen", "transferred", "home-committed", "unknown-start"] as const)("
     expect(replaced.some(result => result.code !== 0)).toBe(true);
     expect(await native.observe(peer, replaced)).toMatchObject({ reachability: "reachable", syncVerified: false });
     expect(recoveryTimers()).toEqual([]);
-    wire.setReplaced(false);
+    wire.setReplaced(false); wire.setIncomplete(true);
+    const incomplete = await sync.sync(BOX);
+    expect(incomplete).toEqual([]);
+    expect(await native.observe(peer, incomplete)).toMatchObject({ reachability: "reachable", syncVerified: true });
+    expect(recoveryTimers()).toHaveLength(1);
     const verified = await sync.sync(BOX);
     expect(verified.every(result => result.code === 0), JSON.stringify(verified)).toBe(true);
     expect(await native.observe(peer, verified)).toMatchObject({ reachability: "reachable", syncVerified: true });

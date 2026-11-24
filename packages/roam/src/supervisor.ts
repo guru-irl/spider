@@ -84,6 +84,7 @@ export function createDurableLaunchPort(input: {
   invoke(request: LaunchInvocation): Promise<SupervisorLaunchOutcome>;
   operationId?: (intent: HostIntent) => string;
 }): SupervisorPorts["launch"] {
+  const completedInvocations = new Map<string, string>();
   const result = (intent: HostIntent, reason: string, operationId = ""): Outcome<HubOperationReadiness> =>
     ({ code: 2, reason, operationId, home: null, epoch: intent.epoch, repairCommand: null, value: null });
   return async request => {
@@ -112,19 +113,23 @@ export function createDurableLaunchPort(input: {
     }
     let mode: LaunchInvocation["mode"] = "reconcile";
     if (pending.phase === "reserved") {
-      if (await input.authorize(intent)) mode = "initial";
-      else if (request.mode === "fresh") return result(intent, "launch-pending", pending.operationId);
+      if (await input.authorize(intent)) {
+        // A returned callback needs reconciliation even when spawn was not admitted.
+        if (completedInvocations.get(intent.sessionId) !== pending.operationId) mode = "initial";
+      } else if (request.mode === "fresh") return result(intent, "launch-pending", pending.operationId);
       // A live owner forbids another spawn, not recovery of the reserved operation.
       const current = await input.intents.get(intent.sessionId);
       if (!current || current.version !== row.version) return result(intent, "launch-intent-stale", pending.operationId);
     }
     const admitted = row;
-    return input.invoke({ intent, mode,
+    const outcome = await input.invoke({ intent, mode,
       reservation: { operationId: pending.operationId }, async beforeSpawn() {
         if (!await input.authorize(intent)) return "cancelled";
         const next: IntentState = { ...admitted.value, supervision: { ...pending, phase: "invoking" } };
         return (await input.intents.update(intent.sessionId, admitted.version, next)).kind === "updated" ? "admitted" : "pending";
       } });
+    completedInvocations.set(intent.sessionId, pending.operationId);
+    return outcome;
   };
 }
 

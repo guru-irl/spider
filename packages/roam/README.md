@@ -31,9 +31,25 @@ enable switch. Stop clears a `reserved` reservation with no ID lock to idle,
 without a launch outcome or restart proof. The same compare-and-swap prevents a
 concurrent launch from invoking the cleared reservation.
 
-An `invoking` reservation without an ID lock remains blocked. A pending ID lock
-must match the participant's launch operation before stop can settle it. Stop
-never settles a different operation, such as a move launch.
+An `invoking` reservation without an ID lock remains blocked unless a released
+adoption record proves which owner adopted that launch. Stop requires the same
+boot and an absent recorded PID. PID reuse, an unavailable probe, or a changed
+boot refuses this proof. The exact file must match the durable intent authority,
+and its lease must be absent or name an absent process on the same boot.
+
+`settleReleasedAdoptedOwner` runs the proof and journal writes under the
+session-ID mutex used by adoption. Participants claim that ID lock before the
+file lease. The proof rechecks ownership, boot and lease state and refuses if
+readiness appears during inspection. It retains the released adoption record
+and existing history, records `exact-adopted-owner-ended` and
+`exact-launch-settled`, and completes the launch with `launch-ended`. Stop then
+sets supervision idle while the durable intent stays stopped. Stop completes
+interrupted launch journal writes before clearing the reservation. A failed
+idle compare-and-swap can retry without duplicating settlement records. No
+launch runs on this path.
+
+A pending ID lock must match the participant's launch operation before stop can
+settle it. Stop never settles a different operation, such as a move launch.
 
 `launcher.ts` settles ownership only after proving launcher exit and proving
 that the terminal cannot adopt. Reconciliation has a 60-second deadline.
@@ -62,9 +78,13 @@ stop repair command. Invoked launches retain their restart proof so resume can
 use a new operation ID.
 
 `local-diagnostics.ts` distinguishes unchecked, unavailable, and changed core
-identities. Pending launches remain blocking in all three cases. Doctor offers
-stop for an unstarted reservation, but inspection for an invoking reservation
-without a handoff.
+identities. Pending launches remain blocking in all three cases. For a released
+adoption, doctor distinguishes a live owner, unavailable owner status and a
+live file-lease holder. It directs the operator to supported session shutdown
+or restored process and boot identity inspection before stopping again. Once
+the released owner has positively exited, doctor offers stop. A reservation
+without adoption evidence checks the actual pin and core before reporting a
+core problem. These repairs do not send the operator back to doctor.
 
 ## Machine reachability
 

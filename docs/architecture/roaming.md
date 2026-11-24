@@ -501,8 +501,33 @@ A pending exact launch blocks doctor and enable even when roaming is disabled.
 Doctor names the launch operation. For a reservation that has not reached the
 `invoking` phase and has no ID lock, doctor offers `spider roam stop <session>`
 on the hub. Stop clears that reservation to idle without a restart proof,
-because the launch never began. If an invoking reservation has lost its ID lock,
-stop keeps it blocked and doctor offers inspection, not another stop.
+because the launch never began. An invoking reservation with no ID lock is not
+proof that its adopted owner exited.
+
+If a released adoption record names the session and launch operation, stop can
+settle that reservation after positive exit proof. The recorded boot must match
+the current boot, and the recorded PID must be absent. PID reuse, a different
+boot, or an unavailable process probe refuses this settlement. The file lease
+must be absent or its holder must also be absent on the same boot. Stop checks
+that file against the durable intent authority. It never infers exit from an
+hc-client exit, an empty handoff directory, or a matching core ID.
+
+The released-owner proof and journal settlement run under the same session-ID
+mutex as adoption. A child claims the ID lock before the file lease. With no
+pending ID lock, a late child cannot reuse the consumed handoff. Stop retains
+the released adoption record and launch history. It records
+`exact-adopted-owner-ended` and `exact-launch-settled`, completes the launch with
+`launch-ended`, and then sets supervision idle. The desired state remains
+stopped. Stop finishes an interrupted journal completion before clearing the
+reservation. A failed intent compare-and-swap can retry without duplicating the
+settlement. Repeated stop does not relaunch the session.
+
+Doctor distinguishes a live adopted owner from unavailable owner status. For a
+live owner, close that session through its supported shutdown path, then stop
+again. For unavailable status, restore local process and boot identity
+inspection before retrying. If adoption evidence is missing, doctor checks the
+actual pin and core and names the missing evidence. It prescribes core startup
+or pin repair when needed, not another doctor command.
 
 For a pending handoff, doctor offers `spider roam stop <session>` on the hub,
 not provision. Stop preserves the stopped intent and never relaunches the

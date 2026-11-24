@@ -15,7 +15,10 @@ import * as participantSupervisor from "../participant-supervisor";
 import * as launcherModule from "../launcher";
 import * as hcModule from "@spider/herdr/client/hc";
 import * as enrollmentModule from "../enrollment";
-import { claimIdLock } from "@spider/herdr/sessions/id-lock";
+import { claimIdLock, inspectIdLock, inspectReleasedIdLock } from "@spider/herdr/sessions/id-lock";
+import { createSessionLeases } from "@spider/herdr/sessions/lease";
+import { createProcessPresence } from "@spider/herdr/sessions/presence";
+import { withProcessLock } from "@spider/herdr/sessions/registry";
 import { createParticipantSupervisor } from "../participant-supervisor";
 import { recordReadiness } from "../session-control";
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
@@ -349,6 +352,227 @@ it("an initialized provisioned box without a hub intent launches nothing", async
   await createRunningIntentAuthority(f.global.db).set({ sessionId: "s-1", epoch: 2, desired: "running", suspended: null, ...location, moveId: "move-1" }, "unproved-intent", { kind: "box-participant", machineId: BOX, hubMachineId: "00000000-0000-4000-8000-000000000003" });
   await supervisor.reconcile(); expect(launches).toBe(0); await supervisor.stop();
 }, 5000);
+
+async function releasedStopFixture(released = true) {
+  const f = fixture(false), authority = createRunningIntentAuthority(f.global.db);
+  const location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
+  const intent = { sessionId: "s-1", epoch: 2, desired: "stopped" as const, suspended: null, ...location, moveId: "move-1" };
+  await authority.set(intent, "start-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
+  const store = createIntentStore(f.global.root);
+  await store.update("s-1", null, { intent, failures: [1], supervision: { kind: "launching", operationId: "launch-1", phase: "invoking" } });
+  const root = join(f.global.root, "herdr"), child = { pid: 202, startIdentity: "child-start" };
+  const launcher = await claimIdLock(root, "s-1", { pid: 201, startIdentity: "launcher-start" }, async () => ({ kind: "absent" }), { bootId: async () => "boot-1" });
+  const handoff = await launcher.prepareHandoff("launch-1", location.file, "core-1");
+  const adopted = await claimIdLock(root, "s-1", child, async () => ({ kind: "live", startIdentity: child.startIdentity }), { bootId: async () => "boot-1", handoff });
+  if (released) await adopted.release();
+  f.ports.journal.begin({ id: "launch-1", kind: "exact-session-launch", machineId: BOX, expectedEpoch: 2, args: { sessionId: "s-1" } });
+  f.ports.journal.record("launch-1", "exact-attempt", { attemptId: "attempt-1" });
+  f.ports.journal.record("launch-1", "exact-core", { coreId: "core-1" });
+  f.ports.journal.record("launch-1", "exact-hc-started", { pid: 301, startTime: "hc-start", bootId: "boot-1" });
+  f.ports.journal.record("launch-1", "exact-hc-exited", { pid: 301, exitedAt: 50 });
+  f.ports.journal.record("launch-1", "exact-terminal", { terminalId: "terminal-1" });
+  return { ...f, authority, store, root, child, location, handoff, history: f.ports.journal.read("launch-1") };
+}
+
+it("stop settles a released adopted owner after positive exit and converges without relaunch", async () => {
+  const f = await releasedStopFixture(); let wakes = 0, live = true;
+  const operation = { ...f.operation, id: "stop-released", kind: "session-stop" };
+  const options = { wake: async () => { wakes++; }, launchRecovery: { bootId: async () => "boot-1", probe: async (pid: number) => {
+    expect(pid).toBe(f.child.pid);
+    return live ? { kind: "live" as const, startIdentity: f.child.startIdentity } : { kind: "absent" as const };
+  }, hc: { coreId: async () => "core-1", terminals: async () => ({ complete: true, terminals: [] }), run: async () => { throw new Error("stop cannot launch"); } } } };
+  expect(await handleSessionOperation(operation, f.ports, options)).toMatchObject({ code: 3, reason: "launch-reconciliation-required" });
+  expect((await f.store.get("s-1"))?.value.supervision.kind).toBe("launching");
+  expect(f.ports.journal.read("launch-1")).toEqual(f.history);
+  live = false;
+  const stopped = await handleSessionOperation(operation, f.ports, options);
+  expect(stopped).toMatchObject({ code: 0, reason: "stopped-intent" });
+  expect(await f.authority.get("s-1")).toMatchObject({ desired: "stopped" });
+  expect((await f.store.get("s-1"))?.value).toMatchObject({ intent: { desired: "stopped" }, failures: [], supervision: { kind: "idle", nextAttemptAt: null } });
+  const settled = f.ports.journal.read("launch-1");
+  expect(settled.slice(0, f.history.length)).toEqual(f.history);
+  expect(settled.filter(row => row.action === "exact-launch-settled")).toEqual([expect.objectContaining({ result: { sessionId: "s-1", file: f.location.file } })]);
+  expect(settled).toEqual(expect.arrayContaining([expect.objectContaining({ action: "exact-adopted-owner-ended", result: expect.objectContaining({
+    sessionId: "s-1", file: f.location.file, bootId: "boot-1", owner: f.child,
+  }) }), expect.objectContaining({ action: "done", result: expect.objectContaining({ reason: "launch-ended" }) })]));
+  expect(await inspectIdLock(f.root, "s-1")).toBeNull();
+  expect(await inspectReleasedIdLock(f.root, "s-1", "launch-1")).toMatchObject({ identity: f.child });
+  expect(await handleSessionOperation(operation, f.ports, options)).toEqual(stopped);
+  expect(await handleSessionOperation({ ...operation, id: "stop-released-again" }, f.ports, options)).toMatchObject({ code: 0, reason: "stopped-intent" });
+  expect(f.ports.journal.read("launch-1")).toEqual(settled);
+  const restarts = f.ports.journal.read(`${participantLaunchId(BOX, "s-1", 2, "start-1")}-restarts`).filter(row => row.action === "restart");
+  expect(restarts).toEqual([expect.objectContaining({ result: { sequence: 1, previous: { kind: "launching", phase: "invoking", operationId: "launch-1" } } })]);
+  f.worktree.db.prepare("UPDATE roam_sessions SET state='active'").run();
+  let launches = 0;
+  const supervisor = createParticipantSupervisor({ root: f.global.root, agent: f.ports, clock: { now: () => 100, later: () => () => {} },
+    events: { subscribe: () => () => {} }, owner: async () => ({ kind: "absent" }), diagnostics: async () => [], stop: async () => ({ kind: "absent" }), notify: async () => {},
+    async launch() { launches++; throw new Error("stopped intent cannot launch"); } });
+  try { await supervisor.reconcile(); await supervisor.reconcile(); }
+  finally { await supervisor.stop(); }
+  expect(launches).toBe(0);
+  expect(await f.authority.get("s-1")).toMatchObject({ desired: "stopped" });
+  expect((await f.store.get("s-1"))?.value.supervision).toEqual({ kind: "idle", nextAttemptAt: null });
+  expect(wakes).toBe(2);
+});
+
+it.each(["live", "pid-reused", "unknown", "probe-unavailable", "boot-unavailable", "different-boot", "live-lease", "unknown-lease", "different-lease-boot", "readiness", "different-operation", "different-file", "adopted-lock", "unreleased-adoption"] as const)(
+  "stop preserves an invoking released-owner reservation with %s evidence", async condition => {
+  const f = await releasedStopFixture(condition !== "unreleased-adoption"); let wakes = 0;
+  if (condition.endsWith("lease") || condition === "different-lease-boot") {
+    const leases = createSessionLeases(f.root), owner = { pid: 401, startIdentity: "lease-start" };
+    await leases.claim(f.location.file, owner, { leases, presence: createProcessPresence(f.root), probe: async () => ({ kind: "absent" }), processes: async () => [] },
+      { mode: "cutover", bootId: condition === "different-lease-boot" ? "boot-2" : "boot-1" });
+  }
+  if (condition === "readiness") f.ports.journal.record("launch-1", "ready-durable", { sessionId: "s-1" });
+  if (condition === "different-operation") {
+    const current = (await f.store.get("s-1"))!;
+    await f.store.update("s-1", current.version, { ...current.value, supervision: { kind: "launching", phase: "invoking", operationId: "other-launch" } });
+  }
+  if (condition === "different-file") {
+    const current = (await f.store.get("s-1"))!, file = join(f.worktree.root, "other.jsonl");
+    writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: "s-1", cwd: f.worktree.root }) + "\n", { mode: 0o600 });
+    await f.store.update("s-1", current.version, { ...current.value, intent: { ...current.value.intent, file } });
+  }
+  if (condition === "adopted-lock") await claimIdLock(f.root, "s-1", { pid: 501, startIdentity: "new-owner" }, async () => ({ kind: "absent" }), { bootId: async () => "boot-1" });
+  const history = f.ports.journal.read("launch-1"), reserved = await f.store.get("s-1");
+  expect(await handleSessionOperation({ ...f.operation, id: `stop-${condition}`, kind: "session-stop" }, f.ports, {
+    wake: async () => { wakes++; }, launchRecovery: { bootId: async () => condition === "boot-unavailable" ? "" : condition === "different-boot" ? "boot-2" : "boot-1",
+      probe: async pid => {
+        if (condition === "probe-unavailable") throw new Error("probe unavailable");
+        if (pid === 401) return condition === "unknown-lease" ? { kind: "unknown" } : condition === "different-lease-boot" ? { kind: "absent" } : { kind: "live", startIdentity: "lease-start" };
+        return condition === "live" ? { kind: "live", startIdentity: f.child.startIdentity }
+          : condition === "pid-reused" ? { kind: "live", startIdentity: "different-start" }
+          : condition === "unknown" ? { kind: "unknown" } : { kind: "absent" };
+      } },
+  })).toMatchObject({ code: 3, reason: "launch-reconciliation-required" });
+  expect(await f.authority.get("s-1")).toMatchObject({ desired: "stopped" });
+  expect(await f.store.get("s-1")).toEqual(reserved);
+  expect(f.ports.journal.read("launch-1")).toEqual(history);
+  expect(wakes).toBe(0);
+});
+
+it("released-owner stop accepts an absent same-boot lease holder without deleting its history", async () => {
+  const f = await releasedStopFixture(), leases = createSessionLeases(f.root);
+  await leases.claim(f.location.file, f.child, { leases, presence: createProcessPresence(f.root), probe: async () => ({ kind: "absent" }), processes: async () => [] },
+    { mode: "cutover", bootId: "boot-1" });
+  const priorLease = await leases.get(f.location.file);
+  expect(await handleSessionOperation({ ...f.operation, id: "stop-exited-lease", kind: "session-stop" }, f.ports,
+    { wake: async () => {}, launchRecovery: { bootId: async () => "boot-1", probe: async () => ({ kind: "absent" }) } })).toMatchObject({ code: 0, reason: "stopped-intent" });
+  expect(await leases.get(f.location.file)).toEqual(priorLease);
+  expect(await inspectReleasedIdLock(f.root, "s-1", "launch-1")).toMatchObject({ identity: f.child });
+  expect((await f.store.get("s-1"))?.value.supervision.kind).toBe("idle");
+});
+
+it("released-owner exit proof excludes another session-ID writer", async () => {
+  const f = await releasedStopFixture(), admissions: string[] = [];
+  expect(await handleSessionOperation({ ...f.operation, id: "stop-mutex", kind: "session-stop" }, f.ports,
+    { wake: async () => {}, launchRecovery: { bootId: async () => "boot-1", probe: async () => {
+      admissions.push(await withProcessLock(f.root, "session-id:s-1", async () => "entered", { timeoutMs: 0 })
+        .catch(error => error.code as string));
+      return { kind: "absent" };
+    } } })).toMatchObject({ code: 0, reason: "stopped-intent" });
+  expect(admissions).toEqual(["lock-occupied"]);
+});
+
+it("released-owner settlement serializes a new claimant until its proof is journaled", async () => {
+  const f = await releasedStopFixture(), order: string[] = [];
+  let observed!: () => void, finishProbe!: () => void;
+  const probing = new Promise<void>(resolve => { observed = resolve; }), continueProbe = new Promise<void>(resolve => { finishProbe = resolve; });
+  const record = f.ports.journal.record.bind(f.ports.journal);
+  vi.spyOn(f.ports.journal, "record").mockImplementation((id, action, result) => { if (action === "exact-launch-settled") order.push("settled"); record(id, action, result); });
+  const stopped = handleSessionOperation({ ...f.operation, id: "stop-serialized", kind: "session-stop" }, f.ports,
+    { wake: async () => {}, launchRecovery: { bootId: async () => "boot-1", probe: async () => { observed(); await continueProbe; return { kind: "absent" }; } } });
+  await probing;
+  const claimant = withProcessLock(f.root, "session-id:s-1", async () => { order.push("claim"); });
+  finishProbe();
+  expect(await stopped).toMatchObject({ code: 0, reason: "stopped-intent" });
+  await claimant;
+  expect(order).toEqual(["settled", "claim"]);
+});
+
+it.each(["boot-changes", "lease-appears", "readiness-appears"] as const)("released-owner stop refuses when %s during proof", async condition => {
+  const f = await releasedStopFixture(); let bootChecks = 0;
+  expect(await handleSessionOperation({ ...f.operation, id: `stop-${condition}`, kind: "session-stop" }, f.ports, {
+    wake: async () => {}, launchRecovery: { bootId: async () => {
+      bootChecks++;
+      if (condition === "lease-appears" && bootChecks === 2) {
+        const leases = createSessionLeases(f.root);
+        await leases.claim(f.location.file, { pid: 401, startIdentity: "new-lease" },
+          { leases, presence: createProcessPresence(f.root), probe: async () => ({ kind: "absent" }), processes: async () => [] }, { mode: "cutover", bootId: "boot-1" });
+      }
+      return condition === "boot-changes" && bootChecks > 1 ? "boot-2" : "boot-1";
+    }, probe: async () => {
+      if (condition === "readiness-appears") f.ports.journal.record("launch-1", "ready-durable", { sessionId: "s-1" });
+      return { kind: "absent" };
+    } },
+  })).toMatchObject({ code: 3, reason: "launch-reconciliation-required" });
+  expect((await f.store.get("s-1"))?.value.supervision.kind).toBe("launching");
+  expect(f.ports.journal.read("launch-1").some(row => row.action === "exact-launch-settled")).toBe(false);
+});
+
+it.each(["exact-adopted-owner-ended", "exact-launch-settled", "done", "done-reply-lost"] as const)(
+  "released-owner stop converges after an interrupted %s journal write", async action => {
+  const f = await releasedStopFixture(), record = f.ports.journal.record.bind(f.ports.journal); let interrupt = true;
+  vi.spyOn(f.ports.journal, "record").mockImplementation((id, step, result) => {
+    if (id === "launch-1" && step === (action === "done-reply-lost" ? "done" : action) && interrupt) {
+      interrupt = false;
+      if (action === "done-reply-lost") record(id, step, result);
+      throw new Error("journal write interrupted");
+    }
+    record(id, step, result);
+  });
+  const operation = { ...f.operation, id: `stop-interrupted-${action}`, kind: "session-stop" }, options = { wake: async () => {},
+    launchRecovery: { bootId: async () => "boot-1", probe: async () => ({ kind: "absent" as const }) } };
+  expect(await handleSessionOperation(operation, f.ports, options)).toMatchObject({ code: 3, reason: "launch-reconciliation-required" });
+  expect((await f.store.get("s-1"))?.value.supervision.kind).toBe("launching");
+  expect(await handleSessionOperation(operation, f.ports, options)).toMatchObject({ code: 0, reason: "stopped-intent" });
+  expect(f.ports.journal.lookupOperation("launch-1")).toEqual({ machineId: BOX, state: "done" });
+  const settled = f.ports.journal.read("launch-1");
+  expect(settled.filter(row => row.action === "exact-adopted-owner-ended")).toHaveLength(1);
+  expect(settled.filter(row => row.action === "exact-launch-settled")).toHaveLength(1);
+  expect(settled.filter(row => row.action === "done")).toEqual([expect.objectContaining({ result: expect.objectContaining({ reason: "launch-ended" }) })]);
+  expect(await f.authority.get("s-1")).toMatchObject({ desired: "stopped" });
+  expect((await f.store.get("s-1"))?.value.supervision.kind).toBe("idle");
+  expect(await handleSessionOperation(operation, f.ports, options)).toMatchObject({ code: 0, reason: "stopped-intent" });
+  expect(f.ports.journal.read("launch-1")).toEqual(settled);
+});
+
+it("released-owner stop retries the idle CAS without duplicating its settlement history", async () => {
+  const f = await releasedStopFixture(), factory = intentModule.createIntentStore; let conflict = true;
+  vi.spyOn(intentModule, "createIntentStore").mockImplementation(root => {
+    const store = factory(root);
+    return { ...store, async update(id, version, next) {
+      if (conflict && next.supervision.kind === "idle") { conflict = false; return { kind: "stale", currentVersion: version }; }
+      return store.update(id, version, next);
+    } };
+  });
+  const operation = { ...f.operation, id: "stop-cas", kind: "session-stop" }, options = { wake: async () => {},
+    launchRecovery: { bootId: async () => "boot-1", probe: async () => ({ kind: "absent" as const }) } };
+  expect(await handleSessionOperation(operation, f.ports, options)).toMatchObject({ code: 3, reason: "intent-reconciliation-required" });
+  const settled = f.ports.journal.read("launch-1");
+  expect(settled.filter(row => row.action === "exact-launch-settled")).toHaveLength(1);
+  expect((await f.store.get("s-1"))?.value.supervision.kind).toBe("launching");
+  expect(await handleSessionOperation(operation, f.ports, options)).toMatchObject({ code: 0, reason: "stopped-intent" });
+  expect(f.ports.journal.read("launch-1")).toEqual(settled);
+  expect((await f.store.get("s-1"))?.value.supervision.kind).toBe("idle");
+});
+
+it("released-owner stop waits for the session-ID mutex and sees a newly claimed owner", async () => {
+  const f = await releasedStopFixture();
+  let enter!: () => void, unlock!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; }), hold = new Promise<void>(resolve => { unlock = resolve; });
+  const claimant = withProcessLock(f.root, "session-id:s-1", async () => { enter(); await hold; });
+  await entered;
+  const stopped = handleSessionOperation({ ...f.operation, id: "stop-contended", kind: "session-stop" }, f.ports,
+    { wake: async () => {}, launchRecovery: { bootId: async () => "boot-1", probe: async () => ({ kind: "absent" }) } });
+  const owner = claimIdLock(f.root, "s-1", { pid: 601, startIdentity: "new-owner" }, async () => ({ kind: "absent" }), { bootId: async () => "boot-1" });
+  unlock(); await claimant; const owned = await owner;
+  try {
+    expect(await stopped).toMatchObject({ code: 3, reason: "launch-reconciliation-required" });
+    expect((await f.store.get("s-1"))?.value.supervision.kind).toBe("launching");
+    expect(f.ports.journal.read("launch-1")).toEqual(f.history);
+  } finally { await owned.release(); }
+});
 
 it.each(["absent", "live", "unknown"] as const)("resume clears an adopted reservation only when its owner is %s", async presence => {
   const f = fixture(false), authority = createRunningIntentAuthority(f.global.db), location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };

@@ -16,7 +16,7 @@ import type { AgentPorts, Operation, Outcome } from "./contracts";
 import { assertBoxEnrollment, participantCaptureInitialized, createRunningIntentAuthority, readReadiness, recordReadiness, startParticipant } from "./session-control";
 import { readLocalIdentity } from "./runtime";
 import { createLocalDiagnosticPorts, runLocalDoctor } from "./local-diagnostics";
-import { adoptedOwnerExited, createProductionLocalExactHc, settlePendingLaunch, type PendingLaunchRecovery } from "./launcher";
+import { adoptedOwnerExited, createProductionLocalExactHc, settlePendingLaunch, settleReleasedAdoptedOwner, type PendingLaunchRecovery } from "./launcher";
 import { readSupervisorCorePin, supervisorCoreEnvironment } from "./enrollment";
 
 export function wakeSupervisor(systemctl: (argv: readonly string[]) => Promise<void> = argv => new Promise((done, reject) => {
@@ -102,10 +102,21 @@ export async function handleSessionOperation(operation: Operation, ports: AgentP
         if (!settled) return { ...result(3, "launch-reconciliation-required"), repairCommand: `spider roam doctor ${pinned.machineId}` };
         current = await intents.get(id);
       }
-      const released = current?.value.supervision.kind === "launching" && ports.journal.read(current.value.supervision.operationId).some(row =>
+      const launchHistory = current?.value.supervision.kind === "launching" ? ports.journal.read(current.value.supervision.operationId) : [];
+      let released = current?.value.supervision.kind === "launching" && launchHistory.some(row =>
         row.action === "exact-launch-settled" && row.result.sessionId === id && row.result.file === current.value.intent.file);
-      if (!lock && current?.value.supervision.kind === "launching" && current.value.supervision.phase === "invoking" && !released)
-        return { ...result(3, "launch-reconciliation-required"), repairCommand: `spider roam doctor ${pinned.machineId}` };
+      if (current?.value.supervision.kind === "launching" && current.value.supervision.phase === "invoking" &&
+          (!released || !launchHistory.some(row => row.action === "done"))) {
+        const local = { machineId: pinned.machineId, label: "local machine", peer: null };
+        const recovery = options.launchRecovery ?? { bootId: localBootId, probe: (pid: number) => createLocalDiagnosticPorts(root, []).probeProcess(local, pid) };
+        try {
+          if ((await authority.get(id))?.file === current.value.intent.file) released = await settleReleasedAdoptedOwner({
+            root: join(root, "herdr"), sessionId: id, operationId: current.value.supervision.operationId,
+            file: current.value.intent.file, journal: ports.journal, leases: createSessionLeases(join(root, "herdr")), ...recovery });
+        }
+        catch { /* Missing adopted-owner proof must preserve the reservation. */ }
+        if (!released) return { ...result(3, "launch-reconciliation-required"), repairCommand: `spider roam doctor ${pinned.machineId}` };
+      }
       const reserved = !lock && current?.value.supervision.kind === "launching" && current.value.supervision.phase === "reserved";
       if (current && (released || reserved)) {
         const intent = await authority.get(id), operationId = authority.operationId(id);

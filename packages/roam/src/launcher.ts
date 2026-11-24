@@ -8,7 +8,7 @@ import { invokeCli as invokeTransport } from "@spider/herdr/client/cli-transport
 import { requireCoreAvailable } from "@spider/herdr/client/liveness";
 import type { ProcessProbe } from "@spider/herdr/sessions/lease";
 import { bootIdChanged, cancelExitedIdLockHandoff, inspectIdLock, inspectReleasedIdLock } from "@spider/herdr/sessions/id-lock";
-import { canonicalSessionFile } from "@spider/herdr/sessions/registry";
+import { canonicalSessionFile, withProcessLock } from "@spider/herdr/sessions/registry";
 import { launchHandoffPath, removeLaunchHandoff } from "@spider/herdr/sessions/launch-handoff";
 import type { SessionId } from "@spider/herdr";
 import { launchExactSession, provedNoStart } from "@spider/herdr/sessions/launcher";
@@ -210,6 +210,58 @@ export async function adoptedOwnerExited(input: {
   if (!first) return last === null;
   return last?.operationId === first.operationId && last.pendingOperationId === null && last.bootId === first.bootId &&
     last.identity.pid === first.identity.pid && last.identity.startIdentity === first.identity.startIdentity;
+}
+
+type AdoptedOwnerInput = Parameters<typeof adoptedOwnerExited>[0];
+export type AdoptedOwnerObservation =
+  | { kind: "exited"; released: boolean; owner: IdLockObservation["identity"]; bootId: string }
+  | { kind: "live" | "lease-live" | "unavailable" | "missing" };
+
+/** Stop requires absence on the recorded boot; PID reuse and a changed boot are not this exit proof. */
+export async function inspectAdoptedOwner(input: AdoptedOwnerInput): Promise<AdoptedOwnerObservation> {
+  try {
+    const first = await inspectIdLock(input.root, input.sessionId);
+    const adopted = first?.operationId === input.operationId && first.pendingOperationId === null ? first
+      : first ? null : await inspectReleasedIdLock(input.root, input.sessionId, input.operationId);
+    if (!adopted) return { kind: first ? "unavailable" : "missing" };
+    const boot = await input.bootId();
+    if (!boot || boot !== adopted.bootId) return { kind: "unavailable" };
+    const owner = await input.probe(adopted.identity.pid);
+    if (owner.kind === "live" && owner.startIdentity === adopted.identity.startIdentity) return { kind: "live" };
+    if (owner.kind !== "absent") return { kind: "unavailable" };
+    const lease = await input.leases.get(input.file);
+    if (lease) {
+      if (lease.bootId !== boot) return { kind: "unavailable" };
+      const holder = await input.probe(lease.pid);
+      if (holder.kind === "live" && holder.startIdentity === lease.startIdentity) return { kind: "lease-live" };
+      if (holder.kind !== "absent") return { kind: "unavailable" };
+    }
+    const last = await inspectIdLock(input.root, input.sessionId);
+    const sameOwner = (value: { identity: IdLockObservation["identity"]; bootId: string; operationId: string | null } | null) =>
+      value?.operationId === input.operationId && value.bootId === adopted.bootId &&
+      value.identity.pid === adopted.identity.pid && value.identity.startIdentity === adopted.identity.startIdentity;
+    if (first ? !sameOwner(last) || last?.pendingOperationId !== null
+      : last !== null || !sameOwner(await inspectReleasedIdLock(input.root, input.sessionId, input.operationId))) return { kind: "unavailable" };
+    if (await input.bootId() !== boot || JSON.stringify(await input.leases.get(input.file)) !== JSON.stringify(lease)) return { kind: "unavailable" };
+    return { kind: "exited", released: first === null, owner: { ...adopted.identity }, bootId: boot };
+  } catch { return { kind: "unavailable" }; }
+}
+
+/** Adoption claims the session ID before the file lease, so serialize this proof with ID-lock writers. */
+export async function settleReleasedAdoptedOwner(input: AdoptedOwnerInput & { journal: Journal }): Promise<boolean> {
+  return withProcessLock(input.root, `session-id:${input.sessionId}`, async () => {
+    const history = input.journal.read(input.operationId);
+    if (history.some(row => row.action === "ready-durable") || await canonicalSessionFile(input.file) !== input.file) return false;
+    const observed = await inspectAdoptedOwner(input);
+    if (observed.kind !== "exited" || !observed.released || input.journal.read(input.operationId).length !== history.length) return false;
+    if (!history.some(row => row.action === "exact-adopted-owner-ended")) input.journal.record(input.operationId, "exact-adopted-owner-ended", {
+      sessionId: input.sessionId, file: input.file, owner: { ...observed.owner }, bootId: observed.bootId,
+    });
+    if (!history.some(row => row.action === "exact-launch-settled")) input.journal.record(input.operationId, "exact-launch-settled", { sessionId: input.sessionId, file: input.file });
+    if (!history.some(row => row.action === "done")) input.journal.record(input.operationId, "done", { code: 1, reason: "launch-ended", operationId: input.operationId,
+      home: null, epoch: null, repairCommand: null, value: null });
+    return true;
+  });
 }
 
 export interface PendingLaunchRecovery {

@@ -51,7 +51,7 @@ it("names the resume command for a crash-suspended session", async () => {
     repairCommand: "spider roam resume session-1" })]));
 }, 5000);
 
-it("offers resume for a pending reservation whose adopted owner is proved absent", async () => {
+it("offers stop for a pending reservation whose released adopted owner is proved absent", async () => {
   const parent = resolve(".spider/scratch/roam-handoff-doctor");
   await mkdir(parent, { recursive: true, mode: 0o700 });
   const root = await mkdtemp(join(parent, "adopted-")); roots.push(root);
@@ -66,7 +66,7 @@ it("offers resume for a pending reservation whose adopted owner is proved absent
   await adopted.release();
   const report = await runLocalDoctor({ root, launchRecovery: { bootId: async () => "boot-1", probe: async () => ({ kind: "absent" }) } });
   expect(report.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "warning", reason: expect.stringMatching(/session-1.*launch-1.*exited/i),
-    repairCommand: "spider roam resume session-1" })]));
+    repairCommand: "spider roam stop session-1" })]));
 }, 5000);
 
 it("reports a reserved launch with no handoff without changing its state", async () => {

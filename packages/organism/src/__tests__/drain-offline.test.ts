@@ -234,6 +234,31 @@ it("runs only one deferred retry across live workers sharing a database", async 
   expect(receipts()).toHaveLength(2);
 });
 
+it("runs only one deferred retry across separate database connections", async () => {
+  const otherDb = openDbAt(databases.db.raw.name, "worktree");
+  let online = false, release!: () => void, onlineCalls = 0;
+  const complete = vi.fn(async () => {
+    if (!online) throw offline();
+    onlineCalls++;
+    if (onlineCalls === 1) return new Promise<string>(resolve => { release = () => resolve(response); });
+    return response;
+  });
+  const org = { ...ORGANISM_DEFAULTS, selfNaming: false, passes: { runMemoryTodo: false, todoMemory: false, learning: true, consolidation: false, reflection: false, insights: false } };
+  const first = fixture(complete, { org });
+  const second = fixture(complete, { org, worktreeDb: otherDb });
+  try {
+    await first.runDrain("session", "before_compact", snapshot("Keep a single deferred retry."));
+    second.startDeferredDrains(); online = true;
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(onlineCalls).toBe(1);
+    release(); await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(35_000);
+    expect(onlineCalls).toBe(1);
+    expect(databases.db.prepare("SELECT session_id FROM organism_deferred_drain").all()).toEqual([]);
+    expect(receipts()).toHaveLength(2);
+  } finally { await second.stopSkillReviews(); otherDb.close(); }
+});
+
 it("does not recognize or renew an expired retry lease before another owner acquires it", () => {
   const store = new DrainRetryStore(databases.db);
   expect(store.acquire("first", 35_000).acquired).toBe(true);

@@ -560,7 +560,7 @@ A bell heads the panel, with the number of items that need you. The panel shows 
 
 Click a session card to focus its pane. Click the memory card to open memory review in the panel. Use the dismiss control to hide a card until its underlying state changes. The panel never polls machines.
 
-Intentional notifications that arrive after an outage remain visible. A sound plays only if the occurrence was created within 15 seconds of its producer's latest feed update. Older arrivals are marked seen silently. The sound check uses the producer's clock, so a clock difference between machines does not silence a fresh occurrence. Muted arrivals do not sound later when sound is enabled.
+A sound plays only if an intentional occurrence was created within 15 seconds of its producer's latest feed update. Older arrivals are marked seen silently. The sound check uses the producer's clock, so a clock difference between machines does not silence a fresh occurrence. A stopped producer can leave an old heartbeat, which cannot establish the true age of a newly discovered occurrence; that occurrence can still sound once. Muted arrivals do not sound later when sound is enabled. Card visibility still uses the viewer's clock, so a notice dated in its future appears later.
 
 ### Sessions
 

@@ -188,7 +188,7 @@ it("standalone cleanup is bounded and shutdown drains it before closing stores",
   let enter!: () => void, release!: () => void;
   const entered = new Promise<void>(resolve => { enter = resolve; }), held = new Promise<void>(resolve => { release = resolve; });
   const order: string[] = [];
-  vi.spyOn(moveRuntimeApi, "createMoveRuntimeService").mockReturnValue({ async control() { return { code: 1, reason: "fixture-unused", value: null }; }, async recover() {}, pendingPeers() { return []; }, async recoverCleanup() { order.push("cleanup-start"); enter(); await held; order.push("cleanup-end"); } });
+  vi.spyOn(moveRuntimeApi, "createMoveRuntimeService").mockReturnValue({ async control() { return { code: 1, reason: "fixture-unused", value: null }; }, async recover() {}, pendingPeers() { return []; }, hasSkippedPeerMoves() { return false; }, async recoverCleanup() { order.push("cleanup-start"); enter(); await held; order.push("cleanup-end"); } });
   const makeStores = storeApi.createStorePort;
   vi.spyOn(storeApi, "createStorePort").mockImplementation((...args) => {
     const stores = makeStores(...args), close = stores.close.bind(stores);
@@ -208,7 +208,7 @@ it("standalone cleanup is bounded and shutdown drains it before closing stores",
 
 it("standalone stop cancels deferred cleanup before it mounts a runtime", async () => {
   const h = fixture(), cleanup = vi.fn(async () => {});
-  vi.spyOn(moveRuntimeApi, "createMoveRuntimeService").mockReturnValue({ async control() { return { code: 1, reason: "fixture-unused", value: null }; }, async recover() {}, pendingPeers() { return []; }, recoverCleanup: cleanup });
+  vi.spyOn(moveRuntimeApi, "createMoveRuntimeService").mockReturnValue({ async control() { return { code: 1, reason: "fixture-unused", value: null }; }, async recover() {}, pendingPeers() { return []; }, hasSkippedPeerMoves() { return false; }, recoverCleanup: cleanup });
   const hub = await runStandaloneHub({ ...h.ports, async moveFactory() { throw new Error("fixture-unused"); } }); handles.push(hub);
   await h.request("sync");
   expect(h.timers.filter(timer => !timer.cancelled && timer.delay === 0)).toHaveLength(1);
@@ -228,6 +228,7 @@ it("a reconnect recovery can request real sync while cleanup shares its writer",
       await flight;
     },
     pendingPeers() { return []; },
+    hasSkippedPeerMoves() { return false; },
     async recoverCleanup() { await flight; },
   }));
   const hub = await runStandaloneHub({ ...h.ports, async moveFactory() { throw new Error("fixture-unused"); } }); handles.push(hub);

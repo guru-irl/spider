@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { readFileSync, appendFileSync, writeFileSync, chmodSync, existsSync, mkdirSync, readdirSync, symlinkSync, mkdtempSync, rmSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { replicaPath } from "@spider/db-core/roam/catalog";
 import { mapWorkspace } from "@spider/db-core/roam/repo-map";
 import { supervisorRetirementLifecycle } from "../participant-supervisor";
@@ -14,7 +14,7 @@ import * as peerState from "../peer-state";
 import * as storeApi from "../stores";
 import { sweepStoreArtifacts } from "../cleanup";
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
-import { createReplica } from "@spider/db-core/testutil";
+import { createReplica, scratchDbPath } from "@spider/db-core/testutil";
 import { openDb } from "@spider/db-core";
 import { exportBatch } from "@spider/db-core/roam/export";
 import { assignInitialHome } from "../homes";
@@ -581,7 +581,7 @@ it.each([
   const recoveries: string[] = [], timers: Array<{ ms: number; cancelled: boolean; fn(): void }> = [];
   const sync = createSync({ config: f.config, globalDb: f.global.db, journal: f.journal, stores: f.stores, transport: f.transport,
     clock: f.clock, ...recovery, onPeerSync: (peer, results) => afterSync(peer, results) });
-  const hubRoot = mkdtempSync(join(resolve(".spider/scratch"), "hub-"));
+  const hubRoot = mkdtempSync(join(dirname(scratchDbPath("hub")), "hub-"));
   const hub = await runHub({ config: f.config, globalDb: f.global.db, journal: f.journal, runtimeRoot: hubRoot, socketPath: join(hubRoot, "hub.sock"),
     identity: { pid: process.pid, startIdentity: "process-1" }, async probe() { return { kind: "live", startIdentity: "process-1" }; },
     clock: { now: f.clock.now, later(ms, fn) { const timer = { ms, cancelled: false, fn }; timers.push(timer); return () => { timer.cancelled = true; }; } },

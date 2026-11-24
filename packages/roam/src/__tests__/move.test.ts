@@ -3,7 +3,7 @@ import { recoverMove, cancelMove } from "../move-recovery";
 import { runHub, type HubRuntimePorts } from "../hub";
 import { createSync } from "../sync";
 import { noChangeSyncFixture, productionObservationFixture } from "./production-observation-fixture";
-import { readLocal } from "@spider/db-core/roam/local-state";
+import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
@@ -440,6 +440,54 @@ it.each(["frozen", "transferred", "home-committed", "unknown-start"] as const)("
     await sync.sync(BOX);
     expect(recoveryTimers()).toHaveLength(1);
   } finally { await hub.stop(); await native.stop(); }
+}, 5000);
+
+it("completed move recovery clears its stale diagnostic", async () => {
+  const f = fixture();
+  expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 0 });
+  writeLocal(f.global.db, "recovery-diagnostic", f.request.operation.id, { reason: "move-lock-pending" });
+  const effects = [...f.events];
+  expect(await recoverMove(f.request.operation.id, f.ports)).toMatchObject({ code: 0 });
+  expect(readLocal(f.global.db, "recovery-diagnostic", f.request.operation.id)).toBeUndefined();
+  expect(f.events).toEqual(effects);
+}, 5000);
+
+it.each([false, true])("peer recovery skips a concurrent move without a doctor warning (still pending: %s)", async unfinished => {
+  const f = fixture(); mkdirSync(join(f.root, "roam"));
+  const journal = openFreezeJournal(join(f.root, "roam", "journal.db")); f.ports.journal = journal;
+  const { readStatus } = await import("../diagnostics");
+  const { openDb } = await import("@spider/db-core");
+  const locks = await import("@spider/herdr/sessions/registry");
+  const lock = locks.withProcessLock;
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const transfer = f.ports.transfer;
+  f.ports.transfer = async (...args) => { entered(); await held; if (unfinished) throw new Error("synthetic transfer interrupted"); return transfer(...args); };
+  const service = createMoveRuntimeService({ root: f.root, config: f.ports.config, globalDb: f.global.db, journal, transport: {} as Transport }, async () => ({
+    ports: f.ports, bindings: {}, control: async () => ({ code: 1, reason: "unused", value: null }), recover: async () => [], async close() {},
+  }));
+  const moving = moveSession(f.request, f.ports); await started;
+  // Keep the real filesystem lock. A held lock must fail immediately in this test.
+  const probe = vi.spyOn(locks, "withProcessLock").mockImplementation((root, id, effect, options) => lock(root, id, effect, { ...options, timeoutMs: 0 }));
+  try {
+    await service.recover(BOX);
+    expect(journal.lookupOperation(f.request.operation.id)?.state).toBe("pending");
+    expect(readLocal(f.global.db, "recovery-diagnostic", f.request.operation.id)).toBeUndefined();
+  } finally { probe.mockRestore(); release(); await moving; }
+  if (unfinished) {
+    expect(await moving).toMatchObject({ code: 3 });
+    expect(journal.lookupOperation(f.request.operation.id)?.state).toBe("pending");
+    f.ports.transfer = transfer;
+    await service.recover(BOX);
+  } else expect(await moving).toMatchObject({ code: 0 });
+  const db = openDb(join(f.root, "roam", "journal.db"));
+  try {
+    const status = readStatus(f.ports.config, { globalDb: f.global.db, journalDb: db, stores: [], now: 10, observations: [] });
+    expect(status.incompleteOperations?.filter(row => row.kind === "move")).toEqual([]);
+    expect(status.diagnostics).toEqual([]);
+    expect(f.events.filter(event => event === "start")).toHaveLength(1);
+  } finally { db.close(); }
 }, 5000);
 
 it("same-home request is a verified no-op", async () => {

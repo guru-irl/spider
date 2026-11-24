@@ -1,5 +1,6 @@
 import { hostingWarningText, validHostingWarning, type HostingWarning } from "./hosting-warning";
 import { safeAgentOperationKind, safeCauseCode } from "./cause-codes";
+import { moveFailureRepair, safeMoveCause } from "./move-failure";
 import type { RoamStatus } from "./diagnostics";
 import { isAbsolute } from "node:path";
 import { MOVE_REFUSAL_MESSAGES, type MoveRefusal, type MoveRefusalCode, type SourceCleanup, type Outcome, type RoamConfig } from "./contracts";
@@ -102,14 +103,17 @@ export function controlWarningText(value: string): string {
 /** Do not serialize arbitrary participant values or error messages at a public boundary. */
 export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknown }): SafeControlOutcome {
   const home = safeHome(result.home);
+  const moveCause = safeMoveCause(result.causeCode);
+  const causeCode = moveCause ?? safeCauseCode(result.causeCode);
   // provision.ts is the sole producer of permission repairs and binds them to the destination home.
-  const safeRepair = (value: unknown): string | null => typeof value === "string" && (/^spider roam (?:recover|doctor|cancel|claim|provision|forget|disable|stop)(?: [A-Za-z0-9._-]+)?$/.test(value) ||
+  const safeRepair = (value: unknown): string | null => typeof value === "string" && (moveCause === "move-workspace-unmapped" && value === "spider roam repo map <repo> <path>" || /^spider roam (?:recover|doctor|cancel|claim|provision|forget|disable|stop)(?: [A-Za-z0-9._-]+)?$/.test(value) ||
     /^spider roam provision [A-Za-z0-9._-]+ --operation-id [A-Za-z0-9._-]+$/.test(value) ||
     result.reason === "destination-permissions-unsafe" && isPermissionRepairCommand(value)) ? value : null;
   const repair = safeRepair(result.repairCommand);
   const raw = result.value && typeof result.value === "object" && !Array.isArray(result.value) ? result.value as Record<string, unknown> : null;
   const value: Record<string, unknown> = {};
   if (raw) {
+    if (result.code === 0 && ["moved", "same-home", "rolled-back"].includes(result.reason) && typeof raw.destinationRoot === "string" && isAbsolute(raw.destinationRoot) && raw.destinationRoot.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(raw.destinationRoot)) value.destinationRoot = raw.destinationRoot;
     if (result.reason === "store-prune-failed" && raw.failure && typeof raw.failure === "object" && !Array.isArray(raw.failure)) {
       const failure = raw.failure as Record<string, unknown>;
       if (typeof failure.check === "string" && /^[a-z][a-z-]{0,63}$/.test(failure.check) && typeof failure.path === "string" && isAbsolute(failure.path))
@@ -185,7 +189,7 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
       const rawWarning = rawRefusal.hostingWarning;
       const warning: HostingWarning | undefined = code === "move-destination-pending" && validHostingWarning(rawWarning)
         ? { code: rawWarning.code, check: rawWarning.check, since: rawWarning.since, count: rawWarning.count } : undefined;
-      const message = MOVE_REFUSAL_MESSAGES[code as MoveRefusalCode] + (warning ? ` ${hostingWarningText(warning)}` : "");
+      const message = MOVE_REFUSAL_MESSAGES[code as MoveRefusalCode] + (moveCause ? ` ${moveFailureRepair(moveCause)}` : "") + (warning ? ` ${hostingWarningText(warning)}` : "");
       if (rawRefusal.message === message) try {
         refusal = { code: code as MoveRefusalCode, message, blockers: rawRefusal.blockers.map(validateBlockerId), ...(warning ? { hostingWarning: warning } : {}) };
       } catch { /* Invalid blocker identities are never printed. */ }
@@ -193,13 +197,13 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
   }
   return { code: [0, 1, 2, 3].includes(result.code) ? result.code : 1, reason: safeReason(result.reason), operationId: token(result.operationId) ?? "",
     home, epoch: Number.isSafeInteger(result.epoch) ? result.epoch : null, repairCommand: repair, value: Object.keys(value).length ? value : null,
-    ...(safeCauseCode(result.causeCode) ? { causeCode: safeCauseCode(result.causeCode) } : {}),
+    ...(causeCode ? { causeCode } : {}),
     ...(result.code !== 0 && safeAgentOperationKind(result.operationKind) ? { operationKind: safeAgentOperationKind(result.operationKind) } : {}),
     ...(refusal ? { refusal } : {}) };
 }
 export function controlText(result: SafeControlOutcome, destinationAlias?: string): string {
-  const value = result.value as { presentation?: string; terminal?: string; intercomAddress?: string; warnings?: string[]; candidates?: string[]; sourceCleanup?: SourceCleanup; diagnostics?: { reason: string; repairCommand: string | null }[] } | null;
-  const movedText = value?.intercomAddress ? `Moved to ${destinationAlias ?? result.home?.machineId ?? "destination"}; terminal ${value.terminal ?? "pending"}; intercom ${value.intercomAddress}.\n${value.warnings?.map(controlWarningText).join("\n") ?? ""}\n` : "Moved.\n";
+  const value = result.value as { destinationRoot?: string; presentation?: string; terminal?: string; intercomAddress?: string; warnings?: string[]; candidates?: string[]; sourceCleanup?: SourceCleanup; diagnostics?: { reason: string; repairCommand: string | null }[] } | null;
+  const movedText = value?.intercomAddress ? `Moved to ${destinationAlias ?? result.home?.machineId ?? "destination"}; terminal ${value.terminal ?? "pending"}; intercom ${value.intercomAddress}.\n${value.destinationRoot ? `Checkout: ${value.destinationRoot}\n` : ""}${value.warnings?.map(controlWarningText).join("\n") ?? ""}\n` : "Moved.\n";
   if (result.code === 0 && value?.sourceCleanup) switch (value.sourceCleanup.status) {
     case 'done': break;
     case 'pending': return `${movedText}Source cleanup pending: ${MOVE_REFUSAL_MESSAGES[value.sourceCleanup.reason].replace(/\.$/, '')}. It finishes on its own; check with \`spider roam status\`.\n`;

@@ -682,7 +682,39 @@ recovery checks the journal. The pending text covers both a request that never
 reached the hub and a reply that was lost. The progress status clears when the
 request ends.
 
-The destination needs its own Pi sign-in and a mapped equivalent Git checkout.
+The destination needs its own Pi sign-in and a mapped common Git repository.
+An existing workspace mapping selects its checkout. Without that mapping,
+pre-stage creates a detached worktree with `git worktree add --detach --no-checkout`
+and installs the incoming snapshot. An unrelated native workspace stays unchanged.
+If the repository is also unmapped, preflight refuses with
+`move-workspace-unmapped` and the repair `spider roam repo map <repo> <path>`.
+No workspace-mapping command is needed.
+
+New checkouts use the destination's private layout:
+
+```text
+<globalRoot>/roam/checkouts/<repo-name>-<repo-key-hash>/<source-checkout-name>-<workspace-prefix>
+```
+
+`repo-name` is the mapped repository directory's basename. The source checkout's
+basename travels as a validated field in the mapping check. Both names retain
+only `[A-Za-z0-9._-]`, stop at 40 characters, and use `repo` or `checkout` when
+empty. `repo-key-hash` is the first 12 hexadecimal characters of SHA-256 of the
+repository key. `workspace-prefix` is the first eight characters of its workspace
+ID. The parent directories are created with mode `0700`.
+
+An occupied or unsafe path refuses with `move-checkout-conflict`. Reuse requires
+the same repository and workspace identity, Git worktree registration, and a
+mapping or a matching preparation snapshot. Pre-stage records the mapping through
+`mapWorkspace`. Abort retains a newly created checkout and records
+`workspace-aborted` with `retained: true`. A retry reuses the mapping and verifies
+its snapshot before applying changes. Existing mappings keep their absolute paths
+after a global-root change. No directory migration runs.
+
+Successful move JSON includes `value.destinationRoot`. Text prints the checkout
+path with the destination and intercom address. Mapped workspace paths also remain
+available in doctor's existing store-inventory diagnostics.
+
 The move preserves the session ID, selected conversation branch, triggers,
 HEAD, staged changes, working changes, and nonignored untracked files. It maps
 the session's working directory to the destination checkout. Historical usage

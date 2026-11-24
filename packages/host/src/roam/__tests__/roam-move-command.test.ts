@@ -126,6 +126,13 @@ it("does not imply gh or Git readiness when production reports tool-auth-unverif
   expect(value.text).toContain("not checked");
 }, 5000);
 
+it("slash-move success retains and prints the destination checkout", async () => {
+  const success = result(); success.reason = "moved"; success.value!.destinationRoot = "/fixture/global/roam/checkouts/repo-hash/checkout-workspace";
+  const moved = await createMoveCommand(async () => success, () => config())("box-1.invalid", context());
+  expect(moved.value?.destinationRoot).toBe(success.value!.destinationRoot);
+  expect(moved.text).toContain(success.value!.destinationRoot!);
+}, 5000);
+
 it("success reports the new intercom address and actual route and tool warnings", async () => {
   const success = await createMoveCommand(async () => result(), () => config())("box-1.invalid", context());
   const destinationTerminal = "terminal-a", expectedIntercomAddress = "session-a@box-1.invalid", actualRouteAndToolWarnings = result().value!.warnings;

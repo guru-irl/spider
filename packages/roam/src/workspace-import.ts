@@ -1375,7 +1375,7 @@ export async function prepareWorkspace(snapshot: WorkspaceSnapshot, destination:
   checkPath(artifact, "file");
   if (lstatSync(artifact).size !== ready.byteLength) throw new Error("workspace-artifact-invalid");
   let repository: string | null;
-  try { repository = await ports.resolveCommonRepository({ repoKey: snapshot.repoKey, workspaceId: snapshot.workspaceId, destination }); }
+  try { repository = await ports.resolveCommonRepository({ repoKey: snapshot.repoKey, workspaceId: snapshot.workspaceId, destination, sourceRoot: snapshot.root, moveId: snapshot.moveId }); }
   catch { throw new Error("workspace-repository-unavailable"); }
   if (repository === null) throw new Error("workspace-repository-unmapped");
   const mappedRepository = repository;

@@ -12,11 +12,19 @@ it("keeps private-mode repairs and hosting readiness in provisioning JSON", () =
 });
 
 it("keeps only exact generated private-mode refusal advice in public JSON", () => {
-  const reason = "unsafe-destination (/home/fixture/agent/settings.json; mode 0664; uid 1001; owner). Have the owner move '/home/fixture/agent/settings.json' out of the agent tree, then reprovision.";
+  const reason = "unsafe-destination (/home/fixture/agent/settings.json; mode 0664; uid 1001; owner). Have the owner move '/home/fixture/agent/settings.json' out of the destination tree, then reprovision.";
   const result = { code: 1 as const, reason, operationId: "op-1", home: null, epoch: null, repairCommand: null, value: null };
   expect(safeControlOutcome(result).reason).toBe(reason);
   expect(safeControlOutcome({ ...result, reason: reason + " arbitrary output" }).reason).toBe("control-failed");
   expect(safeControlOutcome({ ...result, reason: reason.replace("settings.json;", "settings\u202e.json;") }).reason).toBe("control-failed");
+});
+
+it("keeps exact install writable-path advice in public JSON", () => {
+  const reason = "unsafe-destination (/home/fixture/install/prefix/bin; mode 0775; uid 1000; writable-parent). Run chmod go-w '/home/fixture/install/prefix/bin', then reprovision.";
+  const result = { code: 1 as const, reason, operationId: "op-1", home: null, epoch: null, repairCommand: null, value: null };
+  expect(safeControlOutcome(result).reason).toBe(reason);
+  expect(safeControlOutcome({ ...result, reason: reason.replace("chmod go-w", "chmod 0777") }).reason).toBe("control-failed");
+  expect(safeControlOutcome({ ...result, reason: reason + " arbitrary output" }).reason).toBe("control-failed");
 });
 
 it("accepts recursive repairs only for exact package tree roots", () => {

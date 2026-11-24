@@ -10,7 +10,7 @@ import { doctorPeer } from "./resource-doctor";
 import { describeSelectedFiles, prepareSelectedFiles, readPrivateBytes, selectedSettingsDigests, SelectedFilesError } from "./selected-files";
 import type { PreparedFiles, SelectedFileMetadata } from "./selected-files";
 import { renderSupervisorUnit } from "./systemd";
-import { destinationPermissionPath, isPermissionTighteningCount, permissionRepairCommand, permissionTreeRoot, isAgentModeFailure, isAgentModeRepairs, agentModeRefusal } from "./provision-permissions";
+import { destinationPermissionPath, isPermissionTighteningCount, permissionRepairCommand, permissionTreeRoot, isAgentModeFailure, isInstallModeFailure, isAgentModeRepairs, agentModeRefusal } from "./provision-permissions";
 
 const unitName = "spider-roam-supervisor.service";
 function selectedFileDigests(selected: PreparedFiles) {
@@ -250,7 +250,8 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
     return outcome;
   } catch (error) {
     const details = error && typeof error === "object" && "details" in error ? error.details : undefined;
-    const reason = isAgentModeFailure(details, ports.destination.home, ports.destination.agentDir) ? agentModeRefusal(details) : safeReason(error);
+    const reason = isAgentModeFailure(details, ports.destination.home, ports.destination.agentDir) ||
+      isInstallModeFailure(details, ports.destination.home, ports.destination.npmPrefix) ? agentModeRefusal(details) : safeReason(error);
     const outcome = result(operationId, reason === "core-changed" || mutated && reason !== "machine-mismatch" ? 3 : 1, reason, null);
     if (["core-pin-changed", "core-pin-conflict"].includes(reason)) {
       const target = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,255}$/.test(input.peer.alias) ? input.peer.alias : input.peer.machineId;

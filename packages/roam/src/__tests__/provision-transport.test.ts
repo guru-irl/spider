@@ -104,6 +104,21 @@ it("preserves validated agent-mode refusals from previews and installer replies"
   await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "invalid-provision-reply" });
 });
 
+it("preserves destination-bound install refusals and exact repair advice", async () => {
+  const f = fixture(), port = create!(f.options, f.journal); f.consent();
+  const handle = await port.transport.resolve(bootstrapPeer);
+  const request = { action: "release-prepare", operationId: "op-1", machineId: bootstrapPeer.machineId, globalRoot: bootstrapPeer.globalRoot,
+    node: bootstrapPeer.node, pi: bootstrapPeer.pi, cli: bootstrapPeer.cli, home: "/home/fixture", agentDir: "/home/fixture/.pi/agent", npmPrefix: "/home/fixture/install/prefix" };
+  const details = { path: "/home/fixture/install", mode: 0o775, uid: 1000, problem: "writable-parent" };
+  f.state.provisionReply = { version: 1, kind: "provision", error: "unsafe-destination", details };
+  await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "unsafe-destination", details,
+    message: "unsafe-destination (/home/fixture/install; mode 0775; uid 1000; writable-parent). Run chmod go-w '/home/fixture/install', then reprovision." });
+  for (const path of ["/etc/fixture", "/home/fixture/unrelated", "/home/fixture/install/spoof\u202e"]) {
+    f.state.provisionReply = { version: 1, kind: "provision", error: "unsafe-destination", details: { ...details, path } };
+    await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "invalid-provision-reply" });
+  }
+});
+
 it("checks the target agent directory read-only before enrollment and rejects untrusted replies", async () => {
   const f = fixture(), port = create!(f.options, f.journal);
   expect(port.probeAgentDirectory).toBeTypeOf("function");

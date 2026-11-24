@@ -9,7 +9,7 @@ import { assertCredentialSelectedFile, assertPublicSelectedFile } from "./select
 import type { ProvisionTransport } from "./transport";
 import type { InstalledRelease, ReleaseReason } from "./release-receipt";
 import { PROVISION_REMOTE_SCRIPT } from "./provision-remote-script";
-import { destinationPermissionPath, isPermissionTighteningCount, permissionTreeRoot, isAgentModeFailure, isAgentModeRepairs, agentModeRefusal } from "./provision-permissions";
+import { destinationPermissionPath, isPermissionTighteningCount, permissionTreeRoot, isAgentModeFailure, isInstallModeFailure, isAgentModeRepairs, agentModeRefusal } from "./provision-permissions";
 
 export { PROVISION_REMOTE_SCRIPT };
 interface Chunk { name: string; size: number; sha256: string }
@@ -39,7 +39,9 @@ function failure(error: unknown, action: string, destination: ProvisionDestinati
     destinationPermissionPath(details.path, destination.home, roots) &&
     (!("recursive" in details) || ["release-observe", "release-prepare"].includes(action) && details.recursive === true && permissionTreeRoot(details.path, destination.npmPrefix))
     ? { path: details.path, ...("recursive" in details ? { recursive: true } : {}) } : undefined;
-  const agentFailure = candidate === "unsafe-destination" && isAgentModeFailure(details, destination.home, destination.agentDir) ? details : undefined;
+  const agentFailure = candidate === "unsafe-destination" &&
+    (isAgentModeFailure(details, destination.home, destination.agentDir) || ["release-observe", "release-prepare"].includes(action) &&
+      isInstallModeFailure(details, destination.home, destination.npmPrefix)) ? details : undefined;
   const code = candidate === "destination-permissions-unsafe" && !permission ? "invalid-provision-reply" : safe.has(candidate) ? candidate : "provision-failed";
   const blocking = code === "release-in-progress" && details && typeof details === "object" && "blockingOperationId" in details &&
     typeof details.blockingOperationId === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(details.blockingOperationId)

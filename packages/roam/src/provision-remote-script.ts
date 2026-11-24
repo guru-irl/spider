@@ -75,7 +75,7 @@ function name(value: unknown): string {
   if (typeof value !== "string" || !/^(?:public|secret|release)-[A-Za-z0-9.-]{1,80}$/.test(value)) bad("invalid-staging-name");
   return value;
 }
-function ensurePrivate(base: string, target: string, privateMode = true, reportPermissions = false): void {
+function ensurePrivate(base: string, target: string, privateMode = true, reportPermissions = false, protectionRoot?: string): void {
   if (!inside(base, target)) bad("unsafe-path");
   let current = base;
   for (const part of target.slice(base.length + 1).split(sep)) {
@@ -84,7 +84,10 @@ function ensurePrivate(base: string, target: string, privateMode = true, reportP
       try { mkdirSync(current, { mode: 0o700 }); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
     }
-    if (reportPermissions) destinationDirectory(current, privateMode && current === target);
+    if (protectionRoot) {
+      inspectInstallDirectory(base, current, protectionRoot);
+      if (privateMode && current === target) directory(current, true);
+    } else if (reportPermissions) destinationDirectory(current, privateMode && current === target);
     else directory(current, privateMode && current === target);
   }
   if (realpathSync(target) !== target) bad("unsafe-path");
@@ -114,54 +117,68 @@ function permissionTighteningCount(stage: string): number {
     return value.changed;
   } finally { prior.fill(0); }
 }
-function installWalk(root: string, tighten: boolean): void {
-  const pending = [root];
+function installWalk(root: string, tighten: boolean, protectedParent = false): void {
+  const pending = [{ path: root, protected: protectedParent }];
   while (pending.length) {
-    const path = pending.pop()!, link = lstatSync(path);
-    if (!own(link)) bad("unsafe-path");
+    const next = pending.pop()!, path = next.path, link = lstatSync(path);
+    if (!own(link)) agentModeFailure(path, link, "owner");
     if (link.isSymbolicLink()) {
-      let target: string; try { target = realpathSync(path); } catch { bad("unsafe-path"); }
-      if (!inside(root, target!)) bad("unsafe-path");
+      let target: string; try { target = realpathSync(path); } catch { agentModeFailure(path, link, "symlink"); }
+      if (!inside(root, target!)) agentModeFailure(path, link, "symlink");
       continue; // Internal npm bin links are allowed, but never followed or chmodded.
     }
-    if (!link.isDirectory() && !link.isFile() || link.isFile() && link.nlink !== 1) bad("unsafe-path");
+    if (!link.isDirectory() && !link.isFile()) agentModeFailure(path, link, "type");
+    if (link.isFile() && link.nlink !== 1) agentModeFailure(path, link, "hard-link");
+    if ((link.mode & 0o7000) !== 0) agentModeFailure(path, link, "owner-mode");
     const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | (link.isDirectory() ? constants.O_DIRECTORY : 0));
     try {
       const stat = fstatSync(fd);
-      if (stat.dev !== link.dev || stat.ino !== link.ino || !own(stat)) bad("unsafe-path");
-      if ((stat.mode & 0o022) !== 0) {
-        if (!tighten) throw Object.assign(new SelectedFilesError("destination-permissions-unsafe", [root]), { recursive: true });
+      if (stat.dev !== link.dev || stat.ino !== link.ino || stat.mode !== link.mode || stat.nlink !== link.nlink || !own(stat)) agentModeFailure(path, stat, "changed");
+      if ((stat.mode & 0o022) !== 0 && (tighten || !next.protected)) {
+        if (!tighten) agentModeFailure(path, stat, "writable-parent");
         fchmodSync(fd, stat.mode & 0o7777 & ~0o022);
         tightened = Math.min(${MAX_PERMISSION_TIGHTENINGS}, tightened + 1);
       }
-      if (stat.isDirectory()) for (const entry of readdirSync(path).sort().reverse()) pending.push(join(path, entry));
+      if (stat.isDirectory()) for (const entry of readdirSync(path).sort().reverse()) pending.push({
+        path: join(path, entry), protected: next.protected || (stat.mode & 0o7777) === 0o700,
+      });
     } finally { closeSync(fd); }
   }
 }
-function installerDirectory(home: string, roam: string, root: string, privateMode = false): void {
-  if (dirname(root) !== home) existingInstallDirectory(home, dirname(root));
+function installerDirectory(home: string, roam: string, root: string, privateMode = false, protectionRoot?: string): void {
+  if (dirname(root) !== home) existingInstallDirectory(home, dirname(root), protectionRoot);
   if (exists(root)) {
     if (installerOwned(roam, root)) installWalk(root, true);
-    try { ensurePrivate(home, root, privateMode, true); }
+    try { ensurePrivate(home, root, privateMode, true, protectionRoot); }
     catch (error) { if (error instanceof SelectedFilesError) throw error; bad(privateMode ? "unsafe-staging" : "unsafe-path"); }
     return;
   }
-  if (dirname(root) !== home) ensurePrivate(home, dirname(root), false, true);
+  if (dirname(root) !== home) ensurePrivate(home, dirname(root), false, true, protectionRoot);
   try { mkdirSync(root, { mode: 0o700 }); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; destinationDirectory(root, privateMode); return; }
   const stat = lstatSync(root);
   atomicWrite(join(roam, installerReceipt(roam, root)), Buffer.from(JSON.stringify({ version: 1, root, dev: stat.dev, ino: stat.ino, uid: stat.uid })), 0o600, false);
 }
-function existingInstallDirectory(home: string, target: string): boolean {
-  if (!inside(home, target)) bad("unsafe-path");
-  let current = home;
-  for (const part of target.slice(home.length + 1).split(sep)) {
-    current = join(current, part);
-    if (!exists(current)) return false;
-    try { destinationDirectory(current); }
-    catch (error) { if (error instanceof SelectedFilesError) throw error; bad("unsafe-path"); }
+function inspectInstallDirectory(home: string, target: string, protectionRoot?: string): { exists: boolean; protected: boolean } {
+  if (!(target === home || inside(home, target))) bad("unsafe-path");
+  let current = home, protectedPath = false;
+  const components = target === home ? [] : target.slice(home.length + 1).split(sep);
+  for (const part of ["", ...components]) {
+    if (part) current = join(current, part);
+    if (!exists(current)) return { exists: false, protected: protectedPath };
+    const stat = lstatSync(current);
+    if (stat.isSymbolicLink()) agentModeFailure(current, stat, "symlink");
+    if (!own(stat)) agentModeFailure(current, stat, "owner");
+    if (!stat.isDirectory()) agentModeFailure(current, stat, "type");
+    if ((stat.mode & 0o7000) !== 0) agentModeFailure(current, stat, "owner-mode");
+    // A later private folder cannot protect an earlier replaceable ancestor.
+    if ((stat.mode & 0o022) !== 0 && !protectedPath) agentModeFailure(current, stat, "writable-parent");
+    if (protectionRoot && (current === protectionRoot || inside(protectionRoot, current)) && (stat.mode & 0o7777) === 0o700) protectedPath = true;
   }
-  return true;
+  return { exists: true, protected: protectedPath };
+}
+function existingInstallDirectory(home: string, target: string, protectionRoot?: string): boolean {
+  return inspectInstallDirectory(home, target, protectionRoot).exists;
 }
 function checkInstallPermissions(home: string, prefix: string, sha: string, roam: string): void {
   const pi = join(prefix, "lib", "node_modules", "@earendil-works", "pi-coding-agent");
@@ -169,24 +186,33 @@ function checkInstallPermissions(home: string, prefix: string, sha: string, roam
   if (dirname(prefix) !== home) existingInstallDirectory(home, dirname(prefix));
   if (exists(prefix) && installerOwned(roam, prefix)) installWalk(prefix, true);
   if (exists(release) && installerOwned(roam, release)) installWalk(release, true);
-  existingInstallDirectory(home, prefix);
-  const bin = join(prefix, "bin");
-  if (existingInstallDirectory(home, bin)) {
+  existingInstallDirectory(home, prefix, prefix);
+  const bin = join(prefix, "bin"), binSafety = inspectInstallDirectory(home, bin, prefix);
+  if (binSafety.exists) {
     const executable = join(bin, "pi");
     if (exists(executable)) {
       const stat = lstatSync(executable);
-      if (!stat.isSymbolicLink()) {
-        if (!stat.isFile() || !own(stat)) bad("unsafe-path");
-        if ((stat.mode & 0o022) !== 0) fail("destination-permissions-unsafe", [executable]);
+      if (!own(stat)) agentModeFailure(executable, stat, "owner");
+      if (stat.isSymbolicLink()) {
+        let target: string; try { target = realpathSync(executable); } catch { agentModeFailure(executable, stat, "symlink"); }
+        if (!inside(pi, target!)) agentModeFailure(executable, stat, "symlink");
+      } else {
+        if (!stat.isFile()) agentModeFailure(executable, stat, "type");
+        if (stat.nlink !== 1) agentModeFailure(executable, stat, "hard-link");
+        if ((stat.mode & 0o7000) !== 0) agentModeFailure(executable, stat, "owner-mode");
+        if ((stat.mode & 0o022) !== 0 && !binSafety.protected) agentModeFailure(executable, stat, "writable-parent");
       }
     }
   }
   for (const root of [pi, release]) {
     // Check shared ancestors individually, then report a package tree as one unit.
-    if (!existingInstallDirectory(home, dirname(root)) || !exists(root)) continue;
+    const parent = inspectInstallDirectory(home, dirname(root), prefix);
+    if (!parent.exists || !exists(root)) continue;
     const stat = lstatSync(root);
-    if (!stat.isDirectory() || stat.isSymbolicLink() || !own(stat)) bad("unsafe-path");
-    installWalk(root, false);
+    if (stat.isSymbolicLink()) agentModeFailure(root, stat, "symlink");
+    if (!own(stat)) agentModeFailure(root, stat, "owner");
+    if (!stat.isDirectory()) agentModeFailure(root, stat, "type");
+    installWalk(root, false, parent.protected);
   }
 }
 function setPrivate(file: string): void {
@@ -713,7 +739,7 @@ async function run(): Promise<unknown> {
       if (digest(bytes) !== sha) bad("release-hash-mismatch");
       atomicWrite(archive, bytes, 0o600, false);
       const installPrefix = join(npmPrefix, "spider-releases", sha);
-      installerDirectory(home, roam, installPrefix);
+      installerDirectory(home, roam, installPrefix, false, npmPrefix);
       const release = join(installPrefix, "node_modules", "@guru-irl", "spider");
       const expectedCli = join(release, "dist", "roam", "cli.mjs"), expectedSupervisor = join(release, "dist", "roam", "supervisor.mjs");
       if (cli !== expectedCli || supervisor !== expectedSupervisor || text("pi") !== join(npmPrefix, "bin", "pi")) bad("invalid-release");
@@ -907,7 +933,9 @@ catch (error) {
   const path = code === "destination-permissions-unsafe" && error instanceof SelectedFilesError && error.files.length === 1 &&
     isAbsolute(error.files[0]) && error.files[0].length <= 4096 && !/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(error.files[0]) ? error.files[0] : undefined;
   const details = code === "unsafe-destination" && error && typeof error === "object" && "details" in error &&
-    typeof request.home === "string" && typeof request.agentDir === "string" && isAgentModeFailure(error.details, request.home, request.agentDir) ? error.details : undefined;
+    typeof request.home === "string" && typeof request.agentDir === "string" &&
+    (isAgentModeFailure(error.details, request.home, request.agentDir) || typeof request.npmPrefix === "string" &&
+      ["release", "release-observe", "release-prepare"].includes(request.action) && isInstallModeFailure(error.details, request.home, request.npmPrefix)) ? error.details : undefined;
   process.stdout.write(JSON.stringify({ kind: "provision", version: 1, error: code, ...(operationId ? { operationId } : {}), ...(path ? { path, ...("recursive" in error && error.recursive === true ? { recursive: true } : {}) } : {}), ...(details ? { details } : {}) }));
 }
 `;

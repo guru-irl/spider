@@ -11,9 +11,9 @@ The production hub parses native machine states at the inventory boundary.
 Native `unreachable` with the exact reason `a different core answers there
 ("<core-id>")` is a replaced remote core, not a transport outage. The hub and
 machine UI share this classification. It remains unknown, as does a local
-core identity change during inventory. Unknown observations pause pending
-hosting notifications without starting or clearing an outage or scheduling
-move recovery. A replaced remote core also discards the old peer's pending
+core identity change during inventory. Generic unknown observations do not
+start or clear an outage, schedule recovery, or cancel an existing alert timer.
+A replaced remote core cancels pending hosting notifications. A replaced remote core also discards the old peer's pending
 reconnect trigger, so its next connected observation is not a reconnect.
 Existing delivered alerts remain. A later plain unreachable
 observation resumes the retained outage. Other identity refusals keep their

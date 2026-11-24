@@ -166,11 +166,12 @@ export class DrainRetryStore {
   }
 
   renew(owner: string, duration: number): boolean {
-    return this.db.prepare("UPDATE organism_drain_retry_lock SET lease_until=? WHERE id=1 AND owner=?").run(Date.now() + duration, owner).changes > 0;
+    const now = Date.now();
+    return this.db.prepare("UPDATE organism_drain_retry_lock SET lease_until=? WHERE id=1 AND owner=? AND lease_until>?").run(now + duration, owner, now).changes > 0;
   }
 
   owns(owner: string): boolean {
-    return !!this.db.prepare("SELECT 1 FROM organism_drain_retry_lock WHERE id=1 AND owner=?").get(owner);
+    return !!this.db.prepare("SELECT 1 FROM organism_drain_retry_lock WHERE id=1 AND owner=? AND lease_until>?").get(owner, Date.now());
   }
 
   release(owner: string): void {
@@ -194,11 +195,13 @@ export class DrainRetryStore {
     }).immediate();
   }
 
-  finish(bundle: DigestBundle): void {
-    this.db.raw.transaction(() => {
+  finish(bundle: DigestBundle, owner: string): boolean {
+    return this.db.raw.transaction(() => {
+      if (!this.owns(owner)) return false;
       const snapshots = this.snapshots(bundle.sessionId);
       const key = deferredDrainKey(bundle);
       this.writeSnapshots(bundle.sessionId, snapshots.filter(item => deferredDrainKey(item.bundle) !== key));
+      return true;
     }).immediate();
   }
 }

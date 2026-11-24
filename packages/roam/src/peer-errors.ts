@@ -6,6 +6,10 @@ export type RecoveryRefusal = typeof recoveryRefusals[number];
 export function recoveryRefusalCode(value: unknown): RecoveryRefusal | undefined {
   return typeof value === "string" && (recoveryRefusals as readonly string[]).includes(value) ? value as RecoveryRefusal : undefined;
 }
+export class RecoveryArtifactError extends Error {
+  constructor(readonly code: 1 | 2 | 3, reason: string) { super(reason); }
+}
+
 export class RecoveryResponseError extends Error {
   readonly reason: RecoveryRefusal;
   readonly code: 1 | 2 | 3;
@@ -69,6 +73,12 @@ export function peerFailureReason(error: unknown): string | null {
     return `Peer command failed (signal ${signal})`;
   }
   return null;
+}
+
+/** Raw network failures can reach session mirroring without the command adapter. */
+export function isPeerConnectivityError(error: unknown): boolean {
+  return error instanceof Error && "code" in error && typeof error.code === "string" &&
+    ["ETIMEDOUT", "ECONNRESET", "EPIPE", "ENOTFOUND", "ECONNREFUSED", "ECONNABORTED", "ENETUNREACH", "EHOSTUNREACH"].includes(error.code);
 }
 
 /** Store refusals and local pending work do not prove a connectivity failure. */

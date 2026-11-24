@@ -134,6 +134,27 @@ function fakeSystem() {
   };
 }
 
+it("inventories a protected group-writable runtime without collecting auth bytes", () => {
+  const system = fakeSystem();
+  system.entries.set("/home/fixture/.local/bin", { kind: "directory", mode: 0o775 });
+  system.entries.set(bootstrapPeer.pi, { kind: "file", mode: 0o775, executable: true });
+  expect(system.run(bootstrap.BOOTSTRAP_SCRIPT).value).toMatchObject({ pi: bootstrapPeer.pi, piVersion: "1.2.0", spider: { installed: true } });
+  expect(system.reads).not.toContain(system.authPi);
+});
+
+it.each(["unprotected-file", "writable-prefix", "foreign-parent", "foreign-file", "hard-link"] as const)("does not execute an unsafe runtime during inventory: %s", kind => {
+  const system = fakeSystem();
+  if (kind === "unprotected-file") {
+    system.entries.set("/home/fixture/.local", { kind: "directory", mode: 0o755 });
+    system.entries.set("/home/fixture/.local/bin", { kind: "directory", mode: 0o755 });
+    system.entries.set(bootstrapPeer.pi, { kind: "file", mode: 0o775, executable: true });
+  } else if (kind === "writable-prefix") system.entries.set("/home/fixture/.local", { kind: "directory", mode: 0o775 });
+  else if (kind === "foreign-parent") system.entries.set("/home/fixture/.local/bin", { kind: "directory", uid: 1001 });
+  else system.entries.set(bootstrapPeer.pi, { kind: "file", mode: 0o700, executable: true, ...(kind === "foreign-file" ? { uid: 1001 } : { nlink: 2 }) });
+  expect(system.run(bootstrap.BOOTSTRAP_SCRIPT).value.pi).toBeNull();
+  expect(system.calls).not.toContainEqual([bootstrapPeer.pi, "--version"]);
+});
+
 it.each([[0o600, true], [0o400, false], [0o000, false], [0o644, false], [0o1600, false]] as const)("accepts only destination auth mode 0600, observed %s", (mode, modeSafe) => {
   const system = fakeSystem();
   system.entries.set(system.authPi, { kind: "file", mode });

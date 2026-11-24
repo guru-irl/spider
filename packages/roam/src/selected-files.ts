@@ -12,7 +12,7 @@ export interface SelectedFile { path: string; bytes: Buffer; mode: 0o600 | 0o700
 export interface SelectedFileMetadata { path: string; size: number; mode: 0o600 | 0o700 }
 export interface SettingsKeyDigest { path: readonly string[]; sha256: string }
 export interface AgentPrivateModeRepair { path: string; uid: number; before: number; after: 0o600 | 0o700 }
-export interface AgentPrivateModeFailure { path: string; mode: number; uid: number; problem: "owner" | "symlink" | "type" | "hard-link" | "owner-mode" | "changed" | "tightening-failed" | "limit" }
+export interface AgentPrivateModeFailure { path: string; mode: number; uid: number; problem: "owner" | "symlink" | "type" | "hard-link" | "owner-mode" | "changed" | "tightening-failed" | "limit" | "writable-parent" }
 export interface AgentModePreview { authPresent: boolean; repairs: readonly AgentPrivateModeRepair[] }
 export interface SettingsDestinationPreview { fingerprint: string; changedKeys: readonly string[]; agentModes?: AgentModePreview }
 export interface SettingsDestinationDigests { fingerprint: string; digests: readonly (string | null)[]; agentModes?: AgentModePreview }

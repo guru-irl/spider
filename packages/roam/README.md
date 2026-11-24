@@ -74,6 +74,26 @@ special files, and incompatible owner permissions also refuse. Refusals name
 the path, mode, uid, and repair advice. Shared parents outside the agent tree
 retain their existing explicit repair requirement.
 
+## Provisioning protected install paths
+
+A same-uid directory with mode exactly `0700` at or below the install prefix
+protects its descendants. Provisioning accepts a `0775` bin or executable
+behind that directory without chmod. Every parent before protection starts
+must remain same-uid, real, and not writable by group or others. A later private
+directory does not excuse an earlier writable parent. Private directories
+outside the prefix do not relax this rule.
+
+The pi package and release trees use the same rule. Foreign owners, hard links,
+unsafe types, special mode bits, and escaping symlinks still refuse. Internal
+npm links keep their existing checked-target allowance. Install refusals name
+the path, mode, uid, and exact repair advice. An unprotected writable path
+reports `chmod go-w` for that path; owner and link failures require replacement.
+
+Protected install entries add no JSON repairs because their modes do not
+change. Agent repairs and receipt-backed installer tightening remain unchanged.
+The inventory probe recognizes the same protection, so doctor's reprovision
+advice can reach an installed runtime instead of another bin-mode refusal.
+
 ## Stop and pending launches
 
 `supervisor.ts` reserves a launch before authorization. It changes the

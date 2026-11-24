@@ -13,7 +13,7 @@ import { normalizeConfiguredClis, normalizeCoreUnit, parseBootstrapInventory, sa
 import type { BootstrapPeer, CallOptions, Journal, Peer, Transport } from './contracts';
 import type { AgentDirectoryProbe, CoreFence } from './provision-contracts';
 import { validSettingsDigests, validSelectedPaths } from './selected-files';
-import { destinationPermissionPath, isPermissionTighteningCount, permissionTreeRoot, isAgentModeFailure, isAgentModeRepairs, isAgentModePreview, agentModeRefusal } from './provision-permissions';
+import { destinationPermissionPath, isPermissionTighteningCount, permissionTreeRoot, isAgentModeFailure, isInstallModeFailure, isAgentModeRepairs, isAgentModePreview, agentModeRefusal } from './provision-permissions';
 import type { SettingsDestinationPreview, SettingsKeyDigest } from './selected-files';
 
 type CoreObservation = CoreFence;
@@ -367,8 +367,9 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
       const permission = reply.error === 'destination-permissions-unsafe' &&
         (Object.keys(reply).length === 4 && !Object.hasOwn(reply, 'recursive') || Object.keys(reply).length === 5 && recursive) &&
         destinationPermissionPath(reply.path, request.home, permissionRoots);
-      const agentFailure = reply.error === 'unsafe-destination' && Object.keys(reply).length === 4 && request.action === 'agent-private-modes' &&
-        typeof request.home === 'string' && typeof request.agentDir === 'string' && isAgentModeFailure(reply.details, request.home, request.agentDir) ? reply.details : undefined;
+      const agentFailure = reply.error === 'unsafe-destination' && Object.keys(reply).length === 4 && typeof request.home === 'string' &&
+        (request.action === 'agent-private-modes' && typeof request.agentDir === 'string' && isAgentModeFailure(reply.details, request.home, request.agentDir) ||
+          ['release-observe', 'release-prepare'].includes(request.action) && typeof request.npmPrefix === 'string' && isInstallModeFailure(reply.details, request.home, request.npmPrefix)) ? reply.details : undefined;
       if (reply.kind !== 'provision' || reply.version !== 1 ||
           !(Object.keys(reply).length === 3 && reply.error !== 'release-in-progress' && reply.error !== 'destination-permissions-unsafe' || blocked || permission || agentFailure)) {
         throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');

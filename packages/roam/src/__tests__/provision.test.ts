@@ -188,6 +188,13 @@ it("preserves path, mode, owner and actionable repair advice in provisioning ref
   expect(outcome.code).toBe(1); expect(outcome.reason).toContain(path); expect(outcome.reason).toContain("0664"); expect(outcome.reason).toContain("uid 1001"); expect(outcome.reason).toContain("then reprovision");
 });
 
+it("names unsafe install parents and supplies exact chmod advice in provisioning outcomes", async () => {
+  const f = fixture(), path = "/home/fixture/.local", details = { path, mode: 0o775, uid: 1000, problem: "writable-parent" };
+  f.ports.transfer.installRelease = async () => { throw Object.assign(new Error("refused"), { code: "unsafe-destination", details }); };
+  const outcome = await provision!(f.request("unsafe-install-parent", false, [], []), f.ports);
+  expect(outcome.reason).toBe("unsafe-destination (/home/fixture/.local; mode 0775; uid 1000; writable-parent). Run chmod go-w '/home/fixture/.local', then reprovision.");
+});
+
 it("names configured-root ownership failures before the settings preview", async () => {
   const f = fixture(), path = "/home/fixture/.pi/agent";
   f.ports.bootstrap.probeAgentDirectory = async () => { throw Object.assign(new Error("refused"), { code: "unsafe-destination", details: { path, mode: 0o775, uid: 1001, problem: "owner" } }); };

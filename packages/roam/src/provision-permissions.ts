@@ -38,7 +38,10 @@ export function isAgentModeFailure(value: unknown, home?: string, root?: string)
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const v = value as Record<string, unknown>;
   return Object.keys(v).sort().join() === "mode,path,problem,uid" && (home !== undefined && root !== undefined ? agentPath(v.path, home, root) : absolutePath(v.path)) && mode(v.mode) && uid(v.uid) &&
-    typeof v.problem === "string" && ["owner", "symlink", "type", "hard-link", "owner-mode", "changed", "tightening-failed", "limit"].includes(v.problem);
+    typeof v.problem === "string" && ["owner", "symlink", "type", "hard-link", "owner-mode", "changed", "tightening-failed", "limit", "writable-parent"].includes(v.problem);
+}
+export function isInstallModeFailure(value: unknown, home: string, prefix: string): value is AgentPrivateModeFailure {
+  return isAgentModeFailure(value) && destinationPermissionPath(value.path, home, [prefix]);
 }
 export function isAgentModeRepairs(value: unknown, home?: string, root?: string): value is readonly AgentPrivateModeRepair[] {
   return Array.isArray(value) && value.length <= 10_000 && new Set(value.map(v => v?.path)).size === value.length && value.every(v =>
@@ -53,8 +56,9 @@ export function isAgentModePreview(value: unknown, home: string, root: string): 
 export function agentModeRefusal(value: AgentPrivateModeFailure): string {
   const found = value.mode.toString(8).padStart(4, "0"), path = `'${value.path.replaceAll("'", "'\\''")}'`;
   const target = (value.mode & 0o100) !== 0 ? "0700" : "0600";
-  const repair = value.problem === "tightening-failed" ? `Allow chmod ${target} ${path} for the provisioning uid, then reprovision.`
-    : value.problem === "owner" ? `Have the owner move ${path} out of the agent tree, then reprovision.`
+  const repair = value.problem === "writable-parent" ? `Run ${permissionRepairCommand(value.path)}, then reprovision.`
+    : value.problem === "tightening-failed" ? `Allow chmod ${target} ${path} for the provisioning uid, then reprovision.`
+    : value.problem === "owner" ? `Have the owner move ${path} out of the destination tree, then reprovision.`
     : value.problem === "symlink" || value.problem === "hard-link" || value.problem === "type" ? `Replace ${path} with a same-uid regular file or directory without links, then reprovision.`
     : value.problem === "owner-mode" ? `Set owner permissions to ${target} on ${path}, then reprovision.`
     : value.problem === "limit" ? `Reduce the agent tree to at most 10000 entries, then reprovision.`

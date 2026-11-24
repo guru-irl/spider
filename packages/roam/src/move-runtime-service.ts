@@ -12,7 +12,7 @@ import { recoverMove, cancelMove, pendingWorkspaceTransitions, recoverWorkspaceR
 import { MoveError, readMoveReservation } from "./move";
 import { recoverMovePresentation } from "./move-ports";
 
-export function createMoveRuntimeService(input: Omit<MoveRuntimeInput, "sessionId">, factory: MoveRuntimeFactory): { control: MoveControlHandler; recover(machineId?: string): Promise<void>; recoverCleanup(machineId?: string): Promise<void>; pendingPeers(): readonly string[] } {
+export function createMoveRuntimeService(input: Omit<MoveRuntimeInput, "sessionId">, factory: MoveRuntimeFactory): { control: MoveControlHandler; recover(machineId?: string): Promise<void>; recoverCleanup(machineId?: string): Promise<void>; pendingPeers(): readonly string[]; hasSkippedPeerMoves(machineId: string): boolean } {
   const { config, journal } = input;
   const runtime = (sessionId: string) => factory({ ...input, sessionId });
   const requestSession = (moveId: string): string | null => {
@@ -31,6 +31,23 @@ export function createMoveRuntimeService(input: Omit<MoveRuntimeInput, "sessionI
       const moves = db.prepare("SELECT operation_id FROM roam_operations WHERE kind='move' AND result_json IS NULL").all() as { operation_id: string }[];
       return config.peers.filter(peer => moves.some(row => involvesPeer(row.operation_id, peer.machineId))).map(peer => peer.machineId);
     } finally { db.close(); }
+  };
+  const skippedPeerMoves = new Map<string, Set<string>>();
+  const trackPeerResult = (machineId: string | undefined, moveId: string, reason: string): void => {
+    if (!machineId) return;
+    const moves = skippedPeerMoves.get(machineId) ?? new Set<string>();
+    if (reason === "move-lock-pending") moves.add(moveId); else moves.delete(moveId);
+    if (moves.size) skippedPeerMoves.set(machineId, moves); else skippedPeerMoves.delete(machineId);
+  };
+  const hasSkippedPeerMoves = (machineId: string): boolean => {
+    const moves = skippedPeerMoves.get(machineId);
+    if (!moves) return false;
+    for (const moveId of moves) {
+      const rows = journal.read(moveId);
+      if (!rows.length || rows.some(row => row.action === "done")) moves.delete(moveId);
+    }
+    if (!moves.size) skippedPeerMoves.delete(machineId);
+    return moves.size > 0;
   };
   const diagnostic = (id: string, reason: string) => writeLocal(input.globalDb, "recovery-diagnostic", id, { reason });
   const forget: MoveControlHandler = async request => {
@@ -54,6 +71,7 @@ export function createMoveRuntimeService(input: Omit<MoveRuntimeInput, "sessionI
           const mounted = await runtime(sessionId);
           try {
             const result = await recoverMove(operation_id, mounted.ports);
+            trackPeerResult(machineId, operation_id, result.reason);
             if (machineId && result.reason === "move-lock-pending") continue;
             if ((result.code !== 0 || result.reason !== "moved") && !journal.read(operation_id).some(row => row.action === "done")) diagnostic(operation_id, result.reason);
             else writeLocal(input.globalDb, "recovery-diagnostic", operation_id, undefined);
@@ -133,6 +151,7 @@ export function createMoveRuntimeService(input: Omit<MoveRuntimeInput, "sessionI
           const mounted = await runtime(id);
           try {
             const result = await (journal.read(moveId).some(row => row.action === "move-abort-start") ? cancelMove : recoverMove)(moveId, mounted.ports);
+            trackPeerResult(machineId, moveId, result.reason);
             if (machineId && result.reason === "move-lock-pending") continue;
             if (result.code !== 0 && !journal.read(moveId).some(row => row.action === "done")) diagnostic(moveId, result.reason);
           } finally { await mounted.close(); }
@@ -168,5 +187,5 @@ export function createMoveRuntimeService(input: Omit<MoveRuntimeInput, "sessionI
       } finally { recoveryFlight = null; }
     });
   };
-  return { control, pendingPeers, recover: machineId => requestRecovery(machineId, true), recoverCleanup: machineId => requestRecovery(machineId, false) };
+  return { control, pendingPeers, hasSkippedPeerMoves, recover: machineId => requestRecovery(machineId, true), recoverCleanup: machineId => requestRecovery(machineId, false) };
 }

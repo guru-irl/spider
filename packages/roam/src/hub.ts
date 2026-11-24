@@ -64,6 +64,8 @@ export interface HubRuntimePorts extends HubPorts {
   pendingMovePeers?(): readonly string[];
   /** One finite recovery pass after an unreachable peer has a verified successful sync. */
   recoverPeerMoves?(machineId: string): Promise<void>;
+  /** Quietly skipped move locks retry only while their moves remain pending. */
+  hasSkippedPeerMoves?(machineId: string): boolean;
   moveControl?: MoveControlHandler;
   drain(): Promise<void>;
   closeStores(): void | Promise<void>;
@@ -87,6 +89,7 @@ export interface StandaloneHubPorts {
   /** Production move composition supplies the same recovery callback as HubRuntimePorts. */
   reconcileMoves?(): Promise<void>;
   recoverPeerMoves?(machineId: string): Promise<void>;
+  hasSkippedPeerMoves?(machineId: string): boolean;
   moveControl?: MoveControlHandler;
   intercom?: IntercomLifecycle;
 }
@@ -151,7 +154,7 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
   const timers = new Map<string, () => void>();
   const queues = new Map<string, Promise<void>>();
   let stopping = false, disabled = false, disabling = false, activeMoveControls = 0;
-  const unreachablePeers = new Set<string>(), pendingRecoveries = new Set<string>();
+  const unreachablePeers = new Set<string>(), pendingRecoveries = new Set<string>(), skippedRecoveryPeers = new Set<string>();
   let cancelRecovery: (() => void) | undefined, recoveryFlight: Promise<void> | undefined;
   function scheduleRecovery(): void {
     if (stopping || disabled || !ports.recoverPeerMoves || cancelRecovery || recoveryFlight || !pendingRecoveries.size) return;
@@ -162,7 +165,10 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
       const task = Promise.resolve().then(async () => {
         for (const machine of machines) {
           if (stopping || disabled) break;
-          try { await ports.recoverPeerMoves!(machine); } catch { /* Keep journal proofs for the next explicit recovery or reconnect. */ }
+          try {
+            await ports.recoverPeerMoves!(machine);
+            if (ports.hasSkippedPeerMoves?.(machine)) skippedRecoveryPeers.add(machine);
+          } catch { /* Keep journal proofs for the next explicit recovery or reconnect. */ }
         }
       }).finally(() => {
         if (recoveryFlight === task) recoveryFlight = undefined;
@@ -236,7 +242,7 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
       try { observation = await ports.observe(peer, results); } catch { return; }
       if (ports.revocationDb && isRevoked(ports.revocationDb, peer.machineId)) return;
       if (!validObservation(observation)) return;
-      if (observation.reachability === "identity") { unreachablePeers.delete(peer.machineId); cancelTimer(peer.machineId); return; }
+      if (observation.reachability === "identity") { unreachablePeers.delete(peer.machineId); skippedRecoveryPeers.delete(peer.machineId); cancelTimer(peer.machineId); return; }
       if (observation.reachability === "unknown") return;
       let state = peerStatus(db, peer.machineId);
       if (observation.reachability === "unreachable") {
@@ -248,8 +254,9 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
         if (state.since === null) { state.since = clock.now(); saveStatus(db, peer.machineId, state); }
         await unreachable(peer); return;
       }
-      if (observation.syncVerified === true && unreachablePeers.delete(peer.machineId)) {
-        pendingRecoveries.add(peer.machineId); scheduleRecovery();
+      if (observation.syncVerified === true) {
+        const skipped = skippedRecoveryPeers.delete(peer.machineId) && ports.hasSkippedPeerMoves?.(peer.machineId) === true;
+        if (unreachablePeers.delete(peer.machineId) || skipped) { pendingRecoveries.add(peer.machineId); scheduleRecovery(); }
       }
       cancelTimer(peer.machineId);
       if (observation.warnings !== null && observation.suspensions !== null)
@@ -425,6 +432,7 @@ export async function runStandaloneHub(ports: StandaloneHubPorts): Promise<{ sto
     moveControl: ports.moveControl ?? (request => moves ? moves.control(request) : Promise.resolve({ code: 1, reason: "adapter-unbound:moveControl", value: null })),
     reconcileMoves: async () => { await ports.reconcileMoves?.(); await moves?.recover(); },
     recoverPeerMoves: async machineId => { await ports.recoverPeerMoves?.(machineId); await moves?.recover(machineId); },
+    hasSkippedPeerMoves: machineId => ports.hasSkippedPeerMoves?.(machineId) === true || moves?.hasSkippedPeerMoves(machineId) === true,
     pendingMovePeers: () => moves?.pendingPeers() ?? [],
     async prepare(onPeerSync) {
       if (!revocationDb) revocationDb = ownedRevocationDb = openDb(join(dirname(resolve(ports.globalDb.raw.name)), "roam", "journal.db"), { fileMustExist: true, checkpointOnClose: false });

@@ -1,4 +1,4 @@
-import { HELPER_EXCHANGE_ERRORS } from "@spider/intercom/protocol";
+import { HELPER_EXCHANGE_ERRORS } from "@spider/intercom/helper-errors";
 import type { Db } from "@spider/db-core";
 import { safeCauseCode } from "./cause-codes";
 import type { Diagnostic, Journal } from "./contracts";

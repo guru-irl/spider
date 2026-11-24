@@ -352,6 +352,28 @@ it('wakes only the recovered machine on verified availability without an invento
   expect(f.availabilitySubscribers()).toBe(0);
 });
 
+it('retries a verified recovery received during the wake limit when the limit expires', async () => {
+  fakeClock(); vi.setSystemTime(0);
+  const f = makeFixture(); await f.start();
+  const address = f.create(A, 'recovery-during-limit', 'alpha.invalid', 'limited-run');
+  let offline = true;
+  f.getError(value => value === address && offline ? new HerdrError('cli-timeout', 'Destination timed out') : undefined);
+  f.finish(A, 'limited-run'); await settle();
+  await vi.advanceTimersByTimeAsync(30_000 + 60_000 + 120_000);
+  const before = f.attempts.get(address)!;
+  f.notifyAvailable('alpha.invalid'); await settle();
+  expect(f.attempts.get(address)).toBe(before + 1);
+  await vi.advanceTimersByTimeAsync(10_000);
+  offline = false; f.notifyAvailable('alpha.invalid'); await settle();
+  expect(f.terminals.has(address)).toBe(true);
+  await vi.advanceTimersByTimeAsync(19_999);
+  expect(f.terminals.has(address)).toBe(true);
+  await vi.advanceTimersByTimeAsync(1);
+  // The fake clock schedules the sweep's nested zero-delay timer on the next tick.
+  await vi.advanceTimersByTimeAsync(1);
+  expect(f.terminals.has(address)).toBe(false);
+});
+
 it('limits repeated verified-recovery wakes while connectivity still fails', async () => {
   fakeClock(); vi.setSystemTime(0);
   const f = makeFixture(); await f.start();

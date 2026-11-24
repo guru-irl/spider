@@ -1466,6 +1466,20 @@ function readyIntercomDeclarations(f: ReturnType<typeof fixture>): void {
   writeFileSync(join(f.agentDir, "settings.json"), "{}", { mode: 0o600 });
 }
 
+it.each([false, true])("recognizes the packaged entry and detects a second Spider shim (duplicate: %s)", async duplicate => {
+  const f = fixture(true); readyIntercomDeclarations(f);
+  copyFileSync(join(process.cwd(), "scripts", "package-extension.ts"), join(f.releaseRoot, "scripts", "package-extension.ts"));
+  writeFileSync(join(f.releaseRoot, "package.json"), JSON.stringify({ name: "@guru-irl/spider", type: "module", pi: { extensions: ["./scripts/package-extension.ts"] } }), { mode: 0o600 });
+  if (!duplicate) unlinkSync(join(f.agentDir, "extensions", "spider.ts"));
+  writeFileSync(join(f.agentDir, "settings.json"), JSON.stringify({ packages: [f.releaseRoot] }), { mode: 0o600 });
+  await withReadinessBroker(f, ["federation-v1"], async () => {
+    expect(await create!(f.options).verifyPeer()).toMatchObject({
+      intercomUnique: !duplicate,
+      intercomEvidence: { settings: duplicate ? "settings-spider-duplicate" : "settings-unique", otherExtensions: [] },
+    });
+  });
+}, 5000);
+
 it.each([
   ["settings-unique", "intercomUnique"], ["legacy broker drained", "legacyDrained"], ["federation-v1", "federation"],
 ] as const)("proves %s through real remote verification", async (_label, key) => {
@@ -1600,6 +1614,22 @@ it("verifies offline pi auth, native modules, extension load and exact-session l
   expect(readdirSync(join(f.globalRoot, "roam", "provision", "op-1"))).toEqual([]);
 }, 5000);
 
+it.each(["missing", "broken"] as const)("marks the extension unready when its package entry is %s", async state => {
+  const f = fixture(); readyExecutables(f);
+  const sdk = join(f.npmPrefix, "lib", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "index.js");
+  writeFileSync(sdk, `import { pathToFileURL } from 'node:url';
+    export class DefaultResourceLoader {
+      constructor(options) { this.file = options.additionalExtensionPaths[0]; this.errors = []; }
+      async reload() { try { await import(pathToFileURL(this.file).href); } catch (error) { this.errors.push(error); } }
+      getExtensions() { return { errors: this.errors, extensions: [{ tools: new Map([['spider', {}]]) }] }; }
+    }`, { mode: 0o600 });
+  if (state === "broken") {
+    mkdirSync(join(f.releaseRoot, "scripts"), { recursive: true });
+    writeFileSync(join(f.releaseRoot, "scripts", "package-extension.ts"), 'throw new Error("bad entry");');
+  }
+  expect((await create!(f.options).verifyPeer()).extensionLoaded).toBe(false);
+}, 5000);
+
 describe("real pi loader", () => {
   let buildRoot: string;
   beforeAll(async () => {
@@ -1616,6 +1646,8 @@ describe("real pi loader", () => {
     unlinkSync(f.peer.pi); unlinkSync(sdk); symlinkSync(process.execPath, f.peer.node);
     symlinkSync(join(moduleRoot, "bundle", "cli.js"), f.peer.pi); symlinkSync(join(moduleRoot, "index.js"), sdk);
     copyFileSync(join(buildRoot, "extension.js"), join(f.releaseRoot, "dist", "extension.js"));
+    mkdirSync(join(f.releaseRoot, "scripts"), { recursive: true });
+    copyFileSync(join(process.cwd(), "scripts", "package-extension.ts"), join(f.releaseRoot, "scripts", "package-extension.ts"));
     const verified = await create!(f.options).verifyPeer();
     expect(verified.extensionLoaded).toBe(true);
     expect(verified.exactSession).toBe(true);

@@ -136,7 +136,7 @@ SOFTWARE.`;
     const files = [
       "dist/extension.js", "dist/extension.js.ready", "dist/dashboard/index.html", "README.md",
       "dist/roam/cli.mjs", "dist/roam/cli-main.mjs", "dist/roam/intercom-helper.mjs", "dist/roam/supervisor.mjs", "dist/intercom/broker.mjs", "scripts/intercom-switchover.mjs",
-      "scripts/link.mjs", "scripts/dev-link.mjs", "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/pi-agent-dir.mjs",
+      "scripts/link.mjs", "scripts/dev-link.mjs", "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/package-extension.ts", "scripts/pi-agent-dir.mjs",
       "dist/dashboard/assets/index-12345678.js", "dist/dashboard/assets/index-12345678.css",
       ...requiredLicences, ...requiredAssets, ...skillFiles,
     ];

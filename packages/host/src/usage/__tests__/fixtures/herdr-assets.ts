@@ -13,7 +13,7 @@ export function createFixtureHerdr(checkout: string): void {
   mkdirSync(intercom, { recursive: true });
   writeFileSync(join(intercom, "broker.mjs"), "export {};\n");
   cpSync(resolve("packages/intercom/skills"), join(checkout, "packages/intercom/skills"), { recursive: true });
-  for (const file of ["LICENSE", "NOTICE.md", "licenses/herdr-apache-2.0.txt", "packages/herdr/LICENSE", "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md", "scripts/intercom-switchover.mjs", "package.json"]) {
+  for (const file of ["LICENSE", "NOTICE.md", "licenses/herdr-apache-2.0.txt", "packages/herdr/LICENSE", "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md", "scripts/intercom-switchover.mjs", "scripts/package-extension.ts", "package.json"]) {
     const destination = join(checkout, file);
     mkdirSync(dirname(destination), { recursive: true });
     cpSync(resolve(file), destination);

@@ -80,9 +80,11 @@ it("passes pi's assistant and Markdown classes and clipboard into the native bun
   expect(f.received()).toEqual({ copyButtons: { host: { AssistantMessageComponent: f.context.piHost.AssistantMessageComponent, Markdown: f.context.piTui.Markdown }, copy: f.context.piHost.copyToClipboard } });
 });
 
-it("still loads spider if pi no longer exposes the assistant renderer", async () => {
+it.each(["assistant renderer", "Markdown renderer", "clipboard"] as const)("still loads spider if pi does not expose the %s", async missing => {
   const f = fixture();
-  (f.context.piHost as { AssistantMessageComponent?: unknown }).AssistantMessageComponent = undefined;
+  if (missing === "assistant renderer") (f.context.piHost as { AssistantMessageComponent?: unknown }).AssistantMessageComponent = undefined;
+  if (missing === "Markdown renderer") (f.context.piTui as { Markdown?: unknown }).Markdown = undefined;
+  if (missing === "clipboard") (f.context.piHost as { copyToClipboard?: unknown }).copyToClipboard = undefined;
   expect(await f.context.load()).toBe("native");
   expect(f.received()).toEqual({});
 });

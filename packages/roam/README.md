@@ -38,7 +38,9 @@ the last exit code and error log path, without reading log contents, and asks
 to check the service and that log rather than repeatedly reinstalling it.
 
 After upgrading a hub enabled on an earlier release, run `spider roam enable`
-again to reinstall its service with the correct entry.
+again to reinstall its service with the correct entry. The packaged
+`supervisor.mjs` entry also runs through file or directory symlinks to a
+release, including with preserved main symlinks.
 
 ## Stop and pending launches
 

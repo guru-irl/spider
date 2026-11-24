@@ -9,6 +9,7 @@ import { runLocalPairOperation, type LocalPairPorts } from "../intercom-local-op
 import { createIntercomRegistry } from "../intercom-registry";
 import { openIntercomStore } from "../intercom-store";
 import type { IntercomEnrollmentPair } from "../provision-contracts";
+import type { IntercomStore } from "../intercom-contracts";
 
 const publication = vi.hoisted(() => ({ index: null as null | { dev: number; ino: number; bytes: Buffer } }));
 vi.mock("node:fs", async importOriginal => {
@@ -26,14 +27,15 @@ vi.mock("node:fs", async importOriginal => {
 
 const A = "00000000-0000-4000-8000-000000000001", B = "00000000-0000-4000-8000-000000000002";
 const FENCE = "00000000-0000-4000-8000-000000000003";
-const fixtures: ReturnType<typeof fixture>[] = [];
+const roots: string[] = [], queues: IntercomStore[] = [];
 afterEach(() => {
   publication.index = null;
-  for (const f of fixtures.splice(0)) { f.queue.close(); rmSync(f.root, { recursive: true, force: true }); }
+  for (const queue of queues.splice(0)) queue.close();
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 function fixture() {
-  const root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "enroll-fence-"));
+  const root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "enroll-fence-")); roots.push(root);
   const sourceRoot = join(root, "source"), targetRoot = join(root, "target"), home = join(root, "home");
   for (const directory of [sourceRoot, targetRoot, home]) mkdirSync(directory, { mode: 0o700 });
   mkdirSync(join(sourceRoot, "roam"), { mode: 0o700 });
@@ -48,7 +50,7 @@ function fixture() {
     graphDigest: createHash("sha256").update(JSON.stringify([plan])).digest("hex"), pairs: [plan] };
   writeFileSync(join(sourceRoot, "roam", "machine.json"), JSON.stringify({ machineId: A }), { mode: 0o600 });
   writeFileSync(join(sourceRoot, "roam", "config.json"), JSON.stringify({ role: "hub", machineId: A, hubMachineId: A, coreUnit: "fixture.service" }), { mode: 0o600 });
-  const file = join(sourceRoot, "roam", "intercom", "queue.db"), queue = openIntercomStore({ file, machineId: A, clock: { now: () => 1000 } });
+  const file = join(sourceRoot, "roam", "intercom", "queue.db"), queue = openIntercomStore({ file, machineId: A, clock: { now: () => 1000 } }); queues.push(queue);
   const ports: LocalPairPorts = { machineId: A, root: sourceRoot, home, node: process.execPath, ssh: "/fixture/ssh", keygen: "/fixture/keygen",
     async inspectFence(input) {
       const request = input as { machineId: string; peer: string };
@@ -62,8 +64,7 @@ function fixture() {
       writeFileSync(`${key}.pub`, `ssh-ed25519 ${pair.hostKey.base64}\n`, { mode: 0o644 });
       return { code: 0, stdout: "" };
     } };
-  const f = { root, sourceRoot, pair, plan, approval, file, queue, ports };
-  fixtures.push(f); return f;
+  return { root, sourceRoot, pair, plan, approval, file, queue, ports };
 }
 
 // Diagnostic reads see the real index just before publication. The live helper

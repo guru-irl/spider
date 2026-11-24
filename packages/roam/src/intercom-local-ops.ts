@@ -140,7 +140,7 @@ export function hasPairConsent(pair: IntercomEnrollmentPlan, proof: PairConsentP
     proof.pairs.filter(candidate => samePlan(pair, candidate)).length === 1;
 }
 /** Operational checks ask the queue owner, rather than snapshotting its in-flight WAL. */
-export function createLocalPairRegistry(ports: Pick<LocalPairPorts, "root" | "machineId" | "inspectFence">) {
+export function createLocalPairRegistry(ports: Pick<LocalPairPorts, "root" | "machineId" | "inspectFence">): ReturnType<typeof createIntercomRegistry> {
   return createIntercomRegistry(ports.root, { machineId: ports.machineId, read(peer) {
     const request = { version: 1 as const, action: "inspect-fence" as const, machineId: ports.machineId, peer };
     return ports.inspectFence ? ports.inspectFence(request) : requestHelperFence(ports.root, request);

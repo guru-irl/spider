@@ -1,5 +1,7 @@
 const moveCauses = ["participant-pi-unavailable", "participant-stores-unavailable", "participant-config-unavailable",
-  "participant-context-unavailable", "participant-home-unavailable", "move-adapter-unavailable", "move-workspace-unmapped", "move-checkout-conflict"] as const;
+  "participant-context-unavailable", "participant-home-unavailable", "participant-freeze-unfinished", "participant-cwd-unavailable",
+  "participant-header-invalid", "participant-header-mismatch", "participant-store-mapping-failed", "participant-seed-failed",
+  "move-adapter-unavailable", "move-workspace-unmapped", "move-checkout-conflict"] as const;
 export type MoveCauseCode = typeof moveCauses[number];
 
 export function safeMoveCause(value: unknown): MoveCauseCode | undefined {

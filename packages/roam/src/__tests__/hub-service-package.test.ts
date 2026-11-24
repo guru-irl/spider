@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, readdirSync, symlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -53,6 +53,21 @@ it("packaged enable installs the executable CLI dispatcher rather than its impor
     expect(entry.stderr).not.toContain("ENOENT");
     expect(entry.stderr).not.toContain("runtime request");
   } finally { await socket.close(); }
+});
+
+it.each(["file", "directory", "preserved main"])("the packaged supervisor runs through a symlinked %s entry", kind => {
+  const executable = join(packageRoot, "dist/roam/supervisor.mjs"), link = join(root, `supervisor-${kind.replaceAll(" ", "-")}`);
+  symlinkSync(kind === "directory" ? join(packageRoot, "dist/roam") : executable, link);
+  const result = spawnSync(process.execPath, [
+    ...(kind === "preserved main" ? ["--preserve-symlinks-main"] : []),
+    kind === "directory" ? join(link, "supervisor.mjs") : link, "--help",
+  ], { cwd: root, encoding: "utf8", timeout: 2000 });
+  expect(result.error).toBeUndefined();
+  expect({ status: result.status, stdout: result.stdout, stderr: result.stderr }).toEqual({
+    status: 0,
+    stdout: "Usage: spider-roam-supervisor [--help]\nHosts sessions only for an enrolled box with initialized capture and hub-issued intent.\n",
+    stderr: "",
+  });
 });
 
 it("executing the bundled CLI library never starts a remote runtime", () => {

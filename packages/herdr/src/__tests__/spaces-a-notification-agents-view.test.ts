@@ -14,7 +14,7 @@ function fixture(version: SpacesAVersion, sharedState = new Map<string, unknown>
   }
   source = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)*import .*;\s*$/gm, '').replace('export default class ', 'class ').replaceAll('export function ', 'function ');
   const calls: string[] = [], props: any = { feedRoot: '/fixture/feeds', nodePath: '/fixture/node', notifications: { sound: true } };
-  const state: any = { feeds: [{ sessionId: 'owner', notifications: [] }], errors: [], reads: 0 };
+  const state: any = { feeds: [{ sessionId: 'owner', updatedAt: Date.now(), notifications: [] }], errors: [], reads: 0, clockOffset: 0 };
   const timer = { every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) };
   const cx: any = { timer, notify() {}, spawn(fn: Function) { const result = Promise.resolve().then(() => fn(cx)); result.catch(() => {}); return result; } };
   const herdr: any = { checking: () => checking, playSound: (sound: string) => { calls.push(sound); if (state.failSound) throw new Error('device unavailable'); } };
@@ -30,7 +30,7 @@ function fixture(version: SpacesAVersion, sharedState = new Map<string, unknown>
   const name = /class (\w+) extends View/.exec(source)![1];
   const Agents = new Function('ports', `const { ${Object.keys(ports).join(', ')} } = ports; ${source}; return ${name};`)(ports);
   const view = new Agents(); view.init({}, cx);
-  const refresh = async () => { view.spiderReloadAt = -Infinity; await view.reloadSpiderFeeds(); };
+  const refresh = async () => { for (const feed of state.feeds) feed.updatedAt = Date.now() + state.clockOffset; view.spiderReloadAt = -Infinity; await view.reloadSpiderFeeds(); };
   return { view, cx, state, props, calls, sharedState, refresh, ready: async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); } };
 }
 const notice = (id: string, urgency: string) => ({ id, kind: 'intentional', urgency, createdAt: Date.now() });
@@ -60,7 +60,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   it(`${version}: sounds a fresh notification from a producer clock 60 seconds behind`, async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const start = Date.UTC(2026, 0, 1); vi.setSystemTime(start);
-    const a = fixture(version); a.state.feeds[0].updatedAt = start - 60_000;
+    const a = fixture(version); a.state.clockOffset = -60_000; a.state.feeds[0].updatedAt = start - 60_000;
     try {
       await a.ready();
       vi.setSystemTime(start + 2_000);
@@ -68,6 +68,18 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       a.state.feeds[0].notifications.push({ ...notice('skewed', 'urgent'), createdAt: start - 59_000 });
       await a.refresh(); await a.refresh();
       expect(a.calls).toEqual(['blocked']);
+    } finally { await a.view.close(); vi.useRealTimers(); }
+  });
+
+  it(`${version}: keeps initial history silent when its feed timestamp catches up`, async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const start = Date.UTC(2026, 0, 1); vi.setSystemTime(start);
+    const a = fixture(version);
+    a.state.feeds[0].notifications.push({ ...notice('initial-future', 'urgent'), createdAt: start + 1_000 });
+    try {
+      await a.ready();
+      vi.setSystemTime(start + 2_000); await a.refresh();
+      expect(a.calls).toEqual([]);
     } finally { await a.view.close(); vi.useRealTimers(); }
   });
 

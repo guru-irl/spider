@@ -37,7 +37,7 @@ import { disableRoaming, enableRoaming } from "./production-controls";
 import { runForeground, runLocalPairCleanup, runLocalPairOperation, hasPairConsent, type LocalPairCleanup, type LocalPairOperation, type LocalPairPorts } from "./intercom-local-ops";
 import { parseHelperFence, requestHelperFence } from "./intercom-helper";
 import { createIntercomRegistry } from "./intercom-registry";
-import { pairScopedRecipe, inspectPairUnit, reconcilePairUnits } from "./intercom-pair-resources";
+import { pairScopedRecipe, inspectPairUnit, reconcilePairUnits, stoppedPairUnitNeedsRepair } from "./intercom-pair-resources";
 import type { IntercomCliOptions } from "./intercom-cli";
 import { DEFAULT_SSH, DEFAULT_SSH_KEYGEN, DEFAULT_SSH_KEYSCAN } from "./intercom-ssh-defaults";
 import { enrollmentCauseCode } from "./intercom-enrollment";
@@ -218,6 +218,16 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
         ensureIntercomBroker: () => spawnBrokerIfNeeded("npx", ["--no-install", "tsx"], { agentDir }) });
       io.out(`${JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: true, machineId: config.machineId, doctor })}\n`);
     } catch (error) { io.out(`${JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: false, causeCode: brokerStartupCause(error) })}\n`); }
+    return 0;
+  }
+  if (privateRoot && argv.length === 3 && argv[0] === "roam" && argv[1] === "intercom" && argv[2] === "inspect-units") {
+    try {
+      const config = readLocalIdentity(root);
+      if (config.role !== "box") throw new Error("machine-mismatch");
+      const base = options?.pairPorts ?? { machineId: config.machineId, root, home: homedir(), run: runForeground };
+      const needsRepair = await stoppedPairUnitNeedsRepair({ ...base, machineId: config.machineId, root, recipe: config.intercom.connector });
+      io.out(`${JSON.stringify({ version: 1, kind: "intercom-unit-inspect", ok: true, machineId: config.machineId, needsRepair })}\n`);
+    } catch { io.out(`${JSON.stringify({ version: 1, kind: "intercom-unit-inspect", ok: false })}\n`); }
     return 0;
   }
   if (privateRoot && argv.length === 3 && argv[0] === "roam" && argv[1] === "intercom" && argv[2] === "repair-units") {

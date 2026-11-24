@@ -884,6 +884,32 @@ async function run(): Promise<unknown> {
           }
         } finally { source.fill(0); }
       } catch { /* Missing evidence is not readiness. */ }
+      if (request.inspectPairUnits === true) {
+        let needsRepair: boolean | null = null;
+        const enrollmentDir = join(globalRoot, "roam", "intercom", "enrollments");
+        let inspect = true;
+        try {
+          const stat = lstatSync(enrollmentDir);
+          if (stat.isDirectory() && !stat.isSymbolicLink() && realpathSync(enrollmentDir) === enrollmentDir &&
+              !readdirSync(enrollmentDir).some(name => name.endsWith(".json"))) { needsRepair = false; inspect = false; }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") { needsRepair = false; inspect = false; }
+        }
+        if (inspect) try {
+          const child = spawnSync(text("node"), [text("cli"), "--global-root", globalRoot, "roam", "intercom", "inspect-units"], {
+            env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: agentDir, SPIDER_ROAM_PI: pi },
+            timeout: 5000, maxBuffer: 8192, stdio: ["ignore", "pipe", "ignore"],
+          });
+          if (!child.error && !child.signal && child.status === 0) {
+            const reply = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(child.stdout));
+            if (reply && typeof reply === "object" && !Array.isArray(reply) &&
+                Object.keys(reply).sort().join() === "kind,machineId,needsRepair,ok,version" &&
+                reply.version === 1 && reply.kind === "intercom-unit-inspect" && reply.ok === true &&
+                reply.machineId === machineId && (typeof reply.needsRepair === "boolean" || reply.needsRepair === null)) needsRepair = reply.needsRepair;
+          }
+        } catch { /* An unavailable observation must not change provisioning. */ }
+        Object.assign(verification, { pairUnitRepair: needsRepair });
+      }
       return verification;
     } finally { rmSync(probe, { recursive: true, force: true }); }
   }

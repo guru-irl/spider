@@ -235,7 +235,7 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
       if (ports.revocationDb && isRevoked(ports.revocationDb, peer.machineId)) return;
       if (!validObservation(observation)) return;
       if (observation.reachability === "identity") { unreachablePeers.delete(peer.machineId); cancelTimer(peer.machineId); return; }
-      if (observation.reachability === "unknown") { cancelTimer(peer.machineId); return; }
+      if (observation.reachability === "unknown") return;
       let state = peerStatus(db, peer.machineId);
       if (observation.reachability === "unreachable") {
         unreachablePeers.add(peer.machineId);

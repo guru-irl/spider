@@ -108,6 +108,24 @@ it("refuses a staging root that belongs to a different global database", async (
   expect(existsSync(h.socketPath)).toBe(false);
 }, 5000);
 
+it("unknown observations do not cancel a pending outage alert", async () => {
+  const h = fixture(); h.home(); let afterSync!: Parameters<HubRuntimePorts["prepare"]>[0];
+  const hub = await runHub({ ...h.ports,
+    sync: { start() {}, stop() {}, async sync() { return []; }, async barriers() { return false; } },
+    async prepare(callback) { afterSync = callback; }, async drain() {}, async closeStores() {},
+  } as HubRuntimePorts); handles.push(hub);
+  const peer = h.f.config.peers[0];
+  h.unreachable(); await afterSync(peer, []);
+  const outage = readLocal(h.f.global.db, "hub-peer", BOX);
+  h.unknown(); await afterSync(peer, []); await afterSync(peer, []);
+  expect(readLocal(h.f.global.db, "hub-peer", BOX)).toEqual(outage);
+  expect(h.timers.filter(timer => !timer.cancelled && timer.delay === 600_000)).toHaveLength(1);
+  h.fire(600_000); await h.noticeReady();
+  expect(h.notices.map(notice => notice.kind)).toEqual(["unreachable"]);
+  await afterSync(peer, []);
+  expect(h.publishCalls).toHaveLength(1);
+}, 5000);
+
 it("verified peer recovery schedules one full pass outside sync and drains it on stop", async () => {
   const h = fixture(); const peer = h.f.config.peers[0];
   let afterSync!: Parameters<HubRuntimePorts["prepare"]>[0];

@@ -15,8 +15,8 @@ function walk(dir: string): string[] {
   return out;
 }
 
-const EXPECTED_31 = [
-  "bro", "how", "show-me-your-work", "teach", "technical-writing", "unslop", "why",
+const EXPECTED_33 = [
+  "bro", "how", "ketchup", "ketchup-video", "show-me-your-work", "teach", "technical-writing", "unslop", "why",
   "principle-attack-the-premise", "principle-boundary-discipline", "principle-build-the-lever",
   "principle-encode-lessons-in-structure", "principle-exhaust-the-design-space", "principle-experience-first",
   "principle-explain-the-number", "principle-fix-root-causes", "principle-foundational-thinking",
@@ -37,7 +37,7 @@ const UNSHIPPED_HYPHENATED = [
   "comment-sicko", "poteto-agent",
 ];
 // Single-word names are ordinary English too, so only flag them when written as a skill reference.
-const UNSHIPPED_WORDS = ["architect", "arena", "babysit", "correct", "deslop", "interrogate", "ketchup", "recall", "reflect", "sharpen", "swarm", "tdd", "thermos"];
+const UNSHIPPED_WORDS = ["architect", "arena", "babysit", "correct", "deslop", "interrogate", "recall", "reflect", "sharpen", "swarm", "tdd", "thermos", "visualize"];
 
 type Rule = { name: string; pattern: RegExp };
 const RULES: Rule[] = [
@@ -87,22 +87,28 @@ function frontmatter(md: string): Record<string, string> | null {
 }
 
 describe("pstack skills: shipped set", () => {
-  it("ships exactly the 31 pinned skills, each with a SKILL.md", () => {
+  it("ships exactly the 33 pinned skills, each with a SKILL.md", () => {
     const dirs = fs.readdirSync(skillsDir).filter((n) => fs.statSync(path.join(skillsDir, n)).isDirectory()).sort();
-    expect(dirs).toEqual([...EXPECTED_31].sort());
-    for (const name of EXPECTED_31) expect(fs.existsSync(path.join(skillsDir, name, "SKILL.md")), name).toBe(true);
+    expect(dirs).toEqual([...EXPECTED_33].sort());
+    for (const name of EXPECTED_33) expect(fs.existsSync(path.join(skillsDir, name, "SKILL.md")), name).toBe(true);
   });
 
   it("keeps each frontmatter name equal to its directory, with a description pi accepts", () => {
-    for (const name of EXPECTED_31) {
+    for (const name of EXPECTED_33) {
       const fm = frontmatter(fs.readFileSync(path.join(skillsDir, name, "SKILL.md"), "utf8"));
       expect(fm, name).not.toBeNull();
       expect(fm!.name, name).toBe(name);
       // pi's skill loader caps descriptions at 1024 characters.
       expect(fm!.description?.trim().length ?? 0, name).toBeGreaterThan(0);
       expect(fm!.description.length, name).toBeLessThanOrEqual(1024);
-      // pi ignores other keys (e.g. user-invocable), so the copies carry only these two.
-      expect(Object.keys(fm!).sort(), name).toEqual(["description", "name"]);
+      const manualOnly = name === "ketchup" || name === "ketchup-video";
+      expect(Object.keys(fm!).sort(), name).toEqual(manualOnly
+        ? ["description", "disable-model-invocation", "name"]
+        : ["description", "name"]);
+      if (manualOnly) {
+        expect(fm!["disable-model-invocation"], name).toBe("true");
+        expect(fm!.description, name).toContain(`/skill:${name}`);
+      }
     }
   });
 });
@@ -127,6 +133,8 @@ describe("pstack skills: spider terms only", () => {
     ["Use Qwen3 for this.", "model-name"],
     ["Use Kimi-K2 for this.", "model-name"],
     ["Run /recall previous decisions.", "unshipped-skill-ref"],
+    ["Use `/visualize` for a chart.", "unshipped-skill-ref"],
+    ["See [visualize](../visualize/SKILL.md).", "unshipped-skill-ref"],
   ])("catches the review regression fixture %s", (text, rule) => {
     const root = testScratchPath(`pstack-guard-review-${process.pid}`);
     fs.mkdirSync(root, { recursive: true });

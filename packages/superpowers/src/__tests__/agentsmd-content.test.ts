@@ -19,7 +19,7 @@ describe("spider AGENTS.md block content", () => {
   it("includes the approved pstack guidance immediately after Skills first", () => {
     const expected = `## pstack skills
 
-spider also ships 31 skills adapted from pstack. Use them alongside the
+spider also ships 33 skills adapted from pstack. Use them alongside the
 superpowers skills above; they replace none of them.
 
 - \`how\`: how code works, a walkthrough before changing it, or where code should
@@ -32,6 +32,8 @@ superpowers skills above; they replace none of them.
   when asked.
 - \`show-me-your-work\`: keep its decision log for long, unattended or
   multi-phase work.
+- \`ketchup\` and \`ketchup-video\`: catch up on this chat and the calls
+  waiting on you, in text or video. Run them with \`/skill:<name>\`.
 - \`principle-*\`: each description says when it applies. When a decision
   matches one, read that skill in full first. In your reply, name each
   principle you applied and the choice it changed.`;

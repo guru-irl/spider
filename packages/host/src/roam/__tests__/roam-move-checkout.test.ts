@@ -63,7 +63,7 @@ async function fixture(mappedRepository: boolean, occupied = false, complete = f
     JSON.stringify({ type: "model_change", id: "leaf-a", parentId: null, timestamp: "2026-01-01T00:00:00Z", provider: "fixture", modelId: "fixture" }) + "\n", { mode: 0o600 });
   enableMemoryCapture(source.db, "global");
   const home = assignInitialHome(source.db, SESSION, HUB, HUB);
-  if (home === "initial-home-conflict") throw Error(home);
+  if (home === "conflict") throw Error("initial-home-conflict");
   recordLocation(source.db, { sessionId: SESSION, stores: ["global", `repo:${REPO}`, WT], home, file, cwd: sourceRoot });
   const checkout = join(destination.root, "roam", "checkouts", `mapped-repo-${createHash("sha256").update(REPO).digest("hex").slice(0, 12)}`, "source-checkout-12345678");
   if (occupied) { mkdirSync(checkout, { recursive: true, mode: 0o700 }); writeFileSync(join(checkout, "private.txt"), "untouched\n"); }

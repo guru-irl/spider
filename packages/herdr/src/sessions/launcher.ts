@@ -79,8 +79,14 @@ export type LaunchNoStartProof =
       first: { coreId: string; issuedAt: number; terminal: 'absent' }; second: { coreId: string; issuedAt: number; terminal: 'absent' }; confirmationBoundMs: number }
   | { kind: 'terminal-exited-without-adoption'; operationId: string; coreId: string; terminalId: string; terminalExited: true; lockNeverAdopted: true }
   | { kind: 'boot-changed-no-terminal'; operationId: string; coreId: string; previousBootId: string; currentBootId: string; terminal: 'absent' };
+export interface StartedLaunchEndedProof {
+  kind: 'started-launch-ended'; operationId: string; attemptId: string; terminalId: string; coreId: string; bootId: string;
+  launcher: ProcessIdentity;
+  first: { coreId: string; issuedAt: number; terminal: 'absent' };
+  second: { coreId: string; issuedAt: number; terminal: 'absent' }; confirmationBoundMs: number;
+}
 export interface LaunchEvidence {
-  receipt: 'absent' | 'started' | 'finished' | 'unknown'; terminal: 'absent' | 'present' | 'unknown'; proof?: LaunchNoStartProof;
+  receipt: 'absent' | 'started' | 'finished' | 'unknown'; terminal: 'absent' | 'present' | 'unknown'; proof?: LaunchNoStartProof | StartedLaunchEndedProof;
 }
 export function provedNoStart(value: LaunchEvidence, operationId: string, coreId: string, expectedBootId: string): boolean {
   const proof = value.proof;

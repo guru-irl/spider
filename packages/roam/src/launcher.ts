@@ -22,7 +22,9 @@ export interface LaunchReconcilePorts {
   inspectLock(): Promise<IdLockObservation | null>;
   coreId(signal: AbortSignal): Promise<string>;
   bootId(signal: AbortSignal): Promise<string>;
-  terminals(operationId: string, options: { signal: AbortSignal; includeFinished: true; attemptId?: string; terminalId?: string }): Promise<{
+  /** Only stop opts into ended-started evidence; ordinary launch reconciliation still refuses it. */
+  settlement?: { sessionId: string; probe(pid: number): Promise<ProcessProbe>; leases: Pick<ExactSessionLaunchPorts["leases"], "get"> };
+  terminals(operationId: string, options: { signal: AbortSignal; includeFinished: true; attemptId?: string; terminalId?: string; anyLaunchLabel?: { sessionId: string; attemptId: string } }): Promise<{
     complete: boolean; terminals: readonly { id: string; state: "live" | "finished" }[];
   }>;
   clock: { now(): number; wait(ms: number, signal: AbortSignal): Promise<void> };
@@ -100,6 +102,25 @@ export function createLocalExactHc(input: {
     async terminals(operationId, options) {
       if (!text(operationId)) throw new HerdrError("invalid-operation", "A valid launch operation is required");
       if (options.attemptId !== undefined && !text(options.attemptId)) throw new HerdrError("invalid-operation", "A valid launch attempt is required");
+      if (options.anyLaunchLabel) {
+        const { sessionId, attemptId } = options.anyLaunchLabel;
+        if (!text(sessionId) || !text(attemptId)) throw new HerdrError("invalid-operation", "Valid launch labels are required");
+        // Native compact rows omit labels. Three complete filtered lists implement
+        // operation OR attempt OR session, not the CLI's AND label selection.
+        const terminals = new Map<string, { id: string; state: "live" | "finished" }>();
+        for (const label of [`spider.roam.operation=${operationId}`, `spider.roam.attempt=${attemptId}`, `spider.session=${sessionId}`]) {
+          const reply = object(await input.invoke(["ls", "--all", "--json", "--label", label], options.signal));
+          if (!Array.isArray(reply.terminals)) throw new HerdrError("invalid-reply", "A complete terminal list is required");
+          for (const value of reply.terminals) {
+            const row = object(value);
+            if (!text(row.address)) throw new HerdrError("invalid-reply", "Terminal address is unavailable");
+            const parsed = parseCompactLaunchTerminal(row, row.address), previous = terminals.get(parsed.id);
+            if (previous && previous.state !== parsed.state) throw new HerdrError("invalid-reply", "Terminal state changed during listing");
+            terminals.set(parsed.id, parsed);
+          }
+        }
+        return { complete: true, terminals: [...terminals.values()] };
+      }
       const argv = ["ls", "--all", "--json", "--label", `spider.roam.operation=${operationId}`];
       if (options.attemptId) argv.push("--label", `spider.roam.attempt=${options.attemptId}`);
       const reply = object(await input.invoke(argv, options.signal));
@@ -212,14 +233,21 @@ export async function settlePendingLaunch(input: {
       const lease = await input.leases.get(input.file);
       if (lease && (lease.pid !== lock.identity.pid || lease.startIdentity !== lock.identity.startIdentity || lease.bootId !== lock.bootId)) return false;
       const reconcile = createLaunchReconciler({ journal: input.journal, inspectLock: () => inspectIdLock(input.root, input.sessionId),
-        coreId: recovery.hc.coreId, bootId: recovery.bootId, terminals: recovery.hc.terminals, clock: recovery.clock });
+        coreId: recovery.hc.coreId, bootId: recovery.bootId, terminals: recovery.hc.terminals, clock: recovery.clock,
+        settlement: { sessionId: input.sessionId, probe: recovery.probe, leases: input.leases } });
       const signal = AbortSignal.timeout(60_000), evidence = await reconcile(input.operationId, { signal });
-      if (!provedNoStart(evidence, input.operationId, lock.pendingCoreId, lock.bootId)) return false;
+      const proof = evidence.proof;
+      const ended = evidence.receipt === "started" && evidence.terminal === "absent" && proof?.kind === "started-launch-ended" &&
+        proof.operationId === input.operationId && proof.coreId === lock.pendingCoreId && proof.bootId === lock.bootId &&
+        proof.launcher.pid === lock.identity.pid && proof.launcher.startIdentity === lock.identity.startIdentity;
+      if (!ended && !provedNoStart(evidence, input.operationId, lock.pendingCoreId, lock.bootId)) return false;
+      if (ended && proof?.kind === "started-launch-ended" && !input.journal.read(input.operationId).some(row => row.action === "exact-started-launch-ended"))
+        input.journal.record(input.operationId, "exact-started-launch-ended", { ...proof, launcher: { ...proof.launcher }, first: { ...proof.first }, second: { ...proof.second } });
       if (lease) await input.leases.release(input.file, lease.token, { mode: "cutover" });
       await removeLaunchHandoff(input.root, input.operationId);
       if (!input.journal.read(input.operationId).some(row => row.action === "exact-launch-settled"))
         input.journal.record(input.operationId, "exact-launch-settled", { sessionId: input.sessionId, file: input.file });
-      input.journal.record(input.operationId, "done", { code: 1, reason: "launch-not-started", operationId: input.operationId,
+      input.journal.record(input.operationId, "done", { code: 1, reason: ended ? "launch-ended" : "launch-not-started", operationId: input.operationId,
         home: null, epoch: null, repairCommand: null, value: null });
       return true;
     },
@@ -341,10 +369,11 @@ export function createLaunchReconciler(ports: LaunchReconcilePorts): (operationI
       const terminal = one("exact-terminal");
       const terminalId = terminal && text(terminal.terminalId) ? terminal.terminalId : undefined;
       const receipt = has("exact-terminal") ? "started" as const : "unknown" as const;
-      const sample = async (allAttempts = false) => {
+      const sample = async (allAttempts = false, anyLaunchLabel = false) => {
         if (await abortable(signal, () => ports.coreId(signal)) !== pinnedCore) return null;
         const issuedAt = ports.clock.now();
-        const result = await abortable(signal, () => ports.terminals(operationId, { signal, includeFinished: true, ...(!allAttempts && typeof attemptId === "string" ? { attemptId } : {}), ...(terminalId ? { terminalId } : {}) }));
+        const result = await abortable(signal, () => ports.terminals(operationId, { signal, includeFinished: true, ...(!allAttempts && typeof attemptId === "string" ? { attemptId } : {}), ...(terminalId ? { terminalId } : {}),
+          ...(anyLaunchLabel && ports.settlement && typeof attemptId === "string" ? { anyLaunchLabel: { sessionId: ports.settlement.sessionId, attemptId } } : {}) }));
         if (await abortable(signal, () => ports.coreId(signal)) !== pinnedCore || !result.complete ||
             !Array.isArray(result.terminals) || result.terminals.some(item => !item || !text(item.id) || !["live", "finished"].includes(item.state))) return null;
         return { issuedAt, terminals: result.terminals };
@@ -383,7 +412,39 @@ export function createLaunchReconciler(ports: LaunchReconcilePorts): (operationI
       const first = await sample();
       if (!first) return unknown();
       if (first.terminals.length) return present(first.terminals);
-      if (!validExit || receipt === "started" || first.issuedAt <= (exited!.exitedAt as number)) return { receipt, terminal: "absent" };
+      if (receipt === "started") {
+        const settlement = ports.settlement;
+        if (!settlement || !text(attemptId) || !terminalId || !text(currentBoot) || currentBoot !== lock.bootId || !lock.pendingFile) return { receipt, terminal: "absent" };
+        const unadoptedExited = async () => {
+          const current = await abortable(signal, () => ports.inspectLock());
+          if (!current || current.pendingOperationId !== operationId || current.pendingCoreId !== lock.pendingCoreId ||
+              current.pendingFile !== lock.pendingFile || current.bootId !== lock.bootId || current.identity.pid !== lock.identity.pid ||
+              current.identity.startIdentity !== lock.identity.startIdentity || await abortable(signal, () => ports.bootId(signal)) !== lock.bootId ||
+              ports.journal.read(operationId).length !== allActions.length || allActions.some(row => row.action === "ready-durable")) return false;
+          const owner = await abortable(signal, () => settlement.probe(lock.identity.pid));
+          if (!(owner.kind === "absent" || owner.kind === "live" && owner.startIdentity !== lock.identity.startIdentity)) return false;
+          const lease = await abortable(signal, () => settlement.leases.get(lock.pendingFile!));
+          return !lease || lease.pid === lock.identity.pid && lease.startIdentity === lock.identity.startIdentity && lease.bootId === lock.bootId;
+        };
+        if (!await unadoptedExited()) return { receipt, terminal: "absent" };
+        const endedFirst = await sample(false, true);
+        if (!endedFirst) return unknown();
+        if (endedFirst.terminals.some(row => row.state === "live")) return { receipt, terminal: "present" };
+        const firstFinished = endedFirst.terminals.find(row => row.id === terminalId && row.state === "finished");
+        if (firstFinished) return await unadoptedExited() ? present([firstFinished]) : unknown();
+        await abortable(signal, () => ports.clock.wait(CONFIRMATION_BOUND_MS, signal));
+        const endedSecond = await sample(false, true);
+        if (!endedSecond || endedSecond.issuedAt - endedFirst.issuedAt < CONFIRMATION_BOUND_MS) return unknown();
+        if (endedSecond.terminals.some(row => row.state === "live")) return { receipt, terminal: "present" };
+        const secondFinished = endedSecond.terminals.find(row => row.id === terminalId && row.state === "finished");
+        if (secondFinished) return await unadoptedExited() ? present([secondFinished]) : unknown();
+        if (!await unadoptedExited()) return unknown();
+        return { receipt, terminal: "absent", proof: { kind: "started-launch-ended", operationId, attemptId, terminalId,
+          coreId: pinnedCore, bootId: lock.bootId, launcher: { ...lock.identity },
+          first: { coreId: pinnedCore, issuedAt: endedFirst.issuedAt, terminal: "absent" },
+          second: { coreId: pinnedCore, issuedAt: endedSecond.issuedAt, terminal: "absent" }, confirmationBoundMs: CONFIRMATION_BOUND_MS } };
+      }
+      if (!validExit || first.issuedAt <= (exited!.exitedAt as number)) return { receipt, terminal: "absent" };
       await abortable(signal, () => ports.clock.wait(CONFIRMATION_BOUND_MS, signal));
       const second = await sample();
       if (!second || second.issuedAt - first.issuedAt < CONFIRMATION_BOUND_MS) return unknown();

@@ -40,6 +40,7 @@ export function createParticipantSupervisor(input: {
   owner(intent: HostIntent): Promise<Probe>;
   diagnostics(intent: HostIntent): Promise<readonly Diagnostic[]>;
   launch(intent: HostIntent, operationId: string, mode: "initial" | "reconcile", beforeSpawn: LaunchInvocation["beforeSpawn"]): Promise<SupervisorLaunchOutcome>;
+  launch(intent: HostIntent, operationId: string, mode: "reconcile"): Promise<SupervisorLaunchOutcome>;
   stop(sessionId: string): Promise<Probe>;
   cancelStop?(sessionId: string): void;
   confirmExit?(identity: { pid: number; startTime: string }): Promise<boolean>;

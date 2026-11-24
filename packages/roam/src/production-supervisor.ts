@@ -21,6 +21,7 @@ import { createIntentStore } from "./intent";
 import { createExactLaunchAdapter, createProductionLocalExactHc, type LocalExactHc } from "./launcher";
 import { safeLaunchExit, type LaunchExit } from "./hosting-warning";
 import { safeCauseCode } from "./cause-codes";
+import type { LaunchInvocation } from "./supervisor";
 import { createLocalDiagnosticPorts } from "./local-diagnostics";
 import { loadHerdrConfig } from "./production-hub";
 import { createParticipantSupervisor, retireParticipantSessions, supervisorRetirementLifecycle } from "./participant-supervisor";
@@ -388,7 +389,7 @@ async function startEnrolledSupervisor(root: string, options: { coreState: Super
       events: createSupervisorEvents(runtime.db.raw.name, eventClient),
       async beforeInspect(sessionId) { await observeHosting({ ...hosting, sessionId }); },
       owner: intent => owner(root, intent, system),
-      async launch(intent, operationId, mode, beforeSpawn) {
+      async launch(intent, operationId, mode, beforeSpawn: LaunchInvocation["beforeSpawn"] = async () => "pending") {
         const currentCore = await hc.coreId(new AbortController().signal);
         const bytes = await readFile(intent.file), absolutePi = env.SPIDER_ROAM_PI;
         if (!absolutePi || !isAbsolute(absolutePi)) throw new HerdrError("provisioned-pi-unavailable", "The provisioned pi is unavailable");

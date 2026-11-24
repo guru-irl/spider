@@ -103,6 +103,8 @@ async function fixture() {
         }
         value = await runLocalPairOperation(input as LocalPairOperation, { machineId: machine.machineId, root: machine.globalRoot, home: endpoint.home,
           node: process.execPath, ssh: "/fixture/ssh", keygen: "/fixture/keygen", run: unavailable,
+          inspectFence: async query => { const peer = (query as { peer: string }).peer, fence = endpoint.store.pairFence(peer);
+            return { machineId: machine.machineId, peer, fence: fence ? { edgeEpoch: fence.edgeEpoch, fenceId: fence.fenceId } : null }; },
           inspectBridge: async () => ({ machineId: machine.machineId, peer: machine.machineId === A ? B : A,
             edgeEpoch: input.pair.edgeEpoch, status: endpoint.store.edgeState(machine.machineId === A ? B : A, input.pair.edgeEpoch).status, reason: null }) });
         if (input.action === "authorize" && endpoint.store.pairFence(A)) unapprovedStatuses.push(command(input.pair).status);

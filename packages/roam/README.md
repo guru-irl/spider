@@ -8,7 +8,9 @@ configuration and operator commands.
 
 `package-layout.ts` resolves the installed `dist/roam/cli.mjs` dispatcher for
 hub enablement. The service runs that executable with `roam hub`, not the
-imported `cli-main.mjs` library.
+imported `cli-main.mjs` library. Enable checks the local role before resolving
+that entry. A box returns `mac-hub-required`; a hub with an unavailable
+installed entry returns `enable-unavailable` without changing configuration.
 
 `hub-service-diagnostics.ts` reads service metadata and uses the read-only
 status probe in `hub-readiness.ts`, shared with enable. Doctor allows two

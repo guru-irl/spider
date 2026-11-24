@@ -72,8 +72,10 @@ after its definition proves it belongs to the selected root. A missing service
 is safe to remove; after a failed bootout, a service-specific `launchctl print`
 can confirm absence. An unrelated error does not prove absence.
 
-Enable resolves `dist/roam/cli.mjs` from the installed package and uses it for
-`roam hub`. The imported `cli-main.mjs` module is not an executable service
+Enable checks the local role before resolving `dist/roam/cli.mjs` from the
+installed package and using it for `roam hub`. A box returns `mac-hub-required`.
+An unavailable installed entry on a hub returns `enable-unavailable` without
+changing configuration. The imported `cli-main.mjs` module is not an executable service
 entry. Runtime and pane endpoint libraries never execute their CLI on import.
 Their dedicated entries retain the packaged remote runtime and pane commands.
 Hubs enabled on an earlier release must run `spider roam enable` again after

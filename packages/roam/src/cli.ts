@@ -413,7 +413,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
     } catch { /* The selected command reports its own unavailable or invalid state. */ }
   }
   if (argv[0] === "roam" && (argv[1] === "enable" || argv[1] === "disable")) {
-    const result = argv[1] === "enable" ? await enableRoaming(root, roamingCliEntry(options?.bundleUrl ?? new URL(import.meta.url)), options?.bundleUrl) : await disableRoaming(root);
+    const result = argv[1] === "enable" ? await enableRoaming(root, () => roamingCliEntry(options?.bundleUrl ?? new URL(import.meta.url)), options?.bundleUrl) : await disableRoaming(root);
     return emitOutcome(io, { ...outcome(result.code, result.reason, result.issues || result.information ? { issues: result.issues, information: result.information } : null),
       ...(result.causeCode ? { causeCode: result.causeCode } : {}) }, jsonOutput, `${result.message.split("\n").map(clean).join("\n")}\n`);
   }

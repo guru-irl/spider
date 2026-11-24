@@ -127,10 +127,10 @@ it("restores autostart only after enable preflight succeeds", async () => {
   vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue(f.transport as never);
   const doctor = vi.spyOn(remoteObservations, "remoteDoctor").mockResolvedValue({ enabled: false, diagnostics: [
     { severity: "block", reason: "fixture-not-ready", repairCommand: null }], consumers: [] });
-  expect((await enableRoaming(f.root, process.execPath)).code).toBe(1);
+  expect((await enableRoaming(f.root, () => process.execPath)).code).toBe(1);
   expect(readFileSync(f.state, "utf8")).toBe("disabled");
   doctor.mockResolvedValue({ enabled: false, diagnostics: [], consumers: [] });
-  const ready = await enableRoaming(f.root, process.execPath);
+  const ready = await enableRoaming(f.root, () => process.execPath);
   expect(ready.code, JSON.stringify(ready)).toBe(3);
   expect(readFileSync(f.state, "utf8")).toBe("enabled");
   expect(JSON.parse(readFileSync(join(f.roam, "config.json"), "utf8")).enabled).toBe(true);

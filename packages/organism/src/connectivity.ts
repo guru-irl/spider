@@ -7,13 +7,15 @@ const NETWORK_CODES = new Set([
 /** Classify errors from the provider call, not the content returned by it. */
 export function isConnectivityFailure(error: unknown): boolean {
   const seen = new Set<object>();
-  let current = error;
+  const pending: unknown[] = [error];
   let connectivity = false;
-  for (let depth = 0; depth < 8 && current != null; depth++) {
+  for (let index = 0; index < pending.length; index++) {
+    const current = pending[index];
+    if (current == null) continue;
     if (typeof current === "object") {
-      if (seen.has(current)) break;
+      if (seen.has(current)) continue;
       seen.add(current);
-      const value = current as { code?: unknown; name?: unknown; message?: unknown; status?: unknown; statusCode?: unknown; cause?: unknown };
+      const value = current as { code?: unknown; name?: unknown; message?: unknown; status?: unknown; statusCode?: unknown; cause?: unknown; errors?: unknown };
       if (value.name === "OrganismDeadline") return false;
       const status = typeof value.status === "number" ? value.status : value.statusCode;
       const transientStatus = typeof status === "number" && [408, 429, 500, 502, 503, 504, 529].includes(status);
@@ -22,13 +24,13 @@ export function isConnectivityFailure(error: unknown): boolean {
       if (["UNAUTHORIZED", "FORBIDDEN", "AUTHENTICATION_ERROR", "INVALID_API_KEY", "PERMISSION_DENIED"].includes(code)) return false;
       if (typeof value.message === "string" && identityMessage(value.message)) return false;
       if (NETWORK_CODES.has(code) || value.name === "TimeoutError" || value.name === "AbortError" || transientStatus || typeof value.message === "string" && connectivityMessage(value.message)) connectivity = true;
-      current = value.cause;
-    } else {
-      if (typeof current === "string") {
-        if (identityMessage(current)) return false;
-        connectivity ||= connectivityMessage(current);
-      }
-      break;
+      const children = Array.isArray(value.errors) ? value.errors : [];
+      if (pending.length + children.length + (value.cause == null ? 0 : 1) > 64) return false;
+      if (value.cause != null) pending.push(value.cause);
+      pending.push(...children);
+    } else if (typeof current === "string") {
+      if (identityMessage(current)) return false;
+      connectivity ||= connectivityMessage(current);
     }
   }
   return connectivity;

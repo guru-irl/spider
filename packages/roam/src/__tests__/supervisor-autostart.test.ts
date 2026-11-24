@@ -132,15 +132,15 @@ it("restores autostart only after enable preflight succeeds", async () => {
   vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue(f.transport as never);
   const doctor = vi.spyOn(remoteObservations, "remoteDoctor").mockResolvedValue({ enabled: false, diagnostics: [
     { severity: "block", reason: "fixture-not-ready", repairCommand: null }], consumers: [] });
-  expect((await enableRoaming(f.root, process.execPath)).code).toBe(1);
+  expect((await enableRoaming(f.root, () => process.execPath)).code).toBe(1);
   expect(readFileSync(f.state, "utf8")).toBe("disabled");
   doctor.mockResolvedValue({ enabled: false, diagnostics: [], consumers: [] });
   startupBlocked = true;
-  expect(await enableRoaming(f.root, process.execPath)).toMatchObject({ code: 3, causeCode: "intercom-broker-unavailable" });
+  expect(await enableRoaming(f.root, () => process.execPath)).toMatchObject({ code: 3, causeCode: "intercom-broker-unavailable" });
   expect(readFileSync(f.state, "utf8")).toBe("disabled");
   expect(JSON.parse(readFileSync(join(f.roam, "config.json"), "utf8")).enabled).toBe(false);
   startupBlocked = false;
-  const ready = await enableRoaming(f.root, process.execPath);
+  const ready = await enableRoaming(f.root, () => process.execPath);
   expect(ready, JSON.stringify(ready)).toMatchObject({ code: 3, reason: "enable-pending" });
   expect(readFileSync(f.state, "utf8")).toBe("enabled");
   expect(JSON.parse(readFileSync(join(f.roam, "config.json"), "utf8")).enabled).toBe(true);
@@ -151,7 +151,7 @@ it("restores autostart only after enable preflight succeeds", async () => {
   writeFileSync(join(f.roam, "config.json"), JSON.stringify({ ...boxConfig, enabled: false }), { mode: 0o600 });
   service.mockResolvedValue(undefined);
   vi.spyOn(controlSocket, "requestHubControl").mockResolvedValue({ code: 0, value: { enabled: true } } as never);
-  expect(await enableRoaming(f.root, process.execPath)).toMatchObject({ code: 0, reason: "roaming-enabled" });
+  expect(await enableRoaming(f.root, () => process.execPath)).toMatchObject({ code: 0, reason: "roaming-enabled" });
   expect(readFileSync(f.state, "utf8")).toBe("enabled");
   expect(JSON.parse(readFileSync(join(f.roam, "config.json"), "utf8")).enabled).toBe(true);
 });

@@ -279,12 +279,17 @@ describe("copy buttons", () => {
     events.get("session_start")?.({}, context);
     const first = new AssistantMessageComponent(undefined, false, theme, undefined, 0);
     first.updateContent(message("Hello"), false);
-    const before = render(markdown(first)).find(line => line.includes("⧉ text"))!;
+    const firstMd = markdown(first);
+    expect(render(firstMd).join("\n")).not.toContain("⧉ text");
+    hover(firstMd);
+    const before = render(firstMd).find(line => line.includes("⧉ text"))!;
     style = "nerd";
     events.get("session_start")?.({}, context);
     const second = new AssistantMessageComponent(undefined, false, theme, undefined, 0);
     second.updateContent(message("Hello"), false);
     const md = markdown(second);
+    expect(render(md).join("\n")).not.toContain("\u{F018F} text");
+    hover(md);
     const lines = render(md);
     const row = lines.findIndex(line => line.includes("\u{F018F} text"));
     expect(row).toBeGreaterThanOrEqual(0);

@@ -99,7 +99,7 @@ function fixture(version: SpacesAVersion, count: number, finished: number, prese
   const render = () => { rendering = true; try { return view.render(cx); } finally { rendering = false; } };
   const text = (node: any): string[] => typeof node === 'string' ? [node] : node && typeof node === 'object' ? (node.items ?? []).flatMap(text) : [];
   return {
-    state, view, cx, watches, timers, flush, step, render, text, storage, storageWrites, sharedState, execCalls, runCalls,
+    state, config, view, cx, watches, timers, flush, step, render, text, storage, storageWrites, sharedState, execCalls, runCalls,
     get historyReads() { return historyReads; },
     get allHistoryReads() { return allHistoryReads; },
     get notifications() { return notifications; },
@@ -381,6 +381,203 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     } finally { await h.view.close(); }
   });
 
+  it(`${version}: a leaf has no chevron, stays aligned, and gains and loses one with a child`, async () => {
+    const h = fixture(version, 1, 0), first = h.state.feeds[0].runs.rows[0];
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    h.state.feeds[0].runs.rows.push({ ...first, id: 'peer', name: 'Peer', viewer: 'peer-viewer' });
+    h.state.terminals.push({ address: 'peer-viewer', parent: 't0', state: 'live', status: 'working',
+      labels: { 'spider.kind': 'subagent-viewer', 'spider.session': 's0', 'spider.run': 'peer' } },
+    { address: 'peer-child', parent: 'peer-viewer', state: 'live', status: 'idle', labels: {} });
+    const child = { address: 'new-child', parent: 'v0', state: 'live', status: 'idle', labels: {} };
+    try {
+      await h.ready(); let root = h.render();
+      expect(find(root, 'child-fold-live0')).toBeUndefined();
+      expect(find(root, 'child-fold-peer')).toBeDefined();
+      expect(find(root, 'sub-live0').styles.pl?.[0]).toEqual(expect.any(Number));
+      expect(find(root, 'sub-live0').styles.pl).toEqual(find(root, 'sub-peer').styles.pl);
+      h.state.terminals.push(child); h.render(); await h.flush(); root = h.render();
+      expect(find(root, 'child-fold-live0')?.styles.tooltip?.[0]).toBe('Show children');
+      find(root, 'child-fold-live0').events.on_click({}, h.cx); root = h.render();
+      expect(find(root, 'sub-new-child')).toBeDefined();
+      find(root, 'child-fold-live0').events.on_click({}, h.cx); await h.flush();
+      h.state.terminals = h.state.terminals.filter((terminal: any) => terminal !== child);
+      h.render(); await h.flush(); root = h.render();
+      expect(find(root, 'child-fold-live0')).toBeUndefined();
+    } finally { await h.view.close(); }
+  });
+
+  it.each(['run', 'console'] as const)(`${version}: a projected %s can be revealed from its parent`, async kind => {
+    const h = fixture(version, 1, 0), first = h.state.feeds[0].runs.rows[0];
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    try {
+      await h.ready(); expect(find(h.render(), 'child-fold-live0')).toBeUndefined();
+      if (kind === 'run') {
+        h.state.feeds[0].runs.rows.push({ ...first, id: 'nested-live', name: 'Nested live', viewer: 'nested-live-viewer' });
+        h.state.terminals.push({ address: 'nested-live-viewer', parent: 'v0', state: 'live', status: 'working',
+          labels: { 'spider.kind': 'subagent-viewer', 'spider.session': 's0', 'spider.run': 'nested-live' } });
+        h.state.feeds[0].revision++; h.view.spiderReloadAt = -Infinity;
+        await h.view.reloadSpiderFeeds(); h.view.spiderRequestRefresh(); await h.flush();
+      } else {
+        h.state.terminals.push({ address: 'local-console', parent: 't0', state: 'live', status: 'idle',
+          labels: { 'spider.kind': 'remote-console', 'spider.session': 's0', 'spider.run': 'live0' } });
+        h.render(); await h.flush();
+      }
+      let root = h.render();
+      expect(find(root, 'child-fold-live0')).toBeDefined();
+      find(root, 'child-fold-live0').events.on_click({}, h.cx); await h.flush(); root = h.render();
+      if (kind === 'run') expect(find(root, 'sub-nested-live')).toBeDefined();
+      else {
+        const group = `console-group:${encodeURIComponent(`console-group:${JSON.stringify(['t0', 'live0'])}`)}`;
+        expect(find(root, group)).toBeDefined();
+        find(root, group).events.on_click({}, h.cx); root = h.render();
+        expect(find(root, 'sub-console:local-console')).toBeDefined();
+      }
+    } finally { await h.view.close(); }
+  });
+
+  it(`${version}: an unavailable hidden console alone does not make a subagent expandable`, async () => {
+    const h = fixture(version, 1, 0);
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    try {
+      await h.ready();
+      h.state.terminals.push({ address: 'box-1.invalid/console', parent: 't0', state: 'live', status: 'idle',
+        labels: { 'spider.kind': 'remote-console', 'spider.session': 's0', 'spider.run': 'live0', 'spider.machine': 'box-1.invalid' } });
+      h.render(); await h.flush();
+      expect(find(h.render(), 'child-fold-live0')).toBeUndefined();
+      const available = { address: 'local-console', parent: 't0', state: 'live', status: 'idle',
+        labels: { 'spider.kind': 'remote-console', 'spider.session': 's0', 'spider.run': 'live0' } };
+      h.state.terminals.push(available); h.render(); await h.flush(); let root = h.render();
+      find(root, 'child-fold-live0').events.on_click({}, h.cx); await h.flush(); root = h.render();
+      const group = `console-group:${encodeURIComponent(`console-group:${JSON.stringify(['t0', 'live0'])}`)}`;
+      expect(find(root, group)).toBeDefined();
+      find(root, group).events.on_click({}, h.cx); root = h.render();
+      expect(find(root, 'sub-console:local-console')).toBeDefined();
+      expect(find(root, 'sub-console:box-1.invalid/console')).toBeDefined();
+      find(root, 'child-fold-live0').events.on_click({}, h.cx); await h.flush();
+      h.state.terminals = h.state.terminals.filter((terminal: any) => terminal !== available);
+      h.render(); await h.flush();
+      expect(find(h.render(), 'child-fold-live0')).toBeUndefined();
+    } finally { await h.view.close(); }
+  });
+
+  it(`${version}: a retained console makes its parent expandable through finished history`, async () => {
+    const h = fixture(version, 1, 0), now = Date.now();
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    h.state.terminals.push({ address: 'old-console', parent: 't0', state: 'finished', status: 'idle', finishedAt: now - 1000, exitCode: 0, reason: 'exited',
+      labels: { 'spider.kind': 'remote-console', 'spider.session': 's0', 'spider.run': 'live0' } });
+    try {
+      await h.ready(); let root = h.render();
+      expect(find(root, 'child-fold-live0')).toBeDefined();
+      find(root, 'child-fold-live0').events.on_click({}, h.cx); await h.flush(); root = h.render();
+      expect(h.text(root)).toContain('1 finished');
+      find(root, 'finished-toggle-t0').events.on_click({}, h.cx); await h.flush(); root = h.render();
+      const group = `console-group:${encodeURIComponent(`console-group:${JSON.stringify(['t0', 'live0'])}`)}`;
+      expect(find(root, group)).toBeDefined();
+      find(root, group).events.on_click({}, h.cx); root = h.render();
+      expect(find(root, 'sub-console:old-console')).toBeDefined();
+    } finally { await h.view.close(); }
+  });
+
+  it(`${version}: showing finished history exposes an otherwise hidden console group`, async () => {
+    const h = fixture(version, 1, 0), first = h.state.feeds[0].runs.rows[0];
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    h.state.feeds[0].runs.rows.push({ ...first, id: 'root-done', status: 'done', finishedAt: Date.now() - 1000, viewer: null });
+    h.state.terminals.push({ address: 'box-1.invalid/console', parent: 't0', state: 'live', status: 'idle',
+      labels: { 'spider.kind': 'remote-console', 'spider.session': 's0', 'spider.run': 'live0', 'spider.machine': 'box-1.invalid' } });
+    try {
+      await h.ready(); let root = h.render();
+      expect(find(root, 'child-fold-live0')).toBeUndefined();
+      find(root, 'finished-toggle-t0').events.on_click({}, h.cx); await h.flush(); root = h.render();
+      expect(find(root, 'child-fold-live0')).toBeDefined();
+      find(root, 'child-fold-live0').events.on_click({}, h.cx); await h.flush(); root = h.render();
+      const group = `console-group:${encodeURIComponent(`console-group:${JSON.stringify(['t0', 'live0'])}`)}`;
+      expect(find(root, group)).toBeDefined();
+    } finally { await h.view.close(); }
+  });
+
+  it(`${version}: the chevron follows which finished run retention selects`, async () => {
+    const h = fixture(version, 1, 0), first = h.state.feeds[0].runs.rows[0], now = Date.now();
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    const rootDone = { ...first, id: 'root-done', status: 'done', finishedAt: now - 1000, viewer: null };
+    const nestedDone = { ...first, id: 'nested-done', status: 'done', finishedAt: now - 2000, viewer: 'nested-viewer' };
+    const nestedViewer = { address: 'nested-viewer', parent: 'v0', state: 'finished', status: 'idle', finishedAt: now - 2000, exitCode: 0, reason: 'exited',
+      labels: { 'spider.kind': 'subagent-viewer', 'spider.session': 's0', 'spider.run': 'nested-done' } };
+    h.config.retention.completedRows = 1;
+    h.state.feeds[0].runs.rows.push(rootDone, nestedDone); h.state.terminals.push(nestedViewer);
+    const refresh = async () => {
+      h.state.feeds[0].revision++; h.view.spiderReloadAt = -Infinity;
+      await h.view.reloadSpiderFeeds(); h.view.spiderRequestRefresh(); await h.flush();
+    };
+    try {
+      await h.ready(); expect(find(h.render(), 'child-fold-live0')).toBeUndefined();
+      nestedDone.finishedAt = now - 500; nestedViewer.finishedAt = nestedDone.finishedAt;
+      await refresh(); expect(find(h.render(), 'child-fold-live0')).toBeDefined();
+      rootDone.finishedAt = now - 100; await refresh();
+      expect(find(h.render(), 'child-fold-live0')).toBeUndefined();
+    } finally { await h.view.close(); }
+  });
+
+  it(`${version}: the last summarized child's chevron expires with retention`, async () => {
+    const now = Date.now(), clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    const h = fixture(version, 1, 0), first = h.state.feeds[0].runs.rows[0];
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    h.config.retention.completedHours = 0.001;
+    h.state.feeds[0].runs.rows.push({ ...first, id: 'nested-done', status: 'done', finishedAt: now - 1000, viewer: 'nested-viewer' });
+    h.state.terminals.push({ address: 'nested-viewer', parent: 'v0', state: 'finished', status: 'idle', finishedAt: now - 1000, exitCode: 0, reason: 'exited',
+      labels: { 'spider.kind': 'subagent-viewer', 'spider.session': 's0', 'spider.run': 'nested-done' } });
+    try {
+      await h.ready(); expect(find(h.render(), 'child-fold-live0')).toBeDefined();
+      clock.mockReturnValue(now + 3000); h.render(); await h.flush();
+      expect(find(h.render(), 'child-fold-live0')).toBeUndefined();
+    } finally { await h.view.close(); }
+  });
+
+  it(`${version}: a summarized descendant makes its parent expandable until it is removed`, async () => {
+    const h = fixture(version, 1, 0), first = h.state.feeds[0].runs.rows[0];
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    const refresh = async () => {
+      h.state.feeds[0].revision++; h.view.spiderReloadAt = -Infinity;
+      await h.view.reloadSpiderFeeds(); h.view.spiderRequestRefresh(); await h.flush();
+    };
+    try {
+      await h.ready(); expect(find(h.render(), 'child-fold-live0')).toBeUndefined();
+      h.state.feeds[0].runs.rows.push({ ...first, id: 'nested-done', name: 'Nested done', status: 'done', finishedAt: Date.now() - 1000, viewer: 'nested-viewer' });
+      h.state.terminals.push({ address: 'nested-viewer', parent: 'v0', state: 'finished', status: 'idle', finishedAt: Date.now() - 1000, exitCode: 0, reason: 'exited',
+        labels: { 'spider.kind': 'subagent-viewer', 'spider.session': 's0', 'spider.run': 'nested-done' } });
+      await refresh(); let root = h.render();
+      expect(find(root, 'child-fold-live0')).toBeDefined();
+      find(root, 'child-fold-live0').events.on_click({}, h.cx); await h.flush(); root = h.render();
+      expect(h.text(root)).toContain('1 finished');
+      find(root, 'finished-toggle-t0').events.on_click({}, h.cx); root = h.render();
+      expect(find(root, 'sub-nested-done')).toBeDefined();
+      find(root, 'finished-toggle-t0').events.on_click({}, h.cx); await h.flush(); root = h.render();
+      find(root, 'child-fold-live0').events.on_click({}, h.cx); await h.flush();
+      h.state.feeds[0].runs.rows = [first];
+      h.state.terminals = h.state.terminals.filter((terminal: any) => terminal.address !== 'nested-viewer');
+      await refresh(); root = h.render();
+      expect(find(root, 'child-fold-live0')).toBeUndefined();
+    } finally { await h.view.close(); }
+  });
+
+  it(`${version}: a folded native descendant can reveal summarized runs`, async () => {
+    const h = fixture(version, 1, 0), first = h.state.feeds[0].runs.rows[0], now = Date.now();
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    h.state.feeds[0].runs.rows.push({ ...first, id: 'nested-done', status: 'done', finishedAt: now - 1000, viewer: 'nested-viewer' });
+    h.state.terminals.push({ address: 'native', parent: 'v0', state: 'live', status: 'idle', labels: {} },
+      { address: 'nested-viewer', parent: 'native', state: 'finished', status: 'idle', finishedAt: now - 1000, exitCode: 0, reason: 'exited',
+        labels: { 'spider.kind': 'subagent-viewer', 'spider.session': 's0', 'spider.run': 'nested-done' } });
+    h.view.folded.add('native');
+    try {
+      await h.ready(); let root = h.render();
+      find(root, 'child-fold-live0').events.on_click({}, h.cx); await h.flush(); root = h.render();
+      expect(find(root, 'child-fold-native')).toBeDefined();
+      find(root, 'child-fold-native').events.on_click({}, h.cx); await h.flush(); root = h.render();
+      expect(h.text(root)).toContain('1 finished');
+      find(root, 'finished-toggle-t0').events.on_click({}, h.cx); root = h.render();
+      expect(find(root, 'sub-nested-done')).toBeDefined();
+    } finally { await h.view.close(); }
+  });
+
   it(`${version}: subagent folding survives command activity and a reload`, async () => {
     const h = fixture(version, 1, 0);
     const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
@@ -402,8 +599,15 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       expect(ids(root).filter(id => id.startsWith('sub-'))).toHaveLength(before);
       expect(find(root, 'sub-job')).toBeUndefined();
       expect(find(root, 'child-busy-live0')).toBeUndefined();
-      expect(rowSnapshot()).toBe(beforeCommand);
+      expect(rowSnapshot()).not.toBe(beforeCommand);
       expect(find(root, 'child-fold-live0')?.styles.tooltip?.[0]).toBe('Show children');
+      const withCommand = rowSnapshot();
+      const second = { ...command, address: 'job-terminal-2', labels: { ...command.labels, 'spider.job': 'job-2' } };
+      h.state.terminals.push(second); h.render(); await h.flush(); root = h.render();
+      expect(rowSnapshot()).toBe(withCommand);
+      h.state.terminals = h.state.terminals.filter((terminal: any) => terminal !== second);
+      h.render(); await h.flush(); root = h.render();
+      expect(rowSnapshot()).toBe(withCommand);
       command.state = 'finished';
       h.render(); await h.flush(); root = h.render();
       expect(find(root, 'sub-job')).toBeUndefined();

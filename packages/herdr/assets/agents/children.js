@@ -194,7 +194,12 @@ function summarizeFinished(all, deferred, feed, viewersBySession, labels, now, o
     }
   }
   let selectedDeferred = 0;
-  for (const key of deferred.keys()) if (selectedRun(key) && !needed.has(key) && visibleThroughParents(key)) selectedDeferred++;
+  // Omitted history can still be revealed by expanding its projected parent.
+  for (const key of deferred.keys()) if (selectedRun(key) && !needed.has(key)) {
+    if (visibleThroughParents(key)) selectedDeferred++;
+    const parent = byKey.get(keyByAddress.get(viewers?.get(key)?.parent));
+    if (parent) parent.hasSummarizedChildren = true;
+  }
   for (const key of needed) { addRun(deferred.get(key)); retained.push(rows.get(key)); }
   options.finishedSummary.hiddenFinished = selectedDeferred + hiddenNativeCount;
   retained.sort(compare);
@@ -436,7 +441,7 @@ export function agentModelRowKey(rows) {
   try {
     return JSON.stringify(rows.map(row => [row.key, row.kind, row.address, row.originalAddress, row.name,
       row.description, row.status, row.outcome, row.completeness, row.finishedAt, row.retained, row.depth,
-      row.parentKey, row.machine, row.action, row.terminal && [row.terminal.state, row.terminal.template, modelProgram(row.terminal.program)]]));
+      row.parentKey, row.machine, row.action, row.hasSummarizedChildren, row.terminal && [row.terminal.state, row.terminal.template, modelProgram(row.terminal.program)]]));
   } catch { return null; }
 }
 export function agentModelOutputKey(model) {

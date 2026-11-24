@@ -1,7 +1,8 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import * as processIdentity from "../../../subagents/src/process-identity";
+import { main as roamCli } from "../cli";
 import { runIntercomEnrollCli } from "../intercom-cli";
 import { openJournal } from "../journal";
 import { runLocalDoctor } from "../local-diagnostics";
@@ -18,10 +19,11 @@ vi.mock("node:child_process", async importOriginal => {
     return blocked();
   };
   const safe = { exec: blocked, execFile: blocked, execFileSync, execSync: blocked, fork: blocked, spawn: blocked, spawnSync: blocked };
-  return { ...original, ...safe, default: { ...original.default, ...safe } };
+  return { ...original, ...safe, default: { ...original, ...safe } };
 });
+vi.mock("child_process", async () => await import("node:child_process"));
 
-afterEach(() => { vi.restoreAllMocks(); cleanupPairScenarios(); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); cleanupPairScenarios(); });
 
 async function fixture() {
   vi.spyOn(processIdentity, "processStartTime").mockReturnValue("fixture-start");
@@ -96,6 +98,47 @@ it.each([
   expect(await t.doctor()).not.toContain("pair-1: publication");
 });
 
+it("names the real configuration refusal when intercom is disabled on the source", async () => {
+  const t = await fixture(), file = join(t.f.source.globalRoot, "roam", "config.json");
+  const config = JSON.parse(readFileSync(file, "utf8"));
+  config.intercom.enabled = false;
+  writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  const result = await t.enroll(), diagnostic = await t.doctor();
+  expect(result.code).toBe(3);
+  expect(result.err).toContain("publication publish-config on source [intercom-mode-not-peers]");
+  expect(diagnostic).toContain("pair-1: publication publish-config on source [intercom-mode-not-peers]");
+  expect(t.calls).toEqual([{ step: "publish-config", side: "source" }]);
+  expect(result.err).not.toContain(t.f.root);
+});
+
+it("names a missing real helper route without exposing its file path", async () => {
+  const t = await fixture(), local = t.f.locals.get(t.f.target.machineId)!;
+  delete local.enrollBridge;
+  const result = await t.enroll(), diagnostic = await t.doctor();
+  expect(result.code).toBe(3);
+  expect(result.err).toContain("publication enroll-live on target [ENOENT]");
+  expect(diagnostic).toContain("pair-1: publication enroll-live on target [ENOENT]");
+  for (const text of [result.err, diagnostic]) {
+    expect(text).not.toContain(t.f.root);
+    expect(text).not.toContain("helper.json");
+  }
+});
+
+it.each([true, false])("shows pending publication evidence in public doctor with roaming enabled=%s", async enabled => {
+  const t = await fixture(), local = t.f.locals.get(t.f.target.machineId)!;
+  local.enrollBridge = async () => { throw new Error("broker-unavailable"); };
+  expect((await t.enroll()).code).toBe(3);
+  const file = join(t.f.root, "roam", "config.json"), config = JSON.parse(readFileSync(file, "utf8"));
+  config.enabled = enabled;
+  writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  vi.stubEnv("SPIDER_GLOBAL_ROOT", t.f.root);
+  let out = "";
+  await roamCli(["roam", "doctor", "--json"], { out: text => { out += text; }, err: () => {} }, { intercomDoctor: async () => [] });
+  const report = JSON.parse(out) as { value: { diagnostics: Array<{ reason: string }> } };
+  expect(report.value.diagnostics.some(row => row.reason.includes("pair-1: publication enroll-live on target [broker-unavailable]"))).toBe(true);
+  expect(out).not.toContain(t.f.root);
+});
+
 it("clears a recovered publication diagnosis even if federation remains pending", async () => {
   const t = await fixture(), local = t.f.locals.get(t.f.target.machineId)!, originalEnroll = local.enrollBridge!;
   let failing = true;
@@ -130,6 +173,43 @@ it("keeps a precise existing refusal while naming the publication side", async (
   expect(result.err).toContain("pair-1: fresh-peer-consent-required");
   expect(result.err).toContain("publication enroll-live on target");
   expect(await t.doctor()).toContain("pair-1: publication enroll-live on target");
+});
+
+it("clears old publication evidence when a later attempt stops earlier", async () => {
+  const t = await fixture(), local = t.f.locals.get(t.f.target.machineId)!;
+  local.enrollBridge = async () => { throw new Error("broker-unavailable"); };
+  expect((await t.enroll()).code).toBe(3);
+  expect(await t.doctor()).toContain("pair-1: publication enroll-live on target [broker-unavailable]");
+  const count = t.calls.length, exec = t.f.transport.transport.exec.bind(t.f.transport.transport);
+  t.f.transport.transport.exec = async (machine, argv, options) => {
+    if (JSON.parse(options.stdin!.toString()).action === "check-connector") return Buffer.from(JSON.stringify({ version: 1,
+      kind: "intercom-setup", ok: false, machineId: machine.machineId, reason: "intercom-setup-pending", cause: { code: "EACCES" } }));
+    return exec(machine, argv, options);
+  };
+  const result = await t.enroll();
+  expect(result.code).toBe(3);
+  expect(result.err).toContain("intercom-enrollment-pending [EACCES]");
+  expect(t.calls).toHaveLength(count);
+  expect(await t.doctor()).not.toContain("pair-1: publication");
+});
+
+it("keeps enrollment pending and retryable when diagnostic storage fails", async () => {
+  const t = await fixture(), local = t.f.locals.get(t.f.target.machineId)!, originalEnroll = local.enrollBridge!;
+  const record = t.journal.record.bind(t.journal); let failing = true;
+  t.journal.record = (id, action, result) => {
+    if (action === "intercom-publication") throw new Error("private diagnostic failure");
+    record(id, action, result);
+  };
+  local.enrollBridge = async input => { if (failing) throw new Error("broker-unavailable"); return originalEnroll(input); };
+  const result = await t.enroll();
+  expect(result.code).toBe(3);
+  expect(result.err).toContain("intercom-enrollment-pending");
+  expect(result.err).toContain("publication enroll-live on target [broker-unavailable]");
+  expect(result.err).not.toContain("private diagnostic failure");
+  expect(await t.doctor()).not.toContain("pair-1: publication");
+  failing = false;
+  expect((await t.enroll()).code).toBe(0);
+  expect(t.approvals()).toBe(1);
 });
 
 it("does not persist repeated identical failures or expose forged diagnostic fields", async () => {

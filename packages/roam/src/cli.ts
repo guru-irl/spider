@@ -3,6 +3,7 @@ import { inspectSupervisorCorePin } from "./enrollment";
 import { HOSTING_WARNING_CODE } from "./hosting-warning";
 import { peerEnabledDiagnostics } from "./peer-enabled";
 import { readMoveBindingDiagnostics } from "./move-diagnostics";
+import { isMoveSetupDiagnostic } from "./setup-diagnostics";
 import { controlRefusal, controlText, sourceCleanupStatusText, parsePublicControl, resolveControlMachine, safeControlOutcome } from "./commands";
 import { destroyedMachineWarning } from "./forget";
 import type { RunDisabledForget } from "./disabled-forget-contract";
@@ -15,7 +16,7 @@ import { observeLocalHosting } from "./production-supervisor";
 import { homedir, userInfo } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { roamingCliEntry } from "./package-layout";
-import { inspectLocalConsumers, isPendingLaunchDiagnostic, localHubServiceDiagnostics, localPendingLaunchDiagnostics, localStoreInventoryDiagnostics, localHostingWarningDiagnostics, runLocalDoctor, runLocalStatus } from "./local-diagnostics";
+import { inspectLocalConsumers, isPendingLaunchDiagnostic, localHubServiceDiagnostics, localPendingLaunchDiagnostics, localStoreInventoryDiagnostics, localHostingWarningDiagnostics, localMoveSetupDiagnostics, localPublicationDiagnostics, runLocalDoctor, runLocalStatus } from "./local-diagnostics";
 import { requestHubControl } from "./control-socket";
 import { parseRoamJson, storeScope } from "@spider/db-core/roam/codec";
 import { mapRepository } from "@spider/db-core/roam/repo-map";
@@ -549,7 +550,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
             rows.push(...localStoreInventoryDiagnostics(root));
             rows.push(...await localPendingLaunchDiagnostics({ root, machineId: config.machineId }));
           }
-          rows.push(...localHostingWarningDiagnostics(root));
+          rows.push(...localHostingWarningDiagnostics(root), ...localMoveSetupDiagnostics(root), ...await localPublicationDiagnostics(root));
           if (config?.role === "hub") rows.push(...localHubServiceDiagnostics(root));
           if (config?.role === "box") {
             rows.push(...corePinDiagnostics(inspectSupervisorCorePin(root, process.env), config.machineId));
@@ -576,7 +577,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
         const herdr = loadHerdrConfig(root);
         report = await remoteDoctor(createTransport({ binary: herdr.core.binary, env: process.env, enrolled: config.peers }), peer, config);
         report = { ...report, consumers: report.enabled ? report.consumers : [], diagnostics: [
-          ...(report.enabled ? report.diagnostics : report.diagnostics.filter(row => row.reason.startsWith("core-pin-") || row.reason.startsWith("store-") || isPendingLaunchDiagnostic(row) || row.severity === "info" || row.severity === "warning" && row.code === HOSTING_WARNING_CODE)),
+          ...(report.enabled ? report.diagnostics : report.diagnostics.filter(row => row.reason.startsWith("core-pin-") || row.reason.startsWith("store-") || isPendingLaunchDiagnostic(row) || isMoveSetupDiagnostic(row) || row.severity === "info" || row.severity === "warning" && row.code === HOSTING_WARNING_CODE)),
           ...(report.enabled !== config.enabled ? [{ reason: `peer-enabled-mismatch:${peer.machineId}`, severity: "warning" as const,
             repairCommand: config.enabled ? "spider roam enable" : "spider roam disable" }] : []),
         ] };

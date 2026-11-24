@@ -160,6 +160,13 @@ An identity mismatch cannot prove the enrolled peer answered. A session mirror
 export or copy that loses connectivity also retains the backoff and cannot
 verify the round. An answered mirror refusal keeps its own diagnostic.
 
+If an unreadable worktree or replica prevents an initial home, `sync.ts`
+records the responsible machine ID and store kind in local metadata. A move
+keeps the `move-source-home-mismatch` refusal and adds
+`move-first-home-withheld` with that evidence. The safety gate is unchanged.
+A new inventory clears stale evidence, and diagnostic failures do not affect
+home assignment.
+
 ## Move executable and setup failures
 
 Remote agent exec and run commands export the enrolled peer's absolute Pi as
@@ -168,9 +175,13 @@ Validated adapter failures return code `1` with an allowlisted cause. Missing
 Pi returns `participant-pi-unavailable`, which the move refusal retains with
 an install or configuration repair.
 
-Doctor includes the latest local setup stage and cause. The snapshot contains
-no exception text, paths, or prompts. It is machine-local metadata and does not
-replicate. A successful setup clears its own session's failure.
+`readiness.ts` names preparation failures for an unfinished freeze, missing
+cwd, invalid or mismatched header, store mapping, store access, and seeding.
+Unknown failures remain `setup-unavailable`. Doctor includes the latest local
+setup stage, cause, safe session ID, and first and last occurrence times. The
+snapshot contains no exception text, paths, or prompts. It is machine-local
+metadata and does not replicate. A successful setup clears its own session's
+failure.
 
 ## Move recovery
 
@@ -208,3 +219,16 @@ tell open pi sessions to use `/reload` to pick up the local change.
 Failed machine-intercom setup retries after 1, 2, 5, 10, and then 30 seconds.
 Readiness stays pending until setup succeeds. Success resets the initialization
 backoff. Stop cancels the pending retry and drains setup before closing resources.
+
+## Pair publication
+
+After transport verification, `intercom-production.ts` publishes configuration
+on both sides and enrolls both live helpers. A failure keeps the original
+pending or precise refusal. Enrollment output and hub doctor name the step,
+source or target side, and any allowlisted inner cause. Unknown errors keep the
+`unexpected-publish-pair` fallback without exception text.
+
+The local operation journal retains the latest failure for a pending pair.
+Identical retries do not add duplicate diagnostic records. A successful
+publication or a later failure at another step clears the evidence. Writes are
+best effort and cannot change enrollment or its retry.

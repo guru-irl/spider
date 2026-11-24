@@ -13,6 +13,7 @@ import { createIntercomRegistry, withIntercomPeerLock } from "./intercom-registr
 import { persistIntercomPairRoute } from "./provision-config";
 import { requestHelperEnroll, requestHelperFence, requestHelperInspect } from "./intercom-helper";
 import { safeNativeHcCode } from "./cause-codes";
+import { localPublicationError } from "./intercom-publication";
 
 export interface PairConsentProof { approved: true; actor: string; at: number; operationId: string; graphDigest: string; pairs: readonly IntercomEnrollmentPlan[] }
 type Common = { pair: IntercomEnrollmentPair; approval: PairConsentProof; targetCoreId?: string };
@@ -181,10 +182,12 @@ async function localPairOperation(input: LocalPairOperation, ports: LocalPairPor
     const peer = source ? input.pair.target.machineId : input.pair.source.machineId;
     const request = { version: 1 as const, action: "enroll-pair" as const, machineId: ports.machineId, peer, pairId: input.pair.pairId,
       edgeEpoch: input.pair.edgeEpoch, operationId: input.approval.operationId, graphDigest: input.approval.graphDigest, expectedFenceId: input.expectedFenceId };
-    return ports.enrollBridge ? ports.enrollBridge(request) : requestHelperEnroll(ports.root, request);
+    try { return await (ports.enrollBridge ? ports.enrollBridge(request) : requestHelperEnroll(ports.root, request)); }
+    catch (error) { throw localPublicationError(error, "enroll-live"); }
   }
   if (input.action === "publish-config") {
-    await persistIntercomPairRoute(ports.root, input.pair, input.approval.operationId, input.approval.graphDigest);
+    try { await persistIntercomPairRoute(ports.root, input.pair, input.approval.operationId, input.approval.graphDigest); }
+    catch (error) { throw localPublicationError(error, "publish-config"); }
     return { published: true };
   }
   if (input.action === "register-pair") {

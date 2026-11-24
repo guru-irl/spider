@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths, openDbAt, type Db } from "@spider/db-core";
 import { createReplica } from "@spider/db-core/testutil";
@@ -38,16 +38,17 @@ const ROSTER: StoreKey[] = ["global", `repo:${REPO}`, WORKTREE];
 const fixtures: ReturnType<typeof createReplica>[] = [], dbs: Db[] = [];
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const db of dbs.splice(0)) db.close(); for (const f of fixtures.splice(0)) f.close(); });
 
-async function fixture(beforeMapping = true, bound = false) {
-  const global = createReplica("global", HUB); fixtures.push(global);
+async function fixture(beforeMapping = true, bound = false, box = false) {
+  const machineId = box ? BOX : HUB;
+  const global = createReplica("global", machineId); fixtures.push(global);
   vi.stubEnv("HC_SOCKET", join(process.cwd(), ".spider/scratch/move-roster.sock"));
   vi.stubEnv("HC_TERMINAL_SOCKET", join(process.cwd(), ".spider/scratch/move-roster.sock"));
   vi.stubEnv("HC_SESSION", "move-roster");
   mkdirSync(join(global.root, "roam"), { mode: 0o700 });
-  const config: RoamConfig = { enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB,
-    peers: [{ machineId: BOX, alias: "box.invalid", node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/spider", core: "/fixture/core", globalRoot: "/fixture/global" }],
+  const config: RoamConfig = { enabled: !box, role: box ? "box" : "hub", machineId, hubMachineId: HUB,
+    peers: box ? [] : [{ machineId: BOX, alias: "box.invalid", node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/spider", core: "/fixture/core", globalRoot: "/fixture/global" }],
     discoveryRoots: [], coreUnit: "fixture", syncMs: 1000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
-  for (const [name, value] of [["config", config], ["machine", { machineId: HUB }]] as const)
+  for (const [name, value] of [["config", config], ["machine", { machineId }]] as const)
     writeFileSync(join(global.root, "roam", `${name}.json`), JSON.stringify(value), { mode: 0o600 });
   expect(localRuntime.readLocalIdentity(global.root)).toEqual(config);
   for (const directory of [join(global.root, "herdr", "jobs"), join(global.root, "jobs"), join(global.root, "scratch")])
@@ -58,17 +59,20 @@ async function fixture(beforeMapping = true, bound = false) {
   const cwd = join(global.root, "checkout"); mkdirSync(cwd);
   execFileSync("git", ["init", "-q", cwd]);
   expect(paths.projectRoot(cwd)).toBe(join(cwd, ".spider"));
-  const repository = openDbAt(join(cwd, ".git", "spider", "repo.db"), "repo"); dbs.push(repository);
-  repository.prepare("UPDATE roam_meta SET machine_id=? WHERE id=1").run(HUB);
-  enableMemoryCapture(repository, `repo:${REPO}`);
+  const mountRepository = async () => {
+    const repository = openDbAt(join(cwd, ".git", "spider", "repo.db"), "repo"); dbs.push(repository);
+    repository.prepare("UPDATE roam_meta SET machine_id=? WHERE id=1").run(machineId);
+    enableMemoryCapture(repository, `repo:${REPO}`);
+    await mapRepository(global.db, { repoKey: REPO, path: cwd });
+  };
+  if (!box) await mountRepository();
   const worktree = openDbAt(join(cwd, ".spider", "project.db"), "worktree"); dbs.push(worktree);
-  worktree.prepare("UPDATE roam_meta SET machine_id=? WHERE id=1").run(HUB);
+  worktree.prepare("UPDATE roam_meta SET machine_id=? WHERE id=1").run(machineId);
   const sessionId = "ordinary-source", file = join(cwd, "session.jsonl");
   writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: sessionId, cwd }) + "\n" +
     JSON.stringify({ type: "model_change", id: "leaf-1", parentId: null, timestamp: "2026-01-01T00:00:00Z" }) + "\n");
-  const insert = (db: Db) => db.prepare("INSERT INTO sessions(id,started_at,origin_machine) VALUES(?,1,?)").run(sessionId, HUB);
+  const insert = (db: Db) => db.prepare("INSERT INTO sessions(id,started_at,origin_machine) VALUES(?,1,?)").run(sessionId, machineId);
   if (beforeMapping) insert(worktree);
-  await mapRepository(global.db, { repoKey: REPO, path: cwd });
   await mapWorkspace(global.db, { repoKey: REPO, workspaceId: WORKSPACE, path: cwd });
   if (!beforeMapping) insert(worktree);
   const boundKeys: StoreKey[] = [], boundDbs: Db[] = [];
@@ -93,6 +97,10 @@ async function fixture(beforeMapping = true, bound = false) {
   };
   // Memory capture is existing hub setup, not portable session membership.
   enableMemoryCapture(global.db, "global");
+  if (box) {
+    global.db.pragma("wal_checkpoint(TRUNCATE)");
+    copyFileSync(global.db.raw.name, join(global.root, "spider.db"));
+  }
   const journal = openFreezeJournal(join(global.root, "roam", "journal.db"));
   const snapshot = { asks: [], pendingDispatch: [], unknownOutcomes: [], unobservedReceipts: [] };
   const machine = await startMachineMoveSocket(global.root, () => true, { broker: async () => snapshot, bridge: async () => snapshot, settlement: async () => null, intake: fixtureIntercom(sessionId).ports } as never);
@@ -126,8 +134,48 @@ async function fixture(beforeMapping = true, bound = false) {
   const startIdentity = processStartTime(process.pid)!, leases = createSessionLeases(join(global.root, "herdr"));
   const inventory = { presence: createProcessPresence(leases.root), leases, processes: async () => [], probe: async () => ({ kind: "live" as const, startIdentity }) };
   const locks = createBothLocks({ root: leases.root, file: async () => file, inventory, identity: { pid: process.pid, startIdentity } });
-  return { global, config, worktree, sessionId, file, cwd, location, boundKeys, boundDbs, journal, machine, activate, compose, live: () => live, locks };
+  return { global, config, worktree, sessionId, file, cwd, location, boundKeys, boundDbs, journal, machine, activate, compose, mountRepository, live: () => live, locks };
 }
+
+it.each(["activation", "composition"])("%s starts a capture-ready box with a worktree-only location", async path => {
+  const f = await fixture(true, false, true);
+  let mounted: Awaited<ReturnType<typeof f.activate>> | Awaited<ReturnType<typeof f.compose>>;
+  try {
+    f.global.db.prepare("INSERT INTO session_homes VALUES(?,?,1,NULL,1)").run(f.sessionId, BOX);
+    expect(f.location()).toEqual([WORKTREE]);
+    mounted = await (path === "activation" ? f.activate() : f.compose());
+    expect(mounted).not.toBeNull();
+    expect(f.location()).toEqual(ROSTER);
+    expect(readSessionState(f.worktree, f.sessionId)).toBeNull();
+    expect(f.global.db.prepare("SELECT repo_key FROM roam_repo_maps").all()).toEqual([]);
+  } finally { await mounted!?.close(); await f.machine.close(); }
+}, 10000);
+
+it("a box cannot freeze without its move-only store and includes it after it arrives", async () => {
+  const f = await fixture(true, false, true);
+  let activation: Awaited<ReturnType<typeof f.activate>>, mounted: Awaited<ReturnType<typeof f.compose>>;
+  try {
+    f.global.db.prepare("INSERT INTO session_homes VALUES(?,?,1,NULL,1)").run(f.sessionId, BOX);
+    activation = await f.activate(); mounted = await f.compose();
+    expect(activation).not.toBeNull();
+    const live = f.live(); live.ingestThrough = async () => {};
+    const op: Operation = { id: "box-freeze", kind: "session-freeze", machineId: BOX, expectedEpoch: 1,
+      args: { sessionId: f.sessionId, moveId: "box-move", sourceMachine: HUB } };
+    await f.locks(f.sessionId, async () => {
+      await expect(freezeParticipant(op, live)).rejects.toThrow("Store has no local mapping");
+      expect(readSessionState(f.worktree, f.sessionId)).toBeNull();
+      expect(f.journal.read(op.id).some(row => row.action === "done")).toBe(false);
+      const seed: Operation = { ...op, id: "box-seed", kind: "move-seed", args: { ...op.args, keys: ROSTER } };
+      await expect(mounted!.dispatch(seed)).rejects.toThrow("Store has no local mapping");
+      await f.mountRepository();
+      const seeded = await mounted!.dispatch(seed);
+      expect(seeded).toMatchObject({ code: 0, value: ROSTER.map(storeKey => expect.objectContaining({ storeKey })) });
+      const ack = await freezeParticipant(op, live);
+      expect(ack.barriers.map(row => row.storeKey)).toEqual(ROSTER);
+      expect(readSessionState(f.worktree, f.sessionId)).toMatchObject({ state: "frozen", epoch: 1, moveId: "box-move" });
+    });
+  } finally { await mounted!?.close(); await activation!?.close(); await f.machine.close(); }
+}, 10000);
 
 it.each([true, false])("activation completes the roster when the source exists before mapping: %s", async beforeMapping => {
   const f = await fixture(beforeMapping);

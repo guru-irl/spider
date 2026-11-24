@@ -1502,6 +1502,7 @@ it.each([
 it("starts the real Spider broker on a fresh box and then proves broker health", async () => {
   const f = fixture(true); readyIntercomDeclarations(f);
   await create!(f.options).enroll(f.peer, "00000000-0000-4000-8000-000000000001", "herdr-core.service");
+  writeFileSync(join(f.globalRoot, "roam", "active-release.json"), JSON.stringify(f.releaseRoot), { mode: 0o600 });
   vi.stubEnv("HOME", f.home); vi.stubEnv("SPIDER_GLOBAL_ROOT", f.globalRoot); vi.stubEnv("PI_CODING_AGENT_DIR", f.agentDir);
   const out: string[] = [], err: string[] = [];
   const { main } = await import("../cli");
@@ -1509,12 +1510,16 @@ it("starts the real Spider broker on a fresh box and then proves broker health",
   try {
     expect(existsSync(join(f.agentDir, "intercom", "broker.sock"))).toBe(false);
     expect(await main(["--global-root", f.globalRoot, "roam", "intercom", "start-broker"], { out: text => out.push(text), err: text => err.push(text) })).toBe(0);
-    expect(JSON.parse(out.join(""))).toMatchObject({ version: 1, kind: "intercom-broker-start", ok: true, machineId: f.peer.machineId });
+    const reply = JSON.parse(out.join(""));
+    expect(reply).toMatchObject({ version: 1, kind: "intercom-broker-start", ok: true, machineId: f.peer.machineId,
+      doctor: { enabled: false, diagnostics: expect.any(Array), consumers: expect.any(Array) } });
+    expect(reply.doctor.diagnostics.filter((row: { severity: string; reason: string }) => row.severity === "block" && /^intercom-/.test(row.reason))).toEqual([]);
     pid = Number(readFileSync(join(f.agentDir, "intercom", "broker.pid"), "utf8"));
     expect(Number.isSafeInteger(pid) && pid! > 1).toBe(true);
     expect(await create!(f.options).verifyPeer()).toMatchObject({ intercomUnique: true, legacyDrained: true, federation: true });
     out.length = 0;
     expect(await main(["--global-root", f.globalRoot, "roam", "intercom", "start-broker"], { out: text => out.push(text), err: text => err.push(text) })).toBe(0);
+    expect(JSON.parse(out.join(""))).toMatchObject({ ok: true, machineId: f.peer.machineId, doctor: { diagnostics: expect.any(Array) } });
     expect(Number(readFileSync(join(f.agentDir, "intercom", "broker.pid"), "utf8"))).toBe(pid);
   } finally { if (pid) try { process.kill(pid, "SIGTERM"); } catch { /* Fixture process already exited. */ } vi.unstubAllEnvs(); }
 }, 5000);

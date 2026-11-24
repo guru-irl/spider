@@ -427,7 +427,8 @@ it("recovers autostart when enable follows transiently blocked reprovision", asy
   vi.spyOn(observations, "remoteDoctor").mockImplementation(async () => ({ enabled: f.state.boxEnabled,
     diagnostics: await doctorPeer(bootstrapPeer, f.ports as never), consumers: [] }));
   vi.spyOn(transport, "createTransport").mockReturnValue({ async resolve(peer: Peer) { return peer; }, async exec(_peer: Peer, argv: string[]) {
-    if (argv[1] === "intercom") return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: true, machineId: bootstrapPeer.machineId }));
+    if (argv[1] === "intercom") return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: true, machineId: bootstrapPeer.machineId,
+      doctor: { enabled: f.state.boxEnabled, diagnostics: await doctorPeer(bootstrapPeer, f.ports as never), consumers: [] } }));
     const op = JSON.parse(argv[2]);
     return Buffer.from(JSON.stringify({ operationId: op.id, code: 0, value: op.kind === "stores"
       ? { protocol: 1, schema: 14, machineId: bootstrapPeer.machineId, stores: ["global"] } : { complete: true } }));

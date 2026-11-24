@@ -15,6 +15,7 @@ import * as transportModule from "../transport";
 import * as diagnostics from "../diagnostics";
 import * as remoteObservations from "../remote-observations";
 import * as launchd from "../launchd";
+import * as controlSocket from "../control-socket";
 
 const HUB = "00000000-0000-4000-8000-000000000001", BOX = "00000000-0000-4000-8000-000000000002";
 const roots: string[] = [];
@@ -117,9 +118,13 @@ it("restores autostart only after enable preflight succeeds", async () => {
   vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", launchctl);
   vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: f.peer.core } } as never);
   vi.spyOn(diagnostics, "assertCompatibleConsumers").mockResolvedValue(undefined);
-  vi.spyOn(launchd, "installHubService").mockRejectedValue(new Error("fixture prevents service launch"));
+  const service = vi.spyOn(launchd, "installHubService").mockRejectedValue(new Error("fixture prevents service launch"));
+  let startupBlocked = false;
   vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: Peer) { return peer; }, async exec(_peer: Peer, argv: string[]) {
-    if (argv[1] === "intercom") return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: true, machineId: BOX }));
+    if (argv[1] === "intercom") return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: true, machineId: BOX,
+      doctor: { enabled: false, diagnostics: startupBlocked ? [
+        { severity: "block", reason: "intercom-federation: intercom-broker-unavailable.", repairCommand: null },
+      ] : [], consumers: [] } }));
     const op = JSON.parse(argv[2]);
     return Buffer.from(JSON.stringify({ operationId: op.id, code: 0, value: op.kind === "stores"
       ? { protocol: 1, schema: 14, machineId: BOX, stores: ["global"] } : { complete: true } }));
@@ -130,8 +135,23 @@ it("restores autostart only after enable preflight succeeds", async () => {
   expect((await enableRoaming(f.root, process.execPath)).code).toBe(1);
   expect(readFileSync(f.state, "utf8")).toBe("disabled");
   doctor.mockResolvedValue({ enabled: false, diagnostics: [], consumers: [] });
+  startupBlocked = true;
+  expect(await enableRoaming(f.root, process.execPath)).toMatchObject({ code: 3, causeCode: "intercom-broker-unavailable" });
+  expect(readFileSync(f.state, "utf8")).toBe("disabled");
+  expect(JSON.parse(readFileSync(join(f.roam, "config.json"), "utf8")).enabled).toBe(false);
+  startupBlocked = false;
   const ready = await enableRoaming(f.root, process.execPath);
-  expect(ready.code, JSON.stringify(ready)).toBe(3);
+  expect(ready, JSON.stringify(ready)).toMatchObject({ code: 3, reason: "enable-pending" });
+  expect(readFileSync(f.state, "utf8")).toBe("enabled");
+  expect(JSON.parse(readFileSync(join(f.roam, "config.json"), "utf8")).enabled).toBe(true);
+
+  // Retry after the hub service failure and verify the fully successful path too.
+  writeFileSync(f.state, "disabled");
+  const boxConfig = JSON.parse(readFileSync(join(f.roam, "config.json"), "utf8"));
+  writeFileSync(join(f.roam, "config.json"), JSON.stringify({ ...boxConfig, enabled: false }), { mode: 0o600 });
+  service.mockResolvedValue(undefined);
+  vi.spyOn(controlSocket, "requestHubControl").mockResolvedValue({ code: 0, value: { enabled: true } } as never);
+  expect(await enableRoaming(f.root, process.execPath)).toMatchObject({ code: 0, reason: "roaming-enabled" });
   expect(readFileSync(f.state, "utf8")).toBe("enabled");
   expect(JSON.parse(readFileSync(join(f.roam, "config.json"), "utf8")).enabled).toBe(true);
 });

@@ -200,6 +200,77 @@ it.each([
   } finally { vi.useRealTimers(); }
 });
 
+it.each([
+  ["timeout code", () => Object.assign(new Error("provider error"), { code: "ETIMEDOUT" })],
+  ["request timeout", () => new Error("request timed out")],
+  ["bare timeout message", () => new Error("timed out")],
+  ["nested timeout code", () => Object.assign(new Error("fetch failed"), { cause: Object.assign(new Error("connect failed"), { code: "ETIMEDOUT" }) })],
+  ["aggregate timeout", () => new AggregateError([new Error("request timed out")], "provider failed")],
+  ["timeout name", () => Object.assign(new Error("provider error"), { name: "TimeoutError" })],
+])("rotates a candidate with %s and processes its neighbor in the same drain", async (_label, makeError) => {
+  vi.stubEnv("PI_SUBAGENT_CHILD", "0"); vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+  const skills = fixture(); await enqueue(skills);
+  const later = { name: "tracing-readers", body: finalSkillBody("tracing-readers", "Trace reader ownership.") };
+  ctx.repoDb.prepare("INSERT INTO skill_review_queue(name,body,origin,created_at) VALUES (?,?,'learner',?)").run(later.name, later.body, Date.now() + 1);
+  const seen: string[] = [];
+  const reviewer = async (item: typeof candidate) => {
+    seen.push(item.name);
+    if (item.name === candidate.name) throw makeError();
+    return '{"verdict":"new","reason":"reusable"}';
+  };
+  try {
+    await runSkillReviewQueue(ctx.repoDb, { reviewer });
+    expect(seen).toEqual([candidate.name, later.name]);
+    expect(skills.get(later.name)).toMatchObject({ status: "staged", candidateBody: later.body });
+    expect(ctx.repoDb.prepare("SELECT name,attempts,body FROM skill_review_queue").all()).toEqual([{ name: candidate.name, attempts: 0, body: candidate.body }]);
+    expect(ctx.repoDb.prepare("SELECT count(*) n FROM skill_review_outage").get()).toEqual({ n: 0 });
+    expect(ctx.repoDb.prepare("SELECT retry_at FROM skill_review_timeout WHERE name=?").get(candidate.name)).toEqual({ retry_at: Date.now() + 300_000 });
+  } finally { vi.useRealTimers(); }
+});
+
+it("declares an outage after two provider timeouts and retains both candidates", async () => {
+  vi.stubEnv("PI_SUBAGENT_CHILD", "0"); vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+  const skills = fixture(); await enqueue(skills);
+  const later = { name: "tracing-readers", body: finalSkillBody("tracing-readers", "Trace reader ownership.") };
+  ctx.repoDb.prepare("INSERT INTO skill_review_queue(name,body,origin,created_at) VALUES (?,?,'learner',?)").run(later.name, later.body, Date.now() + 1);
+  const seen: string[] = [];
+  try {
+    const reviewer = async (item: typeof candidate) => {
+      seen.push(item.name);
+      if (item.name === candidate.name) throw Object.assign(new Error("provider error"), { code: "ETIMEDOUT" });
+      throw new Error("request timed out");
+    };
+    await runSkillReviewQueue(ctx.repoDb, { reviewer });
+    expect(seen).toEqual([candidate.name, later.name]);
+    expect(ctx.repoDb.prepare("SELECT name,attempts,body FROM skill_review_queue ORDER BY name").all()).toEqual([
+      { name: later.name, attempts: 0, body: later.body }, { name: candidate.name, attempts: 0, body: candidate.body },
+    ]);
+    expect(ctx.repoDb.prepare("SELECT failures,retry_at FROM skill_review_outage").get()).toEqual({ failures: 1, retry_at: Date.now() + 300_000 });
+    await runSkillReviewQueue(ctx.repoDb, { reviewer });
+    expect(seen).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(300_000);
+    await runSkillReviewQueue(ctx.repoDb, { reviewer: async () => '{"verdict":"new","reason":"reusable"}' });
+    expect(skills.get(candidate.name)?.candidateBody).toBe(candidate.body);
+    expect(skills.get(later.name)?.candidateBody).toBe(later.body);
+  } finally { vi.useRealTimers(); }
+});
+
+it("declares an outage immediately for ENOTFOUND without reviewing the neighbor", async () => {
+  vi.stubEnv("PI_SUBAGENT_CHILD", "0"); vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+  const skills = fixture(); await enqueue(skills);
+  const later = { name: "tracing-readers", body: finalSkillBody("tracing-readers", "Trace reader ownership.") };
+  ctx.repoDb.prepare("INSERT INTO skill_review_queue(name,body,origin,created_at) VALUES (?,?,'learner',?)").run(later.name, later.body, Date.now() + 1);
+  const seen: string[] = [];
+  try {
+    await runSkillReviewQueue(ctx.repoDb, { reviewer: async item => { seen.push(item.name); throw Object.assign(new Error("host lookup failed"), { code: "ENOTFOUND" }); } });
+    expect(seen).toEqual([candidate.name]);
+    expect(ctx.repoDb.prepare("SELECT failures,retry_at FROM skill_review_outage").get()).toEqual({ failures: 1, retry_at: Date.now() + 300_000 });
+    expect(ctx.repoDb.prepare("SELECT name,attempts FROM skill_review_queue ORDER BY name").all()).toEqual([
+      { name: later.name, attempts: 0 }, { name: candidate.name, attempts: 0 },
+    ]);
+  } finally { vi.useRealTimers(); }
+});
+
 it("does not spend the content budget when the review timeout aborts the provider", async () => {
   vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
   const skills = fixture(); await enqueue(skills);
@@ -375,7 +446,8 @@ it.each(["malformed", "identity"])("still drops a candidate after three %s revie
 it.each([
   new Error("authentication failed; provider temporarily unavailable"),
   Object.assign(new Error("provider temporarily unavailable"), { cause: Object.assign(new Error("unauthorized"), { status: 401 }) }),
-])("does not defer an identity failure hidden behind provider-unavailable wording", async error => {
+  Object.assign(new Error("request timed out"), { code: "ETIMEDOUT", cause: Object.assign(new Error("unauthorized"), { status: 401 }) }),
+])("does not defer an identity failure hidden behind provider or timeout wording", async error => {
   const skills = fixture(); await enqueue(skills);
   for (let attempt = 1; attempt <= 3; attempt++) {
     await runSkillReviewQueue(ctx.repoDb, { reviewer: async () => { throw error; } });

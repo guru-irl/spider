@@ -285,7 +285,7 @@ export async function disableRoaming(root: string): Promise<ControlResult> {
           } catch { unconfirmed.push(...config.peers.map(peer => peer.alias)); }
         }
         if (unconfirmed.length) return { code: 3, reason: "roaming-disabled-partial",
-          message: `Mac roaming is disabled. Box flags unconfirmed: ${unconfirmed.map(clean).join(", ")}. Captures and homes were retained. Retry spider roam disable.`,
+          message: `Mac roaming is disabled. Box flags unconfirmed: ${unconfirmed.map(clean).join(", ")}. Captures and homes were retained. Retry spider roam disable. Reload open pi sessions (/reload) to pick up /move.`,
           issues: unconfirmed.map(name => ({ reason: `peer-enabled-unconfirmed:${clean(name)}`, repairCommand: "spider roam disable" })) };
         return { code: 0, reason: "roaming-disabled", message: "Roaming hub disabled. Captures and homes were retained. Reload open pi sessions (/reload) to pick up /move.", issues: [] };
       };

@@ -40,7 +40,8 @@ to check the service and that log rather than repeatedly reinstalling it.
 After upgrading a hub enabled on an earlier release, run `spider roam enable`
 again to reinstall its service with the correct entry. The packaged
 `supervisor.mjs` entry also runs through file or directory symlinks to a
-release, including with preserved main symlinks.
+release, including with preserved main symlinks. `scripts/check-roam-bundle.mjs`
+rejects remote runtime and pane endpoint main bodies in the built roam entries.
 
 ## Stop and pending launches
 

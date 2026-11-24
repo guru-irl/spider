@@ -7,6 +7,13 @@ function checkImports(code, path) {
   const tree = ts.createSourceFile(path, code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
   if (tree.parseDiagnostics.length) throw new Error(`invalid roaming JavaScript: ${path}`);
   const visit = node => {
+    if (ts.isStringLiteralLike(node) && node.text.trim() === "A runtime request file is required") {
+      throw new Error(`unexpected remote runtime main in roaming entry: ${path}`);
+    }
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && /^runPaneEndpointCli(?:\$\d+)?$/.test(node.expression.text) &&
+        node.arguments[0] && /\bprocess\s*\.\s*argv\b/.test(node.arguments[0].getText(tree))) {
+      throw new Error(`unexpected pane endpoint main in roaming entry: ${path}`);
+    }
     if (ts.isStringLiteralLike(node) && node.text.startsWith("@earendil-works/pi-")) {
       throw new Error(`pi import in roaming entry: ${path}`);
     }

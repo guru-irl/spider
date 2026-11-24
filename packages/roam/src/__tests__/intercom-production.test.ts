@@ -1,11 +1,14 @@
 import { afterEach, expect, it } from "vitest";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openDb, paths } from "@spider/db-core";
 import { HerdrError } from "@spider/herdr/client/parse";
 import { openJournal } from "../journal";
 import { provisionIntercomEnrollment } from "../intercom-enrollment";
 import type { Peer } from "../contracts";
+import { firstPairFixture } from "./intercom-first-pair-fixture";
+import { runIntercomEnrollCli } from "../intercom-cli";
+import { createIntercomRegistry } from "../intercom-registry";
 
 const HUB = "00000000-0000-4000-8000-000000000001", A = "00000000-0000-4000-8000-000000000002", B = "00000000-0000-4000-8000-000000000003";
 const roots: string[] = [];
@@ -302,6 +305,127 @@ it("reports connector-not-pair-scoped before creating any credentials or routes"
   };
   expect(await provisionIntercomEnrollment(f.request, await ports(f))).toMatchObject({ code: 3, value: { pending: [{ pairId: "pair-1", reason: "connector-not-pair-scoped" }] } });
   expect(f.calls.some(call => ["ensure-key", "write-route", "authorize", "add-machine", "publish-config"].includes(call.input.action))).toBe(false);
+}, 5000);
+
+it("enrolls a first hub-only pair and switches only after hub custody drains", async () => {
+  const f = await firstPairFixture();
+  try {
+    const boxes = [f.source, f.target], initial = boxes.map(peer => f.readConfig(peer));
+    for (const peer of [f.hub, ...boxes]) expect(await createIntercomRegistry(peer.globalRoot).list()).toEqual([]);
+    for (const config of initial) {
+      expect(config.intercom.mode).toBe("hub-only");
+      expect(config.intercom.routes).toHaveLength(1);
+      expect(config.intercom.routes[0]).toMatchObject({ kind: "direct", peer: { machineId: HUB } });
+    }
+    const unrelated = { kind: "relay", peer: f.otherSource, via: HUB };
+    const retainedRoutes = initial.map(config => [...config.intercom.routes, unrelated]);
+    for (const [index, peer] of boxes.entries()) f.saveConfig(peer, { ...initial[index],
+      intercom: { ...initial[index].intercom, routes: retainedRoutes[index] } });
+    let approvals = 0, out = "", err = "";
+    const io = { out(text: string) { out += text; }, err(text: string) { err += text; } };
+    const options = { transport: f.transport, journal: f.journal, tty: true, async ask() { approvals++; return "approve"; } };
+    // Seed relay custody whose consumption receipt still belongs to the hub.
+    // Only its external return path is paused; direct pair enrollment stays live.
+    f.pauseOrigin(true);
+    const sourceQueue = f.queues.get(A)!, from = { sessionId: "sender", scopeId: "scope" };
+    const endpoint = { address: { sessionId: "recipient", scopeId: "scope" }, machineId: B, homeEpoch: null, activationEpoch: "recipient-generation" };
+    const accepted = sourceQueue.acceptOutbound({ from, endpoint, nextHop: HUB,
+      message: { id: "retained-relay", timestamp: 1000, content: { text: "synthetic" } } });
+    expect(accepted.kind).toBe("accepted");
+    const [frame] = sourceQueue.pending({ kind: "outbound", peer: HUB, hopBudgetMs: 1000 });
+    expect(f.hubQueue.acceptInbound({ peer: A, frame }).kind).toBe("accepted");
+    f.hubQueue.acceptOutbound({ frame, nextHop: B });
+    sourceQueue.acknowledge({ peer: HUB, identity: frame.identity, kind: frame.kind });
+    const receipt = { from: endpoint, to: from, digest: frame.identity.digest, attempt: 1, originMachineId: A, sequence: frame.identity.sequence,
+      receipt: { messageId: "retained-relay", status: "injected" as const, timestamp: 1000,
+        evidence: { kind: "entry" as const, entryId: "fixture-entry", sessionId: endpoint.address.sessionId, activationEpoch: endpoint.activationEpoch } } };
+    f.hubQueue.settleReceipt({ queue: "outbound", peer: B, frame: receipt });
+    f.hubQueue.settleReceipt({ queue: "inbound", peer: A, frame: receipt });
+    expect(f.hubQueue.pending({ kind: "receipts", peer: A })).toHaveLength(1);
+    expect(await runIntercomEnrollCli({ root: f.root, graphFile: f.graph, operationId: "enroll-1" }, io, options), err).toBe(0);
+    expect(approvals).toBe(1);
+    expect(out).toContain("intercom-enrolled");
+    for (const [index, peer] of boxes.entries()) {
+      const saved = f.readConfig(peer), remote = index === 0 ? f.target : f.source;
+      expect(saved.intercom.mode).toBe("hub-only");
+      expect(saved.intercom.routes).toEqual([...retainedRoutes[index], { kind: "relay", peer: remote, via: HUB }]);
+      expect(saved.peers).toEqual(initial[index].peers);
+      expect(saved.intercom.connector).toEqual(initial[index].intercom.connector);
+      expect(f.queues.get(peer.machineId)!.topology().mode).toBe("hub-only");
+      const record = (await createIntercomRegistry(peer.globalRoot).get("pair-1"))!;
+      expect(record).toMatchObject({ state: "active", pair: { source: f.source, target: f.target, edgeEpoch: "edge-1" } });
+      const retry = await f.transport.transport.exec(peer, ["roam", "intercom", "setup-local"], { timeoutMs: 40_000, maxBytes: 1024 * 1024,
+        stdin: f.publications.get(peer.machineId)! });
+      expect(JSON.parse(retry.toString()), retry.toString()).toMatchObject({ ok: true, value: { published: true } });
+      expect(f.readConfig(peer)).toEqual(saved);
+      if (process.platform !== "win32") expect(lstatSync(join(peer.globalRoot, "roam", "config.json")).mode & 0o777).toBe(0o600);
+      expect(await f.brokers.get(peer.machineId)!.helper({ version: 1, action: "inspect-pair", machineId: peer.machineId,
+        peer: remote.machineId, edgeEpoch: "edge-1" }, new AbortController().signal)).toMatchObject({ status: "live" });
+    }
+    expect(f.hubQueue.topology()).toMatchObject({ mode: "hub-only", transition: { state: "draining" } });
+    expect(sourceQueue.retained("outbound", "retained-relay")).toMatchObject({ state: "queued", payloadRetained: true });
+    f.pauseOrigin(false);
+    await f.pump(1000);
+    for (let attempt = 0; attempt < 5 && f.hubQueue.topology().mode !== "peers"; attempt++) await f.pump(1000);
+    expect(f.hubQueue.topology()).toMatchObject({ mode: "peers", transition: { state: "complete" } });
+    expect(f.hubQueue.pending({ kind: "receipts", peer: A })).toEqual([]);
+    expect(sourceQueue.retained("outbound", "retained-relay")).toMatchObject({ state: "injected", payloadRetained: false });
+    for (const peer of boxes) expect(f.queues.get(peer.machineId)!.topology().mode).toBe("peers");
+    const beforeRetry = boxes.map(peer => f.readConfig(peer));
+    err = "";
+    expect(await runIntercomEnrollCli({ root: f.root, graphFile: f.graph, operationId: "enroll-1" }, io, options), err).toBe(0);
+    expect(approvals).toBe(1);
+    expect(f.journal.read("enroll-1").filter(row => row.action === "intercom-peer-consent")).toHaveLength(1);
+    for (const [index, peer] of boxes.entries()) {
+      expect(f.readConfig(peer)).toEqual(beforeRetry[index]);
+      expect(f.readConfig(peer).intercom.routes.filter((route: { peer: Peer }) => route.peer.machineId === boxes[1 - index].machineId)).toHaveLength(1);
+      expect((await createIntercomRegistry(peer.globalRoot).list())).toHaveLength(1);
+    }
+  } finally { await f.close(); }
+}, 5000);
+
+it("refuses a wrong-hub relay rather than replacing it during approved publication", async () => {
+  const f = await firstPairFixture();
+  try {
+    const exec = f.transport.transport.exec.bind(f.transport.transport);
+    let refusedConfig: unknown, approvals = 0, enrollments = 0;
+    f.transport.transport.exec = async (peer, argv, options) => {
+      const input = JSON.parse(options.stdin!.toString());
+      if (input.action === "enroll-live") enrollments++;
+      if (input.action === "publish-config" && peer.machineId === A) {
+        const config = f.readConfig(f.source);
+        refusedConfig = { ...config, intercom: { ...config.intercom,
+          routes: [...config.intercom.routes, { kind: "relay", peer: f.target, via: "00000000-0000-4000-8000-000000000004" }] } };
+        f.saveConfig(f.source, refusedConfig);
+      }
+      return exec(peer, argv, options);
+    };
+    let err = "";
+    expect(await runIntercomEnrollCli({ root: f.root, graphFile: f.graph, operationId: "enroll-1" },
+      { out() {}, err(text) { err += text; } }, { transport: f.transport, journal: f.journal, tty: true,
+        async ask() { approvals++; return "approve"; } })).toBe(3);
+    expect(err).toContain("publication publish-config on source");
+    expect(approvals).toBe(1);
+    expect(enrollments).toBe(0);
+    expect(f.readConfig(f.source)).toEqual(refusedConfig);
+    for (const peer of [f.source, f.target]) expect(f.queues.get(peer.machineId)!.topology().mode).toBe("hub-only");
+    expect(f.hubQueue.topology().transition).toBeNull();
+  } finally { await f.close(); }
+}, 5000);
+
+it("keeps a first pair pending when its box has no direct hub edge", async () => {
+  const f = await firstPairFixture();
+  try {
+    const config = f.readConfig(f.source), before = { ...config, intercom: { ...config.intercom, routes: [] } };
+    f.saveConfig(f.source, before);
+    let err = "";
+    expect(await runIntercomEnrollCli({ root: f.root, graphFile: f.graph, operationId: "enroll-1" },
+      { out() {}, err(text) { err += text; } }, { transport: f.transport, journal: f.journal, tty: true,
+        async ask() { return "approve"; } })).toBe(3);
+    expect(err).toContain("publication publish-config on source [intercom-route-missing]");
+    expect(f.readConfig(f.source)).toEqual(before);
+    expect(f.hubQueue.topology().transition).toBeNull();
+  } finally { await f.close(); }
 }, 5000);
 
 it("composes both endpoint operations only after journaled exact-graph approval", async () => {

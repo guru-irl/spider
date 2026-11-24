@@ -166,6 +166,19 @@ it("preserves a typed hosting warning through repeated public outcome sanitizati
   expect(safeControlOutcome(safe)).toEqual(safe);
 });
 
+it("preserves safe launch details through repeated move-refusal sanitization", () => {
+  const warning = { code: "supervisor-hosting-error", check: "launch", since: 1, count: 1,
+    causeCode: "participant-exited-before-readiness", exitCode: 23 };
+  const message = "The source is paused to avoid running two copies. Destination readiness needs reconciliation. supervisor-hosting-error (launch: participant-exited-before-readiness, exit code 23); hosting checks will retry automatically.";
+  const result = { code: 3 as const, reason: "move-destination-pending", operationId: "move-a", home: null, epoch: 2, repairCommand: null, value: null,
+    refusal: { code: "move-destination-pending", blockers: [], message, hostingWarning: { ...warning, contents: "PRIVATE-CONTENT" } } };
+  const safe = safeControlOutcome(result);
+  expect(safe.refusal).toEqual({ code: "move-destination-pending", blockers: [], message, hostingWarning: warning });
+  expect(controlText(safe)).toContain("participant-exited-before-readiness, exit code 23");
+  expect(JSON.stringify(safe)).not.toContain("PRIVATE-CONTENT");
+  expect(safeControlOutcome(safe)).toEqual(safe);
+});
+
 it.each([
   { code: "PRIVATE-CONTENT", check: "restart", since: 1, count: 3 },
   { code: "supervisor-hosting-error", check: "PRIVATE-CONTENT", since: 1, count: 3 },

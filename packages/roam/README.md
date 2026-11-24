@@ -105,6 +105,17 @@ enable switch. Stop clears a `reserved` reservation with no ID lock to idle,
 without a launch outcome or restart proof. The same compare-and-swap prevents a
 concurrent launch from invoking the cleared reservation.
 
+A launch warning retains an allowlisted exception code, or `launch-unavailable`
+when the code is unknown. A confirmed adopted owner that exits before readiness
+reports `participant-exited-before-readiness`. When the recorded terminal matches
+the launch attempt and pinned core, the warning can include its exit code or
+signal. Doctor and cached status show these details without exception text or
+terminal output. The warning survives backoff and supervisor restarts, then
+clears after a successful launch or a deliberate stop. The hosting observation
+sends warnings with fewer than three failures in an optional `earlyWarnings`
+field. Older hubs ignore that field without losing readiness; current hubs
+validate it and combine it with the existing warning list.
+
 An `invoking` reservation without an ID lock remains blocked unless a released
 adoption record proves which owner adopted that launch. Stop requires the same
 boot and an absent recorded PID. PID reuse, an unavailable probe, or a changed
@@ -162,6 +173,14 @@ core problem. These repairs do not send the operator back to doctor. Doctor
 offers stop for an unstarted reservation, but inspection for an invoking
 reservation without a handoff. Stop repair diagnostics name the Mac hub as
 where to run the command, including when doctor runs locally on a box.
+
+## Store inventory
+
+Doctor reports `store-machine-mismatch` when a registered or mapped store
+belongs to another machine identity. The store remains ungathered, and first
+homes stay withheld where its contents could matter. Use a matching machine
+catalog or a fresh isolated catalog. Existing foreign stores have no supported
+in-place adoption or prune command.
 
 ## Machine reachability
 

@@ -300,8 +300,14 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
   if (argv[0] === "roam" && argv[1] === "observe" && argv.length === 3 && ["consumers", "doctor", "hosting"].includes(argv[2])) {
     try {
       const config = readLocalIdentity(root);
-      const value = argv[2] === "consumers" ? await inspectLocalConsumers(root, config.machineId, options?.bundleUrl)
-        : argv[2] === "hosting" ? await observeLocalHosting(root) : await runLocalDoctor({ root, bundleUrl: options?.bundleUrl, inspectIntercomDoctor: true, intercomDoctor: options?.intercomDoctor });
+      let value: unknown;
+      if (argv[2] === "consumers") value = await inspectLocalConsumers(root, config.machineId, options?.bundleUrl);
+      else if (argv[2] === "hosting") {
+        const { warnings, ...observation } = await observeLocalHosting(root);
+        const earlyWarnings = warnings?.filter(row => row.count < 3) ?? [];
+        value = { ...observation, ...(warnings ? { warnings: warnings.filter(row => row.count === 3) } : {}),
+          ...(earlyWarnings.length ? { earlyWarnings } : {}) };
+      } else value = await runLocalDoctor({ root, bundleUrl: options?.bundleUrl, inspectIntercomDoctor: true, intercomDoctor: options?.intercomDoctor });
       io.out(`${JSON.stringify({ version: 1, machineId: config.machineId, kind: argv[2], value })}\n`);
       return 0;
     } catch (error) { io.err(error instanceof ReadinessParseError ? `${error.reason}\n` : "Cannot inspect local roaming state. No data was changed.\n"); return 1; }

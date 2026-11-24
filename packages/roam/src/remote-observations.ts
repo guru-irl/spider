@@ -1,4 +1,4 @@
-import { HOSTING_WARNING_CODE, validHostingWarnings } from "./hosting-warning";
+import { HOSTING_WARNING_CODE, copyHostingWarning, validHostingWarnings, type SessionHostingWarning } from "./hosting-warning";
 import { parseReadiness } from "@spider/db-core/roam/readiness";
 import { validReadiness } from "./session-control";
 import type { HostingObservation } from "./hosting";
@@ -26,9 +26,14 @@ export async function remoteHosting(transport: Transport, peer: Peer, config: Ro
       value.suspensions.some(item => !record(item) || typeof item.sessionId !== "string" || !item.sessionId || !Number.isSafeInteger(item.epoch) || Number(item.epoch) < 1))
     throw new Error("Invalid hosting observation");
   if (value.warnings !== undefined && !validHostingWarnings(value.warnings)) throw new Error("Invalid hosting warnings");
+  if (value.earlyWarnings !== undefined && (!validHostingWarnings(value.earlyWarnings) || value.earlyWarnings.some(row => row.count === 3))) throw new Error("Invalid early hosting warnings");
+  const warnings = (value.warnings ?? []) as SessionHostingWarning[], early = (value.earlyWarnings ?? []) as SessionHostingWarning[];
+  const seen = new Set(warnings.map(row => row.sessionId));
+  for (const row of early) { if (seen.has(row.sessionId)) throw new Error("Duplicate hosting warning"); seen.add(row.sessionId); }
   if (value.readiness.some(row => row.terminal.includes("/"))) throw new Error("Invalid local terminal identity");
   return { readiness: value.readiness.map(raw => { const row = parseReadiness(raw); if (row.origin === "box-local" && row.machineId !== peer.machineId) throw new Error("readiness-origin-mismatch"); return { ...row, terminal: `${peer.alias}/${row.terminal}` }; }),
-    suspensions: value.suspensions as HostingObservation["suspensions"], ...(value.warnings === undefined ? {} : { warnings: value.warnings as HostingObservation["warnings"] }) };
+    suspensions: value.suspensions as HostingObservation["suspensions"],
+    ...(value.warnings === undefined && value.earlyWarnings === undefined ? {} : { warnings: [...warnings, ...early].map(row => ({ sessionId: row.sessionId, ...copyHostingWarning(row) })) }) };
 }
 
 type ConsumerSnapshot = Awaited<ReturnType<typeof inspectLocalConsumers>>;

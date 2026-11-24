@@ -1,5 +1,12 @@
 import { expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { migrate, openDb } from "@spider/db-core";
+import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
+import { scratchDbPath } from "@spider/db-core/testutil";
 import type { Home, Probe, SessionState } from "@spider/db-core/roam/types";
+import { localHostingWarningDiagnostics } from "../local-diagnostics";
+import { validHostingWarnings, type HostingWarning } from "../hosting-warning";
 import type { HostIntent } from "../contracts";
 import type { IntentState, IntentStore, VersionedIntent } from "../intent";
 import { LEGACY_AUTOMATIC_READ_SUSPENSION } from "../intent";
@@ -496,7 +503,8 @@ it.each(["inspection", "running-intent", "restart", "launch"] as const)("reports
       if (pass < 3) expect(f.warnings.filter(row => row.warning !== null)).toEqual([]);
     }
     expect(f.warnings.filter(row => row.warning !== null)).toEqual([{ sessionId: intent.sessionId,
-      warning: { code: "supervisor-hosting-error", check, since: f.now(), count: 3 } }]);
+      warning: { code: "supervisor-hosting-error", check, since: f.now(), count: 3,
+        ...(check === "launch" ? { causeCode: "launch-unavailable" } : {}) } }]);
     expect(log).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(log.mock.calls)).not.toContain("secret file contents");
     expect(await f.state()).toEqual(original);
@@ -560,6 +568,227 @@ it.each([
   } finally { await supervisor.stop(); }
 });
 
+
+it.each([
+  ["ENOENT", "ENOENT"],
+  ["provisioned-pi-unavailable", "provisioned-pi-unavailable"],
+  ["launch-pending", "launch-pending"],
+  ["untrusted-detail", "launch-unavailable"],
+  [undefined, "launch-unavailable"],
+])("retains only the safe cause for a launch exception: %s", async (code, causeCode) => {
+  const module = await supervisorModule(); if (!module) return;
+  const f = fixture(), launch = f.ports.launch, publish = f.ports.hostingWarning!;
+  const root = mkdtempSync(join(dirname(scratchDbPath("supervisor-warning")), "supervisor-warning-"));
+  const db = openDb(join(root, "spider.db"));
+  migrate(db, "global", { machineId: local, globalRoot: root });
+  f.ports.hostingWarning = async (id, warning) => {
+    writeLocal(db, "supervisor-hosting-error", id, warning ?? undefined);
+    await publish(id, warning);
+  };
+  f.ports.launch = async () => { throw Object.assign(new Error("private detail /home/fixture/session"), { code }); };
+  const log = vi.spyOn(console, "error").mockImplementation(() => {}), supervisor = module.createSupervisor(f.ports);
+  try {
+    for (let pass = 0; pass < 3; pass++) await supervisor.reconcile();
+    const warning = readLocal(db, "supervisor-hosting-error", intent.sessionId);
+    expect(warning).toEqual({ code: "supervisor-hosting-error", check: "launch", since: f.now(), count: 3, causeCode });
+    const doctor = localHostingWarningDiagnostics(root);
+    expect(doctor).toEqual([expect.objectContaining({ code: "supervisor-hosting-error", severity: "warning",
+      reason: expect.stringContaining(causeCode) })]);
+    expect(JSON.stringify({ warning, doctor, log: log.mock.calls })).not.toContain("private detail");
+    expect(JSON.stringify({ warning, doctor, log: log.mock.calls })).not.toContain("untrusted-detail");
+    f.ports.launch = launch;
+    await supervisor.reconcile();
+    expect(f.launches).toHaveLength(1);
+    expect(readLocal(db, "supervisor-hosting-error", intent.sessionId)).toBeUndefined();
+    expect(localHostingWarningDiagnostics(root)).toEqual([]);
+  } finally { await supervisor.stop(); log.mockRestore(); db.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+it.each([
+  [{ exitCode: 127 }, "exit code 127"],
+  [{ signal: 15 }, "signal 15"],
+])("reports terminal status from a thrown launch error: %s", async (launchExit, detail) => {
+  const module = await supervisorModule(); if (!module) return;
+  const f = fixture(), publish = f.ports.hostingWarning!;
+  const root = mkdtempSync(join(dirname(scratchDbPath("supervisor-error-exit")), "supervisor-error-exit-"));
+  const db = openDb(join(root, "spider.db"));
+  migrate(db, "global", { machineId: local, globalRoot: root });
+  f.ports.hostingWarning = async (id, warning) => {
+    writeLocal(db, "supervisor-hosting-error", id, warning ?? undefined);
+    await publish(id, warning);
+  };
+  f.ports.launch = async () => { throw Object.assign(new Error("private detail"), { code: "launch-pending", launchExit }); };
+  const log = vi.spyOn(console, "error").mockImplementation(() => {}), supervisor = module.createSupervisor(f.ports);
+  try {
+    for (let pass = 0; pass < 3; pass++) await supervisor.reconcile();
+    const warning = readLocal(db, "supervisor-hosting-error", intent.sessionId);
+    expect(warning).toEqual({ code: "supervisor-hosting-error", check: "launch", since: f.now(), count: 3,
+      causeCode: "launch-pending", ...launchExit });
+    const doctor = localHostingWarningDiagnostics(root);
+    expect(doctor).toEqual([expect.objectContaining({ reason: expect.stringMatching(new RegExp(`launch-pending.*${detail}`)) })]);
+    expect(JSON.stringify({ warning, doctor, log: log.mock.calls })).not.toContain("private detail");
+  } finally { await supervisor.stop(); log.mockRestore(); db.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+it("updates the cause of a persistent launch failure without repeating its log or notifying", async () => {
+  const module = await supervisorModule(); if (!module) return;
+  const f = fixture(); let code = "ENOENT";
+  f.ports.launch = async () => { throw Object.assign(new Error("private detail"), { code }); };
+  const log = vi.spyOn(console, "error").mockImplementation(() => {}), supervisor = module.createSupervisor(f.ports);
+  try {
+    for (let pass = 0; pass < 3; pass++) await supervisor.reconcile();
+    expect(f.warnings.filter(row => row.warning !== null)).toEqual([{ sessionId: intent.sessionId,
+      warning: { code: "supervisor-hosting-error", check: "launch", since: f.now(), count: 3, causeCode: "ENOENT" } }]);
+    code = "EACCES";
+    await supervisor.reconcile();
+    expect(f.warnings.at(-1)).toEqual({ sessionId: intent.sessionId,
+      warning: { code: "supervisor-hosting-error", check: "launch", since: f.now(), count: 3, causeCode: "EACCES" } });
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(f.notices).toEqual([]);
+  } finally { await supervisor.stop(); log.mockRestore(); }
+});
+
+it.each([false, true])("keeps a published launch cause through later inspection failures until launch succeeds, restart=%s", async restart => {
+  const module = await supervisorModule(); if (!module) return;
+  const f = fixture(), launch = f.ports.launch, inspect = f.ports.inspect, publish = f.ports.hostingWarning!;
+  const root = mkdtempSync(join(dirname(scratchDbPath("supervisor-preserve")), "supervisor-preserve-"));
+  const db = openDb(join(root, "spider.db")); migrate(db, "global", { machineId: local, globalRoot: root });
+  f.ports.hostingWarning = async (id, warning) => { writeLocal(db, "supervisor-hosting-error", id, warning ?? undefined); await publish(id, warning); };
+  f.ports.readHostingWarning = async id => readLocal<HostingWarning>(db, "supervisor-hosting-error", id);
+  f.ports.launch = async () => { throw Object.assign(new Error("private launch detail"), { code: "EACCES" }); };
+  const log = vi.spyOn(console, "error").mockImplementation(() => {});
+  let supervisor = module.createSupervisor(f.ports);
+  try {
+    for (let pass = 0; pass < 3; pass++) await supervisor.reconcile();
+    const warning = readLocal(db, "supervisor-hosting-error", intent.sessionId);
+    expect(warning).toMatchObject({ check: "launch", causeCode: "EACCES", count: 3 });
+    if (restart) { await supervisor.stop(); supervisor = module.createSupervisor(f.ports); }
+    f.ports.inspect = async () => { throw new Error("private inspection detail"); };
+    for (let pass = 0; pass < 4; pass++) await supervisor.reconcile();
+    expect(readLocal(db, "supervisor-hosting-error", intent.sessionId)).toEqual(warning);
+    expect(localHostingWarningDiagnostics(root)).toEqual([expect.objectContaining({ reason: expect.stringContaining("EACCES") })]);
+    f.ports.inspect = inspect; f.ports.launch = launch;
+    await supervisor.reconcile();
+    expect(f.launches).toHaveLength(1);
+    expect(readLocal(db, "supervisor-hosting-error", intent.sessionId)).toBeUndefined();
+    expect(log).toHaveBeenCalledTimes(1); expect(f.notices).toEqual([]);
+  } finally { await supervisor.stop(); log.mockRestore(); db.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+it("does not publish an exited-launch warning after a concurrent stop wins the state update", async () => {
+  const module = await supervisorModule(); if (!module) return;
+  const f = fixture(), current = (await f.intents.get(intent.sessionId))!;
+  await f.intents.update(intent.sessionId, current.version, { ...current.value,
+    supervision: { kind: "launching", operationId: "reserved-launch", phase: "reserved" } });
+  f.ports.launch = async () => ({ code: 1, reason: "adopted-exited", operationId: "reserved-launch", home: null,
+    epoch: intent.epoch, repairCommand: null, value: null, launchExit: { exitCode: 23 } });
+  f.ports.restart = async () => {
+    const latest = (await f.intents.get(intent.sessionId))!, stopped = { ...intent, desired: "stopped" as const };
+    await f.intents.update(intent.sessionId, latest.version, { ...latest.value, intent: stopped });
+    f.setAuthoritative(stopped);
+  };
+  const log = vi.spyOn(console, "error").mockImplementation(() => {}), supervisor = module.createSupervisor(f.ports);
+  try {
+    await supervisor.reconcile();
+    expect((await f.state()).intent.desired).toBe("stopped");
+    expect(f.warnings.filter(row => row.warning !== null)).toEqual([]);
+    expect(f.notices).toEqual([]); expect(log).not.toHaveBeenCalled();
+  } finally { await supervisor.stop(); log.mockRestore(); }
+});
+
+it.each([
+  [{ exitCode: 23 }, "exit code 23"],
+  [{ signal: 9 }, "signal 9"],
+])("reports an early participant exit and clears it after a successful launch: %s", async (launchExit, detail) => {
+  const module = await supervisorModule(); if (!module) return;
+  const f = fixture(), launch = f.ports.launch, publish = f.ports.hostingWarning!;
+  const root = mkdtempSync(join(dirname(scratchDbPath("supervisor-exit")), "supervisor-exit-"));
+  const db = openDb(join(root, "spider.db"));
+  migrate(db, "global", { machineId: local, globalRoot: root });
+  f.ports.hostingWarning = async (id, warning) => {
+    writeLocal(db, "supervisor-hosting-error", id, warning ?? undefined);
+    await publish(id, warning);
+  };
+  f.ports.readHostingWarning = async id => readLocal<HostingWarning>(db, "supervisor-hosting-error", id);
+  f.ports.launch = createDurableLaunchPort({ intents: f.intents, operationId: () => "early-launch", authorize: async () => true,
+    async invoke({ intent: value, mode, reservation }) {
+      return { code: mode === "initial" ? 3 : 1, reason: mode === "initial" ? "readiness-pending" : "adopted-exited",
+        operationId: reservation.operationId, home: null, epoch: value.epoch, repairCommand: null, value: null,
+        ...(mode === "reconcile" ? { launchExit } : {}) };
+    } });
+  const log = vi.spyOn(console, "error").mockImplementation(() => {});
+  let supervisor = module.createSupervisor(f.ports);
+  try {
+    await supervisor.reconcile();
+    await supervisor.reconcile();
+    expect((await f.state()).supervision).toEqual({ kind: "idle", nextAttemptAt: f.now() + 5_000 });
+    const warning = { code: "supervisor-hosting-error", check: "launch", since: f.now(), count: 1,
+      causeCode: "participant-exited-before-readiness", ...launchExit };
+    expect(readLocal(db, "supervisor-hosting-error", intent.sessionId)).toEqual(warning);
+    expect(localHostingWarningDiagnostics(root)).toEqual([expect.objectContaining({ severity: "warning",
+      reason: expect.stringMatching(new RegExp(`participant-exited-before-readiness.*${detail}`)) })]);
+    await supervisor.stop();
+    supervisor = module.createSupervisor(f.ports);
+    await supervisor.reconcile();
+    expect(readLocal(db, "supervisor-hosting-error", intent.sessionId)).toEqual(warning);
+    const inspect = f.ports.inspect;
+    f.ports.inspect = async () => { throw new Error("transient inspection failure"); };
+    for (let pass = 0; pass < 3; pass++) await supervisor.reconcile();
+    f.ports.inspect = inspect;
+    await supervisor.reconcile();
+    expect(readLocal(db, "supervisor-hosting-error", intent.sessionId)).toEqual(warning);
+    expect(f.notices).toEqual([]);
+    f.ports.launch = launch;
+    f.advance(5_000);
+    await supervisor.reconcile();
+    expect(f.launches).toHaveLength(1);
+    expect(readLocal(db, "supervisor-hosting-error", intent.sessionId)).toBeUndefined();
+    expect(localHostingWarningDiagnostics(root)).toEqual([]);
+  } finally { await supervisor.stop(); log.mockRestore(); db.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+it.each(["backoff", "inspection failure"] as const)("retries a failed early-exit warning write after %s", async next => {
+  const module = await supervisorModule(); if (!module) return;
+  const f = fixture(), publish = f.ports.hostingWarning!; let reject = true;
+  f.ports.hostingWarning = async (id, warning) => {
+    if (warning && reject) { reject = false; throw new Error("warning write failed"); }
+    await publish(id, warning);
+  };
+  f.ports.launch = createDurableLaunchPort({ intents: f.intents, operationId: () => "early-launch", authorize: async () => true,
+    async invoke({ intent: value, mode, reservation }) {
+      return { code: mode === "initial" ? 3 : 1, reason: mode === "initial" ? "readiness-pending" : "adopted-exited",
+        operationId: reservation.operationId, home: null, epoch: value.epoch, repairCommand: null, value: null,
+        ...(mode === "reconcile" ? { launchExit: { exitCode: 23 } } : {}) };
+    } });
+  const log = vi.spyOn(console, "error").mockImplementation(() => {}), supervisor = module.createSupervisor(f.ports);
+  try {
+    await supervisor.reconcile();
+    await expect(supervisor.reconcile()).rejects.toThrow("warning write failed");
+    expect((await f.state()).supervision).toEqual({ kind: "idle", nextAttemptAt: f.now() + 5_000 });
+    if (next === "inspection failure") f.ports.inspect = async () => { throw new Error("transient inspection failure"); };
+    await supervisor.reconcile();
+    expect(f.warnings.filter(row => row.warning !== null)).toEqual([{ sessionId: intent.sessionId, warning: {
+      code: "supervisor-hosting-error", check: "launch", since: f.now(), count: 1,
+      causeCode: "participant-exited-before-readiness", exitCode: 23,
+    } }]);
+    expect(f.notices).toEqual([]);
+    expect(log).toHaveBeenCalledTimes(1);
+  } finally { await supervisor.stop(); log.mockRestore(); }
+});
+
+it("accepts legacy hosting warnings but rejects unsafe remote launch details", () => {
+  const legacy = { sessionId: "session-1", code: "supervisor-hosting-error", check: "launch", since: 1, count: 3 };
+  expect(validHostingWarnings([legacy])).toBe(true);
+  expect(validHostingWarnings([{ ...legacy, causeCode: "ENOENT", exitCode: 23 }])).toBe(true);
+  expect(validHostingWarnings([{ ...legacy, count: 1, causeCode: "participant-exited-before-readiness", signal: 9 }])).toBe(true);
+  for (const invalid of [
+    { causeCode: "private detail" }, { causeCode: "/home/fixture/secret" },
+    { causeCode: "ENOENT", exitCode: -1 }, { causeCode: "ENOENT", exitCode: 256 },
+    { causeCode: "ENOENT", signal: 0 }, { causeCode: "ENOENT", signal: 256 },
+    { causeCode: "ENOENT", signal: "9" }, { causeCode: "ENOENT", check: "inspection" },
+    { count: 1, causeCode: "ENOENT" }, { exitCode: 23 },
+  ]) expect(validHostingWarnings([{ ...legacy, ...invalid }]), JSON.stringify(invalid)).toBe(false);
+});
 
 it("retries a warning write that failed before it became visible", async () => {
   const module = await supervisorModule(); if (!module) return;

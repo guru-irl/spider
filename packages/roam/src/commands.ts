@@ -1,4 +1,4 @@
-import { hostingWarningText, validHostingWarning, type HostingWarning } from "./hosting-warning";
+import { copyHostingWarning, hostingWarningText, validHostingWarning, type HostingWarning } from "./hosting-warning";
 import { safeAgentOperationKind, safeCauseCode } from "./cause-codes";
 import { moveFailureRepair, safeMoveCause } from "./move-failure";
 import type { RoamStatus } from "./diagnostics";
@@ -194,7 +194,7 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
     if (typeof code === "string" && Object.hasOwn(MOVE_REFUSAL_MESSAGES, code) && code === result.reason && result.code !== 0 && Array.isArray(rawRefusal.blockers)) {
       const rawWarning = rawRefusal.hostingWarning;
       const warning: HostingWarning | undefined = code === "move-destination-pending" && validHostingWarning(rawWarning)
-        ? { code: rawWarning.code, check: rawWarning.check, since: rawWarning.since, count: rawWarning.count } : undefined;
+        ? copyHostingWarning(rawWarning) : undefined;
       const message = MOVE_REFUSAL_MESSAGES[code as MoveRefusalCode] + (moveCause ? ` ${moveFailureRepair(moveCause)}` : "") + (warning ? ` ${hostingWarningText(warning)}` : "");
       if (rawRefusal.message === message) try {
         refusal = { code: code as MoveRefusalCode, message, blockers: rawRefusal.blockers.map(validateBlockerId), ...(warning ? { hostingWarning: warning } : {}),

@@ -2,19 +2,19 @@ import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { parseLocationStores } from "@spider/db-core/roam/catalog";
 import { startPrivateControl, requestPrivateControl } from "./control-socket";
 import type { IntercomLifecycle, Operation, RoamConfig } from "./contracts";
-import type { SupervisorPorts } from "./supervisor";
+import type { SupervisorLaunchOutcome, SupervisorPorts } from "./supervisor";
 import { participantRestartHistory, recordParticipantRestart } from "./participant-launch";
 import { isDeepStrictEqual } from "node:util";
 import { join } from "node:path";
 import { openDbReadOnly, type Db } from "@spider/db-core";
 import { readSessionState } from "@spider/db-core/roam/state";
-import type { Probe, HubOperationReadiness, StoreKey } from "@spider/db-core/roam/types";
+import type { Probe, StoreKey } from "@spider/db-core/roam/types";
 import type { AgentPorts, Clock, Diagnostic, HostIntent, Outcome } from "./contracts";
 import { createIntentStore } from "./intent";
 import { assertBoxEnrollment, participantCaptureInitialized, createRunningIntentAuthority } from "./session-control";
 import { createDurableLaunchPort, createSupervisor, type LaunchReservation } from "./supervisor";
 import { sessionHome } from "./homes";
-import { HOSTING_WARNING_CODE } from "./hosting-warning";
+import { HOSTING_WARNING_CODE, validHostingWarning } from "./hosting-warning";
 import { recordSupervisorExits } from "./intercom-exclusion";
 
 export function unfinishedFreeze(root: string, id: string): boolean {
@@ -39,7 +39,7 @@ export function createParticipantSupervisor(input: {
   beforeInspect?(sessionId: string): Promise<void>;
   owner(intent: HostIntent): Promise<Probe>;
   diagnostics(intent: HostIntent): Promise<readonly Diagnostic[]>;
-  launch(intent: HostIntent, operationId: string, mode: "initial" | "reconcile"): Promise<Outcome<HubOperationReadiness>>;
+  launch(intent: HostIntent, operationId: string, mode: "initial" | "reconcile"): Promise<SupervisorLaunchOutcome>;
   stop(sessionId: string): Promise<Probe>;
   cancelStop?(sessionId: string): void;
   confirmExit?(identity: { pid: number; startTime: string }): Promise<boolean>;
@@ -97,6 +97,7 @@ export function createParticipantSupervisor(input: {
   return createSupervisor({ connection: input.connection, clock: input.clock, journal: input.agent.journal, intents, runningIntents: trusted, events: input.events,
     inspect, launch,
     async hostingWarning(id, warning) { writeLocal(global, HOSTING_WARNING_CODE, id, warning ?? undefined); },
+    async readHostingWarning(id) { const warning = readLocal<unknown>(global, HOSTING_WARNING_CODE, id); return validHostingWarning(warning) ? warning : undefined; },
     async restart(intent, previous) {
       const operationId = authority.operationId(intent.sessionId);
       if (!operationId) throw new Error("participant-intent-unavailable");

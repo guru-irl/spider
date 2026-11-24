@@ -663,6 +663,28 @@ it.each(["missing", "corrupt"])("%s mapped scopes defer first homes and writes w
   expect(f.calls.filter(call => call.operation.args.storeKey === key)).toEqual([]);
   expect(existing.prepare("SELECT name FROM sessions WHERE id='hidden-session'").get()).toEqual({ name: "portable" });
 }, 5000);
+it("a foreign-machine mapped store stays ungathered and withholds its first home", async () => {
+  const f = fixture([BOX, BOX2]), foreign = createReplica("worktree", HUB);
+  try {
+    f.seed(BOX, "hidden-session"); f.seed(BOX2, "healthy-session");
+    const key = f.remotes.get(BOX)!.worktree.storeKey, remote = f.remotes.get(BOX2)!, sync = service(f);
+    f.unavailable.add(BOX2);
+    expect((await sync.sync()).some(row => row.code !== 0)).toBe(true);
+    expect(f.global.db.prepare("SELECT * FROM session_homes").all()).toEqual([]);
+    f.unavailable.delete(BOX2); f.calls.length = 0;
+    foreign.db.prepare("UPDATE roam_meta SET store_key=NULL WHERE id=1").run();
+    remote.global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','workspace-0',?)").run(foreign.root);
+    writeLocal(remote.global.db, "mapping-redirect", key, foreign.db.raw.name);
+    expect((await sync.sync()).every(row => row.code === 0)).toBe(true);
+    expect(f.global.db.prepare("SELECT session_id,machine_id FROM session_homes ORDER BY session_id").all())
+      .toEqual([{ session_id: "healthy-session", machine_id: BOX2 }]);
+    expect(peerState.loadPeerState(f.global.db, BOX2, 4096).ungathered).toContainEqual({ key, scope: "worktree",
+      path: foreign.db.raw.name, code: "uninspectable", check: "store-machine-mismatch" });
+    expect(f.calls.filter(call => call.operation.args.storeKey === key)).toEqual([]);
+    expect(foreign.db.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get()).toEqual({ machine_id: HUB, store_key: null });
+  } finally { foreign.close(); }
+}, 5000);
+
 it("one corrupt registered store leaves global and healthy project sync usable", async () => {
   const f = fixture(); f.seed(); const remote = f.remotes.get(BOX)!;
   const file = join(remote.global.root, "corrupt.db"); writeFileSync(file, "not sqlite");

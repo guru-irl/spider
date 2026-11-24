@@ -377,6 +377,51 @@ it("private hosting observation invokes the producer with the explicit root", as
   expect(JSON.parse(f.out.join(""))).toMatchObject({ version: 1, machineId: HUB, kind: "hosting", value: { suspensions: [{ sessionId: "s-1", epoch: 2 }] } });
 }, 5000);
 
+it.each([1, 2])("keeps early launch warnings compatible with an older hosting observer: count %s", async count => {
+  const f = await fixture(HUB, undefined, false);
+  const early = { sessionId: "s-1", code: "supervisor-hosting-error" as const, check: "launch" as const, since: 1, count,
+    causeCode: "participant-exited-before-readiness", exitCode: 23 };
+  const persistent = { sessionId: "s-2", code: "supervisor-hosting-error" as const, check: "inspection" as const, since: 2, count: 3 };
+  const readiness = { origin: "hub-operation" as const, opId: "op-1", sessionId: "s-2", epoch: 1,
+    file: "/home/fixture/session.jsonl", cwd: "/home/fixture/work", core: "core-1", terminal: "terminal-1" };
+  vi.spyOn(hosting, "observeLocalHosting").mockResolvedValue({ readiness: [readiness], suspensions: [], warnings: [early, persistent] });
+  expect(await f.invoke(["roam", "observe", "hosting"])).toBe(0);
+  const value = JSON.parse(f.out.join("")).value;
+  expect(value.readiness).toEqual([readiness]);
+  expect(value.warnings).toEqual([persistent]);
+  expect(value.earlyWarnings).toEqual([early]);
+}, 5000);
+
+it("a current hub reads early warnings without accepting private or malformed peer fields", async () => {
+  const f = await fixture(HUB, undefined, false), config = localRuntime.readLocalIdentity(f.root), peer = config.peers[0];
+  const early = { sessionId: "s-1", code: "supervisor-hosting-error", check: "launch", since: 1, count: 1,
+    causeCode: "participant-exited-before-readiness", exitCode: 23 };
+  const persistent = { sessionId: "s-2", code: "supervisor-hosting-error", check: "inspection", since: 2, count: 3 };
+  const readiness = { origin: "hub-operation", opId: "op-1", sessionId: "s-2", epoch: 1,
+    file: "/home/fixture/session.jsonl", cwd: "/home/fixture/work", core: "core-1", terminal: "terminal-1" };
+  let value: unknown = { readiness: [readiness], suspensions: [], warnings: [persistent],
+    earlyWarnings: [{ ...early, message: "private detail" }] };
+  const transport = { async resolve() { return peer; }, async exec() {
+    return Buffer.from(JSON.stringify({ version: 1, machineId: peer.machineId, kind: "hosting", value }));
+  } } as never;
+  const observed = await remoteObservations.remoteHosting(transport, peer, config);
+  expect(observed).toEqual({ readiness: [{ ...readiness, terminal: `${peer.alias}/terminal-1` }], suspensions: [], warnings: [persistent, early] });
+  expect(JSON.stringify(observed)).not.toContain("private detail");
+  value = { readiness: [readiness], suspensions: [], earlyWarnings: [early] };
+  expect((await remoteObservations.remoteHosting(transport, peer, config)).warnings).toEqual([early]);
+  value = { readiness: [readiness], suspensions: [], warnings: [persistent] };
+  expect((await remoteObservations.remoteHosting(transport, peer, config)).warnings).toEqual([persistent]);
+  value = { readiness: [readiness], suspensions: [] };
+  expect((await remoteObservations.remoteHosting(transport, peer, config)).warnings).toBeUndefined();
+  for (const invalid of [
+    [{ ...early, causeCode: "private detail" }], [{ ...early, exitCode: 256 }], [{ ...early, count: 3 }],
+    [{ ...early, sessionId: "s-2" }], "invalid",
+  ]) {
+    value = { readiness: [readiness], suspensions: [], warnings: [persistent], earlyWarnings: invalid };
+    await expect(remoteObservations.remoteHosting(transport, peer, config)).rejects.toThrow();
+  }
+}, 5000);
+
 it.each([
   ["agent", ["roam", "agent", "{}"]],
   ["artifact receiver", ["roam", "artifact", "receive", "{}"]],
@@ -1162,6 +1207,23 @@ it("disabled doctor reports an ungathered corrupt store as a warning with its pa
   expect(JSON.parse(f.out.join("")).value.diagnostics).toContainEqual(expect.objectContaining({ severity: "warning", reason: expect.stringContaining(store) }));
   expect(JSON.parse(f.out.join("")).value.diagnostics.filter((row: { severity: string }) => row.severity === "block")).toEqual([]);
 }, 5000);
+it("disabled doctor names a foreign-machine mapped worktree without machine IDs", async () => {
+  const f = await fixture(HUB, undefined, false), configFile = join(f.root, "roam/config.json"), config = JSON.parse(readFileSync(configFile, "utf8"));
+  config.enabled = false; config.peers = []; writeFileSync(configFile, JSON.stringify(config), { mode: 0o600 });
+  const db = openDb(join(f.root, "spider.db")); migrate(db, "global", { machineId: HUB, globalRoot: f.root });
+  const path = join(f.root, "foreign"), file = join(path, ".spider", "project.db");
+  mkdirSync(join(path, ".spider"), { recursive: true });
+  const foreign = openDb(file); migrate(foreign, "worktree", { machineId: BOX, globalRoot: f.root }); foreign.close();
+  db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES ('foreign',?,?,1,1)").run(path, file);
+  db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','foreign',?)").run(path); db.close();
+  expect(await f.invoke(["roam", "doctor", "--json"])).toBe(0);
+  const diagnostics = JSON.parse(f.out.join("")).value.diagnostics as Array<{ reason: string; repairCommand: string }>;
+  const rows = diagnostics.filter(row => row.reason.includes("store-machine-mismatch"));
+  expect(rows).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "warning", reason: expect.stringContaining(file),
+    repairCommand: expect.stringContaining("belongs to another machine identity") })]));
+  expect(JSON.stringify(rows)).not.toContain(HUB); expect(JSON.stringify(rows)).not.toContain(BOX);
+}, 5000);
+
 it("prune reports a bounded failed path and check instead of discarding it", async () => {
   const f = await fixture(HUB, undefined, false), db = openDb(join(f.root, "spider.db"));
   migrate(db, "global", { machineId: HUB, globalRoot: f.root });

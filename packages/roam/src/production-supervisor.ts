@@ -388,7 +388,7 @@ async function startEnrolledSupervisor(root: string, options: { coreState: Super
       events: createSupervisorEvents(runtime.db.raw.name, eventClient),
       async beforeInspect(sessionId) { await observeHosting({ ...hosting, sessionId }); },
       owner: intent => owner(root, intent, system),
-      async launch(intent, operationId, mode) {
+      async launch(intent, operationId, mode, beforeSpawn) {
         const currentCore = await hc.coreId(new AbortController().signal);
         const bytes = await readFile(intent.file), absolutePi = env.SPIDER_ROAM_PI;
         if (!absolutePi || !isAbsolute(absolutePi)) throw new HerdrError("provisioned-pi-unavailable", "The provisioned pi is unavailable");
@@ -400,7 +400,7 @@ async function startEnrolledSupervisor(root: string, options: { coreState: Super
         let launched: Awaited<ReturnType<typeof adapter.launch>>;
         try {
           launched = await adapter.launch({ sessionId: intent.sessionId, file: intent.file, cwd: intent.cwd, epoch: intent.epoch, moveId: intent.moveId,
-            pi: absolutePi, sha256: createHash("sha256").update(bytes).digest("hex"), operationId }, { mode: mode === "initial" ? "fresh" : "reconcile" });
+            pi: absolutePi, sha256: createHash("sha256").update(bytes).digest("hex"), operationId }, { mode: mode === "initial" ? "fresh" : "reconcile", beforeSpawn });
         } catch (error) {
           let beforeReadiness = false;
           try { beforeReadiness = !readReadiness(runtime.journal, operationId); } catch { /* Missing diagnostic evidence does not alter the launch error. */ }

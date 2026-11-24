@@ -14,11 +14,12 @@ import type { SessionId } from "@spider/herdr";
 import { launchExactSession, provedNoStart } from "@spider/herdr/sessions/launcher";
 import { launchNotStarted } from "@spider/herdr/roam-placement";
 import type { IdLockObservation } from "@spider/herdr/sessions/id-lock";
-import type { ExactSessionLaunchPorts, ExactSessionLaunchRequest, LaunchEvidence, PiSpawnRequest, SessionLaunchResult } from "@spider/herdr/sessions/launcher";
+import type { ExactLaunchAdmission, ExactSessionLaunchPorts, ExactSessionLaunchRequest, LaunchEvidence, PiSpawnRequest, SessionLaunchResult } from "@spider/herdr/sessions/launcher";
 import type { Journal } from "./contracts";
 
 export interface LaunchReconcilePorts {
   journal: Journal;
+  sessionId?: string;
   inspectLock(): Promise<IdLockObservation | null>;
   coreId(signal: AbortSignal): Promise<string>;
   bootId(signal: AbortSignal): Promise<string>;
@@ -312,7 +313,7 @@ export function createExactLaunchAdapter(input: {
   journal: Journal;
   hc: LocalExactHc;
   clock: LaunchReconcilePorts["clock"];
-}): { launch(request: ExactSessionLaunchRequest, options?: { mode: "fresh" | "reconcile" }): Promise<ExactLaunchResult> } {
+}): { launch(request: ExactSessionLaunchRequest, options?: { mode: "fresh" | "reconcile"; beforeSpawn?(): Promise<ExactLaunchAdmission> }): Promise<ExactLaunchResult> } {
   const { base, journal, hc, clock } = input;
   return {
     async launch(request, options = { mode: "fresh" }) {
@@ -323,7 +324,8 @@ export function createExactLaunchAdapter(input: {
         throw new HerdrError("launch-environment-invalid", "A valid reserved operation is required");
       }
       const previous = await inspectIdLock(root, request.sessionId), bootId = await base.bootId();
-      if (options.mode === "reconcile") {
+      const reconciling = options.mode === "reconcile" || Boolean(options.beforeSpawn && previous?.pendingOperationId === operationId);
+      if (reconciling) {
         if (await adoptedOwnerExited({ root, sessionId: request.sessionId, operationId, file: request.file, bootId: base.bootId,
           probe: base.processInventory.probe, leases: base.leases })) return { kind: "adopted-exited", operationId };
         if (previous?.operationId === operationId && previous.pendingOperationId === null) {
@@ -346,33 +348,62 @@ export function createExactLaunchAdapter(input: {
         if (previous?.pendingOperationId) throw new HerdrError(request.operationId ? "launch-reservation-exists" : "launch-pending", "An exact launch is already pending");
         const begun = journal.begin({ id: operationId, machineId: base.machineId, expectedEpoch: request.epoch, kind: "exact-session-launch", args: { sessionId: request.sessionId } });
         if (begun.kind !== "new") throw new HerdrError("launch-reservation-exists", "A launch reservation already exists");
+        if (options.beforeSpawn) journal.record(operationId, "exact-launch-prepared", {
+          coreId: base.core.coreId, bootId, sessionId: request.sessionId, file: request.file, launcher: { ...base.processIdentity },
+        });
       }
       const tracker = createLaunchTracker({ journal, machineId: base.machineId, coreId: base.core.coreId, bootId, sessionId: request.sessionId });
-      const reconcileLaunch = createLaunchReconciler({ journal,
+      const reconcileLaunch = createLaunchReconciler({ journal, sessionId: request.sessionId,
         inspectLock: () => inspectIdLock(root, request.sessionId),
         coreId: signal => hc.coreId(signal), bootId: () => base.bootId(), terminals: (id, opts) => hc.terminals(id, opts), clock });
-      return launchExactSession({ ...request, operationId }, { ...base, reconcileLaunch, retainProvedHandoff: request.operationId !== undefined,
-        async spawnPi(spawn) {
-          const attemptId = randomUUID();
-          if (spawn.terminal?.labels["spider.roam.operation"] !== operationId || !tracker.begin(operationId, request.epoch, { attemptId, resume: true })) {
-            throw new HerdrError("launch-pending", "Launch operation already exists");
-          }
-          let observedStart = false;
-          try {
-            const current = await hc.coreId(new AbortController().signal);
-            if (current !== base.core.coreId) throw new HerdrError("core-mismatch", "The selected core identity changed");
-            const terminal = { ...spawn.terminal, labels: { ...spawn.terminal.labels, "spider.roam.attempt": attemptId } };
-            const result = await hc.run({ ...spawn, terminal }, {
-              started(pid, startTime) { observedStart = true; try { tracker.started(operationId, pid, startTime); } catch { /* Missing evidence stays pending. */ } },
-              exited(pid) { observedStart = true; try { tracker.exited(operationId, pid, clock.now()); } catch { /* Missing evidence stays pending. */ } },
-            });
-            tracker.replied(operationId, result.terminal);
-          } catch (error) {
-            if (!observedStart) { try { tracker.failed(operationId, error); } catch { /* Missing evidence stays pending. */ } }
-            throw error;
-          }
-        },
-      });
+      const pendingActions = previous?.pendingOperationId === operationId ? journal.read(operationId) : [];
+      if (pendingActions.some(row => row.action === "exact-launch-prepared") && !pendingActions.some(row => row.action === "exact-invocation-admitted")) {
+        throw new HerdrError("launch-pending", "The prepared launch awaits stop settlement");
+      }
+      const beforeSpawn = options.beforeSpawn;
+      let cancelled = false;
+      try {
+        return await launchExactSession({ ...request, operationId }, { ...base, reconcileLaunch, retainProvedHandoff: request.operationId !== undefined,
+          ...(beforeSpawn ? { async beforeSpawn() {
+            const lock = await inspectIdLock(root, request.sessionId);
+            if (!lock || lock.pendingOperationId !== operationId || lock.pendingFile !== request.file || lock.pendingCoreId !== base.core.coreId ||
+                lock.bootId !== bootId || lock.identity.pid !== base.processIdentity.pid || lock.identity.startIdentity !== base.processIdentity.startIdentity) {
+              throw new HerdrError("launch-pending", "The prepared handoff changed before admission");
+            }
+            const admission = await beforeSpawn();
+            cancelled = admission === "cancelled";
+            if (admission !== "admitted") return admission;
+            journal.record(operationId, "exact-invocation-admitted", { coreId: base.core.coreId, bootId });
+            return admission;
+          } } : {}),
+          async spawnPi(spawn) {
+            const attemptId = randomUUID();
+            if (spawn.terminal?.labels["spider.roam.operation"] !== operationId || !tracker.begin(operationId, request.epoch, { attemptId, resume: true })) {
+              throw new HerdrError("launch-pending", "Launch operation already exists");
+            }
+            let observedStart = false;
+            try {
+              const current = await hc.coreId(new AbortController().signal);
+              if (current !== base.core.coreId) throw new HerdrError("core-mismatch", "The selected core identity changed");
+              const terminal = { ...spawn.terminal, labels: { ...spawn.terminal.labels, "spider.roam.attempt": attemptId } };
+              const result = await hc.run({ ...spawn, terminal }, {
+                started(pid, startTime) { observedStart = true; try { tracker.started(operationId, pid, startTime); } catch { /* Missing evidence stays pending. */ } },
+                exited(pid) { observedStart = true; try { tracker.exited(operationId, pid, clock.now()); } catch { /* Missing evidence stays pending. */ } },
+              });
+              tracker.replied(operationId, result.terminal);
+            } catch (error) {
+              if (!observedStart) { try { tracker.failed(operationId, error); } catch { /* Missing evidence stays pending. */ } }
+              throw error;
+            }
+          },
+        });
+      } catch (error) {
+        if (cancelled && error instanceof HerdrError && error.code === "launch-intent-stale" && !await inspectIdLock(root, request.sessionId)) {
+          journal.record(operationId, "exact-launch-settled", { sessionId: request.sessionId, file: request.file });
+          journal.record(operationId, "done", { code: 1, reason: "launch-not-invoked", operationId, home: null, epoch: request.epoch, repairCommand: null, value: null });
+        }
+        throw error;
+      }
     },
   };
 }
@@ -396,6 +427,22 @@ export function createLaunchReconciler(ports: LaunchReconcilePorts): (operationI
       const lock = await abortable(signal, () => ports.inspectLock());
       if (!lock || lock.pendingOperationId !== operationId || !text(lock.pendingCoreId)) return unknown();
       const allActions = [...ports.journal.read(operationId)];
+      if (allActions.some(row => row.action === "exact-core" && row.result.coreId !== lock.pendingCoreId)) return unknown();
+      const prepared = allActions.filter(row => row.action === "exact-launch-prepared");
+      if (prepared.length === 1 && !allActions.some(row => ["exact-invocation-admitted", "exact-attempt", "exact-hc-started", "exact-hc-exited", "exact-terminal", "ready-durable"].includes(row.action))) {
+        const sessionId = ports.sessionId ?? ports.settlement?.sessionId;
+        const proof = prepared[0].result, launcher = proof.launcher as { pid?: unknown; startIdentity?: unknown } | undefined;
+        const current = await abortable(signal, () => ports.inspectLock());
+        if (text(sessionId) && proof.sessionId === sessionId && proof.coreId === lock.pendingCoreId && proof.bootId === lock.bootId && text(proof.bootId) && proof.file === lock.pendingFile &&
+            launcher?.pid === lock.identity.pid && launcher.startIdentity === lock.identity.startIdentity &&
+            current?.pendingOperationId === operationId && current.pendingFile === lock.pendingFile && current.pendingCoreId === lock.pendingCoreId &&
+            current.bootId === lock.bootId && current.identity.pid === lock.identity.pid && current.identity.startIdentity === lock.identity.startIdentity &&
+            ports.journal.read(operationId).length === allActions.length) {
+          return { receipt: "absent", terminal: "absent", proof: { kind: "prepared-not-invoked", operationId,
+            coreId: lock.pendingCoreId!, bootId: lock.bootId, beforeLaunch: true } };
+        }
+        return unknown();
+      }
       let marker = -1;
       for (let i = 0; i < allActions.length; i++) if (allActions[i].action === "exact-attempt") marker = i;
       const attemptId = marker < 0 ? undefined : allActions[marker].result.attemptId;
@@ -408,7 +455,7 @@ export function createLaunchReconciler(ports: LaunchReconcilePorts): (operationI
       const has = (action: string) => actions.some(item => item.action === action);
       const core = one("exact-core"), started = one("exact-hc-started"), exited = one("exact-hc-exited");
       const pinnedCore = lock.pendingCoreId;
-      if (allActions.some(item => item.action === "exact-core" && item.result.coreId !== pinnedCore) || !core && has("exact-core")) return unknown();
+      if (!core && has("exact-core")) return unknown();
       const failure = one("exact-prelaunch-error");
       if (core && failure && !has("exact-hc-started") && !has("exact-hc-exited") && !has("exact-terminal")) {
         if ((failure.errorCode === "core-unavailable" || failure.errorCode === "core-mismatch") && failure.hcPid === undefined) {

@@ -12,7 +12,7 @@ import type { Probe, StoreKey } from "@spider/db-core/roam/types";
 import type { AgentPorts, Clock, Diagnostic, HostIntent, Outcome } from "./contracts";
 import { createIntentStore } from "./intent";
 import { assertBoxEnrollment, participantCaptureInitialized, createRunningIntentAuthority } from "./session-control";
-import { createDurableLaunchPort, createSupervisor, type LaunchReservation } from "./supervisor";
+import { createDurableLaunchPort, createSupervisor, type LaunchInvocation } from "./supervisor";
 import { sessionHome } from "./homes";
 import { HOSTING_WARNING_CODE, validHostingWarning } from "./hosting-warning";
 import { recordSupervisorExits } from "./intercom-exclusion";
@@ -39,7 +39,7 @@ export function createParticipantSupervisor(input: {
   beforeInspect?(sessionId: string): Promise<void>;
   owner(intent: HostIntent): Promise<Probe>;
   diagnostics(intent: HostIntent): Promise<readonly Diagnostic[]>;
-  launch(intent: HostIntent, operationId: string, mode: "initial" | "reconcile"): Promise<SupervisorLaunchOutcome>;
+  launch(intent: HostIntent, operationId: string, mode: "initial" | "reconcile", beforeSpawn: LaunchInvocation["beforeSpawn"]): Promise<SupervisorLaunchOutcome>;
   stop(sessionId: string): Promise<Probe>;
   cancelStop?(sessionId: string): void;
   confirmExit?(identity: { pid: number; startTime: string }): Promise<boolean>;
@@ -86,8 +86,8 @@ export function createParticipantSupervisor(input: {
       return Boolean(latest?.desired === "running" && latest.suspended === null && latest.epoch === intent.epoch && latest.file === intent.file && latest.cwd === intent.cwd &&
         observation.owner.kind === "absent" && !observation.unfinishedFreeze && !observation.diagnostics.some(row => row.severity === "block"));
     },
-    async invoke(request: { intent: HostIntent; mode: "initial" | "reconcile"; reservation: LaunchReservation }) {
-      return input.launch(request.intent, request.reservation.operationId, request.mode);
+    async invoke(request: LaunchInvocation) {
+      return input.launch(request.intent, request.reservation.operationId, request.mode, request.beforeSpawn);
     },
     operationId(intent) {
       const { launchId, entries } = restartHistory(intent);

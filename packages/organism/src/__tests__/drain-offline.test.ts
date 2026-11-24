@@ -248,6 +248,30 @@ it("does not apply a retry if the wall clock passes its lease before completion"
   expect(databases.db.prepare("SELECT session_id FROM organism_deferred_drain").all()).toEqual([]);
 });
 
+it("renews a live retry lease before applying a result", async () => {
+  databases.db.prepare("INSERT INTO runs(id,session_id,agent,status) VALUES ('run','session','worker','done')").run();
+  let online = false;
+  const complete = vi.fn(async () => {
+    if (!online) throw offline();
+    vi.setSystemTime(Date.now() + 34_999);
+    return '{"memory":[],"skills":[],"todos":[{"text":"Apply once before expiry."}]}';
+  });
+  const worker = fixture(complete, { org: { ...ORGANISM_DEFAULTS, selfNaming: false, passes: { runMemoryTodo: true, todoMemory: false, learning: false, consolidation: false, reflection: false, insights: false } } });
+  await worker.runDrain("session", "before_compact", snapshot("Keep until applied."));
+  const originalPrepare = databases.db.prepare.bind(databases.db);
+  let advanced = false;
+  const prepare = vi.spyOn(databases.db, "prepare").mockImplementation(sql => {
+    if (!advanced && sql.includes("INSERT INTO todos (")) { advanced = true; vi.setSystemTime(Date.now() + 2); }
+    return originalPrepare(sql);
+  });
+  try {
+    online = true; await vi.advanceTimersByTimeAsync(300_000);
+    expect(advanced).toBe(true);
+    expect(databases.db.prepare("SELECT text FROM todos WHERE session_id='session'").all()).toEqual([{ text: "Apply once before expiry." }]);
+    expect(databases.db.prepare("SELECT session_id FROM organism_deferred_drain").all()).toEqual([]);
+  } finally { prepare.mockRestore(); }
+});
+
 it("fences an expired retry owner after another worker finishes the saved input", async () => {
   let online = false;
   let release!: () => void;

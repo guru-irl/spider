@@ -1,5 +1,11 @@
 import { expect, it } from "vitest";
-import { validateBlockerId } from "../move";
+import { moveSession, validateBlockerId } from "../move";
+import { createReplica } from "@spider/db-core/testutil";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { openFreezeJournal } from "../journal";
+import { MoveCompositionError } from "../move-failure";
+import type { MovePorts } from "../contracts";
 import { DEFAULT_LIMITS, type RoamConfig } from "../contracts";
 import { controlRefusal, controlText, parsePublicControl, resolveControlMachine, resolveControlSession, safeControlOutcome, sourceCleanupStatusText } from "../commands";
 
@@ -85,6 +91,16 @@ it("serializes only bounded provisioning counts and strips unrelated private dat
     .toEqual({ hostingReady: true });
 });
 
+it("only successful moves expose a bounded checkout path", () => {
+  const base = { code: 0 as const, reason: "moved", operationId: "move-a", home: null, epoch: null, repairCommand: null };
+  expect(safeControlOutcome({ ...base, value: { destinationRoot: "/fixture/checkout" } }).value).toEqual({ destinationRoot: "/fixture/checkout" });
+  for (const path of ["relative", "/fixture/private\nexception", "/" + "a".repeat(4096)]) {
+    expect(safeControlOutcome({ ...base, value: { destinationRoot: path } }).value).toBeNull();
+  }
+  expect(safeControlOutcome({ ...base, code: 1, value: { destinationRoot: "/fixture/private" } }).value).toBeNull();
+  expect(safeControlOutcome({ ...base, reason: "complete", value: { destinationRoot: "/fixture/private" } }).value).toBeNull();
+});
+
 it("ambiguous name refuses with candidates", () => {
   const candidates = [{ id: "session-a", name: "same" }, { id: "session-b", name: "same" }];
   expect(resolveControlSession("same", candidates)).toEqual({ reason: "ambiguous-session", candidates: ["session-a", "session-b"] });
@@ -163,6 +179,35 @@ it.each([
   expect(safe.refusal).toBeUndefined();
 });
 
+
+it.each([
+  "participant-pi-unavailable", "participant-stores-unavailable", "participant-config-unavailable",
+  "participant-context-unavailable", "participant-home-unavailable", "move-adapter-unavailable", "move-workspace-unmapped", "move-checkout-conflict",
+])("preserves a real move refusal and safe cause %s through repeated sanitization", async cause => {
+  const global = createReplica("global", HUB);
+  try {
+    mkdirSync(join(global.root, "roam"), { mode: 0o700 });
+    const failure = new MoveCompositionError(cause);
+    failure.message = "PRIVATE-EXCEPTION-SENTINEL";
+    const ports = { globalDb: global.db, config: config(), journal: openFreezeJournal(join(global.root, "roam", "journal.db")),
+      intercom: { address: { sessionId: "session-a", scopeId: null }, destinationEndpoint: async () => null,
+        ports: Object.fromEntries(["close", "drain", "inspect", "checkGeneration", "abort", "ready"].map(name => [name, async () => {}])) },
+      check: async () => { throw failure; } } as unknown as MovePorts;
+    const result = await moveSession({ sessionId: "session-a", destinationMachine: BOX,
+      operation: { id: "move-cause", kind: "move", machineId: HUB, expectedEpoch: null,
+        args: { sessionId: "session-a", destinationMachine: BOX } } }, ports);
+    if (result.ok) throw new Error("Expected a move refusal");
+    const first = safeControlOutcome(result), serialized = JSON.stringify(first);
+    expect(first).toMatchObject({ code: 1, causeCode: cause, reason: "move-preflight-refused", repairCommand: cause === "move-workspace-unmapped" ? "spider roam repo map <repo> <path>" : "spider roam doctor",
+      refusal: { code: "move-preflight-refused", blockers: [cause] } });
+    expect(first.refusal?.message).toContain(cause === "move-workspace-unmapped" ? "spider roam repo map <repo> <path>" : "spider roam doctor");
+    expect(controlText(first)).toContain(cause);
+    expect(serialized).not.toContain("PRIVATE-EXCEPTION-SENTINEL");
+    expect(JSON.stringify(safeControlOutcome(first))).toBe(serialized);
+    expect(safeControlOutcome({ ...result, refusal: { ...result.refusal, message: `${result.refusal.message} PRIVATE-EXCEPTION-SENTINEL` } }).refusal).toBeUndefined();
+    expect(safeControlOutcome({ ...result, refusal: { ...result.refusal, blockers: ["private\nblocker"] } }).refusal).toBeUndefined();
+  } finally { global.close(); }
+});
 
 it("prints verified resume doctor blockers and the next command in text and JSON", () => {
   const diagnostic = { severity: "block", reason: "global: roaming capture is not initialized.", repairCommand: "spider roam doctor" };

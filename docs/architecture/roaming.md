@@ -375,6 +375,9 @@ after ten minutes. `needs_login`, `needs-login`, and other uncertain states
 neither start an outage nor clear one. Literal `connected` clears the hosting
 outage alert even when the peer refuses sync content. Sync refusals retain
 their own diagnostics and do not reset an established sync backoff.
+Hosting checks, placement and suspension warnings still run when the native
+state is `connected` and the enrolled peer answered, even with ungathered or
+refused stores.
 Live move recovery requires a separate proof: literal `connected` plus a
 successful current sync round with verified peer connectivity and a complete
 store pull. An incomplete pull never schedules move recovery.

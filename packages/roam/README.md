@@ -57,7 +57,8 @@ before closing stores. A peer pass skips an occupied session move lock without
 recording a warning. Journal I/O, lock inspection, and power assertion failures
 keep their own warning and recovery command. A later pass can retry a skipped
 move if it is still pending.
-Terminal recovery clears that move's saved recovery diagnostic.
+Terminal recovery, including a terminal refusal, clears that move's saved
+recovery diagnostic. Unfinished moves keep their warning and recovery command.
 
 ## Partial disable
 

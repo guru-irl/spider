@@ -628,7 +628,9 @@ inside its callback. A peer pass skips `move-lock-pending` without recording
 a warning only for a real lock wait. Journal I/O, lock inspection, and power
 assertion failures keep their own warning and recovery command.
 A later pass can pick up the move if it remains pending. Terminal
-recovery clears the move's saved recovery diagnostic. Full recovery and
+recovery clears the move's saved recovery diagnostic, including a terminal
+refusal. An unfinished move keeps its warning and exact recovery command.
+Full recovery and
 cleanup share one writer. Requests for the same peer during a running pass
 coalesce into one follow-up pass with a new snapshot. Successful-sync cleanup
 is deferred with one coalesced

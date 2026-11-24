@@ -1049,6 +1049,22 @@ repeating the repair. Doctor remains read-only. While roaming is disabled,
 this repair may start pair connectors but does not enable participation, start
 the broker or supervisor, or start hosted sessions.
 
+### Missing pair units
+
+A missing recorded host or connect unit file leaves that pair unready with
+`intercom-pair-unit-missing`. The machine helper and bridge still publish on
+an existing hub route. The readiness check does not start a unit or discard
+its pair record. Unsafe files, symlinks, wrong ownership or mode, mismatched
+contents, and other filesystem errors keep their existing refusals.
+
+Doctor names the pair and its missing side. For a pending enrollment, set
+`GRAPH_FILE` to the same approved graph and run the reported enrollment command
+on the hub with the original operation. Connector setup republishes the missing
+unit without replacing consent or changing the graph. A completed enrollment
+operation returns its saved result instead of repeating setup. For an active
+pair, run the reported fenced revoke on the hub, then enroll again with fresh
+consent after cleanup completes. Doctor only inspects these resources.
+
 ### Protocol versions
 
 Replication batches use protocol 1. Intercom exchanges use federation
@@ -1124,8 +1140,18 @@ paths. Unknown states or malformed metadata on relevant rows, invalid or
 duplicate addresses, and incomplete listings still leave cleanup pending.
 Revocation does not delete terminal history.
 
+An already-absent unit does not need another stop or disable command. Cleanup
+still requires systemd to report `LoadState=not-found`, an inactive unit, no
+main PID, no control group, no fragment or drop-ins, and no pending reload.
+The recorded main process must have exited, and every descendant of its
+recorded control group must be absent. A missing file alone proves neither
+process exit nor connection closure. Unknown process or control-group evidence,
+a missing recorded process identity, and a cached live unit keep cleanup
+unconfirmed. Cleanup never recreates a unit and still checks the pair fence
+before each effect.
+
 With both boxes reachable and no live terminals, a plain revoke from the hub
-stops and disables both pair units, removes the target key and source route,
+stops and disables any remaining pair units, removes the target key and source route,
 and closes all three pair records. Repeated revokes have no further effects.
 Pending results and doctor diagnostics provide
 `spider roam intercom revoke pair-1` as the retry command. Run it from the hub

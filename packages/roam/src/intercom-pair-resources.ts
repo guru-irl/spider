@@ -48,8 +48,10 @@ function unitContents(pair: IntercomEnrollmentPair, side: "host" | "connect", re
 function safe(info: { uid: number; mode: number }): boolean {
   return (process.getuid === undefined || info.uid === process.getuid()) && (process.platform === "win32" || (info.mode & 0o022) === 0);
 }
-function readUnit(file: string): string {
-  const info = lstatSync(file);
+function readUnit(file: string): string | null {
+  let info: import("node:fs").Stats;
+  try { info = lstatSync(file); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
   if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || !safe(info) || info.size > 64 * 1024 || (info.mode & 0o7777) !== 0o600) throw new Error("intercom-unit-mismatch");
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try { return readFileSync(fd, "utf8"); } finally { closeSync(fd); }
@@ -66,30 +68,35 @@ function unitFile(home: string, name: string, create: boolean): string {
   return join(directory, name);
 }
 function publishUnit(file: string, contents: string): void {
-  try { if (readUnit(file) !== contents) throw new Error("intercom-unit-mismatch"); return; }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  const existing = readUnit(file);
+  if (existing !== null) { if (existing !== contents) throw new Error("intercom-unit-mismatch"); return; }
   const temporary = `${file}.${randomUUID()}`;
   const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
   try { writeFileSync(fd, contents); fsyncSync(fd); } finally { closeSync(fd); }
   try { renameSync(temporary, file); } finally { try { unlinkSync(temporary); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; } }
   const directory = openSync(join(file, ".."), constants.O_RDONLY | constants.O_DIRECTORY); try { fsyncSync(directory); } finally { closeSync(directory); }
 }
-interface UnitObservation { state: "active" | "inactive" | "failed"; pid: number; controlGroup: string }
-async function showUnit(unit: IntercomUnitRecord, ports: PairResourcePorts): Promise<UnitObservation> {
-  if (unit.file !== unitFile(ports.home, unit.name, false) || readUnit(unit.file) !== unit.contents) throw new Error("intercom-unit-mismatch");
+interface UnitObservation { state: "active" | "inactive" | "failed"; pid: number; controlGroup: string; missing: boolean }
+async function showUnit(unit: IntercomUnitRecord, ports: PairResourcePorts, allowMissing = false): Promise<UnitObservation> {
+  if (unit.file !== unitFile(ports.home, unit.name, false)) throw new Error("intercom-unit-mismatch");
+  const contents = readUnit(unit.file);
+  const missing = contents === null;
+  if (missing && !allowMissing) throw Object.assign(new Error("intercom-pair-unit-missing"), { code: "intercom-pair-unit-missing" });
+  if (!missing && contents !== unit.contents) throw new Error("intercom-unit-mismatch");
   const result = await ports.run([ports.systemctl ?? "/usr/bin/systemctl", "--user", "show", unit.name,
-    "--property=Id,ActiveState,MainPID,ControlGroup,KillMode,FragmentPath,DropInPaths,NeedDaemonReload", "--all"], options);
+    "--property=Id,LoadState,ActiveState,MainPID,ControlGroup,KillMode,FragmentPath,DropInPaths,NeedDaemonReload", "--all"], options);
   if (result.code !== 0 || Buffer.byteLength(result.stdout) > options.maxBytes) throw new Error("intercom-unit-unavailable");
   const values: Record<string, string> = Object.create(null);
   for (const line of result.stdout.trimEnd().split("\n")) {
     const at = line.indexOf("="); if (at < 1 || Object.hasOwn(values, line.slice(0, at))) throw new Error("intercom-unit-mismatch");
     values[line.slice(0, at)] = line.slice(at + 1);
   }
-  if (values.Id !== unit.name || values.KillMode !== "control-group" || values.FragmentPath !== unit.file || values.DropInPaths !== "" || values.NeedDaemonReload !== "no") throw new Error("intercom-unit-mismatch");
+  if (values.Id !== unit.name || values.KillMode !== "control-group" || values.FragmentPath !== (missing ? "" : unit.file) || values.DropInPaths !== "" || values.NeedDaemonReload !== "no") throw new Error("intercom-unit-mismatch");
+  if (missing && (values.LoadState !== "not-found" || values.ActiveState !== "inactive" || values.MainPID !== "0" || values.ControlGroup !== "")) throw new Error("intercom-revocation-unconfirmed");
   if (!["active", "inactive", "failed"].includes(values.ActiveState) || !/^(0|[1-9][0-9]*)$/.test(values.MainPID) || !Number.isSafeInteger(Number(values.MainPID))) throw new Error("intercom-unit-unavailable");
   const group = values.ControlGroup;
   if (group !== "" && (!posix.isAbsolute(group) || posix.normalize(group) !== group || group === "/" || /[\u0000-\u001f\u007f]/.test(group))) throw new Error("intercom-unit-mismatch");
-  return { state: values.ActiveState as UnitObservation["state"], pid: Number(values.MainPID), controlGroup: group };
+  return { state: values.ActiveState as UnitObservation["state"], pid: Number(values.MainPID), controlGroup: group, missing };
 }
 function nativeProcess(pid: number): NativeProcess {
   const observed = probeIntercomProcess(pid);
@@ -151,12 +158,15 @@ export async function ensurePairUnit(pair: IntercomEnrollmentPair, side: "host" 
     return { status: "ready" };
   });
 }
-export async function inspectPairUnit(pair: IntercomEnrollmentPair, side: "host" | "connect", ports: PairResourcePorts): Promise<boolean> {
+export async function inspectPairUnit(pair: IntercomEnrollmentPair, side: "host" | "connect", ports: PairResourcePorts): Promise<"ready" | "intercom-pair-unit-missing" | "intercom-pair-unit-unavailable"> {
   const record = await createIntercomRegistry(ports.root).get(pair.pairId), unit = record?.unit;
-  if (!record?.resources || !unit || unit.name !== unitName(pair.pairId, side)) return false;
-  if (ports.recipe && (unit.localPort !== pairLocalPort(parseConnectorRecipe(ports.recipe), pair.pairId) || unit.contents !== unitContents(pair, side, parseConnectorRecipe(ports.recipe)))) return false;
-  const current = await showUnit(unit, ports), process = (ports.process ?? nativeProcess)(current.pid);
-  return current.state === "active" && current.pid > 0 && process.kind === "live" && !!current.controlGroup && members(current.controlGroup, ports).includes(current.pid);
+  if (!record?.resources || !unit || unit.name !== unitName(pair.pairId, side)) return "intercom-pair-unit-unavailable";
+  if (ports.recipe && (unit.localPort !== pairLocalPort(parseConnectorRecipe(ports.recipe), pair.pairId) || unit.contents !== unitContents(pair, side, parseConnectorRecipe(ports.recipe)))) return "intercom-pair-unit-unavailable";
+  let current: UnitObservation;
+  try { current = await showUnit(unit, ports); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "intercom-pair-unit-missing") return "intercom-pair-unit-missing"; throw error; }
+  const process = (ports.process ?? nativeProcess)(current.pid);
+  return current.state === "active" && current.pid > 0 && process.kind === "live" && !!current.controlGroup && members(current.controlGroup, ports).includes(current.pid) ? "ready" : "intercom-pair-unit-unavailable";
 }
 /** Find a stopped recorded unit without changing services or adopting an unverified unit. */
 export async function stoppedPairUnitNeedsRepair(ports: PairResourcePorts): Promise<boolean | null> {
@@ -203,7 +213,7 @@ export async function stopPairUnit(pair: IntercomEnrollmentPair, side: "host" | 
   return withProcessLock(join(ports.root, "roam", "intercom"), `unit-${pair.pairId}`, async () => {
     const registry = createIntercomRegistry(ports.root), record = await registry.get(pair.pairId); let unit = record?.unit;
     if (!record?.resources || record.fenceId !== fenceId || !["revoking", "revoked"].includes(record.state) || !unit || unit.name !== unitName(pair.pairId, side)) throw new Error("intercom-revocation-unconfirmed");
-    const before = await showUnit(unit, ports);
+    const before = await showUnit(unit, ports, true);
     if (before.pid > 0) {
       const process = (ports.process ?? nativeProcess)(before.pid);
       if (process.kind !== "live" || !before.controlGroup || !members(before.controlGroup, ports).includes(before.pid)) throw new Error("intercom-revocation-unconfirmed");
@@ -211,9 +221,11 @@ export async function stopPairUnit(pair: IntercomEnrollmentPair, side: "host" | 
       await registry.recordUnit(pair.pairId, unit);
     }
     if (!unit.main) throw new Error("intercom-revocation-unconfirmed");
-    if ((await ports.run([ports.systemctl ?? "/usr/bin/systemctl", "--user", "disable", unit.name], options)).code !== 0) throw new Error("intercom-revocation-unconfirmed");
-    if ((await ports.run([ports.systemctl ?? "/usr/bin/systemctl", "--user", "stop", unit.name], options)).code !== 0) throw new Error("intercom-revocation-unconfirmed");
-    const after = await showUnit(unit, ports), original = (ports.process ?? nativeProcess)(unit.main.pid);
+    if (!before.missing) {
+      if ((await ports.run([ports.systemctl ?? "/usr/bin/systemctl", "--user", "disable", unit.name], options)).code !== 0) throw new Error("intercom-revocation-unconfirmed");
+      if ((await ports.run([ports.systemctl ?? "/usr/bin/systemctl", "--user", "stop", unit.name], options)).code !== 0) throw new Error("intercom-revocation-unconfirmed");
+    }
+    const after = await showUnit(unit, ports, true), original = (ports.process ?? nativeProcess)(unit.main.pid);
     if (after.controlGroup && after.controlGroup !== unit.main.controlGroup) throw new Error("intercom-unit-mismatch");
     const exited = original.kind === "absent" || original.kind === "live" && original.startIdentity !== unit.main.startIdentity;
     const empty = members(unit.main.controlGroup, ports).length === 0;

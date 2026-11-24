@@ -1,12 +1,40 @@
 import { afterEach, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "@spider/db-core";
 import { parseConfig } from "../config";
 import { createIntercomRegistry } from "../intercom-registry";
 
+import { scenario, cleanupPairScenarios } from "./intercom-pair-fixture";
+import { provisionIntercomEnrollment } from "../intercom-enrollment";
+import { safeCauseCode } from "../cause-codes";
+
 const A = "00000000-0000-4000-8000-000000000001", B = "00000000-0000-4000-8000-000000000002";
-const roots: string[] = []; afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true }); });
+const roots: string[] = []; afterEach(() => { cleanupPairScenarios(); for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true }); });
+it.each([
+  { side: "connect" as const, state: "pending" }, { side: "host" as const, state: "pending" },
+  { side: "connect" as const, state: "active" }, { side: "host" as const, state: "active" },
+])("doctor names the missing $state $side unit and its hub repair", async ({ side, state }) => {
+  const f = await scenario();
+  const enrollment = state === "pending" ? { ...f.enrollment, connect: async (...args: Parameters<typeof f.enrollment.connect>) => {
+    await f.enrollment.connect(...args); return "peer-port-unreachable" as const;
+  } } : f.enrollment;
+  expect((await provisionIntercomEnrollment(f.request, enrollment)).code).toBe(state === "pending" ? 3 : 0);
+  const local = side === "connect" ? f.source : f.target, ports = f.locals.get(local.machineId)!;
+  const row = (await createIntercomRegistry(local.globalRoot).get("pair-1"))!; unlinkSync(row.unit!.file);
+  const config = parseConfig(JSON.parse(readFileSync(join(local.globalRoot, "roam", "config.json"), "utf8")));
+  const { inspectLocalIntercomDoctor } = await import("../intercom-doctor");
+  const diagnostics = await inspectLocalIntercomDoctor({ root: local.globalRoot, config, agentDir: ports.home, resourcePorts: ports, run: ports.run,
+    features: async () => [], inspectSsh: async () => ({ targetMachineId: local.machineId, sshUser: "fixture", hostKeys: [] }),
+    link: async () => ({ status: "down", reason: "link-down" }) });
+  expect(diagnostics).toContainEqual({ severity: "block", reason: `intercom-pair-unit-missing: The ${side} unit for pair-1 is missing. Run the repair on the hub.`,
+    repairCommand: state === "pending" ? 'spider roam intercom enroll --graph "$GRAPH_FILE" --operation enroll-1' : "spider roam intercom revoke pair-1" });
+  expect(diagnostics.some(item => item.reason.startsWith("intercom-pair-unit-unavailable"))).toBe(false);
+  expect(safeCauseCode("intercom-pair-unit-missing")).toBe("intercom-pair-unit-missing");
+  expect(safeCauseCode("intercom-pair-unit-missing: private detail")).toBeUndefined();
+  expect(row.state).toBe(state);
+}, 5000);
+
 it("reports connector, host-key, legacy extension, broker feature and link issues without repair", async () => {
   const root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "icdoctor-")); roots.push(root);
   const agentDir = join(root, "agent"); mkdirSync(agentDir, { mode: 0o700 });

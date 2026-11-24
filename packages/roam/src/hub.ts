@@ -60,6 +60,8 @@ export interface HubRuntimePorts extends HubPorts {
   prepare: Prepare;
   /** Mounted with move handlers. Await startup recovery of pending moves and active reservations before serving. */
   reconcileMoves?(): Promise<void>;
+  /** Peers still involved in pending moves after startup reconciliation. */
+  pendingMovePeers?(): readonly string[];
   /** One finite recovery pass after an unreachable peer has a verified successful sync. */
   recoverPeerMoves?(machineId: string): Promise<void>;
   moveControl?: MoveControlHandler;
@@ -326,6 +328,7 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
       await ports.intercom?.start();
       await recoverWorkspaceRestores(await ports.workspaceRestores?.() ?? []);
       await ports.reconcileMoves?.();
+      for (const machineId of ports.pendingMovePeers?.() ?? []) unreachablePeers.add(machineId);
       // Validate retained state before opening the control socket or starting sync.
       for (const peer of config.peers) {
         const state = peerStatus(db, peer.machineId); pendingRows(db, peer.machineId);
@@ -422,6 +425,7 @@ export async function runStandaloneHub(ports: StandaloneHubPorts): Promise<{ sto
     moveControl: ports.moveControl ?? (request => moves ? moves.control(request) : Promise.resolve({ code: 1, reason: "adapter-unbound:moveControl", value: null })),
     reconcileMoves: async () => { await ports.reconcileMoves?.(); await moves?.recover(); },
     recoverPeerMoves: async machineId => { await ports.recoverPeerMoves?.(machineId); await moves?.recover(machineId); },
+    pendingMovePeers: () => moves?.pendingPeers() ?? [],
     async prepare(onPeerSync) {
       if (!revocationDb) revocationDb = ownedRevocationDb = openDb(join(dirname(resolve(ports.globalDb.raw.name)), "roam", "journal.db"), { fileMustExist: true, checkpointOnClose: false });
       await resumePendingMappings(ports.globalDb);

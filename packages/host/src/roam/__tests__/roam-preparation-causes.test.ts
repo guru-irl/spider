@@ -1,17 +1,19 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { migrate, openDb } from "@spider/db-core";
+import { migrate, openDb, paths } from "@spider/db-core";
+import * as repoMap from "@spider/db-core/roam/repo-map";
 import { readLocal } from "@spider/db-core/roam/local-state";
 import { scratchDbPath } from "@spider/db-core/testutil";
 import { parseConfig } from "@spider/roam/config";
 import { openFreezeJournal, openJournal } from "@spider/roam/journal";
 import { runLocalDoctor } from "@spider/roam/local-diagnostics";
+import { MoveCompositionError } from "@spider/roam/move-failure";
 import { createRunningIntentAuthority } from "@spider/roam/session-control";
 import { recordMoveSetupFailure } from "@spider/roam/setup-diagnostics";
 import { createHostSessionFixture } from "../../__tests__/fixtures/pi-events";
 import { registerAdmission, type AdmissionPorts } from "../admission";
-import { createParticipantAdmission } from "../readiness";
+import { createParticipantAdmission, productionParticipantAdmission } from "../readiness";
 
 const BOX = "00000000-0000-4000-8000-000000000002";
 const HUB = "00000000-0000-4000-8000-000000000001";
@@ -25,7 +27,7 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-type Failure = "freeze" | "cwd" | "header" | "invalid-header" | "mapping" | "seed" | "unknown";
+type Failure = "freeze" | "cwd" | "header" | "invalid-header" | "mapping" | "stores" | "seed" | "unknown";
 function fixture(failure: Failure, participant = false) {
   vi.stubEnv("PI_SUBAGENT_CHILD", "0");
   const parent = dirname(scratchDbPath("preparation-causes"));
@@ -44,7 +46,8 @@ function fixture(failure: Failure, participant = false) {
       if (failure === "unknown") throw new Error("private-content /home/fixture/private");
       return { db, config, journal, authority: createRunningIntentAuthority(db), close() {},
         async stores() {
-          if (failure === "mapping") throw new Error("Non-Git repositories require an explicit map /home/fixture/private");
+          if (failure === "mapping") throw new MoveCompositionError("participant-store-mapping-failed");
+          if (failure === "stores") throw new Error("private-content /home/fixture/private");
           return [];
         } };
     },
@@ -69,6 +72,7 @@ it.each([
   ["header", "participant-header-mismatch"],
   ["invalid-header", "participant-header-invalid"],
   ["mapping", "participant-store-mapping-failed"],
+  ["stores", "participant-stores-unavailable"],
   ["seed", "participant-seed-failed"],
 ] as const)("reports the %s preparation failure and its occurrence times", async (failure, causeCode) => {
   const now = vi.spyOn(Date, "now").mockReturnValue(FIRST);
@@ -86,6 +90,30 @@ it.each([
   expect(diagnostic?.reason).toContain("2023-11-14T22:13:50.000Z");
   expect(diagnostic?.reason).not.toContain(f.root);
   expect(diagnostic?.reason).not.toContain("private");
+});
+
+it("classifies a production repository mapping failure through admission", async () => {
+  const f = fixture("seed");
+  const previous = paths.globalRoot;
+  paths.globalRoot = f.root;
+  cleanups.push(async () => { paths.globalRoot = previous; });
+  const roam = join(f.root, "roam");
+  chmodSync(roam, 0o700);
+  writeFileSync(join(roam, "config.json"), JSON.stringify(parseConfig({ role: "box", machineId: BOX, hubMachineId: HUB, coreUnit: "fixture.service" })), { mode: 0o600 });
+  writeFileSync(join(roam, "machine.json"), JSON.stringify({ machineId: BOX }), { mode: 0o600 });
+  vi.spyOn(paths, "projectRoot").mockImplementation(cwd => join(cwd, ".spider"));
+  vi.spyOn(repoMap, "resolveRepositoryKey").mockImplementation(() => { throw new Error("Non-Git repositories require an explicit map /home/fixture/private"); });
+  const host = createHostSessionFixture({ cwd: f.root, sessionId: SESSION, sessionFile: join(f.root, "session.jsonl") });
+  const ports: AdmissionPorts = { expectedEpoch: null, localMachine: async () => BOX, knownParticipant: () => false, warnOnce() {},
+    prepare: productionParticipantAdmission(() => f.root).prepare,
+    load: async () => ({ home: null, states: [], origin: null, participating: false, captureSafe: true, unfinishedFreeze: false, initialConflict: false }),
+    lock: async () => async () => {}, setupDiagnostic: (id, value) => recordMoveSetupFailure(f.db, id, value),
+  };
+  const gate = registerAdmission(host.pi as never, ports);
+  cleanups.push(() => gate.close());
+  for (const handler of host.hooks.get("session_start") ?? []) await handler({}, host.ctx);
+  expect(gate.inspect()).toMatchObject({ kind: "ordinary", setupFailure: { stage: "preparation", causeCode: "participant-store-mapping-failed" } });
+  expect(JSON.stringify(gate.inspect())).not.toContain("private");
 });
 
 it("keeps a known participant blocked after a named preparation failure", async () => {

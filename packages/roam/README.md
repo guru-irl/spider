@@ -26,12 +26,17 @@ that answers health but lacks federation support remains blocked.
 hub enablement. The service runs that executable with `roam hub`, not the
 imported `cli-main.mjs` library.
 
-`hub-service-diagnostics.ts` reads service metadata and checks the hub socket.
-Doctor blocks an enabled hub with `hub-startup-pending` when the service is
-stopped or its socket is unavailable. The diagnostic names the last exit code
-and error log path, without reading log contents. Its repair is
-`spider roam enable` on the Mac hub. An unknown service state with an existing
-socket produces a `hub-startup-unverified` warning.
+`hub-service-diagnostics.ts` reads service metadata and uses the read-only
+status probe in `hub-readiness.ts`, shared with enable. Doctor allows two
+seconds for a running service to become ready. A stale socket is not readiness.
+It blocks with `hub-startup-pending` only when the service is stopped, or when
+a running service still fails the probe after that bound. Unknown service
+metadata produces a `hub-startup-unverified` warning. The diagnostic names
+the last exit code and error log path, without reading log contents, and asks
+to check the service and that log rather than repeatedly reinstalling it.
+
+After upgrading a hub enabled on an earlier release, run `spider roam enable`
+again to reinstall its service with the correct entry.
 
 ## Stop and pending launches
 

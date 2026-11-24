@@ -6,6 +6,19 @@ const SOUND_RECENCY_MS = 15000;
 /** The built-in Herdr sound for one intentional occurrence. */
 export function notificationSound(urgency) { return urgency === 'low' ? 'done' : 'blocked'; }
 
+/** Carry the producer heartbeat with each occurrence for both sound consumers. */
+export function soundNotifications(feeds, now) {
+  const items = new Map();
+  for (const feed of [...feeds].sort((a, b) => b.updatedAt - a.updatedAt)) for (const notice of feed.notifications ?? []) {
+    if (notice.kind !== 'intentional') continue;
+    const age = feed.updatedAt - notice.createdAt;
+    if (!Number.isFinite(age)) continue;
+    const key = `intentional:${feed.sessionId}:${notice.id}`;
+    if (!items.has(key)) items.set(key, { ...notice, key, feedUpdatedAt: feed.updatedAt, expiresAt: now + LIFETIME_MS - Math.max(0, age) });
+  }
+  return [...items.values()];
+}
+
 /** Observe once, including while muted; initial history is always silent. */
 export function observeNotificationSounds(notices, previous, enabled, now, mountedAt = -Infinity) {
   const valid = previous && Number.isFinite(previous.baselineAt) && previous.baselineAt <= now && Array.isArray(previous.observed);
@@ -19,9 +32,12 @@ export function observeNotificationSounds(notices, previous, enabled, now, mount
   for (const notice of notices) {
     if (notice?.kind !== 'intentional' || typeof notice.key !== 'string' || !notice.key
       || !['attention', 'urgent', 'low'].includes(notice.urgency) || !Number.isFinite(notice.createdAt)
-      || notice.createdAt > now || now - notice.createdAt >= LIFETIME_MS || seen.has(notice.key)) continue;
-    seen.set(notice.key, notice.createdAt);
-    if (valid && enabled && notice.createdAt >= baselineAt && notice.createdAt >= mountedAt && now - notice.createdAt <= SOUND_RECENCY_MS) sounds.push(notificationSound(notice.urgency));
+      || !Number.isFinite(notice.feedUpdatedAt) || seen.has(notice.key)) continue;
+    const age = notice.feedUpdatedAt - notice.createdAt;
+    if (age < 0 || age >= LIFETIME_MS) continue;
+    const localCreatedAt = now - age;
+    seen.set(notice.key, localCreatedAt);
+    if (valid && enabled && localCreatedAt >= baselineAt && localCreatedAt >= mountedAt && age <= SOUND_RECENCY_MS) sounds.push(notificationSound(notice.urgency));
   }
   return { state: { baselineAt, observed: [...seen].map(([token, createdAt]) => ({ token, createdAt })) }, sounds };
 }
@@ -38,9 +54,7 @@ export function createNotificationSound({ shared, setShared, playSound, props, r
     observe(snapshot) {
       if (snapshot.errors.some(error => error.source === 'sessions')) return;
       try {
-        const now = Date.now(), notices = snapshot.feeds.flatMap(feed => (feed.notifications ?? []).map(notice => ({
-          ...notice, key: `intentional:${feed.sessionId}:${notice.id}`,
-        })));
+        const now = Date.now(), notices = soundNotifications(snapshot.feeds, now);
         if (!history) {
           history = new Set(notices.map(notice => notice.key));
           if (!shared(key)) setShared(key, { baselineAt: now, observed: [] });

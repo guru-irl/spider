@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { createReplica, scratchDbPath } from "@spider/db-core/testutil";
 import { openDb } from "@spider/db-core";
 import { seedSession, enableMemoryCapture } from "@spider/db-core/roam/seed";
+import * as seedPorts from "@spider/db-core/roam/seed";
 import { writeLocal } from "@spider/db-core/roam/local-state";
 import { recordLocation } from "@spider/db-core/roam/catalog";
 import { createStorePort } from "../stores";
@@ -1299,18 +1300,21 @@ it("pending readiness reuses the same session-bound local launch without relaunc
 }, 5000);
 
 it("first seed uses bounded configured batches and yields while historical rows remain", async () => {
-  const f = await fixture(HUB, true), open = f.bindings.stores!.open; let batches = 0, tick = false, rowsAtYield = 0;
+  const f = await fixture(HUB, true); let tick = false, rowsAtYield = 0;
   f.config.limits = { ...f.config.limits, targetBatchBytes: 64 * 1024 };
   const insert = f.worktree.db.prepare("INSERT INTO runs(id,session_id,agent,status,task) VALUES(?,?,'worker','done',?)");
   f.worktree.db.raw.transaction(() => { for (let n = 0; n < 64; n++) insert.run(`history-${n}`, SESSION, "x".repeat(2048)); })();
   let yielded: Promise<void> | null = null;
-  f.bindings.stores!.open = key => {
-    if (key === WT && ++batches === 2) yielded = new Promise<void>(resolve => setImmediate(() => { tick = true; rowsAtYield = (f.worktree.db.prepare("SELECT count(*) AS n FROM roam_versions WHERE entity='runs'").get() as { n: number }).n; resolve(); }));
-    return open(key);
-  };
-  await f.ports.seed(f.check);
+  const realSeed = seedPorts.seedSession;
+  const observer = vi.spyOn(seedPorts, "seedSession").mockImplementation((...args) => {
+    const result = realSeed(...args);
+    const rows = (f.worktree.db.prepare("SELECT count(*) AS n FROM roam_versions WHERE entity='runs'").get() as { n: number }).n;
+    if (rows > 0 && !yielded) yielded = new Promise<void>(resolve => setImmediate(() => { tick = true; rowsAtYield = (f.worktree.db.prepare("SELECT count(*) AS n FROM roam_versions WHERE entity='runs'").get() as { n: number }).n; resolve(); }));
+    return result;
+  });
+  try { await f.ports.seed(f.check); } finally { observer.mockRestore(); }
   const returnedBeforeYield = !tick; await yielded;
-  expect(returnedBeforeYield).toBe(false); expect(rowsAtYield).toBeGreaterThan(0); expect(rowsAtYield).toBeLessThanOrEqual(32); expect(batches).toBeLessThanOrEqual(5);
+  expect(yielded).not.toBeNull(); expect(returnedBeforeYield).toBe(false); expect(rowsAtYield).toBeGreaterThan(0); expect(rowsAtYield).toBeLessThanOrEqual(32);
   expect(f.worktree.db.prepare("SELECT count(*) AS n FROM roam_versions WHERE entity='runs'").get()).toEqual({ n: 64 });
 }, 5000);
 

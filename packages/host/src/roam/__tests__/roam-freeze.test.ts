@@ -88,13 +88,16 @@ it("freeze stops all producers before durable acknowledgement", async () => {
   expect(f.admitted()).toBe(false);
 }, 5000);
 
-it("does not acknowledge an incomplete discovered store roster", async () => {
+it("refuses an incomplete discovered store roster without closing admission", async () => {
   const f = fixture();
   f.ports.stores = [f.first.db];
   f.ports.ingestThrough = async () => {};
-  await expect(freeze.freezeParticipant(f.operation, f.ports)).rejects.toThrow(/roster/i);
+  await expect(freeze.freezeParticipant(f.operation, f.ports)).rejects.toMatchObject({ code: "participant-stores-unavailable" });
   expect(f.journal.read("freeze-1").some(row => row.action === "done")).toBe(false);
-  expect(f.admitted()).toBe(false);
+  expect(f.admitted()).toBe(true);
+  expect(f.stores.map(db => readSessionState(db, "session-1")?.state)).toEqual(["active", "active"]);
+  expect(f.journal.readIntercomFence("session-1", "move-1")).toBeNull();
+  expect(unfinishedFreeze(f.first.root, "session-1")).toBe(false);
 }, 5000);
 
 it("does not reactivate a store without current participant ownership", async () => {

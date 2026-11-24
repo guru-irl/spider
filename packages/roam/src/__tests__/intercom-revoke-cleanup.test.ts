@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { createIntercomBridge, type IntercomBridge } from "../intercom-bridge";
 import { provisionIntercomEnrollment, revokeIntercomPair } from "../intercom-enrollment";
@@ -60,6 +60,36 @@ async function livePair() {
   const records = () => Promise.all([f.root, f.source.globalRoot, f.target.globalRoot].map(root => createIntercomRegistry(root).get("pair-1")));
   return { ...f, ports, enroll, revoke, records };
 }
+
+it.each(["pending", "active"] as const)("hub revoke closes a bound %s pair whose unit files are proved absent", async state => {
+  const f = await scenario();
+  const enrollment = state === "pending" ? { ...f.enrollment, verifyPair: async () => ({ sourceMachineId: A, targetMachineId: B,
+    connector: true, key: true, route: true, federation: false }) } : f.enrollment;
+  expect((await provisionIntercomEnrollment(f.request, enrollment)).code).toBe(state === "pending" ? 3 : 0);
+  for (const [machine, side] of [[f.source, "connect"], [f.target, "host"]] as const) {
+    const local = f.locals.get(machine.machineId)!, name = `spider-pair-pair-1-${side}.service`;
+    const unit = f.units.get(`${machine.machineId}/${name}`)!;
+    await local.run(["/fixture/systemctl", "--user", "disable", name], { timeoutMs: 1000, maxBytes: 1024 });
+    await local.run(["/fixture/systemctl", "--user", "stop", name], { timeoutMs: 1000, maxBytes: 1024 });
+    unlinkSync(unit.file); f.units.delete(`${machine.machineId}/${name}`);
+    expect(existsSync(unit.file)).toBe(false);
+    expect(await createIntercomRegistry(machine.globalRoot).get("pair-1")).toMatchObject({ state });
+  }
+  const ports = createProductionIntercomRevocationPorts({ root: f.root, localMachineId: HUB, hub: true, transport: f.transport,
+    localCore: async () => { throw new Error("not an endpoint"); }, fenceLocal: async () => { throw new Error("not an endpoint"); },
+    cleanupLocal: async () => { throw new Error("not an endpoint"); }, notify: async () => {} });
+  const before = f.calls.length;
+  expect(await revokeIntercomPair("pair-1", ports)).toMatchObject({ code: 0, value: { cleanupReason: null } });
+  expect(f.machines()).toEqual([]);
+  expect(readFileSync(join(f.locals.get(B)!.home, ".ssh", "authorized_keys"), "utf8")).not.toContain("spider-intercom:pair-1");
+  for (const root of [f.root, f.source.globalRoot, f.target.globalRoot]) expect(await createIntercomRegistry(root).get("pair-1")).toMatchObject({ state: "revoked", cleanupReason: null });
+  expect(f.queues.get(A)!.pairFence(B)).toMatchObject({ edgeEpoch: "edge-1" });
+  expect(f.queues.get(B)!.pairFence(A)).toMatchObject({ edgeEpoch: "edge-1" });
+  expect(f.calls.slice(before).some(call => /(?:--user (?:start|stop|disable)|machine add|keygen)/.test(call))).toBe(false);
+  const after = f.calls.length;
+  expect(await revokeIntercomPair("pair-1", ports)).toMatchObject({ code: 0, value: { cleanupReason: null } });
+  expect(f.calls).toHaveLength(after);
+}, 10_000);
 
 it.each(["empty", "finished"])("plain revoke with %s terminal inventory closes a live pair and permits fresh enrollment", async inventory => {
   const f = await livePair();

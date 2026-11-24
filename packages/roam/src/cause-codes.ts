@@ -18,6 +18,7 @@ const causeCodes = new Set<string>([
   "missing-hc", "spawn-error", "spawn_failed", "stdin-error", "cli-error", "cli-aborted", "cli-exit", "cli-timeout",
   "active-release-unavailable", "active-release-layout-invalid", "invalid-intercom-readiness",
   "broker-start-timeout", "broker-start-aborted", "broker-start-exited", "broker-start-failed", "unsafe-broker-start", "unsupported-broker",
+  "intercom-pair-unit-missing",
   "intercom-broker-unavailable", "intercom-broker-not-spider", "intercom-agent-unsafe", "intercom-directory-unsafe", "intercom-socket-unsafe", "federation-feature-missing",
   "legacy-pending-asks", "legacy-pending-asks-unavailable", "settings-unavailable", "settings-resolution-unavailable", "legacy-extension-declared",
   "settings-spider-invalid", "settings-spider-missing", "settings-spider-duplicate", "broker-readiness-unconfirmed",

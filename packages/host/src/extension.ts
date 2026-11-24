@@ -1420,8 +1420,8 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
       if (!sessionId) return undefined;
       const cwd = cwdOf(ctx) ?? process.cwd();
       const actionCtx = buildActionCtx(pi, { action: "kill" } as SpiderArgs, sessionId, cwd, undefined, ctx.modelRegistry, undefined, parentModelOf(ctx));
-      // The action ctx has no ui of its own; hand over the session's so a refused adoption is visible.
-      adoptReloadedChildren({ ...actionCtx, ui: ctx.ui });
+      // The action ctx has no UI; hand over the session's for adoption failures and RPC notices.
+      adoptReloadedChildren({ ...actionCtx, ui: ctx.ui, mode: ctx.mode });
     } catch (error) {
       // Best-effort, but never silent: the registry TTL will stop whatever is left detached.
       try { ctx.ui?.notify?.(`Subagents could not be re-adopted after the reload: ${String((error as Error)?.message ?? error)}. Detached runs will be stopped shortly.`, "warning"); } catch { /* no UI */ }

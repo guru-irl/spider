@@ -38,6 +38,33 @@ function mkTheme(theme: any): T {
     bg: (tok, s) => guard(theme?.bg?.bind(theme), tok, s),
   };
 }
+function cardBackground(context: any): string {
+  return context?.cardBackground ?? (context?.isPartial ? "toolPendingBg" : context?.isError ? "toolErrorBg" : "toolSuccessBg");
+}
+
+/** A Box wraps its children, so an SGR reset inside a child must reopen its background. */
+function restoreCardBackground(lines: string[], theme: any, background: string): string[] {
+  const marker = "\0";
+  const sample = mkTheme(theme).bg(background, marker);
+  const open = sample.slice(0, sample.indexOf(marker));
+  if (!open) return lines;
+  return lines.map(line => line.replace(/\x1b\[([0-9;]*)m/g, (sequence, parameters: string) => {
+    const codes = parameters.split(";").map(part => Number(part || 0));
+    let restore = false;
+    for (let i = 0; i < codes.length; i++) {
+      const code = codes[i];
+      if (code === 0 || code === 49) restore = true;
+      else if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107)) restore = false;
+      else if (code === 38 || code === 48 || code === 58) {
+        if (code === 48) restore = false;
+        if (codes[i + 1] === 5) i += 2;
+        else if (codes[i + 1] === 2) i += 4;
+      }
+    }
+    return restore ? sequence + open : sequence;
+  }));
+}
+
 function clip(s: string, w: number): string { return visibleWidth(s) > w ? truncateToWidth(s, w, "…") : s; }
 function shortModel(m?: string | null): string { if (!m) return "—"; return (m.split("/").pop() ?? m).replace(/^claude-/, ""); }
 function wrap(text: string, w: number, max: number): string[] {
@@ -730,9 +757,10 @@ export function renderSpiderResult(result: any, options: any, theme: any, contex
   let body: Component | undefined;
   return cachedLines(width => {
     body ??= renderSpiderResultBody(result, options, theme, context);
-    return ["exec", "exec_file", "batch"].includes(String(context?.args?.action ?? ""))
+    const lines = ["exec", "exec_file", "batch"].includes(String(context?.args?.action ?? ""))
       ? body.render(width)
       : fitResultLines(body.render(width), width, options?.expanded === true);
+    return restoreCardBackground(lines, theme, cardBackground(context));
   }, () => {
     body?.invalidate?.();
     // Some bodies prepare styled strings when created. Rebuild them for the active theme.
@@ -744,7 +772,7 @@ export function renderSpiderResult(result: any, options: any, theme: any, contex
  *  label), so this renders the FULL header using the SAME 'toolTitle' colour pi uses for its
  *  own tool titles (glyph + all text). UI STANDARD: the action VERB (run/parallel/remember/
  *  recall/search/exec/…) is always italicised; separators, counts, and sub-commands are not. */
-export function renderSpiderCall(args: any, theme: any, _context: any): Component {
+export function renderSpiderCall(args: any, theme: any, context: any): Component {
   return cachedLines((w: number) => {
     const t = mkTheme(theme);
     const action = String(args?.action ?? "");
@@ -791,7 +819,7 @@ export function renderSpiderCall(args: any, theme: any, _context: any): Componen
       if (rest > 0) cmdLines.push(`${t.fg("dim", `│ … +${rest} more line${rest === 1 ? "" : "s"}`)}`);
     }
 
-    return [clip(line, w), ...cmdLines.map((c) => clip(c, w))];
+    return restoreCardBackground([clip(line, w), ...cmdLines.map((c) => clip(c, w))], theme, cardBackground(context));
   });
 }
 
@@ -811,13 +839,13 @@ export function renderSubagentDone(message: any, options: { expanded?: boolean }
   const args = { action: "run" };
   const result = { details: { run: { name: d.name, agent: d.agent, model: d.model, thinking: d.thinking, status, result: d.output, token_count: d.tokenCount, cost: d.cost, costText: d.costText, compactionCount: d.compactionCount } } };
   const box = new Box(1, 1, bgFn);
-  box.addChild(renderSpiderCall(args, theme, {}) as any);
+  box.addChild(renderSpiderCall(args, theme, { cardBackground: background }) as any);
   if (d.chain?.outcome === "complete" || d.chain?.outcome === "stopped") {
     const headline = d.chain.outcome === "complete" ? "chain complete"
       : `chain stopped at step ${d.chain.step} of ${d.chain.total}: ${d.chain.cause}`;
-    box.addChild({ render: (width: number) => [clip(mkTheme(theme).fg("toolTitle", headline), width)], invalidate() {} });
+    box.addChild({ render: (width: number) => restoreCardBackground([clip(mkTheme(theme).fg("toolTitle", headline), width)], theme, background), invalidate() {} });
   }
-  box.addChild(renderSpiderResult(result, { expanded }, theme, { args }) as any);
+  box.addChild(renderSpiderResult(result, { expanded }, theme, { args, cardBackground: background }) as any);
   const container = new Container();
   container.addChild(new Spacer(1));
   container.addChild(box as any);
@@ -840,7 +868,7 @@ export function renderCommandOutput(message: any, options: { expanded?: boolean 
   // Normalize internal command output to the same boundary pi uses for tool rows.
   // Its isError flag describes the shell, not whether a rich report should be hidden.
   const normalized = toToolResult(result);
-  box.addChild(renderSpiderResult({ content: normalized.content, details: normalized.details }, { expanded }, theme, { args, isError: normalized.isError }) as any);
+  box.addChild(renderSpiderResult({ content: normalized.content, details: normalized.details }, { expanded }, theme, { args, isError: normalized.isError, cardBackground: "toolSuccessBg" }) as any);
   const container = new Container();
   container.addChild(new Spacer(1));
   container.addChild(box as any);
@@ -869,7 +897,7 @@ export function renderOrganismEntry(entry: unknown, options: { expanded?: boolea
           lines.push(t.fg("toolOutput", "Review: spider control memory sub=pending · spider skill op=list"));
         }
       }
-      return fitResultLines(lines, width, options?.expanded === true);
+      return restoreCardBackground(fitResultLines(lines, width, options?.expanded === true), theme, background);
     },
     invalidate() {},
   });
@@ -897,7 +925,7 @@ export function renderEscalationMessage(message: any, options: { expanded?: bool
   };
   const box = new Box(1, 1, bgFn);
   box.addChild({
-    render: (w: number) => renderEscalation(escalationDetails, { theme: th, width: w, expanded: options?.expanded === true }),
+    render: (w: number) => restoreCardBackground(renderEscalation(escalationDetails, { theme: th, width: w, expanded: options?.expanded === true }), theme, "toolErrorBg"),
     invalidate() {},
   } as any);
   const container = new Container();

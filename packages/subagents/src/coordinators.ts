@@ -322,8 +322,10 @@ export function setupEscalationNotifier(ctx: any, store: RunStore): () => void {
         { triggerTurn: true },
       );
       
-      // Also send a UI notification
-      ctx.ui?.notify?.(summary, severity === "blocked" ? "error" : "warning");
+      // RPC clients cannot render the card; retain their notification and the fallback.
+      if (ctx.mode !== "tui" || typeof ctx.pi?.sendMessage !== "function") {
+        ctx.ui?.notify?.(summary, severity === "blocked" ? "error" : "warning");
+      }
     } catch {
       // Best-effort: never let notification failures break the tailer
     }

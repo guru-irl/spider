@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { PROVISION_REMOTE_SCRIPT } from "../provision-remote-script";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { claimMachineIdentity } from "@spider/db-core/roam/machine";
 import { applyIntercomSwitchover, filesystemSwitchoverPorts } from "../../../../scripts/intercom-switchover.mjs";
@@ -10,14 +10,14 @@ import { DEFAULT_LIMITS } from "../contracts";
 import type { Outcome, Peer, Transport } from "../contracts";
 import { openJournal } from "../journal";
 import { installPiAuth } from "../auth";
-import { inspectDestinationSettings, installSelectedFiles } from "../selected-files";
+import { inspectDestinationSettings, inspectAgentPrivateModes, installSelectedFiles } from "../selected-files";
 import type { SelectedFile, SettingsKeyDigest } from "../selected-files";
 import * as provisionModule from "../provision";
 import { bootstrapPeer, healthyInventory } from "./bootstrap-fixture";
 
 type Provision = (input: { operation: { id: string; machineId: string; expectedEpoch: null; kind: string; args: Record<string, never> }; peer: Peer;
   selected: readonly string[]; includeAuth: boolean; confirmedProviders: readonly string[]; expectedAuthBytes?: number;
-  expectedFiles?: readonly { path: string; size: number; mode: number }[]; expectedSelectionDigest?: string; replaceCorePin?: boolean }, ports: unknown) => Promise<Outcome<{ hostingReady: boolean }>>;
+  expectedFiles?: readonly { path: string; size: number; mode: number }[]; expectedSelectionDigest?: string; replaceCorePin?: boolean; requireDestinationAuth?: boolean }, ports: unknown) => Promise<Outcome<{ hostingReady: boolean }>>;
 const provision = (provisionModule as { provision?: Provision }).provision;
 const roots: string[] = [];
 
@@ -36,7 +36,7 @@ function fixture() {
   write(releaseRoot, "dist/extension.js", "extension"); write(releaseRoot, "dist/intercom/broker.mjs", "broker");
   const activeFile = write(root, "active.json", "null"), journal = openJournal(join(root, "journal.db"));
   const state = { allow: true, existingId: null as string | null, verified: false, hubEnabled: true, boxEnabled: false, agentDirectory: "default" as "default" | "custom" | "unknown",
-    coreId: "fixture-core", replaceCoreOnConfirm: false, supervisorEnabled: false, permissionTightenings: 0 };
+    coreId: "fixture-core", replaceCoreOnConfirm: false, supervisorEnabled: false, permissionTightenings: 0, repairModes: false };
   const events: string[] = [], confirmations: { target: string; providers: readonly string[] }[] = [], persisted: Peer[] = [];
   const preview: unknown[] = [], diagnostics: unknown[] = [], systemctl: string[][] = [], secretCollectionCalls: string[] = [];
   const value = healthyInventory();
@@ -85,7 +85,7 @@ function fixture() {
     },
     async previewSettings(_peer: Peer, _home: string, entries: readonly SettingsKeyDigest[], maximum: number, core: { local: string; remote: string }, selectedPaths?: readonly string[]) {
       if (core.local !== "fixture-local-core" || core.remote !== state.coreId) throw Object.assign(new Error("changed"), { code: "core-changed" });
-      events.push("settings-preview"); return inspectDestinationSettings({ home: root, destinationRoot: destination, entries, maximum, selectedPaths });
+      events.push("settings-preview"); return inspectDestinationSettings({ home: root, destinationRoot: destination, entries, maximum, selectedPaths, repairablePrivateModes: state.repairModes });
     },
     async claimIdentity(peer: Peer, operationId: string, core: { local: string; remote: string }) {
       if (!core || core.local !== "fixture-local-core" || core.remote !== state.coreId) throw Object.assign(new Error("changed"), { code: "core-changed" });
@@ -96,6 +96,13 @@ function fixture() {
       return { machineId: claimMachineIdentity(global, peer.machineId), coreId: "fixture-core" };
     } },
     transfer: {
+      async repairAgentDirectory(_peer: Peer) {
+        events.push("private-mode-repair");
+        const repairs = inspectAgentPrivateModes(destination, true).map(entry => ({ ...entry, path: entry.path.replace(destination, virtual.agentDir) }));
+        const auth = join(destination, "auth.json"), present = existsSync(auth);
+        value.auth.pi = { present, readable: present, modeSafe: present && (lstatSync(auth).mode & 0o7777) === 0o600 };
+        return repairs;
+      },
       async setEnabled(_peer: Peer, _hub: string, enabled: boolean) { state.boxEnabled = enabled; events.push(`enabled:${enabled}`); },
       async enroll(_peer: Peer, hubMachineId: string) { expect(hubMachineId).toBe("00000000-0000-4000-8000-000000000001"); events.push("enrollment"); },
       async cleanupSecrets(_peer: Peer) { events.push("cleanup-secrets"); },
@@ -139,6 +146,55 @@ function fixture() {
     diagnostics, systemctl, secretCollectionCalls, value, ports, request };
 }
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+
+it("reprovisioning repairs sign-in modes with no settings selected and records every repair", async () => {
+  const f = fixture(); f.state.repairModes = true; f.state.verified = true;
+  const settings = f.write(f.destination, "settings.json", '{"theme":"sample"}'), auth = f.write(f.destination, "auth.json", "{}");
+  const folder = join(f.destination, "sessions"); mkdirSync(folder, { mode: 0o700 });
+  chmodSync(settings, 0o664); chmodSync(auth, 0o664); chmodSync(folder, 0o775);
+  f.value.auth.pi = { present: true, readable: true, modeSafe: false };
+  const request = { ...f.request("signin-modes", false, [], []), requireDestinationAuth: true };
+  const expected = [
+    { path: "/home/fixture/.pi/agent/auth.json", uid: process.getuid!(), before: 0o664, after: 0o600 },
+    { path: "/home/fixture/.pi/agent/sessions", uid: process.getuid!(), before: 0o775, after: 0o700 },
+    { path: "/home/fixture/.pi/agent/settings.json", uid: process.getuid!(), before: 0o664, after: 0o600 },
+  ];
+  const outcome = await provision!(request, f.ports);
+  expect(outcome).toMatchObject({ code: 0, reason: "installed", value: { privateModeRepairs: expected } });
+  expect(lstatSync(settings).mode & 0o7777).toBe(0o600); expect(lstatSync(auth).mode & 0o7777).toBe(0o600); expect(lstatSync(folder).mode & 0o7777).toBe(0o700);
+  expect(readFileSync(settings, "utf8")).toBe('{"theme":"sample"}');
+  expect(f.events.indexOf("private-mode-repair")).toBeGreaterThan(f.events.indexOf("confirm"));
+  expect(f.events.indexOf("private-mode-repair")).toBeLessThan(f.events.indexOf("release"));
+  expect(await provision!(request, f.ports)).toMatchObject({ code: 0, value: { privateModeRepairs: expected } });
+});
+
+it("declining consent leaves repairable destination modes unchanged", async () => {
+  const f = fixture(); f.state.repairModes = true; f.state.allow = false;
+  const settings = f.write(f.destination, "settings.json", "{}"); chmodSync(settings, 0o664);
+  expect(await provision!(f.request("decline-mode-repair", false, [], []), f.ports)).toMatchObject({ code: 1, reason: "consent-refused" });
+  expect(lstatSync(settings).mode & 0o7777).toBe(0o664); expect(f.events).not.toContain("private-mode-repair");
+});
+
+it("still requires a real destination sign-in after a repairable preview", async () => {
+  const f = fixture(); f.state.repairModes = true; f.value.auth.pi = { present: false, readable: false, modeSafe: false };
+  expect(await provision!({ ...f.request("missing-signin", false, [], []), requireDestinationAuth: true }, f.ports)).toMatchObject({ code: 1, reason: "destination-auth-missing" });
+  expect(f.events).not.toContain("private-mode-repair");
+});
+
+it("preserves path, mode, owner and actionable repair advice in provisioning refusal", async () => {
+  const f = fixture(), path = "/home/fixture/.pi/agent/settings.json";
+  f.ports.bootstrap.previewSettings = async () => { throw Object.assign(new Error("refused"), { code: "unsafe-destination", details: { path, mode: 0o664, uid: 1001, problem: "owner" } }); };
+  const outcome = await provision!(f.request("foreign-signin", false, [], []), f.ports);
+  expect(outcome.code).toBe(1); expect(outcome.reason).toContain(path); expect(outcome.reason).toContain("0664"); expect(outcome.reason).toContain("uid 1001"); expect(outcome.reason).toContain("then reprovision");
+});
+
+it("names configured-root ownership failures before the settings preview", async () => {
+  const f = fixture(), path = "/home/fixture/.pi/agent";
+  f.ports.bootstrap.probeAgentDirectory = async () => { throw Object.assign(new Error("refused"), { code: "unsafe-destination", details: { path, mode: 0o775, uid: 1001, problem: "owner" } }); };
+  const outcome = await provision!(f.request("foreign-root", false, [], []), f.ports);
+  expect(outcome.code).toBe(1); expect(outcome.reason).toContain(path); expect(outcome.reason).toContain("0775"); expect(outcome.reason).toContain("uid 1001");
+  expect(f.events).not.toContain("confirm");
+});
 
 it("completes ready provisioning when the permission count is unavailable", async () => {
   const f = fixture(); f.write(f.source, "settings.json", "{}"); f.state.verified = true;

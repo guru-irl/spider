@@ -8,7 +8,7 @@ import { validateBlockerId, parseSourceCleanup } from "./move";
 import { isPeerFailureReason } from "./peer-errors";
 import { INTERCOM_UNIQUENESS_DESCRIPTION } from "./intercom-readiness";
 import { storeScope } from "@spider/db-core/roam/codec";
-import { isPermissionRepairCommand, isPermissionTighteningCount } from "./provision-permissions";
+import { isPermissionRepairCommand, isPermissionTighteningCount, isAgentModeRepairs, isAgentModeRefusal } from "./provision-permissions";
 
 export type PublicControl =
   | { kind: "status" | "sync" | "doctor" | "enable" | "disable"; machine?: string }
@@ -83,7 +83,7 @@ const syncReasons = new Set(["Synchronization complete", "Synchronization needs 
   "Conflicting export header", "Invalid empty export", "Invalid committed local receipt", "Local store identity does not match", "Conflicting peer apply receipt",
   "Invalid peer apply receipt", "Invalid peer store list", "Peer global store is missing"]);
 function safeReason(value: unknown): string {
-  return token(value) ?? (typeof value === "string" && (syncReasons.has(value) || isPeerFailureReason(value) ||
+  return token(value) ?? (typeof value === "string" && (syncReasons.has(value) || isPeerFailureReason(value) || isAgentModeRefusal(value) ||
     /^Mapping fenced replica (?:global|(?:repo|worktree):[A-Za-z0-9._:-]{1,250})\. Re-resolve placement and retry\.$/.test(value)) ? value : "control-failed");
 }
 function safeHome(value: unknown): Outcome<unknown>["home"] {
@@ -154,6 +154,8 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
     if (typeof raw.hostingReady === "boolean") value.hostingReady = raw.hostingReady;
     if (result.code === 0 && ["installed", "installed-hosting-disabled"].includes(result.reason) && typeof raw.hostingReady === "boolean" &&
         (raw.permissionTightenings === null || isPermissionTighteningCount(raw.permissionTightenings))) value.permissionTightenings = raw.permissionTightenings;
+    if (result.code === 0 && ["installed", "installed-hosting-disabled"].includes(result.reason) && typeof raw.hostingReady === "boolean" &&
+        isAgentModeRepairs(raw.privateModeRepairs)) value.privateModeRepairs = raw.privateModeRepairs;
     if (Array.isArray(raw.outcomes)) value.outcomes = raw.outcomes.flatMap(item => {
       if (!item || typeof item !== "object" || Array.isArray(item)) return [];
       const row = item as Record<string, unknown>;

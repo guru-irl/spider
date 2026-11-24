@@ -1,3 +1,4 @@
+import { buildRuntimeArtifact } from '../../../herdr/src/__tests__/runtime-artifact.js';
 import { expect, vi } from 'vitest';
 import { resolve, join } from 'node:path';
 import { configFixtureCwd } from './herdr-config-fixture.js';
@@ -142,8 +143,7 @@ console.log(JSON.stringify({ spaces: [{ id: 's1', name: 'work', tabs: [{ id: 'tb
     if (launches) {
       const { build } = await import('vite');
       await build({ define: { 'import.meta.spiderHerdrRuntimeEntry': 'false', 'import.meta.spiderPaneEndpointEntry': 'false' }, configFile: false, logLevel: 'silent', ssr: { noExternal: [/^@spider\//] }, build: { ssr: true, outDir: join(h.root, 'dist/herdr'), emptyOutDir: false, minify: false, rollupOptions: { input: { cli: fileURLToPath(new URL('../../../herdr/src/bin/cli.ts', import.meta.url)), 'viewer-main': fileURLToPath(new URL('../../../herdr/src/bin/viewer.ts', import.meta.url)) }, external: [/^@earendil-works\//, 'better-sqlite3', 'sqlite-vec'], output: { entryFileNames: '[name].mjs' } } } });
-      const { stripTypeScriptTypes } = await import('node:module');
-      const runtime = Buffer.from(stripTypeScriptTypes(await readFile(fileURLToPath(new URL('../../../herdr/src/remote/runtime.ts', import.meta.url)), 'utf8')));
+      const runtime = await buildRuntimeArtifact();
       await writeFile(join(h.root, 'dist/herdr/remote-runtime.mjs'), runtime);
       await writeFile(join(h.root, 'dist/herdr/pane-endpoint.mjs'), 'export const createProductionPaneEndpointPorts = digest => ({protocol:1,buildDigest:digest}); export const runPaneEndpointCli = async (args, create) => {const p = await create(); return JSON.stringify({version:1,op:"handshake",protocol:p.protocol,buildDigest:p.buildDigest})};');
       if (mode === 'fake') await writeFile(join(h.root, 'dist/herdr/viewer.mjs'), `import { spawn } from 'node:child_process';

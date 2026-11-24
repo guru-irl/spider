@@ -1,3 +1,4 @@
+import { buildRuntimeArtifact } from './runtime-artifact.js';
 // SPDX-License-Identifier: MIT
 import { expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
@@ -12,7 +13,6 @@ import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { stripTypeScriptTypes } from 'node:module';
 import { build } from 'vite';
 import { createHerdrHarness, createClientFixture, terminal as fixtureTerminal } from './testutil.js';
 import { createJobMonitor, type JobMonitor, type JobNotice } from '../jobs/monitor.js';
@@ -42,7 +42,7 @@ async function scenario(mode: 'fake' | 'hc', legacyChildPolicy = false, largeSna
       expect([bundle.match(childHook)?.length, bundle.match(parentActivation)?.length]).toEqual([1, 1]);
       await writeFile(bundlePath, bundle.replace(childHook, '').replace(parentActivation, match => `if (process.env.PI_SUBAGENT_CHILD === '1') return; ${match}`));
     }
-    const runtime = Buffer.from(stripTypeScriptTypes(await readFile(fileURLToPath(new URL('../remote/runtime.ts', import.meta.url)), 'utf8')));
+    const runtime = await buildRuntimeArtifact();
     await writeFile(join(dist, 'remote-runtime.mjs'), runtime);
     await writeFixturePaneEndpoint(h.root);
     execFileSync('git', ['init', '-q', h.root]);

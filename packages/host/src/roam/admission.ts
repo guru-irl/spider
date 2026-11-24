@@ -1,7 +1,9 @@
+import { recordMoveSetupFailure } from "@spider/roam/setup-diagnostics";
+import { moveSetupFailure, moveSetupMessage, type MoveSetupFailure, type MoveSetupStage } from "@spider/roam/setup-failure";
 import { rollbackMoveId } from "@spider/roam/move-recovery";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Blocker, Home, MachineId, SessionState, StoreKey } from "@spider/db-core/roam/types";
-import { getBinding, openDbReadOnlyAt, openGlobalReadOnly, paths, type Db } from "@spider/db-core";
+import { getBinding, openDb, openDbReadOnlyAt, openGlobalReadOnly, paths, type Db } from "@spider/db-core";
 import { readMachineIdentity } from "@spider/db-core/roam/machine";
 import { readLocal } from "@spider/db-core/roam/local-state";
 import { readLocalIdentity } from "@spider/roam/runtime";
@@ -21,7 +23,7 @@ import { isMachineId } from "@spider/roam/machine-id";
 import { isRevoked } from "@spider/roam/revocation";
 import type { HostIntent, RoamConfig } from "@spider/roam/contracts";
 
-export interface Admission { kind: "pending" | "ordinary" | "control-only" | "blocked"; home: Home | null; blockers: readonly Blocker[] }
+export interface Admission { kind: "pending" | "ordinary" | "control-only" | "blocked"; home: Home | null; blockers: readonly Blocker[]; setupFailure?: MoveSetupFailure }
 export interface AdmissionGate {
   inspect(): Admission;
   refreshInitialHome(): Promise<Admission>;
@@ -40,6 +42,7 @@ export interface AdmissionPorts {
   /** Null excludes discovery; unchanged revisions require no admission lookup. */
   captureVersion?(): string | null;
   warnOnce(sessionId: string, reason: string): void;
+  setupDiagnostic?(sessionId: string, failure: MoveSetupFailure | null): void;
   load(sessionId: string): Promise<{ home: Home | null; states: readonly SessionState[]; origin: MachineId | null;
     participating: boolean; captureSafe: boolean; unfinishedFreeze: boolean; initialConflict: boolean;
     freezeRecovery?: { moveId: string; epoch: number } }>;
@@ -57,7 +60,8 @@ const admissionFailure = (error: unknown) => error instanceof Error && ["partici
   ? `${error.message}. Run /spider roam doctor for details.` : VERIFY;
 
 function initialAdmissionFailure(stage: string, error: unknown, sessionId: string): string {
-  const code = error instanceof Error && /^participant-[a-z-]+$/.test(error.message) ? error.message : null;
+  const cause = moveSetupFailure("ownership", error).causeCode;
+  const code = cause === "setup-unavailable" ? null : cause;
   const resume = code && ["participant-stopped", "participant-hub-intent-required", "participant-launch-provenance-unavailable"].includes(code);
   const session = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(sessionId) ? sessionId : "<session>";
   return `admission-${stage}-failed. ${code ? `${code}. ` : ""}${resume
@@ -101,8 +105,8 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
     if (process.platform !== "win32") process.on("SIGHUP", noteSignal);
   };
 
-  function publish(kind: Admission["kind"], home: Home | null, detail?: string): void {
-    admission = { kind, home, blockers: detail ? [{ kind: "admission", id: sessionId, detail }] : [] };
+  function publish(kind: Admission["kind"], home: Home | null, detail?: string, setupFailure?: MoveSetupFailure): void {
+    admission = { kind, home, blockers: detail ? [{ kind: "admission", id: sessionId, detail }] : [], ...(setupFailure ? { setupFailure } : {}) };
   }
   function reason(): string {
     const detail = admission.blockers[0]?.detail;
@@ -126,9 +130,15 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
     const file = ctx?.sessionManager?.getSessionFile?.() ?? "";
     const ticket = ++generation;
     let result: Admission | undefined, admitted = false, stage = "eligibility";
+    let setupFailure: MoveSetupFailure | undefined;
+    const setupFailed = (stage: MoveSetupStage, error: unknown) => {
+      setupFailure = moveSetupFailure(stage, error);
+      try { ports.setupDiagnostic?.(id, setupFailure); } catch { /* Diagnostics cannot close ordinary admission. */ }
+      return moveSetupMessage(setupFailure);
+    };
     const publishResult = (kind: Admission["kind"], home: Home | null, detail?: string) => {
-      if (late) result = { kind, home, blockers: detail ? [{ kind: "admission", id, detail }] : [] };
-      else publish(kind, home, detail);
+      if (late) result = { kind, home, blockers: detail ? [{ kind: "admission", id, detail }] : [], ...(setupFailure ? { setupFailure } : {}) };
+      else publish(kind, home, detail, setupFailure);
     };
     if (!late) publish("pending", null);
     await sequence(async () => {
@@ -143,7 +153,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
         stage = "prepare";
         let preparationFailed = false, preparationFailure: unknown;
         try { await ports.prepare?.(id, file); }
-        catch (error) { preparationFailed = true; preparationFailure = error; }
+        catch (error) { preparationFailed = true; preparationFailure = error; setupFailed("preparation", error); }
         let state: Awaited<ReturnType<AdmissionPorts["load"]>>;
         stage = "load";
         try {
@@ -151,7 +161,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
         } catch (error) {
           if (ticket !== generation) return;
           if (handoffRequired || observed.has(id) || ports.knownParticipant(id)) publishResult("blocked", null, initialAdmissionFailure("load", error, id));
-          else { if (!late) ports.warnOnce(id, VERIFY); publishResult("ordinary", null, late && error instanceof Error ? error.message : undefined); }
+          else { if (!late) ports.warnOnce(id, VERIFY); publishResult("ordinary", null, late ? initialAdmissionFailure("load", error, id) : undefined); }
           return;
         }
         if (ticket !== generation) return;
@@ -163,19 +173,21 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
             return;
           }
           if (preparationFailed) {
-            if (!late) ports.warnOnce(id, "Move setup failed. This session can continue; run /spider roam doctor for details.");
-            freeze = undefined; publishResult("ordinary", null); return;
+            const detail = moveSetupMessage(setupFailure!);
+            if (!late) ports.warnOnce(id, detail);
+            freeze = undefined; publishResult("ordinary", null, detail); return;
           }
           try {
             if (!late && ports.lockUntracked?.() && ctx?.mode === "tui" && ctx.hasUI && file && isAbsolute(file) && process.env.PI_SUBAGENT_CHILD !== "1" && !held?.valid) {
               held = { sessionId: id, file, release: await ports.lock(id, file), valid: true };
               if (ticket !== generation) { await release(); return; }
             }
-          } catch {
+          } catch (error) {
             if (ticket !== generation) return;
-            ports.warnOnce(id, "Move setup failed. This session can continue; run /spider roam doctor for details.");
+            ports.warnOnce(id, setupFailed("ownership", error));
           }
-          freeze = undefined; publishResult("ordinary", null);
+          freeze = undefined; publishResult("ordinary", null, setupFailure ? moveSetupMessage(setupFailure) : undefined);
+          if (!setupFailure) { try { ports.setupDiagnostic?.(id, null); } catch { /* Best-effort diagnostic cleanup. */ } }
           discoverable = state.captureSafe && Boolean(ctx && file);
           captureVersion = ports.captureVersion?.() ?? null;
           return;
@@ -236,10 +248,14 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
           if (ticket !== generation) return;
           if (reopening) freeze = undefined;
           admitted = true;
+          try { ports.setupDiagnostic?.(id, null); } catch { /* Best-effort diagnostic cleanup. */ }
           publishResult("ordinary", home);
           if (!late) watchSignals();
         } catch (error) {
-          if (ticket === generation) publishResult("blocked", home, late && error instanceof Error ? error.message : initialAdmissionFailure(stage, error, id));
+          if (ticket === generation) {
+            setupFailed(stage === "readiness" ? "socket-publication" : "ownership", error);
+            publishResult("blocked", home, initialAdmissionFailure(stage, error, id));
+          }
         }
       } finally {
         if (late && ticket === generation) {
@@ -298,7 +314,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
         try { state = await ports.load(sessionId); }
         catch (error) {
           if (ticket === generation) {
-            const detail = `late-admission-load-failed. ${error instanceof Error ? error.message : VERIFY}`;
+            const detail = `late-${initialAdmissionFailure("load", error, sessionId)}`;
             discoverable = false; publish("ordinary", null, detail); ports.warnOnce(sessionId, detail);
           }
           return admission;
@@ -502,6 +518,10 @@ export function createAdmissionPorts(options: ParticipantLockOptions = {}): Admi
         if (!participantReady) return null;
       }
       return `${observed}|${discoveryFiles.map(dbVersion).join('|')}`;
+    },
+    setupDiagnostic(id, failure) {
+      const db = openDb(join(paths.globalRoot, "spider.db"), { fileMustExist: true, checkpointOnClose: false });
+      try { recordMoveSetupFailure(db, id, failure); } finally { db.close(); }
     },
     warnOnce(id, reason) {
       if (cache().warned.has(id)) return;

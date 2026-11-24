@@ -9,7 +9,7 @@ export function exactLaunchArgv(shell: string, pi: string, file: string, limits:
     throw new HerdrError('launch-limits-invalid', 'Cannot verify the destination file limit');
   }
   const target = Math.min(limits.hard, Math.max(limits.soft, 65_536));
-  const script = 'ulimit -Sn "$1" && shift && export SPIDER_GLOBAL_ROOT="$1" PI_CODING_AGENT_DIR="$2" SPIDER_HERDR_HANDOFF_FILE="$3" && unset SPIDER_HERDR_HANDOFF_OPERATION_ID SPIDER_HERDR_HANDOFF_NONCE SPIDER_HERDR_LEASE_TOKEN SPIDER_HERDR_LEASE_FILE SPIDER_HERDR_SSH_BYPASS PI_SUBAGENT_CHILD && shift 3 && exec "$@"';
+  const script = 'ulimit -Sn "$1" && shift && export SPIDER_GLOBAL_ROOT="$1" PI_CODING_AGENT_DIR="$2" SPIDER_HERDR_HANDOFF_FILE="$3" SPIDER_ROAM_PI="$4" && unset SPIDER_HERDR_HANDOFF_OPERATION_ID SPIDER_HERDR_HANDOFF_NONCE SPIDER_HERDR_LEASE_TOKEN SPIDER_HERDR_LEASE_FILE SPIDER_HERDR_SSH_BYPASS PI_SUBAGENT_CHILD && shift 3 && exec "$@"';
   return [shell, '-c', script, shell, target === Infinity ? 'unlimited' : String(target),
     paths.globalRoot, paths.agentDirectory, paths.handoffFile, pi, '--session', file];
 }

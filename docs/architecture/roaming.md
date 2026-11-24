@@ -571,8 +571,16 @@ Resume verifies the exact file and doctor checks before it creates running
 intent and wakes the supervisor. It does not change the home or bypass a live or
 uncertain owner.
 
+Move setup failures retain a safe stage and cause in admission and doctor.
+The stages are `preparation`, `ownership`, `move-bindings`, `live-freeze`, and
+`socket-publication`. Doctor reads one latest machine-local failure snapshot.
+A successful setup clears that snapshot only for the session that recorded it.
+The diagnostic includes a repair but excludes exception text, paths, and prompts.
+A never-homed ordinary session can keep working after setup fails. A known
+participant or exact handoff still requires verified ownership and readiness.
+
 Initial admission failures name the stage, such as
-`admission-readiness-failed`, and a named participant reason when available.
+`admission-readiness-failed`, and an allowlisted participant reason when available.
 `participant-stopped` and `participant-hub-intent-required` name the resume
 command. A refused resume includes the blocking doctor diagnostics in text and
 JSON, plus `spider roam doctor <machine>` as the next command. Fix those
@@ -707,6 +715,16 @@ guarded query for `{ sessionId, launchId, epoch }`. Pending readiness never
 starts a second launch. The Mac resolves `SPIDER_ROAM_PI` or an executable `pi`
 on `PATH`, then pins its absolute path in the hub service environment. A missing
 executable reports `participant-pi-unavailable`.
+
+Remote agent commands carry the enrolled peer's absolute Pi path as
+`SPIDER_ROAM_PI`. Exact terminal commands export the absolute Pi they execute
+inside the child command. Neither boundary depends on the core's ambient
+`PATH` or on environment variables supplied only to the hc client.
+A validated move request whose adapter cannot start returns code `1` and a
+bounded cause, not malformed-input code `2`. Workspace preflight preserves
+that cause in its move refusal and gives the repair command. For
+`participant-pi-unavailable`, install Pi or set `SPIDER_ROAM_PI` to its
+executable, then run `spider roam doctor` and retry the move.
 
 The source broker owns intake inspection, generation checks, and readiness.
 Its saved session endpoint and closure survive a bridge restart. A broker

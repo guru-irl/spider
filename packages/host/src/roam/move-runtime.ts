@@ -1,3 +1,4 @@
+import { MoveCompositionError } from "@spider/roam/move-failure";
 import { readHostingWarnings } from "@spider/roam/hosting-warning";
 import { pendingWorkspaceTransitions } from "@spider/roam/move-recovery";
 import { recordMoveBindings } from "@spider/roam/move-diagnostics";
@@ -86,7 +87,7 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
   const known = globalDb.prepare("SELECT stores_json FROM roam_locations WHERE session_id=?").get(sessionId) as { stores_json: string } | undefined;
   const checkKeys = (input.operation?.args.check as { storeKeys?: unknown } | undefined)?.storeKeys;
   const requiredKeys: unknown = Array.isArray(checkKeys) ? checkKeys : Array.isArray(input.operation?.args.keys) ? input.operation!.args.keys : known ? JSON.parse(known.stores_json) : keys;
-  if (!Array.isArray(requiredKeys) || requiredKeys.some(key => typeof key !== "string" || !keys.includes(key as StoreKey))) throw new Error("participant-stores-unavailable");
+  if (!Array.isArray(requiredKeys) || requiredKeys.some(key => typeof key !== "string" || !keys.includes(key as StoreKey))) throw new MoveCompositionError("participant-stores-unavailable");
   const roster = keys.filter(key => requiredKeys.includes(key)).map(key => ({ key, db: stores.openStore(key).db }));
   const clock: Clock = { now: () => Date.now(), later(ms, fn) { const timer = setTimeout(fn, ms); timer.unref(); return () => clearTimeout(timer); } };
   const sync = input.sync ?? createSync({ config, globalDb, journal, transport, clock, stores });
@@ -197,7 +198,11 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
     const request = { ...operation, machineId: targetMachine, kind, args: { ...operation.args, sourceMachine: config.hubMachineId, requesterMachine: config.machineId, ...(observed ? {} : { authorityOperation: operation as unknown as JsonObject }) } };
     const bytes = await transport.exec(await transport.resolve(hub), ["roam", "agent", JSON.stringify(request)], { timeoutMs: config.limits.controlMs, maxBytes: config.limits.replyBytes });
     const reply = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-    if (reply.operationId !== request.id || reply.code !== 0) throw new Error("hub-authority-unavailable");
+    if (reply.operationId !== request.id) throw new Error("hub-authority-unavailable");
+    if (reply.code !== 0) {
+      if ([1, 2, 3].includes(reply.code)) throw new MoveCompositionError(reply.causeCode);
+      throw new Error("hub-authority-unavailable");
+    }
     return reply.value as T | null;
   };
   const bindings: MoveAdapterBindings = {
@@ -380,7 +385,7 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
   const installOnly = !config.enabled && input.operation?.kind === "restore-destroyed-home";
   const diagnostics = moveBindingDiagnostics(bindings).filter(row => !installOnly || !["participant-pi-unavailable", "adapter-unbound:start", "adapter-unbound:readmitSource"].includes(row.reason));
   recordMoveBindings(globalDb, bindings);
-  if (diagnostics.length) { privateDb.close(); stores.close(); throw new Error(diagnostics[0].reason); }
+  if (diagnostics.length) { privateDb.close(); stores.close(); throw new MoveCompositionError(diagnostics[0].reason); }
   return { bindings, ports, async recover() { return recoverMoveAdapters(ports, bindings); },
     async dispatch(operation) {
       const result = (value: unknown): import("@spider/roam/contracts").Outcome<JsonObject> => ({ code: value === null ? 3 : 0, reason: value === null ? "move-evidence-missing" : "complete", operationId: operation.id, home: localHome(sessionId), epoch: operation.expectedEpoch, repairCommand: value === null ? `spider roam recover ${operation.args.moveId}` : null, value: value as JsonObject | null });

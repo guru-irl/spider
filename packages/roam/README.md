@@ -102,6 +102,18 @@ An identity mismatch cannot prove the enrolled peer answered. A session mirror
 export or copy that loses connectivity also retains the backoff and cannot
 verify the round. An answered mirror refusal keeps its own diagnostic.
 
+## Move executable and setup failures
+
+Remote agent exec and run commands export the enrolled peer's absolute Pi as
+`SPIDER_ROAM_PI`. Move composition does not need Pi on the remote core's `PATH`.
+Validated adapter failures return code `1` with an allowlisted cause. Missing
+Pi returns `participant-pi-unavailable`, which the move refusal retains with
+an install or configuration repair.
+
+Doctor includes the latest local setup stage and cause. The snapshot contains
+no exception text, paths, or prompts. It is machine-local metadata and does not
+replicate. A successful setup clears its own session's failure.
+
 ## Move recovery
 
 The hub tracks unreachable peers even when they have no hosted homes yet.

@@ -1,3 +1,4 @@
+import { MoveSetupError } from "@spider/roam/setup-failure";
 import { createMoveActivation } from "./roam/move-activation";
 import { registerMoveCommand } from "./roam/move-command";
 import { requestHubControl } from "@spider/roam/control-socket";
@@ -898,7 +899,9 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   admissionPorts.setContext = ctx => { activationContext = ctx; setAdmissionContext(ctx); };
   const admission = registerAdmission(hostPi as unknown as ExtensionAPI, admissionPorts);
   admissionPorts.lock = async (sessionId, file) => {
-    const release = await lockAdmission(sessionId, file);
+    let release: () => Promise<void>;
+    try { release = await lockAdmission(sessionId, file); }
+    catch (error) { throw new MoveSetupError("ownership", error); }
     try {
       moveActivation = await createMoveActivation({ root: paths.globalRoot, sessionId, file, context: () => activationContext, gate: admission,
         ...(ports.bootId ? { bootId: ports.bootId } : {}), usage: usageService, embeddings, organism,
@@ -906,7 +909,11 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
         others: [{ async pause() { if (!herdr?.drainRoamFeeds) throw new Error("producer-evidence-unavailable"); await herdr.drainRoamFeeds(); }, async resume() {} }] });
       const mounted = moveActivation;
       return async () => { try { await mounted?.close(); } finally { if (moveActivation === mounted) moveActivation = null; await release(); } };
-    } catch (error) { await release(); throw error; }
+    } catch (error) {
+      const failure = new MoveSetupError("move-bindings", error);
+      try { await release(); } catch { /* The original setup cause remains authoritative. */ }
+      throw failure;
+    }
   };
   admissionPorts.ready = async (id, file, epoch, home) => { await readyAdmission?.(id, file, epoch, home); await moveActivation?.ready(file, epoch, home); };
   // Pi reads context files after extension factories but before session_start.

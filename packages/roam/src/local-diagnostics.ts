@@ -1,3 +1,4 @@
+import { readMoveSetupDiagnostics } from "./setup-diagnostics";
 import { corePinDiagnostics } from "./core-pin-diagnostics";
 import { hubServiceExists, hubServiceFile } from "./launchd";
 import { inspectSupervisorCorePin } from "./enrollment";
@@ -469,7 +470,7 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
   catch (error) { inventory.push({ severity, reason: `global: cannot inspect the registered store.${snapshotProblem(error)}`, repairCommand: null }); }
   if (global) try {
     try {
-      inventory.push(...hostingWarningDiagnostics(global));
+      inventory.push(...hostingWarningDiagnostics(global), ...readMoveSetupDiagnostics(global));
     } catch { inventory.push({ severity: "warning", reason: "Cannot inspect hosting warnings.", repairCommand: null }); }
     let version: number | undefined, key = "global";
     try {

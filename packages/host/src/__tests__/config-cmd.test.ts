@@ -23,6 +23,12 @@ function fixture(): string {
 afterEach(() => { for (const dir of fixtures.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 describe("applyConfigEdit round-trip", () => {
+  it("enables copy buttons by default and reads a persisted disable setting", () => {
+    const dir = fixture();
+    expect(controlConfig("get", dir, "copyButtons.enabled")).toBe(true);
+    expect(applyConfigEdit(dir, "copyButtons.enabled", "false").ok).toBe(true);
+    expect(controlConfig("get", dir, "copyButtons.enabled")).toBe(false);
+  });
   it("enables automatic reload by default and applies an editable override", () => {
     const dir = fixture();
     expect(controlConfig("get", dir, "reload.auto")).toBe(true);

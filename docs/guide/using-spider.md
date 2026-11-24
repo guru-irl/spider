@@ -4,6 +4,18 @@
 - Run `/doctor` after you install, rebuild, or update.
 - Ask the agent to use the single `spider` tool. The examples below are written as tool calls, not terminal commands.
 
+## Copy assistant replies
+
+In pi's fullscreen mode (`"tuiMode": "fullscreen"`), finished assistant replies show `⧉ text` and `⧉ md` buttons. They copy plain text or the original Markdown for a code block, blockquote, section between `---` rules, or the whole reply. Markdown copies of code blocks include their fences and language tags. The buttons do not appear in regular mode or in subagents.
+
+To turn them off, set `copyButtons.enabled` to `false` and run `/reload`:
+
+```text
+spider control command:"config" op:"set" key:"copyButtons.enabled" value:false
+```
+
+If you linked a checkout before this feature, rerun `npm run link` or `npm run dev:link` to update the shim, then reload pi.
+
 ## Skills first
 
 - If a skill's trigger applies, load the skill before you start non-trivial work.

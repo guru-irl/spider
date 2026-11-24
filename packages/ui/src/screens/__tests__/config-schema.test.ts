@@ -4,7 +4,7 @@ import { CONFIG_SCHEMA, createConfigSchema, getField, coerce } from "../config-s
 describe("config schema", () => {
 	it("declares groups with working or explicitly reserved settings", () => {
 		const ids = CONFIG_SCHEMA.map((g) => g.id).sort();
-		expect(ids).toEqual(["auxiliary", "compaction", "curator", "embeddings", "exec", "herdr", "memory", "models", "organism", "reload", "routing", "skills", "subagents", "tools", "ui", "usage"]);
+		expect(ids).toEqual(["auxiliary", "compaction", "copyButtons", "curator", "embeddings", "exec", "herdr", "memory", "models", "organism", "reload", "routing", "skills", "subagents", "tools", "ui", "usage"]);
 	});
 	it("coerces Herdr activation to booleans or auto and exposes its config path", () => {
 		const enabled = getField("herdr.enabled")!;

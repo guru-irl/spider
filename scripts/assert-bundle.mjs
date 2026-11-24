@@ -106,7 +106,7 @@ try {
   process.exit(1);
 }
 
-const intercomFiles = ['dist/intercom/broker.mjs', 'packages/intercom/LICENSE', 'packages/intercom/ORIGIN.md', 'packages/intercom/skills/pi-intercom/SKILL.md', 'scripts/intercom-switchover.mjs'];
+const intercomFiles = ['dist/intercom/broker.mjs', 'packages/intercom/LICENSE', 'packages/intercom/ORIGIN.md', 'packages/intercom/skills/pi-intercom/SKILL.md', 'scripts/intercom-switchover.mjs', 'scripts/package-extension.ts'];
 for (const file of intercomFiles) {
   const info = lstatSync(file);
   if (!info.isFile() || info.isSymbolicLink() || !info.size) throw new Error(`Intercom artifact missing or invalid: ${file}`);
@@ -115,7 +115,7 @@ if (readdirSync('dist/intercom').join() !== 'broker.mjs') throw new Error('Unexp
 const intercomLicense = readFileSync('packages/intercom/LICENSE', 'utf8');
 if (createHash('sha256').update(intercomLicense).digest('hex') !== '2d20dfacd9742706e564470dc77438608a1e54b0ed46959f080709389209093c' || !readFileSync('NOTICE.md', 'utf8').includes(intercomLicense.trim())) throw new Error('Intercom MIT notice missing');
 const intercomManifest = JSON.parse(readFileSync('package.json', 'utf8'));
-if (intercomManifest.pi.extensions.join() !== './dist/extension.js' || intercomManifest.pi.skills.filter(path => path === './packages/intercom/skills').length !== 1) throw new Error('Intercom must load through spider with one skill directory');
+if (intercomManifest.pi.extensions.join() !== './scripts/package-extension.ts' || intercomManifest.pi.skills.filter(path => path === './packages/intercom/skills').length !== 1) throw new Error('Intercom must load through spider with one skill directory');
 if (readdirSync('packages/intercom/skills', { recursive: true }).filter(file => String(file).endsWith('SKILL.md')).join() !== 'pi-intercom/SKILL.md') throw new Error('Intercom skill missing or duplicated');
 const brokerCode = readFileSync('dist/intercom/broker.mjs', 'utf8');
 const brokerTree = ts.createSourceFile('broker.mjs', brokerCode, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);

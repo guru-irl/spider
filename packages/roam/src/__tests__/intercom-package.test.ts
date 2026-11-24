@@ -50,7 +50,7 @@ it("the release file-list gate rejects either missing helper entry", () => {
   const files = ["dist/extension.js", "dist/intercom/broker.mjs", "dist/dashboard/index.html", "dist/dashboard/assets/app-aaaaaaaa.js", "dist/dashboard/assets/app-aaaaaaaa.css",
     "README.md", "LICENSE", "NOTICE.md", "packages/context/LICENSE", "packages/pstack/LICENSE", "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md", ...skills,
     "dist/roam/cli.mjs", "dist/roam/cli-main.mjs", "dist/roam/intercom-helper.mjs", "dist/roam/supervisor.mjs", "scripts/link.mjs", "scripts/dev-link.mjs",
-    "scripts/intercom-switchover.mjs", "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/pi-agent-dir.mjs"];
+    "scripts/intercom-switchover.mjs", "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/package-extension.ts", "scripts/pi-agent-dir.mjs"];
   for (const missing of ["dist/roam/cli-main.mjs", "dist/roam/intercom-helper.mjs"]) {
     const result = spawnSync(process.execPath, ["scripts/check-package-files.cjs"], { input: JSON.stringify([{ files: files.filter(file => file !== missing).map(path => ({ path })) }]), encoding: "utf8", timeout: 2000 });
     expect(result.status).toBe(1); expect(result.stderr).toContain(missing);

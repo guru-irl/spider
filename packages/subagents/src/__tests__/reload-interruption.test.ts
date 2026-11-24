@@ -51,6 +51,16 @@ it.each([
   expect(parkSession("query-session").map(entry => entry.runId)).toEqual(expected ? ["run-1"] : []);
 });
 
+it("cleans up a parked background child without opening a non-fixture database", async () => {
+  const warning = vi.spyOn(console, "warn");
+  try {
+    child("cleanup-session", "run-1", true, false);
+    parkSession("cleanup-session");
+    await coordinators.teardownAllAsync({ graceMs: 1 });
+    expect(warning).not.toHaveBeenCalled();
+  } finally { warning.mockRestore(); }
+});
+
 it("does not block multiple ordinary background runs", () => {
   const first = child("background-session", "first", true, false);
   const second = child("background-session", "second", true, true);

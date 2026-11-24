@@ -19,5 +19,5 @@ it("reports resolved bundled folders and the skill count of each collection", ()
     const count = readdirSync(dir, { withFileTypes: true }).filter(entry => entry.isDirectory()).length;
     expect(report.lines).toContain(`- bundled ${collection} skills: ${dir} (${count} skills)`);
   }
-  expect(report.lines.join("\n")).toContain("(31 skills)");
+  expect(report.lines.join("\n")).toContain("(33 skills)");
 });

@@ -151,7 +151,8 @@ This software is provided by the copyright holders and contributors “as is” 
 - Author: Lauren Tan.
 - License: MIT.
 - Copyright (c) 2026 Lauren Tan.
-- Spider takes the original text of the 31 adopted skills through pstack-claude.
+- Spider takes the original text of 31 skills through pstack-claude and
+  `ketchup` and `ketchup-video` directly from this repository.
 
 ```text
 MIT License

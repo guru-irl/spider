@@ -20,7 +20,8 @@ If you linked a checkout before this feature, rerun `npm run link` or `npm run d
 
 - If a skill's trigger applies, load the skill before you start non-trivial work.
 - Start with a process skill such as `brainstorming` or `systematic-debugging`. Then use implementation skills such as `test-driven-development` or `writing-plans`.
-- Spider bundles the superpowers workflow skills and 31 adapted pstack skills. From pstack, use `how`, `why` and `teach` to explain code, `unslop` and `technical-writing` for prose, and a `principle-*` skill when its description matches a decision.
+- Spider bundles the superpowers workflow skills and 33 adapted pstack skills. From pstack, use `how`, `why` and `teach` to explain code, `unslop` and `technical-writing` for prose, and a `principle-*` skill when its description matches a decision.
+- Run `/skill:ketchup` for a catch-up on this chat and the decisions waiting on you. Run `/skill:ketchup-video` for a subtitled video catch-up.
 - To list skills, run `spider skill op:"list"`. To see one, run `op:"view" name:"<name>"`, or read its `SKILL.md`.
 - List and view label each skill's source as `bundled superpowers`, `bundled pstack`, or `project/agent-created`. If two sources share a name, both entries appear. Spider reads bundled skills from disk and never stores them as curation candidates.
 - `/doctor` reports each bundled skills folder it resolved and how many skills it holds.

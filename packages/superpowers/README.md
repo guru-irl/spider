@@ -1,6 +1,6 @@
 # @spider/superpowers
 
-This package vendors the [superpowers](https://github.com/obra/superpowers) skills into spider and discovers the 31 adapted [pstack](https://github.com/michael-denyer/pstack-claude) skills next to them. Both collections ship in npm packages. This package also writes the managed `AGENTS.md` block and implements `spider control upstream-watch`.
+This package vendors the [superpowers](https://github.com/obra/superpowers) skills into spider and discovers the 33 adapted [pstack](../pstack/README.md) skills next to them. Both collections ship in npm packages. This package also writes the managed `AGENTS.md` block and implements `spider control upstream-watch`.
 
 ## Responsibility
 

@@ -1,5 +1,7 @@
 # pstack integration: decision record
 
+This record describes the original 31-skill scope. Spider now ships 33 pstack skills, including `ketchup` and `ketchup-video`. See the [package README](../../../packages/pstack/README.md) for the current list.
+
 This record gives one decision for every pstack skill, every superpowers skill that spider vendors, and every pi 1.2 feature in the pi feature review. The superplan that orders the work is `docs/superpowers/plans/2026-10-19-pstack-integration.md`, and decision numbers below refer to its decision list.
 
 The sources are pstack-claude v0.9.93 (commit `046341e`), which has 63 skills including 24 principle skills, spider's 15 superpowers skills, and pi 1.2.0.

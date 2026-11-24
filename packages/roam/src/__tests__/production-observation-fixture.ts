@@ -18,10 +18,12 @@ export function noChangeSyncFixture(config: RoamConfig): {
   stores: StorePort; transport: Transport;
   setUnavailable(value: boolean): void; setIncomplete(value: boolean): void;
   setRefused(value: boolean): void; setReplaced(value: boolean): void;
+  setStoreRefused(value: boolean): void; setHosting(value: JsonObject): void;
 } {
   const localStream = "00000000-0000-4000-8000-000000000010";
   const remoteStream = "00000000-0000-4000-8000-000000000011";
-  let unavailable = false, incomplete = false, refused = false, replaced = false;
+  let unavailable = false, incomplete = false, refused = false, replaced = false, storeRefused = false;
+  let hosting: JsonObject = { readiness: [], suspensions: [] };
   const header = (machine: string, stream: string, batchId: string, after: number): BatchHeader => ({
     protocol: 1, schema: 14, batchId, senderMachine: machine, senderStream: stream,
     storeKey: "global", after, through: after, count: 0,
@@ -40,7 +42,7 @@ export function noChangeSyncFixture(config: RoamConfig): {
     async exec(peer, argv) {
       if (argv[0] !== "roam") throw new Error("Unexpected command");
       if (argv[1] === "observe" && argv[2] === "hosting") return Buffer.from(JSON.stringify({
-        version: 1, machineId: peer.machineId, kind: "hosting", value: { readiness: [], suspensions: [] },
+        version: 1, machineId: peer.machineId, kind: "hosting", value: hosting,
       }));
       if (argv[1] !== "agent") throw new Error("Unexpected command");
       const op = JSON.parse(argv[2]) as Operation;
@@ -54,8 +56,9 @@ export function noChangeSyncFixture(config: RoamConfig): {
         case "cursor": value = { lastSeq: 0 }; break;
         default: throw new Error(`Unexpected sync operation: ${op.kind}`);
       }
-      return Buffer.from(JSON.stringify({ code: refused ? 1 : 0, reason: refused ? "Invalid peer value" : "ok", operationId: op.id,
-        home: null, epoch: null, repairCommand: null, value: refused ? null : value }));
+      const reject = refused || storeRefused && op.kind === "inventory";
+      return Buffer.from(JSON.stringify({ code: reject ? 1 : 0, reason: reject ? "Invalid peer value" : "ok", operationId: op.id,
+        home: null, epoch: null, repairCommand: null, value: reject ? null : value }));
     },
     async read() { throw new Error("No artifact should be read"); },
     async write() { throw new Error("No artifact should be written"); },
@@ -63,7 +66,8 @@ export function noChangeSyncFixture(config: RoamConfig): {
   };
   return { stores, transport: wire, setUnavailable(value: boolean) { unavailable = value; },
     setIncomplete(value: boolean) { incomplete = value; }, setRefused(value: boolean) { refused = value; },
-    setReplaced(value: boolean) { replaced = value; } };
+    setReplaced(value: boolean) { replaced = value; }, setStoreRefused(value: boolean) { storeRefused = value; },
+    setHosting(value: JsonObject) { hosting = value; } };
 }
 
 export async function productionObservationFixture(root: string, config: RoamConfig, db: Db, wire: Transport): Promise<{

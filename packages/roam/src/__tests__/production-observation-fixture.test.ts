@@ -1,5 +1,9 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { mkdtempSync, rmSync } from "node:fs";
+import { runHub, type HubRuntimePorts } from "../hub";
+import { assignInitialHome } from "../homes";
+import { readLocal } from "@spider/db-core/roam/local-state";
 import { createReplica } from "@spider/db-core/testutil";
 import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import type { RoamConfig } from "../contracts";
@@ -26,7 +30,37 @@ it("a no-change round supplies production sync proof only for a complete success
     wire.setIncomplete(true);
     const incomplete = await sync.sync(peer.machineId);
     expect(incomplete).toEqual([]);
-    expect(await native.observe(peer, incomplete)).toMatchObject({ reachability: "reachable", syncVerified: false });
+    const readiness = { origin: "hub-operation", opId: "op-1", sessionId: "session-1", epoch: 1,
+      cwd: "/home/fixture/work", file: "/home/fixture/session.jsonl", core: "core-1", terminal: "box-1.invalid/t1" };
+    wire.setHosting({ readiness: [{ ...readiness, terminal: "t1" }], suspensions: [{ sessionId: "session-1", epoch: 1 }] });
+    expect(await native.observe(peer, incomplete)).toMatchObject({ reachability: "reachable", syncVerified: false,
+      readiness: [readiness], suspensions: [{ sessionId: "session-1", epoch: 1 }] });
+    assignInitialHome(local.db, "session-1", peer.machineId, machineId);
+    const root = mkdtempSync(join(resolve(".spider/scratch"), "hosting-"));
+    let afterSync!: Parameters<HubRuntimePorts["prepare"]>[0];
+    const placements: unknown[] = [], notices: string[] = [];
+    const hub = await runHub({ config, globalDb: local.db, runtimeRoot: root, socketPath: join(root, "hub.sock"),
+      identity: { pid: process.pid, startIdentity: "process-1" }, async probe() { return { kind: "live", startIdentity: "process-1" }; },
+      clock: { now: () => 1, later() { return () => {}; } }, observe: native.observe,
+      sync: { start() {}, stop() {}, async sync() { return []; }, async barriers() { return false; } },
+      placement: { async reconcile(rows) { placements.push(...rows); return { pending: [] }; } },
+      notices: { async publish(notice) { notices.push(notice.kind); }, async clear() {} },
+      async homeChangeInProgress() { return false; }, async prepare(callback) { afterSync = callback; },
+      async drain() {}, async closeStores() {},
+    });
+    try {
+      await afterSync(peer, incomplete);
+      expect(placements).toEqual([readiness]);
+      expect(notices).toEqual(["suspended"]);
+      expect(readLocal(local.db, "peer-hosting-warnings", peer.machineId)).toEqual([]);
+      wire.setStoreRefused(true);
+      const storeRefused = await sync.sync(peer.machineId);
+      expect(storeRefused).toMatchObject([{ code: 1 }]);
+      expect(await native.observe(peer, storeRefused)).toMatchObject({ readiness: [readiness] });
+      await afterSync(peer, storeRefused);
+      expect(placements).toEqual([readiness, readiness]);
+    } finally { await hub.stop(); rmSync(root, { recursive: true, force: true }); }
+    wire.setStoreRefused(false);
     wire.setIncomplete(false); wire.setRefused(true);
     const refused = await sync.sync(peer.machineId);
     expect(refused.some(result => result.code !== 0)).toBe(true);

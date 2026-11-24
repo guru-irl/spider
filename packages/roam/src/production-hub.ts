@@ -134,9 +134,9 @@ export async function startProductionHub(root: string, options: { intercomClock?
           syncState.observation?.connected === true;
         const reachability = parseMachineReachability(state, matches[0].why);
         if (reachability !== "reachable") return { reachability, readiness: null, suspensions: null };
-        if (!reached) return { reachability, syncVerified: false, readiness: null, suspensions: null };
-        try { const hosting = await remoteHosting(transport, peer, core.config); return { reachability, syncVerified: true, ...hosting }; }
-        catch { return { reachability, syncVerified: true, readiness: null, suspensions: null }; }
+        if (syncState.observation?.connected !== true) return { reachability, syncVerified: false, readiness: null, suspensions: null };
+        try { const hosting = await remoteHosting(transport, peer, core.config); return { reachability, syncVerified: reached, ...hosting }; }
+        catch { return { reachability, syncVerified: reached, readiness: null, suspensions: null }; }
       } catch { return { reachability: "unknown", readiness: null, suspensions: null }; }
     };
     placement = options.placementFactory?.({ root, globalDb: core.db, config: core.config });

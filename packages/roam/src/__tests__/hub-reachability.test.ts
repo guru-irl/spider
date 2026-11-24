@@ -59,7 +59,7 @@ it("a core identity change during machine inventory remains unknown", async () =
 
 
 it.each([
-  ['a different core answers there ("new-core")', "unknown"],
+  ['a different core answers there ("new-core")', "identity"],
   [undefined, "unreachable"],
   ["network unavailable", "unreachable"],
   ['a different core answers there ("new-core") extra', "unreachable"],
@@ -118,4 +118,8 @@ it("a replaced remote core neither starts nor advances an outage or recovers mov
   expect(clears).toEqual([]);
   expect(recoveries).toEqual([]);
   expect(timers.filter(t => !t.cancelled)).toEqual([]);
+  h.setState("connected"); await observe();
+  expect(timers.filter(t => !t.cancelled)).toEqual([]);
+  advance(0); for (let i = 0; i < 10; i++) await Promise.resolve();
+  expect(recoveries).toEqual([]);
 });

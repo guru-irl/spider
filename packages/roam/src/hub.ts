@@ -27,7 +27,7 @@ const UNREACHABLE_MS = 10 * 60_000;
 const LOCK = "roam-hub";
 type PeerResult = readonly Outcome<ApplyReceipt>[];
 export interface HubObservation {
-  reachability: "reachable" | "unreachable" | "unknown";
+  reachability: "reachable" | "unreachable" | "unknown" | "identity";
   /** The enrolled peer answered this round without a connectivity failure. */
   syncVerified?: boolean;
   warnings?: readonly SessionHostingWarning[] | null;
@@ -123,7 +123,7 @@ function plain(value: unknown): value is string {
 function validObservation(value: unknown): value is HubObservation {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const row = value as HubObservation;
-  return ["reachable", "unreachable", "unknown"].includes(row.reachability) &&
+  return ["reachable", "unreachable", "unknown", "identity"].includes(row.reachability) &&
     (row.syncVerified === undefined || typeof row.syncVerified === "boolean") &&
     (row.warnings === undefined || row.warnings === null || validHostingWarnings(row.warnings)) &&
     (row.readiness === null || Array.isArray(row.readiness) && row.readiness.every(validReadiness)) &&
@@ -234,6 +234,7 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
       try { observation = await ports.observe(peer, results); } catch { return; }
       if (ports.revocationDb && isRevoked(ports.revocationDb, peer.machineId)) return;
       if (!validObservation(observation)) return;
+      if (observation.reachability === "identity") { unreachablePeers.delete(peer.machineId); cancelTimer(peer.machineId); return; }
       if (observation.reachability === "unknown") { cancelTimer(peer.machineId); return; }
       let state = peerStatus(db, peer.machineId);
       if (observation.reachability === "unreachable") {

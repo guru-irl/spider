@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { scratchDbPath } from "@spider/db-core/testutil";
 import { installHubService, removeHubService } from "../launchd";
 import * as launchd from "../launchd";
+import { runLocalDoctor } from "../local-diagnostics";
 
 const failures = vi.hoisted(() => ({ sync: false }));
 vi.mock("node:fs", async importOriginal => {
@@ -219,6 +220,150 @@ it("reports an unexpected service failure without attempting bootstrap", async (
   await expect(installHubService(f, ports)).rejects.toThrow(/fixture launchd failure/);
   expect(f.calls.map(call => call[0])).toEqual(["bootout"]);
 }, 5000);
+
+it("preserves the default definition apart from its stable working directory", async () => {
+  const f = fixture(); vi.stubEnv("HOME", f.root);
+  await installHubService({ ...f, env: { HOME: f.root } }, f.ports);
+  const text = plist(plistAt(f.plistDir, f.globalRoot)).xml;
+  const wd = `<key>WorkingDirectory</key><string>${f.globalRoot}</string>\n`;
+  expect(text).toContain(wd);
+  expect(text.replace(wd, "")).toBe(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>${launchd.hubServiceLabel(f.globalRoot)}</string>
+<key>ProgramArguments</key><array><string>${realpathSync(f.node).replaceAll("&", "&amp;")}</string><string>${realpathSync(f.cli).replaceAll("<", "&lt;").replaceAll(">", "&gt;")}</string><string>roam</string><string>hub</string></array>
+<key>RunAtLoad</key><true/>
+<key>KeepAlive</key><true/>
+<key>EnvironmentVariables</key><dict><key>SPIDER_GLOBAL_ROOT</key><string>${f.globalRoot}</string><key>SPIDER_ROAM_PI</key><string>${f.pi}</string></dict>
+<key>StandardOutPath</key><string>${join(f.globalRoot, "roam/logs/hub.out.log")}</string>
+<key>StandardErrorPath</key><string>${join(f.globalRoot, "roam/logs/hub.err.log")}</string>
+<key>Umask</key><integer>63</integer>
+</dict></plist>\n`);
+});
+
+it("pins the selected session and normalized socket without copying unrelated environment", async () => {
+  const f = fixture(); vi.stubEnv("HOME", f.root);
+  const socket = join(f.root, "custom & core.sock");
+  await installHubService({ ...f, env: { HOME: f.root, HC_SESSION: "  team  ", HC_SOCKET: join(f.root, "dir", "..", "custom & core.sock"), SECRET: "do-not-copy" } }, f.ports);
+  const text = plist(plistAt(f.plistDir, f.globalRoot)).xml;
+  expect(text).toContain(`<key>HC_SESSION</key><string>team</string>`);
+  expect(text).toContain(`<key>HC_SOCKET</key><string>${socket.replaceAll("&", "&amp;")}</string>`);
+  expect(text).not.toContain("do-not-copy");
+});
+
+it("pins a socket selected through XDG config and rejects unsafe selection", async () => {
+  const f = fixture(); vi.stubEnv("HOME", f.root);
+  const config = join(f.root, "alternate-config", "herdr-core"), socket = join(f.root, "configured.sock");
+  mkdirSync(config, { recursive: true }); writeFileSync(join(config, "config.toml"), `socket = "${socket}"\n`);
+  await installHubService({ ...f, env: { HOME: f.root, XDG_CONFIG_HOME: dirname(config) } }, f.ports);
+  expect(plist(plistAt(f.plistDir, f.globalRoot)).xml).toContain(`<key>HC_SOCKET</key><string>${socket}</string>`);
+  expect(plist(plistAt(f.plistDir, f.globalRoot)).xml).toContain("<key>HC_SESSION</key><string>default</string>");
+  for (const env of [{ HOME: f.root, HC_SESSION: "../bad", HC_SOCKET: socket }, { HOME: f.root, HC_SOCKET: "relative.sock" }, { HOME: f.root, HC_SOCKET: "/home/fixture/bad\npath" },
+    { HOME: f.root, HC_SESSION: "bad\ufffe", HC_SOCKET: socket }, { HOME: f.root, HC_SOCKET: "/home/fixture/bad\ud800" }]) {
+    await expect(installHubService({ ...f, env }, f.ports)).rejects.toThrow();
+  }
+});
+
+it.each(["session", "runtime", "state", "home", "socket-precedence"]) ("preserves the effective %s selection", async source => {
+  const f = fixture(); vi.stubEnv("HOME", f.root);
+  const otherHome = join(f.root, "other-home"), runtime = join(f.root, "run"), state = join(f.root, "state"), socket = join(f.root, "override.sock");
+  const env = source === "session" ? { HOME: f.root, HC_SESSION: "team" }
+    : source === "runtime" ? { HOME: f.root, XDG_RUNTIME_DIR: runtime }
+    : source === "state" ? { HOME: f.root, XDG_STATE_HOME: state, XDG_RUNTIME_DIR: "" }
+    : source === "home" ? { HOME: otherHome, XDG_RUNTIME_DIR: "" }
+    : { HOME: f.root, HC_SOCKET: socket, XDG_CONFIG_HOME: join(f.root, "bad-config") };
+  if (source === "socket-precedence") {
+    mkdirSync(join(f.root, "bad-config", "herdr-core"), { recursive: true });
+    writeFileSync(join(f.root, "bad-config", "herdr-core", "config.toml"), "socket = invalid\n");
+  }
+  await installHubService({ ...f, env }, f.ports);
+  const text = plist(plistAt(f.plistDir, f.globalRoot)).xml;
+  const { selectedSocket } = await import("@spider/herdr/client/parse");
+  expect(text).toContain(`<key>HC_SOCKET</key><string>${selectedSocket(env)}</string>`);
+  if (source === "session") expect(text).toContain("<key>HC_SESSION</key><string>team</string>");
+});
+
+it("preserves a shell HOME selection that differs from the service manager home", async () => {
+  const f = fixture(), shellHome = join(f.root, "shell-home"); vi.stubEnv("HOME", shellHome);
+  const ports = { ...f.ports, serviceHome: f.root }, env = { HOME: shellHome };
+  await installHubService({ ...f, env }, ports);
+  const file = plistAt(f.plistDir, f.globalRoot), text = readFileSync(file, "utf8");
+  const { selectedSocket } = await import("@spider/herdr/client/parse");
+  expect(text).toContain(`<key>HC_SOCKET</key><string>${selectedSocket(env)}</string>`);
+  expect(launchd.hubServiceSelectionMatches(f.globalRoot, f.plistDir, env, f.root)).toBe(true);
+  writeFileSync(file, text.replace(/<key>HC_SESSION<\/key><string>[^<]*<\/string>/, "").replace(/<key>HC_SOCKET<\/key><string>[^<]*<\/string>/, ""));
+  expect(launchd.hubServiceSelectionMatches(f.globalRoot, f.plistDir, env, f.root)).toBe(false);
+});
+
+it("pins a socket configured in the default config home across config changes", async () => {
+  const f = fixture(); vi.stubEnv("HOME", f.root);
+  mkdirSync(join(f.root, ".config", "herdr-core"), { recursive: true });
+  const config = join(f.root, ".config", "herdr-core", "config.toml"), socket = join(f.root, "selected.sock");
+  writeFileSync(config, `socket = "${socket}"\n`);
+  await installHubService({ ...f, env: { HOME: f.root } }, f.ports);
+  expect(plist(plistAt(f.plistDir, f.globalRoot)).xml).toContain(`<key>HC_SOCKET</key><string>${socket}</string>`);
+  writeFileSync(config, `socket = "${join(f.root, "changed.sock")}"\n`);
+  expect(launchd.hubServiceSelectionMatches(f.globalRoot, f.plistDir, { HOME: f.root })).toBe(false);
+});
+
+it("an explicit socket remains usable when the default socket config is malformed", async () => {
+  const f = fixture(); vi.stubEnv("HOME", f.root);
+  mkdirSync(join(f.root, ".config", "herdr-core"), { recursive: true });
+  writeFileSync(join(f.root, ".config", "herdr-core", "config.toml"), "socket = invalid\n");
+  const socket = join(f.root, "selected.sock");
+  await expect(installHubService({ ...f, env: { HOME: f.root, HC_SOCKET: socket } }, f.ports)).resolves.toBeUndefined();
+  expect(plist(plistAt(f.plistDir, f.globalRoot)).xml).toContain(`<key>HC_SOCKET</key><string>${socket}</string>`);
+});
+
+it("doctor compares installed, current and legacy hub selections", async () => {
+  const f = fixture(); vi.stubEnv("HOME", f.root);
+  for (const key of ["HC_SESSION", "HC_SOCKET", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "XDG_STATE_HOME"]) vi.stubEnv(key, undefined);
+  const plistDir = join(f.root, "Library", "LaunchAgents"), socket = join(f.root, "selected.sock");
+  const ports = { ...f.ports, plistDir };
+  mkdirSync(join(f.globalRoot, "roam"), { recursive: true });
+  writeFileSync(join(f.globalRoot, "roam", "config.json"), JSON.stringify({ enabled: false, role: "hub", machineId: "00000000-0000-4000-8000-000000000001", hubMachineId: "00000000-0000-4000-8000-000000000001", coreUnit: "fixture.service", peers: [] }), { mode: 0o600 });
+  vi.stubEnv("HC_SOCKET", socket); vi.stubEnv("HC_SESSION", "team");
+  await installHubService({ ...f, env: { HOME: f.root, HC_SOCKET: socket, HC_SESSION: "team" } }, ports);
+  const reasons = async () => (await runLocalDoctor({ root: f.globalRoot })).diagnostics.filter(row => row.reason.includes("hub-core-selection"));
+  expect(await reasons()).toEqual([]);
+  vi.stubEnv("HC_SESSION", "other-team");
+  expect(await reasons()).toEqual([expect.objectContaining({ reason: expect.stringContaining("hub-core-selection-mismatch"), repairCommand: "spider roam enable" })]);
+  vi.stubEnv("HC_SESSION", "team"); vi.stubEnv("HC_SOCKET", join(f.root, "other.sock"));
+  expect(await reasons()).toEqual([expect.objectContaining({ reason: expect.stringContaining("hub-core-selection-mismatch"), repairCommand: "spider roam enable" })]);
+  const file = plistAt(plistDir, f.globalRoot), installed = readFileSync(file, "utf8");
+  writeFileSync(file, installed.replace(/<key>HC_SESSION<\/key><string>[^<]*<\/string>/, "").replace(/<key>HC_SOCKET<\/key><string>[^<]*<\/string>/, ""));
+  expect(await reasons()).toEqual([expect.objectContaining({ reason: expect.stringContaining("hub-core-selection-mismatch"), repairCommand: "spider roam enable" })]);
+  vi.stubEnv("HC_SOCKET", undefined); vi.stubEnv("HC_SESSION", undefined);
+  expect(await reasons()).toEqual([]);
+});
+
+it("accepts valid supplementary Unicode in the selected session and socket", async () => {
+  const f = fixture(); vi.stubEnv("HOME", f.root);
+  const env = { HOME: f.root, HC_SOCKET: join(f.root, "core-🌿.sock"), HC_SESSION: "team-🌿" };
+  await installHubService({ ...f, env }, f.ports);
+  expect(launchd.hubServiceSelectionMatches(f.globalRoot, f.plistDir, env)).toBe(true);
+});
+
+it("doctor compares XML-escaped socket paths and session names", async () => {
+  const f = fixture(); vi.stubEnv("HOME", f.root);
+  const env = { HOME: f.root, HC_SOCKET: join(f.root, "a & b.sock"), HC_SESSION: "a & b" };
+  await installHubService({ ...f, env }, f.ports);
+  expect(launchd.hubServiceSelectionMatches(f.globalRoot, f.plistDir, env)).toBe(true);
+  expect(launchd.hubServiceSelectionMatches(f.globalRoot, f.plistDir, { ...env, HC_SESSION: "other" })).toBe(false);
+});
+
+it("doctor warns rather than guessing when a service environment is malformed", async () => {
+  const f = fixture(); vi.stubEnv("HOME", f.root);
+  const plistDir = join(f.root, "Library", "LaunchAgents"), env = { HOME: f.root, HC_SOCKET: join(f.root, "selected.sock") };
+  mkdirSync(join(f.globalRoot, "roam"), { recursive: true });
+  writeFileSync(join(f.globalRoot, "roam", "config.json"), JSON.stringify({ enabled: false, role: "hub", machineId: "00000000-0000-4000-8000-000000000001", hubMachineId: "00000000-0000-4000-8000-000000000001", coreUnit: "fixture.service", peers: [] }), { mode: 0o600 });
+  await installHubService({ ...f, env }, { ...f.ports, plistDir });
+  const file = plistAt(plistDir, f.globalRoot), text = readFileSync(file, "utf8");
+  writeFileSync(file, text.replace("</dict>\n<key>StandardOutPath", "<key>HC_SOCKET</key><string>/home/fixture/another.sock</string></dict>\n<key>StandardOutPath"));
+  const diagnostics = (await runLocalDoctor({ root: f.globalRoot })).diagnostics;
+  expect(diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ reason: expect.stringContaining("hub-core-selection-unavailable"), repairCommand: null })]));
+  expect(JSON.stringify(diagnostics)).not.toContain("/home/fixture/another.sock");
+});
 
 it("the installed hub pins the same pi PATH resolution as ordinary session launches", async () => {
   const { resolveParticipantPi } = await import("../launcher");

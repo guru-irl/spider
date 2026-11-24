@@ -50,7 +50,8 @@ async function fixture() {
     const code = await runIntercomEnrollCli(input, { out: text => { out += text; }, err: text => { err += text; } }, options);
     return { code, out, err };
   }
-  async function doctor() { return (await runLocalDoctor({ root: f.root })).diagnostics.map(item => item.reason).join("\n"); }
+  // Pair publication rows only: other doctor rows (for example the hub service) may name their own log files.
+  async function doctor() { return (await runLocalDoctor({ root: f.root })).diagnostics.map(item => item.reason).filter(reason => reason.startsWith("pair-")).join("\n"); }
   return { f, journal, calls, enroll, doctor, approvals: () => approvals };
 }
 
@@ -135,8 +136,9 @@ it.each([true, false])("shows pending publication evidence in public doctor with
   let out = "";
   await roamCli(["roam", "doctor", "--json"], { out: text => { out += text; }, err: () => {} }, { intercomDoctor: async () => [] });
   const report = JSON.parse(out) as { value: { diagnostics: Array<{ reason: string }> } };
-  expect(report.value.diagnostics.some(row => row.reason.includes("pair-1: publication enroll-live on target [broker-unavailable]"))).toBe(true);
-  expect(out).not.toContain(t.f.root);
+  const pairRows = report.value.diagnostics.filter(row => row.reason.startsWith("pair-"));
+  expect(pairRows.some(row => row.reason.includes("pair-1: publication enroll-live on target [broker-unavailable]"))).toBe(true);
+  expect(JSON.stringify(pairRows)).not.toContain(t.f.root);
 });
 
 it("clears a recovered publication diagnosis even if federation remains pending", async () => {

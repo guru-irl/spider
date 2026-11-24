@@ -315,7 +315,11 @@ yields between saved inputs so lifecycle drains can run. The 30-second drain
 deadline is a local failure, not a provider outage. After eight connectivity
 retries fail for one saved input, the worker drops that snapshot and records
 `deferredDropped` in its drain receipt. Source session records are not deleted.
-The passes are:
+A retry checks and renews its lease before applying. Finishing checks ownership
+in the same transaction that removes the snapshot. An expired lease cannot be
+renewed. Application is at least once: a crash or partial apply failure can
+replay a snapshot and add a duplicate todo. An apply failure leaves the snapshot
+queued. The passes are:
 
 - **runMemoryTodo.** Summarizes subagent run activity and asks the aux model
   for durable memory and follow-up todo candidates. Emits no skills.

@@ -14,7 +14,7 @@ import { runProvisionCli } from "./provision-cli";
 import { observeLocalHosting } from "./production-supervisor";
 import { homedir, userInfo } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { roamingCliEntry } from "./package-layout";
 import { inspectLocalConsumers, isPendingLaunchDiagnostic, localPendingLaunchDiagnostics, localStoreInventoryDiagnostics, localHostingWarningDiagnostics, runLocalDoctor, runLocalStatus } from "./local-diagnostics";
 import { requestHubControl } from "./control-socket";
 import { parseRoamJson, storeScope } from "@spider/db-core/roam/codec";
@@ -413,7 +413,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
     } catch { /* The selected command reports its own unavailable or invalid state. */ }
   }
   if (argv[0] === "roam" && (argv[1] === "enable" || argv[1] === "disable")) {
-    const result = argv[1] === "enable" ? await enableRoaming(root, fileURLToPath(import.meta.url), options?.bundleUrl) : await disableRoaming(root);
+    const result = argv[1] === "enable" ? await enableRoaming(root, roamingCliEntry(options?.bundleUrl ?? new URL(import.meta.url)), options?.bundleUrl) : await disableRoaming(root);
     return emitOutcome(io, { ...outcome(result.code, result.reason, result.issues || result.information ? { issues: result.issues, information: result.information } : null),
       ...(result.causeCode ? { causeCode: result.causeCode } : {}) }, jsonOutput, `${result.message.split("\n").map(clean).join("\n")}\n`);
   }

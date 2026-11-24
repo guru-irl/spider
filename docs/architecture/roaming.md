@@ -72,6 +72,19 @@ after its definition proves it belongs to the selected root. A missing service
 is safe to remove; after a failed bootout, a service-specific `launchctl print`
 can confirm absence. An unrelated error does not prove absence.
 
+Enable resolves `dist/roam/cli.mjs` from the installed package and uses it for
+`roam hub`. The imported `cli-main.mjs` module is not an executable service
+entry. Runtime and pane endpoint libraries never execute their CLI on import.
+Their dedicated entries retain the packaged remote runtime and pane commands.
+
+An enabled flag does not prove that the hub started. Doctor reports
+`hub-startup-pending` when the service is not running or its socket is missing.
+The diagnostic includes the service's last exit code, or `unknown`, and its
+error log path without reading the log. Run `spider roam enable` on the Mac hub
+to reinstall and start the packaged entry. If the socket exists but service
+state cannot be read, doctor reports `hub-startup-unverified` as a warning.
+Doctor never changes the enabled flag or starts a service.
+
 When enable or disable needs reconciliation, text and JSON include a bounded
 `causeCode`. Sync agent refusals and intercom enrollment pending results also
 report bounded causes, using `unexpected-<step>` when the error has no known
@@ -445,7 +458,8 @@ because the launch never began. If an invoking reservation has lost its ID lock,
 stop keeps it blocked and doctor offers inspection, not another stop.
 
 For a pending handoff, doctor offers `spider roam stop <session>` on the hub,
-not provision. Stop preserves the stopped intent and never relaunches the
+not provision. Box doctor explicitly names the Mac hub as where to run that
+repair command. Stop preserves the stopped intent and never relaunches the
 session. Stop refuses to settle a handoff whose operation differs from the
 session's launch reservation, including a move's launch. It releases the pending
 ID lock, launch handoff, and file lease only when both checks succeed:

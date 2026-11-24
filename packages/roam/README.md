@@ -4,6 +4,19 @@ Roaming coordinates session placement, participant intent, exact launches, and
 replication. See [Roaming architecture](../../docs/architecture/roaming.md) for
 configuration and operator commands.
 
+## Packaged hub service
+
+`package-layout.ts` resolves the installed `dist/roam/cli.mjs` dispatcher for
+hub enablement. The service runs that executable with `roam hub`, not the
+imported `cli-main.mjs` library.
+
+`hub-service-diagnostics.ts` reads service metadata and checks the hub socket.
+Doctor blocks an enabled hub with `hub-startup-pending` when the service is
+stopped or its socket is unavailable. The diagnostic names the last exit code
+and error log path, without reading log contents. Its repair is
+`spider roam enable` on the Mac hub. An unknown service state with an existing
+socket produces a `hub-startup-unverified` warning.
+
 ## Stop and pending launches
 
 `supervisor.ts` reserves a launch before authorization. It changes the
@@ -48,4 +61,5 @@ use a new operation ID.
 `local-diagnostics.ts` distinguishes unchecked, unavailable, and changed core
 identities. Pending launches remain blocking in all three cases. Doctor offers
 stop for an unstarted reservation, but inspection for an invoking reservation
-without a handoff.
+without a handoff. Stop repair diagnostics name the Mac hub as where to run the
+command, including when doctor runs locally on a box.

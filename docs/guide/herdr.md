@@ -323,6 +323,8 @@ spider exec language:"shell" on:"build-box" code:"make test"
 
 The first time setup runs, it installs a small Node runtime on each machine. Every remote command starts through that runtime as its own `hc` job. No pane opens for it, and the command does not wait for free space in the tab. Before the runtime releases the command, spider confirms that the job's labelled terminal exists. If that takes more than 10 seconds, spider removes the job without running it.
 
+The packaged `dist/herdr/remote-runtime.mjs` executable starts jobs and agent consoles. Its runtime library has no command-line startup behavior, so other packaged commands can import it without starting a remote job.
+
 Before each launch, spider checks that the machine has the runtime that matches this version of spider. If the runtime is missing or outdated, the call fails with `runtime-not-installed` before anything runs. Run setup again to install it.
 
 These rules apply to `on`:

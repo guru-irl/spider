@@ -36,7 +36,7 @@ export function createMoveCommand(request: (input: MoveRequest) => Promise<Outco
       const repairCommand = `spider roam recover ${operation.id}`;
       return { code: 3, reason: "move-control-unavailable", operationId: operation.id, home: null, epoch: null,
         repairCommand, value: null, intercomAddress: null, warnings: [],
-        text: `Move reply was lost; the outcome is unknown.\nOperation: ${operation.id}\n${repairCommand}` };
+        text: `The move request may not have reached the hub, or its reply was lost. The outcome is unknown.\nOperation: ${operation.id}\n${repairCommand}` };
     }
     finally { ctx.ui.setStatus("roam-move", undefined); }
   };

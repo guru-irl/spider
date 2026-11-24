@@ -20,7 +20,10 @@ function fixture(state: IntentState = initial) {
   const calls: Array<{ mode: string; operationId: string }> = [];
   let answer = outcome("launch-pending", null), authorized = true;
   const launch = createDurableLaunchPort({ intents, operationId: () => "op-1", authorize: async () => authorized,
-    async invoke(request) { calls.push({ mode: request.mode, operationId: request.reservation.operationId }); return answer; } });
+    async invoke(request) {
+      if (request.mode === "initial") expect(await request.beforeSpawn()).toBe("admitted");
+      calls.push({ mode: request.mode, operationId: request.reservation.operationId }); return answer;
+    } });
   return { launch, calls, state: async () => (await intents.get("s1"))!.value,
     setAnswer(value: Outcome<typeof ready>) { answer = value; }, setAuthorized(value: boolean) { authorized = value; } };
 }

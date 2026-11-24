@@ -26,9 +26,9 @@ async function fixture() {
   const suite: Suite = {
     root, directories, env, story: id, options: { tier: 'ci', story: id },
     ledger: openLedger(join(root, 'ledgers'), root), cores: null,
-    packed: { root: packedRoot, cli: own(join(packedRoot, 'dist/herdr/cli.mjs')), extension: own(join(packedRoot, 'dist/extension.js')), viewer: own(join(packedRoot, 'dist/herdr/viewer.mjs')), remoteRuntime: own(join(packedRoot, 'dist/herdr/remote-runtime.mjs')),
+    packed: { root: packedRoot, cli: own(join(packedRoot, 'dist/herdr/cli.mjs')), extension: own(join(packedRoot, 'dist/extension.js')), extensionEntry: own(join(packedRoot, 'scripts/package-extension.ts')), viewer: own(join(packedRoot, 'dist/herdr/viewer.mjs')), remoteRuntime: own(join(packedRoot, 'dist/herdr/remote-runtime.mjs')),
       roamCli: own(join(packedRoot, 'dist/roam/cli.mjs')), roamSupervisor: own(join(packedRoot, 'dist/roam/supervisor.mjs')), intercomBroker: own(join(packedRoot, 'dist/intercom/broker.mjs')),
-      digests: { 'dist/extension.js': '0'.repeat(64), 'dist/herdr/cli.mjs': '0'.repeat(64), 'dist/herdr/viewer.mjs': '0'.repeat(64), 'dist/herdr/remote-runtime.mjs': '0'.repeat(64), 'dist/herdr/viewer-pi.mjs': '0'.repeat(64), 'dist/roam/cli.mjs': '0'.repeat(64), 'dist/roam/supervisor.mjs': '0'.repeat(64), 'dist/intercom/broker.mjs': '0'.repeat(64) } },
+      digests: { 'dist/extension.js': '0'.repeat(64), 'dist/herdr/cli.mjs': '0'.repeat(64), 'dist/herdr/viewer.mjs': '0'.repeat(64), 'dist/herdr/remote-runtime.mjs': '0'.repeat(64), 'dist/herdr/viewer-pi.mjs': '0'.repeat(64), 'dist/roam/cli.mjs': '0'.repeat(64), 'dist/roam/supervisor.mjs': '0'.repeat(64), 'dist/intercom/broker.mjs': '0'.repeat(64), 'scripts/package-extension.ts': '0'.repeat(64) } },
     pi: { root, bin: own(join(root, 'bin')), launcher: own(join(root, 'bin/pi')), observerDir: own(join(root, 'observer')), scriptPath: own(join(root, 'script.json')), gateSocket: own(join(root, 'gate.sock')), providerPath: join(root, 'provider.mjs'), observerPath: join(root, 'observer.mjs'), env, story: id },
     evidenceDirectory: join(root, 'evidence'), cleanupProofPath: join(root, 'cleanup.json'),
     evidence: unexpected, keepEvidence: unexpected, hc: unexpected, launchPi: unexpected, project: unexpected, gates: unexpected, app: unexpected, close: unexpected,

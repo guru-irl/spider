@@ -57,6 +57,12 @@ describe("configuration schema truthfulness", () => {
     expect(guard({ ...DEFAULTS, "ui.footer": true, "routing.tracking": false })).toContain("default mismatch: routing.tracking");
   });
 
+  it("registers the enabled-by-default copy-button switch with a production reader", () => {
+    expect(DEFAULTS["copyButtons.enabled"]).toBe(true);
+    expect(fields.find(field => field.key === "copyButtons.enabled")).toMatchObject({ type: "boolean", default: true });
+    expect(productionReaders(root).has("copyButtons.enabled")).toBe(true);
+  });
+
   it("requires every declared key to have a reachable production reader, including whole-map keys", () => {
     expect(guard(DEFAULTS)).toEqual([]);
   });

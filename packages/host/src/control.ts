@@ -22,6 +22,7 @@ export const DEFAULTS: Readonly<Record<string, unknown>> = {
   "herdr.enabled": "auto",
   "herdr.config": "",
   "ui.footer": true,
+  "copyButtons.enabled": true,
   "reload.auto": true,
   "tools.structured": false,
   ...USAGE_DEFAULTS,

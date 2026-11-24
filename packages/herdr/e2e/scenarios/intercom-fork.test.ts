@@ -140,7 +140,7 @@ process.execve(${JSON.stringify(suite.pi.launcher)},[${JSON.stringify(suite.pi.l
       expect((await owner.events()).filter(e => e.type === 'message_end' && e.customType === 'spider.subagent_done' && JSON.stringify(e.content).includes('R14 old result'))).toHaveLength(1);
       const probes = (await readFile(probeLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
       const expectedExtensions = extensionArgs(buildPiArgs({ baseArgs: [], task: '', rpc: true, sessionEnabled: false,
-        inheritProjectContext: true, inheritSkills: true, extensions: [suite.packed.extension],
+        inheritProjectContext: true, inheritSkills: true, extensions: [suite.packed.extensionEntry],
         subagentOnlyExtensions: [...config['subagents.extensions'], probe] }).args);
       const launches = (await readFile(childArgsLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
       for (const launch of launches) {
@@ -163,8 +163,8 @@ process.execve(${JSON.stringify(suite.pi.launcher)},[${JSON.stringify(suite.pi.l
     } finally { await peer?.close(); await owner.close(); }
   }
   for (const [label, order] of [
-    ['legacy-first', [join(unwrapped, 'index.mjs'), suite.packed.extension]],
-    ['fork-first', [suite.packed.extension, join(unwrapped, 'index.mjs')]],
+    ['legacy-first', [join(unwrapped, 'index.mjs'), suite.packed.extensionEntry]],
+    ['fork-first', [suite.packed.extensionEntry, join(unwrapped, 'index.mjs')]],
   ] as const) {
     const duplicate = await suite.launchPi({ mode: 'rpc', cwd: await suite.project(`duplicate-${label}`),
       args: ['--name', `duplicate-${label}`, '--no-extensions', '--extension', suite.pi.providerPath,
@@ -203,7 +203,7 @@ process.execve(${JSON.stringify(suite.pi.launcher)},[${JSON.stringify(suite.pi.l
     expect((await readObserved(suite.pi.observerDir, rejectedPid)).filter(event => ['message_end', 'tool_execution_start', 'agent_start'].includes(event.type))).toEqual([]);
     expect(launched.filtered).toEqual(withoutExclusions(launched.original));
     expect(extensionArgs(launched.filtered)).toEqual(extensionArgs(buildPiArgs({ baseArgs: [], task: '', rpc: true, sessionEnabled: false,
-      inheritProjectContext: true, inheritSkills: true, extensions: [suite.packed.extension], subagentOnlyExtensions: forwarded }).args));
+      inheritProjectContext: true, inheritSkills: true, extensions: [suite.packed.extensionEntry], subagentOnlyExtensions: forwarded }).args));
     evidence.push({ unexpectedChild: 'failed before any task or model entry', failed });
   } finally { await isolated.close(); }
   await suite.evidence('R14-fork-adoption.json', { boundary: 'packed spider and real offline RPC sessions', evidence });
@@ -307,7 +307,7 @@ export default function(pi) { pi.on('session_start',()=>appendFileSync(${JSON.st
     expect(switchover.status).toBe('migration-pending');
     expect(JSON.parse(await readFile(settings, 'utf8')).packages).not.toContain('npm:pi-intercom');
     fork = await suite.launchPi({ mode: 'rpc', cwd, label: 'fork-peer',
-      args: [...commonArgs, '--extension', suite.packed.extension, '--name', 'fork-peer'],
+      args: [...commonArgs, '--extension', suite.packed.extensionEntry, '--name', 'fork-peer'],
       extraEnv: { PI_INTERCOM_STABLE_ID: 'fork-peer' } }) as RpcDriver;
     await fork.prompt(mark('fork-ready'));
     const roster = await fork.toolResult('fork-roster', deadline(30_000));

@@ -16,7 +16,8 @@ function fixture(options: { dev?: boolean; missing?: boolean; compileThrows?: bo
   const process = { emitWarning: original };
   let wrapped = false;
   let deferredRestored = false;
-  const namespace = { default: () => { if (options.factoryThrows) throw new Error("factory failed"); return "native"; } };
+  let received: unknown;
+  const namespace = { default: (_pi: unknown, ports: unknown) => { received = ports; if (options.factoryThrows) throw new Error("factory failed"); return "native"; } };
   const warn = () => {
     wrapped = process.emitWarning !== original;
     for (const args of options.warnings ?? []) process.emitWarning.apply(process, args);
@@ -26,6 +27,8 @@ function fixture(options: { dev?: boolean; missing?: boolean; compileThrows?: bo
     .replace("export default async function spider", "async function spider");
   const context = {
     process, URL, isNativeError, pathToFileURL: (path: string) => new URL(path),
+    piHost: { AssistantMessageComponent: class AssistantMessageComponent {}, copyToClipboard: async (_text: string) => {} },
+    piTui: { Markdown: class Markdown {} },
     statSync: () => ({ mtimeNs: 1n, size: 2n }),
     constants: options.missing ? undefined : { USE_MAIN_CONTEXT_DEFAULT_LOADER: Symbol("loader") },
     runInThisContext: () => {
@@ -44,7 +47,7 @@ function fixture(options: { dev?: boolean; missing?: boolean; compileThrows?: bo
     },
   };
   runInNewContext(source + "\nglobalThis.load = spider;", context, { importModuleDynamically: vmConstants.USE_MAIN_CONTEXT_DEFAULT_LOADER });
-  return { context: context as typeof context & { load: () => Promise<string> }, original, forwarded, isWrapped: () => wrapped, isDeferredRestored: () => deferredRestored, source };
+  return { context: context as typeof context & { load: () => Promise<string> }, original, forwarded, isWrapped: () => wrapped, isDeferredRestored: () => deferredRestored, source, received: () => received };
 }
 
 it("drops only matching ExperimentalWarnings and forwards all other arguments and receivers", async () => {
@@ -69,6 +72,19 @@ it("drops only matching ExperimentalWarnings and forwards all other arguments an
   expect(f.isWrapped()).toBe(true);
   expect(f.context.process.emitWarning).toBe(f.original);
   expect(f.isDeferredRestored()).toBe(true);
+});
+
+it("passes pi's assistant and Markdown classes and clipboard into the native bundle", async () => {
+  const f = fixture();
+  await f.context.load();
+  expect(f.received()).toEqual({ copyButtons: { host: { AssistantMessageComponent: f.context.piHost.AssistantMessageComponent, Markdown: f.context.piTui.Markdown }, copy: f.context.piHost.copyToClipboard } });
+});
+
+it("still loads spider if pi no longer exposes the assistant renderer", async () => {
+  const f = fixture();
+  (f.context.piHost as { AssistantMessageComponent?: unknown }).AssistantMessageComponent = undefined;
+  expect(await f.context.load()).toBe("native");
+  expect(f.received()).toEqual({});
 });
 
 it("renders a guarded constant and plain bundle-path fallback", () => {

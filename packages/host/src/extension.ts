@@ -40,6 +40,7 @@ import { registerSlashCommands } from "./slash";
 import { removeLegacyTools } from "./legacy-removal";
 import { registerHooks } from "./hooks";
 import { registerCompaction } from "./compaction/index.js";
+import { registerCopyButtons, type CopyButtonsHost } from "./copy-buttons/index.js";
 import { HostOrganismRuntime } from "./organism-runtime";
 import { HostEmbeddingRuntime } from "./embedding-runtime";
 import { UsageAccounting } from "./usage-accounting";
@@ -890,7 +891,7 @@ async function dispatchWithDoctorSnapshot(
   }
 }
 
-export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBroker?: IntercomBrokerPort; bootId?: () => Promise<string> } = {}): void {
+export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBroker?: IntercomBrokerPort; bootId?: () => Promise<string>; copyButtons?: { host: CopyButtonsHost; copy: (text: string) => Promise<void> } } = {}): void {
   // Admission must be the first session_start registration, before any producer opens a writer.
   const admissionPorts = createAdmissionPorts(ports.bootId ? { bootId: ports.bootId } : {});
   let activationContext: ExtensionContext | undefined;
@@ -922,6 +923,8 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   const ordinaryWorkAllowed = () => isOrdinaryWorkAllowed(admission.inspect());
   const activity = trackReloadActivity(hostPi as unknown as ExtensionAPI);
   const pi = protectAdmissionApi(activity.pi, admission) as unknown as PiToolAPI;
+  if (ports.copyButtons) registerCopyButtons(pi as unknown as ExtensionAPI, ports.copyButtons.host,
+    cwd => ({ "copyButtons.enabled": configValues(cwd).config["copyButtons.enabled"] }), ports.copyButtons.copy);
   let moveEnabled = false;
   try { moveEnabled = readLocalIdentity(paths.globalRoot).enabled; } catch { /* Missing or unreadable configuration leaves the command unregistered. */ }
   if (moveEnabled) registerMoveCommand(activity.pi, async request => {

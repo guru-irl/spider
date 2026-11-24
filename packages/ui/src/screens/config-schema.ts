@@ -88,6 +88,9 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 	{ id: "ui", label: "UI", fields: [
 		{ key: "ui.footer", label: "Agents footer", type: "boolean", default: true, description: "Show the agents footer from the next session.", restart: true },
 	]},
+	{ id: "copyButtons", label: "Copy buttons", fields: [
+		{ key: "copyButtons.enabled", label: "Copy buttons", type: "boolean", default: true, description: "Show copy buttons on finished assistant replies in fullscreen mode. Changes apply on reload.", restart: true },
+	]},
 ];
 
 /** Fill the reviewer enums from the host's single shared policy. No runtime

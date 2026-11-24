@@ -8,12 +8,12 @@ import { join, relative, isAbsolute, sep } from 'node:path';
 import { checkoutRoot, scratchRoot, HarnessError, ownedPath, type OwnedPath } from './environment.js';
 
 export const PACKED_ROOT_ENV = 'SPIDER_HERDR_E2E_PACKED_ROOT';
-export const PACKED_ENTRIES = ['dist/extension.js', 'dist/herdr/cli.mjs', 'dist/herdr/viewer.mjs', 'dist/herdr/remote-runtime.mjs', 'dist/herdr/viewer-pi.mjs', 'dist/roam/cli.mjs', 'dist/roam/supervisor.mjs', 'dist/intercom/broker.mjs'] as const;
+export const PACKED_ENTRIES = ['dist/extension.js', 'dist/herdr/cli.mjs', 'dist/herdr/viewer.mjs', 'dist/herdr/remote-runtime.mjs', 'dist/herdr/viewer-pi.mjs', 'dist/roam/cli.mjs', 'dist/roam/supervisor.mjs', 'dist/intercom/broker.mjs', 'scripts/package-extension.ts'] as const;
 export interface PackedBuild {
   /** The extracted package directory, which pi loads as an installed package. */
   root: OwnedPath;
   digests: Record<(typeof PACKED_ENTRIES)[number], string>;
-  cli: OwnedPath; viewer: OwnedPath; extension: OwnedPath; remoteRuntime: OwnedPath; roamCli: OwnedPath; roamSupervisor: OwnedPath; intercomBroker: OwnedPath;
+  cli: OwnedPath; viewer: OwnedPath; extension: OwnedPath; extensionEntry: OwnedPath; remoteRuntime: OwnedPath; roamCli: OwnedPath; roamSupervisor: OwnedPath; intercomBroker: OwnedPath;
 }
 
 const sha256 = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
@@ -38,11 +38,11 @@ export function verifyPackedRoot(candidate: string): PackedBuild {
     const path = ownedPath(scratch, join(root, entry));
     if (!existsSync(path) || lstatSync(path).isSymbolicLink()) throw new HarnessError('packed-entry-missing', `packed build lacks ${entry}`);
   }
-  if (!Array.isArray(manifest.pi?.extensions) || !manifest.pi.extensions.includes('./dist/extension.js')) throw new HarnessError('packed-entry-missing', 'package.json does not declare ./dist/extension.js');
+  if (!Array.isArray(manifest.pi?.extensions) || !manifest.pi.extensions.includes('./scripts/package-extension.ts')) throw new HarnessError('packed-entry-missing', 'package.json does not declare ./scripts/package-extension.ts');
   if (existsSync(join(root, 'node_modules', '@spider'))) throw new HarnessError('packed-source-link', 'staged dependencies include workspace @spider links');
   if (existsSync(join(root, 'packages')) && readdirSync(join(root, 'packages')).some(p => existsSync(join(root, 'packages', p, 'src')))) throw new HarnessError('packed-source-link', 'staged package ships workspace source');
   const digests = Object.fromEntries(PACKED_ENTRIES.map(e => [e, sha256(join(root, e))])) as PackedBuild['digests'];
-  return { root, digests, extension: ownedPath(scratch, join(root, PACKED_ENTRIES[0])), cli: ownedPath(scratch, join(root, PACKED_ENTRIES[1])), viewer: ownedPath(scratch, join(root, PACKED_ENTRIES[2])), remoteRuntime: ownedPath(scratch, join(root, PACKED_ENTRIES[3])),
+  return { root, digests, extension: ownedPath(scratch, join(root, PACKED_ENTRIES[0])), extensionEntry: ownedPath(scratch, join(root, PACKED_ENTRIES[8])), cli: ownedPath(scratch, join(root, PACKED_ENTRIES[1])), viewer: ownedPath(scratch, join(root, PACKED_ENTRIES[2])), remoteRuntime: ownedPath(scratch, join(root, PACKED_ENTRIES[3])),
     roamCli: ownedPath(scratch, join(root, PACKED_ENTRIES[5])), roamSupervisor: ownedPath(scratch, join(root, PACKED_ENTRIES[6])), intercomBroker: ownedPath(scratch, join(root, PACKED_ENTRIES[7])) };
 }
 

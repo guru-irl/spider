@@ -11,7 +11,8 @@ import { openIntercomStore } from "../intercom-store";
 import { openJournal } from "../journal";
 import type { Clock, Peer, RoamConfig, Transport } from "../contracts";
 import type { IntercomBroker } from "../intercom-bridge";
-import { scenario, cleanupPairScenarios } from "./intercom-pair-fixture";
+import { scenario, cleanupPairScenarios, type PairScenario } from "./intercom-pair-fixture";
+import type { IntercomStore } from "../intercom-contracts";
 
 export const HUB = "00000000-0000-4000-8000-000000000001";
 export const A = "00000000-0000-4000-8000-000000000002";
@@ -20,22 +21,35 @@ export const B = "00000000-0000-4000-8000-000000000003";
 class FixtureBroker extends EventEmitter implements IntercomBroker {
   bridge!: FederationBridge;
   helper!: (input: unknown, signal: AbortSignal) => Promise<unknown>;
-  async connect(_registration: unknown, bridge: FederationBridge) { this.bridge = bridge; this.emit("presence", []); }
-  async enableHelpers(_token: string, handler: FixtureBroker["helper"]) { this.helper = handler; }
-  publishPresence() {}
-  async deliver(..._args: Parameters<IntercomBroker["deliver"]>) {
+  async connect(_registration: unknown, bridge: FederationBridge): Promise<void> { this.bridge = bridge; this.emit("presence", []); }
+  async enableHelpers(_token: string, handler: FixtureBroker["helper"]): Promise<void> { this.helper = handler; }
+  publishPresence(): void {}
+  async deliver(..._args: Parameters<IntercomBroker["deliver"]>): ReturnType<IntercomBroker["deliver"]> {
     return { delivery: "socket_delivered" as const, retryable: false, outcomeKnown: true,
       acceptance: { accepted: true as const, durable: false as const } };
   }
-  deliverReceipt() {}
-  deliverControl() {}
-  async deliverRevocationNotice() { return true; }
-  async inspectBlockers() { return { asks: [], pendingDispatch: [], unknownOutcomes: [], unobservedReceipts: [] }; }
-  async close() { this.emit("closed"); }
+  deliverReceipt(): void {}
+  deliverControl(): void {}
+  async deliverRevocationNotice(): Promise<boolean> { return true; }
+  async inspectBlockers(): ReturnType<IntercomBroker["inspectBlockers"]> { return { asks: [], pendingDispatch: [], unknownOutcomes: [], unobservedReceipts: [] }; }
+  async close(): Promise<void> { this.emit("closed"); }
+}
+
+export interface FirstPairFixture extends PairScenario {
+  hub: Peer;
+  hubQueue: IntercomStore;
+  brokers: Map<string, FixtureBroker>;
+  graph: string;
+  publications: Map<string, Buffer>;
+  readConfig(peer: Peer): RoamConfig;
+  saveConfig(peer: Peer, config: unknown): void;
+  pump(advance?: number): Promise<void>;
+  pauseOrigin(value: boolean): void;
+  close(): Promise<void>;
 }
 
 /** Only broker transport, remote execution and OS process effects are simulated. */
-export async function firstPairFixture() {
+export async function firstPairFixture(): Promise<FirstPairFixture> {
   const pair = await scenario(), hub: Peer = { ...pair.source, machineId: HUB, alias: "hub.invalid", globalRoot: pair.root };
   const journal = openJournal(join(pair.root, "roam", "journal.db"));
   const brokers = new Map<string, FixtureBroker>(), services = new Map<string, MachineIntercom>();
@@ -129,7 +143,7 @@ export async function firstPairFixture() {
     const graph = join(pair.root, "graph.json");
     writeFileSync(graph, JSON.stringify({ pairs: [{ pairId: "pair-1", source: pair.source.alias, target: pair.target.alias, edgeEpoch: "edge-1",
       connector: pair.request.pairs[0].connector }] }), { mode: 0o600 });
-    return { ...pair, hub, hubQueue, journal, brokers, services, graph, transport, publications, readConfig, saveConfig, pump,
+    return { ...pair, hub, hubQueue, journal, brokers, graph, transport, publications, readConfig, saveConfig, pump,
       pauseOrigin(value: boolean) { pauseHubToOrigin = value; },
       async close() { await close(); } };
   } catch (error) { await close(); throw error; }

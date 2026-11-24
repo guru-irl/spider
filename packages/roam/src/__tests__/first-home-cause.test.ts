@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { join } from "node:path";
+import * as processIdentity from "../../../subagents/src/process-identity";
 import { recordLocation } from "@spider/db-core/roam/catalog";
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import type { StoreBarrier } from "@spider/db-core/roam/types";
@@ -11,12 +12,19 @@ import { createSync } from "../sync";
 import * as staging from "../staging";
 import { BOX, BOX2, HUB, network } from "./sync-fixture";
 
+vi.mock("node:child_process", async importOriginal => {
+  const original = await importOriginal<typeof import("node:child_process")>();
+  const blocked = () => { throw new Error("Unexpected process launch"); };
+  return { ...original, exec: blocked, execFile: blocked, execFileSync: blocked, execSync: blocked, fork: blocked, spawn: blocked, spawnSync: blocked };
+});
+
 const SESSION = "session-a";
 const fixtures: ReturnType<typeof network>[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const f of fixtures.splice(0)) f.close(); });
 
 async function fixture() {
   const f = network([BOX, BOX2]); fixtures.push(f);
+  vi.spyOn(processIdentity, "processStartTime").mockReturnValue("fixture-start");
   vi.spyOn(staging, "defaultStagingRoot").mockReturnValue(f.root);
   f.seed(BOX, SESSION);
   const sync = createSync({ config: f.config, globalDb: f.global.db, transport: f.transport, journal: f.journal, clock: f.clock, stores: f.stores });
@@ -35,10 +43,10 @@ function missingMapping(f: ReturnType<typeof network>, workspace: string) {
   f.remotes.get(BOX2)!.global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo',?,?)").run(workspace, path);
 }
 
-async function firstMove(input: Awaited<ReturnType<typeof fixture>>, runSync = true) {
+async function firstMove(input: Awaited<ReturnType<typeof fixture>>, runSync = true, operationId = "move-first") {
   const { f, sync, key } = input, actions: string[] = [];
   const request: MoveRequest = { sessionId: SESSION, destinationMachine: HUB,
-    operation: { id: "move-first", kind: "move", machineId: HUB, expectedEpoch: 1, args: { sessionId: SESSION, destinationMachine: HUB } } };
+    operation: { id: operationId, kind: "move", machineId: HUB, expectedEpoch: 1, args: { sessionId: SESSION, destinationMachine: HUB } } };
   const check: MoveCheck = { source: { sessionId: SESSION, machineId: BOX, epoch: 1, moveId: null, updatedAt: 0 }, destinationMachine: HUB,
     repoKey: "fixture-repo", workspaceId: "workspace-0", sourceRoot: "/home/fixture/source", sourceCwd: "/home/fixture/source",
     sourceFile: "/home/fixture/source/session.jsonl", destinationRoot: "/home/fixture/destination", destinationCwd: "/home/fixture/destination",
@@ -72,11 +80,55 @@ it("reports the machine and kind when a missing mapped store withholds the first
   expect(text).toContain(BOX2);
   expect(text).toContain("worktree");
   expect(JSON.stringify({ safe, text })).not.toContain("private-missing-store");
+  if (result.ok) throw new Error("Expected a move refusal");
+  const forged = safeControlOutcome({ ...result, refusal: { ...result.refusal,
+    firstHomeWithheld: { machineId: BOX2, storeKind: "worktree", content: "private-content" } } });
+  expect(forged.refusal?.firstHomeWithheld).toEqual({ machineId: BOX2, storeKind: "worktree" });
+  expect(JSON.stringify(forged)).not.toContain("private-content");
+  const invalid = safeControlOutcome({ ...result, refusal: { ...result.refusal,
+    firstHomeWithheld: { machineId: "/home/fixture/private", storeKind: "worktree" } } });
+  expect(invalid.causeCode).toBeUndefined();
+  expect(JSON.stringify(invalid)).not.toContain("private");
 
   input.f.remotes.get(BOX2)!.global.db.prepare("DELETE FROM roam_workspace_maps WHERE repo_key='fixture-repo' AND workspace_id='workspace-0'").run();
   await input.sync.sync();
   expect(sessionHome(input.f.global.db, SESSION)).toMatchObject({ machineId: BOX, epoch: 1 });
   expect(readLocal(input.f.global.db, "first-home-withheld", SESSION)).toBeUndefined();
+});
+
+it("reports a missing local mapped store on the hub", async () => {
+  const input = await fixture();
+  const missing = join(input.f.global.root, "missing-local-store");
+  input.f.global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','workspace-0',?)").run(missing);
+  const { result, actions } = await firstMove(input);
+  expect(result).toMatchObject({ code: 1, reason: "move-source-home-mismatch", causeCode: "move-first-home-withheld",
+    refusal: { firstHomeWithheld: { machineId: HUB, storeKind: "worktree" } } });
+  expect(actions).toEqual([]);
+});
+
+it("keeps synchronization and the home safety check unchanged if diagnostic lookup fails", async () => {
+  const input = await fixture();
+  missingMapping(input.f, "workspace-0");
+  const prepare = input.f.global.db.prepare.bind(input.f.global.db);
+  vi.spyOn(input.f.global.db, "prepare").mockImplementation(sql => {
+    if (sql === "SELECT 1 FROM session_homes WHERE session_id=?") throw new Error("private-content");
+    return prepare(sql);
+  });
+  const result = await input.sync.sync();
+  expect(result.every(row => row.code === 0)).toBe(true);
+  expect(sessionHome(input.f.global.db, SESSION)).toBeNull();
+});
+
+it("does not reuse a withholding cause after a later inventory outage", async () => {
+  const input = await fixture();
+  missingMapping(input.f, "workspace-0");
+  expect((await firstMove(input)).result).toMatchObject({ causeCode: "move-first-home-withheld" });
+  input.f.unavailable.add(BOX2);
+  await input.sync.sync(BOX2);
+  expect(readLocal(input.f.global.db, "first-home-withheld", SESSION)).toBeUndefined();
+  const { result } = await firstMove(input, false, "move-next");
+  expect(result).toMatchObject({ code: 1, reason: "move-source-home-mismatch" });
+  expect(result.causeCode).toBeUndefined();
 });
 
 it("does not withhold a home for an unrelated missing mapped worktree", async () => {

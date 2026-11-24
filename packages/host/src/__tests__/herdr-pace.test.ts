@@ -1,9 +1,9 @@
+import { buildRuntimeArtifact } from '../../../herdr/src/__tests__/runtime-artifact.js';
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { cp, mkdir, readFile, writeFile, chmod } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
-import { stripTypeScriptTypes } from 'node:module';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ModelRegistry } from '@earendil-works/pi-coding-agent';
@@ -36,7 +36,7 @@ describe.skipIf(!mods)('production pace feed', () => {
     await cp(resolve('packages/herdr/assets'), join(packageRoot, 'packages/herdr/assets'), { recursive: true });
     await mkdir(join(packageRoot, 'dist/herdr'), { recursive: true });
     await cp(resolve('dist/extension.js'), join(packageRoot, 'dist/extension.js'));
-    await writeFile(join(packageRoot, 'dist/herdr/remote-runtime.mjs'), stripTypeScriptTypes(await readFile(resolve('packages/herdr/src/remote/runtime.ts'), 'utf8')));
+    await writeFile(join(packageRoot, 'dist/herdr/remote-runtime.mjs'), await buildRuntimeArtifact());
     await writeFixturePaneEndpoint(packageRoot);
     await mkdir(join(h.directories.agent, 'sessions'), { recursive: true });
     for (const kind of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome']) {

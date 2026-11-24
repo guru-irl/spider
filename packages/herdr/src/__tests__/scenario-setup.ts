@@ -1,9 +1,9 @@
+import { buildRuntimeArtifact } from './runtime-artifact.js';
 import { runPanelScene } from './acceptance/i.js';
 // SPDX-License-Identifier: MIT
 /// <reference types="vite/client" />
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { stripTypeScriptTypes } from 'node:module';
 import { mkdir, readdir, readFile, writeFile, stat, chmod, rm, access } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -153,7 +153,7 @@ setInterval(()=>{},1000);
   const templates = generateRoleTemplates(policy, registry, { piExecutable: h.nodeBinary,
     instructionPaths: Object.fromEntries(TEMPLATE_ROLES.map(role => [role, join(root, `${role}.md`)])) as Record<typeof TEMPLATE_ROLES[number], string> });
   const runtimePath = join(h.directories.remote, 'acceptance-runtime.mjs');
-  const runtime = Buffer.from(stripTypeScriptTypes(await readFile(new URL('../remote/runtime.ts', import.meta.url), 'utf8')));
+  const runtime = await buildRuntimeArtifact();
   let installedRuntimes: readonly RuntimeFile[] = [{ machine: 'remote.invalid' as MachineName, path: runtimePath, bytes: runtime, sha256: hash(runtime) }];
   const parts: SetupParts = {
     preflight: async () => {

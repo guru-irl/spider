@@ -1,8 +1,8 @@
+import { buildRuntimeArtifact } from '../../../herdr/src/__tests__/runtime-artifact.js';
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { cp, mkdir, readFile, writeFile, chmod } from 'node:fs/promises';
-import { stripTypeScriptTypes } from 'node:module';
 import { execFileSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -46,7 +46,7 @@ beforeAll(async () => {
   await mkdir(join(root, 'packages/herdr'), { recursive: true });
   await cp(resolve('packages/herdr/assets'), join(root, 'packages/herdr/assets'), { recursive: true });
   await mkdir(join(root, 'dist/herdr'), { recursive: true });
-  await writeFile(join(root, 'dist/herdr/remote-runtime.mjs'), stripTypeScriptTypes(await readFile(resolve('packages/herdr/src/remote/runtime.ts'), 'utf8')));
+  await writeFile(join(root, 'dist/herdr/remote-runtime.mjs'), await buildRuntimeArtifact());
   await writeFixturePaneEndpoint(root);
   await mkdir(join(h.directories.agent, 'sessions'), { recursive: true });
   for (const kind of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome']) {

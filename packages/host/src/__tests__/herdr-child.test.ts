@@ -1,10 +1,10 @@
+import { buildRuntimeArtifact } from '../../../herdr/src/__tests__/runtime-artifact.js';
 // SPDX-License-Identifier: MIT
 import { afterEach, expect, it, vi } from 'vitest';
 import { mkdir, readFile, writeFile, readdir, chmod, access } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { paths } from '@spider/db-core';
 import { globalConfigForTest } from '../../../db-core/src/__tests__/global-config.testutil.js';
-import { stripTypeScriptTypes } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { createHerdrHarness } from '../../../herdr/src/__tests__/testutil.js';
 import { mountHerdr } from '../herdr/mount.js';
@@ -25,7 +25,7 @@ async function childFixture(location: 'standard' | 'relative' = 'standard') {
   for (const [key, value] of Object.entries(h.localEnv)) if (value !== undefined && /^(HC_|XDG_|HERDR_)/.test(key)) vi.stubEnv(key, value);
   vi.stubEnv('PI_SPIDER_TOP_SESSION_ID', h.owner!.sessionId); vi.stubEnv('SPIDER_GLOBAL_ROOT', h.directories.global);
   const config = { enabled: true, app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.root, 'core.toml') }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [{ name: 'remote.invalid', aliases: ['managed.invalid', 'box.invalid', 'MyBox.invalid'], runtime: { cwd: h.directories.remote, directory: join(h.directories.remote, 'programs'), commands: {} }, nodePath: process.execPath }], limits: { auxiliaryPanes: 2, completedRows: 50, completedHours: 24 }, retention: { foregroundDays: 7 }, admin: { wrappers: [] } };
-  const runtime = Buffer.from(stripTypeScriptTypes(await readFile(fileURLToPath(new URL('../../../herdr/src/remote/runtime.ts', import.meta.url)), 'utf8')));
+  const runtime = await buildRuntimeArtifact();
   await mkdir(join(h.root, 'dist/herdr'), { recursive: true }); await writeFile(join(h.root, 'dist/herdr/remote-runtime.mjs'), runtime);
   await writeFixturePaneEndpoint(h.root);
   execFileSync('git', ['init', '-q', h.root]);

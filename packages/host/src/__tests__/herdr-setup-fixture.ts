@@ -1,6 +1,6 @@
+import { buildRuntimeArtifact } from '../../../herdr/src/__tests__/runtime-artifact.js';
 import { expect, vi } from 'vitest';
 import { cp, mkdir, readFile, writeFile, chmod } from 'node:fs/promises';
-import { stripTypeScriptTypes } from 'node:module';
 import { execFileSync } from 'node:child_process';
 import { resolve, join } from 'node:path';
 import { createProductionHerdrCliPorts } from '../herdr/ports.js';
@@ -28,7 +28,7 @@ export async function fixture(mode: 'fake' | 'hc' = 'fake', requireAppBackup = f
   await mkdir(join(root, 'packages/herdr'), { recursive: true });
   await cp(resolve('packages/herdr/assets'), join(root, 'packages/herdr/assets'), { recursive: true });
   await mkdir(join(root, 'dist/herdr'), { recursive: true });
-  await writeFile(join(root, 'dist/herdr/remote-runtime.mjs'), stripTypeScriptTypes(await readFile(resolve('packages/herdr/src/remote/runtime.ts'), 'utf8')));
+  await writeFile(join(root, 'dist/herdr/remote-runtime.mjs'), await buildRuntimeArtifact());
   await writeFile(join(root, 'dist/herdr/pane-endpoint.mjs'), 'export const createProductionPaneEndpointPorts = digest => ({protocol:1,buildDigest:digest}); export const runPaneEndpointCli = async (args, create) => {const p = await create(); return JSON.stringify({version:1,op:"handshake",protocol:p.protocol,buildDigest:p.buildDigest})};');
   await mkdir(join(h.directories.agent, 'sessions'), { recursive: true });
   for (const kind of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome']) {

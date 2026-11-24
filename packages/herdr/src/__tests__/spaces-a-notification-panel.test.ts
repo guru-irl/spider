@@ -175,6 +175,26 @@ it('plays at most one sound for a mixed batch of new intentional notices', async
   expect(h.calls.filter(call => call[0] === 'exec' || call[0] === 'run')).toEqual([]); await h.view.close();
 });
 
+it.each([-60_000, 60_000])('sounds fresh panel arrivals with a producer clock offset of %i ms', async offset => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  const start = Date.UTC(2026, 10, 15, 12); vi.setSystemTime(start);
+  const h = panelHost();
+  h.state.feeds[0].updatedAt = start + offset;
+  h.state.feeds[0].notifications[0].createdAt = start + offset;
+  try {
+    await h.ready; await h.drain();
+    expect(h.calls.filter(call => call[0] === 'playSound')).toEqual([]);
+    vi.setSystemTime(start + 2_000);
+    h.state.feeds[0].updatedAt = start + offset + 2_000;
+    h.state.feeds[0].notifications.push(notice(h.state.feeds[0], 'skewed-new', 'attention', start + offset + 1_000));
+    await h.view.reload(h.cx); await h.view.reload(h.cx);
+    expect(h.calls.filter(call => call[0] === 'playSound')).toEqual([['playSound', 'blocked']]);
+    h.state.feeds[0].notifications.push(notice(h.state.feeds[0], 'skewed-old', 'low', start + offset - 30_000));
+    await h.view.reload(h.cx);
+    expect(h.calls.filter(call => call[0] === 'playSound')).toEqual([['playSound', 'blocked']]);
+  } finally { await h.view.close(); vi.useRealTimers(); }
+});
+
 it('does not replay history from before this app panel mounted even if shared claims persisted', async () => {
   const storage = new Map<string, unknown>([['spider.notifications.sounded', { baselineAt: Date.now() - 86400000, observed: [] }]]);
   const h = panelHost({ storage }); h.state.feeds[0].notifications[0].createdAt = Date.now() - 5000;

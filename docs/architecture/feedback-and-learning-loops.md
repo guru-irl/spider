@@ -297,7 +297,7 @@ drain report and does not stop the other passes. A provider connectivity error
 stops later model calls. Provider or service unavailability and HTTP 408, 429,
 500, 502, 503, 504, and 529 count as connectivity failures. A bare mention of a
 timeout does not. Explicit authentication and permission failures take
-precedence, including in nested causes. The worktree database retains captured
+precedence, including in nested causes and aggregate errors. The worktree database retains captured
 inputs and unfinished passes for a live session to retry. Inputs with identical
 content coalesce even if their lifecycle reasons differ. The queue retains at
 most two snapshots per session and 64 across the worktree. On access, it drops

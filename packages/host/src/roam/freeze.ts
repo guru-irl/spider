@@ -1,3 +1,4 @@
+import { MoveCompositionError } from "@spider/roam/move-failure";
 import { createHash, randomUUID } from "node:crypto";
 import { sameAddress, type IntercomIntakeFence, type SessionAddress } from "@spider/intercom/protocol";
 import { constants } from "node:fs";
@@ -185,7 +186,7 @@ function roster(ports: FreezePorts, machine: string): void {
   }
   if (![...names].some(key => storeScope(key as StoreKey) === "worktree")) throw new Error("Participant worktree store is unavailable");
   if (new Set(ports.expectedStores).size !== ports.expectedStores.length || names.size !== ports.expectedStores.length ||
-      ports.expectedStores.some(key => !names.has(key))) throw new Error("Participant store roster does not match");
+      ports.expectedStores.some(key => !names.has(key))) throw new MoveCompositionError("participant-stores-unavailable");
 }
 
 function intercomPorts(ports: FreezePorts, key: Identity) {
@@ -241,6 +242,7 @@ async function verifyAcknowledgement(ack: FreezeAck, operation: Operation, key: 
 export function freezeParticipant(operation: Operation, ports: FreezePorts): Promise<FreezeAck> {
   const key = identity(operation, "session-freeze");
   return sequence(ports, async () => {
+    roster(ports, operation.machineId);
     const prior = ports.journal.begin(operation);
     const progress = ports.journal.beginFreeze(key.sessionId, key.moveId, key.epoch);
     if (prior.kind === "done") {

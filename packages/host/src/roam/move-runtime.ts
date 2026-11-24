@@ -103,11 +103,16 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
       .filter(row => resolve(row.path) === resolve(dirname(paths.projectRoot(cwd)))) : [];
     requiredKeys = completeSource ? completeMoveRoster(JSON.parse(known.stores_json), mapped.length === 1 ? mapped[0] : undefined)
       : parseLocationStores(requestedKeys ?? (known ? JSON.parse(known.stores_json) : keys));
-    // Boxes may host a worktree before receiving its move-only repository store.
-    // Keep that key in the catalog; seed and freeze still require the full roster.
-    if (requiredKeys.some(key => !keys.includes(key) && !(config.role === "box" && key.startsWith("repo:")))) throw new Error("participant-stores-unavailable");
+    // Every role may admit a cataloged session before its move-only stores exist.
+    // Keep the complete roster; move operations must open every required store.
   } catch (error) { throw Object.assign(new MoveCompositionError("participant-stores-unavailable"), { cause: error }); }
-  const roster = requiredKeys.filter(key => keys.includes(key)).map(key => ({ key, db: stores.openStore(key).db }));
+  const openMoveStore = (key: StoreKey): Db => {
+    try {
+      if (!stores.list().includes(key)) throw new Error("participant-stores-unavailable");
+      return stores.openStore(key).db;
+    } catch (error) { throw Object.assign(new MoveCompositionError("participant-stores-unavailable"), { cause: error }); }
+  };
+  const roster = requiredKeys.filter(key => keys.includes(key)).map(key => ({ key, db: openMoveStore(key) }));
   if (completeSource) recordLocation(globalDb, { sessionId, stores: requiredKeys, home: sourceHome });
   const clock: Clock = { now: () => Date.now(), later(ms, fn) { const timer = setTimeout(fn, ms); timer.unref(); return () => clearTimeout(timer); } };
   const sync = input.sync ?? createSync({ config, globalDb, journal, transport, clock, stores });
@@ -234,8 +239,8 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
         const exited = new Promise<void>(done => child.once("exit", () => done()));
         return { exited, async stop() { if (child.exitCode === null) child.kill("SIGTERM"); await exited; } };
       } },
-    stores: { open: key => stores.openStore(key).db, head: key => {
-      const db = stores.openStore(key).db, meta = db.prepare("SELECT stream_id FROM roam_meta WHERE id=1").get() as { stream_id: string };
+    stores: { open: openMoveStore, head: key => {
+      const db = openMoveStore(key), meta = db.prepare("SELECT stream_id FROM roam_meta WHERE id=1").get() as { stream_id: string };
       return { storeKey: key, stream: meta.stream_id, through: (db.prepare("SELECT coalesce(max(seq),0) AS seq FROM roam_changes").get() as { seq: number }).seq };
     } }, sync,
     async mapping(request, loc) {

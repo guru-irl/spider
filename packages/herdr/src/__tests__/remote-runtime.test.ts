@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, writeFile, readFile, rm, readdir, symlink, chmod, stat, access, appendFile, utimes } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { resolve, join, dirname } from 'node:path';
@@ -8,7 +8,9 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { collectRemoteChunks, createFileLogSink, ensureRemoteRuntime, type LogSink, type RemoteLogLocation } from '../remote/transfer.js';
 import { createHerdrHarness } from './testutil.js';
-import { stripTypeScriptTypes } from 'node:module';
+import { buildRuntimeArtifact } from './runtime-artifact.js';
+let runtimeArtifact: Buffer;
+beforeAll(async () => { runtimeArtifact = await buildRuntimeArtifact(); }, 5000);
 import { probeRuntimeDirectory, installRuntimeDirectory, verifyProgramMarker, pruneSettledPrograms, readBoundedFile } from '../remote/runtime.js';
 import type { HcClient, MachineName } from '../contracts.js';
 const roots: string[] = [];
@@ -53,7 +55,7 @@ async function runtime(code: string, options: { args?: string[]; deadline?: numb
   let command = [wrapper];
   if (options.direct) {
     const artifact = join(root, 'remote-runtime.mjs');
-    await writeFile(artifact, stripTypeScriptTypes(await readFile(fileURLToPath(new URL('../remote/runtime.ts', import.meta.url)), 'utf8')));
+    await writeFile(artifact, runtimeArtifact);
     command = [artifact, requestPath];
     if (options.slowChunkWrites) {
       await writeFile(wrapper, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
@@ -95,7 +97,7 @@ async function runtimeThroughHc(mode: 'fake' | 'hc'): Promise<void> {
     const runtimePath = join(h.directories.remote, 'remote-runtime.mjs');
     const programRoot = join(h.directories.remote, 'programs'), directory = join(programRoot, 'a'.repeat(32));
     if (mode === 'fake') await h.scenario({ steps: [{ argvPrefix: ['file', 'read'], argvIncludes: [runtimePath], once: true, stderr: { error: { kind: 'not_found', message: 'Runtime is not installed' } }, exitCode: 3 }] }, 'remote');
-    const runtimeSource = Buffer.from(stripTypeScriptTypes(await readFile(fileURLToPath(new URL('../remote/runtime.ts', import.meta.url)), 'utf8')));
+    const runtimeSource = runtimeArtifact;
     await ensureRemoteRuntime(h.hc, on, runtimePath, runtimeSource, hash(runtimeSource));
     const writesBefore = (await h.calls()).filter(c => c.argv[0] === 'file' && c.argv[1] === 'write').length;
     await ensureRemoteRuntime(h.hc, on, runtimePath, runtimeSource, hash(runtimeSource));

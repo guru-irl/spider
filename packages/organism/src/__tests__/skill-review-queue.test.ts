@@ -94,6 +94,45 @@ it.each(["Provider temporarily unavailable", "service unavailable"])("keeps a ca
   } finally { vi.useRealTimers(); }
 });
 
+it.each([429, 500, 529])("keeps a candidate through a provider HTTP %i response", async status => {
+  vi.stubEnv("PI_SUBAGENT_CHILD", "0"); vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+  const skills = fixture(); await enqueue(skills);
+  try {
+    await runSkillReviewQueue(ctx.repoDb, { reviewer: async () => { throw Object.assign(new Error("provider error"), { status }); } });
+    expect(ctx.repoDb.prepare("SELECT attempts,body FROM skill_review_queue").get()).toEqual({ attempts: 0, body: candidate.body });
+    await vi.advanceTimersByTimeAsync(300_000);
+    await runSkillReviewQueue(ctx.repoDb, { reviewer: async () => '{"verdict":"new","reason":"reusable"}' });
+    expect(skills.get(candidate.name)?.candidateBody).toBe(candidate.body);
+  } finally { vi.useRealTimers(); }
+});
+
+it("spends the review budget for an invalid timeout parameter", async () => {
+  vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  const skills = fixture(); await enqueue(skills);
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await runSkillReviewQueue(ctx.repoDb, { reviewer: async () => { throw new Error("invalid timeout parameter"); } });
+    if (attempt < 3) expect(ctx.repoDb.prepare("SELECT attempts FROM skill_review_queue").get()).toEqual({ attempts: attempt });
+    else expect(skillReviewQueueStatus(ctx.repoDb).pending).toBe(0);
+  }
+  expect(skills.list()).toEqual([]);
+});
+
+it.each([
+  new Error("request timed out"),
+  Object.assign(new Error("provider error"), { code: "ETIMEDOUT" }),
+  Object.assign(new Error("provider error"), { name: "TimeoutError" }),
+])("keeps a candidate when the provider request times out", async error => {
+  vi.stubEnv("PI_SUBAGENT_CHILD", "0"); vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+  const skills = fixture(); await enqueue(skills);
+  try {
+    await runSkillReviewQueue(ctx.repoDb, { reviewer: async () => { throw error; } });
+    expect(ctx.repoDb.prepare("SELECT attempts,body FROM skill_review_queue").get()).toEqual({ attempts: 0, body: candidate.body });
+    await vi.advanceTimersByTimeAsync(300_000);
+    await runSkillReviewQueue(ctx.repoDb, { reviewer: async () => '{"verdict":"new","reason":"reusable"}' });
+    expect(skills.get(candidate.name)?.candidateBody).toBe(candidate.body);
+  } finally { vi.useRealTimers(); }
+});
+
 it("does not spend the content budget when the review timeout aborts the provider", async () => {
   vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
   const skills = fixture(); await enqueue(skills);

@@ -10,9 +10,41 @@ import type { RoamConfig } from "../contracts";
 import { openJournal } from "../journal";
 import { loadPeerState } from "../peer-state";
 import { createSync } from "../sync";
+import { HerdrError } from "../../../herdr/src/client/parse";
 import { noChangeSyncFixture, productionObservationFixture } from "./production-observation-fixture";
 
 afterEach(() => vi.restoreAllMocks());
+
+it.each(["exit", "signal"])("a mid-round command %s still supplies hosting observations", async kind => {
+  const machineId = "00000000-0000-4000-8000-000000000001";
+  const peer = { machineId: "00000000-0000-4000-8000-000000000002", alias: "box-1.invalid", node: "/home/fixture/node",
+    pi: "/home/fixture/pi", cli: "/home/fixture/spider", core: "/home/fixture/core", globalRoot: "/home/fixture/global" };
+  const local = createReplica("global", machineId);
+  const config: RoamConfig = { enabled: true, role: "hub", machineId, hubMachineId: machineId, peers: [peer],
+    discoveryRoots: [], coreUnit: "core", syncMs: 120_000, limits: { ...DEFAULT_LIMITS }, intercom: disabledIntercom() };
+  const wire = noChangeSyncFixture(config);
+  const readiness = { origin: "hub-operation", opId: "op-1", sessionId: "session-1", epoch: 1,
+    cwd: "/home/fixture/work", file: "/home/fixture/session.jsonl", core: "core-1", terminal: "t1" };
+  const warning = { code: "supervisor-hosting-error", check: "inspection", sessionId: "session-1", since: 1, count: 3 };
+  wire.setHosting({ readiness: [readiness], suspensions: [{ sessionId: "session-1", epoch: 1 }], warnings: [warning] });
+  const exec = wire.transport.exec.bind(wire.transport);
+  vi.spyOn(wire.transport, "exec").mockImplementation(async (current, argv, options) => {
+    if (argv[1] === "agent" && JSON.parse(argv[2]).kind === "export") throw new HerdrError("cli-exit", "synthetic failure",
+      kind === "exit" ? { exitCode: 1 } : { exitCode: null, signal: "SIGTERM" });
+    return exec(current, argv, options);
+  });
+  const native = await productionObservationFixture(local.root, config, local.db, wire.transport);
+  const journal = openJournal(join(local.root, "sync.db"));
+  const sync = createSync({ config, globalDb: local.db, stores: wire.stores, transport: wire.transport, journal,
+    clock: { now: () => 1, later() { return () => {}; } } });
+  try {
+    const results = await sync.sync(peer.machineId);
+    expect(results).toMatchObject([{ code: 1, reason: kind === "exit" ? "Peer command failed (exit 1)" : "Peer command failed (signal SIGTERM)" }]);
+    expect(loadPeerState(local.db, peer.machineId, config.limits.targetBatchBytes).observation).toMatchObject({ connected: true });
+    expect(await native.observe(peer, results)).toMatchObject({ reachability: "reachable", syncVerified: false,
+      readiness: [{ ...readiness, terminal: "box-1.invalid/t1" }], suspensions: [{ sessionId: "session-1", epoch: 1 }], warnings: [warning] });
+  } finally { sync.stop(); await sync.drain(); await native.stop(); local.close(); }
+});
 
 it("a peer reply supplies production sync proof despite ungathered or refused stores", async () => {
   const machineId = "00000000-0000-4000-8000-000000000001";

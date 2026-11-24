@@ -375,7 +375,8 @@ export function createSync(ports: SyncPorts): SyncAdapter {
     const outage = results.some(isSyncConnectivityFailure);
     if (outage) state.failures++;
     else if (connected === true) state.failures = 0;
-    state.observation = { machineId: peer.machineId, observedAt, connected: outage ? null : connected,
+    state.observation = { machineId: peer.machineId, observedAt,
+      connected: results.some(result => result.code === 3 && isSyncConnectivityFailure(result)) ? null : connected,
       lastSyncAt: completed ? clock.now() : Number.isSafeInteger(previousSync) && previousSync! >= 0 ? previousSync! : null,
       cursors: uncertain ? [] : cursors, failure: results.find(result => result.code === 1 && isPeerFailureReason(result.reason))?.reason ?? null };
     savePeerState(globalDb, peer.machineId, state);

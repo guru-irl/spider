@@ -383,7 +383,9 @@ their own diagnostics. An answered round without a connectivity failure resets
 an established sync backoff.
 Hosting checks, placement and suspension warnings still run when the native
 state is `connected` and the enrolled peer answered, even with ungathered or
-refused stores.
+refused stores. A mid-round peer command exit does not remove an answered
+peer from hosting checks. A code-3 connectivity failure makes the reply
+uncertain and suppresses those checks for that round.
 Live move recovery requires a separate proof: literal `connected` plus an
 answer from the enrolled peer without a connectivity failure in the current
 round. Session mirror export and copy failures also count as connectivity

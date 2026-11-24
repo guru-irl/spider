@@ -561,7 +561,9 @@ verified sync round, the running hub schedules one full recovery pass for pendin
 that peer. Ungathered and refused stores do not prevent connectivity proof,
 even when the round returned no apply results. The pass runs after sync, not
 inside its callback. A peer pass skips `move-lock-pending` without recording
-a warning. A later pass can pick up the move if it remains pending. Terminal
+a warning only for a real lock wait. Journal I/O, lock inspection, and power
+assertion failures keep their own warning and recovery command.
+A later pass can pick up the move if it remains pending. Terminal
 recovery clears the move's saved recovery diagnostic. Full recovery and
 cleanup share one writer. Requests for the same peer during a running pass
 coalesce into one follow-up pass with a new snapshot. Successful-sync cleanup

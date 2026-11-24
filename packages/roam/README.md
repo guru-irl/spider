@@ -54,7 +54,9 @@ uses the existing forward-only journal proofs and never retries failed moves
 in a loop. Successful-sync cleanup uses one coalesced timer and one flight.
 Disable and shutdown cancel scheduled work and drain active recovery and cleanup
 before closing stores. A peer pass skips an occupied session move lock without
-recording a warning. A later pass can retry it if the move is still pending.
+recording a warning. Journal I/O, lock inspection, and power assertion failures
+keep their own warning and recovery command. A later pass can retry a skipped
+move if it is still pending.
 Terminal recovery clears that move's saved recovery diagnostic.
 
 ## Partial disable

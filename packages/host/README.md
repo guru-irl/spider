@@ -39,7 +39,8 @@ When roaming is enabled, `/move` uses one footer status while the control
 request is pending. It keeps the start and result notices but has no periodic
 progress notifications. A lost reply returns pending code `3` with the known
 operation ID and exact `spider roam recover <operation-id>` command. The footer
-status clears when the request ends.
+status clears when the request ends. The pending text covers both a request
+that never reached the hub and a reply that was lost.
 
 ## Key modules
 

@@ -530,7 +530,9 @@ Children, transient sessions, and busy sessions cannot move.
 progress notices. The start and result notices remain. A lost control reply
 returns code `3`, preserves the known operation ID, and prints the exact
 `spider roam recover <operation-id>` command. The outcome stays unknown until
-recovery checks the journal. The progress status clears when the request ends.
+recovery checks the journal. The pending text covers both a request that never
+reached the hub and a reply that was lost. The progress status clears when the
+request ends.
 
 The destination needs its own Pi sign-in and a mapped equivalent Git checkout.
 The move preserves the session ID, selected conversation branch, triggers,

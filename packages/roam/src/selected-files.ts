@@ -11,8 +11,11 @@ import { isDeepStrictEqual } from "node:util";
 export interface SelectedFile { path: string; bytes: Buffer; mode: 0o600 | 0o700 }
 export interface SelectedFileMetadata { path: string; size: number; mode: 0o600 | 0o700 }
 export interface SettingsKeyDigest { path: readonly string[]; sha256: string }
-export interface SettingsDestinationPreview { fingerprint: string; changedKeys: readonly string[] }
-export interface SettingsDestinationDigests { fingerprint: string; digests: readonly (string | null)[] }
+export interface AgentPrivateModeRepair { path: string; uid: number; before: number; after: 0o600 | 0o700 }
+export interface AgentPrivateModeFailure { path: string; mode: number; uid: number; problem: "owner" | "symlink" | "type" | "hard-link" | "owner-mode" | "changed" | "tightening-failed" | "limit" }
+export interface AgentModePreview { authPresent: boolean; repairs: readonly AgentPrivateModeRepair[] }
+export interface SettingsDestinationPreview { fingerprint: string; changedKeys: readonly string[]; agentModes?: AgentModePreview }
+export interface SettingsDestinationDigests { fingerprint: string; digests: readonly (string | null)[]; agentModes?: AgentModePreview }
 interface SourceFile extends SelectedFile { privateMode: boolean }
 export interface PreparedFiles { files: readonly SelectedFile[]; credentialFiles: readonly SelectedFile[]; providers: readonly string[] }
 export function describeSelectedFiles(input: PreparedFiles): SelectedFileMetadata[] {
@@ -67,17 +70,62 @@ function destinationDirectory(path: string, privateMode = false): void {
   }
   directory(path, privateMode);
 }
+function agentModeFailure(path: string, stat: Stats, problem: AgentPrivateModeFailure["problem"]): never {
+  throw Object.assign(new SelectedFilesError("unsafe-destination", [path]), {
+    details: { path, mode: stat.mode & 0o7777, uid: stat.uid, problem } satisfies AgentPrivateModeFailure,
+  });
+}
+/** Preview or tighten an explicitly selected agent tree. Never follow links or chmod an unverified inode. */
+export function inspectAgentPrivateModes(root: string, repair = false, repaired: (entry: AgentPrivateModeRepair) => void = () => {}): AgentPrivateModeRepair[] {
+  const result: AgentPrivateModeRepair[] = [], pending = [root]; let count = 0;
+  while (pending.length) {
+    const path = pending.pop()!;
+    if (path.length > 4096 || /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(path)) fail("unsafe-destination");
+    const link = lstatSync(path);
+    if (++count > 10_000) agentModeFailure(path, link, "limit");
+    if (link.isSymbolicLink()) agentModeFailure(path, link, "symlink");
+    if (!own(link)) agentModeFailure(path, link, "owner");
+    if (!link.isDirectory() && !link.isFile()) agentModeFailure(path, link, "type");
+    // A hard link would extend chmod authority outside the selected tree.
+    if (link.isFile() && link.nlink !== 1) agentModeFailure(path, link, "hard-link");
+    const after = link.isDirectory() || (link.mode & 0o100) !== 0 ? 0o700 : 0o600;
+    if ((link.mode & 0o7700) !== after) agentModeFailure(path, link, "owner-mode");
+    let fd: number;
+    try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | (link.isDirectory() ? constants.O_DIRECTORY : 0)); }
+    catch { agentModeFailure(path, link, "tightening-failed"); }
+    try {
+      const stat = fstatSync(fd!);
+      if (stat.dev !== link.dev || stat.ino !== link.ino || stat.uid !== link.uid || stat.mode !== link.mode || stat.nlink !== link.nlink) agentModeFailure(path, stat, "changed");
+      const before = stat.mode & 0o7777;
+      if (before !== after) {
+        const entry: AgentPrivateModeRepair = { path, uid: stat.uid, before, after };
+        if (repair) {
+          try { fchmodSync(fd!, after); if ((fstatSync(fd!).mode & 0o7777) !== after) throw new Error("Mode unchanged"); }
+          catch { agentModeFailure(path, stat, "tightening-failed"); }
+          repaired(entry);
+        }
+        result.push(entry);
+      }
+      if (stat.isDirectory()) {
+        const current = lstatSync(path);
+        if (current.isSymbolicLink() || current.dev !== stat.dev || current.ino !== stat.ino || !own(current)) agentModeFailure(path, current, "changed");
+        for (const entry of readdirSync(path).sort().reverse()) pending.push(join(path, entry));
+      }
+    } finally { closeSync(fd!); }
+  }
+  return result;
+}
 function rootPath(value: string): string {
   if (typeof value !== "string" || !isAbsolute(value) || resolve(value) !== value || realpathSync(value) !== value) throw new Error("Unsafe root");
   directory(value, false);
   return value;
 }
-function fileStat(stat: Stats, privateMode: boolean, recoverableLink = false): void {
-  const mode = stat.mode & 0o7777;
+function fileStat(stat: Stats, privateMode: boolean, recoverableLink = false, repairablePrivateModes = false): void {
+  const mode = stat.mode & (repairablePrivateModes ? 0o7700 : 0o7777);
   if (!stat.isFile() || !own(stat) || stat.nlink !== 1 && !(recoverableLink && stat.nlink === 2) ||
       (privateMode ? mode !== 0o600 && mode !== 0o700 : (mode & 0o022) !== 0)) throw new Error("Unsafe file");
 }
-function readFile(path: string, maximum: number, privateMode = true, recoverTemporary = true, recognizeTemporary = false): { bytes: Buffer; mode: 0o600 | 0o700; privateMode: boolean } {
+function readFile(path: string, maximum: number, privateMode = true, recoverTemporary = true, recognizeTemporary = false, repairablePrivateModes = false): { bytes: Buffer; mode: 0o600 | 0o700; privateMode: boolean } {
   const link = lstatSync(path);
   if (link.isSymbolicLink()) throw new Error("Unsafe file");
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -96,7 +144,7 @@ function readFile(path: string, maximum: number, privateMode = true, recoverTemp
       }
       if (recoverTemporary) stat = fstatSync(fd);
     }
-    fileStat(stat, privateMode, recoverableLink);
+    fileStat(stat, privateMode, recoverableLink, repairablePrivateModes);
     if (stat.dev !== link.dev || stat.ino !== link.ino || !Number.isSafeInteger(stat.size) || stat.size > maximum) throw new Error("Unsafe file");
     const bytes = Buffer.alloc(stat.size + 1); let count = 0;
     while (count < bytes.length) { const size = readSync(fd, bytes, count, bytes.length - count, count); if (!size) break; count += size; }
@@ -327,7 +375,7 @@ export function selectedSettingsDigests(file: SelectedFile): SettingsKeyDigest[]
 }
 
 /** Read box settings without creating or changing paths, returning only value digests and a fingerprint. */
-export function inspectDestinationSettingsDigests(input: { home: string; destinationRoot: string; paths: readonly (readonly string[])[]; maximum: number; selectedPaths?: readonly string[] }): SettingsDestinationDigests {
+export function inspectDestinationSettingsDigests(input: { home: string; destinationRoot: string; paths: readonly (readonly string[])[]; maximum: number; selectedPaths?: readonly string[]; repairablePrivateModes?: boolean }): SettingsDestinationDigests {
   if (!input || !validSettingPaths(input.paths) || !Number.isSafeInteger(input.maximum) || input.maximum <= 0 || input.maximum > 256 * 1024 * 1024) fail("invalid-settings-preview");
   if (!validSelectedPaths(input.selectedPaths ?? [])) fail("invalid-settings-preview");
   let home: string;
@@ -337,15 +385,18 @@ export function inspectDestinationSettingsDigests(input: { home: string; destina
   let current = home;
   for (const part of root.slice(home.length + 1).split(sep)) {
     current = join(current, part);
-    if (!exists(current)) return { fingerprint: settingsFingerprint(null), digests: input.paths.map(() => null) };
+    if (!exists(current)) return { fingerprint: settingsFingerprint(null), digests: input.paths.map(() => null),
+      ...(input.repairablePrivateModes ? { agentModes: { authPresent: false, repairs: [] } } : {}) };
+    if (input.repairablePrivateModes && current === root) break;
     try { destinationDirectory(current); }
     catch (error) { if (error instanceof SelectedFilesError) throw error; return fail("unsafe-destination"); }
   }
-  inspectDestinationParents(home, root, input.selectedPaths ?? []);
+  const agentModes = input.repairablePrivateModes ? { repairs: inspectAgentPrivateModes(root), authPresent: exists(join(root, "auth.json")) && lstatSync(join(root, "auth.json")).isFile() } : undefined;
+  if (!agentModes) inspectDestinationParents(home, root, input.selectedPaths ?? []);
   const target = join(root, "settings.json");
-  if (!exists(target)) return { fingerprint: settingsFingerprint(null), digests: input.paths.map(() => null) };
+  if (!exists(target)) return { fingerprint: settingsFingerprint(null), digests: input.paths.map(() => null), ...(agentModes ? { agentModes } : {}) };
   let file: ReturnType<typeof readFile>;
-  try { file = readFile(target, input.maximum, true, false, true); } catch { return fail("unsafe-destination", ["settings.json"]); }
+  try { file = readFile(target, input.maximum, true, false, true, input.repairablePrivateModes); } catch { return fail("unsafe-destination", ["settings.json"]); }
   try {
     let destination: Record<string, unknown>;
     try { destination = parseDestinationSettings({ path: "settings.json", bytes: file.bytes, mode: file.mode }); }
@@ -358,17 +409,17 @@ export function inspectDestinationSettingsDigests(input: { home: string; destina
       }
       return settingValueDigest(value);
     });
-    return { fingerprint: settingsFingerprint(file.bytes, file.mode), digests };
+    return { fingerprint: settingsFingerprint(file.bytes, file.mode), digests, ...(agentModes ? { agentModes } : {}) };
   } finally { file.bytes.fill(0); }
 }
 
 /** Compare source digests locally with the read-only box probe. */
-export function inspectDestinationSettings(input: { home: string; destinationRoot: string; entries: readonly SettingsKeyDigest[]; maximum: number; selectedPaths?: readonly string[] }): SettingsDestinationPreview {
+export function inspectDestinationSettings(input: { home: string; destinationRoot: string; entries: readonly SettingsKeyDigest[]; maximum: number; selectedPaths?: readonly string[]; repairablePrivateModes?: boolean }): SettingsDestinationPreview {
   if (!input || !validSettingsDigests(input.entries)) fail("invalid-settings-preview");
   const result = inspectDestinationSettingsDigests({ home: input.home, destinationRoot: input.destinationRoot,
-    paths: input.entries.map(entry => entry.path), maximum: input.maximum, selectedPaths: input.selectedPaths });
+    paths: input.entries.map(entry => entry.path), maximum: input.maximum, selectedPaths: input.selectedPaths, repairablePrivateModes: input.repairablePrivateModes });
   return { fingerprint: result.fingerprint, changedKeys: input.entries.filter((entry, index) => entry.sha256 !== result.digests[index])
-    .map(entry => entry.path.join(".")).sort() };
+    .map(entry => entry.path.join(".")).sort(), ...(result.agentModes ? { agentModes: result.agentModes } : {}) };
 }
 function sensitiveKey(key: string): boolean {
   return /(?:api.?key|access.?token|refresh.?token|authorization|password|secret|credential|private.?key|^token$)/i.test(key);

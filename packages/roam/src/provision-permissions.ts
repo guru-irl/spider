@@ -1,4 +1,5 @@
 import { posix } from "node:path";
+import type { AgentPrivateModeFailure, AgentPrivateModeRepair, AgentModePreview } from "./selected-files";
 
 export const MAX_PERMISSION_TIGHTENINGS = 1_000_000;
 export function isPermissionTighteningCount(value: unknown): value is number {
@@ -28,6 +29,45 @@ export function permissionTreeRoot(path: unknown, prefix?: string): path is stri
   return /\/lib\/node_modules\/@earendil-works\/pi-coding-agent$/.test(path) || /\/spider-releases\/[a-f0-9]{64}$/.test(path);
 }
 
+function agentPath(path: unknown, home: string, root: string): path is string {
+  return destinationPermissionPath(path, home, [root]) && (path === root || path.startsWith(`${root}/`));
+}
+function mode(value: unknown): value is number { return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 0o7777; }
+function uid(value: unknown): value is number { return typeof value === "number" && Number.isSafeInteger(value) && value >= 0; }
+export function isAgentModeFailure(value: unknown, home?: string, root?: string): value is AgentPrivateModeFailure {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  return Object.keys(v).sort().join() === "mode,path,problem,uid" && (home !== undefined && root !== undefined ? agentPath(v.path, home, root) : absolutePath(v.path)) && mode(v.mode) && uid(v.uid) &&
+    typeof v.problem === "string" && ["owner", "symlink", "type", "hard-link", "owner-mode", "changed", "tightening-failed", "limit"].includes(v.problem);
+}
+export function isAgentModeRepairs(value: unknown, home?: string, root?: string): value is readonly AgentPrivateModeRepair[] {
+  return Array.isArray(value) && value.length <= 10_000 && new Set(value.map(v => v?.path)).size === value.length && value.every(v =>
+    v && typeof v === "object" && !Array.isArray(v) && Object.keys(v).sort().join() === "after,before,path,uid" &&
+    (home !== undefined && root !== undefined ? agentPath(v.path, home, root) : absolutePath(v.path)) && uid(v.uid) && mode(v.before) && (v.after === 0o600 || v.after === 0o700) &&
+    v.before !== v.after && (v.before & 0o7700) === v.after);
+}
+export function isAgentModePreview(value: unknown, home: string, root: string): value is AgentModePreview {
+  return !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join() === "authPresent,repairs" &&
+    "authPresent" in value && typeof value.authPresent === "boolean" && "repairs" in value && isAgentModeRepairs(value.repairs, home, root);
+}
+export function agentModeRefusal(value: AgentPrivateModeFailure): string {
+  const found = value.mode.toString(8).padStart(4, "0"), path = `'${value.path.replaceAll("'", "'\\''")}'`;
+  const target = (value.mode & 0o100) !== 0 ? "0700" : "0600";
+  const repair = value.problem === "tightening-failed" ? `Allow chmod ${target} ${path} for the provisioning uid, then reprovision.`
+    : value.problem === "owner" ? `Have the owner move ${path} out of the agent tree, then reprovision.`
+    : value.problem === "symlink" || value.problem === "hard-link" || value.problem === "type" ? `Replace ${path} with a same-uid regular file or directory without links, then reprovision.`
+    : value.problem === "owner-mode" ? `Set owner permissions to ${target} on ${path}, then reprovision.`
+    : value.problem === "limit" ? `Reduce the agent tree to at most 10000 entries, then reprovision.`
+    : `Stop writers changing ${path}, then reprovision.`;
+  return `unsafe-destination (${value.path}; mode ${found}; uid ${value.uid}; ${value.problem}). ${repair}`;
+}
+export function isAgentModeRefusal(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 16_384) return false;
+  const match = /^unsafe-destination \((.+); mode ([0-7]{4}); uid ([0-9]+); ([a-z-]+)\)\. /.exec(value);
+  if (!match || !absolutePath(match[1])) return false;
+  const details = { path: match[1], mode: Number.parseInt(match[2], 8), uid: Number(match[3]), problem: match[4] };
+  return isAgentModeFailure(details) && agentModeRefusal(details) === value;
+}
 export function permissionRepairCommand(path: string, recursive = false): string {
   return `chmod ${recursive ? "-R " : ""}go-w '${path.replaceAll("'", "'\\''")}'`;
 }

@@ -9,7 +9,7 @@ import { assertCredentialSelectedFile, assertPublicSelectedFile } from "./select
 import type { ProvisionTransport } from "./transport";
 import type { InstalledRelease, ReleaseReason } from "./release-receipt";
 import { PROVISION_REMOTE_SCRIPT } from "./provision-remote-script";
-import { destinationPermissionPath, isPermissionTighteningCount, permissionTreeRoot } from "./provision-permissions";
+import { destinationPermissionPath, isPermissionTighteningCount, permissionTreeRoot, isAgentModeFailure, isAgentModeRepairs, agentModeRefusal } from "./provision-permissions";
 
 export { PROVISION_REMOTE_SCRIPT };
 interface Chunk { name: string; size: number; sha256: string }
@@ -39,11 +39,12 @@ function failure(error: unknown, action: string, destination: ProvisionDestinati
     destinationPermissionPath(details.path, destination.home, roots) &&
     (!("recursive" in details) || ["release-observe", "release-prepare"].includes(action) && details.recursive === true && permissionTreeRoot(details.path, destination.npmPrefix))
     ? { path: details.path, ...("recursive" in details ? { recursive: true } : {}) } : undefined;
+  const agentFailure = candidate === "unsafe-destination" && isAgentModeFailure(details, destination.home, destination.agentDir) ? details : undefined;
   const code = candidate === "destination-permissions-unsafe" && !permission ? "invalid-provision-reply" : safe.has(candidate) ? candidate : "provision-failed";
   const blocking = code === "release-in-progress" && details && typeof details === "object" && "blockingOperationId" in details &&
     typeof details.blockingOperationId === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(details.blockingOperationId)
     ? { blockingOperationId: details.blockingOperationId } : undefined;
-  return new HerdrError(code, `Provisioning ${action} failed (${code})`, blocking ?? permission);
+  return new HerdrError(code, agentFailure ? agentModeRefusal(agentFailure) : `Provisioning ${action} failed (${code})`, blocking ?? permission ?? agentFailure);
 }
 function samePeer(expected: Peer, actual: Peer): boolean {
   return expected.machineId === actual.machineId && expected.alias === actual.alias && expected.node === actual.node &&
@@ -184,6 +185,11 @@ export function createHcProvisionAdapter(options: AdapterOptions): HcProvisionAd
     },
   };
   return {
+    async repairAgentDirectory(target) {
+      const value = await action(target, "agent-private-modes");
+      if (!isAgentModeRepairs(value, destination.home, destination.agentDir)) throw new HerdrError("invalid-provision-reply", "Invalid private-mode repair summary");
+      return value;
+    },
     async permissionTightening(target) {
       const value = await action(target, "permission-summary");
       if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== 1 ||

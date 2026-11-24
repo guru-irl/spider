@@ -1,6 +1,6 @@
 import type { Diagnostic, Journal, Limits, Operation, Peer, Transport } from "./contracts";
 import type { AuthPorts } from "./auth";
-import type { SelectedFile, SelectedFileMetadata, SettingsDestinationPreview, SettingsKeyDigest } from "./selected-files";
+import type { SelectedFile, SelectedFileMetadata, SettingsDestinationPreview, SettingsKeyDigest, AgentPrivateModeRepair } from "./selected-files";
 import type { IntercomReadiness } from "./intercom-readiness";
 
 export type FileLimit = number | "unlimited" | null;
@@ -31,7 +31,7 @@ export interface Inventory {
 }
 
 /** Null means an older completed operation did not record the count. */
-export interface ProvisionResult { hostingReady: boolean; permissionTightenings: number | null }
+export interface ProvisionResult { hostingReady: boolean; permissionTightenings: number | null; privateModeRepairs?: readonly AgentPrivateModeRepair[] }
 export type ProvisionRequest = {
   operation: Operation; peer: Peer; selected: readonly string[]; includeAuth: boolean; requireDestinationAuth?: boolean; confirmedProviders: readonly string[];
   expectedAuthBytes?: number; expectedFiles?: readonly SelectedFileMetadata[]; expectedSelectionDigest?: string; replaceCorePin?: boolean;
@@ -170,6 +170,7 @@ export interface ProvisionPorts extends DoctorPorts {
   };
   systemd: DoctorPorts["systemd"] & { writeUnit(name: string, contents: string): Promise<void> };
   transfer: {
+    repairAgentDirectory(peer: Peer): Promise<readonly AgentPrivateModeRepair[]>;
     enroll(peer: Peer, hubMachineId: string, coreUnit: string, replaceCorePin?: boolean): Promise<import("./enrollment").CorePinReplacement | void>;
     setEnabled(peer: Peer, hubMachineId: string, enabled: boolean): Promise<void>;
     cleanupSecrets(peer: Peer): Promise<void>;

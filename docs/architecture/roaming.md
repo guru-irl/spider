@@ -305,15 +305,42 @@ many. If the count cannot be read, provisioning succeeds with a `null` count.
 A completed operation saved before this count was reported also returns `null`
 on replay. The public count never includes paths.
 
-`destination-permissions-unsafe` identifies a user-owned path with group or
-other write access. For an unmarked pi package or release tree, the reported
+The requested agent tree has a separate private-mode rule. The settings
+preview checks its existing files and directories without changing them,
+even when no settings are selected. After consent and identity verification,
+provisioning removes group and other access from same-uid regular entries.
+Directories become `0700`; files become `0600`, or `0700` if the owner execute
+bit was already set. This repairs `settings.json`, `auth.json`, and other files
+created by sign-in under umask `0002`, without changing their contents.
+
+The agent walk opens entries with `O_NOFOLLOW` and checks the descriptor's
+owner, mode, device, and inode before chmod. Symlinks, hard-linked files,
+foreign owners, special file types, special mode bits, and incompatible owner
+permissions refuse. A failed chmod also refuses. The refusal names the path,
+found mode, uid, and the repair needed before another attempt. Display-control
+characters never appear in repair evidence. The walk accepts at most 10,000
+entries, and the repair receipt is limited to 2 MiB.
+
+`value.privateModeRepairs` lists each repaired path, uid, `before` mode, and
+`after` mode in JSON. Modes are numeric permission bits. A private
+`agent-private-modes.json` receipt preserves that list across retries, including
+completed CLI retries. This list is separate from `permissionTightenings`,
+which counts installer-tree changes. `--no-settings` omits the settings copy,
+not the safety check or permission repair of an existing settings file.
+Reprovisioning now repairs these modes, so doctor's reprovision advice no
+longer repeats the sign-in permission refusal.
+
+`destination-permissions-unsafe` identifies a shared parent or an unmarked
+package path with group or other write access. Automatic agent repair never
+extends to parents outside the requested agent tree. For an unmarked pi
+package or release tree, the reported
 `chmod -R go-w '<root>'` repairs the entire tree in one command. Recursive repair
 is accepted only for those exact package roots, never their shared parents or
-children. Other paths keep a single-path `chmod go-w` repair. These include the
-agent directory chain, `extensions`, selected-file parents, and prefix parents
-such as `~/.local/bin`. The read-only preview checks the agent chain,
-`extensions`, and selected-file parents before consent, including a configured
-`PI_CODING_AGENT_DIR` chain. The installer checks them again before writing.
+children. Shared parents keep a single-path `chmod go-w` repair. These include
+parents of the agent directory and prefix parents such as `~/.local/bin`.
+The read-only preview checks shared parents before consent, including a
+configured `PI_CODING_AGENT_DIR` chain. The installer checks them again before
+writing.
 
 Run the reported shell-quoted command on the box and retry with the same
 options. Several writable user-owned parent directories can require separate

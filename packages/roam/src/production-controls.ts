@@ -1,3 +1,4 @@
+import { launchctlBinary } from "./service-manager";
 import { resolveParticipantPi } from "./launcher";
 import { causeCode, safeCauseCode, type CauseStep } from "./cause-codes";
 import { agentFailureCode, AgentResponseError, peerPreflightIssue } from "./peer-errors";
@@ -7,9 +8,9 @@ import { parseDoctorReport, remoteDoctor } from "./remote-observations";
 import { INTERCOM_UNIQUENESS_DESCRIPTION } from "./intercom-readiness";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join } from "node:path";
+import { basename, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { assertTestConfigPath, openDbReadOnly } from "@spider/db-core";
 import { storeScope } from "@spider/db-core/roam/codec";
@@ -48,18 +49,6 @@ function preflightDetail(reason: string): string | undefined {
   if (process) return `PID ${process[1]} loaded build incompatible with this release. Reload it.`;
   if (detail === "Cannot read the process presence inventory. Run spider roam doctor.") return detail;
   return undefined;
-}
-function launchctlBinary(): string {
-  if (!process.env.SPIDER_TEST_FIXTURE_CHECKOUT) {
-    if (process.platform !== "darwin") throw new Error("The hub service requires macOS");
-    return "/bin/launchctl";
-  }
-  const file = process.env.SPIDER_TEST_ROAM_LAUNCHCTL;
-  if (!file || !isAbsolute(file)) throw new Error("No isolated launchctl fixture");
-  assertTestConfigPath(file);
-  const stat = lstatSync(file);
-  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Unsafe launchctl fixture");
-  return file;
 }
 function servicePorts(): LaunchdPorts {
   const binary = launchctlBinary();

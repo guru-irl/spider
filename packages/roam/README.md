@@ -20,6 +20,19 @@ capture and participation flags change. The response includes an allowlisted
 `causeCode` without broker stderr, exception text, or private paths. A broker
 that answers health but lacks federation support remains blocked.
 
+## Packaged hub service
+
+`package-layout.ts` resolves the installed `dist/roam/cli.mjs` dispatcher for
+hub enablement. The service runs that executable with `roam hub`, not the
+imported `cli-main.mjs` library.
+
+`hub-service-diagnostics.ts` reads service metadata and checks the hub socket.
+Doctor blocks an enabled hub with `hub-startup-pending` when the service is
+stopped or its socket is unavailable. The diagnostic names the last exit code
+and error log path, without reading log contents. Its repair is
+`spider roam enable` on the Mac hub. An unknown service state with an existing
+socket produces a `hub-startup-unverified` warning.
+
 ## Stop and pending launches
 
 `supervisor.ts` reserves a launch before authorization. It changes the
@@ -85,6 +98,11 @@ or restored process and boot identity inspection before stopping again. Once
 the released owner has positively exited, doctor offers stop. A reservation
 without adoption evidence checks the actual pin and core before reporting a
 core problem. These repairs do not send the operator back to doctor.
+
+identities. Pending launches remain blocking in all three cases. Doctor offers
+stop for an unstarted reservation, but inspection for an invoking reservation
+without a handoff. Stop repair diagnostics name the Mac hub as where to run the
+command, including when doctor runs locally on a box.
 
 ## Machine reachability
 

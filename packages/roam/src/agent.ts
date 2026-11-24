@@ -541,7 +541,7 @@ async function dispatchAgentOperation(operation: Operation, ports: AgentPorts): 
       try { return await ports.move(operation); }
       catch (error) {
         const cause = moveFailureCause(error);
-        return { ...outcome(1, cause, id), causeCode: cause, repairCommand: "spider roam doctor" };
+        return { ...outcome(1, cause, id), causeCode: cause, epoch: operation.expectedEpoch, repairCommand: "spider roam doctor" };
       }
     }
     if (["session-start", "session-stop", "session-resume"].includes(operation.kind)) {

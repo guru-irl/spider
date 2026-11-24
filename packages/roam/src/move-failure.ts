@@ -1,5 +1,5 @@
 const moveCauses = ["participant-pi-unavailable", "participant-stores-unavailable", "participant-config-unavailable",
-  "participant-context-unavailable", "participant-home-unavailable", "move-adapter-unavailable"] as const;
+  "participant-context-unavailable", "participant-home-unavailable", "move-adapter-unavailable", "move-workspace-unmapped", "move-checkout-conflict"] as const;
 export type MoveCauseCode = typeof moveCauses[number];
 
 export function safeMoveCause(value: unknown): MoveCauseCode | undefined {
@@ -16,6 +16,7 @@ export class MoveCompositionError extends Error {
   }
 }
 export function moveFailureRepair(cause: MoveCauseCode): string {
+  if (cause === "move-workspace-unmapped") return "Run spider roam repo map <repo> <path> on the destination, then retry the move.";
   return cause === "participant-pi-unavailable"
     ? "Install pi or set SPIDER_ROAM_PI to its executable, then run spider roam doctor."
     : "Run spider roam doctor and repair the participant configuration.";

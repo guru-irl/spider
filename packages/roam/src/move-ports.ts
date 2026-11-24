@@ -6,9 +6,11 @@ import { createHash } from "node:crypto";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { createInterface } from "node:readline";
 import { createReadStream, existsSync, realpathSync, readFileSync, lstatSync, renameSync, unlinkSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { Db } from "@spider/db-core";
 import { parseLocationStores, recordLocation } from "@spider/db-core/roam/catalog";
+import { mapWorkspace } from "@spider/db-core/roam/repo-map";
+import { checkoutName, checkoutParents, resolveMoveCheckout } from "./move-checkout";
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { storeScope } from "@spider/db-core/roam/codec";
 import { seedSession } from "@spider/db-core/roam/seed";
@@ -269,7 +271,7 @@ export function createMovePorts(config: RoamConfig, transport: Transport, journa
   };
   const importMove = async (check: MoveCheck, operation: Operation, stage: "pre" | "final", ack?: FreezeAck): Promise<PreparedMove> => {
     const destination = { ...check.source, machineId: check.destinationMachine, epoch: check.source.epoch + 1, moveId: operation.id };
-    const prerequisites = successful(await call<readonly string[]>(destination, operation, "move-prerequisites", { root: check.destinationRoot, stage }));
+    const prerequisites = successful(await call<readonly string[]>(destination, operation, "move-prerequisites", { root: check.destinationRoot, stage, repoKey: check.repoKey, workspaceId: check.workspaceId, sourceCheckoutName: checkoutName(basename(check.sourceRoot), "checkout") }));
     const exported = successful(await call<MoveExport>(check.source, operation, "move-export", { check: json(check), stage, prerequisites: [...prerequisites], parent: json(operation), ack: ack ? json(ack) : null }));
     const root = join(required(bindings.root, stage === "pre" ? "prepare" : "transfer"), "roam", "staging");
     const claims: MoveArtifactClaim[] = [];
@@ -624,7 +626,12 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
   }
   if (operation.kind === "move-diagnostics") return result(await participant.auth());
   if (operation.kind === "move-prerequisites") {
-    const root = String(operation.args.root), stage = operation.args.stage;
+    const destination = String(operation.args.root), stage = operation.args.stage;
+    const checkout = await resolveMoveCheckout({ globalDb: participant.globalDb, root: participant.root, repoKey: String(operation.args.repoKey),
+      workspaceId: String(operation.args.workspaceId), sourceName: operation.args.sourceCheckoutName, moveId: String(operation.args.moveId), git: participant.git, journal });
+    if (checkout.path !== destination) throw new MoveAdapterError("workspace-repository-unmapped");
+    const mappedRepo = participant.globalDb.prepare("SELECT path FROM roam_repo_maps WHERE repo_key=?").get(operation.args.repoKey) as { path: string } | undefined;
+    const root = checkout.kind === "create" ? required(mappedRepo?.path, "repository-map") : destination;
     if (stage !== "pre" && stage !== "final") throw new MoveAdapterError("workspace-stage-invalid");
     if (stage === "pre") {
       try { await participant.git.run(root, ["git", "fetch", "--quiet", "origin"]); }
@@ -699,7 +706,15 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
     const sessionRow = journal.read(exported.workspace.moveId).find(row => row.action === "workspace-session");
     if (sessionRow && sessionRow.result.sessionId !== id) throw new MoveAdapterError("workspace-session-mismatch");
     if (!sessionRow) journal.record(exported.workspace.moveId, "workspace-session", { sessionId: id });
-    const workspace = await participant.withBothLocks(id, () => prepareWorkspace(exported.workspace, check.destinationRoot, ports));
+    const workspace = await participant.withBothLocks(id, async () => {
+      const checkout = await resolveMoveCheckout({ globalDb: participant.globalDb, root: participant.root, repoKey: check.repoKey, workspaceId: check.workspaceId,
+        sourceName: checkoutName(basename(check.sourceRoot), "checkout"), moveId: exported.workspace.moveId, git: participant.git, journal });
+      if (checkout.path !== check.destinationRoot) throw new MoveAdapterError("workspace-repository-unmapped");
+      const prepared = await prepareWorkspace(exported.workspace, check.destinationRoot, ports);
+      await mapWorkspace(participant.globalDb, { repoKey: check.repoKey, workspaceId: check.workspaceId, path: prepared.root });
+      persistExportedSnapshot(participant.globalDb, { ...prepared.snapshot, root: prepared.root });
+      return prepared;
+    });
     const sourceFile = await ports.verifiedArtifactPath(exported.sessionArtifact.id);
     if (!sourceFile) throw new MoveAdapterError("session-artifact-missing");
     const source = { ...exported.session, file: sourceFile }; await verifyFrozenSession(source, participant.config.limits);
@@ -1106,7 +1121,16 @@ export function createMoveWorkspacePorts(globalDb: Db, git: GitPorts, stagingRoo
     async resolveCommonRepository(mapping) {
       const repo = globalDb.prepare("SELECT path FROM roam_repo_maps WHERE repo_key=?").get(mapping.repoKey) as { path: string } | undefined;
       const workspace = globalDb.prepare("SELECT path FROM roam_workspace_maps WHERE repo_key=? AND workspace_id=?").get(mapping.repoKey, mapping.workspaceId) as { path: string } | undefined;
-      if (!repo || !workspace || !isAbsolute(repo.path) || !isAbsolute(workspace.path) || resolve(workspace.path) !== resolve(mapping.destination)) return null;
+      if (!repo || !isAbsolute(repo.path)) return null;
+      if (workspace) {
+        if (!isAbsolute(workspace.path) || resolve(workspace.path) !== resolve(mapping.destination)) return null;
+      } else {
+        if (!mapping.sourceRoot || !mapping.moveId) return null;
+        const checkout = await resolveMoveCheckout({ globalDb, root: dirname(globalDb.raw.name), repoKey: mapping.repoKey, workspaceId: mapping.workspaceId,
+          sourceName: checkoutName(basename(mapping.sourceRoot), "checkout"), moveId: mapping.moveId, git, journal: git.journal });
+        if (checkout.path !== mapping.destination) return null;
+        checkoutParents(dirname(globalDb.raw.name), checkout.path, true);
+      }
       const common = (await git.run(repo.path, ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"])).toString().trim();
       if (!isAbsolute(common)) throw new MoveAdapterError("workspace-repository-unavailable");
       realpathSync(common);

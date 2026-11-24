@@ -35,7 +35,7 @@ export interface StoreAdapter extends StorePort {
   batchDirectories(): string[];
   close(): void;
 }
-export function createStorePort(config: RoamConfig, globalDb: Db, options: { allowUnassignedGlobal?: boolean } = {}): StoreAdapter {
+export function createStorePort(config: RoamConfig, globalDb: Db, options: { allowUnassignedGlobal?: boolean; unmappedWorktree?: StoreKey } = {}): StoreAdapter {
   if (Number(globalDb.pragma("user_version")) !== 14) throw new Error("Unsupported global store schema");
   const identity = globalDb.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id: string; store_key: string | null };
   if (identity.machine_id !== config.machineId || !(identity.store_key === "global" || options.allowUnassignedGlobal && identity.store_key === null))
@@ -80,7 +80,7 @@ export function createStorePort(config: RoamConfig, globalDb: Db, options: { all
     if (mapped) { file = mapped.raw.name; mapped.close(); }
     if (!file) file = registeredStore(key);
     if (!file) {
-      if (config.role !== "hub") throw new Error("Store has no local mapping");
+      if (config.role !== "hub" && !(scope === "worktree" && key === options.unmappedWorktree)) throw new Error("Store has no local mapping");
       file = replicaPath(globalDb, key);
       privateDirectory(dirname(file));
     }

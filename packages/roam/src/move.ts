@@ -100,7 +100,7 @@ function outcome(request: MoveRequest, ports: MovePorts, code: Outcome<MoveResul
     epoch: current && current !== "unknown" ? current.epoch : null, repairCommand: reason === "initial-home-conflict" ? "spider roam claim" : code === 3 && text(request?.operation?.id) ? `spider roam recover ${request.operation.id}` : null };
   if (code === 0 && value) return { ...envelope, code: 0, ok: true, value };
   if (code === 0 || reason === "moved" || reason === "same-home") refuse("move-journal-invalid");
-  return { ...envelope, ...(cause ? { causeCode: cause, repairCommand: envelope.repairCommand ?? "spider roam doctor" } : {}), code, ok: false, value: null,
+  return { ...envelope, ...(cause ? { causeCode: cause, repairCommand: envelope.repairCommand ?? (cause === "move-workspace-unmapped" ? "spider roam repo map <repo> <path>" : "spider roam doctor") } : {}), code, ok: false, value: null,
     refusal: { code: reason, blockers, message: MOVE_REFUSAL_MESSAGES[reason] + (cause ? ` ${moveFailureRepair(cause)}` : "") } };
 }
 export function parseSourceCleanup(value: unknown): SourceCleanup {
@@ -126,7 +126,8 @@ function completedOutcome(value: unknown, id: string): MoveSessionOutcome {
   if (result.epoch !== (result.home?.epoch ?? null)) refuse("move-journal-invalid");
   if (result.ok === true) {
     if (result.code !== 0 || !result.home || !result.value || !sameHome(result.value.home, result.home) ||
-        !(result.value.terminal === null || text(result.value.terminal)) || !text(result.value.intercomAddress)) refuse("move-journal-invalid");
+        !(result.value.terminal === null || text(result.value.terminal)) || !text(result.value.intercomAddress) ||
+        result.value.destinationRoot !== undefined && (!text(result.value.destinationRoot) || !isAbsolute(result.value.destinationRoot) || result.value.destinationRoot.length > 4096)) refuse("move-journal-invalid");
     try { home(result.value.home); warnings(result.value.warnings); parseSourceCleanup(result.value.sourceCleanup); } catch { refuse("move-journal-invalid"); }
   } else if (result.ok === false) {
     if (result.code === 0 || result.value !== null || !result.refusal || !Object.hasOwn(MOVE_REFUSAL_MESSAGES, result.refusal.code) ||
@@ -287,7 +288,7 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
       if (observation.owner.kind === "uncertain" || observation.owner.kind === "live" && observation.retired ||
           observation.owner.kind === "absent" && !observation.retired) refuse("move-source-owner-uncertain");
       if (!sameHome(sessionHome(ports.globalDb, request.sessionId), check.source)) refuse("move-source-home-mismatch");
-      const result = outcome(request, ports, 0, "same-home", { sourceCleanup: { status: "done" }, home: check.source, terminal: observation.readiness?.terminal ?? null, intercomAddress: ports.intercom.address.sessionId, warnings: check.warnings });
+      const result = outcome(request, ports, 0, "same-home", { destinationRoot: check.destinationRoot, sourceCleanup: { status: "done" }, home: check.source, terminal: observation.readiness?.terminal ?? null, intercomAddress: ports.intercom.address.sessionId, warnings: check.warnings });
       ports.journal.record(id, "done", json(result)); ports.journal.record(slot, "released", { moveId: id });
       return result;
     }
@@ -347,7 +348,7 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
     if (!sameHome(sessionHome(ports.globalDb, request.sessionId), committed)) refuse("move-home-changed");
     const intercom = await action("intercom-ready", () => ports.intercom.ports.ready(fence, endpoint));
     if (!text(intercom.intercomAddress)) refuse("intercom-endpoint-not-ready"); warnings(intercom.warnings);
-    moved = { source: check.source, value: { sourceCleanup: { status: 'done' }, home: committed, terminal: readiness.terminal, intercomAddress: intercom.intercomAddress,
+    moved = { source: check.source, value: { destinationRoot: check.destinationRoot, sourceCleanup: { status: 'done' }, home: committed, terminal: readiness.terminal, intercomAddress: intercom.intercomAddress,
       warnings: [...new Set([...check.warnings, ...inspection.warnings, ...intercom.warnings, ...prepared.workspace.snapshot.droppedConfigKeys, ...prepared.workspace.adjustments])] } };
     const stopped = await action("source-retire", () => ports.retire(check.source, sourceOperation));
     probe(stopped); if (stopped.kind !== "absent") refuse("move-source-stop-pending");
@@ -358,7 +359,7 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
     readinessReply(finalObservation.readiness, committed, prepared, destinationOperation);
     if (!sameHome(sessionHome(ports.globalDb, request.sessionId), committed)) refuse("move-home-changed");
     await action("cleanup", () => ports.cleanup(check, request.operation));
-    const value: MoveResult = { sourceCleanup: { status: "done" }, home: committed, terminal: readiness.terminal, intercomAddress: intercom.intercomAddress,
+    const value: MoveResult = { destinationRoot: check.destinationRoot, sourceCleanup: { status: "done" }, home: committed, terminal: readiness.terminal, intercomAddress: intercom.intercomAddress,
       warnings: [...new Set([...check.warnings, ...inspection.warnings, ...intercom.warnings, ...prepared.workspace.snapshot.droppedConfigKeys,
         ...prepared.workspace.adjustments, ...ports.journal.read(id).filter(row => row.action === "move-cleanup-warnings").flatMap(row => row.result.warnings as string[])])] };
     cleanupDone = value;

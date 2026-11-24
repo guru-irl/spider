@@ -168,7 +168,7 @@ export interface WorkspaceSnapshot {
 }
 export interface WorkspaceImportPorts extends GitPorts {
   /** Resolve the local repository mapping, not a path supplied by a remote snapshot. */
-  resolveCommonRepository(mapping: { repoKey: string; workspaceId: string; destination: string }): Promise<string | null>;
+  resolveCommonRepository(mapping: { repoKey: string; workspaceId: string; destination: string; sourceRoot?: string; moveId?: string }): Promise<string | null>;
   /** Load this checkout's last exported snapshot, including exports from earlier moves. */
   lastExportedSnapshot(checkout: { repoKey: string; workspaceId: string; root: string }): Promise<WorkspaceSnapshot | null>;
   /** Resolve an artifact only after the local transfer store has verified it. */
@@ -188,7 +188,7 @@ export interface FreezeAck {
 }
 export interface MoveRequest { operation: Operation; sessionId: string; destinationMachine: MachineId }
 export type SourceCleanup = { status: "done" } | { status: "pending"; reason: MoveRefusalCode; blockers: readonly ValidatedBlockerId[] };
-export interface MoveResult { home: Home; terminal: string | null; intercomAddress: string; warnings: readonly string[]; sourceCleanup: SourceCleanup }
+export interface MoveResult { destinationRoot?: string; home: Home; terminal: string | null; intercomAddress: string; warnings: readonly string[]; sourceCleanup: SourceCleanup }
 /** Validated at the blocker boundary, never inferred from a message body. */
 declare const validatedBlockerId: unique symbol;
 export type ValidatedBlockerId = string & { readonly [validatedBlockerId]: true };

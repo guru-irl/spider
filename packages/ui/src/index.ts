@@ -3,8 +3,10 @@
 
 import type { Component } from "./component";
 import { fitResultLines } from "./renderers/types";
+import { icon, type IconStyle } from "./icons.js";
 export type { Component } from "./component";
 export { cachedLines } from "./component";
+export { ICON_STYLES, icon, isIconStyle, type IconStyle, type IconRole } from "./icons.js";
 export { formatRunUsage, formatCompactionCount } from "./agents/usage";
 
 // Phase 0 kept a static ANSI token table; that is gone. Colour is NEVER hardcoded here —
@@ -14,8 +16,8 @@ const DEFAULT_TOKENS: Record<string, string> = {
   rule: "─",
 };
 
-export const theme = {
-  glyph: "🕸" as const,
+export const theme: { glyph: string; token(name: string): string } = {
+  glyph: icon("text", "agent"),
   token(name: string): string {
     return DEFAULT_TOKENS[name] ?? "";
   },
@@ -25,10 +27,10 @@ function clamp(s: string, width: number): string {
   return s.length <= width ? s : s.slice(0, Math.max(0, width - 1)) + "…";
 }
 
-export function SectionRule(title?: string): Component {
+export function SectionRule(title?: string, iconStyle?: IconStyle): Component {
   return {
     render(width: number): string[] {
-      const glyph = theme.glyph;
+      const glyph = icon(iconStyle, "agent");
       const label = title ? ` ${glyph} ${title} ` : ` ${glyph} `;
       const fill = theme.token("rule");
       const remaining = Math.max(0, width - label.length);
@@ -37,11 +39,11 @@ export function SectionRule(title?: string): Component {
   };
 }
 
-export function Panel(opts: { title?: string; body: string[]; expanded?: boolean }): Component {
+export function Panel(opts: { title?: string; body: string[]; expanded?: boolean; iconStyle?: IconStyle }): Component {
   return {
     render(width: number): string[] {
       const out: string[] = [];
-      if (opts.title) out.push(...SectionRule(opts.title).render(width));
+      if (opts.title) out.push(...SectionRule(opts.title, opts.iconStyle).render(width));
       if (opts.expanded) out.push(...fitResultLines(opts.body, width, true));
       else for (const line of opts.body) out.push(clamp(line, width));
       return out;

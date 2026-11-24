@@ -8,6 +8,7 @@ import { randomUUID } from "crypto";
 import { existsSync } from "node:fs";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
+import { icon, type IconStyle } from "@spider/ui";
 import { IntercomClient, type SendResult } from "./broker/client.js";
 import { spawnBrokerIfNeeded } from "./broker/spawn.js";
 import { SessionListOverlay } from "./ui/session-list.js";
@@ -588,7 +589,7 @@ function getNamePollMs(): number {
 }
 export type IntercomBrokerPort = (connect: () => Promise<void>) => Promise<void>;
 export interface IntercomRegistration { hasPendingInboundAsks(): boolean }
-export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: IntercomBrokerPort = connect => connect()): IntercomRegistration {
+export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: IntercomBrokerPort = connect => connect(), iconStyle: () => IconStyle = () => "text"): IntercomRegistration {
   let client: IntercomClient | null = null;
   const config: IntercomConfig = loadConfig();
   const askTimeoutMs = getAskTimeoutMs();
@@ -2446,9 +2447,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
         const failed = Boolean(context.isError || details?.error === true || details?.delivered === false);
         const parseWarning = typeof details?.structuredReplyParseError === "string";
         let text = failed
-          ? theme.fg("error", "✗ ")
+          ? theme.fg("error", `${icon(iconStyle(), "failure")} `)
           : parseWarning
-            ? theme.fg("warning", "⚠ ")
+            ? theme.fg("warning", `${icon(iconStyle(), "warning")} `)
             : theme.fg("success", "✓ ");
         text += theme.fg(failed ? "error" : "text", textContent);
         if (parseWarning) {
@@ -3024,7 +3025,7 @@ Usage:
       }
       const details = result.details as { delivered?: boolean; error?: boolean; messageId?: string; reason?: string } | undefined;
       const failed = Boolean(context.isError || details?.error === true || details?.delivered === false);
-      let text = failed ? theme.fg("error", "✗ ") : theme.fg("success", "✓ ");
+      let text = failed ? theme.fg("error", `${icon(iconStyle(), "failure")} `) : theme.fg("success", "✓ ");
       text += theme.fg(failed ? "error" : "text", firstTextContent(result));
       if (details?.messageId && !context.expanded) {
         text += theme.fg("dim", ` (${details.messageId.slice(0, 8)})`);

@@ -1,9 +1,10 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { icon } from "../icons.js";
 import type { Component } from "../component";
 import { buildFooterModel } from "./footer-model";
 import { diffLines, hasChanges } from "./diff";
 import { Spinner } from "../components/spinner";
-import { STATUS_GLYPH, statusToken } from "./types";
+import { activityText, agentGlyph, statusGlyph, statusToken } from "./types";
 import type { AgentSnapshot, ThemeAdapter } from "./types";
 import type { AgentStore } from "./store";
 
@@ -35,10 +36,10 @@ export function formatAgentLine(t: ThemeAdapter, a: AgentSnapshot, width: number
   if (model !== "—") parts.push(sep, t.fg("muted", model));
   if (a.thinking) parts.push(sep, t.fg("dim", a.thinking));
   parts.push(sep, t.fg("dim", turns), sep, t.fg("muted", formatDuration(elapsedMs)));
-  if (a.activity) parts.push(sep, t.fg("dim", a.activity));
+  if (a.activity) parts.push(sep, t.fg("dim", activityText(t, a.activity, a.activityIsError)));
   // ONLY the leading status marker (spinner while running, glyph otherwise) is status-coloured;
   // the name/text stay a constant tool-title colour (no green-on-success noise).
-  return truncateToWidth(`${t.fg(statusToken(a.status), lead)} ${t.fg("toolTitle", t.glyph)}  ${parts.join(" ")}`, width, "…");
+  return truncateToWidth(`${t.fg(statusToken(a.status), lead)} ${t.fg("toolTitle", agentGlyph(t))}  ${parts.join(" ")}`, width, "…");
 }
 
 export class AgentFooter implements Component {
@@ -61,8 +62,8 @@ export class AgentFooter implements Component {
     const selecting = this.store.isSelecting();
     const cursor = selecting ? (a.runId === this.store.selectedRunId() ? this.theme.fg("accent", "▸ ") : "  ") : "";
     const cw = visibleWidth(cursor);
-    const lead = a.status === "running" ? this.spinner.frame(this.now()) : STATUS_GLYPH[a.status];
-    const pin = this.store.isPinned(a.runId) ? " 📌" : "";
+    const lead = a.status === "running" ? this.spinner.frame(this.now()) : statusGlyph(this.theme, a.status);
+    const pin = this.store.isPinned(a.runId) ? ` ${icon(this.theme.iconStyle, "pin")}` : "";
     const line = formatAgentLine(this.theme, a, Math.max(4, width - visibleWidth(pin) - cw), this.now(), lead);
     return cursor + (pin ? line + this.theme.fg("warning", pin) : line);
   }
@@ -82,7 +83,7 @@ export class AgentFooter implements Component {
       if (o.failed) seg.push(`${o.failed} failed`);
       if (o.cancelled) seg.push(`${o.cancelled} cancelled`);
       seg.push(`+${o.hidden} more`);
-      lines.push(truncateToWidth(this.theme.fg("muted", `${this.theme.glyph} ▸ ` + seg.join(" · ")), width, "…"));
+      lines.push(truncateToWidth(this.theme.fg("muted", `${agentGlyph(this.theme)} ▸ ` + seg.join(" · ")), width, "…"));
     }
     return lines.map((l) => (visibleWidth(l) > width ? truncateToWidth(l, width, "…") : l));
   }

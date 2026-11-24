@@ -1,5 +1,6 @@
 import type { ThemeAdapter } from "../agents/types.js";
 import { CONFIG_SCHEMA, type ConfigGroup } from "./config-schema.js";
+import { icon } from "../icons.js";
 import { buildConfigModel } from "./config-model.js";
 import { sectionRule, statusIcon, fitResultLines, resultTrimmer } from "../renderers/types.js";
 
@@ -14,7 +15,7 @@ export function renderConfig(cfg: unknown, theme: ThemeAdapter, width: number, e
 		body.push(sectionRule(theme, group.label, width));
 		for (const r of group.rows) {
 			const glyph = statusIcon(theme, r.isDefault ? "off" : "on");
-			const restart = r.field.restart ? theme.fg("warning", " ⚠restart") : "";
+			const restart = r.field.restart ? theme.fg("warning", ` ${icon(theme.iconStyle, "warning")}restart`) : "";
 			const scope = r.field.scope === "global" ? theme.fg("muted", " (global-only; scope:global)") : "";
 			const line = `${glyph} ${theme.fg("text", r.field.label)} ${theme.fg("muted", r.field.optional && r.value === undefined ? "unset" : typeof r.value === "object" && r.value !== null ? JSON.stringify(r.value) : String(r.value))}${scope}${restart}`;
 			body.push(trim(line, width, ""));

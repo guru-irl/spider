@@ -6,6 +6,8 @@
 // pi's command handler contract is `(args: string, ctx: ExtensionCommandContext) => Promise<void>`
 // (see @earendil-works/pi-coding-agent types + makeTodosCommand). The FIRST param is the raw
 // argument STRING, the SECOND is the command context (which run() needs to resolve db/session/cwd).
+import { icon, type IconStyle } from "@spider/ui";
+
 export const SLASH_COMMANDS = ["spider", "memory", "search", "insights", "learn", "doctor", "stats"] as const;
 
 export type SlashCommandName = (typeof SLASH_COMMANDS)[number];
@@ -30,7 +32,7 @@ const FORWARD: Record<SlashCommandName, (arg: string) => Record<string, unknown>
 };
 
 const DESC: Record<SlashCommandName, string> = {
-	spider: "spider 🕸 dashboard",
+	spider: "spider dashboard",
 	memory: "browse memory",
 	search: "unified search",
 	insights: "learning graph",
@@ -45,6 +47,7 @@ export interface SlashDeps {
 	ordinaryWorkAllowed?: () => boolean;
 	waitForAdmission?: () => Promise<unknown>;
 	roamDoctor?: (args: readonly string[]) => Promise<{ text: string; code: number }>;
+	iconStyle?: IconStyle;
 }
 
 export interface PiLike {
@@ -146,7 +149,7 @@ export function registerSlashCommands(pi: PiLike, deps: SlashDeps): void {
 	for (const name of SLASH_COMMANDS) {
 		if (deps.alreadyRegistered.has(name)) continue;
 		pi.registerCommand(name, {
-			description: DESC[name],
+			description: name === "spider" ? `spider ${icon(deps.iconStyle, "agent")} dashboard` : DESC[name],
 			handler: async (args: string, ctx: unknown) => {
 				const arg = typeof args === "string" ? args.trim() : "";
 				const words = arg.split(/\s+/), roamingDoctor = name === "spider" && words[0] === "roam" && words[1] === "doctor";

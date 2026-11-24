@@ -1,8 +1,8 @@
-import { Panel, renderErrorResult, type Component, type ThemeAdapter } from "@spider/ui";
+import { Panel, icon, renderErrorResult, type Component, type IconStyle, type ThemeAdapter } from "@spider/ui";
 import type { MemoryRecord } from "./types";
 import type { StageResult } from "./staging";
 
-const GLYPH = "🕸";
+const GLYPH = icon("text", "agent");
 
 export function renderRememberResult(
   r: (Partial<StageResult> & { content?: string; category?: string; scope?: string; source?: string; message?: string; error?: string }) | null | undefined,
@@ -39,9 +39,9 @@ export function renderRecallResult(recs: MemoryRecord[], expanded = false): Comp
   return Panel({ body, expanded });
 }
 
-export function renderPending(recs: MemoryRecord[], expanded = false): Component {
+export function renderPending(recs: MemoryRecord[], expanded = false, iconStyle?: IconStyle): Component {
   const body = recs.length
     ? recs.map((r) => `[${r.category}] ${r.content} — ${r.uuid}`)
     : ["(nothing pending)"];
-  return Panel({ title: `${GLYPH} pending (${recs.length})`, body, expanded });
+  return Panel({ title: `${icon(iconStyle, "agent")} pending (${recs.length})`, body, expanded, iconStyle });
 }

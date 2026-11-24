@@ -1,7 +1,7 @@
 // packages/host/src/agents/agents-ui.ts
 import type { Db } from "@spider/db-core";
 import { Key, matchesKey } from "@earendil-works/pi-tui";
-import { AgentStore, AgentFooter, AgentDetail, type ThemeAdapter, type AgentActions, type RunCostFormatter } from "@spider/ui";
+import { AgentStore, AgentFooter, AgentDetail, type ThemeAdapter, type AgentActions, type RunCostFormatter, type IconStyle } from "@spider/ui";
 import { createRunSource } from "./run-source";
 import { piTheme } from "./theme-adapter";
 
@@ -15,7 +15,7 @@ interface HostPi {
   registerShortcut?(key: string, opts: { description?: string; handler: (ctx: unknown) => void }): void;
   registerCommand?(name: string, def: { description?: string; handler: (ctx?: unknown) => void }): void;
 }
-interface Deps { db: Db; sessionId: string; width?: () => number; actions?: AgentActions; showFooter?: boolean; registration?: AgentsUIRegistration; formatRunCost?: RunCostFormatter }
+interface Deps { db: Db; sessionId: string; width?: () => number; actions?: AgentActions; showFooter?: boolean; registration?: AgentsUIRegistration; formatRunCost?: RunCostFormatter; iconStyle?: IconStyle }
 
 const WIDGET = "spider-agents";
 
@@ -125,7 +125,7 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
     if (active && !mounted) {
       ctx.ui.setWidget(WIDGET, (tui: unknown, theme: unknown) => {
         footerTui = tui as { requestRender?: (force?: boolean) => void };
-        const footer = new AgentFooter(store, piTheme(theme as never));
+        const footer = new AgentFooter(store, piTheme(theme as never, deps.iconStyle));
         const stop = selfTick(tui, store);
         return {
           // Detail (when drilled) floats directly ABOVE the footer rows in this SAME static
@@ -157,7 +157,7 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
     detail = undefined;
     await ctx.ui.custom<void>(
       (tui, theme, _kb, done) => {
-        const th = piTheme(theme as never);
+        const th = piTheme(theme as never, deps.iconStyle);
         footerTui ??= tui as { requestRender?: (force?: boolean) => void };
         // Auto-close when the last agent finishes and disappears: an invisible overlay must
         // never keep capturing input once the footer it drives is gone.

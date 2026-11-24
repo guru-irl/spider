@@ -2,7 +2,8 @@ import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/
 import type { Component } from "../component";
 import { Spinner } from "../components/spinner";
 import { formatAgentLine } from "./footer";
-import { STATUS_GLYPH } from "./types";
+import { statusGlyph } from "./types";
+import { icon } from "../icons.js";
 import type { AgentSnapshot, ThemeAdapter } from "./types";
 import type { AgentStore } from "./store";
 
@@ -45,9 +46,9 @@ export class AgentList implements Component {
     this.clampFocus(all.length);
     const body: string[] = [];
     all.forEach((a, i) => {
-      const lead = a.status === "running" ? this.spinner.frame(this.now()) : STATUS_GLYPH[a.status];
+      const lead = a.status === "running" ? this.spinner.frame(this.now()) : statusGlyph(t, a.status);
       const marker = i === this.focus ? "▸ " : "  ";
-      const pin = this.store.isPinned(a.runId) ? " 📌" : "";
+      const pin = this.store.isPinned(a.runId) ? ` ${icon(t.iconStyle, "pin")}` : "";
       const lineW = Math.max(4, width - visibleWidth(marker) - visibleWidth(pin));
       const line = formatAgentLine(t, a, lineW, this.now(), lead);
       body.push(truncateToWidth(`${t.fg("accent", marker)}${line}${pin ? t.fg("warning", pin) : ""}`, width, "…"));

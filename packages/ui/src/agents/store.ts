@@ -25,12 +25,14 @@ export function projectRow(row: RunRow): AgentSnapshot {
     costText: row.costText,
     compactionCount: row.compactionCount,
     recentActivity: [],
+    recentActivityErrors: [],
   };
 }
 
 export function applyEvent(snap: AgentSnapshot, e: RunEvent): AgentSnapshot {
-  const next = { ...snap, recentActivity: [...snap.recentActivity] };
+  const next = { ...snap, recentActivity: [...snap.recentActivity], recentActivityErrors: snap.recentActivity.map((_, i) => snap.recentActivityErrors?.[i] === true) };
   let feedLine: string | undefined;
+  const isError = e.type === "tool_result" && (e.payload as { isError?: unknown } | undefined)?.isError === true;
   if (e.type === "tool_intent") {
     next.activityTool = e.tool ?? next.activityTool;
     feedLine = e.summary ?? e.tool;
@@ -43,8 +45,10 @@ export function applyEvent(snap: AgentSnapshot, e: RunEvent): AgentSnapshot {
   // carry the run *name* as their summary, which previously flooded recentActivity
   // (and the footer's activity column) with the agent name repeated over and over.
   if (feedLine) {
+    next.activityIsError = isError;
     next.recentActivity.push(feedLine);
-    if (next.recentActivity.length > TAIL_CAP) next.recentActivity.shift();
+    next.recentActivityErrors.push(isError);
+    if (next.recentActivity.length > TAIL_CAP) { next.recentActivity.shift(); next.recentActivityErrors.shift(); }
   }
   return next;
 }
@@ -143,7 +147,9 @@ export class AgentStore {
         const base = projectRow(row);
         base.activity = merged.activity ?? base.activity;
         base.activityTool = merged.activityTool ?? base.activityTool;
+        base.activityIsError = merged.activityIsError;
         base.recentActivity = merged.recentActivity;
+        base.recentActivityErrors = merged.recentActivityErrors;
         this.agents.set(id, base);
       } else if (existing) {
         // Row deleted but we have a cached snapshot; apply event to it

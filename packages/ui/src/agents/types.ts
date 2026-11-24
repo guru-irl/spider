@@ -1,4 +1,5 @@
 import type { RunEvent } from "@spider/db-core";
+import { icon, type IconStyle } from "../icons.js";
 
 export type AgentStatus = "queued" | "running" | "paused" | "done" | "failed" | "cancelled";
 
@@ -17,8 +18,8 @@ export interface AgentSnapshot {
   runId: string; parentRunId?: string; name: string; agent: string; role?: string;
   status: AgentStatus; phase?: string; model?: string; thinking?: string; task?: string;
   startedAt?: number; endedAt?: number;
-  activity?: string; activityTool?: string;
-  stepCount: number; tokenCount: number; cost?: number; usageCosts?: RunUsageCosts; costText?: string; compactionCount?: number; recentActivity: string[];
+  activity?: string; activityTool?: string; activityIsError?: boolean;
+  stepCount: number; tokenCount: number; cost?: number; usageCosts?: RunUsageCosts; costText?: string; compactionCount?: number; recentActivity: string[]; recentActivityErrors?: boolean[];
 }
 
 export interface HandoffEdge { from: string; to: string; phase?: string; ts: number; }
@@ -45,6 +46,16 @@ export interface ThemeAdapter {
   bold(s: string): string;
   italic?(s: string): string;
   glyph: string;
+  iconStyle?: IconStyle;
+}
+
+export function agentGlyph(theme: ThemeAdapter): string {
+  return theme.iconStyle === undefined ? theme.glyph : icon(theme.iconStyle, "agent");
+}
+
+export function activityText(theme: ThemeAdapter, text: string, isError: boolean | undefined): string {
+  const marker = icon("text", "failure");
+  return isError && text.startsWith(`${marker} `) ? icon(theme.iconStyle, "failure") + text.slice(marker.length) : text;
 }
 
 export interface FooterModel {
@@ -58,8 +69,13 @@ export interface LineChange { index: number; line: string; }
 export interface LineDiff { changed: LineChange[]; removedFrom?: number; lengthChanged: boolean; }
 
 export const STATUS_GLYPH: Record<AgentStatus, string> = {
-  queued: "○", running: "◆", paused: "■", done: "✓", failed: "✗", cancelled: "⚠",
+  queued: "○", running: "◆", paused: "■", done: "✓", failed: icon("text", "failure"), cancelled: icon("text", "warning"),
 };
+
+export function statusGlyph(theme: ThemeAdapter, status: AgentStatus): string {
+  return status === "failed" ? icon(theme.iconStyle, "failure")
+    : status === "cancelled" ? icon(theme.iconStyle, "warning") : STATUS_GLYPH[status];
+}
 
 export function statusToken(status: AgentStatus): string {
   switch (status) {

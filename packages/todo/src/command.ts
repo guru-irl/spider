@@ -1,9 +1,8 @@
 import { truncateToWidth, visibleWidth, Key, matchesKey } from "@earendil-works/pi-tui";
 import type { Db } from "@spider/db-core";
+import { icon, type IconStyle } from "@spider/ui";
 import { listTodos, viewSession } from "./store";
 import type { SessionGroup, Todo } from "./types";
-
-const GLYPH = "🕸";
 
 type Fg = (token: string, s: string) => string;
 
@@ -53,6 +52,7 @@ function todoLines(fg: Fg, todos: Todo[], width: number, indent: string): string
 export interface TodosCommandDeps {
   getDb: (ctx: any) => Db;
   getSessionId: (ctx: any) => string;
+  iconStyle?: IconStyle;
 }
 
 function fmtTodo(t: Todo): string {
@@ -85,7 +85,7 @@ function notifyText(db: Db, sessionId: string): string {
  */
 export function makeTodosCommand(deps: TodosCommandDeps) {
   return {
-    description: `${GLYPH} view todos (press 'a' for all sessions, 'q' to close)`,
+    description: `${icon(deps.iconStyle, "agent")} view todos (press 'a' for all sessions, 'q' to close)`,
     async handler(_args: string, ctx: any): Promise<void> {
       const sessionId: string =
         ctx?.sessionManager?.getSessionId?.() ?? deps.getSessionId(ctx);

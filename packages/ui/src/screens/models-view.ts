@@ -1,4 +1,5 @@
 import type { ThemeAdapter } from "../agents/types.js";
+import { icon } from "../icons.js";
 import type { ModelEntry } from "@spider/models";
 import { catalogRows, type ModelThinkingDisplay } from "./models-model.js";
 import { sectionRule, fitResultLines, resultTrimmer } from "../renderers/types.js";
@@ -23,7 +24,7 @@ export function renderModels(entries: ModelEntry[], defaults: Record<string, str
       if (row.thinking) badges.push(theme.fg("dim", "R"));
       if (row.vision) badges.push(theme.fg("dim", "V"));
       const badge = badges.length ? ` ${badges.join("")}` : "";
-      const dflt = row.isDefaultFor.length ? theme.fg("success", ` ⟵ ${row.isDefaultFor.join(",")}`) : "";
+      const dflt = row.isDefaultFor.length ? theme.fg("success", ` ${icon(theme.iconStyle, "modelDefault")} ${row.isDefaultFor.join(",")}`) : "";
       body.push(trim(`${glyph} ${theme.fg("text", row.ref)}${badge}${dflt}`, width, ""));
       if (row.thinkingLevels.length) body.push(trim(theme.fg("dim", `  thinking: ${row.thinkingLevels.join(", ")}`), width, ""));
     }

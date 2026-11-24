@@ -297,17 +297,18 @@ drain report and does not stop the other passes. A provider connectivity error
 stops later model calls. Provider or service unavailability and HTTP 408, 429,
 500, 502, 503, 504, and 529 count as connectivity failures. A bare mention of a
 timeout does not. Explicit authentication and permission failures take
-precedence, including in nested causes and aggregate errors. The worktree database retains captured
-inputs and unfinished passes for a live session to retry. Inputs with identical
+precedence, including in nested causes and aggregate errors. The worktree
+database retains captured inputs and unfinished passes for a live session to
+retry. Inputs with identical
 content coalesce even if their lifecycle reasons differ. The queue retains at
 most two snapshots per session and 64 across the worktree. On access, it drops
 snapshots at least seven days old and the oldest snapshots above the count
 limits. Legacy snapshots use the session row's creation time. Every drop records
 a session, reason, and cause without the transcript. A dropped snapshot can
 contain input that was never stored elsewhere. The delay starts at five minutes
-and doubles to at most six hours. A lease
-prevents concurrent retries. Each affected session gets one failure receipt per outage. Repeated
-events update an outage count capped at 100. Local insights can still run.
+and doubles to at most six hours. A lease prevents concurrent retries. Each
+affected session gets one failure receipt per outage. Repeated events update an
+outage count capped at 100. Local insights can still run.
 A retry clears the outage unless connectivity fails again. Passes can finish
 without a provider call. An input that cannot progress waits five minutes while
 other inputs run. Fresh drains can probe after the retry deadline. The worker
@@ -375,7 +376,7 @@ also fails on connectivity, the runner stops the queue. Other transport failures
 can stop it immediately. Retry delays start at five minutes and double to at
 most six hours. The deadlines persist across sessions. A non-connectivity
 outcome resets the timed-out candidate's delay. A session that finds another
-owner holding the review lease retries when the lease expires.
+owner holding the learner lease retries when the lease expires.
 Doctor shows the queue length and recent verdicts. If the rubric or catalog
 is not available, the learner prompt leaves out skill guidance, but memory
 proposals still go through. Disabling skill

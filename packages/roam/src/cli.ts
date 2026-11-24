@@ -283,7 +283,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
         keygen: DEFAULT_SSH_KEYGEN, keyscan: DEFAULT_SSH_KEYSCAN, sshUser: userInfo().username, recipe: config.intercom.connector, run: runForeground };
       if (!["check-connector", "inspect-ssh", "register-pair", "host-connector", "connect-connector"].includes(input?.action)) {
         const side = input.pair?.source?.machineId === config.machineId ? "connect" : "host";
-        if (!await inspectPairUnit(input.pair as import("./provision-contracts").IntercomEnrollmentPair, side, { ...base, machineId: config.machineId, root })) throw new Error("connector-not-pair-scoped");
+        if (await inspectPairUnit(input.pair as import("./provision-contracts").IntercomEnrollmentPair, side, { ...base, machineId: config.machineId, root }) !== "ready") throw new Error("connector-not-pair-scoped");
       }
       const value = await runLocalPairOperation(input, { ...base, machineId: config.machineId, root });
       io.out(`${JSON.stringify({ version: 1, kind: "intercom-setup", ok: true, machineId: config.machineId, value })}\n`);

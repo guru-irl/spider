@@ -298,6 +298,13 @@ it("a pending connector on one pair does not prevent another approved pair from 
   expect(f.state.routes.has("pair-1")).toBe(true); expect(f.state.routes.has("pair-2")).toBe(true);
 }, 5000);
 
+it.each(["intercom-pair-revocation-incomplete", "intercom-pair-fence-conflict"])("retains the named %s refusal if the fence changes after consent", async reason => {
+  const f = fixture(); f.state.allow = true; let observations = 0;
+  const ports = { ...f.ports, async readPairFences() { return { "pair-1": observations++ === 0 ? null : reason }; } };
+  expect(await run(f.request, ports)).toMatchObject({ code: 3, reason, value: { pairs: [], pending: [{ pairId: "pair-1", reason }] } });
+  expect(f.state.registered.size).toBe(0); expect(f.state.keys.size).toBe(0);
+}, 5000);
+
 it("an unavailable authoritative fence does not block an independent pair", async () => {
   const f = fixture(); f.state.allow = true;
   f.request.pairs.push({ pairId: "pair-2", source: peer(THIRD, "box-3.invalid"), target: peer(FOURTH, "box-4.invalid"), edgeEpoch: "edge-2",
@@ -307,6 +314,21 @@ it("an unavailable authoritative fence does not block an independent pair", asyn
   } };
   expect(await run(f.request, ports)).toMatchObject({ code: 3, value: { pairs: ["pair-2"], pending: [{ pairId: "pair-1", reason: "intercom-fence-unavailable" }] } });
   expect(f.state.registered.has("pair-1")).toBe(false); expect(f.state.routes.has("pair-2")).toBe(true);
+}, 5000);
+
+it.each(["intercom-pair-revocation-incomplete", "intercom-pair-fence-conflict"])("a named %s refusal does not block an independent pair or lose its fence consent", async reason => {
+  const f = fixture(); f.state.allow = true; let blocked = true;
+  f.request.pairs.push({ pairId: "pair-2", source: peer(THIRD, "box-3.invalid"), target: peer(FOURTH, "box-4.invalid"), edgeEpoch: "edge-2",
+    connector: { tunnelId: "tunnel-2", remotePort: 2223, session: "default" } });
+  f.state.fences.set("pair-2", "predecessor-fence");
+  const ports = { ...f.ports, async readPairFences(pairs: readonly IntercomEnrollmentPair[]) {
+    return Object.fromEntries(pairs.map(pair => [pair.pairId, pair.pairId === "pair-1" && blocked ? reason : f.state.fences.get(pair.pairId) ?? null]));
+  } };
+  expect(await run(f.request, ports)).toMatchObject({ code: 3, value: { pairs: ["pair-2"], pending: [{ pairId: "pair-1", reason }] } });
+  expect(f.state.registered.has("pair-1")).toBe(false); expect(f.state.routes.has("pair-2")).toBe(true);
+  blocked = false;
+  expect(await run(f.request, ports)).toMatchObject({ code: 0, value: { pairs: ["pair-1", "pair-2"] } });
+  expect(f.journal.read("approval-1").filter(row => row.action === "intercom-peer-consent").at(-1)?.result.fences).toEqual({ "pair-1": null, "pair-2": "predecessor-fence" });
 }, 5000);
 
 it("approves fresh pair commands after authorization and before adding the route", async () => {

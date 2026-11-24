@@ -357,13 +357,18 @@ Directories become `0700`; files become `0600`, or `0700` if the owner execute
 bit was already set. This repairs `settings.json`, `auth.json`, and other files
 created by sign-in under umask `0002`, without changing their contents.
 
-The agent walk opens entries with `O_NOFOLLOW` and checks the descriptor's
-owner, mode, device, and inode before chmod. Symlinks, hard-linked files,
-foreign owners, special file types, special mode bits, and incompatible owner
-permissions refuse. A failed chmod also refuses. The refusal names the path,
-found mode, uid, and the repair needed before another attempt. Display-control
-characters never appear in repair evidence. The walk accepts at most 10,000
-entries, and the repair receipt is limited to 2 MiB.
+The agent walk opens regular entries with `O_NOFOLLOW` and checks the descriptor's
+owner, mode, device, and inode before chmod. It preserves the exact
+`<agentDir>/intercom/broker.sock` socket when it is same-uid and `0600`, with a
+canonical, same-uid `0700` parent. It checks the socket without opening,
+changing, replacing, or unlinking it, and does not list it as a repair. An
+invalid socket, a regular file at that path, or a socket elsewhere refuses.
+Symlinks, hard-linked files, foreign owners, other special file types, special
+mode bits, and incompatible owner permissions also refuse. A failed chmod
+refuses. The refusal names the path, found mode, uid, and the repair needed
+before another attempt. Display-control characters never appear in repair
+evidence. The walk accepts at most 10,000 entries, and the repair receipt is
+limited to 2 MiB.
 
 `value.privateModeRepairs` lists each repaired path, uid, `before` mode, and
 `after` mode in JSON. Modes are numeric permission bits. A private
@@ -1026,6 +1031,19 @@ host key cannot be distinguished by that key, so operators must give each
 machine its own host key. A doctor run scans one port and pinned key type, then
 reports any pairs it could not check as
 `intercom-ssh-check-deferred`.
+
+Doctor requires each active pair's recorded unit to be running. If enable
+reports `intercom-pair-unit-unavailable`, run `spider roam provision <machine>`
+on the hub for each affected box, using the usual authentication options, then
+retry `spider roam enable`. After consent, identity checks, and release
+installation, provisioning reconciles stopped units for active owned pairs.
+It checks the recorded unit and loaded service before enabling or starting it.
+A mismatched or fenced active pair refuses repair; revoked pairs are skipped
+and foreign units are not changed. A new provisioning operation checks the
+units again. Replaying a completed operation returns its saved result without
+repeating the repair. Doctor remains read-only. While roaming is disabled,
+this repair may start pair connectors but does not enable participation, start
+the broker or supervisor, or start hosted sessions.
 
 ### Protocol versions
 

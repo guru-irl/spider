@@ -5,7 +5,7 @@ import type { IntercomConnectorRecipe } from "./contracts";
 import type { IntercomEnrollmentPair, IntercomHostStopEvidence } from "./provision-contracts";
 import { parseConnectorRecipe } from "./config";
 import { pairPaths } from "./intercom-pair-files";
-import { createIntercomRegistry } from "./intercom-registry";
+import { createIntercomRegistry, withIntercomPeerLock } from "./intercom-registry";
 import { probeIntercomProcess, type NativeProcess } from "./intercom-exclusion";
 import { withProcessLock } from "@spider/herdr/sessions/registry";
 
@@ -138,6 +138,7 @@ export async function ensurePairUnit(pair: IntercomEnrollmentPair, side: "host" 
     if (unit.name !== name || unit.file !== file || unit.contents !== contents || unit.localPort !== localPort || unit.closedFenceId !== null) throw new Error("intercom-unit-mismatch");
     await registry.recordUnit(pair.pairId, unit); publishUnit(file, contents);
     if ((await ports.run([ports.systemctl ?? "/usr/bin/systemctl", "--user", "daemon-reload"], options)).code !== 0) throw new Error("intercom-unit-unavailable");
+    await showUnit(unit, ports);
     if ((await ports.run([ports.systemctl ?? "/usr/bin/systemctl", "--user", "enable", name], options)).code !== 0) throw new Error("intercom-unit-unavailable");
     let current = await showUnit(unit, ports);
     if (current.state !== "active") {
@@ -157,6 +158,28 @@ export async function inspectPairUnit(pair: IntercomEnrollmentPair, side: "host"
   const current = await showUnit(unit, ports), process = (ports.process ?? nativeProcess)(current.pid);
   return current.state === "active" && current.pid > 0 && process.kind === "live" && !!current.controlGroup && members(current.controlGroup, ports).includes(current.pid);
 }
+/** Reconcile active pair records without creating, replacing, or reviving foreign or fenced units. */
+export async function reconcilePairUnits(ports: PairResourcePorts): Promise<void> {
+  const registry = createIntercomRegistry(ports.root);
+  for (const observed of await registry.list()) {
+    if (observed.state !== "active" || !("sshUser" in observed.pair)) continue;
+    const pair = observed.pair;
+    const side = pair.source.machineId === ports.machineId ? "connect" : pair.target.machineId === ports.machineId ? "host" : null;
+    if (!side || (side === "connect" ? pair.source.globalRoot : pair.target.globalRoot) !== ports.root) continue;
+    await withIntercomPeerLock(ports.root, pair.source.machineId, pair.target.machineId, async () => {
+      const current = await registry.get(pair.pairId);
+      if (!current || current.state !== "active") return;
+      if (!("sshUser" in current.pair) || current.pair.edgeEpoch !== pair.edgeEpoch ||
+          current.pair.source.machineId !== pair.source.machineId || current.pair.target.machineId !== pair.target.machineId) throw new Error("intercom-pair-conflict");
+      const peer = side === "connect" ? pair.target.machineId : pair.source.machineId;
+      if (current.fenceId !== null || await registry.revocationPending(pair.pairId, peer)) throw new Error("revocation-pending");
+      if (!current.resources || !current.unit || current.unit.closedFenceId !== null) throw new Error("intercom-unit-unavailable");
+      if (await inspectPairUnit(current.pair, side, ports)) return;
+      if ((await ensurePairUnit(current.pair, side, ports)).status !== "ready") throw new Error("connector-not-pair-scoped");
+    });
+  }
+}
+
 export async function stopPairUnit(pair: IntercomEnrollmentPair, side: "host" | "connect", fenceId: string, ports: PairResourcePorts): Promise<IntercomHostStopEvidence> {
   const local = side === "host" ? pair.target : pair.source;
   if (local.machineId !== ports.machineId || local.globalRoot !== ports.root) throw new Error("machine-mismatch");

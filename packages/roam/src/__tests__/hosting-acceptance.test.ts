@@ -89,6 +89,7 @@ function provisionFixture() {
     },
     transfer: {
       async repairAgentDirectory() { return inspectAgentPrivateModes(destination, true); },
+      async reconcilePairUnits() {},
       async setEnabled(_peer, _hub, enabled) { actions.push(`enabled:${enabled}`); },
       async enroll() { actions.push("enroll"); }, async cleanupSecrets() { actions.push("cleanup"); },
       async installRelease() { actions.push("release"); return { pi: peer.pi, cli: peer.cli, supervisor }; },

@@ -486,6 +486,28 @@ async function run(): Promise<unknown> {
     unlock = () => endShortWrite(lockInput, claim.token);
   }
   try {
+  if (action === "pair-unit-repair") {
+    const node = text("node"), cli = text("cli");
+    if (!isAbsolute(node) || resolve(node) !== node || !inside(npmPrefix, cli)) bad("unsafe-context");
+    if (!Number.isSafeInteger(request.timeout) || request.timeout <= 0 || request.timeout > 60_000) bad("invalid-limits");
+    const child = spawnSync(node, [cli, "--global-root", globalRoot, "roam", "intercom", "repair-units"], {
+      env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: agentDir, SPIDER_ROAM_PI: text("pi") },
+      timeout: request.timeout, maxBuffer: 8192, stdio: ["ignore", "pipe", "ignore"],
+    });
+    if (child.error || child.signal || child.status !== 0) bad("intercom-unit-repair-unavailable");
+    let reply: unknown;
+    try { reply = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(child.stdout)); }
+    catch { bad("invalid-provision-reply"); }
+    if (!reply || typeof reply !== "object" || Array.isArray(reply) || !("version" in reply) || reply.version !== 1 ||
+        !("kind" in reply) || reply.kind !== "intercom-unit-repair" || !("ok" in reply)) bad("invalid-provision-reply");
+    if (reply.ok === false && Object.keys(reply).sort().join() === "kind,ok,reason,version" && "reason" in reply) {
+      const reasons = ["intercom-unit-unavailable", "intercom-unit-mismatch", "connector-not-pair-scoped", "revocation-pending", "intercom-unit-repair-unavailable"];
+      bad(typeof reply.reason === "string" && reasons.includes(reply.reason) ? reply.reason : "intercom-unit-repair-unavailable");
+    }
+    if (reply.ok !== true || Object.keys(reply).sort().join() !== "kind,machineId,ok,version" || !("machineId" in reply)) bad("invalid-provision-reply");
+    if (reply.machineId !== machineId) bad("machine-mismatch");
+    return true;
+  }
   if (action === "agent-private-modes") {
     if (dirname(agentDir) !== home) ensurePrivate(home, dirname(agentDir), false, true);
     if (!exists(agentDir)) mkdirSync(agentDir, { mode: 0o700 });

@@ -91,6 +91,19 @@ it("consent-fences private-mode repair and validates its per-path JSON result", 
   await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "invalid-provision-reply" });
 });
 
+it("consent-fences pair-unit repair and rejects malformed results", async () => {
+  const f = fixture(), port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
+  const request = { action: "pair-unit-repair", operationId: "op-1", machineId: bootstrapPeer.machineId, globalRoot: bootstrapPeer.globalRoot,
+    node: bootstrapPeer.node, pi: bootstrapPeer.pi, cli: bootstrapPeer.cli, home: "/home/fixture", agentDir: "/home/fixture/.pi/agent" };
+  await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "consent-required" });
+  f.consent();
+  await expect(port.executeProvision(handle, request)).resolves.toBe(true);
+  f.state.provisionReply = { version: 1, kind: "provision", value: { repaired: true } };
+  await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "invalid-provision-reply" });
+  f.state.provisionReply = { version: 1, kind: "provision", error: "intercom-unit-mismatch" };
+  await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "intercom-unit-mismatch" });
+});
+
 it("preserves validated agent-mode refusals from previews and installer replies", async () => {
   const f = fixture(), port = create!(f.options, f.journal), details = { path: "/home/fixture/.pi/agent/settings.json", mode: 0o664, uid: 1001, problem: "owner" };
   f.state.settingsReply = { version: 1, kind: "settings-preview", error: "unsafe-destination", details };

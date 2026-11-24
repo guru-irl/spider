@@ -31,7 +31,7 @@ else process.exit(2);
       core, globalRoot: root, agentDir };
     const transport = createTransport({ binary: core, env: { ...f.localEnv, PI_CODING_AGENT_DIR: join(f.root, "wrong-agent") }, enrolled: [peer] });
     const handle = await transport.resolve(peer);
-    for (const argv of [["roam", "agent", "{}"], ["roam", "intercom", "start-broker"], ["roam", "observe", "doctor"]]) {
+    for (const argv of [["roam", "agent", "{}"], ["roam", "intercom", "start-broker"], ["roam", "intercom", "repair-units"], ["roam", "observe", "doctor"]]) {
       const reply = await transport.exec(handle, argv, { timeoutMs: 20000, maxBytes: 4096 });
       expect(JSON.parse(reply.toString())).toEqual({ agentDir, args: ["--global-root", root, ...argv] });
     }

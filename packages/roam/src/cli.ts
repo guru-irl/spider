@@ -37,7 +37,7 @@ import { disableRoaming, enableRoaming } from "./production-controls";
 import { runForeground, runLocalPairCleanup, runLocalPairOperation, hasPairConsent, type LocalPairCleanup, type LocalPairOperation, type LocalPairPorts } from "./intercom-local-ops";
 import { parseHelperFence, requestHelperFence } from "./intercom-helper";
 import { createIntercomRegistry } from "./intercom-registry";
-import { pairScopedRecipe, inspectPairUnit } from "./intercom-pair-resources";
+import { pairScopedRecipe, inspectPairUnit, reconcilePairUnits } from "./intercom-pair-resources";
 import type { IntercomCliOptions } from "./intercom-cli";
 import { DEFAULT_SSH, DEFAULT_SSH_KEYGEN, DEFAULT_SSH_KEYSCAN } from "./intercom-ssh-defaults";
 import { enrollmentCauseCode } from "./intercom-enrollment";
@@ -218,6 +218,21 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
         ensureIntercomBroker: () => spawnBrokerIfNeeded("npx", ["--no-install", "tsx"], { agentDir }) });
       io.out(`${JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: true, machineId: config.machineId, doctor })}\n`);
     } catch (error) { io.out(`${JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: false, causeCode: brokerStartupCause(error) })}\n`); }
+    return 0;
+  }
+  if (privateRoot && argv.length === 3 && argv[0] === "roam" && argv[1] === "intercom" && argv[2] === "repair-units") {
+    try {
+      const config = readLocalIdentity(root);
+      if (config.role !== "box") throw new Error("machine-mismatch");
+      const base = options?.pairPorts ?? { machineId: config.machineId, root, home: homedir(), run: runForeground };
+      await reconcilePairUnits({ ...base, machineId: config.machineId, root, recipe: config.intercom.connector });
+      io.out(`${JSON.stringify({ version: 1, kind: "intercom-unit-repair", ok: true, machineId: config.machineId })}\n`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      const reason = ["intercom-unit-unavailable", "intercom-unit-mismatch", "connector-not-pair-scoped", "revocation-pending"].includes(message)
+        ? message : "intercom-unit-repair-unavailable";
+      io.out(`${JSON.stringify({ version: 1, kind: "intercom-unit-repair", ok: false, reason })}\n`);
+    }
     return 0;
   }
   if (argv[0] === "roam" && argv[1] === "intercom" && argv[2] === "enroll") {

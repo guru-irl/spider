@@ -12,7 +12,7 @@ export interface SelectedFile { path: string; bytes: Buffer; mode: 0o600 | 0o700
 export interface SelectedFileMetadata { path: string; size: number; mode: 0o600 | 0o700 }
 export interface SettingsKeyDigest { path: readonly string[]; sha256: string }
 export interface AgentPrivateModeRepair { path: string; uid: number; before: number; after: 0o600 | 0o700 }
-export interface AgentPrivateModeFailure { path: string; mode: number; uid: number; problem: "owner" | "symlink" | "type" | "hard-link" | "owner-mode" | "changed" | "tightening-failed" | "limit" | "writable-parent" }
+export interface AgentPrivateModeFailure { path: string; mode: number; uid: number; problem: "owner" | "symlink" | "type" | "hard-link" | "owner-mode" | "socket-mode" | "changed" | "tightening-failed" | "limit" | "writable-parent" }
 export interface AgentModePreview { authPresent: boolean; repairs: readonly AgentPrivateModeRepair[] }
 export interface SettingsDestinationPreview { fingerprint: string; changedKeys: readonly string[]; agentModes?: AgentModePreview }
 export interface SettingsDestinationDigests { fingerprint: string; digests: readonly (string | null)[]; agentModes?: AgentModePreview }
@@ -75,9 +75,19 @@ function agentModeFailure(path: string, stat: Stats, problem: AgentPrivateModeFa
     details: { path, mode: stat.mode & 0o7777, uid: stat.uid, problem } satisfies AgentPrivateModeFailure,
   });
 }
+function verifyBrokerParent(path: string, stat: Stats): void {
+  if (stat.isSymbolicLink()) agentModeFailure(path, stat, "symlink");
+  if (!own(stat)) agentModeFailure(path, stat, "owner");
+  if (!stat.isDirectory()) agentModeFailure(path, stat, "type");
+  if ((stat.mode & 0o7777) !== 0o700) agentModeFailure(path, stat, "owner-mode");
+  let canonical: string;
+  try { canonical = realpathSync(path); } catch { agentModeFailure(path, stat, "changed"); }
+  if (canonical! !== path) agentModeFailure(path, stat, "changed");
+}
 /** Preview or tighten an explicitly selected agent tree. Never follow links or chmod an unverified inode. */
 export function inspectAgentPrivateModes(root: string, repair = false, repaired: (entry: AgentPrivateModeRepair) => void = () => {}): AgentPrivateModeRepair[] {
   const result: AgentPrivateModeRepair[] = [], pending = [root]; let count = 0;
+  const brokerDirectory = join(root, "intercom"), brokerSocket = join(brokerDirectory, "broker.sock");
   while (pending.length) {
     const path = pending.pop()!;
     if (path.length > 4096 || /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(path)) fail("unsafe-destination");
@@ -85,6 +95,16 @@ export function inspectAgentPrivateModes(root: string, repair = false, repaired:
     if (++count > 10_000) agentModeFailure(path, link, "limit");
     if (link.isSymbolicLink()) agentModeFailure(path, link, "symlink");
     if (!own(link)) agentModeFailure(path, link, "owner");
+    if (path === brokerDirectory && exists(brokerSocket)) verifyBrokerParent(path, link);
+    if (path === brokerSocket) {
+      if (!link.isSocket()) agentModeFailure(path, link, "type");
+      if ((link.mode & 0o7777) !== 0o600) agentModeFailure(path, link, "socket-mode");
+      verifyBrokerParent(brokerDirectory, lstatSync(brokerDirectory));
+      let current: Stats;
+      try { current = lstatSync(path); } catch { agentModeFailure(path, link, "changed"); }
+      if (current!.dev !== link.dev || current!.ino !== link.ino || current!.uid !== link.uid || current!.mode !== link.mode) agentModeFailure(path, current!, "changed");
+      continue;
+    }
     if (!link.isDirectory() && !link.isFile()) agentModeFailure(path, link, "type");
     // A hard link would extend chmod authority outside the selected tree.
     if (link.isFile() && link.nlink !== 1) agentModeFailure(path, link, "hard-link");

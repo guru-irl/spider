@@ -31,7 +31,8 @@ function failure(error: unknown, action: string, destination: ProvisionDestinati
     "credential-file-requires-consent", "provider-consent-required", "invalid-providers", "invalid-auth", "unsafe-auth",
     "provider-unavailable", "unsupported-credential-command", "release-arguments-changed", "invalid-release-receipt", "release-evidence-unavailable", "release-evidence-unfiltered",
     "release-in-progress", "process-identity-unavailable", "release-launch-uncertain", "operation-arguments-changed", "short-write-pending", "destination-permissions-unsafe",
-    "invalid-limits", "invalid-staging-name", "invalid-release-request", "unknown-provision-action", "provision-transport-failed"]);
+    "invalid-limits", "invalid-staging-name", "invalid-release-request", "unknown-provision-action", "provision-transport-failed",
+    "intercom-unit-unavailable", "intercom-unit-mismatch", "connector-not-pair-scoped", "revocation-pending", "intercom-unit-repair-unavailable"]);
   const candidate = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : "";
   const details = error && typeof error === "object" && "details" in error ? error.details : undefined;
   const roots = ["release-observe", "release-prepare"].includes(action) ? [destination.npmPrefix] : [destination.agentDir];
@@ -187,6 +188,10 @@ export function createHcProvisionAdapter(options: AdapterOptions): HcProvisionAd
     },
   };
   return {
+    async reconcilePairUnits(target) {
+      if (await action(target, "pair-unit-repair", { timeout: Math.min(limits.controlMs, 60_000) }) !== true)
+        throw new HerdrError("invalid-provision-reply", "Invalid pair-unit repair reply");
+    },
     async repairAgentDirectory(target) {
       const value = await action(target, "agent-private-modes");
       if (!isAgentModeRepairs(value, destination.home, destination.agentDir)) throw new HerdrError("invalid-provision-reply", "Invalid private-mode repair summary");

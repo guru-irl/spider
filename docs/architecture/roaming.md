@@ -59,9 +59,19 @@ session, not a box. Disabled forget takes the hub single-instance lock and runs
 recovery without enabling roaming or starting the hub. It refuses if the hub is
 running or roaming becomes enabled. Ownership recovery can finish while pane
 presentation remains pending. A disabled provision does not enable the box, start
-its broker, or start hosting. Enable starts
-Spider's broker when needed before it checks broker health. The enable preflight
-refuses if the broker cannot start or its health check fails. Reload open Pi
+its broker, or start hosting. Enable completes read-only preflight on every
+box before starting services. The box startup command resolves settings and
+completes the other doctor checks before starting Spider's broker when needed.
+It then waits for a protocol-valid health reply with federation support and
+returns the final doctor report. Enable consumes that report without another
+doctor pass, which could outlive a sessionless broker's idle shutdown.
+
+Startup uses the existing control deadline and adds no retry loop. A startup
+failure or blocking readiness report leaves enable pending before capture or
+participation flags change. Text and JSON retain a bounded cause, such as
+`broker-start-timeout`, `unsupported-broker`, or `intercom-broker-unavailable`.
+Malformed replies or mismatched machine identities report `invalid-reply`.
+Reload open Pi
 sessions with `/reload` to update `/move`. A command left over from an enabled
 session still refuses after roaming is disabled.
 

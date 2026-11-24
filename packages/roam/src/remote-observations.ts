@@ -80,7 +80,10 @@ export function compatibleConsumerPorts(root: string, config: RoamConfig, transp
 }
 
 export async function remoteDoctor(transport: Transport, peer: Peer, config: RoamConfig): Promise<DoctorReport> {
-  const value = await remoteObservation(transport, peer, "doctor", config);
+  return parseDoctorReport(await remoteObservation(transport, peer, "doctor", config));
+}
+
+export function parseDoctorReport(value: unknown): DoctorReport {
   if (!record(value) || typeof value.enabled !== "boolean" || !Array.isArray(value.diagnostics) || !Array.isArray(value.consumers))
     throw new Error("Invalid remote doctor report");
   for (const diagnostic of value.diagnostics) {

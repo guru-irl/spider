@@ -172,7 +172,8 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
     if (Array.isArray(raw.issues)) value.issues = raw.issues.flatMap(item => {
       if (!item || typeof item !== "object" || Array.isArray(item)) return [];
       const issue = item as Record<string, unknown>, reason = token(issue.reason), repairCommand = safeRepair(issue.repairCommand);
-      const cause = reason?.endsWith(":agent-operation-failed") ? safeCauseCode(issue.causeCode) : undefined;
+      const hasCause = reason?.endsWith(":agent-operation-failed") || /^preflight-failed:[^:]+:intercom-(?:broker|settings-unique|legacy-drained|federation)$/.test(reason ?? "");
+      const cause = hasCause ? safeCauseCode(issue.causeCode) : undefined;
       return reason && repairCommand ? [{ reason, repairCommand, ...(cause ? { causeCode: cause } : {}),
         ...(issue.detail === "Start Herdr or check hc on this machine." ? { detail: issue.detail } : {}) }] : [];
     });

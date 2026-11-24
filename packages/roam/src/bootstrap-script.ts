@@ -94,26 +94,30 @@ try {
   if (!path.isAbsolute(home)) throw new Error('home');
   const uid = typeof process.getuid === 'function' ? process.getuid() : -1;
   const inside = value => value === home || value.startsWith(home + '/');
-  function parents(file) {
+  const runtimePrefix = path.basename(path.dirname(input.pi)) === 'bin' ? path.dirname(path.dirname(input.pi)) : null;
+  function parentSafety(file, protectionRoot = null) {
     const dir = path.dirname(path.resolve(file));
-    if (!inside(dir)) return 'unsafe';
-    let cursor = home;
-    for (const part of path.relative(home, dir).split('/').filter(Boolean)) {
-      cursor = path.join(cursor, part);
+    if (!inside(dir)) return { status: 'unsafe', protected: false };
+    let cursor = home, protectedPath = false;
+    for (const part of ['', ...path.relative(home, dir).split('/').filter(Boolean)]) {
+      if (part) cursor = path.join(cursor, part);
       try {
         const stat = fs.lstatSync(cursor);
-        if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== uid || (stat.mode & 0o022) !== 0) return 'unsafe';
-      } catch (error) { return error && error.code === 'ENOENT' ? 'missing' : 'unsafe'; }
+        if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== uid || (stat.mode & 0o7000) !== 0 ||
+            (stat.mode & 0o022) !== 0 && !protectedPath) return { status: 'unsafe', protected: false };
+        if (protectionRoot && (cursor === protectionRoot || cursor.startsWith(protectionRoot + '/')) && (stat.mode & 0o7777) === 0o700) protectedPath = true;
+      } catch (error) { return { status: error && error.code === 'ENOENT' ? 'missing' : 'unsafe', protected: false }; }
     }
-    return 'ok';
+    return { status: 'ok', protected: protectedPath };
   }
+  function parents(file) { return parentSafety(file).status; }
   function homeFile(file, access) {
     try {
-      if (!inside(path.resolve(file)) || parents(file) !== 'ok') return null;
-      const link = fs.lstatSync(file), actual = fs.realpathSync(file);
-      if (!inside(actual) || link.uid !== uid || parents(actual) !== 'ok') return null;
+      if (!inside(path.resolve(file)) || parentSafety(file, runtimePrefix).status !== 'ok') return null;
+      const link = fs.lstatSync(file), actual = fs.realpathSync(file), safety = parentSafety(actual, runtimePrefix);
+      if (!inside(actual) || link.uid !== uid || safety.status !== 'ok') return null;
       const stat = fs.statSync(actual);
-      if (!stat.isFile() || stat.uid !== uid) return null;
+      if (!stat.isFile() || stat.uid !== uid || stat.nlink !== 1 || (stat.mode & 0o7000) !== 0 || (stat.mode & 0o022) !== 0 && !safety.protected) return null;
       fs.accessSync(actual, access);
       return actual;
     } catch { return null; }

@@ -1,5 +1,5 @@
 import { constants as osConstants } from "node:os";
-import { HELPER_EXCHANGE_ERRORS } from "@spider/intercom/protocol";
+import { HELPER_EXCHANGE_ERRORS } from "@spider/intercom/helper-errors";
 
 const nativeHcCodes = new Set<string>(["unreachable", "not_found", "machine_not_found", "invalid_params", "server_stopped"]);
 const causeCodes = new Set<string>([

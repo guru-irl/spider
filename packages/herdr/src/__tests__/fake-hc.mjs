@@ -58,12 +58,24 @@ function interrupted() {
   console.error(JSON.stringify({ error: { kind: 'server_stopped', message: 'Fixture core restarted' } }));
   process.exitCode = 3;
 }
+function fixtureExecutable(command) {
+  if (command[0] !== '/usr/bin/env' || !command[1]?.startsWith('SPIDER_ROAM_PI=') || command[1].length === 'SPIDER_ROAM_PI='.length) {
+    throw new Error('Unfenced fixture environment');
+  }
+  const executable = command.slice(2);
+  if (executable[0]?.startsWith('PI_CODING_AGENT_DIR=')) {
+    const agentDir = executable.shift().slice('PI_CODING_AGENT_DIR='.length);
+    if (!realpathSync(agentDir).startsWith(realpathSync(root) + '/')) throw new Error('Unfenced fixture agent directory');
+  }
+  return executable;
+}
 async function executeIntercomFixture(command, input) {
+  const executable = fixtureExecutable(command);
   const inside = path => realpathSync(path).startsWith(realpathSync(root) + '/');
-  if (command.length !== 7 || command[0] !== process.execPath || !inside(command[1]) || command[2] !== '--global-root' || !inside(command[3]) ||
-      command[4] !== 'roam' || command[5] !== 'intercom' || command[6] !== 'exchange') throw new Error('Unfenced fixture intercom helper');
+  if (executable.length !== 7 || executable[0] !== process.execPath || !inside(executable[1]) || executable[2] !== '--global-root' || !inside(executable[3]) ||
+      executable[4] !== 'roam' || executable[5] !== 'intercom' || executable[6] !== 'exchange') throw new Error('Unfenced fixture intercom helper');
   return new Promise((resolve, reject) => {
-    const child = spawn(command[0], command.slice(1), { cwd: process.cwd(), env: { ...process.env, HOME: root, SPIDER_GLOBAL_ROOT: command[3] }, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(command[0], command.slice(1), { cwd: process.cwd(), env: { ...process.env, HOME: root, SPIDER_GLOBAL_ROOT: executable[3] }, stdio: ['pipe', 'pipe', 'pipe'] });
     appendFileSync(`${root}/helper-pids.jsonl`, JSON.stringify({ pid: child.pid, parentPid: process.pid }) + '\n');
     const stdout = [], stderr = [];
     const terminate = () => { child.kill('SIGTERM'); process.exitCode = 143; };
@@ -75,12 +87,13 @@ async function executeIntercomFixture(command, input) {
   });
 }
 async function executeAgentFixture(command, input) {
+  const executable = fixtureExecutable(command);
   const inside = path => realpathSync(path).startsWith(realpathSync(root) + '/');
-  if (command[0] !== process.execPath || !inside(command[1]) || command[2] !== '--global-root' || !inside(command[3]) || command[4] !== 'roam' || command[5] !== 'agent') {
+  if (executable[0] !== process.execPath || !inside(executable[1]) || executable[2] !== '--global-root' || !inside(executable[3]) || executable[4] !== 'roam' || executable[5] !== 'agent') {
     throw new Error('Unfenced fixture agent');
   }
   return new Promise((resolve, reject) => {
-    const child = spawn(command[0], command.slice(1), { cwd: root, env: { ...process.env, HOME: root, SPIDER_GLOBAL_ROOT: command[3] }, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(command[0], command.slice(1), { cwd: root, env: { ...process.env, HOME: root, SPIDER_GLOBAL_ROOT: executable[3] }, stdio: ['pipe', 'pipe', 'pipe'] });
     const stdout = [], stderr = [];
     child.stdout.on('data', bytes => stdout.push(bytes)); child.stderr.on('data', bytes => stderr.push(bytes));
     child.once('error', reject);

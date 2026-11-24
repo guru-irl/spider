@@ -40,6 +40,10 @@ if [[ ${1:-} == exec ]]; then
     fi
   done
   if [[ $on_peer == true && ${#cmd[@]} -gt 0 ]]; then
+    invocation=("${cmd[@]}")
+    if [[ ${cmd[0]} == /usr/bin/env && ${cmd[1]:-} == "SPIDER_ROAM_PI=$SPIDER_TEST_HC_NODE" ]]; then
+      cmd=("${cmd[@]:2}")
+    fi
     if [[ ${cmd[0]} == cat && ${cmd[${#cmd[@]}-1]} == "$SPIDER_TEST_HC_MACHINE_FILE" ]]; then
       log_call "${argv[@]}"
       [[ ${SPIDER_TEST_HC_OFFLINE:-} != 1 ]] || exit 1
@@ -54,7 +58,7 @@ if [[ ${1:-} == exec ]]; then
       log_call "${argv[@]}"
       [[ ${SPIDER_TEST_HC_OFFLINE:-} != 1 ]] || exit 1
       export HOME="$SPIDER_TEST_HC_BOX" PI_CODING_AGENT_DIR="$SPIDER_TEST_HC_AGENT" SPIDER_GLOBAL_ROOT="$SPIDER_TEST_HC_BOX"
-      exec "${cmd[@]}"
+      exec "${invocation[@]}"
     fi
   fi
 fi

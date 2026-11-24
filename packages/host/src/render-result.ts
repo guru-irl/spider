@@ -5,7 +5,7 @@
 // would double the "spider"). `options.expanded` reflects the in-chat Ctrl+O toggle;
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth, Box, Spacer, Container } from "@earendil-works/pi-tui";
-import type { Component } from "@spider/ui";
+import { icon, type Component, type IconStyle } from "@spider/ui";
 import { cachedLines, formatRunUsage, renderErrorResult, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, sectionRule, fitResultLines, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
 import {
   renderRememberResult,
@@ -21,10 +21,10 @@ import { UI_CONFIG_SCHEMA, modelThinkingDisplay } from "./ui-thinking";
 import { toToolResult } from "./result";
 import { makeRunCostFormatter } from "./run-credits";
 import { restoreExecDetails } from "./exec-session-storage";
-const SG: Record<string, string> = { queued: "○", running: "◆", paused: "■", done: "✓", failed: "✗", cancelled: "⚠" };
+const SG: Record<string, string> = { queued: "○", running: "◆", paused: "■", done: "✓", failed: icon("text", "failure"), cancelled: icon("text", "warning") };
 
-interface T { fg(tok: string, s: string): string; bold(s: string): string; italic(s: string): string; bg(tok: string, s: string): string; }
-function mkTheme(theme: any): T {
+interface T { fg(tok: string, s: string): string; bold(s: string): string; italic(s: string): string; bg(tok: string, s: string): string; iconStyle?: IconStyle; }
+function mkTheme(theme: any, iconStyle?: IconStyle): T {
   // Theme.fg/bg THROW on a token the active theme lacks; swallow it so one unknown token never
   // aborts a whole render (pi's CustomMessageComponent would silently fall back to raw content).
   const guard = (fn: any, tok: string, s: string): string => {
@@ -32,6 +32,7 @@ function mkTheme(theme: any): T {
     try { return fn(tok, s); } catch { return s; }
   };
   return {
+    iconStyle,
     fg: (tok, s) => guard(theme?.fg?.bind(theme), tok, s),
     bold: (s) => { try { return typeof theme?.bold === "function" ? theme.bold(s) : s; } catch { return s; } },
     italic: (s) => { try { return typeof theme?.italic === "function" ? theme.italic(s) : s; } catch { return s; } },
@@ -98,7 +99,7 @@ interface RunLike { token_count?: number; cost?: number; usageCosts?: RunUsageCo
 /** One run block, ONE header line: `◆ name · type · model · status` + expandable instructions. */
 function runBlock(t: T, r: RunLike, width: number, expanded: boolean, formatRunCost: RunCostFormatter): string[] {
   const status = r.status ?? "running";
-  const glyph = t.fg("toolTitle", SG[status] ?? "•");
+  const glyph = t.fg("toolTitle", status === "failed" ? icon(t.iconStyle, "failure") : status === "cancelled" ? icon(t.iconStyle, "warning") : SG[status] ?? "•");
   const name = t.bold(r.name ?? r.agent ?? "agent");
   const sep = t.fg("dim", "·");
   const thinkSeg = r.thinking ? ` ${sep} ${t.fg("muted", r.thinking)}` : "";
@@ -108,14 +109,14 @@ function runBlock(t: T, r: RunLike, width: number, expanded: boolean, formatRunC
   const task = (r.task ?? "").trim();
   if (task) {
     const body = expanded ? task.split("\n") : [clip(task, width - 7)];
-    for (let i = 0; i < body.length; i++) lines.push(`    ${t.fg("muted", (i === 0 ? "↳ " : "  ") + body[i])}`);
+    for (let i = 0; i < body.length; i++) lines.push(`    ${t.fg("muted", (i === 0 ? `${icon(t.iconStyle, "task")} ` : "  ") + body[i])}`);
   }
   // Subagent output: collapsed to the first 2 lines by default, full on ctrl+o (expanded).
   const out = (r.result ?? "").trim();
   if (out) {
     const outLines = out.split("\n");
     const shown = expanded ? outLines : outLines.slice(0, 2);
-    for (let i = 0; i < shown.length; i++) lines.push(`    ${t.fg("dim", (i === 0 ? "⤴ " : "  ") + (expanded ? shown[i] : clip(shown[i], width - 7)))}`);
+    for (let i = 0; i < shown.length; i++) lines.push(`    ${t.fg("dim", (i === 0 ? `${icon(t.iconStyle, "result")} ` : "  ") + (expanded ? shown[i] : clip(shown[i], width - 7)))}`);
     if (!expanded && outLines.length > 2) lines.push(`    ${t.fg("dim", `  … (+${outLines.length - 2} more lines)`)}`);
   }
   return lines;
@@ -154,10 +155,10 @@ function wrapBespoke(c: Component): Component {
 
 /** Build a ThemeAdapter (fg/bg/bold/glyph) for the pure @spider/ui renderers from the host `T`. */
 function adaptTheme(t: T): ThemeAdapter {
-  return { fg: (tok, s) => t.fg(tok, s), bg: (tok, s) => t.bg(tok, s), bold: (s) => t.bold(s), italic: (s) => t.italic(s), glyph: "🕸" };
+  return { fg: (tok, s) => t.fg(tok, s), bg: (tok, s) => t.bg(tok, s), bold: (s) => t.bold(s), italic: (s) => t.italic(s), glyph: icon(t.iconStyle, "agent"), iconStyle: t.iconStyle };
 }
 
-const SEARCH_GLYPH: Record<string, string> = { memory: "◆", content: "▪", todo: "▣", message: "✉" };
+const SEARCH_GLYPH: Record<string, string> = { memory: "◆", content: "▪", todo: "▣", message: icon("text", "message") };
 
 /** Unified-search hits rendered in the parallel-run style (renderRun/runBlock): a leading
  *  blank, a muted count line, then one 2-line block per hit — `n. ◆ title · kind · source`
@@ -171,7 +172,7 @@ function renderSearch(t: T, rows: any, expanded: boolean): Component {
       const sep = t.fg("dim", "·");
       const lines: string[] = [t.fg("muted", `  ${list.length} result${list.length === 1 ? "" : "s"}`)];
       list.forEach((r, i) => {
-        const glyph = t.fg("toolTitle", SEARCH_GLYPH[String(r?.kind)] ?? "•");
+        const glyph = t.fg("toolTitle", r?.kind === "message" ? icon(t.iconStyle, "message") : SEARCH_GLYPH[String(r?.kind)] ?? "•");
         const num = t.fg("dim", `${i + 1}.`);
         const title = t.bold(String(r?.title || "untitled"));
         const kind = t.italic(t.fg("toolTitle", String(r?.kind ?? "")));
@@ -181,9 +182,9 @@ function renderSearch(t: T, rows: any, expanded: boolean): Component {
         if (snippet) {
           if (expanded) {
             const body = snippet.split("\n");
-            for (let j = 0; j < body.length; j++) lines.push(`     ${t.fg("dim", (j === 0 ? "↳ " : "  ") + body[j])}`);
+            for (let j = 0; j < body.length; j++) lines.push(`     ${t.fg("dim", (j === 0 ? `${icon(t.iconStyle, "task")} ` : "  ") + body[j])}`);
           } else {
-            lines.push(`     ${t.fg("dim", "↳ " + clip(snippet, Math.max(1, width - 7)))}`);
+            lines.push(`     ${t.fg("dim", `${icon(t.iconStyle, "task")} ` + clip(snippet, Math.max(1, width - 7)))}`);
           }
         }
       });
@@ -212,7 +213,7 @@ function renderDoctor(t: T, details: any, expanded: boolean): Component {
   return {
     render(width: number): string[] {
       const clipDoctor = (line: string, w: number) => expanded ? line : clip(line, w);
-      const glyph = t.fg(ok === undefined ? "dim" : "toolTitle", ok === true ? "✓" : ok === false ? "✗" : "○");
+      const glyph = t.fg(ok === undefined ? "dim" : "toolTitle", ok === true ? "✓" : ok === false ? icon(t.iconStyle, "failure") : "○");
       const summary = ok === true ? "all checks passed" : ok === false ? "issues found" : "check status unknown";
       const out = ["", clipDoctor(` ${glyph} ${t.fg("muted", summary)}`, width)];
       for (const c of checks) {
@@ -220,9 +221,9 @@ function renderDoctor(t: T, details: any, expanded: boolean): Component {
         if (idx > 0) {
           const label = t.bold(c.slice(0, idx));
           const rest = t.fg("muted", c.slice(idx + 1).trim());
-          out.push(clipDoctor(` ${t.fg("dim", "⎿ ")}${label}${t.fg("dim", ":")} ${rest}`, width));
+          out.push(clipDoctor(` ${t.fg("dim", `${icon(t.iconStyle, "gutter")} `)}${label}${t.fg("dim", ":")} ${rest}`, width));
         } else {
-          out.push(clipDoctor(` ${t.fg("dim", "⎿ ")}${t.fg("muted", c)}`, width));
+          out.push(clipDoctor(` ${t.fg("dim", `${icon(t.iconStyle, "gutter")} `)}${t.fg("muted", c)}`, width));
         }
       }
       return fitResultLines(out, width, expanded);
@@ -260,7 +261,7 @@ function renderControlModels(t: T, details: any, expanded: boolean): Component {
         ? `no local override for ${String(details.role ?? "")}`
         : details.cleared ? `clear ${String(details.role ?? "")} (local)`
         : `set ${String(details.role ?? "")} → ${String(details.ref ?? "")} (global)`)
-      : th.fg("error", "✗") + " " + th.fg("text", String(details.error ?? "failed"));
+      : th.fg("error", icon(th.iconStyle, "failure")) + " " + th.fg("text", String(details.error ?? "failed"));
     const shadow = details.ok && details.shadowedBy
       ? `This worktree overrides it with ${String(details.shadowedBy.ref)} in ${String(details.shadowedBy.file)}` : "";
     return { render: (w: number) => ["", ...fitResultLines([line, ...(shadow ? [shadow] : []), ...renderConfigErrors(th, details, w, expanded)], w, expanded)], invalidate() {} };
@@ -284,7 +285,7 @@ function renderControlConfig(t: T, details: any, expanded: boolean): Component {
   }
   if (details && (details.ok !== undefined || details.error !== undefined)) {
     const line = details.error
-      ? th.fg("error", "✗") + " " + th.fg("text", String(details.error))
+      ? th.fg("error", icon(th.iconStyle, "failure")) + " " + th.fg("text", String(details.error))
       : th.fg("accent", "●") + " " + th.fg("text", `${details.op === "unset" ? "unset" : "set"} ${String(details.key ?? "")}${details.op === "unset" ? "" : ` → ${typeof details.value === "object" && details.value !== null ? JSON.stringify(details.value) : String(details.value ?? "")}`}${details.scope ? ` (${String(details.scope)})` : ""}${details.key === "ui.footer" ? " (applies from next session)" : ""}`);
     const destination = details.ok && details.file ? `Config file: ${String(details.file)}` : "";
     const shadow = details.ok && details.shadowedBy ? `Shadowed by ${String(details.shadowedBy)} config` : "";
@@ -608,7 +609,7 @@ function renderSpiderResultBody(
   theme: any,
   context: any,
 ): Component {
-  const t = mkTheme(theme);
+  const t = mkTheme(theme, context?.iconStyle);
   const expanded = options?.expanded === true;
   const action = String(context?.args?.action ?? "");
   const sub = String(context?.args?.sub ?? context?.args?.command ?? "");
@@ -705,9 +706,9 @@ function renderSpiderResultBody(
       if (op === "distill") return plainBody(renderDistill(String(details?.prompt ?? "")), expanded);
       return plainBody(renderSkillView((details?.row ?? details ?? undefined) as SkillRow | undefined), expanded);
     }
-    case "import": return wrapBespoke(renderImportResult(details as any, expanded));
+    case "import": return wrapBespoke(renderImportResult(details as any, expanded, t.iconStyle));
     case "control":
-      if (sub === "pending") return wrapBespoke(renderPending(details as MemoryRecord[], expanded));
+      if (sub === "pending") return wrapBespoke(renderPending(details as MemoryRecord[], expanded, t.iconStyle));
       if (sub === "doctor") return renderDoctor(t, details, expanded);
       if (sub === "stats") return renderControlStats(t, details, expanded);
       if (sub === "models") return renderControlModels(t, details, expanded);
@@ -727,7 +728,7 @@ function renderSpiderResultBody(
         return {
           render: (w: number) => [
             "",
-            ...fitResultLines([` ${t.fg(archived ? "success" : "error", archived ? "✓ archived memory" : "✗ memory was not archived")}`], w, expanded),
+            ...fitResultLines([` ${t.fg(archived ? "success" : "error", archived ? "✓ archived memory" : `${icon(t.iconStyle, "failure")} memory was not archived`)}`], w, expanded),
             ...fitResultLines([` ${t.fg("toolOutput", String(details?.uuid ?? ""))} ${t.fg("muted", String(details?.scope ?? ""))}`], w, expanded),
           ],
           invalidate() {},
@@ -774,7 +775,7 @@ export function renderSpiderResult(result: any, options: any, theme: any, contex
  *  recall/search/exec/…) is always italicised; separators, counts, and sub-commands are not. */
 export function renderSpiderCall(args: any, theme: any, context: any): Component {
   return cachedLines((w: number) => {
-    const t = mkTheme(theme);
+    const t = mkTheme(theme, context?.iconStyle);
     const action = String(args?.action ?? "");
     const verb = (v: string) => t.italic(t.fg("toolTitle", v)); // universal: verbs are italicised
     let suffix = verb(action || "run");
@@ -794,7 +795,7 @@ export function renderSpiderCall(args: any, theme: any, context: any): Component
     } else if (args?.sub || args?.command) {
       suffix = `${verb(action)} ${t.fg("toolTitle", `· ${args.sub ?? args.command}`)}`;
     }
-    const line = `${t.fg("toolTitle", "🕸")}  ${t.fg("toolTitle", t.bold("spider"))} ${t.fg("toolTitle", "·")} ${suffix}`;
+    const line = `${t.fg("toolTitle", icon(t.iconStyle, "agent"))}  ${t.fg("toolTitle", t.bold("spider"))} ${t.fg("toolTitle", "·")} ${suffix}`;
 
     // The call is rendered as soon as the tool is invoked; the result only lands when the
     // command EXITS. Anything not on the call is invisible for the whole run. A slow
@@ -823,7 +824,7 @@ export function renderSpiderCall(args: any, theme: any, context: any): Component
   });
 }
 
-export function renderSubagentDone(message: any, options: { expanded?: boolean }, theme: any): Component {
+export function renderSubagentDone(message: any, options: { expanded?: boolean }, theme: any, iconStyle?: IconStyle): Component {
   const d = message?.details ?? {};
   // C-LOW: a malformed completion event without status is not proof of `done`.
   const status = String(d.status ?? "unknown");
@@ -839,13 +840,13 @@ export function renderSubagentDone(message: any, options: { expanded?: boolean }
   const args = { action: "run" };
   const result = { details: { run: { name: d.name, agent: d.agent, model: d.model, thinking: d.thinking, status, result: d.output, token_count: d.tokenCount, cost: d.cost, costText: d.costText, compactionCount: d.compactionCount } } };
   const box = new Box(1, 1, bgFn);
-  box.addChild(renderSpiderCall(args, theme, { cardBackground: background }) as any);
+  box.addChild(renderSpiderCall(args, theme, { cardBackground: background, iconStyle }) as any);
   if (d.chain?.outcome === "complete" || d.chain?.outcome === "stopped") {
     const headline = d.chain.outcome === "complete" ? "chain complete"
       : `chain stopped at step ${d.chain.step} of ${d.chain.total}: ${d.chain.cause}`;
     box.addChild({ render: (width: number) => restoreCardBackground([clip(mkTheme(theme).fg("toolTitle", headline), width)], theme, background), invalidate() {} });
   }
-  box.addChild(renderSpiderResult(result, { expanded }, theme, { args, cardBackground: background }) as any);
+  box.addChild(renderSpiderResult(result, { expanded }, theme, { args, cardBackground: background, iconStyle }) as any);
   const container = new Container();
   container.addChild(new Spacer(1));
   container.addChild(box as any);
@@ -857,18 +858,18 @@ export function renderSubagentDone(message: any, options: { expanded?: boolean }
  *  the dispatch result normalized via toToolResult (so control's {ok,lines}/{details} shapes both
  *  populate result.details) — wrapped in the tool-success box, so /spider, /stats, /doctor look
  *  identical to the tool result. ctrl+o (options.expanded) expands. */
-export function renderCommandOutput(message: any, options: { expanded?: boolean }, theme: any): Component {
+export function renderCommandOutput(message: any, options: { expanded?: boolean }, theme: any, iconStyle?: IconStyle): Component {
   const d = message?.details ?? {};
   const args = d.args ?? { action: "control" };
   const result = d.result ?? {};
   const expanded = options?.expanded === true;
   const bgFn = (text: string) => { try { return typeof theme?.bg === "function" ? theme.bg("toolSuccessBg", text) : text; } catch { return text; } };
   const box = new Box(1, 1, bgFn);
-  box.addChild(renderSpiderCall(args, theme, {}) as any);
+  box.addChild(renderSpiderCall(args, theme, { iconStyle }) as any);
   // Normalize internal command output to the same boundary pi uses for tool rows.
   // Its isError flag describes the shell, not whether a rich report should be hidden.
   const normalized = toToolResult(result);
-  box.addChild(renderSpiderResult({ content: normalized.content, details: normalized.details }, { expanded }, theme, { args, isError: normalized.isError, cardBackground: "toolSuccessBg" }) as any);
+  box.addChild(renderSpiderResult({ content: normalized.content, details: normalized.details }, { expanded }, theme, { args, isError: normalized.isError, cardBackground: "toolSuccessBg", iconStyle }) as any);
   const container = new Container();
   container.addChild(new Spacer(1));
   container.addChild(box as any);
@@ -876,7 +877,7 @@ export function renderCommandOutput(message: any, options: { expanded?: boolean 
 }
 
 /** TUI-only receipt: proposed knowledge stays pending and never masquerades as completed user work. */
-export function renderOrganismEntry(entry: unknown, options: { expanded?: boolean }, theme: unknown): Component {
+export function renderOrganismEntry(entry: unknown, options: { expanded?: boolean }, theme: unknown, iconStyle?: IconStyle): Component {
   const report = (entry as { data?: DrainReport } | undefined)?.data;
   const state = report?.status ?? "unknown";
   const bad = state === "failed" || state === "partial";
@@ -885,8 +886,8 @@ export function renderOrganismEntry(entry: unknown, options: { expanded?: boolea
   box.addChild({
     render: (width: number) => {
       const t = mkTheme(theme);
-      const icon = bad ? "⚠" : state === "completed" ? "✓" : "○";
-      const lines = [t.fg(bad ? "error" : "toolTitle", `${icon} organism · ${state}`)];
+      const marker = bad ? icon(iconStyle, "warning") : state === "completed" ? "✓" : "○";
+      const lines = [t.fg(bad ? "error" : "toolTitle", `${marker} organism · ${state}`)];
       if (report) {
         lines.push(t.fg("toolOutput", `${report.memoryStaged} memories · ${report.skillsQueued === undefined && report.skillsStaged > 0 ? `${report.skillsStaged} skills staged` : `${report.skillsQueued ?? 0} skills queued`} · ${report.todosAdded} todos`));
         if (report.skipReason) lines.push(t.fg("toolOutput", report.skipReason));
@@ -909,7 +910,7 @@ export function renderOrganismEntry(entry: unknown, options: { expanded?: boolea
 
 /** Transcript renderer for `spider.escalation` custom messages. Escalations always use
  *  the error background (warnings/blocks are both urgent enough to warrant the red card). */
-export function renderEscalationMessage(message: any, options: { expanded?: boolean }, theme: any): Component {
+export function renderEscalationMessage(message: any, options: { expanded?: boolean }, theme: any, iconStyle?: IconStyle): Component {
   const d = message?.details ?? {};
   const escalationDetails: EscalationDetails = {
     runId: d.runId,
@@ -919,7 +920,7 @@ export function renderEscalationMessage(message: any, options: { expanded?: bool
     name: d.name ?? d.agent ?? "subagent",
     payload: d.payload,
   };
-  const th = adaptTheme(mkTheme(theme));
+  const th = adaptTheme(mkTheme(theme, iconStyle));
   const bgFn = (text: string) => {
     try { return typeof theme?.bg === "function" ? theme.bg("toolErrorBg", text) : text; } catch { return text; }
   };

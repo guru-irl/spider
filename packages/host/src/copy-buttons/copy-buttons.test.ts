@@ -252,6 +252,37 @@ describe("copy buttons", () => {
     expect(setWidget).not.toHaveBeenCalled();
   });
 
+  it("uses the Nerd Font copy icon without moving its clickable columns", async () => {
+    const events = new Map<string, (event: unknown, ctx: unknown) => void>();
+    const pi = { on: (name: string, handler: (event: unknown, ctx: unknown) => void) => events.set(name, handler) };
+    const copied: string[] = [];
+    let style: "text" | "nerd" = "text";
+    registerCopyButtons(pi as never, { AssistantMessageComponent, Markdown }, () => ({ "ui.icons": style }), async text => { copied.push(text); });
+    const context = { hasUI: true, mode: "tui", cwd: "/project", ui: {
+      setWidget: (_key: string, make: (tui: unknown) => unknown) => make({ mode: "fullscreen", requestRender: () => {} }), notify: vi.fn(),
+    } };
+    events.get("session_start")?.({}, context);
+    const first = new AssistantMessageComponent(undefined, false, theme, undefined, 0);
+    first.updateContent(message("Hello"), false);
+    const before = render(markdown(first)).find(line => line.includes("⧉ text"))!;
+    style = "nerd";
+    events.get("session_start")?.({}, context);
+    const second = new AssistantMessageComponent(undefined, false, theme, undefined, 0);
+    second.updateContent(message("Hello"), false);
+    const md = markdown(second);
+    const lines = render(md);
+    const row = lines.findIndex(line => line.includes("\u{F018F} text"));
+    expect(row).toBeGreaterThanOrEqual(0);
+    const after = lines[row];
+    expect(visibleWidth(after)).toBe(visibleWidth(before));
+    expect(visibleWidth(after.slice(0, after.indexOf("\u{F018F} text")))).toBe(visibleWidth(before.slice(0, before.indexOf("⧉ text"))));
+    const x = visibleWidth(after.slice(0, after.indexOf("\u{F018F} md")));
+    const event: TuiMouseEvent = { type: "click", button: "left", x, y: row, screenX: x, screenY: row, width: 90, height: lines.length, shift: false, alt: false, ctrl: false };
+    expect((md as Component).handleMouse?.(event)).toEqual({ handled: true });
+    await Promise.resolve();
+    expect(copied).toEqual(["Hello"]);
+  });
+
   it("does not double wrap when activated twice", async () => {
     const first = fixture();
     const second = fixture();

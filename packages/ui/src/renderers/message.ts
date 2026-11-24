@@ -1,8 +1,16 @@
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { icon as uiIcon } from "../icons.js";
 import { fitResultLines, resultTrimmer, statusIcon } from "./types.js";
 import type { MessageDetails, RenderCtx } from "./types.js";
 
-const ARROW: Record<MessageDetails["verb"], string> = { send: "→", ask: "→?", reply: "↩", broadcast: "⇉" };
+function arrow(verb: MessageDetails["verb"], theme: RenderCtx["theme"]): string {
+  switch (verb) {
+    case "send": return "→";
+    case "ask": return "→?";
+    case "reply": return uiIcon(theme.iconStyle, "reply");
+    case "broadcast": return uiIcon(theme.iconStyle, "broadcast");
+  }
+}
 
 /** RESULT body (no header — the spider call line already shows `🕸 spider · message`).
  *  Leading blank + 1-space indent + `⎿` gutter, consistent with renderRun. */
@@ -21,10 +29,10 @@ export function renderMessageResult(details: MessageDetails, ctx: RenderCtx): st
     : details.delivery === "queued" ? "queued · not delivered"
     : details.delivery === "unavailable" ? "recipient unavailable"
     : details.delivered ? "delivered" : "not delivered";
-  const head = ` ${icon} ${theme.fg("muted", `${ARROW[details.verb]} ${target}`)} ${theme.fg("dim", "·")} ${theme.fg("muted", status)}`;
+  const head = ` ${icon} ${theme.fg("muted", `${arrow(details.verb, theme)} ${target}`)} ${theme.fg("dim", "·")} ${theme.fg("muted", status)}`;
   const out = ["", trim(head, width, "")];
   const body = expanded ? details.body ?? "" : (details.body ?? "").replace(/\s+/g, " ").trim();
-  if (body) out.push(trim(` ${theme.fg("dim", "⎿ ")}${theme.fg("toolOutput", body)}`, width, ""));
+  if (body) out.push(trim(` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("toolOutput", body)}`, width, ""));
   if (details.error) {
     if (details.delivery === "unavailable" || details.delivery === "refused") {
       const lines = details.error.split("\n");

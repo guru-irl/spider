@@ -48,6 +48,7 @@ export function mountAgentsUI(
     db,
     sessionId,
     showFooter: controlConfig("get", opts.cwd, "ui.footer") !== false,
+    iconStyle: controlConfig("get", opts.cwd, "ui.icons") === "nerd" ? "nerd" : "text",
     registration: opts.registration,
     formatRunCost: opts.formatRunCost,
     actions: createAgentActions(pi, {

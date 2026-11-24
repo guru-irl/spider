@@ -1,3 +1,4 @@
+import { icon as uiIcon } from "../icons.js";
 import { fitResultLines, resultTrimmer, statusIcon } from "./types.js";
 import type { RenderCtx } from "./types.js";
 
@@ -44,10 +45,10 @@ export function renderKillResult(details: KillDetails, ctx: RenderCtx): string[]
       width, "",
     ));
     if (r.lastActivity) {
-      out.push(trim(` ${theme.fg("dim", "⎿ ")}${theme.fg("toolOutput", `was: ${r.lastActivity}`)}`, width, ""));
+      out.push(trim(` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("toolOutput", `was: ${r.lastActivity}`)}`, width, ""));
     }
     if (r.error) {
-      out.push(trim(` ${theme.fg("dim", "⎿ ")}${theme.fg("error", `error: ${r.error}`)}`, width, ""));
+      out.push(trim(` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("error", `error: ${r.error}`)}`, width, ""));
     }
   }
   return fitResultLines(out, width, expanded);

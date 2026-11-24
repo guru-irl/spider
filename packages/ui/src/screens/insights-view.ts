@@ -1,3 +1,4 @@
+import { icon as uiIcon } from "../icons.js";
 import type { ThemeAdapter } from "../agents/types.js";
 import { sectionRule, fitResultLines, resultTrimmer } from "../renderers/types.js";
 
@@ -30,7 +31,7 @@ export function renderInsights(g: InsightGraphView, theme: ThemeAdapter, width: 
     body.push(trim(`${badge} ${theme.fg("text", n.label)}${cat}`, width, ""));
   }
   if (!expanded && nodes.length > shownNodes.length) {
-    body.push(trim(theme.fg("muted", `⎿ … ${nodes.length - shownNodes.length} more`), width, ""));
+    body.push(trim(theme.fg("muted", `${uiIcon(theme.iconStyle, "gutter")} … ${nodes.length - shownNodes.length} more`), width, ""));
   }
 
   const edges = g.edges ?? [];
@@ -41,7 +42,7 @@ export function renderInsights(g: InsightGraphView, theme: ThemeAdapter, width: 
       body.push(trim(`${theme.fg("text", e.source)} ${theme.fg("dim", "→")} ${theme.fg("text", e.target)}`, width, ""));
     }
     if (!expanded && edges.length > shownEdges.length) {
-      body.push(trim(theme.fg("muted", `⎿ … ${edges.length - shownEdges.length} more`), width, ""));
+      body.push(trim(theme.fg("muted", `${uiIcon(theme.iconStyle, "gutter")} … ${edges.length - shownEdges.length} more`), width, ""));
     }
   }
   return fitResultLines(body, width, expanded);

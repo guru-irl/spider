@@ -6,6 +6,7 @@
 import type { AssistantMessageComponent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Component, type Markdown, type TUI, type TuiMouseEvent, type TuiMouseEventResult, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { Lexer, type MarkedToken, type Token } from "marked";
+import { icon, type IconStyle } from "@spider/ui";
 import { blocksToPlain } from "./plain.js";
 
 type Format = "text" | "md";
@@ -18,6 +19,7 @@ export type CopyButtonsOptions = {
   copy: (text: string) => Promise<void>;
   requestRender: () => void;
   onError: (error: unknown) => void;
+  iconStyle?: IconStyle;
 };
 type State = { options: CopyButtonsOptions; enabled: boolean };
 type MarkdownInternals = {
@@ -37,9 +39,9 @@ type PatchedProto = AssistantInternals & { [PATCH]?: Patch };
 // OSC markers survive pi's line wrapping and are removed before display.
 const mark = (i: number) => `\x1b]7799;${i}\x07`;
 const MARKER = /\x1b\]7799;(\d+)\x07/g;
-const LABELS: Record<Format, string> = { text: "⧉ text", md: "⧉ md" };
+const labels = (style?: IconStyle): Record<Format, string> => ({ text: `${icon(style, "copy")} text`, md: `${icon(style, "copy")} md` });
 const DONE = "✓ copied";
-const COLUMN = Math.max(...[...Object.values(LABELS), DONE].map(visibleWidth));
+const COLUMN = Math.max(...[...Object.values(labels("text")), ...Object.values(labels("nerd")), DONE].map(visibleWidth));
 const GROUP_WIDTH = COLUMN * 2 + 1;
 const dim = (text: string) => `\x1b[2m${text}\x1b[22m`;
 const pad = (text: string) => text + " ".repeat(Math.max(0, COLUMN - visibleWidth(text)));
@@ -55,7 +57,7 @@ function addButtons(md: Markdown, host: CopyButtonsHost, state: State, source: s
   let sourceIndex = 0;
   let raw: string[] | undefined;
   let copied: Copied | undefined;
-  let out: { raw: string[]; copied: Copied | undefined; show: boolean; lines: string[]; hits: Hit[] } | undefined;
+  let out: { raw: string[]; copied: Copied | undefined; show: boolean; iconStyle?: IconStyle; lines: string[]; hits: Hit[] } | undefined;
 
   const addBlock = (block: Block, lines: string[]) => {
     const last = lines.findLastIndex(line => line !== "");
@@ -98,8 +100,9 @@ function addButtons(md: Markdown, host: CopyButtonsHost, state: State, source: s
     if (next === raw) blocks = previous;
     raw = next;
     const show = state.enabled && state.options.isFullscreen();
-    if (!out || out.raw !== next || out.copied !== copied || out.show !== show) {
-      out = { raw: next, copied, show, ...decorate(next, blocks, copied, width, show, full) };
+    const iconStyle = state.options.iconStyle;
+    if (!out || out.raw !== next || out.copied !== copied || out.show !== show || out.iconStyle !== iconStyle) {
+      out = { raw: next, copied, show, iconStyle, ...decorate(next, blocks, copied, width, show, full, iconStyle) };
     }
     return out.lines;
   };
@@ -124,7 +127,8 @@ function addButtons(md: Markdown, host: CopyButtonsHost, state: State, source: s
   };
 }
 
-function decorate(raw: string[], blocks: Block[], copied: Copied | undefined, width: number, show: boolean, full: string | undefined): { lines: string[]; hits: Hit[] } {
+function decorate(raw: string[], blocks: Block[], copied: Copied | undefined, width: number, show: boolean, full: string | undefined, iconStyle?: IconStyle): { lines: string[]; hits: Hit[] } {
+  const LABELS = labels(iconStyle);
   const lines: string[] = [];
   const hits: Hit[] = [];
   const last = full === undefined ? -1 : raw.findLastIndex(line => stripTerminalSequences(line.replace(MARKER, "")).trim() !== "");
@@ -179,11 +183,13 @@ export function registerCopyButtons(pi: Pick<ExtensionAPI, "on">, host: CopyButt
     disableCopyButtons(host);
     if (process.env.PI_SUBAGENT_CHILD === "1" || ctx.mode !== "tui" || !ctx.hasUI) return;
     try {
-      if (readConfig(ctx.cwd)["copyButtons.enabled"] === false) return;
+      const config = readConfig(ctx.cwd);
+      if (config["copyButtons.enabled"] === false) return;
       let tui: TUI | undefined;
       installCopyButtons(host, {
         isFullscreen: () => tui?.mode === "fullscreen",
         copy,
+        iconStyle: config["ui.icons"] === "nerd" ? "nerd" : "text",
         requestRender: () => tui?.requestRender(),
         onError: error => ctx.ui.notify(`Copy failed: ${error instanceof Error ? error.message : String(error)}`, "error"),
       });

@@ -149,6 +149,7 @@ The live footer shows corrected credits without basis markers, then the cache hi
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `ui.footer` | `true` | Footer and run selector. Takes effect next session. |
+| `ui.icons` | `"text"` | `"text"` keeps the standard glyphs. `"nerd"` uses Nerd Font icons. New messages use the setting immediately. The agents footer and copy buttons update next session or after `/reload`. Command descriptions update after `/reload`. |
 | `copyButtons.enabled` | `true` | Copy buttons for finished replies in fullscreen mode. Takes effect after `/reload`. |
 | `reload.auto` | `true` | Reload idle interactive parent sessions after a verified build, once active work and prompts are clear. Changes apply live. |
 | `usage.footer` | `true` | Global-only. Footer with corrected credits in parent TUI sessions. Changes apply live. |
@@ -195,7 +196,7 @@ The live footer shows corrected credits without basis markers, then the cache hi
 
 - Config readers use the merged layers for live action and routing settings. The reloader in `packages/host/src/config-reload.ts` rereads the same flat map.
 - The organism rereads configuration each time it resolves its runtime for a request or drain.
-- The agents UI reads `ui.footer` when it mounts at session start, not during a running session.
+- The agents UI reads `ui.footer` and `ui.icons` when it mounts at session start, not during a running session. New tool and notice renderers read `ui.icons` when they are created.
 - `copyButtons.enabled` changes need `/reload`.
 - `tools.structured` changes need `/reload`. The setting does not change the interactive `spider` tool.
 - `reload.auto` applies live. Set it to `false` to stop automatic reloads.

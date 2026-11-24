@@ -9,7 +9,7 @@ import { embeddingRepoPath, getEmbeddingRuntimeErrors } from "./embedding-runtim
 import { bundledSkillCollections } from "@spider/superpowers";
 import { diagnoseDurableChildren } from '@spider/subagents';
 
-import { isAbsolutePathList, isToolSelectorList } from "@spider/ui";
+import { isAbsolutePathList, isIconStyle, isToolSelectorList } from "@spider/ui";
 import { isUsageConfigKey, readUsageConfig, USAGE_DEFAULTS, usageConfigError } from "./usage/config.js";
 import { usageDoctorLines } from "./usage/doctor.js";
 import { COMPACTION_DEFAULTS, compactionConfigError } from "./compaction/config.js";
@@ -22,6 +22,7 @@ export const DEFAULTS: Readonly<Record<string, unknown>> = {
   "herdr.enabled": "auto",
   "herdr.config": "",
   "ui.footer": true,
+  "ui.icons": "text",
   "copyButtons.enabled": true,
   "reload.auto": true,
   "tools.structured": false,
@@ -111,6 +112,9 @@ function configLayers(cwd: string, localRoot = paths.projectRoot(cwd), globalRoo
         errors.push(`invalid subagents.profiles.reviewer.excludeTools in ${file}: expected a JSON array of nonempty tool selectors without whitespace or commas`);
       }
     }
+    if (Object.hasOwn(layer.config, "ui.icons") && !isIconStyle(layer.config["ui.icons"])) {
+      errors.push(`invalid ui.icons in ${file}: expected text or nerd`);
+    }
     if (Object.hasOwn(layer.config, "exec.enforce") && typeof layer.config["exec.enforce"] !== "boolean") {
       errors.push(`invalid value for exec.enforce in ${file}: expected a boolean`);
     }
@@ -196,6 +200,10 @@ export function configValues(cwd: string, localRoot?: string, globalRoot: string
     all[key] = Object.hasOwn(g, key) ? g[key] : DEFAULTS[key];
     sources[key] = Object.hasOwn(g, key) ? "global" : "default";
   }
+  const localIcons = isIconStyle(p["ui.icons"]);
+  const globalIcons = isIconStyle(g["ui.icons"]);
+  all["ui.icons"] = localIcons ? p["ui.icons"] : globalIcons ? g["ui.icons"] : DEFAULTS["ui.icons"];
+  sources["ui.icons"] = localIcons ? "local" : globalIcons ? "global" : "default";
   const usage = readUsageConfig(g, p).value;
   for (const [key, value] of Object.entries({
     "usage.calibration": usage.calibration, "usage.footer": usage.footer, "usage.counter.poll": usage.counterPoll,
@@ -261,6 +269,9 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
   }
   if (op === "set" && key === "subagents.profiles.reviewer.excludeTools" && !isToolSelectorList(value)) {
     throw new Error(`${key} must be a JSON array of nonempty tool selectors without whitespace or commas`);
+  }
+  if (op === "set" && key === "ui.icons" && !isIconStyle(value)) {
+    throw new Error("ui.icons must be text or nerd");
   }
   if (op === "set" && key === "subagents.childMode" && value !== "rpc" && value !== "print") {
     throw new Error("subagents.childMode must be rpc or print");

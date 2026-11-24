@@ -1,4 +1,5 @@
 import { isAbsolutePathList } from "./absolute-paths.js";
+import { ICON_STYLES } from "../icons.js";
 
 export type ConfigFieldType = "boolean" | "number" | "string" | "enum" | "model-map" | "absolute-path-list" | "tool-selector-list" | "model-ref";
 export interface ConfigField {
@@ -87,6 +88,7 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 	]},
 	{ id: "ui", label: "UI", fields: [
 		{ key: "ui.footer", label: "Agents footer", type: "boolean", default: true, description: "Show the agents footer from the next session.", restart: true },
+		{ key: "ui.icons", label: "Icon style", type: "enum", default: "text", enum: ICON_STYLES, description: "Choose text or Nerd Font icons. New messages update immediately; footer and copy buttons update next session, command descriptions on reload.", restart: true },
 	]},
 	{ id: "copyButtons", label: "Copy buttons", fields: [
 		{ key: "copyButtons.enabled", label: "Copy buttons", type: "boolean", default: true, description: "Show copy buttons on finished assistant replies in fullscreen mode. Changes apply on reload.", restart: true },

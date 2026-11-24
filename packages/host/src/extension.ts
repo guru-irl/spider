@@ -22,7 +22,7 @@ import { reviewerThinkingDiagnostic } from "./reviewer-thinking";
 import { skillReviewOptions, piLoadedSkills } from "./skill-reviewer";
 import { persistReviewError, scrubSecrets } from "@spider/memory";
 import { commandEnv, THINKING_LEVELS } from "@spider/db-core";
-import { isAbsolutePathList, isToolSelectorList } from "@spider/ui";
+import { icon, isAbsolutePathList, isToolSelectorList } from "@spider/ui";
 // packages/host/src/extension.ts
 // THE single spider pi extension entry. Composes the whole surface:
 // one `spider` tool + control routing + every contract hook. Later phases
@@ -924,7 +924,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   const activity = trackReloadActivity(hostPi as unknown as ExtensionAPI);
   const pi = protectAdmissionApi(activity.pi, admission) as unknown as PiToolAPI;
   if (ports.copyButtons) registerCopyButtons(pi as unknown as ExtensionAPI, ports.copyButtons.host,
-    cwd => ({ "copyButtons.enabled": configValues(cwd).config["copyButtons.enabled"] }), ports.copyButtons.copy);
+    cwd => configValues(cwd).config, ports.copyButtons.copy);
   let moveEnabled = false;
   try { moveEnabled = readLocalIdentity(paths.globalRoot).enabled; } catch { /* Missing or unreadable configuration leaves the command unregistered. */ }
   if (moveEnabled) registerMoveCommand(activity.pi, async request => {
@@ -935,7 +935,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   let intercom: ReturnType<typeof registerIntercomOnce> | undefined;
   try {
     registerRoamIntercom(activity.pi, createHostIntercomPorts(admission));
-    intercom = registerIntercomOnce(activity.pi, ports.intercomBroker);
+    intercom = registerIntercomOnce(activity.pi, ports.intercomBroker, () => iconStyle());
   } catch {
     hostPi.on("session_start", (_event, ctx) => {
       const message = "Intercom is unavailable in this session. Spider's other features still work.";
@@ -983,6 +983,10 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   }, () => piLoadedSkills(pi), sessionId => accounting.factory(sessionId), ordinaryWorkAllowed);
   setForHost(organismRuntimes, organism);
   let currentContext: unknown;
+  const iconStyle = () => {
+    try { return controlConfig("get", cwdOf(currentContext) ?? process.cwd(), "ui.icons") === "nerd" ? "nerd" as const : "text" as const; }
+    catch { return "text" as const; } // A config read failure must not break TUI rendering.
+  };
   let currentSessionId = "";
   const embeddings = new HostEmbeddingRuntime(() => currentContext, resolveEmbedder, { admitted: ordinaryWorkAllowed, enabled: project => embeddingDrainEnabled(path.dirname(project.dbPath)) });
   // Fence embedding writes before later shutdown hooks await other background work.
@@ -1099,7 +1103,9 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
     }
     return skillAction(buildOrganismDeps(ctx), args as SkillActionArgs);
   });
+  const initialIconStyle = iconStyle();
   const todosCommand = makeTodosCommand({
+      iconStyle: initialIconStyle,
       getDb: (ctx) => {
         const sessionId = sessionIdOf(ctx);
         const cwd = cwdOf(ctx) ?? process.cwd();
@@ -1116,6 +1122,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
         details?: unknown;
       }>,
     alreadyRegistered: new Set(["todos", "agents"]),
+    iconStyle: initialIconStyle,
     ordinaryWorkAllowed,
     waitForAdmission: () => admission.whenSettled(),
     async roamDoctor(args) {
@@ -1237,13 +1244,13 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
 
   const spiderTool: Parameters<PiToolAPI["registerTool"]>[0] = {
     name: "spider",
-    label: "🕸 spider",
+    get label() { return `${icon(iconStyle(), "agent")} spider`; },
     description:
       "spider 🕸: unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; exec→{on,copy:{direction,local,remote}} for file transfer; remember→content+category+required justification, optional supersedes:[uuid or unique prefix] for atomic same-scope replacement with cap credit (foreground only; reviewer still checks durability, usefulness and scope and may skip storage, change scope or archive replaced entries); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message} (owned RPC run: delivered only after observed conversation entry, otherwise accepted but not confirmed, no reply yet with delivery unknown, or refused; slash-prefixed steers are refused); notify→{message,urgency?} only when a person must act, never for completion; kill→{id} for an owned remote job or subagent; loop→{name?,interval?|cron?,tz?,prompt} (no definition lists all triggers), schedule→{name?,delaySeconds|at,prompt,reason?,noop?}; independent names replace only themselves (defaults loop and wakeup); stop:true affects only the named kind; exact named self-paced re-arms retain origin; loop/schedule wait on external work (CI, deploys, timers), not for polling subagents or remote spider jobs whose completion notices arrive automatically; top-level persistent sessions only; triggers survive /reload and same-session resume, new and fork start empty; cron uses a captured IANA zone and has no immediate first prompt; nothing fires while closed or asleep; todo→op:add/list/toggle/remove/clear/sessions/view(+text, id or session); control→command('doctor'|'config'|'memory'|'bind'|'unbind'). Every `run` needs a concrete `task` string; never call run without one.",
     parameters: SPIDER_PARAMETERS,
-    renderCall: renderSpiderCall,
+    renderCall: (args: any, theme: any, context: any) => renderSpiderCall(args, theme, { ...context, iconStyle: iconStyle() }),
     renderResult: (result: any, options: any, theme: any, context: any) => renderSpiderResult(result, options, theme,
-      { ...context, formatRunCost: makeRunCostFormatter(() => usageServices.get(pi)?.snapshot()) }),
+      { ...context, iconStyle: iconStyle(), formatRunCost: makeRunCostFormatter(() => usageServices.get(pi)?.snapshot()) }),
     async execute(toolCallId, args, signal, onUpdate, ctx) {
       if (!ordinaryWorkAllowed()) throw new Error("Session ownership is not available; run /spider roam doctor.");
       // Stream partial output the way pi's built-in bash tool does. The FIRST call is an
@@ -1315,22 +1322,22 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   // The async subagent_done message is expandable in the transcript: collapsed by default,
   // ctrl+o reveals the COMPLETE curated output. Best-effort — older hosts may lack the API.
   pi.registerMessageRenderer?.("spider.subagent_done", (message: any, options: any, theme: any) =>
-    renderSubagentDone(message, options, theme),
+    renderSubagentDone(message, options, theme, iconStyle()),
   );
 
   // Slash commands (/spider, /doctor, /stats, …) emit a spider.command message; render its
   // output lines themed in the transcript instead of an ephemeral toast.
   pi.registerMessageRenderer?.("spider.command", (message: any, options: any, theme: any) =>
-    renderCommandOutput(message, options, theme),
+    renderCommandOutput(message, options, theme, iconStyle()),
   );
 
   pi.registerEntryRenderer?.("spider.organism", (entry: unknown, options: any, theme: unknown) =>
-    renderOrganismEntry(entry, options, theme),
+    renderOrganismEntry(entry, options, theme, iconStyle()),
   );
 
   // Escalation messages from subagents render in the error card style (red background).
   pi.registerMessageRenderer?.("spider.escalation", (message: any, options: any, theme: any) =>
-    renderEscalationMessage(message, options, theme),
+    renderEscalationMessage(message, options, theme, iconStyle()),
   );
 
   const herdrPackageRoot = path.resolve(path.dirname(new URL(loadedBundle.url).pathname), loadedBundle.url.includes('/packages/host/src/') ? '../../..' : '..');

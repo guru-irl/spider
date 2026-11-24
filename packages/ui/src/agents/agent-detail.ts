@@ -3,7 +3,8 @@ import type { Component } from "../component";
 import { formatDuration, shortModel } from "./footer";
 import { wrapText } from "./grid-cell";
 import { formatRunUsage } from "./usage";
-import { STATUS_GLYPH, statusToken } from "./types";
+import { activityText, agentGlyph, statusGlyph, statusToken } from "./types";
+import { icon } from "../icons.js";
 import type { ThemeAdapter } from "./types";
 import type { AgentStore } from "./store";
 
@@ -51,14 +52,14 @@ export class AgentDetail implements Component {
   render(width: number): string[] {
     const a = this.store.getById(this.runId);
     const t = this.theme;
-    const title = `${t.glyph} ${a ? a.name : "agent"}`;
+    const title = `${agentGlyph(t)} ${a ? a.name : "agent"}`;
     if (!a) return this.frame(title, [t.fg("muted", `  run ${this.runId} not found`)], width);
     const inner = Math.max(4, width - 2);
     const fit = (s: string) => truncateToWidth(s, inner, "…");
     const elapsedMs = a.startedAt === undefined ? 0 : (a.endedAt ?? this.now()) - a.startedAt;
     const turns = a.stepCount === 1 ? "1 turn" : `${a.stepCount} turns`;
 
-    const head = fit(`${t.fg(statusToken(a.status), STATUS_GLYPH[a.status])} ${t.bold(a.name)}  ${t.fg(statusToken(a.status), a.status)}`);
+    const head = fit(`${t.fg(statusToken(a.status), statusGlyph(t, a.status))} ${t.bold(a.name)}  ${t.fg(statusToken(a.status), a.status)}`);
     const meta = fit("  " + t.fg("dim", `${a.role ?? a.agent} · ${shortModel(a.model)}${a.thinking ? ` · ${a.thinking}` : ""} · ${turns} · ${formatDuration(elapsedMs)}`));
     const idLine = fit("  " + t.fg("dim", `#${a.runId}`));
 
@@ -81,21 +82,23 @@ export class AgentDetail implements Component {
       } else if (e.type === "tool_intent") {
         convo.push(fit("  " + t.fg("accent", "→ " + (e.summary ?? e.tool ?? "tool"))));
       } else if (e.type === "tool_result" && (e.summary || time !== undefined)) {
-        convo.push(fit("    " + t.fg("muted", `${time === undefined ? "" : `tool time ${time} · `}${e.summary ?? e.tool ?? "tool"}`)));
+        const isError = (e.payload as { isError?: unknown } | undefined)?.isError === true;
+        const summary = activityText(t, e.summary ?? e.tool ?? "tool", isError);
+        convo.push(fit("    " + t.fg("muted", `${time === undefined ? "" : `tool time ${time} · `}${summary}`)));
       } else if (e.type === "handoff" && e.summary) {
-        convo.push(fit("  " + t.fg("accent", "⇢ " + e.summary)));
+        convo.push(fit("  " + t.fg("accent", `${icon(t.iconStyle, "handoff")} ` + e.summary)));
       }
     }
-    if (a.status === "running" && a.activity) convo.push(fit("  " + t.fg("accent", "▸ " + a.activity)));
+    if (a.status === "running" && a.activity) convo.push(fit("  " + t.fg("accent", "▸ " + activityText(t, a.activity, a.activityIsError))));
     // Tail to the most recent lines (the overlay is scroll-free; keep it bounded).
     const convoTail = convo.length ? convo.slice(-120) : ["  " + t.fg("dim", "(waiting for the agent…)")];
 
     const body = [
       head, meta, fit("  " + t.fg("dim", formatRunUsage(a.tokenCount, a.cost ?? 0, a.compactionCount, a.costText))), idLine, ...thinkingNotes, "",
-      t.fg("dim", `${t.glyph} instructions`), ...instructions, "",
-      t.fg("dim", `${t.glyph} conversation`), ...convoTail,
+      t.fg("dim", `${agentGlyph(t)} instructions`), ...instructions, "",
+      t.fg("dim", `${agentGlyph(t)} conversation`), ...convoTail,
       "", fit(this.isArmed()
-        ? t.fg("error", `⚠ kill "${a.name}"? press k again to confirm`)
+        ? t.fg("error", `${icon(t.iconStyle, "warning")} kill "${a.name}"? press k again to confirm`)
         : t.fg("dim", "esc back to list · k k to kill")),
     ];
     return this.frame(title, body, width);

@@ -1,5 +1,6 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { ThemeAdapter } from "../agents/types.js";
+import { icon } from "../icons.js";
 
 /** Active SGR at the end of a marker; closed attributes must not leak into its text. */
 function sgrCodes(marker: string): string {
@@ -28,6 +29,12 @@ function sgrCodes(marker: string): string {
   return [...active.values()].map((code) => `\x1b[${code}m`).join("");
 }
 
+// Both styles participate in wrapping; keep this list tied to the icon table.
+const markerChars = (["gutter", "task", "result", "failure", "warning", "message"] as const)
+  .flatMap(role => [icon("text", role), icon("nerd", role)]).join("").replace(/[\\\]\-^]/g, "\\$&");
+const messageChars = [icon("text", "message"), icon("nerd", "message")].join("").replace(/[\\\]\-^]/g, "\\$&");
+const resultPrefix = new RegExp(`^([ \\t]*(?:(?:\\d+\\.[ \\t]+)?[│✓●○■◆▪▣•·\\-*${markerChars}](?:[ \\t]*[→◆▪▣${messageChars}])?[ \\t]+|\\[[^\\]\\n]+\\][ \\t]+|\\d+\\.[ \\t]+|[ \\t]+))`, "u");
+
 /** Fit result rows at the final render boundary, preserving ANSI state across wraps. */
 export function fitResultLines(lines: readonly string[], width: number, expanded: boolean): string[] {
   const w = Math.max(1, width);
@@ -35,7 +42,7 @@ export function fitResultLines(lines: readonly string[], width: number, expanded
     if (!expanded) return [truncateToWidth(line, w, "…")];
     // Locate the visible marker first; ANSI spans inside its styling do not count as cells.
     const plain = line.replace(/\x1b\[[0-9;]*m/g, "");
-    const prefix = /^([ \t]*(?:(?:\d+\.[ \t]+)?[⎿│↳⤴✓✗⚠●○■◆▪▣✉•·\-*](?:[ \t]*[→◆▪▣✉])?[ \t]+|\[[^\]\n]+\][ \t]+|\d+\.[ \t]+|[ \t]+))/u.exec(plain)?.[1];
+    const prefix = resultPrefix.exec(plain)?.[1];
     if (prefix && visibleWidth(prefix) < w) {
       // Long bracketed labels are not useful as hanging indents at narrow widths.
       if (/^[ \t]*\[[^\]\n]+\][ \t]+$/u.test(prefix) && w - visibleWidth(prefix) < 20) {
@@ -166,14 +173,14 @@ export interface MessageDetails {
 
 type St = "ok" | "fail" | "warn" | "on" | "off" | "paused";
 const ICON: Record<St, { g: string; token: string }> = {
-  ok: { g: "✓", token: "success" }, fail: { g: "✗", token: "error" }, warn: { g: "⚠", token: "warning" },
+  ok: { g: "✓", token: "success" }, fail: { g: icon("text", "failure"), token: "error" }, warn: { g: icon("text", "warning"), token: "warning" },
   on: { g: "●", token: "accent" }, off: { g: "○", token: "muted" }, paused: { g: "■", token: "muted" },
 };
 
 /** Status glyph in its semantic color (glyph + color, never color-only). */
 export function statusIcon(theme: ThemeAdapter, status: St): string {
   const s = ICON[status];
-  return theme.fg(s.token, s.g);
+  return theme.fg(s.token, status === "warn" ? icon(theme.iconStyle, "warning") : status === "fail" ? icon(theme.iconStyle, "failure") : s.g);
 }
 
 /** `label value` on one line, width-guaranteed (value right-truncated). */
@@ -187,7 +194,7 @@ export function kv(theme: ThemeAdapter, label: string, value: string, width: num
  *  already shows `🕸 spider · <action>`, so a second 🕸 header double-heads the output.
  *  See docs/output-ui-guidelines.md. Every returned line is ≤ width visible cells. */
 export function card(theme: ThemeAdapter, title: string, lines: string[], width: number): string[] {
-  const head = `${theme.fg("accent", "🕸")} ${theme.bold(theme.fg("accent", title))} `;
+  const head = `${theme.fg("accent", icon(theme.iconStyle, "agent"))} ${theme.bold(theme.fg("accent", title))} `;
   const fill = Math.max(0, width - visibleWidth(head));
   const rule = truncateToWidth(head + theme.fg("dim", "─".repeat(fill)), width, "");
   const out = [rule];

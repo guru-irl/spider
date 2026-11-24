@@ -3,14 +3,12 @@
 // @spider/memory's renderers.ts: they take a handler's structured `details` and return
 // an @spider/ui Component (Panel). The host renderResult dispatcher wraps them to add
 // pi's required invalidate(). REAL ANSI is emitted by @spider/ui.
-import { Panel, type Component } from "@spider/ui";
+import { Panel, icon, type Component, type IconStyle } from "@spider/ui";
 import type { SearchResultRow } from "./search";
 import type { ImportSummary } from "./import";
 
-const GLYPH = "🕸";
-
 /** Panel of unified-search hits: one row per hit as `[kind] title — snippet`. */
-export function renderSearchResult(rows: SearchResultRow[]): Component {
+export function renderSearchResult(rows: SearchResultRow[], iconStyle?: IconStyle): Component {
   const list = Array.isArray(rows) ? rows : [];
   const body = list.length
     ? list.map((r, i) => {
@@ -18,11 +16,11 @@ export function renderSearchResult(rows: SearchResultRow[]): Component {
         return `${i + 1}. [${r.kind}] ${title}${r.snippet ?? ""}`.trim();
       })
     : ["(no results)"];
-  return Panel({ title: `${GLYPH} search (${list.length})`, body });
+  return Panel({ title: `${icon(iconStyle, "agent")} search (${list.length})`, body, iconStyle });
 }
 
 /** Panel summarizing an import/migrate run's imported/skipped/staged/committed counts. */
-export function renderImportResult(s: ImportSummary, expanded = false): Component {
+export function renderImportResult(s: ImportSummary, expanded = false, iconStyle?: IconStyle): Component {
   const sum = s ?? ({} as ImportSummary);
   const body = [
     `imported: ${sum.imported ?? 0}`,
@@ -34,5 +32,5 @@ export function renderImportResult(s: ImportSummary, expanded = false): Componen
   for (const p of sessions) {
     body.push(`  · ${p.sessionId}: ${p.status} (${p.candidates} cand, ${p.chunks} chunks)`);
   }
-  return Panel({ title: `${GLYPH} import`, body, expanded });
+  return Panel({ title: `${icon(iconStyle, "agent")} import`, body, expanded, iconStyle });
 }

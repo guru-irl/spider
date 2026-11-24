@@ -22,11 +22,7 @@ export interface IntercomIntakeFence { address: SessionAddress; moveId: string; 
 export type IntercomIntakeAction = "close" | "check" | "open";
 export const HELPER_EXCHANGE_FEATURE = "intercom-exchange-v1";
 export const FEDERATION_NOTICE_ACK_FEATURE = "federation-notice-ack-v1";
-export const HELPER_EXCHANGE_ERRORS: readonly string[] = ["machine-not-enrolled", "machine-mismatch", "stale-generation", "invalid-request",
-  "invalid-presence", "invalid-refusal", "invalid-receipt", "invalid-reply", "peer-version-mismatch", "unsupported-broker", "helper-unauthorized",
-  "cli-aborted", "bridge-unavailable", "exchange-too-large", "endpoint-exited", "peer-revoked", "peer-consent-required", "intercom-requires-hub",
-  "intercom-transition-unsupported", "intercom-transition-conflict", "intercom-topology-invalid"];
-export const isHelperExchangeError = (value: unknown): value is string => typeof value === "string" && HELPER_EXCHANGE_ERRORS.includes(value);
+export { HELPER_EXCHANGE_ERRORS, isHelperExchangeError } from "./helper-errors.js";
 
 /** Logical identity. Machine aliases and endpoint generations are replaceable routes. */
 export interface SessionAddress { sessionId: string; scopeId: string | null }

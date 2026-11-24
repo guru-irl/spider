@@ -139,6 +139,14 @@ export function hasPairConsent(pair: IntercomEnrollmentPlan, proof: PairConsentP
   return Buffer.byteLength(encoded) <= 1024 * 1024 && createHash("sha256").update(encoded).digest("hex") === proof.graphDigest &&
     proof.pairs.filter(candidate => samePlan(pair, candidate)).length === 1;
 }
+/** Operational checks ask the queue owner, rather than snapshotting its in-flight WAL. */
+export function createLocalPairRegistry(ports: Pick<LocalPairPorts, "root" | "machineId" | "inspectFence">) {
+  return createIntercomRegistry(ports.root, { machineId: ports.machineId, read(peer) {
+    const request = { version: 1 as const, action: "inspect-fence" as const, machineId: ports.machineId, peer };
+    return ports.inspectFence ? ports.inspectFence(request) : requestHelperFence(ports.root, request);
+  } });
+}
+
 /** Caller must verify the proof against the human-consent journal before invoking this local adapter. */
 export async function runLocalPairOperation(input: LocalPairOperation, ports: LocalPairPorts): Promise<unknown> {
   if (!input?.pair || !hasPairConsent(input.pair, input.approval)) throw new Error("peer-consent-required");
@@ -146,16 +154,16 @@ export async function runLocalPairOperation(input: LocalPairOperation, ports: Lo
   if (local.machineId !== ports.machineId || local.globalRoot !== ports.root) throw new Error("machine-mismatch");
   const other = input.pair.source.machineId === ports.machineId ? input.pair.target.machineId : input.pair.source.machineId;
   return withIntercomPeerLock(ports.root, input.pair.source.machineId, input.pair.target.machineId, async () => {
-    const registry = createIntercomRegistry(ports.root);
+    const registry = createLocalPairRegistry(ports);
     if (await registry.revocationPending(input.pair.pairId, other)) throw new Error("revocation-pending");
     if (!["register-pair", "check-connector", "inspect-ssh"].includes(input.action)) {
       const record = await registry.get(input.pair.pairId);
       if (!record || !["pending", "active"].includes(record.state) || record.operationId !== input.approval.operationId || record.graphDigest !== input.approval.graphDigest || !samePlan(record.pair, input.pair)) throw new Error("fresh-peer-consent-required");
     }
-    return localPairOperation(input, ports);
+    return localPairOperation(input, ports, registry);
   });
 }
-async function localPairOperation(input: LocalPairOperation, ports: LocalPairPorts): Promise<unknown> {
+async function localPairOperation(input: LocalPairOperation, ports: LocalPairPorts, registry: ReturnType<typeof createIntercomRegistry>): Promise<unknown> {
   if (!input || !input.pair || !hasPairConsent(input.pair, input.approval)) throw new Error("peer-consent-required");
   const source = input.action === "ensure-key" || input.action === "write-route" || input.action === "add-machine" || input.action === "verify-transport" || input.action === "connect-connector" ||
     (input.action === "check-connector" || input.action === "register-pair" || input.action === "publish-config" || input.action === "approve-commands" || input.action === "enroll-live" ||
@@ -191,7 +199,6 @@ async function localPairOperation(input: LocalPairOperation, ports: LocalPairPor
     return { published: true };
   }
   if (input.action === "register-pair") {
-    const registry = createIntercomRegistry(ports.root);
     await registry.register(input.pair, input.approval.operationId, input.approval.graphDigest);
     await registry.bind(input.pair, input.approval.operationId);
     if (input.targetCoreId) await registry.bindResources(input.pair.pairId, input.approval.operationId, pairResources(input.pair, input.targetCoreId));

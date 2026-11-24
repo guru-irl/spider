@@ -1098,6 +1098,15 @@ Unconfirmed cleanup means closure evidence is missing, not that the target
 is necessarily offline. A completed revoke permits fresh enrollment with a
 new epoch and fresh consent.
 
+Endpoint enrollment reads fences through the identity-bound live queue helper,
+not a diagnostic snapshot of the actively written queue. Registration repeats
+that check under the peer lifecycle lock, which also serializes revocation.
+Unrelated WAL publication does not block setup. If a queue exists but its
+helper is unavailable or reports another identity, setup remains refused.
+Initial setup without a queue creates no queue files. Diagnostic registry reads
+still use private snapshots and refuse unpublished WAL commits. Completed
+predecessor fences and unfinished cleanup keep the same enrollment rules.
+
 Enrollment grants command access as the peer user, including access through
 that peer's enrolled pairs. SSH ignores user configuration with `-F /dev/null`.
 Each key has a forced command that verifies its pair, edge epoch, and current

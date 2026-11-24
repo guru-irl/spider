@@ -34,9 +34,8 @@ import { createTransport } from "./transport";
 import { isPeerFailureReason, peerFailureReason, peerPreflightIssue, recoveryRefusalCode } from "./peer-errors";
 import { remoteDoctor } from "./remote-observations";
 import { disableRoaming, enableRoaming } from "./production-controls";
-import { runForeground, runLocalPairCleanup, runLocalPairOperation, hasPairConsent, type LocalPairCleanup, type LocalPairOperation, type LocalPairPorts } from "./intercom-local-ops";
+import { runForeground, runLocalPairCleanup, runLocalPairOperation, createLocalPairRegistry, hasPairConsent, type LocalPairCleanup, type LocalPairOperation, type LocalPairPorts } from "./intercom-local-ops";
 import { parseHelperFence, requestHelperFence } from "./intercom-helper";
-import { createIntercomRegistry } from "./intercom-registry";
 import { pairScopedRecipe, inspectPairUnit } from "./intercom-pair-resources";
 import type { IntercomCliOptions } from "./intercom-cli";
 import { DEFAULT_SSH, DEFAULT_SSH_KEYGEN, DEFAULT_SSH_KEYSCAN } from "./intercom-ssh-defaults";
@@ -254,7 +253,8 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       const input = parseHelperFence(body);
       if (input.machineId !== config.machineId) throw new Error("machine-mismatch");
       const observed = await (options?.fencePort ?? requestHelperFence)(root, input);
-      const value = pairId === undefined ? observed : { ...observed, revocationPending: await createIntercomRegistry(root).revocationPending(pairId as string, observed.peer) };
+      const value = pairId === undefined ? observed : { ...observed, revocationPending: await createLocalPairRegistry({ root,
+        machineId: config.machineId, inspectFence: async () => observed }).revocationPending(pairId as string, input.peer) };
       io.out(`${JSON.stringify({ version: 1, kind: "intercom-fence", ok: true, value })}\n`);
     } catch { io.out(`${JSON.stringify({ version: 1, kind: "intercom-fence", ok: false, reason: "intercom-fence-unavailable" })}\n`); }
     return 0;
@@ -277,10 +277,11 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       const config = readLocalIdentity(root), bytes = await readArtifactInput(1024 * 1024, options?.stdin);
       const input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as LocalPairOperation;
       if (!input?.pair || !hasPairConsent(input.pair, input.approval)) throw new Error("peer-consent-required");
-      if (await createIntercomRegistry(root).revocationPending(input.pair.pairId, config.machineId === input.pair.source.machineId ? input.pair.target.machineId : input.pair.source.machineId)) throw new Error("revocation-pending");
-      if (!["check-connector", "inspect-ssh", "register-pair", "host-connector", "connect-connector"].includes(input?.action) && !pairScopedRecipe(config.intercom.connector ?? options?.pairPorts?.recipe)) throw new Error("connector-not-pair-scoped");
       const base = options?.pairPorts ?? { machineId: config.machineId, root, home: homedir(), node: process.execPath, ssh: DEFAULT_SSH,
         keygen: DEFAULT_SSH_KEYGEN, keyscan: DEFAULT_SSH_KEYSCAN, sshUser: userInfo().username, recipe: config.intercom.connector, run: runForeground };
+      if (await createLocalPairRegistry({ ...base, machineId: config.machineId, root }).revocationPending(input.pair.pairId,
+          config.machineId === input.pair.source.machineId ? input.pair.target.machineId : input.pair.source.machineId)) throw new Error("revocation-pending");
+      if (!["check-connector", "inspect-ssh", "register-pair", "host-connector", "connect-connector"].includes(input?.action) && !pairScopedRecipe(config.intercom.connector ?? base.recipe)) throw new Error("connector-not-pair-scoped");
       if (!["check-connector", "inspect-ssh", "register-pair", "host-connector", "connect-connector"].includes(input?.action)) {
         const side = input.pair?.source?.machineId === config.machineId ? "connect" : "host";
         if (!await inspectPairUnit(input.pair as import("./provision-contracts").IntercomEnrollmentPair, side, { ...base, machineId: config.machineId, root })) throw new Error("connector-not-pair-scoped");

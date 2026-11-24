@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { assertTestConfigPath } from "@spider/db-core";
 import type { Diagnostic } from "./contracts";
@@ -12,22 +13,25 @@ export interface HubServiceObservation {
   lastExitCode: number | null;
 }
 interface ServicePrint { code: number | null; stdout: string }
+const DOCTOR_HUB_DEADLINE_MS = 2000;
 
 /** Query metadata and read-only status. The error log is never opened. */
 export async function inspectHubService(root: string, print?: () => Promise<ServicePrint>): Promise<HubServiceObservation> {
   const socket = join(root, "roam", "hub.sock"); assertTestConfigPath(socket);
+  const end = Date.now() + DOCTOR_HUB_DEADLINE_MS;
   let running: boolean | null = null, lastExitCode: number | null = null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const query = print ?? (() => new Promise<ServicePrint>((done, reject) => {
       let binary: string;
       try { binary = launchctlBinary(); } catch (error) { reject(error); return; }
-      execFile(binary, ["print", `gui/${process.getuid?.()}/${hubServiceLabel(root)}`], { timeout: 5000, maxBuffer: 64 * 1024 }, (error, stdout) => {
+      execFile(binary, ["print", `gui/${process.getuid?.()}/${hubServiceLabel(root)}`], { timeout: DOCTOR_HUB_DEADLINE_MS, killSignal: "SIGKILL", maxBuffer: 64 * 1024 }, (error, stdout) => {
         done({ code: !error ? 0 : error.killed || error.signal ? null : typeof error.code === "number" ? error.code : null, stdout });
       });
     }));
-    const result = await query();
-    if (result.code === 113) running = false;
-    else if (result.code === 0) {
+    const result = await Promise.race([query(), new Promise<null>(done => { timer = setTimeout(() => done(null), DOCTOR_HUB_DEADLINE_MS); })]);
+    if (result?.code === 113) running = false;
+    else if (result?.code === 0) {
       const lastExit = /\blast exit code\s*=\s*(-?\d+)\b/.exec(result.stdout)?.[1];
       lastExitCode = lastExit !== undefined && Number.isSafeInteger(Number(lastExit)) ? Number(lastExit) : null;
       const pid = /\bpid\s*=\s*(\d+)\b/.exec(result.stdout)?.[1];
@@ -35,7 +39,9 @@ export async function inspectHubService(root: string, print?: () => Promise<Serv
       running = pid !== undefined && Number.isSafeInteger(Number(pid)) && Number(pid) > 0 ? true : state ? false : null;
     }
   } catch { /* Unknown metadata alone cannot prove a stopped service. */ }
-  const socketAvailable = running !== false && await waitReady(socket, 2000);
+  finally { if (timer !== undefined) clearTimeout(timer); }
+  const remaining = end - Date.now();
+  const socketAvailable = remaining > 0 && running !== false && (running === true || existsSync(socket)) && await waitReady(socket, remaining);
   return { running, socketAvailable, lastExitCode };
 }
 

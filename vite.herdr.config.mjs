@@ -4,11 +4,11 @@ import { builtinModules } from 'node:module';
 
 const entries = {
   cli: 'packages/herdr/src/bin/cli.ts',
-  'pane-endpoint': 'packages/host/src/herdr/bin/pane-endpoint.ts',
+  'pane-endpoint': 'packages/host/src/herdr/bin/pane-endpoint-main.ts',
   'feed-reader': 'packages/herdr/src/bin/feed-reader.ts',
   viewer: 'packages/herdr/src/bin/viewer.ts',
   'viewer-pi': 'packages/herdr/src/viewers/pi-main.ts',
-  'remote-runtime': 'packages/herdr/src/remote/runtime.ts',
+  'remote-runtime': 'packages/herdr/src/remote/runtime-entry.ts',
   'subagent-supervisor': 'packages/subagents/src/supervisor-main.ts',
 };
 const peers = [
@@ -22,9 +22,6 @@ export default defineConfig(({ mode }) => {
   const entry = entries[mode];
   if (!entry) throw new Error(`Unknown Herdr build entry: ${mode}`);
   return {
-    // Bundling collapses import.meta.url to the entry URL. This structural
-    // marker keeps C's library imports from becoming additional main programs.
-    define: { 'import.meta.spiderPaneEndpointEntry': mode === 'pane-endpoint' ? 'true' : 'false', 'import.meta.spiderHerdrRuntimeEntry': mode === 'remote-runtime' ? 'true' : 'false' },
     ssr: { target: 'node', noExternal: true },
     build: {
       target: 'node22', outDir: 'dist/herdr', emptyOutDir: mode === 'cli',

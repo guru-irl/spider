@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "@spider/db-core";
 import { main } from "../cli";
@@ -57,11 +57,13 @@ export async function scenario(): Promise<PairScenario> {
       if (argv[0] === "/fixture/systemctl") {
         const name = argv[3], key = `${peer.machineId}/${name}`;
         if (argv[2] === "daemon-reload") return { code: 0, stdout: "" };
+        if (!units.has(key) && !existsSync(join(home, ".config", "systemd", "user", name))) return { code: argv[2] === "show" ? 0 : 1,
+          stdout: argv[2] === "show" ? `Id=${name}\nLoadState=not-found\nActiveState=inactive\nMainPID=0\nControlGroup=\nKillMode=control-group\nFragmentPath=\nDropInPaths=\nNeedDaemonReload=no\n` : "" };
         if (!units.has(key)) units.set(key, { name, file: join(home, ".config", "systemd", "user", name), pid: 0, state: "inactive", members: [] });
         const unit = units.get(key)!;
         if (argv[2] === "start") { unit.pid = ++nextPid; unit.state = "active"; unit.members = [unit.pid, ++nextPid]; }
         if (argv[2] === "stop") { unit.state = "inactive"; unit.pid = 0; unit.members = straggler && name.endsWith("-host.service") ? unit.members.slice(-1) : []; if (name.endsWith("-host.service")) connection = unit.members.length > 0; }
-        return { code: 0, stdout: argv[2] === "show" ? `Id=${unit.name}\nActiveState=${unit.state}\nMainPID=${unit.pid}\nControlGroup=/user.slice/${unit.name}\nKillMode=control-group\nFragmentPath=${unit.file}\nDropInPaths=\nNeedDaemonReload=no\n` : "" };
+        return { code: 0, stdout: argv[2] === "show" ? `Id=${unit.name}\nLoadState=loaded\nActiveState=${unit.state}\nMainPID=${unit.pid}\nControlGroup=/user.slice/${unit.name}\nKillMode=control-group\nFragmentPath=${unit.file}\nDropInPaths=\nNeedDaemonReload=no\n` : "" };
       }
       if (argv[1] === "machine" && argv[2] === "ls") return { code: 0, stdout: JSON.stringify({ machines: routes.get(peer.machineId)!.map(row => mismatch && row.name === "spider-pair-pair-1" ? { ...row, session: "changed" } : row) }) };
       if (argv[1] === "machine" && argv[2] === "add") { routes.get(peer.machineId)!.push({ name: argv[argv.indexOf("--name") + 1], id: "core-b", via: true, target: argv[argv.indexOf("--via") + 1], session: "default", temporary: false, state: "connected", host: "box-b.invalid", version: "0.1.16" }); return { code: 0, stdout: "{}" }; }

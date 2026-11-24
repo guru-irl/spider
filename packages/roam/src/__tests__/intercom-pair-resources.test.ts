@@ -1,5 +1,5 @@
-import { afterEach, expect, it } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { afterEach, expect, it, vi } from "vitest";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "@spider/db-core";
 import { createIntercomRegistry } from "../intercom-registry";
@@ -10,6 +10,11 @@ import { inspectLocalIntercomDoctor } from "../intercom-doctor";
 import { openIntercomStore } from "../intercom-store";
 import { parseConfig } from "../config";
 import { FEDERATION_NOTICE_ACK_FEATURE, HELPER_EXCHANGE_FEATURE } from "@spider/intercom/protocol";
+
+vi.mock("node:fs", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, lstatSync: vi.fn(actual.lstatSync) };
+});
 
 const A = "00000000-0000-4000-8000-000000000001", B = "00000000-0000-4000-8000-000000000002";
 const FENCE = "00000000-0000-4000-8000-000000000003";
@@ -27,16 +32,65 @@ async function fixture(side: "host" | "connect" = "host") {
   const name = `spider-pair-pair-1-${side}.service`, file = join(home, ".config", "systemd", "user", name), group = "/user.slice/pair-1";
   const run = async (argv: readonly string[]) => {
     calls.push([...argv]);
+    if (!existsSync(file) && active === "inactive" && ["stop", "disable"].includes(argv[2])) return { code: 1, stdout: "" };
     if (argv[2] === "start") { active = "active"; pid = 123; processes = [123, 124]; connection = true; }
     if (argv[2] === "stop") { active = "inactive"; pid = 0; processes = straggler ? [124] : []; connection = straggler; }
-    return { code: 0, stdout: argv[2] === "show" ? `Id=${wrongName ? "other.service" : name}\nActiveState=${active}\nMainPID=${pid}\nControlGroup=${group}\nKillMode=control-group\nFragmentPath=${file}\nDropInPaths=\nNeedDaemonReload=no\n` : "" };
+    const missing = !existsSync(file) && active === "inactive";
+    return { code: 0, stdout: argv[2] === "show" ? `Id=${wrongName ? "other.service" : name}\nLoadState=${missing ? "not-found" : "loaded"}\nActiveState=${active}\nMainPID=${pid}\nControlGroup=${missing ? "" : group}\nKillMode=control-group\nFragmentPath=${missing ? "" : file}\nDropInPaths=\nNeedDaemonReload=no\n` : "" };
   };
   const recipe = { check: ["/fixture/connector", "check"], host: ["/fixture/connector", "host", "{pairId}", "{tunnelId}"], connect: ["/fixture/connector", "connect", "{pairId}"], localPort: 23222 };
   const ports = { machineId: side === "host" ? B : A, root, home, run, recipe, systemctl: "/fixture/systemctl",
     process: (value: number): NativeProcess => processes.includes(value) ? { kind: "live" as const, startIdentity: "linux:100" } : { kind: "absent" as const },
     cgroup: () => processes };
-  return { root, home, pair, registry, ports, calls, file, connected: () => connection, straggler: () => { straggler = true; }, drain: () => { straggler = false; processes = []; connection = false; }, mismatch: () => { wrongName = true; } };
+  return { root, home, pair, registry, ports, calls, file, remove: () => { active = "inactive"; pid = 0; processes = []; connection = false; unlinkSync(file); }, connected: () => connection, straggler: () => { straggler = true; }, drain: () => { straggler = false; processes = []; connection = false; }, mismatch: () => { wrongName = true; } };
 }
+
+it.each(["host", "connect"] as const)("reports a missing recorded %s unit as unready without querying systemd", async side => {
+  const f = await fixture(side), api = await import("../intercom-pair-resources");
+  await f.registry.bindResources("pair-1", "enroll-1", api.pairResources(f.pair, "core-b"));
+  await api.ensurePairUnit(f.pair, side, f.ports);
+  unlinkSync(f.file); const before = f.calls.length;
+  expect(await api.inspectPairUnit(f.pair, side, f.ports)).toBe("intercom-pair-unit-missing");
+  expect(f.calls).toHaveLength(before);
+  expect(await f.registry.get("pair-1")).toMatchObject({ state: "pending", unit: { main: { pid: 123 } } });
+}, 5000);
+
+it.each(["mode", "symlink", "contents", "parent"] as const)("does not classify an unsafe %s as a missing unit", async failure => {
+  const f = await fixture(), api = await import("../intercom-pair-resources");
+  await f.registry.bindResources("pair-1", "enroll-1", api.pairResources(f.pair, "core-b"));
+  await api.ensurePairUnit(f.pair, "host", f.ports);
+  if (failure === "mode") chmodSync(f.file, 0o644);
+  if (failure === "contents") writeFileSync(f.file, "foreign unit", { mode: 0o600 });
+  if (failure === "symlink") { unlinkSync(f.file); symlinkSync(join(f.home, "absent.service"), f.file); }
+  if (failure === "parent") rmSync(join(f.home, ".config", "systemd", "user"), { recursive: true });
+  await expect(api.inspectPairUnit(f.pair, "host", f.ports)).rejects.toThrow();
+}, 5000);
+
+it.each(["EIO", "EACCES"])("keeps %s from the recorded unit as a refusal", async code => {
+  const f = await fixture(), api = await import("../intercom-pair-resources");
+  await f.registry.bindResources("pair-1", "enroll-1", api.pairResources(f.pair, "core-b"));
+  await api.ensurePairUnit(f.pair, "host", f.ports);
+  const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+  vi.mocked(lstatSync).mockImplementation(file => {
+    if (file === f.file) throw Object.assign(new Error("synthetic filesystem failure"), { code });
+    return actual.lstatSync(file);
+  });
+  try { await expect(api.inspectPairUnit(f.pair, "host", f.ports)).rejects.toMatchObject({ code }); }
+  finally { vi.mocked(lstatSync).mockImplementation(actual.lstatSync); }
+}, 5000);
+
+it("refuses a recorded unit owned by another user", async () => {
+  const f = await fixture(), api = await import("../intercom-pair-resources");
+  await f.registry.bindResources("pair-1", "enroll-1", api.pairResources(f.pair, "core-b"));
+  await api.ensurePairUnit(f.pair, "host", f.ports);
+  const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+  vi.mocked(lstatSync).mockImplementation(file => {
+    const info = actual.lstatSync(file);
+    return file === f.file ? Object.assign(Object.create(info), { uid: info.uid + 1 }) : info;
+  });
+  try { await expect(api.inspectPairUnit(f.pair, "host", f.ports)).rejects.toThrow("intercom-unit-mismatch"); }
+  finally { vi.mocked(lstatSync).mockImplementation(actual.lstatSync); }
+}, 5000);
 
 it("creates and records a pair host with literal argv and explicit control-group killing", async () => {
   const f = await fixture(), api = await import("../intercom-pair-resources");
@@ -215,6 +269,70 @@ it("rejects the retired SSH port placeholder", async () => {
   await f.registry.bindResources("pair-1", "enroll-1", api.pairResources(f.pair, "core-b"));
   await expect(api.ensurePairUnit(f.pair, "host", { ...f.ports, recipe: { ...recipe, host: [...recipe.host, "{sshPort}"] } })).rejects.toThrow("intercom-connector-recipe-invalid");
   expect(f.calls).toEqual([]); expect(existsSync(f.file)).toBe(false);
+}, 5000);
+
+it.each(["host", "connect"] as const)("proves an already-absent %s unit closed under the retained fence", async side => {
+  const f = await fixture(side), api = await import("../intercom-pair-resources");
+  await f.registry.bindResources("pair-1", "enroll-1", api.pairResources(f.pair, "core-b"));
+  await api.ensurePairUnit(f.pair, side, f.ports); f.remove();
+  await f.registry.beginRevocation("pair-1", FENCE);
+  expect(await api.stopPairUnit(f.pair, side, FENCE, f.ports)).toMatchObject({ activeState: "inactive", mainPid: 123, mainStartIdentity: "linux:100", mainProcess: "exited", controlGroup: "empty" });
+  expect(await f.registry.get("pair-1")).toMatchObject({ unit: { closedFenceId: FENCE } });
+  expect(f.calls.some(argv => ["stop", "disable"].includes(argv[2]))).toBe(false);
+  expect(await api.stopPairUnit(f.pair, side, FENCE, f.ports)).toMatchObject({ mainProcess: "exited", controlGroup: "empty" });
+}, 5000);
+
+it("does not stop a cached live unit merely because its file was deleted", async () => {
+  const f = await fixture(), api = await import("../intercom-pair-resources");
+  await f.registry.bindResources("pair-1", "enroll-1", api.pairResources(f.pair, "core-b"));
+  await api.ensurePairUnit(f.pair, "host", f.ports); unlinkSync(f.file); await f.registry.beginRevocation("pair-1", FENCE);
+  await expect(api.stopPairUnit(f.pair, "host", FENCE, f.ports)).rejects.toThrow();
+  expect(f.connected()).toBe(true); expect(f.calls.some(argv => argv[2] === "stop")).toBe(false);
+  expect((await f.registry.get("pair-1"))?.unit?.closedFenceId).toBeNull();
+}, 5000);
+
+it.each(["process", "cgroup"] as const)("absence does not replace missing %s closure proof", async failure => {
+  const f = await fixture(), api = await import("../intercom-pair-resources");
+  await f.registry.bindResources("pair-1", "enroll-1", api.pairResources(f.pair, "core-b"));
+  await api.ensurePairUnit(f.pair, "host", f.ports); f.remove(); await f.registry.beginRevocation("pair-1", FENCE);
+  const ports = { ...f.ports, ...(failure === "process" ? { process: (): NativeProcess => ({ kind: "unknown" }) } : { cgroup: () => [124] }) };
+  expect(await api.stopPairUnit(f.pair, "host", FENCE, ports)).toMatchObject(failure === "process" ? { mainProcess: "unknown" } : { controlGroup: "nonempty" });
+  expect((await f.registry.get("pair-1"))?.unit?.closedFenceId).toBeNull();
+}, 5000);
+
+it.each([
+  ["LoadState", "loaded"], ["ActiveState", "active"], ["MainPID", "123"], ["ControlGroup", "/user.slice/foreign"],
+  ["FragmentPath", "/home/fixture/foreign.service"], ["DropInPaths", "/home/fixture/override.conf"], ["NeedDaemonReload", "yes"], ["KillMode", "process"],
+])("refuses an absent unit with unsafe %s evidence", async (field, value) => {
+  const f = await fixture(), api = await import("../intercom-pair-resources");
+  await f.registry.bindResources("pair-1", "enroll-1", api.pairResources(f.pair, "core-b"));
+  await api.ensurePairUnit(f.pair, "host", f.ports); f.remove(); await f.registry.beginRevocation("pair-1", FENCE);
+  const run = f.ports.run, ports = { ...f.ports, run: async (argv: readonly string[]) => {
+    const reply = await run(argv);
+    return argv[2] === "show" ? { ...reply, stdout: reply.stdout.replace(new RegExp(`^${field}=.*$`, "m"), `${field}=${value}`) } : reply;
+  } };
+  await expect(api.stopPairUnit(f.pair, "host", FENCE, ports)).rejects.toThrow();
+  expect((await f.registry.get("pair-1"))?.unit?.closedFenceId).toBeNull();
+  expect(f.calls.some(argv => ["stop", "disable"].includes(argv[2]))).toBe(false);
+}, 5000);
+
+it("does not invent process closure for an absent unit without a recorded main identity", async () => {
+  const f = await fixture(), api = await import("../intercom-pair-resources");
+  await f.registry.bindResources("pair-1", "enroll-1", api.pairResources(f.pair, "core-b"));
+  await api.ensurePairUnit(f.pair, "host", f.ports); f.remove();
+  const unit = (await f.registry.get("pair-1"))!.unit!;
+  await f.registry.recordUnit("pair-1", { ...unit, main: null }); await f.registry.beginRevocation("pair-1", FENCE);
+  await expect(api.stopPairUnit(f.pair, "host", FENCE, f.ports)).rejects.toThrow("intercom-revocation-unconfirmed");
+  expect((await f.registry.get("pair-1"))?.unit?.closedFenceId).toBeNull();
+}, 5000);
+
+it("absence still requires the recorded fence before any systemd inspection", async () => {
+  const f = await fixture(), api = await import("../intercom-pair-resources");
+  await f.registry.bindResources("pair-1", "enroll-1", api.pairResources(f.pair, "core-b"));
+  await api.ensurePairUnit(f.pair, "host", f.ports); f.remove(); await f.registry.beginRevocation("pair-1", FENCE);
+  const before = f.calls.length;
+  await expect(api.stopPairUnit(f.pair, "host", A, f.ports)).rejects.toThrow("intercom-revocation-unconfirmed");
+  expect(f.calls).toHaveLength(before); expect((await f.registry.get("pair-1"))?.unit?.closedFenceId).toBeNull();
 }, 5000);
 
 it("stopping B drops a live connection and proves every member of the pair cgroup exited", async () => {

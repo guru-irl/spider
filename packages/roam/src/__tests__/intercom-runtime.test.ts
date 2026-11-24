@@ -5,7 +5,7 @@ import { EventEmitter, once } from "node:events";
 import { createServer, type Socket } from "node:net";
 import { createMessageReader, writeMessage } from "../../../intercom/src/broker/framing";
 import { HELPER_EXCHANGE_FEATURE } from "@spider/intercom/protocol";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createReplica } from "@spider/db-core/testutil";
 import { writeLocal } from "@spider/db-core/roam/local-state";
@@ -18,6 +18,12 @@ import { recordIntercomGeneration } from "../intercom-exclusion";
 import type { FederationBridge, RemoteSessionInfo, SessionAddress } from "@spider/intercom/protocol";
 import type { Clock, Journal, Transport } from "../contracts";
 
+import { scenario, cleanupPairScenarios } from "./intercom-pair-fixture";
+import { createProductionIntercomMaintenance } from "../intercom-production";
+import { provisionIntercomEnrollment } from "../intercom-enrollment";
+import { createIntercomRegistry } from "../intercom-registry";
+import { inspectPairUnit } from "../intercom-pair-resources";
+
 const HUB = "00000000-0000-4000-8000-000000000001";
 const BOX = "00000000-0000-4000-8000-000000000002";
 const OTHER = "00000000-0000-4000-8000-000000000003";
@@ -29,6 +35,7 @@ afterEach(async () => {
   for (const resource of resources.splice(0).reverse()) await resource.stop();
   for (const replica of replicas.splice(0).reverse()) replica.close();
   for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true });
+  cleanupPairScenarios();
 });
 function fixture() {
   const root = mkdtempSync(join(resolve(".spider/scratch"), "icr-")); roots.push(root);
@@ -372,6 +379,65 @@ it("runtime uses the configured agent directory and private queue", async () => 
   expect(service.readiness()).toEqual({ state: "ready", reason: null });
   await service.stop(); await service.stop();
   expect(f.broker.closed).toBe(1);
+}, 5000);
+
+it.each([
+  { side: "connect" as const, state: "pending" }, { side: "connect" as const, state: "active" },
+  { side: "host" as const, state: "pending" }, { side: "host" as const, state: "active" },
+])("publishes the machine helper on its hub route with a missing $state $side unit", async ({ side, state }) => {
+  const pair = await scenario();
+  const enrollment = state === "pending" ? { ...pair.enrollment, connect: async (...args: Parameters<typeof pair.enrollment.connect>) => {
+    await pair.enrollment.connect(...args); return "peer-port-unreachable" as const;
+  } } : pair.enrollment;
+  expect((await provisionIntercomEnrollment(pair.request, enrollment)).code).toBe(state === "pending" ? 3 : 0);
+  const local = side === "connect" ? pair.source : pair.target, other = side === "connect" ? pair.target : pair.source;
+  const ports = pair.locals.get(local.machineId)!, record = (await createIntercomRegistry(local.globalRoot).get("pair-1"))!;
+  if (!("sshUser" in record.pair)) throw new Error("expected a bound fixture pair");
+  unlinkSync(record.unit!.file);
+  const f = machineFixture(local.machineId), hub = peer(HUB, "hub.invalid");
+  const config = parseConfig({ ...f.options.config, role: "box", machineId: local.machineId, hubMachineId: HUB, peers: [],
+    intercom: { enabled: true, mode: "hub-only", machineAlias: local.alias, connector: ports.recipe,
+      routes: [{ kind: "direct", peer: hub, edgeEpoch: "hub-edge" }, { kind: "relay", peer: other, via: HUB }] } });
+  const maintenance = createProductionIntercomMaintenance({ root: local.globalRoot, config, binary: "/fixture/hc", env: {}, localPorts: ports });
+  const service = await makeMachine({ ...f.options, root: local.globalRoot, config,
+    pairScopedHostReady: maintenance.pairScopedHostReady });
+  await service.start();
+  expect(service.readiness()).toEqual({ state: "ready", reason: null });
+  expect(f.broker.registrations).toMatchObject([{ machineId: local.machineId }]);
+  expect(f.broker.bridge).not.toBeNull(); expect(f.broker.helper).not.toBeNull();
+  expect(await f.broker.helper!(withHopRequest(helperRequest(HUB, local.machineId, "hub-edge", 1)), new AbortController().signal))
+    .toMatchObject({ exchange: { senderMachine: local.machineId, recipientMachine: HUB } });
+  expect(existsSync(join(local.globalRoot, "roam", "intercom", "helper.json"))).toBe(true);
+  expect(existsSync(join(f.agentDir, "intercom", "bridge-authority.json"))).toBe(true);
+  expect(await maintenance.pairScopedHostReady("pair-1")).toBe(false);
+  expect(await inspectPairUnit(record.pair, side, ports)).toBe("intercom-pair-unit-missing");
+  expect(await f.broker.helper!({ version: 1, action: "inspect-fence", machineId: local.machineId, peer: other.machineId }, new AbortController().signal))
+    .toMatchObject({ machineId: local.machineId, peer: other.machineId, fence: null });
+  expect(await createIntercomRegistry(local.globalRoot).get("pair-1")).toMatchObject({ state });
+  if (state === "pending") {
+    const helper = f.broker.helper, consentCount = pair.journal.read("enroll-1").filter(row => row.action === "intercom-peer-consent").length;
+    expect((await provisionIntercomEnrollment(pair.request, pair.enrollment)).code).toBe(0);
+    expect(readFileSync(record.unit!.file, "utf8")).toBe(record.unit!.contents);
+    expect(await maintenance.pairScopedHostReady("pair-1")).toBe(true);
+    expect(await createIntercomRegistry(local.globalRoot).get("pair-1")).toMatchObject({ state: "active", operationId: "enroll-1", graphDigest: record.graphDigest });
+    expect(pair.journal.read("enroll-1").filter(row => row.action === "intercom-peer-consent")).toHaveLength(consentCount);
+    expect(f.broker.helper).toBe(helper); expect(f.broker.registrations).toHaveLength(1);
+  }
+}, 5000);
+
+it.each(["mode", "symlink"] as const)("still refuses helper startup with a %s-unsafe recorded unit", async failure => {
+  const pair = await scenario(); expect((await provisionIntercomEnrollment(pair.request, pair.enrollment)).code).toBe(0);
+  const local = pair.source, ports = pair.locals.get(local.machineId)!, record = (await createIntercomRegistry(local.globalRoot).get("pair-1"))!;
+  if (failure === "mode") chmodSync(record.unit!.file, 0o644);
+  else { unlinkSync(record.unit!.file); symlinkSync(join(ports.home, "absent.service"), record.unit!.file); }
+  const f = machineFixture(local.machineId), config = parseConfig({ ...f.options.config, role: "box", machineId: local.machineId, hubMachineId: HUB,
+    intercom: { enabled: true, mode: "hub-only", machineAlias: local.alias, connector: ports.recipe, routes: [] } });
+  const maintenance = createProductionIntercomMaintenance({ root: local.globalRoot, config, binary: "/fixture/hc", env: {}, localPorts: ports });
+  const service = await makeMachine({ ...f.options, root: local.globalRoot, config, pairScopedHostReady: maintenance.pairScopedHostReady });
+  await service.start();
+  expect(service.readiness()).toEqual({ state: "pending", reason: "bridge-unavailable" });
+  expect(f.broker.registrations).toEqual([]);
+  expect(existsSync(join(local.globalRoot, "roam", "intercom", "helper.json"))).toBe(false);
 }, 5000);
 
 it("does not activate a live edge without pair-scoped connector readiness", async () => {

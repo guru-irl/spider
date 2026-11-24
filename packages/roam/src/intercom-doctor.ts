@@ -88,13 +88,18 @@ export async function inspectLocalIntercomDoctor(input: DoctorOptions): Promise<
   } catch { add("intercom-broker-unavailable", "The local intercom broker could not be inspected."); }
   let targetScan: { port: number; type: ReturnType<typeof sshScanType>; observation: ReturnType<typeof inspectServedSshIdentity> } | undefined;
   for (const item of await createIntercomRegistry(input.root).list()) {
-    if (item.state !== "active" || !("sshUser" in item.pair)) continue;
+    if (!["pending", "active"].includes(item.state) || !("sshUser" in item.pair)) continue;
     const pair = item.pair, localSource = pair.source.machineId === input.config.machineId, localTarget = pair.target.machineId === input.config.machineId;
     if (!localSource && !localTarget) continue;
     const unitPorts = input.resourcePorts ?? { root: input.root, machineId: input.config.machineId, home: homedir(), recipe, run };
     try {
-      if (!item.resources || !await inspectPairUnit(pair, localSource ? "connect" : "host", unitPorts)) diagnostics.push({ severity: "block", reason: `intercom-pair-unit-unavailable: Verify the pair unit for ${pair.pairId}.`, repairCommand: null });
+      const side = localSource ? "connect" : "host", state = await inspectPairUnit(pair, side, unitPorts);
+      if (state === "intercom-pair-unit-missing") diagnostics.push({ severity: "block",
+        reason: `intercom-pair-unit-missing: The ${side} unit for ${pair.pairId} is missing. Run the repair on the hub.`,
+        repairCommand: item.state === "pending" ? `spider roam intercom enroll --graph "$GRAPH_FILE" --operation ${item.operationId}` : `spider roam intercom revoke ${pair.pairId}` });
+      else if (item.state === "active" && state !== "ready") diagnostics.push({ severity: "block", reason: `intercom-pair-unit-unavailable: Verify the pair unit for ${pair.pairId}.`, repairCommand: null });
     } catch { diagnostics.push({ severity: "block", reason: `intercom-pair-unit-unavailable: The pair unit for ${pair.pairId} could not be verified.`, repairCommand: null }); }
+    if (item.state !== "active") continue;
     if (localSource && item.resources) try {
       const result = await run([pair.source.core, "machine", "ls", "--json"], { timeoutMs: 10_000, maxBytes: 64 * 1024 }), value: unknown = result.code === 0 ? JSON.parse(result.stdout) : null;
       if (!record(value) || !Array.isArray(value.machines)) throw new Error("intercom-route-unavailable");

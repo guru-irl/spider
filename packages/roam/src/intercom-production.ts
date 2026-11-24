@@ -225,7 +225,7 @@ export function createProductionIntercomMaintenance(input: { root: string; confi
     async pairScopedHostReady(pairId: string): Promise<boolean> {
       const record = await registry.get(pairId); if (!record || !("sshUser" in record.pair) || !["pending", "active"].includes(record.state)) return false;
       const pair = record.pair, side = local === pair.source.machineId ? "connect" : local === pair.target.machineId ? "host" : null;
-      return side === null ? false : inspectPairUnit(pair, side, localPorts);
+      return side === null ? false : await inspectPairUnit(pair, side, localPorts) === "ready";
     },
     async recoverRevocations(store: Pick<IntercomStore, "pairFence">) {
       const records = await registry.list(), transports = new Map<string, ProvisionTransport>();

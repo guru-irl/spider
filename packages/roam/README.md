@@ -307,6 +307,28 @@ fences. Pending revocation keeps `revocation-pending`. Same-endpoint restores
 still need consent to the recorded fence. `intercom-enrollment.ts` refreshes
 refused observations on retry while retaining successful pairs' fence consent.
 
+## Pair-unit readiness and repair
+
+A missing recorded host or connect unit file reports
+`intercom-pair-unit-missing`. The pair stays unready, but the machine helper and
+bridge still publish on an existing hub route. Inspection does not recreate
+resources or remove pair state. Unsafe files, symlinks, wrong ownership or
+mode, mismatched contents, and other filesystem errors retain their refusals.
+
+Doctor names the pair side and provides a command to run on the hub. For a
+pending enrollment, set `GRAPH_FILE` to the original approved graph and rerun
+the same enrollment operation. Connector setup republishes its missing unit.
+A completed enrollment operation does not repeat setup. For an active pair,
+complete fenced revoke before enrolling again with fresh consent.
+
+Fenced cleanup treats an already-absent unit as removed only when systemd
+reports it not found and inactive with no PID, control group, fragment,
+drop-ins, or pending reload. The retained main process identity must have
+exited, and its recorded control group must be empty. Missing files alone,
+unknown process evidence, or a cached live unit cannot prove closure. Cleanup
+keeps all fence checks and never recreates a unit. See
+[Pair revocation](../../docs/architecture/roaming.md#pair-revocation).
+
 ## Intercom initialization
 
 Failed machine-intercom setup retries after 1, 2, 5, 10, and then 30 seconds.

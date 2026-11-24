@@ -41,12 +41,15 @@ export async function createMoveActivation(input: MoveActivationInput): Promise<
     const expectedStores = completeMoveRoster(old ? JSON.parse(old.stores_json) : ["global"], current.length === 1 ? current[0] : undefined);
     mounted = await createHostMoveBindings({ root: input.root, globalDb: core.db, config, journal, sessionId: input.sessionId, transport, storeKeys: expectedStores });
     const bindings = mounted.bindings, participant = bindings.participant!, stores = participant.stores;
+    let moveStores: typeof stores | undefined;
+    const resolveStores = () => moveStores ??= expectedStores.map(key => ({ key, db: bindings.stores!.open(key) }));
     const home = sessionHome(core.db, input.sessionId); if (home === "unknown") throw new Error("participant-home-unavailable");
     if (current.length === 1 || old) recordLocation(core.db, { sessionId: input.sessionId, stores: expectedStores, home, file: input.file, cwd: context.cwd });
     const address = bindings.intercom!.address;
     const scratchRoots = [paths.scratch("project", context.cwd), paths.scratch("global")];
     for (const root of scratchRoots) mkdirSync(root, { recursive: true });
     const live = createLiveFreezePorts({ ...input, globalRoot: input.root, machineId: config.machineId, stores: stores.map(row => row.db), expectedStores,
+      resolveStores: () => resolveStores().map(row => row.db),
       routeStores: [core.db], address, jobRoots: [join(input.root, "herdr", "jobs")], scratchRoots,
       broker: bindings.evidence!.broker, bridge: bindings.evidence!.bridge, settlement: bindings.evidence!.settlement,
       authorizeAbort: bindings.evidence!.authorizeAbort, onHubRestored: bindings.evidence!.onHubRestored,
@@ -72,7 +75,7 @@ export async function createMoveActivation(input: MoveActivationInput): Promise<
       }
       return live.inspect();
     };
-    live.readmit = operation => readmitLiveSession(operation, { globalDb: core.db, machineId: config.machineId, stores, journal, limits: config.limits,
+    live.readmit = operation => readmitLiveSession(operation, { globalDb: core.db, machineId: config.machineId, stores: resolveStores(), journal, limits: config.limits,
       proof: op => bindings.evidence!.rollback!(op), owner: async () => ({ kind: "live", identity: await inspectLiveOwner(join(input.root, "herdr"), input.sessionId, input.file, input.bootId) }),
       async readmit(home, op) { if (!input.gate.readmit) throw new Error("move-rollback-proof-missing"); await input.gate.readmit(String(op.args.moveId), op.args.source as unknown as Home, home); const result = await ready(input.file, home.epoch, home, op.id); if (!result) throw new Error("move-rollback-proof-missing"); return result; },
       reopen: bindings.intercom!.rollback.reopen, resume: live.resume });

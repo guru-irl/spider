@@ -35,6 +35,8 @@ type Evidence = Parameters<typeof createBlockerPorts>[0];
 export interface LiveFreezeInput {
   globalRoot: string; sessionId: string; machineId: string; context(): ExtensionContext | undefined; bootId?: () => Promise<string>;
   gate: AdmissionGate; stores: readonly Db[]; expectedStores: readonly StoreKey[]; routeStores: readonly Db[]; address: SessionAddress;
+  /** Open move-only stores on first freeze, not ordinary session admission. */
+  resolveStores?(): readonly Db[];
   activity: BlockerActivity; jobRoots: readonly string[]; scratchRoots: readonly string[]; usageRoots?: UsageRoots;
   usage: Producers["usage"]; embeddings: Producers["embeddings"]; organism: Producers["organism"]; others: Producers["others"];
   broker?: Pick<IntercomFederationClient, "inspectFreezeBlockers">; bridge?: Evidence["bridge"]; settlement?: Evidence["settlement"];
@@ -57,7 +59,8 @@ export function createLiveFreezePorts(input: LiveFreezeInput): LiveFreezePorts {
   const ingestThrough = createUsageIngestThrough(usageRoots, input.sessionId, input.machineId);
   return {
     gate: input.gate, journal: openFreezeJournal(join(input.globalRoot, "roam", "journal.db")),
-    stores: input.stores, expectedStores: input.expectedStores, intercom: input.intercom, ...producers, ingestThrough,
+    get stores() { return input.resolveStores?.() ?? input.stores; },
+    expectedStores: input.expectedStores, intercom: input.intercom, ...producers, ingestThrough,
     authorizeAbort: input.authorizeAbort ?? (async () => null), onHubRestored: input.onHubRestored ?? unavailable,
     shutdown: input.shutdown ?? (async () => unavailable()),
     async inspect(fence) {

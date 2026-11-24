@@ -107,13 +107,16 @@ export function createDurableLaunchPort(input: {
     if (pending.kind !== "launching" || !sameIntent(row.value.intent, intent) || intent.desired !== "running" || intent.suspended !== null) {
       return result(intent, "launch-intent-stale");
     }
+    let mode: LaunchInvocation["mode"] = "reconcile";
     if (pending.phase === "reserved") {
-      if (!await input.authorize(intent)) return result(intent, "launch-pending", pending.operationId);
+      if (await input.authorize(intent)) mode = "initial";
+      else if (request.mode === "fresh") return result(intent, "launch-pending", pending.operationId);
+      // A live owner forbids another spawn, not recovery of the reserved operation.
       const current = await input.intents.get(intent.sessionId);
       if (!current || current.version !== row.version) return result(intent, "launch-intent-stale", pending.operationId);
     }
     const admitted = row;
-    return input.invoke({ intent, mode: pending.phase === "reserved" ? "initial" : "reconcile",
+    return input.invoke({ intent, mode,
       reservation: { operationId: pending.operationId }, async beforeSpawn() {
         if (!await input.authorize(intent)) return "cancelled";
         const next: IntentState = { ...admitted.value, supervision: { ...pending, phase: "invoking" } };

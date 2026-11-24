@@ -315,6 +315,14 @@ The existing locked configuration write validates and durably stores the route
 with private permissions. The live helper can then enroll the staged direct
 edge. Only the hub's drain and switch control activate direct routing.
 
+Endpoint enrollment checks the queue's fence through its identity-bound live
+helper, including registration under the peer lifecycle lock. Unrelated queue
+WAL publication cannot block an approved setup effect. A missing or mismatched
+helper still refuses setup when a queue exists. Initial setup without a queue
+creates no queue files. Diagnostic reads retain private snapshots and still
+refuse unpublished WAL commits. Existing fences and unfinished revocation
+cleanup continue to block enrollment.
+
 After transport verification, `intercom-production.ts` publishes configuration
 on both sides and enrolls both live helpers. A failure keeps the original
 pending or precise refusal. Enrollment output and hub doctor name the step,

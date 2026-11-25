@@ -118,6 +118,7 @@ it.each([1, 2, 0])("retries a reserved launch after a hosting read fails at insp
     expect(evidence.mock.calls.map(args => JSON.parse(String(args[0])))).toContainEqual({
       event: "supervisor-hosting-error", sessionId: intent.sessionId,
       code: "supervisor-hosting-error", check: failureAt === 0 ? "running-intent" : "inspection",
+      ...(failureAt === 0 ? {} : { causeCode: "inspection-unavailable" }),
     });
     expect(await f.state()).toEqual(reserved);
     await supervisor.reconcile();
@@ -506,7 +507,7 @@ it.each(["inspection", "running-intent", "restart", "launch"] as const)("reports
     }
     expect(f.warnings.filter(row => row.warning !== null)).toEqual([{ sessionId: intent.sessionId,
       warning: { code: "supervisor-hosting-error", check, since: f.now(), count: 3,
-        ...(check === "launch" ? { causeCode: "launch-unavailable" } : {}) } }]);
+        ...(check === "launch" ? { causeCode: "launch-unavailable" } : check === "inspection" ? { causeCode: "inspection-unavailable" } : {}) } }]);
     expect(log).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(log.mock.calls)).not.toContain("secret file contents");
     expect(await f.state()).toEqual(original);
@@ -789,7 +790,7 @@ it("accepts legacy hosting warnings but rejects unsafe remote launch details", (
     { causeCode: "private detail" }, { causeCode: "/home/fixture/secret" },
     { causeCode: "ENOENT", exitCode: -1 }, { causeCode: "ENOENT", exitCode: 256 },
     { causeCode: "ENOENT", signal: 0 }, { causeCode: "ENOENT", signal: 256 },
-    { causeCode: "ENOENT", signal: "9" }, { causeCode: "ENOENT", check: "inspection" },
+    { causeCode: "ENOENT", signal: "9" }, { causeCode: "ENOENT", check: "restart" },
     { causeCode: "ENOENT", exitStatus: "private detail" }, { exitStatus: "exit-status-unavailable" },
     { causeCode: "ENOENT", exitStatus: "exit-status-unavailable", exitCode: 23 },
     { causeCode: "ENOENT", exitStatus: "exit-status-unavailable", check: "inspection" },
@@ -812,9 +813,41 @@ it("retries a warning write that failed before it became visible", async () => {
     await expect(supervisor.reconcile()).rejects.toThrow("warning write failed");
     await supervisor.reconcile();
     expect(f.warnings).toEqual([{ sessionId: intent.sessionId,
-      warning: { code: "supervisor-hosting-error", check: "inspection", since: f.now(), count: 3 } }]);
+      warning: { code: "supervisor-hosting-error", check: "inspection", since: f.now(), count: 3, causeCode: "inspection-unavailable" } }]);
     expect(f.launches).toEqual([]);
     expect((await f.state()).intent.suspended).toBeNull();
     expect(log).toHaveBeenCalledTimes(1);
   } finally { await supervisor.stop(); log.mockRestore(); }
+});
+
+
+it.each([["ENOENT", "ENOENT"], ["private-code", "inspection-unavailable"], [undefined, "inspection-unavailable"]])(
+  "preserves a safe inspection cause in the record, journal and doctor: %s", async (code, causeCode) => {
+  const module = await supervisorModule(); if (!module) return;
+  const f = fixture(), inspect = f.ports.inspect;
+  const root = mkdtempSync(join(dirname(scratchDbPath("inspection-warning")), "inspection-warning-"));
+  const db = openDb(join(root, "spider.db"));
+  migrate(db, "global", { machineId: local, globalRoot: root });
+  f.ports.hostingWarning = async (id, warning) => { writeLocal(db, "supervisor-hosting-error", id, warning ?? undefined); };
+  f.ports.inspect = async () => { throw Object.assign(new Error("private contents /private/session.jsonl"), { code }); };
+  const log = vi.spyOn(console, "error").mockImplementation(() => {}), supervisor = module.createSupervisor(f.ports);
+  try {
+    for (let pass = 0; pass < 3; pass++) await supervisor.reconcile();
+    const warning = readLocal(db, "supervisor-hosting-error", intent.sessionId);
+    expect(warning).toEqual({ code: "supervisor-hosting-error", check: "inspection", since: f.now(), count: 3, causeCode });
+    expect(validHostingWarnings([{ sessionId: intent.sessionId, ...warning as HostingWarning }])).toBe(true);
+    expect(log.mock.calls.map(args => JSON.parse(String(args[0])))).toEqual([{
+      event: "supervisor-hosting-error", sessionId: intent.sessionId, code: "supervisor-hosting-error", check: "inspection", causeCode,
+    }]);
+    const doctor = localHostingWarningDiagnostics(root);
+    expect(doctor).toEqual([expect.objectContaining({ severity: "warning", reason: expect.stringContaining(causeCode!),
+      repairCommand: "spider roam stop session-1" })]);
+    expect(doctor[0].reason).toContain("cancel hosting");
+    expect(JSON.stringify({ warning, doctor, journal: log.mock.calls })).not.toMatch(/private contents|private-code|\/private\//);
+    expect(f.launches).toEqual([]);
+    f.ports.inspect = inspect;
+    await supervisor.reconcile();
+    expect(f.launches).toHaveLength(1);
+    expect(localHostingWarningDiagnostics(root)).toEqual([]);
+  } finally { await supervisor.stop(); log.mockRestore(); db.close(); rmSync(root, { recursive: true, force: true }); }
 });

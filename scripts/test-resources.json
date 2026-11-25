@@ -16,7 +16,11 @@
         "vite*.config.*",
         "vitest*.ts",
         "vitest*.mjs",
-        ".github/**"
+        ".github/**",
+        "**/vite*.config.*",
+        "**/vitest*.config.*",
+        "**/vitest.setup.*",
+        "**/vitest.herdr-global-setup.*"
       ],
       "tests": [],
       "related": [],

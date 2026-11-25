@@ -36,7 +36,8 @@ function fixture() {
   write(releaseRoot, "dist/extension.js", "extension"); write(releaseRoot, "dist/intercom/broker.mjs", "broker");
   const activeFile = write(root, "active.json", "null"), journal = openJournal(join(root, "journal.db"));
   const state = { allow: true, existingId: null as string | null, verified: false, hubEnabled: true, boxEnabled: false, agentDirectory: "default" as "default" | "custom" | "unknown",
-    coreId: "fixture-core", replaceCoreOnConfirm: false, supervisorEnabled: false, permissionTightenings: 0, repairModes: false };
+    coreId: "fixture-core", replaceCoreOnConfirm: false, supervisorEnabled: false, permissionTightenings: 0, repairModes: false,
+    runningSupervisor: null as string | null, supervisorStarts: 0, supervisorRestarts: 0 };
   const events: string[] = [], confirmations: { target: string; providers: readonly string[] }[] = [], persisted: Peer[] = [];
   const preview: unknown[] = [], diagnostics: unknown[] = [], systemctl: string[][] = [], secretCollectionCalls: string[] = [];
   const value = healthyInventory();
@@ -62,11 +63,22 @@ function fixture() {
     },
     systemd: {
       unitDir: "/home/fixture/.config/systemd/user",
-      async writeUnit(name: string, bytes: string) { events.push("unit"); write(units, name, bytes); },
+      async writeUnit(name: string, bytes: string) {
+        events.push("unit");
+        const file = join(units, name), changed = !existsSync(file) || readFileSync(file, "utf8") !== bytes;
+        write(units, name, bytes); return changed;
+      },
       async systemctl(argv: readonly string[]) {
         events.push("systemctl"); systemctl.push([...argv]);
         if (argv[1] === "enable") state.supervisorEnabled = true;
         if (argv[1] === "disable") state.supervisorEnabled = false;
+        if (argv[1] === "start" || argv[1] === "restart") {
+          if (argv[1] === "restart" && state.runningSupervisor) state.supervisorRestarts++;
+          if (!state.runningSupervisor || argv[1] === "restart") {
+            state.supervisorStarts++;
+            state.runningSupervisor = readFileSync(join(units, "spider-roam-supervisor.service"), "utf8");
+          }
+        }
       },
     },
     async resources() { throw new Error("local resource probe is forbidden"); },
@@ -147,6 +159,28 @@ function fixture() {
     diagnostics, systemctl, secretCollectionCalls, value, ports, request };
 }
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+
+it("provisioning replaces an active supervisor's old release before reporting ready", async () => {
+  const f = fixture(); f.state.verified = true; f.write(f.source, "settings.json", "{}");
+  const old = '[Service]\nExecStart="/home/fixture/node" "/home/fixture/old/supervisor.mjs"\n';
+  f.write(f.units, "spider-roam-supervisor.service", old); f.state.runningSupervisor = old;
+  expect(await provision!(f.request("upgrade-supervisor"), f.ports)).toMatchObject({ code: 0, value: { hostingReady: true } });
+  expect(f.state.runningSupervisor).toContain(f.ports.destination.supervisor);
+  expect(f.state.runningSupervisor).not.toContain("/home/fixture/old/supervisor.mjs");
+  expect(f.state.supervisorRestarts).toBe(1);
+  expect(f.state.boxEnabled).toBe(true);
+});
+
+it("fresh provisioning of an unchanged healthy supervisor never restarts it", async () => {
+  const f = fixture(); f.state.verified = true; f.write(f.source, "settings.json", "{}");
+  expect(await provision!(f.request("supervisor-first"), f.ports)).toMatchObject({ code: 0 });
+  const running = f.state.runningSupervisor, starts = f.state.supervisorStarts;
+  expect(running).not.toBeNull();
+  expect(await provision!(f.request("supervisor-unchanged"), f.ports)).toMatchObject({ code: 0 });
+  expect(f.state.runningSupervisor).toBe(running);
+  expect(f.state.supervisorStarts).toBe(starts);
+  expect(f.state.supervisorRestarts).toBe(0);
+});
 
 it("reprovisioning repairs sign-in modes with no settings selected and records every repair", async () => {
   const f = fixture(); f.state.repairModes = true; f.state.verified = true;
@@ -601,12 +635,12 @@ it("recovers autostart when enable follows transiently blocked reprovision", asy
   expect(f.state.boxEnabled).toBe(true); expect(f.state.supervisorEnabled).toBe(true);
 }, 5000);
 
-it.each([false, true])("enables a ready supervisor without starting it (hub enabled: %s)", async hubEnabled => {
+it.each([false, true])("starts a ready supervisor before setting participation (hub enabled: %s)", async hubEnabled => {
   const f = fixture(); f.write(f.source, "settings.json", "{}"); f.state.hubEnabled = hubEnabled; f.state.verified = true;
   const outcome = await provision!(f.request(`ready-supervisor-${hubEnabled}`), f.ports);
   expect(outcome).toMatchObject({ code: 0, reason: "installed", value: { hostingReady: true } });
   expect(f.state.supervisorEnabled).toBe(true);
-  expect(f.systemctl).toEqual([["--user", "daemon-reload"], ["--user", "enable", "spider-roam-supervisor.service"]]);
+  expect(f.systemctl).toEqual([["--user", "daemon-reload"], ["--user", "enable", "spider-roam-supervisor.service"], ["--user", "restart", "spider-roam-supervisor.service"]]);
   expect(f.state.boxEnabled).toBe(hubEnabled);
 }, 5000);
 
@@ -1012,7 +1046,7 @@ it("provisions when a recorded diagnostic core unit has vanished", async () => {
   expect(await provision!(f.request("missing-diagnostic-unit"), f.ports)).toMatchObject({ code: 0 });
   expect(readFileSync(f.coreFile)).toEqual(before);
   expect(readFileSync(f.terminals)).toEqual(terminals);
-  expect(f.systemctl).toEqual([["--user", "daemon-reload"], ["--user", "enable", "spider-roam-supervisor.service"]]);
+  expect(f.systemctl).toEqual([["--user", "daemon-reload"], ["--user", "enable", "spider-roam-supervisor.service"], ["--user", "restart", "spider-roam-supervisor.service"]]);
 });
 
 it("core unit bytes and terminals remain unchanged", async () => {
@@ -1022,7 +1056,7 @@ it("core unit bytes and terminals remain unchanged", async () => {
   expect((await provision!(f.request("core-safe"), f.ports)).code).toBe(0);
   expect(readFileSync(f.coreFile)).toEqual(core);
   expect(readFileSync(f.terminals)).toEqual(terminals);
-  expect(f.systemctl).toEqual([["--user", "daemon-reload"], ["--user", "enable", "spider-roam-supervisor.service"]]);
+  expect(f.systemctl).toEqual([["--user", "daemon-reload"], ["--user", "enable", "spider-roam-supervisor.service"], ["--user", "restart", "spider-roam-supervisor.service"]]);
 }, 5000);
 
 it("reports a pending release and resumes the same operation without repeating consent", async () => {

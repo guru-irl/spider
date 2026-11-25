@@ -22,7 +22,7 @@ import { withProcessLock } from "@spider/herdr/sessions/registry";
 import { createParticipantSupervisor } from "../participant-supervisor";
 import { recordReadiness } from "../session-control";
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
-import { chmodSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createReplica } from "@spider/db-core/testutil";
 import { recordLocation } from "@spider/db-core/roam/catalog";
@@ -36,10 +36,19 @@ import { createIntentStore } from "../intent";
 import * as intentModule from "../intent";
 import { participantLaunchId } from "../participant-launch";
 import { enrollFixtureCore } from "./supervisor-core-fixture";
+import { requestHubControl, startHubControl } from "../control-socket";
+import { createMovePorts, handleMoveParticipantOperation, type MoveAdapterBindings } from "../move-ports";
+import type { Operation, Transport } from "../contracts";
+import { sessionHome } from "../homes";
+import { moveSession } from "../move";
 
 const BOX = "00000000-0000-4000-8000-000000000002", HUB = "00000000-0000-4000-8000-000000000001";
 const fixtures: ReturnType<typeof createReplica>[] = [];
-afterEach(() => { for (const f of fixtures.splice(0)) f.close(); vi.restoreAllMocks(); });
+const services: { close(): Promise<void> }[] = [];
+afterEach(async () => {
+  for (const service of services.splice(0)) await service.close();
+  for (const f of fixtures.splice(0)) f.close(); vi.restoreAllMocks(); vi.unstubAllEnvs();
+});
 function fixture(enabled = true, homed = true) {
   const global = createReplica("global", BOX), worktree = createReplica("worktree", BOX); fixtures.push(global, worktree);
   const config = { enabled, role: "box" as const, machineId: BOX, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture.service", syncMs: 120000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
@@ -47,6 +56,7 @@ function fixture(enabled = true, homed = true) {
   writeFileSync(join(global.root, "roam", "machine.json"), JSON.stringify({ machineId: BOX }), { mode: 0o600 });
   writeFileSync(join(global.root, "roam", "config.json"), JSON.stringify(config), { mode: 0o600 });
   enrollFixtureCore(global.root);
+  writeFileSync(join(global.root, "roam", "active-release.json"), JSON.stringify(join(global.root, "release")), { mode: 0o600 });
   const file = join(worktree.root, "s.jsonl"); writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: "s-1", cwd: worktree.root }) + "\n", { mode: 0o600 });
   global.db.prepare("UPDATE roam_meta SET capture_enabled=1 WHERE id=1").run();
   if (homed) global.db.prepare("INSERT INTO session_homes VALUES (?,?,2,?,1)").run("s-1", BOX, "move-1");
@@ -125,6 +135,19 @@ it.each(["root", "machine"])('refuses mismatched pair platform %s before deferre
   const outcome = await startProductionSupervisor(f.global.root, { intercomLocalPorts: platform as never }).then(
     async service => { await service.stop(); return 'accepted'; }, error => (error as Error).message);
   expect(outcome).toBe('machine-mismatch');
+}, 5000);
+
+it("production supervisor reports its root and loaded release before capture is initialized", async () => {
+  const f = fixture(), pi = "/fixture/pi", agentDir = join(f.global.root, "agent");
+  vi.stubEnv("SPIDER_ROAM_PI", pi); vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
+  const service = await startProductionSupervisor(f.global.root, { clock: { now: () => 1, later: () => () => {} } });
+  try {
+    await expect(requestHubControl(join(f.global.root, "roam", "sv.sock"), { op: "status" })).resolves.toMatchObject({
+      code: 0, reason: "ready", value: { root: f.global.root, release: join(process.cwd(), "packages"), pid: process.pid },
+    });
+    expect(await requestHubControl(join(f.global.root, "roam", "sv.sock"), { op: "disable" })).toMatchObject({ code: 2, reason: "invalid-supervisor-request" });
+    expect(await requestHubControl(join(f.global.root, "roam", "sv.sock"), { op: "status" })).toMatchObject({ code: 0 });
+  } finally { await service.stop(); }
 }, 5000);
 
 it("uninitialized production capture keeps an enrolled service inert", async () => {
@@ -690,6 +713,112 @@ it("standalone start rechecks persisted enrollment before effects", async () => 
   writeFileSync(join(f.global.root, "roam", "config.json"), JSON.stringify({ ...f.ports.config, hubMachineId: "00000000-0000-4000-8000-000000000003" }), { mode: 0o600 });
   expect(await handleSessionOperation(f.operation, f.ports, { wake: async () => { throw new Error("must not wake"); } })).toMatchObject({ code: 1, reason: "participant-config-changed" });
   expect(f.worktree.db.prepare("SELECT state FROM roam_sessions").get()).toEqual({ state: "retired" });
+}, 5000);
+
+async function supervisorPreflightFixture(mismatch: "root" | "release" | null) {
+  const f = fixture(), hub = createReplica("global", HUB); fixtures.push(hub);
+  const release = join(f.global.root, "release"), pi = "/fixture/pi", agentDir = join(f.global.root, "agent");
+  writeFileSync(join(f.global.root, "roam", "active-release.json"), JSON.stringify(release), { mode: 0o600 });
+  vi.stubEnv("SPIDER_ROAM_PI", pi); vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
+  const bin = join(f.global.root, "bin"); mkdirSync(bin);
+  writeFileSync(join(bin, "systemctl"), "#!/bin/sh\nprintf '42\\n'\n", { mode: 0o700 });
+  vi.stubEnv("PATH", `${bin}:${process.env.PATH}`);
+  const running = { root: mismatch === "root" ? join(f.global.root, "foreign") : f.global.root,
+    release: mismatch === "release" ? join(f.global.root, "old-release") : release, pid: 42 };
+  services.push(await startHubControl(join(f.global.root, "roam", "sv.sock"), async () => ({ code: 0, reason: "ready", value: running })));
+  const file = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
+  const home = { sessionId: "s-1", machineId: HUB, epoch: 1, moveId: null, updatedAt: 1 };
+  hub.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run("s-1", HUB);
+  recordLocation(hub.db, { sessionId: "s-1", stores: ["global", f.worktree.storeKey], home, ...file });
+  const config = { ...f.ports.config, role: "hub" as const, machineId: HUB,
+    peers: [{ machineId: BOX, alias: "box.invalid", node: "/fixture/node", pi, cli: "/fixture/cli", core: "core-1", globalRoot: f.global.root }] };
+  const unused = async (): Promise<never> => { throw new Error("preflight must not perform move effects"); };
+  let freezes = 0, wakes = 0;
+  const participant = { pi, config, globalDb: hub.db, root: hub.root, runtimeRoot: join(hub.root, "s"),
+    stores: [{ key: "global" as const, db: hub.db }, { key: f.worktree.storeKey, db: f.worktree.db }],
+    withBothLocks: async <T>(_id: string, effect: () => Promise<T>) => effect(), probe: async () => ({ kind: "absent" as const }),
+    git: { run: unused, scratch: join(hub.root, "git"), worktreeCommand: null }, writers: async () => [], sessionTarget: async () => file.file,
+    auth: async () => [], identityCurrent: async () => true, wake: unused, readiness: async () => null,
+    observation: unused, dormant: () => async (op: Operation) => {
+      if (op.kind === "session-freeze") freezes++;
+      return { code: 0 as const, reason: "complete", operationId: op.id, home, epoch: 1, repairCommand: null, value: { blockers: [] } };
+    }, retireFailed: unused, readmitLive: unused, cleanupTerminal: unused };
+  const bindings: MoveAdapterBindings = { globalDb: hub.db, root: hub.root, participant,
+    mapping: async () => ({ repoKey: "fixture-repo", workspaceId: "fixture-workspace", sourceRoot: file.cwd, destinationRoot: file.cwd, destinationCwd: file.cwd }),
+    checkSessionFile: async () => {}, stores: { open: key => key === "global" ? hub.db : f.worktree.db, head: () => { throw new Error("preflight must not read barriers"); } },
+    clock: { now: () => 1, later: () => () => {} },
+    evidence: { authorizeAbort: unused, authorizeRetire: unused, onHubRestored: () => () => {}, bridge: unused, settlement: unused,
+      broker: { inspectFreezeBlockers: unused } },
+    intercom: { address: { sessionId: "s-1", scopeId: null }, ports: { close: unused, drain: unused, inspect: unused,
+      checkGeneration: unused, abort: unused, ready: unused }, destinationEndpoint: unused, rollback: { currentFence: unused, reopen: unused } },
+  };
+  const destination: MoveAdapterBindings = { ...bindings, participant: { ...participant, config: f.ports.config, root: f.global.root, globalDb: f.global.db } };
+  const transport: Transport = { resolve: async peer => peer, bootstrapProbe: unused, run: unused, read: unused, write: unused,
+    exec: async (_peer, argv) => Buffer.from(JSON.stringify(await handleAgentOperation(JSON.parse(argv[2]), {
+      ...f.ports, move: op => handleMoveParticipantOperation(op, f.ports.journal, destination) }))) };
+  const ports = createMovePorts(config, transport, f.ports.journal, bindings);
+  const request = { sessionId: "s-1", destinationMachine: BOX, operation: { id: "identity-preflight", kind: "move", machineId: HUB,
+    expectedEpoch: 1, args: { sessionId: "s-1", destinationMachine: BOX } } };
+  const wake = (await import("../participant-runtime")).createBoxParticipantWake({ root: f.global.root, db: f.global.db, config: f.ports.config,
+    journal: f.ports.journal, wake: async () => { wakes++; } });
+  return { f, hub, running, file, home, ports, request, wake, destination, freezes: () => freezes, wakes: () => wakes };
+}
+
+it.each(["root", "release"] as const)("destination preflight refuses a same-named supervisor on another %s before freeze or home CAS", async mismatch => {
+  const c = await supervisorPreflightFixture(mismatch), beforeFile = readFileSync(c.file.file), beforeHome = sessionHome(c.hub.db, "s-1");
+  await expect(c.ports.check(c.request)).rejects.toMatchObject({ failure: { step: "destination-diagnostics", code: `supervisor-${mismatch}-mismatch` } });
+  expect(await moveSession(c.request, c.ports)).toMatchObject({ code: 1, reason: "move-preflight-refused",
+    failure: { step: "destination-diagnostics", code: `supervisor-${mismatch}-mismatch` } });
+  const op = { id: "direct-diagnostics", kind: "move-diagnostics", machineId: BOX, expectedEpoch: 1,
+    args: { sourceMachine: HUB, sessionId: "s-1", moveId: c.request.operation.id } };
+  expect(await handleMoveParticipantOperation(op, c.f.ports.journal, c.destination)).toMatchObject({ code: 1,
+    reason: `supervisor-${mismatch}-mismatch`, repairCommand: `spider roam provision ${BOX}` });
+  expect(sessionHome(c.hub.db, "s-1")).toEqual(beforeHome);
+  expect(await createRunningIntentAuthority(c.f.global.db).get("s-1")).toBeNull();
+  expect(await createIntentStore(c.f.global.root).get("s-1")).toBeNull();
+  expect(readFileSync(c.file.file)).toEqual(beforeFile);
+  expect(c.f.worktree.db.prepare("SELECT state FROM roam_sessions").get()).toEqual({ state: "retired" });
+  expect(c.freezes()).toBe(0); expect(c.wakes()).toBe(0);
+}, 5000);
+
+it("preflight refuses a foreign fixed unit even when a matching-root manual supervisor answers", async () => {
+  const c = await supervisorPreflightFixture(null); c.running.pid = 43;
+  await expect(c.ports.check(c.request)).rejects.toMatchObject({ failure: { step: "destination-diagnostics", code: "supervisor-identity-unavailable" } });
+  expect(sessionHome(c.hub.db, "s-1")).toEqual(c.home);
+  expect(await createRunningIntentAuthority(c.f.global.db).get("s-1")).toBeNull();
+  expect(await createIntentStore(c.f.global.root).get("s-1")).toBeNull();
+  expect(c.freezes()).toBe(0); expect(c.wakes()).toBe(0);
+}, 5000);
+
+it("box wake refuses a changed supervisor before reserving the exact session", async () => {
+  const c = await supervisorPreflightFixture("release"), authority = createRunningIntentAuthority(c.f.global.db);
+  await authority.set({ sessionId: "s-1", epoch: 2, desired: "running", suspended: null, ...c.file, moveId: "move-1" }, "start-1",
+    { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
+  expect(await c.wake({ sessionId: "s-1", operationId: "start-1" })).toMatchObject({ ok: false, reason: "supervisor-release-mismatch" });
+  expect(await createIntentStore(c.f.global.root).get("s-1")).toBeNull(); expect(c.wakes()).toBe(0);
+}, 5000);
+
+it("matching supervisor preflight joins one exact-file launch", async () => {
+  const c = await supervisorPreflightFixture(null);
+  expect(await c.ports.check(c.request)).toMatchObject({ source: c.home, sourceFile: c.file.file, destinationMachine: BOX });
+  await handleSessionOperation(c.f.operation, c.f.ports, { wake: async () => {} });
+  let live = false; const launches: { file: string; cwd: string }[] = [];
+  const supervisor = createParticipantSupervisor({ root: c.f.global.root, agent: c.f.ports,
+    clock: { now: () => 1, later: () => () => {} }, events: { subscribe: () => () => {} }, diagnostics: async () => [],
+    owner: async () => live ? { kind: "live", identity: { bootId: "boot-1", pid: 123, startTime: "start-1" } } : { kind: "absent" },
+    stop: async () => ({ kind: "absent" }), notify: async () => {}, async launch(intent, operationId) {
+      live = true; launches.push({ file: intent.file, cwd: intent.cwd });
+      return { code: 0, reason: "ready", operationId, home: null, epoch: intent.epoch, repairCommand: null,
+        value: { origin: "hub-operation", opId: operationId, sessionId: intent.sessionId, epoch: intent.epoch,
+          file: intent.file, cwd: intent.cwd, core: "core-1", terminal: "terminal-1" } };
+    } });
+  const wake = (await import("../participant-runtime")).createBoxParticipantWake({ root: c.f.global.root, db: c.f.global.db, config: c.f.ports.config,
+    journal: c.f.ports.journal, wake: () => supervisor.reconcile() });
+  try {
+    const request = { sessionId: "s-1", operationId: "start-1" };
+    expect(await wake(request)).toMatchObject({ ok: true }); expect(await wake(request)).toMatchObject({ ok: true });
+    expect(launches).toEqual([{ file: c.file.file, cwd: c.file.cwd }]);
+  } finally { await supervisor.stop(); }
 }, 5000);
 
 it("box wake reserves exactly the requested session with an idempotent local launch id and no readiness wait", async () => {

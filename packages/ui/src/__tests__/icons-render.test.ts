@@ -27,7 +27,7 @@ const agent: AgentSnapshot = {
 describe("icon styles in rendered rows", () => {
   it("returns each role's specified text and Nerd Font glyph with equal cell widths", () => {
     const roles: [IconRole, string, string][] = [
-      ["agent", "\u{1F578}\uFE0F", "\u{F167A} "], ["spider", "\u{1F578}\uFE0F", "\u{F0BCA} "], ["warning", "⚠", "\u{F002A}"], ["failure", "✗", "\u{F0156}"],
+      ["agent", "\u{1F916}", "\u{F167A} "], ["spider", "\u{1F578}\uFE0F", "\u{F0BCA} "], ["warning", "⚠", "\u{F002A}"], ["failure", "✗", "\u{F0156}"],
       ["gutter", "⎿", "\u{F060D}"], ["task", "↳", "\u{F060D}"], ["result", "⤴", "\u{F005C}"],
       ["message", "✉", "\u{F01F0}"], ["reply", "↩", "\u{F0F20}"], ["broadcast", "⇉", "\u{F0B23}"],
       ["handoff", "⇢", "\u{F19B0}"], ["pin", "📌", "\u{F0931} "], ["modelDefault", "⟵", "\u{F004D}"],
@@ -50,7 +50,7 @@ describe("icon styles in rendered rows", () => {
   it("keeps the agent marker and its following spaces aligned", () => {
     const text = formatAgentLine(theme("text"), agent, 100, 0, "◆");
     const nerd = formatAgentLine(theme("nerd"), agent, 100, 0, "◆");
-    expect(text).toContain("◆ \u{1F578}\uFE0F scribe");
+    expect(text).toContain("◆ \u{1F916} scribe");
     expect(nerd).toContain("◆ \u{F167A}  scribe");
     expect(visibleWidth(nerd)).toBe(visibleWidth(text));
   });
@@ -109,7 +109,7 @@ describe("icon styles in rendered rows", () => {
       focused: false, pinned: true, now: 0, spinner: new Spinner() };
     const text = renderGridCell(theme("text"), opts);
     const nerd = renderGridCell(theme("nerd"), opts);
-    expect(text[0]).toContain("✗ \u{1F578}\uFE0F scribe 📌");
+    expect(text[0]).toContain("✗ \u{1F916} scribe 📌");
     expect(nerd[0]).toContain("\u{F0156} \u{F167A}  scribe \u{F0931} ");
     expect(text[2]).toContain("↳ read files");
     expect(nerd[2]).toContain("\u{F060D} read files");
@@ -167,8 +167,8 @@ describe("icon styles in rendered rows", () => {
       expect(b.join("\n")).toContain("\u{F19B0} next");
       expect(a.join("\n")).toContain("⚠ k again to kill");
       expect(b.join("\n")).toContain("\u{F002A} k again to kill");
-      expect(a[0]).toContain("🕸 scribe");
-      expect(b[0]).toContain("\u{F167A} scribe");
+      expect(a[0]).toContain("\u{1F916} scribe");
+      expect(b[0]).toContain("\u{F167A}  scribe");
       expect(b.map(visibleWidth)).toEqual(a.map(visibleWidth));
     } finally { text.dispose(); nerd.dispose(); }
   });

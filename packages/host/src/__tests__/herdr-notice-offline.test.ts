@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { afterEach, expect, it, vi } from 'vitest';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHcClient } from '../../../herdr/src/client/hc.js';
 import { HerdrError } from '../../../herdr/src/client/parse.js';
@@ -31,7 +32,7 @@ afterEach(() => { boundary.modes = {}; boundary.inventoryDown = false; vi.useRea
 
 type Session = { outages: Set<string>; messages: Map<string, number>; notices: string[] };
 const session = (): Session => ({ outages: new Set(), messages: new Map(), notices: [] });
-const client = (session: Session) => createHcClient({ binary: 'fixture', env: { HC_SOCKET: join(process.cwd(), '.spider/scratch/offline-fixture.sock'), HC_SESSION: 'fixture' } }, key => session.outages.delete(key));
+const client = (session: Session) => createHcClient({ binary: 'fixture', env: { HC_SOCKET: join(tmpdir(), 'offline-fixture.sock'), HC_SESSION: 'fixture' } }, key => session.outages.delete(key));
 function report(session: Session, error: unknown): void {
   if (shouldNotifyHerdrError(error, session.outages, session.messages, Date.now())) session.notices.push(herdrErrorNotice(error));
 }

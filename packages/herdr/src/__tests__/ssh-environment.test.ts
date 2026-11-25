@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { describe, it, expect } from 'vitest';
+import { afterAll, describe, it, expect } from 'vitest';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { rolldown } from 'rolldown';
 import { createBashTool, createLocalBashOperations, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { createHerdrHarness, type HerdrHarness } from './testutil.js';
@@ -23,6 +22,20 @@ async function execute(binary: string, argv: string[], env: Readonly<NodeJS.Proc
     child.on('close', exitCode => resolve({ exitCode, stdout, stderr }));
   });
 }
+let bundleRoot: string | undefined, bundlePromise: Promise<string> | undefined;
+function shimBundle(): Promise<string> {
+  return bundlePromise ??= (async () => {
+    const base = resolve('.spider/scratch/h'); await mkdir(base, { recursive: true });
+    bundleRoot = await mkdtemp(join(base, 'ssh-bundle-'));
+    const entry = join(bundleRoot, 'entry.ts'), shimProgram = join(bundleRoot, 'shim.mjs');
+    await writeFile(entry, `import {runSshShim} from ${JSON.stringify(resolve('packages/herdr/src/ssh/shim.ts'))}; process.exitCode = await runSshShim(process.argv.slice(3));`);
+    const bundle = await rolldown({ input: entry, platform: 'node' });
+    try { await bundle.write({ file: shimProgram, format: 'esm' }); } finally { await bundle.close(); }
+    return shimProgram;
+  })();
+}
+afterAll(async () => { if (bundleRoot) await rm(bundleRoot, { recursive: true, force: true }); });
+
 // This generator consumes its argument, never process.env.PATH. The real executor composition is L2's assertion.
 function generatedShell(code: string, env: Readonly<NodeJS.ProcessEnv>): string { return `export PATH='${env.PATH!.replace(/'/g, "'\\''")}'\n${code}\n`; }
 async function fixture(test: (h: HerdrHarness, options: EnvironmentPolicyOptions, ports: RoutingPorts) => Promise<void>) {
@@ -30,10 +43,7 @@ async function fixture(test: (h: HerdrHarness, options: EnvironmentPolicyOptions
   try {
     await h.start(); await h.scenario({ ssh: { stdout: 'ok\n', exitCode: 17 } });
     cache = createMachineCache({ hc: h.hc, identity: await h.hc.identity(), directory: join(h.root, 'cache') }); await cache.ready;
-    const entry = join(h.root, 'entry.ts'), shimProgram = join(h.root, 'shim.mjs');
-    await writeFile(entry, `import {runSshShim} from ${JSON.stringify(resolve('packages/herdr/src/ssh/shim.ts'))}; process.exitCode = await runSshShim(process.argv.slice(3));`);
-    const bundle = await rolldown({ input: entry, platform: 'node' }); try { await bundle.write({ file: shimProgram, format: 'esm' }); } finally { await bundle.close(); }
-    const options: EnvironmentPolicyOptions = { shimDirectory: join(h.root, 'shim'), realSshBinary: h.sshBinary, cacheDescriptor: cache.descriptor, shimProgram };
+    const options: EnvironmentPolicyOptions = { shimDirectory: join(h.root, 'shim'), realSshBinary: h.sshBinary, cacheDescriptor: cache.descriptor, shimProgram: await shimBundle() };
     await installSshShim(options);
     const ports: RoutingPorts = { policy: createSshPolicy(cache), environmentPolicy: createExecutionEnvironmentPolicy(options), currentOwner: () => h.owner,
       createBashTool, createLocalBashOperations, readShellFile: path => readFile(path, 'utf8'), enabled: () => true };
@@ -113,10 +123,12 @@ describe('immutable SSH execution environment', () => {
     const f = piFixture(), registration = registerHerdrRouting(f.pi, { ...ports, enabled: () => false });
     try { expect(await f.emit('tool_call', { toolName: 'bash', input: { command: 'ssh remote.invalid' } }, context(h))).toBeUndefined(); } finally { await registration.dispose(); }
   }));
-  it('normalizes Windows Path and PATHEXT before prepending and reports failed platform checks', async () => fixture(async (_h, options) => {
-    const windows = createExecutionEnvironmentPolicy({ ...options, platform: 'win32', shimDirectory: 'C:\\policy\\bin', realSshBinary: 'C:\\Windows\\System32\\ssh.exe', shimProgram: 'C:\\policy\\cli.mjs', platformCheck: () => ({ ok: true }) });
+  it('normalizes Windows Path and PATHEXT before prepending and reports failed platform checks', () => {
+    const options: EnvironmentPolicyOptions = { platform: 'win32', shimDirectory: 'C:\\policy\\bin', realSshBinary: 'C:\\Windows\\System32\\ssh.exe', shimProgram: 'C:\\policy\\cli.mjs',
+      cacheDescriptor: { path: 'C:\\policy\\cache.json', identity: { coreId: 'fixture' as MachineCache['descriptor']['identity']['coreId'], socket: 'C:\\policy\\core.sock', sessionNamespace: 'fixture' } } };
+    const windows = createExecutionEnvironmentPolicy({ ...options, platformCheck: () => ({ ok: true }) });
     const env = windows({ Path: 'C:\\tools;C:\\Windows', PATHEXT: '.EXE;.BAT' }); expect(env.PATH).toBe('C:\\policy\\bin;C:\\tools;C:\\Windows'); expect(env.Path).toBeUndefined(); expect(env.PATHEXT?.split(';')[0]).toBe('.CMD');
-    const failures: string[] = []; const disabled = createExecutionEnvironmentPolicy({ ...options, platform: 'win32', platformCheck: () => ({ ok: false, reason: 'transport check failed' }), reportDisabled: reason => failures.push(reason) });
+    const failures: string[] = []; const disabled = createExecutionEnvironmentPolicy({ ...options, platformCheck: () => ({ ok: false, reason: 'transport check failed' }), reportDisabled: reason => failures.push(reason) });
     expect(disabled({ PATH: 'original' }).PATH).toBe('original'); expect(failures).toEqual(['transport check failed']);
-  }));
+  });
 });

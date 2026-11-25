@@ -9,14 +9,28 @@ import { selectRemoteSessionSlot } from '../spaces/remote-placement.js';
 import { createPaneService, type PaneServicePorts } from '../panes/service.js';
 import { createPaneInventoryCache } from '../panes/inventory.js';
 import { createPanePlacementStore } from '../panes/store.js';
-import { parseMachineChoice, parsePanePresentation } from '../panes/codec.js';
+import { parseMachineChoice, parsePanePresentation, parsePlacementState } from '../panes/codec.js';
+import type { PanePlacementStore, PlacementState } from '../panes/types.js';
 import type { HcClient } from '../contracts.js';
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
-async function fixture() {
+function inMemoryStore(): PanePlacementStore {
+  let state: PlacementState = { version: 2, revision: 0, slots: [], attempts: [], presentations: [], choices: [], launches: [] };
+  let tail = Promise.resolve();
+  const transact = (change?: (before: PlacementState) => PlacementState): Promise<PlacementState> => {
+    const result = tail.then(() => {
+      if (change) state = parsePlacementState({ ...change(structuredClone(state)), revision: state.revision + 1 });
+      return structuredClone(state);
+    });
+    tail = result.then(() => {}, () => {});
+    return result;
+  };
+  return { read: () => transact(), update: change => transact(change) };
+}
+async function fixture(disk = false) {
   const base = join(paths.scratch('worktree', process.cwd()), 'b3', 'service'); await mkdir(base, { recursive: true });
   const root = await mkdtemp(join(base, 's-')); roots.push(root);
-  const store = createPanePlacementStore(join(root, 'roam', 'placement'));
+  const store = disk ? createPanePlacementStore(join(root, 'roam', 'placement')) : inMemoryStore();
   const presentation = parsePanePresentation({ id: 'p1', revision: 1, mode: 'proxy', role: 'agent', target: { coreId: 'core-remote', terminalId: 't7', address: 'core-remote/t7', createdMs: 17, identityLabels: { 'spider.session': 'session-1' }, alias: 'box-1.invalid', machineId: null, kind: 'session', sessionId: 'session-1', generation: 'gen-1', homeEpoch: 2, runId: null, consoleId: null, name: 'Example', cwd: '/home/example/work' }, proxy: 'core-local/t8', slot: null, visibility: 'visible', launch: 'acknowledged', closeOperationId: null, conversion: null });
   await store.update(s => ({ ...s, presentations: [presentation] }));
   const ticks = new Set<() => void>();
@@ -59,7 +73,7 @@ test('one mutation reconciles once even when its own effects emit core events', 
   } finally { await service.stop(); }
 });
 test('scheduled reconciliation waits for placement acknowledgement before registering session facts', async () => {
-  const f = await fixture();
+  const f = await fixture(true);
   let release!: () => void, entered!: () => void, placing = false, overlapping = false;
   const gate = new Promise<void>(resolve => { release = resolve; });
   const started = new Promise<void>(resolve => { entered = resolve; });
@@ -84,7 +98,7 @@ test('scheduled reconciliation waits for placement acknowledgement before regist
   } finally { release(); await service.stop(); }
 });
 test.each(['move', 'open'] as const)('an earlier inventory refresh cannot rewrite a presentation during %s', async op => {
-  const f = await fixture();
+  const f = await fixture(true);
   let releaseInventory!: () => void, inventoryEntered!: () => void, releasePlacement!: () => void, placementEntered!: () => void;
   const inventoryStarted = new Promise<void>(resolve => { inventoryEntered = resolve; });
   const inventoryGate = new Promise<void>(resolve => { releaseInventory = resolve; });
@@ -141,7 +155,7 @@ test('socket refuses oversized or stale mutation', async () => {
   expect(f.ports.dispatch).not.toHaveBeenCalled(); await service.stop();
 });
 test('service park persists intent even when the app is absent', async () => {
-  const f = await fixture(); const service = createPaneService(f.ports);
+  const f = await fixture(true); const service = createPaneService(f.ports);
   const result = await service.request({ version: 1, op: 'park', operationId: 'park1', presentationId: 'p1', expectedRevision: 1 });
   expect(result).toMatchObject({ outcome: { status: 'pending', presentation: { visibility: 'parked' } } });
   expect((await f.ports.store.read()).presentations[0].visibility).toBe('parked');
@@ -187,7 +201,7 @@ test('in-flight actions retain replay protection beyond the replay window', asyn
   await service.stop();
 });
 test('identical readiness replay after a service restart does not retarget twice', async () => {
-  const f = await fixture();
+  const f = await fixture(true);
   const request = { version: 1 as const, op: 'present-ready' as const, operationId: 'durable-ready', presentationId: 'p1', expectedRevision: 1, target: { ...f.presentation.target, homeEpoch: 3 } };
   f.ports.dispatch = vi.fn(async () => {
     const presentation = { ...f.presentation, target: request.target, revision: 2 };
@@ -200,7 +214,7 @@ test('identical readiness replay after a service restart does not retarget twice
   finally { await restarted.stop(); }
 });
 test('a changed readiness request cannot reuse completed operation evidence', async () => {
-  const f = await fixture();
+  const f = await fixture(true);
   const request = { version: 1 as const, op: 'present-ready' as const, operationId: 'durable-ready', presentationId: 'p1', expectedRevision: 1, target: f.presentation.target };
   const service = createPaneService(f.ports); await service.request(request); await service.stop();
   const restarted = createPaneService(f.ports);
@@ -210,7 +224,7 @@ test('a changed readiness request cannot reuse completed operation evidence', as
   } finally { await restarted.stop(); }
 });
 test('a superseded generation cannot replay an old completed readiness', async () => {
-  const f = await fixture();
+  const f = await fixture(true);
   const request = { version: 1 as const, op: 'present-ready' as const, operationId: 'durable-ready', presentationId: 'p1', expectedRevision: 1, target: f.presentation.target };
   const service = createPaneService(f.ports); await service.request(request); await service.stop();
   await f.ports.store.update(state => ({ ...state, presentations: [{ ...f.presentation, revision: 2, target: { ...f.presentation.target, generation: 'gen-2' as never, homeEpoch: 3 } }] }));
@@ -230,7 +244,7 @@ test('an in-memory readiness reply cannot outlive its generation', async () => {
   } finally { await service.stop(); }
 });
 test('incomplete readiness never earns a durable replay', async () => {
-  const f = await fixture();
+  const f = await fixture(true);
   const request = { version: 1 as const, op: 'present-ready' as const, operationId: 'unfinished-ready', presentationId: 'p1', expectedRevision: 1, target: f.presentation.target };
   f.ports.dispatch = vi.fn(async () => {
     const presentation = { ...f.presentation, revision: 2 };
@@ -244,7 +258,7 @@ test('incomplete readiness never earns a durable replay', async () => {
 });
 
 test('completed readiness evidence never bypasses another action revision check', async () => {
-  const f = await fixture();
+  const f = await fixture(true);
   const request = { version: 1 as const, op: 'present-ready' as const, operationId: 'durable-ready', presentationId: 'p1', expectedRevision: 1, target: f.presentation.target };
   const service = createPaneService(f.ports); await service.request(request); await service.stop();
   await f.ports.store.update(state => ({ ...state, presentations: [{ ...f.presentation, revision: 2 }] }));
@@ -480,7 +494,7 @@ test('cold auxiliary lookup refreshes and finds an existing owner before launch'
 });
 
 test('persisted owner rows cannot authorize a launch when refresh fails', async () => {
-  const f = await fixture(), row = availableOwnerRow(f.presentation), launch = observeOwnerLookup(f);
+  const f = await fixture(true), row = availableOwnerRow(f.presentation), launch = observeOwnerLookup(f);
   f.ports.inventory = vi.fn(async () => ({ version: 1 as const, rows: [row] as never, next: null, complete: true }));
   const original = createPaneService(f.ports);
   await original.reconcile(); await original.stop();
@@ -692,7 +706,7 @@ test('snapshot trims live presentations and terminal facts without raising codec
   } finally { await service.stop(); }
 });
 test('capped display snapshots retain the full private placement inventory', async () => {
-  const f = await fixture();
+  const f = await fixture(true);
   const owner = { sessionId: 'session-0', generation: 'gen-1', terminal: { coreId: 'core-remote', terminalId: 't7', address: 'core-remote/t7', socket: '/unused', sessionNamespace: 'test' }, cwd: '/home/example', sessionFile: null, name: 'Builder' };
   const rows = Array.from({ length: 270 }, (_, i) => ({ sessionId: `session-${i}`, generation: 'gen-1', name: i === 269 || i === 0 ? 'Builder' : `Other-${i}`, status: 'working', updatedAt: 1, machineKey: 'box-1.invalid', unavailableReason: null, owner: { ...owner, sessionId: `session-${i}` }, target: { ...f.presentation.target, sessionId: `session-${i}` }, children: [], consoles: [] }));
   f.ports.inventory = async (_machine, _signal, cursor) => ({ version: 1, rows: (cursor ? rows.slice(256) : rows.slice(0, 256)) as never, next: cursor ? null : 'page-2', complete: true });
@@ -714,7 +728,7 @@ test('capped display snapshots retain the full private placement inventory', asy
 
 
 test('ready outcome queries remain read-only after revision changes and service restart', async () => {
-  const f = await fixture();
+  const f = await fixture(true);
   const request = { version: 1 as const, op: 'present-ready' as const, operationId: 'query-ready', presentationId: 'p1', expectedRevision: 1, target: f.presentation.target };
   const service = createPaneService(f.ports), completed = await service.request(request); await service.stop();
   await f.ports.store.update(state => ({ ...state, presentations: [{ ...f.presentation, revision: 2, visibility: 'parked' }] }));

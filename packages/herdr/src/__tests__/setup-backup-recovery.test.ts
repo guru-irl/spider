@@ -16,6 +16,7 @@ import { createProductionHerdrCliPorts } from '../../../host/src/herdr/ports.js'
 import { writePrivateJson } from '../sessions/registry.js';
 import { forgetCutoverTabs, readCutoverRecovery, recordSessionMove, type LayoutSnapshot } from '../spaces/setup.js';
 import { fixture, hash, realFs, registerSetupCleanup } from './setup-fixture.js';
+import { createInProcessHerdrHarness } from './setup-inprocess-harness.js';
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
@@ -26,7 +27,8 @@ registerSetupCleanup();
 const publicationCases = Array.from({ length: 16 }, (_, index) => ['before', 'after'].map(timing => [timing, index] as const)).flat();
 
 test.each(publicationCases)('verified backup recovery resumes %s installed file publication %i', async (timing, index) => {
-  const f = await fixture();
+  const processBoundary = timing === 'before' && index === 0 || timing === 'after' && index === 15;
+  const f = await fixture('fake', processBoundary ? createHerdrHarness : createInProcessHerdrHarness);
   let writes = 0;
   let crashed = false;
   const publish = (operation: typeof realFs.rename) => async (from: Parameters<typeof realFs.rename>[0], to: Parameters<typeof realFs.rename>[1]) => {
@@ -108,7 +110,8 @@ test('setup recovery preserves a moved remote presentation and its real owner', 
 
 const bookkeepingCases = ['checkpoint', 'journal', 'blob'].flatMap(kind => ['before', 'after'].map(timing => [kind, timing] as const));
 test.each(bookkeepingCases)('setup resumes after %s publication fails %s its persisted boundary', async (kind, timing) => {
-  const f = await fixture();
+  const processBoundary = kind === 'journal' && timing === 'before';
+  const f = await fixture('fake', processBoundary ? createHerdrHarness : createInProcessHerdrHarness);
   let crashed = false;
   const publish = (operation: typeof realFs.rename) => async (from: Parameters<typeof realFs.rename>[0], to: Parameters<typeof realFs.rename>[1]) => {
     const path = String(to), name = path.slice(f.request.journalRoot.length + 1);

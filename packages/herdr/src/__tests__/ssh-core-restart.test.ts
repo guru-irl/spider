@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
-import { access, unlink, writeFile } from 'node:fs/promises';
+import { access, readFile, unlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { createHerdrHarness, type HerdrHarness } from './testutil.js';
 import { createMachineCache, type MachineCache } from '../ssh/cache.js';
-import { createExecutionEnvironmentPolicy, finalChildEnvironment, installSshShim, sshShimDirectory } from '../ssh/shim.js';
+import { createExecutionEnvironmentPolicy, finalChildEnvironment, installSshShim, runSshShim, sshShimDirectory } from '../ssh/shim.js';
 import { isCoreAvailable } from '../client/liveness.js';
 
 const realHc = process.env.SPIDER_HERDR_E2E === '1' && await access(process.env.SPIDER_HERDR_HC_BINARY ?? join(process.env.HOME!, '.local/bin/hc')).then(() => true, () => false);
@@ -18,6 +18,12 @@ function bash(command: string, env: Readonly<NodeJS.ProcessEnv>): Promise<{ code
     child.stdout.on('data', bytes => { stdout += bytes; }); child.stderr.on('data', bytes => { stderr += bytes; });
     child.once('error', reject); child.once('close', code => resolve({ code, stdout, stderr }));
   });
+}
+
+async function checkShim(argv: readonly string[], env: Readonly<NodeJS.ProcessEnv>): Promise<number> {
+  const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  try { return await runSshShim(argv, env); }
+  finally { stderr.mockRestore(); }
 }
 
 async function stopOwnerCore(h: HerdrHarness): Promise<void> {
@@ -38,11 +44,11 @@ for (const mode of ['fake', 'hc'] as const) for (const age of [200000, -200000])
         aliases: { 'remote.invalid': ['remote-alias.invalid', 'remote-host.invalid', 'resolved-target.invalid'] }, clock: () => Date.now() - age });
       await cache.ready;
       expect(cache.snapshot()?.machines.map(machine => machine.name)).toContain('remote.invalid');
-      const realSshBinary = join(h.root, 'ordinary-ssh');
-      await writeFile(realSshBinary, '#!/bin/sh\nprintf "ORDINARY-SSH %s\\n" "$*"\n', { mode: 0o700 });
+      const realSshBinary = join(h.root, 'ordinary-ssh'), sshCalls = join(h.root, 'ordinary-ssh-calls');
+      await writeFile(realSshBinary, '#!/bin/sh\nprintf "called\\n" >> "$SSH_FIXTURE_CALLS"\nprintf "ORDINARY-SSH %s\\n" "$*"\n', { mode: 0o700 });
       const options = { shimDirectory: sshShimDirectory(cache.descriptor), realSshBinary, cacheDescriptor: cache.descriptor, shimProgram: resolve('dist/herdr/cli.mjs') };
       await installSshShim(options);
-      const parentEnv = createExecutionEnvironmentPolicy(options)(h.localEnv);
+      const parentEnv = createExecutionEnvironmentPolicy(options)({ ...h.localEnv, SSH_FIXTURE_CALLS: sshCalls });
       const childEnv = finalChildEnvironment(parentEnv, { PI_SUBAGENT_CHILD: '1', PI_SUBAGENT_RUN_ID: 'shim-core-restart' });
       await cache.dispose(); cache = undefined;
       await stopOwnerCore(h);
@@ -62,24 +68,25 @@ for (const mode of ['fake', 'hc'] as const) for (const age of [200000, -200000])
           expect(result.code, `${command}: ${result.stderr}`).toBe(0);
           expect(result.stdout).toContain('ORDINARY-SSH'); expect(result.stderr).toBe('');
         }
-        for (const command of [
-          'ssh remote.invalid true',
-          'ssh user@REMOTE.INVALID. true',
-          'ssh remote-alias.invalid true',
-          'ssh remote-host.invalid true',
-          'ssh resolved-target.invalid true',
-          'ssh -o HostName=remote-host.invalid unmanaged.invalid true',
-          'ssh -J remote-alias.invalid unmanaged.invalid true',
-          'ssh -o "ProxyCommand=ssh remote.invalid true" unmanaged.invalid true',
-          'ssh -W resolved-target.invalid:22 unmanaged.invalid true',
-          'ssh -F missing-config unmanaged.invalid true',
-          'ssh -o "ProxyCommand=unknown-proxy" unmanaged.invalid true',
-          'ssh --unknown unmanaged.invalid true',
-          'ssh',
-        ]) {
-          const result = await bash(command, env);
-          expect(result.code, command).toBe(126); expect(result.stdout).not.toContain('ORDINARY-SSH');
-        }
+        const before = await readFile(sshCalls, 'utf8');
+        for (const argv of [
+          ['remote.invalid', 'true'],
+          ['user@REMOTE.INVALID.', 'true'],
+          ['remote-alias.invalid', 'true'],
+          ['remote-host.invalid', 'true'],
+          ['resolved-target.invalid', 'true'],
+          ['-o', 'HostName=remote-host.invalid', 'unmanaged.invalid', 'true'],
+          ['-J', 'remote-alias.invalid', 'unmanaged.invalid', 'true'],
+          ['-W', 'resolved-target.invalid:22', 'unmanaged.invalid', 'true'],
+          ['-F', 'missing-config', 'unmanaged.invalid', 'true'],
+          ['-o', 'ProxyCommand=unknown-proxy', 'unmanaged.invalid', 'true'],
+          ['--unknown', 'unmanaged.invalid', 'true'],
+          [],
+        ]) expect(await checkShim(argv, env), JSON.stringify(argv)).toBe(126);
+        // Keep the real shell and shim boundary for a quoted ProxyCommand.
+        const quoted = await bash('ssh -o "ProxyCommand=ssh remote.invalid true" unmanaged.invalid true', env);
+        expect(quoted.code).toBe(126); expect(quoted.stdout).not.toContain('ORDINARY-SSH');
+        expect(await readFile(sshCalls, 'utf8')).toBe(before);
       }
       // Without any readable snapshot, the existing alive-core fail-closed rule stays.
       await unlink(options.cacheDescriptor.path);

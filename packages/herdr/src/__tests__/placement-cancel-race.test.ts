@@ -4,6 +4,7 @@ import { expect, test } from 'vitest';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHerdrHarness } from './testutil.js';
+import { createInProcessViewerHarness } from './viewer-inprocess-harness.js';
 import { createViewerLauncher } from '../viewers/register.js';
 import { createAuxiliaryPanes } from '../jobs/placement.js';
 import { HerdrError } from '../client/parse.js';
@@ -18,7 +19,8 @@ const turn = () => new Promise<void>(resolve => setImmediate(resolve));
 
 // An explicit display must tolerate lifecycle cleanup before or after enqueue.
 test.each(['before-enqueue', 'queued'] as const)('explicit open survives cancellation cleanup %s', async stage => {
-  const h = await createHerdrHarness('fake'); await h.start(); const owner = h.owner!;
+  const h = stage === 'queued' ? await createHerdrHarness('fake') : await createInProcessViewerHarness();
+  await h.start(); const owner = h.owner!;
   const executable = join(h.root, 'viewer.mjs'); await writeFile(executable, 'setInterval(() => {}, 1000);');
   const placement = { space: 'space', tab: 'owner-tab', pane: 'owner-pane' } as OwnerPlacement;
   const layout = new Map<TerminalAddress, OwnerPlacement>([[owner.terminal.address, placement]]);
@@ -68,7 +70,7 @@ test.each(['before-enqueue', 'queued'] as const)('explicit open survives cancell
     void opening.catch(() => {});
     await explicitReading.promise;
     if (stage === 'queued') { allowRead.resolve(); await turn(); }
-    // Real core finish events drive removeSlot, exactly as a cancelled viewer exits.
+    // Finish events drive removeSlot; the queued case uses a real fake-HC process.
     await h.hc.kill(first.viewer);
     await retired.promise; await turn();
     allowRead.resolve(); unblock.resolve();

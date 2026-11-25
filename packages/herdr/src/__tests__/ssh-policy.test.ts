@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { readFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHerdrHarness, type HerdrHarness } from './testutil.js';
-import { createMachineCache, type MachineCache } from '../ssh/cache.js';
+import { createMachineCache, type MachineCache, type MachineSnapshot } from '../ssh/cache.js';
 import { createSshPolicy, createSshPolicyReader } from '../ssh/policy.js';
 import { runSshShim } from '../ssh/shim.js';
 import { parseSshDestinations } from '../ssh/parse.js';
@@ -18,6 +18,14 @@ async function fixture(test: (h: HerdrHarness, cache: MachineCache, tick: (n: nu
     await cache.ready; await test(h, cache, n => { now += n; });
   } finally { await cache?.dispose(); await h.scenario({}); await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); }
 }
+const routeSnapshot: MachineSnapshot = {
+  version: 1,
+  identity: { coreId: 'fixture' as MachineSnapshot['identity']['coreId'], socket: '/fixture/core.sock', sessionNamespace: 'fixture' },
+  fetchedAt: 1000,
+  machines: [{ id: 'remote-core', name: 'remote.invalid', targets: ['remote.invalid', 'alias.invalid', 'server.invalid', '2001:db8::1'] }],
+};
+const routePolicy = createSshPolicyReader(async () => routeSnapshot, () => 1000);
+
 async function invoke(h: HerdrHarness, argv: string[]) {
   return new Promise<{ exitCode: number | null; stdout: string; stderr: string }>((resolve, reject) => {
     const child = spawn(h.sshBinary, argv, { env: h.localEnv, stdio: ['ignore', 'pipe', 'pipe'] }); let stdout = '', stderr = '';
@@ -39,6 +47,8 @@ describe('managed SSH policy', () => {
   });
   it('refuses a managed destination before connecting but preserves another host', async () => fixture(async (h, cache) => {
     const policy = createSshPolicy(cache);
+    expect(cache.snapshot()?.machines.find(machine => machine.name === 'remote.invalid')?.targets)
+      .toEqual(expect.arrayContaining([...routeSnapshot.machines[0].targets]));
     expect(await policy.checkArgv(['-p', '2222', 'user@remote.invalid', 'echo', 'hidden'])).toEqual({ kind: 'refuse', machine: 'remote.invalid', reason: 'Spider blocked SSH to this Herdr-managed machine. Use spider exec with on:remote.invalid instead.' });
     const argv = ['user@elsewhere.invalid', 'echo', 'ok']; expect(await policy.checkArgv(argv)).toEqual({ kind: 'allow' });
     expect(await invoke(h, argv)).toMatchObject({ exitCode: 17, stdout: 'ok\n', stderr: 'separate\n' });
@@ -79,20 +89,19 @@ describe('managed SSH policy', () => {
     ['-o', 'HostName=server.invalid', 'elsewhere.invalid'], ['-oHostName remote.invalid', 'elsewhere.invalid'],
     ['-J', 'user@remote.invalid:22,elsewhere.invalid', 'other.invalid'], ['-o', 'ProxyJump=alias.invalid', 'other.invalid'],
     ['-o', 'ProxyCommand=ssh -W %h:%p remote.invalid', 'other.invalid'],
-  ])('normalizes options, URI, IPv6, HostName and proxy routes: %j', async (...argv) => fixture(async (_h, cache) => {
-    expect(await createSshPolicy(cache).checkArgv(argv)).toMatchObject({ kind: 'refuse', machine: 'remote.invalid' });
-  }));
-  it.each(['true; ssh remote.invalid echo hidden', 'echo ok | ssh alias.invalid cat', '/usr/bin/ssh remote.invalid', 'command ssh remote.invalid', 'env X=1 ssh remote.invalid', 'ssh "$TARGET"', 'ssh -o ProxyCommand="opaque-helper %h" elsewhere.invalid', 'ssh -p', 'ssh remote.invalid; echo "unterminated', 'bash -c "ssh remote.invalid"'])('blocks compound, absolute, ambiguous or unsupported shell routes: %s', async code => fixture(async (_h, cache) => {
-    expect(await createSshPolicy(cache).checkShell(code)).toMatchObject({ kind: 'refuse' });
-  }));
-  it.each(['env -u PATH /usr/bin/ssh remote.invalid', 'sudo -u root ssh remote.invalid', 'exec -a label /usr/bin/ssh remote.invalid', 'env -S "ssh remote.invalid"'])('cannot hide explicit SSH behind a wrapper operand: %s', async code => fixture(async (_h, cache) => {
-    expect(await createSshPolicy(cache).checkShell(code)).toMatchObject({ kind: 'refuse' });
-  }));
-  it('preserves nonmanaged routes with redirection without treating output files as hosts', async () => fixture(async (_h, cache) => {
-    const policy = createSshPolicy(cache);
-    for (const code of ['echo ok > output', 'ssh elsewhere.invalid > output 2>&1', 'ssh < input elsewhere.invalid', 'echo ok >> "ssh remote.invalid"', '2>output ssh elsewhere.invalid']) expect(await policy.checkShell(code)).toEqual({ kind: 'allow' });
-    for (const code of ['ssh > output remote.invalid', 'ssh 2>&1 remote.invalid', 'echo ok > output; ssh remote.invalid', '2>output ssh remote.invalid']) expect(await policy.checkShell(code)).toMatchObject({ kind: 'refuse', machine: 'remote.invalid' });
-  }));
+  ])('normalizes options, URI, IPv6, HostName and proxy routes: %j', async (...argv) => {
+    expect(await routePolicy.checkArgv(argv)).toMatchObject({ kind: 'refuse', machine: 'remote.invalid' });
+  });
+  it.each(['true; ssh remote.invalid echo hidden', 'echo ok | ssh alias.invalid cat', '/usr/bin/ssh remote.invalid', 'command ssh remote.invalid', 'env X=1 ssh remote.invalid', 'ssh "$TARGET"', 'ssh -o ProxyCommand="opaque-helper %h" elsewhere.invalid', 'ssh -p', 'ssh remote.invalid; echo "unterminated', 'bash -c "ssh remote.invalid"'])('blocks compound, absolute, ambiguous or unsupported shell routes: %s', async code => {
+    expect(await routePolicy.checkShell(code)).toMatchObject({ kind: 'refuse' });
+  });
+  it.each(['env -u PATH /usr/bin/ssh remote.invalid', 'sudo -u root ssh remote.invalid', 'exec -a label /usr/bin/ssh remote.invalid', 'env -S "ssh remote.invalid"'])('cannot hide explicit SSH behind a wrapper operand: %s', async code => {
+    expect(await routePolicy.checkShell(code)).toMatchObject({ kind: 'refuse' });
+  });
+  it('preserves nonmanaged routes with redirection without treating output files as hosts', async () => {
+    for (const code of ['echo ok > output', 'ssh elsewhere.invalid > output 2>&1', 'ssh < input elsewhere.invalid', 'echo ok >> "ssh remote.invalid"', '2>output ssh elsewhere.invalid']) expect(await routePolicy.checkShell(code)).toEqual({ kind: 'allow' });
+    for (const code of ['ssh > output remote.invalid', 'ssh 2>&1 remote.invalid', 'echo ok > output; ssh remote.invalid', '2>output ssh remote.invalid']) expect(await routePolicy.checkShell(code)).toMatchObject({ kind: 'refuse', machine: 'remote.invalid' });
+  });
   it('does not execute config probes or mistake an ordinary echo for SSH', async () => fixture(async (h, cache) => {
     expect(await createSshPolicy(cache).checkShell('echo "ssh remote.invalid"; ssh elsewhere.invalid printf ok')).toEqual({ kind: 'allow' });
     expect(parseSshDestinations(['-p', '2222', 'USER@Example.invalid.'])).toMatchObject([{ host: 'example.invalid', source: 'destination' }]);

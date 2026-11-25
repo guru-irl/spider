@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { constants, existsSync } from "node:fs";
+import { lstat, open } from "node:fs/promises";
+import type { SessionHeader } from "@earendil-works/pi-coding-agent";
 import { dirname, join, resolve } from "node:path";
 import { getBinding, openDb, openDbAt, paths, type Db } from "@spider/db-core";
 import { mapWorkspace, resolveRepositoryKey } from "@spider/db-core/roam/repo-map";
@@ -99,12 +101,23 @@ export function createHostRoamPresentationPorts(input: { root: string; globalDb:
 }
 export { createNativeHostingOutcomeReader } from "@spider/roam/hosting";
 export interface ParticipantAdmissionHooks {
-  prepare(sessionId: string, file: string): Promise<void>;
+  prepare(sessionId: string, file: string, header?: SessionHeader | null): Promise<void | "pending-file">;
   ready(sessionId: string, file: string, epoch: number, home: Home | null): Promise<void>;
   stopped(sessionId: string): Promise<void>;
 }
 
 export function persistReadiness(journal: Journal, ready: HubOperationReadiness): void { recordReadiness(journal, ready); }
+async function privatizeNativeSession(file: string): Promise<void> {
+  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const before = await handle.stat();
+    const path = await lstat(file);
+    if (!before.isFile() || !path.isFile() || before.dev !== path.dev || before.ino !== path.ino ||
+        process.platform !== "win32" && before.uid !== process.getuid?.()) throw new MoveCompositionError("participant-header-invalid");
+    if (process.platform !== "win32") await handle.chmod(0o600);
+  } finally { await handle.close(); }
+}
+
 export interface AdmissionRuntime {
   config: RoamConfig; db: Db; journal: Journal; authority: RunningIntentAuthority;
   stores(sessionId: string): Promise<readonly { db: Db; key: StoreKey }[]>;
@@ -116,7 +129,7 @@ export function createParticipantAdmission(input: {
   terminal(sessionId: string): Promise<{ core: string; terminal: string; operationId: string | null; owner: { pid: number; startIdentity: string } }>;
 }): ParticipantAdmissionHooks {
   return {
-    async prepare(sessionId, file) {
+    async prepare(sessionId, file, pendingHeader) {
       const runtime = await input.open(); if (!runtime) return;
       try {
         if (runtime.config.role !== "box" || !participantCaptureInitialized(runtime.db, runtime.config.machineId, "global")) return;
@@ -125,7 +138,15 @@ export function createParticipantAdmission(input: {
         if (unfinishedFreeze(dirname(runtime.db.raw.name), sessionId)) throw new MoveCompositionError("participant-freeze-unfinished");
         const cwd = input.cwd(); if (!cwd) throw new MoveCompositionError("participant-cwd-unavailable");
         let header: Awaited<ReturnType<typeof readSessionHeader>>;
-        try { header = await readSessionHeader(file); } catch { throw new MoveCompositionError("participant-header-invalid"); }
+        try { header = await readSessionHeader(file); }
+        catch {
+          // Pi creates a fresh session in memory and persists it on the first conversation.
+          let missing = false;
+          try { await lstat(file); } catch (error) { missing = (error as NodeJS.ErrnoException).code === "ENOENT"; }
+          if (missing && pendingHeader?.type === "session" && typeof pendingHeader.version === "number" &&
+              [1, 2, 3].includes(pendingHeader.version) && pendingHeader.id === sessionId && pendingHeader.cwd === cwd) return "pending-file";
+          throw new MoveCompositionError("participant-header-invalid");
+        }
         if (header.id !== sessionId || header.cwd !== cwd) throw new MoveCompositionError("participant-header-mismatch");
         let stores: Awaited<ReturnType<AdmissionRuntime["stores"]>>;
         try { stores = await runtime.stores(sessionId); }
@@ -133,6 +154,7 @@ export function createParticipantAdmission(input: {
           if (error instanceof MoveCompositionError && error.code === "participant-store-mapping-failed") throw error;
           throw new MoveCompositionError("participant-stores-unavailable");
         }
+        await privatizeNativeSession(file);
         try { seedNewParticipant({ globalDb: runtime.db, machineId: runtime.config.machineId, sessionId, file, cwd,
           stores, limit: runtime.config.limits.targetBatchBytes }); }
         catch { throw new MoveCompositionError("participant-seed-failed"); }

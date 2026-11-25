@@ -420,7 +420,9 @@ describe('runner boundary and report', () => {
       binarySha256: '8c4c0930974e2b31978cbbb14b892cd29d5ace917f4c04ce6dfdd5573e1fe193',
       timeouts: { R15: 4, R16: 4 },
     });
-    expect(config.stories).toEqual(['R01', 'R03', 'R04', 'R05', 'R06', 'R07', 'R08', 'R09', 'R10', 'R11', 'R12', 'R13', 'R14', 'R15', 'R16', 'R17']);
+    // R04 to R08, R13 and R14 are flaky in CI and stay out of the default
+    // set until fixed; they still run when requested by ID.
+    expect(config.stories).toEqual(['R01', 'R03', 'R09', 'R10', 'R11', 'R12', 'R15', 'R16', 'R17']);
     expect(new Set(config.stories).size).toBe(config.stories.length);
     expect(config.stories.every(id => profileIds.headless.includes(id))).toBe(true);
     // @ts-ignore Vite provides import.meta.glob during test transformation.

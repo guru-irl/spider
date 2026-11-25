@@ -18,7 +18,7 @@ function fake() {
   const homes: HomeStore = {
     read: vi.fn(async () => home), list: vi.fn(async () => home ? [home] : []),
     initialize: vi.fn(async () => { throw new Error("must not initialize"); }),
-    compareAndSwap: vi.fn(async (expected,next) => {
+    compareAndSwap: vi.fn<HomeStore["compareAndSwap"]>(async (expected,next) => {
       calls.push("cas"); expect(expected).toEqual(INITIAL);
       home = structuredClone(next); return {kind:"applied",home};
     }),

@@ -5,6 +5,7 @@ import { migrate } from "../migrate";
 import { migrateHomeV0 } from "../roam/home-v0-migration";
 import { GENERATED_TRIGGERS } from "../roam/generated";
 import { exportBatch } from "../roam/export";
+import type { JsonObject } from "../roam/types";
 import { replica, home, clock, batch, apply, validate, A, B, C, SESSION, rows } from "./roam-apply-fixture";
 
 // Frozen public schema-14 capture SQL from the pre-v0 layout.
@@ -65,12 +66,13 @@ describe("v0 home layout and replication", () => {
     const target = replica("global");
     apply(target, await batch(target, [home(A, 1)]));
     expect(rows(target, "session_homes")).toEqual([{session_id:SESSION,machine_id:A,epoch:1,move_id:null,updated_at:1,state:null,destination:null}]);
-    for (const invalid of [
+    const invalidBodies: JsonObject[] = [
       {session_id:SESSION,epoch:1,move_id:null,updated_at:1},
       {...home(A,1).body, extra:"x"},
       {...moving().body,state:"bogus"}, {...moving().body,destination:null},
       {...moving().body,state:"running"},
-    ]) await expect(batch(target, [{...home(A,1),body:invalid}])).rejects.toThrow();
+    ];
+    for (const invalid of invalidBodies) await expect(batch(target, [{...home(A,1),body:invalid}])).rejects.toThrow();
     // Old queued rows remain exportable after the additive migration.
     const old = oldStore(); old.db.exec("UPDATE roam_meta SET capture_enabled=1");
     old.db.prepare("INSERT INTO session_homes VALUES (?, ?, 1, NULL, 1)").run(SESSION,A);

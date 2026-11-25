@@ -161,7 +161,7 @@ export async function cancelExitedIdLockHandoff(root: string, sessionId: string,
     await checkPrivate(directory, true); await checkPrivate(file, false);
     await unlink(file);
     return true;
-  });
+  }, { reclaimReusedOwner: true });
 }
 
 export async function claimIdLock(root: string, sessionId: string, identity: ProcessIdentity, probe: (pid: number) => Promise<ProcessProbe>, options: { bootId?: () => Promise<string>; handoff?: IdLockHandoff; exclusive?: boolean; recoverPending?: string } = {}): Promise<IdLockHandle> {
@@ -187,7 +187,7 @@ export async function claimIdLock(root: string, sessionId: string, identity: Pro
       await privateDirectory(directory);
       await checkPrivate(directory, true);
       return operation();
-    });
+    }, { reclaimReusedOwner: true });
   }
   async function read(): Promise<IdLockRecord | null> {
     const value = await readPrivateJson(file);

@@ -574,6 +574,27 @@ describe("assistant copy hover", () => {
     expect(row.indexOf("⧉ md") + 8).toBe(60 - 1 - padding);
   });
 
+  it("falls back to a one-cell inset when Markdown padding is unavailable", () => {
+    vi.stubEnv("TZ", "UTC");
+    const { md } = fixture("Hello", Date.UTC(2024, 0, 3, 8, 15), true, 3);
+    mouse(md, "move");
+    render(md); // Prime Markdown's own cache before simulating an inaccessible field.
+    const internals = md as unknown as { paddingX?: number };
+    delete internals.paddingX;
+    const row = render(md).find(line => line.includes("⧉ text"))!;
+    expect(row.indexOf("Jan 3 08:15")).toBe(2);
+    expect(row.indexOf("⧉ md") + 8).toBe(58);
+  });
+
+  it("reduces a large inset before dropping buttons at narrow widths", () => {
+    const { md } = fixture("Hi", undefined, true, 3);
+    mouse(md, "move");
+    const row = render(md, 21).find(line => line.includes("⧉ text"))!;
+    expect(visibleWidth(row)).toBe(21);
+    expect(row.indexOf("⧉ text")).toBe(2);
+    expect(row.indexOf("⧉ md") + 8).toBe(19);
+  });
+
   it("keeps controls and drops the date when the two no longer fit", () => {
     vi.stubEnv("TZ", "UTC");
     const { md } = fixture("Hi", Date.UTC(2024, 0, 3, 8, 15));

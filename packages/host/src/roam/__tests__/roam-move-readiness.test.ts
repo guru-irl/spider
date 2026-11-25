@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { openFreezeJournal } from "@spider/roam/journal";
 import { createRunningIntentAuthority, readReadiness } from "@spider/roam/session-control";
 import { publishOwnedMoveReadiness, readOwnedLaunchReadiness, type OwnedMoveReadinessInput } from "../move-readiness";
+import { OwnershipFailure } from "@spider/roam/ownership-failure";
 const HUB = "00000000-0000-4000-8000-000000000001";
 it("proved live readmit publishes readiness for an originally untracked held lock without launching or releasing it", async () => {
   const f = createReplica("global", HUB), journal = openFreezeJournal(join(f.root, "journal.db"));
@@ -52,6 +53,38 @@ it("the exact launch readiness completes the launcher's tuple wait and records t
     expect(f.journal.read("launch-a").find(row => row.action === "readiness-intent")?.result).toEqual({ sessionId: "session-a", epoch: 4, intentOperationId: "intent-a" });
     await publishOwnedMoveReadiness(f.input);
     expect(f.journal.read("launch-a").filter(row => row.action === "readiness-intent")).toHaveLength(1);
+  } finally { f.close(); }
+}, 5000);
+
+it.each([false, true])("an unadopted pending handoff has no readiness even with an older receipt: %s", async olderReceipt => {
+  const f = await launchReadinessFixture();
+  try {
+    if (olderReceipt) await publishOwnedMoveReadiness(f.input);
+    const lock = { ...f.lock, operationId: olderReceipt ? "launch-a" : null, pendingOperationId: "launch-b", pendingCoreId: "core-a", pendingFile: f.input.file };
+    expect(await readOwnedLaunchReadiness({ db: f.db, journal: f.journal, machineId: HUB, lock: async () => lock,
+      probe: async () => { throw new OwnershipFailure("ownership-handoff-pending"); } },
+      { sessionId: "session-a", launchId: "launch-a", epoch: 4 })).toBeNull();
+  } finally { f.close(); }
+}, 5000);
+
+it("an adopted ready launch still refuses an unreadable owner", async () => {
+  const f = await launchReadinessFixture();
+  try {
+    await publishOwnedMoveReadiness(f.input);
+    await expect(readOwnedLaunchReadiness({ db: f.db, journal: f.journal, machineId: HUB, lock: async () => f.lock,
+      probe: async () => { throw new OwnershipFailure("ownership-process-unavailable"); } },
+      { sessionId: "session-a", launchId: "launch-a", epoch: 4 })).rejects.toThrow("ownership-process-unavailable");
+  } finally { f.close(); }
+}, 5000);
+
+it.each(["absent", "uncertain", "other-pid", "other-start"] as const)("an adopted readiness receipt cannot hide an %s owner", async mode => {
+  const f = await launchReadinessFixture();
+  try {
+    await publishOwnedMoveReadiness(f.input);
+    expect(await readOwnedLaunchReadiness({ db: f.db, journal: f.journal, machineId: HUB, lock: async () => f.lock,
+      probe: async () => mode === "absent" || mode === "uncertain" ? { kind: mode }
+        : { kind: "live", identity: { bootId: "boot-a", pid: mode === "other-pid" ? 43 : 42, startTime: mode === "other-start" ? "replacement-start" : "owned-start" } } },
+      { sessionId: "session-a", launchId: "launch-a", epoch: 4 })).toBeNull();
   } finally { f.close(); }
 }, 5000);
 

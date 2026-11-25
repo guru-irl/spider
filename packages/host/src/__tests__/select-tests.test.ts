@@ -90,9 +90,10 @@ describe('change-scoped test manifests', () => {
     const f = fixture(); f.put('packages/roam/src/store.ts', 'export const value = 2;'); const head = f.commit();
     const manifest = await selectTests({ ...f, head, resolveRelated: async () => [a] });
     expect(manifest.mode).toBe('scoped');
-    expect(manifest.files).toEqual([guard, a].sort());
+    expect(manifest.files).toEqual([a]);
     expect(manifest.reasons[a]).toContain('import graph');
-    expect(manifest.reasons[guard].some((s: string) => s.includes('source-text'))).toBe(true);
+    expect(manifest.deferred.map((entry: { file: string }) => entry.file)).toEqual([guard]);
+    expect(manifest.deferred[0].reasons.some((s: string) => s.includes('source-text'))).toBe(true);
     expect(manifest.baseSha).toBe(f.base);
     expect(manifest.testedSha).toBe(head);
     expect(manifest.timingHash).toMatch(/^[a-f0-9]{64}$/);
@@ -193,7 +194,8 @@ describe('change-scoped test manifests', () => {
     expect(existsSync(file), 'the manifest runner must exist').toBe(true);
     const { executionPlan } = await import(/* @vite-ignore */ file);
     const plan = executionPlan(manifest, { root: f.root, shard: '1/2' });
-    expect(plan.files).toEqual([guard, c]); expect(plan.maxWorkers).toBe(3);
+    expect(plan.files).toEqual([c]); expect(plan.maxWorkers).toBe(3);
+    expect(manifest.deferred.map((entry: { file: string }) => entry.file)).toEqual([guard]);
     expect(plan.shard).toBe('1/2'); expect(plan).not.toHaveProperty('changed');
     expect(executionPlan(manifest, { root: f.root, shard: '1/2', shadow: true }).files).toEqual([a, b, c, guard].sort());
     expect(() => executionPlan(manifest, { root: f.root, shard: '0/2' })).toThrow();

@@ -58,7 +58,8 @@ async function fixture(mappedRepository: boolean, occupied = false, complete = f
   await mapWorkspace(destination.db, { repoKey: "native-repo", workspaceId: "native-workspace", path: nativeRoot });
   initializeStore(destination, "worktree:native-repo:native-workspace");
   worktree.prepare("INSERT INTO sessions(id,started_at,origin_machine) VALUES(?,1,?)").run(SESSION, HUB);
-  const file = join(source.root, "session.jsonl");
+  const file = join(source.root, "agent", "sessions", "project", "session.jsonl");
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: SESSION, cwd: sourceRoot, timestamp: "2026-01-01T00:00:00Z" }) + "\n" +
     JSON.stringify({ type: "model_change", id: "leaf-a", parentId: null, timestamp: "2026-01-01T00:00:00Z", provider: "fixture", modelId: "fixture" }) + "\n", { mode: 0o600 });
   enableMemoryCapture(source.db, "global");
@@ -73,6 +74,9 @@ async function fixture(mappedRepository: boolean, occupied = false, complete = f
   const configs = new Map([[HUB, config(HUB)], [BOX, config(BOX)]]), journals = new Map<string, ReturnType<typeof openFreezeJournal>>();
   for (const global of [source, destination]) {
     mkdirSync(join(global.root, "roam"), { recursive: true, mode: 0o700 });
+    mkdirSync(join(global.root, "herdr"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(global.root, "herdr", "config.json"), JSON.stringify({ mode: "core-only", globalRoot: global.root,
+      core: { binary: join(global.root, "hc"), config: join(global.root, "core.json") }, agentDirectory: join(global.root, "agent"), shellRc: join(global.root, "shell.rc"), machines: [] }), { mode: 0o600 });
     writeFileSync(join(global.root, "roam", "config.json"), JSON.stringify(configs.get(global.machineId)), { mode: 0o600 });
     writeFileSync(join(global.root, "roam", "machine.json"), JSON.stringify({ machineId: global.machineId }), { mode: 0o600 });
     configs.set(global.machineId, readLocalIdentity(global.root));

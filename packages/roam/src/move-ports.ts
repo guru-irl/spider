@@ -104,6 +104,8 @@ export type HandoffCaptureOutcome =
 export interface MoveAdapterBindings {
   globalDb?: Db; privateDb?: Db; root?: string; clock?: Clock; power?: PowerPorts;
   stores?: { open(key: StoreKey): Db; head(key: StoreKey): StoreBarrier };
+  /** Source-machine policy for the transcript observed in the local catalog. */
+  checkSessionFile?(file: string): Promise<void>;
   sync?: Pick<MovePorts, "barriers"> & { sync(peer?: string): Promise<readonly Outcome<unknown>[]> };
   /** Mapped paths are local catalog observations, not paths accepted from a foreign manifest. */
   mapping?(request: MoveRequest, location: { file: string; cwd: string; stores: readonly StoreKey[] }): Promise<{
@@ -146,7 +148,7 @@ function required<T>(value: T | null | undefined, name: string): T {
   return value;
 }
 const dependencies = {
-  check: ["globalDb", "mapping", "participant"], power: ["power"], seed: ["stores", "participant", "sync"],
+  check: ["globalDb", "mapping", "participant", "checkSessionFile"], power: ["power"], seed: ["stores", "participant", "sync"],
   prepare: ["root", "participant"], freeze: ["participant", "evidence", "intercom", "handoff"],
   transfer: ["root", "participant"], verifySource: ["participant"], barriers: ["sync", "stores"], replicateHome: ["globalDb", "stores", "sync"],
   start: ["participant"], inspect: ["participant"], retire: ["participant", "evidence"], unfreeze: ["participant", "evidence", "intercom"],
@@ -422,7 +424,10 @@ export function createMovePorts(config: RoamConfig, transport: Transport, journa
         home = { sessionId: request.sessionId, machineId: config.machineId, epoch: 1, moveId: null, updatedAt: 0 };
       }
       if (home.machineId !== config.machineId) local = checkedLocation(successful(await call<unknown>(home, request.operation, "move-location")));
-      else for (const key of local.stores) bindings.stores!.open(key);
+      else {
+        await required(bindings.checkSessionFile, "checkSessionFile")(local.file);
+        for (const key of local.stores) bindings.stores!.open(key);
+      }
       const mapped = await withMoveStep("workspace-plan", () => bindings.mapping!(request, local));
       if (!mapped) throw new MoveAdapterError("workspace-repository-unmapped");
       const inspection = await withMoveStep("source-inspect", async () => successful(await call<{ blockers: readonly Blocker[] }>(home, request.operation, "session-inspect")));
@@ -611,6 +616,7 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
     const current = sessionHome(participant.globalDb, id);
     if (!current || current === "unknown" || current.machineId !== home.machineId || current.epoch !== home.epoch) throw new MoveAdapterError("participant-home-mismatch");
     const local = location(participant.globalDb, id);
+    await required(bindings.checkSessionFile, "checkSessionFile")(local.file);
     for (const key of local.stores) required(bindings.stores, "stores").open(key);
     return result(local);
   }

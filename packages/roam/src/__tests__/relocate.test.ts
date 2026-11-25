@@ -65,6 +65,20 @@ describe("relocate", () => {
     expect(s.effects).toEqual(effects); expect(s.ids).toBe(1);
   });
 
+  it.each(["start-destination", "confirm-destination"])("committed retry never recaptures the source after %s", async boundary => {
+    const s = state(); s.failAfter = boundary;
+    expect((await relocate(request, ports(s))).ok).toBe(false);
+    const committed = structuredClone(s.home); const before = s.effects.length;
+    const installed = structuredClone(s.installed);
+    expect(await relocate(request, ports(s))).toMatchObject({ ok: true, value: { disposition: "relocated", moveId: "v0-move-1" } });
+    expect(protocol(s.effects.slice(before))).toEqual([
+      "publish-destination-running", "activate-destination", "start-destination", "confirm-destination",
+    ]);
+    expect(s.home).toEqual(committed); expect(s.ids).toBe(1);
+    expect(s.installed).toEqual(installed); expect(s.snapshots.size).toBe(1);
+    expect(s.segments.size).toBe(1); expect(s.processes).toEqual(new Set([destination]));
+  });
+
   it("capture waits for source lock freedom", async () => {
     const s = state();
     const barrier = deferred();

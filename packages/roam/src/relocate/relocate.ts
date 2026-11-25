@@ -51,6 +51,25 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
         const source = value(await ports.initialSource(request.sessionId));
         home = await ports.homes.initialize(request.sessionId, source);
       }
+      if (home.state === "running" && home.machineId === request.destinationMachine && home.moveId) {
+        const pending = await ports.journal.load(home.moveId);
+        if (pending && !pending.result && pending.installed && pending.plan.moveId === home.moveId &&
+            pending.plan.destinationPlacement.machineId === home.machineId && pending.plan.source.epoch + 2 === home.epoch) {
+          moveId = home.moveId;
+          const placement = pending.installed.placement;
+          step = "commit-home";
+          value(await ports.publishHome(home, home.machineId));
+          value(await ports.activate(home, placement));
+          step = "start-destination";
+          value(await ports.start(home, placement));
+          step = "confirm";
+          const confirmed = value(await ports.confirm(home, placement));
+          const result = { moveId, home, placement, terminal: confirmed.terminal, disposition: "relocated" as const };
+          await save({ ...pending, completed: [...new Set([...pending.completed, "commit-home", "start-destination", "confirm"] as const)],
+            terminal: confirmed.terminal, result });
+          return { ok: true, value: result };
+        }
+      }
       let checkpoint: RelocateCheckpoint;
       if (home.state === "moving") {
         moveId = home.moveId;

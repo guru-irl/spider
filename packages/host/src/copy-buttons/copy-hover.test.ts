@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AssistantMessageComponent } from "@earendil-works/pi-coding-agent";
+import { AssistantMessageComponent, initTheme } from "@earendil-works/pi-coding-agent";
 import { Markdown, Text, TuiAltScreen, getCapabilities, setCapabilities, stripTerminalSequences, visibleWidth, type Component, type MarkdownTheme, type Terminal, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { installCopyButtons, registerCopyButtons } from "./index.js";
@@ -18,8 +18,9 @@ const message = (text: string, timestamp = Date.UTC(2024, 0, 3, 8, 15)): Assista
 function fixture(text: string, timestamp?: number, fullscreen = true, padding = 1) {
   const copied: string[] = [];
   const requestRender = vi.fn();
+  let isFullscreen = fullscreen;
   installCopyButtons({ AssistantMessageComponent, Markdown }, {
-    isFullscreen: () => fullscreen,
+    isFullscreen: () => isFullscreen,
     copy: async value => { copied.push(value); },
     requestRender,
     onError: error => { throw error; },
@@ -29,7 +30,7 @@ function fixture(text: string, timestamp?: number, fullscreen = true, padding = 
   const children = (assistant as unknown as { contentContainer: { children: Component[] } }).contentContainer.children;
   const md = children.find(child => child instanceof Markdown);
   if (!(md instanceof Markdown)) throw new Error("assistant has no Markdown");
-  return { assistant, md, copied, requestRender };
+  return { assistant, md, copied, requestRender, setFullscreen: (value: boolean) => { isFullscreen = value; } };
 }
 function render(md: Markdown, width = 60): string[] {
   return md.render(width).map(stripTerminalSequences);
@@ -164,7 +165,7 @@ describe("assistant copy hover", () => {
     const app = fullscreenFixture();
     app.move("Hello there");
     app.screen();
-    expect(app.tui.getScreenLines().join("\n")).toContain("\x1b[38;5;245m┌");
+    expect(app.tui.getScreenLines().join("\n")).toContain("\x1b[38;5;245m🭽");
   });
 
   it("copies both exact formats through Pi's fullscreen click dispatch", async () => {
@@ -361,7 +362,7 @@ describe("assistant copy hover", () => {
     render(md);
     mouse(md, "move");
     const row = render(md).find(line => line.includes("⧉ text"));
-    expect(row).toMatch(/^│ Jan 3 03:15\s+⧉ text\s+⧉ md\s+│$/);
+    expect(row).toMatch(/^▏Jan 3 03:15\s+⧉ text\s+⧉ md\s+▕$/);
   });
 
   it("updates the timestamp label when the system time zone changes", () => {
@@ -396,7 +397,7 @@ describe("assistant copy hover", () => {
     render(md);
     mouse(md, "move");
     const row = render(md).find(line => line.includes("⧉ text"));
-    expect(row).toMatch(/^│ Jan 2 21:00.*⧉ text/);
+    expect(row).toMatch(/^▏Jan 2 21:00.*⧉ text/);
   });
 
   it("adds the local month and day when the message was sent on an earlier day", () => {
@@ -406,19 +407,19 @@ describe("assistant copy hover", () => {
     const { md } = fixture("Yesterday", Date.UTC(2024, 0, 1, 8, 15));
     render(md);
     mouse(md, "move");
-    expect(render(md).find(line => line.includes("⧉ text"))).toMatch(/^│ Jan 1 03:15.*⧉ text/);
+    expect(render(md).find(line => line.includes("⧉ text"))).toMatch(/^▏Jan 1 03:15.*⧉ text/);
   });
 
   it("keeps extremely narrow layouts within the terminal width", () => {
     const { md } = fixture("Hi", undefined, true, 0);
     const two = render(md, 2);
-    expect(two.every(line => line.length <= 2)).toBe(true);
+    expect(two.every(line => visibleWidth(line) <= 2)).toBe(true);
     expect(two.join("\n")).not.toContain("⧉ text");
     const nineteen = render(md, 19);
     const event: TuiMouseEvent = { type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width: 19, height: nineteen.length, shift: false, alt: false, ctrl: false };
     (md as Component).handleMouse?.(event);
     const hovered = render(md, 19);
-    expect(hovered.every(line => line.length <= 19)).toBe(true);
+    expect(hovered.every(line => visibleWidth(line) <= 19)).toBe(true);
     expect(hovered.join("\n")).toContain("⧉ text");
     const eighteen = render(md, 18);
     expect(eighteen.every(line => visibleWidth(line) <= 18)).toBe(true);
@@ -437,11 +438,11 @@ describe("assistant copy hover", () => {
     expect(after.join("\n")).toContain("⧉ text");
     expect(after.join("\n")).not.toContain("08:15");
     const controls = after.find(line => line.includes("⧉ text"))!;
-    expect(controls.indexOf("⧉ text")).toBe(9);
-    expect(controls.indexOf("⧉ md")).toBe(18);
+    expect(controls.indexOf("⧉ text")).toBe(10);
+    expect(controls.indexOf("⧉ md")).toBe(19);
     expect(after).toHaveLength(before.length);
     expect(after.findIndex(line => line.includes("Hello"))).toBe(before.findIndex(line => line.includes("Hello")));
-    expect(after.every(line => line.length <= 28)).toBe(true);
+    expect(after.every(line => visibleWidth(line) <= 28)).toBe(true);
   });
 
   it("keeps a complete border around extra block action rows at narrow widths", () => {
@@ -455,8 +456,8 @@ describe("assistant copy hover", () => {
     const after = render(md, 28);
     expect(after).toHaveLength(before.length);
     for (const line of after.slice(1, -1)) {
-      expect(line).toMatch(/^│.*│$/);
-      expect(line.length).toBe(28);
+      expect(line).toMatch(/^▏.*▕$/);
+      expect(visibleWidth(line)).toBe(28);
     }
     expect(after.join("\n").match(/⧉ text/g)).toHaveLength(2);
   });
@@ -472,7 +473,7 @@ describe("assistant copy hover", () => {
     const after = render(md, 28);
     const y = after.findIndex(line => line.includes("⧉ md"));
     const x = after[y].indexOf("⧉ md");
-    expect(x).toBe(18);
+    expect(x).toBe(19);
     expect(after[y]).not.toContain("Jan 1 08:15");
     expect((md as Component).handleMouse?.({ ...motion, type: "click", button: "left", x, y, screenX: x, screenY: y, height: after.length })).toEqual({ handled: true });
     await Promise.resolve();
@@ -492,7 +493,7 @@ describe("assistant copy hover", () => {
     expect(after.join("\n")).toContain("⧉ text");
     expect(after).toHaveLength(before.length);
     expect(after.findIndex(line => line.includes("Hello"))).toBe(before.findIndex(line => line.includes("Hello")));
-    expect(after.every(line => line.length <= 28)).toBe(true);
+    expect(after.every(line => visibleWidth(line) <= 28)).toBe(true);
   });
 
   it("preserves wide and combining text cells when the border appears", () => {
@@ -515,17 +516,65 @@ describe("assistant copy hover", () => {
     const before = render(md);
     mouse(md, "move");
     const after = render(md);
-    expect(after[0]).toMatch(/^┌─+┐$/);
-    expect(after.at(-1)).toMatch(/^└─+┘$/);
-    expect(after.filter(line => line.includes("First line"))[0]).toMatch(/^│.*│$/);
+    expect(after[0]).toMatch(/^🭽▔+🭾$/u);
+    expect(after.at(-1)).toMatch(/^🭼▁+🭿$/u);
+    expect(after.filter(line => line.includes("First line"))[0]).toMatch(/^▏.*▕$/);
     expect(after).toHaveLength(before.length);
-    expect(after.every(line => line.length <= 60)).toBe(true);
+    expect(after.every(line => visibleWidth(line) <= 60)).toBe(true);
     for (const fragment of ["First line", "x".repeat(55)]) {
       const oldRow = before.findIndex(line => line.includes(fragment));
       const newRow = after.findIndex(line => line.includes(fragment));
       expect(newRow).toBe(oldRow);
       expect(after[newRow].indexOf(fragment)).toBe(before[oldRow].indexOf(fragment));
     }
+  });
+
+  it("aligns reply text with reasoning and preserves Pi's single spacer", () => {
+    vi.stubEnv("TZ", "UTC");
+    initTheme(undefined, false);
+    const { assistant } = fixture("Hello", Date.UTC(2024, 0, 3, 8, 15));
+    const response = message("Hello", Date.UTC(2024, 0, 3, 8, 15));
+    response.content.unshift({ type: "thinking", thinking: "Thinking about it" });
+    assistant.updateContent(response, false);
+    const children = (assistant as unknown as { contentContainer: { children: Component[] } }).contentContainer.children;
+    const md = children.find((child): child is Markdown => child instanceof Markdown)!;
+    const before = assistant.render(60).map(stripTerminalSequences);
+    const thinking = before.findIndex(line => line.includes("Thinking about it"));
+    expect(thinking).toBeGreaterThanOrEqual(0);
+    expect(before[thinking].indexOf("Thinking about it")).toBe(1);
+    expect(before[thinking + 1].trim()).toBe("");
+    expect(before[thinking + 2]).toBe(" ".repeat(60));
+    expect(before[thinking + 3].indexOf("Hello")).toBe(1);
+    expect(before[thinking + 5]).toBe(" ".repeat(60));
+    mouse(md, "move");
+    const after = assistant.render(60).map(stripTerminalSequences);
+    expect(after[thinking + 1].trim()).toBe("");
+    expect(after[thinking + 2]).toBe(`🭽${"▔".repeat(58)}🭾`);
+    expect(after[thinking + 3]).toBe(`▏Hello${" ".repeat(53)}▕`);
+    expect(after[thinking + 4]).toMatch(/^▏Jan 3 08:15\s+⧉ text\s+⧉ md\s+▕$/);
+    expect(after[thinking + 5]).toBe(`🭼${"▁".repeat(58)}🭿`);
+    expect(after).toHaveLength(before.length);
+  });
+
+  it("wraps framed text across the full width between the edge cells", () => {
+    const { md } = fixture("ABCDEFGHIJKLMNOPQR");
+    mouse(md, "move");
+    const lines = render(md, 20);
+    expect(lines).toContain("▏ABCDEFGHIJKLMNOPQR▕");
+    expect(lines.every(line => visibleWidth(line) <= 20)).toBe(true);
+  });
+
+  it("restores unframed padding after fullscreen mode changes at matching inner widths", () => {
+    const text = "x".repeat(58);
+    const { md, setFullscreen } = fixture(text, undefined, false);
+    const original = new Markdown(text, 1, 0, theme);
+    const regular = original.render(58).map(stripTerminalSequences);
+    expect(render(md, 58)).toEqual(regular);
+    setFullscreen(true);
+    mouse(md, "move");
+    expect(render(md, 60)).toContain(`▏${text}▕`);
+    setFullscreen(false);
+    expect(render(md, 58)).toEqual(regular);
   });
 
   it("leaves regular mode's Markdown output untouched", () => {
@@ -549,7 +598,7 @@ describe("assistant copy hover", () => {
     expect(after).toHaveLength(before.length);
     expect(before.findIndex(line => line.includes("Hello"))).toBe(textRow);
     expect(after[textRow]).not.toContain("⧉ text");
-    expect(after[textRow + 1]).toMatch(/^│ Jan 3 08:15\s+⧉ text\s+⧉ md\s+│$/);
+    expect(after[textRow + 1]).toMatch(/^▏Jan 3 08:15\s+⧉ text\s+⧉ md\s+▕$/);
     expect(before[textRow + 1]).not.toContain("⧉ text");
   });
 
@@ -562,7 +611,7 @@ describe("assistant copy hover", () => {
     expect(render(md).join("\n")).toContain("Jan 3 03:15");
   });
 
-  it.each([0, 1, 3])("matches the reply's %i-cell Markdown padding on both sides", padding => {
+  it.each([0, 1, 3])("aligns controls with framed text for %i-cell Markdown padding", padding => {
     vi.stubEnv("TZ", "UTC");
     const { md } = fixture("Hello", Date.UTC(2024, 0, 3, 8, 15), true, padding);
     mouse(md, "move");
@@ -570,8 +619,8 @@ describe("assistant copy hover", () => {
     const text = lines.find(line => line.includes("Hello"))!;
     const row = lines.find(line => line.includes("⧉ text"))!;
     expect(row.indexOf("Jan 3 08:15")).toBe(text.indexOf("Hello"));
-    expect(row.indexOf("Jan 3 08:15")).toBe(1 + padding);
-    expect(row.indexOf("⧉ md") + 8).toBe(60 - 1 - padding);
+    expect(row.indexOf("Jan 3 08:15")).toBe(1);
+    expect(row.indexOf("⧉ md") + 8).toBe(59);
   });
 
   it("falls back to a one-cell inset when Markdown padding is unavailable", () => {
@@ -586,13 +635,13 @@ describe("assistant copy hover", () => {
     expect(row.indexOf("⧉ md") + 8).toBe(58);
   });
 
-  it("reduces a large inset before dropping buttons at narrow widths", () => {
+  it("keeps controls aligned when the original Markdown padding is large", () => {
     const { md } = fixture("Hi", undefined, true, 3);
     mouse(md, "move");
     const row = render(md, 21).find(line => line.includes("⧉ text"))!;
     expect(visibleWidth(row)).toBe(21);
-    expect(row.indexOf("⧉ text")).toBe(2);
-    expect(row.indexOf("⧉ md") + 8).toBe(19);
+    expect(row.indexOf("⧉ text")).toBe(3);
+    expect(row.indexOf("⧉ md") + 8).toBe(20);
   });
 
   it("keeps controls and drops the date when the two no longer fit", () => {
@@ -605,17 +654,17 @@ describe("assistant copy hover", () => {
     };
     const minimum = move(19);
     expect(minimum.join("\n")).toContain("⧉ text");
-    expect(minimum.find(line => line.includes("⧉ text"))).toMatch(/^│⧉ text\s+⧉ md\s*│$/);
+    expect(minimum.find(line => line.includes("⧉ text"))).toMatch(/^▏⧉ text\s+⧉ md\s*▕$/);
     expect(minimum.every(line => visibleWidth(line) <= 19)).toBe(true);
     const twenty = move(20);
     expect(twenty.find(line => line.includes("⧉ text"))!.indexOf("⧉ md") + 8).toBe(19);
     const twentyOne = move(21);
-    expect(twentyOne.find(line => line.includes("⧉ text"))!.indexOf("⧉ md") + 8).toBe(19);
-    const narrow = move(32);
+    expect(twentyOne.find(line => line.includes("⧉ text"))!.indexOf("⧉ md") + 8).toBe(20);
+    const narrow = move(30);
     expect(narrow.join("\n")).toContain("⧉ text");
     expect(narrow.join("\n")).not.toContain("Jan 3 08:15");
-    const fits = move(33);
-    expect(fits.find(line => line.includes("⧉ text"))).toMatch(/^│ Jan 3 08:15\s+⧉ text\s+⧉ md\s+│$/);
+    const fits = move(31);
+    expect(fits.find(line => line.includes("⧉ text"))).toMatch(/^▏Jan 3 08:15\s+⧉ text\s+⧉ md\s+▕$/);
   });
 
   it("moves click targets with the buttons and leaves the rest to pi", async () => {
@@ -627,9 +676,9 @@ describe("assistant copy hover", () => {
     const textX = lines[y].indexOf("⧉ text");
     const mdX = lines[y].indexOf("⧉ md");
     const timeX = lines[y].indexOf("Jan 3 08:15");
-    expect(timeX).toBe(2);
-    expect(textX).toBe(41);
-    expect(mdX).toBe(50);
+    expect(timeX).toBe(1);
+    expect(textX).toBe(42);
+    expect(mdX).toBe(51);
     const click = (x: number, row = y) => (md as Component).handleMouse?.({ type: "click", button: "left", x, y: row, screenX: x, screenY: row, width: 60, height: lines.length, shift: false, alt: false, ctrl: false });
     expect(click(timeX)).toBeUndefined();
     expect(click(timeX + 15)).toBeUndefined();
@@ -653,6 +702,6 @@ describe("assistant copy hover", () => {
     expect(lines).not.toContain("⧉ text");
     expect(lines).not.toContain("⧉ md");
     expect(lines).not.toContain("08:15");
-    expect(lines).not.toMatch(/[┌┐└┘│]/);
+    expect(lines).not.toMatch(/[🭽🭾🭼🭿▔▁▏▕]/u);
   });
 });

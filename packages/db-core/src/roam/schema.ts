@@ -63,7 +63,8 @@ CREATE TABLE roam_receipts (
 const GLOBAL = `
 CREATE TABLE session_homes (
   session_id TEXT PRIMARY KEY, machine_id TEXT NOT NULL,
-  epoch INTEGER NOT NULL CHECK(epoch > 0), move_id TEXT, updated_at INTEGER NOT NULL
+  epoch INTEGER NOT NULL CHECK(epoch > 0), move_id TEXT, updated_at INTEGER NOT NULL,
+  state TEXT, destination TEXT
 );
 CREATE TABLE roam_repo_maps (
   repo_key TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE, origin_fingerprint TEXT,

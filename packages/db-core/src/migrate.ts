@@ -5,6 +5,7 @@ import { loadMachineIdentity } from "./roam/machine";
 import { indexPresent, validateRoamLayout } from "./roam/layout";
 import { GENERATED_TRIGGERS } from "./roam/generated";
 import { addRoamSchema } from "./roam/schema";
+import { migrateHomeV0 } from "./roam/home-v0-migration";
 import type { MachineId } from "./roam/types";
 
 export const SCHEMA_VERSION = 14;
@@ -207,11 +208,16 @@ export function migrate(
 
   const observed = Number(db.pragma("user_version"));
   if (observed > SCHEMA_VERSION) throw new Error(`Cannot open future core schema ${observed}`);
+  const needsHomeV0 = () => actualScope === "global" &&
+    !(db.prepare("PRAGMA table_info(session_homes)").all() as Array<{ name: string }>).some(column => column.name === "state");
+  let homeMigration = false;
   if (observed === SCHEMA_VERSION) {
     const inspection = db.withRetry(() => db.raw.transaction(() => {
       const current = Number(db.raw.pragma("user_version", { simple: true }));
       if (current > SCHEMA_VERSION) throw new Error(`Cannot open future core schema ${current}`);
       if (current !== SCHEMA_VERSION) throw new Error("Core schema changed before its backup");
+      homeMigration = needsHomeV0();
+      if (homeMigration) return { needsWrite: true, missingIndex: false };
       const layout = validateRoamLayout(db, actualScope, "inspect");
       return {
         needsWrite: layout.needsWrite,
@@ -226,7 +232,7 @@ export function migrate(
   }
   const globalRoot = options?.globalRoot ?? paths.globalRoot;
   const machineId = observed < SCHEMA_VERSION ? options?.machineId ?? loadMachineIdentity(globalRoot) : undefined;
-  if (observed < SCHEMA_VERSION) {
+  if (observed < SCHEMA_VERSION || homeMigration) {
     const existing = observed > 0 || !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1").get();
     if (existing) backupBeforeMigration(db, actualScope, globalRoot, observed);
   }
@@ -235,6 +241,7 @@ export function migrate(
       const current = Number(db.raw.pragma("user_version", { simple: true }));
       if (current > SCHEMA_VERSION) throw new Error(`Cannot open future core schema ${current}`);
       if (current === SCHEMA_VERSION) {
+        if (needsHomeV0()) migrateHomeV0(db);
         validateRoamLayout(db, actualScope);
         ensureQueryIndexes(db, actualScope);
         return;

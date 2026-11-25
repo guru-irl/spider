@@ -149,7 +149,8 @@ BEGIN
 		machine_id, stream_id, NULL,
 		NULL, 14,
 		json_object('session_id', NEW.session_id, 'machine_id', NEW.machine_id, 'epoch', NEW.epoch,
-			'move_id', NEW.move_id, 'updated_at', NEW.updated_at)
+			'move_id', NEW.move_id, 'updated_at', NEW.updated_at, 'state', NEW.state,
+			'destination', NEW.destination)
 	FROM roam_meta WHERE id = 1;
 	INSERT INTO roam_versions
 	SELECT entity, row_key, change_id, hlc_ms, hlc_count,
@@ -167,8 +168,10 @@ END;` },
     { name: "roam_session_homes_capture_au", sql: `CREATE TRIGGER roam_session_homes_capture_au AFTER UPDATE ON session_homes
 WHEN (SELECT capture_enabled = 1 AND importing = 0 FROM roam_meta WHERE id = 1)
 	AND json_object('session_id', OLD.session_id, 'machine_id', OLD.machine_id, 'epoch', OLD.epoch,
-			'move_id', OLD.move_id, 'updated_at', OLD.updated_at) IS NOT json_object('session_id', NEW.session_id, 'machine_id', NEW.machine_id, 'epoch', NEW.epoch,
-			'move_id', NEW.move_id, 'updated_at', NEW.updated_at)
+			'move_id', OLD.move_id, 'updated_at', OLD.updated_at, 'state', OLD.state,
+			'destination', OLD.destination) IS NOT json_object('session_id', NEW.session_id, 'machine_id', NEW.machine_id, 'epoch', NEW.epoch,
+			'move_id', NEW.move_id, 'updated_at', NEW.updated_at, 'state', NEW.state,
+			'destination', NEW.destination)
 BEGIN
 	UPDATE roam_meta SET (hlc_ms, hlc_count) = (
 		WITH sample(ms) AS (
@@ -187,7 +190,8 @@ BEGIN
 		machine_id, stream_id, NULL,
 		NULL, 14,
 		json_object('session_id', NEW.session_id, 'machine_id', NEW.machine_id, 'epoch', NEW.epoch,
-			'move_id', NEW.move_id, 'updated_at', NEW.updated_at)
+			'move_id', NEW.move_id, 'updated_at', NEW.updated_at, 'state', NEW.state,
+			'destination', NEW.destination)
 	FROM roam_meta WHERE id = 1;
 	INSERT INTO roam_versions
 	SELECT entity, row_key, change_id, hlc_ms, hlc_count,

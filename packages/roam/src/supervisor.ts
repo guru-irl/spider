@@ -171,11 +171,13 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
       failures.set(id, previous);
       return;
     }
-    if (!previous) console.error(JSON.stringify({ event: HOSTING_WARNING_CODE, sessionId: id, code: HOSTING_WARNING_CODE, check }));
     const cause = error && typeof error === "object" && "code" in error ? safeCauseCode(error.code) : undefined;
+    const causeCode = check === "inspection" ? cause ?? "inspection-unavailable" : check === "launch" ? cause ?? "launch-unavailable" : undefined;
+    if (!previous) console.error(JSON.stringify({ event: HOSTING_WARNING_CODE, sessionId: id, code: HOSTING_WARNING_CODE, check,
+      ...(causeCode === undefined ? {} : { causeCode }) }));
     const exit = error && typeof error === "object" && "launchExit" in error ? safeLaunchExit(error.launchExit) : undefined;
     const warning: HostingWarning = { code: HOSTING_WARNING_CODE, check, since: previous?.since ?? ports.clock.now(), count: Math.min(3, (previous?.count ?? 0) + 1),
-      ...(check === "launch" ? { causeCode: cause ?? "launch-unavailable", ...exit } : {}) };
+      ...(causeCode === undefined ? {} : { causeCode }), ...(check === "launch" ? exit : {}) };
     // A confirmed early exit is actionable immediately. Other failures need three failed passes.
     failures.set(id, warning);
     if ((immediate || warning.count === 3) && JSON.stringify(previous) !== JSON.stringify(warning)) {

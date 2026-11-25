@@ -130,6 +130,21 @@ sends warnings with fewer than three failures in an optional `earlyWarnings`
 field. Older hubs ignore that field without losing readiness; current hubs
 validate it and combine it with the existing warning list.
 
+Inspection failures also retain an allowlisted cause in the first supervisor
+log entry and the persistent hosting warning. Unknown causes use
+`inspection-unavailable`. A failed capture prerequisite reports
+`participant-capture-uninitialized`. Doctor and cached status show the cause
+without exception text or file contents. Doctor offers
+`spider roam stop <session>` on the hub to cancel hosting, not to retry a launch.
+
+Move activation enables capture in the session's exact worktree stores before
+publishing running intent. It checks store identity and the existing trigger
+layout and seeds through the bounded session-seeding path. Unrelated workspace
+maps do not participate. Recovery of an older activated move with capture still
+disabled rechecks the home, intent, file, workspace and absent owner under both
+session locks, initializes capture, and reuses the recorded launch reservation.
+The supervisor still requires exact admission before spawn.
+
 An `invoking` reservation without an ID lock remains blocked unless a released
 adoption record proves which owner adopted that launch. Stop requires the same
 boot and an absent recorded PID. PID reuse, an unavailable probe, or a changed

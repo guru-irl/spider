@@ -1,4 +1,4 @@
-import { hostingWarningReason, readHostingWarnings, validHostingWarnings } from "./hosting-warning";
+import { hostingWarningDiagnostic, readHostingWarnings, validHostingWarnings } from "./hosting-warning";
 import { parseSourceCleanup } from "./move";
 import { SCHEMA_VERSION, validateRoamLayout, type Db } from "@spider/db-core";
 import type { Home, Scope } from "@spider/db-core/roam/types";
@@ -261,12 +261,15 @@ export function readStatus(config: RoamConfig, ports: StatusPorts): RoamStatus {
   });
   const diagnostics: Diagnostic[] = [];
   if (ports.globalDb) try {
-    for (const warning of readHostingWarnings(ports.globalDb)) diagnostics.push({ code: warning.code, severity: "warning", reason: hostingWarningReason(warning.sessionId, warning), repairCommand: null });
+    for (const warning of readHostingWarnings(ports.globalDb)) diagnostics.push(hostingWarningDiagnostic(warning.sessionId, warning));
     for (const peer of config.peers) {
       const warnings = readLocal<unknown>(ports.globalDb, "peer-hosting-warnings", peer.machineId);
       if (warnings === undefined) continue;
       if (!validHostingWarnings(warnings)) throw new Error("Invalid peer hosting warnings");
-      for (const warning of warnings) diagnostics.push({ code: warning.code, severity: "warning", reason: `${peer.alias}: ${hostingWarningReason(warning.sessionId, warning)}`, repairCommand: null });
+      for (const warning of warnings) {
+        const diagnostic = hostingWarningDiagnostic(warning.sessionId, warning);
+        diagnostics.push({ ...diagnostic, reason: `${peer.alias}: ${diagnostic.reason}` });
+      }
     }
     if (localEntries(ports.globalDb, "catalog-diagnostic").length) diagnostics.push({ severity: "warning", reason: "Session catalog pending: invalid location stores.", repairCommand: null });
     for (const { key, value } of localEntries<{ reason?: unknown }>(ports.globalDb, "recovery-diagnostic")) {

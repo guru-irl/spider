@@ -59,7 +59,7 @@ export function createParticipantSupervisor(input: {
     },
   };
   async function inspect(id: string) {
-    if (!participantCaptureInitialized(global, input.agent.config.machineId, "global")) throw new Error("Participant capture is not initialized");
+    if (!participantCaptureInitialized(global, input.agent.config.machineId, "global")) throw Object.assign(new Error("Participant capture is not initialized"), { code: "participant-capture-uninitialized" });
     const intent = await trusted.get(id); if (!intent) throw new Error("Participant intent unavailable");
     const row = global.prepare("SELECT stores_json FROM roam_locations WHERE session_id=?").get(id) as { stores_json: string } | undefined;
     const keys = parseLocationStores(row ? JSON.parse(row.stores_json) : null).filter(key => key.startsWith("worktree:"));
@@ -67,7 +67,8 @@ export function createParticipantSupervisor(input: {
     let origin: string | null = null;
     const states = keys.map(key => {
       const { db } = input.agent.openStore(key), state = readSessionState(db, id);
-      if (!state || !participantCaptureInitialized(db, input.agent.config.machineId, key)) throw new Error("Participant store unavailable");
+      if (!state) throw new Error("Participant store unavailable");
+      if (!participantCaptureInitialized(db, input.agent.config.machineId, key)) throw Object.assign(new Error("Participant store unavailable"), { code: "participant-capture-uninitialized" });
       const row = db.prepare("SELECT origin_machine FROM sessions WHERE id=?").get(id) as { origin_machine: string } | undefined;
       if (!row?.origin_machine || origin !== null && origin !== row.origin_machine) throw new Error("Participant origin conflict");
       origin = row.origin_machine; return state;

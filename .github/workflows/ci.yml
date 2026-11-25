@@ -17,6 +17,10 @@ permissions:
   contents: read
   actions: read
 
+env:
+  # CI never uses onnxruntime's CUDA provider; skip its NuGet download.
+  ONNXRUNTIME_NODE_INSTALL: skip
+
 jobs:
   checks:
     # Branch protection matches these exact middle-dot characters.

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createConnection } from "node:net";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_LIMITS, disabledIntercom, type RoamConfig } from "../contracts";
@@ -40,6 +41,25 @@ describe("v0 controls", () => {
       expect(await client.setHome({ sessionId: home.sessionId, destinationMachine: box, force: true, confirmation })).toMatchObject({ ok: true, value: home });
       expect(f.services.setHome).toHaveBeenCalledWith({ sessionId: home.sessionId, destinationMachine: box, force: true, confirmation });
     } finally { await socket.close(); await socket.close(); }
+  });
+  it("v0 control drains the current request and rejects requests arriving during stop", async () => {
+    const f = fixture(); const root = mkdtempSync(join(resolve(".spider/scratch"), "dvd-")); roots.push(root);
+    let release!: () => void, entered!: () => void;
+    const pending = new Promise<void>(done => { entered = done; });
+    const success = await f.services.relocate({ sessionId: home.sessionId, destinationMachine: box });
+    vi.mocked(f.services.relocate).mockClear().mockImplementationOnce(async () => { entered(); await new Promise<void>(done => { release = done; }); return success; });
+    const server = await serveV0Control(root, f.services);
+    const first = requestV0Services(root).relocate({ sessionId: home.sessionId, destinationMachine: box }); await pending;
+    const late = createConnection(join(root, "roam", "relocate.sock")); late.on("error", () => {}); late.resume();
+    await new Promise<void>(done => late.once("connect", done));
+    let stopped = false; const stopping = server.close().then(() => { stopped = true; });
+    const lateClosed = new Promise<void>(done => late.once("close", () => done()));
+    late.write(JSON.stringify({ version: 1, kind: "relocate", request: { sessionId: home.sessionId, destinationMachine: box } }) + "\n");
+    await lateClosed;
+    const calls = vi.mocked(f.services.relocate).mock.calls.length;
+    expect(stopped).toBe(false); release();
+    expect(await first).toMatchObject({ ok: true }); await stopping;
+    expect(calls).toBe(1);
   });
   it("private v0 agent parses bounded UTF-8 stdin before forwarding", async () => {
     const f = fixture(); const agent = vi.fn(async (_input: unknown, _root: string) => ({ ok: true, value: { version: 1 } }));

@@ -41,10 +41,12 @@ async function reclaim(path: string): Promise<void> {
 export async function serveV0Control(root: string, services: V0ControlServices): Promise<{ close(): Promise<void> }> {
   const path = socketPath(root); privateDirectory(dirname(path)); await reclaim(path);
   const sockets = new Set<Socket>(), requests = new Set<Promise<void>>();
+  let accepting = true;
   const server = createServer(socket => {
     sockets.add(socket); socket.on("error", () => {}); socket.once("close", () => sockets.delete(socket)); socket.setTimeout(30 * 60_000, () => socket.destroy());
     let bytes = Buffer.alloc(0), received = false;
     socket.on("data", data => {
+      if (!accepting) { socket.destroy(); return; }
       if (received) return;
       bytes = Buffer.concat([bytes, data]); const end = bytes.indexOf(10);
       if (end < 0 && bytes.length <= MAX_REQUEST) return;
@@ -66,6 +68,7 @@ export async function serveV0Control(root: string, services: V0ControlServices):
   return { close() { return closing ??= (async () => {
     // Wait for relocation effects before releasing its stores. Stop accepting
     // new requests while allowing current clients to receive their result.
+    accepting = false;
     const closed = new Promise<void>(done => server.close(() => done()));
     await Promise.allSettled([...requests]);
     for (const socket of sockets) socket.destroy();

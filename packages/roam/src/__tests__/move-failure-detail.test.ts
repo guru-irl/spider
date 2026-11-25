@@ -56,10 +56,10 @@ it.each([
 });
 
 it.each([
-  { step: "untrusted-step", code: "transport-refused" },
+  { step: "untrusted-step", code: "connection-refused" },
   { step: "preflight", code: "unsafe\ncode" },
   { step: "preflight", code: "private-cause" },
-  { step: "/fixture/private", code: "transport-refused" },
+  { step: "/fixture/private", code: "connection-refused" },
 ])("does not serialize forged move failure details: %j", failure => {
   const safe = safeControlOutcome({ code: 1, reason: "move-preflight-refused", operationId: "move-a", home: null,
     epoch: null, repairCommand: null, value: null, causeCode: "move-adapter-unavailable", failure } as never);

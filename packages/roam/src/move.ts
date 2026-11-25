@@ -9,7 +9,7 @@ import type { Home, HubOperationReadiness, JsonObject, Probe, StoreBarrier } fro
 import type { IntercomIntakeFence, SessionEndpoint } from "@spider/intercom/protocol";
 import { validHostingWarning } from "./hosting-warning";
 import { peerErrorCode } from "./peer-errors";
-import { MoveCompositionError, MoveStepError, safeMoveCause, moveFailureRepair, moveFailureCause, moveFailureDetail, parseMoveFailure, withMoveStep, type MoveCauseCode, type MoveFailureDetail } from "./move-failure";
+import { MoveCompositionError, MoveStepError, safeMoveCause, moveFailureRepair, moveFailureDetail, parseMoveFailure, withMoveStep, type MoveCauseCode, type MoveFailureDetail } from "./move-failure";
 import type { MoveFailureStep } from "./cause-codes";
 import { MOVE_REFUSAL_MESSAGES } from "./contracts";
 import type { DestinationObservation, FreezeAck, Journal, MoveCheck, MovePorts, MoveRequest, MoveResult, SourceCleanup, MoveRefusal, MoveRefusalCode, MoveSessionOutcome, ValidatedBlockerId, Operation, Outcome, PreparedMove } from "./contracts";
@@ -397,7 +397,8 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
     const rows = ports.journal.read(id), failedAction = rows.filter(row => row.action === 'move-action-start').at(-1)?.result.action;
     const failure = adapterFailure;
     if (failure) {
-      try { ports.journal.record(id, "move-failure", json(failure)); }
+      const previous = rows.filter(row => row.action === "move-failure").at(-1);
+      if (!previous || !isDeepStrictEqual(previous.result, failure)) try { ports.journal.record(id, "move-failure", json(failure)); }
       catch { /* Missing diagnostic storage never changes the move outcome. */ }
     }
     if (cleanupDone) {
@@ -424,7 +425,7 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
     const blockers = error instanceof MoveError ? error.refusal.blockers : reason === "move-preflight-refused"
       ? [validateBlockerId(error instanceof MoveCompositionError ? error.code : peerErrorCode(error) ?? "preflight-check-unavailable")] : [];
     const firstHomeWithheld = error instanceof FirstHomeWithheldError ? error.firstHomeWithheld : undefined;
-    const candidate = error instanceof MoveError && !("code" in error) ? undefined : moveFailureCause(error);
+    const candidate = error instanceof MoveCompositionError ? error.code : error instanceof MoveError && "code" in error ? safeMoveCause(error.code) : undefined;
     const cause = candidate === "move-first-home-withheld" && !firstHomeWithheld ? undefined : candidate;
     const result = outcome(request, ports, code, reason, null, blockers, cause, firstHomeWithheld, failure);
     if (!checked && (begunNew || recovering) && code !== 3) {

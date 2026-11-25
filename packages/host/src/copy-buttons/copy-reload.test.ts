@@ -90,6 +90,71 @@ describe("copy button reload", () => {
     expect(proto.updateContent).toBe(other);
   });
 
+  it.each(["none", "legacy", "delegating"])("uses fresh code for messages rebuilt before session start with a %s patch", async shape => {
+    if (shape === "legacy") {
+      const legacyState = { options: options([]), enabled: false };
+      const legacyOriginal = proto.updateContent;
+      patched[patch] = { original: legacyOriginal, state: legacyState };
+      proto.updateContent = function (...args) {
+        legacyOriginal.apply(this, args);
+        if (!legacyState.enabled) return;
+        const children = (this as unknown as { contentContainer: { children: Component[] } }).contentContainer.children;
+        for (const child of children) if (child instanceof Markdown) (child as Component).handleMouse = () => ({ handled: true });
+      };
+    } else if (shape === "delegating") {
+      const previous = await import("./index.js");
+      previous.installCopyButtons(host, options([]));
+      previous.disableCopyButtons(host);
+    }
+    // Pi emits shutdown, loads extensions, rebuilds messages, then emits start.
+    const next = await freshWithPlainText("reloaded code");
+    const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
+    const pi = { on: (name: string, handler: (event: unknown, ctx: unknown) => void) => handlers.set(name, handler) };
+    const copied: string[] = [];
+    next.registerCopyButtons(pi as never, host, () => ({}), async value => { copied.push(value); });
+    const rebuilt = new AssistantMessageComponent(message, false, theme, undefined, 0);
+    const anotherRebuilt = new AssistantMessageComponent(message, false, theme, undefined, 0);
+    const children = (rebuilt as unknown as { contentContainer: { children: Component[] } }).contentContainer.children;
+    const md = children.find((child): child is Markdown => child instanceof Markdown);
+    if (!md) throw new Error("assistant has no Markdown");
+    expect(md.render(90)).toEqual(new Markdown("**Bold**", 0, 0, theme).render(90));
+    const context = { mode: "tui", hasUI: true, cwd: "/project", ui: {
+      setWidget: (_key: string, make: (tui: unknown) => unknown) => make({ mode: "fullscreen", requestRender: () => {} }),
+      notify: vi.fn(),
+    } };
+    handlers.get("session_start")?.({}, context);
+    await copyText(rebuilt);
+    await copyText(anotherRebuilt);
+    const fresh = new AssistantMessageComponent(message, false, theme, undefined, 0);
+    await copyText(fresh);
+    expect(copied).toEqual(["reloaded code", "reloaded code", "reloaded code"]);
+  });
+
+  it.each(["disabled", "regular"])("keeps rebuilt messages untouched in %s mode", async mode => {
+    const previous = await import("./index.js");
+    previous.installCopyButtons(host, options([]));
+    previous.disableCopyButtons(host);
+    const next = await freshWithPlainText("new code");
+    const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
+    const pi = { on: (name: string, handler: (event: unknown, ctx: unknown) => void) => handlers.set(name, handler) };
+    next.registerCopyButtons(pi as never, host, () => ({ "copyButtons.enabled": mode !== "disabled" }), async () => {});
+    const rebuilt = new AssistantMessageComponent(message, false, theme, undefined, 0);
+    const children = (rebuilt as unknown as { contentContainer: { children: Component[] } }).contentContainer.children;
+    const md = children.find((child): child is Markdown => child instanceof Markdown);
+    if (!md) throw new Error("assistant has no Markdown");
+    const expected = new Markdown("**Bold**", 0, 0, theme).render(90);
+    expect(md.render(90)).toEqual(expected);
+    const context = { mode: "tui", hasUI: true, cwd: "/project", ui: {
+      setWidget: (_key: string, make: (tui: unknown) => unknown) => make({ mode: mode === "disabled" ? "fullscreen" : "regular", requestRender: () => {} }),
+      notify: vi.fn(),
+    } };
+    handlers.get("session_start")?.({}, context);
+    expect(md.render(90)).toEqual(expected);
+    const move: TuiMouseEvent = { type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width: 90, height: 10, shift: false, alt: false, ctrl: false };
+    expect((md as Component).handleMouse?.(move)).toBeUndefined();
+    expect(md.render(90)).toEqual(expected);
+  });
+
   it("upgrades a legacy patch without losing a wrapper that captured it", async () => {
     const base = vi.spyOn(proto, "updateContent");
     const detach = vi.fn();

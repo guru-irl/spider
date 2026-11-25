@@ -22,7 +22,7 @@ export type CopyButtonsOptions = {
   iconStyle?: IconStyle;
   border?: (text: string) => string;
 };
-type State = { options: CopyButtonsOptions; enabled: boolean; hovered?: object; trackingMove?: boolean; hoverSeen?: boolean; detach?: () => void };
+type State = { options: CopyButtonsOptions; enabled: boolean; preparing?: boolean; hovered?: object; trackingMove?: boolean; hoverSeen?: boolean; detach?: () => void };
 type MarkdownInternals = {
   renderToken(token: Token, width: number, nextTokenType?: string, styleContext?: unknown): string[];
   render(width: number): string[];
@@ -272,7 +272,7 @@ export function installCopyButtons(host: CopyButtonsHost, options: CopyButtonsOp
   });
   patch.implementation = function (this: AssistantInternals, ...args: unknown[]) {
     patch.original.apply(this, args);
-    if (!state.enabled || this.isStreaming) return;
+    if ((!state.enabled && !state.preparing) || this.isStreaming) return;
     const message = args[0] as { content?: { type?: string; text?: string }[]; timestamp: number } | undefined;
     const content = message?.content;
     if (!Array.isArray(content) || !Array.isArray(this.contentContainer?.children)) return;
@@ -290,6 +290,11 @@ export function installCopyButtons(host: CopyButtonsHost, options: CopyButtonsOp
 }
 
 export function registerCopyButtons(pi: Pick<ExtensionAPI, "on">, host: CopyButtonsHost, readConfig: (cwd: string) => Record<string, unknown>, copy: (text: string) => Promise<void>): void {
+  const proto = host.AssistantMessageComponent?.prototype as unknown as PatchedProto | undefined;
+  // Pi rebuilds the transcript after extension load but before session_start.
+  installCopyButtons(host, { isFullscreen: () => false, copy, requestRender: () => {}, onError: () => {} });
+  const state = proto?.[PATCH]?.state;
+  if (state) { state.enabled = false; state.preparing = true; }
   pi.on("session_start", (_event, ctx) => {
     disableCopyButtons(host);
     if (process.env.PI_SUBAGENT_CHILD === "1" || ctx.mode !== "tui" || !ctx.hasUI) return;
@@ -332,6 +337,7 @@ export function disableCopyButtons(host: CopyButtonsHost): void {
   if (proto?.[PATCH]) {
     const state = proto[PATCH].state;
     state.enabled = false;
+    state.preparing = false;
     state.hovered = undefined;
     state.detach?.();
     state.detach = undefined;

@@ -3,20 +3,22 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { installFixtureRuntime, mountedFixture } from './herdr-wiring-fixture.js';
+import { mountedFixture } from './herdr-wiring-fixture.js';
+import { seedMountedRuntime } from './herdr-runtime-seed.testutil.js';
 
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
 it('delivers the last scrubbed output from a detached remote job with its real exit and log paths', async () => {
   const f = await mountedFixture('fake', 'tui', true, false, true, true);
   try {
-    await installFixtureRuntime(f);
-    const execution = f.mount.execution();
+    await seedMountedRuntime(f);
+    const execution = f.mount.execution(), release = join(f.h.directories.remote, 'release-summary');
     const token = 'ghp_' + 'A'.repeat(36);
-    const code = `setTimeout(() => { for (let i=0;i<20;i++) console.log('line-'+i); console.log('token ${token}'); console.error('last-error'); process.exitCode=23; }, 1200)`;
+    const code = `const fs=require('node:fs'); const t=setInterval(() => { if (!fs.existsSync(${JSON.stringify(release)})) return; clearInterval(t); for (let i=0;i<20;i++) console.log('line-'+i); console.log('token ${token}'); console.error('last-error'); process.exitCode=23; }, 50)`;
     const detached = await execution.remote!.execute({ owner: execution.owner!, on: 'remote.invalid' as never,
       source: { kind: 'code', language: 'javascript', code }, background: true, timeout: 50 });
     expect(detached).toMatchObject({ outcome: 'timeout', exitCode: null });
+    await f.h.hc.fileWrite('remote.invalid' as never, release, Buffer.from('release'));
     let notice: { content: string; details: { exitCode: number; localDirectory: string } } | undefined;
     await vi.waitFor(() => {
       notice = f.notices.find(value => typeof value === 'object' && value !== null && 'customType' in value && value.customType === 'spider.job_done') as typeof notice;
@@ -37,7 +39,7 @@ it('delivers the last scrubbed output from a detached remote job with its real e
 it('reconstructs the output summary after reload when a long-lived job dies by signal', async () => {
   const f = await mountedFixture('fake', 'tui', true, false, true, true);
   try {
-    await installFixtureRuntime(f);
+    await seedMountedRuntime(f);
     const execution = f.mount.execution(), release = join(f.h.directories.remote, 'release-job');
     const code = `const fs=require('node:fs'); console.log('before-reload'); const t=setInterval(()=>{if(fs.existsSync(${JSON.stringify(release)})){clearInterval(t);console.log('after-reload');console.error('signal-error');process.kill(process.pid,'SIGTERM')}},100)`;
     const detached = await execution.remote!.execute({ owner: execution.owner!, on: 'remote.invalid' as never,

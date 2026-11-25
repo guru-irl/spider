@@ -8,8 +8,7 @@ import { ProcessTerminal } from '@earendil-works/pi-tui';
 import { createHerdrHarness } from '../../../herdr/src/__tests__/testutil.js';
 import { createTerminalRegistry } from '../../../herdr/src/sessions/registry.js';
 import { createProcessPresence } from '../../../herdr/src/sessions/presence.js';
-import { setupHerdr, standardHerdrConfigPath } from '../../../herdr/src/setup/installer.js';
-import { createProductionHerdrCliPorts } from '../herdr/ports.js';
+import { runtimeInstallPath, standardHerdrConfigPath } from '../../../herdr/src/setup/installer.js';
 import { writeFixturePaneEndpoint } from '../../../herdr/src/__tests__/endpoint-fixture.js';
 import { controlConfig } from '../control.js';
 import { mountHerdr, type HerdrMount } from '../herdr/mount.js';
@@ -40,17 +39,10 @@ async function fixture(mode: 'fake' | 'hc' = 'fake') {
       agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [{ name: 'remote.invalid', aliases: [], nodePath: process.execPath,
         runtime: { cwd: null, directory: join(h.directories.remote, 'programs'), commands: {} } }] }));
     await writeFile(join(h.directories.app, 'settings.json'), '{}');
-    const ports = createProductionHerdrCliPorts(h.root, h.localEnv);
-    try {
-      const cwd = vi.spyOn(process, 'cwd').mockReturnValue(h.directories.local);
-      let request;
-      try { request = await ports.request(); } finally { cwd.mockRestore(); }
-      const parts = await ports.setupParts(request);
-      await setupHerdr(request, { ...parts,
-        preflight: async () => ({ fingerprint: 'session-registry-test', coreIdentity: h.owner!.terminal, mods: ['panel', 'machines'].map(name => ({ directory: join(h.directories.app, 'mods', `spider-${name}`) })), targets: [{ machine: 'remote.invalid' as never, nodePath: process.execPath, coreStartedAt: 'isolated' }], retiredTerminals: [], layoutExport: true }),
-        stageLook: async () => [], generateTemplates: async () => [], cutover: async () => ({ terminals: [], identities: {} }), verify: async () => ({ checks: [], failures: [], warnings: [], probes: [] }),
-      });
-    } finally { await ports.dispose(); }
+    const directory = join(h.directories.remote, 'programs');
+    const runtime = await readFile(join(h.root, 'dist/herdr/remote-runtime.mjs'));
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await writeFile(runtimeInstallPath(directory, runtime), runtime);
     const registry = createTerminalRegistry(join(h.directories.global, 'herdr'));
     const dbPath = join(h.root, 'runs.db'), globalPath = join(h.root, 'global.db');
     openDbAt(dbPath, 'worktree').close(); openDbAt(globalPath, 'global').close();

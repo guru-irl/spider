@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: MIT
 import { expect, it, vi } from 'vitest';
-import { access, cp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { execFileSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { openDbAt } from '@spider/db-core';
 import { createHerdrHarness } from '../../../herdr/src/__tests__/testutil.js';
 import { parseHerdrConfig } from '../../../herdr/src/config.js';
-import { setupHerdr, runtimeInstallPath } from '../../../herdr/src/setup/installer.js';
+import { runtimeInstallPath } from '../../../herdr/src/setup/installer.js';
 import { createJobMonitor } from '../../../herdr/src/jobs/monitor.js';
 import { createJobStore } from '../../../herdr/src/jobs/store.js';
 import { sha256 } from '../../../herdr/src/remote/runtime.js';
@@ -17,7 +16,7 @@ import { publishSessionFeed } from '../../../herdr/src/feed/publisher.js';
 import { parseFeed } from '../../../herdr/assets/shared/feed.js';
 import { prepareRemoteProgram } from '../../../context/src/remote-plan.js';
 import { runExec } from '../../../context/src/actions/exec.js';
-import { createHostHerdrPorts, createProductionHerdrCliPorts, readJobJournal } from '../herdr/ports.js';
+import { createHostHerdrPorts } from '../herdr/ports.js';
 import { createHerdrDataSource } from '../herdr/data-source.js';
 import type { RuntimeTarget, RemoteResult } from '../../../herdr/src/contracts.js';
 
@@ -43,18 +42,14 @@ async function prove(mode: 'fake' | 'hc', kind: 'conflict' | 'delayed-receipt' |
       await writeFile(preload, `if (process.argv[1]?.endsWith('/fake-hc.mjs')) { const until = Date.now() + ${callLatencyMs}; while (Date.now() < until) {} }`);
       h.localEnv.NODE_OPTIONS = h.remoteEnv.NODE_OPTIONS = `--import=${preload}`;
     }
-    await h.start(); execFileSync('git', ['init', '-q', h.root]); vi.stubEnv('SPIDER_GLOBAL_ROOT', h.directories.global); vi.stubEnv('HC_TERMINAL_ID', '');
+    await h.start(); vi.stubEnv('SPIDER_GLOBAL_ROOT', h.directories.global); vi.stubEnv('HC_TERMINAL_ID', '');
     const file = join(h.directories.global, 'herdr/config.json'); await mkdir(join(file, '..'), { recursive: true });
     const config = parseHerdrConfig({ enabled: true, app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.localEnv.XDG_CONFIG_HOME!, 'herdr-core/config.toml') },
       agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [{ name: 'remote.invalid', nodePath: process.execPath, runtime: { directory: join(h.directories.remote, 'runtime'), cwd: null, commands: {} } }] });
-    await writeFile(file, JSON.stringify(config)); await writeFile(join(h.directories.app, 'settings.json'), '{}');
-    await mkdir(join(h.root, 'packages/herdr'), { recursive: true }); await cp(resolve('packages/herdr/assets'), join(h.root, 'packages/herdr/assets'), { recursive: true }); await cp(resolve('dist/herdr'), join(h.root, 'dist/herdr'), { recursive: true });
-    const cli = createProductionHerdrCliPorts(h.root, h.localEnv);
-    try {
-      const request = { config, configPath: file, packageRoot: h.root, journalRoot: join(h.directories.global, 'herdr/setup') }, parts = await cli.setupParts(request);
-      await setupHerdr(request, { ...parts, preflight: async () => ({ fingerprint: 'exit-proof', coreIdentity: h.owner!.terminal, layoutExport: true, targets: [], retiredTerminals: [], mods: ['spider-panel', 'spider-machines'].map(name => ({ directory: join(h.directories.app, 'mods', name) })) }), stageLook: async () => [], generateTemplates: async () => [], installResume: async () => [], cutover: async () => ({ terminals: [], identities: {} }), verify: async () => ({ failures: [], warnings: [], probes: [] }) });
-    } finally { await cli.dispose(); }
+    await writeFile(file, JSON.stringify(config));
     const runtime = await readFile(resolve('dist/herdr/remote-runtime.mjs')), runtimePath = runtimeInstallPath(config.machines[0].runtime.directory, runtime);
+    await mkdir(config.machines[0].runtime.directory, { recursive: true, mode: 0o700 });
+    await writeFile(runtimePath, runtime);
     expect((await h.hc.fileRead('remote.invalid' as never, runtimePath)).equals(runtime)).toBe(true);
     const collectionHc = { ...h.hc, fileRead: async (on: Parameters<typeof h.hc.fileRead>[0], path: string) => {
       if (!receiptVisible && path.endsWith('/receipt.json')) throw Object.assign(new Error('Receipt publication is delayed'), { code: 'ENOENT' });

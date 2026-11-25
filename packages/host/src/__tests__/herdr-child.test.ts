@@ -10,8 +10,8 @@ import { createHerdrHarness } from '../../../herdr/src/__tests__/testutil.js';
 import { mountHerdr } from '../herdr/mount.js';
 import { runExec, runExecFile, runBatch } from '../../../context/src/actions/exec.js';
 import { execFileSync } from 'node:child_process';
-import { setupHerdr, runtimeInstallPath, standardHerdrConfigPath } from '../../../herdr/src/setup/installer.js';
-import { createProductionHerdrCliPorts } from '../herdr/ports.js';
+import { runtimeInstallPath, standardHerdrConfigPath } from '../../../herdr/src/setup/installer.js';
+import { stagePaneEndpointInstallation } from '../herdr/pane-installation.js';
 import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { writeFixturePaneEndpoint } from '../../../herdr/src/__tests__/endpoint-fixture.js';
 import { readRetainedAgentConsole, type AgentConsoleLaunch } from '../../../herdr/src/remote/console.js';
@@ -31,15 +31,12 @@ async function childFixture(location: 'standard' | 'relative' = 'standard') {
   execFileSync('git', ['init', '-q', h.root]);
   globalConfig.set('herdr.enabled', true);
   const configPath = location === 'standard' ? standardHerdrConfigPath(config.globalRoot) : join(config.globalRoot, 'relative-config.json');
-  const request = { config: config as never, configPath, packageRoot: h.root, journalRoot: join(config.globalRoot, 'herdr/setup') };
-  const installer = createProductionHerdrCliPorts(h.root, h.localEnv), parts = await installer.setupParts(request);
-  try {
-    await setupHerdr(request, { ...parts,
-      preflight: async () => ({ fingerprint: 'child-fixture', coreIdentity: await h.hc.identity(), mods: [], targets: [{ machine: 'remote.invalid' as never, nodePath: process.execPath, coreStartedAt: 'fixture' }], retiredTerminals: [], layoutExport: true }),
-      stageLook: async () => [], installFiles: async () => [{ path: configPath, bytes: Buffer.from(JSON.stringify(config)), expected: null }], generateTemplates: async () => [], installResume: async () => [],
-      cutover: async () => ({ terminals: [], identities: {} }), verify: async () => ({ failures: [], warnings: [] } as never),
-    });
-  } finally { await installer.dispose(); }
+  await mkdir(join(config.globalRoot, 'herdr'), { recursive: true, mode: 0o700 });
+  await mkdir(join(config.globalRoot, 'herdr/setup'), { recursive: true, mode: 0o700 });
+  await writeFile(configPath, JSON.stringify(config), { mode: 0o600 });
+  await stagePaneEndpointInstallation(config.globalRoot, h.root);
+  await mkdir(config.machines[0].runtime.directory, { recursive: true, mode: 0o700 });
+  await writeFile(runtimeInstallPath(config.machines[0].runtime.directory, runtime), runtime);
   if (location === 'relative') globalConfig.set('herdr.config', relative(paths.globalRoot, configPath));
   vi.stubEnv('PI_SUBAGENT_CHILD', '1'); vi.stubEnv('PI_SUBAGENT_RUN_ID', 'child-run'); vi.stubEnv('PI_SUBAGENT_RUN_NAME', 'worker');
   const setupCallCount = (await h.calls()).length;

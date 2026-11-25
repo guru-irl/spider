@@ -3,7 +3,8 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { runExec } from '../../../context/src/actions/exec.js';
 import { toToolResult } from '../result.js';
-import { installFixtureRuntime, mountedFixture } from './herdr-wiring-fixture.js';
+import { mountedFixture } from './herdr-wiring-fixture.js';
+import { seedMountedRuntime } from './herdr-runtime-seed.testutil.js';
 import { createHerdrHarness } from '../../../herdr/src/__tests__/testutil.js';
 import { createRemoteTestFixture } from '../../../herdr/src/__tests__/acceptance/c.js';
 import { executeRemote } from '../../../herdr/src/remote/execute.js';
@@ -63,7 +64,7 @@ it('returns gathered remote output and the cancellation state after an abort', a
   const controller = new AbortController(); let seen = ''; let abortedFromOutput = false;
   const guard = setTimeout(() => controller.abort(), 25000);
   try {
-    await installFixtureRuntime(f);
+    await seedMountedRuntime(f);
     const execution = f.mount.execution();
     const result = await runExec({ on: 'remote.invalid', language: 'javascript', code: "process.stdout.write('remote-out\\n');process.stderr.write('remote-err\\n');setInterval(()=>{},1000)" }, {
       cwd: f.ctx.cwd, ...execution, signal: controller.signal,

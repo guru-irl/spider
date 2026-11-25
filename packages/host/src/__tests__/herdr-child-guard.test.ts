@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { afterEach, expect, it, vi } from 'vitest';
-import { access, chmod, cp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve, join } from 'node:path';
@@ -9,7 +9,7 @@ import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { resetProcessStartTimeForTests } from '../../../subagents/src/process-identity.js';
 import { createHerdrHarness } from '../../../herdr/src/__tests__/testutil.js';
-import { setupHerdr, standardHerdrConfigPath } from '../../../herdr/src/setup/installer.js';
+import { runtimeInstallPath, setupHerdr, standardHerdrConfigPath } from '../../../herdr/src/setup/installer.js';
 import { createMachineCache } from '../../../herdr/src/ssh/cache.js';
 import { createExecutionEnvironmentPolicy, installSshShim, sshShimDirectory } from '../../../herdr/src/ssh/shim.js';
 import { mountHerdr } from '../herdr/mount.js';
@@ -19,7 +19,7 @@ import { createProductionHerdrCliPorts, type HostHerdrOptions } from '../herdr/p
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
-async function childFixture(mode: 'fake' | 'hc' = 'fake') {
+async function childFixture(mode: 'fake' | 'hc' = 'fake', install = false) {
   const h = await createHerdrHarness(mode);
   let cache: ReturnType<typeof createMachineCache> | undefined, mount: ReturnType<typeof mountHerdr> | undefined;
   try {
@@ -36,21 +36,27 @@ async function childFixture(mode: 'fake' | 'hc' = 'fake') {
     const config = { enabled: true, app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.root, 'core.toml') }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [{ name: 'remote.invalid', aliases: ['managed.invalid', 'box.invalid'], runtime: { cwd: h.directories.remote, directory: join(h.directories.remote, 'programs'), commands: {} }, nodePath: process.execPath }], limits: { auxiliaryPanes: 2, completedRows: 50, completedHours: 24 }, retention: { foregroundDays: 7 }, admin: { wrappers: [] } };
     const configPath = standardHerdrConfigPath(config.globalRoot);
     await mkdir(join(config.globalRoot, 'herdr'), { recursive: true });
-    // The config is setup's input; the runtime and mod files below are its real output.
     await writeFile(configPath, JSON.stringify(config));
     await writeFile(join(config.app.home, 'settings.json'), '{}');
-    const installer = createProductionHerdrCliPorts(packageRoot, { ...h.localEnv, SPIDER_GLOBAL_ROOT: h.directories.global });
-    const request = { config: config as never, configPath, packageRoot, journalRoot: join(config.globalRoot, 'herdr/setup') };
-    const parts = await installer.setupParts(request);
-    try {
-      await setupHerdr(request, { ...parts,
-        preflight: async () => ({ fingerprint: 'child-policy-fixture', coreIdentity: await h.hc.identity(), mods: ['panel'].map(name => ({ directory: join(config.app.home, 'mods', `spider-${name}`) })), targets: [{ machine: 'remote.invalid' as never, nodePath: process.execPath, coreStartedAt: 'fixture' }], retiredTerminals: [], layoutExport: true }),
-        stageLook: async () => [], generateTemplates: async () => [], installResume: async () => [],
-        cutover: async () => ({ terminals: [], identities: {} }), verify: async () => ({ failures: [], warnings: [] } as never),
-      });
-    } finally { await installer.dispose(); }
-    await access(join(config.app.home, 'mods/spider-panel/main.js'));
-    await expect(access(join(config.app.home, 'mods/spider-machines/main.js'))).rejects.toMatchObject({ code: 'ENOENT' });
+    if (install) {
+      const installer = createProductionHerdrCliPorts(packageRoot, { ...h.localEnv, SPIDER_GLOBAL_ROOT: h.directories.global });
+      const request = { config: config as never, configPath, packageRoot, journalRoot: join(config.globalRoot, 'herdr/setup') };
+      const parts = await installer.setupParts(request);
+      try {
+        await setupHerdr(request, { ...parts,
+          preflight: async () => ({ fingerprint: 'child-policy-fixture', coreIdentity: await h.hc.identity(), mods: ['panel'].map(name => ({ directory: join(config.app.home, 'mods', `spider-${name}`) })), targets: [{ machine: 'remote.invalid' as never, nodePath: process.execPath, coreStartedAt: 'fixture' }], retiredTerminals: [], layoutExport: true }),
+          stageLook: async () => [], generateTemplates: async () => [], installResume: async () => [],
+          cutover: async () => ({ terminals: [], identities: {} }), verify: async () => ({ failures: [], warnings: [] } as never),
+        });
+      } finally { await installer.dispose(); }
+      await access(join(config.app.home, 'mods/spider-panel/main.js'));
+      await expect(access(join(config.app.home, 'mods/spider-machines/main.js'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } else {
+      const directory = config.machines[0].runtime.directory;
+      const runtime = await readFile(join(packageRoot, 'dist/herdr/remote-runtime.mjs'));
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      await writeFile(runtimeInstallPath(directory, runtime), runtime);
+    }
     cache = createMachineCache({ hc: h.hc, identity: h.owner!.terminal, directory: join(config.globalRoot, 'herdr/ssh'), aliases: { 'remote.invalid': ['managed.invalid', 'box.invalid'] } });
     await cache.ready;
     const ssh = join(h.root, 'ssh');
@@ -110,7 +116,7 @@ it('a child outside Herdr keeps inherited managed-destination enforcement on eve
 }, 30000);
 
 async function proveCoreLoss(mode: 'fake' | 'hc') {
-  const f = await childFixture(mode);
+  const f = await childFixture(mode, true);
   try {
     const mount = f.mount(); await f.emit('session_start');
     expect(mount.enabled(), JSON.stringify(f.errors)).toBe(true);

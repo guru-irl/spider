@@ -6,8 +6,9 @@
 // routing.secret_scrub, routing.injection_scan, routing.auto_index_threshold.
 // The six original mutation evasions remain covered below; these are out of scope.
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { CONFIG_SCHEMA } from "@spider/ui";
 import { DEFAULTS } from "../control";
 import { ORGANISM_DEFAULTS, CURATOR_DEFAULTS } from "@spider/organism";
@@ -28,6 +29,27 @@ function guard(defaults: Readonly<Record<string, unknown>>, overrides: Record<st
 }
 
 describe("configuration schema truthfulness", () => {
+  it("recomputes reachable readers when imports, overrides, and file contents change", () => {
+    const base = mkdtempSync(join(tmpdir(), "config-reader-"));
+    const dir = join(base, "host/src");
+    const entry = join(dir, "extension.ts");
+    const reader = join(dir, "reader.ts");
+    try {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(entry, 'import "./reader.js";');
+      writeFileSync(reader, 'controlConfig("get", cwd, "example.first");');
+      expect(productionReaders(base).has("example.first")).toBe(true);
+      expect(productionReaders(base, { [entry]: "" }).has("example.first")).toBe(false);
+      expect(productionReaders(base, { [reader]: 'controlConfig("get", cwd, "example.other");' }).has("example.other")).toBe(true);
+      expect(productionReaders(base).has("example.first")).toBe(true);
+      writeFileSync(reader, 'controlConfig("get", cwd, "example.next_");');
+      const updated = productionReaders(base);
+      expect(updated.has("example.first")).toBe(false);
+      expect(updated.has("example.next_")).toBe(true);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
   it("documents curator and auxiliary inventory and routing-key behavior test gaps", () => {
     const header = readFileSync(new URL("./config-reader-guard.test.ts", import.meta.url), "utf8").split("import { describe")[0];
     for (const term of ["CURATOR_CONFIG_KEYS", "AUXILIARY_CONFIG_KEYS", "routing keys", "behaviour test"]) {

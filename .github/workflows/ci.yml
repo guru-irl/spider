@@ -231,7 +231,19 @@ jobs:
         if: matrix.shard == 1 && steps.selection.outputs.audit == 'true'
         run: node scripts/check-test-selection.mjs
 
+      - name: Save graph probe evidence
+        if: always() && matrix.shard == 1 && steps.selection.outputs.audit == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: selection-probes
+          path: |
+            .spider/scratch/selection-probes/*.json
+            .spider/scratch/selection-probes/*.log
+          include-hidden-files: true
+          if-no-files-found: error
+
       - name: Test selected shard
+        id: tests
         env:
           SCOPED_TESTS: ${{ vars.CI_SCOPED_TESTS }}
         run: |
@@ -239,6 +251,25 @@ jobs:
           shadow=--shadow
           if [ "$SCOPED_TESTS" = true ]; then shadow=; fi
           env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR TMPDIR="$PWD/.spider/scratch/tmp" node scripts/run-selected-tests.mjs --manifest ".spider/scratch/test-results/selection-${{ matrix.shard }}.json" --shard ${{ matrix.shard }}/2 --report .spider/scratch/test-results/shard-${{ matrix.shard }}.json $shadow
+
+      - name: Measure without recorded slow files
+        if: steps.selection.outputs.audit == 'true'
+        continue-on-error: true
+        env:
+          SCOPED_TESTS: ${{ vars.CI_SCOPED_TESTS }}
+        run: |
+          shadow=--shadow
+          if [ "$SCOPED_TESTS" = true ]; then shadow=; fi
+          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR TMPDIR="$PWD/.spider/scratch/tmp" node scripts/measure-test-selection.mjs --manifest ".spider/scratch/test-results/selection-${{ matrix.shard }}.json" --shard ${{ matrix.shard }}/2 --output ".spider/scratch/test-results/measurement-${{ matrix.shard }}.json" $shadow
+
+      - name: Save measurement evidence
+        if: always() && steps.selection.outputs.audit == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-measurement-${{ matrix.shard }}
+          path: .spider/scratch/test-results/measurement-${{ matrix.shard }}*.json
+          include-hidden-files: true
+          if-no-files-found: warn
 
       - name: Save proposed selection and budget
         if: always()
@@ -248,17 +279,6 @@ jobs:
           path: |
             .spider/scratch/test-results/selection-${{ matrix.shard }}.json
             .spider/scratch/test-results/budget-${{ matrix.shard }}.json
-          include-hidden-files: true
-          if-no-files-found: error
-
-      - name: Save graph probe evidence
-        if: always() && matrix.shard == 1 && steps.selection.outputs.audit == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: selection-probes
-          path: |
-            .spider/scratch/selection-probes/*.json
-            .spider/scratch/selection-probes/*.log
           include-hidden-files: true
           if-no-files-found: error
 

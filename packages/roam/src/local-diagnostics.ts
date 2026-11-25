@@ -26,6 +26,7 @@ import { DEFAULT_LIMITS, disabledIntercom, type Diagnostic, type RoamConfig } fr
 import { doctorLocal, inspectStore, localCaptureRequired, readStatus, type DiagnosticMachine, type DiagnosticPorts, type DiagnosticStore, type LoadedConsumer, type PeerObservation, type RoamStatus, type UsageWorker } from "./diagnostics";
 import { listStoreKeys, StoreInventoryError, storeInventoryDiagnostic } from "./store-inventory";
 import { openDiagnosticSnapshot } from "./diagnostic-snapshot";
+import { readPendingMoves } from "./pending-moves";
 import { isPeerFailureReason } from "./peer-errors";
 import { RUNNING_INTENT_SOURCE_UNAVAILABLE } from "./supervisor";
 import { createRunningIntentAuthority } from "./session-control";
@@ -490,6 +491,13 @@ export function localHubServiceDiagnostics(root: string): Diagnostic[] {
   }
 }
 
+export function localPendingMoveDiagnostics(root: string): Diagnostic[] {
+  const inventory: Diagnostic[] = [], moves = readPendingMoves(join(root, "roam", "journal.db"));
+  if (moves === null) inventory.push({ severity: "warning", reason: "pending-moves-unavailable: Cannot inspect pending moves.", repairCommand: "spider roam doctor" });
+  else for (const move of moves) inventory.push({ severity: "warning", reason: `move-pending: Move ${move.operationId} is pending at ${move.step}.`, repairCommand: move.repairCommand });
+  return inventory;
+}
+
 /** Inspect registered local stores without modifying them. */
 export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; currentCore?: () => Promise<string | null>; inspectIntercomDoctor?: boolean;
   hubService?: () => Promise<HubServiceObservation>;
@@ -506,7 +514,7 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
   const required = localCaptureRequired(config), severity = required ? "block" : "warning";
   const inventory: Diagnostic[] = [], storeDiagnostics: Diagnostic[] = [], peerFailures: Diagnostic[] = [], consumers: LoadedConsumer[] = [];
   if (config.enabled && config.role === "hub") inventory.push(...hubStartupDiagnostics(root, await (input.hubService ?? (() => inspectHubService(root)))()));
-  if (config.role === "hub") inventory.push(...localHubServiceDiagnostics(root));
+  if (config.role === "hub") inventory.push(...localHubServiceDiagnostics(root), ...localPendingMoveDiagnostics(root));
   if (config.role === "box") {
     if (config.enabled && (input.supervisorAutostart || process.platform === "linux")) {
       let autostart: SupervisorAutostart = "unknown";

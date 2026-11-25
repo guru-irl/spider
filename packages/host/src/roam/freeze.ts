@@ -133,12 +133,17 @@ export async function inspectDormantTranscript(file: string, sessionId: string):
 }
 
 type Meta = { machine_id: string; store_key: StoreKey | null; stream_id: string; capture_enabled: number; importing: number; roamable: number; problem: string | null };
-function storeMeta(db: Db, machine: string): Meta & { store_key: StoreKey } {
+function storeIdentity(db: Db, machine: string): Meta & { store_key: StoreKey } {
   const meta = db.prepare("SELECT machine_id,store_key,stream_id,capture_enabled,importing,roamable,problem FROM roam_meta WHERE id=1").get() as Meta | undefined;
-  if (!meta || meta.machine_id !== machine || !meta.store_key || !text(meta.stream_id) || meta.capture_enabled !== 1 ||
-      meta.importing !== 0 || meta.roamable !== 1 || meta.problem !== null) throw new Error("Participant store is unavailable");
+  if (!meta || meta.machine_id !== machine || !meta.store_key) throw new Error("Participant store identity is unavailable");
   storeScope(meta.store_key);
   return meta as Meta & { store_key: StoreKey };
+}
+function storeMeta(db: Db, machine: string): Meta & { store_key: StoreKey } {
+  const meta = storeIdentity(db, machine);
+  if (!text(meta.stream_id) || meta.capture_enabled !== 1 || meta.importing !== 0 || meta.roamable !== 1 || meta.problem !== null)
+    throw new Error("Participant store is unavailable");
+  return meta;
 }
 function highSequence(db: Db): number {
   const row = db.prepare("SELECT COALESCE(MAX(seq),0) AS seq FROM roam_changes").get() as { seq: number };
@@ -163,9 +168,9 @@ function freezeStore(db: Db, machine: string, key: Identity): StoreBarrier {
     return { storeKey: meta.store_key, stream: meta.stream_id, through };
   }).immediate();
 }
-function unfreezeStore(db: Db, machine: string, key: Identity): void {
+function unfreezeStore(db: Db, machine: string, key: Identity, inspectStore = storeMeta): void {
   db.raw.transaction(() => {
-    const meta = storeMeta(db, machine);
+    const meta = inspectStore(db, machine);
     if (storeScope(meta.store_key) !== "worktree") return;
     const state = readSessionState(db, key.sessionId);
     if (!state || state.epoch !== key.epoch) throw new Error("Participant store epoch does not match");
@@ -175,12 +180,12 @@ function unfreezeStore(db: Db, machine: string, key: Identity): void {
       .run(key.sessionId, key.epoch, key.moveId);
   }).immediate();
 }
-function roster(ports: FreezePorts, machine: string): void {
+function roster(ports: FreezePorts, machine: string, inspectStore = storeMeta): void {
   if (!Array.isArray(ports.stores) || ports.stores.length === 0 || !Array.isArray(ports.expectedStores) || ports.expectedStores.length === 0)
     throw new Error("Participant store roster is unavailable");
   const names = new Set<string>();
   for (const db of ports.stores) {
-    const meta = storeMeta(db, machine);
+    const meta = inspectStore(db, machine);
     if (names.has(meta.store_key)) throw new Error("Duplicate participant store");
     names.add(meta.store_key);
   }
@@ -376,8 +381,8 @@ export function unfreezeParticipant(operation: Operation, ports: FreezePorts): P
   return sequence(ports, async () => {
     const prior = ports.journal.begin(operation);
     if (prior.kind === "done") { clearAbortWatch(ports, operation.id); return; }
-    const progress = ports.journal.readFreeze(key.sessionId, key.moveId);
-    if (!progress || progress.epoch !== key.epoch || progress.state === "complete") throw new Error("Freeze is unavailable for abort");
+    let progress = ports.journal.readFreeze(key.sessionId, key.moveId);
+    if (progress && (progress.epoch !== key.epoch || progress.state === "complete")) throw new Error("Freeze is unavailable for abort");
     let proof: AbortAuthorization | null = null;
     try { proof = await ports.authorizeAbort(operation); } catch { /* An unreachable hub is not authorization. */ }
     if (!proof || proof.cancelledMoveId !== key.moveId || !proof.home || proof.home.sessionId !== key.sessionId ||
@@ -385,14 +390,33 @@ export function unfreezeParticipant(operation: Operation, ports: FreezePorts): P
       watchAbort(operation, ports);
       throw new AbortAuthorizationPendingError();
     }
-    const fence = recordedFence(ports, key);
-    await freezeAdmissionAndIntake(ports.gate, key.moveId, key.epoch, () => intercomPorts(ports, key).ports.close(fence.address, key.moveId, key.epoch, fence.generation));
-    await intercomPorts(ports, key).ports.checkGeneration(fence);
-    roster(ports, operation.machineId);
+    // No acknowledgement means no transfer. Compensate only recorded local effects;
+    // do not require intake closure or inspection to succeed a second time.
+    const partial = !progress || progress.state === "freezing" || ports.journal.read(operation.id).some(row => row.action === "partial-freeze-abort");
+    if (partial && !ports.journal.read(operation.id).some(row => row.action === "partial-freeze-abort"))
+      ports.journal.record(operation.id, "partial-freeze-abort", {});
+    const inspectStore = partial ? storeIdentity : storeMeta;
+    const savedFence = ports.journal.readIntercomFence(key.sessionId, key.moveId);
+    const fence = savedFence ? recordedFence(ports, key) : null;
+    if (!partial && progress?.state === "frozen" && !fence) throw new Error("Freeze fence is unavailable");
+    if (!partial && fence) {
+      await freezeAdmissionAndIntake(ports.gate, key.moveId, key.epoch, () => intercomPorts(ports, key).ports.close(fence.address, key.moveId, key.epoch, fence.generation));
+      await intercomPorts(ports, key).ports.checkGeneration(fence);
+    }
+    roster(ports, operation.machineId, inspectStore);
+    if (!progress) {
+      if (ports.stores.some(db => {
+        const meta = inspectStore(db, operation.machineId);
+        if (storeScope(meta.store_key) !== "worktree") return false;
+        const state = readSessionState(db, key.sessionId);
+        return !state || state.epoch !== key.epoch || state.state !== "active";
+      })) throw new Error("Participant state changed before cancellation");
+      progress = ports.journal.beginFreeze(key.sessionId, key.moveId, key.epoch);
+    }
     if (!ports.journal.readFreezeRoster(key.sessionId, key.moveId)) {
       // A crash before binding the roster cannot have frozen any store yet.
       if (progress.state !== "freezing" || ports.stores.some(db => {
-        const meta = storeMeta(db, operation.machineId);
+        const meta = inspectStore(db, operation.machineId);
         return storeScope(meta.store_key) === "worktree" && readSessionState(db, key.sessionId)?.state !== "active";
       })) throw new Error("Freeze store roster is unavailable");
     }
@@ -400,12 +424,12 @@ export function unfreezeParticipant(operation: Operation, ports: FreezePorts): P
     if (progress.state !== "aborted") {
       ports.journal.advanceFreeze(key.sessionId, key.moveId, key.epoch, "aborting");
       ports.journal.record(operation.id, "abort-authorized", { sessionId: key.sessionId, moveId: key.moveId, epoch: key.epoch });
-      for (const db of ports.stores) unfreezeStore(db, operation.machineId, key);
+      for (const db of ports.stores) unfreezeStore(db, operation.machineId, key, inspectStore);
       ports.journal.advanceFreeze(key.sessionId, key.moveId, key.epoch, "aborted");
     } else {
       // A stale retry must not reactivate a later frozen or retired state.
       for (const db of ports.stores) {
-        const meta = storeMeta(db, operation.machineId);
+        const meta = inspectStore(db, operation.machineId);
         if (storeScope(meta.store_key) === "worktree") {
           const state = readSessionState(db, key.sessionId);
           if (!state || state.state !== "active" || state.epoch !== key.epoch) throw new Error("Participant state changed after cancellation");
@@ -415,12 +439,13 @@ export function unfreezeParticipant(operation: Operation, ports: FreezePorts): P
     if (ports.gate.inspect().kind !== "ordinary") await ports.gate.unfreeze(key.moveId, key.epoch);
     try {
       if (!ports.journal.read(operation.id).some(row => row.action === "producers-resumed")) {
-        await intercomPorts(ports, key).ports.abort(fence);
+        if (fence) await intercomPorts(ports, key).ports.abort(fence);
         await ports.resume();
         ports.journal.record(operation.id, "producers-resumed", {});
       }
     } catch (error) {
-      await freezeAdmissionAndIntake(ports.gate, key.moveId, key.epoch, () => intercomPorts(ports, key).ports.close(fence.address, key.moveId, key.epoch, fence.generation));
+      if (fence) await freezeAdmissionAndIntake(ports.gate, key.moveId, key.epoch, () => intercomPorts(ports, key).ports.close(fence.address, key.moveId, key.epoch, fence.generation));
+      else await ports.gate.close();
       throw error;
     }
     ports.journal.record(operation.id, "done", { sessionId: key.sessionId, moveId: key.moveId, epoch: key.epoch });

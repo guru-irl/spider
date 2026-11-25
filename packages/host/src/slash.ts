@@ -149,7 +149,7 @@ export function registerSlashCommands(pi: PiLike, deps: SlashDeps): void {
 	for (const name of SLASH_COMMANDS) {
 		if (deps.alreadyRegistered.has(name)) continue;
 		pi.registerCommand(name, {
-			description: name === "spider" ? `spider ${icon(deps.iconStyle, "agent")} dashboard` : DESC[name],
+			description: name === "spider" ? `spider ${icon(deps.iconStyle, "spider")} dashboard` : DESC[name],
 			handler: async (args: string, ctx: unknown) => {
 				const arg = typeof args === "string" ? args.trim() : "";
 				const words = arg.split(/\s+/), roamingDoctor = name === "spider" && words[0] === "roam" && words[1] === "doctor";

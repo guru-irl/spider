@@ -37,7 +37,7 @@ export function renderExecCall(
 ): string[] {
   const { theme, width } = ctx;
   const head = truncateToWidth(
-    theme.fg("accent", `${uiIcon(theme.iconStyle, "agent")} `) + theme.fg("toolTitle", theme.bold("spider ")) + theme.fg("muted", details.kind),
+    theme.fg("accent", `${uiIcon(theme.iconStyle, "spider")} `) + theme.fg("toolTitle", theme.bold("spider ")) + theme.fg("muted", details.kind),
     width, "",
   );
   const cmds = details.commands ?? [];

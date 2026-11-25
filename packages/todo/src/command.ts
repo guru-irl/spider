@@ -85,7 +85,7 @@ function notifyText(db: Db, sessionId: string): string {
  */
 export function makeTodosCommand(deps: TodosCommandDeps) {
   return {
-    description: `${icon(deps.iconStyle, "agent")} view todos (press 'a' for all sessions, 'q' to close)`,
+    description: `${icon(deps.iconStyle, "spider")} view todos (press 'a' for all sessions, 'q' to close)`,
     async handler(_args: string, ctx: any): Promise<void> {
       const sessionId: string =
         ctx?.sessionManager?.getSessionId?.() ?? deps.getSessionId(ctx);

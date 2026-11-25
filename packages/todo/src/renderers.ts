@@ -2,7 +2,7 @@ import type { Component } from "@spider/ui";
 import { icon, Panel, StatusLine, type Component as UIComponent } from "@spider/ui";
 import type { SessionGroup, SessionSummary, Todo } from "./types";
 
-const GLYPH = icon("text", "agent");
+const GLYPH = icon("text", "spider");
 
 function todoLine(t: Todo): string {
   return `${t.done ? "[x]" : "[ ]"} #${t.seq} ${t.text}`;

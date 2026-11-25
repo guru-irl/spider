@@ -27,12 +27,12 @@ describe("host icon rendering", () => {
     }
   });
 
-  it("uses the agent icon in the tool call", () => {
+  it("uses the spider icon in the tool call", () => {
     const args = { action: "run" };
     const text = renderSpiderCall(args, theme, style("text")).render(100);
     const nerd = renderSpiderCall(args, theme, style("nerd")).render(100);
     expect(text[0]).toContain("🕸  spider");
-    expect(nerd[0]).toContain("\u{F167A}  spider");
+    expect(nerd[0]).toContain("\u{F0BCA}  spider");
     equalWidths(text, nerd);
   });
 
@@ -77,7 +77,7 @@ describe("host icon rendering", () => {
     }
   });
 
-  it("uses agent markers in import and pending-memory panels", () => {
+  it("uses spider markers in import and pending-memory panels", () => {
     for (const [args, details] of [
       [{ action: "import" }, { imported: 0, skipped: 0, staged: 0, committed: 0 }],
       [{ action: "control", command: "memory", sub: "pending" }, []],
@@ -85,7 +85,8 @@ describe("host icon rendering", () => {
       const render = (iconStyle: "text" | "nerd") => renderSpiderResult({ details }, {}, theme, { args, iconStyle }).render(100);
       const text = render("text"), nerd = render("nerd");
       expect(text.join("\n")).toContain("🕸");
-      expect(nerd.join("\n")).toContain("\u{F167A}");
+      expect(nerd.join("\n")).toContain("\u{F0BCA}");
+      expect(nerd.join("\n")).not.toContain("\u{F167A}");
       expect(nerd.join("\n")).not.toContain("🕸");
       equalWidths(text, nerd);
     }
@@ -97,7 +98,7 @@ describe("host icon rendering", () => {
     const nerd = renderSubagentDone(done, {}, theme, "nerd").render(100);
     expect(text.join("\n")).toContain("⚠ scribe");
     expect(nerd.join("\n")).toContain("\u{F002A} scribe");
-    expect(nerd.join("\n")).toContain("\u{F167A}  spider");
+    expect(nerd.join("\n")).toContain("\u{F0BCA}  spider");
     equalWidths(text, nerd);
     const report = { data: { status: "failed", errors: [], memoryStaged: 0, skillsStaged: 0, todosAdded: 0 } };
     const a = renderOrganismEntry(report, {}, theme, "text").render(100);

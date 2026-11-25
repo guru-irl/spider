@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { afterEach, expect, it, vi } from 'vitest';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHcClient } from '../client/hc.js';
 import { trackAvailability } from '../client/availability.js';
@@ -33,7 +34,7 @@ vi.mock('../client/cli-transport.js', () => ({ invokeCli: async (_binary: string
 } }));
 afterEach(() => { boundary.mode = 'timeout'; boundary.machineDown = false; boundary.sharedHost = false; boundary.machineGate = null; boundary.calls = []; vi.useRealTimers(); });
 const scope = { key: 'machine:box-1.invalid', machine: 'box-1.invalid' };
-const client = (available: (key: string) => void) => createHcClient({ binary: 'fixture', env: { HC_SOCKET: join(process.cwd(), '.spider/scratch/offline-fixture.sock'), HC_SESSION: 'fixture' } }, available);
+const client = (available: (key: string) => void) => createHcClient({ binary: 'fixture', env: { HC_SOCKET: join(tmpdir(), 'offline-fixture.sock'), HC_SESSION: 'fixture' } }, available);
 
 it.each(['cli-timeout', 'cli-exit', 'unreachable'])('attaches the destination to a %s transport failure', async code => {
   const original = new HerdrError(code, 'transport failed', { exitCode: 1, stderr: 'connection lost' });

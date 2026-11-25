@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createJobMonitor, type JobMonitorOptions } from '../jobs/monitor.js';
 import { createJobStore, type JournalJob } from '../jobs/store.js';
@@ -25,8 +26,7 @@ afterEach(async () => {
 });
 
 async function fixture(initial: 'offline' | 'invalid' | 'foreign' | 'auth', recoverySource?: HcAvailabilitySource) {
-  const scratch = join(process.cwd(), '.spider/scratch/failed-cleanup'); await mkdir(scratch, { recursive: true });
-  const root = await mkdtemp(join(scratch, 'case-')); roots.push(root);
+  const root = await mkdtemp(join(tmpdir(), 'failed-cleanup-')); roots.push(root);
   const owner = { sessionId: 'session-one', generation: 'generation-one', terminal: { coreId: 'local-core', terminalId: 'owner', address: 'owner', socket: join(root, 'fixture.sock'), sessionNamespace: 'fixture' }, cwd: root, sessionFile: null, name: null } as Owner;
   const machine = 'box-1.invalid' as MachineName, address = 'box-1.invalid/t1' as TerminalAddress, id = 'job-one' as JobId;
   let terminal: TerminalSummary | null = { address, parent: null, state: 'live', status: null, exitCode: null, reason: null, signal: null, finishedAt: null,
@@ -113,7 +113,7 @@ it('wakes delayed cleanup after a verified remote read, not cached inventory', a
 
 it('wakes delayed failed-launch cleanup from a real hc client after a validated remote read', async () => {
   fakeClock();
-  const client = createHcClient({ binary: 'fixture', env: { HC_SOCKET: join(process.cwd(), '.spider/scratch/failed-cleanup-client.sock'), HC_SESSION: 'fixture' } });
+  const client = createHcClient({ binary: 'fixture', env: { HC_SOCKET: join(tmpdir(), 'failed-cleanup-client.sock'), HC_SESSION: 'fixture' } });
   try {
     const f = await fixture('offline', client);
     for (let i = 0; i < 4; i++) {

@@ -207,3 +207,5 @@ export function disableCopyButtons(host: CopyButtonsHost): void {
   const proto = host.AssistantMessageComponent?.prototype as unknown as PatchedProto | undefined;
   if (proto?.[PATCH]) proto[PATCH].state.enabled = false;
 }
+
+// Source-only CI timing probe.

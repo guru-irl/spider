@@ -29,7 +29,7 @@ export interface IntercomPairRecord {
   version: 1; pair: IntercomEnrollmentPlan | IntercomEnrollmentPair; state: "pending" | "active" | "revoking" | "revoked" | "cancelled";
   operationId: string; graphDigest: string; fenceId: string | null; cleanupReason: IntercomRevocationCleanupReason | null;
   resources?: IntercomPairResources; unit?: IntercomUnitRecord; revocationEpoch?: string;
-  commandApprovalFenceId?: string | null; revocationGates?: readonly RevocationGate[];
+  commandApprovalFenceId?: string | null; revocationGates?: readonly RevocationGate[]; predecessorPairId?: string;
 }
 /** Resources remain as cleanup receipts. A recorded epoch and no obligation prove completion. */
 export function canReuseRevokedPairId(record: IntercomPairRecord | null, candidate: IntercomEnrollmentPlan): boolean {
@@ -94,6 +94,7 @@ function validate(value: unknown, pairId: string): IntercomPairRecord {
       !id(item.operationId) || !hash(item.graphDigest) || !(item.fenceId === null || isMachineId(item.fenceId)) ||
       !(item.cleanupReason === null || reasons.has(item.cleanupReason)) || item.revocationEpoch !== undefined && !id(item.revocationEpoch) ||
       item.revocationGates !== undefined && (item.cleanupReason !== "intercom-revocation-unconfirmed" || !validRevocationGates(item.revocationGates)) ||
+      item.predecessorPairId !== undefined && (!id(item.predecessorPairId) || item.predecessorPairId === pairId) ||
       item.commandApprovalFenceId !== undefined && (!(item.commandApprovalFenceId === null || isMachineId(item.commandApprovalFenceId)) || !bound(item.pair)) ||
       !["pending", "cancelled"].includes(item.state) && !bound(item.pair) ||
       item.state === "cancelled" && (bound(item.pair) || item.resources || item.unit || item.cleanupReason || item.revocationEpoch) ||
@@ -103,6 +104,7 @@ function validate(value: unknown, pairId: string): IntercomPairRecord {
     ...(item.revocationEpoch === undefined ? {} : { revocationEpoch: item.revocationEpoch }),
     ...(item.revocationGates === undefined ? {} : { revocationGates: item.revocationGates.map(({ side, gate, causeCode }) => ({ side, gate, ...(causeCode === undefined ? {} : { causeCode }) })) }),
     ...(item.commandApprovalFenceId === undefined ? {} : { commandApprovalFenceId: item.commandApprovalFenceId }),
+    ...(item.predecessorPairId === undefined ? {} : { predecessorPairId: item.predecessorPairId }),
     ...(item.resources === undefined ? {} : { resources: resources(item.resources, item.pair) }), ...(item.unit === undefined ? {} : { unit: unit(item.unit, item.pair) }) };
 }
 function checkPrivateFile(file: string): boolean {
@@ -130,13 +132,28 @@ export function createIntercomRegistry(root: string, live?: LiveFenceReader) {
     const path = file(pairId); if (!checkPrivateFile(path)) return null;
     const value = await readPrivateJson(path); return value === null ? null : validate(value, pairId);
   };
-  const pending = async (existing: IntercomPairRecord | null, candidate?: IntercomEnrollmentPlan, peer?: string): Promise<boolean> => {
-    if (existing?.state === "revoking" || existing?.cleanupReason) return true;
-    const scope = existing?.pair ?? candidate; if (!scope && !peer) return false;
+  const list = async (): Promise<IntercomPairRecord[]> => {
+    const records: IntercomPairRecord[] = [];
+    for (const path of await jsonFiles(directory)) {
+      const name = path.slice(directory.length + 1, -5);
+      if (!id(name)) throw new Error("invalid-intercom-registry");
+      const item = await get(name); if (item) records.push(item);
+    }
+    return records;
+  };
+  const pending = async (existing: IntercomPairRecord | null, candidate?: IntercomEnrollmentPlan, peer?: string): Promise<{ pending: boolean; predecessor?: IntercomPairRecord }> => {
+    if (existing?.state === "revoking" || existing?.cleanupReason) return { pending: true };
+    const scope = existing?.pair ?? candidate; if (!scope && !peer) return { pending: false };
     if (peer !== undefined && !isMachineId(peer)) throw new Error("invalid-intercom-peer");
+    const records = await list();
+    const obligation = (first: string, second: string): boolean => records.some(record =>
+      (record.pair.source.machineId === first && record.pair.target.machineId === second ||
+       record.pair.source.machineId === second && record.pair.target.machineId === first) &&
+      (record.state === "revoking" || record.cleanupReason !== null));
+    if (scope && obligation(scope.source.machineId, scope.target.machineId)) return { pending: true };
     const queue = join(base, "queue.db");
-    if (live && !checkPrivateFile(queue)) return false;
-    const snapshot = live ? undefined : openDiagnosticSnapshot(queue); if (!live && !snapshot) return false;
+    if (live && !checkPrivateFile(queue)) return { pending: false };
+    const snapshot = live ? undefined : openDiagnosticSnapshot(queue); if (!live && !snapshot) return { pending: false };
     try {
       let machineId = live?.machineId;
       if (snapshot) {
@@ -147,7 +164,8 @@ export function createIntercomRegistry(root: string, live?: LiveFenceReader) {
       if (!isMachineId(machineId)) throw new Error("intercom-fence-unavailable");
       const scopedPeer = scope ? machineId === scope.source.machineId ? scope.target.machineId : machineId === scope.target.machineId ? scope.source.machineId : null : undefined;
       const other = peer ?? scopedPeer;
-      if (!other) return false;
+      if (!other) return { pending: false };
+      if (obligation(machineId, other)) return { pending: true };
       let fence: { edge_epoch: string; fence_id: string } | undefined;
       if (live) {
         const observed = await live.read(other);
@@ -156,14 +174,27 @@ export function createIntercomRegistry(root: string, live?: LiveFenceReader) {
         if (observed.fence) fence = { edge_epoch: observed.fence.edgeEpoch, fence_id: observed.fence.fenceId };
       } else fence = snapshot!.prepare("SELECT edge_epoch,fence_id FROM intercom_pair_fences WHERE peer=?").get(other) as typeof fence;
       if (fence && (!id(fence.edge_epoch) || !isMachineId(fence.fence_id))) throw new Error("intercom-fence-unavailable");
-      if (!fence) return false;
+      if (!fence) return { pending: false };
+      // A fresh pair carries a reference, never its predecessor's completion proof.
+      const predecessorPairId = existing?.state === "pending" || existing?.state === "cancelled" ? existing.predecessorPairId : undefined;
+      const predecessors: IntercomPairRecord[] = [];
+      for (const record of records) {
+        if (record.pair.pairId !== existing?.pair.pairId && (predecessorPairId === undefined || record.pair.pairId === predecessorPairId) &&
+            record.fenceId === fence.fence_id &&
+            record.revocationEpoch === fence.edge_epoch &&
+            (record.pair.source.machineId === machineId && record.pair.target.machineId === other ||
+             record.pair.target.machineId === machineId && record.pair.source.machineId === other)) predecessors.push(record);
+      }
+      if (predecessors.length === 1 && predecessors[0].state === "revoked" && predecessors[0].cleanupReason === null &&
+          predecessors[0].unit?.closedFenceId === fence.fence_id) return { pending: false, predecessor: predecessors[0] };
+      if (predecessorPairId !== undefined) return { pending: true };
       // A predecessor receipt only accounts for the peer recorded on that pair.
-      if (other !== scopedPeer) return true;
-      if (existing?.state === "revoked" && existing.fenceId === fence.fence_id && (existing.revocationEpoch ?? existing.pair.edgeEpoch) === fence.edge_epoch) return false;
+      if (other !== scopedPeer) return { pending: true };
+      if (existing?.state === "revoked" && existing.fenceId === fence.fence_id && (existing.revocationEpoch ?? existing.pair.edgeEpoch) === fence.edge_epoch) return { pending: false };
       // A pending fresh enrollment may retain its completed predecessor until approved admission clears it.
       if ((existing?.state === "pending" || existing?.state === "cancelled") && existing.fenceId === fence.fence_id &&
-          existing.pair.edgeEpoch !== fence.edge_epoch && candidate?.edgeEpoch !== fence.edge_epoch) return false;
-      return true;
+          existing.pair.edgeEpoch !== fence.edge_epoch && candidate?.edgeEpoch !== fence.edge_epoch) return { pending: false };
+      return { pending: true };
     } finally { snapshot?.close(); }
   };
   const save = async (item: IntercomPairRecord): Promise<void> => {
@@ -174,16 +205,11 @@ export function createIntercomRegistry(root: string, live?: LiveFenceReader) {
   const locked = <T>(work: () => Promise<T>): Promise<T> => withProcessLock(base, "intercom-enrollment-registry", work);
   return {
     get(pairId: string): Promise<IntercomPairRecord | null> { return get(pairId); },
-    async revocationPending(pairId: string, peer?: string): Promise<boolean> { return pending(await get(pairId), undefined, peer); },
-    async list(): Promise<IntercomPairRecord[]> {
-      const files = await jsonFiles(directory), records: IntercomPairRecord[] = [];
-      for (const path of files) {
-        const name = path.slice(directory.length + 1, -5);
-        if (!id(name)) throw new Error("invalid-intercom-registry");
-        const item = await get(name); if (item) records.push(item);
-      }
-      return records;
+    async revocationPending(pair: string | IntercomEnrollmentPlan, peer?: string): Promise<boolean> {
+      const candidate = typeof pair === "string" ? undefined : normalizePlan(pair);
+      return (await pending(await get(typeof pair === "string" ? pair : pair.pairId), candidate, peer)).pending;
     },
+    list(): Promise<IntercomPairRecord[]> { return list(); },
     async fences(pairs: readonly IntercomEnrollmentPlan[]): Promise<Record<string, string | null>> {
       const result: Record<string, string | null> = Object.create(null);
       for (const value of pairs) {
@@ -198,9 +224,14 @@ export function createIntercomRegistry(root: string, live?: LiveFenceReader) {
       if (!id(operationId) || !hash(graphDigest)) throw new Error("invalid-intercom-enrollment");
       await withIntercomPeerLock(root, candidate.source.machineId, candidate.target.machineId, () => locked(async () => {
         const existing = await get(candidate.pairId);
-        if (await pending(existing, candidate)) throw new Error("revocation-pending");
+        let observation = await pending(existing, candidate);
+        if (observation.pending) throw new Error("revocation-pending");
         const reuse = canReuseRevokedPairId(existing, candidate);
-        if (reuse && await pending(null, candidate)) throw new Error("revocation-pending");
+        if (reuse) {
+          observation = await pending(null, candidate);
+          if (observation.pending) throw new Error("revocation-pending");
+        }
+        if (observation.predecessor?.revocationEpoch === candidate.edgeEpoch) throw new Error("fresh-peer-consent-required");
         if (existing) {
           if (!reuse && (existing.pair.source.machineId !== candidate.source.machineId || existing.pair.target.machineId !== candidate.target.machineId)) throw new Error("intercom-pair-conflict");
           if (existing.state === "revoked" || existing.state === "cancelled") {
@@ -210,7 +241,9 @@ export function createIntercomRegistry(root: string, live?: LiveFenceReader) {
             throw new Error("intercom-pair-conflict");
           }
         }
-        await save({ version: 1, pair: candidate, state: "pending", operationId, graphDigest, fenceId: reuse ? null : existing?.fenceId ?? null, cleanupReason: existing?.cleanupReason ?? null });
+        await save({ version: 1, pair: candidate, state: "pending", operationId, graphDigest,
+          fenceId: observation.predecessor?.fenceId ?? (reuse ? null : existing?.fenceId ?? null), cleanupReason: existing?.cleanupReason ?? null,
+          ...(observation.predecessor === undefined ? {} : { predecessorPairId: observation.predecessor.pair.pairId }) });
       }));
     },
     async cancelPending(pairId: string, operationId: string, graphDigest: string): Promise<void> {

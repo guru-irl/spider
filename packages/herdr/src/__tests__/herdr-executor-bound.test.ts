@@ -29,6 +29,13 @@ it('returns an uncertain release with job paths and preserves a later completion
   expect(f.notices[0].details.jobId).toBe(actual.result.remote.jobId);
 });
 
+it('the safety bound rejects a stalled wait while execution timers are paused', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+  try {
+    await expect(Promise.race([bounded(new Promise<never>(() => {}), 20), delay(50).then(() => 'still waiting')])).rejects.toThrow('wait did not settle');
+  } finally { vi.useRealTimers(); }
+});
+
 for (const nativeFinishes of [true, false]) {
 // Disabled 2026-11-25: flaky in CI (wait did not settle for native finish true).
 it.skipIf(nativeFinishes)(`a stalled collector respects liveness and cancellation with native finish ${nativeFinishes}`, async () => {
@@ -102,11 +109,13 @@ it.each([{ background: false, nativeFinishes: false }, { background: false, nati
   const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => timeout(callback, ms === 5000 ? 1000 : ms, ...args)) as typeof setTimeout);
   cleanup(() => spy.mockRestore());
   const reading = deferred(), stalled = deferred<CollectedLogs>(), stop = new AbortController();
+  // Each clock read moves time forward, including between arming and reading the settlement deadline.
+  let now = Date.now();
   f.hc.fileRead = async () => bytes;
   const jobs = f.monitor({ outputCollector: { ...f.options.outputCollector, collect: () => new Promise(() => {}) } });
   const remote = createRemoteExecutor({
     hc: f.hc, jobs, prepare: program, target: async () => ({ on, cwd: null, directory: f.f.root, commands: {}, environment: {}, nodePath: process.execPath, runtimePath: 'runtime', runtimeSha256: sha256(bytes) }),
-    environmentPolicy: env => env, clock: Date.now,
+    environmentPolicy: env => env, clock: nativeFinishes ? () => now++ : Date.now,
     logSink: async () => ({ collect: () => { reading.resolve(); return stalled.promise; }, dispose() {} }),
   });
   const executing = runExec({ on, language: 'shell', code: 'unused', timeout: 100, background }, { cwd: f.f.root, owner: f.owner, remote, signal: stop.signal });

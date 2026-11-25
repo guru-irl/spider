@@ -110,7 +110,7 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
   const moveCause = candidate === "move-first-home-withheld" && !withheld ? undefined : candidate;
   const causeCode = moveCause ?? safeCauseCode(result.causeCode);
   // provision.ts is the sole producer of permission repairs and binds them to the destination home.
-  const safeRepair = (value: unknown): string | null => typeof value === "string" && (moveCause === "move-workspace-unmapped" && value === "spider roam repo map <repo> <path>" || /^spider roam (?:recover|doctor|cancel|claim|provision|forget|disable|stop)(?: [A-Za-z0-9._-]+)?$/.test(value) ||
+  const safeRepair = (value: unknown): string | null => typeof value === "string" && (moveCause === "move-workspace-unmapped" && value === "spider roam repo map <repo> <path>" || /^spider roam (?:recover|doctor|cancel|claim|provision|forget|disable|stop|enable)(?: [A-Za-z0-9._-]+)?$/.test(value) ||
     /^spider roam provision [A-Za-z0-9._-]+ --operation-id [A-Za-z0-9._-]+$/.test(value) ||
     result.reason === "destination-permissions-unsafe" && isPermissionRepairCommand(value)) ? value : null;
   const repair = safeRepair(result.repairCommand);

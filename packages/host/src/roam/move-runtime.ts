@@ -9,6 +9,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { homedir } from 'node:os';
 import { openDb, paths, type Db } from "@spider/db-core";
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { parseLocationStores, recordLocation } from "@spider/db-core/roam/catalog";
@@ -31,6 +32,7 @@ import { readLocalIdentity } from "@spider/roam/runtime";
 import { createBoxParticipantWake } from "@spider/roam/participant-runtime";
 import { participantLaunchId } from "@spider/roam/participant-launch";
 import { createProcessInventory } from "../herdr/process-inventory";
+import { createMoveOwnershipProbe } from './move-ownership';
 import { inspectIdLock, inspectReleasedIdLock, localBootId } from "@spider/herdr/sessions/id-lock";
 import { processStartTime } from "../../../subagents/src/process-identity";
 import { createTerminalRegistry } from "@spider/herdr/sessions/registry";
@@ -130,7 +132,7 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
   if (completeSource) recordLocation(globalDb, { sessionId, stores: requiredKeys, home: sourceHome });
   const clock: Clock = { now: () => Date.now(), later(ms, fn) { const timer = setTimeout(fn, ms); timer.unref(); return () => clearTimeout(timer); } };
   const sync = input.sync ?? createSync({ config, globalDb, journal, transport, clock, stores });
-  const inventory = createProcessInventory(join(root, "herdr"));
+  const inventory = createProcessInventory(join(root, "herdr"), false, [join(homedir(), '.pi', 'agent', 'spider', 'herdr')]);
   const machine = machineMoveProxy(root), broker = { inspectFreezeBlockers: machine.broker };
   const runtimeRoot = join(root, "roam", "s");
   const location = (id: string) => globalDb.prepare("SELECT file,cwd,stores_json FROM roam_locations WHERE session_id=?").get(id) as { file: string; cwd: string; stores_json: string } | undefined;
@@ -152,23 +154,12 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
     if (!locks) throw new Error("session-lock-evidence-unavailable");
     return heldClaims.run({ sessionId: id, locks }, () => effect(locks));
   });
-  const probe = async (id: string): Promise<Probe> => {
-    const lock = await inspectIdLock(join(root, "herdr"), id), held = heldClaims.getStore();
-    const ownClaim = held?.sessionId === id;
-    if (ownClaim && !await held.locks.owns()) return { kind: "uncertain" };
-    if (!lock || ownClaim) {
-      const records = await inventory.presence.list();
-      for (const record of records.filter(record => record.sessionId === id)) if ((await inventory.probe(record.pid)).kind !== "absent") return { kind: "uncertain" };
-      const unknown = await inventory.processes();
-      if (unknown.some(row => !records.some(record => record.pid === row.pid))) return { kind: "uncertain" };
-      return { kind: "absent" };
-    }
-    if (lock.pendingOperationId) return { kind: "uncertain" };
-    const observed = await inventory.probe(lock.identity.pid), bootId = await localBootId();
-    if (lock.bootId !== bootId || observed.kind === "absent") return { kind: "absent" };
-    if (observed.kind !== "live" || observed.startIdentity !== lock.identity.startIdentity) return { kind: "uncertain" };
-    return { kind: "live", identity: { bootId, pid: lock.identity.pid, startTime: observed.startIdentity } };
-  };
+  const probe = createMoveOwnershipProbe({ root: join(root, 'herdr'), inventory, bootId: localBootId,
+    async heldClaim(id) {
+      const held = heldClaims.getStore();
+      return held?.sessionId === id ? held.locks.owns() : null;
+    },
+  });
   const scratch = join(root, "roam", "git");
   const git: Omit<GitPorts, "journal" | "limits"> = { run: (cwd, argv, options) => gitRun(cwd, argv[0] === "git" ? argv : ["git", ...argv], options), scratch, worktreeCommand: null };
   const authority = createRunningIntentAuthority(globalDb);

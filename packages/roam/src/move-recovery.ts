@@ -3,6 +3,7 @@
 import { hostingWarningText } from "./hosting-warning";
 import { safeCauseCode } from "./cause-codes";
 import { safeMoveCause } from "./move-failure";
+import { ownershipFailureCode } from './ownership-failure';
 import { writeLocal } from "@spider/db-core/roam/local-state";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -122,7 +123,10 @@ async function reconcile(id: string, ports: MovePorts, cancel: boolean): Promise
         const code = error && typeof error === "object" && "code" in error ? error.code : null;
         const cause = code === "abort-authorization-pending" ? code : safeCauseCode(code) ?? safeMoveCause(code);
         const blockers = error instanceof MoveError ? error.refusal.blockers : cause ? [validateBlockerId(cause)] : [];
-        const result = evidence.outcome(request, ports, 3, cancel && reason === "move-preflight-refused" ? "move-abort-pending" : reason, null, blockers);
+        const ownershipCause = blockers.map(ownershipFailureCode).find(cause => cause !== undefined);
+        const refusal = ownershipCause ? 'move-ownership-unavailable' : cancel && reason === "move-preflight-refused" ? "move-abort-pending" : reason;
+        ports.journal.record(id, 'move-recovery-refused', { reason: refusal, blockers: [...blockers], ...(ownershipCause ? { causeCode: ownershipCause } : {}) });
+        const result = evidence.outcome(request, ports, 3, refusal, null, blockers, safeMoveCause(ownershipCause));
         if (!result.ok && result.reason === "move-destination-pending" && pendingWarning) {
           result.refusal.hostingWarning = pendingWarning;
           result.refusal.message += ` ${hostingWarningText(pendingWarning)}`;

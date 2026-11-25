@@ -148,6 +148,20 @@ it.each([1, 2])('preserves the ownership cause from probe %s without dormant eff
   expect(effects).toBe(0);
 });
 
+it.each([
+  ['session-may-be-live', 'ownership-file-live'],
+  ['session-id-owner', 'ownership-lock-unavailable'],
+  ['lock-owner-uncertain', 'ownership-lock-unavailable'],
+])('names the ownership repair when a physical lock refuses with %s', async (code, reason) => {
+  const f = fixture(); let effects = 0;
+  const operation: Operation = { id: 'abort-locked', kind: 'session-unfreeze', machineId: BOX, expectedEpoch: 2, args: { sessionId: 'session-1', moveId: 'move-1' } };
+  expect(await control.controlSession(operation, { journal: f.journal, probe: async () => ({ kind: 'absent' }),
+    async withBothLocks() { throw Object.assign(new Error('lock refused'), { code }); },
+    async live() { throw new Error('must not call live'); },
+    async dormant(op) { effects++; return { code: 0, reason: 'unfrozen', operationId: op.id, home: null, epoch: 2, repairCommand: null, value: {} }; } })).toMatchObject({ code: 3, reason });
+  expect(effects).toBe(0);
+});
+
 it("dormant control rechecks dormancy while holding both locks", async () => {
   const f = fixture();
   const operation: Operation = { id: "freeze-dormant", kind: "session-freeze", machineId: BOX, expectedEpoch: 2,
@@ -235,7 +249,9 @@ it("both locks fail closed on missing identity evidence or file claim failure", 
   let entered = false;
   const run = async () => { entered = true; };
   const noBoot = control.createBothLocks({ root: f.root, file: async () => f.file, inventory: f.inventory, identity: f.identity, bootId: async () => "" });
-  await expect(noBoot("session-1", run)).rejects.toThrow();
+  await expect(noBoot("session-1", run)).rejects.toMatchObject({ code: 'ownership-boot-unavailable' });
+  const unknownSelf = control.createBothLocks({ root: f.root, file: async () => f.file, inventory: { ...f.inventory, probe: async () => ({ kind: 'unknown' }) }, identity: f.identity, bootId: async () => 'boot-fixture' });
+  await expect(unknownSelf('session-1', run)).rejects.toMatchObject({ code: 'ownership-process-unavailable' });
   const badInventory: ProcessInventoryPorts = { ...f.inventory, leases: { ...f.leases, claim: async () => { throw new Error("file unavailable"); } } };
   const failedFile = control.createBothLocks({ root: f.root, file: async () => f.file, inventory: badInventory, identity: f.identity, bootId: async () => "boot-fixture" });
   await expect(failedFile("session-1", run)).rejects.toThrow("file unavailable");

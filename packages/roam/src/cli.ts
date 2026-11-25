@@ -203,7 +203,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
         let alias: string | undefined;
         if (kind === "move") try { alias = readLocalIdentity(root).peers.find(peer => peer.machineId === result.home?.machineId)?.alias; } catch { /* The typed outcome remains authoritative. */ }
         return emitOutcome(io, result, jsonOutput, jsonOutput ? undefined : controlText(safeControlOutcome(result), alias));
-      } catch { return emitOutcome(io, outcome(1, "move-control-unavailable"), jsonOutput); }
+      } catch { return emitOutcome(io, { ...outcome(1, "move-control-unavailable"), repairCommand: 'spider roam enable' }, jsonOutput); }
     }
     if (jsonOutput) argv = argv.slice(0, -1);
   }
@@ -645,7 +645,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
         const value = { enabled: report.enabled, diagnostics: report.diagnostics.map(row => ({ ...row, reason: clean(row.reason),
           repairCommand: row.repairCommand === null ? null : clean(row.repairCommand) })),
           consumers: report.consumers.map(row => ({ ...row, machine: clean(row.machine), build: clean(row.build) })) };
-        io.out(`${JSON.stringify({ ...outcome(code, !report.enabled ? "roaming-disabled" : code ? "doctor-blocked" : "doctor-complete"), value })}\n`);
+        io.out(`${JSON.stringify({ ...outcome(code, code ? "doctor-blocked" : !report.enabled ? "roaming-disabled" : "doctor-complete"), value })}\n`);
         return code;
       }
       io.out(`${report.enabled ? "Roaming is enabled." : MOVE_REFUSAL_MESSAGES["roaming-disabled"]}\n`);

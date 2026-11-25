@@ -1,3 +1,4 @@
+import type { SessionId } from '@spider/herdr/contracts';
 import { afterEach, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { homedir } from 'node:os';
@@ -156,7 +157,7 @@ it('the production move probe accounts for an unrelated Pi registered in the nor
   processRows.value = `${process.pid} pi node pi`;
   const otherFile = join(f.global.root, 'other-session.jsonl'); writeFileSync(otherFile, '{}\n');
   const normalPresence = createProcessPresence(join(homedir(), '.pi', 'agent', 'spider', 'herdr'));
-  await normalPresence.record({ pid: process.pid, startIdentity: processStartTime(process.pid)!, sessionId: 'other-session', sessionFile: otherFile, sessionName: null, kind: 'top-level', hcAddress: null });
+  await normalPresence.record({ pid: process.pid, startIdentity: processStartTime(process.pid)!, sessionId: 'other-session' as SessionId, sessionFile: otherFile, sessionName: null, kind: 'top-level', hcAddress: null });
   let mounted: Awaited<ReturnType<typeof f.compose>> | undefined;
   try {
     mounted = await f.compose();
@@ -196,7 +197,7 @@ it('a reused lock PID is absent only when its replacement is proved unrelated', 
     { pid: process.pid, startIdentity: 'old-start' }, async () => ({ kind: 'live', startIdentity: 'old-start' }), { bootId: async () => 'boot-a' });
   const other = join(f.global.root, 'other.jsonl'); writeFileSync(other, '{}\n');
   const presence = createProcessPresence(join(f.global.root, 'herdr'));
-  await presence.record({ pid: process.pid, startIdentity: processStartTime(process.pid)!, sessionId: 'other-session', sessionFile: other, sessionName: null, kind: 'top-level', hcAddress: null });
+  await presence.record({ pid: process.pid, startIdentity: processStartTime(process.pid)!, sessionId: 'other-session' as SessionId, sessionFile: other, sessionName: null, kind: 'top-level', hcAddress: null });
   let mounted: Awaited<ReturnType<typeof f.compose>> | undefined;
   try {
     mounted = await f.compose();

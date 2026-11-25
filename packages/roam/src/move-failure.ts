@@ -1,4 +1,5 @@
 import { safeCauseCode, safeMoveFailureStep, type MoveFailureStep } from "./cause-codes";
+import { ownershipFailureCode, ownershipRepair, type OwnershipFailureCode } from './ownership-failure';
 
 export interface MoveFailureDetail { step: MoveFailureStep; code: string }
 // A bounded token can still contain private data. Only registered codes may leave the adapter.
@@ -30,9 +31,11 @@ const moveCauses = ["participant-pi-unavailable", "participant-stores-unavailabl
   "participant-context-unavailable", "participant-home-unavailable", "participant-freeze-unfinished", "participant-cwd-unavailable",
   "participant-header-invalid", "participant-header-mismatch", "participant-store-mapping-failed", "participant-seed-failed",
   "move-adapter-unavailable", "move-workspace-unmapped", "move-checkout-conflict", "move-first-home-withheld"] as const;
-export type MoveCauseCode = typeof moveCauses[number];
+export type MoveCauseCode = typeof moveCauses[number] | OwnershipFailureCode;
 
 export function safeMoveCause(value: unknown): MoveCauseCode | undefined {
+  const ownership = ownershipFailureCode(value);
+  if (ownership) return ownership;
   return typeof value === "string" && (moveCauses as readonly string[]).includes(value) ? value as MoveCauseCode : undefined;
 }
 export function moveFailureCause(error: unknown): MoveCauseCode {
@@ -48,6 +51,8 @@ export class MoveCompositionError extends Error {
   }
 }
 export function moveFailureRepair(cause: MoveCauseCode): string {
+  const ownership = ownershipFailureCode(cause);
+  if (ownership) return ownershipRepair(ownership);
   if (cause === "move-first-home-withheld") return "Restore the reported store on the named machine, then retry the move.";
   if (cause === "move-workspace-unmapped") return "Run spider roam repo map <repo> <path> on the destination, then retry the move.";
   return cause === "participant-pi-unavailable"

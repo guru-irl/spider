@@ -1,5 +1,7 @@
+import type { SessionId } from '@spider/herdr/contracts';
 import { afterEach, expect, it, vi } from "vitest";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from 'node:crypto';
 import { join } from "node:path";
 import { createReplica } from "@spider/db-core/testutil";
 import { seedSession, enableMemoryCapture } from "@spider/db-core/roam/seed";
@@ -16,10 +18,23 @@ import * as localDiagnostics from "../local-diagnostics";
 import { disableRoaming } from "../production-controls";
 import { main } from "../cli";
 import { movePowerKey, releaseMovePower } from "../power";
+import { createProcessInventory } from '../../../host/src/herdr/process-inventory';
+import { createMoveOwnershipProbe } from '../../../host/src/roam/move-ownership';
+import { createProcessPresence } from '@spider/herdr/sessions/presence';
+import { claimIdLock } from '@spider/herdr/sessions/id-lock';
+import { createBothLocks, controlSession, type HeldSessionLocks } from '../session-control';
+import { processStartTime } from '../../../subagents/src/process-identity';
+
+const processRows = vi.hoisted(() => ({ value: null as string | null }));
+vi.mock('node:child_process', async original => {
+  const actual = await original<typeof import('node:child_process')>();
+  return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) =>
+    processRows.value !== null && args[0] === 'ps' && args[1]?.[0] === '-U' ? processRows.value : actual.execFileSync(...args) };
+});
 
 const HUB = "00000000-0000-4000-8000-000000000001", BOX = "00000000-0000-4000-8000-000000000002";
 const cleanup: (() => void)[] = [];
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const fn of cleanup.splice(0)) fn(); });
+afterEach(() => { processRows.value = null; vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const fn of cleanup.splice(0)) fn(); });
 
 function fixture() {
   const global = createReplica("global", HUB), store = createReplica("worktree", HUB), repo = createReplica("repo", HUB);
@@ -79,6 +94,43 @@ it("cancel completes when freeze refused before participant progress existed", a
   expect(await cancelMove("move-a", f.ports)).toEqual(result);
 });
 
+it.each(['clean-exit', 'hub-restart', 'machine-restart'] as const)('cancel finishes with physical ownership proof after %s and unrelated live Pi sessions', async mode => {
+  const f = fixture(); f.ports.freeze = async () => { throw new MoveAdapterError('session-control-refused'); };
+  await moveSession(f.request, f.ports);
+  const root = join(f.root, 'herdr'), other = join(f.root, 'other-runtime');
+  mkdirSync(root, { mode: 0o700 }); mkdirSync(other, { mode: 0o700 });
+  const file = join(f.root, 'session.jsonl');
+  const otherFile = join(f.root, 'other.jsonl'); writeFileSync(otherFile, '{}\n');
+  const identity = { pid: process.pid, startIdentity: processStartTime(process.pid)! };
+  processRows.value = `${process.pid} pi node pi`;
+  await createProcessPresence(other).record({ ...identity, sessionId: 'other-session' as SessionId, sessionFile: otherFile, sessionName: null, kind: 'top-level', hcAddress: null });
+  const inventory = createProcessInventory(root, false, [other]);
+  if (mode !== 'clean-exit') {
+    const old = mode === 'hub-restart' ? { pid: 99999991, startIdentity: 'old-start' } : { ...identity, startIdentity: 'old-start' };
+    await claimIdLock(root, 'session-a', old, async () => ({ kind: 'absent' }), { bootId: async () => mode === 'hub-restart' ? 'boot-b' : 'boot-a' });
+    await inventory.leases.claim(file, old, inventory, { mode: 'bookkeeping' });
+    await createProcessPresence(root).record({ ...old, sessionId: 'session-a' as SessionId, sessionFile: file, sessionName: null, kind: 'top-level', hcAddress: null });
+  }
+  mkdirSync(join(f.root, 'roam', 's', createHash('sha256').update('session-a').digest('hex').slice(0, 32)), { recursive: true, mode: 0o700 });
+  let held: HeldSessionLocks | undefined;
+  const locks = createBothLocks({ root, inventory, file: async () => file, identity, bootId: async () => 'boot-b' });
+  const probe = createMoveOwnershipProbe({ root, inventory, bootId: async () => 'boot-b', heldClaim: async () => held ? held.owns() : null });
+  f.ports.unfreeze = async (_source, operation) => {
+    const reply = await controlSession(operation, { journal: f.participant, probe,
+      withBothLocks: (id, effect) => locks(id, async claim => { held = claim; try { return await effect(); } finally { held = undefined; } }),
+      async live() { throw new Error('must not contact a gone owner'); },
+      async dormant(op) { await unfreezeParticipant(op, f.freezePorts); return { code: 0, reason: 'unfrozen', operationId: op.id, home: f.home, epoch: 1, repairCommand: null, value: {} }; } });
+    if (reply.code !== 0) throw new MoveAdapterError(reply.reason);
+  };
+  const result = await cancelMove('move-a', f.ports);
+  expect(result).toMatchObject({ code: 0, reason: 'cancelled', home: f.home });
+  expect(sessionHome(f.global.db, 'session-a')).toEqual(f.home);
+  expect(f.journal.lookupOperation('move-a')?.state).toBe('done');
+  expect(readMoveReservation('session-a', f.journal)).toBeNull();
+  expect(await cancelMove('move-a', f.ports)).toEqual(result);
+  expect(await createProcessPresence(other).list()).toHaveLength(1);
+});
+
 it("cancel does not require capture readiness that prevented the freeze", async () => {
   const f = fixture();
   f.store.db.prepare("UPDATE roam_meta SET capture_enabled=0 WHERE id=1").run();
@@ -107,7 +159,7 @@ it("a completed freeze still requires abort authorization and preserves its fenc
   expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 3, failure: { step: "transfer" } });
   expect(f.participant.readFreeze("session-a", "move-a")?.state).toBe("frozen");
   f.freezePorts.authorizeAbort = async () => null;
-  expect(await cancelMove("move-a", f.ports)).toMatchObject({ code: 3, reason: "move-abort-pending", refusal: { blockers: ["abort-authorization-pending"] } });
+  expect(await cancelMove("move-a", f.ports)).toMatchObject({ code: 3, reason: "move-abort-pending", repairCommand: 'spider roam cancel move-a', refusal: { blockers: ["abort-authorization-pending"] } });
   expect(f.admissionOpen).toBe(false); expect(f.intakeOpen).toBe(false);
   expect(f.store.db.prepare("SELECT state FROM roam_sessions WHERE session_id='session-a'").get()).toEqual({ state: "frozen" });
 });
@@ -122,6 +174,15 @@ it.each(['cancel', 'recover'] as const)('%s names the ownership repair instead o
   expect(readMoveReservation('session-a', f.journal)?.moveId).toBe('move-a');
   const report = await runLocalDoctor({ root: f.root, hubService: async () => ({ running: true, socketAvailable: true, lastExitCode: null }) });
   expect(report.diagnostics).toContainEqual(expect.objectContaining({ reason: expect.stringMatching(/ownership-unavailable.*Restore.*process.*boot/), repairCommand: null }));
+});
+
+it('an unidentified live process gets a quit repair rather than cancel or recover', async () => {
+  const f = fixture(); f.ports.freeze = async () => { throw new MoveAdapterError('session-control-refused'); };
+  await moveSession(f.request, f.ports);
+  f.ports.unfreeze = async () => { throw new MoveAdapterError('ownership-unregistered-process'); };
+  expect(await cancelMove('move-a', f.ports)).toMatchObject({ code: 3, reason: 'move-ownership-unavailable', causeCode: 'ownership-unregistered-process', repairCommand: null,
+    refusal: { blockers: ['ownership-unregistered-process'], message: expect.stringContaining('Quit unregistered Pi sessions normally') } });
+  expect(readMoveReservation('session-a', f.journal)?.moveId).toBe('move-a');
 });
 
 it.each([false, true])('cancel with unavailable move control names enable in JSON and text output: json=%s', async json => {
@@ -164,6 +225,27 @@ it.each([false, true])("disable names the pending move and cancel repair after f
   expect(JSON.parse(out.join(""))).toMatchObject({ reason: "move-in-progress:move-a", operationId: "move-a", repairCommand: "spider roam cancel move-a" });
 });
 
+it.each(['darwin', 'linux'] as const)('pending-move disable refuses before %s service-path inspection', async platform => {
+  const f = fixture(); f.ports.freeze = async () => { throw new MoveAdapterError('session-control-refused'); };
+  await moveSession(f.request, f.ports);
+  vi.spyOn(localDiagnostics, 'createLocalDiagnosticPorts').mockReturnValue({ async probeProcess() { return { kind: 'live', startIdentity: 'process-a' }; } } as never);
+  // CI runs with the account's real HOME, not a fenced test HOME.
+  vi.stubEnv('HOME', '/unavailable-service-home');
+  const original = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  Object.defineProperty(process, 'platform', { value: platform });
+  try {
+    expect(await disableRoaming(f.root)).toMatchObject({ code: 1, reason: 'move-in-progress:move-a', repairCommand: 'spider roam cancel move-a' });
+  } finally { Object.defineProperty(process, 'platform', original); }
+});
+
+it('offline disable uses the same refusal code for a proved pending home action', async () => {
+  const f = fixture();
+  f.journal.begin({ id: 'pending-claim', kind: 'claim', machineId: HUB, expectedEpoch: 1, args: { sessionId: 'session-a' } });
+  vi.spyOn(localDiagnostics, 'createLocalDiagnosticPorts').mockReturnValue({ async probeProcess() { return { kind: 'live', startIdentity: 'process-a' }; } } as never);
+  expect(await disableRoaming(f.root)).toMatchObject({ code: 1, reason: 'home-change-in-progress', repairCommand: 'spider roam doctor' });
+  expect(JSON.parse(readFileSync(join(f.root, 'roam', 'config.json'), 'utf8')).enabled).toBe(true);
+});
+
 it("unfrozen cancel does not reacquire a forward move power assertion", async () => {
   const f = fixture();
   f.ports.freeze = async () => { throw new MoveAdapterError("session-control-refused"); };
@@ -179,8 +261,9 @@ it("disabled public doctor still lists pending moves", async () => {
   writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify({ ...f.ports.config, enabled: false }), { mode: 0o600 });
   vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root);
   const out: string[] = [], err: string[] = [];
-  await main(["roam", "doctor", "--json"], { out: text => out.push(text), err: text => err.push(text) });
-  expect(JSON.parse(out.join("")).value.diagnostics).toContainEqual(expect.objectContaining({ reason: expect.stringMatching(/move-a.*freeze/), repairCommand: "spider roam cancel move-a" }));
+  expect(await main(["roam", "doctor", "--json"], { out: text => out.push(text), err: text => err.push(text) })).toBe(1);
+  expect(JSON.parse(out.join('')).reason).toBe('doctor-blocked');
+  expect(JSON.parse(out.join("")).value.diagnostics).toContainEqual(expect.objectContaining({ severity: 'block', reason: expect.stringMatching(/move-a.*freeze/), repairCommand: "spider roam cancel move-a" }));
 });
 
 it("doctor lists two pending moves and removes only the completed one", async () => {

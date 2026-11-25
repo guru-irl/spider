@@ -59,10 +59,10 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
   let home: RelocateHome | null = null;
   let moveId: RelocateId | null = null;
   let step: RelocateStep = "check";
-  const refuse = (code: V0RefusalCode, message: string, nextStep =
-    `Retry spider roam relocate ${request.sessionId} ${request.destinationMachine}.`): never => {
+  function refuse(code: V0RefusalCode, message: string, nextStep =
+    `Retry spider roam relocate ${request.sessionId} ${request.destinationMachine}.`): never {
     throw new PortRefusal({ code, message, nextStep });
-  };
+  }
   const cas = async (expected: RelocateHome, next: RelocateHome) => {
     const result = await ports.homes.compareAndSwap(expected, next).catch(async error => {
       // A lost reply may hide an applied CAS. Never report the cached prior home.

@@ -3,14 +3,14 @@ import type { MachineId } from "@spider/db-core/roam/types";
 import type { SessionManifest } from "../contracts";
 import type {
   CapturedSession, RelocateCheckpoint, RelocateHome, RelocateId, RelocatePlan,
-  RelocatePorts, RunningHome, SessionId, SessionPlacement, V0Refusal, V0Result,
+  RelocatePorts, RelocateRequest, RunningHome, SessionId, SessionPlacement, V0Refusal, V0Result,
 } from "../relocate/types";
 
 export const sessionId = "session-1" as SessionId;
 export const source = "source" as MachineId;
 export const destination = "destination" as MachineId;
 export const third = "third" as MachineId;
-export const request = { sessionId, destinationMachine: destination };
+export const request: RelocateRequest = { sessionId, destinationMachine: destination };
 export const ok = <T>(value: T): V0Result<T> => ({ ok: true, value });
 export const refusal = (code: V0Refusal["code"]): V0Refusal => ({
   code, message: "The operation could not finish.", nextStep: "Retry spider roam relocate session-1 destination.",
@@ -82,7 +82,7 @@ export function state(): FakeState {
   histories.push(result);
   return result;
 }
-export function deferred() {
+export function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
   const promise = new Promise<void>(done => { resolve = done; });
   return { promise, resolve };

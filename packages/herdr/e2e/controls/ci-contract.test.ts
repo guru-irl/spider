@@ -282,7 +282,7 @@ describe('CI acceptance contract', () => {
       type: 'boolean', required: true, default: true,
     } } });
     // Evaluate the actual job conditions, not a second routing implementation.
-    const applies = (job: Job, event: string, full = false, mode = 'scoped'): boolean => Boolean(Function('github', 'inputs', 'needs', 'always', `return (${job.if});`)(
+    const applies = (job: Job, event: string, full = false, mode = 'scoped'): boolean => Boolean(Function('github', 'inputs', 'needs', 'always', `return (${job.if!.replaceAll('needs.pr-test', 'needs["pr-test"]')});`)(
       { event_name: event }, { force_full: full }, { 'pr-test': { outputs: { mode } } }, () => true,
     ));
     expect(applies(ci.jobs['pr-test']!, 'workflow_dispatch', true)).toBe(false);

@@ -137,7 +137,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(initial = false, sourceMachine = HUB, destinationMachine = BOX) {
+function fixture(initial = false, sourceMachine = HUB, destinationMachine = BOX, workspaceMode: "git" | "synthetic" = "git") {
   const root = mkdtempSync(join(dirname(scratchDbPath("move")), "move-")); roots.push(root);
   for (const part of ["source", "origin.git", "destination"]) cpSync(join(template, part), join(root, part), { recursive: true, mode: constants.COPYFILE_FICLONE });
   const source = join(root, "source"), destination = join(root, "destination"), file = join(root, "source.jsonl"), target = join(root, "sessions", "session-a.jsonl");
@@ -195,6 +195,19 @@ function fixture(initial = false, sourceMachine = HUB, destinationMachine = BOX)
     } });
   const prepare = async (stage: "pre" | "final", operation: Operation): Promise<PreparedMove> => {
     sourceJournal.begin(operation); destinationJournal.begin(operation);
+    if (workspaceMode === "synthetic") {
+      // Hub recovery tests exercise the move and session ports, not Git transfer.
+      const snapshot: WorkspaceSnapshot = { root: source, repoKey: "fixture-repo", workspaceId: "fixture-workspace", moveId: operation.id, stage,
+        head: "a".repeat(40), branch: null, objectFormat: "sha1", indexTree: "b".repeat(40), workingTree: "c".repeat(40), relativeCwd: ".",
+        sparsePatterns: null, worktreeConfig: null, droppedConfigKeys: [], normalization: { autocrlf: null, eol: null },
+        sparse: { enabled: false, cone: null }, refs: [], prerequisites: [], bundle: { kind: "unbundled" } };
+      const manifest = await inspectSession(file, SESSION, "selected");
+      const staged = await stageSession({ source: manifest, destinationCwd: destination, destinationParent: null,
+        segment: { version: 1, moveId: operation.id, epoch: 2, previousMachine: sourceMachine, nextMachine: destinationMachine, historyMachine: sourceMachine, parentRef: null } }, capture.scratch);
+      if (stage === "final") await installSession(staged, target, { journal: destinationJournal, async ownership() { return { kind: "absent" }; }, withBothLocks });
+      return { workspace: { root: destination, snapshot, previous: null, moveId: operation.id, adjustments: [] },
+        session: stage === "final" ? { ...staged, file: target } : staged };
+    }
     // Copy the real capture only before a byte-identical fixture's first prestage.
     // A changed source still goes through snapshotting and bundling against Git.
     const srcDigest = stage === "pre" ? fixtureSourceDigest(source) : null;
@@ -279,10 +292,12 @@ function fixture(initial = false, sourceMachine = HUB, destinationMachine = BOX)
     async transfer(_check, _ack, operation) { events.push("transfer"); final = await prepare("final", operation); return final; },
     async verifySource(ack, snapshot) {
       events.push("verify-source");
-      const observed = await snapshotWorkspace({ root: source, cwd: source, repoKey: snapshot.repoKey, workspaceId: snapshot.workspaceId,
-        moveId: snapshot.moveId, stage: "final", writers: [] }, capture);
-      for (const key of ["head", "branch", "indexTree", "workingTree", "sparsePatterns", "worktreeConfig", "normalization", "sparse"] as const) {
-        if (!isDeepStrictEqual(observed[key], snapshot[key])) throw new Error("source-workspace-changed");
+      if (workspaceMode === "git") {
+        const observed = await snapshotWorkspace({ root: source, cwd: source, repoKey: snapshot.repoKey, workspaceId: snapshot.workspaceId,
+          moveId: snapshot.moveId, stage: "final", writers: [] }, capture);
+        for (const key of ["head", "branch", "indexTree", "workingTree", "sparsePatterns", "worktreeConfig", "normalization", "sparse"] as const) {
+          if (!isDeepStrictEqual(observed[key], snapshot[key])) throw new Error("source-workspace-changed");
+        }
       }
       const manifest = await inspectSession(file, SESSION, ack.leaf);
       await verifyFrozenSession({ ...manifest, size: ack.size, sha256: ack.sha256, cwd: ack.cwd });
@@ -316,7 +331,7 @@ function fixture(initial = false, sourceMachine = HUB, destinationMachine = BOX)
       if (!sourceStopped || !terminalRemoval) throw new Error("terminal-removal-unproved");
       await registry.remove(terminal, terminalRemoval);
       registryRemovals.push({ id: "source-terminal", provedRemoved: terminalRemoval });
-      for (const cwd of [source, destination]) for (const ref of git(cwd, "for-each-ref", "--format=%(refname)", `refs/spider-roam/${request.operation.id}/`).split("\n").filter(Boolean)) git(cwd, "update-ref", "-d", ref);
+      if (workspaceMode === "git") for (const cwd of [source, destination]) for (const ref of git(cwd, "for-each-ref", "--format=%(refname)", `refs/spider-roam/${request.operation.id}/`).split("\n").filter(Boolean)) git(cwd, "update-ref", "-d", ref);
       const store = openOutgoingStaging(capture.scratch, capture.limits, false);
       try { for (const id of [...artifacts.keys(), request.operation.id]) store.remove(id); } finally { store.close(); }
     },
@@ -348,7 +363,7 @@ function fixture(initial = false, sourceMachine = HUB, destinationMachine = BOX)
 
 it.each(["frozen", "transferred", "home-committed", "unknown-start"] as const)("a running hub recovers an offline move after %s without a second launch", async interruption => {
   const gitAtStart = gitCalls;
-  const f = fixture();
+  const f = fixture(false, HUB, BOX, "synthetic");
   mkdirSync(join(f.root, "roam"));
   const journal = openFreezeJournal(join(f.root, "roam", "journal.db")); f.ports.journal = journal;
   const peer = { machineId: BOX, alias: "box-1.invalid", node: "/home/fixture/node", pi: "/home/fixture/pi", cli: "/home/fixture/spider", core: "/home/fixture/core", globalRoot: "/home/fixture/global" };

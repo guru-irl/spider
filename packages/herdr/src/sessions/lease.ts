@@ -88,7 +88,7 @@ export function createSessionLeases(root: string): SessionLeases {
         const records = await (inventory?.presence ?? createProcessPresence(root)).list();
         return startIdentity && records.some(record => record.pid === pid && record.startIdentity === startIdentity) ? { kind: 'live', startIdentity } : { kind: 'absent' };
       },
-    } : {}); }
+    } : policy?.mode === 'cutover' ? { reclaimReusedOwner: true } : {}); }
     catch (error) { if (error instanceof HerdrError && (error.code === 'lock-occupied' || error.code === 'lock-owner-uncertain')) throw new HerdrError('session-may-be-live', error.message); throw error; }
   }
   const leases: SessionLeases = {

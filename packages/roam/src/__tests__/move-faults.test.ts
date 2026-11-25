@@ -218,7 +218,7 @@ it.each([
   expect(outcome).toMatchObject({ code: 3, reason: codeSource === "refusal" ? "move-prepared-invalid" : "move-pending", value: null });
   expect(f.current()).toEqual(f.sourceHome);
   const diagnostic = f.journal.read(f.request.operation.id).filter(row => row.action === "move-transfer-diagnostic").map(row => row.result);
-  expect(diagnostic).toEqual([{ phase: "result", code, codeSource,
+  expect(diagnostic).toEqual([{ stage: "final", phase: "result", code, codeSource,
     fingerprint: createHash("sha256").update(error.message).digest("hex") }]);
   const publicOutput = JSON.stringify(safeControlOutcome(outcome)) + controlText(safeControlOutcome(outcome));
   for (const text of ["fixture-private", "/home/fixture/not-public", "ENOENT", "fingerprint", "message-prefix"]) {

@@ -214,7 +214,7 @@ it.each(["prerequisites", "export"] as const)("records private transfer diagnost
   await expect(f.ports.transfer(f.check, ack, f.operation)).rejects.toBe(error);
   const phases = phase === "export" ? ["participant-export", "export"] : ["prerequisites"];
   expect(f.journal.read(f.operation.id).filter(row => row.action === "move-transfer-diagnostic").map(row => row.result)).toEqual(phases.map(phase =>
-    ({ phase, code: "ENOENT", codeSource: "code", fingerprint: createHash("sha256").update(error.message).digest("hex") })));
+    ({ stage: "final", phase, code: "ENOENT", codeSource: "code", fingerprint: createHash("sha256").update(error.message).digest("hex") })));
 
   expect(f.global.db.prepare("SELECT machine_id,epoch FROM session_homes WHERE session_id=?").get(SESSION)).toEqual({ machine_id: HUB, epoch: 1 });
 });
@@ -222,11 +222,11 @@ it.each(["prerequisites", "export"] as const)("records private transfer diagnost
 it("records private participant transfer diagnostics before reply normalization", async () => {
   const f = await fixture();
   const operation: Operation = { id: "final-prerequisites", machineId: HUB, kind: "move-prerequisites", expectedEpoch: 2,
-    args: { sourceMachine: HUB, sessionId: SESSION, moveId: f.operation.id, stage: "final", root: f.repo,
+    args: { sourceMachine: HUB, sessionId: SESSION, moveId: f.operation.id, parent: f.operation as unknown as JsonObject, stage: "final", root: f.repo,
       repoKey: f.check.repoKey, workspaceId: f.check.workspaceId, sourceCheckoutName: "fixture" } };
   await expect(handleMoveParticipantOperation(operation, f.journal, f.bindings)).rejects.toMatchObject({ code: "workspace-prerequisite-missing" });
   expect(f.journal.read(f.operation.id).filter(row => row.action === "move-transfer-diagnostic").map(row => row.result)).toEqual([
-    { phase: "participant-prerequisites", code: "workspace-prerequisite-missing", codeSource: "code",
+    { stage: "final", phase: "participant-prerequisites", code: "workspace-prerequisite-missing", codeSource: "code",
       fingerprint: createHash("sha256").update("workspace-prerequisite-missing").digest("hex") },
   ]);
 });

@@ -276,10 +276,10 @@ export function createMovePorts(config: RoamConfig, transport: Transport, journa
     return result;
   };
   const importMove = async (check: MoveCheck, operation: Operation, stage: "pre" | "final", ack?: FreezeAck): Promise<PreparedMove> => {
-    const diagnose = <T>(phase: TransferDiagnosticPhase, effect: () => T | Promise<T>) => stage === "final"
-      ? withPrivateTransferDiagnostic(journal, operation.id, phase, effect) : effect();
+    const diagnose = <T>(phase: TransferDiagnosticPhase, effect: () => T | Promise<T>) =>
+      withPrivateTransferDiagnostic(journal, operation.id, stage, phase, effect);
     const destination = { ...check.source, machineId: check.destinationMachine, epoch: check.source.epoch + 1, moveId: operation.id };
-    const prerequisites = await diagnose("prerequisites", async () => successful(await call<readonly string[]>(destination, operation, "move-prerequisites", { root: check.destinationRoot, stage, repoKey: check.repoKey, workspaceId: check.workspaceId, sourceCheckoutName: checkoutName(basename(check.sourceRoot), "checkout") })));
+    const prerequisites = await diagnose("prerequisites", async () => successful(await call<readonly string[]>(destination, operation, "move-prerequisites", { root: check.destinationRoot, stage, repoKey: check.repoKey, workspaceId: check.workspaceId, sourceCheckoutName: checkoutName(basename(check.sourceRoot), "checkout"), parent: json(operation) })));
     const exported = await diagnose("export", async () => successful(await call<MoveExport>(check.source, operation, "move-export", { check: json(check), stage, prerequisites: [...prerequisites], parent: json(operation), ack: ack ? json(ack) : null })));
     const root = join(required(bindings.root, stage === "pre" ? "prepare" : "transfer"), "roam", "staging");
     const claims: MoveArtifactClaim[] = [];
@@ -600,8 +600,13 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
     return { code: 3, reason: "waiting-for-hub-evidence", operationId: operation.id, home: null, epoch: operation.expectedEpoch, repairCommand: `spider roam recover ${operation.args.moveId}`, value: null };
   const id = operation.args.sessionId as string, home = { sessionId: id, machineId: operation.machineId, epoch: operation.expectedEpoch!, moveId: String(operation.args.moveId), updatedAt: 0 };
   const result = (value: unknown): Outcome<JsonObject> => ({ code: 0, reason: "complete", operationId: operation.id, home, epoch: home.epoch, repairCommand: null, value: json(value) });
-  const transferEffect = (phase: TransferDiagnosticPhase, stage: unknown, effect: () => Promise<Outcome<JsonObject>>) => stage === "final"
-    ? withPrivateTransferDiagnostic(journal, String(operation.args.moveId), phase, effect) : effect();
+  const transferEffect = (phase: TransferDiagnosticPhase, stage: unknown, effect: () => Promise<Outcome<JsonObject>>) => stage === "pre" || stage === "final"
+    ? withPrivateTransferDiagnostic(journal, String(operation.args.moveId), stage, phase, effect) : effect();
+  if (["move-prerequisites", "move-export", "move-import"].includes(operation.kind)) {
+    const parent = operation.args.parent as unknown as Operation;
+    if (!parent || parent.id !== operation.args.moveId || parent.machineId !== participant.config.hubMachineId || parent.args.sessionId !== id) throw new MoveAdapterError("move-request-invalid");
+    journal.begin(parent);
+  }
   if (operation.kind === "move-location") {
     const current = sessionHome(participant.globalDb, id);
     if (!current || current === "unknown" || current.machineId !== home.machineId || current.epoch !== home.epoch) throw new MoveAdapterError("participant-home-mismatch");
@@ -692,11 +697,6 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
     const retired = await participant.observation(home, operation);
     if (stopped.kind !== "absent" || retired.owner.kind !== "absent" || !retired.retired || retired.activationCancelled !== true) throw new MoveAdapterError("move-rollback-proof-missing");
     return result(stopped);
-  }
-  if (operation.kind === "move-export" || operation.kind === "move-import") {
-    const parent = operation.args.parent as unknown as Operation;
-    if (!parent || parent.id !== operation.args.moveId || parent.machineId !== participant.config.hubMachineId || parent.args.sessionId !== id) throw new MoveAdapterError("move-request-invalid");
-    journal.begin(parent);
   }
   if (operation.kind === "move-export") return transferEffect("participant-export", operation.args.stage, async () => {
     const check = operation.args.check as unknown as MoveCheck, stage = operation.args.stage as "pre" | "final", ack = operation.args.ack as unknown as FreezeAck | null;

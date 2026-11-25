@@ -226,7 +226,11 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           node scripts/select-tests.mjs --base "$BASE_SHA" --head "$(git rev-parse HEAD)" --output ".spider/scratch/test-results/selection-${{ matrix.shard }}.json"
-          node scripts/test-shard-budget.mjs --manifest ".spider/scratch/test-results/selection-${{ matrix.shard }}.json" > ".spider/scratch/test-results/budget-${{ matrix.shard }}.json"
+          # Two runners must finish a scoped selection well inside the job limit; a larger one runs on the full matrix.
+          if ! node scripts/test-shard-budget.mjs --manifest ".spider/scratch/test-results/selection-${{ matrix.shard }}.json" --limit-ms 300000 > ".spider/scratch/test-results/budget-${{ matrix.shard }}.json"; then
+            perl -pi -e 's/^mode=scoped$/mode=full/' "$GITHUB_OUTPUT"
+            echo "The selection exceeds the two-runner budget, so the full matrix runs instead."
+          fi
 
       - name: Probe selector graph on isolated inputs
         if: matrix.shard == 1 && steps.selection.outputs.audit == 'true'

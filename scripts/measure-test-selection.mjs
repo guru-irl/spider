@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { executionPlan } from './run-selected-tests.mjs';
+import { executionEnvironment, executionPlan } from './run-selected-tests.mjs';
 import { partitionFiles } from './test-shards.ts';
 
 export function measurementPlan(manifest, { root = process.cwd(), shard, shadow = false, durations } = {}) {
@@ -35,6 +35,7 @@ async function main() {
   let ctx;
   try {
     if (!plan.empty) {
+      Object.assign(process.env, executionEnvironment());
       const { createVitest } = await import('vitest/node');
       ctx = await createVitest('test', { run: true, watch: false, include: plan.files,
         shard: plan.shard, maxWorkers: 3, changed: false, related: undefined,

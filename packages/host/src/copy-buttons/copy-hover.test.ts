@@ -15,7 +15,7 @@ const message = (text: string, timestamp = Date.UTC(2024, 0, 3, 8, 15)): Assista
   usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
   stopReason: "stop", timestamp,
 });
-function fixture(text: string, timestamp?: number, fullscreen = true) {
+function fixture(text: string, timestamp?: number, fullscreen = true, padding = 1) {
   const copied: string[] = [];
   const requestRender = vi.fn();
   installCopyButtons({ AssistantMessageComponent, Markdown }, {
@@ -24,7 +24,7 @@ function fixture(text: string, timestamp?: number, fullscreen = true) {
     requestRender,
     onError: error => { throw error; },
   });
-  const assistant = new AssistantMessageComponent(undefined, false, theme, undefined, 0);
+  const assistant = new AssistantMessageComponent(undefined, false, theme, undefined, padding);
   assistant.updateContent(message(text, timestamp), false);
   const children = (assistant as unknown as { contentContainer: { children: Component[] } }).contentContainer.children;
   const md = children.find(child => child instanceof Markdown);
@@ -353,7 +353,7 @@ describe("assistant copy hover", () => {
     expect(requestRender).toHaveBeenCalled();
   });
 
-  it("shows the message timestamp in the system time zone to the right of the controls", () => {
+  it("shows the message timestamp in the system time zone to the left of the controls", () => {
     vi.useFakeTimers();
     vi.stubEnv("TZ", "America/New_York");
     vi.setSystemTime(new Date("2024-01-03T18:00:00Z"));
@@ -361,7 +361,7 @@ describe("assistant copy hover", () => {
     render(md);
     mouse(md, "move");
     const row = render(md).find(line => line.includes("⧉ text"));
-    expect(row).toMatch(/⧉ text\s+⧉ md\s+Jan 3 03:15│$/);
+    expect(row).toMatch(/^│ Jan 3 03:15\s+⧉ text\s+⧉ md\s+│$/);
   });
 
   it("updates the timestamp label when the system time zone changes", () => {
@@ -371,9 +371,9 @@ describe("assistant copy hover", () => {
     const { md } = fixture("Time zone change", Date.UTC(2024, 0, 3, 8, 15));
     render(md);
     mouse(md, "move");
-    expect(render(md).join("\n")).toMatch(/⧉ text.*Jan 3 08:15│/);
+    expect(render(md).join("\n")).toMatch(/Jan 3 08:15.*⧉ text/);
     vi.stubEnv("TZ", "America/New_York");
-    expect(render(md).join("\n")).toMatch(/⧉ text.*Jan 3 03:15│/);
+    expect(render(md).join("\n")).toMatch(/Jan 3 03:15.*⧉ text/);
   });
 
   it("keeps the message date when the local day changes", () => {
@@ -383,9 +383,9 @@ describe("assistant copy hover", () => {
     const { md } = fixture("Before midnight", Date.UTC(2024, 0, 3, 8, 15));
     render(md);
     mouse(md, "move");
-    expect(render(md).join("\n")).toMatch(/⧉ text.*Jan 3 08:15│/);
+    expect(render(md).join("\n")).toMatch(/Jan 3 08:15.*⧉ text/);
     vi.setSystemTime(new Date("2024-01-04T00:01:00Z"));
-    expect(render(md).join("\n")).toMatch(/⧉ text.*Jan 3 08:15│/);
+    expect(render(md).join("\n")).toMatch(/Jan 3 08:15.*⧉ text/);
   });
 
   it("uses the local date rather than the UTC date", () => {
@@ -396,7 +396,7 @@ describe("assistant copy hover", () => {
     render(md);
     mouse(md, "move");
     const row = render(md).find(line => line.includes("⧉ text"));
-    expect(row).toMatch(/⧉ text.*Jan 2 21:00│$/);
+    expect(row).toMatch(/^│ Jan 2 21:00.*⧉ text/);
   });
 
   it("adds the local month and day when the message was sent on an earlier day", () => {
@@ -406,11 +406,11 @@ describe("assistant copy hover", () => {
     const { md } = fixture("Yesterday", Date.UTC(2024, 0, 1, 8, 15));
     render(md);
     mouse(md, "move");
-    expect(render(md).find(line => line.includes("⧉ text"))).toMatch(/⧉ text.*Jan 1 03:15│$/);
+    expect(render(md).find(line => line.includes("⧉ text"))).toMatch(/^│ Jan 1 03:15.*⧉ text/);
   });
 
   it("keeps extremely narrow layouts within the terminal width", () => {
-    const { md } = fixture("Hi");
+    const { md } = fixture("Hi", undefined, true, 0);
     const two = render(md, 2);
     expect(two.every(line => line.length <= 2)).toBe(true);
     expect(two.join("\n")).not.toContain("⧉ text");
@@ -436,6 +436,9 @@ describe("assistant copy hover", () => {
     const after = render(md, 28);
     expect(after.join("\n")).toContain("⧉ text");
     expect(after.join("\n")).not.toContain("08:15");
+    const controls = after.find(line => line.includes("⧉ text"))!;
+    expect(controls.indexOf("⧉ text")).toBe(9);
+    expect(controls.indexOf("⧉ md")).toBe(18);
     expect(after).toHaveLength(before.length);
     expect(after.findIndex(line => line.includes("Hello"))).toBe(before.findIndex(line => line.includes("Hello")));
     expect(after.every(line => line.length <= 28)).toBe(true);
@@ -462,13 +465,15 @@ describe("assistant copy hover", () => {
     vi.useFakeTimers();
     vi.stubEnv("TZ", "UTC");
     vi.setSystemTime(new Date("2024-01-03T18:00:00Z"));
-    const { md, copied } = fixture("```js\nx()\n```", Date.UTC(2024, 0, 1, 8, 15));
+    const { md, copied } = fixture("Intro\n\n```js\nx()\n```", Date.UTC(2024, 0, 1, 8, 15));
     const before = render(md, 28);
     const motion: TuiMouseEvent = { type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width: 28, height: before.length, shift: false, alt: false, ctrl: false };
     (md as Component).handleMouse?.(motion);
     const after = render(md, 28);
     const y = after.findIndex(line => line.includes("⧉ md"));
     const x = after[y].indexOf("⧉ md");
+    expect(x).toBe(18);
+    expect(after[y]).not.toContain("Jan 1 08:15");
     expect((md as Component).handleMouse?.({ ...motion, type: "click", button: "left", x, y, screenX: x, screenY: y, height: after.length })).toEqual({ handled: true });
     await Promise.resolve();
     expect(copied).toEqual(["```js\nx()\n```"]);
@@ -526,13 +531,13 @@ describe("assistant copy hover", () => {
   it("leaves regular mode's Markdown output untouched", () => {
     const source = "Hello **world**\n\n```js\nx()\n```";
     const { md } = fixture(source, undefined, false);
-    const original = new Markdown(source, 0, 0, theme);
+    const original = new Markdown(source, 1, 0, theme);
     expect(md.render(60)).toEqual(original.render(60));
     mouse(md, "move");
     expect(md.render(60)).toEqual(original.render(60));
   });
 
-  it("reserves a row below the reply with buttons left and today's date right", () => {
+  it("reserves a row below the reply with today's date left and buttons right", () => {
     vi.useFakeTimers();
     vi.stubEnv("TZ", "UTC");
     vi.setSystemTime(new Date("2024-01-03T18:00:00Z"));
@@ -544,7 +549,7 @@ describe("assistant copy hover", () => {
     expect(after).toHaveLength(before.length);
     expect(before.findIndex(line => line.includes("Hello"))).toBe(textRow);
     expect(after[textRow]).not.toContain("⧉ text");
-    expect(after[textRow + 1]).toMatch(/^│⧉ text\s+⧉ md\s+Jan 3 08:15│$/);
+    expect(after[textRow + 1]).toMatch(/^│ Jan 3 08:15\s+⧉ text\s+⧉ md\s+│$/);
     expect(before[textRow + 1]).not.toContain("⧉ text");
   });
 
@@ -557,12 +562,16 @@ describe("assistant copy hover", () => {
     expect(render(md).join("\n")).toContain("Jan 3 03:15");
   });
 
-  it("right-aligns the time at the inside edge", () => {
+  it.each([0, 1, 3])("matches the reply's %i-cell Markdown padding on both sides", padding => {
     vi.stubEnv("TZ", "UTC");
-    const { md } = fixture("Time", Date.UTC(2024, 0, 3, 8, 15));
+    const { md } = fixture("Hello", Date.UTC(2024, 0, 3, 8, 15), true, padding);
     mouse(md, "move");
-    const row = render(md).find(line => line.includes("⧉ text"));
-    expect(row).toMatch(/08:15│$/);
+    const lines = render(md);
+    const text = lines.find(line => line.includes("Hello"))!;
+    const row = lines.find(line => line.includes("⧉ text"))!;
+    expect(row.indexOf("Jan 3 08:15")).toBe(text.indexOf("Hello"));
+    expect(row.indexOf("Jan 3 08:15")).toBe(1 + padding);
+    expect(row.indexOf("⧉ md") + 8).toBe(60 - 1 - padding);
   });
 
   it("keeps controls and drops the date when the two no longer fit", () => {
@@ -577,11 +586,15 @@ describe("assistant copy hover", () => {
     expect(minimum.join("\n")).toContain("⧉ text");
     expect(minimum.find(line => line.includes("⧉ text"))).toMatch(/^│⧉ text\s+⧉ md\s*│$/);
     expect(minimum.every(line => visibleWidth(line) <= 19)).toBe(true);
-    const narrow = move(30);
+    const twenty = move(20);
+    expect(twenty.find(line => line.includes("⧉ text"))!.indexOf("⧉ md") + 8).toBe(19);
+    const twentyOne = move(21);
+    expect(twentyOne.find(line => line.includes("⧉ text"))!.indexOf("⧉ md") + 8).toBe(19);
+    const narrow = move(32);
     expect(narrow.join("\n")).toContain("⧉ text");
     expect(narrow.join("\n")).not.toContain("Jan 3 08:15");
-    const fits = move(31);
-    expect(fits.find(line => line.includes("⧉ text"))).toMatch(/^│⧉ text\s+⧉ md\s+Jan 3 08:15│$/);
+    const fits = move(33);
+    expect(fits.find(line => line.includes("⧉ text"))).toMatch(/^│ Jan 3 08:15\s+⧉ text\s+⧉ md\s+│$/);
   });
 
   it("moves click targets with the buttons and leaves the rest to pi", async () => {
@@ -593,10 +606,12 @@ describe("assistant copy hover", () => {
     const textX = lines[y].indexOf("⧉ text");
     const mdX = lines[y].indexOf("⧉ md");
     const timeX = lines[y].indexOf("Jan 3 08:15");
-    expect(textX).toBe(1);
-    expect(timeX).toBeGreaterThan(mdX);
+    expect(timeX).toBe(2);
+    expect(textX).toBe(41);
+    expect(mdX).toBe(50);
     const click = (x: number, row = y) => (md as Component).handleMouse?.({ type: "click", button: "left", x, y: row, screenX: x, screenY: row, width: 60, height: lines.length, shift: false, alt: false, ctrl: false });
     expect(click(timeX)).toBeUndefined();
+    expect(click(timeX + 15)).toBeUndefined();
     expect(click(0)).toBeUndefined();
     expect(click(1, y - 1)).toBeUndefined();
     expect(click(mdX - 1)).toBeUndefined();

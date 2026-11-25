@@ -87,6 +87,7 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
   const { root, globalDb, config, journal, sessionId, transport } = input;
   const pi = resolveParticipantPi();
   let unmappedWorktree: StoreKey | undefined;
+  let incomingWorkspace: Pick<MoveCheck, "repoKey" | "workspaceId"> & { checkout: MoveCheckout } | undefined;
   if (input.operation?.kind === "move-import") {
     const operation = input.operation, check = operation.args.check as unknown as MoveCheck;
     if (operation.machineId !== config.machineId || operation.args.sourceMachine !== config.hubMachineId) throw new MoveCompositionError("move-adapter-unavailable");
@@ -95,6 +96,7 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
       sourceName: checkoutName(basename(check.sourceRoot), "checkout"), moveId: String(operation.args.moveId), git: { run: gitRun }, journal });
     if (checkout.path !== check.destinationRoot) throw new MoveCompositionError("move-checkout-conflict");
     if (checkout.kind === "create") unmappedWorktree = `worktree:${check.repoKey}:${check.workspaceId}`;
+    incomingWorkspace = { repoKey: check.repoKey, workspaceId: check.workspaceId, checkout };
   }
   const privateDb = openDb(join(root, "roam", "journal.db"), { fileMustExist: true, checkpointOnClose: false });
   let closeStores: (() => void) | undefined;
@@ -137,9 +139,12 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
   const target = async (id: string): Promise<string> => {
     const existing = location(id);
     if (existing?.file && existing.cwd) return existing.file;
-    const workspace = (globalDb.prepare("SELECT path FROM roam_workspace_maps ORDER BY repo_key,workspace_id").all() as { path: string }[]);
-    if (workspace.length !== 1) throw new Error("participant-location-unavailable");
-    const herdr = loadHerdrConfig(root), directory = join(herdr.agentDirectory, "sessions", `--${workspace[0].path.replace(/^\//, "").replace(/\//g, "-")}--`);
+    const workspace = (globalDb.prepare("SELECT repo_key,workspace_id,path FROM roam_workspace_maps ORDER BY repo_key,workspace_id").all() as { repo_key: string; workspace_id: string; path: string }[])
+      .filter(row => !incomingWorkspace || row.repo_key === incomingWorkspace.repoKey && row.workspace_id === incomingWorkspace.workspaceId);
+    // The first import lock precedes mapWorkspace publishing a new checkout.
+    const workspaceRoot = workspace.length === 1 ? workspace[0].path : incomingWorkspace?.checkout.kind === "create" ? incomingWorkspace.checkout.path : undefined;
+    if (!workspaceRoot) throw new Error("participant-location-unavailable");
+    const herdr = loadHerdrConfig(root), directory = join(herdr.agentDirectory, "sessions", `--${workspaceRoot.replace(/^\//, "").replace(/\//g, "-")}--`);
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     return join(directory, `${id}.jsonl`);
   };

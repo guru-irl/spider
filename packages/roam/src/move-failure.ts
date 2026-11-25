@@ -1,7 +1,9 @@
-import { safeMoveFailureStep, type MoveFailureStep } from "./cause-codes";
+import { safeCauseCode, safeMoveFailureStep, type MoveFailureStep } from "./cause-codes";
 
 export interface MoveFailureDetail { step: MoveFailureStep; code: string }
-const safeDetailCode = (value: unknown): value is string => typeof value === "string" && /^[a-z0-9-]{1,64}$/.test(value);
+// A bounded token can still contain private data. Only registered codes may leave the adapter.
+const safeDetailCode = (value: unknown): value is string => typeof value === "string" && /^[a-z0-9-]{1,64}$/.test(value) &&
+  (value === "unknown" || safeMoveCause(value) !== undefined || safeCauseCode(value) !== undefined);
 export function parseMoveFailure(value: unknown): MoveFailureDetail | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const row = value as Partial<MoveFailureDetail>, step = safeMoveFailureStep(row.step);

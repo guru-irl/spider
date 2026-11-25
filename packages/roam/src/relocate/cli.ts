@@ -1,6 +1,20 @@
+import { createInterface } from "node:readline/promises";
+import type { Readable, Writable } from "node:stream";
 import type { RoamConfig } from "../contracts";
 import { resolveControlMachine, resolveControlSession } from "../commands";
 import type { RelocateSuccess, RunningHome, SessionId, V0CommandIO, V0ControlServices, V0PublicControl, V0Refusal, V0Result } from "./types";
+
+export async function readV0Confirmation(prompt: string, streams: {
+  input: Readable & { isTTY?: boolean }; output: Writable & { isTTY?: boolean };
+} = { input: process.stdin, output: process.stderr }): Promise<string | null> {
+  if (!streams.input.isTTY || !streams.output.isTTY) return null;
+  const reader = createInterface(streams), abort = new AbortController();
+  const onClose = () => abort.abort();
+  reader.once("close", onClose);
+  try { return await reader.question(prompt, { signal: abort.signal }); }
+  catch { return null; }
+  finally { reader.off("close", onClose); reader.close(); }
+}
 
 const token = (value: string | undefined): value is string => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(value);
 export function parseV0Control(argv: readonly string[]): V0PublicControl | null {

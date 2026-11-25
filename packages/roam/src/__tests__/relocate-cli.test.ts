@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createConnection } from "node:net";
+import { PassThrough } from "node:stream";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_LIMITS, disabledIntercom, type RoamConfig } from "../contracts";
 import type { RunningHome, SessionId, V0ControlServices } from "../relocate/types";
-import { parseV0Control, runV0Control } from "../relocate/cli";
+import { parseV0Control, runV0Control, readV0Confirmation } from "../relocate/cli";
 import { serveV0Control, requestV0Services, runV0Service } from "../relocate/service";
 import { parsePublicControl } from "../commands";
 import { main } from "../cli";
@@ -111,6 +112,16 @@ describe("v0 controls", () => {
     expect(f.out).toHaveLength(1); expect(f.services.relocate).not.toHaveBeenCalled();
     const disabled = fixture(); await runV0Control({ kind: "relocate", session: "first", machine: "mac" }, { ...config, enabled: false }, catalog, disabled.services, disabled.io);
     expect(disabled.services.relocate).not.toHaveBeenCalled(); expect(disabled.err.join("")).toContain("replication");
+  });
+  it("real confirmation requires a TTY and resolves EOF without writing JSON stdout", async () => {
+    const input = Object.assign(new PassThrough(), { isTTY: true });
+    const output = Object.assign(new PassThrough(), { isTTY: true }); let prompt = "";
+    output.on("data", chunk => { prompt += chunk.toString(); });
+    const eof = readV0Confirmation("Source loss risk. Type exactly the phrase: ", { input, output });
+    input.end(); expect(await eof).toBeNull(); expect(prompt).toContain("Source loss risk");
+    const plain = new PassThrough(), plainOutput = new PassThrough(); const data = vi.fn(); plainOutput.on("data", data);
+    expect(await readV0Confirmation("No prompt", { input: plain, output: plainOutput })).toBeNull(); expect(data).not.toHaveBeenCalled();
+    plain.destroy(); plainOutput.destroy(); output.destroy();
   });
   it("force prompts for the exact phrase", async () => {
     const phrase = `reassign session-abc to ${box}; source will not run`;

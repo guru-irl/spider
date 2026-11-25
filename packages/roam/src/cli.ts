@@ -1,5 +1,4 @@
-import { createInterface } from "node:readline/promises";
-import { parseV0Control, runV0Control } from "./relocate/cli";
+import { parseV0Control, runV0Control, readV0Confirmation } from "./relocate/cli";
 import { requestV0Services } from "./relocate/service";
 import type { V0ControlServices, V0Result } from "./relocate/types";
 import { corePinDiagnostics } from "./core-pin-diagnostics";
@@ -174,11 +173,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
         try { catalog = core.db.prepare("SELECT id,name FROM sessions").all() as { id: string; name: string | null }[]; }
         finally { core.close(); }
       }
-      const confirmation = options?.v0?.confirmation ?? (async (prompt: string): Promise<string | null> => {
-        if (!process.stdin.isTTY || !process.stderr.isTTY) return null;
-        const reader = createInterface({ input: process.stdin, output: process.stderr });
-        try { return await reader.question(prompt); } catch { return null; } finally { reader.close(); }
-      });
+      const confirmation = options?.v0?.confirmation ?? readV0Confirmation;
       return await runV0Control(control, config, catalog, options?.v0?.services ?? requestV0Services(root), { ...io, confirmation }, { json });
     } catch { return refusal("home-unavailable", "The v0 home service could not be opened.", "Start the v0 hub on the Mac, then retry this command.", 1); }
   }

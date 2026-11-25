@@ -53,11 +53,11 @@ followed by one typecheck/build job. The last job keeps the required name
 and packed Herdr acceptance steps share that runner. Headless stories have
 separate path-filtered jobs.
 
-PR selection starts in **shadow mode**. Both shards save the proposed manifest,
-but execute the full root suite. Set the repository variable
-`CI_SCOPED_TESTS=true` only after historical replay and synthetic graph checks
-have no unexplained misses. This switches execution to the proposed manifests.
-Both test jobs must produce identical selection hashes.
+PR selection is enabled by default. Both PR jobs compute the same manifest and
+execute only scoped selections. A full fallback skips their test execution and
+runs the existing twelve-shard suite instead. Both selector jobs must produce
+identical selection hashes. The protected aggregate accepts either successful
+path and rejects failed or cancelled selected jobs.
 
 Main still runs all root tests on twelve shards with two workers each, plus
 separate Chrome and Herdr acceptance jobs. `npm ci` builds each checkout through

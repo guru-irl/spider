@@ -9,6 +9,7 @@ import { configSocket } from "@spider/herdr/client/socket-config";
 import { privateDirectory } from "./staging";
 
 const LABEL = "com.spider.roam.hub";
+const V0_LABEL = "com.spider.roam.hub-v0";
 
 export interface LaunchdPorts {
   plistDir: string;
@@ -37,12 +38,13 @@ function canonical(path: string): string {
 }
 
 /** The default root retains the original label; other roots have stable namespaces. */
-export function hubServiceLabel(globalRoot: string): string {
+export function hubServiceLabel(globalRoot: string, mode?: "v0"): string {
   const root = canonical(globalRoot), defaultRoot = canonical(join(homedir(), ".pi", "agent", "spider"));
-  return root === defaultRoot ? LABEL : `${LABEL}.${createHash("sha256").update(root).digest("hex").slice(0, 16)}`;
+  const label = mode === "v0" ? V0_LABEL : LABEL;
+  return root === defaultRoot ? label : `${label}.${createHash("sha256").update(root).digest("hex").slice(0, 16)}`;
 }
-export function hubServiceFile(globalRoot: string, plistDir: string): string {
-  return join(absolute(plistDir), `${hubServiceLabel(globalRoot)}.plist`);
+export function hubServiceFile(globalRoot: string, plistDir: string, mode?: "v0"): string {
+  return join(absolute(plistDir), `${hubServiceLabel(globalRoot, mode)}.plist`);
 }
 
 function executable(path: string, node: boolean): string {
@@ -102,7 +104,7 @@ function definition(node: string, cli: string, root: string, out: string, err: s
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>${label}</string>
-<key>ProgramArguments</key><array><string>${xml(node)}</string><string>${xml(cli)}</string><string>roam</string><string>hub</string></array>
+<key>ProgramArguments</key><array><string>${xml(node)}</string><string>${xml(cli)}</string><string>roam</string><string>${label.startsWith(V0_LABEL) ? "hub-v0" : "hub"}</string></array>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><true/>
 <key>WorkingDirectory</key><string>${xml(root)}</string>
@@ -130,7 +132,7 @@ function managedDefinition(file: string, root: string, label: string, ignoreUnre
     const values = [...(args ?? "").matchAll(/<string>([\s\S]*?)<\/string>/g)].map(match => match[1]);
     if (!text.includes(`<key>Label</key><string>${label}</string>`) ||
         !text.includes(`<key>SPIDER_GLOBAL_ROOT</key><string>${xml(root)}</string>`) ||
-        values.length !== 4 || values[2] !== "roam" || values[3] !== "hub") {
+        values.length !== 4 || values[2] !== "roam" || values[3] !== (label.startsWith(V0_LABEL) ? "hub-v0" : "hub")) {
       if (ignoreUnrelated) return null;
       throw new Error("Unrelated service definition");
     }
@@ -155,12 +157,13 @@ function writeDefinition(file: string, contents: string, root: string, label: st
 }
 
 /** Install only into the supplied service directory and scoped global root. */
-export async function installHubService(input: { node: string; cli: string; globalRoot: string; pi?: string; env?: Readonly<NodeJS.ProcessEnv> }, ports: LaunchdPorts): Promise<void> {
+export async function installHubService(input: { node: string; cli: string; globalRoot: string; pi?: string; env?: Readonly<NodeJS.ProcessEnv>; mode?: "v0" }, ports: LaunchdPorts): Promise<void> {
   const selection = hubCoreSelection(input.env ?? process.env), serviceHome = absolute(ports.serviceHome ?? serviceManagerHome());
   const node = executable(input.node, true), cli = executable(input.cli, false);
-  const root = absolute(input.globalRoot), directory = absolute(ports.plistDir), label = hubServiceLabel(root);
-  const file = hubServiceFile(root, directory), logDirectory = join(root, "roam", "logs");
-  const out = join(logDirectory, "hub.out.log"), err = join(logDirectory, "hub.err.log");
+  const root = absolute(input.globalRoot), directory = absolute(ports.plistDir), label = hubServiceLabel(root, input.mode);
+  const file = hubServiceFile(root, directory, input.mode), logDirectory = join(root, "roam", "logs");
+  const logName = input.mode === "v0" ? "hub-v0" : "hub";
+  const out = join(logDirectory, `${logName}.out.log`), err = join(logDirectory, `${logName}.err.log`);
   // In tests the shared guard rejects both live databases and other user paths.
   assertTestConfigPath(file); assertTestConfigPath(out); assertTestConfigPath(err);
   const uid = process.getuid?.();
@@ -171,7 +174,7 @@ export async function installHubService(input: { node: string; cli: string; glob
   const pi = input.pi ?? resolveParticipantPi();
   if (!pi) throw new Error("participant-pi-unavailable");
   const participant = executable(pi, true);
-  if (label !== LABEL) await removeDefinition(join(directory, `${LABEL}.plist`), root, LABEL, ports, true);
+  if (input.mode !== "v0" && label !== LABEL) await removeDefinition(join(directory, `${LABEL}.plist`), root, LABEL, ports, true);
   writeDefinition(file, definition(node, cli, root, out, err, participant, label, selection, serviceHome), root, label, previous);
   const domain = `gui/${uid}`;
   try { await ports.launchctl(["bootout", domain, file]); }
@@ -229,8 +232,8 @@ export function hubServiceSelectionMatches(globalRoot: string, plistDir: string,
 }
 
 /** A service with another definition or root is not ours to remove. */
-export async function removeHubService(input: { globalRoot: string }, ports: LaunchdPorts): Promise<void> {
-  const root = absolute(input.globalRoot), directory = absolute(ports.plistDir), label = hubServiceLabel(root);
-  await removeDefinition(hubServiceFile(root, directory), root, label, ports, false);
-  if (label !== LABEL) await removeDefinition(join(directory, `${LABEL}.plist`), root, LABEL, ports, true);
+export async function removeHubService(input: { globalRoot: string; mode?: "v0" }, ports: LaunchdPorts): Promise<void> {
+  const root = absolute(input.globalRoot), directory = absolute(ports.plistDir), label = hubServiceLabel(root, input.mode);
+  await removeDefinition(hubServiceFile(root, directory, input.mode), root, label, ports, false);
+  if (input.mode !== "v0" && label !== LABEL) await removeDefinition(join(directory, `${LABEL}.plist`), root, LABEL, ports, true);
 }

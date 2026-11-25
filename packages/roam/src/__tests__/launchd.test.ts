@@ -48,6 +48,20 @@ function plist(file: string) {
   };
 }
 
+it("v0 mode installs a distinct hub-v0 service without changing legacy definitions", async () => {
+  const f = fixture();
+  await installHubService(f, f.ports);
+  const legacyFile = plistAt(f.plistDir, f.globalRoot), legacy = readFileSync(legacyFile, "utf8");
+  await installHubService({ ...f, mode: "v0" }, f.ports);
+  const v0File = launchd.hubServiceFile(f.globalRoot, f.plistDir, "v0");
+  expect(v0File).not.toBe(legacyFile);
+  expect(plist(v0File).ProgramArguments).toEqual([realpathSync(f.node), realpathSync(f.cli), "roam", "hub-v0"]);
+  expect(readFileSync(legacyFile, "utf8")).toBe(legacy);
+  await installHubService({ ...f, mode: "v0" }, f.ports);
+  await removeHubService({ globalRoot: f.globalRoot, mode: "v0" }, f.ports);
+  expect(existsSync(v0File)).toBe(false); expect(readFileSync(legacyFile, "utf8")).toBe(legacy);
+});
+
 it("different roots install independent labels and remove only their own plist", async () => {
   const f = fixture(), secondRoot = join(f.root, "other-global");
   mkdirSync(f.globalRoot); mkdirSync(secondRoot);

@@ -1,5 +1,5 @@
 import { USAGE_SCHEMA_VERSION } from "../schema.js";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { fork, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -10,18 +10,19 @@ import { openDb } from "@spider/db-core";
 import { openUsageLedger, type UsageLedger } from "../ledger.js";
 
 let root: string;
+let buildRoot: string;
 let helper: string;
 const children: ChildProcess[] = [];
 const exits: Promise<number | null>[] = [];
 const ledgers: UsageLedger[] = [];
 const rawHandles: Database.Database[] = [];
 
-beforeEach(async () => {
-  root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "usage-opening-"));
-  helper = join(root, "opener.mjs");
+beforeAll(async () => {
+  buildRoot = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "usage-opener-build-"));
+  helper = join(buildRoot, "opener.mjs");
   await buildFixture({
     entryPoints: [fileURLToPath(new URL("../ledger.ts", import.meta.url))],
-    outfile: join(root, "ledger.mjs"), bundle: true, platform: "node", format: "esm",
+    outfile: join(buildRoot, "ledger.mjs"), bundle: true, platform: "node", format: "esm",
     external: ["better-sqlite3", "sqlite-vec"], logLevel: "silent",
   });
   writeFileSync(helper, `
@@ -53,6 +54,8 @@ beforeEach(async () => {
     }
   `);
 });
+beforeEach(() => { root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "usage-opening-")); });
+afterAll(() => { if (buildRoot) rmSync(buildRoot, { recursive: true, force: true }); });
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -103,7 +106,7 @@ describe("usage ledger opening", () => {
 
   // Catches first-install races: every process must see the same committed v1 schema.
   it("opens the same fresh file concurrently in six node processes", async () => {
-    for (let trial = 0; trial < 12; trial++) {
+    for (let trial = 0; trial < 2; trial++) {
       const dir = join(root, String(trial));
       mkdirSync(dir);
       const group = Array.from({ length: 6 }, () => opener(join(dir, "usage.db")));

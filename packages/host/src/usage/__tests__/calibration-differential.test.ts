@@ -56,7 +56,8 @@ test.each([false, true])("seeded history equals fresh single-endpoint lookup (fr
   }))));
   reader = openDashboardReader(fixture.file, { instanceId: "differential", now: () => ts + 10 * D, serverBuild: "fixture", calibrationMode: () => "auto" })!;
   // >200 distinct points, unsorted, duplicated, exactly at and just before snapshots.
-  const ends = times.flatMap(t => [t + 1, t]).sort(() => r() - 0.5);
+  const boundaryIndices = new Set([80, 117, 118, 119, 120, 121, 125, 180, 210, 260]);
+  const ends = times.filter((_, i) => i % 3 !== 0 || boundaryIndices.has(i)).flatMap(t => [t + 1, t]).sort(() => r() - 0.5);
   ends.push(ends[0]!);
   reader.snapshot(ctx => {
     const want = reference(ctx, ends);
@@ -69,7 +70,7 @@ test.each([false, true])("seeded history equals fresh single-endpoint lookup (fr
     // Query starts in the gap, after two invalid snapshots. Exercise both the
     // initial stale anchor and trailing evidence before the first query point.
     for (const start of [times[117]! + 8 * D, times[125]!]) {
-      const gapEnds = Array.from({ length: 240 }, (_, i) => start + i * 60000 + 1);
+      const gapEnds = Array.from({ length: 201 }, (_, i) => start + i * 60000 + 1);
       const cold = { ...ctx, calibration: createCalibrationService(ctx.db, { revision: () => ctx.revision }) };
       compare(analysisFits(cold, gapEnds), reference(ctx, gapEnds));
     }

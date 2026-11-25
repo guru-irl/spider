@@ -296,11 +296,28 @@ it("publishes independent response metadata catch-up and continues bounded passe
   const seed = openUsageLedger(c.roots.ledgerFile); await ingestOnce(seed, d, at, new AbortController().signal); seed.close();
   const db = openDb(c.roots.ledgerFile);
   try { db.exec("UPDATE calls SET latency_ms=NULL,thinking_level=NULL"); } finally { db.close(); }
-  await bootUsageWorker(p as unknown as MessagePort, c, { discover: async () => d, now: () => at });
-  await vi.waitFor(() => expect(snapshots(p).at(-1)).toMatchObject({ metadataBackfill: "complete", responseMetadataBackfill: "running",
-    responseMetadataProgress: { sourcesCompleted: 0, sourcesTotal: 1, sourcesUnavailable: 0 } }));
-  // The owner must choose its short retry cadence for response work alone.
-  await vi.waitFor(() => expect(snapshots(p).at(-1)?.responseMetadataBackfill).toBe("complete"), { timeout: 22000 });
+  const post = p.postMessage.bind(p);
+  p.postMessage = event => { post(event); if (event.type === "snapshot") p.emit("fixture-snapshot", event); };
+  const nextSnapshot = (matches: (event: Extract<UsageWorkerEvent, { type: "snapshot" }>) => boolean = () => true) => new Promise<void>(resolve => {
+    const onSnapshot = (event: Extract<UsageWorkerEvent, { type: "snapshot" }>) => {
+      if (matches(event)) { p.off("fixture-snapshot", onSnapshot); resolve(); }
+    };
+    p.on("fixture-snapshot", onSnapshot);
+  });
+  vi.useFakeTimers();
+  try {
+    const first = nextSnapshot(event => event.metadataBackfill === "complete" && event.responseMetadataBackfill === "running");
+    await bootUsageWorker(p as unknown as MessagePort, c, { discover: async () => d, now: () => at });
+    await vi.advanceTimersByTimeAsync(0); await first; await vi.advanceTimersByTimeAsync(0);
+    expect(snapshots(p).at(-1)).toMatchObject({ metadataBackfill: "complete", responseMetadataBackfill: "running",
+      responseMetadataProgress: { sourcesCompleted: 0, sourcesTotal: 1, sourcesUnavailable: 0 } });
+    // Seven three-second intervals keep the original 22-second retry bound.
+    for (let elapsed = 0; elapsed < 21000 && snapshots(p).at(-1)?.responseMetadataBackfill !== "complete"; elapsed += 3000) {
+      const next = nextSnapshot();
+      await vi.advanceTimersByTimeAsync(3000); await next; await vi.advanceTimersByTimeAsync(0);
+    }
+    expect(snapshots(p).at(-1)?.responseMetadataBackfill).toBe("complete");
+  } finally { vi.useRealTimers(); }
   const check = openDb(c.roots.ledgerFile);
   try { expect(check.prepare("SELECT latency_ms,thinking_level FROM calls").get()).toEqual({ latency_ms: 37, thinking_level: "low" }); }
   finally { check.close(); }

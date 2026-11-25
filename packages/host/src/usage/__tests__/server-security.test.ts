@@ -57,13 +57,6 @@ async function login(server: { port: number; secret: string }): Promise<string> 
 }
 
 describe("usage HTTP security", () => {
-  test("CSP allows external local assets only", async () => {
-    const server = await start();
-    const reply = await get(server.port, "/", { Cookie: await login(server) });
-    const csp = reply.headers["content-security-policy"]!;
-    expect(csp).toContain("script-src 'self'"); expect(csp).toContain("style-src 'self'");
-    expect(csp).not.toMatch(/sha256|unsafe-inline|fonts.googleapis.com/);
-  });
   test("credential routes reject ambiguous headers and probes", async () => {
     const server = await start();
     const nonce = await mint(server);
@@ -94,7 +87,7 @@ describe("usage HTTP security", () => {
       expect(csp).toContain("style-src 'self'");
       for (const directive of ["default-src 'none'", "connect-src 'self'", "img-src 'self'", "font-src https://fonts.gstatic.com",
         "object-src 'none'", "base-uri 'none'", "form-action 'none'", "frame-src 'none'", "frame-ancestors 'none'", "style-src-attr 'none'"]) expect(csp).toContain(directive);
-      expect(csp).not.toMatch(/unsafe-inline|unsafe-eval|\*/);
+      expect(csp).not.toMatch(/sha256|unsafe-inline|unsafe-eval|fonts.googleapis.com|\*/);
       expect(reply.headers["referrer-policy"]).toBe("no-referrer");
       expect(reply.headers["x-content-type-options"]).toBe("nosniff");
       expect(reply.headers["cache-control"]).toBe("no-store");

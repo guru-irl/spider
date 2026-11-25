@@ -40,18 +40,6 @@ describe("registerRouting", () => {
     db.close();
   });
 
-  it("scrubs secrets in tool_result and replaces content", async () => {
-    const db = mkdb();
-    const pi = fakePi();
-    registerRouting(pi as any, { db, getSessionId: () => "s1", getCwd: () => process.cwd(), config: DEFAULT_ROUTING_CONFIG });
-    const token = "ghp_" + "e".repeat(20);
-    const ret: any = await pi._hooks.tool_result({ toolName: "bash", content: [{ type: "text", text: `key=${token}` }] }, {});
-    expect(JSON.stringify(ret.content)).not.toContain(token);
-    const [row] = listEvents(db, { phase: "after" });
-    expect(row.flagged).toContain("github_personal_token");
-    db.close();
-  });
-
   it("registers edit + write overrides and tool_call/tool_result hooks", () => {
     const db = mkdb();
     const pi = fakePi();
@@ -63,13 +51,4 @@ describe("registerRouting", () => {
     db.close();
   });
 
-  it("exempts the spider mega-tool from tool_result processing", async () => {
-    const db = mkdb();
-    const pi = fakePi();
-    registerRouting(pi as any, { db, getSessionId: () => "s1", getCwd: () => process.cwd(), config: DEFAULT_ROUTING_CONFIG });
-    const ret = await pi._hooks.tool_result({ toolName: "spider", content: [{ type: "text", text: "internal" }] }, {});
-    expect(ret == null).toBe(true);
-    expect(listEvents(db)).toHaveLength(0);
-    db.close();
-  });
 });

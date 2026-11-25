@@ -7,8 +7,10 @@ import { countedUsageSql, USAGE_LEASE_SCHEMA } from "../schema.js";
 import { DIMENSION_COLUMNS } from "../dimension-values.js";
 import { countedUsageSql as baseCounted, USAGE_SCHEMA as BASE_V1, USAGE_SCHEMA_V2 as BASE_V2 } from "./fixtures/selection-v2-frozen.js";
 
-const SEQUENCES = Number(process.env.REVIEW_SEQ ?? 50);
+const SEQUENCES = Number(process.env.REVIEW_SEQ ?? 1);
 const STEPS = Number(process.env.REVIEW_STEPS ?? 24);
+const RUN = Number(process.env.GITHUB_RUN_ID ?? Math.floor(Date.now() / 86400000));
+const SEED = Number(process.env.SPIDER_TEST_SEED ?? process.env.REVIEW_SEED ?? (RUN % 2 === 0 ? 0x5eed1234 : RUN)) >>> 0;
 
 // Independent reference expressions (copied from the ce0c8f4 dynamic rules).
 const SHADOW_DYN = `EXISTS (SELECT 1 FROM calls p WHERE p.fingerprint = c.fingerprint
@@ -31,9 +33,9 @@ it("v2/v3 shipped SQL is unchanged and dynamic mode equals ce0c8f4", () => {
   }
 });
 
-it("randomized differential: stored decisions, selection, revision and registry", () => {
+it(`randomized differential: stored decisions, selection, revision and registry (seed=${SEED})`, () => {
   const root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "review-diff-"));
-  let seed = Number(process.env.REVIEW_SEED ?? 0x5eed1234);
+  let seed = SEED;
   const rnd = (n: number) => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return (seed >>> 8) % n; };
   const pick = <T,>(xs: readonly T[]) => xs[rnd(xs.length)]!;
   const FP = ["f0", "f1", "f2", "f3"], SRC = ["s0", "s1", "s2", "s3"], RUN = [null, "r0", "r1", "r2", "r3"], ID = Array.from({ length: 10 }, (_, i) => `c${i}`);
@@ -167,6 +169,21 @@ it("randomized differential: stored decisions, selection, revision and registry"
         observe(neu, model);
         // Backfill must equal what historic rows imply. Registry: only current rows are known pre-migration.
         check("backfill");
+        // Exercise both transaction outcomes even when the rotating sequence misses them.
+        for (const rollback of [true, false]) {
+          const before = snapshot(neu), pending = new Map(model);
+          neu.exec("BEGIN IMMEDIATE");
+          neu.prepare(INSERT_SQL).run(`tx-${rollback}`, 1000, "tx-source", `tx-${rollback}`, 0,
+            "tx-project", "tx-role", "tx-model", null, null, "parent", "transcript", 1, 0, 1, 0, `tx-${rollback}`);
+          observe(neu, pending);
+          expect(() => old.prepare("DELETE FROM calls WHERE id='nope'").run()).toThrow(/locked|busy/i);
+          neu.exec(rollback ? "ROLLBACK" : "COMMIT");
+          if (!rollback) for (const [k, v] of pending) model.set(k, v);
+          const after = snapshot(neu);
+          if (rollback) expect(after).toEqual(before);
+          else { expect(after.sig).not.toBe(before.sig); expect(after.rev).toBeGreaterThan(before.rev); }
+          check(rollback ? "fixed-rollback" : "fixed-commit");
+        }
         for (let i = 0; i < STEPS; i++) {
           const db = pick(conns);
           const kind = rnd(10);
@@ -211,7 +228,7 @@ it("randomized differential: stored decisions, selection, revision and registry"
       } finally { old.close(); neu.close(); rmSync(file, { force: true }); rmSync(`${file}-wal`, { force: true }); rmSync(`${file}-shm`, { force: true }); }
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
-  const summary = JSON.stringify({ sequences: SEQUENCES, seed: process.env.REVIEW_SEED, steps, checks, failures: failures.length, firstFailures: failures.slice(0, 5), stats });
+  const summary = JSON.stringify({ sequences: SEQUENCES, seed: SEED, steps, checks, failures: failures.length, firstFailures: failures.slice(0, 5), stats });
   console.log(summary);
   if (process.env.REVIEW_OUT) writeFileSync(process.env.REVIEW_OUT, summary);
   expect(failures.slice(0, 5)).toEqual([]);

@@ -28,6 +28,7 @@ it("publication cannot outlive its startup fence", async () => {
 it("startup rejects stale guards and corrupt root records", async () => {
   const fixtureUrl = new URL("./fixtures/dashboard-process.mjs", import.meta.url).href;
   const h = await import(/* @vite-ignore */ fixtureUrl); processFixtures ??= await h.processFixtures();
+  const { runUsageServerEntry } = await import("../server-entry.js");
   for (const corrupt of ["stale-guard", "foreign-guard", "stale-startup", "relative-root", "oversized"]) {
     const f = await processFixtures.fixture(); const instanceId = "a".repeat(32), now = Date.now();
     const guard = { version: 1, instanceId: corrupt === "foreign-guard" ? "b".repeat(32) : instanceId,
@@ -36,10 +37,20 @@ it("startup rejects stale guards and corrupt root records", async () => {
       options: { ...f.options, roots: { ...f.options.roots, ...(corrupt === "relative-root" ? { ledgerFile: "relative.db" } : {}) } } };
     await writeFile(`${f.options.lockFile}.guard`, JSON.stringify(guard), { mode: 0o600 });
     await writeFile(join(f.privateDir, "startup.json"), corrupt === "oversized" ? "x".repeat(16385) : JSON.stringify(record), { mode: 0o600 });
-    const server = f.startServer();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const code = await Promise.race([server.exited, new Promise(resolve => { timer = setTimeout(() => resolve("still-running"), 1500); })]); clearTimeout(timer);
-    expect(code, corrupt).toBe(1);
+    if (corrupt === "stale-guard") {
+      const server = f.startServer();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const code = await Promise.race([server.exited, new Promise(resolve => { timer = setTimeout(() => resolve("still-running"), 1500); })]); clearTimeout(timer);
+      expect(code, corrupt).toBe(1);
+    } else {
+      const argv = process.argv, cwd = process.cwd(), exitCode = process.exitCode;
+      try {
+        process.argv = [process.execPath, processFixtures.built, "--spider-usage-server", join(f.privateDir, "startup.json")];
+        process.chdir(f.privateDir); process.exitCode = undefined;
+        await runUsageServerEntry(processFixtures.built, { dashboardDir: f.options.dashboardDir });
+        expect(process.exitCode, corrupt).toBe(1);
+      } finally { process.chdir(cwd); process.argv = argv; process.exitCode = exitCode; }
+    }
     await expect(readFile(f.options.lockFile)).rejects.toThrow();
     expect(JSON.parse(await readFile(`${f.options.lockFile}.guard`, "utf8"))).toEqual(guard);
     expect(await readFile(join(f.privateDir, "crash.log"), "utf8")).toMatch(/^usage-server-startup-invalid \d+\n$/);

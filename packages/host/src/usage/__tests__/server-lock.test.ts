@@ -1,10 +1,10 @@
-import { afterAll, afterEach, expect, it } from "vitest";
+import { afterAll, afterEach, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile, chmod, utimes } from "node:fs/promises";
 import { join, resolve } from "node:path";
 const dirs: string[] = [];
 let processFixtures: any;
 async function cleanup() { await processFixtures?.cleanup(); for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); }
-afterEach(cleanup); afterAll(async () => { await cleanup(); await processFixtures?.dispose(); });
+afterEach(async () => { vi.unstubAllEnvs(); await cleanup(); }); afterAll(async () => { await cleanup(); await processFixtures?.dispose(); });
 async function fixture() {
   const scratch = resolve(".spider/scratch/usage-ui"); await mkdir(scratch, { recursive: true });
   const root = await mkdtemp(join(scratch, "server-lock-")); dirs.push(root);
@@ -100,15 +100,24 @@ it("owned private directory permissions are repaired but symlinks fail closed", 
 it("crash-mid-start empty corrupt and wrong-mode records recover after grace", async () => {
   const h = await import(/* @vite-ignore */ new URL("./fixtures/dashboard-process.mjs", import.meta.url).href);
   processFixtures ??= await h.processFixtures();
+  const runtime = await import("../server-runtime.js");
   for (const name of ["lock.json.guard", "lock.json", "startup.json"]) {
     for (const state of ["empty", "corrupt", "wrong-mode", "wrong-shape"]) {
       const f = await processFixtures.fixture(); const file = join(f.privateDir, name);
       const record = { version: 1, instanceId: "d".repeat(32), pid: 99999999, createdAt: Date.now() - 20000, processIdentity: "absent", port: 12345, secret: "s".repeat(43) };
       await writeFile(file, state === "empty" ? "" : state === "corrupt" ? "{" : state === "wrong-shape" ? '{"instanceId":"broken"}' : JSON.stringify(record), { mode: state === "wrong-mode" ? 0o644 : 0o600 });
       const stale = new Date(Date.now() - 20000); await utimes(file, stale, stale);
-      const result = await f.start("launch").exited;
-      expect(result.code, `${name} ${state}: ${result.stderr}`).toBe(0);
-      expect(JSON.parse(result.stdout).reused).toBe(false);
+      let row: { pid: number; reused: boolean };
+      if (name === "lock.json.guard" && state === "empty") {
+        const result = await f.start("launch").exited;
+        expect(result.code, `${name} ${state}: ${result.stderr}`).toBe(0);
+        row = JSON.parse(result.stdout);
+      } else {
+        for (const key of ["HOME", "SPIDER_GLOBAL_ROOT", "PI_CODING_AGENT_DIR", "SPIDER_FIXTURE_OBSERVED"]) vi.stubEnv(key, f.env[key]);
+        row = await runtime.ensureUsageServer(f.options, { deadlineMs: f.options.launchDeadlineMs });
+      }
+      f.pids.add(row.pid);
+      expect(row.reused, `${name} ${state}`).toBe(false);
       await expect(readFile(join(f.privateDir, "startup.json"))).rejects.toThrow();
     }
   }

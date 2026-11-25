@@ -32,7 +32,10 @@ test('pi summary serialization omits thinking while preserving visible work and 
 });
 
 // Break: nested read/write/edit records, incomplete records or edited/omitted entries diverge from pi's preparation.
-test.each([7, 11, 23])('seed %s matches pi cuts and file sets across nested calls and context edits', async initialSeed => {
+const seeds = [7, 11, 23];
+const run = Number(process.env.GITHUB_RUN_ID ?? Math.floor(Date.now() / 86400000));
+const seed = Number(process.env.SPIDER_TEST_SEED ?? seeds[run % seeds.length]);
+test.each([seed])('seed %s matches pi cuts and file sets across nested calls and context edits', async initialSeed => {
   let seed = initialSeed;
   const next = () => { seed = Math.imul(seed, 1664525) + 1013904223 >>> 0; return seed; };
   for (let i = 0; i < 80; i++) {

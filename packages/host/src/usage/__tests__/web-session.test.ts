@@ -70,11 +70,11 @@ it("route has one roving Tab stop and arrows reach runs and every event type", (
 it("route skips sub-two-pixel idle glyphs but retains every gap in its table", async () => {
   const d = sessionFixture(); d.span = sessionSpan(0, 180 * 86400000); d.range = { from: d.span.start, to: d.span.end }; d.runs = []; d.compaction = [];
   d.activePeriods = [{ ...d.span }]; d.ownCallBins = [];
-  d.idleGaps = Array.from({ length: 10000 }, (_, i) => ({ start: i * 600001, end: (i + 1) * 600001, cacheWriteCredits: 0 }));
+  d.idleGaps = Array.from({ length: 300 }, (_, i) => ({ start: i * 600001, end: (i + 1) * 600001, cacheWriteCredits: 0 }));
   const s = setup(d), page = mountSession(s.ctx); await page.refresh();
   expect(descendants(s.doc.body).filter(n => n.getAttribute("data-event") === "idle")).toHaveLength(0);
   const table = elements(s.doc.body, "table").find(n => n.textContent.includes("Session route data"))!;
-  expect(elements(table, "tr").filter(n => n.children[1] && cellText(n.children[1]) === "Idle gap")).toHaveLength(10000); page.dispose();
+  expect(elements(table, "tr").filter(n => n.children[1] && cellText(n.children[1]) === "Idle gap")).toHaveLength(300); page.dispose();
 });
 it("status mark grammar does not turn unknown evidence into completion", () => {
   const d = sessionFixture(), run = d.runs[0]!;

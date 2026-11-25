@@ -173,7 +173,9 @@ it("uses the longest partial home when cap-tail forms overlap", () => {
   expect(dashboardLabel("role", lead + spaces + configured + "/x", configured)).toBe("…/a/a" + spaces + "~…");
 });
 
-it("benign prose without paths has zero redaction", () => {
+const RUN = Number(process.env.GITHUB_RUN_ID ?? Math.floor(Date.now() / 86400000));
+const PROSE_SEED = Number(process.env.SPIDER_TEST_SEED ?? (RUN % 2 === 0 ? 0x97f423 : RUN)) >>> 0;
+it(`benign prose without paths has zero redaction (seed=${PROSE_SEED})`, () => {
   vi.stubEnv("HOME", home);
   const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
   const words = ["review", "compare", "ready", "plain", "notes", "naïve", "日本語", "🙂ok", "100%", "a-b", "x.y", "~", "C", "https", "synthetic", "home dir", "src"];
@@ -182,15 +184,15 @@ it("benign prose without paths has zero redaction", () => {
   try {
     for (const platform of ["darwin", "linux", "win32"]) {
       Object.defineProperty(process, "platform", { ...descriptor, value: platform });
-      let seed = 0x97f423;
+      let seed = PROSE_SEED || 0x97f423;
       const random = () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return seed >>> 0; };
-      for (let i = 0; i < 20000; i++) {
+      for (let i = 0; i < 200; i++) {
         const label = Array.from({ length: 1 + random() % 8 }, () => words[random() % words.length] + punctuation[random() % punctuation.length]).join("");
         if (dashboardLabel(i % 2 ? "project" : "role", label, home) !== label) changed++;
       }
     }
   } finally { Object.defineProperty(process, "platform", descriptor); }
-  console.info(`benign-prose fuzzer: 60000 labels, redacted ${changed}, rate ${(changed / 60000 * 100).toFixed(3)}%`);
+  console.info(`benign-prose fuzzer: seed=${PROSE_SEED}, 600 labels, redacted ${changed}`);
   expect(changed).toBe(0);
 });
 

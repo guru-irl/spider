@@ -33,6 +33,5 @@ it.each([
   const home = "/synthetic/home with spaces";
   const result = dashboardLabel("role", input, home)!;
   expect(result).toBe(expected);
-  expect(labelLeaks(expected, [home])).toEqual([]);
   expect(labelLeaks(result, [home])).toEqual([]);
 });

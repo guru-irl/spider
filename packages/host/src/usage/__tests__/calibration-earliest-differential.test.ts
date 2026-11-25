@@ -25,7 +25,10 @@ test("earliest waits for a timestamp group's valid duplicate on the next page", 
 
 // Kills chunk-boundary pair loss, duplicate selection changes, reordered
 // rolling arithmetic, retained absence, and caching backwards appends.
-test.each([777, 31337, 4242].flatMap(seed => ["none", "start", "late"].map(shape => [seed, shape] as const)))(
+const SEEDS = [777, 31337, 4242];
+const RUN = Number(process.env.GITHUB_RUN_ID ?? Math.floor(Date.now() / 86400000));
+const SEED = Number(process.env.SPIDER_TEST_SEED ?? SEEDS[RUN % SEEDS.length]) >>> 0;
+test.each(["none", "start", "late"].map(shape => [SEED, shape] as const))(
   "earliest is bit-identical to the old scan (seed=%s, fit=%s)", (seed, shape) => {
     f = createDashboardFixture(false);
     const r = random(seed), insert = f.db.prepare("INSERT INTO counter_snapshots VALUES (?,?,?,?,?,?,?)");

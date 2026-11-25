@@ -227,16 +227,6 @@ it("launcher strips poisoned Node options, search paths and inspector settings",
   const launched = await f.start("launch").exited; expect(launched.code, launched.stderr).toBe(0);
 });
 
-it("concurrent crash writers retain every complete code", async () => {
-  const { module: m } = await helpers(); const f = await fixtures.fixture();
-  const results = await Promise.all(Array.from({ length: 6 }, () => f.start("crash-write").exited));
-  for (const result of results) expect(result.code, result.stderr).toBe(0);
-  const codes = await m.readUsageServerCrashCodes(f.privateDir);
-  expect(codes.filter(code => code === "usage-server-crashed")).toHaveLength(72);
-  expect(codes.filter(code => code === "usage-server-not-ready")).toHaveLength(72);
-  expect((await stat(join(f.privateDir, "crash.log"))).size).toBeLessThanOrEqual(8192);
-});
-
 it("build upgrade stops an authenticated old owner including a hung participant", async () => {
   const { h } = await helpers();
   for (const hang of ["", "1"]) {

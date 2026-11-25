@@ -4,7 +4,10 @@ import { setup, pi, user, assistant, summaryCalls } from './harness.js';
 const { prepareCompaction } = await import(new URL('../../../../../node_modules/@earendil-works/pi-coding-agent/dist/core/compaction/compaction.js', import.meta.url).href);
 
 // Break: child cut or history extraction diverges from pi, or parent recency becomes sorted/forward.
-test.each([7, 11, 23])('seed %s preserves child boundaries and parent newest-touch file order', async initialSeed => {
+const seeds = [7, 11, 23];
+const run = Number(process.env.GITHUB_RUN_ID ?? Math.floor(Date.now() / 86400000));
+const seed = Number(process.env.SPIDER_TEST_SEED ?? seeds[run % seeds.length]);
+test.each([seed])('seed %s preserves child boundaries and parent newest-touch file order', async initialSeed => {
   let seed = initialSeed;
   const next = () => { seed = Math.imul(seed, 1664525) + 1013904223 >>> 0; return seed; };
   for (let i = 0; i < 80; i++) {

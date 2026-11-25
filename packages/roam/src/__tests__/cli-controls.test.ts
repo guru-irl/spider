@@ -1232,7 +1232,7 @@ it("disabled doctor reports an ungathered corrupt store as a warning with its pa
   expect(JSON.parse(f.out.join("")).value.diagnostics).toContainEqual(expect.objectContaining({ severity: "warning", reason: expect.stringContaining(store) }));
   expect(JSON.parse(f.out.join("")).value.diagnostics.filter((row: { severity: string }) => row.severity === "block")).toEqual([]);
 }, 5000);
-it("disabled doctor names a foreign-machine mapped worktree without machine IDs", async () => {
+it("disabled doctor names a foreign-machine mapped worktree and targets its catalog for repair", async () => {
   const f = await fixture(HUB, undefined, false), configFile = join(f.root, "roam/config.json"), config = JSON.parse(readFileSync(configFile, "utf8"));
   config.enabled = false; config.peers = []; writeFileSync(configFile, JSON.stringify(config), { mode: 0o600 });
   const db = openDb(join(f.root, "spider.db")); migrate(db, "global", { machineId: HUB, globalRoot: f.root });
@@ -1245,8 +1245,23 @@ it("disabled doctor names a foreign-machine mapped worktree without machine IDs"
   const diagnostics = JSON.parse(f.out.join("")).value.diagnostics as Array<{ reason: string; repairCommand: string }>;
   const rows = diagnostics.filter(row => row.reason.includes("store-machine-mismatch"));
   expect(rows).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "warning", reason: expect.stringContaining(file),
-    repairCommand: expect.stringContaining("belongs to another machine identity") })]));
-  expect(JSON.stringify(rows)).not.toContain(HUB); expect(JSON.stringify(rows)).not.toContain(BOX);
+    repairCommand: `spider roam stores retire ${HUB}` })]));
+  // Task 2 names the affected catalog, never the foreign store owner's identity.
+  expect(rows.every(row => row.repairCommand === `spider roam stores retire ${HUB}`)).toBe(true);
+  expect(JSON.stringify(rows)).not.toContain(BOX);
+  const before = readFileSync(file);
+  f.out.length = 0;
+  expect(await f.invoke(["roam", "stores", "retire", HUB, "--json"])).toBe(1);
+  expect(JSON.parse(f.out.join(""))).toMatchObject({ reason: "stores-retire-refused", value: {
+    candidates: [], removed: [], unavailable: expect.arrayContaining([expect.objectContaining({ path: file, check: "machine-not-retired" })]),
+  } });
+  expect(readFileSync(file)).toEqual(before);
+  const catalog = openDb(join(f.root, "spider.db"));
+  try {
+    expect(catalog.prepare("SELECT project_key,db_path FROM projects WHERE project_key='foreign'").get()).toEqual({ project_key: "foreign", db_path: file });
+    expect(catalog.prepare("SELECT path FROM roam_workspace_maps WHERE workspace_id='foreign'").get()).toEqual({ path });
+    expect(localEntries(catalog, "store-retire")).toEqual([]);
+  } finally { catalog.close(); }
 }, 5000);
 
 it("prune reports a bounded failed path and check instead of discarding it", async () => {

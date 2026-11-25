@@ -209,10 +209,23 @@ it.each([
   expect(result).toMatchObject({ code: 1, reason: "move-preflight-refused", failure: { step, code: detailCode } });
   if (step === "destination-diagnostics") expect(result.causeCode).toBe("move-adapter-unavailable");
   else expect(result).not.toHaveProperty("causeCode");
-  expect(f.journal.read(f.operation.id)).toContainEqual(expect.objectContaining({ action: "move-failure", result: { step, code: detailCode } }));
-  expect(JSON.stringify(result)).not.toContain("PRIVATE-ADAPTER-SENTINEL");
-  expect(JSON.stringify(result)).not.toContain("/fixture/private-file");
-  expect(JSON.stringify({ result, journal: f.journal.read(f.operation.id) })).not.toContain("private");
+  // Task 2 isolates failures before an accepted move-request from the move's journal.
+  const failures = () => f.privateDb.prepare("SELECT operation_id,result_json FROM roam_operation_actions WHERE action='move-failure'").all() as { operation_id: string; result_json: string }[];
+  const rows = failures();
+  expect(rows.map(row => JSON.parse(row.result_json))).toEqual([{ step, code: detailCode }]);
+  expect(rows[0].operation_id).not.toBe(f.operation.id);
+  expect(f.journal.read(rows[0].operation_id)).toEqual([
+    { action: "move-failure", result: { step, code: detailCode } },
+    { action: "done", result: { step, code: detailCode } },
+  ]);
+  const moveRows = f.journal.read(f.operation.id);
+  expect(await resumeMove({ operation: f.operation, sessionId: SESSION, destinationMachine: BOX }, f.ports)).toEqual(result);
+  expect(failures()).toEqual(rows);
+  expect(f.journal.read(f.operation.id)).toEqual(moveRows);
+  const exposed = JSON.stringify({ result, journal: moveRows, diagnostics: rows });
+  expect(exposed).not.toContain("PRIVATE-ADAPTER-SENTINEL");
+  expect(exposed).not.toContain("/fixture/private-file");
+  expect(exposed).not.toContain("private");
   expect(sessionHome(f.global.db, SESSION)).toEqual(f.home);
 });
 

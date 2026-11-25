@@ -1,5 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join, relative, isAbsolute, resolve, sep } from "node:path";
+import { createHash } from "node:crypto";
+import { lstat, realpath } from "node:fs/promises";
+import { parseLocationStores } from "@spider/db-core/roam/catalog";
+import { seedSession, enableMemoryCapture } from "@spider/db-core/roam/seed";
+import { createStorePort } from "../stores";
+import { parsePlacement, object, text } from "./journal";
 import { homedir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { inspectIdLock, claimIdLock, localBootId, type IdLockObservation } from "@spider/herdr/sessions/id-lock";
@@ -123,6 +129,90 @@ export async function stopLocalSession(sessionId: SessionId, moving: MovingHome 
     if ((await io.terminals(sessionId)).some(t=>t.state === "live")) return refusal("stop-timeout","A session terminal is still live.");
     return {ok:true,value:undefined};
   } catch { return refusal("stop-timeout","The session could not be stopped safely."); }
+}
+export const digestIdentity = (value: string): string => createHash("sha256").update(value).digest("hex");
+function repoMap(options: RelocateAdapterOptions, key: string): {path:string;worktree_command_json:string|null} | undefined {
+  return options.globalDb.prepare("SELECT path,worktree_command_json FROM roam_repo_maps WHERE repo_key=?").get(key) as {path:string;worktree_command_json:string|null}|undefined;
+}
+async function normalRepository(root: string, options: RelocateAdapterOptions): Promise<void> {
+  if (options.git.worktreeCommand !== null) throw new Error("Configured worktree command is unsupported");
+  let sparse = "";
+  try { sparse = (await options.git.run(root,["git","config","--bool","core.sparseCheckout"])).toString().trim(); }
+  catch (error) { if ((error as {status?:number}).status !== 1 && (error as {code?:number}).code !== 1) throw error; }
+  if (sparse === "true") throw new Error("Sparse checkout is unsupported");
+  const files = await options.git.run(root,["git","ls-files","-z"]);
+  if (files.length) for (const cached of [false,true]) {
+    const attrs = await options.git.run(root,["git","check-attr",...(cached?["--cached"]:[]),"-z","--stdin","filter"],{stdin:files});
+    const fields = attrs.toString().split("\0");
+    for (let i=2;i<fields.length;i+=3) if (fields[i] === "lfs") throw new Error("LFS is unsupported");
+  }
+}
+export interface LocalSource {placement:SessionPlacement;epoch:number;state:"active"|"frozen";root:string;relativeCwd:string;head:string}
+export async function inspectLocalSource(id: SessionId, options: RelocateAdapterOptions, allowStopped = false): Promise<V0Result<LocalSource>> {
+  try {
+    const row = options.globalDb.prepare("SELECT stores_json,home_json,file,cwd FROM roam_locations WHERE session_id=?").get(id) as {stores_json:string;home_json:string|null;file:string|null;cwd:string|null}|undefined;
+    if (!row) return refusal("session-not-found","The session has no local location.");
+    const keys = parseLocationStores(JSON.parse(row.stores_json)), worktrees = keys.filter(key=>key.startsWith("worktree:"));
+    if (worktrees.length !== 1) return refusal("ambiguous-session","The session has more than one working checkout.");
+    const key = worktrees[0], rest = key.slice(9), at = rest.lastIndexOf(":"), repoKey = rest.slice(0,at), workspaceId = rest.slice(at+1);
+    const map = repoMap(options,repoKey);
+    if (!map) return refusal("repo-unmapped","The source repository has no local mapping.","Run spider roam repo map for the session repository, then retry.");
+    if (map.worktree_command_json !== null) return refusal("unsupported-workspace","Configured worktree commands are not supported by v0.");
+    if (!row.file || !row.cwd || !isAbsolute(row.file) || !isAbsolute(row.cwd)) return refusal("session-not-found","The local transcript and working directory are missing.");
+    if (row.home_json !== null) { const home = object(JSON.parse(row.home_json)); if (home.machineId !== options.config.machineId) return refusal("home-conflict","This location is not owned by the local source."); }
+    const fileStat = await lstat(row.file);
+    if (!fileStat.isFile() || fileStat.isSymbolicLink() || await realpath(row.file) !== row.file) return refusal("session-not-found","The local transcript path is not a regular canonical file.");
+    const stores = createStorePort(options.config,options.globalDb);
+    let epoch: number, state:"active"|"frozen";
+    try {
+      const db = stores.openStore(key).db;
+      const membership = db.prepare("SELECT epoch,state FROM roam_sessions WHERE session_id=?").get(id) as {epoch:number;state:string}|undefined;
+      const meta = db.prepare("SELECT machine_id FROM roam_meta WHERE id=1").get() as {machine_id:string};
+      if (!membership || meta.machine_id !== options.config.machineId || !Number.isSafeInteger(membership.epoch) || membership.epoch<1 || membership.state !== "active" && !(allowStopped && membership.state === "frozen")) return refusal("home-conflict","The source is not an ordinary active local member.");
+      epoch = membership.epoch; state = membership.state as "active"|"frozen";
+    } finally {stores.close();}
+    const root = await realpath((await options.git.run(row.cwd,["git","rev-parse","--show-toplevel"])).toString().trim());
+    const relativeCwd = relative(root,await realpath(row.cwd));
+    if (isAbsolute(relativeCwd) || relativeCwd === ".." || relativeCwd.startsWith(`..${sep}`)) return refusal("unsupported-workspace","The session cwd is outside its working checkout.");
+    await normalRepository(root,options);
+    const head = (await options.git.run(root,["git","rev-parse","--verify","HEAD^{commit}"])).toString().trim();
+    const knownHome = row.home_json ? object(JSON.parse(row.home_json)) : null;
+    const historyMachine = typeof knownHome?.historyMachine === "string" ? knownHome.historyMachine : options.config.machineId;
+    const placement = parsePlacement({sessionId:id,machineId:options.config.machineId,repoKey,workspaceId,repository:map.path,cwd:row.cwd,file:row.file,stores:[...new Set(["global",`repo:${repoKey}`,...keys])],historyMachine});
+    return {ok:true,value:{placement,epoch,state,root,relativeCwd,head}};
+  } catch { return refusal("unsupported-workspace","The source checkout or membership could not be inspected safely."); }
+}
+export async function inspectLocalDestination(source: SessionPlacement, relativeCwd: string, options: RelocateAdapterOptions): Promise<V0Result<{placement:SessionPlacement;head:string}>> {
+  try {
+    parsePlacement(source);
+    if (isAbsolute(relativeCwd) || relativeCwd.split(/[\\/]/).includes("..")) return refusal("invalid-arguments","The relative session cwd is invalid.");
+    const map = repoMap(options,source.repoKey);
+    if (!map) return refusal("repo-unmapped","The destination repository has no local mapping.","Run spider roam repo map for the session repository on the destination, then retry.");
+    if (map.worktree_command_json !== null) return refusal("unsupported-workspace","Configured worktree commands are not supported by v0.");
+    await normalRepository(map.path,options);
+    const mapped = options.globalDb.prepare("SELECT path FROM roam_workspace_maps WHERE repo_key=? AND workspace_id=?").get(source.repoKey,source.workspaceId) as {path:string}|undefined;
+    const checkout = mapped?.path ?? join(options.root,"roam","checkouts","v0",digestIdentity(source.repoKey),digestIdentity(source.workspaceId));
+    if (mapped) await normalRepository(mapped.path,options);
+    const existing = options.globalDb.prepare("SELECT file FROM roam_locations WHERE session_id=?").get(source.sessionId) as {file:string|null}|undefined;
+    let file = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(),".pi","agent"),"sessions","roaming",`${digestIdentity(source.sessionId)}.jsonl`);
+    if (existing?.file && isAbsolute(existing.file)) {
+      const info = await lstat(existing.file).catch(()=>null);
+      if (info?.isFile() && !info.isSymbolicLink() && await realpath(existing.file) === existing.file) file=existing.file;
+    }
+    const head = (await options.git.run(map.path,["git","rev-parse","--verify","HEAD^{commit}"])).toString().trim();
+    const placement = parsePlacement({...source,machineId:options.config.machineId,repository:map.path,cwd:join(checkout,relativeCwd),file});
+    return {ok:true,value:{placement,head}};
+  } catch {return refusal("unsupported-workspace","The destination is not a supported normal checkout.");}
+}
+export async function seedLocalPlacement(placement: SessionPlacement, epoch: number, options: RelocateAdapterOptions): Promise<void> {
+  const stores = createStorePort(options.config,options.globalDb);
+  try {
+    for (const key of placement.stores) {
+      const db=stores.openStore(key).db;
+      if (key.startsWith("worktree:")) { while (!seedSession(db,placement.sessionId,epoch,key,options.limits.hardBatchBytes).complete) { /* bounded seed chunks */ } }
+      else enableMemoryCapture(db,key);
+    }
+  } finally {stores.close();}
 }
 export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO = createLocalIO(options)) {
   async function owner(id: SessionId): Promise<SessionOwner> {

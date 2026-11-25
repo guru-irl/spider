@@ -32,6 +32,7 @@ describe("v0 home supervisor", () => {
     f.setOwner({ kind: "live", pid: 42, terminal: "core:term" });
     await loop.tick(); f.setEntries([{ sessionId: id, home: running(3), placement }]); await loop.tick();
     expect(f.effects).toEqual(["activate:1", "start:1", "activate:1", "activate:3"]);
+    f.setOwner({ kind: "free" });
     const denied: (RelocateHome | null)[] = [null, { ...running(), machineId: foreign }, { ...running(), state: "stopped" }, { ...running(), state: "moving", moveId: "v0-move" as never, destination: local }];
     for (const home of denied) { f.setEntries([{ sessionId: id, home, placement }]); await loop.tick(); }
     expect(f.ports.start).toHaveBeenCalledTimes(1);

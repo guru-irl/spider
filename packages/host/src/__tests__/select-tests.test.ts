@@ -37,6 +37,54 @@ async function api() {
 }
 
 describe('change-scoped test manifests', () => {
+  it('defers only distant recorded slow tests and records why they wait for the full run', async () => {
+    // Catches removing deferral, widening proximity to transitive imports, or
+    // treating a changed test as a changed production-source directory.
+    const f = fixture();
+    const changed = 'packages/roam/src/feature/value.ts';
+    const paths = {
+      fast: 'packages/roam/src/checks/fast.test.ts',
+      boundary: 'packages/roam/src/checks/boundary.test.ts',
+      unknown: 'packages/roam/src/checks/unknown.test.ts',
+      direct: 'packages/roam/src/checks/direct.test.ts',
+      types: 'packages/roam/src/checks/types.test.ts',
+      transitive: 'packages/roam/src/checks/transitive.test.ts',
+      dynamic: 'packages/roam/src/checks/dynamic.test.ts',
+      nearby: 'packages/roam/src/feature/nearby.test.ts',
+      changed: 'packages/roam/src/other/changed.test.ts',
+      neighborOfTest: 'packages/roam/src/other/neighbor.test.ts',
+      distant: 'packages/roam/src/checks/distant.test.ts',
+    };
+    for (const file of Object.values(paths)) f.put(file, 'export {};');
+    f.put(changed, 'export const value = 1; export type Value = number;');
+    f.put(paths.direct, 'import { value } from "../feature/value.js"; void value;');
+    f.put(paths.types, 'import type { Value } from "../feature/value.js"; export type V = Value;');
+    f.put('packages/roam/src/checks/helper.ts', 'export { value } from "../feature/value.js";');
+    f.put(paths.transitive, 'import { value } from "./helper.js"; void value;');
+    f.put(paths.dynamic, 'const load = () => import("../feature/value.js");');
+    f.put('scripts/select-tests.mjs', readFileSync('scripts/select-tests.mjs', 'utf8'));
+    f.put('scripts/test-resources.json', readFileSync('scripts/test-resources.json', 'utf8'));
+    f.put('scripts/test-durations.json', JSON.stringify({
+      ...Object.fromEntries(Object.values(paths).filter(file => file !== paths.unknown).map(file => [file, 5001])),
+      [paths.fast]: 1, [paths.boundary]: 5000,
+    }));
+    const base = f.commit();
+    f.put(changed, 'export const value = 2; export type Value = number;');
+    f.put(paths.changed, 'export const changed = true;');
+    const selector = await import(/* @vite-ignore */ join(f.root, 'scripts/select-tests.mjs'));
+    const manifest = await selector.selectTests({ ...f, base, head: f.commit(), resolveRelated: async () => Object.values(paths) });
+    expect(manifest.mode).toBe('scoped');
+    expect(manifest.files).toEqual([guard, paths.fast, paths.boundary, paths.unknown, paths.direct, paths.types, paths.nearby, paths.changed].sort());
+    expect(manifest.deferred).toEqual([paths.distant, paths.dynamic, paths.neighborOfTest, paths.transitive].sort().map(file => ({
+      file, durationMs: 5001, rule: 'slow test is unchanged, has no direct static import of a changed module, and shares no directory with changed source',
+      reasons: ['import graph'],
+    })));
+    expect(Object.keys(manifest.reasons).sort()).toEqual(manifest.files);
+    expect(selector.validateManifest(manifest, { root: f.root })).toEqual(manifest.files);
+    const tampered = structuredClone(manifest); tampered.deferred.pop();
+    expect(() => selector.validateManifest(tampered, { root: f.root })).toThrow(/checksum/);
+  });
+
   it('unions the Vite graph with source-text guards and records stable provenance', async () => {
     const { selectTests } = await api();
     const f = fixture(); f.put('packages/roam/src/store.ts', 'export const value = 2;'); const head = f.commit();

@@ -101,6 +101,14 @@ describe('change-scoped test manifests', () => {
     expect(manifest.reasons[b].some((s: string) => s.includes('bundle'))).toBe(true);
   });
 
+  it('falls back for a dirty tracked checkout and rejects source drift after selection', async () => {
+    const { selectTests, validateManifest } = await api(); const f = fixture();
+    const clean = await selectTests({ ...f, head: f.base });
+    f.put('packages/roam/src/store.ts', 'uncommitted source');
+    expect((await selectTests({ ...f, head: f.base })).mode).toBe('full');
+    expect(() => validateManifest(clean, { root: f.root })).toThrow(/checkout|tracked/);
+  });
+
   it('rejects stale manifests rather than executing an empty or altered file list', async () => {
     const { selectTests, validateManifest } = await api(); const f = fixture(); f.put('docs/guide/example.md', 'changed'); const head = f.commit();
     const manifest = await selectTests({ ...f, head, resolveRelated: async () => [] });
@@ -146,6 +154,20 @@ describe('change-scoped test manifests', () => {
     expect(budget.fileCount).toBe(4); expect(budget.shards).toHaveLength(2);
     expect(budget.shards.every((shard: { workersMs: number[] }) => shard.workersMs.length === 3)).toBe(true);
     expect(budget).toHaveProperty('withoutSlowFiles');
+  });
+
+  it.each(['{', '{"version":1,"rules":null}'])('selects the full inventory when the policy cannot load: %s', async contents => {
+    const f = fixture();
+    const file = join(f.root, 'scripts/select-tests.mjs');
+    f.put('scripts/select-tests.mjs', readFileSync('scripts/select-tests.mjs', 'utf8'));
+    f.put('scripts/test-resources.json', contents); f.put('scripts/test-durations.json', '{}');
+    const head = f.commit();
+    const imported = import(/* @vite-ignore */ file);
+    await expect(imported).resolves.toHaveProperty('selectTests');
+    const result = await (await imported).selectTests({ ...f, head });
+    expect(result.mode).toBe('full'); expect(result.files).toEqual([a, b, c, guard].sort());
+    expect(result.fallback).toMatch(/policy/);
+    expect(result.optional).toEqual({ chrome: true, acceptance: true, stories: true });
   });
 
   it('requires selector compatibility audits when selection policy changes', async () => {

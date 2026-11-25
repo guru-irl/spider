@@ -28,8 +28,8 @@ describe("icon styles in rendered rows", () => {
   it.each(["text", "nerd"] as const)("keeps copy and copied icons equally wide in %s style", style => {
     expect(() => icon(style, "copied")).not.toThrow();
     const copied = icon(style, "copied");
-    expect(copied).toBe(style === "text" ? "✓" : "\u{F012C}");
     expect(visibleWidth(copied)).toBe(visibleWidth(icon(style, "copy")));
+    expect(copied).toBe(style === "text" ? "✓" : "\u{F012C}");
   });
 
   it("returns each role's specified text and Nerd Font glyph with equal cell widths", () => {

@@ -72,6 +72,7 @@ it("reports the machine and kind when a missing mapped store withholds the first
   expect(result).toMatchObject({ code: 1, reason: "move-source-home-mismatch", causeCode: "move-first-home-withheld",
     refusal: { firstHomeWithheld: { machineId: BOX2, storeKind: "worktree" } } });
   expect(actions).toEqual([]);
+  expect(result).not.toHaveProperty("failure");
   expect(sessionHome(input.f.global.db, SESSION)).toBeNull();
   expect(readLocal(input.f.global.db, "first-home-withheld", SESSION)).toEqual({ machineId: BOX2, storeKind: "worktree" });
   expect(await replay()).toEqual(result);

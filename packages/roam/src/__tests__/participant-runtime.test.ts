@@ -863,6 +863,7 @@ async function productionLaunchFixture(exitCode: number | null, signal: number |
 it.each([
   [23, null, { exitCode: 23 }],
   [null, 9, { signal: 9 }],
+  [null, null, { exitStatus: "exit-status-unavailable" }],
 ])("production carries a recorded participant terminal exit into supervision", async (exitCode, signal, launchExit) => {
   const f = await productionLaunchFixture(exitCode, signal);
   try {
@@ -909,7 +910,7 @@ it.each([
     if (condition === "lookup unavailable") f.eventClient.get = async () => { throw new Error("private detail"); };
     const result = await f.input.launch(f.intent, f.operationId, "reconcile");
     expect(result.reason).toBe("adopted-exited");
-    expect(result.launchExit).toEqual({});
+    expect(result.launchExit).toEqual({ exitStatus: "exit-status-unavailable" });
     expect(JSON.stringify(result)).not.toContain("private detail");
   } finally { await f.service.stop(); vi.unstubAllEnvs(); }
 });
@@ -946,14 +947,20 @@ it.each([
   } finally { await f.service.stop(); vi.unstubAllEnvs(); }
 });
 
-it.each(["already ready", "terminal unavailable"] as const)("keeps the original launch error when %s", async condition => {
+it.each(["already ready", "terminal unavailable"] as const)("keeps readiness semantics and names missing status when %s", async condition => {
   const f = await productionLaunchFixture(23, null), failure = Object.assign(new Error("private detail"), { code: "EACCES" });
   vi.mocked(launcherModule.createExactLaunchAdapter).mockReturnValue({ async launch() { throw failure; } } as never);
   if (condition === "already ready") recordReadiness(f.f.ports.journal, { origin: "hub-operation", opId: f.operationId,
     sessionId: f.intent.sessionId, epoch: f.intent.epoch, file: f.intent.file, cwd: f.intent.cwd, core: "core-1", terminal: "terminal-1" });
   else f.eventClient.get = async () => { throw new Error("terminal unavailable"); };
-  try { await expect(f.input.launch(f.intent, f.operationId, "reconcile")).rejects.toBe(failure); }
-  finally { await f.service.stop(); vi.unstubAllEnvs(); }
+  try {
+    const error = await f.input.launch(f.intent, f.operationId, "reconcile").then(() => null, error => error);
+    if (condition === "already ready") expect(error).toBe(failure);
+    else {
+      expect(error).toMatchObject({ code: "EACCES", launchExit: { exitStatus: "exit-status-unavailable" } });
+      expect(error.message).not.toContain("private detail");
+    }
+  } finally { await f.service.stop(); vi.unstubAllEnvs(); }
 });
 
 it("an enabled production box launches and restarts a reserved session without dialing the hub", async () => {

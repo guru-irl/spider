@@ -283,7 +283,8 @@ keep their own warning and recovery command. A quiet skip arms one later pass
 on the peer's next verified sync round while that skipped move remains pending.
 There is no timer retry loop, and completed moves do not trigger a later pass.
 Terminal recovery, including a terminal refusal, clears that move's saved
-recovery diagnostic. Unfinished moves keep their warning and recovery command.
+recovery diagnostic. Unfinished moves retain their diagnostic and the repair
+allowed by its cause.
 
 ## Cancel before a completed freeze
 
@@ -297,6 +298,12 @@ runtime and the normal runtime. Unrelated registered Pi sessions do not block
 absence. A changed boot or process start identity proves only the recorded
 owner gone. An unidentified replacement, unreadable process identity, or a live
 owner still blocks cancellation. Foreign runtime registrations remain read-only.
+
+ID-lock and cutover file-lease mutexes reclaim a stale, uniquely named ticket
+only when its recorded process is absent or has a different observed start
+identity. Matching or unreadable ticket owners still block, and their tickets
+remain unchanged. Reclaiming a ticket does not release the session's ownership
+or bypass freeze authorization.
 
 An ownership refusal returns code `3` with `move-ownership-unavailable` and its
 specific cause. The response and doctor give the repair steps instead of

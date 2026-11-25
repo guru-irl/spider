@@ -94,7 +94,7 @@ it("cancel completes when freeze refused before participant progress existed", a
   expect(await cancelMove("move-a", f.ports)).toEqual(result);
 });
 
-it.each(['clean-exit', 'hub-restart', 'machine-restart'] as const)('cancel finishes with physical ownership proof after %s and unrelated live Pi sessions', async mode => {
+it.each(['clean-exit', 'hub-restart', 'machine-restart', 'stale-id-mutex', 'stale-file-mutex'] as const)('cancel finishes with physical ownership proof after %s and unrelated live Pi sessions', async mode => {
   const f = fixture(); f.ports.freeze = async () => { throw new MoveAdapterError('session-control-refused'); };
   await moveSession(f.request, f.ports);
   const root = join(f.root, 'herdr'), other = join(f.root, 'other-runtime');
@@ -110,6 +110,12 @@ it.each(['clean-exit', 'hub-restart', 'machine-restart'] as const)('cancel finis
     await claimIdLock(root, 'session-a', old, async () => ({ kind: 'absent' }), { bootId: async () => mode === 'hub-restart' ? 'boot-b' : 'boot-a' });
     await inventory.leases.claim(file, old, inventory, { mode: 'bookkeeping' });
     await createProcessPresence(root).record({ ...old, sessionId: 'session-a' as SessionId, sessionFile: file, sessionName: null, kind: 'top-level', hcAddress: null });
+  }
+  if (mode === 'stale-id-mutex' || mode === 'stale-file-mutex') {
+    const key = mode === 'stale-id-mutex' ? 'session-id:session-a' : `lease:${file}`;
+    const directory = join(root, 'locks', createHash('sha256').update(key).digest('hex'));
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    writeFileSync(join(directory, 'stale-ticket.json'), JSON.stringify({ version: 1, pid: identity.pid, startIdentity: 'old-start', number: 1 }), { mode: 0o600 });
   }
   mkdirSync(join(f.root, 'roam', 's', createHash('sha256').update('session-a').digest('hex').slice(0, 32)), { recursive: true, mode: 0o700 });
   let held: HeldSessionLocks | undefined;

@@ -51,13 +51,20 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
         const source = value(await ports.initialSource(request.sessionId));
         home = await ports.homes.initialize(request.sessionId, source);
       }
-      if (home.state === "moving") refuse("move-in-progress", "A relocation is already in progress.");
-      moveId = ports.newMoveId();
-      const plan = value(await ports.check(request, home, moveId));
-      let checkpoint: RelocateCheckpoint = {
-        plan, completed: ["check"], captured: null, installed: null, terminal: null, result: null,
-      };
-      await save(checkpoint);
+      let checkpoint: RelocateCheckpoint;
+      if (home.state === "moving") {
+        moveId = home.moveId;
+        const pending = await ports.journal.load(moveId);
+        if (!pending) refuse("journal-unavailable", "The relocation checkpoint is unavailable.");
+        checkpoint = pending;
+      } else {
+        moveId = ports.newMoveId();
+        const plan = value(await ports.check(request, home, moveId));
+        checkpoint = { plan, completed: ["check"], captured: null, installed: null, terminal: null, result: null };
+        await save(checkpoint);
+      }
+      const plan = checkpoint.plan;
+      const done = (name: RelocateStep) => checkpoint.completed.includes(name);
       const complete = async (done: RelocateStep, update: Partial<RelocateCheckpoint> = {}) => {
         checkpoint = { ...checkpoint, ...update, completed: [...checkpoint.completed, done] };
         await save(checkpoint);
@@ -65,21 +72,27 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
       const moving = movingHome(plan);
       const committed = committedHome(plan);
       step = "mark-moving";
-      await cas(plan.source, moving);
-      value(await ports.publishHome(moving, moving.machineId));
-      await complete(step);
+      if (home.state !== "moving") await cas(plan.source, moving);
+      if (!done(step)) {
+        value(await ports.publishHome(moving, moving.machineId));
+        await complete(step);
+      }
       step = "stop-source";
-      value(await ports.stopSource(plan, moving));
-      await complete(step);
+      if (!done(step)) {
+        value(await ports.stopSource(plan, moving));
+        await complete(step);
+      }
       step = "pull-source";
-      const captured = value(await ports.pullSource(plan));
-      await complete(step, { captured });
+      const captured = checkpoint.captured ?? value(await ports.pullSource(plan));
+      if (!done(step)) await complete(step, { captured });
       step = "push-destination";
-      value(await ports.pushDestination(plan, captured));
-      await complete(step);
+      if (!done(step)) {
+        value(await ports.pushDestination(plan, captured));
+        await complete(step);
+      }
       step = "install-destination";
-      const installed = value(await ports.installDestination(plan, captured, committed));
-      await complete(step, { installed });
+      const installed = checkpoint.installed ?? value(await ports.installDestination(plan, captured, committed));
+      if (!done(step)) await complete(step, { installed });
       step = "commit-home";
       await cas(moving, committed);
       value(await ports.publishHome(committed, committed.machineId));

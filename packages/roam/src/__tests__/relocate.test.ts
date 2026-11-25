@@ -25,6 +25,18 @@ describe("relocate", () => {
     expect(s.processes).toEqual(new Set([destination]));
   });
 
+  it("same target reuses the pending move ID", async () => {
+    const s = state(); s.failAfter = "push-destination";
+    expect(await relocate(request, ports(s))).toMatchObject({ ok: false, step: "push-destination" });
+    expect(s.home).toMatchObject({ state: "moving", moveId: "v0-move-1" });
+    expect((await relocate(request, ports(s))).ok).toBe(true);
+    expect(s.ids).toBe(1);
+    expect(s.effects.filter(e => e === "pull-source")).toHaveLength(1);
+    expect(s.snapshots.size).toBe(1); expect(s.segments.size).toBe(1);
+    expect(s.installed.size).toBe(1); expect(s.pushed.size).toBe(1);
+    expect(s.processes).toEqual(new Set([destination]));
+  });
+
   it("capture waits for source lock freedom", async () => {
     const s = state();
     const barrier = deferred();

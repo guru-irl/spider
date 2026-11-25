@@ -284,6 +284,9 @@ function reconcileTranscriptSeams(tui: TUI, host: CopyButtonsHost, state: State)
     }
   }
   const boundary = (component: Component | undefined, first: boolean): Seam | undefined => {
+    if (!component) return undefined;
+    const direct = (component as SeamedMarkdown)[SEAM];
+    if (direct) return direct;
     if (!(component instanceof host.AssistantMessageComponent)) return undefined;
     const children = (component as unknown as AssistantInternals).contentContainer?.children ?? [];
     const child = first ? children.find(item => !(item instanceof host.Spacer)) : children.at(-1);
@@ -302,8 +305,13 @@ function reconcileTranscriptSeams(tui: TUI, host: CopyButtonsHost, state: State)
       const current = children[i];
       const next = boundary(current, true);
       if (next) { previous.externalAfter = next; next.externalBefore = previous; }
-      if (current instanceof host.Spacer || current instanceof host.ToolExecutionComponent) {
-        patchFollowingSpace(current, width => {
+      const leading = current instanceof host.AssistantMessageComponent && !next
+        ? (current as unknown as AssistantInternals).contentContainer?.children?.[0]
+        : undefined;
+      const spaced = current instanceof host.Spacer || current instanceof host.ToolExecutionComponent
+        ? current : leading instanceof host.Spacer ? leading : undefined;
+      if (spaced) {
+        patchFollowingSpace(spaced, width => {
           const index = children.indexOf(current);
           return state.enabled && state.options.isFullscreen() && width >= 3 && index > 0 && !!previousBoundary(children, index);
         });

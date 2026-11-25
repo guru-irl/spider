@@ -33,7 +33,7 @@ type AssistantInternals = {
   isStreaming?: boolean;
   updateContent(...args: unknown[]): void;
 };
-type Patch = { original: AssistantInternals["updateContent"]; state: State };
+type Patch = { original: AssistantInternals["updateContent"]; state: State; implementation?: AssistantInternals["updateContent"] };
 const PATCH = Symbol.for("spider.copy-buttons.updateContent");
 type PatchedProto = AssistantInternals & { [PATCH]?: Patch };
 
@@ -270,17 +270,24 @@ function observeViewport(tui: TUI, state: State): () => void {
   };
 }
 
-/** Install once per host prototype; reload updates the shared options rather than wrapping again. */
+/** Install a stable wrapper; each reload replaces its implementation and state. */
 export function installCopyButtons(host: CopyButtonsHost, options: CopyButtonsOptions): void {
   const proto = host.AssistantMessageComponent?.prototype as unknown as PatchedProto | undefined;
   const markdown = host.Markdown?.prototype as unknown as MarkdownInternals | undefined;
   if (!proto || typeof proto.updateContent !== "function" || !markdown || typeof markdown.renderToken !== "function" || typeof markdown.render !== "function") return;
-  if (proto[PATCH]) { proto[PATCH].state.options = options; proto[PATCH].state.enabled = true; return; }
-  const state: State = { options, enabled: true };
-  const original = proto.updateContent;
-  proto[PATCH] = { original, state };
-  proto.updateContent = function (this: AssistantInternals, ...args: unknown[]) {
-    original.apply(this, args);
+  const previous = proto[PATCH];
+  if (previous) disableCopyButtons(host);
+  // The legacy wrapper may be captured by another extension. Leave the stack
+  // intact and wrap it once, with the old wrapper's captured state disabled.
+  const patch: Patch = previous?.implementation ? previous : { original: proto.updateContent, state: { options, enabled: true } };
+  patch.state = { options, enabled: true };
+  // Existing Markdown instances must follow the current state across reloads.
+  const state = new Proxy({} as State, {
+    get: (_target, key) => Reflect.get(patch.state, key),
+    set: (_target, key, value) => Reflect.set(patch.state, key, value),
+  });
+  patch.implementation = function (this: AssistantInternals, ...args: unknown[]) {
+    patch.original.apply(this, args);
     if (!state.enabled || this.isStreaming) return;
     const message = args[0] as { content?: { type?: string; text?: string }[]; timestamp: number } | undefined;
     const content = message?.content;
@@ -290,6 +297,12 @@ export function installCopyButtons(host: CopyButtonsHost, options: CopyButtonsOp
     const messageGroup = {};
     for (const [i, child] of children.entries()) addButtons(child, host, state, text[i] ?? "", i === children.length - 1 ? text.join("\n\n") : undefined, message!.timestamp, messageGroup);
   };
+  if (!previous?.implementation) {
+    proto[PATCH] = patch;
+    proto.updateContent = function (this: AssistantInternals, ...args: unknown[]) {
+      proto[PATCH]!.implementation!.apply(this, args);
+    };
+  }
 }
 
 export function registerCopyButtons(pi: Pick<ExtensionAPI, "on">, host: CopyButtonsHost, readConfig: (cwd: string) => Record<string, unknown>, copy: (text: string) => Promise<void>): void {

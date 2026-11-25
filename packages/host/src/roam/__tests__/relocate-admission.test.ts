@@ -57,6 +57,16 @@ it("v0 readiness admits background sessions without legacy enrollment", async ()
   expect(f.ports.v0Ready).toHaveBeenCalledWith(id, "/fixture/session.jsonl", home);
   await f.emit("session_shutdown", { reason: "exit" }); expect(f.close).toHaveBeenCalledOnce(); expect(f.ports.stopped).not.toHaveBeenCalled();
 });
+it("late v0 discovery cannot fall back to ordinary admission", async () => {
+  const f = fixture({ kind: "unmanaged" }); let version = "1";
+  f.ports.captureVersion = () => version;
+  await f.emit("session_start");
+  f.setHome({ kind: "unavailable" }); version = "2";
+  vi.mocked(f.ports.load).mockResolvedValue({ home, states: [{ sessionId: id, epoch: 3, state: "active", moveId: null, freezeSeq: null }], origin: local, participating: true, captureSafe: true, unfinishedFreeze: false, initialConflict: false });
+  expect((await f.gate.refreshInitialHome()).kind).toBe("blocked");
+  expect(f.ports.v0Ready).not.toHaveBeenCalled();
+});
+
 it("a previously managed session cannot become ordinary when its home disappears", async () => {
   const f = fixture({ kind: "managed", home }); await f.emit("session_start");
   f.setHome({ kind: "unmanaged" }); await f.emit("session_start"); expect(f.gate.inspect().kind).toBe("blocked");

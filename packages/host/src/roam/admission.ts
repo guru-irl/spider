@@ -313,6 +313,9 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
           if (admitted && result) {
             participating = true; observed.add(id);
             publish(result.kind, result.home); watchSignals();
+          } else if (v0Managed && result) {
+            participating = false; ownershipVerified = false; epoch = null; discoverable = false;
+            publish(result.kind, result.home, result.blockers[0]?.detail);
           } else if (preparationPending && result?.kind === "ordinary" && !setupFailure) {
             publish("ordinary", null);
           } else {

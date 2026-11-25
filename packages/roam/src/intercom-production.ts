@@ -72,12 +72,13 @@ export function createProductionIntercomEnrollmentPorts(input: EnrollmentOptions
     const pair = request.pairs.find(item => item.source.machineId === machine.machineId || item.target.machineId === machine.machineId);
     if (!pair) throw new Error("machine-mismatch"); return pair;
   };
-  const readFence = async (machine: Peer, other: Peer, pairId: string): Promise<{ fenceId: string | null; pending: boolean }> => {
+  const readFence = async (machine: Peer, other: Peer, pairId: string): Promise<{ fenceId: string | null; edgeEpoch: string | null; pending: boolean }> => {
     const observed = await pin(machine), value = await send(machine, observed, "observe-fence", { version: 1, action: "inspect-fence", machineId: machine.machineId, peer: other.machineId, pairId });
     if (!object(value) || value.machineId !== machine.machineId || value.peer !== other.machineId || typeof value.revocationPending !== "boolean") throw new Error("intercom-fence-unavailable");
-    if (value.fence === null) return { fenceId: null, pending: value.revocationPending };
-    if (!object(value.fence) || !isMachineId(value.fence.fenceId)) throw new Error("intercom-fence-unavailable");
-    return { fenceId: value.fence.fenceId, pending: value.revocationPending };
+    if (value.fence === null) return { fenceId: null, edgeEpoch: null, pending: value.revocationPending };
+    if (!object(value.fence) || !isMachineId(value.fence.fenceId) || typeof value.fence.edgeEpoch !== "string" ||
+        !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value.fence.edgeEpoch)) throw new Error("intercom-fence-unavailable");
+    return { fenceId: value.fence.fenceId, edgeEpoch: value.fence.edgeEpoch, pending: value.revocationPending };
   };
   return {
     journal: input.journal, actor: input.actor, now: input.now, present: input.present, approve: input.approve, notify: input.notify, warn: input.warn,
@@ -85,12 +86,22 @@ export function createProductionIntercomEnrollmentPorts(input: EnrollmentOptions
     async readPairFences(pairs) {
       const result: Record<string, string | null> = Object.create(null);
       for (const pair of pairs) {
-        if (await registry.revocationPending(pair.pairId)) throw new Error("revocation-pending");
+        if (await registry.revocationPending(pair)) throw new Error("revocation-pending");
         const observations = await Promise.allSettled([readFence(pair.source, pair.target, pair.pairId), readFence(pair.target, pair.source, pair.pairId)]);
         if (observations.some(value => value.status === "fulfilled" && value.value.pending)) throw new Error("revocation-pending");
+        const first = observations[0], second = observations[1], central = await registry.get(pair.pairId);
+        if (first.status === "fulfilled" && second.status === "fulfilled" && first.value.fenceId !== null && first.value.fenceId === second.value.fenceId &&
+            (!central || (central.state === "pending" || central.state === "cancelled") && central.fenceId === null)) {
+          const owners = (await registry.list()).filter(record => record.pair.pairId !== pair.pairId &&
+            record.pair.source.machineId === pair.source.machineId && record.pair.target.machineId === pair.target.machineId &&
+            record.fenceId === first.value.fenceId && record.revocationEpoch === first.value.edgeEpoch && record.revocationEpoch === second.value.edgeEpoch);
+          const owner = owners.length === 1 ? owners[0] : undefined;
+          if (owner?.state !== "revoked" || owner.cleanupReason !== null || owner.unit !== undefined && owner.unit.closedFenceId !== first.value.fenceId)
+            throw new Error("revocation-pending");
+        }
         try {
-          const first = observations[0], second = observations[1]; if (first.status !== "fulfilled" || second.status !== "fulfilled") throw new Error("intercom-fence-unavailable");
-          const a = first.value.fenceId, b = second.value.fenceId, central = await registry.get(pair.pairId);
+          if (first.status !== "fulfilled" || second.status !== "fulfilled") throw new Error("intercom-fence-unavailable");
+          const a = first.value.fenceId, b = second.value.fenceId;
           const approvedBefore = input.journal.read(request.operation.id).some(row => row.action === "intercom-setup" && row.result.pairId === pair.pairId && row.result.stage === "fence-approved");
           if (a !== b) result[pair.pairId] = "intercom-pair-fence-conflict";
           else if (central?.state === "revoked" && central.revocationEpoch === undefined) result[pair.pairId] = "intercom-pair-revocation-incomplete";

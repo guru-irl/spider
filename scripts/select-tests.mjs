@@ -80,6 +80,40 @@ export async function createGraphResolver(root, inventory) {
   };
 }
 
+// This rule changes only scoped PR execution. Full runs retain every test.
+export async function deferSlowTests({ root, files, changedPaths, durations = JSON.parse(readFileSync(timingPath)) }) {
+  const changed = new Set(changedPaths);
+  const sourceDirectories = new Set(changedPaths.filter(file => /^packages\/[^/]+\/src\//.test(file)
+    && code.test(file) && !rootTest.test(file) && !file.includes('/__tests__/')).map(dirname));
+  const candidates = files.filter(file => (durations[file] ?? 0) > 5000
+    && !changed.has(file) && !sourceDirectories.has(dirname(file)));
+  if (!candidates.length) return { files: sorted(files), deferred: [] };
+  const { default: ts } = await import('typescript');
+  const config = ts.findConfigFile(root, ts.sys.fileExists);
+  const parsed = config ? ts.getParsedCommandLineOfConfigFile(config, {}, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: () => { throw new Error('invalid module resolution config'); } }) : undefined;
+  const options = parsed?.options ?? { moduleResolution: ts.ModuleResolutionKind.Bundler, allowJs: true, resolveJsonModule: true };
+  const cache = ts.createModuleResolutionCache(root, file => file, options);
+  const deferred = [];
+  for (const file of sorted(candidates)) {
+    const importer = resolve(root, file);
+    const source = ts.createSourceFile(importer, readFileSync(importer, 'utf8'), ts.ScriptTarget.Latest, true);
+    const imports = source.statements.flatMap(statement => {
+      if ((ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement))
+        && statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) return [statement.moduleSpecifier.text];
+      if (ts.isImportEqualsDeclaration(statement) && ts.isExternalModuleReference(statement.moduleReference)
+        && statement.moduleReference.expression && ts.isStringLiteral(statement.moduleReference.expression)) return [statement.moduleReference.expression.text];
+      return [];
+    });
+    const direct = imports.some(specifier => {
+      const target = ts.resolveModuleName(specifier, importer, options, ts.sys, cache).resolvedModule;
+      return target && changed.has(relative(root, target.resolvedFileName).replaceAll('\\', '/'));
+    });
+    if (!direct) deferred.push({ file, durationMs: durations[file], rule: 'slow test is unchanged, has no direct static import of a changed module, and shares no directory with changed source' });
+  }
+  const excluded = new Set(deferred.map(entry => entry.file));
+  return { files: sorted(files).filter(file => !excluded.has(file)), deferred };
+}
+
 export async function selectTests({ root = process.cwd(), base, head = 'HEAD', resolveRelated: injectedGraph } = {}) {
   root = resolve(root);
   const started = performance.now();
@@ -95,7 +129,7 @@ export async function selectTests({ root = process.cwd(), base, head = 'HEAD', r
     testedSha: git(root, 'rev-parse', 'HEAD').trim(), changedPaths: [],
     timingHash: hash(readFileSync(timingPath)), policyHash: hash(policyBytes),
     selectorHash: hash(readFileSync(fileURLToPath(import.meta.url))),
-    inventoryHash: hash(canonical(inventory)), fallback: null,
+    inventoryHash: hash(canonical(inventory)), fallback: null, deferred: [],
   };
   let graph;
   try {
@@ -150,6 +184,8 @@ export async function selectTests({ root = process.cwd(), base, head = 'HEAD', r
       }
     }
     if (changes.length && !reasons.size) throw new Error('changed inputs have no classified test consumer');
+    const scoped = await deferSlowTests({ root, files: sorted(reasons.keys()), changedPaths: result.changedPaths });
+    result.deferred = scoped.deferred.map(entry => ({ ...entry, reasons: sorted(reasons.get(entry.file)) }));
   } catch (error) {
     result.mode = 'full';
     // Avoid embedding local paths or command output in a portable manifest.
@@ -161,13 +197,15 @@ export async function selectTests({ root = process.cwd(), base, head = 'HEAD', r
       catch { result.mode = 'full'; result.fallback = 'graph shutdown failed'; for (const file of inventory) add(file, 'graph shutdown fallback'); }
     }
   }
+  if (result.mode === 'full') result.deferred = [];
   result.selectionAudit = result.changedPaths.some(file => [
     'scripts/select-tests.mjs', 'scripts/test-resources.json',
     'scripts/run-selected-tests.mjs', 'scripts/check-test-selection.mjs',
     'scripts/measure-test-selection.mjs', 'scripts/replay-test-selection.mjs', '.github/workflows/ci.yml',
   ].includes(file));
   result.optional = optionalSuites(result.changedPaths, result.mode === 'full');
-  result.files = sorted(reasons.keys());
+  const deferred = new Set(result.deferred.map(entry => entry.file));
+  result.files = sorted(reasons.keys()).filter(file => !deferred.has(file));
   result.reasons = Object.fromEntries(result.files.map(file => [file, sorted(reasons.get(file))]));
   result.selectionHash = manifestDigest(result);
   result.selectionMs = Math.round(performance.now() - started);

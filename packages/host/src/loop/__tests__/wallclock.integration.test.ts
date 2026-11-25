@@ -15,6 +15,8 @@ const real = () => setup(createTimeMath());
 async function rows(h: Harness): Promise<TriggerListing[]> {
   return (await h.runtime.loop({}, h.ctx)).details.triggers as TriggerListing[];
 }
+// Each 02:30Z occurrence is 08:00 the same day in Kolkata, so the UTC weekday is the local one.
+const weekday = (iso: string): string => ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][new Date(iso).getUTCDay()]!;
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-26T02:29:00Z")); vi.stubEnv("PI_SUBAGENT_CHILD", "0"); });
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllEnvs(); vi.restoreAllMocks(); clearActions(); });
 
@@ -34,7 +36,7 @@ describe("real wall-clock triggers", () => {
       expect(h.prompts()).toHaveLength(before + 1);
       const lateness = Date.now() - ms(due);
       expect(lateness).toBeGreaterThanOrEqual(0); expect(lateness).toBeLessThan(60_000);
-      expect(await rows(h)).toEqual([expect.objectContaining({ name: "morning", nextAtUtc: next, nextAtLocal: next.slice(0, 10) + " 08:00:00 Asia/Kolkata" })]);
+      expect(await rows(h)).toEqual([expect.objectContaining({ name: "morning", nextAtUtc: next, nextAtLocal: `${weekday(next)} ${Number(next.slice(8, 10))} Oct 2026, 08:00:00 UTC+5:30` })]);
       await h.settleDelivery();
     }
   });
@@ -44,7 +46,7 @@ describe("real wall-clock triggers", () => {
     await h.runtime.loop({ name: "morning", cron: "0 8 * * *", tz: "Asia/Kolkata", prompt: "wake" }, h.ctx);
     vi.setSystemTime(new Date("2026-10-27T02:35:00Z"));
     await vi.advanceTimersToNextTimerAsync();
-    expect(h.prompts()).toEqual([expect.stringContaining("Scheduled for 2026-10-26 08:00:00 Asia/Kolkata (2026-10-26T02:30:00.000Z UTC)")]);
+    expect(h.prompts()).toEqual([expect.stringContaining("Scheduled for Mon 26 Oct 2026, 08:00:00 UTC+5:30 (2026-10-26T02:30:00.000Z UTC)")]);
     expect(await rows(h)).toEqual([expect.objectContaining({ nextAtUtc: "2026-10-28T02:30:00.000Z" })]);
     await vi.advanceTimersByTimeAsync(10_000); expect(h.prompts()).toHaveLength(1);
   });
@@ -116,7 +118,7 @@ describe("real wall-clock triggers", () => {
     await scheduler.loop({ cron: "0 8 * * *", prompt: "zone" }, ctx);
     vi.stubEnv("TZ", "America/New_York");
     const row = (await scheduler.loop({}, ctx)).details.triggers as TriggerListing[];
-    expect(row).toEqual([expect.objectContaining({ tz: "Asia/Kolkata", nextAtUtc: "2026-10-26T02:30:00.000Z", nextAtLocal: "2026-10-26 08:00:00 Asia/Kolkata" })]);
+    expect(row).toEqual([expect.objectContaining({ tz: "Asia/Kolkata", nextAtUtc: "2026-10-26T02:30:00.000Z", nextAtLocal: "Mon 26 Oct 2026, 08:00:00 UTC+5:30" })]);
   });
 
   it.each(["", "UTC0", "EST5", "UTC+3"])("creates and restores a plain schedule under TZ=%j", async tz => {
@@ -191,7 +193,7 @@ describe("real wall-clock triggers", () => {
     expect(messages).toEqual([]);
     await vi.advanceTimersByTimeAsync(60_000); expect(messages).toEqual(["real daily"]);
     await vi.advanceTimersByTimeAsync(60_000); expect(messages).toEqual(["real daily", "real once"]);
-    expect((await run({ action: "loop" })).details.triggers).toEqual([expect.objectContaining({ name: "morning", cron: "0 8 * * *", tz: "Asia/Kolkata", nextAtUtc: "2026-10-27T02:30:00.000Z", nextAtLocal: "2026-10-27 08:00:00 Asia/Kolkata" })]);
+    expect((await run({ action: "loop" })).details.triggers).toEqual([expect.objectContaining({ name: "morning", cron: "0 8 * * *", tz: "Asia/Kolkata", nextAtUtc: "2026-10-27T02:30:00.000Z", nextAtLocal: "Tue 27 Oct 2026, 08:00:00 UTC+5:30" })]);
     expect(existsSync(resolve(cwd, ".spider/project.db"))).toBe(false);
     expect(entries).toHaveLength(4);
   });

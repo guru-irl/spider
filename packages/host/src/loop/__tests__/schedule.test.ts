@@ -3,7 +3,7 @@
 // Copyright (c) 2026 Lauren Tan
 // Copyright (c) 2026 Michael Denyer
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { setup } from "./harness";
+import { fakeTime, setup } from "./harness";
 
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date("2026-10-20T12:00:00Z")); vi.stubEnv("PI_SUBAGENT_CHILD", "0"); });
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllEnvs(); });
@@ -19,6 +19,18 @@ describe("spider schedule", () => {
     expect(h.messages).toEqual([{ prompt: "check CI", options: { deliverAs: "followUp", expandPromptTemplates: false } }]);
     vi.advanceTimersByTime(3_600_000);
     expect(h.prompts()).toEqual(["check CI"]);
+  });
+
+  it("confirms new and re-armed wakeups in the machine's time zone rather than UTC", async () => {
+    const time = fakeTime(); const h = setup(time);
+    const once = await h.runtime.schedule({ delaySeconds: 600, prompt: "check CI" }, h.ctx);
+    expect(once.text).toBe(`Wakeup scheduled in 600s, at ${time.formatInZone(Date.parse("2026-10-20T12:10:00Z"), time.zone)}.`);
+    expect(once.details).toMatchObject({ fireAt: "2026-10-20T12:10:00.000Z" });
+    await h.runtime.loop({ prompt: "watch PR" }, h.ctx);
+    await h.settleDelivery();
+    const rearm = await h.runtime.schedule({ name: "loop", delaySeconds: 60, prompt: "/loop watch PR" }, h.ctx);
+    expect(rearm.text).toBe(`Wakeup scheduled for loop, at ${time.formatInZone(Date.parse("2026-10-20T12:01:00Z"), time.zone)}.`);
+    expect(rearm.details).toMatchObject({ fireAt: "2026-10-20T12:01:00.000Z" });
   });
 
   it("a due wakeup waits through manual compaction and fires after idle without a settled event", async () => {

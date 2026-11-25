@@ -1,8 +1,8 @@
-import type { SessionId } from '@spider/herdr/contracts';
+import type { CoreId, SessionId } from '@spider/herdr/contracts';
 import { afterEach, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { homedir } from 'node:os';
-import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths, openDbAt, type Db } from "@spider/db-core";
 import { createReplica } from "@spider/db-core/testutil";
@@ -10,16 +10,25 @@ import { catalogReplica, recordLocation, replicaPath } from "@spider/db-core/roa
 import { mapRepository, mapWorkspace } from "@spider/db-core/roam/repo-map";
 import { enableMemoryCapture, seedSession } from "@spider/db-core/roam/seed";
 import { readSessionState } from "@spider/db-core/roam/state";
-import type { StoreKey } from "@spider/db-core/roam/types";
+import type { Home, StoreKey } from "@spider/db-core/roam/types";
 import { DEFAULT_LIMITS, disabledIntercom, type Operation, type RoamConfig } from "@spider/roam/contracts";
 import { openFreezeJournal } from "@spider/roam/journal";
 import { moveEvidence } from "@spider/roam/move";
 import type { MoveFreezeEvidenceBindings } from "@spider/roam/move-ports";
 import { sessionHome } from "@spider/roam/homes";
 import { startMachineMoveSocket } from "@spider/roam/machine-move-socket";
-import { createBothLocks } from "@spider/roam/session-control";
+import { createBothLocks, createRunningIntentAuthority } from "@spider/roam/session-control";
+import { participantLaunchId } from "@spider/roam/participant-launch";
+import { createPendingHandoffControl, pendingHandoffLifecycle } from "@spider/roam/pending-handoff";
+import { readLaunchHandoff, removeLaunchHandoff } from "@spider/herdr/sessions/launch-handoff";
+import * as hcBoundary from "@spider/herdr/client/hc";
+import * as nativeHc from "@spider/herdr/client/cli-transport";
+import * as coreLiveness from "@spider/herdr/client/liveness";
+import { HerdrError } from "@spider/herdr/client/parse";
+import * as processInventory from "../herdr/process-inventory";
+import { publishOwnedMoveReadiness } from "../roam/move-readiness";
 import { createSessionLeases } from "@spider/herdr/sessions/lease";
-import { claimIdLock } from '@spider/herdr/sessions/id-lock';
+import { claimIdLock, inspectIdLock } from '@spider/herdr/sessions/id-lock';
 import { createProcessPresence } from "@spider/herdr/sessions/presence";
 import { processStartTime } from "../../../subagents/src/process-identity";
 import * as processIdentity from "../../../subagents/src/process-identity";
@@ -155,6 +164,146 @@ async function fixture(beforeMapping = true, bound = false, box = false, worktre
   const locks = createBothLocks({ root: leases.root, file: async () => file, inventory, identity: { pid: process.pid, startIdentity } });
   return { global, config, worktree, sessionId, file, cwd, context, gate, location, boundKeys, boundDbs, journal, machine, activate, compose, mountRepository, live: () => live, freezeControl: (operation: Operation) => handler({ op: "freeze", operation }), locks };
 }
+
+// Keep wake, exact launch, handoff adoption and readiness real. Only the native
+// core, terminal invocation and OS process identity are doubles.
+async function hubReturnFixture(options: { unselected?: boolean; minimalPath?: boolean; failure?: "changed-core" | "missing-core" | "finished-terminal" } = {}) {
+  const f = await fixture();
+  processRows.value = ""; processRows.boot = "return-boot";
+  chmodSync(f.file, 0o600);
+  const pi = join(f.global.root, "pi");
+  writeFileSync(pi, '#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({ node: process.execPath, argv: process.argv.slice(2) }));\n', { mode: 0o700 });
+  vi.stubEnv("SPIDER_ROAM_PI", pi);
+  const selected = { coreId: "return-core" as CoreId, sessionNamespace: "move-return", socket: join(process.cwd(), ".spider/scratch/move-return.sock") };
+  vi.stubEnv("HC_SESSION", options.unselected ? undefined : selected.sessionNamespace);
+  vi.stubEnv("HC_SOCKET", options.unselected ? undefined : selected.socket);
+  vi.stubEnv("HC_TERMINAL_SOCKET", undefined);
+  const minimalPath = join(f.global.root, "empty-path");
+  mkdirSync(minimalPath);
+  if (options.minimalPath) vi.stubEnv("PATH", minimalPath);
+  vi.spyOn(hcBoundary, "createHcClient").mockReturnValue({ identity: async () => selected, async dispose() {} } as ReturnType<typeof hcBoundary.createHcClient>);
+  let changedCore = options.failure === "changed-core";
+  vi.spyOn(hcBoundary, "observeCoreIdentity").mockImplementation(async () => ({ ...selected, coreId: changedCore ? "replacement-core" as CoreId : selected.coreId }));
+  vi.spyOn(coreLiveness, "requireCoreAvailable").mockImplementation(async () => {
+    if (options.failure === "missing-core") throw new HerdrError("core-unavailable", "Fixture core is absent");
+  });
+  const child = { pid: 99999981, startIdentity: "return-child" }, hcPid = 99999982;
+  const inventoryFactory = processInventory.createProcessInventory;
+  vi.spyOn(processInventory, "createProcessInventory").mockImplementation((...args) => {
+    const inventory = inventoryFactory(...args), probe = inventory.probe;
+    return { ...inventory, probe: async pid => pid === child.pid ? { kind: "live", startIdentity: child.startIdentity }
+      : pid === hcPid ? { kind: "live", startIdentity: "return-hc" } : probe(pid) };
+  });
+  const moveId = "hub-return-move", operationId = "hub-return-start", epoch = 4;
+  const launchId = participantLaunchId(HUB, f.sessionId, epoch, operationId);
+  const home: Home = { sessionId: f.sessionId, machineId: HUB, epoch, moveId, updatedAt: 1 };
+  f.global.db.prepare("INSERT INTO session_homes VALUES(?,?,?,?,1)").run(f.sessionId, HUB, epoch, moveId);
+  recordLocation(f.global.db, { sessionId: f.sessionId, stores: ROSTER, home, file: f.file, cwd: f.cwd });
+  f.journal.begin({ id: moveId, kind: "move", machineId: HUB, expectedEpoch: epoch - 1, args: { sessionId: f.sessionId } });
+  const authority = createRunningIntentAuthority(f.global.db);
+  await authority.set({ sessionId: f.sessionId, file: f.file, cwd: f.cwd, epoch, moveId, desired: "running", suspended: null }, operationId, { kind: "hub-return", machineId: HUB, moveId });
+  const stateRoot = join(f.global.root, "herdr"), leases = createSessionLeases(stateRoot);
+  let childLock: Awaited<ReturnType<typeof claimIdLock>> | undefined;
+  const calls: { argv: readonly string[]; env: Readonly<NodeJS.ProcessEnv> }[] = [];
+  const outputs: { node: string; argv: string[] }[] = [];
+  let finished = false, elapsed = 0;
+  const realNow = Date.now;
+  vi.spyOn(Date, "now").mockImplementation(() => realNow() + elapsed);
+  const record = f.journal.record.bind(f.journal);
+  vi.spyOn(f.journal, "record").mockImplementation((id, action, result) => {
+    record(id, action, result);
+    // Advance the clock only after authoritative failure evidence, not a shorter
+    // production deadline or an assertion timeout.
+    if (action === "exact-prelaunch-error" || (action === "exact-terminal" && !childLock)) elapsed += 60_001;
+  });
+  vi.spyOn(nativeHc, "invokeCli").mockImplementation(async (_binary, argv, env, _maxBytes, _input, callOptions) => {
+    if (argv[0] === "ls") return { terminals: finished ? [{ address: "return-terminal", state: "finished", reason: "exited", exit_code: 127 }] : [] };
+    if (argv[0] !== "run") throw new Error(`Unexpected native operation: ${argv[0]}`);
+    calls.push({ argv: [...argv], env: { ...env } });
+    callOptions?.processObserver?.started(hcPid);
+    if (options.failure !== "finished-terminal") {
+      const command = argv.slice(argv.indexOf("--") + 1);
+      let output: string | undefined;
+      try {
+        // The core's environment need not match the hub/CLI environment. Run the
+        // exact terminal command under the core's deliberately minimal PATH.
+        output = execFileSync(command[0], [...command.slice(1)], { env: { ...env, PATH: options.minimalPath ? minimalPath : env.PATH }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+      } catch (error) {
+        if (!options.minimalPath || (error as { status?: number }).status !== 127) throw error;
+        finished = true;
+      }
+      if (output !== undefined) {
+        outputs.push(JSON.parse(output));
+        const handoff = await readLaunchHandoff(stateRoot, join(stateRoot, "handoffs", `${launchId}.json`), f.sessionId, f.file);
+        childLock = await claimIdLock(stateRoot, f.sessionId, child, async () => ({ kind: "live", startIdentity: child.startIdentity }),
+          { bootId: async () => "return-boot", handoff: { operationId: launchId, nonce: handoff.nonce, file: f.file } });
+        await leases.adopt(f.file, handoff.leaseToken, child);
+        await removeLaunchHandoff(stateRoot, launchId);
+        await publishOwnedMoveReadiness({ db: f.global.db, journal: f.journal, sessionId: f.sessionId, machineId: HUB, file: f.file, cwd: f.cwd, epoch, home,
+          owner: async () => ({ pid: child.pid, startTime: child.startIdentity }), lock: () => inspectIdLock(stateRoot, f.sessionId), caller: async () => ({ coreId: selected.coreId, address: "return-terminal" }) });
+      }
+    } else finished = true;
+    callOptions?.processObserver?.exited(hcPid);
+    return { address: "return-terminal" };
+  });
+  const inventory = processInventory.createProcessInventory(stateRoot);
+  const pending = pendingHandoffLifecycle(f.global.root, createPendingHandoffControl({ root: stateRoot, journal: f.journal, authority, inventory,
+    identity: { pid: process.pid, startIdentity: processStartTime(process.pid)! }, bootId: async () => "return-boot" }));
+  await pending.start();
+  const mounted = await f.compose();
+  return { ...f, mounted, selected, pi, calls, outputs, launchId, operationId, epoch, home, authority, leases,
+    wake: () => mounted.bindings.participant!.wake({ sessionId: f.sessionId, operationId }),
+    restoreCore: () => { changedCore = false; },
+    async close() { await childLock?.release(); await pending.stop(); await mounted.close(); await f.machine.close(); } };
+}
+
+it("a hub return without HC variables launches once on the selected core and becomes ready", async () => {
+  const f = await hubReturnFixture({ unselected: true });
+  try {
+    expect(await f.wake()).toEqual({ ok: true, launchId: f.launchId });
+    expect(f.journal.read(f.launchId).filter(row => row.action === "exact-prelaunch-error").map(row => row.result.errorCode)).toEqual([]);
+    expect(f.calls).toHaveLength(1);
+    expect(f.calls[0].env).toMatchObject({ HC_SESSION: "move-return", HC_SOCKET: f.selected.socket, SPIDER_GLOBAL_ROOT: f.global.root, PI_CODING_AGENT_DIR: join(f.global.root, "agent") });
+    expect(f.calls[0].argv.slice(-3)).toEqual([f.pi, "--session", f.file]);
+    expect(await f.mounted.bindings.participant!.readiness({ sessionId: f.sessionId, launchId: f.launchId, epoch: f.epoch }))
+      .toEqual({ origin: "hub-operation", opId: f.launchId, sessionId: f.sessionId, epoch: 4, file: f.file, cwd: f.cwd, core: "return-core", terminal: "return-terminal" });
+    await f.wake();
+    expect(f.calls).toHaveLength(1);
+  } finally { await f.close(); }
+});
+
+it("a hub return resolves Pi's Node interpreter even with a minimal hub and core PATH", async () => {
+  const f = await hubReturnFixture({ minimalPath: true });
+  try {
+    expect(await f.wake()).toEqual({ ok: true, launchId: f.launchId });
+    expect(f.calls).toHaveLength(1);
+    expect(f.outputs).toEqual([{ node: process.execPath, argv: ["--session", f.file] }]);
+    expect(await f.mounted.bindings.participant!.readiness({ sessionId: f.sessionId, launchId: f.launchId, epoch: f.epoch })).not.toBeNull();
+  } finally { await f.close(); }
+});
+
+it.each(["changed-core", "missing-core", "finished-terminal"] as const)("a hub return with %s reports absence and releases pending ownership through repair", async failure => {
+  const f = await hubReturnFixture({ failure });
+  try {
+    expect(await f.wake()).toEqual({ ok: true, launchId: f.launchId });
+    expect(f.calls).toHaveLength(failure === "finished-terminal" ? 1 : 0);
+    expect(await f.mounted.bindings.participant!.readiness({ sessionId: f.sessionId, launchId: f.launchId, epoch: f.epoch })).toBeNull();
+    expect(await inspectIdLock(join(f.global.root, "herdr"), f.sessionId)).toMatchObject({ pendingOperationId: f.launchId });
+    if (failure !== "finished-terminal") expect(f.journal.read(f.launchId).filter(row => row.action === "exact-prelaunch-error").map(row => row.result.errorCode))
+      .toEqual([failure === "changed-core" ? "core-mismatch" : "core-unavailable"]);
+    const observation = { id: "observe-return", kind: "move-owner-observation", machineId: HUB, expectedEpoch: f.epoch, args: { sessionId: f.sessionId } };
+    if (failure === "changed-core") {
+      expect(await f.mounted.bindings.participant!.observation(f.home, observation)).toMatchObject({ owner: { kind: "uncertain" }, launchFailure: null });
+      f.restoreCore();
+    }
+    const observed = await f.mounted.bindings.participant!.observation(f.home, observation);
+    expect(observed).toMatchObject({ owner: { kind: "absent" }, readiness: null,
+      launchFailure: failure === "finished-terminal" ? `proved-unadopted-exit:${f.launchId}:return-terminal` : `proved-no-start:${f.launchId}` });
+    expect(await inspectIdLock(join(f.global.root, "herdr"), f.sessionId)).toBeNull();
+    expect(await f.leases.get(f.file)).toBeNull();
+    expect(await f.authority.get(f.sessionId)).toMatchObject({ desired: "stopped" });
+  } finally { await f.close(); }
+});
 
 it('the production move probe accounts for an unrelated Pi registered in the normal runtime', async () => {
   const f = await fixture();

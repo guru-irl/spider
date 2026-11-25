@@ -12,9 +12,10 @@ vi.mock('node:child_process', async importOriginal => {
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
+const fastFixture = () => fixture('fake', false, { coreTransport: 'socket' });
 
-async function interruptSelection(command: 'layout.switch' | 'app.theme') {
-  const f = await fixture(), settings = join(f.request.config.app.home, 'settings.json');
+async function interruptSelection(command: 'layout.switch' | 'app.theme', coreTransport: 'process' | 'socket' = 'socket') {
+  const f = await fixture('fake', false, { coreTransport }), settings = join(f.request.config.app.home, 'settings.json');
   const original = await readFile(settings);
   const script = join(f.h.root, 'app-selection.mjs'), marker = join(f.h.root, 'interrupt-selection');
   const journal = join(f.request.journalRoot, 'journal.json'), interruptedJournal = join(f.h.root, 'interrupted-journal.json');
@@ -40,7 +41,7 @@ async function fingerprint(f: SetupFixture) {
 
 // Recording cutover as complete before both app commands succeed skips selection on retry.
 test.each(['layout.switch', 'app.theme'] as const)('setup resumes an interruption at %s and preserves its original backup', async command => {
-  const { f, settings, original } = await interruptSelection(command);
+  const { f, settings, original } = await interruptSelection(command, 'process');
   const partial = JSON.parse(await readFile(settings, 'utf8'));
   expect(partial.theme).toBe('stock');
   expect(partial.layout).toBe(command === 'app.theme' ? 'spider-glass' : undefined);
@@ -82,7 +83,7 @@ test.each(['theme', 'layout'])('interrupted setup refuses a foreign %s value bef
 }, 60_000);
 
 test.each([false, true])('setup repairs an older unverified completed-cutover checkpoint (partial: %s)', async partial => {
-  const f = await fixture(), settings = join(f.request.config.app.home, 'settings.json');
+  const f = await fastFixture(), settings = join(f.request.config.app.home, 'settings.json');
   const original = await readFile(settings);
   await setupHerdr(f.request, f.parts);
   // Older setup recorded cutover completion before selecting the app look.
@@ -115,7 +116,7 @@ test('rollback from a partial app selection restores the original settings bytes
 
 
 test('rollback releases a verified user theme and restores the other owned paths', async () => {
-  const f = await fixture(), settings = join(f.request.config.app.home, 'settings.json');
+  const f = await fastFixture(), settings = join(f.request.config.app.home, 'settings.json');
   await setupHerdr(f.request, f.parts);
   const edited = JSON.stringify({ ...JSON.parse((await readFile(settings)).toString()), theme: 'stock' });
   await writeFile(settings, edited);
@@ -153,7 +154,7 @@ if (args[0] === 'do' && (args[1] === 'layout.switch' || args[1] === 'app.theme')
 }, 60_000);
 
 test('saves the partial selection journal without hiding a selection error', async () => {
-  const f = await fixture(), settings = join(f.request.config.app.home, 'settings.json');
+  const f = await fastFixture(), settings = join(f.request.config.app.home, 'settings.json');
   const script = join(f.h.root, 'app-selection.mjs');
   await writeFile(script, `import { readFileSync as readSettings, writeFileSync as saveSettings } from 'node:fs';
 const args = process.argv.slice(2), path = process.env.HERDR_APP_HOME + '/settings.json';
@@ -172,7 +173,7 @@ if (args[0] === 'do' && args[1] === 'app.theme') {
 }, 60_000);
 
 test('does not claim a sound edit during interrupted selection before its own write', async () => {
-  const f = await fixture(), settings = join(f.request.config.app.home, 'settings.json');
+  const f = await fastFixture(), settings = join(f.request.config.app.home, 'settings.json');
   const initial = JSON.parse(await readFile(settings, 'utf8'));
   await writeFile(settings, JSON.stringify({ ...initial, sounds: { enabled: true } }));
   const script = join(f.h.root, 'app-selection.mjs');
@@ -192,7 +193,7 @@ if (args[0] === 'do' && args[1] === 'app.theme') {
 }, 60_000);
 
 test('leaves a verified user sound opt-in on rerun and rollback', async () => {
-  const f = await fixture(), settings = join(f.request.config.app.home, 'settings.json');
+  const f = await fastFixture(), settings = join(f.request.config.app.home, 'settings.json');
   await setupHerdr(f.request, f.parts);
   const edited = JSON.parse(await readFile(settings, 'utf8'));
   edited.sounds.enabled = true;
@@ -214,7 +215,7 @@ test('leaves a verified user sound opt-in on rerun and rollback', async () => {
 }, 60_000);
 
 test('keeps a released sound preference when a rerun is interrupted', async () => {
-  const f = await fixture(), settings = join(f.request.config.app.home, 'settings.json');
+  const f = await fastFixture(), settings = join(f.request.config.app.home, 'settings.json');
   await setupHerdr(f.request, f.parts);
   const current = JSON.parse(await readFile(settings, 'utf8'));
   current.sounds.enabled = true;

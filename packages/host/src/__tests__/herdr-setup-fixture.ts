@@ -9,6 +9,7 @@ import { createHerdrHarness, type HerdrHarness } from '../../../herdr/src/__test
 import { HerdrLabelContract } from '../../../herdr/src/contracts.js';
 import type { SetupContext, SetupParts, SetupRequest } from '../../../herdr/src/setup/installer.js';
 import { ModelRegistry } from '@earendil-works/pi-coding-agent';
+import { installFastCoreTransport } from './herdr-setup-fast-core.js';
 
 // Shared by the production setup tests. Each test file must still mock `ps -U`,
 // so an isolated fixture never inventories unrelated host sessions.
@@ -17,13 +18,21 @@ export interface SetupFixture {
   h: HerdrHarness; root: string; ports: ReturnType<typeof createProductionHerdrCliPorts>; request: SetupRequest;
   parts: SetupParts; context: SetupContext; bootstraps: string[];
 }
-export async function fixture(mode: 'fake' | 'hc' = 'fake', requireAppBackup = false): Promise<SetupFixture> {
-  const h = await createHerdrHarness(mode); cleanup.push(() => h.close()); await h.start();
+export type FixtureOptions = { startCores?: true; coreTransport?: 'process' | 'socket' } | { startCores: false; coreTransport?: never };
+export async function fixture(mode: 'fake' | 'hc' = 'fake', requireAppBackup = false, options: FixtureOptions = {}): Promise<SetupFixture> {
+  if (options.coreTransport === 'socket' && mode !== 'fake') throw new Error('Socket transport requires fake cores');
+  const h = await createHerdrHarness(mode); let restoreTransport: (() => void) | undefined;
+  cleanup.push(async () => { try { await h.close(); } finally { restoreTransport?.(); } });
+  if (options.coreTransport === 'socket') restoreTransport = installFastCoreTransport(h);
+  const startCores = options.startCores !== false;
+  if (startCores) await h.start();
   expect(h.localSocket).toContain(h.root); expect(h.remoteSocket).toContain(h.root);
   expect(h.localSocket).not.toContain('/default/default.sock'); expect(h.remoteSocket).not.toContain('/default/default.sock');
-  await h.cli(['machine', 'rm', 'remote.invalid', '--json']);
-  await h.cli(['machine', 'add', '--via', join(h.root, 'via'), '--name', 'remote.invalid', '--session', 'r', '--json']);
-  cleanup.push(async () => { if ((await h.hc.machines()).some(m => m.name === 'remote.invalid')) await h.cli(['machine', 'rm', 'remote.invalid', '--json']); });
+  if (startCores) {
+    await h.cli(['machine', 'rm', 'remote.invalid', '--json']);
+    await h.cli(['machine', 'add', '--via', join(h.root, 'via'), '--name', 'remote.invalid', '--session', 'r', '--json']);
+    cleanup.push(async () => { if ((await h.hc.machines()).some(m => m.name === 'remote.invalid')) await h.cli(['machine', 'rm', 'remote.invalid', '--json']); });
+  }
   const root = join(h.root, 'package');
   await mkdir(join(root, 'packages/herdr'), { recursive: true });
   await cp(resolve('packages/herdr/assets'), join(root, 'packages/herdr/assets'), { recursive: true });

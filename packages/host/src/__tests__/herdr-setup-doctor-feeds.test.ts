@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import { chmod, readFile, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join, resolve } from 'node:path';
-import { build } from 'vite';
+import { createBundledFixture } from './herdr-setup-bundled-writer.js';
 import { runHerdrCli } from '../../../herdr/src/setup/cli.js';
 import { setupHerdr } from '../../../herdr/src/setup/installer.js';
 import type { Owner, SessionFeed, SessionId, Generation } from '../../../herdr/src/contracts.js';
@@ -15,6 +15,15 @@ vi.mock('node:child_process', async importOriginal => {
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
+const feedWriterProgram = createBundledFixture('feed-writer', `import { publishSessionFeed } from ${JSON.stringify(resolve('packages/herdr/src/feed/publisher.ts'))};
+import { createProcessPresence } from ${JSON.stringify(resolve('packages/herdr/src/sessions/presence.ts'))};
+import { createTerminalRegistry } from ${JSON.stringify(resolve('packages/herdr/src/sessions/registry.ts'))};
+import { processStartTime } from ${JSON.stringify(resolve('packages/subagents/src/process-identity.ts'))};
+const [root, raw, agent] = process.argv.slice(2), feed = JSON.parse(raw), owner = feed.owner;
+await publishSessionFeed(root, feed);
+await createTerminalRegistry(root).record({owner, recordedAt:Date.now(), coreStartedAt:1, environment:{agentDirectory:agent, extensionArguments:[]}});
+await createProcessPresence(root).record({pid:process.pid, startIdentity:processStartTime(process.pid), sessionId:owner.sessionId, sessionFile:null, sessionName:null, kind:'top-level', hcAddress:owner.terminal.address});
+console.log('ready'); setInterval(()=>{},1000);\n`);
 async function stop(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
   const ended = once(child, 'exit'); child.kill('SIGTERM'); await ended;
@@ -27,18 +36,7 @@ async function writer(f: SetupFixture, second = false) {
     placement: null, lifecycle: 'live', status: { native: null, effective: null, message: null },
     runs: { rows: [], total: 0, truncated: false }, todos: { rows: [], total: 0, truncated: false }, triggers: [],
     pace: { scope: 'session', used: null, budget: null, projected: null, remaining: null, periodStart: null, periodEnd: null, updatedAt: null, unavailableReason: null }, approvals: [], notifications: [], ipc: null, errors: [] };
-  const source = join(f.h.root, 'feed-writer.ts'), cli = join(f.h.root, 'feed-writer.mjs'), root = join(f.request.config.globalRoot, 'herdr');
-  await writeFile(source, `import { publishSessionFeed } from ${JSON.stringify(resolve('packages/herdr/src/feed/publisher.ts'))};
-import { createProcessPresence } from ${JSON.stringify(resolve('packages/herdr/src/sessions/presence.ts'))};
-import { createTerminalRegistry } from ${JSON.stringify(resolve('packages/herdr/src/sessions/registry.ts'))};
-import { processStartTime } from ${JSON.stringify(resolve('packages/subagents/src/process-identity.ts'))};
-const [root, raw, agent] = process.argv.slice(2), feed = JSON.parse(raw), owner = feed.owner;
-await publishSessionFeed(root, feed);
-await createTerminalRegistry(root).record({owner, recordedAt:Date.now(), coreStartedAt:1, environment:{agentDirectory:agent, extensionArguments:[]}});
-await createProcessPresence(root).record({pid:process.pid, startIdentity:processStartTime(process.pid), sessionId:owner.sessionId, sessionFile:null, sessionName:null, kind:'top-level', hcAddress:owner.terminal.address});
-console.log('ready'); setInterval(()=>{},1000);\n`);
-  await build({ configFile: false, logLevel: 'silent', ssr: { noExternal: true }, build: { ssr: source, outDir: f.h.root, emptyOutDir: false,
-    rollupOptions: { external: id => id.startsWith('node:'), output: { entryFileNames: 'feed-writer.mjs' } } } });
+  const root = join(f.request.config.globalRoot, 'herdr'), cli = await feedWriterProgram(f.h.root);
   const child = spawn(process.execPath, [cli, root, JSON.stringify(feed), f.request.config.agentDirectory], { env: f.h.localEnv, stdio: ['ignore', 'pipe', 'pipe'] });
   cleanup.push(() => stop(child));
   await new Promise<void>((resolve, reject) => { let output = ''; child.stdout!.on('data', chunk => { output += String(chunk); if (output.includes('ready')) resolve(); }); child.once('error', reject); child.once('exit', code => reject(new Error(`feed writer exited ${code}`))); });
@@ -66,7 +64,7 @@ it('stale live-owner feeds fail, but the same unchanged feed is information afte
 }, 60000);
 
 it.each(['missing', 'unreadable', 'malformed'])('doctor never treats %s writer provenance as ended', async kind => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await fixture('fake', false, { coreTransport: 'socket' }); await setupHerdr(f.request, f.parts);
   const w = await writer(f), bytes = await readFile(w.path); await stop(w.child);
   const record = join(f.request.config.globalRoot, 'herdr/feed-writers', w.owner.sessionId + '.json');
   if (kind === 'missing') await rm(record);
@@ -80,7 +78,7 @@ it.each(['missing', 'unreadable', 'malformed'])('doctor never treats %s writer p
 }, 60000);
 
 it('information about an ended owner does not conceal another stale live owner', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await fixture('fake', false, { coreTransport: 'socket' }); await setupHerdr(f.request, f.parts);
   const ended = await writer(f); await stop(ended.child);
   const live = await writer(f, true);
   const result = await doctor(f);

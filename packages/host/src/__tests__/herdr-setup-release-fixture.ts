@@ -2,10 +2,10 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { cp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { fixture, type SetupFixture } from './herdr-setup-fixture.js';
+import { fixture, type FixtureOptions, type SetupFixture } from './herdr-setup-fixture.js';
 
-export async function releaseFixture(version: '0.1.13' | '0.1.16'): Promise<SetupFixture> {
-  const f = await fixture();
+export async function releaseFixture(version: '0.1.13' | '0.1.16', options: FixtureOptions = {}): Promise<SetupFixture> {
+  const f = await fixture('fake', false, options);
   const source = resolve(`packages/herdr/src/__tests__/fixtures/herdr-${version}`);
   await rm(join(f.h.directories.app, 'mods'), { recursive: true, force: true });
   await cp(join(source, 'mods'), join(f.h.directories.app, 'mods'), { recursive: true });

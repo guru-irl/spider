@@ -11,6 +11,7 @@ vi.mock('node:child_process', async importOriginal => {
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
+const fastFixture = () => fixture('fake', false, { coreTransport: 'socket' });
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 const exists = (path: string) => readFile(path).then(() => true, () => false);
@@ -63,7 +64,7 @@ test('user edits made after setup survive rollback in every managed file kind af
 });
 
 test('user edits survive setup, rollback, setup, rollback in every managed file kind', async () => {
-  const f = await fixture(); const notesBefore = await notesValue(f);
+  const f = await fastFixture(); const notesBefore = await notesValue(f);
   await setupHerdr(f.request, f.parts);
   await rollbackHerdr(f.request, f.parts);
   await editEveryKind(f);
@@ -73,7 +74,7 @@ test('user edits survive setup, rollback, setup, rollback in every managed file 
 });
 
 test('setup verification reuses the root probe that bootstrap just ran', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
   const probes = (await f.h.calls()).filter(call => call.argv[0] === 'run' && call.argv.includes('--probe'));
   expect(probes).toHaveLength(f.request.config.machines.length);
 });
@@ -125,7 +126,7 @@ test('rollback never closes a created tab whose pi switched sessions and still r
 });
 
 test('a fresh app home without settings.json sets up and rolls back to no settings file', async () => {
-  const f = await fixture();
+  const f = await fastFixture();
   const { unlink } = await import('node:fs/promises');
   const settings = join(f.h.directories.app, 'settings.json');
   await unlink(settings);
@@ -137,7 +138,7 @@ test('a fresh app home without settings.json sets up and rolls back to no settin
 });
 
 test('a fresh app home keeps settings the user added after setup through rollback', async () => {
-  const f = await fixture();
+  const f = await fastFixture();
   const { unlink } = await import('node:fs/promises');
   const settings = join(f.h.directories.app, 'settings.json');
   await unlink(settings);
@@ -148,7 +149,7 @@ test('a fresh app home keeps settings the user added after setup through rollbac
 });
 
 test('setup after rollback and an upgrade takes a fresh baseline instead of refusing spider\'s removed files', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
   await rollbackHerdr(f.request, f.parts);
   expect((await readJournal(f.request.journalRoot)).entries).toEqual([]);
   await upgradeMods(f);
@@ -158,7 +159,7 @@ test('setup after rollback and an upgrade takes a fresh baseline instead of refu
 });
 
 test('rollback keeps journal entries only for files it could not restore', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
   f.parts.warn = () => {};
   await writeFile(join(f.h.directories.agent, 'settings.json'), '{"theme":"user-theme"}');
   await rollbackHerdr(f.request, f.parts);
@@ -167,7 +168,7 @@ test('rollback keeps journal entries only for files it could not restore', async
 });
 
 test('a rollback that fails after closing tabs can be retried without closing them again', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
   const settings = join(f.h.directories.agent, 'settings.json');
   const entry = (await readJournal(f.request.journalRoot)).entries.find(e => e.path === settings)!;
   const backup = await readFile(entry.backup!);

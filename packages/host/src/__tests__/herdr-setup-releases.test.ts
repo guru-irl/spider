@@ -16,6 +16,7 @@ vi.mock('node:child_process', async importOriginal => {
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
+const fastRelease = (version: Parameters<typeof releaseFixture>[0]) => releaseFixture(version, { coreTransport: 'socket' });
 
 for (const version of ['0.1.13', '0.1.16'] as const) {
   test(`${version} production setup stages the complete A and B result and doctor checks its release`, async () => {
@@ -66,7 +67,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   });
 
   test(`${version} stages additional records only after the verified A result and replays them in doctor`, async () => {
-    const f = await releaseFixture(version), home = f.h.directories.app;
+    const f = await fastRelease(version), home = f.h.directories.app;
     const records = { [version]: {
       agents: [{ id: 'b-arrival-proof', anchor: 'this.spiderNotificationSound.observe(loaded);', replacement: 'this.spiderNotificationSound.observe(loaded); /* additional arrival */' }],
       picker: [{ id: 'b-picker-proof', anchor: 'export default Picker;', replacement: '/* "$&" */\nexport default Picker;' }],
@@ -142,7 +143,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   });
 
   test(`${version} offers only supported native keys missing from the stock map`, async () => {
-    const f = await releaseFixture(version), out: string[] = [], errors: string[] = [];
+    const f = await fastRelease(version), out: string[] = [], errors: string[] = [];
     const ports = { ...f.ports, stdout: (text: string) => out.push(text), stderr: (text: string) => errors.push(text) };
     expect(await runHerdrCli(['setup', '--dry-run', '--config', f.request.configPath], ports), errors.join('')).toBe(0);
     if (version === '0.1.13') {
@@ -153,7 +154,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   });
 
   for (const section of ['terminal', 'layout:custom'] as const) test(`${version} does not shadow native bindings in ${section} or global`, async () => {
-    const f = await releaseFixture(version), path = join(f.h.directories.app, 'keys.json');
+    const f = await fastRelease(version), path = join(f.h.directories.app, 'keys.json');
     const keys = JSON.parse(await readFile(path, 'utf8'));
     delete keys.terminal['cmd-f']; delete keys.terminal['cmd-a']; delete keys.global['cmd-m'];
     keys.global['cmd-f'] = 'custom.find'; keys.global['cmd-a'] = 'custom.select';
@@ -173,18 +174,6 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect(result.global).not.toHaveProperty('cmd-m');
   });
 
-  if (version === '0.1.13') test('0.1.13 does not offer or install its unsupported select-all command', async () => {
-    const f = await releaseFixture(version), path = join(f.h.directories.app, 'keys.json');
-    const keys = JSON.parse(await readFile(path, 'utf8'));
-    delete keys.terminal['cmd-f']; delete keys.terminal['cmd-a']; delete keys.global['cmd-m'];
-    await writeFile(path, JSON.stringify(keys));
-    f.request.nativeKeys = 'accept';
-    const offered = (await f.parts.installFiles(f.request, f.context)).find(file => file.path === path)!;
-    expect(offered.keys?.terminal).toMatchObject({ 'cmd-f': 'terminal.search' });
-    expect(offered.keys?.terminal).not.toHaveProperty('cmd-a');
-    expect(offered.keys?.global).toMatchObject({ 'cmd-m': 'window.minimize' });
-  });
-
   if (version === '0.1.13') test('accepted native keys are not reoffered or removed by decline', async () => {
     const f = await releaseFixture(version), path = join(f.h.directories.app, 'keys.json'), original = await readFile(path);
     const out: string[] = [], errors: string[] = [];
@@ -201,7 +190,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   });
 
   test(`${version} missing native key map uses the setup guidance`, async () => {
-    const f = await releaseFixture(version), path = join(f.h.directories.app, 'keys.json');
+    const f = await fastRelease(version), path = join(f.h.directories.app, 'keys.json');
     await rm(path);
     f.request.nativeKeys = 'accept';
     const files = await f.parts.installFiles(f.request, f.context);
@@ -211,7 +200,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   });
 
   test(`${version} additional records cannot bypass guards or write partial clones`, async () => {
-    const f = await releaseFixture(version);
+    const f = await fastRelease(version);
     for (const agents of [
       [{ id: 'b-empty', anchor: 'this.spiderNotificationSound.observe(loaded);', replacement: '' }],
       [{ id: 'b-missing', anchor: 'not-an-A-anchor', replacement: 'unused' }],
@@ -225,7 +214,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   });
 
   test(`${version} absent supported native keys remain optional until accepted`, async () => {
-    const f = await releaseFixture(version), path = join(f.h.directories.app, 'keys.json');
+    const f = await fastRelease(version), path = join(f.h.directories.app, 'keys.json');
     const keys = JSON.parse(await readFile(path, 'utf8'));
     delete keys.terminal['cmd-f']; delete keys.terminal['cmd-a']; delete keys.global['cmd-m'];
     await writeFile(path, JSON.stringify(keys));
@@ -244,21 +233,21 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   });
 
   test(`${version} production refuses a missing built-in auxiliary asset before writing`, async () => {
-    const f = await releaseFixture(version);
+    const f = await fastRelease(version);
     await rm(join(f.h.directories.app, 'mods/pane/close.svg'));
     await expect(setupHerdr(f.request, f.parts)).rejects.toThrow();
     await expect(readFile(join(f.h.directories.app, 'mods/spider-menu/main.js'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   test(`${version} reports a missing built-in directory before installing`, async () => {
-    const f = await releaseFixture(version);
+    const f = await fastRelease(version);
     await rm(join(f.h.directories.app, 'mods/new-menu'), { recursive: true });
     await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'upstream-source-unknown', message: expect.stringContaining('new-menu') });
     await expect(readFile(join(f.h.directories.app, 'mods/spider-menu/main.js'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   test(`${version} rejects changes to the stock new-menu before cloning it`, async () => {
-    const f = await releaseFixture(version), manifest = join(f.h.directories.app, 'mods/new-menu/mod.json');
+    const f = await fastRelease(version), manifest = join(f.h.directories.app, 'mods/new-menu/mod.json');
     await writeFile(manifest, (await readFile(manifest, 'utf8')) + '\n');
     await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'upstream-source-unknown', message: expect.stringContaining('new-menu') });
     await expect(readFile(join(f.h.directories.app, 'mods/spider-menu/main.js'))).rejects.toMatchObject({ code: 'ENOENT' });

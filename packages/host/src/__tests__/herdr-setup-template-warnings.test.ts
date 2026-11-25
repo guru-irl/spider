@@ -15,6 +15,8 @@ vi.mock('node:child_process', async importOriginal => {
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
+const bareFixture = () => fixture('fake', false, { startCores: false });
+const fastFixture = () => fixture('fake', false, { coreTransport: 'socket' });
 
 const unavailableWorker = 'unavailable.invalid/missing-worker';
 const cases = [
@@ -54,7 +56,7 @@ async function installedBytes(f: SetupFixture): Promise<Record<string, string>> 
 }
 
 it.each(cases)('setup refuses $name before writing any setup-owned file on a fresh install', async scenario => {
-  const f = await fixture(); await configure(f, scenario.empty);
+  const f = await fastFixture(); await configure(f, scenario.empty);
   const before = await installedBytes(f);
   let stderr = '';
   vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { stderr += String(chunk); return true; });
@@ -82,7 +84,7 @@ it.each(cases)('setup refuses $name without changing an existing installation', 
 });
 
 it.each(cases)('doctor reports $name as a role failure with a repair', async scenario => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts); await configure(f, scenario.empty);
+  const f = await fastFixture(); await setupHerdr(f.request, f.parts); await configure(f, scenario.empty);
   let output = '', stderr = '';
   vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { stderr += String(chunk); return true; });
   const code = await runHerdrCli(['doctor', '--config', f.request.configPath], { ...f.ports, stdout: message => { output += message; }, stderr: message => { stderr += message; } });
@@ -95,7 +97,7 @@ it.each(cases)('doctor reports $name as a role failure with a repair', async sce
 });
 
 it('session activation still warns once and skips the same unavailable worker default across reloads', async () => {
-  const f = await fixture(); await configure(f, false);
+  const f = await bareFixture(); await configure(f, false);
   const runtime = await ModelRuntime.create({ authPath: join(f.h.directories.agent, 'auth.json'), modelsPath: join(f.h.directories.agent, 'models.json'), modelsStorePath: join(f.h.directories.agent, 'models-cache.json'), allowModelNetwork: false });
   const templateDirectory = join(dirname(f.request.config.core.config), 'templates');
   const instructions = join(f.h.directories.global, 'herdr/instructions');

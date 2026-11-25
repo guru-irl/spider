@@ -9,6 +9,7 @@ vi.mock('node:child_process', async importOriginal => {
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
+const fastFixture = () => fixture('fake', false, { coreTransport: 'socket' });
 const runs = async (f: SetupFixture) => {
   const calls: { argv: string[] }[] = f.h.mode === 'hc'
     ? (await readFile(join(f.h.root, 'observed-core-calls.jsonl'), 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line))
@@ -46,7 +47,7 @@ for (const mode of ['fake', 'hc'] as const) it.skipIf(mode === 'hc' && process.e
 }, 60000);
 
 it.each(['runtime', 'node path', 'root', 'machine', 'missing entry', 'corrupt entry', 'invalid result'])('a changed %s is checked live instead of trusting recorded evidence', async change => {
-  const f = await fixture(); await setupHerdr(f.request, await f.ports.setupParts(f.request)); await replay(f);
+  const f = await fastFixture(); await setupHerdr(f.request, await f.ports.setupParts(f.request)); await replay(f);
   const config = JSON.parse(await readFile(f.request.configPath, 'utf8'));
   if (change === 'runtime') {
     const runtime = join(f.root, 'dist/herdr/remote-runtime.mjs');
@@ -76,7 +77,7 @@ it.each(['runtime', 'node path', 'root', 'machine', 'missing entry', 'corrupt en
 }, 60000);
 
 it('a failed earlier root probe is never reused as passing evidence', async () => {
-  const f = await fixture();
+  const f = await fastFixture();
   await f.h.scenario({ steps: [{ argvIncludes: ['--probe'], stderr: 'earlier probe failed', exitCode: 1 }] });
   await expect(setupHerdr(f.request, await f.ports.setupParts(f.request))).rejects.toMatchObject({ code: 'runtime-bootstrap-failed' });
   await f.h.scenario({});

@@ -893,3 +893,14 @@ it("caches and clears a peer hosting warning independently of suspension and pla
   await h.request("sync");
   expect(readLocal(h.f.global.db, "peer-hosting-warnings", BOX)).toEqual([]);
 });
+
+it("disable identifies the pending move at the hub safety boundary", async () => {
+  const h = fixture();
+  const { openFreezeJournal } = await import("../journal");
+  const journal = openFreezeJournal(join(h.runtimeRoot, "journal.db"));
+  journal.begin({ id: "move-a", kind: "move", machineId: HUB, expectedEpoch: 1, args: { sessionId: "session-a" } });
+  journal.record("move-a", "move-action-start", { action: "freeze" });
+  h.setMoving(true);
+  await h.start();
+  expect(await h.request("disable")).toMatchObject({ code: 1, reason: "move-in-progress:move-a", operationId: "move-a", repairCommand: "spider roam cancel move-a" });
+});

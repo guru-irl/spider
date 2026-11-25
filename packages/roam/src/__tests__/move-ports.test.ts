@@ -200,6 +200,37 @@ it.each([
   expect(sessionHome(f.global.db, SESSION)).toEqual(f.home);
 });
 
+it.each(["prerequisites", "export"] as const)("records private transfer diagnostics at the %s boundary", async phase => {
+  const f = await fixture();
+  const error = Object.assign(new Error("fixture-private /home/fixture/not-public"), { code: "ENOENT" });
+  f.transport.exec = async (_peer, argv) => {
+    if (phase === "prerequisites") throw error;
+    const operation = JSON.parse(argv[2]) as Operation;
+    return Buffer.from(JSON.stringify({ code: 0, reason: "complete", operationId: operation.id,
+      home: null, epoch: operation.expectedEpoch, repairCommand: null, value: ["a".repeat(40)] }));
+  };
+  f.bindings.participant!.writers = async () => { throw error; };
+  const ack: FreezeAck = { ...f.sourceManifest, operationId: "freeze-a", epoch: 1, owner: null, barriers: [], intercomGeneration: "fence-a" };
+  await expect(f.ports.transfer(f.check, ack, f.operation)).rejects.toBe(error);
+  const phases = phase === "export" ? ["participant-export", "export"] : ["prerequisites"];
+  expect(f.journal.read(f.operation.id).filter(row => row.action === "move-transfer-diagnostic").map(row => row.result)).toEqual(phases.map(phase =>
+    ({ phase, code: "ENOENT", codeSource: "code", fingerprint: createHash("sha256").update(error.message).digest("hex") })));
+
+  expect(f.global.db.prepare("SELECT machine_id,epoch FROM session_homes WHERE session_id=?").get(SESSION)).toEqual({ machine_id: HUB, epoch: 1 });
+});
+
+it("records private participant transfer diagnostics before reply normalization", async () => {
+  const f = await fixture();
+  const operation: Operation = { id: "final-prerequisites", machineId: HUB, kind: "move-prerequisites", expectedEpoch: 2,
+    args: { sourceMachine: HUB, sessionId: SESSION, moveId: f.operation.id, stage: "final", root: f.repo,
+      repoKey: f.check.repoKey, workspaceId: f.check.workspaceId, sourceCheckoutName: "fixture" } };
+  await expect(handleMoveParticipantOperation(operation, f.journal, f.bindings)).rejects.toMatchObject({ code: "workspace-prerequisite-missing" });
+  expect(f.journal.read(f.operation.id).filter(row => row.action === "move-transfer-diagnostic").map(row => row.result)).toEqual([
+    { phase: "participant-prerequisites", code: "workspace-prerequisite-missing", codeSource: "code",
+      fingerprint: createHash("sha256").update("workspace-prerequisite-missing").digest("hex") },
+  ]);
+});
+
 it("move preflight accepts the mixed store list written by the catalog", async () => {
   const f = await fixture();
   expect((await f.ports.check({ operation: f.operation, sessionId: SESSION, destinationMachine: BOX })).storeKeys).toEqual(["global", REPO, WT]);

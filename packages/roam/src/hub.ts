@@ -21,6 +21,7 @@ import { recoverWorkspaceRestores } from "./move-recovery";
 import type { WorkspaceRestore } from "./contracts";
 import { openFreezeJournal, type ArtifactJournal } from "./journal";
 import { createMoveRuntimeService } from "./move-runtime-service";
+import { readPendingMoves } from "./pending-moves";
 import type { MoveRuntimeFactory } from "./move-runtime-contracts";
 
 const UNREACHABLE_MS = 10 * 60_000;
@@ -304,13 +305,15 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
       finally { activeMoveControls--; }
     }
     if (request.op === "disable") {
-      if (disabling) return { code: 3, reason: "disable-in-progress", value: null };
-      if (activeMoveControls) return { code: 1, reason: "move-in-progress", value: null };
+      if (disabling) return { code: 3, reason: "disable-in-progress", repairCommand: "spider roam disable", value: null };
+      const move = readPendingMoves(join(ports.runtimeRoot, "journal.db"))?.[0];
+      if (move) return { code: 1, reason: `move-in-progress:${move.operationId}`, operationId: move.operationId, repairCommand: `spider roam cancel ${move.operationId}`, value: null };
+      if (activeMoveControls) return { code: 1, reason: "move-in-progress", repairCommand: "spider roam doctor", value: null };
       disabling = true;
       try {
         let moving: boolean | null;
         try { moving = await ports.homeChangeInProgress(); } catch { moving = null; }
-        if (moving !== false) return { code: 1, reason: "A home change is in progress or unknown", value: null };
+        if (moving !== false) return { code: 1, reason: moving ? "home-change-in-progress" : "home-change-unverified", repairCommand: "spider roam doctor", value: null };
         disabled = true; ports.sync.stop(); for (const peer of config.peers) cancelTimer(peer.machineId);
         cancelRecovery?.(); cancelRecovery = undefined; pendingRecoveries.clear();
         await ports.drain(); await recoveryFlight;

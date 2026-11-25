@@ -10,12 +10,13 @@ import { moveEvidence, moveSession } from "../move";
 const HUB = "00000000-0000-4000-8000-000000000001", DESTINATION = "00000000-0000-4000-8000-000000000002";
 
 it.each([
-  ["coded", "transport-refused", "transport-refused"],
+  ["coded", "connection-refused", "connection-refused"],
+  ["unregistered lowercase", "private-cause", "unknown"],
   ["uncoded", undefined, "unknown"],
   ["unsafe", "/fixture/private-file", "unknown"],
   ["uppercase", "EACCES", "unknown"],
   ["too long", "a".repeat(65), "unknown"],
-  ["maximum length", "a".repeat(64), "a".repeat(64)],
+  ["unregistered maximum length", "a".repeat(64), "unknown"],
 ])("names a %s preflight error without changing the public fallback", async (_name, code, detailCode) => {
   const global = createReplica("global", HUB);
   try {
@@ -32,14 +33,20 @@ it.each([
       operation: { id: "move-a", kind: "move", machineId: HUB, expectedEpoch: null,
         args: { sessionId: "session-a", destinationMachine: DESTINATION } } };
     const result = await moveSession(request, ports);
-    expect(result).toMatchObject({ code: 1, reason: "move-preflight-refused", causeCode: "move-adapter-unavailable",
+    expect(result).toMatchObject({ code: 1, reason: "move-preflight-refused",
       failure: { step: "preflight", code: detailCode } });
+    expect(result).not.toHaveProperty("causeCode");
+    if (result.ok) throw new Error("Expected a move refusal");
+    expect(result.refusal).toEqual({ code: "move-preflight-refused", blockers: ["preflight-check-unavailable"],
+      message: "Move preflight could not be verified." });
     const safe = safeControlOutcome(result);
-    expect(safe).toMatchObject({ causeCode: "move-adapter-unavailable", failure: { step: "preflight", code: detailCode } });
+    expect(safe).toMatchObject({ failure: { step: "preflight", code: detailCode }, refusal: result.refusal });
+    expect(safe).not.toHaveProperty("causeCode");
     expect(safeControlOutcome(safe)).toEqual(safe);
     expect(controlText(safe)).toContain(`preflight: ${detailCode}`);
     expect(JSON.stringify(safe)).not.toContain("PRIVATE-ERROR-SENTINEL");
     expect(JSON.stringify(safe)).not.toContain("/fixture/private-file");
+    expect(JSON.stringify({ result, safe, text: controlText(safe), journal: journal.read(request.operation.id) })).not.toContain("private");
     expect(journal.read(request.operation.id)).toContainEqual(expect.objectContaining({ action: "move-failure",
       result: { step: "preflight", code: detailCode } }));
     expect(await moveSession(request, ports)).toEqual(result);
@@ -51,6 +58,7 @@ it.each([
 it.each([
   { step: "untrusted-step", code: "transport-refused" },
   { step: "preflight", code: "unsafe\ncode" },
+  { step: "preflight", code: "private-cause" },
   { step: "/fixture/private", code: "transport-refused" },
 ])("does not serialize forged move failure details: %j", failure => {
   const safe = safeControlOutcome({ code: 1, reason: "move-preflight-refused", operationId: "move-a", home: null,

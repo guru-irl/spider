@@ -167,10 +167,12 @@ async function fixture(worktreeMachine = HUB, homeless = false) {
 }
 
 it.each([
-  ["workspace-plan", "mapping-failed", "mapping-failed"],
+  ["workspace-plan", "connection-refused", "connection-refused"],
+  ["workspace-plan", "private-cause", "unknown"],
   ["workspace-plan", undefined, "unknown"],
   ["workspace-plan", "/fixture/private-file", "unknown"],
-  ["destination-diagnostics", "diagnostics-unavailable", "diagnostics-unavailable"],
+  ["destination-diagnostics", "connection-closed", "connection-closed"],
+  ["destination-diagnostics", "private-cause", "unknown"],
 ] as const)("move reports the failing %s adapter without exposing error text", async (step, code, detailCode) => {
   const f = await fixture();
   const fail = async (): Promise<never> => { throw Object.assign(new Error("PRIVATE-ADAPTER-SENTINEL"), { code }); };
@@ -188,11 +190,13 @@ it.each([
     };
   }
   const result = await resumeMove({ operation: f.operation, sessionId: SESSION, destinationMachine: BOX }, f.ports);
-  expect(result).toMatchObject({ code: 1, reason: "move-preflight-refused", causeCode: "move-adapter-unavailable",
-    failure: { step, code: detailCode } });
+  expect(result).toMatchObject({ code: 1, reason: "move-preflight-refused", failure: { step, code: detailCode } });
+  if (step === "destination-diagnostics") expect(result.causeCode).toBe("move-adapter-unavailable");
+  else expect(result).not.toHaveProperty("causeCode");
   expect(f.journal.read(f.operation.id)).toContainEqual(expect.objectContaining({ action: "move-failure", result: { step, code: detailCode } }));
   expect(JSON.stringify(result)).not.toContain("PRIVATE-ADAPTER-SENTINEL");
   expect(JSON.stringify(result)).not.toContain("/fixture/private-file");
+  expect(JSON.stringify({ result, journal: f.journal.read(f.operation.id) })).not.toContain("private");
   expect(sessionHome(f.global.db, SESSION)).toEqual(f.home);
 });
 

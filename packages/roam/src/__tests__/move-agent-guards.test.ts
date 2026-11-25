@@ -45,6 +45,17 @@ it.each([
   const result = await handleAgentOperation(f.operation, f.ports);
   expect(result).toMatchObject({ code: 1, reason: expected, causeCode: expected, repairCommand: "spider roam doctor", operationId: f.operation.id });
   expect(JSON.stringify(result)).not.toContain("private");
+  expect(result.failure).toEqual({ step: "workspace-plan", code: code === "participant-pi-unavailable" ? code : "unknown" });
+});
+it("an adapter cannot smuggle an unregistered cause through nested failure detail", async () => {
+  const f = fixture("move-workspace-map"); f.operation.expectedEpoch = null;
+  f.ports.move = async () => { throw Object.assign(new Error("private message"), {
+    code: "participant-pi-unavailable", failure: { step: "workspace-plan", code: "private-cause" },
+  }); };
+  const result = await handleAgentOperation(f.operation, f.ports);
+  expect(result).toMatchObject({ causeCode: "participant-pi-unavailable",
+    failure: { step: "workspace-plan", code: "participant-pi-unavailable" } });
+  expect(JSON.stringify(result)).not.toContain("private");
 });
 it("a named failure for an epoch-bound participant operation retains its epoch", async () => {
   const f = fixture("session-inspect");

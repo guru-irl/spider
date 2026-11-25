@@ -354,16 +354,31 @@ export function openUsageLedger(file: string): UsageLedger {
 
 /** Never creates, migrates, canonicalizes or changes journal mode for followers. */
 export function openUsageLedgerReadOnly(file: string): UsageLedger | undefined {
-  const db = openDbReadOnly(file, { busyTimeoutMs: BUSY_TIMEOUT_MS });
-  if (!db) return undefined;
-  try {
-    assertUsageSchemaVersion(db);
-    // Another initial opener may have created the file but not committed its
-    // first schema transaction. Let the bounded writable opener serialize it.
-    if (db.pragma("user_version") === 0) { db.close(); return undefined; }
-    return createLedger(db);
+  const deadline = performance.now() + OPEN_BUDGET_MS;
+  for (let attempt = 0; ; attempt++) {
+    let db: Db | undefined;
+    try {
+      const timeout = Math.max(1, Math.min(BUSY_TIMEOUT_MS, Math.floor(deadline - performance.now())));
+      db = openDbReadOnly(file, { busyTimeoutMs: timeout });
+      if (!db) return undefined;
+      assertUsageSchemaVersion(db);
+      // Another initial opener may have created the file but not committed its
+      // first schema transaction. Let the bounded writable opener serialize it.
+      if (db.pragma("user_version") === 0) { db.close(); return undefined; }
+      db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
+      return createLedger(db);
+    } catch (error) {
+      db?.close();
+      const code = (error as { code?: unknown } | null)?.code;
+      if (typeof code !== "string" || !code.startsWith("SQLITE_BUSY")) throw error;
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) throw error;
+      const delay = Math.min(remaining, (8 + Math.random() * 8) * 2 ** Math.min(attempt, 3));
+      // Cold WAL initialization can block even a read-only schema query.
+      Atomics.wait(BACKOFF_WAIT, 0, 0, delay);
+      if (performance.now() >= deadline) throw error;
+    }
   }
-  catch (error) { db.close(); throw error; }
 }
 
 function createLedger(db: Db): UsageLedger {

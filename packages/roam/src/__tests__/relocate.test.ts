@@ -226,6 +226,13 @@ describe("relocate", () => {
     expect(s.ids).toBe(0); expect(s.snapshots.size).toBe(0);
   });
 
+  it.each(["cas-moving", "cas-running"])("lost %s reply reports the durable home", async boundary => {
+    const s = state(); s.failAfter = boundary;
+    const result = await relocate(request, ports(s));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.home).toEqual(s.home);
+  });
+
   it("capture waits for source lock freedom", async () => {
     const s = state();
     const barrier = deferred();

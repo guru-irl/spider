@@ -64,7 +64,11 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
     throw new PortRefusal({ code, message, nextStep });
   };
   const cas = async (expected: RelocateHome, next: RelocateHome) => {
-    const result = await ports.homes.compareAndSwap(expected, next);
+    const result = await ports.homes.compareAndSwap(expected, next).catch(async error => {
+      // A lost reply may hide an applied CAS. Never report the cached prior home.
+      try { home = await ports.homes.read(request.sessionId); } catch { home = null; }
+      throw error;
+    });
     home = result.home;
     if (result.kind === "conflict") refuse("home-conflict", "The session home changed during relocation.");
   };

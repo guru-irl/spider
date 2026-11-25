@@ -1,4 +1,5 @@
 import { participantLaunchId, participantLaunchSuccessor } from "./participant-launch";
+import { supervisorPreflight } from "./participant-runtime";
 import { withMoveStep, parseMoveFailure, type MoveFailureDetail } from "./move-failure";
 import { withPrivateTransferDiagnostic, type TransferDiagnosticPhase } from "./private-transfer-diagnostics";
 // SPDX-License-Identifier: MIT
@@ -599,6 +600,11 @@ function assertParticipant(operation: Operation, participant: MoveParticipantBin
 /** 4.6b mounts this handler beside the existing agent operations. It performs no command registration. */
 export async function handleMoveParticipantOperation(operation: Operation, journal: Journal, bindings: MoveAdapterBindings): Promise<Outcome<JsonObject>> {
   const participant = required(bindings.participant, "participant"); assertParticipant(operation, participant);
+  if (participant.config.role === "box" && ["move-diagnostics", "session-start"].includes(operation.kind)) {
+    const diagnostic = await supervisorPreflight(participant.root, participant.config.machineId);
+    if (diagnostic) return { code: 1, reason: diagnostic.reason, operationId: operation.id, home: null, epoch: operation.expectedEpoch,
+      repairCommand: diagnostic.repairCommand, value: null, failure: { step: operation.kind === "move-diagnostics" ? "destination-diagnostics" : "start", code: diagnostic.reason } };
+  }
   operation = acceptPushedMoveEvidence(operation, participant);
   const authorityKind = moveAuthorityKind(operation);
   if (participant.config.role === "box" && authorityKind && !await required(bindings.evidence?.[authorityKind], `evidence.${authorityKind}`)(operation))

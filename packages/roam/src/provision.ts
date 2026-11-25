@@ -238,13 +238,14 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
     await ports.persistPeer(peer);
     const unit = renderSupervisorUnit({ node: peer.node, supervisor: ports.destination.supervisor, coreUnit, globalRoot: peer.globalRoot,
       agentDir: ports.destination.agentDir, pi: peer.pi });
-    await ports.systemd.writeUnit(unitName, unit);
+    const unitChanged = await ports.systemd.writeUnit(unitName, unit);
     await ports.systemd.systemctl(["--user", "daemon-reload"]);
     const diagnostics = await doctorPeer(peer, ports);
     await ports.transfer.reconcilePairUnits(peer);
     await ports.report(diagnostics);
     const hostingReady = diagnostics.every(item => item.severity !== "block");
     await ports.systemd.systemctl(["--user", hostingReady ? "enable" : "disable", unitName]);
+    if (hostingReady) await ports.systemd.systemctl(["--user", unitChanged ? "restart" : "start", unitName]);
     await ports.setParticipation(peer, hostingReady);
     const permissionTightenings = await ports.permissionTightening(peer).catch(() => null);
     const outcome = result(operationId, 0, hostingReady ? "installed" : "installed-hosting-disabled", { hostingReady, permissionTightenings, ...(privateModeRepairs !== undefined ? { privateModeRepairs } : {}) });

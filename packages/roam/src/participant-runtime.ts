@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { participantLaunchId, participantLaunchSuccessor, recordParticipantRestart } from "./participant-launch";
 import { execFile } from "node:child_process";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { JsonObject, Readiness, StoreKey } from "@spider/db-core/roam/types";
 import { parseReadiness } from "@spider/db-core/roam/readiness";
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
@@ -12,12 +12,32 @@ import { createSessionLeases } from "@spider/herdr/sessions/lease";
 import { observeCoreIdentity } from "@spider/herdr/client/hc";
 import { createIntentStore } from "./intent";
 import { sessionHome } from "./homes";
-import type { AgentPorts, Operation, Outcome } from "./contracts";
+import type { AgentPorts, Diagnostic, Operation, Outcome } from "./contracts";
 import { assertBoxEnrollment, participantCaptureInitialized, createRunningIntentAuthority, readReadiness, recordReadiness, startParticipant } from "./session-control";
 import { readLocalIdentity } from "./runtime";
 import { createLocalDiagnosticPorts, runLocalDoctor } from "./local-diagnostics";
 import { adoptedOwnerExited, createProductionLocalExactHc, settlePendingLaunch, settleReleasedAdoptedOwner, type PendingLaunchRecovery } from "./launcher";
 import { readSupervisorCorePin, supervisorCoreEnvironment } from "./enrollment";
+import { readPrivateBytes } from "./selected-files";
+import { inspectSupervisorReadiness } from "./supervisor-readiness";
+
+/** A successful auth probe is not evidence of which process will host the session. */
+export async function supervisorPreflight(root: string, machineId: string): Promise<Diagnostic | null> {
+  const refusal = (reason: string): Diagnostic => ({ severity: "block", reason, repairCommand: `spider roam provision ${machineId}` });
+  let release: unknown;
+  try {
+    const bytes = readPrivateBytes(join(root, "roam"), "active-release.json", 4096);
+    if (!bytes) return refusal("supervisor-release-unavailable");
+    try { release = JSON.parse(bytes.toString("utf8")); } finally { bytes.fill(0); }
+    if (typeof release !== "string" || !isAbsolute(release) || resolve(release) !== release || /[\u0000-\u001f\u007f]/.test(release)) return refusal("supervisor-release-unavailable");
+  } catch { return refusal("supervisor-release-unavailable"); }
+  try {
+    const actual = await inspectSupervisorReadiness(root);
+    if (actual.root !== root) return refusal("supervisor-root-mismatch");
+    if (actual.release !== release) return refusal("supervisor-release-mismatch");
+    return null;
+  } catch { return refusal("supervisor-identity-unavailable"); }
+}
 
 export function wakeSupervisor(systemctl: (argv: readonly string[]) => Promise<void> = argv => new Promise((done, reject) => {
   execFile("systemctl", [...argv], { timeout: 5000, maxBuffer: 4096 }, error => error ? reject(new Error("supervisor-wake-failed")) : done());
@@ -40,6 +60,10 @@ export async function handleSessionOperation(operation: Operation, ports: AgentP
   if (!participantCaptureInitialized(db, pinned.machineId, "global")) return result(1, "participant-capture-uninitialized");
   const id = operation.args.sessionId, home = sessionHome(db, id);
   if (!home || home === "unknown" || home.machineId !== pinned.machineId || home.epoch !== operation.expectedEpoch) return result(1, "participant-home-mismatch");
+  if (operation.kind === "session-start") {
+    const diagnostic = await supervisorPreflight(root, pinned.machineId);
+    if (diagnostic) return { ...result(1, diagnostic.reason), repairCommand: diagnostic.repairCommand };
+  }
   const authority = createRunningIntentAuthority(db);
   const identityCurrent = async () => { const current = readLocalIdentity(root); return JSON.stringify(current) === JSON.stringify(pinned); };
   if (operation.kind !== "session-start") {
@@ -199,6 +223,8 @@ export function createBoxParticipantWake(input: { root: string; db: import("@spi
   return async ({ sessionId, operationId }) => {
     try {
       assertBoxEnrollment(input.config);
+      const diagnostic = await supervisorPreflight(input.root, input.config.machineId);
+      if (diagnostic) return { ok: false, reason: diagnostic.reason, repairCommand: diagnostic.repairCommand };
       const intent = await authority.get(sessionId);
       if (!intent || authority.operationId(sessionId) !== operationId || intent.desired !== "running" || intent.suspended || !authority.authorized(sessionId, input.config.hubMachineId, input.config.machineId))
         return { ok: false, reason: "participant-intent-unavailable" };

@@ -178,13 +178,18 @@ export function createHcProvisionAdapter(options: AdapterOptions): HcProvisionAd
     unitDir,
     async writeUnit(name, contents) {
       if (name !== "spider-roam-supervisor.service") throw new HerdrError("invalid-unit", "Only the roaming supervisor unit may be installed");
-      await action(peer, "unit-write", { unit: name, contents });
+      const result = await action(peer, "unit-write", { unit: name, contents });
+      if (!result || typeof result !== "object" || Array.isArray(result) || Object.keys(result).length !== 1 ||
+          !("changed" in result) || typeof result.changed !== "boolean") throw new HerdrError("invalid-provision-reply", "Invalid supervisor unit reply");
+      return result.changed;
     },
     async systemctl(argv) {
       const allowed = JSON.stringify(argv) === JSON.stringify(["--user", "daemon-reload"]) ||
         JSON.stringify(argv) === JSON.stringify(["--user", "enable", "spider-roam-supervisor.service"]) ||
-        JSON.stringify(argv) === JSON.stringify(["--user", "disable", "spider-roam-supervisor.service"]);
-      if (!allowed) throw new HerdrError("invalid-systemctl", "Only the roaming supervisor unit may be enabled or disabled");
+        JSON.stringify(argv) === JSON.stringify(["--user", "disable", "spider-roam-supervisor.service"]) ||
+        JSON.stringify(argv) === JSON.stringify(["--user", "start", "spider-roam-supervisor.service"]) ||
+        JSON.stringify(argv) === JSON.stringify(["--user", "restart", "spider-roam-supervisor.service"]);
+      if (!allowed) throw new HerdrError("invalid-systemctl", "Only the roaming supervisor unit may be managed");
       await action(peer, "systemctl", { argv });
     },
   };

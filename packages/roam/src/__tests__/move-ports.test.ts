@@ -1,6 +1,7 @@
 import * as sessionFiles from "../session-file";
 import { createParticipantSupervisor } from "../participant-supervisor";
 import { createBoxParticipantWake } from "../participant-runtime";
+import * as supervisorReadiness from "../supervisor-readiness";
 import { createIntentStore } from "../intent";
 import { readLocal } from "@spider/db-core/roam/local-state";
 import { isDeepStrictEqual } from "node:util";
@@ -64,6 +65,9 @@ function git(cwd: string, argv: readonly string[], options?: { env?: Readonly<No
 }
 async function fixture(worktreeMachine = HUB, homeless = false) {
   const root = mkdtempSync(join(dirname(scratchDbPath("move-ports")), "mp-")); roots.push(root);
+  mkdirSync(join(root, "roam"), { mode: 0o700 });
+  writeFileSync(join(root, "roam", "active-release.json"), JSON.stringify(join(root, "release")), { mode: 0o600 });
+  vi.spyOn(supervisorReadiness, "inspectSupervisorReadiness").mockImplementation(async selectedRoot => ({ root: selectedRoot, release: join(root, "release"), pid: process.pid }));
   const global = createReplica("global", HUB), worktree = createReplica("worktree", worktreeMachine), repository = createReplica("repo", HUB); closes.push(() => global.close(), () => worktree.close(), () => repository.close());
   const repo = join(root, "repo"); mkdirSync(repo); git(repo, ["init", "-q", "--initial-branch=main"]);
   writeFileSync(join(repo, "tracked.txt"), "fixture\n"); git(repo, ["add", "."]); git(repo, ["commit", "-q", "-m", "fixture"]);

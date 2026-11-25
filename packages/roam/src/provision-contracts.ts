@@ -169,7 +169,7 @@ export interface ProvisionPorts extends DoctorPorts {
     previewSettings(peer: Peer, home: string, entries: readonly SettingsKeyDigest[], maximum: number, core: CoreFence, selectedPaths?: readonly string[]): Promise<SettingsDestinationPreview>;
     claimIdentity(peer: Peer, operationId: string, core: CoreFence): Promise<{ machineId: string; coreId: string }>;
   };
-  systemd: DoctorPorts["systemd"] & { writeUnit(name: string, contents: string): Promise<void> };
+  systemd: DoctorPorts["systemd"] & { writeUnit(name: string, contents: string): Promise<boolean> };
   transfer: {
     repairAgentDirectory(peer: Peer): Promise<readonly AgentPrivateModeRepair[]>;
     reconcilePairUnits(peer: Peer): Promise<void>;

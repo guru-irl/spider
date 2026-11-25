@@ -28,7 +28,7 @@ type Factory = (input: unknown) => {
   verifyPeer(): Promise<import("../provision-contracts").ProvisionVerification>;
   cleanupSecrets(peer: Peer): Promise<void>;
   permissionTightening(peer: Peer): Promise<number>;
-  systemd: { writeUnit(name: string, contents: string): Promise<void>; systemctl(argv: readonly string[]): Promise<void> };
+  systemd: { writeUnit(name: string, contents: string): Promise<boolean>; systemctl(argv: readonly string[]): Promise<void> };
 };
 const create = (adapterModule as { createHcProvisionAdapter?: Factory }).createHcProvisionAdapter;
 const remoteProgram = (adapterModule as { PROVISION_REMOTE_SCRIPT?: string }).PROVISION_REMOTE_SCRIPT;
@@ -1433,6 +1433,49 @@ it("disables only the supervisor autostart through the remote systemd adapter", 
     await expect(f.remote.executeProvision(f.peer, { ...request, argv })).rejects.toMatchObject({ code: "invalid-systemctl" });
   }
   expect(readFileSync(f.calls, "utf8").trim().split("\n")).toHaveLength(1);
+}, 5000);
+
+it("remote supervisor unit changes remain changed after a lost reply and are unchanged for a fresh operation", async () => {
+  const f = fixture(), unit = "spider-roam-supervisor.service", file = join(f.unitDir, unit);
+  writeFileSync(file, "old supervisor", { mode: 0o600 });
+  const execute = f.remote.executeProvision; let lost = true;
+  f.remote.executeProvision = async (peer, request) => {
+    const value = await execute(peer, request);
+    if (request.action === "unit-write" && lost) { lost = false; throw Object.assign(new Error("reply lost"), { code: "cli-timeout" }); }
+    return value;
+  };
+  const first = create!(f.options);
+  await expect(first.systemd.writeUnit(unit, "new supervisor")).resolves.toBe(true);
+  expect(readFileSync(file, "utf8")).toBe("new supervisor");
+  await expect(create!(f.options).systemd.writeUnit(unit, "new supervisor")).resolves.toBe(true);
+  await expect(create!({ ...f.options, operationId: "op-2" }).systemd.writeUnit(unit, "new supervisor")).resolves.toBe(false);
+  await expect(create!({ ...f.options, operationId: "op-3" }).systemd.writeUnit(unit, "changed root")).resolves.toBe(true);
+  expect(readFileSync(file, "utf8")).toBe("changed root");
+}, 5000);
+
+it("a lost supervisor restart reply does not restart the unchanged healthy service twice", async () => {
+  const f = fixture(), execute = f.remote.executeProvision; let lost = true;
+  f.remote.executeProvision = async (peer, request) => {
+    const value = await execute(peer, request);
+    if (request.action === "systemctl" && lost) { lost = false; throw Object.assign(new Error("reply lost"), { code: "cli-timeout" }); }
+    return value;
+  };
+  const adapter = create!(f.options);
+  await adapter.systemd.systemctl(["--user", "restart", "spider-roam-supervisor.service"]);
+  await create!(f.options).systemd.systemctl(["--user", "restart", "spider-roam-supervisor.service"]);
+  expect(readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line))).toEqual([
+    ["--user", "restart", "spider-roam-supervisor.service"],
+  ]);
+}, 5000);
+
+it("remote provisioning starts and restarts only the fixed supervisor unit", async () => {
+  const f = fixture(), adapter = create!(f.options);
+  await expect(adapter.systemd.systemctl(["--user", "start", "spider-roam-supervisor.service"])).resolves.toBeUndefined();
+  await expect(adapter.systemd.systemctl(["--user", "restart", "spider-roam-supervisor.service"])).resolves.toBeUndefined();
+  await expect(adapter.systemd.systemctl(["--user", "restart", "foreign.service"])).rejects.toMatchObject({ code: "invalid-systemctl" });
+  expect(readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line))).toEqual([
+    ["--user", "start", "spider-roam-supervisor.service"], ["--user", "restart", "spider-roam-supervisor.service"],
+  ]);
 }, 5000);
 
 it("installs only a supervisor unit through a fake systemd port", async () => {

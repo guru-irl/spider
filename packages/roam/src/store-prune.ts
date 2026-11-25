@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { accessSync, constants, lstatSync, realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { Db } from "@spider/db-core";
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 
@@ -16,13 +16,21 @@ export class StorePruneError extends Error {
 }
 
 /** A missing ancestor or a crossed symlink is not evidence of deletion. */
-function availability(path: string): "present" | "candidate" | "unavailable" {
+function availability(path: string, storeFolder?: ".spider" | "spider"): "present" | "candidate" | "unavailable" {
   try { return lstatSync(path).isSymbolicLink() ? "unavailable" : "present"; }
   catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOTDIR") return "unavailable";
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new StorePruneError(path, error);
   }
   try {
-    const parent = dirname(path), stat = lstatSync(parent);
+    let parent = dirname(path);
+    let stat: ReturnType<typeof lstatSync>;
+    try { stat = lstatSync(parent); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || basename(parent) !== storeFolder) throw error;
+      parent = dirname(parent);
+      stat = lstatSync(parent);
+    }
     if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(parent) !== parent) return "unavailable";
     accessSync(parent, constants.R_OK | constants.X_OK);
     return "candidate";
@@ -38,8 +46,8 @@ export function pruneMissingStores(db: Db, confirm = false): PruneResult {
   return db.raw.transaction(() => {
     const result: PruneResult = { candidates: [], unavailable: [], removed: [] };
     const audit: Array<PruneEntry & { table: string; row: Row; redirect: unknown }> = [];
-    const candidate = (entry: PruneEntry): boolean => {
-      const state = availability(entry.path);
+    const candidate = (entry: PruneEntry, storeFolder?: ".spider" | "spider"): boolean => {
+      const state = availability(entry.path, storeFolder);
       if (state === "unavailable") result.unavailable.push({ ...entry, check: "path-unavailable", repair: "Mount or restore the path, then inspect again. Nothing was pruned." });
       if (state === "candidate") result.candidates.push(entry);
       return state === "candidate";
@@ -49,13 +57,13 @@ export function pruneMissingStores(db: Db, confirm = false): PruneResult {
     };
     for (const row of db.prepare("SELECT * FROM projects ORDER BY rowid").all() as Row[]) {
       const project = { key: `project:${row.project_key}`, path: String(row.db_path) };
-      if (candidate(project)) {
+      if (candidate(project, ".spider")) {
         if (!confirm) continue;
         db.prepare("DELETE FROM projects WHERE project_key=?").run(row.project_key);
         remember(project, "projects", row);
       } else if (row.git_common_dir) {
         const repository = { key: `repository:${row.project_key}`, path: join(String(row.git_common_dir), "spider", "repo.db") };
-        if (candidate(repository) && confirm) {
+        if (candidate(repository, "spider") && confirm) {
           db.prepare("UPDATE projects SET git_common_dir=NULL WHERE project_key=?").run(row.project_key);
           remember(repository, "projects", row);
         }

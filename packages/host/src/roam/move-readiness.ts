@@ -15,10 +15,11 @@ export async function readOwnedLaunchReadiness(ports: {
   probe(sessionId: string): Promise<Probe>;
 }, { sessionId, launchId, epoch }: ParticipantReadinessQuery): Promise<HubOperationReadiness | null> {
   const authority = createRunningIntentAuthority(ports.db), intent = await authority.get(sessionId), home = sessionHome(ports.db, sessionId);
-  const lock = await ports.lock(sessionId), owner = await ports.probe(sessionId), intentOperationId = authority.operationId(sessionId);
-  if (!intent || !intentOperationId || !lock?.operationId || !participantLaunchSuccessor(ports.journal, ports.machineId, intent, intentOperationId, launchId, lock.operationId)) return null;
+  const lock = await ports.lock(sessionId), intentOperationId = authority.operationId(sessionId);
+  if (!intent || !intentOperationId || !lock?.operationId || lock.pendingOperationId !== null || !participantLaunchSuccessor(ports.journal, ports.machineId, intent, intentOperationId, launchId, lock.operationId)) return null;
   const ready = readReadiness(ports.journal, lock.operationId);
   if (!ready || ready.sessionId !== sessionId || ready.epoch !== epoch) return null;
+  const owner = await ports.probe(sessionId);
   if (!intent || intent.desired !== "running" || intent.suspended || !home || home === "unknown" || home.machineId !== ports.machineId || home.epoch !== epoch ||
       ready.file !== intent.file || ready.cwd !== intent.cwd || intent.epoch !== epoch || !lock || lock.pendingOperationId !== null || lock.operationId !== ready.opId ||
       owner.kind !== "live" || lock.identity.pid !== owner.identity.pid || lock.identity.startIdentity !== owner.identity.startTime) return null;

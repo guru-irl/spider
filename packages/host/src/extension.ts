@@ -924,7 +924,10 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   const activity = trackReloadActivity(hostPi as unknown as ExtensionAPI);
   const pi = protectAdmissionApi(activity.pi, admission) as unknown as PiToolAPI;
   if (ports.copyButtons) registerCopyButtons(pi as unknown as ExtensionAPI, ports.copyButtons.host,
-    cwd => configValues(cwd).config, ports.copyButtons.copy);
+    cwd => {
+      const values = configValues(cwd);
+      return { "copyButtons.enabled": values.config["copyButtons.enabled"], "ui.icons": values.config["ui.icons"] };
+    }, ports.copyButtons.copy);
   let moveEnabled = false;
   try { moveEnabled = readLocalIdentity(paths.globalRoot).enabled; } catch { /* Missing or unreadable configuration leaves the command unregistered. */ }
   if (moveEnabled) registerMoveCommand(activity.pi, async request => {

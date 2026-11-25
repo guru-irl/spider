@@ -269,6 +269,8 @@ export class AgentDetail implements Component {
     const rows: { parts: string[]; separator: string }[] = [];
     const add = (separator: string, ...parts: string[]) => rows.push({ separator, parts: parts.filter(Boolean) });
     add(" · ", marker, status, readError ? "Conversation unavailable" : "", "Esc");
+    // An idle kill hint matters less than a read error, so drop it before abbreviating the error.
+    if (readError && this.killState.kind === "idle") add(" · ", marker, "Conversation unavailable", "Esc");
     if (readError) add(" ", marker, status, "read err", "Esc");
     if (readError && this.killState.kind === "idle") add(" ", marker, "read err", "Esc");
     add(" ", marker, status, "Esc");

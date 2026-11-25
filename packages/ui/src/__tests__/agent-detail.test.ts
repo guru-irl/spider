@@ -371,6 +371,18 @@ describe("AgentDetail cache and basic kill", () => {
     detail.dispose(); wrap.mockRestore();
   });
 
+  it("keeps an armed kill prompt over a read error when the row is narrow", () => {
+    const history = Array.from({ length: 20 }, (_, i) => storedEvent(i + 1, `line-${i}`));
+    const { detail } = makeDetail(run(), history, 12);
+    detail.onKill(vi.fn()); detail.render(60); detail.scroll(-1);
+    detail.update({ kind: "loaded", run: run(), events: [...history, storedEvent(21, "new-1")] });
+    detail.update({ kind: "failed" });
+    detail.handleInput("k");
+    const armed = text(detail.render(60));
+    expect(armed).toContain("↓ 1 new");
+    expect(armed).toContain("k again to kill");
+  });
+
   it("requires two fresh kill presses and disarms on another key or expiry", () => {
     let now = 1000;
     const { detail } = makeDetail(run(), [], 20, () => now);

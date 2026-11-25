@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { hostingWarningText } from "./hosting-warning";
+import { safeCauseCode } from "./cause-codes";
+import { safeMoveCause } from "./move-failure";
 import { writeLocal } from "@spider/db-core/roam/local-state";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -9,7 +11,7 @@ import type { DestinationObservation, FreezeAck, MoveCheck, MovePorts, MoveReque
 import { recoveredForgottenHome } from "./forget";
 import { recoverInterruptedWorkspace } from "./workspace-import";
 import { cancelHomeAction, casHome, sessionHome } from "./homes";
-import { MoveError, moveEvidence as evidence, moveSessionSlot, readMoveReservation, resumeMove, withMoveLock } from "./move";
+import { MoveError, validateBlockerId, moveEvidence as evidence, moveSessionSlot, readMoveReservation, resumeMove, withMoveLock } from "./move";
 import { acquireMovePower, movePowerKey, releaseMovePower } from "./power";
 
 function requestFor(id: string, ports: MovePorts): MoveRequest {
@@ -60,7 +62,11 @@ export async function authorizeMoveAbort(operation: Operation, ports: MovePorts)
 }
 
 export async function recoverMove(moveId: string, ports: MovePorts): Promise<MoveSessionOutcome> { return reconcile(moveId, ports, false); }
-export async function cancelMove(moveId: string, ports: MovePorts): Promise<MoveSessionOutcome> { return reconcile(moveId, ports, true); }
+export async function cancelMove(moveId: string, ports: MovePorts): Promise<MoveSessionOutcome> {
+  const result = await reconcile(moveId, ports, true);
+  if (!result.ok && !result.refusal.blockers.length) result.refusal.blockers = [validateBlockerId(result.reason)];
+  return result;
+}
 
 /** Hub startup awaits these reconciliations before publishing move handlers. Pending reservations remain occupied. */
 export async function recoverIncompleteMoves(moveIds: readonly string[], ports: MovePorts): Promise<readonly MoveSessionOutcome[]> {
@@ -103,14 +109,20 @@ async function reconcile(id: string, ports: MovePorts, cancel: boolean): Promise
     return await withMoveLock(request.sessionId, ports, async () => {
       const rows = ports.journal.read(id);
       try {
-        if (!rows.some(row => row.action === "done") && rows.some(row => row.action === "move-action-start" && row.result.action === "freeze")) {
+        const unfrozenCancel = cancel && !evidence.actionReceipt(rows, "freeze") &&
+          !rows.some(row => row.action === "move-action-start" && row.result.action === "transfer") && !receipt(ports, id);
+        if (!unfrozenCancel && !rows.some(row => row.action === "done") && rows.some(row => row.action === "move-action-start" && row.result.action === "freeze")) {
           try { await acquireMovePower(movePowerKey(ports, id), ports.power); }
           catch { throw new MoveError("move-power-pending"); }
         }
         return await locked(request, ports, cancel, warning => { pendingWarning = warning; });
       }
       catch (error) {
-        const result = evidence.outcome(request, ports, 3, error instanceof MoveError ? error.refusal.code : "move-pending");
+        const reason = error instanceof MoveError ? error.refusal.code : cancel ? "move-abort-pending" : "move-pending";
+        const code = error && typeof error === "object" && "code" in error ? error.code : null;
+        const cause = code === "abort-authorization-pending" ? code : safeCauseCode(code) ?? safeMoveCause(code);
+        const blockers = error instanceof MoveError ? error.refusal.blockers : cause ? [validateBlockerId(cause)] : [];
+        const result = evidence.outcome(request, ports, 3, cancel && reason === "move-preflight-refused" ? "move-abort-pending" : reason, null, blockers);
         if (!result.ok && result.reason === "move-destination-pending" && pendingWarning) {
           result.refusal.hostingWarning = pendingWarning;
           result.refusal.message += ` ${hostingWarningText(pendingWarning)}`;

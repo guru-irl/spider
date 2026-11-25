@@ -43,12 +43,8 @@ type PatchedProto = AssistantInternals & { [PATCH]?: Patch };
 const mark = (i: number) => `\x1b]7799;${i}\x07`;
 const MARKER = /\x1b\]7799;(\d+)\x07/g;
 const labels = (style?: IconStyle): Record<Format, string> => ({ text: `${icon(style, "copy")} text`, md: `${icon(style, "copy")} md` });
-const DONE = "✓ copied";
-const COLUMN = Math.max(...[...Object.values(labels("text")), ...Object.values(labels("nerd")), DONE].map(visibleWidth));
-const GROUP_WIDTH = COLUMN * 2 + 1;
 const FRAME = { left: "▏", right: "▕", top: "▔", bottom: "▁", topLeft: "🭽", topRight: "🭾", bottomLeft: "🭼", bottomRight: "🭿" } as const;
 const dim = (text: string) => `\x1b[2m${text}\x1b[22m`;
-const pad = (text: string) => text + " ".repeat(Math.max(0, COLUMN - visibleWidth(text)));
 
 function formatTime(date: Date): string {
   const time = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(date);
@@ -171,6 +167,10 @@ function addButtons(md: Markdown, host: CopyButtonsHost, state: State, source: s
 
 function decorate(raw: string[], blocks: Block[], copied: Copied | undefined, width: number, padding: number, show: boolean, frame: boolean, full: string | undefined, time: string, border: (text: string) => string, iconStyle?: IconStyle): { lines: string[]; hits: Hit[] } {
   const LABELS = labels(iconStyle);
+  const textWidth = visibleWidth(LABELS.text);
+  const mdWidth = visibleWidth(LABELS.md);
+  const gap = "   ";
+  const groupWidth = textWidth + gap.length + mdWidth;
   const lines: string[] = [];
   const hits: Hit[] = [];
   const innerWidth = frame ? width - 2 : width;
@@ -180,22 +180,23 @@ function decorate(raw: string[], blocks: Block[], copied: Copied | undefined, wi
       lines.push(" ".repeat(innerWidth));
       return;
     }
-    const text = copied?.block === block && copied.format === "text" ? DONE : LABELS.text;
-    const md = copied?.block === block && copied.format === "md" ? DONE : LABELS.md;
+    const text = copied?.block === block && copied.format === "text" ? `${icon(iconStyle, "copied")} text` : LABELS.text;
+    const md = copied?.block === block && copied.format === "md" ? `${icon(iconStyle, "copied")} md` : LABELS.md;
     // Drop the timestamp before reducing the inset; the buttons always take priority.
-    const timeText = GROUP_WIDTH + 1 + visibleWidth(time) + padding * 2 <= innerWidth ? time : "";
-    const inset = Math.min(padding, Math.floor((innerWidth - GROUP_WIDTH) / 2));
-    const start = innerWidth - inset - GROUP_WIDTH;
-    hits.push({ row: lines.length + 1, start: start + 1, end: start + COLUMN + 1, block, format: "text" });
-    hits.push({ row: lines.length + 1, start: start + COLUMN + 2, end: start + GROUP_WIDTH + 1, block, format: "md" });
-    lines.push(`${" ".repeat(inset)}${dim(timeText)}${" ".repeat(start - inset - visibleWidth(timeText))}${dim(pad(text))} ${dim(pad(md))}${" ".repeat(inset)}`);
+    const timeText = groupWidth + 1 + visibleWidth(time) + padding * 2 <= innerWidth ? time : "";
+    const inset = Math.min(padding, Math.floor((innerWidth - groupWidth) / 2));
+    const start = innerWidth - inset - groupWidth;
+    const mdStart = start + textWidth + gap.length;
+    hits.push({ row: lines.length + 1, start: start + 1, end: start + textWidth + 1, block, format: "text" });
+    hits.push({ row: lines.length + 1, start: mdStart + 1, end: mdStart + mdWidth + 1, block, format: "md" });
+    lines.push(`${" ".repeat(inset)}${dim(timeText)}${" ".repeat(start - inset - visibleWidth(timeText))}${dim(text)}${gap}${dim(md)}${" ".repeat(inset)}`);
   };
   for (const [row, line] of raw.entries()) {
     const marks = [...line.matchAll(MARKER)];
     const clean = marks.length ? line.replace(MARKER, "") : line;
     const block = marks.map(([, i]) => Number(i)).find(i => blocks[i] !== undefined);
     lines.push(clean);
-    if (!frame || innerWidth < GROUP_WIDTH) continue;
+    if (!frame || innerWidth < groupWidth) continue;
     if (block !== undefined) addRow(block);
     else if (row === last) { addRow(blocks.length); continue; }
     if (row === last && full !== undefined) addRow(blocks.length);

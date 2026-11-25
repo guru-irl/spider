@@ -84,6 +84,27 @@ it("uses Pi's bundled spacers and tool components for one line around a reply", 
   expect(after[reasoning + 3]).toMatch(/^🭼Jan 3 08:15▁+⧉ text▁▁▁⧉ md🭿$/u);
 });
 
+it("uses the reply seam before bundled reasoning and a truncation notice", () => {
+  const app = fixture();
+  const later: AssistantMessage = { ...message, content: [
+    { type: "thinking", thinking: "Later reasoning" }, { type: "text", text: "Later reply" },
+  ], stopReason: "length" };
+  const next = new piHost.AssistantMessageComponent(later, false, theme, undefined, 1);
+  app.chat.addChild(app.assistant); app.chat.addChild(next);
+  const before = app.screen();
+  const reply = before.findIndex(line => line.includes("Reply"));
+  const reasoning = before.findIndex(line => line.includes("Later reasoning"));
+  const laterReply = before.findIndex(line => line.includes("Later reply"));
+  const notice = before.findIndex(line => line.includes("Response was truncated"));
+  expect(reasoning - reply).toBe(2);
+  expect(notice - laterReply).toBe(2);
+  app.move("Later reply");
+  const after = app.screen();
+  expect(after).toHaveLength(before.length);
+  expect(after[laterReply + 1]).toMatch(/^🭼.*🭿$/u);
+  expect(after[laterReply + 2]).toContain("Response was truncated");
+});
+
 it("suppresses Pi's bundled user spacer after a reply", () => {
   const app = fixture();
   const user = new piHost.UserMessageComponent("User next", theme, 1);

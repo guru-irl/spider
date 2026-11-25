@@ -3,6 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { expect, test } from 'vitest';
 import { createHerdrHarness } from './testutil.js';
+import { createMemoryViewerHarness } from './viewer-memory-hc.fixture.js';
 import { createViewerLauncher, registerHerdrViewers } from '../viewers/register.js';
 import { createAuxiliaryPanes } from '../jobs/placement.js';
 import { sameRun } from '../viewers/identity.js';
@@ -14,8 +15,9 @@ import { HerdrLabelContract, type AppClient, type AppPaneInspection, type Machin
 import { HerdrError } from '../client/parse.js';
 
 const ids = ['10000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000002'] as RunId[];
-async function fixture(automaticSubagentPanes = false) {
-  const h = await createHerdrHarness('fake'); await h.start();
+async function fixture(automaticSubagentPanes = false, realCore = false) {
+  const h = realCore ? await createHerdrHarness('fake') : await createMemoryViewerHarness();
+  if (realCore) await h.start();
   const owner = h.owner!;
   const executable = join(h.root, 'viewer.mjs'); await writeFile(executable, 'setInterval(() => {}, 1000);');
   const placement = { space: 'space', tab: 'tab', pane: 'owner-pane' } as OwnerPlacement;
@@ -97,7 +99,7 @@ test('default activation never launches a viewer without a pane', async () => {
 });
 
 test('a running row without a viewer opens below its owner through the session endpoint and focuses on repeat', async () => {
-  const f = await fixture(); let endpoint: Awaited<ReturnType<typeof startSessionEndpoint>> | undefined;
+  const f = await fixture(false, true); let endpoint: Awaited<ReturnType<typeof startSessionEndpoint>> | undefined;
   try {
     const source = { openRun: async (id: RunId) => (await f.panes.acquire('subagent', id, f.owner, { timeoutMs: 3000, ownerRelative: true }))?.viewer ?? null };
     endpoint = await startSessionEndpoint(f.owner, {

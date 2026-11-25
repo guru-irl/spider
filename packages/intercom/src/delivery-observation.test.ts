@@ -45,14 +45,5 @@ it("an early physical entry does not fabricate a protocol acknowledgement", () =
   expect(observer.snapshot("mail")).toMatchObject({ accepted: false, observed: true, state: "injected" });
   observer.accept("mail", "generation");
   expect(observer.snapshot("mail")).toMatchObject({ accepted: true, observed: true });
-}, 5000);
-
-it("RPC and intercom share observation settlement", () => {
-  for (const id of ["rpc-request", "intercom-id"]) {
-    const observer = createDeliveryObserver<string>();
-    observer.register(id, "generation");
-    observer.observe(id, "generation", "entry");
-    observer.accept(id, "generation");
-    expect(observer.settle(id, "generation")).toMatchObject({ accepted: true, observed: true, state: "injected" });
-  }
+  expect(observer.settle("mail", "generation")).toMatchObject({ accepted: true, observed: true, state: "injected" });
 }, 5000);

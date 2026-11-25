@@ -40,7 +40,7 @@ function syntheticCaller(socket: string, inventory: () => readonly { address: st
 
 export interface FakeStep {
   argvPrefix?: string[]; argvIncludes?: string[]; once?: boolean; reply?: unknown; stderr?: unknown; exitCode?: number;
-  delayMs?: number; beforeReply?: unknown[]; writes?: Record<string, string>;
+  delayMs?: number; waitSocket?: string; beforeReply?: unknown[]; writes?: Record<string, string>;
 }
 export interface FakeScenario {
   steps?: FakeStep[]; events?: ({ record: unknown; delayMs?: number } | Record<string, unknown>)[];

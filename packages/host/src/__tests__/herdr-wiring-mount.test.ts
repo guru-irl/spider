@@ -229,7 +229,7 @@ it('composed host calls real transcript and command ports without editor input',
 }, 30_000);
 
 it.each([[false, true], ['auto', false]] as const)('optional %s mode with HC owner %s makes no hc calls', async (requested, hcOwner) => {
-  const f = await mountedFixture('fake', 'tui', true, false, hcOwner, false, requested);
+  const f = await mountedFixture('fake', 'tui', true, false, hcOwner, false, requested, false, false, true, undefined, { fastInactive: true });
   try {
     expect(f.owner).toBeNull(); expect(await f.calls()).toEqual([]);
     expect(f.captured).toEqual([]); expect(f.feed).toBeNull();
@@ -268,7 +268,7 @@ it('an active owner installs the bash and shortcut adapters', async () => {
 });
 
 it.each([[false, true], ['auto', false]] as const)('inactive %s mode registers neither bash override nor shortcut handlers', async (requested, hcOwner) => {
-  const f = await mountedFixture('fake', 'tui', true, false, hcOwner, false, requested, false, true);
+  const f = await mountedFixture('fake', 'tui', true, false, hcOwner, false, requested, false, true, true, undefined, { fastInactive: true });
   try {
     expect(f.registrations.tools).toEqual([]);
     expect(f.registrations.shortcuts).toEqual([]);
@@ -287,7 +287,7 @@ it.each([
   const writes = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
   let f: Awaited<ReturnType<typeof mountedFixture>> | undefined;
   try {
-    f = await mountedFixture('fake', 'tui', hasUI, false, hcOwner, false, requested, false, true, coreAvailable);
+    f = await mountedFixture('fake', 'tui', hasUI, false, hcOwner, false, requested, false, true, coreAvailable, undefined, { fastInactive: requested === false || !hcOwner });
     const visible = () => f!.notices.length + writes.mock.calls.filter(([text]) => /^(?:Herdr stopped responding|Herdr couldn't respond to spider|This session isn't running inside Herdr)/.test(String(text))).length;
     expect(visible(), JSON.stringify(writes.mock.calls)).toBe(requested === false ? 0 : 1);
     await f.emit('session_start', { reason: 'resume' });

@@ -4,6 +4,7 @@ import { expect, test } from 'vitest';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHerdrHarness } from './testutil.js';
+import { createMemoryViewerHarness } from './viewer-memory-hc.fixture.js';
 import { createViewerLauncher } from '../viewers/register.js';
 import { createAuxiliaryPanes } from '../jobs/placement.js';
 import { HerdrError } from '../client/parse.js';
@@ -13,8 +14,11 @@ const ids = ['10000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-00
 const modes: ('fake' | 'hc')[] = ['fake'];
 if (process.env.SPIDER_HERDR_E2E === '1') modes.push('hc');
 else console.info('Viewer lifecycle real-core checks disabled. Set SPIDER_HERDR_E2E=1; no app window is used.');
-async function fixture(limit = 2, mode: 'fake' | 'hc' = 'fake') {
-  const h = await createHerdrHarness(mode); await h.start(); const owner = h.owner!;
+async function fixture(limit = 2, mode: 'fake' | 'hc' = 'fake', realCore = false) {
+  const useProcess = mode === 'hc' || realCore;
+  const h = useProcess ? await createHerdrHarness(mode) : await createMemoryViewerHarness();
+  if (useProcess) await h.start();
+  const owner = h.owner!;
   const executable = join(h.root, 'viewer.mjs'); writeFileSync(executable, 'setInterval(() => {}, 1000);');
   const placement = { space: 'space', tab: 'tab', pane: 'owner-pane' } as OwnerPlacement;
   const layout = new Map<TerminalAddress, OwnerPlacement>([[owner.terminal.address, placement]]); const errors: unknown[] = [];
@@ -63,7 +67,7 @@ async function fixture(limit = 2, mode: 'fake' | 'hc' = 'fake') {
 }
 
 test.each(modes)('%s: two finished viewers release their slots so a third automatic viewer is displayed', async mode => {
-  const f = await fixture(2, mode);
+  const f = await fixture(2, mode, true);
   try {
     const first = (await f.panes.acquire('subagent', ids[0], f.owner, { timeoutMs: 1000, automatic: true }))!;
     const second = (await f.panes.acquire('subagent', ids[1], f.owner, { timeoutMs: 1000, automatic: true }))!;
@@ -92,12 +96,13 @@ test.each(modes)('%s: a failed viewer display may be retried with a live replace
     f.failDisplay(); await expect(f.panes.acquire('subagent', ids[0], f.owner, { timeoutMs: 1000 })).rejects.toMatchObject({ code: 'pane-timeout' });
     const next = (await f.panes.acquire('subagent', ids[0], f.owner, { timeoutMs: 1000 }))!;
     expect((await f.h.hc.get(next.viewer)).state).toBe('live'); expect(await f.launcher(ids[0], f.owner)).toBe(next.viewer);
+    if (mode === 'fake') expect((await f.h.calls()).filter(call => call.argv[0] === 'run' && call.argv.includes('spider.kind=subagent-viewer'))).toHaveLength(2);
     expect(f.layout.has(next.viewer)).toBe(true);
   } finally { await f.close(); }
 }, 15000);
 
 test.each(modes)('%s: a transient app error on native removal is retried by the next display instead of wedging the slot', async mode => {
-  const f = await fixture(1, mode);
+  const f = await fixture(1, mode, true);
   try {
     const first = (await f.panes.acquire('subagent', ids[0], f.owner, { timeoutMs: 1000 }))!;
     f.layout.delete(first.viewer); f.failRemoval(); await f.h.hc.kill(first.viewer); await f.h.hc.rm(first.viewer);

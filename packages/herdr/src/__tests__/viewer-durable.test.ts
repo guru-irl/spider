@@ -3,13 +3,14 @@ import { expect, test } from 'vitest';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHerdrHarness } from './testutil.js';
+import { createMemoryViewerHarness } from './viewer-memory-hc.fixture.js';
 import { createViewerLauncher } from '../viewers/register.js';
 import type { Generation, Owner, RunId, TerminalId } from '../contracts.js';
 
 test.each([false, true])('same-session resume reuses a viewer only when the original owner is gone (gone=%s)', async gone => {
-  const h = await createHerdrHarness('fake');
+  const h = gone ? await createHerdrHarness('fake') : await createMemoryViewerHarness();
   try {
-    await h.start();
+    if (gone) await h.start();
     const executable = join(h.root, 'viewer-fixture.mjs'); await writeFile(executable, 'setInterval(() => {}, 1000);');
     let owner = h.owner!;
     const runId = '10000000-0000-4000-8000-000000000001' as RunId;

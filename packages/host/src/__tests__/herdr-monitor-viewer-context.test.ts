@@ -1,18 +1,23 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { createServer } from 'node:net';
 import { execFileSync } from 'node:child_process';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { appendRunEvent, openDbAt } from '@spider/db-core';
 import { RunStore } from '../../../subagents/src/run-store.js';
 import { buildChildSpawnSpec } from '../../../subagents/src/pi-args.js';
 import { createHerdrHarness } from '../../../herdr/src/__tests__/testutil.js';
+import { createMemoryViewerHarness } from '../../../herdr/src/__tests__/viewer-memory-hc.fixture.js';
 import { setupHerdr } from '../../../herdr/src/setup/installer.js';
 import { parseHerdrConfig } from '../../../herdr/src/config.js';
-import type { HcRunRequest, RunId } from '../../../herdr/src/contracts.js';
+import type { AppClient, AppPaneInspection, HcRunRequest, OwnerPlacement, PaneId, RunId, TerminalAddress } from '../../../herdr/src/contracts.js';
 import type { ViewerRegistration, ViewerRegistrationPorts } from '../../../herdr/src/viewers/register.js';
 import * as hcModule from '../../../herdr/src/client/hc.js';
+import * as appModule from '../../../herdr/src/client/app.js';
+import * as hostPorts from '../herdr/ports.js';
+import { HerdrError } from '../../../herdr/src/client/parse.js';
 import * as viewerModule from '../../../herdr/src/viewers/register.js';
 import { mountHerdr } from '../herdr/mount.js';
 
@@ -32,7 +37,35 @@ it('metadata fixture cleanup still closes its core after mount cleanup fails', a
 
 it.each(['top-level', 'nested', 'rpc', 'gone', 'file', 'blocked', 'invalid-header', 'legacy'] as const)('the production viewer launch uses run metadata with a safe %s cwd', async mode => {
   const core = process.env.SPIDER_HERDR_E2E === '1' && process.env.SPIDER_HERDR_HEADER_CORE === 'hc' ? 'hc' : 'fake';
-  const h = await createHerdrHarness(core); cleanups.push(() => h.close()); await h.start();
+  const realProcess = core === 'hc' || mode === 'top-level';
+  const h = realProcess ? await createHerdrHarness(core) : await createMemoryViewerHarness();
+  cleanups.push(() => h.close());
+  if (realProcess) await h.start();
+  else {
+    h.localEnv.HC_TERMINAL_ID = h.owner!.terminal.terminalId;
+    h.localEnv.HC_TERMINAL_SOCKET = h.localSocket;
+    await mkdir(dirname(h.localSocket), { recursive: true });
+    const server = createServer(socket => { socket.on('error', () => {}); socket.end(); });
+    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(h.localSocket, resolve); });
+    cleanups.push(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
+    vi.spyOn(hostPorts, 'coreStartedAt').mockResolvedValue(Date.now());
+    const ownerPlacement = { space: 'space', tab: 'tab', pane: 'owner-pane' } as OwnerPlacement;
+    const layout = new Map<TerminalAddress, OwnerPlacement>([[h.owner!.terminal.address, ownerPlacement]]);
+    const app: AppClient & Pick<AppPaneInspection, 'tabIndex'> = {
+      tabTerminals: async target => [...layout].filter(([, p]) => p.space === target.space && p.tab === target.tab).map(([address]) => address),
+      ownerPlacement: async address => { const placement = layout.get(address); if (!placement) throw new HerdrError('owner-unplaced', 'Pane absent'); return placement; },
+      tabIndex: async target => target.tab === ownerPlacement.tab ? 0 : 1,
+      awaitPane: async (address, placement) => { const pane = `pane-${address}` as PaneId; layout.set(address, { ...placement, pane }); return pane; },
+      command: async (name, args) => {
+        if (name === 'tab.new') return { space: ownerPlacement.space, tab: 'viewer-tab' as OwnerPlacement['tab'], pane: 'placeholder' as PaneId };
+        if (name === 'terminal.park') { layout.delete(args.terminal as TerminalAddress); return { pending: true, terminal: args.terminal as TerminalAddress }; }
+        if (name === 'pane.close' || name === 'pane.focus' || name === 'tab.move') return {};
+        return { error: { code: 'app-error', message: `Unexpected ${name}` } };
+      },
+    };
+    // The test exercises metadata, not the app's optional pane inspection ports.
+    vi.spyOn(appModule, 'createAppClient').mockReturnValue(app as ReturnType<typeof appModule.createAppClient>);
+  }
   let appBinary = h.appBinary;
   if (core === 'hc') {
     const hcAlias = join(h.root, 'hc');
@@ -59,8 +92,15 @@ it.each(['top-level', 'nested', 'rpc', 'gone', 'file', 'blocked', 'invalid-heade
   });
   const dbPath = join(h.root, 'runs.db'), globalPath = join(h.root, 'global.db');
   const db = openDbAt(dbPath, 'worktree'), globalDb = openDbAt(globalPath, 'global'); cleanups.push(async () => { db.close(); globalDb.close(); });
-  const calls: HcRunRequest[] = [], originalClient = hcModule.createHcClient, originalRegistration = viewerModule.registerHerdrViewers;
-  vi.spyOn(hcModule, 'createHcClient').mockImplementation(options => { const hc = originalClient(options); return { ...hc, run: async request => { calls.push(request); return hc.run(request); } }; });
+  const calls: HcRunRequest[] = [], names = new Map<TerminalAddress, string | undefined>(), originalClient = hcModule.createHcClient, originalRegistration = viewerModule.registerHerdrViewers;
+  vi.spyOn(hcModule, 'createHcClient').mockImplementation(options => {
+    const hc = realProcess ? originalClient(options) : { ...h.hc, dispose: async () => {} };
+    return { ...hc, run: async request => { calls.push(request); const result = await hc.run(request); names.set(result.address, request.name); return result; } };
+  });
+  if (!realProcess) {
+    const cli = h.cli;
+    h.cli = async (args, side) => args[0] === 'get' ? { name: names.get(args[1] as TerminalAddress) } : cli(args, side);
+  }
   let registration: ViewerRegistration | undefined, panePort: ViewerRegistrationPorts['panes'] | undefined;
   vi.spyOn(viewerModule, 'registerHerdrViewers').mockImplementation((pi, ports) => { panePort = ports.panes; registration = originalRegistration(pi, ports); return registration; });
   const hooks = new Map<string, Set<Function>>(), warnings: string[] = [];

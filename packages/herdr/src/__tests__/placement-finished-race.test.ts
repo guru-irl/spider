@@ -3,14 +3,14 @@
 import { expect, test } from 'vitest';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createHerdrHarness } from './testutil.js';
+import { createMemoryViewerHarness } from './viewer-memory-hc.fixture.js';
 import { createViewerLauncher } from '../viewers/register.js';
 import { createAuxiliaryPanes } from '../jobs/placement.js';
 import { HerdrError } from '../client/parse.js';
 import type { AppClient, OwnerPlacement, RunId, TerminalAddress } from '../contracts.js';
 
 test('an explicit viewer that finishes during placement is replaced without evicting another pane', async () => {
-  const h = await createHerdrHarness('fake'); await h.start(); const owner = h.owner!;
+  const h = await createMemoryViewerHarness(); const owner = h.owner!;
   const executable = join(h.root, 'viewer.mjs'); await writeFile(executable, 'setInterval(() => {}, 1000);');
   const placement = { space: 'space', tab: 'owner-tab', pane: 'owner-pane' } as OwnerPlacement;
   const layout = new Map<TerminalAddress, OwnerPlacement>([[owner.terminal.address, placement]]);

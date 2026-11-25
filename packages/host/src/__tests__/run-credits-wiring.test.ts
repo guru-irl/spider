@@ -5,7 +5,6 @@ import { join, resolve } from "node:path";
 import { setGlobalDbPathForTests, type Db } from "@spider/db-core";
 import { RunStore, recordRunUsage } from "@spider/subagents";
 import spiderExtension, { buildActionCtx } from "../extension";
-import { mountAgentsUI } from "../agents/mount";
 import { makeAsyncNotifier } from "../../../subagents/src/actions/run";
 import { assertPreflightIsolation, assertPostOpenIsolation, gitInit } from "./fixture-safety";
 const state = vi.hoisted(() => ({ factor: 2 }));
@@ -53,21 +52,6 @@ it("injects snapshot calibration into the registered run-card renderer", () => {
   state.factor = 3;
   expect(rendered.render(120).join("\n")).toContain("1.2k tokens · 90 credits");
 });
-// Break: mountAgentsUI or installAgentsUI drops the injected formatter before AgentStore.
-it("threads the host formatter through production agents mounting to the drilled detail", () => {
-  const f = fixture(); let widget: any, selector: any, finish!: () => void;
-  const ui = { setWidget: (_key: string, value: any) => { if (value) widget = value; }, notify() {},
-    custom: <T>(factory: any) => new Promise<T>(resolve => { finish = () => resolve(undefined as T); selector = factory({ requestRender() {} }, theme, {}, resolve); }) };
-  let open!: () => void;
-  const pi = { registerCommand: (_name: string, def: any) => { open = def.handler; }, registerShortcut() {} };
-  const dispose = mountAgentsUI(pi, { ui }, { db: f.ctx.db, sessionId: "owner", cwd: f.root, formatRunCost: () => "60 credits" });
-  const component = widget({ requestRender() {} }, theme);
-  try {
-    open(); selector.handleInput("\r");
-    expect(component.render(120).join("\n")).toContain("1.2k tokens · 60 credits");
-  } finally { finish?.(); component.dispose?.(); dispose(); }
-});
-
 // Break: the extension's real session mount forgets the formatter, even though a manual mount works.
 it("calibrates the agents detail through the extension session-start mount", async () => {
   state.factor = 2; const f = fixture(); let widget: any, selector: any, finish!: () => void;

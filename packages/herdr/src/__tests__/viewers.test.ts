@@ -10,6 +10,7 @@ import { HerdrError } from '../client/parse.js';
 import { runViewer, createViewerFeedSource, type ViewerStreamClient } from '../viewers/program.js';
 import { registerHerdrViewers, createViewerLauncher } from '../viewers/register.js';
 import { createHerdrHarness, type HerdrHarness } from './testutil.js';
+import { createMemoryViewerHarness } from './viewer-memory-hc.fixture.js';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import type { RunViewFrame, RunCursor } from '../contracts.js';
 import type { RunId, IpcDescriptor, RunSummary, SessionFeed, TerminalSummary, TerminalAddress, PaneReservation, PaneId } from '../contracts.js';
@@ -116,7 +117,7 @@ describe('external run viewer', () => {
     } finally { await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); }
   });
   it('does not claim a live labelled viewer whose owner terminal differs', async () => {
-    const h = await createHerdrHarness('fake'); await h.start(); const executable = join(h.root, 'viewer-fixture.mjs'); writeFileSync(executable, 'setInterval(() => {}, 1000);');
+    const h = await createMemoryViewerHarness(); const executable = join(h.root, 'viewer-fixture.mjs'); writeFileSync(executable, 'setInterval(() => {}, 1000);');
     try {
       const foreign = await h.hc.run({ argv: [process.execPath, executable], cwd: h.root, parent: h.owner!.terminal.address,
         labels: { 'spider.session': h.owner!.sessionId, 'spider.owner-core': h.owner!.terminal.coreId, 'spider.owner-terminal': 'another-owner', 'spider.run': runId, 'spider.kind': 'subagent-viewer' }, background: true, noNotify: true, outliveParent: false });
@@ -124,7 +125,7 @@ describe('external run viewer', () => {
     } finally { await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); }
   });
   it('freezes the launch owner and rolls back its new terminal if that owner object changes during launch', async () => {
-    const h = await createHerdrHarness('fake'); await h.start(); const executable = join(h.root, 'viewer-fixture.mjs'); writeFileSync(executable, 'setInterval(() => {}, 1000);');
+    const h = await createMemoryViewerHarness(); const executable = join(h.root, 'viewer-fixture.mjs'); writeFileSync(executable, 'setInterval(() => {}, 1000);');
     const nativeRun = h.hc.run; let created: TerminalAddress | null = null; let release!: () => void; let entered!: () => void; const gate = new Promise<void>(r => { release = r; }); const began = new Promise<void>(r => { entered = r; });
     h.hc.run = async request => { entered(); await gate; const handle = await nativeRun(request); created = handle.address; return handle; };
     try {
@@ -134,7 +135,7 @@ describe('external run viewer', () => {
     } finally { release(); h.hc.run = nativeRun; await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); }
   });
   it('reconciles an acknowledged reservation on reload and ignores stale, foreign and prefix events', async () => {
-    const h = await createHerdrHarness('fake'); await h.start(); const executable = join(h.root, 'viewer-fixture.mjs'); writeFileSync(executable, 'setInterval(() => {}, 1000);');
+    const h = await createMemoryViewerHarness(); const executable = join(h.root, 'viewer-fixture.mjs'); writeFileSync(executable, 'setInterval(() => {}, 1000);');
     const handlers = new Map<string, () => Promise<void>>(); const pi = { on: (event: string, handler: () => Promise<void>) => { handlers.set(event, handler); } } as unknown as ExtensionAPI;
     const releases: PaneReservation[] = []; let acquireCount = 0; const listeners: ((id: RunId) => void)[] = [];
     const makeRegistration = () => {
@@ -158,7 +159,7 @@ describe('external run viewer', () => {
     } finally { await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); }
   });
   it('refuses a reservation acknowledging a different terminal', async () => {
-    const h = await createHerdrHarness('fake'); await h.start(); const executable = join(h.root, 'viewer-fixture.mjs'); writeFileSync(executable, 'setInterval(() => {}, 1000);');
+    const h = await createMemoryViewerHarness(); const executable = join(h.root, 'viewer-fixture.mjs'); writeFileSync(executable, 'setInterval(() => {}, 1000);');
     const handlers = new Map<string, () => Promise<void>>(); const pi = { on: (event: string, handler: () => Promise<void>) => { handlers.set(event, handler); } } as unknown as ExtensionAPI; const releases: PaneReservation[] = [];
     const registration = registerHerdrViewers(pi, { owner: () => h.owner, hc: h.hc, feedRoot: join(h.directories.global, 'herdr'), viewerExecutable: executable,
       ipcDescriptor: () => ({ ...descriptor, sessionId: h.owner!.sessionId, generation: h.owner!.generation }), ownedRunEvents: { list: async () => [runId], subscribe: () => () => {} },
@@ -167,7 +168,7 @@ describe('external run viewer', () => {
     finally { await registration.dispose(); await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); }
   });
   it('waits for an in-flight pane viewer launch to roll back on shutdown', async () => {
-    const h = await createHerdrHarness('fake'); await h.start(); const executable = join(h.root, 'viewer-fixture.mjs'); writeFileSync(executable, 'setInterval(() => {}, 1000);');
+    const h = await createMemoryViewerHarness(); const executable = join(h.root, 'viewer-fixture.mjs'); writeFileSync(executable, 'setInterval(() => {}, 1000);');
     const handlers = new Map<string, () => Promise<void>>(); const pi = { on: (event: string, handler: () => Promise<void>) => { handlers.set(event, handler); } } as unknown as ExtensionAPI;
     const nativeRun = h.hc.run; let created: TerminalAddress | null = null; let release!: () => void; let entered!: () => void; const gate = new Promise<void>(r => { release = r; }); const began = new Promise<void>(r => { entered = r; });
     h.hc.run = async request => { entered(); await gate; const handle = await nativeRun(request); created = handle.address; return handle; };

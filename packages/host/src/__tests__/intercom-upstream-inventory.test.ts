@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { globSync, lstatSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { matchesGlob, resolve } from 'node:path';
 import { configDefaults } from 'vitest/config';
 import { loadConfigFromFile } from 'vite';
 import { parse } from 'yaml';
@@ -17,6 +17,20 @@ it('declares the intercom workspace dependency consistently', () => {
     const pkg = JSON.parse(readFileSync(resolve(dir, 'package.json'), 'utf8'));
     expect({ name, version: pkg.version }).toEqual({ name, version: range });
     expect(lock.packages[dir].version).toBe(range);
+  }
+});
+it('keeps native story routing aligned with the policy, including hidden workflow inputs', () => {
+  const policy = JSON.parse(readFileSync('scripts/test-resources.json', 'utf8'));
+  const workflow = parse(readFileSync('.github/workflows/herdr-stories.yml', 'utf8'));
+  const patterns: string[] = workflow.on.pull_request.paths;
+  expect(patterns).toEqual(policy.optional.stories);
+  for (const [file, expected] of [
+    ['.github/workflows/ci.yml', true], ['.node-version', true],
+    ['packages/roam/src/store-prune.ts', true], ['docs/guide/herdr.md', true],
+    ['docs/architecture/README.md', false], ['packages/pstack/skills/how/SKILL.md', false],
+  ] as const) {
+    const selected = patterns.reduce((included, pattern) => matchesGlob(file, pattern.replace(/^!/, '')) ? !pattern.startsWith('!') : included, false);
+    expect(selected, file).toBe(expected);
   }
 });
 const upstream = ['broker/client-liveness.test.ts', 'broker/client.test.ts', 'broker/extension.test.ts',

@@ -64,7 +64,7 @@ export async function runForeground(argv: readonly string[], options: { timeoutM
   });
 }
 export type LocalPairCleanup = ({ action: "read-public" | "mark-revoked" | "stop-host" | "stop-connect" | "inspect-cleanup" | "inspect-terminals"; pairId: string; fenceId: string } |
-  { action: "remove-authorized"; pairId: string; fenceId: string; publicKey: string } |
+  { action: "remove-authorized"; pairId: string; fenceId: string; publicKey: string | null } |
   { action: "remove-route"; pairId: string; fenceId: string; hostClosed: true; keyRemoved: true; terminalInventory?: PairTerminalInventory } |
   { action: "finish-revocation"; pairId: string; fenceId: string; cleanupReason: IntercomRevocationCleanupReason | null }) & { fenceEpoch?: string };
 /** The local queue fence is checked again for every revocation cleanup effect. */
@@ -95,7 +95,7 @@ async function localPairCleanup(input: LocalPairCleanup, ports: LocalPairPorts):
     if (input.cleanupReason === null) {
       const proof = await stopPairUnit(pair, source ? "connect" : "host", input.fenceId, ports);
       if (proof.mainProcess !== "exited" || proof.controlGroup !== "empty" || !["inactive", "failed"].includes(proof.activeState) || !record.resources ||
-          (source ? !await pairRouteAbsent(pair, record.resources, ports.run) : !record.resources.publicKey || !pairKeyAbsent(ports.home, pair, record.resources.publicKey))) throw new Error("intercom-revocation-cleanup-pending");
+          (source ? !await pairRouteAbsent(pair, record.resources, ports.run) : !pairKeyAbsent(ports.home, pair, record.resources.publicKey ?? null))) throw new Error("intercom-revocation-cleanup-pending");
     }
     await registry.finishRevocation(pair.pairId, input.cleanupReason); return { recorded: true };
   }
@@ -104,7 +104,7 @@ async function localPairCleanup(input: LocalPairCleanup, ports: LocalPairPorts):
   if (input.action === "remove-authorized" && !source) {
     const proof = await stopPairUnit(pair, "host", input.fenceId, ports);
     if (!["inactive", "failed"].includes(proof.activeState) || proof.mainProcess !== "exited" || proof.controlGroup !== "empty" || proof.killMode !== "control-group") throw new Error("intercom-revocation-unconfirmed");
-    await removePairKey(ports.home, pair, input.publicKey);
+    if (input.publicKey !== null) await removePairKey(ports.home, pair, input.publicKey);
     if (!pairKeyAbsent(ports.home, pair, input.publicKey)) throw new Error("intercom-revocation-cleanup-pending");
     return { removed: true };
   }
@@ -113,14 +113,14 @@ async function localPairCleanup(input: LocalPairCleanup, ports: LocalPairPorts):
     if (stopped.mainProcess !== "exited" || stopped.controlGroup !== "empty" || !["inactive", "failed"].includes(stopped.activeState)) throw new Error("intercom-revocation-cleanup-pending");
     return { status: await removePairMachineRoute(pair, record.resources, { run: ports.run, hostClosed: input.hostClosed === true, keyRemoved: input.keyRemoved === true, terminalInventory: input.terminalInventory }) };
   }
-  if (input.action === "inspect-terminals" && !source && record.resources?.publicKey) {
+  if (input.action === "inspect-terminals" && !source && record.resources) {
     const proof = await stopPairUnit(pair, "host", input.fenceId, ports);
-    if (proof.mainProcess !== "exited" || proof.controlGroup !== "empty" || !["inactive", "failed"].includes(proof.activeState) || !pairKeyAbsent(ports.home, pair, record.resources.publicKey)) throw new Error("intercom-revocation-unconfirmed");
+    if (proof.mainProcess !== "exited" || proof.controlGroup !== "empty" || !["inactive", "failed"].includes(proof.activeState) || !pairKeyAbsent(ports.home, pair, record.resources.publicKey ?? null)) throw new Error("intercom-revocation-unconfirmed");
     return { machineId: ports.machineId, targetCoreId: record.resources.route.targetCoreId, status: await inspectPairTerminals(pair.target.core, ports.run) };
   }
-  if (input.action === "inspect-cleanup" && !source && record.resources?.publicKey) {
+  if (input.action === "inspect-cleanup" && !source && record.resources) {
     const proof = await stopPairUnit(pair, "host", input.fenceId, ports);
-    return { keyAbsent: pairKeyAbsent(ports.home, pair, record.resources.publicKey), hostClosed: proof.mainProcess === "exited" && proof.controlGroup === "empty" && ["inactive", "failed"].includes(proof.activeState) };
+    return { keyAbsent: pairKeyAbsent(ports.home, pair, record.resources.publicKey ?? null), hostClosed: proof.mainProcess === "exited" && proof.controlGroup === "empty" && ["inactive", "failed"].includes(proof.activeState) };
   }
   throw new Error("invalid-intercom-operation");
 }

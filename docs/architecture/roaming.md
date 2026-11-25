@@ -1166,6 +1166,12 @@ a missing recorded process identity, and a cached live unit keep cleanup
 unconfirmed. Cleanup never recreates a unit and still checks the pair fence
 before each effect.
 
+Enrollment can stop before generating a pair key. In that case, cleanup checks
+that the target has no authorization bearing the pair's marker. No recorded key
+is not proof of absent authorization. Unsafe authorization files or any retained
+pair marker keep cleanup unconfirmed. Cleanup generates no credentials and
+checks authorization absence again before closing the target record.
+
 With both boxes reachable and no live terminals, a plain revoke from the hub
 stops and disables any remaining pair units, removes the target key and source route,
 and closes all three pair records. Repeated revokes have no further effects.

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { RelocateCheckpoint } from "../relocate/types";
 import { relocate } from "../relocate/relocate";
 import { deferred, destination, ports, request, running, sessionId, source, state, third } from "./relocate-fakes";
 
@@ -118,6 +119,27 @@ describe("relocate", () => {
     const home = structuredClone(s.home); s.refuse = { effect: "locate-source", code: "destination-copy-missing" };
     expect(await relocate({ sessionId, destinationMachine: source }, ports(s))).toMatchObject({ ok: false, refusal: { code: "destination-copy-missing" } });
     expect(s.home).toEqual(home); expect(s.effects).toEqual([]); expect(s.ids).toBe(0);
+  });
+
+  it.each(["missing", "unreadable", "malformed", "wrong-source", "wrong-destination", "wrong-id", "wrong-epoch", "missing-capture", "missing-install"])("missing journal never guesses a source: %s", async mode => {
+    const s = state(); s.failAfter = "save-stop-source";
+    expect((await relocate(request, ports(s))).ok).toBe(false);
+    const id = s.home!.moveId!; const cp = s.journal.get(id)!;
+    if (mode === "missing") s.journal.delete(id);
+    if (mode === "unreadable") s.failBefore = "load";
+    if (mode === "malformed") s.journal.set(id, {} as RelocateCheckpoint);
+    if (mode === "wrong-source") cp.plan.sourcePlacement.machineId = third;
+    if (mode === "wrong-destination") cp.plan.destinationPlacement.machineId = third;
+    if (mode === "wrong-id") cp.plan.moveId = "v0-other" as typeof id;
+    if (mode === "wrong-epoch") cp.plan.source.epoch = 99;
+    if (mode === "missing-capture") cp.completed = [...cp.completed, "pull-source"];
+    if (mode === "missing-install") cp.completed = [...cp.completed, "install-destination"];
+    const home = structuredClone(s.home); const journal = structuredClone(s.journal); const before = s.effects.length;
+    expect(await relocate(request, ports(s))).toMatchObject({
+      ok: false, refusal: { code: "journal-unavailable", nextStep: expect.stringMatching(/set-home.*--force.*lost/i) },
+    });
+    expect(s.home).toEqual(home); expect(s.journal).toEqual(journal);
+    expect(s.effects.slice(before)).toEqual([]); expect(s.ids).toBe(1);
   });
 
   it("capture waits for source lock freedom", async () => {

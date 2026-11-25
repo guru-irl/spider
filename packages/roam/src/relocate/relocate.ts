@@ -19,6 +19,30 @@ function committedHome(plan: RelocatePlan): RunningHome {
   return { ...plan.source, machineId: plan.destinationPlacement.machineId, state: "running",
     epoch: plan.source.epoch + 2, moveId: plan.moveId, destination: null, updatedAt: plan.startedAt };
 }
+const steps: readonly RelocateStep[] = ["check", "mark-moving", "stop-source", "pull-source",
+  "push-destination", "install-destination", "commit-home", "start-destination", "confirm"];
+function sameHome(left: RelocateHome, right: RelocateHome): boolean {
+  return left.sessionId === right.sessionId && left.machineId === right.machineId &&
+    left.epoch === right.epoch && left.state === right.state && left.destination === right.destination &&
+    left.moveId === right.moveId && left.updatedAt === right.updatedAt;
+}
+// The journal adapter parses storage. This boundary additionally checks recovery policy:
+// a saved result may justify skipping an effect only for this exact moving home.
+function matchesMoving(checkpoint: RelocateCheckpoint | null, home: MovingHome): checkpoint is RelocateCheckpoint {
+  try {
+    if (!checkpoint) return false;
+    const { plan, completed, captured, installed } = checkpoint;
+    return (plan.source.state === "running" || plan.source.state === "stopped") &&
+      sameHome(movingHome(plan), home) && plan.sourcePlacement.sessionId === home.sessionId &&
+      plan.sourcePlacement.machineId === home.machineId && plan.destinationPlacement.sessionId === home.sessionId &&
+      Array.isArray(completed) && completed.length > 0 && completed.length <= 6 &&
+      completed.every((step, index) => step === steps[index]) &&
+      (captured !== null) === completed.includes("pull-source") &&
+      (installed !== null) === completed.includes("install-destination") && checkpoint.result === null &&
+      (!captured || (captured.session.sessionId === home.sessionId && captured.workspace.moveId === home.moveId)) &&
+      (!installed || (installed.placement.sessionId === home.sessionId && installed.placement.machineId === home.destination));
+  } catch { return false; }
+}
 const failureCodes: Record<RelocateStep, V0RefusalCode> = {
   check: "home-unavailable", "mark-moving": "sync-failed", "stop-source": "stop-timeout",
   "pull-source": "transfer-failed", "push-destination": "transfer-failed",
@@ -94,8 +118,13 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
           refuse("move-in-progress", "The session is already moving to another destination.",
             `Finish spider roam relocate ${request.sessionId} ${home.destination}, or undo with spider roam relocate ${request.sessionId} ${home.machineId}.`);
         }
-        const pending = await ports.journal.load(moveId);
-        if (!pending) refuse("journal-unavailable", "The relocation checkpoint is unavailable.");
+        step = "mark-moving";
+        let pending: RelocateCheckpoint | null;
+        try { pending = await ports.journal.load(moveId); } catch { pending = null; }
+        if (!matchesMoving(pending, home)) {
+          refuse("journal-unavailable", "The relocation checkpoint is missing or unreadable.",
+            `Use spider roam set-home ${request.sessionId} ${request.destinationMachine} --force only with a local backup; unsynced work can be lost.`);
+        }
         checkpoint = pending;
       } else {
         moveId = ports.newMoveId();

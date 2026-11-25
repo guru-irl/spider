@@ -13,3 +13,15 @@ it('rejects a fallback masquerading as a successful scoped probe and reports omi
   expect(() => checkProbe(probe, { ...manifest, files: [] })).toThrow(/consumer/);
   expect(() => checkProbe({ ...probe, mode: 'full' }, manifest)).toThrow(/full/);
 });
+
+it('rejects skipped, failed or extra files in exact-manifest execution evidence', async () => {
+  const { checkExecution } = await import(/* @vite-ignore */ resolve('scripts/check-test-selection.mjs'));
+  const root = resolve('selection-fixture'), file = 'packages/a/src/value.test.ts';
+  const report = { success: true, numPassedTests: 1, numFailedTests: 0,
+    testResults: [{ name: resolve(root, file), status: 'passed' }] };
+  expect(() => checkExecution(report, root, file)).not.toThrow();
+  expect(() => checkExecution({ ...report, success: false }, root, file)).toThrow();
+  expect(() => checkExecution({ ...report, numPassedTests: 0 }, root, file)).toThrow();
+  expect(() => checkExecution({ ...report, testResults: [] }, root, file)).toThrow();
+  expect(() => checkExecution({ ...report, testResults: [...report.testResults, { name: resolve(root, 'packages/b/src/unselected.test.ts'), status: 'passed' }] }, root, file)).toThrow();
+});

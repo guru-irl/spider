@@ -172,7 +172,7 @@ jobs:
           EVENT: ${{ github.event_name }}
         run: |
           if [ "$EVENT" = pull_request ]; then
-            jq -e '.["pr-test"].result == "success" and all(to_entries[]; .key == "pr-test" or .value.result == "skipped")' <<< "$NEEDS_JSON"
+            jq -e '.["pr-test"].result == "success" and (((.["pr-test"].outputs.mode == "full") and (.test.result == "success")) or ((.["pr-test"].outputs.mode == "scoped") and (.test.result == "skipped"))) and .chrome.result == "skipped" and .["herdr-acceptance"].result == "skipped"' <<< "$NEEDS_JSON"
           else
             jq -e '.["pr-test"].result == "skipped" and all(to_entries[]; .key == "pr-test" or .value.result == "success")' <<< "$NEEDS_JSON"
           fi
@@ -185,11 +185,12 @@ jobs:
       matrix:
         shard: [1, 2]
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 10
     outputs:
       acceptance: ${{ steps.selection.outputs.acceptance }}
       chrome: ${{ steps.selection.outputs.chrome }}
       audit: ${{ steps.selection.outputs.audit }}
+      mode: ${{ steps.selection.outputs.mode }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -243,24 +244,19 @@ jobs:
           if-no-files-found: error
 
       - name: Test selected shard
+        if: steps.selection.outputs.mode != 'full'
         id: tests
-        env:
-          SCOPED_TESTS: ${{ vars.CI_SCOPED_TESTS }}
         run: |
-          # Default to full PR tests while collecting proposed-selection evidence.
-          shadow=--shadow
-          if [ "$SCOPED_TESTS" = true ]; then shadow=; fi
+          # Scoped execution is the PR default; full fallback uses the 12-shard job.
+          shadow=
           env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR TMPDIR="$PWD/.spider/scratch/tmp" node scripts/run-selected-tests.mjs --manifest ".spider/scratch/test-results/selection-${{ matrix.shard }}.json" --shard ${{ matrix.shard }}/2 --report .spider/scratch/test-results/shard-${{ matrix.shard }}.json $shadow
 
       - name: Measure without recorded slow files
-        if: steps.selection.outputs.audit == 'true'
+        if: steps.selection.outputs.audit == 'true' && steps.selection.outputs.mode != 'full'
         continue-on-error: true
         timeout-minutes: 5
-        env:
-          SCOPED_TESTS: ${{ vars.CI_SCOPED_TESTS }}
         run: |
-          shadow=--shadow
-          if [ "$SCOPED_TESTS" = true ]; then shadow=; fi
+          shadow=
           env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR TMPDIR="$PWD/.spider/scratch/tmp" node scripts/measure-test-selection.mjs --manifest ".spider/scratch/test-results/selection-${{ matrix.shard }}.json" --shard ${{ matrix.shard }}/2 --output ".spider/scratch/test-results/measurement-${{ matrix.shard }}.json" $shadow
 
       - name: Save measurement evidence
@@ -293,7 +289,8 @@ jobs:
           if-no-files-found: warn
 
   test:
-    if: github.event_name != 'pull_request'
+    needs: [pr-test]
+    if: always() && (github.event_name != 'pull_request' || needs.pr-test.outputs.mode == 'full')
     name: test shard ${{ matrix.shard }}/12
     strategy:
       fail-fast: false

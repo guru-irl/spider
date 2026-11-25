@@ -252,11 +252,20 @@ function actionReceipt(rows: ReturnType<Journal["read"]>, name: string): ReturnT
   const final = completed.filter(row => {
     const value = row.result.value;
     if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.code !== "number" || ![0, 1, 2, 3].includes(value.code)) refuse("move-journal-invalid");
-    return value.code !== 3;
+    return value.code === 0 || value.code === 2;
   });
   if (final.some(row => !isDeepStrictEqual(row.result.value, final[0].result.value))) refuse("move-journal-invalid");
-  // Retain a pending reply when no final proof exists; it must never replay the start effect.
-  return final[0] ?? completed[0];
+  // Refused and pending starts can be reconciled under fresh destination ownership proof.
+  return final[0] ?? completed.at(-1);
+}
+
+function pendingStartOutcome(request: MoveRequest, ports: MovePorts, started: Outcome<HubOperationReadiness>): MoveSessionOutcome {
+  const failure = moveFailureDetail({ code: started.reason, failure: started.failure }, "start");
+  recordFailure(request, ports, failure);
+  const result = outcome(request, ports, 3, "move-destination-pending", null,
+    failure.code === "unknown" ? [] : [validateBlockerId(failure.code)], undefined, undefined, failure);
+  if (text(started.repairCommand) && started.repairCommand.length <= 4096) result.repairCommand = started.repairCommand;
+  return result;
 }
 
 /** Shared journal-boundary parsers; recovery uses the same validation as the initial move. */
@@ -264,8 +273,8 @@ export const moveEvidence: {
   sameHome: typeof sameHome; checkReply: typeof checkReply; freezeReply: typeof freezeReply;
   preparedReply: typeof preparedReply; readinessReply: typeof readinessReply; observationReply: typeof observationReply;
   completedOutcome: typeof completedOutcome; participantOperation: typeof participantOperation; json: typeof json; outcome: typeof outcome;
-  actionReceipt: typeof actionReceipt;
-} = { sameHome, checkReply, freezeReply, preparedReply, readinessReply, observationReply, completedOutcome, participantOperation, json, outcome, actionReceipt };
+  actionReceipt: typeof actionReceipt; pendingStartOutcome: typeof pendingStartOutcome;
+} = { sameHome, checkReply, freezeReply, preparedReply, readinessReply, observationReply, completedOutcome, participantOperation, json, outcome, actionReceipt, pendingStartOutcome };
 
 async function forward(request: MoveRequest, ports: MovePorts, recovering = false): Promise<MoveSessionOutcome> {
   const id = request.operation.id, powerKey = movePowerKey(ports, id);
@@ -389,7 +398,7 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
     await action("home-replicate", () => ports.replicateHome(committed));
     const destinationOperation = participantOperation(request, committed);
     const started = await action("start", () => ports.start(committed, prepared, destinationOperation));
-    if (started.code !== 0) refuse("move-destination-pending");
+    if (started.code !== 0) return pendingStartOutcome(request, ports, started);
     if (started.operationId !== destinationOperation.id || !sameHome(started.home, committed) || started.epoch !== committed.epoch) refuse("move-readiness-invalid");
     const readiness = readinessReply(started.value, committed, prepared, destinationOperation);
     state("destination-ready", { readiness: json(readiness) });

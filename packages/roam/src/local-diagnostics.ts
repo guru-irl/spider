@@ -4,6 +4,7 @@ import { corePinDiagnostics } from "./core-pin-diagnostics";
 import { hubStartupDiagnostics, inspectHubService, type HubServiceObservation } from "./hub-service-diagnostics";
 import { hubServiceExists, hubServiceFile, hubServiceSelectionMatches } from "./launchd";
 import { inspectSupervisorCorePin } from "./enrollment";
+import { sessionHome } from "./homes";
 import { hostingWarningDiagnostic, readHostingWarnings } from "./hosting-warning";
 import { execFile, execFileSync } from "node:child_process";
 import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
@@ -29,7 +30,7 @@ import { openDiagnosticSnapshot } from "./diagnostic-snapshot";
 import { readPendingMoves } from "./pending-moves";
 import { isPeerFailureReason } from "./peer-errors";
 import { RUNNING_INTENT_SOURCE_UNAVAILABLE } from "./supervisor";
-import { createRunningIntentAuthority } from "./session-control";
+import { createRunningIntentAuthority, participantCaptureInitialized } from "./session-control";
 import { inspectIntentReservations, inspectSuspendedIntents } from "./intent";
 import { inspectAdoptedOwner } from "./launcher";
 import { createIntercomRegistry, isIntercomRevocationComplete, type IntercomPairRecord } from "./intercom-registry";
@@ -324,7 +325,9 @@ function readDoctorCatalog(db: Db, projects: DoctorProject[], globalPath: string
 }
 
 function hostingWarningDiagnostics(db: Db): Diagnostic[] {
-  return readHostingWarnings(db).map(warning => hostingWarningDiagnostic(warning.sessionId, warning));
+  const meta = db.prepare("SELECT machine_id FROM roam_meta WHERE id=1").get() as { machine_id: string } | undefined;
+  const captureReady = !!meta && participantCaptureInitialized(db, meta.machine_id, "global");
+  return readHostingWarnings(db).map(warning => hostingWarningDiagnostic(warning.sessionId, warning, sessionHome(db, warning.sessionId), captureReady));
 }
 
 /** Read hosting warnings even when hub scheduling is disabled. */

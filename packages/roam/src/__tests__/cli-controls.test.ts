@@ -33,6 +33,11 @@ const movePort = { broker: unavailableMove, bridge: unavailableMove, settlement:
   intake: { close: unavailableMove, drain: unavailableMove, inspect: unavailableMove, checkGeneration: unavailableMove, abort: unavailableMove, ready: unavailableMove } };
 const HUB = "00000000-0000-4000-8000-000000000001";
 const BOX = "00000000-0000-4000-8000-000000000002";
+async function captureReply(_peer: unknown, argv: readonly string[]): Promise<Buffer> {
+  const operation = JSON.parse(argv[2]);
+  expect(operation).toMatchObject({ kind: "enable-capture", machineId: BOX, args: { storeKey: "global" } });
+  return Buffer.from(JSON.stringify({ code: 0, operationId: operation.id, epoch: null, value: { storeKey: "global", enabled: true } }));
+}
 const roots: string[] = [];
 const sockets: Array<{ close(): Promise<void> }> = [];
 afterEach(async () => {
@@ -798,7 +803,7 @@ it("disable does not replay an old pending operation after a newer enable", asyn
   const f = await fixture(), requests: Record<string, unknown>[] = [];
   let loseReply = true, enabled = true;
   const receipts = new Map<unknown, { enabled: boolean }>();
-  const transport = { transport: { async resolve(peer: unknown) { return peer; } }, async executeProvision(_peer: unknown, request: Record<string, unknown>) {
+  const transport = { transport: { async resolve(peer: unknown) { return peer; }, exec: captureReply }, async executeProvision(_peer: unknown, request: Record<string, unknown>) {
     requests.push(request);
     if (!receipts.has(request.operationId)) { enabled = request.enabled === true; receipts.set(request.operationId, { enabled }); }
     if (loseReply) throw new Error("synthetic lost reply");
@@ -1093,7 +1098,7 @@ it("explicit Mac enable requires box preflight before authorizing its flag", asy
     if (argv[1] === "intercom") { starts.push(BOX); return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: true, machineId: BOX, doctor: { enabled: false, diagnostics: [], consumers: [] } })); }
     const op = JSON.parse(argv[2]); return Buffer.from(JSON.stringify({ operationId: op.id, code: 0, value: op.kind === "stores" ? { protocol: 1, schema: 14, machineId: BOX, stores: ["global"] } : { complete: true } }));
   } } as never);
-  vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: { async resolve(peer: unknown) { return peer; } }, async executeProvision(_peer: unknown, request: Record<string, unknown>) { requests.push(request); return { enabled: request.enabled }; } } as never);
+  vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: { async resolve(peer: unknown) { return peer; }, exec: captureReply }, async executeProvision(_peer: unknown, request: Record<string, unknown>) { requests.push(request); return { enabled: request.enabled }; } } as never);
   const doctor = vi.spyOn(remoteObservations, "remoteDoctor").mockResolvedValue({ enabled: false, diagnostics: [{ severity: "block", reason: "fixture-preflight", repairCommand: null }], consumers: [] });
   expect(await f.invoke(["roam", "enable"])).not.toBe(0); expect(requests).toEqual([]);
   doctor.mockResolvedValue({ enabled: false, diagnostics: [{ severity: "warning", reason: "intercom-other-extension: ordinary-extension (not classified for intercom).", repairCommand: null }], consumers: [] });
@@ -1136,7 +1141,7 @@ it.each(["ready", "unavailable", "startup-timeout", "transport-timeout", "wrong-
     const op = JSON.parse(argv[2]); operations.push(op.kind);
     return Buffer.from(JSON.stringify({ operationId: op.id, code: 0, value: op.kind === "stores" ? { protocol: 1, schema: 14, machineId: BOX, stores: ["global"] } : { complete: true } }));
   } } as never);
-  vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: { async resolve(peer: unknown) { return peer; } },
+  vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: { async resolve(peer: unknown) { return peer; }, exec: captureReply },
     async executeProvision(_peer: unknown, request: unknown) { flags.push(request); return { enabled: true }; } } as never);
   const enabling = f.invoke(["roam", "enable", "--json"]);
   await starting;
@@ -1200,7 +1205,7 @@ it("enable warns for an absent store and sync enables capture when it returns", 
     if (argv[1] === "intercom") return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: true, machineId: BOX, doctor: { enabled: false, diagnostics: [], consumers: [] } }));
     return net.transport.exec(peer, argv, options);
   } });
-  vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: { async resolve(peer: unknown) { return peer; } }, async executeProvision() { return { enabled: true }; } } as never);
+  vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: net.transport, async executeProvision() { return { enabled: true }; } } as never);
   try {
     expect(localRuntime.readLocalIdentity(f.root).peers).toHaveLength(1);
     const discovery = await agent.handleAgentOperation({ id: "before-enable", machineId: BOX, expectedEpoch: null, kind: "stores", args: {} }, remote.ports);

@@ -3,6 +3,7 @@ import { createParticipantSupervisor } from "../participant-supervisor";
 import { createBoxParticipantWake } from "../participant-runtime";
 import * as supervisorReadiness from "../supervisor-readiness";
 import { createIntentStore } from "../intent";
+import { localHostingWarningDiagnostics } from "../local-diagnostics";
 import { readLocal } from "@spider/db-core/roam/local-state";
 import { isDeepStrictEqual } from "node:util";
 // SPDX-License-Identifier: MIT
@@ -308,6 +309,7 @@ it.each(["null", "object", "string", "empty", "non-string", "unknown kind", "mis
 it("real adapters preserve expected epoch and exact file", async () => {
   const f = await fixture(BOX);
   const home = casHome(f.global.db, f.home, BOX, f.operation.id, HUB);
+  f.global.db.prepare("UPDATE roam_meta SET machine_id=? WHERE id=1").run(BOX);
   f.bindings.participant!.config = { ...f.config, role: "box", machineId: BOX };
   const manifest = { ...f.sourceManifest, file: f.file };
   const prepared = { session: manifest, workspace: f.sourceWorkspace } as PreparedMove;
@@ -328,7 +330,10 @@ it.each(["local", "remote"] as const)("keeps a %s wake launch conflict as a type
   const f = await fixture(side === "remote" ? BOX : HUB);
   const outgoing = casHome(f.global.db, f.home, BOX, "outgoing", HUB);
   const home = side === "remote" ? outgoing : casHome(f.global.db, outgoing, HUB, f.operation.id, HUB);
-  if (side === "remote") f.bindings.participant!.config = { ...f.config, role: "box", machineId: BOX };
+  if (side === "remote") {
+    f.global.db.prepare("UPDATE roam_meta SET machine_id=? WHERE id=1").run(BOX);
+    f.bindings.participant!.config = { ...f.config, role: "box", machineId: BOX };
+  }
   f.bindings.participant!.wake = async () => ({ ok: false, reason: "participant-launch-conflict" });
   f.transport.exec = async (_peer, argv) => {
     const operation = JSON.parse(argv[2]) as Operation;
@@ -1207,6 +1212,7 @@ it("gathers source barriers after a transient shortcut failure", async () => {
 
 it("destination start retains the enrolled hub even when the caller targets the box", async () => {
   const f = await fixture(BOX), home = casHome(f.global.db, f.home, BOX, f.operation.id, HUB);
+  f.global.db.prepare("UPDATE roam_meta SET machine_id=? WHERE id=1").run(BOX);
   f.bindings.participant!.config = { ...f.config, role: "box", machineId: BOX };
   f.worktree.db.prepare("UPDATE roam_sessions SET state='retired'").run();
   const start = f.ports.start(home, { session: f.sourceManifest, workspace: f.sourceWorkspace } as PreparedMove, { ...f.operation, machineId: BOX });
@@ -2224,6 +2230,163 @@ it("duplicate store keys from a peer are refused before import staging", async (
   expect(f.journal.read(f.operation.id).some(row => row.action === "move-import-intent")).toBe(false);
 }, 5000);
 
+
+let retainedCaptureSetup: Awaited<ReturnType<typeof prepareAppAbsentFixture>>;
+let retainedCaptureMove: Awaited<ReturnType<typeof appAbsentFixture>>;
+let retainedCaptureSupervisor: ReturnType<typeof createParticipantSupervisor>;
+let retainedCaptureOwner: Probe;
+let retainedCaptureLaunches: number;
+let retainedSupervisorBroken: boolean;
+beforeEach(async context => {
+  if (!context.task.name.startsWith("retained committed capture")) return;
+  retainedCaptureOwner = { kind: "absent" }; retainedCaptureLaunches = 0;
+  retainedSupervisorBroken = context.task.name.includes("supervisor refusal");
+  retainedCaptureSetup = await prepareAppAbsentFixture({ sessionOnly: true, skipCrash: true, async beforeMove(f) {
+    const participant = f.remote.participant!, config = participant.config;
+    mkdirSync(join(f.remoteRoot, "roam"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(f.remoteRoot, "roam", "active-release.json"), JSON.stringify(join(f.root, "release")), { mode: 0o600 });
+    vi.spyOn(supervisorReadiness, "inspectSupervisorReadiness").mockImplementation(async selectedRoot => ({
+      root: retainedSupervisorBroken && selectedRoot === f.remoteRoot && (sessionHome(f.global.db, SESSION) as Home)?.machineId === BOX
+        ? join(f.root, "foreign-root") : selectedRoot,
+      release: join(f.root, "release"), pid: process.pid,
+    }));
+    const agent = { config, root: f.remoteRoot, journal: f.remoteJournal, openStore(key: StoreKey) {
+      return { db: participant.stores.find(store => store.key === key)!.db, effects: {} as never, policy: {} as never };
+    } };
+    const intents = createIntentStore(f.remoteRoot);
+    retainedCaptureSupervisor = createParticipantSupervisor({ root: f.remoteRoot, agent,
+      clock: { now: () => 1, later: () => () => {} }, events: { subscribe: () => () => {} },
+      owner: async () => retainedCaptureOwner, diagnostics: async () => [], stop: async () => ({ kind: "absent" }), notify: async () => {},
+      async launch(intent, operationId, _mode, beforeSpawn?: import("../supervisor").LaunchInvocation["beforeSpawn"]) {
+        expect(await beforeSpawn!()).toBe("admitted");
+        retainedCaptureLaunches++; retainedCaptureOwner = { kind: "live", identity: { bootId: "boot", pid: 42, startTime: "start" } };
+        const ready: HubOperationReadiness = { origin: "hub-operation", opId: operationId, sessionId: SESSION, epoch: 2,
+          file: f.target, cwd: f.destination, core: "core-a", terminal: "terminal-a" };
+        f.remoteJournal.begin({ id: operationId, kind: "exact-session-launch", machineId: BOX, expectedEpoch: 2, args: {} });
+        recordReadiness(f.remoteJournal, ready); writeLocal(f.remoteGlobal.db, "participant-ready", SESSION, ready);
+        return { code: 0, reason: "ready", operationId, home: sessionHome(f.remoteGlobal.db, SESSION) as Home, epoch: 2, repairCommand: null, value: ready };
+      } });
+    closes.push(() => retainedCaptureSupervisor.stop());
+    participant.probe = async () => retainedCaptureOwner;
+    participant.wake = createBoxParticipantWake({ root: f.remoteRoot, db: f.remoteGlobal.db, config, journal: f.remoteJournal, wake: async () => {} });
+    participant.readiness = async query => readReadiness(f.remoteJournal, query.launchId);
+    participant.observation = async home => ({ home, owner: retainedCaptureOwner, readiness:
+      readLocal<HubOperationReadiness>(f.remoteGlobal.db, "participant-ready", SESSION) ? {
+        ...readLocal<HubOperationReadiness>(f.remoteGlobal.db, "participant-ready", SESSION)!, opId: `${home.moveId}-session-start-${BOX}`,
+      } : null, retired: false, launchFailure: null, hostingWarning: readLocal(f.remoteGlobal.db, "supervisor-hosting-error", SESSION) });
+    // A second unrelated map must not become a participant store.
+    f.remoteGlobal.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path,snapshot_json) VALUES(?,?,?,NULL)")
+      .run("other-repo", "other-workspace", join(f.root, "unrelated"));
+    expect(await intents.get(SESSION)).toBeNull();
+  } });
+}, 5000);
+beforeEach(async context => {
+  if (!context.task.name.startsWith("retained committed capture")) return;
+  retainedCaptureMove = await retainedCaptureSetup.run();
+  const { f, operation, initial } = retainedCaptureMove;
+  expect(initial).toMatchObject({ code: 3, reason: "move-destination-pending" });
+  const rows = f.remoteJournal.read(`${operation.id}-session-start-${BOX}`);
+  if (!retainedSupervisorBroken) expect(rows.map(row => row.action)).toEqual(expect.arrayContaining(["participant-file-verified", "activated", "participant-launch"]));
+  else expect(rows).toEqual([]);
+  expect(rows.some(row => row.action === "done")).toBe(false);
+  // Rebuild the pre-fix state: a committed activation and reservation with capture off.
+  f.remoteWorktree.db.prepare("UPDATE roam_meta SET capture_enabled=0 WHERE id=1").run();
+  expect(retainedCaptureLaunches).toBe(0);
+}, 5000);
+
+it("retained committed capture recovery repairs the stores and hosts exactly one destination", async () => {
+  const { f, operation } = retainedCaptureMove;
+  const home = sessionHome(f.global.db, SESSION);
+  expect(await recoverMove(operation.id, f.ports)).toMatchObject({ code: 3, reason: "move-destination-pending" });
+  expect(f.remoteWorktree.db.prepare("SELECT capture_enabled FROM roam_meta WHERE id=1").get()).toEqual({ capture_enabled: 1 });
+  await retainedCaptureSupervisor.reconcile();
+  expect((await createIntentStore(f.remoteRoot).get(SESSION))?.value.supervision.kind).toBe("live");
+  expect(await recoverMove(operation.id, f.ports)).toMatchObject({ code: 0, reason: "moved", home });
+  await retainedCaptureSupervisor.reconcile();
+  expect(await recoverMove(operation.id, f.ports)).toMatchObject({ code: 0, home });
+  expect(retainedCaptureLaunches).toBe(1);
+  expect(readSessionState(f.worktree.db, SESSION)?.state).toBe("retired");
+  expect(readSessionState(f.remoteWorktree.db, SESSION)).toMatchObject({ state: "active", epoch: 2 });
+  f.remoteWorktree.db.prepare("INSERT INTO todos(session_id,seq,text,created_at,updated_at) VALUES(?,1,'after recovery',1,1)").run(SESSION);
+  expect(f.remoteWorktree.db.prepare("SELECT count(*) AS n FROM roam_changes WHERE entity='todos' AND writer_session=? AND writer_epoch=2").get(SESSION)).toEqual({ n: 1 });
+}, 5000);
+
+it("retained committed capture global capture names enable before recovery can host", async () => {
+  const { f, operation } = retainedCaptureMove;
+  f.remoteGlobal.db.prepare("UPDATE roam_meta SET capture_enabled=0 WHERE id=1").run();
+  for (let i = 0; i < 3; i++) await retainedCaptureSupervisor.reconcile();
+  f.remoteGlobal.db.pragma("wal_checkpoint(TRUNCATE)");
+  copyFileSync(f.remoteGlobal.db.raw.name, join(f.remoteRoot, "spider.db"));
+  expect(localHostingWarningDiagnostics(f.remoteRoot).find(row => row.code === "supervisor-hosting-error"))
+    .toMatchObject({ repairCommand: "spider roam enable" });
+  expect(await recoverMove(operation.id, f.ports)).toMatchObject({ code: 3, repairCommand: "spider roam enable" });
+  expect(retainedCaptureLaunches).toBe(0);
+  const participant = f.remote.participant!;
+  expect(await handleAgentOperation({ id: "explicit-enable-capture", kind: "enable-capture", machineId: BOX, expectedEpoch: null, args: { storeKey: "global" } }, {
+    config: participant.config, journal: f.remoteJournal, root: f.remoteRoot,
+    openStore(key) { return { db: participant.stores.find(store => store.key === key)!.db, effects: {} as never, policy: {} as never }; },
+  })).toMatchObject({ code: 0 });
+  expect(await recoverMove(operation.id, f.ports)).toMatchObject({ code: 3 });
+  await retainedCaptureSupervisor.reconcile();
+  expect(await recoverMove(operation.id, f.ports)).toMatchObject({ code: 0, reason: "moved" });
+  expect(retainedCaptureLaunches).toBe(1);
+}, 5000);
+
+it("retained committed capture supervisor refusal retries the same start after the supervisor is fixed", async () => {
+  const { f, operation } = retainedCaptureMove;
+  retainedSupervisorBroken = false;
+  expect(await recoverMove(operation.id, f.ports)).toMatchObject({ code: 3 });
+  await retainedCaptureSupervisor.reconcile();
+  expect(retainedCaptureLaunches).toBe(1);
+  expect(await recoverMove(operation.id, f.ports)).toMatchObject({ code: 0, reason: "moved", home: { machineId: BOX, epoch: 2 } });
+}, 5000);
+
+it("retained committed capture supervisor refusal keeps its repair and recovers after provisioning", async () => {
+  const { f, operation, initial } = retainedCaptureMove;
+  expect(initial).toMatchObject({ code: 3, repairCommand: `spider roam provision ${BOX}` });
+  expect(await recoverMove(operation.id, f.ports)).toMatchObject({ code: 3, repairCommand: `spider roam provision ${BOX}` });
+  expect(retainedCaptureLaunches).toBe(0);
+  retainedSupervisorBroken = false;
+  expect(await recoverMove(operation.id, f.ports)).toMatchObject({ code: 3, reason: "move-destination-pending" });
+  await retainedCaptureSupervisor.reconcile();
+  expect(await recoverMove(operation.id, f.ports)).toMatchObject({ code: 0, reason: "moved", home: { machineId: BOX, epoch: 2 } });
+  await retainedCaptureSupervisor.reconcile();
+  expect(await recoverMove(operation.id, f.ports)).toMatchObject({ code: 0 });
+  expect(retainedCaptureLaunches).toBe(1);
+  expect(readSessionState(f.worktree.db, SESSION)?.state).toBe("retired");
+}, 5000);
+
+it("retained committed capture supervisor retry names recovery instead of abandoning hosting", async () => {
+  const { f, operation } = retainedCaptureMove;
+  for (let i = 0; i < 3; i++) await retainedCaptureSupervisor.reconcile();
+  expect(retainedCaptureLaunches).toBe(0);
+  // Flush the same durable global state to the doctor's configured path.
+  f.remoteGlobal.db.pragma("wal_checkpoint(TRUNCATE)");
+  copyFileSync(f.remoteGlobal.db.raw.name, join(f.remoteRoot, "spider.db"));
+  const diagnostic = localHostingWarningDiagnostics(f.remoteRoot).find(row => row.code === "supervisor-hosting-error");
+  expect(diagnostic).toMatchObject({ repairCommand: `spider roam recover ${operation.id}` });
+  expect(diagnostic?.reason).not.toContain("To cancel hosting");
+  expect(await recoverMove(operation.id, f.ports)).toMatchObject({ code: 3 });
+  await retainedCaptureSupervisor.reconcile();
+  expect(retainedCaptureLaunches).toBe(1);
+}, 5000);
+
+it.each(["live", "uncertain", "replacement", "epoch"] as const)("retained committed capture recovery refuses %s ownership without capture or launch", async mode => {
+  const { f, operation } = retainedCaptureMove;
+  let starts = 0;
+  const exec = f.transport.exec;
+  f.transport.exec = async (peer, argv, options) => {
+    if (argv[1] === "agent" && JSON.parse(argv[2]).kind === "session-start") starts++;
+    return exec(peer, argv, options);
+  };
+  if (mode === "uncertain") retainedCaptureOwner = { kind: "uncertain" };
+  else if (mode !== "epoch") retainedCaptureOwner = { kind: "live", identity: { bootId: "boot", pid: mode === "replacement" ? 99 : 42, startTime: "other-start" } };
+  else casHome(f.global.db, sessionHome(f.global.db, SESSION) as Home, HUB, "later-home", HUB);
+  expect(await recoverMove(operation.id, f.ports)).toMatchObject({ code: 3, reason: mode === "epoch" ? "move-home-changed" : "move-destination-pending" });
+  expect(starts).toBe(0);
+  expect(f.remoteWorktree.db.prepare("SELECT capture_enabled FROM roam_meta WHERE id=1").get()).toEqual({ capture_enabled: 0 });
+  expect(retainedCaptureLaunches).toBe(0);
+}, 5000);
 
 it.each([false, true])("destination activation enables capture before exact hosting with several maps, already activated=%s", async alreadyActivated => {
   const f = await fixture(BOX), home = casHome(f.global.db, f.home, BOX, f.operation.id, HUB);

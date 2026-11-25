@@ -32,7 +32,7 @@ function recordAction(ports: MovePorts, id: string, action: string, value: unkno
   const prior = evidence.actionReceipt(ports.journal.read(id), action), next = evidence.json(value);
   if (prior) {
     if (action !== "start") return;
-    if ((prior.result.value as JsonObject).code !== 3) {
+    if (![1, 3].includes(Number((prior.result.value as JsonObject).code))) {
       if (!isDeepStrictEqual(prior.result.value, next)) throw new MoveError("move-journal-invalid");
       return;
     }
@@ -204,7 +204,25 @@ async function locked(request: MoveRequest, ports: MovePorts, cancel: boolean, w
   }
   if (observation.launchFailure !== null) return rollback(request, check, committed, observation, ports);
   const startAttempted = rows.some(row => row.action === "move-action-start" && row.result.action === "start");
-  if (cancel || startAttempted || observation.owner.kind !== "absent" || observation.retired) throw new MoveError("move-destination-pending");
+  if (cancel || observation.owner.kind !== "absent" || observation.retired) throw new MoveError("move-destination-pending");
+  if (startAttempted) {
+    // A refused or uncertain start is not readiness. Reconcile the same participant
+    // operation; its locks and durable reservation still fence duplicate launches.
+    const started = await ports.start(committed, prepared, operation);
+    if (!evidence.sameHome(sessionHome(ports.globalDb, request.sessionId), committed)) throw new MoveError("move-home-changed");
+    if (started.code !== 0) {
+      recordAction(ports, id, "start", started);
+      const result = evidence.pendingStartOutcome(request, ports, started);
+      if (!result.ok && observation.hostingWarning) {
+        result.refusal.hostingWarning = observation.hostingWarning;
+        result.refusal.message += ` ${hostingWarningText(observation.hostingWarning)}`;
+      }
+      return result;
+    }
+    if (started.operationId !== operation.id || !evidence.sameHome(started.home, committed) || started.epoch !== committed.epoch) throw new MoveError("move-readiness-invalid");
+    evidence.readinessReply(started.value, committed, prepared, operation);
+    recordAction(ports, id, "start", started);
+  }
   return resumeMove(request, ports);
 }
 async function abort(request: MoveRequest, check: MoveCheck, ports: MovePorts): Promise<MoveSessionOutcome> {

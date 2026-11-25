@@ -247,7 +247,12 @@ it("reprovision repairs a stopped enrolled pair so enable succeeds", async () =>
       return Buffer.from(JSON.stringify({ operationId: op.id, code: 0, value: op.kind === "stores"
         ? { protocol: 1, schema: 14, machineId: peer.machineId, stores: ["global"] } : { complete: true } }));
     } } as never);
-    vi.spyOn(transport, "createProvisionTransport").mockReturnValue({ transport: { async resolve(target: Peer) { return target; } },
+    vi.spyOn(transport, "createProvisionTransport").mockReturnValue({ transport: { async resolve(target: Peer) { return target; },
+      async exec(_target: Peer, argv: string[]) {
+        const operation = JSON.parse(argv[2]);
+        expect(operation).toMatchObject({ kind: "enable-capture", machineId: peer.machineId, args: { storeKey: "global" } });
+        return Buffer.from(JSON.stringify({ code: 0, operationId: operation.id, epoch: null, value: { storeKey: "global", enabled: true } }));
+      } },
       async executeProvision(_target: Peer, request: { enabled: boolean }) { return { enabled: request.enabled }; } } as never);
     const blocked = await controls.enableRoaming(f.root, () => process.execPath);
     expect(blocked).toMatchObject({ code: 1, reason: "preflight-failed:box-1.invalid:intercom-pair-unit-unavailable",
@@ -624,7 +629,12 @@ it("recovers autostart when enable follows transiently blocked reprovision", asy
     return Buffer.from(JSON.stringify({ operationId: op.id, code: 0, value: op.kind === "stores"
       ? { protocol: 1, schema: 14, machineId: bootstrapPeer.machineId, stores: ["global"] } : { complete: true } }));
   } } as never);
-  vi.spyOn(transport, "createProvisionTransport").mockReturnValue({ transport: { async resolve(peer: Peer) { return peer; } },
+  vi.spyOn(transport, "createProvisionTransport").mockReturnValue({ transport: { async resolve(peer: Peer) { return peer; },
+    async exec(_peer: Peer, argv: string[]) {
+      const operation = JSON.parse(argv[2]);
+      expect(operation).toMatchObject({ kind: "enable-capture", machineId: bootstrapPeer.machineId, args: { storeKey: "global" } });
+      return Buffer.from(JSON.stringify({ code: 0, operationId: operation.id, epoch: null, value: { storeKey: "global", enabled: true } }));
+    } },
     async executeProvision(_peer: Peer, request: { enabled: boolean; restoreAutostart?: boolean }) {
       f.state.boxEnabled = request.enabled;
       if (request.enabled && request.restoreAutostart) f.state.supervisorEnabled = true;

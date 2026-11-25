@@ -44,7 +44,9 @@ const environment: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: "1
   GIT_COMMITTER_NAME: "Snapshot fixture", GIT_COMMITTER_EMAIL: "roam@example.invalid",
   GIT_AUTHOR_DATE: "2000-01-01T00:00:00Z", GIT_COMMITTER_DATE: "2000-01-01T00:00:00Z" };
 for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_CONFIG", "GIT_CONFIG_COUNT"]) delete environment[key];
+let gitCalls = 0;
 function run(cwd: string, argv: readonly string[], options?: { env?: Readonly<NodeJS.ProcessEnv>; stdin?: Buffer }): Buffer {
+  gitCalls++;
   return execFileSync("git", argv[0] === "git" ? argv.slice(1) : [...argv], { cwd, env: { ...environment, ...options?.env },
     input: options?.stdin, stdio: ["pipe", "pipe", "pipe"] });
 }
@@ -345,6 +347,7 @@ function fixture(initial = false, sourceMachine = HUB, destinationMachine = BOX)
 }
 
 it.each(["frozen", "transferred", "home-committed", "unknown-start"] as const)("a running hub recovers an offline move after %s without a second launch", async interruption => {
+  const gitAtStart = gitCalls;
   const f = fixture();
   mkdirSync(join(f.root, "roam"));
   const journal = openFreezeJournal(join(f.root, "roam", "journal.db")); f.ports.journal = journal;
@@ -441,6 +444,7 @@ it.each(["frozen", "transferred", "home-committed", "unknown-start"] as const)("
     expect(f.ownersAtEveryObservation.every(n => n <= 1)).toBe(true);
     await sync.sync(BOX);
     expect(recoveryTimers()).toHaveLength(1);
+    expect(gitCalls - gitAtStart, "hub recovery fixture must not run Git").toBe(0);
   } finally { await hub.stop(); await native.stop(); }
 }, 5000);
 

@@ -63,6 +63,17 @@ Main still runs all root tests on twelve shards with two workers each, plus
 separate Chrome and Herdr acceptance jobs. `npm ci` builds each checkout through
 `prepare`. There is no separate fast-test roster: new root tests join by default.
 
+Before merging a scoped PR, dispatch the full CI workflow on its head branch:
+
+```bash
+gh workflow run ci.yml --ref <head-branch> -f force_full=true
+```
+
+Wait for that run's `typecheck · test · build` check to pass on the exact PR head
+commit. Repeat the full run if the head changes. The dispatch runs twelve test
+shards, all Chrome partitions, and packed acceptance. Non-PR events always keep
+the full route, even when `force_full` is false.
+
 `scripts/select-tests.mjs` compares the merge base with the tested checkout SHA.
 Vitest resolves import dependencies, including build entries used as virtual
 specifications. `scripts/test-resources.json` adds filesystem readers, bundle
@@ -70,8 +81,19 @@ consumers, source inventories, and optional-suite inputs. Unknown paths,
 deletes, missing bases, and graph errors select the full inventory. Selection
 never collects test modules or starts test workers.
 
+In scoped mode, tests with recorded durations of at most five seconds and tests
+without recorded durations run on the PR. A selected slower test also runs if the
+test itself changed, it directly imports a changed module with a static import,
+or it shares a directory with changed production source. Type-only imports count;
+transitive and dynamic imports do not. Other selected slow tests wait for the full
+pre-merge run. The five-minute scheduling budget still sends large selections to
+the full matrix.
+
 Each manifest records sorted test paths, selection reasons, base/tested SHAs,
 and hashes of the selector, resource policy, inventory, and timing table.
+Its `deferred` list records each deferred file, recorded duration, deferral rule,
+and original selection reasons. Deferred entries are covered by the manifest
+checksum but are not passed to the scoped test runner.
 `scripts/run-selected-tests.mjs` validates it and passes the exact file list to
 Vitest without a second changed-file filter. Empty partitions skip explicitly.
 

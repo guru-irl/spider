@@ -2,6 +2,13 @@ name: CI
 
 on:
   workflow_call:
+  workflow_dispatch:
+    inputs:
+      force_full:
+        description: Run all tests, Chrome, and packed acceptance before merge
+        type: boolean
+        required: true
+        default: true
   pull_request:
     branches: [main]
   push:
@@ -182,7 +189,7 @@ jobs:
           fi
 
   pr-test:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && !inputs.force_full
     name: PR tests ${{ matrix.shard }}/2
     strategy:
       fail-fast: false
@@ -298,7 +305,7 @@ jobs:
 
   test:
     needs: [pr-test]
-    if: always() && (github.event_name != 'pull_request' || needs.pr-test.outputs.mode == 'full')
+    if: always() && (inputs.force_full || github.event_name != 'pull_request' || needs.pr-test.outputs.mode == 'full')
     name: test shard ${{ matrix.shard }}/12
     strategy:
       fail-fast: false
@@ -348,7 +355,7 @@ jobs:
           if-no-files-found: warn
 
   herdr-acceptance:
-    if: github.event_name != 'pull_request'
+    if: inputs.force_full || github.event_name != 'pull_request'
     name: herdr acceptance
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -398,7 +405,7 @@ jobs:
           if-no-files-found: ignore
 
   chrome:
-    if: github.event_name != 'pull_request'
+    if: inputs.force_full || github.event_name != 'pull_request'
     # The three states-gallery tests take most of the browser time, so each runs in
     # its own job and the other tests share one. Keep the widths in step with
     # visual-acceptance.e2e.ts; playwright-config.test.ts checks that they match.

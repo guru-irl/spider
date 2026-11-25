@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { authorizedPairLine } from "./intercom-pair-files";
 import { posix } from "node:path";
-import { causeCode, safeCauseCode, type CauseStep } from "./cause-codes";
+import { causeCode, revocationCauseCode, safeCauseCode, type CauseStep, type RevocationGate } from "./cause-codes";
 import { PublicationError, parsePublicationFailure, recordPublicationFailure, type PublicationFailure } from "./intercom-publication";
 import type { Outcome, Peer } from "./contracts";
 import { isMachineId } from "./machine-id";
@@ -285,14 +285,15 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
 }
 
 export interface RevocationResult { pairId: string; cleanupReason: IntercomRevocationCleanupReason | null }
-function revocationOutcome(pairId: string, code: 0 | 1 | 3, reason: string, cleanupReason: IntercomRevocationCleanupReason | null = null, fenceEpoch?: string): Outcome<RevocationResult> {
+export type RevocationOutcome = Outcome<RevocationResult> & { revocationGates?: readonly RevocationGate[] };
+function revocationOutcome(pairId: string, code: 0 | 1 | 3, reason: string, cleanupReason: IntercomRevocationCleanupReason | null = null, fenceEpoch?: string, revocationGates?: readonly RevocationGate[]): RevocationOutcome {
   return { code, reason, operationId: pairId, home: null, epoch: null,
     repairCommand: code === 3 || cleanupReason !== null ? `spider roam intercom revoke ${pairId}${fenceEpoch === undefined ? "" : ` --fence-epoch ${fenceEpoch}`}` : null,
-    value: code === 0 ? { pairId, cleanupReason } : null };
+    value: code === 0 ? { pairId, cleanupReason } : null, ...(revocationGates ? { revocationGates } : {}) };
 }
 
 /** A removed key alone cannot prove that a previously authenticated connection has closed. */
-export async function revokeIntercomPair(pairId: string, ports: IntercomRevocationPorts): Promise<Outcome<RevocationResult>> {
+export async function revokeIntercomPair(pairId: string, ports: IntercomRevocationPorts): Promise<RevocationOutcome> {
   if (!identifier(pairId)) return revocationOutcome(pairId, 1, "invalid-intercom-pair");
   try {
     return await ports.withLock(async () => {
@@ -313,13 +314,22 @@ export async function revokeIntercomPair(pairId: string, ports: IntercomRevocati
           !identifier(closure.fenceId) || closure.fenceDurable !== true || closure.exchanges !== "closed" || closure.inFlight !== 0) return revocationOutcome(pairId, 3, "revocation-incomplete", null, ports.fenceEpoch);
       await ports.beginRevocation(pair, closure.fenceId);
       await ports.notify([pair.source, pair.target]);
-      const pin = async (machine: Peer) => { try { return await ports.pinMachine(machine); } catch { return null; } };
-      const source = await pin(pair.source), target = await pin(pair.target);
+      const pin = async (machine: Peer) => {
+        try { return { value: await ports.pinMachine(machine) }; }
+        catch (error) { return { value: null, causeCode: revocationCauseCode(error, "revoke-pin") }; }
+      };
+      const sourcePin = await pin(pair.source), targetPin = await pin(pair.target);
+      const source = sourcePin.value, target = targetPin.value;
+      const revocationGates: RevocationGate[] = [];
       let cleanupReason: IntercomRevocationCleanupReason | null = null;
-      if (!target) cleanupReason = "intercom-revocation-unconfirmed";
-      else if (target.machineId !== pair.target.machineId || typeof target.coreId !== "string" || !target.coreId ||
+      if (!target) {
+        cleanupReason = "intercom-revocation-unconfirmed";
+        revocationGates.push({ side: "target", gate: "identity-pin-unavailable", ...(targetPin.causeCode ? { causeCode: targetPin.causeCode } : {}) });
+      } else if (target.machineId !== pair.target.machineId || typeof target.coreId !== "string" || !target.coreId ||
           source && (source.machineId !== pair.source.machineId || typeof source.coreId !== "string" || !source.coreId)) {
         cleanupReason = "intercom-revocation-unconfirmed";
+        if (target.machineId !== pair.target.machineId || typeof target.coreId !== "string" || !target.coreId) revocationGates.push({ side: "target", gate: "identity-pin-invalid" });
+        if (source && (source.machineId !== pair.source.machineId || typeof source.coreId !== "string" || !source.coreId)) revocationGates.push({ side: "source", gate: "identity-pin-invalid" });
       } else {
         const pins = { source, target };
         try {
@@ -327,18 +337,31 @@ export async function revokeIntercomPair(pairId: string, ports: IntercomRevocati
           const remoteMachine = closure.localMachineId === pair.source.machineId ? pair.target.machineId : pair.source.machineId;
           if (closure.localMachineId !== pair.target.machineId && (!remote || remote.sourceMachineId !== pair.source.machineId || remote.targetMachineId !== pair.target.machineId ||
               remote.localMachineId !== remoteMachine || remote.edgeEpoch !== fenceEpoch || remote.fenceId !== closure.fenceId ||
-              remote.fenceDurable !== true || remote.exchanges !== "closed" || remote.inFlight !== 0)) cleanupReason = "intercom-revocation-unconfirmed";
-        } catch { if (closure.localMachineId !== pair.target.machineId) cleanupReason = "intercom-revocation-unconfirmed"; }
+              remote.fenceDurable !== true || remote.exchanges !== "closed" || remote.inFlight !== 0)) {
+            cleanupReason = "intercom-revocation-unconfirmed";
+            revocationGates.push({ side: "target", gate: "fence-closure-unproven" });
+          }
+        } catch (error) { if (closure.localMachineId !== pair.target.machineId) {
+          cleanupReason = "intercom-revocation-unconfirmed";
+          revocationGates.push({ side: "target", gate: "fence-closure-unproven", causeCode: revocationCauseCode(error, "revoke-remote-fence") });
+        } }
         if (!cleanupReason) try {
           const stopped = await ports.stopPairHost?.(pair, pins, closure.fenceId);
           if (!stopped || stopped.machineId !== pair.target.machineId || stopped.unit !== `spider-pair-${pair.pairId}-host.service` ||
               !["inactive", "failed"].includes(stopped.activeState) || !Number.isSafeInteger(stopped.mainPid) || stopped.mainPid < 1 ||
               typeof stopped.mainStartIdentity !== "string" || !stopped.mainStartIdentity || stopped.mainProcess !== "exited" || stopped.controlGroup !== "empty" || stopped.killMode !== "control-group") {
             cleanupReason = "intercom-revocation-unconfirmed";
+            revocationGates.push({ side: "target", gate: "host-closure-unproven" });
           }
-        } catch { cleanupReason = "intercom-revocation-unconfirmed"; }
+        } catch (error) {
+          cleanupReason = "intercom-revocation-unconfirmed";
+          revocationGates.push({ side: "target", gate: "host-closure-unproven", causeCode: revocationCauseCode(error, "revoke-host") });
+        }
         if (!cleanupReason) try { await ports.removeAuthorizedKey(pair, pins); }
-        catch { cleanupReason = "intercom-revocation-unconfirmed"; }
+        catch (error) {
+          cleanupReason = "intercom-revocation-unconfirmed";
+          revocationGates.push({ side: "target", gate: "authorization-removal-unproven", causeCode: revocationCauseCode(error, "revoke-authorization") });
+        }
         if (!cleanupReason) try {
           if (ports.stopPairConnect && !await ports.stopPairConnect(pair, pins, closure.fenceId)) throw new Error("intercom-revocation-cleanup-pending");
           const route = await ports.removeMachineIfIdle(pair, pins);
@@ -349,14 +372,17 @@ export async function revokeIntercomPair(pairId: string, ports: IntercomRevocati
             if (!evidence || evidence.sourceMachineId !== pair.source.machineId || evidence.targetMachineId !== pair.target.machineId ||
                 evidence.edgeEpoch !== pair.edgeEpoch) {
               cleanupReason = "intercom-revocation-verification-pending";
-            } else if (evidence.keyAbsent !== true) cleanupReason = "intercom-revocation-unconfirmed";
+            } else if (evidence.keyAbsent !== true) {
+              cleanupReason = "intercom-revocation-unconfirmed";
+              revocationGates.push({ side: "target", gate: "authorization-absence-unproven" });
+            }
             else if (evidence.routeAbsent !== true || evidence.exchanges !== "closed") cleanupReason = "intercom-revocation-verification-pending";
             else if (evidence.authenticatedConnections !== "closed") cleanupReason = "intercom-revocation-access-open";
           }
         } catch { cleanupReason = "intercom-revocation-cleanup-pending"; }
       }
-      await ports.finishRevocation(pair, cleanupReason);
-      return cleanupReason === "intercom-revocation-unconfirmed" ? revocationOutcome(pairId, 3, cleanupReason, null, ports.fenceEpoch) : revocationOutcome(pairId, 0, "intercom-revoked", cleanupReason, ports.fenceEpoch);
+      await ports.finishRevocation(pair, cleanupReason, revocationGates.length ? revocationGates : undefined);
+      return cleanupReason === "intercom-revocation-unconfirmed" ? revocationOutcome(pairId, 3, cleanupReason, null, ports.fenceEpoch, revocationGates) : revocationOutcome(pairId, 0, "intercom-revoked", cleanupReason, ports.fenceEpoch);
     });
   } catch { return revocationOutcome(pairId, 3, "revocation-incomplete", null, ports.fenceEpoch); }
 }

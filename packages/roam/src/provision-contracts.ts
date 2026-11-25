@@ -2,6 +2,7 @@ import type { Diagnostic, Journal, Limits, Operation, Peer, Transport } from "./
 import type { AuthPorts } from "./auth";
 import type { SelectedFile, SelectedFileMetadata, SettingsDestinationPreview, SettingsKeyDigest, AgentPrivateModeRepair } from "./selected-files";
 import type { IntercomReadiness } from "./intercom-readiness";
+import type { RevocationGate } from "./cause-codes";
 
 export type FileLimit = number | "unlimited" | null;
 export interface FileStatus { present: boolean; readable: boolean; modeSafe: boolean }
@@ -47,7 +48,7 @@ export interface IntercomDoctorState {
   key: "ready" | "missing" | "unsafe" | "unknown"; route: "ready" | "missing" | "unknown";
   extension: "ready" | "missing" | "duplicate" | "unknown"; broker: "ready" | "legacy" | "unknown";
   feature: "ready" | "missing" | "unknown"; link: "live" | "down" | "unknown";
-  pendingRevocations: readonly { pairId: string; reason: IntercomRevocationCleanupReason }[];
+  pendingRevocations: readonly { pairId: string; reason: IntercomRevocationCleanupReason; revocationGates?: readonly RevocationGate[] }[];
 }
 export interface DoctorPorts {
   transport: Transport; journal: Journal; limits: Limits; configuredClis?: readonly ConfiguredCli[]; coreUnit?: string;
@@ -145,7 +146,7 @@ export interface IntercomRevocationPorts {
     edgeEpoch: string; keyAbsent: boolean; routeAbsent: boolean; exchanges: "closed" | "active" | "unknown";
     authenticatedConnections: "closed" | "active" | "unknown" }>;
   /** Persist completion and any still-required remote cleanup for read-only doctor. */
-  finishRevocation(pair: IntercomEnrollmentPair, cleanupReason: IntercomRevocationCleanupReason | null): Promise<void>;
+  finishRevocation(pair: IntercomEnrollmentPair, cleanupReason: IntercomRevocationCleanupReason | null, revocationGates?: readonly RevocationGate[]): Promise<void>;
 }
 
 export interface ProvisionPorts extends DoctorPorts {

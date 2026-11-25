@@ -22,6 +22,7 @@ import { pairResources, inspectPairUnit } from "./intercom-pair-resources";
 import { isMachineId } from "./machine-id";
 import type { LocalPairCleanup } from "./intercom-local-ops";
 import type { IntercomRevocationPorts } from "./provision-contracts";
+import { safeCauseCode } from "./cause-codes";
 
 interface EnrollmentOptions {
   root: string; journal: Journal; transport: ProvisionTransport; request: IntercomEnrollmentRequest; actor: string; now(): number;
@@ -287,8 +288,12 @@ export function createProductionIntercomRevocationPorts(input: RevocationOptions
     const bytes = await input.transport.transport.exec(handle.handle, ["roam", "intercom", command],
       { timeoutMs: 40_000, maxBytes: 64 * 1024, stdin: Buffer.from(JSON.stringify(value)) });
     const reply: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-    if (!object(reply) || reply.version !== 1 || reply.kind !== (command === "revoke-local" ? "intercom-revoke" : command === "observe-fence" ? "intercom-fence" : "intercom-cleanup") || reply.ok !== true ||
-        command === "cleanup-local" && reply.machineId !== machine.machineId) throw new Error("intercom-revocation-cleanup-pending");
+    const kind = command === "revoke-local" ? "intercom-revoke" : command === "observe-fence" ? "intercom-fence" : "intercom-cleanup";
+    if (!object(reply) || reply.version !== 1 || reply.kind !== kind || reply.ok !== true ||
+        command === "cleanup-local" && reply.machineId !== machine.machineId) {
+      const code = object(reply) && reply.version === 1 && reply.kind === kind && reply.ok === false && object(reply.cause) ? safeCauseCode(reply.cause.code) : undefined;
+      throw Object.assign(new Error("intercom-revocation-cleanup-pending"), code ? { code } : {});
+    }
     return reply.value;
   };
   const epochFor = async (pair: IntercomEnrollmentPair) => input.fenceEpoch ?? closureEpochs.get(pair.pairId) ?? (await registry.get(pair.pairId))?.revocationEpoch ?? pair.edgeEpoch;
@@ -413,8 +418,8 @@ export function createProductionIntercomRevocationPorts(input: RevocationOptions
         keyAbsent: object(observed) && observed.keyAbsent === true && keyRemoved.has(pair.pairId), routeAbsent: routeRemoved.has(pair.pairId),
         exchanges: hostClosed.has(pair.pairId) ? "closed" : "unknown", authenticatedConnections: object(observed) && observed.hostClosed === true ? "closed" : "unknown" };
     },
-    async finishRevocation(pair, reason) {
-      await registry.finishRevocation(pair.pairId, reason);
+    async finishRevocation(pair, reason, revocationGates) {
+      await registry.finishRevocation(pair.pairId, reason, revocationGates);
       if (reason !== null) return;
       const record = await registry.get(pair.pairId); if (!record?.fenceId) throw new Error("intercom-fence-mismatch");
       try {

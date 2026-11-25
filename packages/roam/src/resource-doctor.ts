@@ -5,6 +5,7 @@ import { InventoryError, inventory, prerequisiteDiagnostics } from "./inventory"
 import { normalizeConfiguredClis } from "./bootstrap-reply";
 import type { ConfiguredCli, DoctorPorts, FileLimit, FileStatus, IntercomDoctorState, Inventory, ProvisionVerification } from "./provision-contracts";
 import { intercomReadinessDiagnostics, validIntercomReadiness } from "./intercom-readiness";
+import { formatRevocationGates, validRevocationGates } from "./cause-codes";
 
 function fileReady(file: FileStatus): boolean { return file.present && file.readable && file.modeSafe; }
 function low(value: FileLimit, floor: number): boolean { return typeof value === "number" && value < floor; }
@@ -24,7 +25,8 @@ export function intercomDiagnostics(value: IntercomDoctorState): Diagnostic[] {
     broker: ["ready", "legacy", "unknown"], feature: ["ready", "missing", "unknown"], link: ["live", "down", "unknown"] };
   if (!value || typeof value !== "object" || Object.entries(allowed).some(([key, choices]) => !choices.includes((value as unknown as Record<string, string>)[key])) ||
       !Array.isArray(value.pendingRevocations) || value.pendingRevocations.some(item => !item || typeof item.pairId !== "string" ||
-        !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(item.pairId) || !cleanupReasons.has(item.reason))) throw new Error("intercom-diagnostics-invalid");
+        !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(item.pairId) || !cleanupReasons.has(item.reason) ||
+        item.revocationGates !== undefined && (item.reason !== "intercom-revocation-unconfirmed" || !validRevocationGates(item.revocationGates)))) throw new Error("intercom-diagnostics-invalid");
   const diagnostics: Diagnostic[] = [];
   const add = (reason: string, detail: string, severity: "warning" | "block" = "block") => diagnostics.push({ reason: `${reason}: ${detail}`, severity, repairCommand: null });
   if (value.connector === "missing") add("intercom-connector-missing", "Install the connector yourself and retry enrollment.");
@@ -41,7 +43,7 @@ export function intercomDiagnostics(value: IntercomDoctorState): Diagnostic[] {
   if (value.feature === "missing") add("intercom-feature-missing", "The broker does not offer federation.");
   if (value.link === "down") add("intercom-link-down", "The enrolled pair is unreachable.", "warning");
   for (const pending of value.pendingRevocations) add(pending.reason, pending.reason === "intercom-revocation-unconfirmed"
-    ? `Box A may still reach box B for ${pending.pairId} until B is back and its pair host is stopped.` : `Remote cleanup is pending for ${pending.pairId}.`,
+    ? `Box A may still reach box B for ${pending.pairId} until B is back and its pair host is stopped.${pending.revocationGates?.length ? ` Gates: ${formatRevocationGates(pending.revocationGates)}.` : ""}` : `Remote cleanup is pending for ${pending.pairId}.`,
     pending.reason === "intercom-revocation-unconfirmed" ? "block" : "warning");
   return diagnostics;
 }

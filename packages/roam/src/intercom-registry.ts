@@ -10,6 +10,7 @@ import type { IntercomPairResources, IntercomUnitRecord } from "./intercom-pair-
 import type { IntercomPairApproval } from "./intercom-contracts";
 import { isMachineId } from "./machine-id";
 import { openDiagnosticSnapshot } from "./diagnostic-snapshot";
+import { validRevocationGates, type RevocationGate } from "./cause-codes";
 
 const peerLeases = new AsyncLocalStorage<ReadonlyMap<string, { active: boolean }>>();
 /** Fixed order: peer lifecycle, then unit/config/registry locks. Never reclaim by age. */
@@ -28,7 +29,7 @@ export interface IntercomPairRecord {
   version: 1; pair: IntercomEnrollmentPlan | IntercomEnrollmentPair; state: "pending" | "active" | "revoking" | "revoked" | "cancelled";
   operationId: string; graphDigest: string; fenceId: string | null; cleanupReason: IntercomRevocationCleanupReason | null;
   resources?: IntercomPairResources; unit?: IntercomUnitRecord; revocationEpoch?: string;
-  commandApprovalFenceId?: string | null;
+  commandApprovalFenceId?: string | null; revocationGates?: readonly RevocationGate[];
 }
 /** Resources remain as cleanup receipts. A recorded epoch and no obligation prove completion. */
 export function canReuseRevokedPairId(record: IntercomPairRecord | null, candidate: IntercomEnrollmentPlan): boolean {
@@ -92,6 +93,7 @@ function validate(value: unknown, pairId: string): IntercomPairRecord {
   if (item.version !== 1 || !plan(item.pair) || item.pair.pairId !== pairId || !["pending", "active", "revoking", "revoked", "cancelled"].includes(item.state) ||
       !id(item.operationId) || !hash(item.graphDigest) || !(item.fenceId === null || isMachineId(item.fenceId)) ||
       !(item.cleanupReason === null || reasons.has(item.cleanupReason)) || item.revocationEpoch !== undefined && !id(item.revocationEpoch) ||
+      item.revocationGates !== undefined && (item.cleanupReason !== "intercom-revocation-unconfirmed" || !validRevocationGates(item.revocationGates)) ||
       item.commandApprovalFenceId !== undefined && (!(item.commandApprovalFenceId === null || isMachineId(item.commandApprovalFenceId)) || !bound(item.pair)) ||
       !["pending", "cancelled"].includes(item.state) && !bound(item.pair) ||
       item.state === "cancelled" && (bound(item.pair) || item.resources || item.unit || item.cleanupReason || item.revocationEpoch) ||
@@ -99,6 +101,7 @@ function validate(value: unknown, pairId: string): IntercomPairRecord {
   return { version: 1, pair: bound(item.pair) ? normalizePair(item.pair) : normalizePlan(item.pair), state: item.state,
     operationId: item.operationId, graphDigest: item.graphDigest, fenceId: item.fenceId, cleanupReason: item.cleanupReason,
     ...(item.revocationEpoch === undefined ? {} : { revocationEpoch: item.revocationEpoch }),
+    ...(item.revocationGates === undefined ? {} : { revocationGates: item.revocationGates.map(({ side, gate, causeCode }) => ({ side, gate, ...(causeCode === undefined ? {} : { causeCode }) })) }),
     ...(item.commandApprovalFenceId === undefined ? {} : { commandApprovalFenceId: item.commandApprovalFenceId }),
     ...(item.resources === undefined ? {} : { resources: resources(item.resources, item.pair) }), ...(item.unit === undefined ? {} : { unit: unit(item.unit, item.pair) }) };
 }
@@ -308,13 +311,17 @@ export function createIntercomRegistry(root: string, live?: LiveFenceReader) {
         await save({ ...existing, state: "revoking", fenceId, revocationEpoch: epoch });
       });
     },
-    async finishRevocation(pairId: string, cleanupReason: IntercomRevocationCleanupReason | null): Promise<void> {
+    async finishRevocation(pairId: string, cleanupReason: IntercomRevocationCleanupReason | null, revocationGates?: readonly RevocationGate[]): Promise<void> {
       if (cleanupReason !== null && !reasons.has(cleanupReason)) throw new Error("invalid-intercom-cleanup-reason");
+      if (revocationGates !== undefined && (cleanupReason !== "intercom-revocation-unconfirmed" || !validRevocationGates(revocationGates))) throw new Error("invalid-intercom-cleanup-gates");
       await locked(async () => {
         const existing = await get(pairId);
         if (!existing || existing.state !== "revoking" && existing.state !== "revoked" || !existing.fenceId) throw new Error("intercom-pair-conflict");
-        if (existing.state === "revoked" && existing.cleanupReason === cleanupReason) return;
-        await save({ ...existing, state: "revoked", cleanupReason });
+        const gates = cleanupReason === "intercom-revocation-unconfirmed" && existing.cleanupReason === cleanupReason
+          ? revocationGates ?? existing.revocationGates : revocationGates;
+        if (existing.state === "revoked" && existing.cleanupReason === cleanupReason && JSON.stringify(existing.revocationGates) === JSON.stringify(gates)) return;
+        const { revocationGates: _oldGates, ...rest } = existing;
+        await save({ ...rest, state: "revoked", cleanupReason, ...(gates === undefined ? {} : { revocationGates: gates }) });
       });
     },
   };

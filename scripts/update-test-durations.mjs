@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 
 const args = process.argv.slice(2);
 let output = 'scripts/test-durations.json';
@@ -26,5 +26,9 @@ for (const report of args) {
     durations[file] = Math.max(durations[file] ?? 0, endTime - startTime);
   }
 }
-writeFileSync(output, JSON.stringify(Object.fromEntries(Object.entries(durations).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)), null, 2) + '\n');
-console.log(`Wrote ${Object.keys(durations).length} file durations to ${output}`);
+// Reports from scoped PR runs cannot replace the complete history. Observed
+// files use the new maximum, so a genuine speedup can lower an old weight.
+const previous = existsSync(output) ? JSON.parse(readFileSync(output, 'utf8')) : {};
+const merged = { ...previous, ...durations };
+writeFileSync(output, JSON.stringify(Object.fromEntries(Object.entries(merged).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)), null, 2) + '\n');
+console.log(`Updated ${Object.keys(durations).length} file durations; retained ${Object.keys(merged).length} total entries`);

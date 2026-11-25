@@ -1,0 +1,425 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "toolchain",
+      "inputs": [
+        "package.json",
+        "package-lock.json",
+        "packages/*/package.json",
+        ".npmrc",
+        ".nvmrc",
+        ".node-version",
+        ".tool-versions",
+        "tsconfig*.json",
+        "**/tsconfig*.json",
+        "vite*.config.*",
+        "vitest*.ts",
+        "vitest*.mjs",
+        ".github/**"
+      ],
+      "tests": [],
+      "related": [],
+      "reason": "Resolution, setup and workflow changes can affect every test.",
+      "full": true
+    },
+    {
+      "id": "test-policy",
+      "inputs": [
+        "scripts/select-tests*",
+        "scripts/test-resources.json",
+        "scripts/run-selected-tests.mjs",
+        "scripts/replay-test-selection.mjs",
+        "scripts/vitest-*",
+        "scripts/test-shards.ts",
+        "scripts/list-test-shards.mjs",
+        "scripts/test-shard-budget.mjs",
+        "scripts/test-durations.json",
+        "scripts/update-test-durations.mjs",
+        "scripts/test-bundle.ts",
+        "scripts/check-test-selection.mjs"
+      ],
+      "tests": [],
+      "related": [],
+      "reason": "Selection and partition policy must not omit its own regressions.",
+      "full": true
+    },
+    {
+      "id": "build-install",
+      "inputs": [
+        "scripts/build*",
+        "scripts/postinstall*",
+        "scripts/*link*",
+        "scripts/assert-bundle*",
+        "scripts/check-package*",
+        "scripts/package-extension.ts",
+        "scripts/extension-shim.mjs",
+        "scripts/generate-roam-sql.mjs"
+      ],
+      "tests": [],
+      "related": [],
+      "reason": "Build and package boundaries affect filesystem and subprocess consumers.",
+      "full": true
+    },
+    {
+      "id": "shared-environment",
+      "inputs": [
+        "packages/db-core/src/testutil.ts",
+        "packages/db-core/src/__tests__/global-config.testutil.ts",
+        "packages/herdr/src/__tests__/testutil.ts"
+      ],
+      "tests": [],
+      "related": [],
+      "reason": "Shared state and globally injected fixtures have suite-wide reach.",
+      "full": true
+    },
+    {
+      "id": "herdr-assets",
+      "inputs": [
+        "packages/herdr/assets/**",
+        "scripts/spaces-*-fragments/**",
+        "scripts/compose-spaces-*.mjs"
+      ],
+      "tests": [
+        "packages/herdr/src/**/*.test.ts",
+        "packages/host/src/**/herdr*.test.ts",
+        "packages/host/src/herdr/**/*.test.ts",
+        "packages/host/src/__tests__/*packag*.test.ts",
+        "packages/host/src/__tests__/licence-notices.test.ts",
+        "packages/herdr/src/__tests__/packaging.test.ts",
+        "packages/superpowers/src/__tests__/packaging.test.ts"
+      ],
+      "related": [
+        "packages/host/src/herdr/ports.ts"
+      ],
+      "reason": "Asset recipes, role templates and composed patches are read from disk."
+    },
+    {
+      "id": "skills",
+      "inputs": [
+        "packages/*/skills/**"
+      ],
+      "tests": [
+        "packages/$package/src/**/*.test.ts",
+        "packages/host/src/__tests__/doctor-skills.test.ts",
+        "packages/host/src/__tests__/*packag*.test.ts",
+        "packages/host/src/__tests__/licence-notices.test.ts",
+        "packages/herdr/src/__tests__/packaging.test.ts",
+        "packages/superpowers/src/__tests__/packaging.test.ts"
+      ],
+      "related": [],
+      "reason": "Skill guards walk Markdown and execute shipped shell scripts."
+    },
+    {
+      "id": "documentation",
+      "inputs": [
+        "docs/**",
+        "README.md",
+        "packages/*/README.md",
+        "assets/**"
+      ],
+      "tests": [
+        "packages/host/src/__tests__/pi-config-examples.test.ts",
+        "packages/host/src/__tests__/readme.test.ts",
+        "packages/host/src/__tests__/config-reader-guard.test.ts",
+        "packages/herdr/src/__tests__/herdr-documentation.test.ts",
+        "packages/db-core/src/__tests__/roam-capture.test.ts",
+        "packages/$package/src/**/*.test.ts"
+      ],
+      "related": [],
+      "reason": "Example, README, configuration and roaming guards read document text."
+    },
+    {
+      "id": "fixtures",
+      "inputs": [
+        "packages/*/src/**/fixtures/**"
+      ],
+      "tests": [
+        "packages/$package/src/**/*.test.ts",
+        "packages/herdr/src/**/*.test.ts",
+        "packages/host/src/**/herdr*.test.ts",
+        "packages/host/src/herdr/**/*.test.ts",
+        "packages/host/src/__tests__/*packag*.test.ts",
+        "packages/host/src/__tests__/licence-notices.test.ts",
+        "packages/herdr/src/__tests__/packaging.test.ts",
+        "packages/superpowers/src/__tests__/packaging.test.ts"
+      ],
+      "related": [],
+      "reason": "Fixture paths are computed by helpers, including cross-package Herdr readers."
+    },
+    {
+      "id": "intercom-policy",
+      "inputs": [
+        "packages/intercom/DIVERGENCE.json",
+        "packages/intercom/upstream-assertions.json",
+        "packages/intercom/ORIGIN.md",
+        "packages/intercom/src/**"
+      ],
+      "tests": [
+        "packages/intercom/src/__tests__/upstream-parity.test.ts",
+        "packages/host/src/__tests__/intercom-upstream-inventory.test.ts"
+      ],
+      "related": [],
+      "reason": "Parity scans source and metadata rather than importing them."
+    },
+    {
+      "id": "source-text",
+      "inputs": [
+        "packages/*/src/**/*.ts",
+        "packages/*/src/**/*.tsx",
+        "packages/*/src/**/*.js",
+        "packages/*/src/**/*.mjs"
+      ],
+      "tests": [
+        "packages/host/src/__tests__/config-reader-guard.test.ts"
+      ],
+      "related": [],
+      "reason": "The source-text configuration guard parses production files from disk."
+    },
+    {
+      "id": "legacy-widget",
+      "inputs": [
+        "packages/subagents/src/index.ts"
+      ],
+      "tests": [
+        "packages/host/src/__tests__/no-legacy-widget.test.ts"
+      ],
+      "related": [],
+      "reason": "The legacy-widget guard reads the subagent entry as text."
+    },
+    {
+      "id": "test-inventory",
+      "inputs": [
+        "packages/*/src/**/*.test.ts"
+      ],
+      "tests": [
+        "packages/host/src/__tests__/test-shards.test.ts",
+        "packages/host/src/__tests__/intercom-upstream-inventory.test.ts",
+        "packages/host/src/__tests__/select-tests.test.ts"
+      ],
+      "related": [],
+      "reason": "Full-inventory guards must see additions and changes to test files."
+    },
+    {
+      "id": "parity-script",
+      "inputs": [
+        "scripts/check-intercom-parity.mjs"
+      ],
+      "tests": [
+        "packages/intercom/src/__tests__/upstream-parity.test.ts"
+      ],
+      "related": [],
+      "reason": "Parity imports this verifier through a computed file URL."
+    },
+    {
+      "id": "build-probes",
+      "inputs": [
+        "scripts/probe-reload.mjs",
+        "scripts/probe-build-watch.mjs"
+      ],
+      "tests": [
+        "packages/host/src/__tests__/build-probes.test.ts"
+      ],
+      "related": [],
+      "reason": "Probe guards read and launch these scripts."
+    }
+  ],
+  "bundles": {
+    "entries": [
+      "packages/host/src/extension.ts",
+      "packages/roam/src/cli-entry.ts",
+      "packages/host/src/roam/cli-main.ts",
+      "packages/roam/src/intercom-helper.ts",
+      "packages/roam/src/supervisor-main.ts",
+      "packages/herdr/src/bin/cli.ts",
+      "packages/host/src/herdr/bin/pane-endpoint-main.ts",
+      "packages/herdr/src/bin/feed-reader.ts",
+      "packages/herdr/src/bin/viewer.ts",
+      "packages/herdr/src/viewers/pi-main.ts",
+      "packages/herdr/src/remote/runtime-entry.ts",
+      "packages/subagents/src/supervisor-main.ts",
+      "packages/intercom/src/broker/broker.ts"
+    ],
+    "consumers": [
+      "packages/context/src/__tests__/background-job.test.ts",
+      "packages/context/src/__tests__/executor-background-receipt.test.ts",
+      "packages/context/src/__tests__/executor-background-survival.test.ts",
+      "packages/herdr/src/__tests__/acceptance/f.ts",
+      "packages/herdr/src/__tests__/child-remote-integration.test.ts",
+      "packages/herdr/src/__tests__/endpoint-fixture.ts",
+      "packages/herdr/src/__tests__/feed-reader-server.test.ts",
+      "packages/herdr/src/__tests__/herdr-crashfg-real.test.ts",
+      "packages/herdr/src/__tests__/herdr-crashorder-real.test.ts",
+      "packages/herdr/src/__tests__/herdr-cutover-rollback.test.ts",
+      "packages/herdr/src/__tests__/herdr-e127-real.test.ts",
+      "packages/herdr/src/__tests__/herdr-e2e-package.test.ts",
+      "packages/herdr/src/__tests__/herdr-expired-fixture.ts",
+      "packages/herdr/src/__tests__/herdr-feed-reader.test.ts",
+      "packages/herdr/src/__tests__/herdr-jobs-parent.test.ts",
+      "packages/herdr/src/__tests__/herdr-monitor-real.test.ts",
+      "packages/herdr/src/__tests__/herdr-remote-cache.test.ts",
+      "packages/herdr/src/__tests__/herdr-remote-receipt.test.ts",
+      "packages/herdr/src/__tests__/herdr-runtime-hints.test.ts",
+      "packages/herdr/src/__tests__/herdr-ui-2-feed.test.ts",
+      "packages/herdr/src/__tests__/herdr-viewer-warning.test.ts",
+      "packages/herdr/src/__tests__/ipc-cli.test.ts",
+      "packages/herdr/src/__tests__/packaging.test.ts",
+      "packages/herdr/src/__tests__/pane-setup-doctor.test.ts",
+      "packages/herdr/src/__tests__/production-cutover-fixture.ts",
+      "packages/herdr/src/__tests__/roam-destination-layout.test.ts",
+      "packages/herdr/src/__tests__/roam-transport.test.ts",
+      "packages/herdr/src/__tests__/scenario-setup.ts",
+      "packages/herdr/src/__tests__/setup-fixture.ts",
+      "packages/herdr/src/__tests__/spider-panel.test.ts",
+      "packages/herdr/src/__tests__/ssh-admin-transport.test.ts",
+      "packages/herdr/src/__tests__/ssh-core-loss.test.ts",
+      "packages/herdr/src/__tests__/ssh-core-restart.test.ts",
+      "packages/herdr/src/__tests__/viewer-entry.test.ts",
+      "packages/herdr/src/remote/fix3.test.ts",
+      "packages/herdr/src/remote/node-bootstrap.test.ts",
+      "packages/host/src/__tests__/build-id.test.ts",
+      "packages/host/src/__tests__/copy-button-entry.test.ts",
+      "packages/host/src/__tests__/herdr-auto-resume.test.ts",
+      "packages/host/src/__tests__/herdr-child-guard.test.ts",
+      "packages/host/src/__tests__/herdr-child.test.ts",
+      "packages/host/src/__tests__/herdr-console-reaping.test.ts",
+      "packages/host/src/__tests__/herdr-core-only.test.ts",
+      "packages/host/src/__tests__/herdr-coreid.test.ts",
+      "packages/host/src/__tests__/herdr-cost.test.ts",
+      "packages/host/src/__tests__/herdr-crashorder-reaping.test.ts",
+      "packages/host/src/__tests__/herdr-job-evidence.test.ts",
+      "packages/host/src/__tests__/herdr-minor-notice.test.ts",
+      "packages/host/src/__tests__/herdr-mode.test.ts",
+      "packages/host/src/__tests__/herdr-nodepath.test.ts",
+      "packages/host/src/__tests__/herdr-notice.test.ts",
+      "packages/host/src/__tests__/herdr-ownership.test.ts",
+      "packages/host/src/__tests__/herdr-pace.test.ts",
+      "packages/host/src/__tests__/herdr-packed-digests.test.ts",
+      "packages/host/src/__tests__/herdr-pane-installation.test.ts",
+      "packages/host/src/__tests__/herdr-presence.test.ts",
+      "packages/host/src/__tests__/herdr-remote-file.test.ts",
+      "packages/host/src/__tests__/herdr-setup-agent-dir.test.ts",
+      "packages/host/src/__tests__/herdr-setup-cross-machine.test.ts",
+      "packages/host/src/__tests__/herdr-setup-fixture.ts",
+      "packages/host/src/__tests__/herdr-setup-probes.test.ts",
+      "packages/host/src/__tests__/herdr-setup-production-install.test.ts",
+      "packages/host/src/__tests__/herdr-setup-production-rollback.test.ts",
+      "packages/host/src/__tests__/herdr-setup-rollback-exit.test.ts",
+      "packages/host/src/__tests__/herdr-sidebar.test.ts",
+      "packages/host/src/__tests__/herdr-ssh.test.ts",
+      "packages/host/src/__tests__/herdr-viewer-layout.test.ts",
+      "packages/host/src/__tests__/herdr-viewer-quit.test.ts",
+      "packages/host/src/__tests__/herdr-viewer-replace.test.ts",
+      "packages/host/src/__tests__/herdr-viewers.test.ts",
+      "packages/host/src/__tests__/herdr-wiring-fixture.ts",
+      "packages/host/src/__tests__/intercom-admission.test.ts",
+      "packages/host/src/__tests__/licence-notices.test.ts",
+      "packages/host/src/__tests__/models-catalog.test.ts",
+      "packages/host/src/__tests__/roam-cli-installed.test.ts",
+      "packages/host/src/compaction/__tests__/files.test.ts",
+      "packages/host/src/compaction/__tests__/pi12-parity.test.ts",
+      "packages/host/src/compaction/__tests__/seeded.test.ts",
+      "packages/host/src/herdr/__tests__/fixture-process-domain.test.ts",
+      "packages/host/src/herdr/__tests__/linux-process-inventory.test.ts",
+      "packages/host/src/roam/__tests__/roam-intercom-move.test.ts",
+      "packages/host/src/roam/__tests__/roam-remote-pi.test.ts",
+      "packages/host/src/roam/__tests__/roam-usage-producer.test.ts",
+      "packages/host/src/usage/__tests__/dashboard-build-isolation.test.ts",
+      "packages/host/src/usage/__tests__/fixtures/herdr-assets.ts",
+      "packages/host/src/usage/__tests__/fixtures/roam-assets.ts",
+      "packages/host/src/usage/__tests__/lease.test.ts",
+      "packages/host/src/usage/__tests__/ledger-open.test.ts",
+      "packages/host/src/usage/__tests__/runtime.test.ts",
+      "packages/intercom/src/__tests__/intercom-build-atomic.test.ts",
+      "packages/intercom/src/__tests__/intercom-switchover.test.ts",
+      "packages/intercom/src/__tests__/reload-integration.test.ts",
+      "packages/intercom/src/broker/extension.test.ts",
+      "packages/intercom/src/broker/federation-disconnect-roam.test.ts",
+      "packages/intercom/src/broker/federation-roam.test.ts",
+      "packages/intercom/src/broker/federation-socket.test.ts",
+      "packages/intercom/src/broker/fixture-cleanup.test.ts",
+      "packages/intercom/src/broker/helper-socket.test.ts",
+      "packages/intercom/src/broker/receipt-queue.test.ts",
+      "packages/intercom/src/broker/receipt-replay.test.ts",
+      "packages/intercom/src/broker/spawn.test.ts",
+      "packages/intercom/src/broker/versions.test.ts",
+      "packages/intercom/src/federation-protocol.test.ts",
+      "packages/intercom/src/intercom.integration.test.ts",
+      "packages/intercom/src/receipt-replay-integration.test.ts",
+      "packages/intercom/src/reconnect.test.ts",
+      "packages/memory/src/__tests__/queue-process.test.ts",
+      "packages/roam/src/__tests__/agent.test.ts",
+      "packages/roam/src/__tests__/bootstrap-agent-directory.test.ts",
+      "packages/roam/src/__tests__/bootstrap-fixture.ts",
+      "packages/roam/src/__tests__/bootstrap-script.test.ts",
+      "packages/roam/src/__tests__/cli-package.test.ts",
+      "packages/roam/src/__tests__/enable-entry.test.ts",
+      "packages/roam/src/__tests__/hosting-acceptance.test.ts",
+      "packages/roam/src/__tests__/hub-service-package.test.ts",
+      "packages/roam/src/__tests__/intercom-acceptance.test.ts",
+      "packages/roam/src/__tests__/intercom-enrollment.test.ts",
+      "packages/roam/src/__tests__/intercom-move-port.test.ts",
+      "packages/roam/src/__tests__/intercom-offline-readiness.test.ts",
+      "packages/roam/src/__tests__/intercom-package.test.ts",
+      "packages/roam/src/__tests__/intercom-tool-delivery.test.ts",
+      "packages/roam/src/__tests__/intercom-upgrade-hardening.test.ts",
+      "packages/roam/src/__tests__/provision-adapter.test.ts",
+      "packages/roam/src/__tests__/provision-cli.test.ts",
+      "packages/roam/src/__tests__/provision-prefix-modes.test.ts",
+      "packages/roam/src/__tests__/provision-private-modes.test.ts",
+      "packages/roam/src/__tests__/provision.test.ts",
+      "packages/roam/src/__tests__/session-control.test.ts",
+      "packages/subagents/src/__tests__/durable-child.test.ts",
+      "packages/subagents/src/__tests__/fork-launch-real.test.ts",
+      "packages/subagents/src/__tests__/pi-args.test.ts",
+      "packages/subagents/src/__tests__/pi-spawn.test.ts",
+      "packages/subagents/src/__tests__/pi-version-fallback.test.ts",
+      "packages/subagents/src/__tests__/process-identity.test.ts",
+      "packages/subagents/src/__tests__/reload-round3.test.ts",
+      "packages/subagents/src/__tests__/reporter-ownership-round4.test.ts",
+      "packages/subagents/src/__tests__/reviewer-profile-real.test.ts",
+      "packages/subagents/src/__tests__/rpc-disposition.test.ts",
+      "packages/subagents/src/__tests__/rpc-real-delivery.test.ts",
+      "packages/subagents/src/__tests__/rpc-real-hung-delivery.test.ts",
+      "packages/subagents/src/__tests__/rpc-spawn.test.ts",
+      "packages/superpowers/src/__tests__/packaging.test.ts",
+      "packages/superpowers/src/__tests__/skills-dir.test.ts",
+      "packages/ui/src/__tests__/runtime-boundary.test.ts"
+    ],
+    "reason": "Vite entry graphs provide source-to-output edges; listed runtime tests and helper importers consume those outputs."
+  },
+  "optional": {
+    "chrome": [
+      "packages/host/src/usage/**",
+      "scripts/usage-dashboard*",
+      "vite.dashboard.config.mjs",
+      "docs/dev-ui-testing.md",
+      "playwright.config.*",
+      "packages/db-core/src/**",
+      "packages/models/src/**",
+      "packages/host/src/extension.ts"
+    ],
+    "acceptance": [
+      "packages/herdr/**",
+      "packages/host/src/herdr/**",
+      "packages/host/src/extension.ts",
+      "packages/host/src/herdr*.ts",
+      "packages/roam/**",
+      "packages/intercom/**",
+      "packages/subagents/src/**",
+      "packages/db-core/src/**",
+      "scripts/herdr*",
+      "scripts/test-bundle.ts",
+      "packages/*/src/**",
+      "docs/guide/herdr.md"
+    ],
+    "stories": [
+      "**",
+      "!docs/**",
+      "!README.md",
+      "!packages/*/README.md",
+      "!packages/*/skills/**",
+      "docs/guide/herdr.md"
+    ]
+  }
+}

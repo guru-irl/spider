@@ -45,6 +45,8 @@ function preflightCheck(reason: string): string {
 }
 function preflightDetail(reason: string): string | undefined {
   const detail = reason.replace(/^local machine:\s*/i, "");
+  const pair = /^(intercom-fence-mismatch|intercom-revocation-unconfirmed): Pair ([A-Za-z0-9][A-Za-z0-9._-]{0,127})(?=[:\s])/.exec(detail);
+  if (pair) return pair[1] === "intercom-fence-mismatch" ? `Pair ${pair[2]} does not match the current fence.` : `Pair ${pair[2]} has an unconfirmed revocation.`;
   const process = /^PID ([0-9]+) loaded build .+ without the required release or roaming schema [0-9]+\. Reload it\.$/.exec(detail);
   if (process) return `PID ${process[1]} loaded build incompatible with this release. Reload it.`;
   if (detail === "Cannot read the process presence inventory. Run spider roam doctor.") return detail;

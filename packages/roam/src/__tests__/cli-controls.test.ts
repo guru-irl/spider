@@ -246,6 +246,30 @@ it.each([["filesystem", "ENOENT"], ["transport", "cli-timeout"], ["unknown", "un
   expect(f.err.join("")).not.toContain("private-secret");
 }, 5000);
 
+it.each([
+  ["intercom-fence-mismatch", "Pair pair-old does not match the current fence."],
+  ["intercom-revocation-unconfirmed", "Pair pair-old has an unconfirmed revocation."],
+] as const)("enable preflight names the blocking pair for %s in text and JSON", async (reason, detail) => {
+  const f = await fixture(HUB, undefined, false), file = join(f.root, "roam/config.json");
+  const config = JSON.parse(readFileSync(file, "utf8")); config.enabled = false; config.peers[0].alias = "box-1.invalid";
+  writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  const before = readFileSync(file);
+  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
+  vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: unknown) { return peer; }, async exec(_peer: unknown, argv: string[]) {
+    const operation = JSON.parse(argv[2]);
+    return Buffer.from(JSON.stringify({ operationId: operation.id, code: 0,
+      value: { protocol: 1, schema: 14, machineId: BOX, stores: ["global"], ungathered: [] } }));
+  } } as never);
+  vi.spyOn(remoteObservations, "remoteDoctor").mockResolvedValue({ enabled: false, consumers: [], diagnostics: [
+    { severity: "block", reason: `${reason}: Pair pair-old: closure is unconfirmed.`, repairCommand: "spider roam intercom revoke pair-old" },
+  ] });
+  expect(await f.invoke(["roam", "enable", "--json"])).toBe(1);
+  expect(JSON.parse(f.out.join(""))).toMatchObject({ value: { issues: [{ reason: `preflight-failed:box-1.invalid:${reason}`, detail }] } });
+  expect(await f.invoke(["roam", "enable"])).toBe(1);
+  expect(f.err.join("")).toContain(detail);
+  expect(readFileSync(file)).toEqual(before);
+});
+
 it("enable pending retains the real peer agent cause after broker startup", async () => {
   const f = await fixture(HUB, undefined, false), file = join(f.root, "roam/config.json");
   const config = JSON.parse(readFileSync(file, "utf8")); config.enabled = false; config.peers[0].alias = "box-1.invalid";

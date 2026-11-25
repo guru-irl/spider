@@ -770,8 +770,16 @@ async function supervisorPreflightFixture(mismatch: "root" | "release" | null) {
 it.each(["root", "release"] as const)("destination preflight refuses a same-named supervisor on another %s before freeze or home CAS", async mismatch => {
   const c = await supervisorPreflightFixture(mismatch), beforeFile = readFileSync(c.file.file), beforeHome = sessionHome(c.hub.db, "s-1");
   await expect(c.ports.check(c.request)).rejects.toMatchObject({ failure: { step: "destination-diagnostics", code: `supervisor-${mismatch}-mismatch` } });
-  expect(await moveSession(c.request, c.ports)).toMatchObject({ code: 1, reason: "move-preflight-refused",
-    failure: { step: "destination-diagnostics", code: `supervisor-${mismatch}-mismatch` } });
+  const result = await moveSession(c.request, c.ports);
+  expect(result).toMatchObject({ code: 1, reason: "move-preflight-refused", causeCode: `supervisor-${mismatch}-mismatch`,
+    repairCommand: `spider roam provision ${BOX}`, failure: { step: "destination-diagnostics", code: `supervisor-${mismatch}-mismatch` } });
+  if (result.ok) throw new Error("Expected a move refusal");
+  expect(result.refusal.message).toContain(`spider roam provision ${BOX}`);
+  expect(safeControlOutcome(result)).toMatchObject({ causeCode: `supervisor-${mismatch}-mismatch`,
+    repairCommand: `spider roam provision ${BOX}`, refusal: { message: result.refusal.message } });
+  expect(c.f.ports.journal.read(c.request.operation.id).filter(row => row.action === "move-failure").map(row => row.result))
+    .toEqual([{ step: "destination-diagnostics", code: `supervisor-${mismatch}-mismatch` }]);
+  expect(await moveSession(c.request, c.ports)).toEqual(result);
   const op = { id: "direct-diagnostics", kind: "move-diagnostics", machineId: BOX, expectedEpoch: 1,
     args: { sourceMachine: HUB, sessionId: "s-1", moveId: c.request.operation.id } };
   expect(await handleMoveParticipantOperation(op, c.f.ports.journal, c.destination)).toMatchObject({ code: 1,
@@ -787,11 +795,31 @@ it.each(["root", "release"] as const)("destination preflight refuses a same-name
 it("preflight refuses a foreign fixed unit even when a matching-root manual supervisor answers", async () => {
   const c = await supervisorPreflightFixture(null); c.running.pid = 43;
   await expect(c.ports.check(c.request)).rejects.toMatchObject({ failure: { step: "destination-diagnostics", code: "supervisor-identity-unavailable" } });
+  const result = await moveSession(c.request, c.ports);
+  expect(result).toMatchObject({ code: 1, causeCode: "supervisor-identity-unavailable", repairCommand: `spider roam provision ${BOX}`,
+    failure: { step: "destination-diagnostics", code: "supervisor-identity-unavailable" } });
+  if (result.ok) throw new Error("Expected a move refusal");
+  expect(result.refusal.message).toContain(`spider roam provision ${BOX}`);
+  expect(c.f.ports.journal.read(c.request.operation.id).filter(row => row.action === "move-failure").map(row => row.result))
+    .toEqual([{ step: "destination-diagnostics", code: "supervisor-identity-unavailable" }]);
   expect(sessionHome(c.hub.db, "s-1")).toEqual(c.home);
   expect(await createRunningIntentAuthority(c.f.global.db).get("s-1")).toBeNull();
   expect(await createIntentStore(c.f.global.root).get("s-1")).toBeNull();
   expect(c.freezes()).toBe(0); expect(c.wakes()).toBe(0);
 }, 5000);
+
+it("destination preflight reports an unavailable supervisor release and provisioning repair", async () => {
+  const c = await supervisorPreflightFixture(null);
+  unlinkSync(join(c.f.global.root, "roam", "active-release.json"));
+  const result = await moveSession(c.request, c.ports);
+  expect(result).toMatchObject({ code: 1, causeCode: "supervisor-release-unavailable", repairCommand: `spider roam provision ${BOX}`,
+    failure: { step: "destination-diagnostics", code: "supervisor-release-unavailable" } });
+  if (result.ok) throw new Error("Expected a move refusal");
+  expect(result.refusal.message).toContain(`spider roam provision ${BOX}`);
+  expect(c.f.ports.journal.read(c.request.operation.id).filter(row => row.action === "move-failure").map(row => row.result))
+    .toEqual([{ step: "destination-diagnostics", code: "supervisor-release-unavailable" }]);
+  expect(c.freezes()).toBe(0); expect(c.wakes()).toBe(0);
+});
 
 it("box wake refuses a changed supervisor before reserving the exact session", async () => {
   const c = await supervisorPreflightFixture("release"), authority = createRunningIntentAuthority(c.f.global.db);

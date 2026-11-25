@@ -24,6 +24,7 @@ import { handleAgentOperation } from "../agent";
 import { appendMirror } from "../mirrors";
 import { forgetMachine } from "../forget";
 import { moveSession, resumeMove } from "../move";
+import { safeControlOutcome } from "../commands";
 import type { Home, HubOperationReadiness, JsonObject, Probe, StoreKey } from "@spider/db-core/roam/types";
 import { createSessionLeases } from "@spider/herdr/sessions/lease";
 import { createProcessPresence } from "@spider/herdr/sessions/presence";
@@ -205,14 +206,15 @@ it.each([
       return exec(peer, argv, options);
     };
   }
-  const result = await resumeMove({ operation: f.operation, sessionId: SESSION, destinationMachine: BOX }, f.ports);
+  const operation = { ...f.operation, id: "public-adapter-refusal" };
+  const result = await moveSession({ operation, sessionId: SESSION, destinationMachine: BOX }, f.ports);
   expect(result).toMatchObject({ code: 1, reason: "move-preflight-refused", failure: { step, code: detailCode } });
   if (step === "destination-diagnostics") expect(result.causeCode).toBe("move-adapter-unavailable");
   else expect(result).not.toHaveProperty("causeCode");
-  expect(f.journal.read(f.operation.id)).toContainEqual(expect.objectContaining({ action: "move-failure", result: { step, code: detailCode } }));
+  expect(f.journal.read(operation.id)).toContainEqual(expect.objectContaining({ action: "move-failure", result: { step, code: detailCode } }));
   expect(JSON.stringify(result)).not.toContain("PRIVATE-ADAPTER-SENTINEL");
   expect(JSON.stringify(result)).not.toContain("/fixture/private-file");
-  expect(JSON.stringify({ result, journal: f.journal.read(f.operation.id) })).not.toContain("private");
+  expect(JSON.stringify({ result, journal: f.journal.read(operation.id) })).not.toContain("private");
   expect(sessionHome(f.global.db, SESSION)).toEqual(f.home);
 });
 
@@ -583,6 +585,8 @@ async function transferFixture(homeless = false, sessionOnly = false) {
   f.global.db.prepare("INSERT OR IGNORE INTO roam_repo_maps(repo_key,path) VALUES(?,?)").run(f.check.repoKey, f.repo);
   f.global.db.prepare("INSERT OR IGNORE INTO roam_workspace_maps(repo_key,workspace_id,path,snapshot_json) VALUES(?,?,?,NULL)").run(f.check.repoKey, f.check.workspaceId, f.repo);
   f.config.peers[0].globalRoot = remoteRoot;
+  mkdirSync(join(remoteRoot, "roam"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(remoteRoot, "roam", "active-release.json"), JSON.stringify(join(f.root, "release")), { mode: 0o600 });
   const remoteJournal = openFreezeJournal(join(remoteRoot, "journal.db"));
   const config = { ...f.config, machineId: BOX, role: "box" as const };
   const leases = createSessionLeases(join(remoteRoot, "herdr")), inventory = { leases, presence: createProcessPresence(leases.root), processes: async () => [], probe: async () => ({ kind: "live" as const, startIdentity: "fixture-lock" }) };
@@ -839,8 +843,18 @@ it("no shared destination history refuses with a fetch instruction before freeze
   f.bindings.mapping = async () => ({ repoKey: f.check.repoKey, workspaceId: f.check.workspaceId, sourceRoot: f.repo,
     destinationRoot: f.destination, destinationCwd: f.destination });
   const freeze = vi.spyOn(f.ports, "freeze");
-  const result = await resumeMove({ operation: f.operation, sessionId: SESSION, destinationMachine: BOX }, f.ports);
-  expect(result).toMatchObject({ code: 1, reason: "move-preflight-refused" });
+  const operation = { ...f.operation, id: "public-shared-base" };
+  const request = { operation, sessionId: SESSION, destinationMachine: BOX };
+  const result = await moveSession(request, f.ports);
+  expect(result).toMatchObject({ code: 1, reason: "move-preflight-refused", causeCode: "workspace-prerequisite-missing",
+    repairCommand: "fetch a shared merge base on the destination", failure: { step: "remote-prepare", code: "workspace-prerequisite-missing" } });
+  if (result.ok) throw new Error("Expected a move refusal");
+  expect(result.refusal.message).toContain("fetch a shared merge base on the destination");
+  expect(safeControlOutcome(result)).toMatchObject({ causeCode: "workspace-prerequisite-missing",
+    repairCommand: "fetch a shared merge base on the destination", refusal: { message: result.refusal.message } });
+  expect(f.journal.read(operation.id).filter(row => row.action === "move-failure").map(row => row.result))
+    .toEqual([{ step: "remote-prepare", code: "workspace-prerequisite-missing" }]);
+  expect(await moveSession(request, f.ports)).toEqual(result);
   expect(freeze).not.toHaveBeenCalled();
   expect(sessionHome(f.global.db, SESSION)).toEqual(f.home);
   expect(readFileSync(join(f.repo, ".git", "index"))).toEqual(sourceIndex);
@@ -858,8 +872,14 @@ it("unfetched destination prerequisite refuses with a fetch instruction before f
   f.bindings.mapping = async () => ({ repoKey: f.check.repoKey, workspaceId: f.check.workspaceId, sourceRoot: f.repo,
     destinationRoot: f.destination, destinationCwd: f.destination });
   const freeze = vi.spyOn(f.ports, "freeze");
-  expect(await resumeMove({ operation: f.operation, sessionId: SESSION, destinationMachine: BOX }, f.ports))
-    .toMatchObject({ code: 1, reason: "move-preflight-refused" });
+  const operation = { ...f.operation, id: "public-unfetched" };
+  const result = await moveSession({ operation, sessionId: SESSION, destinationMachine: BOX }, f.ports);
+  expect(result).toMatchObject({ code: 1, reason: "move-preflight-refused", causeCode: "workspace-prerequisite-missing",
+    repairCommand: "fetch the required commits on both machines", failure: { step: "remote-prepare", code: "workspace-prerequisite-missing" } });
+  if (result.ok) throw new Error("Expected a move refusal");
+  expect(result.refusal.message).toContain("fetch the required commits on both machines");
+  expect(f.journal.read(operation.id).filter(row => row.action === "move-failure").map(row => row.result))
+    .toEqual([{ step: "remote-prepare", code: "workspace-prerequisite-missing" }]);
   expect(freeze).not.toHaveBeenCalled();
   expect(sessionHome(f.global.db, SESSION)).toEqual(f.home);
   expect(readFileSync(join(f.repo, ".git", "index"))).toEqual(index);
@@ -876,11 +896,92 @@ it("denied destination fetch refuses before freeze without changing home or the 
   f.bindings.mapping = async () => ({ repoKey: f.check.repoKey, workspaceId: f.check.workspaceId, sourceRoot: f.repo,
     destinationRoot: f.destination, destinationCwd: f.destination });
   const freeze = vi.spyOn(f.ports, "freeze");
-  const result = await resumeMove({ operation: f.operation, sessionId: SESSION, destinationMachine: BOX }, f.ports);
-  expect(result).toMatchObject({ code: 1, reason: "move-preflight-refused", repairCommand: null });
+  const operation = { ...f.operation, id: "public-fetch-denied" };
+  const result = await moveSession({ operation, sessionId: SESSION, destinationMachine: BOX }, f.ports);
+  expect(result).toMatchObject({ code: 1, reason: "move-preflight-refused", causeCode: "workspace-fetch-unavailable",
+    repairCommand: "fetch origin on the destination", failure: { step: "remote-prepare", code: "workspace-fetch-unavailable" } });
+  if (result.ok) throw new Error("Expected a move refusal");
+  expect(result.refusal.message).toContain("fetch origin on the destination");
+  expect(f.journal.read(operation.id).filter(row => row.action === "move-failure").map(row => row.result))
+    .toEqual([{ step: "remote-prepare", code: "workspace-fetch-unavailable" }]);
   expect(freeze).not.toHaveBeenCalled();
   expect(sessionHome(f.global.db, SESSION)).toEqual(f.home);
   expect(readFileSync(join(f.repo, ".git", "index"))).toEqual(sourceIndex);
+});
+
+it.each([
+  ["fetch a shared merge base on the destination", "fetch a shared merge base on the destination"],
+  ["fetch the required commits on both machines", "fetch the required commits on both machines"],
+  ["fetch the required commits on the destination", "fetch the required commits on the destination"],
+  ["PRIVATE-GIT-ERROR", "fetch the required commits on the destination"],
+] as const)("remote prerequisite refusal reaches the public move with safe guidance: %s", async (hint, repair) => {
+  const f = await transferFixture(), exec = f.transport.exec;
+  f.bindings.mapping = async () => ({ repoKey: f.check.repoKey, workspaceId: f.check.workspaceId, sourceRoot: f.repo,
+    destinationRoot: f.destination, destinationCwd: f.destination });
+  f.transport.exec = async (peer, argv, options) => {
+    const op = JSON.parse(argv[2]) as Operation;
+    if (op.kind !== "move-prerequisites") return exec(peer, argv, options);
+    const agent = { config: f.remote.participant!.config, root: f.remoteRoot, journal: f.remoteJournal,
+      openStore: () => { throw new Error("Unexpected store"); },
+      move: async () => { throw Object.assign(new Error(`workspace-prerequisite-missing: ${hint}`), { code: "workspace-prerequisite-missing" }); } };
+    const response = await handleAgentOperation(op, agent);
+    if (hint === "PRIVATE-GIT-ERROR") response.repairCommand = "PRIVATE-REMOTE-REPAIR";
+    return Buffer.from(JSON.stringify(response));
+  };
+  const operation = { ...f.operation, id: "public-remote-hint" };
+  const result = await moveSession({ operation, sessionId: SESSION, destinationMachine: BOX }, f.ports);
+  expect(result).toMatchObject({ code: 1, reason: "move-preflight-refused", causeCode: "workspace-prerequisite-missing",
+    repairCommand: repair, failure: { step: "remote-prepare", code: "workspace-prerequisite-missing" } });
+  if (result.ok) throw new Error("Expected a move refusal");
+  expect(result.refusal.message).toContain(repair);
+  expect(safeControlOutcome(result)).toMatchObject({ repairCommand: repair, refusal: { message: result.refusal.message } });
+  expect(JSON.stringify(result)).not.toContain("PRIVATE-GIT-ERROR");
+  expect(JSON.stringify(result)).not.toContain("PRIVATE-REMOTE-REPAIR");
+  expect(f.journal.read(operation.id).filter(row => row.action === "move-failure").map(row => row.result))
+    .toEqual([{ step: "remote-prepare", code: "workspace-prerequisite-missing" }]);
+});
+
+it.each(["destination prerequisite", "merge base"] as const)("invalid %s names its refusal and Git repair before freeze", async invalid => {
+  const f = await transferFixture(), exec = f.transport.exec, run = f.bindings.participant!.git.run;
+  f.bindings.mapping = async () => ({ repoKey: f.check.repoKey, workspaceId: f.check.workspaceId, sourceRoot: f.repo,
+    destinationRoot: f.destination, destinationCwd: f.destination });
+  if (invalid === "destination prerequisite") f.transport.exec = async (peer, argv, options) => {
+    const result = await exec(peer, argv, options), op = JSON.parse(argv[2]) as Operation;
+    if (op.kind !== "move-prerequisites") return result;
+    return Buffer.from(JSON.stringify({ ...JSON.parse(result.toString()), value: ["PRIVATE-INVALID-COMMIT"] }));
+  };
+  else f.bindings.participant!.git.run = async (cwd, argv, options) => argv[1] === "merge-base" && argv[2] === "--all"
+    ? Buffer.from("PRIVATE-INVALID-COMMIT") : run(cwd, argv, options);
+  const operation = { ...f.operation, id: "public-invalid-prerequisite" }, freeze = vi.spyOn(f.ports, "freeze");
+  const result = await moveSession({ operation, sessionId: SESSION, destinationMachine: BOX }, f.ports);
+  expect(result).toMatchObject({ code: 1, reason: "move-preflight-refused", causeCode: "workspace-prerequisite-invalid",
+    repairCommand: "verify the Git history on both machines", failure: { step: "remote-prepare", code: "workspace-prerequisite-invalid" } });
+  if (result.ok) throw new Error("Expected a move refusal");
+  expect(result.refusal.message).toContain("verify the Git history on both machines");
+  expect(JSON.stringify(result)).not.toContain("PRIVATE-INVALID-COMMIT");
+  expect(f.journal.read(operation.id).filter(row => row.action === "move-failure").map(row => row.result))
+    .toEqual([{ step: "remote-prepare", code: "workspace-prerequisite-invalid" }]);
+  expect(freeze).not.toHaveBeenCalled();
+  expect(sessionHome(f.global.db, SESSION)).toEqual(f.home);
+});
+
+it("a destination without a readable HEAD reports the destination fetch repair", async () => {
+  const f = await transferFixture(), run = f.remote.participant!.git.run;
+  f.remote.participant!.git.run = async (cwd, argv, options) => {
+    if (argv[1] === "rev-parse" && argv[3] === "HEAD^{commit}") throw new Error("PRIVATE-GIT-ERROR");
+    return run(cwd, argv, options);
+  };
+  f.bindings.mapping = async () => ({ repoKey: f.check.repoKey, workspaceId: f.check.workspaceId, sourceRoot: f.repo,
+    destinationRoot: f.destination, destinationCwd: f.destination });
+  const operation = { ...f.operation, id: "public-head-missing" };
+  const result = await moveSession({ operation, sessionId: SESSION, destinationMachine: BOX }, f.ports);
+  expect(result).toMatchObject({ code: 1, reason: "move-preflight-refused", causeCode: "workspace-prerequisite-missing",
+    repairCommand: "fetch the required commits on the destination", failure: { step: "remote-prepare", code: "workspace-prerequisite-missing" } });
+  if (result.ok) throw new Error("Expected a move refusal");
+  expect(result.refusal.message).toContain("fetch the required commits on the destination");
+  expect(JSON.stringify(result)).not.toContain("PRIVATE-GIT-ERROR");
+  expect(f.journal.read(operation.id).filter(row => row.action === "move-failure").map(row => row.result))
+    .toEqual([{ step: "remote-prepare", code: "workspace-prerequisite-missing" }]);
 });
 
 async function useSessionOnlyTransfer(f: Awaited<ReturnType<typeof transferFixture>>, operation: Operation) {

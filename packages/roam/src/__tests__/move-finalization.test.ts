@@ -3,6 +3,8 @@ import { dirname } from "node:path";
 import type { HubOperationReadiness } from "@spider/db-core/roam/types";
 import type { MoveCheck, MoveRequest, PreparedMove } from "../contracts";
 import { moveSession, recoverMove } from "../move";
+import { safeControlOutcome } from "../commands";
+import { MoveAdapterError } from "../move-ports";
 import { recoveryFixture, HUB, OTHER } from "./recovery-fixture";
 
 const cleanups: (() => void)[] = [];
@@ -59,6 +61,38 @@ it.each(["power-release", "state-done", "done", "released"] as const)("proved mo
 it("an unknown failure after check but before freeze is pending rather than a preflight refusal", async () => {
   const f = await fixture(); f.ports.seed = async () => { throw new Error("fixture-seed-unavailable"); };
   expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 3, reason: "move-pending" });
+});
+
+it("a supervisor start refusal retains its code and provisioning repair after home commit", async () => {
+  const f = await fixture();
+  f.ports.start = async home => ({ code: 1, reason: "supervisor-release-mismatch", operationId: f.request.operation.id,
+    home: null, epoch: home.epoch, repairCommand: `spider roam provision ${OTHER}`, value: null,
+    failure: { step: "start", code: "supervisor-release-mismatch" } });
+  const result = await moveSession(f.request, f.ports);
+  expect(result).toMatchObject({ code: 3, reason: "move-destination-pending", causeCode: "supervisor-release-mismatch",
+    repairCommand: `spider roam provision ${OTHER}`, failure: { step: "start", code: "supervisor-release-mismatch" } });
+  if (result.ok) throw new Error("Expected a move refusal");
+  expect(result.refusal.message).toContain(`spider roam provision ${OTHER}`);
+  expect(result.refusal.message).toContain("recover the move");
+  expect(safeControlOutcome(result)).toMatchObject({ causeCode: "supervisor-release-mismatch",
+    repairCommand: `spider roam provision ${OTHER}`, refusal: { message: result.refusal.message } });
+  expect(f.ports.journal.read(f.request.operation.id).filter(row => row.action === "move-failure").map(row => row.result))
+    .toEqual([{ step: "start", code: "supervisor-release-mismatch" }]);
+});
+
+it("a post-freeze prerequisite refusal names its repair and keeps the move pending", async () => {
+  const f = await fixture(), refusal = new MoveAdapterError("workspace-prerequisite-missing");
+  refusal.message = "workspace-prerequisite-missing: fetch the required commits on both machines";
+  f.ports.transfer = async () => { throw refusal; };
+  const result = await moveSession(f.request, f.ports);
+  expect(result).toMatchObject({ code: 3, reason: "move-pending", causeCode: "workspace-prerequisite-missing",
+    repairCommand: "fetch the required commits on both machines", failure: { step: "transfer", code: "workspace-prerequisite-missing" } });
+  if (result.ok) throw new Error("Expected a move refusal");
+  expect(result.refusal.message).toContain("recover the move");
+  expect(safeControlOutcome(result)).toMatchObject({ repairCommand: "fetch the required commits on both machines",
+    refusal: { message: result.refusal.message } });
+  expect(f.ports.journal.read(f.request.operation.id).filter(row => row.action === "move-failure").map(row => row.result))
+    .toEqual([{ step: "transfer", code: "workspace-prerequisite-missing" }]);
 });
 
 it.each([

@@ -7,6 +7,7 @@ export function isIconStyle(value: unknown): value is IconStyle {
 
 const ICONS = {
   agent: { text: "🕸", nerd: "\u{F167A}" },
+  spider: { text: "🕸", nerd: "\u{F0BCA}" },
   warning: { text: "⚠", nerd: "\u{F002A}" },
   failure: { text: "✗", nerd: "\u{F0156}" },
   gutter: { text: "⎿", nerd: "\u{F060D}" },

@@ -16,7 +16,7 @@ export function renderSearchResult(rows: SearchResultRow[], iconStyle?: IconStyl
         return `${i + 1}. [${r.kind}] ${title}${r.snippet ?? ""}`.trim();
       })
     : ["(no results)"];
-  return Panel({ title: `${icon(iconStyle, "agent")} search (${list.length})`, body, iconStyle });
+  return Panel({ title: `${icon(iconStyle, "spider")} search (${list.length})`, body, iconStyle });
 }
 
 /** Panel summarizing an import/migrate run's imported/skipped/staged/committed counts. */
@@ -32,5 +32,5 @@ export function renderImportResult(s: ImportSummary, expanded = false, iconStyle
   for (const p of sessions) {
     body.push(`  · ${p.sessionId}: ${p.status} (${p.candidates} cand, ${p.chunks} chunks)`);
   }
-  return Panel({ title: `${icon(iconStyle, "agent")} import`, body, expanded, iconStyle });
+  return Panel({ title: `${icon(iconStyle, "spider")} import`, body, expanded, iconStyle });
 }

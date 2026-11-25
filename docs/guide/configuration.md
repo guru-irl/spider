@@ -149,7 +149,7 @@ The live footer shows corrected credits without basis markers, then the cache hi
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `ui.footer` | `true` | Footer and run selector. Takes effect next session. |
-| `ui.icons` | `"text"` | `"text"` keeps the standard glyphs. `"nerd"` uses Nerd Font icons. New messages use the setting immediately. The agents footer and copy buttons update next session or after `/reload`. Command descriptions update after `/reload`. |
+| `ui.icons` | `"text"` | `"text"` keeps the standard glyphs. `"nerd"` uses Nerd Font icons: a spider web on spider's own headings and a robot on subagent rows. New messages use the setting immediately. The agents footer and copy buttons update next session or after `/reload`. Command descriptions update after `/reload`. |
 | `copyButtons.enabled` | `true` | Copy buttons for finished replies in fullscreen mode. Takes effect after `/reload`. |
 | `reload.auto` | `true` | Reload idle interactive parent sessions after a verified build, once active work and prompts are clear. Changes apply live. |
 | `usage.footer` | `true` | Global-only. Footer with corrected credits in parent TUI sessions. Changes apply live. |

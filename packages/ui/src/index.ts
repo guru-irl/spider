@@ -17,7 +17,7 @@ const DEFAULT_TOKENS: Record<string, string> = {
 };
 
 export const theme: { glyph: string; token(name: string): string } = {
-  glyph: icon("text", "agent"),
+  glyph: icon("text", "spider"),
   token(name: string): string {
     return DEFAULT_TOKENS[name] ?? "";
   },
@@ -30,7 +30,7 @@ function clamp(s: string, width: number): string {
 export function SectionRule(title?: string, iconStyle?: IconStyle): Component {
   return {
     render(width: number): string[] {
-      const glyph = icon(iconStyle, "agent");
+      const glyph = icon(iconStyle, "spider");
       const label = title ? ` ${glyph} ${title} ` : ` ${glyph} `;
       const fill = theme.token("rule");
       const remaining = Math.max(0, width - label.length);

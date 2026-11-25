@@ -194,7 +194,7 @@ export function kv(theme: ThemeAdapter, label: string, value: string, width: num
  *  already shows `🕸 spider · <action>`, so a second 🕸 header double-heads the output.
  *  See docs/output-ui-guidelines.md. Every returned line is ≤ width visible cells. */
 export function card(theme: ThemeAdapter, title: string, lines: string[], width: number): string[] {
-  const head = `${theme.fg("accent", icon(theme.iconStyle, "agent"))} ${theme.bold(theme.fg("accent", title))} `;
+  const head = `${theme.fg("accent", icon(theme.iconStyle, "spider"))} ${theme.bold(theme.fg("accent", title))} `;
   const fill = Math.max(0, width - visibleWidth(head));
   const rule = truncateToWidth(head + theme.fg("dim", "─".repeat(fill)), width, "");
   const out = [rule];

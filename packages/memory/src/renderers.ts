@@ -2,7 +2,7 @@ import { Panel, icon, renderErrorResult, type Component, type IconStyle, type Th
 import type { MemoryRecord } from "./types";
 import type { StageResult } from "./staging";
 
-const GLYPH = icon("text", "agent");
+const GLYPH = icon("text", "spider");
 
 export function renderRememberResult(
   r: (Partial<StageResult> & { content?: string; category?: string; scope?: string; source?: string; message?: string; error?: string }) | null | undefined,
@@ -43,5 +43,5 @@ export function renderPending(recs: MemoryRecord[], expanded = false, iconStyle?
   const body = recs.length
     ? recs.map((r) => `[${r.category}] ${r.content} — ${r.uuid}`)
     : ["(nothing pending)"];
-  return Panel({ title: `${icon(iconStyle, "agent")} pending (${recs.length})`, body, expanded, iconStyle });
+  return Panel({ title: `${icon(iconStyle, "spider")} pending (${recs.length})`, body, expanded, iconStyle });
 }

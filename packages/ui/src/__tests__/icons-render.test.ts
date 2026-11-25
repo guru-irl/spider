@@ -7,7 +7,7 @@ import { renderKillResult } from "../renderers/kill.js";
 import { renderIndexResult } from "../renderers/index-fetch.js";
 import { renderInsights } from "../screens/insights-view.js";
 import { renderMessageResult } from "../renderers/message.js";
-import { renderExecResult } from "../renderers/exec.js";
+import { renderExecCall, renderExecResult } from "../renderers/exec.js";
 import { renderGridCell } from "../agents/grid-cell.js";
 import { AgentDetail } from "../agents/agent-detail.js";
 import { AgentStore, applyEvent } from "../agents/store.js";
@@ -27,7 +27,7 @@ const agent: AgentSnapshot = {
 describe("icon styles in rendered rows", () => {
   it("returns each role's specified text and Nerd Font glyph with equal cell widths", () => {
     const roles: [IconRole, string, string][] = [
-      ["agent", "🕸", "\u{F167A}"], ["warning", "⚠", "\u{F002A}"], ["failure", "✗", "\u{F0156}"],
+      ["agent", "🕸", "\u{F167A}"], ["spider", "🕸", "\u{F0BCA}"], ["warning", "⚠", "\u{F002A}"], ["failure", "✗", "\u{F0156}"],
       ["gutter", "⎿", "\u{F060D}"], ["task", "↳", "\u{F060D}"], ["result", "⤴", "\u{F005C}"],
       ["message", "✉", "\u{F01F0}"], ["reply", "↩", "\u{F0F20}"], ["broadcast", "⇉", "\u{F0B23}"],
       ["handoff", "⇢", "\u{F19B0}"], ["pin", "📌", "\u{F0931} "], ["modelDefault", "⟵", "\u{F004D}"],
@@ -63,12 +63,23 @@ describe("icon styles in rendered rows", () => {
     expect(visibleWidth(statusIcon(theme("nerd"), "warn"))).toBe(visibleWidth("⚠"));
   });
 
-  it("uses the agent icon in cards and preserves their width", () => {
+  it("uses the spider icon in cards and preserves their width", () => {
     const text = card(theme("text"), "Agents", [], 40)[0];
     const nerd = card(theme("nerd"), "Agents", [], 40)[0];
     expect(text).toContain("🕸 Agents");
-    expect(nerd).toContain("\u{F167A} Agents");
+    expect(nerd).toContain("\u{F0BCA} Agents");
+    expect(nerd).not.toContain("\u{F167A}");
     expect(visibleWidth(nerd)).toBe(visibleWidth(text));
+  });
+
+  it("heads spider tool calls with the spider icon, keeping the robot for subagent rows", () => {
+    const call = { kind: "exec" as const, commands: ["echo"] };
+    const text = renderExecCall(call, { theme: theme("text"), width: 80 });
+    const nerd = renderExecCall(call, { theme: theme("nerd"), width: 80 });
+    expect(text[0]).toMatch(/^🕸 spider exec/);
+    expect(nerd[0]).toMatch(/^\u{F0BCA} spider exec/u);
+    expect(nerd.map(visibleWidth)).toEqual(text.map(visibleWidth));
+    expect(formatAgentLine(theme("nerd"), agent, 100, 0, "◆")).toContain("◆ \u{F167A}  scribe");
   });
 
   it("keeps message warning and output gutter aligned", () => {

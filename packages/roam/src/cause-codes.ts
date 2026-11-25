@@ -28,7 +28,7 @@ const causeCodes = new Set<string>([
   "intercom-pair-revocation-incomplete", "intercom-pair-fence-conflict", "intercom-revocation-unconfirmed",
   "intercom-revocation-remote-fence-pending", "intercom-revocation-cleanup-pending", "intercom-fence-mismatch", "unsafe-pair-key",
   "connection-refused", "connection-closed", "machine-not-found", "machine-ambiguous", "machine-not-enrolled", "machine-mismatch",
-  "launch-unavailable", "launch-pending", "provisioned-pi-unavailable", "participant-exited-before-readiness",
+  "launch-unavailable", "launch-pending", "provisioned-pi-unavailable", "participant-exited-before-readiness", "exit-status-unavailable",
   "peer-invalidated", "core-unavailable", "core-changed", "reply-too-large", "invalid-reply", "invalid-config", "invalid-operation",
   "invalid-byte-limit", "invalid-cli-deadline", "unresolved-peer", "service-not-loaded", "service-failed", "service-timeout", "service-spawn-error",
 ]);
@@ -39,6 +39,28 @@ export type AgentOperationKind = typeof agentOperationKinds[number];
 const agentKindSet = new Set<string>(agentOperationKinds);
 export function safeAgentOperationKind(value: unknown): AgentOperationKind | undefined {
   return typeof value === "string" && agentKindSet.has(value) ? value as AgentOperationKind : undefined;
+}
+
+export const MOVE_FAILURE_STEPS = [
+  "preflight", "workspace-plan", "source-inspect", "destination-diagnostics", "power", "seed", "seed-barriers",
+  "initial-home", "source-home-replicate", "remote-prepare", "freeze", "intercom-inspect", "transfer", "final-barriers",
+  "generation-check", "verify-source", "home-commit", "home-replicate", "start", "same-home-inspect", "destination-inspect",
+  "destination-endpoint", "intercom-ready", "source-retire", "final-inspect", "cleanup", "power-release",
+] as const;
+export type MoveFailureStep = typeof MOVE_FAILURE_STEPS[number];
+export function safeMoveFailureStep(value: unknown): MoveFailureStep | undefined {
+  return typeof value === "string" && (MOVE_FAILURE_STEPS as readonly string[]).includes(value) ? value as MoveFailureStep : undefined;
+}
+
+export function moveOperationStep(kind: string): MoveFailureStep {
+  const steps: Readonly<Record<string, MoveFailureStep>> = {
+    "move-workspace-map": "workspace-plan", "session-inspect": "source-inspect", "move-diagnostics": "destination-diagnostics",
+    "move-seed": "seed", "move-prerequisites": "remote-prepare", "session-freeze": "freeze",
+    "move-export": "transfer", "move-import": "transfer", "move-verify": "verify-source", "session-start": "start",
+    "move-observation": "destination-inspect", "session-retire": "source-retire", "move-cleanup": "cleanup",
+    "move-intercom-inspect": "intercom-inspect", "move-intercom-checkGeneration": "generation-check", "move-intercom-ready": "intercom-ready",
+  };
+  return steps[kind] ?? "preflight";
 }
 
 const additionalSteps = [

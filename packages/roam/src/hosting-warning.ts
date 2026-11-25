@@ -4,18 +4,19 @@ import { safeCauseCode } from "./cause-codes";
 
 export const HOSTING_WARNING_CODE = "supervisor-hosting-error";
 export type HostingCheck = "running-intent" | "intent-view" | "inspection" | "restart" | "launch";
-export interface LaunchExit { exitCode?: number; signal?: number }
-export interface HostingWarning { code: typeof HOSTING_WARNING_CODE; check: HostingCheck; since: number; count: number; causeCode?: string; exitCode?: number; signal?: number }
+export interface LaunchExit { exitCode?: number; signal?: number; exitStatus?: "exit-status-unavailable" }
+export interface HostingWarning extends LaunchExit { code: typeof HOSTING_WARNING_CODE; check: HostingCheck; since: number; count: number; causeCode?: string }
 export interface SessionHostingWarning extends HostingWarning { sessionId: string }
 
 const validExitCode = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 255;
 const validSignal = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 255;
 export function safeLaunchExit(value: unknown): LaunchExit | undefined {
   if (!value || typeof value !== "object") return undefined;
-  const row = value as { exitCode?: unknown; signal?: unknown };
+  const row = value as { exitCode?: unknown; signal?: unknown; exitStatus?: unknown };
   const exit: LaunchExit = { ...(validExitCode(row.exitCode) ? { exitCode: row.exitCode } : {}),
     ...(validSignal(row.signal) ? { signal: row.signal } : {}) };
-  return exit.exitCode === undefined && exit.signal === undefined ? undefined : exit;
+  if (exit.exitCode !== undefined || exit.signal !== undefined) return exit;
+  return row.exitStatus === "exit-status-unavailable" ? { exitStatus: "exit-status-unavailable" } : undefined;
 }
 
 export function validHostingWarning(value: unknown): value is HostingWarning {
@@ -26,7 +27,9 @@ export function validHostingWarning(value: unknown): value is HostingWarning {
     (row.count === 3 || row.check === "launch" && row.causeCode === "participant-exited-before-readiness" && (row.count === 1 || row.count === 2)) &&
     (row.causeCode === undefined || row.check === "launch" && safeCauseCode(row.causeCode) !== undefined) &&
     (row.exitCode === undefined || row.check === "launch" && row.causeCode !== undefined && validExitCode(row.exitCode)) &&
-    (row.signal === undefined || row.check === "launch" && row.causeCode !== undefined && validSignal(row.signal));
+    (row.signal === undefined || row.check === "launch" && row.causeCode !== undefined && validSignal(row.signal)) &&
+    (row.exitStatus === undefined || row.check === "launch" && row.causeCode !== undefined && row.exitStatus === "exit-status-unavailable" &&
+      row.exitCode === undefined && row.signal === undefined);
 }
 export function validHostingWarnings(value: unknown): value is SessionHostingWarning[] {
   return Array.isArray(value) && value.every(value => {
@@ -38,7 +41,8 @@ export function validHostingWarnings(value: unknown): value is SessionHostingWar
 export function copyHostingWarning(value: HostingWarning): HostingWarning {
   return { code: value.code, check: value.check, since: value.since, count: value.count,
     ...(value.causeCode === undefined ? {} : { causeCode: value.causeCode }),
-    ...(value.exitCode === undefined ? {} : { exitCode: value.exitCode }), ...(value.signal === undefined ? {} : { signal: value.signal }) };
+    ...(value.exitCode === undefined ? {} : { exitCode: value.exitCode }), ...(value.signal === undefined ? {} : { signal: value.signal }),
+    ...(value.exitStatus === undefined ? {} : { exitStatus: value.exitStatus }) };
 }
 export function readHostingWarnings(db: Db): SessionHostingWarning[] {
   return localEntries<unknown>(db, HOSTING_WARNING_CODE).map(({ key, value }) => {
@@ -48,7 +52,7 @@ export function readHostingWarnings(db: Db): SessionHostingWarning[] {
 }
 export function hostingWarningText(warning: HostingWarning): string {
   const details = [warning.causeCode, warning.exitCode === undefined ? undefined : `exit code ${warning.exitCode}`,
-    warning.signal === undefined ? undefined : `signal ${warning.signal}`].filter(Boolean).join(", ");
+    warning.signal === undefined ? undefined : `signal ${warning.signal}`, warning.exitStatus].filter(Boolean).join(", ");
   return `${warning.code} (${warning.check}${details ? `: ${details}` : ""}); hosting checks will retry automatically.`;
 }
 export function hostingWarningReason(sessionId: string, warning: HostingWarning): string {

@@ -1,6 +1,7 @@
 import { openDbReadOnly } from "@spider/db-core";
 import { causeCode } from "./cause-codes";
-import { moveFailureCause } from "./move-failure";
+import { moveFailureCause, moveFailureDetail } from "./move-failure";
+import { moveOperationStep } from "./cause-codes";
 import { syncHandshake } from "./revocation";
 import { inspectSession, verifyFrozenSession } from "./session-file";
 import { exportMirrorRange, type MirrorPrefix } from "./mirrors";
@@ -541,7 +542,8 @@ async function dispatchAgentOperation(operation: Operation, ports: AgentPorts): 
       try { return await ports.move(operation); }
       catch (error) {
         const cause = moveFailureCause(error);
-        return { ...outcome(1, cause, id), causeCode: cause, epoch: operation.expectedEpoch, repairCommand: "spider roam doctor" };
+        return { ...outcome(1, cause, id), causeCode: cause, failure: moveFailureDetail(error, moveOperationStep(operation.kind)),
+          epoch: operation.expectedEpoch, repairCommand: "spider roam doctor" };
       }
     }
     if (["session-start", "session-stop", "session-resume"].includes(operation.kind)) {

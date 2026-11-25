@@ -1,4 +1,5 @@
 import { participantLaunchId, participantLaunchSuccessor } from "./participant-launch";
+import { withMoveStep, parseMoveFailure, type MoveFailureDetail } from "./move-failure";
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { isDeepStrictEqual } from "node:util";
@@ -133,7 +134,11 @@ export interface MoveAdapterBindings {
   };
 }
 export class MoveAdapterError extends MoveError {
-  constructor(readonly code: string) { super("move-preflight-refused", [validateBlockerId(code)]); this.message = code; this.name = "MoveAdapterError"; }
+  readonly failure?: MoveFailureDetail;
+  constructor(readonly code: string, failure?: MoveFailureDetail) {
+    super("move-preflight-refused", [validateBlockerId(code)]); this.message = code; this.name = "MoveAdapterError";
+    this.failure = parseMoveFailure(failure);
+  }
 }
 function required<T>(value: T | null | undefined, name: string): T {
   if (value === undefined || value === null) throw new MoveAdapterError(`adapter-unbound:${name}`);
@@ -229,7 +234,7 @@ function successful<T>(outcome: Outcome<T>): T {
   if (outcome.code !== 0 || outcome.value === null) {
     let code: string;
     try { code = validateBlockerId(outcome.reason); } catch { code = "participant-operation-refused"; }
-    throw new MoveAdapterError(code);
+    throw new MoveAdapterError(code, parseMoveFailure(outcome.failure));
   }
   return outcome.value;
 }
@@ -413,13 +418,13 @@ export function createMovePorts(config: RoamConfig, transport: Transport, journa
       }
       if (home.machineId !== config.machineId) local = checkedLocation(successful(await call<unknown>(home, request.operation, "move-location")));
       else for (const key of local.stores) bindings.stores!.open(key);
-      const mapped = await bindings.mapping!(request, local);
+      const mapped = await withMoveStep("workspace-plan", () => bindings.mapping!(request, local));
       if (!mapped) throw new MoveAdapterError("workspace-repository-unmapped");
-      const inspection = successful(await call<{ blockers: readonly Blocker[] }>(home, request.operation, "session-inspect"));
+      const inspection = await withMoveStep("source-inspect", async () => successful(await call<{ blockers: readonly Blocker[] }>(home, request.operation, "session-inspect")));
       if (!Array.isArray(inspection.blockers)) throw new MoveAdapterError("blocker-source-unavailable");
       if (inspection.blockers.length) throw new MoveError("move-preflight-blocked", inspection.blockers.map(row => validateBlockerId(row.id)));
       const destination = { ...home, machineId: request.destinationMachine };
-      const diagnostics = successful(await call<readonly Diagnostic[]>(destination, request.operation, "move-diagnostics"));
+      const diagnostics = await withMoveStep("destination-diagnostics", async () => successful(await call<readonly Diagnostic[]>(destination, request.operation, "move-diagnostics")));
       if (!Array.isArray(diagnostics) || diagnostics.some(row => !row || !["warning", "block", "info"].includes(row.severity) || typeof row.reason !== "string")) throw new MoveAdapterError("participant-auth-unavailable");
       if (diagnostics.some(row => row.severity === "block")) throw new MoveAdapterError("participant-auth-unavailable");
       return { source: home, destinationMachine: request.destinationMachine, ...mapped, sourceFile: local.file, sourceCwd: local.cwd, storeKeys: local.stores, warnings: diagnostics.map(row => row.reason) };

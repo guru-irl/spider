@@ -1,4 +1,4 @@
-import { MoveCompositionError } from "@spider/roam/move-failure";
+import { MoveCompositionError, parseMoveFailure } from "@spider/roam/move-failure";
 import { checkoutName, resolveMoveCheckout, type MoveCheckout } from "@spider/roam/move-checkout";
 import { readHostingWarnings } from "@spider/roam/hosting-warning";
 import { pendingWorkspaceTransitions } from "@spider/roam/move-recovery";
@@ -239,7 +239,7 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
     const reply = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     if (reply.operationId !== request.id) throw new Error("hub-authority-unavailable");
     if (reply.code !== 0) {
-      if ([1, 2, 3].includes(reply.code)) throw new MoveCompositionError(reply.causeCode);
+      if ([1, 2, 3].includes(reply.code)) throw new MoveCompositionError(reply.causeCode, parseMoveFailure(reply.failure));
       throw new Error("hub-authority-unavailable");
     }
     return reply.value as T | null;
@@ -449,7 +449,7 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
             sourceName: operation.args.sourceCheckoutName, moveId: String(operation.args.moveId), git, journal }));
         } catch (error) {
           if (!(error instanceof MoveCompositionError)) throw error;
-          return { ...result(null), code: 1, causeCode: error.code, repairCommand: "spider roam doctor" };
+          return { ...result(null), code: 1, causeCode: error.code, ...(error.failure ? { failure: error.failure } : {}), repairCommand: "spider roam doctor" };
         }
       }
       if (["move-abort-authority", "move-retire-authority", "move-rollback-authority", "move-presentation-authority"].includes(operation.kind)) {

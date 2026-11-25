@@ -6,7 +6,7 @@ import { registerOrganism } from "../index.js";
 import { ORGANISM_DEFAULTS } from "../config.js";
 import { CURATOR_DEFAULTS } from "../curator.js";
 import { makeOrgDb } from "./helpers/tmpdb.js";
-import { openDbAt, type Db } from "@spider/db-core";
+import { openDbAt, paths, type Db } from "@spider/db-core";
 import { join } from "node:path";
 import { rmSync } from "node:fs";
 import type { DigestModel, DrainReport } from "../types.js";
@@ -19,7 +19,7 @@ beforeEach(() => {
   vi.stubEnv("PI_SUBAGENT_CHILD", "0");
   vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
   databases = makeOrgDb();
-  globalPath = join(process.cwd(), ".spider", "scratch", `drain-offline-${crypto.randomUUID()}.db`);
+  globalPath = join(paths.scratch("worktree", process.cwd()), `drain-offline-${crypto.randomUUID()}.db`);
   globalDb = openDbAt(globalPath, "global");
   databases.db.prepare("INSERT INTO sessions(id,started_at) VALUES ('session',1)").run();
 });

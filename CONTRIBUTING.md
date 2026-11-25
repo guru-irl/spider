@@ -88,6 +88,13 @@ The budget reports aggregate file time and a six-worker scheduling estimate,
 including a separate estimate without measured files over five seconds. It does
 not include installation, selection, or process startup.
 
+On selection-policy changes, a successful test shard also runs a measurement-only
+cohort through `scripts/measure-test-selection.mjs`. It omits files with recorded
+weights over five seconds and retains unmeasured files. The `test-measurement-*`
+artifacts record the cohort, excluded files, status, and elapsed time. This warm
+follow-up run never replaces the required test manifest. Failed measurements are
+not timing samples.
+
 To refresh durations, download the `test-results-*` artifacts from a completed
 CI run:
 

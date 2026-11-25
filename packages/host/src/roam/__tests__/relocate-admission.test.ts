@@ -1,4 +1,8 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { openDb } from "@spider/db-core";
+import { scratchDbPath } from "@spider/db-core/testutil";
+import type { HomeStore } from "@spider/roam/relocate/types";
+import { readRelocateAdmission } from "../relocate-admission";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { HomeAdmission, RunningHome, SessionId } from "@spider/roam/relocate/types";
 import { createHostSessionFixture } from "../../__tests__/fixtures/pi-events";
@@ -24,6 +28,23 @@ function fixture(initial: HomeAdmission) {
   async function emit(name: string, event = {}) { let result; for (const fn of host.hooks.get(name) ?? []) result = await fn(event, host.ctx); return result; }
   return { gate, ports, release, close, emit, host, setHome(value: HomeAdmission) { current = value; } };
 }
+it("successful SQL discovery distinguishes legacy rows from managed missing homes", async () => {
+  const db = openDb(scratchDbPath("v0-admission-query"));
+  const homes: HomeStore = { read: vi.fn(async () => home), initialize: vi.fn(), compareAndSwap: vi.fn(), list: vi.fn() };
+  try {
+    db.exec("CREATE TABLE session_homes(session_id TEXT PRIMARY KEY, state TEXT)");
+    db.prepare("INSERT INTO session_homes VALUES (?,NULL)").run(id);
+    expect(await readRelocateAdmission(id, db, homes, () => false)).toEqual({ kind: "unmanaged" });
+    expect(homes.read).not.toHaveBeenCalled();
+    db.prepare("UPDATE session_homes SET state='running' WHERE session_id=?").run(id);
+    expect(await readRelocateAdmission(id, db, homes, () => false)).toEqual({ kind: "managed", home });
+    db.prepare("DELETE FROM session_homes").run();
+    expect(await readRelocateAdmission(id, db, homes, () => true)).toEqual({ kind: "managed", home: null });
+    expect(await readRelocateAdmission(id, db, homes, () => false)).toEqual({ kind: "unmanaged" });
+    db.exec("DROP TABLE session_homes");
+    expect(await readRelocateAdmission(id, db, homes, () => false)).toEqual({ kind: "unavailable" });
+  } finally { db.close(); }
+});
 it("only local running v0 home admits", async () => {
   const good = fixture({ kind: "managed", home }); await good.emit("session_start");
   expect(good.gate.inspect()).toEqual({ kind: "ordinary", home, blockers: [] }); expect(good.ports.lock).toHaveBeenCalledWith(id, "/fixture/session.jsonl");

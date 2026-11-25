@@ -22,6 +22,7 @@ import { isDeepStrictEqual } from "node:util";
 import { isMachineId } from "@spider/roam/machine-id";
 import { isRevoked } from "@spider/roam/revocation";
 import type { HostIntent, RoamConfig } from "@spider/roam/contracts";
+import type { HomeAdmission, RunningHome, SessionId } from "@spider/roam/relocate/types";
 
 export interface Admission { kind: "pending" | "ordinary" | "control-only" | "blocked"; home: Home | null; blockers: readonly Blocker[]; setupFailure?: MoveSetupFailure }
 export interface AdmissionGate {
@@ -51,6 +52,8 @@ export interface AdmissionPorts {
   prepare?: ParticipantAdmissionHooks["prepare"];
   ready?(sessionId: string, file: string, epoch: number, home: Home | null): Promise<void>;
   stopped?(sessionId: string): Promise<void>;
+  v0Lookup?(sessionId: SessionId): Promise<HomeAdmission>;
+  v0Ready?(sessionId: SessionId, file: string, home: RunningHome): Promise<{ close(): Promise<void> } | void>;
 }
 
 const VERIFY = "Cannot verify this session's home. Retry or run /spider roam doctor for details.";
@@ -91,6 +94,14 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
   let lastContext: ExtensionContext | undefined;
   let signalled = false, watchingSignals = false;
   const observed = new Set<string>();
+  const observedV0 = new Set<string>();
+  let v0Managed = false;
+  let v0Control: { close(): Promise<void> } | void;
+  async function closeV0Control(): Promise<void> {
+    const previous = v0Control;
+    v0Control = undefined;
+    await previous?.close();
+  }
   const noteSignal = () => { signalled = true; };
   const unwatchSignals = () => {
     if (!watchingSignals) return;
@@ -145,11 +156,50 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
       try {
         if (ticket !== generation) return;
         if (ctx) { lastContext = ctx; ports.setContext?.(ctx); }
-        try { if (held && (!held.valid || held.sessionId !== id || held.file !== file)) await release(); }
+        try {
+          if (v0Control) await closeV0Control();
+          if (held && (!held.valid || held.sessionId !== id || held.file !== file)) await release();
+        }
         catch { if (ticket === generation) { sessionId = id; publishResult("blocked", null, VERIFY); } return; }
         if (ticket !== generation) return;
         sessionId = id; sessionFile = file; epoch = null; participating = false; ownershipVerified = false; discoverable = false; captureVersion = null;
         if (!id) { publishResult(handoffRequired ? "blocked" : "ordinary", null, handoffRequired ? VERIFY : undefined); return; }
+        v0Managed = false;
+        if (ports.v0Lookup) {
+          const v0Message = "Cannot verify a local running home. Restore the local home before starting this session.";
+          let lookup: HomeAdmission;
+          try { lookup = await ports.v0Lookup(id as SessionId); }
+          catch { lookup = { kind: "unavailable" }; }
+          if (ticket !== generation) return;
+          if (lookup.kind !== "unmanaged" || observedV0.has(id)) {
+            v0Managed = true;
+            observedV0.add(id);
+            const home = lookup.kind === "managed" ? lookup.home : null;
+            try {
+              const machine = await ports.localMachine();
+              if (!home || home.state !== "running" || home.sessionId !== id || home.machineId !== machine ||
+                  ports.expectedEpoch !== null && ports.expectedEpoch !== home.epoch || !file || !isAbsolute(file)) {
+                await release(); publishResult("blocked", home, v0Message); return;
+              }
+              if (!held) held = { sessionId: id, file, release: await ports.lock(id, file), valid: true };
+              if (ticket !== generation) { await release(); return; }
+              const current = await ports.v0Lookup(id as SessionId);
+              if (current.kind !== "managed" || !isDeepStrictEqual(current.home, home)) {
+                await release(); publishResult("blocked", home, v0Message); return;
+              }
+              v0Control = await ports.v0Ready?.(id as SessionId, file, home);
+              if (ticket !== generation) { await closeV0Control(); await release(); return; }
+              epoch = home.epoch; participating = true; ownershipVerified = true;
+              handoffRequired = false; freeze = undefined; admitted = true;
+              publishResult("ordinary", home);
+              if (!late) watchSignals();
+            } catch {
+              await closeV0Control(); await release();
+              publishResult("blocked", home, v0Message);
+            }
+            return;
+          }
+        }
         stage = "prepare";
         let preparationFailed = false, preparationFailure: unknown;
         preparationPending = false;
@@ -288,7 +338,8 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
     // Pi starts shutdown from its prepended signal listener before other listeners run.
     await Promise.resolve();
     unwatchSignals();
-    if (!signalled && event.reason !== "reload" && participating && ordinaryWorkAllowed()) await ports.stopped?.(sessionId);
+    if (v0Control) await closeV0Control();
+    if (!v0Managed && !signalled && event.reason !== "reload" && participating && ordinaryWorkAllowed()) await ports.stopped?.(sessionId);
   });
   pi.on("input", (_event, ctx) => {
     if (ordinaryWorkAllowed()) return undefined;
@@ -357,8 +408,9 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
         if (current === transition) return admission;
       }
     },
-    async close() { unwatchSignals(); ++generation; publish("blocked", admission.home, VERIFY); await sequence(release); },
+    async close() { unwatchSignals(); ++generation; publish("blocked", admission.home, VERIFY); await sequence(async () => { if (v0Control) await closeV0Control(); await release(); }); },
     async freeze(moveId, expectedEpoch) {
+      if (v0Managed) throw new Error("V0 sessions stop without a freeze fence.");
       const sameFreeze = freeze?.moveId === moveId && freeze.epoch === expectedEpoch && admission.kind === "control-only";
       if (!participating || !ownershipVerified || !held?.valid || !moveId || epoch !== expectedEpoch || (!ordinaryWorkAllowed() && !sameFreeze) ||
           freeze && (freeze.moveId !== moveId || freeze.epoch !== expectedEpoch)) throw new Error(VERIFY);
@@ -366,6 +418,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
       await sequence(async () => {});
     },
     async readmit(moveId, source, restored) {
+      if (v0Managed) throw new Error("V0 sessions do not use legacy readmission proofs.");
       const ticket = generation;
       await sequence(async () => {
         if (!participating || !ownershipVerified || !held?.valid || !freeze || freeze.moveId !== moveId || freeze.epoch !== source.epoch ||

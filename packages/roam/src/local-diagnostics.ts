@@ -31,7 +31,7 @@ import { RUNNING_INTENT_SOURCE_UNAVAILABLE } from "./supervisor";
 import { createRunningIntentAuthority } from "./session-control";
 import { inspectIntentReservations, inspectSuspendedIntents } from "./intent";
 import { inspectAdoptedOwner } from "./launcher";
-import { createIntercomRegistry, type IntercomPairRecord } from "./intercom-registry";
+import { createIntercomRegistry, isIntercomRevocationComplete, type IntercomPairRecord } from "./intercom-registry";
 import { inspectLocalIntercomDoctor } from "./intercom-doctor";
 import { publicationDiagnostics } from "./intercom-publication";
 import { formatRevocationGates } from "./cause-codes";
@@ -636,19 +636,22 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
     } catch { inventory.push({ severity: "block", reason: "intercom-fence-unavailable: Durable pair fences could not be inspected.", repairCommand: null }); }
     finally { snapshot?.close(); }
     for (const record of records) {
+      if (record.fenceId && record.revocationEpoch && isIntercomRevocationComplete(record, {
+        fenceId: record.fenceId, edgeEpoch: record.revocationEpoch,
+      })) continue;
       const pair = record.pair, peer = pair.source.machineId === config.machineId ? pair.target.machineId : pair.target.machineId === config.machineId ? pair.source.machineId : null;
       const fence = peer === null ? undefined : fences.get(peer);
       const completed = !record.cleanupReason && record.fenceId === fence?.fenceId && (record.state === "revoked" && (record.revocationEpoch ?? pair.edgeEpoch) === fence?.edgeEpoch || (record.state === "pending" || record.state === "cancelled") && pair.edgeEpoch !== fence?.edgeEpoch);
       if (fence && !completed && fence.edgeEpoch !== (record.revocationEpoch ?? pair.edgeEpoch)) {
         const repairCommand = `spider roam intercom revoke ${pair.pairId} --fence-epoch ${fence.edgeEpoch}`;
-        inventory.push({ severity: "block", reason: `intercom-fence-mismatch: On the hub, run ${repairCommand} with both boxes reachable to stop the pair units and confirm closure of the historical fence.`, repairCommand });
+        inventory.push({ severity: "block", reason: `intercom-fence-mismatch: Pair ${pair.pairId} does not match the current fence. On the hub, run ${repairCommand} with both boxes reachable to stop the pair units and confirm closure of the historical fence.`, repairCommand });
       }
       const gap = fence !== undefined && !completed && record.state !== "revoking";
       const reason = gap || record.state === "revoking" && !record.cleanupReason ? "intercom-revocation-unconfirmed" : record.cleanupReason;
       if (!reason || !gap && !["revoking", "revoked"].includes(record.state)) continue;
       const unconfirmed = reason === "intercom-revocation-unconfirmed";
       inventory.push({ severity: unconfirmed ? "block" : "warning", reason: unconfirmed
-        ? `${reason}: Box A may still reach box B for ${pair.pairId} until its pair host is proved stopped.${record.revocationGates?.length ? ` Gates: ${formatRevocationGates(record.revocationGates)}.` : ""} Keep both boxes reachable and run the repair command on the hub to confirm closure.`
+        ? `${reason}: Pair ${pair.pairId}: Box A may still reach box B until its pair host is proved stopped.${record.revocationGates?.length ? ` Gates: ${formatRevocationGates(record.revocationGates)}.` : ""} Keep both boxes reachable and run the repair command on the hub to confirm closure.`
         : reason === "intercom-revocation-shared-jobs"
           ? `${reason}: Any live terminal on ${pair.target.alias} blocks route cleanup for ${pair.pairId}, because terminal rows do not identify their owner. Let all live terminals on that core finish, then run the repair command on the hub. Finished terminal history does not block cleanup.`
           : `${reason}: Resource cleanup is pending for ${pair.pairId}. Keep both boxes reachable and run the repair command on the hub; inspect live terminals and the pair-owned resources if it remains pending.`,

@@ -184,8 +184,11 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
       const issue = item as Record<string, unknown>, reason = token(issue.reason), repairCommand = safeRepair(issue.repairCommand);
       const hasCause = reason?.endsWith(":agent-operation-failed") || /^preflight-failed:[^:]+:intercom-(?:broker|settings-unique|legacy-drained|federation)$/.test(reason ?? "");
       const cause = hasCause ? safeCauseCode(issue.causeCode) : undefined;
+      const pairDetail = typeof issue.detail === "string" && (
+        /^preflight-failed:[^:]+:intercom-fence-mismatch$/.test(reason ?? "") && /^Pair [A-Za-z0-9][A-Za-z0-9._-]{0,127} does not match the current fence\.$/.test(issue.detail) ||
+        /^preflight-failed:[^:]+:intercom-revocation-unconfirmed$/.test(reason ?? "") && /^Pair [A-Za-z0-9][A-Za-z0-9._-]{0,127} has an unconfirmed revocation\.$/.test(issue.detail));
       return reason && repairCommand ? [{ reason, repairCommand, ...(cause ? { causeCode: cause } : {}),
-        ...(issue.detail === "Start Herdr or check hc on this machine." ? { detail: issue.detail } : {}) }] : [];
+        ...(pairDetail || issue.detail === "Start Herdr or check hc on this machine." ? { detail: issue.detail } : {}) }] : [];
     });
   }
   const sourceCleanup = value.sourceCleanup as SourceCleanup | undefined;

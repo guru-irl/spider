@@ -7,7 +7,7 @@ import type { Peer } from "./contracts";
 import type { IntercomEnrollmentPair, IntercomEnrollmentPlan, IntercomRevocationCleanupReason } from "./provision-contracts";
 import { validHostKey, validPublicKey } from "./intercom-enrollment";
 import type { IntercomPairResources, IntercomUnitRecord } from "./intercom-pair-resources";
-import type { IntercomPairApproval } from "./intercom-contracts";
+import type { IntercomPairApproval, IntercomPairFence } from "./intercom-contracts";
 import { isMachineId } from "./machine-id";
 import { openDiagnosticSnapshot } from "./diagnostic-snapshot";
 import { validRevocationGates, type RevocationGate } from "./cause-codes";
@@ -30,6 +30,11 @@ export interface IntercomPairRecord {
   operationId: string; graphDigest: string; fenceId: string | null; cleanupReason: IntercomRevocationCleanupReason | null;
   resources?: IntercomPairResources; unit?: IntercomUnitRecord; revocationEpoch?: string;
   commandApprovalFenceId?: string | null; revocationGates?: readonly RevocationGate[]; predecessorPairId?: string;
+}
+/** The owning receipt must prove closure of this exact revocation generation. */
+export function isIntercomRevocationComplete(record: IntercomPairRecord, fence: Pick<IntercomPairFence, "edgeEpoch" | "fenceId">): boolean {
+  return record.state === "revoked" && record.cleanupReason === null && record.fenceId === fence.fenceId &&
+    record.revocationEpoch === fence.edgeEpoch && record.unit?.closedFenceId === fence.fenceId;
 }
 /** Resources remain as cleanup receipts. A recorded epoch and no obligation prove completion. */
 export function canReuseRevokedPairId(record: IntercomPairRecord | null, candidate: IntercomEnrollmentPlan): boolean {
@@ -185,8 +190,9 @@ export function createIntercomRegistry(root: string, live?: LiveFenceReader) {
             (record.pair.source.machineId === machineId && record.pair.target.machineId === other ||
              record.pair.target.machineId === machineId && record.pair.source.machineId === other)) predecessors.push(record);
       }
-      if (predecessors.length === 1 && predecessors[0].state === "revoked" && predecessors[0].cleanupReason === null &&
-          predecessors[0].unit?.closedFenceId === fence.fence_id) return { pending: false, predecessor: predecessors[0] };
+      if (predecessors.length === 1 && isIntercomRevocationComplete(predecessors[0], {
+        edgeEpoch: fence.edge_epoch, fenceId: fence.fence_id,
+      })) return { pending: false, predecessor: predecessors[0] };
       if (predecessorPairId !== undefined) return { pending: true };
       // A predecessor receipt only accounts for the peer recorded on that pair.
       if (other !== scopedPeer) return { pending: true };

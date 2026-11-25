@@ -65,6 +65,23 @@ it("retains typed authority and drops arbitrary participant data", () => {
     repairCommand: "spider roam recover move-a", value: { warnings: ["tool-auth-unverified"] } });
   expect(controlText(safe)).toContain("The source is paused to avoid running two copies.");
 });
+it.each([
+  ["intercom-fence-mismatch", "Pair pair-old does not match the current fence."],
+  ["intercom-revocation-unconfirmed", "Pair pair-old has an unconfirmed revocation."],
+] as const)("preserves only the named pair detail for %s through repeated sanitization", (check, detail) => {
+  const base = { code: 1 as const, reason: `preflight-failed:peer.invalid:${check}`, operationId: "", home: null, epoch: null, repairCommand: null };
+  const issue = { reason: base.reason, detail, repairCommand: "spider roam provision peer.invalid" };
+  const first = safeControlOutcome({ ...base, value: { issues: [issue] } });
+  expect(first.value).toEqual({ issues: [issue] });
+  expect(safeControlOutcome(first)).toEqual(first);
+  for (const bad of ["Pair /fixture/private does not match the current fence.", `${detail} private exception`,
+    detail.replace("pair-old", "x".repeat(129)), detail.replace("pair-old", "pair-old\nprivate"), "private exception"]) {
+    expect(safeControlOutcome({ ...base, value: { issues: [{ ...issue, detail: bad }] } }).value).toEqual({ issues: [{ reason: issue.reason, repairCommand: issue.repairCommand }] });
+  }
+  expect(safeControlOutcome({ ...base, value: { issues: [{ ...issue, reason: "preflight-failed:peer.invalid:other" }] } }).value)
+    .toEqual({ issues: [{ reason: "preflight-failed:peer.invalid:other", repairCommand: issue.repairCommand }] });
+});
+
 it("retains only shell-safe destination permission repair commands", () => {
   const base = { code: 3 as const, reason: "destination-permissions-unsafe", operationId: "provision-a", home: null, epoch: null, value: null };
   const repair = "chmod go-w '/home/fixture/.pi/agent/user'\\''s themes'";

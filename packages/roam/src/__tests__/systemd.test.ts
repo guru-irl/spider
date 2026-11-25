@@ -4,6 +4,12 @@ import { dirname, join } from "node:path";
 import { scratchDbPath } from "@spider/db-core/testutil";
 import { renderSupervisorUnit } from "../systemd";
 
+it("v0 supervisor mode appends only --v0", () => {
+  const input = { node: "/home/agent/node", supervisor: "/home/agent/supervisor", coreUnit: "herdr-core.service", globalRoot: "/home/agent/data" };
+  const ordinary = renderSupervisorUnit(input);
+  expect(renderSupervisorUnit({ ...input, mode: "v0" })).toBe(ordinary.replace('ExecStart="/home/agent/node" "/home/agent/supervisor"', 'ExecStart="/home/agent/node" "/home/agent/supervisor" --v0'));
+});
+
 it("renders a private login supervisor without dependencies on the core unit", () => {
   const parent = dirname(scratchDbPath("roam-systemd"));
   mkdirSync(parent, { recursive: true });

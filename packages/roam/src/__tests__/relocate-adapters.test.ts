@@ -72,6 +72,17 @@ describe("relocate adapters", () => {
     f.global.db.prepare("UPDATE roam_repo_maps SET worktree_command_json=NULL").run();await f.options.git.run(f.root,["git","config","core.sparseCheckout","true"]);expect(await inspectLocalDestination(source.value.placement,"sub",f.options)).toMatchObject({ok:false,refusal:{code:"unsupported-workspace"}});
     await f.options.git.run(f.root,["git","config","core.sparseCheckout","false"]);f.global.db.prepare("DELETE FROM roam_repo_maps").run();expect(await inspectLocalDestination(source.value.placement,"sub",f.options)).toMatchObject({ok:false,refusal:{code:"repo-unmapped"}});
   });
+  it("remote prerequisites are advertised only when source objects exist",async()=>{
+    const f=adapterFixture(),head=(await f.options.git.run(f.root,["git","rev-parse","HEAD"])).toString().trim();
+    expect(await handleRelocateAgent({version:1,kind:"prerequisite",sessionId:id,candidate:head},f.options)).toMatchObject({ok:true,value:{version:1,available:true}});
+    expect(await handleRelocateAgent({version:1,kind:"prerequisite",sessionId:id,candidate:"0".repeat(40)},f.options)).toMatchObject({ok:true,value:{version:1,available:false}});
+  });
+  it("stopped-source seeding keeps its writer epoch without launching",async()=>{
+    const f=adapterFixture(),source=await inspectLocalSource(id,f.options);if(!source.ok)throw new Error("source missing");
+    f.worktree.db.prepare("UPDATE roam_sessions SET state='frozen'").run();f.options.homes.read=async()=>({...checkpoint().plan.source,state:"stopped"});
+    expect(await handleRelocateAgent({version:1,kind:"seed",placement:source.value.placement,epoch:1,allowStopped:true},f.options)).toEqual({ok:true,value:{version:1}});
+    expect(f.worktree.db.prepare("SELECT epoch,state FROM roam_sessions").get()).toEqual({epoch:1,state:"active"});
+  });
   it("private data handler excludes legacy move and recovery",async()=>{
     const f=adapterFixture();
     const operation={id:"data-stores",machineId:hub,expectedEpoch:null,kind:"stores",args:{}};

@@ -40,7 +40,8 @@ export type RelocateAgentRequest =
   | {version:1;kind:"hello"}
   | {version:1;kind:"source"|"locate"|"home"|"owner";sessionId:SessionId;allowStopped?:boolean}
   | {version:1;kind:"destination";source:SessionPlacement;relativeCwd:string}
-  | {version:1;kind:"seed";placement:SessionPlacement;epoch:number}
+  | {version:1;kind:"seed";placement:SessionPlacement;epoch:number;allowStopped?:boolean}
+  | {version:1;kind:"prerequisite";sessionId:SessionId;candidate:string;allowStopped?:boolean}
   | {version:1;kind:"authorize"|"capture";plan:RelocatePlan}
   | {version:1;kind:"install";plan:RelocatePlan;captured:NonNullable<import("./types").RelocateCheckpoint["captured"]>;home:RunningHome}
   | {version:1;kind:"activate"|"start"|"confirm";home:RunningHome;placement:SessionPlacement}
@@ -54,7 +55,8 @@ export function parseAgentRequest(input: unknown): RelocateAgentRequest {
     case "source":if(r.allowStopped!==undefined && typeof r.allowStopped!=="boolean")throw new Error("Invalid stopped flag");text(r.sessionId);break;
     case "locate":case "home":case "owner":text(r.sessionId);break;
     case "destination":parsePlacement(r.source);if(typeof r.relativeCwd!=="string" || r.relativeCwd.length>4096)throw new Error("Invalid relative cwd");break;
-    case "seed":parsePlacement(r.placement);if(!Number.isSafeInteger(r.epoch)||(r.epoch as number)<1)throw new Error("Invalid seed epoch");break;
+    case "seed":parsePlacement(r.placement);if(!Number.isSafeInteger(r.epoch)||(r.epoch as number)<1 || r.allowStopped!==undefined && typeof r.allowStopped!=="boolean")throw new Error("Invalid seed epoch");break;
+    case "prerequisite":text(r.sessionId);if(typeof r.candidate!=="string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(r.candidate))throw new Error("Invalid prerequisite");break;
     case "authorize":case "capture":parsePlan(r.plan);break;
     case "install":parsePlan(r.plan);parseCaptured(r.captured);if(parseHome(r.home).state!=="running")throw new Error("Invalid install home");break;
     case "activate":case "start":case "confirm":if(parseHome(r.home).state!=="running")throw new Error("Invalid launch home");parsePlacement(r.placement);break;
@@ -93,10 +95,24 @@ export async function handleRelocateAgent(input:unknown,options:RelocateAdapterO
         return wrap(await inspectLocalSource(r.sessionId,options,!!r.allowStopped && home?.state==="stopped" && home.machineId===options.config.machineId));
       }
       case "destination":return wrap(await inspectLocalDestination(r.source,r.relativeCwd,options));
+      case "prerequisite":{
+        const home=r.allowStopped?await options.homes.read(r.sessionId):null;
+        const source=await inspectLocalSource(r.sessionId,options,!!r.allowStopped && home?.state==="stopped" && home.machineId===options.config.machineId);
+        if(!source.ok)return source;
+        let available=false;
+        try{await options.git.run(source.value.root,["git","cat-file","-e",`${r.candidate}^{commit}`]);await options.git.run(source.value.root,["git","merge-base","--is-ancestor",r.candidate,source.value.head]);available=true;}catch{/* transfer full history */}
+        return {ok:true,value:{version:1,available}};
+      }
       case "seed":{
-        const source=await inspectLocalSource(r.placement.sessionId,options);
+        const home=r.allowStopped?await options.homes.read(r.placement.sessionId):null;
+        const stopped=!!r.allowStopped && home?.state==="stopped" && home.machineId===options.config.machineId && home.epoch===r.epoch;
+        const source=await inspectLocalSource(r.placement.sessionId,options,stopped);
         if(!source.ok)return source;
         if(source.value.epoch!==r.epoch || JSON.stringify(source.value.placement)!==JSON.stringify(r.placement))return refusal("home-conflict","The active source placement changed before seeding.");
+        if(stopped && source.value.state==="frozen") {
+          const stores=createStorePort(options.config,options.globalDb);
+          try{for(const key of r.placement.stores)if(key.startsWith("worktree:"))stores.openStore(key).db.prepare("UPDATE roam_sessions SET state='active' WHERE session_id=? AND epoch=? AND state='frozen'").run(r.placement.sessionId,r.epoch);}finally{stores.close();}
+        }
         await seedLocalPlacement(r.placement,r.epoch,options);return {ok:true,value:{version:1}};
       }
       case "authorize":{

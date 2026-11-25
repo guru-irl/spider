@@ -179,10 +179,17 @@ export function resolveLocalMinute(local: LocalMinute, tz: string): number {
   throw new Error(`Unable to resolve civil minute in ${tz}`);
 }
 
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** A dated 24-hour local time with its UTC offset, such as "Wed 25 Nov 2026, 14:44:52 UTC+4". */
 export function formatInZone(atMs: number, tz: string): string {
   const local = fields(atMs, tz);
-  const pad = (value: number, width = 2): string => String(value).padStart(width, "0");
-  return `${pad(local.year, 4)}-${pad(local.month)}-${pad(local.day)} ${pad(local.hour)}:${pad(local.minute)}:${pad(local.second)} ${tz}`;
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  const weekday = WEEKDAYS[new Date(civilUtc(local)).getUTCDay()];
+  const offset = offsetMinutes(atMs, tz), size = Math.abs(offset);
+  const zone = offset === 0 ? "UTC" : `UTC${offset < 0 ? "-" : "+"}${Math.floor(size / 60)}${size % 60 ? `:${pad(size % 60)}` : ""}`;
+  return `${weekday} ${local.day} ${MONTHS[local.month - 1]} ${local.year}, ${pad(local.hour)}:${pad(local.minute)}:${pad(local.second)} ${zone}`;
 }
 
 export function parseAt(value: string, nowMs: number): number {

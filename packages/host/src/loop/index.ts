@@ -328,7 +328,7 @@ export class SessionScheduler {
     const nextAt = args.at === undefined ? Date.now() + seconds! * 1000 : this.time.parseAt(args.at, Date.now());
     if (rearm) {
       rearm.nextAt = nextAt; this.arm();
-      return this.changed({ text: `Wakeup scheduled for ${name}, at ${new Date(nextAt).toISOString()}.`, details: { ...(seconds === undefined ? {} : { delaySeconds: seconds }), fireAt: new Date(nextAt).toISOString(), noop: args.noop === true } }, ctx);
+      return this.changed({ text: `Wakeup scheduled for ${name}, at ${this.time.formatInZone(nextAt, this.time.resolveTimeZone())}.`, details: { ...(seconds === undefined ? {} : { delaySeconds: seconds }), fireAt: new Date(nextAt).toISOString(), noop: args.noop === true } }, ctx);
     }
     const trigger: Trigger = {
       name, kind: "once", prompt: args.prompt.trim(), origin: "model", tz: this.time.resolveTimeZone(), nextAt,
@@ -337,7 +337,7 @@ export class SessionScheduler {
     };
     const replaced = this.triggers.has(name);
     const warning = this.put(trigger, ctx);
-    return { text: `Wakeup scheduled${seconds === undefined ? "" : ` in ${seconds}s`}, at ${new Date(nextAt).toISOString()}.${replaced ? ` It replaced the trigger named ${name}.` : ""}${warning ? ` Warning: ${warning}` : ""}`, details: { ...(seconds === undefined ? {} : { delaySeconds: seconds }), fireAt: new Date(nextAt).toISOString(), noop: args.noop === true, ...(warning ? { warning } : {}) } };
+    return { text: `Wakeup scheduled${seconds === undefined ? "" : ` in ${seconds}s`}, at ${this.time.formatInZone(nextAt, trigger.tz)}.${replaced ? ` It replaced the trigger named ${name}.` : ""}${warning ? ` Warning: ${warning}` : ""}`, details: { ...(seconds === undefined ? {} : { delaySeconds: seconds }), fireAt: new Date(nextAt).toISOString(), noop: args.noop === true, ...(warning ? { warning } : {}) } };
   }
   async command(cmd: LoopCommand, ctx: ExtensionContext, origin: PromptOrigin = "user"): Promise<Result> {
     if (!this.admitted()) throw new Error("Session ownership is not available; run /spider roam doctor.");

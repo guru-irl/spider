@@ -18,7 +18,14 @@ describe("absolute and zoned times", () => {
       .toEqual({ year: 2026, month: 10, day: 27, hour: 8, minute: 0, weekday: 2 });
     expect(offsetMinutes(at, "Asia/Kolkata")).toBe(330);
     expect(resolveTimeZone("Asia/Kolkata")).toBe("Asia/Kolkata");
-    expect(formatInZone(at, "Asia/Kolkata")).toBe("2026-10-27 08:00:00 Asia/Kolkata");
+    expect(formatInZone(at, "Asia/Kolkata")).toBe("Tue 27 Oct 2026, 08:00:00 UTC+5:30");
+  });
+
+  it("formats a dated 24-hour local time with its UTC offset", () => {
+    expect(formatInZone(ms("2026-11-25T10:44:52.452Z"), "Asia/Dubai")).toBe("Wed 25 Nov 2026, 14:44:52 UTC+4");
+    expect(formatInZone(ms("2026-11-25T23:05:00Z"), "UTC")).toBe("Wed 25 Nov 2026, 23:05:00 UTC");
+    expect(formatInZone(ms("2026-11-25T03:00:00Z"), "America/Los_Angeles")).toBe("Tue 24 Nov 2026, 19:00:00 UTC-8");
+    expect(formatInZone(ms("2026-07-01T12:00:00Z"), "America/St_Johns")).toBe("Wed 1 Jul 2026, 09:30:00 UTC-2:30");
   });
 
   it("requires an offset and a future valid date", () => {
@@ -114,7 +121,7 @@ describe("absolute and zoned times", () => {
     expect(zonedMinute(ms("2026-12-31T18:30Z"), "Asia/Kolkata"))
       .toEqual({ year: 2027, month: 1, day: 1, hour: 0, minute: 0, weekday: 5 });
     expect(formatInZone(ms("2026-12-31T18:30:07.123Z"), "Asia/Kolkata"))
-      .toBe("2027-01-01 00:00:07 Asia/Kolkata");
+      .toBe("Fri 1 Jan 2027, 00:00:07 UTC+5:30");
     expect(offsetMinutes(ms("2026-12-31T18:30:07.123Z"), "Asia/Kolkata")).toBe(330);
   });
 

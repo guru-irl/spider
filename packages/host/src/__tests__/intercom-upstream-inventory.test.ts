@@ -3,6 +3,7 @@ import { globSync, lstatSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { configDefaults } from 'vitest/config';
 import { loadConfigFromFile } from 'vite';
+import { parse } from 'yaml';
 it('declares the intercom workspace dependency consistently', () => {
   const host = JSON.parse(readFileSync(resolve('packages/host/package.json'), 'utf8'));
   const lock = JSON.parse(readFileSync(resolve('package-lock.json'), 'utf8'));
@@ -34,8 +35,18 @@ it('all fifteen upstream tests are present and selected by the CI Vitest configu
     { cwd: root, exclude: configuration.test?.exclude ?? configDefaults.exclude }));
   expect(expected.filter(name => !selected.has(name))).toEqual([]);
   const workflow = readFileSync(resolve(root, '.github/workflows/ci.yml'), 'utf8');
-  const command = workflow.split('\n').find(line => line.includes('npx vitest run --shard='));
-  const args = command?.split('npx vitest run ')[1].replace(/\$\{\{[^}]+\}\}/g, 'shard').trim().split(/\s+/);
-  // These reporting and partition options cannot narrow the default file set.
-  expect(args?.every(arg => /^--(?:shard|maxWorkers|reporter|outputFile)=/.test(arg))).toBe(true);
+  const jobs = parse(workflow).jobs;
+  const full = jobs.test;
+  expect(full.if).toContain("github.event_name != 'pull_request'");
+  const command = full.steps.find((step: { name?: string }) => step.name === 'Test shard').run;
+  const args = command.split('npx vitest run ')[1].replace(/\$\{\{[^}]+\}\}/g, 'shard').trim().split(/\s+/);
+  // Main still discovers all upstream files, not a PR selection or test-name filter.
+  expect(args.every((arg: string) => /^--(?:shard|maxWorkers|reporter|outputFile)=/.test(arg))).toBe(true);
+  const pr = jobs['pr-test'];
+  expect(pr.strategy.matrix.shard).toEqual([1, 2]);
+  expect(pr.steps.some((step: { run?: string }) => step.run?.includes('node scripts/select-tests.mjs'))).toBe(true);
+  expect(pr.steps.some((step: { run?: string }) => step.run?.includes('node scripts/run-selected-tests.mjs'))).toBe(true);
+  expect(jobs.checks.name).toBe('typecheck · test · build');
+  expect(jobs.checks.needs).toContain('pr-test');
+  expect(jobs).not.toHaveProperty('required');
 }, 5000);

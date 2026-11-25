@@ -1,5 +1,15 @@
 import type { Db } from "@spider/db-core";
-import type { HomeAdmission, HomeStore, SessionId } from "@spider/roam/relocate/types";
+import type { HomeAdmission, HomeStore, RunningHome, SessionId, SessionMachinePorts } from "@spider/roam/relocate/types";
+import { resolve } from "node:path";
+
+export async function prepareRelocateAdmission(home: RunningHome, file: string, machine: SessionMachinePorts): Promise<void> {
+  const located = await machine.locate(home.machineId, home.sessionId);
+  if (!located.ok) throw new Error(located.refusal.code);
+  const placement = located.value;
+  if (placement.sessionId !== home.sessionId || placement.machineId !== home.machineId || resolve(placement.file) !== resolve(file)) throw new Error("home-conflict");
+  const activated = await machine.activate(home, placement);
+  if (!activated.ok) throw new Error(activated.refusal.code);
+}
 
 /** A failed lookup is never evidence that a session is ordinary legacy work. */
 export async function readRelocateAdmission(sessionId: SessionId, db: Db, homes: HomeStore,

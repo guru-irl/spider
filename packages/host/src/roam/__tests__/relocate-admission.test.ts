@@ -2,7 +2,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { openDb } from "@spider/db-core";
 import { scratchDbPath } from "@spider/db-core/testutil";
 import type { HomeStore } from "@spider/roam/relocate/types";
-import { readRelocateAdmission } from "../relocate-admission";
+import { readRelocateAdmission, prepareRelocateAdmission } from "../relocate-admission";
+import type { SessionMachinePorts, SessionPlacement } from "@spider/roam/relocate/types";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { HomeAdmission, RunningHome, SessionId } from "@spider/roam/relocate/types";
 import { createHostSessionFixture } from "../../__tests__/fixtures/pi-events";
@@ -44,6 +45,15 @@ it("successful SQL discovery distinguishes legacy rows from managed missing home
     db.exec("DROP TABLE session_homes");
     expect(await readRelocateAdmission(id, db, homes, () => false)).toEqual({ kind: "unavailable" });
   } finally { db.close(); }
+});
+it("readiness activates the locked exact file at the home epoch", async () => {
+  const placement: SessionPlacement = { sessionId: id, machineId: local, repoKey: "repo", workspaceId: "ws", repository: "/fixture", cwd: "/fixture", file: "/fixture/session.jsonl", stores: ["global", "repo:repo", "worktree:repo:ws"], historyMachine: local };
+  const machine: SessionMachinePorts = { locate: vi.fn(async () => ({ ok: true, value: placement })), activate: vi.fn(async () => ({ ok: true, value: undefined })), start: vi.fn(), confirm: vi.fn(), publishHome: vi.fn() };
+  await prepareRelocateAdmission(home, placement.file, machine);
+  expect(machine.locate).toHaveBeenCalledWith(local, id); expect(machine.activate).toHaveBeenCalledWith(home, placement);
+  vi.mocked(machine.activate).mockClear();
+  await expect(prepareRelocateAdmission(home, "/fixture/other.jsonl", machine)).rejects.toThrow();
+  expect(machine.activate).not.toHaveBeenCalled(); expect(machine.start).not.toHaveBeenCalled(); expect(machine.publishHome).not.toHaveBeenCalled();
 });
 it("only local running v0 home admits", async () => {
   const good = fixture({ kind: "managed", home }); await good.emit("session_start");

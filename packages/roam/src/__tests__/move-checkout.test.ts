@@ -6,14 +6,16 @@ import { createReplica } from "@spider/db-core/testutil";
 import { mapRepository, mapWorkspace } from "@spider/db-core/roam/repo-map";
 import { openFreezeJournal } from "../journal";
 import { checkoutName, moveCheckoutPath, resolveMoveCheckout } from "../move-checkout";
+import { snapshotWorkspace } from "../workspace";
+import { DEFAULT_LIMITS } from "../contracts";
 
 const HUB = "00000000-0000-4000-8000-000000000001", WORKSPACE = "12345678-0000-4000-8000-000000000003";
 const fixtures: ReturnType<typeof createReplica>[] = [];
 afterEach(() => { for (const fixture of fixtures.splice(0)) fixture.close(); });
-function git(root: string, argv: readonly string[]) {
-  return execFileSync("git", [...argv], { cwd: root, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env,
+function git(root: string, argv: readonly string[], options?: { env?: Readonly<NodeJS.ProcessEnv>; stdin?: Buffer }) {
+  return execFileSync("git", [...argv], { cwd: root, input: options?.stdin, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env,
     GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid",
-    GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid" } });
+    GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid", ...options?.env } });
 }
 async function fixture() {
   const global = createReplica("global", HUB); fixtures.push(global);
@@ -24,7 +26,7 @@ async function fixture() {
   await mapRepository(global.db, { repoKey: "fixture-repo", path: repository });
   const journal = openFreezeJournal(join(global.root, "roam", "journal.db"));
   const input = { globalDb: global.db, root: global.root, repoKey: "fixture-repo", workspaceId: WORKSPACE, sourceName: "source-checkout", moveId: "move-a", journal,
-    git: { run: async (root: string, argv: readonly string[]) => git(root, argv.slice(1)) } };
+    git: { run: async (root: string, argv: readonly string[], options?: { env?: Readonly<NodeJS.ProcessEnv>; stdin?: Buffer }) => git(root, argv[0] === "git" ? argv.slice(1) : argv, options) } };
   const path = join(global.root, "roam", "checkouts", "mapped-repo-40080b8c38fc", "source-checkout-12345678");
   return { global, repository, input, path };
 }
@@ -42,6 +44,12 @@ it("retains a registered absolute mapping after the global root changes", async 
   const f = await fixture(); mkdirSync(join(f.global.root, "roam", "checkouts", "mapped-repo-40080b8c38fc"), { recursive: true, mode: 0o700 });
   git(f.repository, ["worktree", "add", "--detach", f.path]);
   await mapWorkspace(f.global.db, { repoKey: "fixture-repo", workspaceId: WORKSPACE, path: f.path });
+  f.input.journal.begin({ id: "baseline", kind: "workspace-snapshot", machineId: HUB, expectedEpoch: null, args: {} });
+  const baseline = await snapshotWorkspace({ root: f.path, cwd: f.path, repoKey: f.input.repoKey, workspaceId: WORKSPACE,
+    moveId: "baseline", stage: "final", writers: [] }, { ...f.input.git, journal: f.input.journal, limits: DEFAULT_LIMITS,
+    scratch: join(f.global.root, "roam", "git"), worktreeCommand: null });
+  f.global.db.prepare("UPDATE roam_workspace_maps SET snapshot_json=? WHERE repo_key=? AND workspace_id=?")
+    .run(JSON.stringify(baseline), f.input.repoKey, WORKSPACE);
   const nextRoot = join(f.global.root, "next-root"); mkdirSync(nextRoot, { mode: 0o700 });
   expect(await resolveMoveCheckout({ ...f.input, root: nextRoot })).toEqual({ kind: "mapped", path: f.path });
 });

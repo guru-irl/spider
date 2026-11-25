@@ -269,7 +269,11 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
     async mapping(request, loc) {
       const sourceMachine = localHome(sessionId)?.machineId ?? config.machineId;
       const mapped = globalDb.prepare("SELECT repo_key,workspace_id,path FROM roam_workspace_maps").all() as { repo_key: string; workspace_id: string; path: string }[];
-      const source = mapped.filter(row => loc.stores.includes(`worktree:${row.repo_key}:${row.workspace_id}` as StoreKey) && (sourceMachine !== config.machineId || !relative(row.path, loc.cwd).startsWith("..")));
+      const source = sourceMachine === config.machineId
+        ? mapped.filter(row => loc.stores.includes(`worktree:${row.repo_key}:${row.workspace_id}` as StoreKey) && !relative(row.path, loc.cwd).startsWith(".."))
+        : parseLocationStores(loc.stores).filter(key => key.startsWith("worktree:")).map(key => ({
+          repo_key: key.slice("worktree:".length, key.lastIndexOf(":")), workspace_id: key.slice(key.lastIndexOf(":") + 1),
+        }));
       if (source.length !== 1) return null;
       const row = source[0];
       const rootFor = async (machineId: string, sourceName?: string): Promise<MoveCheckout | null> => {
@@ -284,7 +288,8 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
       };
       const sourceCheckout = await rootFor(sourceMachine), sourceRoot = sourceCheckout?.path;
       if (!sourceRoot || relative(sourceRoot, loc.cwd).startsWith("..")) return null;
-      const destination = await rootFor(request.destinationMachine, checkoutName(basename(sourceRoot), "checkout"));
+      const destination = request.destinationMachine === sourceMachine ? sourceCheckout
+        : await rootFor(request.destinationMachine, checkoutName(basename(sourceRoot), "checkout"));
       if (!destination) return null;
       return { repoKey: row.repo_key, workspaceId: row.workspace_id, sourceRoot, destinationRoot: destination.path, destinationCwd: join(destination.path, relative(sourceRoot, loc.cwd)) };
     },

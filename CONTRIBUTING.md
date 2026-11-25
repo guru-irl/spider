@@ -47,29 +47,65 @@ npm run build
 
 ### CI shards and timing data
 
-CI runs only Node `26.x`. The `checks`, twelve `test` shards, `herdr-acceptance`,
-and `chrome` jobs run in parallel. Each shard uses two Vitest workers. The required
-`typecheck · test · build` check succeeds only when every job succeeds.
-`npm ci` runs the `prepare` build in each job.
+CI uses Node `26.x`. PRs have two test jobs with three fork workers each,
+followed by one typecheck/build job. The last job keeps the required name
+`typecheck · test · build` and fails if either shard fails. Conditional Chrome
+and packed Herdr acceptance steps share that runner. Headless stories have
+separate path-filtered jobs.
 
-`scripts/vitest-sequencer.ts` assigns files by longest processing time first,
-using `scripts/test-durations.json`. It breaks ties by repository-relative path
-and runs slow files first. New files get the median recorded duration.
+PR selection starts in **shadow mode**. Both shards save the proposed manifest,
+but execute the full root suite. Set the repository variable
+`CI_SCOPED_TESTS=true` only after historical replay and synthetic graph checks
+have no unexplained misses. This switches execution to the proposed manifests.
+Both test jobs must produce identical selection hashes.
 
-To refresh the durations, download all twelve `test-results-*` artifacts from
-a completed CI run, then rebuild the file from their JSON reports:
+Main still runs all root tests on twelve shards with two workers each, plus
+separate Chrome and Herdr acceptance jobs. `npm ci` builds each checkout through
+`prepare`. There is no separate fast-test roster: new root tests join by default.
+
+`scripts/select-tests.mjs` compares the merge base with the tested checkout SHA.
+Vitest resolves import dependencies, including build entries used as virtual
+specifications. `scripts/test-resources.json` adds filesystem readers, bundle
+consumers, source inventories, and optional-suite inputs. Unknown paths,
+deletes, missing bases, and graph errors select the full inventory. Selection
+never collects test modules or starts test workers.
+
+Each manifest records sorted test paths, selection reasons, base/tested SHAs,
+and hashes of the selector, resource policy, inventory, and timing table.
+`scripts/run-selected-tests.mjs` validates it and passes the exact file list to
+Vitest without a second changed-file filter. Empty partitions skip explicitly.
+
+`scripts/vitest-sequencer.ts` assigns the selected files by longest processing
+time first, using `scripts/test-durations.json`. Ties use repository-relative
+paths. New files get the median recorded duration. To inspect a saved selection:
+
+```bash
+node scripts/list-test-shards.mjs 1/2 --manifest selection.json
+node scripts/test-shard-budget.mjs --manifest selection.json
+```
+
+The budget reports aggregate file time and a six-worker scheduling estimate,
+including a separate estimate without measured files over five seconds. It does
+not include installation, selection, or process startup.
+
+To refresh durations, download the `test-results-*` artifacts from a completed
+CI run:
 
 ```bash
 gh run download RUN_ID --pattern 'test-results-*' --dir .spider/scratch/ci-reports
 node scripts/update-test-durations.mjs .spider/scratch/ci-reports/test-results-*/shard-*.json
 ```
 
-The script uses each file's start and end times, including hooks. If the reports
-contain repeated observations, it keeps the longest. Commit the regenerated
-file. Use all shards from the same revision so removed paths disappear and new
-files get measured weights. To list a shard without running it, use
-`node scripts/list-test-shards.mjs 1/12`. This uses Vitest's file discovery and
-the configured sequencer. Vitest 4's `list --filesOnly` does not apply sharding.
+The script includes hooks through file start/end timestamps. It replaces each
+observed weight with the largest supplied observation and retains unobserved
+entries, so a scoped report cannot erase the history. Prefer complete runs from
+one revision when refreshing the checked-in table. To list the full inventory's
+main shard, use `node scripts/list-test-shards.mjs 1/12`.
+
+For selector safety evidence, `scripts/replay-test-selection.mjs --collect`
+downloads red PR logs and reports without resolving any graphs. Its replay mode
+runs only on GitHub Actions, in isolated historical checkouts at the tested merge
+SHAs. Missing evidence is inconclusive, not successful recall.
 
 ## Package map and dependency rules
 

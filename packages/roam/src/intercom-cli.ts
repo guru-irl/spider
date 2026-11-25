@@ -16,6 +16,7 @@ import { provisionIntercomEnrollment, revokeIntercomPair } from "./intercom-enro
 import { parsePublicationFailure, publicationText } from "./intercom-publication";
 import { formatRevocationGates } from "./cause-codes";
 import { createIntercomRegistry } from "./intercom-registry";
+import { selectIntercomCleanupPeer } from "./intercom-cleanup-peer";
 import { topologyTransitionId } from "./intercom-topology";
 import { requestHelperRevoke, requestHelperTopology } from "./intercom-helper";
 import { runForeground, runLocalPairCleanup } from "./intercom-local-ops";
@@ -104,12 +105,16 @@ export async function runIntercomRevokeCli(input: { root: string; pairId: string
     if (!record || !("sshUser" in record.pair)) throw new Error("intercom-pair-not-found");
     const pair = record.pair, remote = config.machineId === pair.source.machineId ? pair.target : config.machineId === pair.target.machineId ? pair.source : null;
     if (!remote && config.role !== "hub") throw new Error("machine-mismatch");
-    const routedRemote = remote && config.machineId === pair.source.machineId && record.resources ? { ...remote, alias: record.resources.route.name } : remote;
+    const effective = (peer: Peer): Peer => {
+      const selected = selectIntercomCleanupPeer(peer, config.peers);
+      return config.machineId === pair.source.machineId && peer.machineId === pair.target.machineId && record.resources
+        ? { ...selected, alias: record.resources.route.name } : selected;
+    };
     let created: ProvisionTransport | undefined;
     const getTransport = (): ProvisionTransport => created ??= createProvisionTransport({ binary: loadHerdrConfig(input.root).core.binary,
-      env: process.env, enrolled: routedRemote ? [routedRemote] : [pair.source, pair.target] }, options.journal ?? openJournal(join(input.root, "roam", "journal.db")));
+      env: process.env, enrolled: (remote ? [remote] : [pair.source, pair.target]).map(effective) }, options.journal ?? openJournal(join(input.root, "roam", "journal.db")));
     const delegate = (): ProvisionTransport => options.transport ?? getTransport();
-    const lazy: IntercomRevocationTransport = { pinIntercomPeer: peer => delegate().pinIntercomPeer(routedRemote?.machineId === peer.machineId ? routedRemote : peer),
+    const lazy: IntercomRevocationTransport = { pinIntercomPeer: peer => delegate().pinIntercomPeer(effective(peer)),
       transport: { exec: (...args) => delegate().transport.exec(...args) } };
     const ports = options.revokePorts ?? createProductionIntercomRevocationPorts({ root: input.root, localMachineId: config.machineId, hub: config.role === "hub", fenceEpoch: input.fenceEpoch, transport: lazy,
       async localCore() {

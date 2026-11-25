@@ -23,6 +23,7 @@ import { isMachineId } from "./machine-id";
 import type { LocalPairCleanup } from "./intercom-local-ops";
 import type { IntercomRevocationPorts } from "./provision-contracts";
 import { safeCauseCode } from "./cause-codes";
+import { selectIntercomCleanupPeer } from "./intercom-cleanup-peer";
 
 interface EnrollmentOptions {
   root: string; journal: Journal; transport: ProvisionTransport; request: IntercomEnrollmentRequest; actor: string; now(): number;
@@ -233,7 +234,10 @@ export function createProductionIntercomMaintenance(input: { root: string; confi
       const transportFor = (pair: IntercomEnrollmentPair): ProvisionTransport => {
         const existing = transports.get(pair.pairId); if (existing) return existing;
         const resources = records.find(record => record.pair.pairId === pair.pairId)?.resources;
-        const effective = (peer: Peer) => local === pair.source.machineId && peer.machineId === pair.target.machineId && resources ? { ...peer, alias: resources.route.name } : peer;
+        const effective = (peer: Peer): Peer => {
+          const selected = selectIntercomCleanupPeer(peer, input.config.peers);
+          return local === pair.source.machineId && peer.machineId === pair.target.machineId && resources ? { ...selected, alias: resources.route.name } : selected;
+        };
         let delegate = input.transport;
         if (!delegate) {
           journal ??= openJournal(join(input.root, "roam", "journal.db"));

@@ -275,15 +275,29 @@ it.each([
   } finally { client.dispose(); await endpoint.dispose(); }
 });
 it('viewer receives a definitive refused steer even after the host queue and answer budget', async () => {
-  const cancel = new AbortController(); const p = ports();
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const p = ports();
   p.steerRun = async () => {
-    await delay(21000, undefined, { signal: cancel.signal }).catch(() => {});
+    entered(); await gate;
     return { accepted: false, delivered: false, queued: false, delivery: 'refused', error: 'Not sent: earlier steer did not finish.' };
   };
   const endpoint = await startSessionEndpoint(owner, p, root); const client = createSessionIpcClient(endpoint.descriptor);
+  vi.useFakeTimers();
+  const socketTimers = new WeakMap<Socket, ReturnType<typeof setTimeout>>();
+  const timerSpy = vi.spyOn(Socket.prototype, 'setTimeout').mockImplementation(function (this: Socket, ms: number, callback?: () => void) {
+    const old = socketTimers.get(this); if (old) clearTimeout(old);
+    if (ms && callback) socketTimers.set(this, setTimeout(callback, ms));
+    return this;
+  });
   try {
-    expect(await submitViewerSteer(client, runId, 'next case')).toEqual({ accepted: false, delivered: false, queued: false, delivery: 'refused', error: 'Not sent: earlier steer did not finish.' });
-  } finally { cancel.abort(); client.dispose(); await endpoint.dispose(); }
+    const reply = submitViewerSteer(client, runId, 'next case');
+    await started;
+    await vi.advanceTimersByTimeAsync(21000);
+    release();
+    expect(await reply).toEqual({ accepted: false, delivered: false, queued: false, delivery: 'refused', error: 'Not sent: earlier steer did not finish.' });
+  } finally { release(); client.dispose(); timerSpy.mockRestore(); vi.useRealTimers(); await endpoint.dispose(); }
 }, 28000);
 it('client preserves actual steering refusals and dispatches view and run openers', async () => {
   const p = ports(); const view = vi.fn(); const openRun = vi.fn(p.openRun); p.openView = view; p.openRun = openRun;

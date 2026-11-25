@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
-import { expect, it } from 'vitest';
-import { setTimeout as delay } from 'node:timers/promises';
+import { expect, it, vi } from 'vitest';
 import { HerdrError } from '../client/parse.js';
 import { createJobStore } from '../jobs/store.js';
 import { bounded, monitorFixture, on, program } from './herdr-monitor-fixture.js';
@@ -18,12 +17,21 @@ it('shutdown attempts every kill, disposes events, and succeeds again after core
 
 it('periodic monitoring does not report core loss again before host cleanup', async () => {
   const h = await monitorFixture();
+  let observed!: () => void, unavailable = false;
+  const checked = new Promise<void>(resolve => { observed = resolve; });
   let ready = Promise.resolve(); const events = h.hc.events;
-  h.hc.events = () => ({ ...events(), get ready() { return ready; } });
-  const jobs = h.monitor(); await jobs.activate(h.owner);
-  ready = Promise.reject(new HerdrError('core-unavailable', 'Herdr core is not running')); void ready.catch(() => {});
-  await delay(2200); await jobs.shutdown('reload');
-  expect(h.errors).toEqual([]);
+  h.hc.events = () => ({ ...events(), get ready() { if (unavailable) observed(); return ready; } });
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  const jobs = h.monitor();
+  try {
+    await jobs.activate(h.owner);
+    ready = Promise.reject(new HerdrError('core-unavailable', 'Herdr core is not running')); void ready.catch(() => {}); unavailable = true;
+    await vi.advanceTimersByTimeAsync(2200); await checked;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(h.errors).toEqual([]);
+    await jobs.shutdown('reload');
+    expect(h.errors).toEqual([]);
+  } finally { await jobs.shutdown('reload'); vi.useRealTimers(); }
 });
 
 it('shutdown persists child completion even when one original cannot be killed', async () => {

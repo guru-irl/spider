@@ -53,16 +53,6 @@ function view(source: string, className: string, ports: any, context: any = cx) 
 }
 
 for (const version of ['0.1.13', '0.1.16'] as const) {
-  test(`${version}: every B anchor occurs exactly once in A output`, () => {
-    const clean = loadSpacesAFiles(version), recipe = loadPublishedSpacesARecipe(version), b = fragments(version);
-    const afterA = replaySpacesARecipe(version, clean, recipe.aFragments, recipe);
-    const invalid = Object.entries(b).flatMap(([mod, records]) => records.flatMap(patch => {
-      const count = afterA[mod]![patch.file]!.split(patch.anchor).length - 1;
-      return count === 1 ? [] : [`${mod}/${patch.file}:${patch.id} matched ${count} times`];
-    }));
-    expect(invalid).toEqual([]);
-  });
-
   test(`${version}: B replay verifies A, exact anchors and repeated output`, () => {
     const clean = loadSpacesAFiles(version), recipe = loadPublishedSpacesARecipe(version), b = fragments(version);
     const afterA = replaySpacesARecipe(version, clean, recipe.aFragments, recipe);

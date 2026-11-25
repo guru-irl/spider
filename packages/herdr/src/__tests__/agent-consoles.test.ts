@@ -8,7 +8,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { ExtensionAPI, ExtensionContext, SessionShutdownEvent } from '@earendil-works/pi-coding-agent';
-import type { JobHandle, JobId, MachineName, Owner, RunId, TerminalAddress } from '../contracts.js';
+import type { HcClient, JobHandle, JobId, MachineName, Owner, RunId, TerminalAddress, TerminalSummary } from '../contracts.js';
 import type { AgentConsoleLaunch } from '../remote/console.js';
 import { createHerdrHarness, type HerdrHarness } from './testutil.js';
 import { createRemoteTestFixture } from './acceptance/c.js';
@@ -168,13 +168,48 @@ it('drops a stale preparation hold link when no console was ensured', async () =
   const jobs: import('../contracts.js').JobPort = { ...remote.ports.jobs, start: async (prepare, ...rest) => remote.ports.jobs.start(async () => { const program = await prepare(); expect(program).not.toHaveProperty('consoleDirectory'); return program; }, ...rest) };
   await consoleModule.startWithAgentConsole({ ...request, enabled: false, hc: h.hc, jobs, program: async () => ({ ...await prepareRemoteProgram(request.source, request.target), consoleDirectory: join(request.target.directory, '.consoles', 'stale') }), options: {} });
 }, 20000);
+function lifecycleFixture(reason: string) {
+  const owner = { sessionId: `lifecycle-${reason}`, generation: 'generation', name: 'Owner', cwd: '/fixture', sessionFile: null,
+    terminal: { coreId: 'owner-core', terminalId: 'owner-terminal', address: 'owner-terminal', socket: '/fixture/core.sock', sessionNamespace: 'fixture' } } as Owner;
+  const on = 'remote.invalid' as MachineName;
+  const files = new Map<string, Buffer>(), terminals = new Map<TerminalAddress, TerminalSummary>();
+  const missing = () => Object.assign(new Error('not found'), { code: 'not_found' });
+  const hc: HcClient = {
+    identity: async () => owner.terminal, caller: async () => owner.terminal,
+    machines: async () => [{ id: 'remote-core' as never, name: on, aliases: [], state: 'connected', sessionNamespace: 'fixture', runtime: null }],
+    run: async input => {
+      const address = `${on}/console` as TerminalAddress;
+      terminals.set(address, { address, parent: null, state: 'live', labels: { ...input.labels }, status: null, exitCode: null, reason: null, signal: null, finishedAt: null });
+      return { address, coreId: 'remote-core' as never };
+    },
+    get: async address => { const terminal = terminals.get(address); if (!terminal) throw missing(); return { ...terminal, labels: { ...terminal.labels } }; },
+    kill: async address => { const terminal = terminals.get(address); if (!terminal) throw missing(); terminal.state = 'finished'; },
+    rm: async address => { if (!terminals.delete(address)) throw missing(); },
+    read: async () => '', setLabels: async () => { throw new Error('Unexpected label write'); },
+    fileRead: async (_on, file) => { const value = files.get(file); if (!value) throw Object.assign(new Error('missing'), { code: 'ENOENT' }); return value; },
+    fileWrite: async (_on, file, bytes) => { files.set(file, bytes); },
+    events: () => ({ ready: Promise.resolve(), lookup: async address => terminals.get(address) ?? null,
+      subscribe: listener => { listener({ type: 'snapshot', seq: 1, terminals: [...terminals.values()].map(terminal => ({ ...terminal, labels: { ...terminal.labels } })) }); return () => {}; }, dispose: () => {} }),
+  };
+  const h = { owner, hc, localEnv: { HC_TERMINAL_ID: owner.terminal.terminalId } };
+  const launch = async (): Promise<Launch> => ({ owner, on,
+    target: { on, cwd: null, directory: '/fixture/remote', commands: {}, environment: {}, nodePath: '/fixture/node', runtimePath: '/fixture/runtime.mjs', runtimeSha256: 'runtime' },
+    source: { kind: 'code', language: 'shell', code: 'echo ready' } });
+  return { h, launch };
+}
 function events() {
   const callbacks = new Map<string, (event: SessionShutdownEvent, ctx: ExtensionContext) => unknown>();
   const pi = { on: (name: string, callback: (event: SessionShutdownEvent, ctx: ExtensionContext) => unknown) => { callbacks.set(name, callback); return () => callbacks.delete(name); } } as unknown as ExtensionAPI;
   return { pi, shutdown: async (reason: SessionShutdownEvent['reason']) => { await callbacks.get('session_shutdown')?.({ type: 'session_shutdown', reason }, {} as ExtensionContext); } };
 }
 it.each(['new', 'resume', 'fork', 'quit'] as const)('closes a top-level console at %s but preserves it on reload', async reason => {
-  const { h, launch } = await fixture(); const module = api(); const console = await module.ensureAgentConsole(await launch(), h.hc, h.localEnv); const event = events();
+  const { h, launch } = reason === 'quit' ? await fixture() : lifecycleFixture(reason);
+  const request = await launch();
+  const store = reason === 'quit' ? null : await consoleModule.ensureAgentConsole(request, h.hc, h.localEnv);
+  const console = reason === 'quit' ? await openRetainedConsole(request, h.hc, h.localEnv)
+    : await consoleModule.openAgentConsoleView({ ...request, displayLeaseFile: '/fixture/display-lease.json' }, h.hc, h.localEnv);
+  if (reason !== 'quit') expect(store).not.toBeNull();
+  const module = api(); const event = events();
   const registration = module.registerAgentConsoleLifecycle(event.pi, { hc: h.hc, currentOwner: () => h.owner, env: h.localEnv });
   await event.shutdown('reload'); expect((await h.hc.get(console!.address)).state).toBe('live');
   await event.shutdown(reason); await expect(h.hc.get(console!.address)).rejects.toMatchObject({ code: 'not_found' }); registration.dispose();

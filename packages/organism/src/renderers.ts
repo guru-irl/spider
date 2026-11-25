@@ -14,7 +14,7 @@ function skillLine(s: SkillInventoryEntry): string {
 /** Render the `skill list` result. */
 export function renderSkillList(rows: SkillInventoryEntry[]): string {
   if (rows.length === 0) return "No skills.";
-  return ["## skills 🕸", ...rows.map(skillLine)].join("\n");
+  return ["## skills \u{1F578}\uFE0F", ...rows.map(skillLine)].join("\n");
 }
 
 /** Render a single `skill view` result. */
@@ -57,7 +57,7 @@ function nodeLine(n: GraphNode): string {
 
 /** Render the `control insights` learning graph. */
 export function renderInsights(g: LearningGraph): string {
-  const head = `## insights 🕸 — ${g.stats.nodes} nodes · ${g.stats.edges} edges · ${Math.round(g.stats.linkedPct)}% linked`;
+  const head = `## insights \u{1F578}\uFE0F — ${g.stats.nodes} nodes · ${g.stats.edges} edges · ${Math.round(g.stats.linkedPct)}% linked`;
   const preview = g.nodes.slice(0, 20).map(nodeLine);
   return [head, ...preview].join("\n");
 }

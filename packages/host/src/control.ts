@@ -302,7 +302,7 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
 
 // ── doctor ──
 export function controlDoctor(cwd: string, sessionId?: string, bundle?: LoadedBundle, usage?: ReturnType<typeof usageDoctorLines>): { ok: boolean; lines: string[] } {
-  const lines: string[] = ["## spider doctor 🕸", ""];
+  const lines: string[] = ["## spider doctor \u{1F578}\uFE0F", ""];
   if (bundle) lines.push(bundleDoctorLine(bundle));
   let ok = true;
   try {

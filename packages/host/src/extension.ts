@@ -369,7 +369,7 @@ function renderUpstreamReport(report: {
   }>;
   todosAdded: number;
 }): string {
-  const lines = [`🕸 upstream-watch — ${report.packages.length} package(s) checked, ${report.todosAdded} new cherry-pick todo(s)`];
+  const lines = [`\u{1F578}\uFE0F upstream-watch — ${report.packages.length} package(s) checked, ${report.todosAdded} new cherry-pick todo(s)`];
   for (const p of report.packages) {
     const head = p.head ? ` @ ${p.head.slice(0, 7)}` : "";
     const reason = (p.reason ?? "unknown reason").split("\n")[0];
@@ -648,7 +648,7 @@ async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnap
         try {
           const sha = await markReviewed(ctx.globalDb, pkg, ref, { git, mirrorRoot });
           return {
-            display: `🕸 upstream-watch: marked ${pkg} reviewed @ ${sha}`,
+            display: `\u{1F578}\uFE0F upstream-watch: marked ${pkg} reviewed @ ${sha}`,
             details: { ok: true, marked: { package: pkg, ref, sha } },
           };
         } catch (error) {

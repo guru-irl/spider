@@ -663,7 +663,7 @@ describe("renderSpiderCall shows the command while it runs", () => {
 
   it.each(["exec", "exec_file", "batch"])("local %s keeps its existing title", (action) => {
     const title = renderSpiderCall({ action }, titleTheme, {}).render(200)[0];
-    expect(title).toBe(`⟨toolTitle|🕸⟩  ⟨toolTitle|**spider**⟩ ⟨toolTitle|·⟩ «⟨toolTitle|${action}⟩»`);
+    expect(title).toBe(`⟨toolTitle|\u{1F578}\uFE0F⟩ ⟨toolTitle|**spider**⟩ ⟨toolTitle|·⟩ «⟨toolTitle|${action}⟩»`);
   });
 
   it("keeps local title behavior for shared arguments while naming a remote destination", () => {

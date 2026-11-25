@@ -89,7 +89,7 @@ export function makeAsyncNotifier(ctx: { formatRunCost?: (costs: readonly { prov
       if (notes.size) output = [output, ...notes].filter(Boolean).join("\n\n");
       const chainHeadline = chain?.outcome === "complete" ? "chain complete" : chain?.outcome === "stopped"
         ? `chain stopped at step ${chain.step} of ${chain.total}: ${chain.cause}` : undefined;
-      const headline = `🕸 *subagent* "${name}" · ${agent} · *${status}*${chainHeadline ? ` · ${chainHeadline}` : ""}`;
+      const headline = `\u{1F578}\uFE0F *subagent* "${name}" · ${agent} · *${status}*${chainHeadline ? ` · ${chainHeadline}` : ""}`;
       // Carry the COMPLETE curated output in the transcript; the registered renderer collapses
       // it and ctrl+o expands the whole thing. triggerTurn wakes an idle main agent so the
       // conversation continues automatically instead of waiting for the user to send a message.

@@ -795,7 +795,7 @@ export function renderSpiderCall(args: any, theme: any, context: any): Component
     } else if (args?.sub || args?.command) {
       suffix = `${verb(action)} ${t.fg("toolTitle", `· ${args.sub ?? args.command}`)}`;
     }
-    const line = `${t.fg("toolTitle", icon(t.iconStyle, "spider"))}  ${t.fg("toolTitle", t.bold("spider"))} ${t.fg("toolTitle", "·")} ${suffix}`;
+    const line = `${t.fg("toolTitle", icon(t.iconStyle, "spider"))} ${t.fg("toolTitle", t.bold("spider"))} ${t.fg("toolTitle", "·")} ${suffix}`;
 
     // The call is rendered as soon as the tool is invoked; the result only lands when the
     // command EXITS. Anything not on the call is invisible for the whole run. A slow

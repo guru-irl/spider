@@ -13,6 +13,7 @@ import { parseHerdrConfig } from '@spider/herdr/config';
 import { registerHerdrJobs } from '@spider/herdr/jobs/register';
 import type { JobMonitor } from '@spider/herdr/jobs/monitor';
 import { processStartIdentity } from '@spider/herdr/jobs/handoff';
+import { jobJournalRoot } from '@spider/herdr/jobs/store';
 import { processStartTime } from '../../../subagents/src/process-identity.js';
 import { createRemoteExecutor } from '@spider/herdr/remote/execute';
 import { sha256 } from '@spider/herdr/remote/runtime';
@@ -194,7 +195,7 @@ export function mountChildHerdr(pi: ExtensionAPI, options: HostHerdrOptions, job
       runtimePaths.set(resolved.on, runtimeInstallPath(machine.runtime.directory, bytes));
       return { on: resolved.on, ...machine.runtime, nodePath: machine.nodePath ?? 'node', environment: {}, runtimePath: runtimePath(resolved.on), runtimeSha256: sha256(bytes) };
     } }), hc, () => need(config).machines, () => join(need(config).globalRoot, 'herdr/copy-cleanup')) : undefined;
-  }, monitorOptions: () => ({ hc, clock: Date.now, journalRoot: join(need(config).globalRoot, 'herdr/jobs'), outputCollector: need(output).outputCollector, reportError: report,
+  }, monitorOptions: () => ({ hc, clock: Date.now, journalRoot: jobJournalRoot(need(config).globalRoot), outputCollector: need(output).outputCollector, reportError: report,
     child: { id: process.env.PI_SUBAGENT_RUN_ID as import('@spider/herdr').RunId, pid: process.pid, startIdentity: need(childIdentity) },
   }) });
   const consoles = registerChildAgentConsoleLifecycle(registrationPi, { hc, currentOwner: () => owner, reportCleanupError: report });
@@ -220,7 +221,7 @@ export function mountChildHerdr(pi: ExtensionAPI, options: HostHerdrOptions, job
   const routing: RoutingPorts = { policy, environmentPolicy: env => environment(env), currentOwner: () => owner, createBashTool, createLocalBashOperations,
     enabled: () => Boolean(owner || inheritedDescriptor), readShellFile: async (file, on) => on ? need(remoteFiles).read(file, on as MachineName) : readFile(resolve(context?.cwd ?? process.cwd(), file), 'utf8'),
   };
-  return { owner: () => owner, enabled: () => Boolean(owner && config && config.enabled !== false), queueNotification: () => false, findKillJobs: id => findOwnedKillJobs(id, need(owner), join(need(config).globalRoot, 'herdr/jobs')), killJob: id => killOwnedJob(id, need(owner), hc, need(config).machines, join(need(config).globalRoot, 'herdr/jobs'), remote), execution: () => ({ ...(owner ? { owner } : {}), ...(remote ? { remote } : {}), ...(!remote ? { remoteUnavailableReason: remoteUnavailableReason ?? HERDR_NOTICES.remoteDisabled.text } : {}), environmentPolicy: env => environment(env) }), guard: async event => {
+  return { owner: () => owner, enabled: () => Boolean(owner && config && config.enabled !== false), queueNotification: () => false, findKillJobs: id => findOwnedKillJobs(id, need(owner), jobJournalRoot(need(config).globalRoot)), killJob: id => killOwnedJob(id, need(owner), hc, need(config).machines, jobJournalRoot(need(config).globalRoot), remote), execution: () => ({ ...(owner ? { owner } : {}), ...(remote ? { remote } : {}), ...(!remote ? { remoteUnavailableReason: remoteUnavailableReason ?? HERDR_NOTICES.remoteDisabled.text } : {}), environmentPolicy: env => environment(env) }), guard: async event => {
       await probeCore();
       if (!coreLost && !remote && remoteUnavailableReason && event.input.on !== undefined) return { block: true, reason: remoteUnavailableReason };
       if (!owner && event.input.on !== undefined) return { block: true, reason: coreLost ? HERDR_NOTICES.childCoreLost.text : HERDR_NOTICES.remoteDisabled.text };

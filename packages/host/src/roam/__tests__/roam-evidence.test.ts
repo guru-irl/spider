@@ -1,10 +1,11 @@
 import { afterEach, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createReplica } from "@spider/db-core/testutil";
 import { createJobStore, type JournalJob } from "@spider/herdr/jobs/store";
 import { MessageStore } from "../../../../subagents/src/message-store.js";
-import { readHostJobJournals, readLocalRoutes } from "../evidence.js";
+import { createBlockerPorts, readHostJobJournals, readLocalRoutes } from "../evidence.js";
+import { inspectBlockers } from "../blockers.js";
 
 const roots: string[] = [], replicas: ReturnType<typeof createReplica>[] = [];
 afterEach(() => { for (const f of replicas.splice(0)) f.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -28,6 +29,56 @@ it("reads top-level and every child journal without modifying them", async () =>
   expect((await readHostJobJournals([dir], "owner")).top.map(job => job.id)).toEqual(["top"]);
   expect((await readHostJobJournals([dir], "owner")).children.map(job => job.id)).toEqual(["child"]);
   expect([readFileSync(top.path), readFileSync(child.path)]).toEqual(before);
+}, 5000);
+
+it("treats a missing job root as empty without creating it and still reads other roots", async () => {
+  const dir = root(), missing = join(dir, "missing", "jobs"), existing = join(dir, "existing");
+  const store = createJobStore(existing, "owner" as never);
+  await store.write({ version: 1, sessionId: "owner" as never, revision: 1, updatedAt: 1, jobs: [remote("top")] });
+  expect(await readHostJobJournals([missing], "owner")).toEqual({ top: [], children: [] });
+  const result = await readHostJobJournals([missing, existing], "owner");
+  expect(result.top.map(job => job.id)).toEqual(["top"]);
+  expect(result.children).toEqual([]);
+  expect(existsSync(join(dir, "missing"))).toBe(false);
+}, 5000);
+
+it("does not report unavailable job evidence for a fresh agent", async () => {
+  const dir = root(), missing = join(dir, "jobs");
+  const replica = createReplica("worktree", "11111111-1111-4111-8111-111111111111"); replicas.push(replica);
+  const routes = createReplica("global", "11111111-1111-4111-8111-111111111111"); replicas.push(routes);
+  new MessageStore(routes.db);
+  const address = { sessionId: "owner", scopeId: null };
+  const empty = { asks: [], pendingDispatch: [], unknownOutcomes: [], unobservedReceipts: [] };
+  const ports = createBlockerPorts({ sessionId: "owner", address,
+    activity: { busy: () => false, bashRunning: () => false, promptOpen: () => false },
+    routeStores: [routes.db], jobRoots: [missing], scratchRoots: [dir],
+    broker: async () => empty, bridge: () => empty, settlement: async () => null });
+  const ctx = { mode: "tui", hasUI: true, sessionManager: { getSessionId: () => "owner" },
+    isIdle: () => true, hasPendingMessages: () => false, ui: { getEditorText: () => "" } } as never;
+  expect(await inspectBlockers(ctx, [replica.db], ports)).toEqual([]);
+  expect(existsSync(missing)).toBe(false);
+}, 5000);
+
+it.each(["symlink root", "file root", "symlink component", "file component"])("rejects an unsafe job root: %s", async kind => {
+  const dir = root(), target = join(dir, "target"), unsafe = join(dir, "unsafe");
+  if (kind.startsWith("symlink")) { mkdirSync(target); symlinkSync(target, unsafe); }
+  else writeFileSync(unsafe, "fixture");
+  const path = kind.endsWith("component") ? join(unsafe, "jobs") : unsafe;
+  await expect(readHostJobJournals([path], "owner")).rejects.toThrow();
+}, 5000);
+
+it("rejects a relative job root rather than treating validation errors as empty", async () => {
+  await expect(readHostJobJournals(["relative"], "owner")).rejects.toThrow();
+}, 5000);
+
+it("propagates filesystem errors other than ENOENT", async () => {
+  await expect(readHostJobJournals([join(root(), "x".repeat(300))], "owner")).rejects.toMatchObject({ code: "ENAMETOOLONG" });
+}, 5000);
+
+it("reads an existing root without changing or restricting its mode", async () => {
+  const dir = root(); chmodSync(dir, 0o755);
+  expect(await readHostJobJournals([dir], "owner")).toEqual({ top: [], children: [] });
+  expect(statSync(dir).mode & 0o777).toBe(0o755);
 }, 5000);
 
 it("does not hide an unreadable or malformed child journal", async () => {

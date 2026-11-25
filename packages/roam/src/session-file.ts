@@ -4,6 +4,7 @@ import type { Stats } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { Home, Probe, Segment } from "@spider/db-core/roam/types";
 import type { Journal, Limits, SessionManifest } from "./contracts";
+import type { ArtifactJournal } from "./journal";
 import { DEFAULT_LIMITS } from "./contracts";
 import { stageArtifact } from "./artifacts";
 import type { OutgoingStore } from "./staging";
@@ -27,6 +28,7 @@ interface SessionScan {
   headerLayout: HeaderLayout;
   parents: Map<string, string | null>;
   firstHistoryMachine: string | null;
+  lastDepartures: Map<string, Segment>;
   lastSegment: Segment | null;
   lastSegmentLineStart: number | null;
   lastEntry: Record<string, unknown>;
@@ -252,7 +254,7 @@ function scanSession(file: string, expectedId: string, liveLeaf?: string, limits
     }
     const whole = createHash("sha256"), history = createHash("sha256");
     const decoder = new TextDecoder("utf-8", { fatal: true });
-    const parents = new Map<string, string | null>();
+    const parents = new Map<string, string | null>(), lastDepartures = new Map<string, Segment>();
     let header: Header | undefined, headerBytes = 0, headerLayout: HeaderLayout | undefined, lastLeaf: string | undefined;
     let lastEntry: Record<string, unknown> | undefined, lastLineStart = 0;
     let firstHistoryMachine: string | null = null, lastSegment: Segment | null = null, lastSegmentLineStart: number | null = null;
@@ -286,6 +288,7 @@ function scanSession(file: string, expectedId: string, liveLeaf?: string, limits
           firstHistoryMachine = segment.historyMachine;
         } else if (segment.historyMachine !== firstHistoryMachine || segment.previousMachine !== lastSegment.nextMachine ||
             segment.epoch <= lastSegment.epoch) invalid("invalid segment sequence");
+        lastDepartures.set(segment.previousMachine, segment);
         lastSegment = segment;
         lastSegmentLineStart = lineStart;
       }
@@ -324,7 +327,7 @@ function scanSession(file: string, expectedId: string, liveLeaf?: string, limits
     if (!named.isFile() || named.dev !== before.dev || named.ino !== before.ino || after.size !== before.size ||
         after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) invalid("source changed while reading");
     return {
-      header, headerBytes, headerLayout, parents, firstHistoryMachine, lastSegment, lastSegmentLineStart, lastEntry, lastLineStart,
+      header, headerBytes, headerLayout, parents, firstHistoryMachine, lastDepartures, lastSegment, lastSegmentLineStart, lastEntry, lastLineStart,
       manifest: { file, sessionId: expectedId, cwd: header.cwd, leaf, size: before.size,
         sha256: whole.digest("hex"), historySha256: history.digest("hex"), artifactId: randomUUID() },
     };
@@ -615,7 +618,7 @@ function ensureBackup(target: string, backup: string, prior: SessionManifest): v
 }
 
 export interface SessionInstallPorts {
-  journal: Journal;
+  journal: Journal & Partial<Pick<ArtifactJournal, "retiredSessionPrefix">>;
   limits?: Readonly<Limits>;
   ownership(): Promise<Probe>;
   withBothLocks<T>(sessionId: string, fn: () => Promise<T>): Promise<T>;
@@ -639,9 +642,16 @@ export async function installSession(manifest: SessionManifest, target: string, 
         ports.journal.record(segment.moveId, "session-install-complete", { file: target, sha256: manifest.sha256 });
         return;
       }
-      const length = prior.manifest.size - prior.headerBytes;
+      const departure = scan.lastDepartures.get(segment.nextMachine);
+      const retired = departure && (prior.lastSegment?.epoch ?? 0) < departure.epoch
+        ? ports.journal.retiredSessionPrefix?.(manifest.sessionId, target, departure.previousMachine, departure.moveId, departure.epoch - 1)
+        : null;
+      if (retired && (retired.size <= prior.headerBytes || retired.size > prior.manifest.size ||
+          digestRange(target, 0, retired.size) !== retired.sha256)) invalid("prior session history diverged");
+      const length = (retired?.size ?? prior.manifest.size) - prior.headerBytes;
+      const priorHistory = retired ? digestRange(target, prior.headerBytes, retired.size) : prior.manifest.historySha256;
       if (length > scan.lastLineStart - scan.headerBytes ||
-          digestRange(manifest.file, scan.headerBytes, scan.headerBytes + length) !== prior.manifest.historySha256) {
+          digestRange(manifest.file, scan.headerBytes, scan.headerBytes + length) !== priorHistory) {
         invalid("prior session history diverged");
       }
       backup = join(directory, `.${basename(target)}.${manifest.artifactId}.backup`);

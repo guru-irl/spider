@@ -132,6 +132,8 @@ function resultReferences(value: unknown): string[] {
   visit(value); return [...refs];
 }
 export interface ArtifactJournal extends Journal {
+  /** Only the completed retirement for this departure permits discarding later bytes. */
+  retiredSessionPrefix(sessionId: string, file: string, machineId: string, moveId: string, epoch: number): { size: number; sha256: string } | null;
   lookupOperation(id: string): JournalOperationState | null;
   hasArtifactReference(value: string): boolean;
   referenceCheck(): (value: string) => boolean;
@@ -195,6 +197,30 @@ export function openJournal(file: string): ArtifactJournal {
     return value => referenceTerms(value).some(term => references.has(referenceHash(term)));
   });
   return {
+    retiredSessionPrefix(sessionId, target, machineId, moveId, epoch) {
+      freezeIdentity(sessionId, moveId, epoch);
+      if (!isAbsolute(target) || !isMachineId(machineId)) throw new Error("Invalid retired session identity");
+      return withDatabase(file, db => {
+        if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='freeze_journal'").get()) return null;
+        const rows = db.prepare(`SELECT o.operation_id, o.result_json, f.move_id, f.intercom_json
+          FROM freeze_journal f JOIN roam_operations o
+            ON o.kind='session-freeze' AND o.expected_epoch=f.epoch AND o.machine_id=?
+            AND json_extract(o.result_json,'$.sessionId')=f.session_id
+            AND json_extract(o.result_json,'$.intercomGeneration')=json_extract(f.intercom_json,'$.generation')
+          WHERE f.session_id=? AND f.move_id=? AND f.epoch=? AND f.state='complete'
+            AND json_extract(o.result_json,'$.file')=?`).all(machineId, sessionId, moveId, epoch, target) as
+          { operation_id: string; result_json: string; move_id: string; intercom_json: string }[];
+        if (!rows.length) return null;
+        if (rows.length !== 1) throw new Error("Ambiguous retired session prefix");
+        const row = rows[0], ack = parseResult(row.result_json), fence: unknown = JSON.parse(row.intercom_json);
+        if (ack.operationId !== row.operation_id || ack.sessionId !== sessionId || ack.epoch !== epoch || ack.file !== target ||
+            !isIntercomIntakeFence(fence) || fence.moveId !== row.move_id || fence.address.sessionId !== sessionId ||
+            fence.expectedEpoch !== epoch || fence.generation !== ack.intercomGeneration ||
+            typeof ack.size !== "number" || !Number.isSafeInteger(ack.size) || ack.size <= 0 ||
+            typeof ack.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(ack.sha256)) throw new Error("Invalid retired session prefix");
+        return { size: ack.size, sha256: ack.sha256 };
+      });
+    },
     begin(operation) {
       const argumentsDigest = digest(operation);
       return withDatabase(file, db => db.raw.transaction(() => {
@@ -279,6 +305,12 @@ export function openJournal(file: string): ArtifactJournal {
         for (const row of rows) {
           // Destruction recovery receipts remain proof for old move reconciliation and same-ID retry.
           if (row.kind === "forget-machine" || row.kind === "restore-destroyed-home") continue;
+          // Retained source files need their acknowledged byte boundary on a later return.
+          if (row.kind === "session-freeze" && db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='freeze_journal'").get() &&
+              db.prepare(`SELECT 1 FROM freeze_journal f JOIN roam_operations o
+                ON json_extract(o.result_json,'$.sessionId')=f.session_id AND o.expected_epoch=f.epoch
+                AND json_extract(o.result_json,'$.intercomGeneration')=json_extract(f.intercom_json,'$.generation')
+                WHERE o.operation_id=? AND f.state IN ('frozen','complete')`).get(row.operation_id)) continue;
           const refs = rowReferences(db, row);
           if (artifactKinds.has(row.kind) && !row.released && refs.size) continue;
           const values = [row.operation_id, ...(row.result_json ? resultReferences(parseResult(row.result_json)) : [])];

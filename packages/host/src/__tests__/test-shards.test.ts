@@ -69,6 +69,19 @@ describe('duration-balanced test shards', () => {
 });
 
 describe('duration report refresh', () => {
+  it('preserves unobserved files when refreshing from a scoped report while replacing observed weights', () => {
+    const root = mkdtempSync(join(process.cwd(), '.spider/scratch/duration-report-'));
+    try {
+      const output = join(root, 'durations.json');
+      const report = join(root, 'report.json');
+      const observed = 'packages/host/src/__tests__/observed.test.ts';
+      const untouched = 'packages/host/src/__tests__/untouched.test.ts';
+      writeFileSync(output, JSON.stringify({ [observed]: 1000, [untouched]: 500 }));
+      writeFileSync(report, JSON.stringify({ testResults: [{ name: observed, startTime: 100, endTime: 300 }] }));
+      execFileSync(process.execPath, ['scripts/update-test-durations.mjs', '--output', output, report]);
+      expect(JSON.parse(readFileSync(output, 'utf8'))).toEqual({ [observed]: 200, [untouched]: 500 });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it('uses file start/end times including hooks, normalizes runner paths, and retains the larger observation', () => {
     const root = mkdtempSync(join(process.cwd(), '.spider/scratch/duration-report-'));
     try {

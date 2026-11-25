@@ -105,10 +105,11 @@
         "packages/host/src/__tests__/*packag*.test.ts",
         "packages/host/src/__tests__/licence-notices.test.ts",
         "packages/herdr/src/__tests__/packaging.test.ts",
-        "packages/superpowers/src/__tests__/packaging.test.ts"
+        "packages/superpowers/src/__tests__/packaging.test.ts",
+        "packages/organism/src/__tests__/bundled-skills.test.ts"
       ],
       "related": [],
-      "reason": "Skill guards walk Markdown and execute shipped shell scripts."
+      "reason": "Skill guards walk Markdown and execute scripts; the organism inventories all shipped collections."
     },
     {
       "id": "documentation",
@@ -222,6 +223,18 @@
       ],
       "related": [],
       "reason": "Probe guards read and launch these scripts."
+    },
+    {
+      "id": "dashboard-output",
+      "inputs": [
+        "packages/host/src/usage/web/**"
+      ],
+      "tests": [
+        "packages/host/src/usage/**/*.test.ts",
+        "packages/host/src/__tests__/licence-notices.test.ts"
+      ],
+      "related": [],
+      "reason": "The dashboard HTML entries emit ignored JavaScript and CSS consumed by packaging and browser guards."
     }
   ],
   "bundles": {

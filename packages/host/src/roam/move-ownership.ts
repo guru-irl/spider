@@ -36,7 +36,8 @@ export function createMoveOwnershipProbe(input: {
       }
       const processes = await input.inventory.processes();
       if (processes.some(row => row.classification !== 'pi' || !row.startIdentity ||
-          !records.some(record => record.pid === row.pid && record.startIdentity === row.startIdentity)))
+          !records.some(record => record.sessionId !== null && record.sessionFile !== null &&
+            record.pid === row.pid && record.startIdentity === row.startIdentity)))
         throw new OwnershipFailure('ownership-unregistered-process');
       return { kind: 'absent' };
     } catch (error) {

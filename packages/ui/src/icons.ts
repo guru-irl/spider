@@ -7,9 +7,10 @@ export function isIconStyle(value: unknown): value is IconStyle {
 
 const ICONS = {
   // U+FE0F asks for emoji presentation: without it terminals draw the web as a
-  // one-cell text symbol, which looks tiny in fullscreen pi. The emoji is two
-  // cells wide, so the Nerd Font variants carry a pad cell, like the pin.
-  agent: { text: "\u{1F578}\uFE0F", nerd: "\u{F167A} " },
+  // one-cell text symbol, which looks tiny in fullscreen pi. The robot is an
+  // emoji by default. Both are two cells wide, so the Nerd Font variants carry
+  // a pad cell, like the pin.
+  agent: { text: "\u{1F916}", nerd: "\u{F167A} " },
   spider: { text: "\u{1F578}\uFE0F", nerd: "\u{F0BCA} " },
   warning: { text: "⚠", nerd: "\u{F002A}" },
   failure: { text: "✗", nerd: "\u{F0156}" },

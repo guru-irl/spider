@@ -257,7 +257,7 @@ it("uses the configured icon style in the footer and detail overlay", async () =
   const h = realCustomHarness(seededDb("aui-icons", 1), { iconStyle: "nerd" });
   expect(h.ui.widgets.get("spider-agents")!.render(120).join("\n")).toContain("\u{F167A}");
   await h.start(); await h.send("\r");
-  expect(h.focused()!.render(96)[0]).toContain("\u{F167A} one");
+  expect(h.focused()!.render(96)[0]).toContain("\u{F167A}  one");
 });
 
 it("Esc closes detail then selector and restores the editor text and cursor", async () => {

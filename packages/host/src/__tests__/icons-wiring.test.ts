@@ -34,7 +34,7 @@ it("mounts the configured icon style without changing any config", () => {
   migrate(db, "project");
   db.prepare("INSERT INTO runs (id, session_id, agent, name, status, step_count, token_count, started_at) VALUES ('r1','s','worker','scribe','running',1,0,0)").run();
   try {
-    for (const [style, expected] of [["text", "\u{1F578}\uFE0F"], ["nerd", "\u{F167A} "]] as const) {
+    for (const [style, expected] of [["text", "\u{1F916}"], ["nerd", "\u{F167A} "]] as const) {
       writeFileSync(file, JSON.stringify({ "ui.icons": style }));
       let factory: ((tui: unknown, theme: unknown) => { render(width: number): string[]; dispose(): void }) | undefined;
       const ui = { setWidget: (_key: string, value: unknown) => { if (typeof value === "function") factory = value as typeof factory; },

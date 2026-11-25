@@ -143,9 +143,13 @@ function checkHome(db: Db, change: Change, hubMachine: MachineId): void {
     .get(change.rowKey) as { machine_id: string; epoch: number; move_id: string | null; state: string | null; destination: string | null } | undefined;
   if (!current) return;
   const next = change.body;
+  // Initialization preserves an ordinary legacy home's epoch. This is not a
+  // managed-state transition: a null-state home was never runnable under v0.
+  const legacyAdoption = current.state === null && current.destination === null && current.move_id === null &&
+    next.state === "running" && next.destination === null && next.move_id === null;
   if ((next.epoch as number) < current.epoch ||
       (next.epoch === current.epoch && (next.machine_id !== current.machine_id || next.move_id !== current.move_id ||
-        next.state !== current.state || next.destination !== current.destination))) {
+        (!legacyAdoption && (next.state !== current.state || next.destination !== current.destination))))) {
     throw new Error(`Roaming home epoch or owner conflicts for ${change.rowKey}`);
   }
 }

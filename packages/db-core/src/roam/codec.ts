@@ -187,7 +187,9 @@ export function assertRecordChange(value: unknown, key: StoreKey): asserts value
     if (state === null) {
       if (destination !== null) throw new Error("Invalid legacy roaming home destination");
     } else {
-      if (!nonempty(value.body.session_id) || !isRoamUuid(value.body.machine_id) ||
+      if (!nonempty(value.body.session_id) || !value.body.session_id.trim() ||
+          /[\u0000-\u001f\u007f]/.test(value.body.session_id) || (value.body.updated_at as number) < 0 ||
+          !isRoamUuid(value.body.machine_id) ||
           (moveId !== null && (typeof moveId !== "string" || !moveId.startsWith("v0-") || !isRoamUuid(moveId.slice(3))))) {
         throw new Error("Invalid v0 roaming home identity");
       }

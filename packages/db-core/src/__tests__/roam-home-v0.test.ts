@@ -97,6 +97,27 @@ describe("v0 home layout and replication", () => {
     expect(rows(target,"session_homes")).toEqual(before);
   });
 
+  it("legacy running adoption replicates at the preserved epoch", async () => {
+    const target = replica("global");
+    apply(target,await batch(target,[home(A,7,clock(),null,"legacy")]));
+    const adopted = {...home(A,7,clock(2000),null,"adopted"),body:{...home(A,7).body,state:"running",destination:null,updated_at:100}};
+    apply(target,await batch(target,[adopted],{after:1,id:"adopted"}));
+    expect(rows(target,"session_homes")).toEqual([{session_id:SESSION,machine_id:A,epoch:7,move_id:null,updated_at:100,state:"running",destination:null}]);
+  });
+
+  it("malformed v0 identities refuse before apply", async () => {
+    const target = replica("global");
+    for (const body of [
+      {...moving().body,session_id:"\n"}, {...moving().body,session_id:" "},
+      {...moving().body,move_id:"old-move"}, {...moving().body,move_id:null},
+      {...moving().body,epoch:0}, {...moving().body,epoch:Number.MAX_SAFE_INTEGER+1},
+      {...moving().body,machine_id:"invalid"}, {...moving().body,updated_at:-1},
+    ]) {
+      await expect(batch(target,[{...moving(),rowKey:body.session_id,body}])).rejects.toThrow();
+      expect(rows(target,"session_homes")).toEqual([]);
+    }
+  });
+
   it("known legacy triggers upgrade but unknown drift refuses", () => {
     const old = oldStore(); old.db.exec("UPDATE roam_meta SET capture_enabled=1");
     migrate(old.db,"global",{machineId:A,globalRoot:old.root});

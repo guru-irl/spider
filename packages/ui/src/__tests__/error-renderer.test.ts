@@ -10,7 +10,7 @@ const textOf = (lines: string[]) => lines.join(" ").replace(/\s+/g, " ").trim();
 describe("collapsed error wrapping", () => {
   it.each([80, 240])("retains cap numbers at width %i, but not the multiline help", width => {
     const lines = renderErrorResult(headline + "\nFree space: forget an entry.", { theme, width });
-    expect(textOf(lines)).toBe(`✗ ${headline}`);
+    expect(textOf(lines)).toBe(`❌ ${headline}`);
     expect(lines.filter(line => line.trim()).length).toBeLessThanOrEqual(4);
     for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
   });
@@ -18,7 +18,7 @@ describe("collapsed error wrapping", () => {
   it("keeps a long single-line error that fits in four rows", () => {
     const message = "justification required: say why the fact is durable after this task, how it helps other agents, and why the chosen scope is right (global in every repo, otherwise repo).";
     const lines = renderErrorResult(message, { theme, width: 80 });
-    expect(textOf(lines)).toBe(`✗ ${message}`);
+    expect(textOf(lines)).toBe(`❌ ${message}`);
     expect(lines.filter(line => line.trim()).length).toBeGreaterThan(1);
     expect(lines.filter(line => line.trim()).length).toBeLessThanOrEqual(4);
   });

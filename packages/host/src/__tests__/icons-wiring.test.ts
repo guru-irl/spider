@@ -76,9 +76,9 @@ it("uses the configured style for registered tool and notice renderers", () => {
   expect(tool.label).toBe("\u{F0BCA}  spider");
   expect(tool.renderCall({ action: "run" }, theme, {}).render(100).join("\n")).toContain("\u{F0BCA}  spider");
   const result = { details: { run: { name: "scribe", status: "failed" } } };
-  expect(tool.renderResult(result, {}, theme, { args: { action: "run" } }).render(100).join("\n")).toContain("\u{F0156} scribe");
-  expect(messages.get("spider.subagent_done")!({ details: { name: "scribe", status: "cancelled" } }, {}, theme).render(100).join("\n")).toContain("\u{F002A} scribe");
-  expect(entry!({ data: { status: "failed", errors: [], memoryStaged: 0, skillsStaged: 0, todosAdded: 0 } }, {}, theme).render(100).join("\n")).toContain("\u{F002A} organism");
+  expect(tool.renderResult(result, {}, theme, { args: { action: "run" } }).render(100).join("\n")).toContain("\u{F0156}  scribe");
+  expect(messages.get("spider.subagent_done")!({ details: { name: "scribe", status: "cancelled" } }, {}, theme).render(100).join("\n")).toContain("\u{F002A}  scribe");
+  expect(entry!({ data: { status: "failed", errors: [], memoryStaged: 0, skillsStaged: 0, todosAdded: 0 } }, {}, theme).render(100).join("\n")).toContain("\u{F002A}  organism");
   writeFileSync(join(global, "config.json"), JSON.stringify({ "ui.icons": "text" }));
   expect(tool.renderCall({ action: "run" }, theme, {}).render(100).join("\n")).toContain("\u{1F578}\uFE0F spider");
   expect(commands.get("spider")?.description).toContain("\u{F0BCA}");

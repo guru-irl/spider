@@ -14,6 +14,7 @@ import { createProvisionTransport, type ProvisionTransport } from "./transport";
 import { createProductionIntercomEnrollmentPorts, createProductionIntercomRevocationPorts, type IntercomRevocationTransport } from "./intercom-production";
 import { provisionIntercomEnrollment, revokeIntercomPair } from "./intercom-enrollment";
 import { parsePublicationFailure, publicationText } from "./intercom-publication";
+import { formatRevocationGates } from "./cause-codes";
 import { createIntercomRegistry } from "./intercom-registry";
 import { topologyTransitionId } from "./intercom-topology";
 import { requestHelperRevoke, requestHelperTopology } from "./intercom-helper";
@@ -96,7 +97,7 @@ export async function runIntercomEnrollCli(input: { root: string; graphFile: str
   }
 }
 
-export async function runIntercomRevokeCli(input: { root: string; pairId: string; fenceEpoch?: string }, io: { out(text: string): void; err(text: string): void },
+export async function runIntercomRevokeCli(input: { root: string; pairId: string; fenceEpoch?: string; json?: boolean }, io: { out(text: string): void; err(text: string): void },
   options: IntercomCliOptions = {}): Promise<number> {
   try {
     const config = readLocalIdentity(input.root), record = await createIntercomRegistry(input.root).get(input.pairId);
@@ -121,13 +122,18 @@ export async function runIntercomRevokeCli(input: { root: string; pairId: string
       async notify() {},
     });
     const result = await revokeIntercomPair(input.pairId, ports);
+    if (input.json) { io.out(`${JSON.stringify(result)}\n`); return result.code; }
     (result.code === 0 ? io.out : io.err)(`${result.reason}\n`);
+    if (result.revocationGates?.length) (result.code === 0 ? io.out : io.err)(`Gates: ${formatRevocationGates(result.revocationGates)}\n`);
     if (result.value?.cleanupReason) io.out(`${result.value.cleanupReason}\n`);
     if (result.repairCommand) (result.code === 0 ? io.out : io.err)(`${config.role === "hub" ? "" : "On the hub, run "}${result.repairCommand}\n`);
     return result.code;
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
-    io.err(`${message === "intercom-pair-not-found" || message === "machine-mismatch" ? message : "revocation-incomplete"}\n`); return 1;
+    const reason = message === "intercom-pair-not-found" || message === "machine-mismatch" ? message : "revocation-incomplete";
+    if (input.json) io.out(`${JSON.stringify({ code: 1, reason, operationId: input.pairId, home: null, epoch: null, repairCommand: null, value: null })}\n`);
+    else io.err(`${reason}\n`);
+    return 1;
   }
 }
 

@@ -40,7 +40,7 @@ import { pairScopedRecipe, inspectPairUnit, reconcilePairUnits, stoppedPairUnitN
 import type { IntercomCliOptions } from "./intercom-cli";
 import { DEFAULT_SSH, DEFAULT_SSH_KEYGEN, DEFAULT_SSH_KEYSCAN } from "./intercom-ssh-defaults";
 import { enrollmentCauseCode } from "./intercom-enrollment";
-import { brokerStartupCause } from "./cause-codes";
+import { brokerStartupCause, revocationCauseCode } from "./cause-codes";
 
 const HELP = `Usage: spider <command>
 
@@ -53,7 +53,7 @@ const HELP = `Usage: spider <command>
   spider roam provision <machine> --replace-core-pin [other provision options]
   spider roam intercom enroll --graph <file> [--operation <id>]
   spider roam intercom cancel <pair-id>
-  spider roam intercom revoke <pair-id>
+  spider roam intercom revoke <pair-id> [--fence-epoch <historical-epoch>] [--json]
   spider roam stop|resume <session>
   spider roam recover|cancel <operation-id>
   spider roam claim <session> <machine>
@@ -262,11 +262,13 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
   }
   if (argv[0] === "roam" && argv[1] === "intercom" && argv[2] === "revoke") {
     const id = (value: string) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
-    if (!id(argv[3] ?? "") || !(argv.length === 4 || argv.length === 6 && argv[4] === "--fence-epoch" && id(argv[5]))) {
-      io.err("Usage: spider roam intercom revoke <pair-id> [--fence-epoch <historical-epoch>]\n"); return 2;
+    const json = argv.at(-1) === "--json", args = json ? argv.slice(0, -1) : argv;
+    if (!id(args[3] ?? "") || !(args.length === 4 || args.length === 6 && args[4] === "--fence-epoch" && id(args[5]))) {
+      if (json) return emitOutcome(io, outcome(2, "invalid-arguments"), true);
+      io.err("Usage: spider roam intercom revoke <pair-id> [--fence-epoch <historical-epoch>] [--json]\n"); return 2;
     }
     const { runIntercomRevokeCli } = await import("./intercom-cli");
-    return runIntercomRevokeCli({ root, pairId: argv[3], fenceEpoch: argv[5] }, io, options?.intercomOptions);
+    return runIntercomRevokeCli({ root, pairId: args[3], fenceEpoch: args[5], json }, io, options?.intercomOptions);
   }
   if (argv[0] === "roam" && argv[1] === "intercom" && argv[2] === "observe-fence" && argv.length === 3) {
     try {
@@ -294,7 +296,8 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       const value = await runLocalPairCleanup(input, { ...base, machineId: config.machineId, root });
       io.out(`${JSON.stringify({ version: 1, kind: "intercom-cleanup", ok: true, machineId: config.machineId, value })}\n`);
     } catch (error) { io.out(`${JSON.stringify({ version: 1, kind: "intercom-cleanup", ok: false,
-      reason: error instanceof Error && error.message === "intercom-revocation-unconfirmed" ? error.message : "intercom-revocation-cleanup-pending" })}\n`); }
+      reason: error instanceof Error && error.message === "intercom-revocation-unconfirmed" ? error.message : "intercom-revocation-cleanup-pending",
+      cause: { code: revocationCauseCode(error, "revoke-remote-cleanup") } })}\n`); }
     return 0;
   }
   if (argv[0] === "roam" && argv[1] === "intercom" && argv[2] === "setup-local" && argv.length === 3) {

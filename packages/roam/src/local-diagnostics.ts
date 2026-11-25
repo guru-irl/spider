@@ -33,6 +33,7 @@ import { inspectAdoptedOwner } from "./launcher";
 import { createIntercomRegistry, type IntercomPairRecord } from "./intercom-registry";
 import { inspectLocalIntercomDoctor } from "./intercom-doctor";
 import { publicationDiagnostics } from "./intercom-publication";
+import { formatRevocationGates } from "./cause-codes";
 import { inspectIntercomReadiness, intercomReadinessDiagnostics, validIntercomReadiness, type IntercomReadiness } from "./intercom-readiness";
 import { readPrivateBytes } from "./selected-files";
 
@@ -630,7 +631,7 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
       if (!reason || !gap && !["revoking", "revoked"].includes(record.state)) continue;
       const unconfirmed = reason === "intercom-revocation-unconfirmed";
       inventory.push({ severity: unconfirmed ? "block" : "warning", reason: unconfirmed
-        ? `${reason}: Box A may still reach box B for ${pair.pairId} until its pair host is proved stopped. Keep both boxes reachable and run the repair command on the hub to confirm closure.`
+        ? `${reason}: Box A may still reach box B for ${pair.pairId} until its pair host is proved stopped.${record.revocationGates?.length ? ` Gates: ${formatRevocationGates(record.revocationGates)}.` : ""} Keep both boxes reachable and run the repair command on the hub to confirm closure.`
         : reason === "intercom-revocation-shared-jobs"
           ? `${reason}: Any live terminal on ${pair.target.alias} blocks route cleanup for ${pair.pairId}, because terminal rows do not identify their owner. Let all live terminals on that core finish, then run the repair command on the hub. Finished terminal history does not block cleanup.`
           : `${reason}: Resource cleanup is pending for ${pair.pairId}. Keep both boxes reachable and run the repair command on the hub; inspect live terminals and the pair-owned resources if it remains pending.`,

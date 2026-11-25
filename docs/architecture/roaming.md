@@ -1167,8 +1167,12 @@ The CLI and doctor on a box tell you to run the repair command on the hub.
 An unmatched fence has no repair command until its pair record is restored.
 Keep both boxes reachable during recovery.
 Unconfirmed cleanup means closure evidence is missing, not that the target
-is necessarily offline. A completed revoke permits fresh enrollment with a
-new epoch and fresh consent.
+is necessarily offline. The revoke output and doctor show the last recorded gate
+and its source or target side. A caught error may also have a bounded cause code.
+Older pair records may not have a gate. Add `--json` to the revoke command for a
+JSON reply on standard output. An unconfirmed reply includes the top-level
+`reason`, `repairCommand`, and `revocationGates` fields. A completed revoke
+permits fresh enrollment with a new epoch and fresh consent.
 
 A completed pair record can release its pair ID for a different endpoint
 identity pair when both new endpoint fences are null. At least one machine ID

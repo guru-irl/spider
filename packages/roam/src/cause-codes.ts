@@ -25,7 +25,8 @@ const causeCodes = new Set<string>([
   "intercom-broker-unavailable", "intercom-broker-not-spider", "intercom-agent-unsafe", "intercom-directory-unsafe", "intercom-socket-unsafe", "federation-feature-missing",
   "legacy-pending-asks", "legacy-pending-asks-unavailable", "settings-unavailable", "settings-resolution-unavailable", "legacy-extension-declared",
   "settings-spider-invalid", "settings-spider-missing", "settings-spider-duplicate", "broker-readiness-unconfirmed",
-  "intercom-pair-revocation-incomplete", "intercom-pair-fence-conflict",
+  "intercom-pair-revocation-incomplete", "intercom-pair-fence-conflict", "intercom-revocation-unconfirmed",
+  "intercom-revocation-remote-fence-pending", "intercom-revocation-cleanup-pending", "intercom-fence-mismatch", "unsafe-pair-key",
   "connection-refused", "connection-closed", "machine-not-found", "machine-ambiguous", "machine-not-enrolled", "machine-mismatch",
   "launch-unavailable", "launch-pending", "provisioned-pi-unavailable", "participant-exited-before-readiness",
   "peer-invalidated", "core-unavailable", "core-changed", "reply-too-large", "invalid-reply", "invalid-config", "invalid-operation",
@@ -45,6 +46,7 @@ const additionalSteps = [
   "disable", "disable-service", "disable-config", "disable-peer-flag",
   "enrollment", "read-fences", "notify-peers", "record-enrollment", "register-pair", "check-connector", "inspect-ssh", "bind-pair", "host-connector", "connect-connector",
   "ensure-key", "write-known-host", "authorize", "approve-pair", "add-machine", "verify-transport", "publish-pair", "verify-pair",
+  "revoke-pin", "revoke-remote-fence", "revoke-host", "revoke-authorization", "revoke-remote-cleanup",
 ] as const;
 export type CauseStep = AgentOperationKind | typeof additionalSteps[number];
 const fallbackCodes = new Set<string>([...agentOperationKinds, ...additionalSteps].map(step => `unexpected-${step}`));
@@ -57,6 +59,25 @@ export function safeNativeHcCode(value: unknown): string | undefined {
 /** Only named codes and fixed operation steps can cross a machine or CLI boundary. */
 export function safeCauseCode(value: unknown): string | undefined {
   return typeof value === "string" && (causeCodes.has(value) || fallbackCodes.has(value)) ? value : undefined;
+}
+const revocationGateNames = ["identity-pin-unavailable", "identity-pin-invalid", "fence-closure-unproven", "host-closure-unproven",
+  "authorization-removal-unproven", "authorization-absence-unproven"] as const;
+export interface RevocationGate { side: "source" | "target"; gate: typeof revocationGateNames[number]; causeCode?: string }
+const revocationGateSet = new Set<string>(revocationGateNames);
+/** Validate persisted or remotely supplied diagnostic data before displaying it. */
+export function validRevocationGates(value: unknown): value is readonly RevocationGate[] {
+  return Array.isArray(value) && value.length > 0 && value.length <= 8 && value.every(item => item && typeof item === "object" && !Array.isArray(item) &&
+    (item.side === "source" || item.side === "target") && typeof item.gate === "string" && revocationGateSet.has(item.gate) &&
+    (item.causeCode === undefined || safeCauseCode(item.causeCode) !== undefined));
+}
+export function formatRevocationGates(gates: readonly RevocationGate[] | undefined): string {
+  return gates?.map(({ side, gate, causeCode }) => `${side}:${gate}${causeCode ? ` [${causeCode}]` : ""}`).join(", ") ?? "";
+}
+export function revocationCauseCode(error: unknown, step: CauseStep): string {
+  const code = error && typeof error === "object" && "code" in error ? safeCauseCode(error.code) : undefined;
+  const peer = error && typeof error === "object" && "causeCode" in error ? safeCauseCode(error.causeCode) : undefined;
+  const named = error instanceof Error ? safeCauseCode(error.message) : undefined;
+  return code ?? peer ?? named ?? `unexpected-${step}`;
 }
 /** Classify startup failures without exposing the broker's captured stderr. */
 export function brokerStartupCause(error: unknown): string {

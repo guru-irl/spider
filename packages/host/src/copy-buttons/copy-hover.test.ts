@@ -544,7 +544,8 @@ describe("assistant copy hover", () => {
     expect(before[thinking].indexOf("Thinking about it")).toBe(1);
     expect(before[thinking + 1].trim()).toBe("");
     expect(before[thinking + 2]).toBe(" ".repeat(60));
-    expect(before[thinking + 3].indexOf("Hello")).toBe(1);
+    expect(before[thinking + 3]).toBe(` Hello${" ".repeat(54)}`);
+    expect(before[thinking + 4]).toBe(" ".repeat(60));
     expect(before[thinking + 5]).toBe(" ".repeat(60));
     mouse(md, "move");
     const after = assistant.render(60).map(stripTerminalSequences);
@@ -633,6 +634,18 @@ describe("assistant copy hover", () => {
     const row = render(md).find(line => line.includes("⧉ text"))!;
     expect(row.indexOf("Jan 3 08:15")).toBe(2);
     expect(row.indexOf("⧉ md") + 8).toBe(58);
+  });
+
+  it.each([[31, 29], [20, 19]])("drops time before reducing an unavailable-padding fallback at width %i", (width, groupEnd) => {
+    vi.stubEnv("TZ", "UTC");
+    const { md } = fixture("Hi", Date.UTC(2024, 0, 3, 8, 15), true, 3);
+    mouse(md, "move");
+    render(md, width); // Prime Markdown's cache at this width before hiding its padding.
+    delete (md as unknown as { paddingX?: number }).paddingX;
+    const row = render(md, width).find(line => line.includes("⧉ text"))!;
+    expect(row).not.toContain("Jan 3 08:15");
+    expect(row.indexOf("⧉ md") + 8).toBe(groupEnd);
+    expect(visibleWidth(row)).toBe(width);
   });
 
   it("keeps controls aligned when the original Markdown padding is large", () => {

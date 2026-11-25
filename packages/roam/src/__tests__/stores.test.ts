@@ -143,7 +143,7 @@ it("unlogged collisions consult the global home instead of retired membership", 
   const batch = await exportBatch(source.db, { after: 0, targetBytes: 4096, batchId: "batch-a" }, policy);
   await expect(stores.accept(source.storeKey, batch)).rejects.toThrow(new RegExp(`${localUuid}.*todo-a|todo-a.*${localUuid}`));
   expect(stores.cursor(source.storeKey, BOX, batch.header.senderStream)).toBe(0);
-  global.db.prepare("INSERT INTO session_homes VALUES ('session-a',?,1,NULL,1)").run(BOX);
+  global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES ('session-a',?,1,NULL,1)").run(BOX);
   await stores.accept(source.storeKey, batch);
   expect(target.prepare("SELECT uuid,text FROM todos").all()).toEqual([{ uuid: "todo-a", text: "portable" }]);
 }, 5000);

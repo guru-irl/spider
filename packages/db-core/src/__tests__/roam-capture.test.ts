@@ -113,7 +113,7 @@ const entities: ReadonlyArray<{
     insert: `INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES ('${SESSION}', '${MACHINE}', 1, 'move-a', 1)`,
     update: `UPDATE session_homes SET epoch = 2 WHERE session_id = '${SESSION}'`,
     remove: `DELETE FROM session_homes WHERE session_id = '${SESSION}'`,
-    initial: { session_id: SESSION, machine_id: MACHINE, epoch: 1, move_id: "move-a", updated_at: 1 }, updatedField: "epoch", updatedValue: 2,
+    initial: { session_id: SESSION, machine_id: MACHINE, epoch: 1, move_id: "move-a", updated_at: 1, state: null, destination: null }, updatedField: "epoch", updatedValue: 2,
   },
   {
     scope: "worktree", table: "sessions", key: "id",
@@ -776,7 +776,7 @@ describe("roaming SQL capture", () => {
     for (const scope of SCOPES) expect(GENERATED_CAPTURE_SQL[scope]).toBe(captureSql(scope));
     const digest = createHash("sha256");
     for (const scope of SCOPES) digest.update(scope).update("\0").update(GENERATED_CAPTURE_SQL[scope]).update("\0");
-    expect(digest.digest("hex")).toBe("525dffcd13a4c65376f6aafc5a243df785552412167356bf81397f10aa62b692");
+    expect(digest.digest("hex")).toBe("299e4b9c699c141c17aed46fbdee8bf4d1649ee8d8582b0bf813178b9fb57a12");
     const spec = readFileSync(join(process.cwd(), "docs/superpowers/specs/2026-11-11-roaming-agents-design.md"), "utf8");
     const sample = /```sql\n(CREATE TRIGGER roam_todos_uuid_fill[\s\S]*?)\n```/.exec(spec)?.[1];
     expect(sample).toBeDefined();

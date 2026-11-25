@@ -55,7 +55,9 @@ const SESSION = "session-a", WT = "worktree:fixture-repo:fixture-workspace" as S
 const roots: string[] = [], closes: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const close of closes.splice(0).reverse()) await close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const unused = async (): Promise<never> => { throw new Error("Unexpected external call"); };
+let gitCalls = 0;
 function git(cwd: string, argv: readonly string[], options?: { env?: Readonly<NodeJS.ProcessEnv>; stdin?: Buffer }): Buffer {
+  gitCalls++;
   return execFileSync("git", argv[0] === "git" ? argv.slice(1) : [...argv], { cwd, input: options?.stdin, env: { ...process.env,
     GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid",
     GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid", ...options?.env }, stdio: ["pipe", "pipe", "pipe"] });
@@ -619,10 +621,15 @@ beforeEach(async context => {
       return exec(peer, argv, options);
     };
   }
-  if (context.task.name.startsWith("destroyed mirror") || context.task.name.startsWith("real Git artifacts")) mirrorPrepared = await preparedFixture.ports.prepare(preparedFixture.check, preparedFixture.operation);
+  if (context.task.name.startsWith("destroyed mirror") || context.task.name.startsWith("real Git artifacts")) {
+    const gitAtStart = gitCalls;
+    mirrorPrepared = await preparedFixture.ports.prepare(preparedFixture.check, preparedFixture.operation);
+    if (context.task.name.startsWith("destroyed mirror")) expect(gitCalls - gitAtStart, "mirror setup must not transfer a Git workspace").toBe(0);
+  }
 }, 5000);
 beforeEach(async context => {
   if (!appCases.some(prefix => context.task.name.startsWith(prefix))) return;
+  const gitAtStart = gitCalls;
   const { f } = interruptedFixture, record = f.journal.record;
   let interrupted = false;
   f.journal.record = (id, action, value) => {
@@ -631,9 +638,11 @@ beforeEach(async context => {
   };
   await recoverMoveAdapters(f.ports, f.bindings);
   f.journal.record = record;
+  expect(gitCalls - gitAtStart, "presentation setup must not transfer a Git workspace").toBe(0);
 }, 5000);
 beforeEach(async context => {
   if (!appCases.some(prefix => context.task.name.startsWith(prefix))) return;
+  const gitAtStart = gitCalls;
   const { f, operation } = interruptedFixture, record = f.journal.record;
   let interrupted = false;
   f.journal.record = (id, action, value) => {
@@ -643,6 +652,7 @@ beforeEach(async context => {
   const outcomes = await recoverMoveAdapters(f.ports, f.bindings);
   f.journal.record = record;
   interruptedFixture.initial = outcomes.find(row => row.operationId === operation.id)!;
+  expect(gitCalls - gitAtStart, "presentation setup must not transfer a Git workspace").toBe(0);
 }, 5000);
 
 
@@ -755,11 +765,17 @@ async function appAbsentFixture(options: Parameters<typeof prepareAppAbsentFixtu
   return (await prepareAppAbsentFixture(options)).run();
 }
 
-// Disabled 2026-11-25: flaky in CI (test and hook timed out at 5000 ms).
-it.skip("app-absent end-to-end move retires source ownership and preserves pending pane intent", async () => {
+it("app-absent end-to-end move retires source ownership and preserves pending pane intent", async () => {
   const { f, operation, before, initial, presentationSourceStates } = interruptedFixture;
   expect(initial.code).toBe(3);
   expect(f.journal.read(operation.id).some(row => row.action === "move-action-complete" && row.result.action === "transfer")).toBe(true);
+  const artifacts = f.journal.read(operation.id).filter(row => row.action === "workspace-bundle").map(row => String(row.result.artifactId));
+  expect(artifacts).toHaveLength(2);
+  for (const id of [...artifacts, `${operation.id}-session`]) {
+    expect(existsSync(join(f.root, "roam", "staging", "outgoing", id))).toBe(true);
+    expect(existsSync(join(f.remoteRoot, "roam", "staging", "incoming", HUB, "artifacts", id))).toBe(true);
+  }
+  for (const root of [f.repo, f.destination]) expect(git(root, ["for-each-ref", "--format=%(refname)", `refs/spider-roam/${operation.id}/`]).toString().trim()).not.toBe("");
   const outcomes = await recoverMoveAdapters(f.ports, f.bindings), result = outcomes.find(row => row.operationId === operation.id)!;
   expect(result.code).toBe(0);
   expect(sessionHome(f.global.db, SESSION)).toMatchObject({ machineId: BOX, epoch: 2, moveId: operation.id });
@@ -768,7 +784,6 @@ it.skip("app-absent end-to-end move retires source ownership and preserves pendi
   expect(f.journal.read(operation.id).filter(row => row.action === "handoff-presentation").map(row => row.result.status)).toEqual(["pending"]);
   expect(readFileSync(f.file)).toEqual(before);
   expect(presentationSourceStates).toEqual(["retired"]);
-  const artifacts = f.journal.read(operation.id).filter(row => row.action === "workspace-bundle").map(row => String(row.result.artifactId));
   for (const id of [...artifacts, `${operation.id}-session`]) {
     expect(existsSync(join(f.root, "roam", "staging", "outgoing", id))).toBe(false);
     expect(existsSync(join(f.remoteRoot, "roam", "staging", "incoming", HUB, "artifacts", id))).toBe(false);
@@ -1419,8 +1434,7 @@ it("an unrelated offline sync peer cannot reject an exactly established initial 
   expect(sessionHome(f.global.db, SESSION)).toMatchObject({ machineId: HUB, epoch: 1, moveId: null });
 }, 5000);
 
-// Disabled 2026-11-25: flaky in CI (hook timed out at 5000 ms).
-it.skip("destination cleanup while its owner is live preserves concurrent session and checkout writes", async () => {
+it("destination cleanup while its owner is live preserves concurrent session and checkout writes", async () => {
   const { claimIdLock } = await import("@spider/herdr/sessions/id-lock");
   const { f, operation } = interruptedFixture, identity = { pid: 42, startIdentity: "fixture-lock" };
   const lockRoot = join(f.remoteRoot, "herdr");

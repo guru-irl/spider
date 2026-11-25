@@ -29,6 +29,7 @@ import { createProcessPresence } from "@spider/herdr/sessions/presence";
 import { createBothLocks, createRunningIntentAuthority, readReadiness, recordReadiness } from "../session-control";
 import { startSessionControlSocket } from "../session-socket";
 import { createDormantControl, serveSessionControl } from "../../../host/src/roam/control";
+import { createHostMoveBindings } from "../../../host/src/roam/move-runtime";
 import { registerAdmission } from "../../../host/src/roam/admission";
 import { createHostSessionFixture } from "../../../host/src/__tests__/fixtures/pi-events";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -44,7 +45,7 @@ import { openStaging, sourceChunk, openOutgoingStaging } from "../staging";
 import { abortCleanupId, cancelMove, recoverMove, rollbackMoveId } from "../move-recovery";
 import { createProductionRecoveryPorts } from "../recovery-transport";
 import { createMovePorts, handleMoveParticipantOperation, unboundMoveEffects, recoverMoveAdapters, createMoveWorkspacePorts, readRollbackEvidence, createRollbackIntercomPorts, createHubMoveEvidencePorts, createPushedMoveEvidencePorts, forgetMachineWithAdapters } from "../move-ports";
-import type { MoveAdapterBindings } from "../move-ports";
+import type { MoveAdapterBindings, MoveExport } from "../move-ports";
 import { createUsageIngestThrough } from "../../../host/src/roam/usage-ingest";
 import { discoverUsageSources } from "../../../host/src/usage/discovery";
 import { openUsageLedger } from "../../../host/src/usage/ledger";
@@ -232,6 +233,8 @@ it.each(["prerequisites", "export"] as const)("records private transfer diagnost
 
 it("records private participant transfer diagnostics before reply normalization", async () => {
   const f = await fixture();
+  f.global.db.prepare("UPDATE roam_workspace_maps SET snapshot_json=? WHERE repo_key=? AND workspace_id=?")
+    .run(JSON.stringify(f.sourceWorkspace.snapshot), f.check.repoKey, f.check.workspaceId);
   const operation: Operation = { id: "final-prerequisites", machineId: HUB, kind: "move-prerequisites", expectedEpoch: 2,
     args: { sourceMachine: HUB, sessionId: SESSION, moveId: f.operation.id, parent: f.operation as unknown as JsonObject, stage: "final", root: f.repo,
       repoKey: f.check.repoKey, workspaceId: f.check.workspaceId, sourceCheckoutName: "fixture" } };
@@ -603,6 +606,278 @@ async function transferFixture(homeless = false, sessionOnly = false) {
   const check = { ...f.check, destinationRoot: destination, destinationCwd: destination };
   return { ...f, remote, remoteGlobal, remoteWorktree, remoteRepository, remoteJournal, remoteRoot, destination, target, check };
 }
+
+async function independentlyMappedFixture(repoKey = "fixture-repo") {
+  const f = await fixture(), destinationMachine = "00000000-0000-4000-8000-000000000003";
+  const roster: StoreKey[] = ["global", `repo:${repoKey}`, `worktree:${repoKey}:fixture-workspace`];
+  f.check.repoKey = repoKey; f.check.storeKeys = roster;
+  const sourceGlobal = createReplica("global", BOX), destinationGlobal = createReplica("global", destinationMachine);
+  closes.push(() => sourceGlobal.close(), () => destinationGlobal.close());
+  const native = join(f.root, "native"); git(f.root, ["clone", "-q", f.repo, native]);
+  const cwd = join(f.repo, "app"); mkdirSync(cwd);
+  writeFileSync(f.file, readFileSync(f.file, "utf8").replace(JSON.stringify(f.repo), JSON.stringify(cwd)));
+  const sourceHome = casHome(f.global.db, f.home, BOX, "previous-move", HUB);
+  const operation: Operation = { ...f.operation, id: "box-move", expectedEpoch: sourceHome.epoch,
+    args: { sessionId: SESSION, destinationMachine } };
+  f.journal.begin(operation);
+  sourceGlobal.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES(?,?,?,?,?)")
+    .run(SESSION, BOX, sourceHome.epoch, sourceHome.moveId, sourceHome.updatedAt);
+  recordLocation(sourceGlobal.db, { sessionId: SESSION, home: sourceHome, stores: roster, file: f.file, cwd });
+  sourceGlobal.db.prepare("INSERT INTO roam_repo_maps(repo_key,path) VALUES(?,?)").run(f.check.repoKey, f.repo);
+  sourceGlobal.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path,snapshot_json) VALUES(?,?,?,NULL)")
+    .run(f.check.repoKey, f.check.workspaceId, f.repo);
+  destinationGlobal.db.prepare("INSERT INTO roam_repo_maps(repo_key,path) VALUES(?,?)").run(f.check.repoKey, native);
+  destinationGlobal.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path,snapshot_json) VALUES(?,?,?,NULL)")
+    .run(f.check.repoKey, "native-workspace", native);
+  // Workspace maps are machine-local. A hub need not map either box's workspace.
+  f.global.db.prepare("DELETE FROM roam_workspace_maps").run();
+  f.global.db.prepare("DELETE FROM roam_repo_maps").run();
+  f.config.peers = [sourceGlobal, destinationGlobal].map((replica, index) => ({ ...f.config.peers[0], machineId: index === 0 ? BOX : destinationMachine,
+    alias: `participant-${index}.invalid`, globalRoot: replica.root }));
+  const initialize = (replica: typeof f.global, machineId: string) => {
+    const root = replica.root, config = { ...f.config, machineId, role: machineId === HUB ? "hub" as const : "box" as const };
+    mkdirSync(join(root, "herdr"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(root, "herdr", "config.json"), JSON.stringify({ mode: "core-only", globalRoot: root,
+      core: { binary: "/fixture/hc", config: join(root, "core.json") }, agentDirectory: join(root, "agent"), shellRc: join(root, "shell.rc"), machines: [] }));
+    const journal = openFreezeJournal(join(root, "roam", "journal.db"));
+    return { root, globalDb: replica.db, config, journal, sessionId: SESSION, transport: f.transport,
+      storeKeys: ["global"] as StoreKey[], sync: f.bindings.sync };
+  };
+  const hubInput = initialize(f.global, HUB), sourceInput = initialize(sourceGlobal, BOX), destinationInput = initialize(destinationGlobal, destinationMachine);
+  const destinationRuntime = await createHostMoveBindings(destinationInput); closes.push(() => destinationRuntime.close());
+  const sourceRuntime = await createHostMoveBindings(sourceInput); closes.push(() => sourceRuntime.close());
+  const sourceBindings: MoveAdapterBindings = { ...f.bindings, root: sourceGlobal.root, globalDb: sourceGlobal.db,
+    participant: { ...f.bindings.participant!, root: sourceGlobal.root, globalDb: sourceGlobal.db, config: sourceInput.config,
+      git: { ...f.bindings.participant!.git, scratch: join(sourceGlobal.root, "git") } } };
+  const incoming = openStaging(join(destinationGlobal.root, "roam", "staging"), HUB, f.config.limits); closes.push(() => incoming.close());
+  f.transport.read = async (peer, file) => {
+    if (peer.machineId !== BOX || !file.startsWith(join(sourceGlobal.root, "roam", "staging") + "/")) throw new Error("Unexpected artifact read");
+    return readFileSync(file);
+  };
+  f.transport.exec = async (peer, argv, options) => {
+    if (argv[1] === "artifact") return handleArtifactRequest(JSON.parse(argv[3]), options.stdin,
+      { store: incoming, journal: destinationInput.journal, machineId: destinationMachine, limits: f.config.limits });
+    const op = JSON.parse(argv[2]) as Operation;
+    if (op.kind === "move-workspace-map") return Buffer.from(JSON.stringify(await (peer.machineId === BOX ? sourceRuntime : destinationRuntime).dispatch(op)));
+    if (peer.machineId === BOX) return Buffer.from(JSON.stringify(await handleMoveParticipantOperation(op, sourceInput.journal, sourceBindings)));
+    if (op.kind === "move-import") {
+      const runtime = await createHostMoveBindings({ ...destinationInput, operation: op });
+      const participant = runtime.bindings.participant!, leases = createSessionLeases(join(destinationGlobal.root, "herdr"));
+      const inventory = { leases, presence: createProcessPresence(leases.root), processes: async () => [],
+        probe: async () => ({ kind: "live" as const, startIdentity: "fixture-lock" }) };
+      participant.withBothLocks = createBothLocks({ root: leases.root, inventory, identity: { pid: 900, startIdentity: "fixture-lock" },
+        file: () => participant.sessionTarget(SESSION, operation.id), bootId: async () => "fixture-boot" });
+      participant.probe = async () => ({ kind: "absent" });
+      try { return Buffer.from(JSON.stringify(await runtime.dispatch(op))); } finally { await runtime.close(); }
+    }
+    return Buffer.from(JSON.stringify(await destinationRuntime.dispatch(op)));
+  };
+  const hubRuntime = await createHostMoveBindings(hubInput); closes.push(() => hubRuntime.close());
+  const mapping = (destination = destinationMachine) => hubRuntime.bindings.mapping!({ operation, sessionId: SESSION, destinationMachine: destination },
+    { file: f.file, cwd, stores: roster });
+  return { ...f, native, cwd, sourceHome, operation, sourceGlobal, destinationGlobal, destinationInput, sourceInput, mapping, destinationMachine };
+}
+
+it.each(["fixture-repo", "origin:fixture-repo"])("independent destination uses a private checkout with a source-only workspace map (%s)", async repoKey => {
+  const f = await independentlyMappedFixture(repoKey);
+  const nativeIndex = readFileSync(join(f.native, ".git", "index")), nativeHead = git(f.native, ["rev-parse", "HEAD"]);
+  const mapped = await f.mapping();
+  expect(mapped).not.toBeNull();
+  const repositoryName = "native-" + createHash("sha256").update(repoKey).digest("hex").slice(0, 12);
+  const destinationRoot = join(f.destinationGlobal.root, "roam", "checkouts", repositoryName, "repo-fixture-");
+  expect(mapped).toEqual({ repoKey, workspaceId: "fixture-workspace", sourceRoot: f.repo,
+    destinationRoot, destinationCwd: join(destinationRoot, "app") });
+  const prepared = await f.ports.prepare({ ...f.check, ...mapped!, source: f.sourceHome, destinationMachine: f.destinationMachine,
+    sourceCwd: f.cwd }, f.operation);
+  expect(prepared.workspace.root).toBe(destinationRoot);
+  const sessionDirectory = `--${destinationRoot.slice(1).replace(/\//g, "-")}--`;
+  expect(prepared.session.file).toBe(join(f.destinationGlobal.root, "agent", "sessions", sessionDirectory, "session-a.jsonl"));
+  expect(prepared.session.cwd).toBe(join(destinationRoot, "app"));
+  expect(readFileSync(join(destinationRoot, "tracked.txt"), "utf8")).toBe("fixture\n");
+  expect(readFileSync(join(f.native, "tracked.txt"), "utf8")).toBe("fixture\n");
+  expect(readFileSync(join(f.native, ".git", "index"))).toEqual(nativeIndex);
+  expect(git(f.native, ["rev-parse", "HEAD"])).toEqual(nativeHead);
+  expect(f.destinationGlobal.db.prepare("SELECT path FROM roam_workspace_maps WHERE workspace_id='native-workspace'").get()).toEqual({ path: f.native });
+});
+
+it("same-home workspace mapping needs no exported import baseline", async () => {
+  const f = await independentlyMappedFixture();
+  expect(await f.mapping(BOX)).toEqual({ repoKey: "fixture-repo", workspaceId: "fixture-workspace", sourceRoot: f.repo,
+    destinationRoot: f.repo, destinationCwd: f.cwd });
+});
+
+it("mapped destination without a baseline refuses with a typed repair before freeze", async () => {
+  const f = await independentlyMappedFixture(), index = readFileSync(join(f.native, ".git", "index"));
+  f.destinationGlobal.db.prepare("UPDATE roam_workspace_maps SET workspace_id=? WHERE workspace_id='native-workspace'").run(f.check.workspaceId);
+  await expect(f.mapping()).rejects.toMatchObject({ code: "move-checkout-conflict" });
+  const runtime = await createHostMoveBindings(f.destinationInput);
+  try {
+    const reply = await runtime.dispatch({ ...f.operation, kind: "move-workspace-map", machineId: f.destinationMachine,
+      args: { sessionId: SESSION, moveId: f.operation.id, destinationMachine: f.destinationMachine,
+        repoKey: f.check.repoKey, workspaceId: f.check.workspaceId, sourceCheckoutName: "repo" } });
+    expect(reply).toMatchObject({ code: 1, causeCode: "move-checkout-conflict", repairCommand: "spider roam doctor" });
+  } finally { await runtime.close(); }
+  expect(sessionHome(f.global.db, SESSION)).toEqual(f.sourceHome);
+  expect(readFileSync(join(f.native, ".git", "index"))).toEqual(index);
+  expect(readFileSync(join(f.native, "tracked.txt"), "utf8")).toBe("fixture\n");
+  expect(f.sourceInput.journal.read(f.operation.id).some(row => row.action === "freeze-ack")).toBe(false);
+});
+
+it("mapped baseline publication can resume its own prepared checkout", async () => {
+  const f = await independentlyMappedFixture(), mapping = (await f.mapping())!;
+  const check = { ...f.check, ...mapping, source: f.sourceHome, destinationMachine: f.destinationMachine, sourceCwd: f.cwd };
+  const prepared = await f.ports.prepare(check, f.operation);
+  f.destinationGlobal.db.prepare("UPDATE roam_workspace_maps SET snapshot_json=NULL WHERE workspace_id=?").run(f.check.workspaceId);
+  expect(await f.mapping()).toEqual(mapping);
+  const resumed = await f.ports.prepare(check, f.operation);
+  expect(resumed.workspace.root).toBe(prepared.workspace.root);
+  expect(resumed.session.file).toBe(prepared.session.file);
+  expect(resumed.session.sha256).toBe(prepared.session.sha256);
+});
+
+it("mapped baseline refuses preparation evidence for another workspace", async () => {
+  const f = await independentlyMappedFixture();
+  f.destinationGlobal.db.prepare("UPDATE roam_workspace_maps SET workspace_id=? WHERE workspace_id='native-workspace'").run(f.check.workspaceId);
+  f.destinationInput.journal.begin(f.operation);
+  f.destinationInput.journal.record(f.operation.id, "workspace-prepared", { root: f.native,
+    snapshotJson: JSON.stringify({ repoKey: "another-repository", workspaceId: f.check.workspaceId, moveId: f.operation.id }) });
+  await expect(f.mapping()).rejects.toMatchObject({ code: "move-checkout-conflict" });
+  expect(readFileSync(join(f.native, "tracked.txt"), "utf8")).toBe("fixture\n");
+});
+
+it("ahead destination bundles against the fetched shared merge base without changing the source index", async () => {
+  const f = await transferFixture(), origin = join(f.root, "origin.git");
+  git(f.root, ["clone", "--bare", "-q", f.repo, origin]);
+  git(f.repo, ["remote", "add", "origin", origin]);
+  git(f.destination, ["remote", "set-url", "origin", origin]);
+  const shared = git(f.repo, ["rev-parse", "HEAD"]).toString().trim();
+  writeFileSync(join(f.destination, "tracked.txt"), "destination child\n");
+  git(f.destination, ["add", "."]); git(f.destination, ["commit", "-q", "-m", "destination child"]);
+  git(f.destination, ["push", "-q", "origin", "HEAD:main"]);
+  // Both repositories have the fetched child, but the source remains at its parent.
+  git(f.repo, ["fetch", "-q", "origin"]);
+  expect(git(f.repo, ["rev-parse", "HEAD"]).toString().trim()).toBe(shared);
+  writeFileSync(join(f.repo, "tracked.txt"), "source staged\n"); git(f.repo, ["add", "."]);
+  writeFileSync(join(f.repo, "tracked.txt"), "source unstaged\n");
+  const index = readFileSync(join(f.repo, ".git", "index"));
+  const prerequisiteOperation: Operation = { id: "ahead-prerequisites", kind: "move-prerequisites", machineId: BOX, expectedEpoch: 2,
+    args: { sourceMachine: HUB, sessionId: SESSION, moveId: f.operation.id, parent: f.operation as unknown as JsonObject,
+      stage: "pre", root: f.destination, repoKey: f.check.repoKey, workspaceId: f.check.workspaceId, sourceCheckoutName: "repo" } };
+  const prerequisites = (await handleMoveParticipantOperation(prerequisiteOperation, f.remoteJournal, f.remote)).value as unknown as string[];
+  const exported = (await handleMoveParticipantOperation({ id: "ahead-export", kind: "move-export", machineId: HUB, expectedEpoch: 1,
+    args: { sourceMachine: HUB, sessionId: SESSION, moveId: f.operation.id, parent: f.operation as unknown as JsonObject,
+      check: f.check as unknown as JsonObject, stage: "pre", prerequisites, ack: null } }, f.journal, f.bindings)).value as unknown as MoveExport;
+  expect(exported.workspace.prerequisites).toContain(shared);
+  const outgoing = openOutgoingStaging(f.bindings.participant!.git.scratch, f.config.limits, false);
+  const incoming = openStaging(f.bindings.participant!.git.scratch, HUB, f.config.limits);
+  try {
+    const manifest = outgoing.inspect(exported.workspaceArtifact.id).current!;
+    const bundle = incoming.assemble(manifest);
+    expect(readFileSync(bundle).subarray(0, 2048).toString()).toContain(`-${shared} `);
+    expect(() => git(f.destination, ["bundle", "verify", bundle])).not.toThrow();
+  } finally { incoming.close(); outgoing.close(); }
+  expect(readFileSync(join(f.repo, ".git", "index"))).toEqual(index);
+  expect(sessionHome(f.global.db, SESSION)).toEqual(f.home);
+  expect(f.journal.read(f.operation.id).some(row => row.action === "freeze-ack")).toBe(false);
+});
+
+async function returnTransferFixture() {
+  const f = await transferFixture();
+  const outward = await f.ports.prepare(f.check, f.operation);
+  const home = casHome(f.global.db, f.home, BOX, f.operation.id, HUB);
+  f.remoteGlobal.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES(?,?,?,?,?)")
+    .run(SESSION, BOX, home.epoch, home.moveId, home.updatedAt);
+  git(f.repo, ["remote", "add", "origin", f.destination]);
+  f.transport.read = async (peer, file) => {
+    if (peer.machineId !== BOX || !file.startsWith(join(f.remoteRoot, "roam", "staging") + "/")) throw new Error("Unexpected return artifact read");
+    return readFileSync(file);
+  };
+  const operation: Operation = { ...f.operation, id: "return-move", expectedEpoch: home.epoch, args: { sessionId: SESSION, destinationMachine: HUB } };
+  f.journal.begin(operation);
+  const check: MoveCheck = { ...f.check, source: home, destinationMachine: HUB, sourceRoot: f.destination,
+    sourceFile: outward.session.file, sourceCwd: f.destination, destinationRoot: f.repo, destinationCwd: f.repo };
+  return { ...f, outward, home, operation, check };
+}
+
+it("return transfer reuses the original exported workspace baseline", async () => {
+  const f = await returnTransferFixture();
+  const returned = await f.ports.prepare(f.check, f.operation);
+  expect(returned.workspace.root).toBe(f.repo);
+  expect(returned.workspace.previous).toMatchObject({ root: f.repo, moveId: "move-a", stage: "pre" });
+  expect(returned.session.cwd).toBe(f.repo);
+  expect(returned.session.file).toBe(join(f.root, "installed", "exact.jsonl"));
+  expect(readFileSync(join(f.repo, "tracked.txt"), "utf8")).toBe("fixture\n");
+  expect(git(f.repo, ["rev-parse", "HEAD"]).toString().trim()).toBe(f.outward.workspace.snapshot.head);
+  expect(sessionHome(f.global.db, SESSION)).toEqual(f.home);
+});
+
+it("return transfer refuses altered tracked content without overwriting it", async () => {
+  const f = await returnTransferFixture(), index = readFileSync(join(f.repo, ".git", "index"));
+  writeFileSync(join(f.repo, "tracked.txt"), "local divergence\n");
+  await expect(f.ports.prepare(f.check, f.operation)).rejects.toThrow(/workspace-diverged/);
+  expect(readFileSync(join(f.repo, "tracked.txt"), "utf8")).toBe("local divergence\n");
+  expect(readFileSync(join(f.repo, ".git", "index"))).toEqual(index);
+  expect(sessionHome(f.global.db, SESSION)).toEqual(f.home);
+});
+
+it("no shared destination history refuses with a fetch instruction before freeze and leaves home unchanged", async () => {
+  const f = await transferFixture(), origin = join(f.root, "unrelated.git");
+  git(f.destination, ["checkout", "--orphan", "unrelated"]); git(f.destination, ["rm", "-rf", "."]);
+  writeFileSync(join(f.destination, "tracked.txt"), "unrelated history\n");
+  git(f.destination, ["add", "."]); git(f.destination, ["commit", "-q", "-m", "unrelated"]);
+  git(f.root, ["clone", "--bare", "-q", f.destination, origin]);
+  git(f.destination, ["remote", "set-url", "origin", origin]);
+  git(f.repo, ["remote", "add", "origin", origin]); git(f.repo, ["fetch", "-q", "origin"]);
+  const sourceIndex = readFileSync(join(f.repo, ".git", "index"));
+  const preparation = f.ports.prepare(f.check, f.operation);
+  await expect(preparation).rejects.toThrow(/workspace-prerequisite-missing: fetch/);
+  await expect(preparation).rejects.toMatchObject({ code: "workspace-prerequisite-missing" });
+  f.bindings.mapping = async () => ({ repoKey: f.check.repoKey, workspaceId: f.check.workspaceId, sourceRoot: f.repo,
+    destinationRoot: f.destination, destinationCwd: f.destination });
+  const freeze = vi.spyOn(f.ports, "freeze");
+  const result = await resumeMove({ operation: f.operation, sessionId: SESSION, destinationMachine: BOX }, f.ports);
+  expect(result).toMatchObject({ code: 1, reason: "move-preflight-refused" });
+  expect(freeze).not.toHaveBeenCalled();
+  expect(sessionHome(f.global.db, SESSION)).toEqual(f.home);
+  expect(readFileSync(join(f.repo, ".git", "index"))).toEqual(sourceIndex);
+  expect(readFileSync(join(f.destination, "tracked.txt"), "utf8")).toBe("unrelated history\n");
+  expect(f.journal.read(f.operation.id).filter(row => row.action === "workspace-bundle")).toEqual([]);
+});
+
+it("unfetched destination prerequisite refuses with a fetch instruction before freeze", async () => {
+  const f = await transferFixture(), index = readFileSync(join(f.repo, ".git", "index"));
+  writeFileSync(join(f.destination, "tracked.txt"), "unfetched child\n");
+  git(f.destination, ["add", "."]); git(f.destination, ["commit", "-q", "-m", "unfetched child"]);
+  const preparation = f.ports.prepare(f.check, f.operation);
+  await expect(preparation).rejects.toMatchObject({ code: "workspace-prerequisite-missing" });
+  await expect(preparation).rejects.toThrow(/fetch the required commits on both machines/);
+  f.bindings.mapping = async () => ({ repoKey: f.check.repoKey, workspaceId: f.check.workspaceId, sourceRoot: f.repo,
+    destinationRoot: f.destination, destinationCwd: f.destination });
+  const freeze = vi.spyOn(f.ports, "freeze");
+  expect(await resumeMove({ operation: f.operation, sessionId: SESSION, destinationMachine: BOX }, f.ports))
+    .toMatchObject({ code: 1, reason: "move-preflight-refused" });
+  expect(freeze).not.toHaveBeenCalled();
+  expect(sessionHome(f.global.db, SESSION)).toEqual(f.home);
+  expect(readFileSync(join(f.repo, ".git", "index"))).toEqual(index);
+});
+
+it("denied destination fetch refuses before freeze without changing home or the source index", async () => {
+  const f = await transferFixture(), run = f.remote.participant!.git.run;
+  f.remote.participant!.git.run = async (cwd, argv, options) => {
+    if (argv[0] === "git" && argv[1] === "fetch") throw Object.assign(new Error("denied"), { status: 128 });
+    return run(cwd, argv, options);
+  };
+  const sourceIndex = readFileSync(join(f.repo, ".git", "index"));
+  await expect(f.ports.prepare(f.check, f.operation)).rejects.toMatchObject({ code: "workspace-fetch-unavailable" });
+  f.bindings.mapping = async () => ({ repoKey: f.check.repoKey, workspaceId: f.check.workspaceId, sourceRoot: f.repo,
+    destinationRoot: f.destination, destinationCwd: f.destination });
+  const freeze = vi.spyOn(f.ports, "freeze");
+  const result = await resumeMove({ operation: f.operation, sessionId: SESSION, destinationMachine: BOX }, f.ports);
+  expect(result).toMatchObject({ code: 1, reason: "move-preflight-refused", repairCommand: null });
+  expect(freeze).not.toHaveBeenCalled();
+  expect(sessionHome(f.global.db, SESSION)).toEqual(f.home);
+  expect(readFileSync(join(f.repo, ".git", "index"))).toEqual(sourceIndex);
+});
 
 async function useSessionOnlyTransfer(f: Awaited<ReturnType<typeof transferFixture>>, operation: Operation) {
   const limits = f.config.limits, participant = f.remote.participant!, scratch = f.bindings.participant!.git.scratch;

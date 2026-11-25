@@ -33,27 +33,28 @@ it.each([
   ["verifySource", "verify-source"], ["start", "start"], ["inspect", "destination-inspect"],
 ] as const)("persists the safe cause of a failing %s adapter on a pending move", async (adapter, step) => {
   const f = fixture();
-  f.ports[adapter] = async () => { throw Object.assign(new Error("PRIVATE-ADAPTER-SENTINEL"), { code: "fixture-adapter-failed" }); };
+  f.ports[adapter] = async () => { throw Object.assign(new Error("PRIVATE-ADAPTER-SENTINEL"), { code: "connection-refused" }); };
   const result = await moves.moveSession(f.request, f.ports);
-  expect(result).toMatchObject({ code: 3, causeCode: "move-adapter-unavailable", failure: { step, code: "fixture-adapter-failed" } });
+  expect(result).toMatchObject({ code: 3, failure: { step, code: "connection-refused" } });
+  expect(result).not.toHaveProperty("causeCode");
   const safe = safeControlOutcome(result);
-  expect(safe).toMatchObject({ failure: { step, code: "fixture-adapter-failed" } });
-  expect(controlText(safe)).toContain(`${step}: fixture-adapter-failed`);
-  expect(f.journal.read(f.request.operation.id)).toContainEqual(expect.objectContaining({ action: "move-failure", result: { step, code: "fixture-adapter-failed" } }));
+  expect(safe).toMatchObject({ failure: { step, code: "connection-refused" } });
+  expect(controlText(safe)).toContain(`${step}: connection-refused`);
+  expect(f.journal.read(f.request.operation.id)).toContainEqual(expect.objectContaining({ action: "move-failure", result: { step, code: "connection-refused" } }));
   expect(JSON.stringify({ result, safe })).not.toContain("PRIVATE-ADAPTER-SENTINEL");
 });
 
 it.each([["retire", "source-retire"], ["cleanup", "cleanup"]] as const)("names a failing %s adapter without changing move success", async (adapter, step) => {
   const f = fixture();
-  f.ports[adapter] = async () => { throw Object.assign(new Error("PRIVATE-CLEANUP-SENTINEL"), { code: "fixture-cleanup-failed" }); };
+  f.ports[adapter] = async () => { throw Object.assign(new Error("PRIVATE-CLEANUP-SENTINEL"), { code: "connection-closed" }); };
   const result = await moves.moveSession(f.request, f.ports);
-  expect(result).toMatchObject({ code: 0, reason: "moved", failure: { step, code: "fixture-cleanup-failed" },
+  expect(result).toMatchObject({ code: 0, reason: "moved", failure: { step, code: "connection-closed" },
     value: { sourceCleanup: { status: "pending" } } });
   expect(result.causeCode).toBeUndefined();
   const safe = safeControlOutcome(result);
-  expect(safe).toMatchObject({ failure: { step, code: "fixture-cleanup-failed" } });
-  expect(controlText(safe)).toContain(`${step}: fixture-cleanup-failed`);
-  expect(f.journal.read(f.request.operation.id)).toContainEqual(expect.objectContaining({ action: "move-failure", result: { step, code: "fixture-cleanup-failed" } }));
+  expect(safe).toMatchObject({ failure: { step, code: "connection-closed" } });
+  expect(controlText(safe)).toContain(`${step}: connection-closed`);
+  expect(f.journal.read(f.request.operation.id)).toContainEqual(expect.objectContaining({ action: "move-failure", result: { step, code: "connection-closed" } }));
   expect(moves.moveEvidence.completedOutcome(JSON.parse(JSON.stringify(result)), f.request.operation.id)).toEqual(result);
   expect(JSON.stringify({ result, safe })).not.toContain("PRIVATE-CLEANUP-SENTINEL");
 });

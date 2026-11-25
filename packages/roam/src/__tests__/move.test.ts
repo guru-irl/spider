@@ -33,6 +33,7 @@ import { inspectSession, installSession, stageSession, verifyFrozenSession } fro
 import { openOutgoingStaging, sourceChunk } from "../staging";
 import { MoveError, moveSession, moveSessionSlot, readMoveReservation, validateBlockerId } from "../move";
 import { createMovePower, releaseMovePower, movePowerKey } from "../power";
+import { controlText, safeControlOutcome } from "../commands";
 import { HerdrError } from "../../../herdr/src/client/parse";
 
 const HUB = "00000000-0000-4000-8000-000000000001", BOX = "00000000-0000-4000-8000-000000000002";
@@ -716,7 +717,12 @@ it("maps arbitrary adapter failures to a fixed typed message", async () => {
   expect(result.ok).toBe(false);
   if (result.ok) throw new Error("unexpected move success");
   expect(result.refusal).toEqual({ code: "move-preflight-refused", blockers: ["preflight-check-unavailable"], message: "Move preflight could not be verified." });
-  expect(JSON.stringify(result)).not.toContain("private-transcript-sentinel");
+  expect(result).not.toHaveProperty("causeCode");
+  expect(result.failure).toEqual({ step: "preflight", code: "unknown" });
+  const safe = safeControlOutcome(result);
+  expect(safe.refusal).toEqual(result.refusal);
+  expect(safeControlOutcome(safe)).toEqual(safe);
+  expect(JSON.stringify({ result, safe, text: controlText(safe), journal: f.ports.journal.read(f.request.operation.id) })).not.toContain("private-transcript-sentinel");
   expect(f.events).toEqual([]);
 }, 5000);
 
@@ -1501,6 +1507,26 @@ it("offline source cleanup retries do not append unchanged journal evidence", as
   for (let i = 0; i < 8; i++) expect(await recoverMove(f.request.operation.id, f.ports)).toMatchObject({ code: 0, reason: "moved" });
   expect(f.ports.journal.read(f.request.operation.id)).toHaveLength(before);
 }, 5000);
+
+it.each(["retire", "cleanup"] as const)("%s cleanup records changed failure evidence once per transition", async adapter => {
+  const f = fixture();
+  let code = "connection-refused";
+  f.ports[adapter] = async () => { throw Object.assign(new Error("private-cleanup-detail"), { code }); };
+  const failures = () => f.ports.journal.read(f.request.operation.id).filter(row => row.action === "move-failure").map(row => row.result);
+  expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 0, reason: "moved" });
+  const before = f.ports.journal.read(f.request.operation.id).length;
+  expect(await recoverMove(f.request.operation.id, f.ports)).toMatchObject({ code: 0, reason: "moved" });
+  expect(f.ports.journal.read(f.request.operation.id)).toHaveLength(before);
+  code = "connection-closed";
+  expect(await recoverMove(f.request.operation.id, f.ports)).toMatchObject({ code: 0, reason: "moved" });
+  code = "connection-refused";
+  expect(await recoverMove(f.request.operation.id, f.ports)).toMatchObject({ code: 0, reason: "moved" });
+  expect(await recoverMove(f.request.operation.id, f.ports)).toMatchObject({ code: 0, reason: "moved" });
+  const step = adapter === "retire" ? "source-retire" : "cleanup";
+  expect(failures()).toEqual([{ step, code: "connection-refused" }, { step, code: "connection-closed" }, { step, code: "connection-refused" }]);
+  expect(f.ports.journal.read(f.request.operation.id)).toHaveLength(before + 2);
+  expect(JSON.stringify(f.ports.journal.read(f.request.operation.id))).not.toContain("private-cleanup-detail");
+});
 
 it("post-retirement cleanup reports the remaining cleanup cause", async () => {
   const f = fixture(); f.ports.cleanup = async () => { throw new Error("fixture-cleanup-failed"); };

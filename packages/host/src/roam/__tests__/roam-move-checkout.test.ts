@@ -166,12 +166,12 @@ it("a public move retains the remote workspace-plan error code", async () => {
     if (operation.kind !== "move-workspace-map") return exec(peer, argv, options);
     return Buffer.from(JSON.stringify({ code: 1, reason: "move-adapter-unavailable", causeCode: "move-adapter-unavailable",
       operationId: operation.id, epoch: operation.expectedEpoch, value: null,
-      failure: { step: "workspace-plan", code: "workspace-probe-failed" } }));
+      failure: { step: "workspace-plan", code: "connection-refused" } }));
   };
   const result = publicOutcome(await f.runtime.control({ op: "move", session: SESSION, machine: "box.invalid" }));
   expect(result).toMatchObject({ code: 1, reason: "move-preflight-refused", causeCode: "move-adapter-unavailable",
-    failure: { step: "workspace-plan", code: "workspace-probe-failed" } });
-  expect(controlText(result)).toContain("workspace-plan: workspace-probe-failed");
+    failure: { step: "workspace-plan", code: "connection-refused" } });
+  expect(controlText(result)).toContain("workspace-plan: connection-refused");
 });
 
 it("a public move refuses an unmapped repository before seed or freeze with the workspace cause and repo-map repair", async () => {

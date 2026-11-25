@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -7,10 +7,21 @@ import { parse } from 'yaml';
 
 type Step = { name?: string; uses?: string; run?: string; if?: string; env?: Record<string, string>; with?: Record<string, string>; 'timeout-minutes'?: number | string };
 type Job = { name?: string; uses?: string; needs?: string[] | string; permissions?: Record<string, string>; if?: string; outputs?: Record<string, string>; steps: Step[]; 'timeout-minutes'?: number | string; strategy?: { matrix: any; 'fail-fast'?: boolean } };
-type Workflow = { on: Record<string, unknown>; permissions?: Record<string, string>; jobs: Record<string, Job>; concurrency?: unknown };
+type Workflow = { on: Record<string, unknown>; permissions?: Record<string, string>; env?: Record<string, string>; jobs: Record<string, Job>; concurrency?: unknown };
 const source = (name: string): string => readFileSync(join(process.cwd(), '.github/workflows', `${name}.yml`), 'utf8');
 const workflow = (name: string): Workflow => parse(source(name)) as Workflow;
 const step = (job: Job, name: string): Step => job.steps.find(item => item.name === name)!;
+
+describe('package installation contract', () => {
+  it('skips the unbundled GPU runtime download in every workflow that installs packages', () => {
+    // onnxruntime-node downloads its CUDA provider from NuGet during npm ci on
+    // Linux x64. CI never uses it, and that download times out intermittently.
+    const names = readdirSync(join(process.cwd(), '.github/workflows')).filter(file => file.endsWith('.yml')).map(file => file.slice(0, -4));
+    const installing = names.filter(name => /\bnpm ci\b/.test(source(name)));
+    expect(installing).toEqual(expect.arrayContaining(['ci', 'herdr-stories', 'test-files']));
+    for (const name of installing) expect(workflow(name).env?.ONNXRUNTIME_NODE_INSTALL, name).toBe('skip');
+  });
+});
 
 describe('release installation contract', () => {
   it('runs on version tags and calls the complete CI workflow', () => {

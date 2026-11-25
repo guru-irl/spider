@@ -31,6 +31,10 @@ concurrency:
   group: herdr-stories-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  # CI never uses onnxruntime's CUDA provider; skip its NuGet download.
+  ONNXRUNTIME_NODE_INSTALL: skip
+
 jobs:
   prepare:
     name: Prepare headless stories

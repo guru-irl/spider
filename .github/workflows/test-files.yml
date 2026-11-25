@@ -19,6 +19,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # CI never uses onnxruntime's CUDA provider; skip its NuGet download.
+  ONNXRUNTIME_NODE_INSTALL: skip
+
 jobs:
   run:
     name: test files

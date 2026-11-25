@@ -154,7 +154,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
   if (argv[0] === "roam" && argv[1] === "agent" && argv[2] === "--v0") {
     if (argv.length !== 3) { io.out(`${JSON.stringify({ ok: false, refusal: { code: "invalid-arguments", message: "Invalid private v0 request.", nextStep: "Use the private v0 agent protocol." } })}\n`); return 2; }
     let input: unknown;
-    try { input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await readArtifactInput(32 * 1024, options?.stdin))); }
+    try { input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await readArtifactInput(4 * 1024 * 1024, options?.stdin))); }
     catch { io.out(`${JSON.stringify({ ok: false, refusal: { code: "invalid-arguments", message: "Invalid private v0 request.", nextStep: "Send bounded UTF-8 JSON to the private v0 agent." } })}\n`); return 2; }
     if (!options?.v0?.agent) throw new Error("V0 production agent composition is not installed");
     const result = await options.v0.agent(input, root); io.out(`${JSON.stringify(result)}\n`); return result.ok ? 0 : 1;

@@ -65,11 +65,14 @@ describe("v0 controls", () => {
     const f = fixture(); const agent = vi.fn(async (_input: unknown, _root: string) => ({ ok: true, value: { version: 1 } }));
     expect(await main(["--global-root", "/fixture/root", "roam", "agent", "--v0"], f.io, { stdin: Buffer.from('{"version":1,"kind":"version"}'), v0: { agent } })).toBe(0);
     expect(agent).toHaveBeenCalledWith({ version: 1, kind: "version" }, "/fixture/root");
-    for (const stdin of [Buffer.from("{"), Buffer.from([0xff]), Buffer.alloc(32 * 1024 + 1)]) {
+    const chunkRequest = { version: 1, kind: "chunk", data: Buffer.alloc(DEFAULT_LIMITS.chunkBytes, 7).toString("base64") };
+    expect(await main(["roam", "agent", "--v0"], f.io, { stdin: Buffer.from(JSON.stringify(chunkRequest)), v0: { agent } })).toBe(0);
+    expect(agent).toHaveBeenLastCalledWith(chunkRequest, expect.any(String));
+    for (const stdin of [Buffer.from("{"), Buffer.from([0xff]), Buffer.alloc(4 * 1024 * 1024 + 1)]) {
       f.out.length = 0; expect(await main(["roam", "agent", "--v0"], f.io, { stdin, v0: { agent } })).toBe(2);
       expect(JSON.parse(f.out.join("")).refusal.code).toBe("invalid-arguments");
     }
-    expect(agent).toHaveBeenCalledTimes(1);
+    expect(agent).toHaveBeenCalledTimes(2);
   });
   it("parse relocate and forced set-home without changing move", () => {
     expect(parseV0Control(["roam", "relocate", "session-abc", "box-a", "--json"])).toEqual({ kind: "relocate", session: "session-abc", machine: "box-a" });

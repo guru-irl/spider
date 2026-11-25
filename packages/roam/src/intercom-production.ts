@@ -389,7 +389,7 @@ export function createProductionIntercomRevocationPorts(input: RevocationOptions
       const record = await registry.get(pair.pairId); if (!record?.fenceId) throw new Error("intercom-fence-mismatch");
       if (!hostClosed.has(pair.pairId)) throw new Error("intercom-revocation-unconfirmed");
       const key = record.resources?.publicKey ? { publicKey: record.resources.publicKey } : await cleanup(pair.target, pins.target, { action: "read-public", pairId: pair.pairId, fenceId: record.fenceId });
-      if (!object(key) || !validPublicKey(key.publicKey)) throw new Error("unsafe-pair-key");
+      if (!object(key) || key.publicKey !== null && !validPublicKey(key.publicKey)) throw new Error("unsafe-pair-key");
       const removed = await cleanup(pair.target, pins.target, { action: "remove-authorized", pairId: pair.pairId, fenceId: record.fenceId, publicKey: key.publicKey });
       if (!object(removed) || removed.removed !== true) throw new Error("intercom-revocation-cleanup-pending");
       keyRemoved.add(pair.pairId);

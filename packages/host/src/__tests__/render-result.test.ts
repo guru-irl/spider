@@ -146,11 +146,11 @@ describe("renderSpiderResult dispatcher", () => {
     expect(text).toContain("loaded");
   });
 
-  it("control doctor → ✗ status when ok is false", () => {
+  it("control doctor → ❌ status when ok is false", () => {
     const details = { ok: false, lines: ["- sqlite-vec: NOT loaded"] };
     const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "control", command: "doctor" }));
     assertComponent(c);
-    expect(c.render(80).join("\n")).toContain("✗");
+    expect(c.render(80).join("\n")).toContain("❌");
   });
 
   it("control doctor does not invent success when ok evidence is absent (C-LOW)", () => {
@@ -453,7 +453,7 @@ describe("exec: command shown on the call, output on the result", () => {
       [{ stdout: "a", exitCode: 0, outcome: "exited" }, { stdout: "", exitCode: null, outcome: "signal", signal: "SIGTERM" }],
       false,
     );
-    expect(out).toContain("✗");
+    expect(out).toContain("❌");
     expect(out).toMatch(/signal/i);
     expect(out).not.toMatch(/exit unknown/i);
   });
@@ -464,7 +464,7 @@ describe("exec: command shown on the call, output on the result", () => {
       [{ stdout: "a", exitCode: 0, outcome: "exited" }, { stdout: "", exitCode: null, outcome: "spawn-error" }],
       false,
     );
-    expect(out).toContain("✗");
+    expect(out).toContain("❌");
     expect(out).toMatch(/spawn error/i);
     expect(out).not.toMatch(/exit unknown/i);
   });
@@ -475,7 +475,7 @@ describe("exec: command shown on the call, output on the result", () => {
       [{ stdout: "a", exitCode: 0, outcome: "exited" }, { stdout: "", exitCode: null, outcome: "unknown" }],
       false,
     );
-    expect(out).not.toContain("✗");
+    expect(out).not.toContain("❌");
     expect(out).toMatch(/unknown/i);
   });
 
@@ -489,7 +489,7 @@ describe("exec: command shown on the call, output on the result", () => {
       ],
       false,
     );
-    expect(out).toContain("✗");
+    expect(out).toContain("❌");
     expect(out).toMatch(/signal/i);
     expect(out).toMatch(/unknown/i);
   });
@@ -500,7 +500,7 @@ describe("exec: command shown on the call, output on the result", () => {
       { stdout: "", stderr: "", exitCode: null, outcome: "signal", signal: "SIGTERM" },
       false,
     );
-    expect(out).toContain("✗");
+    expect(out).toContain("❌");
     expect(out).toMatch(/signal/i);
   });
 

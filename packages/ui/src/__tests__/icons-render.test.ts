@@ -27,7 +27,7 @@ const agent: AgentSnapshot = {
 describe("icon styles in rendered rows", () => {
   it("returns each role's specified text and Nerd Font glyph with equal cell widths", () => {
     const roles: [IconRole, string, string][] = [
-      ["agent", "\u{1F916}", "\u{F167A} "], ["spider", "\u{1F578}\uFE0F", "\u{F0BCA} "], ["warning", "⚠", "\u{F002A}"], ["failure", "✗", "\u{F0156}"],
+      ["agent", "\u{1F916}", "\u{F167A} "], ["spider", "\u{1F578}\uFE0F", "\u{F0BCA} "], ["warning", "\u26A0\uFE0F", "\u{F002A} "], ["failure", "\u274C", "\u{F0156} "],
       ["gutter", "⎿", "\u{F060D}"], ["task", "↳", "\u{F060D}"], ["result", "⤴", "\u{F005C}"],
       ["message", "✉", "\u{F01F0}"], ["reply", "↩", "\u{F0F20}"], ["broadcast", "⇉", "\u{F0B23}"],
       ["handoff", "⇢", "\u{F19B0}"], ["pin", "📌", "\u{F0931} "], ["modelDefault", "⟵", "\u{F004D}"],
@@ -56,11 +56,11 @@ describe("icon styles in rendered rows", () => {
   });
 
   it("renders warning and failure icons without changing their width", () => {
-    expect(statusIcon(theme("text"), "warn")).toBe("⚠");
-    expect(statusIcon(theme("nerd"), "warn")).toBe("\u{F002A}");
-    expect(statusIcon(theme("text"), "fail")).toBe("✗");
-    expect(statusIcon(theme("nerd"), "fail")).toBe("\u{F0156}");
-    expect(visibleWidth(statusIcon(theme("nerd"), "warn"))).toBe(visibleWidth("⚠"));
+    expect(statusIcon(theme("text"), "warn")).toBe("\u26A0\uFE0F");
+    expect(statusIcon(theme("nerd"), "warn")).toBe("\u{F002A} ");
+    expect(statusIcon(theme("text"), "fail")).toBe("\u274C");
+    expect(statusIcon(theme("nerd"), "fail")).toBe("\u{F0156} ");
+    expect(visibleWidth(statusIcon(theme("nerd"), "warn"))).toBe(visibleWidth("\u26A0\uFE0F"));
   });
 
   it("uses the spider icon in cards and preserves their width", () => {
@@ -86,8 +86,8 @@ describe("icon styles in rendered rows", () => {
     const details = { verb: "send" as const, to: "worker", body: "hello", delivered: false, delivery: "queued" as const };
     const text = renderMessageResult(details, { theme: theme("text"), width: 100 });
     const nerd = renderMessageResult(details, { theme: theme("nerd"), width: 100 });
-    expect(text.join("\n")).toContain("⚠ → worker");
-    expect(nerd.join("\n")).toContain("\u{F002A} → worker");
+    expect(text.join("\n")).toContain("\u26A0\uFE0F → worker");
+    expect(nerd.join("\n")).toContain("\u{F002A}  → worker");
     expect(text.join("\n")).toContain("⎿ hello");
     expect(nerd.join("\n")).toContain("\u{F060D} hello");
     expect(nerd.map(visibleWidth)).toEqual(text.map(visibleWidth));
@@ -109,8 +109,8 @@ describe("icon styles in rendered rows", () => {
       focused: false, pinned: true, now: 0, spinner: new Spinner() };
     const text = renderGridCell(theme("text"), opts);
     const nerd = renderGridCell(theme("nerd"), opts);
-    expect(text[0]).toContain("✗ \u{1F916} scribe 📌");
-    expect(nerd[0]).toContain("\u{F0156} \u{F167A}  scribe \u{F0931} ");
+    expect(text[0]).toContain("\u274C \u{1F916} scribe 📌");
+    expect(nerd[0]).toContain("\u{F0156}  \u{F167A}  scribe \u{F0931} ");
     expect(text[2]).toContain("↳ read files");
     expect(nerd[2]).toContain("\u{F060D} read files");
     expect(nerd.map(visibleWidth)).toEqual(text.map(visibleWidth));
@@ -122,16 +122,18 @@ describe("icon styles in rendered rows", () => {
     const snapshot = applyEvent(agent, event);
     const text = formatAgentLine(theme("text"), snapshot, 100, 0, "◆");
     const nerd = formatAgentLine(theme("nerd"), snapshot, 100, 0, "◆");
-    expect(text).toContain("✗ read — failed");
-    expect(nerd).toContain("\u{F0156} read — failed");
+    expect(text).toContain("\u274C read — failed");
+    expect(nerd).toContain("\u{F0156}  read — failed");
+    const current = applyEvent(agent, { ...event, summary: "\u274C read — failed" });
+    expect(formatAgentLine(theme("nerd"), current, 100, 0, "◆")).toContain("\u{F0156}  read — failed");
     expect(visibleWidth(nerd)).toBe(visibleWidth(text));
     const opts = { agent: snapshot, width: 100, height: 3, focused: false, pinned: false, now: 0, spinner: new Spinner() };
-    expect(renderGridCell(theme("nerd"), opts).join("\n")).toContain("\u{F0156} read — failed");
+    expect(renderGridCell(theme("nerd"), opts).join("\n")).toContain("\u{F0156}  read — failed");
     const log = applyEvent(agent, { ...event, type: "log", summary: "✗ user text" });
     expect(formatAgentLine(theme("nerd"), log, 100, 0, "◆")).toContain("✗ user text");
     const detail = new AgentDetail("one", theme("nerd"), { viewport: () => ({ safeHeight: 15 }), requestRender: () => {} });
     detail.update({ kind: "loaded", run: agent, events: [{ ...event, id: 1 }] });
-    try { expect(detail.render(100).join("\n")).toContain("\u{F0156} read — failed"); }
+    try { expect(detail.render(100).join("\n")).toContain("\u{F0156}  read — failed"); }
     finally { detail.dispose(); }
   });
 
@@ -165,8 +167,8 @@ describe("icon styles in rendered rows", () => {
       const a = text.render(80), b = nerd.render(80);
       expect(a.join("\n")).toContain("⇢ next");
       expect(b.join("\n")).toContain("\u{F19B0} next");
-      expect(a.join("\n")).toContain("⚠ k again to kill");
-      expect(b.join("\n")).toContain("\u{F002A} k again to kill");
+      expect(a.join("\n")).toContain("\u26A0\uFE0F k again to kill");
+      expect(b.join("\n")).toContain("\u{F002A}  k again to kill");
       expect(a[0]).toContain("\u{1F916} scribe");
       expect(b[0]).toContain("\u{F167A}  scribe");
       expect(b.map(visibleWidth)).toEqual(a.map(visibleWidth));
@@ -177,9 +179,9 @@ describe("icon styles in rendered rows", () => {
     const detail = new AgentDetail("one", theme("nerd"), { viewport: () => ({ safeHeight: 15 }), requestRender: () => {} });
     try {
       detail.update({ kind: "loaded", run: { ...agent, status: "failed" }, events: [] });
-      expect(detail.render(80)[0]).toContain("\u{F0156} failed");
+      expect(detail.render(80)[0]).toContain("\u{F0156}  failed");
       detail.update({ kind: "loaded", run: { ...agent, activity: "✗ read — failed", activityIsError: true }, events: [] });
-      expect(detail.render(80).join("\n")).toContain("\u{F0156} read — failed");
+      expect(detail.render(80).join("\n")).toContain("\u{F0156}  read — failed");
     } finally { detail.dispose(); }
   });
 
@@ -246,8 +248,8 @@ describe("icon styles in rendered rows", () => {
     expect(b.map(visibleWidth)).toEqual(a.map(visibleWidth));
     const c = renderConfig({}, theme("text"), 120, true);
     const d = renderConfig({}, theme("nerd"), 120, true);
-    expect(c.join("\n")).toContain("⚠restart");
-    expect(d.join("\n")).toContain("\u{F002A}restart");
+    expect(c.join("\n")).toContain("\u26A0\uFE0Frestart");
+    expect(d.join("\n")).toContain("\u{F002A} restart");
     expect(d.map(visibleWidth)).toEqual(c.map(visibleWidth));
   });
 });

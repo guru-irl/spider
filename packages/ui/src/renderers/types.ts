@@ -29,11 +29,15 @@ function sgrCodes(marker: string): string {
   return [...active.values()].map((code) => `\x1b[${code}m`).join("");
 }
 
-// Both styles participate in wrapping; keep this list tied to the icon table.
-const markerChars = (["gutter", "task", "result", "failure", "warning", "message"] as const)
-  .flatMap(role => [icon("text", role), icon("nerd", role)]).join("").replace(/[\\\]\-^]/g, "\\$&");
+// Both styles participate in wrapping; keep this list tied to the icon table. An icon can
+// be several code points (an emoji and its U+FE0F selector), so icons are matched as
+// alternatives, not as members of a character class. The bare ✗ and ⚠ stay recognised
+// for text written before those icons became emoji.
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\\-]/g, "\\$&");
+const markerGlyphs = (["gutter", "task", "result", "failure", "warning", "message"] as const)
+  .flatMap(role => [icon("text", role), icon("nerd", role).trimEnd()]).map(escapeRegExp).join("|");
 const messageChars = [icon("text", "message"), icon("nerd", "message")].join("").replace(/[\\\]\-^]/g, "\\$&");
-const resultPrefix = new RegExp(`^([ \\t]*(?:(?:\\d+\\.[ \\t]+)?[│✓●○■◆▪▣•·\\-*${markerChars}](?:[ \\t]*[→◆▪▣${messageChars}])?[ \\t]+|\\[[^\\]\\n]+\\][ \\t]+|\\d+\\.[ \\t]+|[ \\t]+))`, "u");
+const resultPrefix = new RegExp(`^([ \\t]*(?:(?:\\d+\\.[ \\t]+)?(?:[│✓✗⚠●○■◆▪▣•·\\-*]|${markerGlyphs})(?:[ \\t]*[→◆▪▣${messageChars}])?[ \\t]+|\\[[^\\]\\n]+\\][ \\t]+|\\d+\\.[ \\t]+|[ \\t]+))`, "u");
 
 /** Fit result rows at the final render boundary, preserving ANSI state across wraps. */
 export function fitResultLines(lines: readonly string[], width: number, expanded: boolean): string[] {

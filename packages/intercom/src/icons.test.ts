@@ -27,10 +27,10 @@ it("uses the selected failure and warning glyphs in message tool results", () =>
   const textFailure = render("intercom", failed), textWarning = render("contact_supervisor", warning);
   style = "nerd";
   const nerdFailure = render("intercom", failed), nerdWarning = render("contact_supervisor", warning);
-  expect(textFailure).toContain("✗ not delivered");
-  expect(nerdFailure).toContain("\u{F0156} not delivered");
-  expect(textWarning).toContain("⚠ reply");
-  expect(nerdWarning).toContain("\u{F002A} reply");
+  expect(textFailure).toContain("❌ not delivered");
+  expect(nerdFailure).toContain("\u{F0156}  not delivered");
+  expect(textWarning).toContain("⚠\uFE0F reply");
+  expect(nerdWarning).toContain("\u{F002A}  reply");
   expect(visibleWidth(nerdFailure)).toBe(visibleWidth(textFailure));
   expect(visibleWidth(nerdWarning)).toBe(visibleWidth(textWarning));
 });

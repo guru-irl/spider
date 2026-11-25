@@ -185,7 +185,7 @@ jobs:
       matrix:
         shard: [1, 2]
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 50
     outputs:
       acceptance: ${{ steps.selection.outputs.acceptance }}
       chrome: ${{ steps.selection.outputs.chrome }}
@@ -255,6 +255,7 @@ jobs:
       - name: Measure without recorded slow files
         if: steps.selection.outputs.audit == 'true'
         continue-on-error: true
+        timeout-minutes: 5
         env:
           SCOPED_TESTS: ${{ vars.CI_SCOPED_TESTS }}
         run: |

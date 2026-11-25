@@ -1,0 +1,81 @@
+name: test files
+
+# Runs named test files on one runner, with the same setup as a CI test
+# shard. Use it to check slow test files without running the whole suite.
+
+on:
+  workflow_dispatch:
+    inputs:
+      files:
+        description: Space-separated test file paths under packages/
+        required: true
+        type: string
+      repeat:
+        description: How many times to run the files (1 to 5)
+        required: false
+        default: '1'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    name: test files
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+
+      - name: Check inputs
+        env:
+          FILES: ${{ inputs.files }}
+          REPEAT: ${{ inputs.repeat }}
+        run: |
+          case "$REPEAT" in 1|2|3|4|5) ;; *) echo "repeat must be 1 to 5"; exit 1;; esac
+          count=0
+          for f in $FILES; do
+            if ! printf '%s' "$f" | grep -Eq '^packages/[A-Za-z0-9_./-]+\.test\.(ts|mjs|js)$'; then
+              echo "not a test file path: $f"; exit 1
+            fi
+            case "$f" in *..*) echo "path must not contain ..: $f"; exit 1;; esac
+            test -f "$f" || { echo "missing: $f"; exit 1; }
+            count=$((count + 1))
+          done
+          test "$count" -gt 0 || { echo "no files given"; exit 1; }
+
+      - name: Prepare isolated scratch
+        run: mkdir -p "$PWD/.spider/scratch/tmp"
+
+      - name: Install SQLite CLI
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+
+      - name: Install
+        run: npm ci
+
+      # Same as the CI test shards: keep hc sockets inside the tests' own
+      # state homes by removing the runner's runtime directory.
+      - name: Remove runner runtime directory
+        run: |
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+          test ! -e "$rundir"
+          echo "XDG_RUNTIME_DIR=" >> "$GITHUB_ENV"
+
+      - name: Run test files
+        env:
+          FILES: ${{ inputs.files }}
+          REPEAT: ${{ inputs.repeat }}
+        run: |
+          status=0
+          for i in $(seq 1 "$REPEAT"); do
+            echo "::group::run $i of $REPEAT"
+            env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR TMPDIR="$PWD/.spider/scratch/tmp" npx vitest run $FILES --maxWorkers=3 --reporter=verbose || status=1
+            echo "::endgroup::"
+          done
+          exit $status

@@ -57,6 +57,8 @@ afterEach(() => { processRows.value = null; processRows.boot = null; vi.restoreA
 async function fixture(beforeMapping = true, bound = false, box = false, worktreeOnly = false) {
   const machineId = box ? BOX : HUB;
   const global = createReplica("global", machineId); fixtures.push(global);
+  // The normal-runtime inventory also follows HOME, which CI does not fence.
+  vi.stubEnv('HOME', join(global.root, 'home'));
   vi.stubEnv("HC_SOCKET", join(process.cwd(), ".spider/scratch/move-roster.sock"));
   vi.stubEnv("HC_TERMINAL_SOCKET", join(process.cwd(), ".spider/scratch/move-roster.sock"));
   vi.stubEnv("HC_SESSION", "move-roster");
@@ -182,6 +184,19 @@ it.each(['no-lock', 'previous-boot', 'exited-owner'] as const)('an unidentified 
     mounted = await f.compose();
     await expect(mounted.bindings.participant!.probe(f.sessionId)).rejects.toMatchObject({ code: 'ownership-unregistered-process' });
   } finally { await mounted?.close(); await lock?.release(); await f.machine.close(); }
+});
+
+it.each(['missing-session-id', 'missing-session-file', 'missing-both'] as const)('an incomplete Pi registration cannot prove a live process unrelated: %s', async mode => {
+  const f = await fixture(); processRows.value = `${process.pid} pi node pi`;
+  const presence = createProcessPresence(join(f.global.root, 'herdr'));
+  await presence.record({ pid: process.pid, startIdentity: processStartTime(process.pid)!,
+    sessionId: mode === 'missing-session-file' ? 'other-session' as SessionId : null,
+    sessionFile: mode === 'missing-session-id' ? f.file : null, sessionName: null, kind: 'top-level', hcAddress: null });
+  let mounted: Awaited<ReturnType<typeof f.compose>> | undefined;
+  try {
+    mounted = await f.compose();
+    await expect(mounted.bindings.participant!.probe(f.sessionId)).rejects.toMatchObject({ code: 'ownership-unregistered-process' });
+  } finally { await mounted?.close(); await f.machine.close(); }
 });
 
 it.each(['matching-live', 'unreadable'] as const)('the production move probe refuses absence for a %s lock owner', async mode => {

@@ -138,8 +138,38 @@ it.each([['human', 5], ['new-session', 0]] as const)('does not re-probe unrelate
   }
   expect(work.ownership - probes).toBe(0);
 });
-it('releases an idle ownership scope and rebuilds it on the next panel read', async () => {
-  // Keeping the scope forever prevents an idle worker from releasing its ownership graph.
+it('keeps ownership of distinct call pairs when a later time range becomes visible', async () => {
+  const session = (id: string) => ({ id, ownerSessionId: null, name: id, nameSource: 'name' as const,
+    project: null, firstActivity: START, lastActivity: now, nameOrder: 1 });
+  const run = (id: string, sessionId: string, dbPath: string) => ({ id, dbPath, project: null, repo: null, sessionId,
+    parentRunId: null, agent: null, role: 'worker', name: id, model: null, thinking: null, phase: null, startedAt: null, endedAt: null });
+  f.ledger.apply(dashboardBatch([
+    dashboardCall('unknown-run', { sessionId: 'human', runId: 'missing-run', actor: 'subagent', ts: now + 1000 }),
+    dashboardCall('other-run', { sessionId: 'human', runId: 'other-run', actor: 'subagent', ts: now + 1001 }),
+    dashboardCall('ambiguous-run', { sessionId: 'human', runId: 'ambiguous-run', actor: 'subagent', ts: now + 1002 }),
+  ], { sessions: [session('human'), session('other')], runs: [run('other-run', 'other', 'synthetic/a.db'),
+    run('ambiguous-run', 'human', 'synthetic/a.db'), run('ambiguous-run', 'other', 'synthetic/b.db')] }));
+  await boot();
+  p.emit('message', { type: 'configure', poll: false, calibration: 'off' });
+  expect(panel()?.monthCost.credits).toBe(10);
+  const probes = work.ownership;
+  expect(panel(now + 2000)?.monthCost.credits).toBe(11);
+  expect(work.ownership).toBe(probes);
+});
+it('rebuilds an oversized derived identity instead of retaining it', async () => {
+  const suffix = 'x'.repeat(128);
+  f.db.exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<4000)
+    INSERT INTO runs_meta(id,db_path,session_id,role,started_at,ended_at,status)
+    SELECT 'run-'||i||'${suffix}','synthetic/runs.db','human','worker',0,${now},'done' FROM n`);
+  await boot();
+  expect(panel()?.monthCost.credits).toBe(5);
+  const probes = work.ownership;
+  expect(probes).toBeGreaterThan(0);
+  expect(panel()?.monthCost.credits).toBe(5);
+  expect(work.ownership).toBeGreaterThan(probes);
+});
+it('releases an idle panel identity and rebuilds it on the next panel read', async () => {
+  // Idle workers release even the compact identity cache.
   await boot();
   expect(panel()?.monthCost.credits).toBe(5);
   const initial = work.ownership;

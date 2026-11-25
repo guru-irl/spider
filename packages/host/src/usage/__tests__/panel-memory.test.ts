@@ -27,13 +27,15 @@ it('does not retain the ownership dictionary after a worker panel read', async (
       rolldownOptions: { external: id => !id.startsWith('.') && !id.startsWith('/') && !id.startsWith('@spider/') } } });
     const worker = new Worker(join(root, 'worker.mjs'), { resourceLimits: { maxOldGenerationSizeMb: 256, maxYoungGenerationSizeMb: 16, stackSizeMb: 4 },
       workerData: { file, now: seed.now, sessionId: seed.sessionId } });
-    const result = await new Promise<{ before: number; retained: number; value: { monthCost: { credits: number } } | null }>((resolve, reject) => {
-      worker.once('message', resolve); worker.once('error', reject);
-      worker.once('exit', code => { if (code) reject(new Error(`worker exited ${code}`)); });
-    });
-    await worker.terminate();
+    let result: { before: number; retained: number; value: { monthCost: { credits: number } } | null };
+    try {
+      result = await new Promise((resolve, reject) => {
+        worker.once('message', resolve); worker.once('error', reject);
+        worker.once('exit', code => reject(new Error(`worker exited before reporting: ${code}`)));
+      });
+    } finally { await worker.terminate(); }
     expect(result.value).not.toBeNull();
-    expect(Number.isFinite(result.value!.monthCost.credits)).toBe(true);
+    expect(result.value!.monthCost.credits).toBeGreaterThan(0);
     const retainedBytes = result.retained - result.before;
     console.log(`panel worker retained heap: ${retainedBytes} bytes`);
     expect(retainedBytes).toBeLessThan(8 * 1024 * 1024);

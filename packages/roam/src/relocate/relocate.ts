@@ -54,6 +54,10 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
       let checkpoint: RelocateCheckpoint;
       if (home.state === "moving") {
         moveId = home.moveId;
+        if (request.destinationMachine !== home.machineId && request.destinationMachine !== home.destination) {
+          refuse("move-in-progress", "The session is already moving to another destination.",
+            `Finish spider roam relocate ${request.sessionId} ${home.destination}, or undo with spider roam relocate ${request.sessionId} ${home.machineId}.`);
+        }
         const pending = await ports.journal.load(moveId);
         if (!pending) refuse("journal-unavailable", "The relocation checkpoint is unavailable.");
         checkpoint = pending;

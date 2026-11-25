@@ -53,6 +53,18 @@ describe("relocate", () => {
     expect(s.backups.has(source)).toBe(true);
   });
 
+  it("third destination refuses during moving", async () => {
+    const s = state(); s.failAfter = "save-stop-source";
+    expect((await relocate(request, ports(s))).ok).toBe(false);
+    const home = structuredClone(s.home); const journal = structuredClone(s.journal);
+    const effects = [...s.effects];
+    expect(await relocate({ sessionId, destinationMachine: third }, ports(s))).toMatchObject({
+      ok: false, refusal: { code: "move-in-progress", nextStep: expect.stringMatching(/source|destination/) },
+    });
+    expect(s.home).toEqual(home); expect(s.journal).toEqual(journal);
+    expect(s.effects).toEqual(effects); expect(s.ids).toBe(1);
+  });
+
   it("capture waits for source lock freedom", async () => {
     const s = state();
     const barrier = deferred();

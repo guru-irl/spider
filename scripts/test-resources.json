@@ -428,6 +428,8 @@
     ],
     "stories": [
       "**",
+      ".*",
+      ".*/**",
       "!docs/**",
       "!README.md",
       "!packages/*/README.md",

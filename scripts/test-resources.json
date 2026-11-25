@@ -279,6 +279,7 @@
       "packages/context/src/__tests__/executor-background-receipt.test.ts",
       "packages/context/src/__tests__/executor-background-survival.test.ts",
       "packages/herdr/src/__tests__/acceptance/f.ts",
+      "packages/herdr/src/__tests__/admin-cli.test.ts",
       "packages/herdr/src/__tests__/child-remote-integration.test.ts",
       "packages/herdr/src/__tests__/endpoint-fixture.ts",
       "packages/herdr/src/__tests__/feed-reader-server.test.ts",

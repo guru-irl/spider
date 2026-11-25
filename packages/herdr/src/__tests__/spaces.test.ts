@@ -149,10 +149,8 @@ it('cached native notes cannot follow a retired identity into a new pi draft', a
 });
 
 import { runAcceptance } from './testutil.js';
-import { acceptanceSpaces, acceptanceResume, acceptanceG } from './acceptance/g.js';
+import { acceptanceSpaces, acceptanceG } from './acceptance/g.js';
 it.skipIf(process.env.SPIDER_HERDR_APP_E2E === '1' && process.env.SPIDER_HERDR_APP_TESTS !== '1')('spaces acceptance (real app requires user opt-in)', async () => runAcceptance('spaces', acceptanceSpaces), 60000);
-
-it.skipIf(process.env.SPIDER_HERDR_APP_E2E === '1' && process.env.SPIDER_HERDR_APP_TESTS !== '1')('resume acceptance (real app requires user opt-in)', async () => runAcceptance('resume', acceptanceResume), 60000);
 
 it.skipIf(process.env.SPIDER_HERDR_APP_E2E === '1' && process.env.SPIDER_HERDR_APP_TESTS !== '1')('combined resume and spaces acceptance leaves no finished resume fixture', async () => runAcceptance('combined-resume-spaces', acceptanceG), 60000);
 

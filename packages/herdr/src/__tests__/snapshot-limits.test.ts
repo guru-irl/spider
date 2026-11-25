@@ -5,6 +5,17 @@ import { invokeCli as transport } from '../client/cli-transport.js';
 import { createHcClient, invokeCli as core } from '../client/hc.js';
 import { remoteUnavailableNotice } from '../notices.js';
 
+const spawned = vi.hoisted(() => ({ onEvents: undefined as undefined | ((child: import('node:child_process').ChildProcess) => void) }));
+vi.mock('node:child_process', async importOriginal => {
+  const original = await importOriginal<typeof import('node:child_process')>();
+  const spawn = ((...args: Parameters<typeof original.spawn>) => {
+    const child = original.spawn(...args);
+    if (args[1]?.[0] === 'events') spawned.onEvents?.(child);
+    return child;
+  }) as typeof original.spawn;
+  return { ...original, spawn };
+});
+
 const fixtures: ClientFixture[] = [];
 const clients: ReturnType<typeof createHcClient>[] = [];
 afterEach(async () => {
@@ -52,11 +63,22 @@ it.each([
 ])('does not respawn events after deterministic %s failure', async (code, reply) => {
   const f = await fixture(); await f.configure({ reply });
   const client = createHcClient({ binary: f.hcBinary, env: f.localEnv, maxReplyBytes: 1024 }); clients.push(client);
-  const view = client.events();
-  await expect(view.ready).rejects.toMatchObject({ code });
-  await view.dispose();
-  await new Promise(resolve => setTimeout(resolve, 2700));
-  expect((await f.calls()).filter(call => call.argv[0] === 'events')).toHaveLength(1);
+  let closed: Promise<void> | undefined, starts = 0;
+  spawned.onEvents = child => {
+    starts++;
+    if (starts === 1) closed = new Promise(resolve => child.once('close', () => resolve()));
+  };
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+  try {
+    const view = client.events();
+    await expect(view.ready).rejects.toMatchObject({ code });
+    expect(closed).toBeDefined(); await closed;
+    await vi.advanceTimersByTimeAsync(2700);
+    for (let turn = 0; turn < 5; turn++) await new Promise<void>(resolve => setImmediate(resolve));
+    expect(starts).toBe(1);
+    expect((await f.calls()).filter(call => call.argv[0] === 'events')).toHaveLength(1);
+    await view.dispose();
+  } finally { vi.useRealTimers(); spawned.onEvents = undefined; }
 });
 
 it.each([

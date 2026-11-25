@@ -24,7 +24,11 @@ const npm = (args: string[]) => execFileSync('npm', args, { cwd: root, env, enco
 // A missing build entry or package allowlist entry must fail through npm's real artifact.
 const h = {
   async buildAndInspectPackage() {
-    npm(['run', 'build']);
+    // CI's npm ci already runs prepare and builds this checkout.
+    if (process.env.CI !== 'true') npm(['run', 'build']);
+    const commit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+    const marker = readFileSync(join(root, 'dist/extension.js'), 'utf8').slice(0, 16 * 1024).match(/SPIDER_BUILD_ID=([0-9a-f]{7,40})(?:-dirty)?@/);
+    expect(marker?.[1], 'Run npm run build for the current commit before packaging').toBe(commit);
     const manifest = JSON.parse(npm(['pack', '--json', '--ignore-scripts', '--foreground-scripts=false', '--pack-destination', packedRoot]))[0];
     tarball = join(packedRoot, manifest.filename);
     execFileSync('tar', ['-xzf', tarball, '-C', packedRoot]);

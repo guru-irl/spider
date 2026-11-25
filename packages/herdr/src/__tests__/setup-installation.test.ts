@@ -13,7 +13,10 @@ import { setupHerdr, rollbackHerdr, type SetupParts, type SetupRequest, type Ins
 import { DOCTOR_ITEMS, doctorHerdr, type DoctorParts, type DoctorFailure } from '../setup/doctor.js';
 import { runHerdrCli, type HerdrCliPorts } from '../setup/cli.js';
 import { readJournal, withSetupLock } from '../setup/backup.js';
-import { fixture, hash, realFs, registerSetupCleanup } from './setup-fixture.js';
+import { fixture as processFixture, hash, realFs, registerSetupCleanup } from './setup-fixture.js';
+import { createInProcessHerdrHarness } from './setup-inprocess-harness.js';
+
+const fixture = () => processFixture('fake', createInProcessHerdrHarness);
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
@@ -42,7 +45,7 @@ test('CLI plan mode lists every file without a journal, probes or cutover', asyn
 });
 
 test('proved running sessions bypass cutover after a core restart and terminal replacement', async () => {
-  const f = await fixture(), first = await setupHerdr(f.request, f.parts);
+  const f = await processFixture(), first = await setupHerdr(f.request, f.parts);
   const preflight = f.parts.preflight;
   const recovered = { terminals: ['replacement' as never], identities: { session: 'current' } };
   f.parts.preflight = async request => ({ ...await preflight(request), coreIdentity: { ...f.h.owner!.terminal, coreId: 'restarted' as never }, recoveredCutover: recovered, cutoverNeedsRecheck: true, cutoverActions: [] });
@@ -119,7 +122,7 @@ test('an unchanged setup performs no feed-directory metadata writes', async () =
 });
 
 test('a second setup writes nothing and preserves unrelated settings', async () => {
-  const f = await fixture();
+  const f = await processFixture();
   const first = await setupHerdr(f.request, f.parts);
   expect(JSON.parse(await readFile(f.settings, 'utf8'))).toEqual({ theme: 'dracula-plus-glass', unrelated: 'keep' });
   expect(first.writes).toContain(f.paths.spider);
@@ -158,7 +161,7 @@ test('old or missing destination Node refuses before target writes', async () =>
 });
 
 test('standalone doctor repeats visible probes and detects independent native notification failures', async () => {
-  const f = await fixture();
+  const f = await processFixture();
   await setupHerdr(f.request, f.parts);
   const before = f.launches.length;
   await f.h.cli(['run', '--bg', '--no-parent', '--', f.h.nodeBinary, '-e', '']);
@@ -209,7 +212,7 @@ test('unowned terminal keys refuse before writes unless overwrite is explicit, p
 });
 
 test('a crash after a fresh launch recovers recorded app IDs rather than launching a second writer', async () => {
-  const f = await fixture();
+  const f = await processFixture();
   let crash = true;
   const real = f.parts.cutover;
   f.parts.cutover = async (r, c) => {
@@ -284,7 +287,7 @@ test('a crash cannot overwrite a settings edit between validation and the verifi
 });
 
 test('an uncertain cutover failure blocks retry rather than reopening a session with an unrecorded owner', async () => {
-  const f = await fixture();
+  const f = await processFixture();
   const real = f.parts.cutover;
   f.parts.cutover = async (r, c) => { await real(r, c); throw new Error('lost cutover acknowledgement'); };
   await expect(setupHerdr(f.request, f.parts)).rejects.toThrow('lost cutover acknowledgement');
@@ -364,7 +367,7 @@ test('setup requires a plain shell and cannot use a headless child as cutover au
 });
 
 test('rollback restores only matching installed files and never closes an unrelated terminal', async () => {
-  const f = await fixture();
+  const f = await processFixture();
   const result = await setupHerdr(f.request, f.parts);
   const unrelated = await f.h.hc.run({ argv: [f.h.nodeBinary, '-e', 'setInterval(()=>{},1000)'], cwd: f.h.root, labels: {}, outliveParent: true, background: true, noNotify: true });
   await writeFile(f.paths.spider, 'user-edited-decoder');
@@ -377,7 +380,7 @@ test('rollback restores only matching installed files and never closes an unrela
 });
 
 test('a changed Node path or core start invalidates the observation without duplicate owners or runtime uploads', async () => {
-  const f = await fixture();
+  const f = await processFixture();
   await setupHerdr(f.request, f.parts);
   const uploads = () => f.h.calls().then(calls => calls.filter(c => c.argv[0] === 'file' && c.argv[1] === 'write'));
   expect(await uploads()).toHaveLength(1);
@@ -403,7 +406,7 @@ if (process.env.SPIDER_HERDR_E2E !== '1')
   console.info('SKIP real setup core probes: require SPIDER_HERDR_E2E=1; no real app test is launched');
 
 test.skipIf(process.env.SPIDER_HERDR_E2E !== '1')('isolated hc visibly probes destination Node and verifies one runtime upload without opening an app', async () => {
-  const f = await fixture('hc');
+  const f = await processFixture('hc');
   f.setTarget({ nodePath: f.h.nodeBinary });
   const result = await setupHerdr(f.request, f.parts);
   expect(result.probes[0].version).toBe(process.version);

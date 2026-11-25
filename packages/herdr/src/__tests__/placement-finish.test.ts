@@ -4,6 +4,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { createHerdrHarness } from './testutil.js';
+import { createInProcessViewerHarness } from './viewer-inprocess-harness.js';
 import { createViewerLauncher, registerHerdrViewers } from '../viewers/register.js';
 import { createAuxiliaryPanes } from '../jobs/placement.js';
 import { createViewerPorts } from '../../../host/src/herdr/ports.js';
@@ -16,8 +17,9 @@ function barrier() {
   const promise = new Promise<void>(done => { resolve = done; });
   return { promise, resolve };
 }
-async function fixture() {
-  const h = await createHerdrHarness('fake'); await h.start(); const owner = h.owner!;
+async function fixture(realProcess = false) {
+  const h = realProcess ? await createHerdrHarness('fake') : await createInProcessViewerHarness();
+  await h.start(); const owner = h.owner!;
   const executable = join(h.root, 'viewer.mjs'); await writeFile(executable, 'setInterval(() => {}, 1000);');
   const placement = { space: 'space', tab: 'owner-tab', pane: 'owner-pane' } as OwnerPlacement;
   const layout = new Map<TerminalAddress, OwnerPlacement>([[owner.terminal.address, placement]]);
@@ -68,7 +70,7 @@ test.each(['done', 'failed', 'cancelled'] as const)('placement skips an already-
 }, 15000);
 
 test('an automatic launch racing finish carries its intent and frees its slot and core record on exit', async () => {
-  const f = await fixture(); let opening: ReturnType<typeof f.panes.acquire> | undefined;
+  const f = await fixture(true); let opening: ReturnType<typeof f.panes.acquire> | undefined;
   try {
     f.hold(); opening = f.panes.acquire('subagent', id, f.owner, { automatic: true, timeoutMs: 1000 });
     await f.entered.promise; f.setStatus('done'); f.release.resolve();
@@ -101,7 +103,7 @@ test('an explicit open reuses a live automatic viewer without changing its lifet
 
 // S31 disproved this premise: a live viewer is not necessarily a saved viewer.
 test.each(['automatic', 'explicit'] as const)('a saved open waits for an unfinished %s viewer to exit rather than returning its dying pane', async intent => {
-  const f = await fixture(); let opening: ReturnType<typeof f.panes.acquire> | undefined;
+  const f = await fixture(intent === 'automatic'); let opening: ReturnType<typeof f.panes.acquire> | undefined;
   try {
     const live = (await f.panes.acquire('subagent', id, f.owner, { automatic: intent === 'automatic', timeoutMs: 1000 }))!;
     f.setStatus('failed');

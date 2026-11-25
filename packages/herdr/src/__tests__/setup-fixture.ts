@@ -22,7 +22,7 @@ export function registerSetupCleanup(): void {
 } });
 }
 export const hash: (bytes: Buffer) => string = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
-export async function fixture(mode: 'fake' | 'hc' = 'fake'): Promise<{
+export async function fixture(mode: 'fake' | 'hc' = 'fake', makeHarness: typeof createHerdrHarness = createHerdrHarness): Promise<{
     h: HerdrHarness;
     request: SetupRequest;
     parts: SetupParts;
@@ -54,7 +54,7 @@ export async function fixture(mode: 'fake' | 'hc' = 'fake'): Promise<{
     }>) => void;
     setVersion: (v: string) => void;
 }> {
-  const h = await createHerdrHarness(mode);
+  const h = await makeHarness(mode);
   fixtures.push(h);
   await h.start();
   const settings = join(h.directories.agent, 'settings.json');

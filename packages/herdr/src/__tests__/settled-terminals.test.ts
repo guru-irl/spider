@@ -32,7 +32,7 @@ it('removes a finished terminal consumed by its foreground tool call', async () 
   const f = await monitorFixture(), removed = vi.spyOn(f.hc, 'rm'), jobs = f.monitor();
   const handle = await jobs.start(program, f.owner, on, {});
   f.complete(handle.address); await jobs.reconcile();
-  await jobs.consumeNotice(handle.id);
+  await jobs.consumeNotice(handle.id); await jobs.finishCleanup();
   await vi.waitFor(() => expect(removed.mock.calls.map(([address]) => [address])).toEqual([[handle.address]]), { timeout: 3500 });
   expect(f.notices).toEqual([]);
 });
@@ -57,16 +57,15 @@ it.each(['spider.session', 'spider.owner-core', 'spider.owner-terminal', 'spider
   const f = await monitorFixture(), removed = vi.spyOn(f.hc, 'rm'), queries = vi.spyOn(f.hc, 'get'), jobs = f.monitor();
   const handle = await jobs.start(program, f.owner, on, {});
   f.complete(handle.address); await jobs.reconcile();
-  await jobs.consumeNotice(handle.id);
+  await jobs.consumeNotice(handle.id); await jobs.finishCleanup();
   await vi.waitFor(() => expect(removed.mock.calls.map(([address]) => [address])).toEqual([[handle.address]]), { timeout: 3500 });
   removed.mockClear();
   const foreign = await jobs.start(program, f.owner, on, {});
   f.complete(foreign.address); await jobs.reconcile();
   f.terminals.get(foreign.address)!.labels = { ...f.terminals.get(foreign.address)!.labels, [label]: 'foreign' };
   queries.mockClear();
-  await jobs.consumeNotice(foreign.id); await jobs.reconcile();
+  await jobs.consumeNotice(foreign.id); await jobs.reconcile(); await jobs.finishCleanup();
   await vi.waitFor(() => expect(queries.mock.calls.some(([address]) => address === foreign.address)).toBe(true), { timeout: 3500 });
-  await jobs.finishCleanup();
   expect(removed).not.toHaveBeenCalled();
   expect(f.terminals.has(foreign.address)).toBe(true);
 });
@@ -86,8 +85,8 @@ it('does not remove a finished terminal replaced after its initial identity chec
     }
     return terminal;
   };
-  await jobs.consumeNotice(handle.id);
-  await vi.waitFor(() => expect(replaced).toBe(true), { timeout: 3500 }); await jobs.finishCleanup();
+  await jobs.consumeNotice(handle.id); await jobs.finishCleanup();
+  await vi.waitFor(() => expect(replaced).toBe(true), { timeout: 3500 });
   expect(removed).not.toHaveBeenCalled();
   expect(f.terminals.get(handle.address)?.labels['spider.job']).toBe('foreign');
 });
@@ -143,8 +142,8 @@ it('reconciliation retries a failed removal after the notice was observed', asyn
   f.complete(handle.address); await jobs.reconcile();
   removed.mockRejectedValueOnce(new Error('temporary removal failure'));
   await expect(jobs.consumeNotice(handle.id)).resolves.toBeUndefined();
-  await vi.waitFor(async () => expect((await createJobStore(f.f.root, f.owner.sessionId).read()).jobs[0].cleanupFailure).toMatchObject({ code: 'cleanup-failed', attempts: 1 }), { timeout: 3500 });
   await jobs.finishCleanup();
+  await vi.waitFor(async () => expect((await createJobStore(f.f.root, f.owner.sessionId).read()).jobs[0].cleanupFailure).toMatchObject({ code: 'cleanup-failed', attempts: 1 }), { timeout: 3500 });
   expect(removed.mock.calls.map(([address]) => [address])).toEqual([[handle.address]]);
   now += 60000; await jobs.reconcile();
   await vi.waitFor(() => expect(removed.mock.calls.map(([address]) => [address])).toEqual([[handle.address], [handle.address]]));

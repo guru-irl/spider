@@ -6,16 +6,26 @@ import { spawn } from 'node:child_process';
 import { chmod, writeFile, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { createHerdrHarness, runAcceptance, type HerdrHarness } from './testutil.js';
-import { createMachineCache } from '../ssh/cache.js';
-import { createSshPolicy } from '../ssh/policy.js';
+import { createMachineCache, type MachineSnapshot } from '../ssh/cache.js';
+import { createSshPolicy, createSshPolicyReader } from '../ssh/policy.js';
 import { runHerdrAdmin, preflightTransports, createTransportPolicy, type AdminPolicy, type AdminAuditRow, type AdminTransportRequest } from '../ssh/admin.js';
 import { ordinaryExecutionEnvironment } from '../ssh/shim.js';
 import { acceptanceE } from './acceptance/e.js';
+
+const routeSnapshot: MachineSnapshot = {
+  version: 1,
+  identity: { coreId: 'fixture' as MachineSnapshot['identity']['coreId'], socket: '/fixture/core.sock', sessionNamespace: 'fixture' },
+  fetchedAt: 1000,
+  machines: [{ id: 'remote-core', name: 'remote.invalid', targets: ['remote.invalid'] }],
+};
+const routing = createSshPolicyReader(async () => routeSnapshot, () => 1000);
+
 async function fixture(test: (h: HerdrHarness, policy: AdminPolicy, rows: AdminAuditRow[], transports: AdminTransportRequest[]) => Promise<void>) {
   const h = await createHerdrHarness('fake'); let cache: ReturnType<typeof createMachineCache> | undefined;
   try {
     await h.start(); await h.scenario({ ssh: { exitCode: 17, stdout: 'ok\n' } });
     cache = createMachineCache({ hc: h.hc, identity: await h.hc.identity(), directory: join(h.root, 'cache') }); await cache.ready;
+    expect(cache.snapshot()?.machines.find(machine => machine.name === 'remote.invalid')?.targets).toContain('remote.invalid');
     const wrapper = join(h.root, 'approved'); await writeFile(wrapper, '#!/bin/sh\nexit 0\n'); await chmod(wrapper, 0o700);
     const sha256 = createHash('sha256').update(await readFile(wrapper)).digest('hex'); const rows: AdminAuditRow[] = [], transports: AdminTransportRequest[] = [];
     const policy: AdminPolicy = { wrappers: [{ path: wrapper, sha256 }], routing: createSshPolicy(cache), environment: { ...h.localEnv, SPIDER_HERDR_SSH_BYPASS: '1', SPIDER_HERDR_TRANSPORT_CAPABILITY: 'stale', SPIDER_SESSION_LEASE_TOKEN: 'stale' },
@@ -60,19 +70,19 @@ describe('audited SSH administration', () => {
     'rsync -e "ssh -p 2222" local remote.invalid:/path', 'RSYNC_RSH="ssh -J remote.invalid" rsync local elsewhere.invalid:/path',
     'git clone user@remote.invalid:repo', 'git clone ssh://user@remote.invalid:2222/repo',
     'git -c core.sshCommand="ssh -J remote.invalid" clone ssh://elsewhere.invalid/repo', 'GIT_SSH_COMMAND="ssh -J remote.invalid" git fetch', 'GIT_SSH=/usr/bin/ssh git clone remote.invalid:/repo',
-  ])('preflights explicit managed transfer or Git SSH transport: %s', async code => fixture(async (_h, policy) => {
-    expect(await preflightTransports(code, policy.routing, {})).toMatchObject({ kind: 'refuse' });
-    expect(await createTransportPolicy(policy.routing, () => ({})).checkShell(code)).toMatchObject({ kind: 'refuse' });
-  }));
-  it('preflights transport overrides in the final environment', async () => fixture(async (_h, policy) => {
-    expect(await preflightTransports('rsync local elsewhere.invalid:/path', policy.routing, { RSYNC_RSH: 'ssh -J remote.invalid' })).toMatchObject({ kind: 'refuse' });
-    expect(await preflightTransports('git fetch', policy.routing, { GIT_SSH_COMMAND: 'ssh -J remote.invalid' })).toMatchObject({ kind: 'refuse' });
-  }));
-  it('preserves HTTPS Git, local copies and unrelated explicit endpoints', async () => fixture(async (_h, policy) => {
-    for (const code of ['git clone https://example.invalid/repo', 'cp local other', 'scp local other.invalid', 'scp file elsewhere.invalid:/path', 'rsync -e ssh file elsewhere.invalid:/path']) expect(await preflightTransports(code, policy.routing, {})).toEqual({ kind: 'allow' });
-    expect(await preflightTransports('git clone https://example.invalid/repo', policy.routing, { GIT_SSH_COMMAND: 'ssh -J remote.invalid' })).toEqual({ kind: 'allow' });
+  ])('preflights explicit managed transfer or Git SSH transport: %s', async code => {
+    expect(await preflightTransports(code, routing, {})).toMatchObject({ kind: 'refuse' });
+    expect(await createTransportPolicy(routing, () => ({})).checkShell(code)).toMatchObject({ kind: 'refuse' });
+  });
+  it('preflights transport overrides in the final environment', async () => {
+    expect(await preflightTransports('rsync local elsewhere.invalid:/path', routing, { RSYNC_RSH: 'ssh -J remote.invalid' })).toMatchObject({ kind: 'refuse' });
+    expect(await preflightTransports('git fetch', routing, { GIT_SSH_COMMAND: 'ssh -J remote.invalid' })).toMatchObject({ kind: 'refuse' });
+  });
+  it('preserves HTTPS Git, local copies and unrelated explicit endpoints', async () => {
+    for (const code of ['git clone https://example.invalid/repo', 'cp local other', 'scp local other.invalid', 'scp file elsewhere.invalid:/path', 'rsync -e ssh file elsewhere.invalid:/path']) expect(await preflightTransports(code, routing, {})).toEqual({ kind: 'allow' });
+    expect(await preflightTransports('git clone https://example.invalid/repo', routing, { GIT_SSH_COMMAND: 'ssh -J remote.invalid' })).toEqual({ kind: 'allow' });
     expect(ordinaryExecutionEnvironment({ SPIDER_HERDR_SSH_BYPASS: '1' }).SPIDER_HERDR_SSH_BYPASS).toBeUndefined();
-  }));
+  });
   it('proves guards and nested PATH SSH while recording the nested absolute-binary limitation', async () => {
     const h = await createHerdrHarness(process.env.SPIDER_HERDR_E2E === '1' ? 'hc' : 'fake');
     try {

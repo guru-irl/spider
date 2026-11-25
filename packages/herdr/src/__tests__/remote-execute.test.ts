@@ -5,12 +5,12 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { executeRemote, createRemoteExecutor } from '../remote/execute.js';
-import { runExec, runBatch, isExecError } from '../../../context/src/actions/exec.js';
+import { runExec, runBatch, isExecError, type ExecCtx } from '../../../context/src/actions/exec.js';
 import { processToolContent } from '../../../host/src/routing/safety.js';
 import { createHerdrHarness, type HerdrHarness } from './testutil.js';
 import { acceptanceC, createRemoteTestFixture } from './acceptance/c.js';
 import { createExpiredRemoteFixture } from './herdr-expired-fixture.js';
-import type { RemoteExecuteRequest, MachineName, JobHandle, JobId } from '../contracts.js';
+import type { RemoteExecuteRequest, RemoteResult, Owner, MachineName, JobHandle, JobId } from '../contracts.js';
 const harnesses: HerdrHarness[] = [];
 afterEach(async () => {
   vi.unstubAllEnvs();
@@ -27,6 +27,16 @@ async function fixture(mode: 'fake' | 'hc' = 'fake') {
   const ctx = { cwd: h.owner!.cwd, owner: h.owner!, remote: createRemoteExecutor(f.ports) };
   return { h, f, request, ctx };
 }
+function adapterFixture(result: Omit<RemoteResult, 'remote'>, code: string, kind: 'exec' | 'batch' = 'exec', background = false): ExecCtx {
+  const owner = { sessionId: 'adapter-owner', generation: 'adapter-generation', cwd: '/fixture', sessionFile: null, name: null,
+    terminal: { coreId: 'core', terminalId: 'owner', address: 'owner', socket: '/fixture/core.sock', sessionNamespace: 'fixture' } } as Owner;
+  return { cwd: owner.cwd, owner, remote: { execute: async request => {
+    expect(request).toMatchObject({ on: 'remote.invalid', owner, source: { kind: 'code', language: 'javascript', code }, kind, timeout: 1000 });
+    expect(request.background === true).toBe(background);
+    return { ...result, remote: { jobId: 'test-job' as JobId, machine: 'remote.invalid' as MachineName, address: null } };
+  } } };
+}
+
 async function hupTimeout(mode: 'fake' | 'hc'): Promise<void> {
   const { h, f, ctx } = await fixture(mode);
   const result = await runExec({ on: 'remote.invalid', language: 'javascript', code: "process.on('SIGHUP',()=>{console.log('trapped HUP');process.exit(0)}); console.log('ready'); setInterval(()=>{},1000)", timeout: 1000 }, ctx);
@@ -38,8 +48,9 @@ async function hupTimeout(mode: 'fake' | 'hc'): Promise<void> {
 }
 describe('remote result adapter', () => {
   it('reports a foreground timeout and the SIGHUP receipt to the caller', async () => {
-    const { ctx } = await fixture();
-    const result = await runExec({ on: 'remote.invalid', language: 'javascript', code: 'setInterval(() => {}, 1000)', timeout: 1000 }, ctx);
+    const code = 'setInterval(() => {}, 1000)';
+    const ctx = adapterFixture({ stdout: '', stderr: '', exitCode: null, timedOut: true, outcome: 'signal', signal: 'SIGHUP' }, code);
+    const result = await runExec({ on: 'remote.invalid', language: 'javascript', code, timeout: 1000 }, ctx);
     expect(result.text.startsWith('[timed out after 1 s. Spider sent a stop, and the command ended by signal SIGHUP.]')).toBe(true);
     expect(result.isError).toBe(true);
   }, 20000);
@@ -59,28 +70,30 @@ describe('remote result adapter', () => {
     if (reason === 'abort') expect(result.details.remoteAbortInfo).toContain('exited with code 0');
   }, 20000);
   it('reports a trapped timeout with the actual exit zero', async () => {
-    const { ctx } = await fixture();
-    const result = await runExec({ on: 'remote.invalid', language: 'javascript', code: "process.on('SIGHUP', () => process.exit(0)); setInterval(() => {}, 1000)", timeout: 1000 }, ctx);
+    const code = "process.on('SIGHUP', () => process.exit(0)); setInterval(() => {}, 1000)";
+    const ctx = adapterFixture({ stdout: '', stderr: '', exitCode: 0, timedOut: true, outcome: 'exited' }, code);
+    const result = await runExec({ on: 'remote.invalid', language: 'javascript', code, timeout: 1000 }, ctx);
     expect(result.text.startsWith("[timed out after 1 s. Spider sent a stop, and the command's exit status was 0.]")).toBe(true);
     expect(result.isError).toBe(true);
   }, 20000);
   it('labels a timed out batch item and names its timeout', async () => {
-    const { ctx } = await fixture();
-    const result = await runBatch({ on: 'remote.invalid', commands: [{ language: 'javascript', code: 'setInterval(() => {}, 1000)', timeout: 1000 }] }, ctx);
+    const code = 'setInterval(() => {}, 1000)';
+    const ctx = adapterFixture({ stdout: '', stderr: '', exitCode: null, timedOut: true, outcome: 'signal', signal: 'SIGHUP' }, code, 'batch');
+    const result = await runBatch({ on: 'remote.invalid', commands: [{ language: 'javascript', code, timeout: 1000 }] }, ctx);
     expect(result.text).toContain('── [1] javascript · timed out · signal SIGHUP ──');
     expect(result.text).toContain('[timed out after 1 s. Spider sent a stop, and the command ended by signal SIGHUP.]');
     expect(result.isError).toBe(true);
   }, 20000);
   it('labels a timed out batch item that exits zero', async () => {
-    const { ctx } = await fixture();
-    const result = await runBatch({ on: 'remote.invalid', commands: [{ language: 'javascript', code: "process.on('SIGHUP', () => process.exit(0)); setInterval(() => {}, 1000)", timeout: 1000 }] }, ctx);
+    const code = "process.on('SIGHUP', () => process.exit(0)); setInterval(() => {}, 1000)";
+    const ctx = adapterFixture({ stdout: '', stderr: '', exitCode: 0, timedOut: true, outcome: 'exited' }, code, 'batch');
+    const result = await runBatch({ on: 'remote.invalid', commands: [{ language: 'javascript', code, timeout: 1000 }] }, ctx);
     expect(result.text).toContain('── [1] javascript · timed out · exit 0 ──');
     expect(result.text).toContain("[timed out after 1 s. Spider sent a stop, and the command's exit status was 0.]");
     expect(result.isError).toBe(true);
   }, 20000);
   it('reports an indeterminate timeout without claiming the command stopped', async () => {
-    const { ctx } = await fixture();
-    ctx.remote.execute = async () => ({ stdout: '', stderr: '', exitCode: null, timedOut: true, outcome: 'unknown', remote: { jobId: 'test-job' as JobId, machine: 'remote.invalid' as MachineName, address: null } });
+    const ctx = adapterFixture({ stdout: '', stderr: '', exitCode: null, timedOut: true, outcome: 'unknown' }, '0');
     const result = await runExec({ on: 'remote.invalid', language: 'javascript', code: '0', timeout: 1000 }, ctx);
     expect(result.text.startsWith('[timed out after 1 s. Spider tried to stop the command, but its outcome is unknown.]')).toBe(true);
     expect(result.isError).toBe(false);
@@ -116,15 +129,16 @@ describe('remote result adapter', () => {
     expect(result.isError).toBe(false);
   }, 20000);
   it('reports a timeout whose command never started', async () => {
-    const { ctx } = await fixture();
-    ctx.remote.execute = async () => ({ stdout: '', stderr: '', exitCode: null, timedOut: true, outcome: 'spawn-error', remote: { jobId: 'test-job' as JobId, machine: 'remote.invalid' as MachineName, address: null } });
+    const ctx = adapterFixture({ stdout: '', stderr: '', exitCode: null, timedOut: true, outcome: 'spawn-error' }, '0');
     const result = await runExec({ on: 'remote.invalid', language: 'javascript', code: '0', timeout: 1000 }, ctx);
     expect(result.text.startsWith('[timed out after 1 s. Spider tried to stop the command, but it never started (spawn error).]')).toBe(true);
     expect(result.isError).toBe(true);
   }, 20000);
   it('keeps the existing detached wording for a background timeout', async () => {
-    const { ctx } = await fixture();
-    const result = await runExec({ on: 'remote.invalid', language: 'javascript', code: 'setInterval(() => {}, 1000)', timeout: 1000, background: true }, ctx);
+    const code = 'setInterval(() => {}, 1000)', logs = { stdout: '/fixture/stdout.log', stderr: '/fixture/stderr.log' };
+    const ctx = adapterFixture({ stdout: '', stderr: '', exitCode: null, timedOut: true, outcome: 'timeout', backgrounded: true,
+      backgroundJob: { id: 'test-job', dir: '/fixture', manifest: '/fixture/job.json', receipt: '/fixture/receipt.json', logs }, backgroundLogs: logs }, code, 'exec', true);
+    const result = await runExec({ on: 'remote.invalid', language: 'javascript', code, timeout: 1000, background: true }, ctx);
     expect(result.text).toContain('[detached. The command has not finished, so its exit status is unknown.');
     expect(result.text).toContain('Wait for the spider.job_done notice in this session. Do not poll or schedule checks.');
     expect(result.text).not.toContain('Spider stopped the command');

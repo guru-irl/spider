@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
-import { globSync, lstatSync, readFileSync } from 'node:fs';
-import { matchesGlob, resolve } from 'node:path';
+import { globSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { configDefaults } from 'vitest/config';
 import { loadConfigFromFile } from 'vite';
 import { parse } from 'yaml';
@@ -19,19 +19,23 @@ it('declares the intercom workspace dependency consistently', () => {
     expect(lock.packages[dir].version).toBe(range);
   }
 });
-it('keeps native story routing aligned with the policy, including hidden workflow inputs', () => {
-  const policy = JSON.parse(readFileSync('scripts/test-resources.json', 'utf8'));
+it('keeps native stories in full CI instead of extra PR workflows', () => {
   const workflow = parse(readFileSync('.github/workflows/herdr-stories.yml', 'utf8'));
-  const patterns: string[] = workflow.on.pull_request.paths;
-  expect(patterns).toEqual(policy.optional.stories);
-  for (const [file, expected] of [
-    ['.github/workflows/ci.yml', true], ['.node-version', true],
-    ['packages/roam/src/store-prune.ts', true], ['docs/guide/herdr.md', true],
-    ['docs/architecture/README.md', false], ['packages/pstack/skills/how/SKILL.md', false],
-  ] as const) {
-    const selected = patterns.reduce((included, pattern) => matchesGlob(file, pattern.replace(/^!/, '')) ? !pattern.startsWith('!') : included, false);
-    expect(selected, file).toBe(expected);
-  }
+  expect(workflow.on).not.toHaveProperty('pull_request');
+  expect(workflow.on).toHaveProperty('workflow_call');
+  expect(workflow.on).toHaveProperty('workflow_dispatch');
+  const ci = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
+  expect(ci.jobs.stories.uses).toBe('./.github/workflows/herdr-stories.yml');
+  const applies = (event: string, full = false) => Function('github', 'inputs', `return (${ci.jobs.stories.if});`)({ event_name: event }, { force_full: full });
+  expect(applies('pull_request')).toBe(false);
+  expect(applies('push')).toBe(true);
+  expect(applies('workflow_dispatch', true)).toBe(true);
+  expect(ci.jobs.checks.needs).toContain('stories');
+  const prWorkflows = readdirSync('.github/workflows').filter(name => name.endsWith('.yml')).filter(name => {
+    const events = parse(readFileSync(`.github/workflows/${name}`, 'utf8')).on;
+    return 'pull_request' in events || 'pull_request_target' in events;
+  });
+  expect(prWorkflows).toEqual(['ci.yml']);
 });
 const upstream = ['broker/client-liveness.test.ts', 'broker/client.test.ts', 'broker/extension.test.ts',
   'broker/framing.test.ts', 'broker/paths.test.ts', 'broker/runtime-claim.test.ts', 'broker/spawn.test.ts',

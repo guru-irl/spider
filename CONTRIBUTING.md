@@ -47,53 +47,68 @@ npm run build
 
 ### CI shards and timing data
 
-CI uses Node `26.x`. PRs have two test jobs with three fork workers each,
-followed by one typecheck/build job. The last job keeps the required name
-`typecheck · test · build` and fails if either shard fails. Conditional Chrome
-and packed Herdr acceptance steps share that runner. Headless stories have
-separate path-filtered jobs.
+Build and test jobs use Node `26.x`. PR CI is a fast, scoped signal, not the
+complete merge gate. Two test runners with three fork workers each start beside
+one typecheck/build runner. A short, install-free aggregate keeps the required
+name `typecheck · test · build`. It rejects failed, cancelled, or unexpectedly
+skipped jobs and requires both test runners to use identical manifests.
 
-PR selection is enabled by default. Both PR jobs compute the same manifest and
-execute only scoped selections. A full fallback skips their test execution and
-runs the existing twelve-shard suite instead. Both selector jobs must produce
-identical selection hashes. The protected aggregate accepts either successful
-path and rejects failed or cancelled selected jobs.
+Only `ci.yml` runs automatically on PRs. PR runs never start the twelve-shard
+matrix, Chrome, Herdr confidence utilities, packed acceptance, or headless
+stories. Selector probes, historical replays, and measurement cohorts also stay
+off the PR critical path.
 
-Main still runs all root tests on twelve shards with two workers each, plus
-separate Chrome and Herdr acceptance jobs. `npm ci` builds each checkout through
-`prepare`. There is no separate fast-test roster: new root tests join by default.
-
-Before merging a scoped PR, dispatch the full CI workflow on its head branch:
+Before **every merge**, dispatch the full CI workflow on the PR head branch:
 
 ```bash
 gh workflow run ci.yml --ref <head-branch> -f force_full=true
 ```
 
 Wait for that run's `typecheck · test · build` check to pass on the exact PR head
-commit. Repeat the full run if the head changes. The dispatch runs twelve test
-shards, all Chrome partitions, and packed acceptance. Non-PR events always keep
-the full route, even when `force_full` is false.
+commit. Repeat the full run if the head changes. Merge tooling requires this
+successful `ci.yml` dispatch on the exact head, not just a successful PR check.
+It covers every deferred test, twelve complete test shards, all Chrome
+partitions, Herdr confidence utilities, packed acceptance, and the default
+headless story set.
+
+Pushes to `main` and reusable CI calls also take the full route. Non-PR CI
+dispatches remain full even when `force_full` is false. The root suite keeps
+twelve shards with two workers each. `npm ci` builds each checkout through
+`prepare`; new root tests join the full inventory automatically.
+
+Full CI calls `herdr-stories.yml` as a reusable workflow and requires its result
+in the aggregate. That workflow no longer has a PR trigger. Its standalone
+manual trigger still supports selected stories and a shorter deadline.
 
 `scripts/select-tests.mjs` compares the merge base with the tested checkout SHA.
 Vitest resolves import dependencies, including build entries used as virtual
 specifications. `scripts/test-resources.json` adds filesystem readers, bundle
 consumers, source inventories, and optional-suite inputs. Unknown paths,
-deletes, missing bases, and graph errors select the full inventory. Selection
-never collects test modules or starts test workers.
+deletes, missing bases, and graph errors make the whole inventory a candidate
+set. PRs still cut that set to the budget; they never hand off to the full
+matrix. Selection never collects test modules or starts test workers.
 
-In scoped mode, tests with recorded durations of at most five seconds and tests
-without recorded durations run on the PR. A selected slower test also runs if the
-test itself changed, it directly imports a changed module with a static import,
-or it shares a directory with changed production source. Type-only imports count;
-transitive and dynamic imports do not. Other selected slow tests wait for the full
-pre-merge run. The five-minute scheduling budget still sends large selections to
-the full matrix.
+The PR scheduling budget is 65 seconds per runner, leaving setup and aggregate
+headroom inside the two-minute target. It uses recorded file durations plus a
+700 ms per-file import allowance from CI observations. Tests fill that budget
+in this order:
+
+1. Changed test files and tests that directly import a changed file with a static import.
+2. Tests beside changed production source, including its `__tests__` directory.
+3. Other selected importers and resource consumers.
+
+Type-only imports count as direct imports. Dynamic and transitive imports do
+not. Paths break ties within each priority. A file that cannot fit waits for
+the full run, and smaller later files can use the space left. Every deferred
+file appears in each runner's step summary. Chrome and acceptance selection
+outputs are summary notes, not PR suite triggers.
 
 Each manifest records sorted test paths, selection reasons, base/tested SHAs,
 and hashes of the selector, resource policy, inventory, and timing table.
-Its `deferred` list records each deferred file, recorded duration, deferral rule,
-and original selection reasons. Deferred entries are covered by the manifest
-checksum but are not passed to the scoped test runner.
+Its `budget` records the limit, import allowance, worker loads, and candidate
+mode. Its `deferred` list records each deferred file, duration estimate, deferral
+rule, and original selection reasons. Deferred entries are covered by the
+manifest checksum but are not passed to the scoped test runner.
 `scripts/run-selected-tests.mjs` validates it and passes the exact file list to
 Vitest without a second changed-file filter. Empty partitions skip explicitly.
 
@@ -106,16 +121,14 @@ node scripts/list-test-shards.mjs 1/2 --manifest selection.json
 node scripts/test-shard-budget.mjs --manifest selection.json
 ```
 
-The budget reports aggregate file time and a six-worker scheduling estimate,
-including a separate estimate without measured files over five seconds. It does
-not include installation, selection, or process startup.
+The budget reports aggregate measured file time and a six-worker scheduling
+estimate that includes the manifest's import allowance. Installation, selection,
+and process startup are additional. Vitest's reported import and test totals
+sum worker time; neither is wall time. Fork isolation stays enabled because
+tests use native SQLite, module mocks, and process-global state.
 
-On selection-policy changes, a successful test shard also runs a measurement-only
-cohort through `scripts/measure-test-selection.mjs`. It omits files with recorded
-weights over five seconds and retains unmeasured files. The `test-measurement-*`
-artifacts record the cohort, excluded files, status, and elapsed time. This warm
-follow-up run never replaces the required test manifest. Failed measurements are
-not timing samples.
+The unbudgeted selector and `scripts/measure-test-selection.mjs` remain available
+for separate selector investigations. They do not add work to PR CI.
 
 To refresh durations, download the `test-results-*` artifacts from a completed
 CI run:

@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createIntercomBridge, type IntercomBridge } from "../intercom-bridge";
 import { provisionIntercomEnrollment, revokeIntercomPair } from "../intercom-enrollment";
@@ -89,6 +89,149 @@ it.each(["pending", "active"] as const)("hub revoke closes a bound %s pair whose
   const after = f.calls.length;
   expect(await revokeIntercomPair("pair-1", ports)).toMatchObject({ code: 0, value: { cleanupReason: null } });
   expect(f.calls).toHaveLength(after);
+}, 10_000);
+
+async function earlyPendingPair() {
+  const f = await scenario();
+  expect(await provisionIntercomEnrollment(f.request, { ...f.enrollment, async connect(pair, pins) {
+    await f.enrollment.connect(pair, pins);
+    return "peer-port-unreachable";
+  } })).toMatchObject({ code: 3, reason: "intercom-peer-port-unreachable" });
+  for (const root of [f.root, f.source.globalRoot, f.target.globalRoot]) {
+    const record = await createIntercomRegistry(root).get("pair-1");
+    expect(record?.state).toBe("pending");
+    expect(record?.resources?.publicKey).toBeUndefined();
+  }
+  const ports = () => createProductionIntercomRevocationPorts({ root: f.root, localMachineId: HUB, hub: true, transport: f.transport,
+    localCore: async () => { throw new Error("not an endpoint"); }, fenceLocal: async () => { throw new Error("not an endpoint"); },
+    cleanupLocal: async () => { throw new Error("not an endpoint"); }, notify: async () => {} });
+  const removeUnit = async (side: "host" | "connect") => {
+    const machine = side === "host" ? f.target : f.source, local = f.locals.get(machine.machineId)!;
+    const name = `spider-pair-pair-1-${side}.service`, key = `${machine.machineId}/${name}`, unit = f.units.get(key)!;
+    await local.run(["/fixture/systemctl", "--user", "stop", name], { timeoutMs: 1000, maxBytes: 1024 });
+    unlinkSync(unit.file); f.units.delete(key);
+  };
+  const complete = async () => {
+    const fence = f.queues.get(A)!.pairFence(B)!;
+    expect(f.queues.get(B)!.pairFence(A)?.fenceId).toBe(fence.fenceId);
+    for (const root of [f.root, f.source.globalRoot, f.target.globalRoot]) {
+      expect(await createIntercomRegistry(root).get("pair-1")).toMatchObject({ state: "revoked", fenceId: fence.fenceId, cleanupReason: null });
+    }
+    for (const machine of [f.source, f.target]) {
+      expect((await createIntercomRegistry(machine.globalRoot).get("pair-1"))?.unit?.closedFenceId).toBe(fence.fenceId);
+    }
+    expect(f.machines()).toEqual([]);
+    expect(f.calls.some(call => call.includes("keygen"))).toBe(false);
+    const count = f.calls.length;
+    expect(await revokeIntercomPair("pair-1", ports())).toMatchObject({ code: 0, value: { cleanupReason: null } });
+    expect(f.calls).toHaveLength(count);
+  };
+  return { ...f, ports, removeUnit, complete };
+}
+
+it.each([
+  { name: "connect", sides: ["connect"] },
+  { name: "host", sides: ["host"] },
+  { name: "both", sides: ["connect", "host"] },
+] as const)("revoke before key generation closes proved-absent units: $name", async ({ sides }) => {
+  const f = await earlyPendingPair();
+  for (const side of sides) await f.removeUnit(side);
+  expect(await revokeIntercomPair("pair-1", f.ports())).toMatchObject({ code: 0, value: { cleanupReason: null } });
+  await f.complete();
+}, 10_000);
+
+it("the same revoke completes an early pending pair after an earlier host-only closure", async () => {
+  const f = await earlyPendingPair();
+  await f.removeUnit("connect"); await f.removeUnit("host");
+  expect(await revokeIntercomPair("pair-1", { ...f.ports(), removeAuthorizedKey: async () => { throw new Error("unavailable"); } }))
+    .toMatchObject({ code: 3, reason: "intercom-revocation-unconfirmed" });
+  const source = await createIntercomRegistry(f.source.globalRoot).get("pair-1");
+  const target = await createIntercomRegistry(f.target.globalRoot).get("pair-1");
+  expect(source?.unit?.closedFenceId).toBeNull();
+  expect(target?.unit?.closedFenceId).toBe(source?.fenceId);
+  expect(await revokeIntercomPair("pair-1", f.ports())).toMatchObject({ code: 0, value: { cleanupReason: null } });
+  await f.complete();
+}, 10_000);
+
+it.each(["host", "connect"] as const)("early pending revoke retains incomplete %s closure evidence", async side => {
+  const f = await earlyPendingPair(), machine = side === "host" ? f.target : f.source, local = f.locals.get(machine.machineId)!;
+  const registry = createIntercomRegistry(machine.globalRoot), saved = (await registry.get("pair-1"))!.unit!;
+  const name = `spider-pair-pair-1-${side}.service`, key = `${machine.machineId}/${name}`, cached = f.units.get(key)!;
+  await f.removeUnit("host"); await f.removeUnit("connect");
+  const process = local.process, cgroup = local.cgroup;
+  for (const failure of ["cached unit", "process unknown", "cgroup unknown", "main identity absent"] as const) {
+    if (failure === "cached unit") f.units.set(key, cached);
+    if (failure === "process unknown") local.process = () => ({ kind: "unknown" });
+    if (failure === "cgroup unknown") local.cgroup = () => { throw new Error("unavailable"); };
+    if (failure === "main identity absent") await registry.recordUnit("pair-1", { ...saved, main: null });
+    const result = await revokeIntercomPair("pair-1", f.ports());
+    expect(result.repairCommand, failure).toBe("spider roam intercom revoke pair-1");
+    const record = await registry.get("pair-1");
+    expect(record?.cleanupReason, failure).toBeTruthy();
+    expect(record?.unit?.closedFenceId, failure).toBeNull();
+    f.units.delete(key); local.process = process; local.cgroup = cgroup;
+    await registry.recordUnit("pair-1", saved);
+  }
+  expect(await revokeIntercomPair("pair-1", f.ports())).toMatchObject({ code: 0, value: { cleanupReason: null } });
+  await f.complete();
+}, 10_000);
+
+it.each(["pair authorization", "unsafe authorization file"] as const)("pre-key revoke refuses %s rather than assuming key absence", async failure => {
+  const f = await earlyPendingPair(), local = f.locals.get(B)!;
+  await f.removeUnit("host"); await f.removeUnit("connect");
+  const directory = join(local.home, ".ssh"), file = join(directory, "authorized_keys");
+  mkdirSync(directory, { mode: 0o700 });
+  const contents = failure === "pair authorization" ? `${f.publicKey} spider-intercom:pair-1 retained\n` : `${f.publicKey} unrelated\n`;
+  writeFileSync(file, contents, { mode: failure === "pair authorization" ? 0o600 : 0o644 });
+  expect(await revokeIntercomPair("pair-1", f.ports())).toMatchObject({ code: 3, reason: "intercom-revocation-unconfirmed" });
+  expect(readFileSync(file, "utf8")).toBe(contents);
+  expect((await createIntercomRegistry(f.source.globalRoot).get("pair-1"))?.unit?.closedFenceId).toBeNull();
+  for (const root of [f.root, f.source.globalRoot, f.target.globalRoot]) {
+    expect((await createIntercomRegistry(root).get("pair-1"))?.cleanupReason).toBeTruthy();
+  }
+}, 10_000);
+
+it.each(["read-public", "remove-authorized", "inspect-cleanup"] as const)("pre-key revoke requires the target's %s proof", async action => {
+  const f = await earlyPendingPair(), exec = f.transport.transport.exec;
+  await f.removeUnit("host"); await f.removeUnit("connect");
+  f.transport.transport.exec = async (machine, argv, options) => {
+    const input = JSON.parse(options.stdin!.toString());
+    if (argv[2] === "cleanup-local" && input.action === action) {
+      return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-cleanup", ok: true, machineId: B, value: {} }));
+    }
+    return exec(machine, argv, options);
+  };
+  expect(await revokeIntercomPair("pair-1", f.ports())).toMatchObject({ code: 3, reason: "intercom-revocation-unconfirmed" });
+  expect((await createIntercomRegistry(f.root).get("pair-1"))?.cleanupReason).toBe("intercom-revocation-unconfirmed");
+  f.transport.transport.exec = exec;
+  expect(await revokeIntercomPair("pair-1", f.ports())).toMatchObject({ code: 0, value: { cleanupReason: null } });
+  await f.complete();
+}, 10_000);
+
+it.each(["inspect-terminals", "inspect-cleanup", "finish-revocation"] as const)("pre-key revoke rechecks authorization absence at %s", async action => {
+  const f = await earlyPendingPair(), exec = f.transport.transport.exec;
+  await f.removeUnit("host"); await f.removeUnit("connect");
+  const route = (await createIntercomRegistry(f.root).get("pair-1"))!.resources!.route;
+  await f.locals.get(A)!.run(["/fixture/hc", "machine", "add", "--via", route.via, "--name", "spider-pair-pair-1", "--session", "default", "--json"], { timeoutMs: 1000, maxBytes: 1024 });
+  expect(f.machines()).toHaveLength(1);
+  const directory = join(f.locals.get(B)!.home, ".ssh"), file = join(directory, "authorized_keys");
+  const retained = `${f.publicKey} spider-intercom:pair-1 retained\n`;
+  f.transport.transport.exec = async (machine, argv, options) => {
+    const input = JSON.parse(options.stdin!.toString());
+    if (argv[2] === "cleanup-local" && input.action === action && machine.machineId === B) {
+      mkdirSync(directory, { mode: 0o700, recursive: true }); writeFileSync(file, retained, { mode: 0o600 });
+    }
+    return exec(machine, argv, options);
+  };
+  expect((await revokeIntercomPair("pair-1", f.ports())).repairCommand).toBe("spider roam intercom revoke pair-1");
+  expect(readFileSync(file, "utf8")).toBe(retained);
+  expect(f.machines()).toHaveLength(action === "inspect-terminals" ? 1 : 0);
+  for (const root of [f.root, f.target.globalRoot]) {
+    expect((await createIntercomRegistry(root).get("pair-1"))?.cleanupReason).toBeTruthy();
+  }
+  f.transport.transport.exec = exec; writeFileSync(file, "", { mode: 0o600 });
+  expect(await revokeIntercomPair("pair-1", f.ports())).toMatchObject({ code: 0, value: { cleanupReason: null } });
+  await f.complete();
 }, 10_000);
 
 it.each(["empty", "finished"])("plain revoke with %s terminal inventory closes a live pair and permits fresh enrollment", async inventory => {

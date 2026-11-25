@@ -74,6 +74,48 @@ it("authorizes and removes only the exact restricted pair key while preserving o
   expect(readFileSync(file, "utf8")).toBe(unrelated); expect(lstatSync(file).mode & 0o777).toBe(0o600);
 }, 5000);
 
+it.each(["directory absent", "file absent", "unrelated key"] as const)("proves an unrecorded pair key absent with %s", async state => {
+  const f = fixture(), mod = await api(), directory = join(f.home, ".ssh"), file = join(directory, "authorized_keys");
+  const unrelated = `ssh-ed25519 ${key(3).base64} spider-intercom:pair-10\n`;
+  if (state !== "directory absent") mkdirSync(directory, { mode: 0o700 });
+  if (state === "unrelated key") writeFileSync(file, unrelated, { mode: 0o600 });
+  expect(mod.pairKeyAbsent(f.home, f.pair, null)).toBe(true);
+  expect(mod.pairKeyAbsent(f.home, f.pair, null)).toBe(true);
+  expect(existsSync(directory)).toBe(state !== "directory absent");
+  expect(existsSync(file)).toBe(state === "unrelated key");
+  if (state === "unrelated key") expect(readFileSync(file, "utf8")).toBe(unrelated);
+});
+
+it("validates pair identity before proving an unrecorded key absent", async () => {
+  const f = fixture(), mod = await api();
+  expect(() => mod.pairKeyAbsent(f.home, { ...f.pair, pairId: "../other" }, null)).toThrow("invalid-intercom-pair");
+});
+
+it.each(["restricted", "unexpected", "trailing whitespace", "extra comment"] as const)("refuses an unrecorded pair key when a %s pair authorization remains", async shape => {
+  const f = fixture(), mod = await api(), directory = join(f.home, ".ssh"), file = join(directory, "authorized_keys");
+  mkdirSync(directory, { mode: 0o700 });
+  const pub = `ssh-ed25519 ${key(4).base64}`;
+  const suffix = shape === "trailing whitespace" ? " \t" : shape === "extra comment" ? " retained" : "";
+  const contents = `${shape === "restricted" ? mod.authorizedPairLine(f.pair, pub) : `${pub} spider-intercom:pair-1${suffix}`}\n`;
+  writeFileSync(file, contents, { mode: 0o600 });
+  expect(() => mod.pairKeyAbsent(f.home, f.pair, null)).toThrow("intercom-authorized-key-conflict");
+  expect(readFileSync(file, "utf8")).toBe(contents);
+});
+
+it.each(["directory mode", "file mode", "symlink"] as const)("refuses unrecorded key absence with unsafe %s", async failure => {
+  const f = fixture(), mod = await api(), directory = join(f.home, ".ssh"), file = join(directory, "authorized_keys");
+  mkdirSync(directory, { mode: 0o700 });
+  const contents = `ssh-ed25519 ${key(3).base64} other\n`;
+  if (failure === "symlink") {
+    const outside = join(f.root, "other-keys"); writeFileSync(outside, contents, { mode: 0o600 }); symlinkSync(outside, file);
+  } else {
+    writeFileSync(file, contents, { mode: 0o600 });
+    chmodSync(failure === "directory mode" ? directory : file, failure === "directory mode" ? 0o755 : 0o644);
+  }
+  expect(() => mod.pairKeyAbsent(f.home, f.pair, null)).toThrow();
+  expect(readFileSync(file, "utf8")).toBe(contents);
+});
+
 it("refuses symlinked or unsafe key destinations without modifying their targets", async () => {
   const f = fixture(), mod = await api(); expect(mod.authorizePairKey).toBeTypeOf("function");
   const dir = join(f.home, ".ssh"), outside = join(f.root, "other-keys"); mkdirSync(dir, { mode: 0o700 });

@@ -98,6 +98,28 @@ describe("relocate", () => {
     expect(s.effects.slice(before)).toEqual(["locate-destination", "start-destination", "confirm-destination"]);
   });
 
+  it("stopped source can move and stopped local copy can resume", async () => {
+    const remote = state(); remote.home = { ...running(), state: "stopped" }; remote.processes.clear();
+    expect(await relocate(request, ports(remote))).toMatchObject({ ok: true, value: {
+      disposition: "relocated", home: { machineId: destination, epoch: 3, state: "running" },
+    } });
+    expect(remote.snapshots.size).toBe(1); expect(remote.segments.size).toBe(1);
+    const local = state(); local.home = { ...running(), state: "stopped" }; local.processes.clear();
+    expect(await relocate({ sessionId, destinationMachine: source }, ports(local))).toMatchObject({ ok: true, value: {
+      disposition: "already-home", moveId: null, home: { machineId: source, epoch: 2, state: "running" },
+    } });
+    expect(local.effects).toEqual(["locate-source", "activate-source", "cas-running", "publish-source-running", "start-source", "confirm-source"]);
+    expect(local.ids).toBe(0); expect(local.snapshots.size).toBe(0); expect(local.segments.size).toBe(0);
+    expect(local.processes).toEqual(new Set([source]));
+  });
+
+  it("missing stopped local copy leaves home stopped", async () => {
+    const s = state(); s.home = { ...running(), state: "stopped" }; s.processes.clear();
+    const home = structuredClone(s.home); s.refuse = { effect: "locate-source", code: "destination-copy-missing" };
+    expect(await relocate({ sessionId, destinationMachine: source }, ports(s))).toMatchObject({ ok: false, refusal: { code: "destination-copy-missing" } });
+    expect(s.home).toEqual(home); expect(s.effects).toEqual([]); expect(s.ids).toBe(0);
+  });
+
   it("capture waits for source lock freedom", async () => {
     const s = state();
     const barrier = deferred();

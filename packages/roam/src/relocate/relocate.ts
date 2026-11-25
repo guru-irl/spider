@@ -70,14 +70,22 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
           return { ok: true, value: result };
         }
       }
-      if (home.state === "running" && home.machineId === request.destinationMachine) {
+      if (home.state !== "moving" && home.machineId === request.destinationMachine) {
         moveId = home.moveId;
         const placement = value(await ports.locate(home.machineId, request.sessionId));
+        const resumed: RunningHome = { ...home, state: "running",
+          epoch: home.state === "stopped" ? home.epoch + 1 : home.epoch };
+        if (home.state === "stopped") {
+          step = "commit-home";
+          value(await ports.activate(resumed, placement));
+          await cas(home, resumed);
+          value(await ports.publishHome(resumed, resumed.machineId));
+        }
         step = "start-destination";
-        value(await ports.start(home, placement));
+        value(await ports.start(resumed, placement));
         step = "confirm";
-        const confirmed = value(await ports.confirm(home, placement));
-        return { ok: true, value: { moveId, home, placement, terminal: confirmed.terminal, disposition: "already-home" } };
+        const confirmed = value(await ports.confirm(resumed, placement));
+        return { ok: true, value: { moveId, home: resumed, placement, terminal: confirmed.terminal, disposition: "already-home" } };
       }
       let checkpoint: RelocateCheckpoint;
       if (home.state === "moving") {

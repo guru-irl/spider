@@ -585,11 +585,9 @@ async function transferFixture(homeless = false, sessionOnly = false) {
   f.global.db.prepare("INSERT OR IGNORE INTO roam_repo_maps(repo_key,path) VALUES(?,?)").run(f.check.repoKey, f.repo);
   f.global.db.prepare("INSERT OR IGNORE INTO roam_workspace_maps(repo_key,workspace_id,path,snapshot_json) VALUES(?,?,?,NULL)").run(f.check.repoKey, f.check.workspaceId, f.repo);
   f.config.peers[0].globalRoot = remoteRoot;
-  mkdirSync(join(remoteRoot, "roam"), { recursive: true, mode: 0o700 });
-  writeFileSync(join(remoteRoot, "roam", "active-release.json"), JSON.stringify(join(f.root, "release")), { mode: 0o600 });
   const remoteJournal = openFreezeJournal(join(remoteRoot, "journal.db"));
   // Task 5 preflights the destination's own provisioned supervisor release.
-  mkdirSync(join(remoteRoot, "roam"), { mode: 0o700 });
+  mkdirSync(join(remoteRoot, "roam"), { recursive: true, mode: 0o700 });
   writeFileSync(join(remoteRoot, "roam", "active-release.json"), JSON.stringify(join(remoteRoot, "release")), { mode: 0o600 });
   const config = { ...f.config, machineId: BOX, role: "box" as const };
   const leases = createSessionLeases(join(remoteRoot, "herdr")), inventory = { leases, presence: createProcessPresence(leases.root), processes: async () => [], probe: async () => ({ kind: "live" as const, startIdentity: "fixture-lock" }) };

@@ -52,7 +52,9 @@ export function safeMoveFailureStep(value: unknown): MoveFailureStep | undefined
   return typeof value === "string" && (MOVE_FAILURE_STEPS as readonly string[]).includes(value) ? value as MoveFailureStep : undefined;
 }
 
-export function moveOperationStep(kind: string): MoveFailureStep {
+export function moveOperationStep(kind: string, stage?: unknown): MoveFailureStep {
+  if (["move-prerequisites", "move-export", "move-import"].includes(kind) && (stage === "pre" || stage === "final"))
+    return stage === "pre" ? "remote-prepare" : "transfer";
   const steps: Readonly<Record<string, MoveFailureStep>> = {
     "move-workspace-map": "workspace-plan", "session-inspect": "source-inspect", "move-diagnostics": "destination-diagnostics",
     "move-seed": "seed", "move-prerequisites": "remote-prepare", "session-freeze": "freeze",

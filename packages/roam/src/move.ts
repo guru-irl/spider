@@ -253,7 +253,8 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
     if (!cleanupRetry || !ports.journal.read(id).some(row => row.action === "move-action-start" && row.result.action === name))
       ports.journal.record(id, "move-action-start", { action: name });
     let value: T;
-    try { value = await (name === "transfer" ? withPrivateTransferDiagnostic(ports.journal, id, "result", effect) : effect()); }
+    try { value = await (name === "prestage" || name === "transfer"
+      ? withPrivateTransferDiagnostic(ports.journal, id, name === "prestage" ? "pre" : "final", "result", effect) : effect()); }
     catch (error) {
       adapterFailure = moveFailureDetail(error, name === "check" ? "preflight" : name === "prestage" ? "remote-prepare" : name);
       throw error;

@@ -541,8 +541,11 @@ async function dispatchAgentOperation(operation: Operation, ports: AgentPorts): 
       if (!ports.move) return outcome(1, "adapter-unbound:moveControl", id);
       try { return await ports.move(operation); }
       catch (error) {
-        const cause = moveFailureCause(error);
-        return { ...outcome(1, cause, id), causeCode: cause, failure: moveFailureDetail(error, moveOperationStep(operation.kind)),
+        const cause = moveFailureCause(error), exported = operation.args.exported;
+        const stage = operation.kind === "move-import"
+          ? plainObject(exported) && plainObject(exported.workspace) ? exported.workspace.stage : undefined
+          : operation.args.stage;
+        return { ...outcome(1, cause, id), causeCode: cause, failure: moveFailureDetail(error, moveOperationStep(operation.kind, stage)),
           epoch: operation.expectedEpoch, repairCommand: "spider roam doctor" };
       }
     }

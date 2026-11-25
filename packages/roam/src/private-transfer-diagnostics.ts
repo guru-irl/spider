@@ -6,10 +6,11 @@ import type { Journal } from "./contracts";
 const phases = ["prerequisites", "export", "pull", "relay", "send", "import", "result",
   "participant-prerequisites", "participant-export", "participant-import"] as const;
 const codeSources = ["code", "refusal", "message-prefix", "untyped"] as const;
+export type TransferDiagnosticStage = "pre" | "final";
 export type TransferDiagnosticPhase = typeof phases[number];
 type CodeSource = typeof codeSources[number];
 export interface PrivateTransferDiagnostic {
-  phase: TransferDiagnosticPhase; code: string; codeSource: CodeSource; fingerprint?: string;
+  stage: TransferDiagnosticStage; phase: TransferDiagnosticPhase; code: string; codeSource: CodeSource; fingerprint?: string;
 }
 
 function codeToken(value: unknown): string | undefined {
@@ -21,15 +22,15 @@ export function parsePrivateTransferDiagnostic(value: unknown): PrivateTransferD
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const row = value as Record<string, unknown>;
   const phase = phases.find(value => value === row.phase), codeSource = codeSources.find(value => value === row.codeSource);
-  if (!phase || !codeSource || typeof row.code !== "string" || codeToken(row.code) !== row.code ||
+  if ((row.stage !== "pre" && row.stage !== "final") || !phase || !codeSource || typeof row.code !== "string" || codeToken(row.code) !== row.code ||
       row.fingerprint !== undefined && (typeof row.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(row.fingerprint))) return undefined;
-  return { phase, code: row.code, codeSource,
+  return { stage: row.stage, phase, code: row.code, codeSource,
     ...(typeof row.fingerprint === "string" ? { fingerprint: row.fingerprint } : {}) };
 }
 
 /** Private evidence only. Never copy these rows into outcomes or replicated stores. */
 export async function withPrivateTransferDiagnostic<T>(journal: Journal, operationId: string,
-  phase: TransferDiagnosticPhase, effect: () => T | Promise<T>): Promise<T> {
+  stage: TransferDiagnosticStage, phase: TransferDiagnosticPhase, effect: () => T | Promise<T>): Promise<T> {
   try { return await effect(); }
   catch (error) {
     try {
@@ -39,7 +40,7 @@ export async function withPrivateTransferDiagnostic<T>(journal: Journal, operati
       if (!code) { code = codeToken(row.refusal?.code); codeSource = "refusal"; }
       if (!code) { code = message?.match(/^([a-z][a-z0-9-]{0,63})(?::|$)/)?.[1]; codeSource = "message-prefix"; }
       if (!code) { code = "untyped-error"; codeSource = "untyped"; }
-      journal.record(operationId, "move-transfer-diagnostic", { phase, code, codeSource,
+      journal.record(operationId, "move-transfer-diagnostic", { stage, phase, code, codeSource,
         ...(message === undefined ? {} : { fingerprint: createHash("sha256").update(message).digest("hex") }) });
     } catch { /* Missing diagnostic evidence must not change the move failure. */ }
     throw error;

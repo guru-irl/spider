@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 // A dropped graph result, resource edge, or invalid-input fallback must change the manifest.
@@ -168,6 +168,20 @@ describe('change-scoped test manifests', () => {
     expect(result.mode).toBe('full'); expect(result.files).toEqual([a, b, c, guard].sort());
     expect(result.fallback).toMatch(/policy/);
     expect(result.optional).toEqual({ chrome: true, acceptance: true, stories: true });
+  });
+
+  it('exposes installed package commands and the ordinary Vitest environment to test subprocesses', async () => {
+    const f = fixture(); const pi = join(f.root, 'node_modules/.bin/pi');
+    mkdirSync(dirname(pi), { recursive: true }); writeFileSync(pi, 'fixture executable; never launched');
+    const { chmodSync } = await import('node:fs'); chmodSync(pi, 0o755);
+    const runner = await import(/* @vite-ignore */ resolve('scripts/run-selected-tests.mjs'));
+    const input = { PATH: '' };
+    const env = runner.executionEnvironment ? runner.executionEnvironment(f.root, input) : input;
+    const { resolveParticipantPi } = await import('@spider/roam/launcher');
+    expect(resolveParticipantPi(env)).toBe(pi);
+    expect(env).toMatchObject({ TEST: 'true', VITEST: 'true', NODE_ENV: 'test' });
+    expect(input).toEqual({ PATH: '' });
+    expect(runner.executionEnvironment(f.root, { NODE_ENV: 'custom' }).NODE_ENV).toBe('custom');
   });
 
   it('measures a separate cohort without measured slow files while retaining unknown timings', async () => {

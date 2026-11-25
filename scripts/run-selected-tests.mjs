@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { delimiter, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { testInventory, validateManifest } from './select-tests.mjs';
 import { partitionFiles } from './test-shards.ts';
 
 const durations = JSON.parse(readFileSync(new URL('./test-durations.json', import.meta.url), 'utf8'));
+
+export function executionEnvironment(root = process.cwd(), env = process.env) {
+  return { ...env, PATH: `${resolve(root, 'node_modules/.bin')}${delimiter}${env.PATH ?? ''}`,
+    TEST: 'true', VITEST: 'true', NODE_ENV: env.NODE_ENV ?? 'test' };
+}
 
 export function executionPlan(manifest, { root = process.cwd(), shard, shadow = false } = {}) {
   const match = /^(\d+)\/(\d+)$/.exec(shard ?? '');
@@ -25,6 +30,7 @@ async function main() {
   const manifest = JSON.parse(readFileSync(filename, 'utf8'));
   const plan = executionPlan(manifest, { shard: option('--shard'), shadow: args.includes('--shadow') });
   if (plan.empty) { console.log(`Validated empty partition ${plan.shard}; no tests to run.`); return; }
+  Object.assign(process.env, executionEnvironment());
   const { createVitest } = await import('vitest/node');
   const ctx = await createVitest('test', {
     run: true, watch: false, include: plan.files, shard: plan.shard,

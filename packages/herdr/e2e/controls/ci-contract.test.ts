@@ -240,36 +240,36 @@ describe('CI acceptance contract', () => {
     }
   });
 
-  it('keeps the exact aggregate name once and requires success from every parallel job, even when skipped or cancelled', () => {
-    const ci = workflow('ci');
+  it('keeps the exact aggregate name once and rejects failed or cancelled selected jobs', () => {
+    const ci = workflow('ci'), checks = ci.jobs.checks!;
     expect(source('ci').match(/^    name: typecheck · test · build$/gm)).toHaveLength(1);
-    expect(ci.jobs.required!.name).toBe('typecheck · test · build');
-    const names = Object.keys(ci.jobs).filter(name => name !== 'required').sort();
-    expect(names).toEqual(['checks', 'chrome', 'herdr-acceptance', 'test']);
-    expect([...(ci.jobs.required!.needs! as string[])].sort()).toEqual(names);
-    expect(ci.jobs.required!.if).toBe('always()');
-    const gate = ci.jobs.required!.steps[0]!;
-    expect(gate.env?.NEEDS_JSON).toBe('${{ toJSON(needs) }}');
-    const needs = Object.fromEntries(names.map(name => [name, { result: 'success' }]));
-    const run = (value: typeof needs): number | null => spawnSync('bash', ['-c', gate.run!], { env: { ...process.env, NEEDS_JSON: JSON.stringify(value) } }).status;
-    expect(run(needs)).toBe(0);
-    for (const name of names) for (const result of ['failure', 'cancelled', 'skipped']) {
-      expect(run({ ...needs, [name]: { result } })).not.toBe(0);
+    expect(checks.name).toBe('typecheck · test · build');
+    expect([...(checks.needs as string[])].sort()).toEqual(['chrome', 'herdr-acceptance', 'pr-test', 'test']);
+    expect(checks.if).toBe('always()');
+    const gate = step(checks, 'Require every applicable job to pass');
+    const run = (needs: unknown, event = 'pull_request') => spawnSync('bash', ['-c', gate.run!], { env: { ...process.env, EVENT: event, NEEDS_JSON: JSON.stringify(needs) } }).status;
+    const skipped = { result: 'skipped' }, success = { result: 'success' };
+    const scoped = { 'pr-test': { ...success, outputs: { mode: 'scoped' } }, test: skipped, chrome: skipped, 'herdr-acceptance': skipped };
+    const full = { ...scoped, 'pr-test': { ...success, outputs: { mode: 'full' } }, test: success };
+    expect(run(scoped)).toBe(0); expect(run(full)).toBe(0);
+    for (const result of ['failure', 'cancelled', 'skipped']) {
+      expect(run({ ...scoped, 'pr-test': { result } })).not.toBe(0);
+      expect(run({ ...full, test: { result } })).not.toBe(0);
     }
-    expect(ci.concurrency).toEqual({ group: 'ci-${{ github.workflow }}-${{ github.ref }}', 'cancel-in-progress': "${{ github.event_name == 'pull_request' }}" });
+    const main = { 'pr-test': skipped, test: success, chrome: success, 'herdr-acceptance': success };
+    expect(run(main, 'push')).toBe(0);
+    for (const key of ['test', 'chrome', 'herdr-acceptance']) for (const result of ['failure', 'cancelled', 'skipped']) expect(run({ ...main, [key]: { result } }, 'push')).not.toBe(0);
+    expect(step(ci.jobs['pr-test']!, 'Test selected shard').if).toContain("mode != 'full'");
+    expect(ci.jobs.test!.if).toContain("mode == 'full'");
   });
 
-  it('uses only Node 26 with npm caches and gives every CI job a ten-minute budget', () => {
-    for (const name of ['ci', 'release', 'publish']) {
-      for (const job of Object.values(workflow(name).jobs)) {
-        const setup = (job.steps ?? []).filter(item => item.uses === 'actions/setup-node@v4');
-        for (const node of setup) {
-          const versions = node.with!['node-version'] === '${{ matrix.node }}' ? job.strategy!.matrix.node : [node.with!['node-version']];
-          expect(versions).toEqual(['26.x']);
-          expect(node.with!.cache).toBe('npm');
-        }
-        if (name === 'ci') expect(job['timeout-minutes']).toBe(10);
+  it('uses only Node 26 with npm caches and gives every CI job an explicit timeout', () => {
+    for (const name of ['ci', 'release', 'publish']) for (const [id, job] of Object.entries(workflow(name).jobs)) {
+      for (const node of (job.steps ?? []).filter(item => item.uses === 'actions/setup-node@v4')) {
+        const versions = node.with!['node-version'] === '${{ matrix.node }}' ? job.strategy!.matrix.node : [node.with!['node-version']];
+        expect(versions).toEqual(['26.x']); expect(node.with!.cache).toBe('npm');
       }
+      if (name === 'ci') expect(job['timeout-minutes']).toBe(id === 'checks' ? 45 : 10);
     }
   });
 

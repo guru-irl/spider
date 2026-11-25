@@ -196,7 +196,7 @@ async function main() {
   mkdirSync(dirname(resolve(output)), { recursive: true });
   writeFileSync(output, JSON.stringify(manifest, null, 2) + '\n');
   if (process.env.GITHUB_OUTPUT) writeFileSync(process.env.GITHUB_OUTPUT,
-    Object.entries(manifest.optional).map(([key, value]) => `${key}=${value}\n`).join('') + `audit=${manifest.selectionAudit}\nselection-hash=${manifest.selectionHash}\n`, { flag: 'a' });
+    Object.entries(manifest.optional).map(([key, value]) => `${key}=${value}\n`).join('') + `mode=${manifest.mode}\naudit=${manifest.selectionAudit}\nselection-hash=${manifest.selectionHash}\n`, { flag: 'a' });
   console.log(`Selection: ${manifest.mode}, ${manifest.files.length} files, ${manifest.selectionMs} ms, ${manifest.selectionHash}`);
   if (manifest.fallback) console.log(`Full fallback: ${manifest.fallback}`);
 }

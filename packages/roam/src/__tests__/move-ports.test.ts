@@ -9,7 +9,7 @@ import { isDeepStrictEqual } from "node:util";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createReplica, scratchDbPath } from "@spider/db-core/testutil";
 import { openDb } from "@spider/db-core";
@@ -37,9 +37,9 @@ import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import type { FreezeAck, MoveCheck, Operation, PreparedMove, PreparedWorkspace, RoamConfig, Transport } from "../contracts";
 import { assignInitialHome, casHome, sessionHome, cancelHomeAction } from "../homes";
 import { openFreezeJournal } from "../journal";
-import { inspectSession, stageSession, verifyFrozenSession } from "../session-file";
+import { inspectSession, installSession, stageSession, verifyFrozenSession } from "../session-file";
 import { snapshotWorkspace } from "../workspace";
-import { stageArtifact, handleArtifactRequest } from "../artifacts";
+import { stageArtifact, transferArtifact, handleArtifactRequest } from "../artifacts";
 import { openStaging, sourceChunk, openOutgoingStaging } from "../staging";
 import { abortCleanupId, cancelMove, recoverMove, rollbackMoveId } from "../move-recovery";
 import { createProductionRecoveryPorts } from "../recovery-transport";
@@ -565,9 +565,10 @@ it("completeness inventory detects nested missing intercom and workspace ports",
     .rejects.toMatchObject({ code: "adapter-unbound:intercom.ready" });
 }, 5000);
 
-async function transferFixture(homeless = false) {
+async function transferFixture(homeless = false, sessionOnly = false) {
   const f = await fixture(HUB, homeless), destination = join(f.root, "destination"), target = join(f.root, "destination-session.jsonl"), remoteRoot = join(f.root, "remote");
-  git(f.root, ["clone", "-q", f.repo, destination]);
+  if (sessionOnly) cpSync(f.repo, destination, { recursive: true });
+  else git(f.root, ["clone", "-q", f.repo, destination]);
   const remoteGlobal = createReplica("global", BOX), remoteWorktree = createReplica("worktree", BOX), remoteRepository = createReplica("repo", BOX); closes.push(() => remoteGlobal.close(), () => remoteWorktree.close(), () => remoteRepository.close());
   enableMemoryCapture(remoteGlobal.db, "global"); enableMemoryCapture(remoteRepository.db, REPO);
   remoteGlobal.db.prepare("INSERT OR IGNORE INTO roam_repo_maps(repo_key,path) VALUES(?,?)").run(f.check.repoKey, destination);
@@ -591,7 +592,8 @@ async function transferFixture(homeless = false) {
     return ready ? { machineId: home.machineId, alias: null, sessionId: ready.sessionId, homeEpoch: ready.epoch, coreId: ready.core, terminalId: ready.terminal } : null;
   };
   remoteJournal.begin({ id: "baseline", kind: "workspace-snapshot", machineId: BOX, expectedEpoch: null, args: {} });
-  const baseline = await snapshotWorkspace({ root: destination, cwd: destination, repoKey: f.check.repoKey, workspaceId: f.check.workspaceId, moveId: "baseline", stage: "final", writers: [] }, { ...remote.participant!.git, journal: remoteJournal, limits: config.limits });
+  const baseline = sessionOnly ? { ...f.sourceWorkspace.snapshot, root: destination, moveId: "baseline" } :
+    await snapshotWorkspace({ root: destination, cwd: destination, repoKey: f.check.repoKey, workspaceId: f.check.workspaceId, moveId: "baseline", stage: "final", writers: [] }, { ...remote.participant!.git, journal: remoteJournal, limits: config.limits });
   remoteGlobal.db.prepare("UPDATE roam_workspace_maps SET snapshot_json=? WHERE repo_key=? AND workspace_id=?").run(JSON.stringify(baseline), f.check.repoKey, f.check.workspaceId);
   const incoming = openStaging(join(remoteRoot, "roam", "staging"), HUB, config.limits); closes.push(() => incoming.close());
   f.transport.exec = async (_peer, argv, options) => {
@@ -602,14 +604,72 @@ async function transferFixture(homeless = false) {
   return { ...f, remote, remoteGlobal, remoteWorktree, remoteRepository, remoteJournal, remoteRoot, destination, target, check };
 }
 
+async function useSessionOnlyTransfer(f: Awaited<ReturnType<typeof transferFixture>>, operation: Operation) {
+  const limits = f.config.limits, participant = f.remote.participant!, scratch = f.bindings.participant!.git.scratch;
+  const root = join(f.root, "roam", "staging"), remoteRoot = join(f.remoteRoot, "roam", "staging"), peer = f.config.peers[0];
+  // Cleanup must remove real refs and staged artifacts even though these cases do not test Git transfer.
+  // Workspace bytes are a placeholder; staging, session installation, and cleanup remain real.
+  const head = f.sourceWorkspace.snapshot.head;
+  const refUpdates = ["pre", "final"].flatMap(stage => ["index", "working"].map(kind => `create refs/spider-roam/${operation.id}/${stage}/${kind} ${head}\n`)).join("");
+  for (const repo of [f.repo, f.destination]) git(repo, ["update-ref", "--stdin"], { stdin: Buffer.from(refUpdates) });
+  f.remoteJournal.begin(operation);
+  const prepare = async (stage: "pre" | "final", check: MoveCheck, move: Operation, ack?: FreezeAck): Promise<PreparedMove> => {
+    if (move.id !== operation.id || check.sourceRoot !== f.repo || check.destinationRoot !== f.destination || check.source.sessionId !== SESSION) throw new Error("Unexpected transfer");
+    const refs = ["index", "working"].map(kind => ({ ref: `refs/spider-roam/${move.id}/${stage}/${kind}`, oid: head }));
+    f.journal.record(move.id, "workspace-snapshot-refs", { root: f.repo, refs });
+    f.remoteJournal.record(move.id, "workspace-snapshot-refs", { root: f.destination, refs });
+    const artifactId = `workspace-${move.id}-${stage}`;
+    const local = await stageArtifact(join(f.repo, "tracked.txt"), "workspace", limits, { root: scratch, artifactId });
+    const incoming = openStaging(scratch, HUB, limits);
+    let workspace: Awaited<ReturnType<typeof stageArtifact>>;
+    try {
+      incoming.declare(local, `local-${artifactId}`);
+      for (const chunk of local.chunks) incoming.receive(local, chunk.index, readFileSync(sourceChunk(scratch, artifactId, chunk.index, chunk.sha256)));
+      workspace = await stageArtifact(incoming.assemble(local), "workspace", limits, { root, artifactId });
+    } finally { incoming.close(); }
+    const snapshot = { ...f.sourceWorkspace.snapshot, branch: "refs/heads/main", moveId: move.id, stage, refs: refs.map(value => value.ref), prerequisites: [head],
+      bundle: { kind: "ready" as const, artifactId, byteLength: workspace.byteLength } };
+    const digest = createHash("sha256").update(JSON.stringify([snapshot.repoKey, snapshot.workspaceId, snapshot.moveId, snapshot.stage, snapshot.head, snapshot.branch,
+      snapshot.objectFormat, snapshot.indexTree, snapshot.workingTree, snapshot.relativeCwd, snapshot.sparsePatterns, snapshot.worktreeConfig,
+      snapshot.normalization, snapshot.sparse, snapshot.refs, snapshot.prerequisites, snapshot.bundle])).digest("hex");
+    f.journal.record(move.id, "workspace-bundle", { artifactId, byteLength: workspace.byteLength, stage });
+    f.remoteJournal.record(move.id, "workspace-prepared", { root: f.destination, stage, digest, snapshotJson: JSON.stringify(snapshot), previousJson: null, artifactId });
+    const source = await inspectSession(f.file, SESSION, ack?.leaf, limits);
+    if (ack && (source.file !== ack.file || source.cwd !== ack.cwd || source.size !== ack.size || source.sha256 !== ack.sha256)) throw new Error("move-freeze-invalid");
+    const sessionArtifact = await stageArtifact(source.file, "session", limits, { root, artifactId: `${move.id}-session` });
+    let receivedSession = "";
+    for (const artifact of [workspace, sessionArtifact]) {
+      const sent = await transferArtifact(peer, artifact, { transport: f.transport, journal: f.journal, limits, root, operationId: `${move.id}-send-${stage}-${artifact.kind}` });
+      if (sent.code !== 0 || !sent.value) throw new Error(`Fixture artifact transfer failed: ${sent.reason}`);
+      if (artifact.kind === "session") receivedSession = sent.value.file;
+    }
+    const staged = await stageSession({ source: { ...source, file: receivedSession }, destinationCwd: check.destinationCwd, destinationParent: null, limits,
+      segment: { version: 1, moveId: move.id, epoch: check.source.epoch + 1, previousMachine: HUB, nextMachine: BOX, historyMachine: HUB, parentRef: null } }, remoteRoot);
+    await installSession(staged, f.target, { journal: f.remoteJournal, limits, withBothLocks: participant.withBothLocks, ownership: () => participant.probe(SESSION) });
+    const home = sessionHome(f.remoteGlobal.db, SESSION);
+    recordLocation(f.remoteGlobal.db, { sessionId: SESSION, stores: check.storeKeys, home: home === "unknown" ? null : home, file: f.target, cwd: check.destinationCwd });
+    return { session: { ...staged, file: f.target }, workspace: { ...f.sourceWorkspace, root: f.destination, moveId: move.id, snapshot } };
+  };
+  f.ports.prepare = (check, move) => prepare("pre", check, move);
+  f.ports.transfer = (check, ack, move) => prepare("final", check, move, ack);
+  f.ports.verifySource = async ack => {
+    const actual = await inspectSession(ack.file, ack.sessionId, ack.leaf, limits);
+    if (actual.cwd !== ack.cwd || actual.size !== ack.size || actual.sha256 !== ack.sha256) throw new Error("move-freeze-invalid");
+    await verifyFrozenSession(actual, limits);
+  };
+}
+
 let preparedFixture: Awaited<ReturnType<typeof transferFixture>>;
+let mirrorFixture: Awaited<ReturnType<typeof fixture>>;
 let interruptedFixture: Awaited<ReturnType<typeof appAbsentFixture>>;
 let interruptedSetup: Awaited<ReturnType<typeof prepareAppAbsentFixture>>;
-let mirrorPrepared: PreparedMove;
+let preparedMove: PreparedMove;
+let mirrorSession: Awaited<ReturnType<typeof stageSession>>;
 const appCases = ["presentation waits", "app absence records", "app-absent end-to-end", "app presentation failure", "cleanup retries", "destination cleanup while"];
 beforeEach(async context => {
-  if (context.task.name.startsWith("real Git artifacts") || context.task.name.startsWith("destroyed mirror")) preparedFixture = await transferFixture();
-  if (appCases.some(prefix => context.task.name.startsWith(prefix))) interruptedSetup = await prepareAppAbsentFixture();
+  if (context.task.name.startsWith("real Git artifacts")) preparedFixture = await transferFixture();
+  if (context.task.name.startsWith("destroyed mirror")) mirrorFixture = await fixture();
+  if (appCases.some(prefix => context.task.name.startsWith(prefix))) interruptedSetup = await prepareAppAbsentFixture({ sessionOnly: true });
 }, 5000);
 let transferArtifacts: string[] = [];
 beforeEach(async context => {
@@ -621,10 +681,12 @@ beforeEach(async context => {
       return exec(peer, argv, options);
     };
   }
-  if (context.task.name.startsWith("destroyed mirror") || context.task.name.startsWith("real Git artifacts")) {
-    const gitAtStart = gitCalls;
-    mirrorPrepared = await preparedFixture.ports.prepare(preparedFixture.check, preparedFixture.operation);
-    if (context.task.name.startsWith("destroyed mirror")) expect(gitCalls - gitAtStart, "mirror setup must not transfer a Git workspace").toBe(0);
+  if (context.task.name.startsWith("real Git artifacts")) preparedMove = await preparedFixture.ports.prepare(preparedFixture.check, preparedFixture.operation);
+  if (context.task.name.startsWith("destroyed mirror")) {
+    const f = mirrorFixture, gitAtStart = gitCalls;
+    mirrorSession = await stageSession({ source: f.sourceManifest, destinationCwd: join(f.root, "destination"), destinationParent: null, limits: f.config.limits,
+      segment: { version: 1, moveId: f.operation.id, epoch: 2, previousMachine: HUB, nextMachine: BOX, historyMachine: HUB, parentRef: null } }, join(f.root, "mirror-source"));
+    expect(gitCalls - gitAtStart, "mirror setup must not transfer a Git workspace").toBe(0);
   }
 }, 5000);
 beforeEach(async context => {
@@ -658,7 +720,7 @@ beforeEach(async context => {
 
 it("real Git artifacts prepare and transfer into the exact installed manifest file", async () => {
   const f = preparedFixture, { check, target } = f;
-  const artifactIds = transferArtifacts, prepared = mirrorPrepared;
+  const artifactIds = transferArtifacts, prepared = preparedMove;
   const installedFile = prepared.session.file, manifest = prepared.session;
   expect(installedFile).toBe(manifest.file);
   expect(installedFile).toBe(target);
@@ -693,8 +755,8 @@ it("app absence records pending presentation but does not delay ownership handof
   expect(f.events).not.toContain("view-close");
 }, 5000);
 
-async function prepareAppAbsentFixture(options: { homeless?: boolean; skipCrash?: boolean; beforeMove?(f: Awaited<ReturnType<typeof transferFixture>>, operation: Operation): Promise<void> } = {}) {
-  const f = await transferFixture(options.homeless);
+async function prepareAppAbsentFixture(options: { homeless?: boolean; skipCrash?: boolean; sessionOnly?: boolean; beforeMove?(f: Awaited<ReturnType<typeof transferFixture>>, operation: Operation): Promise<void> } = {}) {
+  const f = await transferFixture(options.homeless, options.sessionOnly);
   f.global.db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES(?,?,?,1,1)").run("source", f.worktree.root, f.worktree.db.raw.name);
   f.remoteGlobal.db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES(?,?,?,1,1)").run("destination", f.remoteWorktree.root, f.remoteWorktree.db.raw.name);
   f.global.db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES(?,?,?,1,1)").run("source-repo", f.repository.root, f.repository.db.raw.name);
@@ -749,6 +811,7 @@ async function prepareAppAbsentFixture(options: { homeless?: boolean; skipCrash?
   const sync = createSync({ config: f.config, globalDb: f.global.db, transport: f.transport, journal: f.journal, clock: f.bindings.clock!, stores: sourceStores, revocationDb: f.privateDb });
   f.bindings.sync = sync;
   const operation = { ...f.operation, id: "app-absent" }, before = readFileSync(f.file), record = f.journal.record;
+  if (options.sessionOnly) await useSessionOnlyTransfer(f, operation);
   let interrupted = false;
   f.journal.record = (id, action, value) => {
     record(id, action, value);
@@ -778,6 +841,7 @@ it("app-absent end-to-end move retires source ownership and preserves pending pa
   for (const root of [f.repo, f.destination]) expect(git(root, ["for-each-ref", "--format=%(refname)", `refs/spider-roam/${operation.id}/`]).toString().trim()).not.toBe("");
   const outcomes = await recoverMoveAdapters(f.ports, f.bindings), result = outcomes.find(row => row.operationId === operation.id)!;
   expect(result.code).toBe(0);
+  expect(result.value?.sourceCleanup).toEqual({ status: "done" });
   expect(sessionHome(f.global.db, SESSION)).toMatchObject({ machineId: BOX, epoch: 2, moveId: operation.id });
   expect(f.worktree.db.prepare("SELECT state,epoch FROM roam_sessions WHERE session_id=?").get(SESSION)).toEqual({ state: "retired", epoch: 1 });
   expect(f.remoteWorktree.db.prepare("SELECT state,epoch FROM roam_sessions WHERE session_id=?").get(SESSION)).toEqual({ state: "active", epoch: 2 });
@@ -945,11 +1009,11 @@ it("app presentation failure persists pending intent without reversing ownership
 }, 5000);
 
 it("destroyed mirror restores through real adapters and preserves original segment history", async () => {
-  const f = preparedFixture, moved = mirrorPrepared;
+  const f = mirrorFixture, moved = mirrorSession;
   casHome(f.global.db, f.home, BOX, f.operation.id, HUB);
   const mirrorOperation = { id: "mirror-on-box", kind: "session-mirror", machineId: BOX, expectedEpoch: 2, args: { sessionId: SESSION } };
   f.journal.begin(mirrorOperation);
-  const mirror = await appendMirror({ sessionId: SESSION, epoch: 2, source: moved.session, root: f.bindings.recovery!.mirrorRoot, operationId: mirrorOperation.id }, f.journal);
+  const mirror = await appendMirror({ sessionId: SESSION, epoch: 2, source: moved, root: f.bindings.recovery!.mirrorRoot, operationId: mirrorOperation.id }, f.journal);
   f.bindings.recovery!.restoreWorkspace = async () => ({ cwd: f.repo, parent: null });
   const result = await forgetMachine({ machineId: BOX, confirmation: `destroyed ${BOX}` }, f.ports);
   expect(result.code).toBe(0);
@@ -1146,11 +1210,11 @@ it("recovery adapter records app absence as pending presentation rather than cla
 }, 5000);
 
 it("destroyed mirror with pending presentation returns typed recovery success without another commit", async () => {
-  const f = preparedFixture, moved = mirrorPrepared;
+  const f = mirrorFixture, moved = mirrorSession;
   casHome(f.global.db, f.home, BOX, f.operation.id, HUB);
   const mirrorOperation = { id: "pending-mirror", kind: "session-mirror", machineId: BOX, expectedEpoch: 2, args: { sessionId: SESSION } };
   f.journal.begin(mirrorOperation);
-  await appendMirror({ sessionId: SESSION, epoch: 2, source: moved.session, root: f.bindings.recovery!.mirrorRoot, operationId: mirrorOperation.id }, f.journal);
+  await appendMirror({ sessionId: SESSION, epoch: 2, source: moved, root: f.bindings.recovery!.mirrorRoot, operationId: mirrorOperation.id }, f.journal);
   f.bindings.recovery!.restoreWorkspace = async () => ({ cwd: f.repo, parent: null });
   f.bindings.handoff!.presentReadyTarget = async () => { throw new Error("app-absent"); };
   const input = { machineId: BOX, confirmation: `destroyed ${BOX}` }, recovered = await forgetMachineWithAdapters(input, f.ports);
@@ -1167,12 +1231,12 @@ it("destroyed mirror with pending presentation returns typed recovery success wi
 }, 5000);
 
 it("destroyed mirror partial recovery never reports uncommitted homes as success", async () => {
-  const f = preparedFixture, moved = mirrorPrepared;
+  const f = mirrorFixture, moved = mirrorSession;
   casHome(f.global.db, f.home, BOX, f.operation.id, HUB);
   assignInitialHome(f.global.db, "session-b", BOX, HUB);
   const mirrorOperation = { id: "partial-mirror", kind: "session-mirror", machineId: BOX, expectedEpoch: 2, args: { sessionId: SESSION } };
   f.journal.begin(mirrorOperation);
-  await appendMirror({ sessionId: SESSION, epoch: 2, source: moved.session, root: f.bindings.recovery!.mirrorRoot, operationId: mirrorOperation.id }, f.journal);
+  await appendMirror({ sessionId: SESSION, epoch: 2, source: moved, root: f.bindings.recovery!.mirrorRoot, operationId: mirrorOperation.id }, f.journal);
   f.bindings.recovery!.restoreWorkspace = async () => ({ cwd: f.repo, parent: null });
   f.bindings.handoff!.presentReadyTarget = async () => { throw new Error("app-absent"); };
   const result = await forgetMachineWithAdapters({ machineId: BOX, confirmation: `destroyed ${BOX}` }, f.ports);
@@ -1447,6 +1511,7 @@ it("destination cleanup while its owner is live preserves concurrent session and
     return result;
   };
   const preserved = [join(f.destination, ".git", "index"), join(f.destination, ".git", "config")], before = preserved.map(file => readFileSync(file));
+  expect(git(f.destination, ["for-each-ref", "--format=%(refname)", `refs/spider-roam/${operation.id}/`]).toString().trim()).not.toBe("");
   const content = Buffer.concat([readFileSync(f.target), Buffer.from(JSON.stringify({ type: "message", id: "live-write", parentId: "leaf-a", message: { role: "user", content: "synthetic" } }) + "\n")]);
   f.bindings.handoff!.presentReadyTarget = async () => {
     await new Promise<void>(resolve => setImmediate(() => {
@@ -1456,7 +1521,8 @@ it("destination cleanup while its owner is live preserves concurrent session and
   };
   try {
     const result = (await recoverMoveAdapters(f.ports, f.bindings)).find(row => row.operationId === operation.id)!;
-    expect(result).toMatchObject({ code: 0, reason: "moved" });
+    expect(result).toMatchObject({ code: 0, reason: "moved", value: { sourceCleanup: { status: "done" } } });
+    expect(git(f.destination, ["for-each-ref", "--format=%(refname)", `refs/spider-roam/${operation.id}/`]).toString().trim()).toBe("");
     expect(readFileSync(f.target)).toEqual(content);
     expect(readFileSync(join(f.destination, "tracked.txt"), "utf8")).toBe("concurrent user edit\n");
     expect(preserved.map(file => readFileSync(file))).toEqual(before);
@@ -1715,11 +1781,11 @@ it("records normal hub-return provenance tied to the committed move", async () =
 
 
 it.each(['ready', 'owner-changed', 'home-changed'] as const)('destroyed mirror restoration replay %s checks durable ownership before installation', async mode => {
-  const f = preparedFixture;
+  const f = mirrorFixture;
   casHome(f.global.db, f.home, BOX, f.operation.id, HUB);
   const mirrorOperation = { id: 'restore-replay-mirror', kind: 'session-mirror', machineId: BOX, expectedEpoch: 2, args: { sessionId: SESSION } };
   f.journal.begin(mirrorOperation);
-  await appendMirror({ sessionId: SESSION, epoch: 2, source: mirrorPrepared.session, root: f.bindings.recovery!.mirrorRoot, operationId: mirrorOperation.id }, f.journal);
+  await appendMirror({ sessionId: SESSION, epoch: 2, source: mirrorSession, root: f.bindings.recovery!.mirrorRoot, operationId: mirrorOperation.id }, f.journal);
   const p = f.bindings.participant!, readiness = p.readiness;
   p.readiness = async () => null;
   f.bindings.recovery!.restoreWorkspace = async () => ({ cwd: f.repo, parent: null });
@@ -1755,11 +1821,11 @@ it("destroyed mirror relaunches twice after exact failed launches through produc
   const { createPendingHandoffControl, pendingHandoffLifecycle, readMoveLaunchAbsenceReceipt } = await import("../pending-handoff");
   const { processStartTime } = await import("../../../subagents/src/process-identity");
   const { localBootId } = await import("@spider/herdr/sessions/id-lock");
-  const f = preparedFixture;
+  const f = mirrorFixture;
   casHome(f.global.db, f.home, BOX, f.operation.id, HUB);
   const mirrorOperation = { id: "restore-real-mirror", kind: "session-mirror", machineId: BOX, expectedEpoch: 2, args: { sessionId: SESSION } };
   f.journal.begin(mirrorOperation);
-  await appendMirror({ sessionId: SESSION, epoch: 2, source: mirrorPrepared.session, root: f.bindings.recovery!.mirrorRoot, operationId: mirrorOperation.id }, f.journal);
+  await appendMirror({ sessionId: SESSION, epoch: 2, source: mirrorSession, root: f.bindings.recovery!.mirrorRoot, operationId: mirrorOperation.id }, f.journal);
   mkdirSync(join(f.root, "roam"), { recursive: true });
   openFreezeJournal(join(f.root, "roam", "journal.db"));
   const agentDirectory = join(f.root, "agent"); mkdirSync(agentDirectory);
@@ -1841,10 +1907,10 @@ it("cleanup retries follow a destination restart while source cleanup is pending
 }, 5000);
 
 it("destroyed mirror completed restoration replays its start receipt after the owner exits", async () => {
-  const f = preparedFixture;
+  const f = mirrorFixture;
   casHome(f.global.db, f.home, BOX, f.operation.id, HUB);
   f.journal.begin({ id: "completed-restore-mirror", kind: "session-mirror", machineId: BOX, expectedEpoch: 2, args: { sessionId: SESSION } });
-  await appendMirror({ sessionId: SESSION, epoch: 2, source: mirrorPrepared.session, root: f.bindings.recovery!.mirrorRoot, operationId: "completed-restore-mirror" }, f.journal);
+  await appendMirror({ sessionId: SESSION, epoch: 2, source: mirrorSession, root: f.bindings.recovery!.mirrorRoot, operationId: "completed-restore-mirror" }, f.journal);
   f.bindings.recovery!.restoreWorkspace = async () => ({ cwd: f.repo, parent: null });
   expect(await forgetMachine({ machineId: BOX, confirmation: `destroyed ${BOX}` }, f.ports)).toMatchObject({ code: 0 });
   const home = sessionHome(f.global.db, SESSION) as Home, mirror = await f.ports.recovery.mirror(SESSION, 2);

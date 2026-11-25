@@ -42,7 +42,7 @@ export async function resolveMoveCheckout(input: {
 }): Promise<MoveCheckout> {
   const { globalDb, root, repoKey, workspaceId, sourceName, moveId, git, journal } = input;
   try { storeScope(`worktree:${repoKey}:${workspaceId}`); } catch { conflict(); }
-  const mapped = globalDb.prepare("SELECT path FROM roam_workspace_maps WHERE repo_key=? AND workspace_id=?").get(repoKey, workspaceId) as { path: string } | undefined;
+  const mapped = globalDb.prepare("SELECT path,snapshot_json FROM roam_workspace_maps WHERE repo_key=? AND workspace_id=?").get(repoKey, workspaceId) as { path: string; snapshot_json: string | null } | undefined;
   const repo = globalDb.prepare("SELECT path FROM roam_repo_maps WHERE repo_key=?").get(repoKey) as { path: string } | undefined;
   const registered = async (repository: string, path: string): Promise<void> => {
     let listed: Buffer;
@@ -53,6 +53,17 @@ export async function resolveMoveCheckout(input: {
     if (!isAbsolute(mapped.path) || !directory(mapped.path)) conflict();
     if (sourceName !== undefined && (!repo || !isAbsolute(repo.path))) throw new MoveCompositionError("move-workspace-unmapped");
     if (repo && isAbsolute(repo.path)) await registered(repo.path, mapped.path);
+    if (sourceName !== undefined && mapped.snapshot_json === null) {
+      // A crash between map publication and baseline persistence may resume its own preparation.
+      const prepared = journal.read(moveId).some(row => {
+        if (row.action !== "workspace-prepared" || row.result.root !== mapped.path || typeof row.result.snapshotJson !== "string") return false;
+        try {
+          const snapshot = JSON.parse(row.result.snapshotJson);
+          return snapshot.repoKey === repoKey && snapshot.workspaceId === workspaceId && snapshot.moveId === moveId;
+        } catch { return false; }
+      });
+      if (!prepared) conflict();
+    }
     return { kind: "mapped", path: mapped.path };
   }
   if (!repo || !isAbsolute(repo.path) || sourceName === undefined) throw new MoveCompositionError("move-workspace-unmapped");

@@ -36,7 +36,7 @@ import { forgetMachine, forgottenPresentationComplete, recoveredForgottenHome } 
 import { inspectRestoredSession, inspectSession, installSession, stageSession, verifyFrozenSession } from "./session-file";
 import { cleanupMoveRefs, snapshotWorkspace } from "./workspace";
 import { abortWorkspace, prepareWorkspace, verifyWorkspace } from "./workspace-import";
-import { bundleWorkspace } from "./git-bundle";
+import { bundleWorkspace, WorkspacePrerequisiteError } from "./git-bundle";
 import { pullArtifact, stageArtifact, transferArtifact } from "./artifacts";
 import { recoverMirror } from "./mirrors";
 import { openOutgoingStaging, openStaging, syncStagingDirectory, sourceChunk, validateManifest } from "./staging";
@@ -585,7 +585,7 @@ function requiredHome(db: Db, id: string): Home {
   if (!home || home === "unknown") throw new MoveAdapterError("move-home-invalid");
   return home;
 }
-interface MoveExport { workspace: WorkspaceSnapshot; session: SessionManifest; workspaceArtifact: ArtifactManifest; sessionArtifact: ArtifactManifest }
+export interface MoveExport { workspace: WorkspaceSnapshot; session: SessionManifest; workspaceArtifact: ArtifactManifest; sessionArtifact: ArtifactManifest }
 function gitPorts(participant: MoveParticipantBindings, journal: Journal): GitPorts {
   return { ...participant.git, journal, limits: participant.config.limits };
 }
@@ -712,7 +712,11 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
     const session = await inspectSession(local.file, id, ack?.leaf, participant.config.limits);
     if (ack && (session.size !== ack.size || session.sha256 !== ack.sha256 || session.file !== ack.file)) throw new MoveAdapterError("move-freeze-invalid");
     const snapshot = await snapshotWorkspace({ root: check.sourceRoot, cwd: local.cwd, repoKey: check.repoKey, workspaceId: check.workspaceId, moveId: String(operation.args.moveId), stage, writers }, git);
-    const workspace = await bundleWorkspace(snapshot, operation.args.prerequisites as string[], git);
+    const workspace = await bundleWorkspace(snapshot, operation.args.prerequisites as string[], git).catch(error => {
+      if (!(error instanceof WorkspacePrerequisiteError)) throw error;
+      const refusal = new MoveAdapterError(error.code); refusal.message = error.message;
+      throw refusal;
+    });
     if (workspace.bundle.kind !== "ready") throw new MoveAdapterError("workspace-unbundled");
     const root = join(required(bindings.root, "root"), "roam", "staging"), file = assembleOutgoing(git.scratch, workspace.bundle.artifactId, participant.config.machineId, participant.config.limits);
     const workspaceArtifact = await stageArtifact(file, "workspace", participant.config.limits, { root, artifactId: workspace.bundle.artifactId });

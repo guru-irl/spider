@@ -2,6 +2,7 @@
 import { afterEach } from 'vitest';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { setTimeout, clearTimeout } from 'node:timers';
 import type { CoreId, MachineName, HcClient, HcEvent, JobId, Owner, PreparedProgram, TerminalAddress, TerminalFinish, TerminalSummary } from '../contracts.js';
 import { createJobMonitor, type JobMonitor, type JobMonitorOptions, type JobNotice } from '../jobs/monitor.js';
 import { createClientFixture, type ClientFixture } from './testutil.js';

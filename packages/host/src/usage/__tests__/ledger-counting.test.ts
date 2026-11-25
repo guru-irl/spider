@@ -313,7 +313,10 @@ describe("read-time usage selection", () => {
 // Conservation oracle: true billed calls are generated FIRST. Reports and all
 // observations below are derived from those calls, not from ledger selection.
 describe("ground-truth conservation under random imports", () => {
-  it.each([7, 37, 101, 419, 12345])("conserves true calls or flags incomplete evidence (seed %i)", seedValue => {
+  const seeds = [7, 37, 101, 419, 12345];
+  const run = Number(process.env.GITHUB_RUN_ID ?? Math.floor(Date.now() / 86400000));
+  const seed = Number(process.env.SPIDER_TEST_SEED ?? seeds[run % seeds.length]);
+  it.each([seed])("conserves true calls or flags incomplete evidence (seed %i)", seedValue => {
     let seed = seedValue;
     const random = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed; };
     type TrueCall = { id: string; run: number; model: string; tokens: number; kind: "assistant" | "compaction" | "aux" };

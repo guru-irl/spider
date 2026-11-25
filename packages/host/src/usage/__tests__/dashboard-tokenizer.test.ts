@@ -9,7 +9,6 @@ it.each([...":;&|><=,()[]{}\"'`"].map(delimiter => [delimiter]))("redacts both s
   const expected = `~/a${delimiter}~/b`;
   const result = dashboardLabel("role", `${home}/a${delimiter}${home}/b`, home)!;
   expect(result).toBe(expected);
-  expect(labelLeaks(expected, [home])).toEqual([]);
   expect(labelLeaks(result, [home])).toEqual([]);
 });
 it.each([
@@ -42,7 +41,6 @@ it.each([
 ])("tokenizer preserves prose and URL prefixes: %s", (input, expected) => {
   const result = dashboardLabel("runName", input!, home)!;
   expect(result).toBe(expected);
-  expect(labelLeaks(expected!, [home])).toEqual([]);
   expect(labelLeaks(result, [home])).toEqual([]);
 });
 

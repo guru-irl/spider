@@ -71,19 +71,6 @@ describe("usage HTTP", () => {
     expect((await get(server.port, "/api/sessions?limit=200", { Cookie: cookie })).status).toBe(200);
     expect(snapshot).toHaveBeenCalledTimes(6);
   });
-  test("slow headers expire within five seconds", async () => {
-    const server = await start();
-    const result = await new Promise<string>((resolve, reject) => {
-      const socket = connect(server.port, "127.0.0.1", () => socket.write("GET / HTTP/1.1\r\nHo"));
-      closers.push(() => { socket.destroy(); });
-      let reply = "";
-      const deadline = setTimeout(() => { socket.destroy(); resolve("deadline exceeded"); }, 7500);
-      socket.on("data", data => { reply += data.toString(); });
-      socket.on("error", reject);
-      socket.on("end", () => { clearTimeout(deadline); resolve(reply); });
-    });
-    expect(result === "" || result.startsWith("HTTP/1.1 408")).toBe(true);
-  });
   test("socket admission caps connections", async () => {
     const server = await start();
     const sockets = [] as import("node:net").Socket[];

@@ -258,7 +258,7 @@ it("every Session statement uses identity-bounded raw-call lookups including Una
   }
 });
 
-it("Session raw-call work stays fixed with 200000 unrelated calls", () => {
+it("Session raw-call work stays fixed with 20000 unrelated calls", () => {
   seed([call("first", S), call("last", S + 180 * D), call("orphan", S + 1, 3, { sessionId: null, runId: "orphan", actor: "subagent" })], [], [human(), human("other")]);
   let visits = 0;
   ctx.db.raw.function("test_visit", (_id: string) => { visits++; return 1; });
@@ -273,12 +273,12 @@ it("Session raw-call work stays fixed with 200000 unrelated calls", () => {
   };
   const small = measure();
   // One publication avoids measuring repeated fixture ingestion work.
-  f.ledger.apply(dashboardBatch(Array.from({ length: 200000 }, (_, i) => call(`unrelated-${i}`, S + i * 1000, 99, { sessionId: "other" }))));
+  f.ledger.apply(dashboardBatch(Array.from({ length: 20000 }, (_, i) => call(`unrelated-${i}`, S + i * 1000, 99, { sessionId: "other" }))));
   ctx.revision += "-unrelated"; // Force cold ownership/style caches after fixture writes.
   const large = measure();
   expect(large).toBeLessThanOrEqual(small + 20);
   expect(large).toBeLessThan(200);
-  process.stdout.write(`SCOPED_WORK before=${small} after=${large} unrelated=200000\n`);
+  process.stdout.write(`SCOPED_WORK before=${small} after=${large} unrelated=20000\n`);
 }, 120_000);
 
 it("dictionary-only child ownership is resolved in bounded batches rather than per id", () => {

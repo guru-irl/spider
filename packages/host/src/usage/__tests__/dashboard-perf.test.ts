@@ -73,7 +73,7 @@ test("plan entries reject duplicate or unreviewed registered routes", () => {
 });
 
 
-test("dense-month fixture has month-end density, short lifetimes, ten-minute counters and reports", () => {
+test("dense-month fixture retains its benchmark workload properties", () => {
   const fixture = createDashboardFixture(false); closers.push(fixture.close);
   const seed = seedPlanLedger(fixture.file, 10_000, { denseMonthCalls: 1750 });
   expect(seed.now).toBe(Date.UTC(2026, 9, 31, 23));
@@ -82,6 +82,13 @@ test("dense-month fixture has month-end density, short lifetimes, ten-minute cou
   expect((fixture.db.prepare("SELECT max(ended_at-started_at) AS lifetime FROM runs_meta").get() as any).lifetime).toBeLessThan(7 * 86_400_000);
   expect(fixture.db.prepare("SELECT min(ts-previous) AS cadence FROM (SELECT ts,lag(ts) OVER (ORDER BY ts) AS previous FROM counter_snapshots)").get()).toEqual({ cadence: 600000 });
   expect((fixture.db.prepare("SELECT count(*) AS n FROM calls WHERE is_report=1").get() as any).n).toBeGreaterThan(0);
+  const scalar = (sql: string) => (fixture.db.prepare(sql).get() as { n: number }).n;
+  expect(scalar("SELECT count(DISTINCT provider) AS n FROM calls")).toBeGreaterThan(1);
+  expect(scalar("SELECT count(DISTINCT model) AS n FROM calls")).toBeGreaterThan(2);
+  expect(scalar("SELECT count(*) AS n FROM calls WHERE run_id IS NULL")).toBeGreaterThan(0);
+  expect(scalar("SELECT count(DISTINCT delta) AS n FROM (SELECT ts-lag(ts) OVER (ORDER BY ts) AS delta FROM calls)")).toBeGreaterThan(3);
+  expect(scalar("SELECT count(*) AS n FROM calls r WHERE is_report=1 AND EXISTS (SELECT 1 FROM calls t WHERE t.run_id=r.run_id AND t.is_report=0)")).toBeGreaterThan(0);
+  expect(scalar("WITH spans AS (SELECT session_id,min(ts) AS lo,max(ts) AS hi FROM calls GROUP BY session_id) SELECT count(*) AS n FROM spans a JOIN spans b ON a.session_id<b.session_id AND a.lo<b.hi AND b.lo<a.hi")).toBeGreaterThan(0);
 });
 
 
@@ -95,18 +102,6 @@ test("million row timing is local opt in only", () => {
 });
 
 
-
-test("dense data has mixed providers/models, overlapping sessions, jitter and overlapping reports", () => {
-  const fixture = createDashboardFixture(false); closers.push(fixture.close);
-  seedPlanLedger(fixture.file, 10_000, { denseMonthCalls: 1750 });
-  const scalar = (sql: string) => (fixture.db.prepare(sql).get() as { n: number }).n;
-  expect(scalar("SELECT count(DISTINCT provider) AS n FROM calls")).toBeGreaterThan(1);
-  expect(scalar("SELECT count(DISTINCT model) AS n FROM calls")).toBeGreaterThan(2);
-  expect(scalar("SELECT count(*) AS n FROM calls WHERE run_id IS NULL")).toBeGreaterThan(0);
-  expect(scalar("SELECT count(DISTINCT delta) AS n FROM (SELECT ts-lag(ts) OVER (ORDER BY ts) AS delta FROM calls)")).toBeGreaterThan(3);
-  expect(scalar("SELECT count(*) AS n FROM calls r WHERE is_report=1 AND EXISTS (SELECT 1 FROM calls t WHERE t.run_id=r.run_id AND t.is_report=0)")).toBeGreaterThan(0);
-  expect(scalar("WITH spans AS (SELECT session_id,min(ts) AS lo,max(ts) AS hi FROM calls GROUP BY session_id) SELECT count(*) AS n FROM spans a JOIN spans b ON a.session_id<b.session_id AND a.lo<b.hi AND b.lo<a.hi")).toBeGreaterThan(0);
-});
 
 
 test.each(["calls", '"calls"'])("calibration attribution survives delayed execution, renamed CTEs and new statements using %s", (table) => {

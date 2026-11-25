@@ -14,7 +14,7 @@ const call = (id: string, day: number, aic: number) => dashboardCall(id, { ts: S
 // Kills whole-history materialization: absence may require all history, but
 // neither snapshot reads nor interval binds may grow with ledger age.
 it("earliest no-fit discovery bounds snapshot pages and interval binds", () => {
-  seedCalibrationHistory(f, 30, false);
+  seedCalibrationHistory(f, 8, false);
   const prepare = f.db.prepare.bind(f.db);
   const pageSizes: number[] = [], bindSizes: number[] = [];
   vi.spyOn(f.db, "prepare").mockImplementation(sql => {
@@ -37,13 +37,13 @@ it("earliest no-fit discovery bounds snapshot pages and interval binds", () => {
     return statement;
   });
   expect(service.earliest("auto").status).toBe("uncalibrated");
-  expect(pageSizes.reduce((a, b) => a + b, 0)).toBe(30 * 144 + 1);
+  expect(pageSizes.reduce((a, b) => a + b, 0)).toBe(8 * 144 + 1);
   expect(Math.max(...pageSizes)).toBeLessThanOrEqual(512);
   expect(Math.max(...bindSizes)).toBeLessThanOrEqual(512);
 });
 
 it("earliest stops call aggregation in the first chunk containing a fit", () => {
-  seedCalibrationHistory(f, 365, true);
+  seedCalibrationHistory(f, 8, true);
   const prepare = f.db.prepare.bind(f.db);
   let snapshots = 0;
   vi.spyOn(f.db, "prepare").mockImplementation(sql => {

@@ -51,6 +51,7 @@ test.each(["/", "", "C:", "C:\\", "C:/", "//"])("root or empty home %j never map
   expect(dashboardLabel("project", "/private/team/project", home)).toBe("…/team/project");
   expect(dashboardLabel("model", "at /private/team/project", home)).toBe("at …/team/project");
   expect(dashboardLabel("project", "~/private/team/project", home)).toBe("…/team/project");
+  expect(dashboardLabel("project", "C:\\private\\team\\project", home)).toBe("…/team/project");
   expect(dashboardLabel("model", "at C:\\private\\team\\project", home)).toBe("at …/team/project");
   expect(dashboardLabel("model", "at ~/team/project", home)).toBe("at …/team/project");
 });
@@ -67,9 +68,4 @@ test.each([
   ["note=[/private/team/project],file:/private/team/project", "note=[…/team/project"],
 ])("embedded paths normalize dot segments and clamp at their root: %s", (input, expected) => {
   expect(dashboardLabel("model", input, "/synthetic/home")).toBe(expected);
-});
-
-test.each(["C:\\", "C:/", "//", "/"])("filesystem or drive root %j is not a home mapping", home => {
-  expect(dashboardLabel("project", "C:\\private\\team\\project", home)).toBe("…/team/project");
-  expect(dashboardLabel("project", "~/private/team/project", home)).toBe("…/team/project");
 });

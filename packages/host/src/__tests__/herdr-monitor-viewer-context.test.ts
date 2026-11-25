@@ -94,7 +94,7 @@ it.each(['top-level', 'nested', 'rpc', 'gone', 'file', 'blocked', 'invalid-heade
   const db = openDbAt(dbPath, 'worktree'), globalDb = openDbAt(globalPath, 'global'); cleanups.push(async () => { db.close(); globalDb.close(); });
   const calls: HcRunRequest[] = [], names = new Map<TerminalAddress, string | undefined>(), originalClient = hcModule.createHcClient, originalRegistration = viewerModule.registerHerdrViewers;
   vi.spyOn(hcModule, 'createHcClient').mockImplementation(options => {
-    const hc = realProcess ? originalClient(options) : { ...h.hc, dispose: async () => {} };
+    const hc = realProcess ? originalClient(options) : { ...h.hc, onMachineAvailable: () => () => {}, dispose: async () => {} };
     return { ...hc, run: async request => { calls.push(request); const result = await hc.run(request); names.set(result.address, request.name); return result; } };
   });
   if (!realProcess) {

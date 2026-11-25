@@ -10,9 +10,10 @@ vi.mock('node:child_process', async importOriginal => {
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
+const fastFixture = () => fixture('fake', false, { coreTransport: 'socket' });
 
 it.each(['export BEFORE=1', '# existing rc\nexport BEFORE=1', '', 'export BEFORE=1\n'])('rollback restores an untouched rc byte for byte: %j', async original => {
-  const f = await fixture();
+  const f = await fastFixture();
   await writeFile(f.request.config.shellRc, original);
   await setupHerdr(f.request, f.parts);
   await rollbackHerdr(f.request, f.parts);

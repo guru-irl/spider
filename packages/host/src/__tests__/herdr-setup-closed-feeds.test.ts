@@ -6,7 +6,7 @@ import { once } from 'node:events';
 import { chmod, readFile, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join, resolve } from 'node:path';
-import { build } from 'vite';
+import { createBundledFixture } from './herdr-setup-bundled-writer.js';
 import { runHerdrCli } from '../../../herdr/src/setup/cli.js';
 import { setupHerdr } from '../../../herdr/src/setup/installer.js';
 import type { Owner, SessionFeed, SessionId, Generation } from '../../../herdr/src/contracts.js';
@@ -17,6 +17,16 @@ vi.mock('node:child_process', async importOriginal => {
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
+const closedOwnerProgram = createBundledFixture('closed-owner', `import { publishSessionFeed } from ${JSON.stringify(resolve('packages/herdr/src/feed/publisher.ts'))};
+import { startSessionEndpoint } from ${JSON.stringify(resolve('packages/herdr/src/feed/ipc-server.ts'))};
+import { createTerminalRegistry } from ${JSON.stringify(resolve('packages/herdr/src/sessions/registry.ts'))};
+const [root, raw, agent] = process.argv.slice(2), feed = JSON.parse(raw), owner = feed.owner;
+const endpoint = await startSessionEndpoint(owner, {currentOwner:()=>owner}, root);
+await createTerminalRegistry(root).record({owner, recordedAt:Date.now(), coreStartedAt:1, environment:{agentDirectory:agent, extensionArguments:[]}});
+await publishSessionFeed(root, {...feed, ipc:endpoint.descriptor});
+await publishSessionFeed(root, {...feed, lifecycle:'closed', ipc:null});
+await endpoint.dispose();
+`);
 async function stop(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
   const ended = once(child, 'exit'); child.kill('SIGTERM'); await ended;
@@ -27,20 +37,8 @@ async function closedOwner(f: SetupFixture, stale: boolean) {
     placement: null, lifecycle: 'live', status: { native: null, effective: null, message: null },
     runs: { rows: [], total: 0, truncated: false }, todos: { rows: [], total: 0, truncated: false }, triggers: [],
     pace: { scope: 'session', used: null, budget: null, projected: null, remaining: null, periodStart: null, periodEnd: null, updatedAt: null, unavailableReason: null }, approvals: [], notifications: [], ipc: null, errors: [] };
-  const source = join(f.h.root, 'closed-owner.ts'), root = join(f.request.config.globalRoot, 'herdr');
-  await writeFile(source, `import { publishSessionFeed } from ${JSON.stringify(resolve('packages/herdr/src/feed/publisher.ts'))};
-import { startSessionEndpoint } from ${JSON.stringify(resolve('packages/herdr/src/feed/ipc-server.ts'))};
-import { createTerminalRegistry } from ${JSON.stringify(resolve('packages/herdr/src/sessions/registry.ts'))};
-const [root, raw, agent] = process.argv.slice(2), feed = JSON.parse(raw), owner = feed.owner;
-const endpoint = await startSessionEndpoint(owner, {currentOwner:()=>owner}, root);
-await createTerminalRegistry(root).record({owner, recordedAt:Date.now(), coreStartedAt:1, environment:{agentDirectory:agent, extensionArguments:[]}});
-await publishSessionFeed(root, {...feed, ipc:endpoint.descriptor});
-await publishSessionFeed(root, {...feed, lifecycle:'closed', ipc:null});
-await endpoint.dispose();
-`);
-  await build({ configFile: false, logLevel: 'silent', ssr: { noExternal: true }, build: { ssr: source, outDir: f.h.root, emptyOutDir: false,
-    rollupOptions: { external: id => id.startsWith('node:'), output: { entryFileNames: 'closed-owner.mjs' } } } });
-  const child = spawn(process.execPath, [join(f.h.root, 'closed-owner.mjs'), root, JSON.stringify(feed), f.request.config.agentDirectory], { env: f.h.localEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+  const root = join(f.request.config.globalRoot, 'herdr'), cli = await closedOwnerProgram(f.h.root);
+  const child = spawn(process.execPath, [cli, root, JSON.stringify(feed), f.request.config.agentDirectory], { env: f.h.localEnv, stdio: ['ignore', 'pipe', 'pipe'] });
   cleanup.push(() => stop(child));
   let stderr = ''; child.stderr!.on('data', chunk => { stderr += String(chunk); });
   const [code] = await once(child, 'exit'); expect(code, stderr).toBe(0);
@@ -69,7 +67,7 @@ it.each([false, true])('setup verifies after a graceful owner exit (stale feed: 
 }, 60000);
 
 it.each(['missing', 'unreadable', 'malformed'])('a closed feed with %s writer provenance still fails verification', async kind => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await fixture('fake', false, { coreTransport: 'socket' }); await setupHerdr(f.request, f.parts);
   const owner = await closedOwner(f, true);
   if (kind === 'missing') await rm(owner.record, { force: true });
   else if (kind === 'unreadable') await chmod(owner.record, 0);

@@ -21,6 +21,9 @@ vi.mock('node:child_process', async importOriginal => {
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); for (const name of ['rename', 'link', 'mkdir'] as const) vi.mocked(fs[name]).mockImplementation(realFs[name] as never); });
+const fastRelease = (version: Parameters<typeof releaseFixture>[0]) => releaseFixture(version, { coreTransport: 'socket' });
+const bareFixture = () => fixture('fake', false, { startCores: false });
+const fastFixture = () => fixture('fake', false, { coreTransport: 'socket' });
 
 async function tree(root: string): Promise<string[]> {
   const rows: string[] = [];
@@ -40,7 +43,7 @@ async function tree(root: string): Promise<string[]> {
 
 
 test('unreadable app version skips picker keys while install and doctor remain available', async () => {
-  const f = await fixture(), home = f.h.directories.app;
+  const f = await bareFixture(), home = f.h.directories.app;
   const request = { ...f.request, config: { ...f.request.config, app: { ...f.request.config.app, binary: join(f.h.root, 'missing-app') } } };
   const keyPath = join(home, 'keys.json'), before = JSON.parse(await readFile(keyPath, 'utf8'));
   Object.assign(before.global, { 'cmd-t': 'tab.new', 'cmd-d': 'pane.split:right', 'cmd-shift-d': 'pane.split:down' });
@@ -65,7 +68,7 @@ test('unreadable app version skips picker keys while install and doctor remain a
 });
 
 test('unreadable app version leaves existing picker files and bindings alone', async () => {
-  const f = await fixture(), home = f.h.directories.app;
+  const f = await bareFixture(), home = f.h.directories.app;
   const request = { ...f.request, config: { ...f.request.config, app: { ...f.request.config.app, binary: join(f.h.root, 'missing-app') } } };
   const keyPath = join(home, 'keys.json'), before = await readFile(keyPath);
   const keys = { global: { 'cmd-t': 'mod.open:spider-machine-picker' }, 'layout:spider-glass': { 'cmd-shift-w': 'spider-pane.close' } };
@@ -160,7 +163,7 @@ test.each(['0.1.13', '0.1.16'] as const)('a lost version after staging preserves
 });
 
 test('a lost version updates independent keys without rebinding an installed picker', async () => {
-  const f = await releaseFixture('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
+  const f = await fastRelease('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
   await setupHerdr(f.request, f.parts);
   const keyPath = join(home, 'keys.json'), before = JSON.parse(await readFile(keyPath, 'utf8'));
   const oldJournal = (await readJournal(f.request.journalRoot)).entries.find(entry => entry.path === keyPath)!;
@@ -184,7 +187,7 @@ test('a lost version updates independent keys without rebinding an installed pic
 });
 
 test.each([false, true])('a lost version updates independent keys without rebinding user-modified picker keys (overwrite=%s)', async overwrite => {
-  const f = await releaseFixture('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
+  const f = await fastRelease('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
   const stockKeys = JSON.parse(await readFile(join(home, 'keys.json'), 'utf8'));
   await setupHerdr(f.request, f.parts);
   const keyPath = join(home, 'keys.json'), keys = JSON.parse(await readFile(keyPath, 'utf8'));
@@ -222,7 +225,7 @@ test.each([false, true])('a lost version updates independent keys without rebind
 });
 
 test('a lost version preserves a relocated picker binding while updating other keys', async () => {
-  const f = await releaseFixture('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
+  const f = await fastRelease('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
   await setupHerdr(f.request, f.parts);
   const keyPath = join(home, 'keys.json'), keys = JSON.parse(await readFile(keyPath, 'utf8'));
   keys.terminal['cmd-shift-a'] = { command: 'mod.open', args: { name: 'spider-machine-picker-right' } };
@@ -243,7 +246,7 @@ test('a lost version preserves a relocated picker binding while updating other k
 });
 
 test('a lost version does not recreate a removed picker key section', async () => {
-  const f = await releaseFixture('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
+  const f = await fastRelease('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
   await setupHerdr(f.request, f.parts);
   const keyPath = join(home, 'keys.json'), before = await readFile(keyPath), journal = await readJournal(f.request.journalRoot);
   const prior = journal.entries.find(entry => entry.path === keyPath)!.keys!;
@@ -268,7 +271,7 @@ test('a lost version does not recreate a removed picker key section', async () =
 });
 
 test('a lost version preserves a lone picker helper and still installs the A pane', async () => {
-  const f = await releaseFixture('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
+  const f = await fastRelease('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
   const helper = join(home, 'mods/spider-pane/machine.js');
   await mkdir(dirname(helper), { recursive: true }); await writeFile(helper, '// existing picker helper\n');
   const stage = f.parts.stageLook;
@@ -285,7 +288,7 @@ test('a lost version preserves a lone picker helper and still installs the A pan
 });
 
 test.each(['0.1.12', '0.1.99'])('setup refuses a change to %s after staging without writing files', async version => {
-  const f = await releaseFixture('0.1.13'), app = join(f.h.root, 'app-selection.mjs');
+  const f = await fastRelease('0.1.13'), app = join(f.h.root, 'app-selection.mjs');
   const roots = [f.h.directories.app, f.h.directories.agent], before = await Promise.all(roots.map(tree));
   const stage = f.parts.stageLook;
   f.parts.stageLook = async (...args) => {
@@ -299,7 +302,7 @@ test.each(['0.1.12', '0.1.99'])('setup refuses a change to %s after staging with
 });
 
 test('0.1.12 preserves native creation keys and does not install machine pickers', async () => {
-  const f = await fixture(), home = f.h.directories.app, path = join(home, 'keys.json');
+  const f = await fastFixture(), home = f.h.directories.app, path = join(home, 'keys.json');
   const before = JSON.parse(await readFile(path, 'utf8'));
   Object.assign(before.global, { 'cmd-t': 'tab.new', 'cmd-d': 'pane.split:right', 'cmd-shift-d': 'pane.split:down' });
   await writeFile(path, JSON.stringify(before));
@@ -318,7 +321,7 @@ test('0.1.12 preserves native creation keys and does not install machine pickers
 });
 
 test('0.1.12 refuses previously owned pickers until rollback restores stock keys', async () => {
-  const f = await fixture(), home = f.h.directories.app, path = join(home, 'keys.json');
+  const f = await fastFixture(), home = f.h.directories.app, path = join(home, 'keys.json');
   const stock = JSON.parse(await readFile(path, 'utf8'));
   Object.assign(stock.global, { 'cmd-t': 'tab.new', 'cmd-d': 'pane.split:right', 'cmd-shift-d': 'pane.split:down' });
   const baseline = Buffer.from(JSON.stringify(stock)); await writeFile(path, baseline);
@@ -344,7 +347,7 @@ test('0.1.12 refuses previously owned pickers until rollback restores stock keys
 });
 
 test('0.1.12 refuses an unowned stale picker binding without changing it', async () => {
-  const f = await fixture(), path = join(f.h.directories.app, 'keys.json');
+  const f = await fastFixture(), path = join(f.h.directories.app, 'keys.json');
   const keys = JSON.parse(await readFile(path, 'utf8'));
   keys.global['cmd-d'] = 'mod.open:spider-machine-picker-right';
   await writeFile(path, JSON.stringify(keys));
@@ -354,7 +357,7 @@ test('0.1.12 refuses an unowned stale picker binding without changing it', async
 });
 
 test('0.1.12 refuses a structured picker binding outside the default section', async () => {
-  const f = await fixture(), path = join(f.h.directories.app, 'keys.json');
+  const f = await fastFixture(), path = join(f.h.directories.app, 'keys.json');
   const keys = JSON.parse(await readFile(path, 'utf8'));
   keys.terminal['ctrl-p'] = { command: 'mod.open', args: { name: 'spider-machine-picker-right' } };
   await writeFile(path, JSON.stringify(keys));
@@ -364,7 +367,7 @@ test('0.1.12 refuses a structured picker binding outside the default section', a
 });
 
 test('0.1.12 refuses an owned picker file even after its shortcuts are restored', async () => {
-  const f = await fixture(), path = join(f.h.directories.app, 'mods/spider-machine-picker/main.js');
+  const f = await fastFixture(), path = join(f.h.directories.app, 'mods/spider-machine-picker/main.js');
   const journal = await readJournal(f.request.journalRoot), plans: InstallFile[] = [{ path, expected: null, bytes: Buffer.from('// old owned picker\n') }];
   await prepareBackups(f.request.journalRoot, plans, journal); await applyFiles(f.request.journalRoot, plans, journal);
   await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'legacy-picker-binding', message: expect.stringContaining(path) });
@@ -374,7 +377,7 @@ test('0.1.12 refuses an owned picker file even after its shortcuts are restored'
 });
 
 test('doctor names the insecure machine-picker config and chmod repair', async () => {
-  const f = await releaseFixture('0.1.13');
+  const f = await fastRelease('0.1.13');
   await setupHerdr(f.request, f.parts);
   const path = join(f.h.directories.app, 'mods/spider-machine-picker-right/config.json');
   await chmod(path, 0o644);
@@ -384,7 +387,7 @@ test('doctor names the insecure machine-picker config and chmod repair', async (
 });
 
 test('cross-machine helper digests affect the setup fingerprint', async () => {
-  const f = await releaseFixture('0.1.16'), path = join(f.root, 'packages/herdr/assets/look/cross-machine-patches.json');
+  const f = await fastRelease('0.1.16'), path = join(f.root, 'packages/herdr/assets/look/cross-machine-patches.json');
   const first = await f.parts.preflight(f.request), manifest = JSON.parse(await readFile(path, 'utf8'));
   manifest.checks['0.1.16'].helperHashes['pane/actions.js'] = '0'.repeat(64);
   await writeFile(path, JSON.stringify(manifest));
@@ -393,7 +396,7 @@ test('cross-machine helper digests affect the setup fingerprint', async () => {
 });
 
 test.each(['pane/actions.js', 'pane/machine.js', 'machines/actions.js', 'machines/picker.js'])('B refuses altered helper %s before staging', async helper => {
-  const f = await releaseFixture('0.1.16'), path = join(f.root, 'packages/herdr/assets', helper);
+  const f = await fastRelease('0.1.16'), path = join(f.root, 'packages/herdr/assets', helper);
   await writeFile(path, Buffer.concat([await readFile(path), Buffer.from('\n// altered helper\n')]));
   const context = { ...f.context, modProps: [...f.context.modProps, ...['picker', 'toast'].map(name => ({ directory: join(f.h.directories.app, 'mods', `spider-${name}`), props: { ...f.context.modProps[0]!.props, modId: `spider-${name}` } }))] };
   await expect(f.parts.stageLook(f.request, context, 'export')).rejects.toMatchObject({ code: 'cross-machine-helper-mismatch', message: expect.stringContaining(helper) });
@@ -401,7 +404,7 @@ test.each(['pane/actions.js', 'pane/machine.js', 'machines/actions.js', 'machine
 });
 
 test.each(['recipe', 'menu'] as const)('B refuses a missing A %s before staging', async missing => {
-  const f = await releaseFixture('0.1.16'), select = lookPatches.selectLookPatches;
+  const f = await fastRelease('0.1.16'), select = lookPatches.selectLookPatches;
   vi.spyOn(lookPatches, 'selectLookPatches').mockImplementation((manifest, version) => {
     const selected = select(manifest, version);
     if (missing === 'recipe') return { ...selected, recipe: undefined };
@@ -413,7 +416,7 @@ test.each(['recipe', 'menu'] as const)('B refuses a missing A %s before staging'
 
 for (const version of ['0.1.13', '0.1.16'] as const) {
   test(`${version} publishes complete mods before the layout can reference them`, async () => {
-    const f = await releaseFixture(version), mods = join(f.h.directories.app, 'mods');
+    const f = await fastRelease(version), mods = join(f.h.directories.app, 'mods');
     const layout = join(f.h.directories.app, 'layouts/spider-glass.json');
     const incomplete: string[] = [], published: string[] = [];
     const inspect = async (directory: string) => {
@@ -445,7 +448,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   });
 
   test(`${version} rollback removes created mod directories but preserves existing and populated directories`, async () => {
-    const f = await releaseFixture(version), mods = join(f.h.directories.app, 'mods');
+    const f = await fastRelease(version), mods = join(f.h.directories.app, 'mods');
     const existing = join(mods, 'spider-new-menu'), shared = join(existing, 'shared');
     await mkdir(shared, { recursive: true });
     await setupHerdr(f.request, f.parts);
@@ -491,7 +494,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   });
 
   test(`${version} an unowned B file refuses unless replaced and rollback restores its original bytes`, async () => {
-    const f = await releaseFixture(version), home = f.h.directories.app;
+    const f = await fastRelease(version), home = f.h.directories.app;
     const directory = join(home, 'mods/spider-new-menu'); await mkdir(directory);
     const path = join(directory, 'main.js'), original = '// existing custom menu\n';
     await writeFile(path, original, { mode: 0o640 });
@@ -509,7 +512,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
 
   for (const change of ['changed-record', 'missing-record', 'missing-release', 'missing-asset', 'stale-input', 'changed-output', 'stale-stock'] as const) {
     test(`${version} refuses ${change} before installing B files or keys`, async () => {
-      const f = await releaseFixture(version);
+      const f = await fastRelease(version);
       const path = join(f.root, 'packages/herdr/assets/look/cross-machine-patches.json');
       const manifest = JSON.parse(await readFile(path, 'utf8'));
       if (change === 'changed-record') manifest.versions[version].tabs[0].replacement += '\n// changed\n';
@@ -537,7 +540,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   }
 
   test(`${version} default production staging includes every B hook with its picker and keys`, async () => {
-    const f = await releaseFixture(version);
+    const f = await fastRelease(version);
     const preflight = await f.parts.preflight(f.request);
     const context = { ...f.context, modProps: preflight.mods.map(copy => ({ directory: copy.directory, props: { ...f.context.modProps[0]!.props, modId: basename(copy.directory) } })) };
     const files = await f.parts.stageLook(f.request, context, 'export');

@@ -24,7 +24,7 @@ async function installedFiles(f: SetupFixture) {
 }
 
 it.each(['ambiguous name', 'duplicate file', 'duplicate name and file'])('setup rejects %s before backups, managed writes or layout changes', async kind => {
-  const f = await fixture(), first = join(f.request.config.agentDirectory, 'sessions/one.jsonl');
+  const f = await fixture('fake', false, { startCores: false }), first = join(f.request.config.agentDirectory, 'sessions/one.jsonl');
   for (const id of ['one', 'two']) await writeFile(join(f.request.config.agentDirectory, `sessions/${id}.jsonl`), [
     JSON.stringify({ type: 'session', version: 3, id, cwd: f.h.root }),
     JSON.stringify({ type: 'session_info', name: 'saved name' }),

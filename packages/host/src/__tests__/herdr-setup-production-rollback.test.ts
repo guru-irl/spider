@@ -16,6 +16,7 @@ vi.mock('node:child_process', async importOriginal => {
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
+const fastFixture = () => fixture('fake', false, { coreTransport: 'socket' });
 
 test.skipIf(process.env.SPIDER_HERDR_E2E !== '1')('real isolated production setup preserves edits upgrades and repeats doctor probes without an app window', async () => {
   const f = await fixture('hc', true);
@@ -45,13 +46,13 @@ test.skipIf(process.env.SPIDER_HERDR_E2E !== '1')('real isolated production setu
 }, 60_000);
 
 test('doctor rejects an older runtime when the current package requires new bytes', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
   const path = join(f.root, 'dist/herdr/remote-runtime.mjs'); await writeFile(path, (await readFile(path, 'utf8')) + '\n// new runtime\n');
   expect((await (await f.ports.doctorParts(f.request)).inspect('runtime-digest', f.request)).failures.length).toBeGreaterThan(0);
 });
 
 test('doctor reports mod loading not verified with fenced headless commands', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
   const parts = await f.ports.doctorParts(f.request);
   for (const item of ['mods', 'clones'] as const) {
     const report = await parts.inspect(item, f.request);
@@ -73,7 +74,7 @@ test('doctor reports mod loading not verified with fenced headless commands', as
 });
 
 test('unrelated multiline TOML edits survive a complete production rerun', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
   const current = await readFile(f.request.config.core.config, 'utf8');
   const edited = `description = '''
 notes = true
@@ -90,7 +91,7 @@ choices = [
 });
 
 test('production setup stages every relative import target in every installed mod', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
   const missing: string[] = [];
   for (const mod of ['agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome']) {
     const files = await installedModFiles(join(f.h.directories.app, 'mods', `spider-${mod}`));
@@ -125,7 +126,7 @@ test('production upgrade rollback removes newly installed artifacts and restores
 });
 
 test('production template refresh retains the original backup for rollback', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
   const template = (await f.parts.generateTemplates(f.request, f.context))[0].path;
   const original = (await readJournal(f.request.journalRoot)).entries.find(e => e.path === template)!;
   const current = await readFile(template);
@@ -137,7 +138,7 @@ test('production template refresh retains the original backup for rollback', asy
 });
 
 test('a pi save then replan never replaces the original settings backup', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
   const path = join(f.h.directories.agent, 'settings.json');
   const original = (await readJournal(f.request.journalRoot)).entries.find(e => e.path === path)!;
   await writeFile(path, JSON.stringify({ ...JSON.parse(await readFile(path, 'utf8')), defaultModel: 'user-choice' }, null, 2));
@@ -150,7 +151,7 @@ test('a pi save then replan never replaces the original settings backup', async 
 });
 
 test('production rollback reverses only managed parts after unrelated shared edits', async () => {
-  const f = await fixture();
+  const f = await fastFixture();
   await writeFile(f.request.config.shellRc, 'export ORIGINAL=kept\n');
   await writeFile(f.request.config.core.config, 'notes = true\n[custom]\noriginal = 1\n');
   const keys = join(f.h.directories.app, 'keys.json');
@@ -175,7 +176,7 @@ test('production rollback reverses only managed parts after unrelated shared edi
 });
 
 test.each(['resume', 'theme', 'keys'] as const)('rollback preserves dependencies of a user-changed managed %s and reports it', async kind => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
   const warnings: string[] = []; f.parts.warn = warning => warnings.push(warning);
   let dependency: string;
   if (kind === 'resume') {
@@ -195,7 +196,7 @@ test.each(['resume', 'theme', 'keys'] as const)('rollback preserves dependencies
 });
 
 test.each(installedShells)('a new %s starts silently after production rollback removes the resume hook', async binary => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts); await editUnrelated(f);
+  const f = await fastFixture(); await setupHerdr(f.request, f.parts); await editUnrelated(f);
   await rollbackHerdr(f.request, f.parts);
   const home = join(f.h.root, 'shell-home'); await mkdir(home);
   const rc = await readFile(f.request.config.shellRc);
@@ -204,7 +205,7 @@ test.each(installedShells)('a new %s starts silently after production rollback r
 });
 
 test.each(installedShells)('a new %s ignores a missing resume hook or pinned runtime silently', async binary => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
   const home = join(f.h.root, 'shell-home'); await mkdir(home);
   const rc = await readFile(f.request.config.shellRc, 'utf8'), hook = join(f.h.directories.global, 'herdr/resume.sh');
   const originalHook = await readFile(hook);
@@ -219,7 +220,7 @@ test.each(installedShells)('a new %s ignores a missing resume hook or pinned run
 });
 
 test('semantic pi and app saves preserve bytes and journal without another cutover', async () => {
-  const f = await fixture(); const cutover = vi.spyOn(f.parts, 'cutover');
+  const f = await fastFixture(); const cutover = vi.spyOn(f.parts, 'cutover');
   await setupHerdr(f.request, f.parts); await editUnrelated(f);
   const app = join(f.h.directories.app, 'settings.json');
   await writeFile(app, JSON.stringify({ ...JSON.parse(await readFile(app, 'utf8')), zoom: 2 }, null, 4));
@@ -235,7 +236,7 @@ test('semantic pi and app saves preserve bytes and journal without another cutov
 });
 
 test('an artifact-only upgrade does not repeat a settled cutover', async () => {
-  const f = await fixture(); const cutover = vi.spyOn(f.parts, 'cutover');
+  const f = await fastFixture(); const cutover = vi.spyOn(f.parts, 'cutover');
   await setupHerdr(f.request, f.parts);
   const source = join(f.root, 'packages/herdr/assets/mods/spider/main.js');
   await writeFile(source, (await readFile(source, 'utf8')) + '\n// updated panel\n');
@@ -244,7 +245,7 @@ test('an artifact-only upgrade does not repeat a settled cutover', async () => {
 });
 
 test.each(['resume', 'mods', 'launcher'] as const)('doctor checks the pinned %s Node path with an explicit repair', async source => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
   const missing = join(f.h.root, 'removed-node');
   if (source === 'resume') await writeFile(f.request.config.shellRc, (await readFile(f.request.config.shellRc, 'utf8')).split(process.execPath).join(missing));
   else if (source === 'mods') {
@@ -260,7 +261,7 @@ test.each(['resume', 'mods', 'launcher'] as const)('doctor checks the pinned %s 
 });
 
 test('production setup refuses a split global root before writes and doctor names the repair', async () => {
-  const f = await fixture();
+  const f = await fastFixture();
   const wrongRoot = join(f.h.root, 'wrong-global');
   const request = { ...f.request, config: { ...f.request.config, globalRoot: wrongRoot }, journalRoot: join(wrongRoot, 'herdr/setup') };
   const parts = await f.ports.setupParts(request);
@@ -274,14 +275,14 @@ test('production setup refuses a split global root before writes and doctor name
 });
 
 test('setup can follow a managed rollback that preserved unrelated edits', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts); await editUnrelated(f);
+  const f = await fastFixture(); await setupHerdr(f.request, f.parts); await editUnrelated(f);
   await rollbackHerdr(f.request, f.parts);
   expect((await setupHerdr(f.request, f.parts)).doctor.failures).toEqual([]);
   expect(JSON.parse(await readFile(join(f.h.directories.agent, 'settings.json'), 'utf8')).unrelated).toBe('edited');
 });
 
 test('rollback reports damaged resume markers and retains the referenced hook', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
   const warnings: string[] = []; f.parts.warn = warning => warnings.push(warning);
   await writeFile(f.request.config.shellRc, (await readFile(f.request.config.shellRc, 'utf8')).replace('# spider:resume:end', '# user-edited:end'));
   await rollbackHerdr(f.request, f.parts);

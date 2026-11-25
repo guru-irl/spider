@@ -149,6 +149,7 @@ export async function selectTests({ root = process.cwd(), base, head = 'HEAD', r
         for (const file of reached) add(file, 'bundle helper importer');
       }
     }
+    if (changes.length && !reasons.size) throw new Error('changed inputs have no classified test consumer');
   } catch (error) {
     result.mode = 'full';
     // Avoid embedding local paths or command output in a portable manifest.

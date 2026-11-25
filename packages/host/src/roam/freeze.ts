@@ -375,8 +375,9 @@ function watchAbort(operation: Operation, ports: FreezePorts): void {
   queueMicrotask(retry);
 }
 
-/** The hub must cancel the move before any participant store can become active. */
-export function unfreezeParticipant(operation: Operation, ports: FreezePorts): Promise<void> {
+/** The hub must cancel the move before any participant store can become active.
+ * Only the dormant router may pass absent, after fresh owner proof under both locks. */
+export function unfreezeParticipant(operation: Operation, ports: FreezePorts, owner: "live" | "absent" = "live"): Promise<void> {
   const key = identity(operation, "session-unfreeze");
   return sequence(ports, async () => {
     const prior = ports.journal.begin(operation);
@@ -397,7 +398,9 @@ export function unfreezeParticipant(operation: Operation, ports: FreezePorts): P
       ports.journal.record(operation.id, "partial-freeze-abort", {});
     const inspectStore = partial ? storeIdentity : storeMeta;
     const savedFence = ports.journal.readIntercomFence(key.sessionId, key.moveId);
-    const fence = savedFence ? recordedFence(ports, key) : null;
+    // An exited partial-freeze owner has no producers to reopen. Its old fence
+    // cannot authorize a replacement generation; compensate the local journal only.
+    const fence = savedFence && !(partial && owner === "absent") ? recordedFence(ports, key) : null;
     if (!partial && progress?.state === "frozen" && !fence) throw new Error("Freeze fence is unavailable");
     if (!partial && fence) {
       await freezeAdmissionAndIntake(ports.gate, key.moveId, key.epoch, () => intercomPorts(ports, key).ports.close(fence.address, key.moveId, key.epoch, fence.generation));

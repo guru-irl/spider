@@ -65,7 +65,7 @@ export function createDormantControl(input: DormantControlInput): (operation: Op
       validateTarget(operation, ports);
       if (operation.kind === "session-inspect") return result(0, "inspected", await ports.inspect() as unknown as JsonObject);
       if (operation.kind === "session-freeze") return result(0, "frozen", await freezeParticipant(operation, ports) as unknown as JsonObject);
-      if (operation.kind === "session-unfreeze") { await unfreezeParticipant(operation, ports); return result(0, "unfrozen", {}); }
+      if (operation.kind === "session-unfreeze") { await unfreezeParticipant(operation, ports, "absent"); return result(0, "unfrozen", {}); }
       if (operation.kind === "session-shutdown") return result(0, "already-stopped", {});
       return result(2, "invalid-session-control");
     } catch (error) {

@@ -1753,7 +1753,9 @@ it("destroyed mirror relaunches twice after exact failed launches through produc
   vi.spyOn(identity, "readLocalIdentity").mockReturnValue(f.config);
   vi.spyOn(hostConfig, "loadHerdrConfig").mockReturnValue({ agentDirectory, core: { binary: "/fixture/hc" } } as never);
   const inventory = inventories.createProcessInventory(join(f.root, "herdr"));
-  vi.spyOn(inventories, "createProcessInventory").mockReturnValue({ ...inventory, processes: async () => [] });
+  let replacement = false;
+  vi.spyOn(inventories, "createProcessInventory").mockReturnValue({ ...inventory,
+    processes: async () => replacement ? [{ pid: process.pid, startIdentity: processStartTime(process.pid)!, classification: "pi" as const }] : [] });
   vi.spyOn(hcClients, "createHcClient").mockReturnValue({ identity: async () => ({ coreId: "core-a", sessionNamespace: "fixture", socket: join(f.root, "core.sock") }), dispose: async () => {} } as never);
   let finished = false;
   const launched: string[] = [];
@@ -1781,6 +1783,11 @@ it("destroyed mirror relaunches twice after exact failed launches through produc
     expect(launched).toHaveLength(1);
     finished = true;
     const home = sessionHome(f.global.db, SESSION) as Home;
+    replacement = true;
+    await expect(real.observation(home, { id: `${home.moveId}-move-restore-${HUB}`, kind: "move-restore", machineId: HUB, expectedEpoch: home.epoch, args: {} }))
+      .rejects.toMatchObject({ code: "ownership-unregistered-process" });
+    expect(launched).toHaveLength(1);
+    replacement = false;
     for (let attempt = 0; attempt < 2; attempt++) {
       await forgetMachine(request, f.ports);
       expect((await authority.get(SESSION))?.desired).toBe("running");

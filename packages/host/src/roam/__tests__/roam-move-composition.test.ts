@@ -80,7 +80,7 @@ it("the import lock is not a session owner, but other observers still see the cl
       const current = await inventory.probe(process.pid);
       if (current.kind !== "live") throw new Error("test process identity unavailable");
       processes.mockResolvedValue([{ pid: process.pid, startIdentity: current.startIdentity, classification: "pi" }]);
-      expect(await participant.probe(sessionId)).toEqual({ kind: "uncertain" });
+      await expect(participant.probe(sessionId)).rejects.toMatchObject({ code: "ownership-unregistered-process" });
       processes.mockResolvedValue([]);
     });
     await Promise.race([ready, locked]);
@@ -128,7 +128,7 @@ it.each(["never-started", "exited-without-adoption"] as const)("rollback retains
       entered(); await hold;
       expect(await participant.observation(home, operation)).toMatchObject({ owner: { kind: "absent" }, launchFailure });
       processes.mockResolvedValue([{ pid: process.pid, startIdentity: "other-process", classification: "pi" }]);
-      expect(await participant.observation(home, operation)).toMatchObject({ owner: { kind: "uncertain" }, launchFailure: null });
+      await expect(participant.observation(home, operation)).rejects.toMatchObject({ code: "ownership-unregistered-process" });
       processes.mockResolvedValue([]);
       expect(await participant.retireFailed(home, operation)).toEqual({ kind: "absent" });
     });

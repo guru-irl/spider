@@ -246,6 +246,8 @@ it.each(['darwin', 'linux'] as const)('pending-move disable refuses before %s se
 
 it('offline disable uses the same refusal code for a proved pending home action', async () => {
   const f = fixture();
+  // Offline disable checks a HOME-relative service path; CI keeps the real HOME.
+  vi.stubEnv('HOME', f.root);
   f.journal.begin({ id: 'pending-claim', kind: 'claim', machineId: HUB, expectedEpoch: 1, args: { sessionId: 'session-a' } });
   vi.spyOn(localDiagnostics, 'createLocalDiagnosticPorts').mockReturnValue({ async probeProcess() { return { kind: 'live', startIdentity: 'process-a' }; } } as never);
   expect(await disableRoaming(f.root)).toMatchObject({ code: 1, reason: 'home-change-in-progress', repairCommand: 'spider roam doctor' });

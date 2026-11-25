@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, beforeEach, expect, it } from 'vitest';
+import type { SessionId } from '../contracts.js';
 import { chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
@@ -263,14 +264,34 @@ it.each([
   await f.releaseChild();
 }, 5000);
 
-it.each(['unknown', 'reused'] as const)('boot ID or start time defeats PID reuse: %s', async mode => {
+it.each(['unknown', 'reused'] as const)('an unreadable or unidentified replacement keeps a stale file lease blocking: %s', async mode => {
   const f = await exactFixture();
   const prior = { pid: 500, startIdentity: 'old-start' };
   await f.leases.claim(f.file, prior, f.inventory, { mode: 'cutover', bootId: 'boot-fixture' });
   probes.set(prior.pid, mode === 'unknown' ? { kind: 'unknown' } : { kind: 'live', startIdentity: 'new-start' });
+  // A live replacement must appear in the inventory, not just the PID probe.
+  if (mode === 'reused') f.inventory.processes = async () => [{ pid: prior.pid, startIdentity: 'new-start', classification: 'pi' }];
   await expect(launchExactSession(f.request, f.ports)).rejects.toMatchObject({ code: 'session-may-be-live' });
   expect(f.spawned).toEqual([]);
   expect(await f.leases.get(f.file)).toMatchObject(prior);
+}, 5000);
+
+it('reclaims a reused file-lease PID only when its live replacement is registered to another session', async () => {
+  const f = await exactFixture(), prior = { pid: 500, startIdentity: 'old-start' };
+  await f.leases.claim(f.file, prior, f.inventory, { mode: 'cutover', bootId: 'boot-fixture' });
+  const replacement = { pid: prior.pid, startIdentity: 'new-start' };
+  probes.set(replacement.pid, { kind: 'live', startIdentity: replacement.startIdentity });
+  f.inventory.processes = async () => [{ ...replacement, classification: 'pi' }];
+  const otherFile = join(root, 'other-session.jsonl');
+  await writeFile(otherFile, '{}\n', { mode: 0o600 });
+  await f.inventory.presence.record({ ...replacement, sessionId: 'other-session' as SessionId, sessionFile: otherFile,
+    sessionName: null, kind: 'top-level', hcAddress: null });
+  try {
+    await expect(launchExactSession(f.request, f.ports)).resolves.toMatchObject(firstChild);
+    expect(f.spawned).toHaveLength(1);
+    expect(await f.leases.get(f.file)).toMatchObject(firstChild);
+    expect(await f.inventory.presence.list()).toMatchObject([{ ...replacement, sessionId: 'other-session', sessionFile: otherFile }]);
+  } finally { await f.releaseChild(); }
 }, 5000);
 
 it('reclaims a file lease only after its owner is proved absent', async () => {

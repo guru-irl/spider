@@ -9,6 +9,7 @@ import type { Home, HubOperationReadiness, JsonObject, Probe, StoreBarrier } fro
 import type { IntercomIntakeFence, SessionEndpoint } from "@spider/intercom/protocol";
 import { validHostingWarning } from "./hosting-warning";
 import { peerErrorCode } from "./peer-errors";
+import { withPrivateTransferDiagnostic } from "./private-transfer-diagnostics";
 import { MoveCompositionError, safeMoveCause, moveFailureRepair, type MoveCauseCode } from "./move-failure";
 import { MOVE_REFUSAL_MESSAGES } from "./contracts";
 import type { DestinationObservation, FreezeAck, Journal, MoveCheck, MovePorts, MoveRequest, MoveResult, SourceCleanup, MoveRefusal, MoveRefusalCode, MoveSessionOutcome, ValidatedBlockerId, Operation, Outcome, PreparedMove } from "./contracts";
@@ -247,7 +248,8 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
     const cleanupRetry = recovering && (name === "source-retire" || name === "cleanup");
     if (!cleanupRetry || !ports.journal.read(id).some(row => row.action === "move-action-start" && row.result.action === name))
       ports.journal.record(id, "move-action-start", { action: name });
-    const value = await effect(), receipt = { action: name, value: value === undefined ? null : json(value) };
+    const value = await (name === "transfer" ? withPrivateTransferDiagnostic(ports.journal, id, "result", effect) : effect());
+    const receipt = { action: name, value: value === undefined ? null : json(value) };
     const previous = cleanupRetry ? ports.journal.read(id).filter(row => row.action === "move-action-complete" && row.result.action === name).at(-1) : null;
     if (!previous || !isDeepStrictEqual(previous.result, receipt)) ports.journal.record(id, "move-action-complete", receipt);
     return value;

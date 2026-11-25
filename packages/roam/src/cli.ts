@@ -16,7 +16,7 @@ import { observeLocalHosting } from "./production-supervisor";
 import { homedir, userInfo } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { roamingCliEntry } from "./package-layout";
-import { inspectLocalConsumers, isPendingLaunchDiagnostic, localHubServiceDiagnostics, localPendingLaunchDiagnostics, localStoreInventoryDiagnostics, localHostingWarningDiagnostics, localMoveSetupDiagnostics, localPublicationDiagnostics, runLocalDoctor, runLocalStatus } from "./local-diagnostics";
+import { inspectLocalConsumers, isPendingLaunchDiagnostic, localHubServiceDiagnostics, localPendingLaunchDiagnostics, localStoreInventoryDiagnostics, localHostingWarningDiagnostics, localMoveSetupDiagnostics, localPublicationDiagnostics, localPrivateTransferDiagnostics, runLocalDoctor, runLocalStatus } from "./local-diagnostics";
 import { requestHubControl } from "./control-socket";
 import { parseRoamJson, storeScope } from "@spider/db-core/roam/codec";
 import { mapRepository } from "@spider/db-core/roam/repo-map";
@@ -325,6 +325,14 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       io.out(`${JSON.stringify({ version: 1, kind: "intercom-setup", ok: false, reason, ...(cause ? { cause } : {}) })}\n`);
     }
     return 0;
+  }
+  if (argv[0] === "roam" && argv[1] === "observe" && argv[2] === "transfer" && argv.length === 4) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(argv[3])) { io.err("Invalid private diagnostic operation.\n"); return 2; }
+    try {
+      const value = localPrivateTransferDiagnostics(root, argv[3]);
+      io.out(`${JSON.stringify({ version: 1, kind: "private-transfer-diagnostics", value })}\n`);
+      return 0;
+    } catch { io.err("Cannot inspect private transfer diagnostics.\n"); return 1; }
   }
   if (argv[0] === "roam" && argv[1] === "observe" && argv.length === 3 && ["consumers", "doctor", "hosting"].includes(argv[2])) {
     try {

@@ -1,4 +1,5 @@
 import { participantLaunchId, participantLaunchSuccessor } from "./participant-launch";
+import { withPrivateTransferDiagnostic, type TransferDiagnosticPhase } from "./private-transfer-diagnostics";
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { isDeepStrictEqual } from "node:util";
@@ -270,28 +271,32 @@ export function createMovePorts(config: RoamConfig, transport: Transport, journa
     return result;
   };
   const importMove = async (check: MoveCheck, operation: Operation, stage: "pre" | "final", ack?: FreezeAck): Promise<PreparedMove> => {
+    const diagnose = <T>(phase: TransferDiagnosticPhase, effect: () => T | Promise<T>) => stage === "final"
+      ? withPrivateTransferDiagnostic(journal, operation.id, phase, effect) : effect();
     const destination = { ...check.source, machineId: check.destinationMachine, epoch: check.source.epoch + 1, moveId: operation.id };
-    const prerequisites = successful(await call<readonly string[]>(destination, operation, "move-prerequisites", { root: check.destinationRoot, stage, repoKey: check.repoKey, workspaceId: check.workspaceId, sourceCheckoutName: checkoutName(basename(check.sourceRoot), "checkout") }));
-    const exported = successful(await call<MoveExport>(check.source, operation, "move-export", { check: json(check), stage, prerequisites: [...prerequisites], parent: json(operation), ack: ack ? json(ack) : null }));
+    const prerequisites = await diagnose("prerequisites", async () => successful(await call<readonly string[]>(destination, operation, "move-prerequisites", { root: check.destinationRoot, stage, repoKey: check.repoKey, workspaceId: check.workspaceId, sourceCheckoutName: checkoutName(basename(check.sourceRoot), "checkout") })));
+    const exported = await diagnose("export", async () => successful(await call<MoveExport>(check.source, operation, "move-export", { check: json(check), stage, prerequisites: [...prerequisites], parent: json(operation), ack: ack ? json(ack) : null })));
     const root = join(required(bindings.root, stage === "pre" ? "prepare" : "transfer"), "roam", "staging");
     const claims: MoveArtifactClaim[] = [];
     for (const artifact of [exported.workspaceArtifact, exported.sessionArtifact]) {
       if (check.source.machineId !== config.machineId) {
         const peer = required(config.peers.find(row => row.machineId === check.source.machineId), "source-peer");
-        const pulled = successful(await pullArtifact(peer, artifact, { transport, journal, limits: config.limits, root, operationId: `${operation.id}-pull-${stage}-${artifact.kind}` }));
+        const pulled = await diagnose("pull", async () => successful(await pullArtifact(peer, artifact, { transport, journal, limits: config.limits, root, operationId: `${operation.id}-pull-${stage}-${artifact.kind}` })));
         if (check.destinationMachine !== config.machineId) {
-          const forwarded = await stageArtifact(pulled.file, artifact.kind, config.limits, { root, artifactId: artifact.id });
-          if (!isDeepStrictEqual(forwarded, artifact)) throw new MoveAdapterError("move-relay-artifact-mismatch");
+          await diagnose("relay", async () => {
+            const forwarded = await stageArtifact(pulled.file, artifact.kind, config.limits, { root, artifactId: artifact.id });
+            if (!isDeepStrictEqual(forwarded, artifact)) throw new MoveAdapterError("move-relay-artifact-mismatch");
+          });
         }
       }
       if (check.destinationMachine !== config.machineId) {
         const peer = required(config.peers.find(row => row.machineId === check.destinationMachine), "destination-peer");
-        successful(await transferArtifact(peer, artifact, { transport, journal, limits: config.limits, root, operationId: `${operation.id}-send-${stage}-${artifact.kind}` }));
+        await diagnose("send", async () => successful(await transferArtifact(peer, artifact, { transport, journal, limits: config.limits, root, operationId: `${operation.id}-send-${stage}-${artifact.kind}` })));
       }
       claims.push({ artifactId: artifact.id, peer: check.destinationMachine !== config.machineId ? config.machineId : check.source.machineId,
         operationId: `${operation.id}-${check.destinationMachine !== config.machineId ? "send" : "pull"}-${stage}-${artifact.kind}`, sha256: artifact.sha256 });
     }
-    return successful(await call<PreparedMove>(destination, operation, "move-import", { check: json(check), exported: json(exported), parent: json(operation), claims: json(claims) }));
+    return diagnose("import", async () => successful(await call<PreparedMove>(destination, operation, "move-import", { check: json(check), exported: json(exported), parent: json(operation), claims: json(claims) })));
   };
   const intercomPorts = (): IntercomMovePorts => required(bindings.intercom, "intercom").ports;
   const intercomEffect = <K extends keyof IntercomMovePorts>(name: K): IntercomMovePorts[K] => required(intercomPorts()[name], `intercom.${name}`);
@@ -590,6 +595,8 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
     return { code: 3, reason: "waiting-for-hub-evidence", operationId: operation.id, home: null, epoch: operation.expectedEpoch, repairCommand: `spider roam recover ${operation.args.moveId}`, value: null };
   const id = operation.args.sessionId as string, home = { sessionId: id, machineId: operation.machineId, epoch: operation.expectedEpoch!, moveId: String(operation.args.moveId), updatedAt: 0 };
   const result = (value: unknown): Outcome<JsonObject> => ({ code: 0, reason: "complete", operationId: operation.id, home, epoch: home.epoch, repairCommand: null, value: json(value) });
+  const transferEffect = (phase: TransferDiagnosticPhase, stage: unknown, effect: () => Promise<Outcome<JsonObject>>) => stage === "final"
+    ? withPrivateTransferDiagnostic(journal, String(operation.args.moveId), phase, effect) : effect();
   if (operation.kind === "move-location") {
     const current = sessionHome(participant.globalDb, id);
     if (!current || current === "unknown" || current.machineId !== home.machineId || current.epoch !== home.epoch) throw new MoveAdapterError("participant-home-mismatch");
@@ -629,7 +636,7 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
     return result(await intake.ready(fence, endpoint));
   }
   if (operation.kind === "move-diagnostics") return result(await participant.auth());
-  if (operation.kind === "move-prerequisites") {
+  if (operation.kind === "move-prerequisites") return transferEffect("participant-prerequisites", operation.args.stage, async () => {
     const destination = String(operation.args.root), stage = operation.args.stage;
     const checkout = await resolveMoveCheckout({ globalDb: participant.globalDb, root: participant.root, repoKey: String(operation.args.repoKey),
       workspaceId: String(operation.args.workspaceId), sourceName: operation.args.sourceCheckoutName, moveId: String(operation.args.moveId), git: participant.git, journal });
@@ -652,7 +659,7 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
       prerequisites.push(staged.toString("utf8").trim());
     }
     return result(prerequisites);
-  }
+  });
   if (operation.kind === "move-seed") {
     const local = location(participant.globalDb, id), keys = operation.args.keys as StoreKey[];
     if (!Array.isArray(keys) || keys.length !== local.stores.length || keys.some(key => !local.stores.includes(key))) throw new MoveAdapterError("participant-stores-unavailable");
@@ -686,7 +693,7 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
     if (!parent || parent.id !== operation.args.moveId || parent.machineId !== participant.config.hubMachineId || parent.args.sessionId !== id) throw new MoveAdapterError("move-request-invalid");
     journal.begin(parent);
   }
-  if (operation.kind === "move-export") {
+  if (operation.kind === "move-export") return transferEffect("participant-export", operation.args.stage, async () => {
     const check = operation.args.check as unknown as MoveCheck, stage = operation.args.stage as "pre" | "final", ack = operation.args.ack as unknown as FreezeAck | null;
     const writers = await participant.writers(check.sourceRoot);
     if (writers.length) throw new MoveError("move-preflight-blocked", writers.map(row => validateBlockerId(row.id)));
@@ -701,8 +708,8 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
     const sessionArtifact = await stageArtifact(session.file, "session", participant.config.limits, { root, artifactId: `${operation.args.moveId}-session` });
     persistExportedSnapshot(participant.globalDb, workspace);
     return result({ workspace, session, workspaceArtifact, sessionArtifact });
-  }
-  if (operation.kind === "move-import") {
+  });
+  if (operation.kind === "move-import") return transferEffect("participant-import", (operation.args.exported as unknown as MoveExport)?.workspace?.stage, async () => {
     const exported = operation.args.exported as unknown as MoveExport, check = operation.args.check as unknown as MoveCheck;
     const stores = parseLocationStores(check.storeKeys);
     const root = join(required(bindings.root, "root"), "roam", "staging"), claims = operation.args.claims as unknown as MoveArtifactClaim[];
@@ -730,7 +737,7 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
     const installed = { ...session, file: target };
     recordLocation(participant.globalDb, { sessionId: id, stores, home: sessionHome(participant.globalDb, id) === "unknown" ? null : sessionHome(participant.globalDb, id) as Home | null, file: target, cwd: check.destinationCwd });
     return result({ workspace, session: installed });
-  }
+  });
   if (operation.kind === "move-verify") {
     const ack = operation.args.ack as unknown as FreezeAck, snapshot = operation.args.workspace as unknown as WorkspaceSnapshot;
     const session = await inspectSession(ack.file, ack.sessionId, ack.leaf, participant.config.limits);

@@ -15,7 +15,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { lockParticipant, type ParticipantLockOptions } from "../herdr/participant-lock.js";
 import { ordinaryWorkAllowed as isOrdinaryWorkAllowed } from "./activation.js";
 import { AUTO_RELOAD_ARG } from "../auto-reload.js";
-import { productionParticipantAdmission } from "./readiness.js";
+import { productionParticipantAdmission, type ParticipantAdmissionHooks } from "./readiness.js";
 import { lstatSync } from "node:fs";
 import { participantCaptureReady } from "@spider/roam/production-supervisor";
 import { isDeepStrictEqual } from "node:util";
@@ -48,7 +48,7 @@ export interface AdmissionPorts {
     freezeRecovery?: { moveId: string; epoch: number } }>;
   lock(sessionId: string, file: string): Promise<() => Promise<void>>;
   setContext?(ctx: ExtensionContext): void;
-  prepare?(sessionId: string, file: string): Promise<void>;
+  prepare?: ParticipantAdmissionHooks["prepare"];
   ready?(sessionId: string, file: string, epoch: number, home: Home | null): Promise<void>;
   stopped?(sessionId: string): Promise<void>;
 }
@@ -84,7 +84,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
   const ordinaryWorkAllowed = () => isOrdinaryWorkAllowed(admission);
   let sessionId = "", sessionFile = "", epoch: number | null = null, participating = false, generation = 0;
   let ownershipVerified = false;
-  let discoverable = false, captureVersion: string | null = null;
+  let discoverable = false, captureVersion: string | null = null, preparationPending = false;
   let held: { sessionId: string; file: string; release: () => Promise<void>; valid: boolean } | undefined;
   let transition: Promise<void> = Promise.resolve();
   let freeze: { moveId: string; epoch: number } | undefined;
@@ -152,7 +152,8 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
         if (!id) { publishResult(handoffRequired ? "blocked" : "ordinary", null, handoffRequired ? VERIFY : undefined); return; }
         stage = "prepare";
         let preparationFailed = false, preparationFailure: unknown;
-        try { await ports.prepare?.(id, file); }
+        preparationPending = false;
+        try { preparationPending = await ports.prepare?.(id, file, ctx?.sessionManager?.getHeader?.()) === "pending-file"; }
         catch (error) { preparationFailed = true; preparationFailure = error; setupFailed("preparation", error); }
         let state: Awaited<ReturnType<AdmissionPorts["load"]>>;
         stage = "load";
@@ -194,7 +195,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
         }
         if (!late) observed.add(id);
         const home = state.home;
-        if (preparationFailed) { publishResult("blocked", home, initialAdmissionFailure("prepare", preparationFailure, id)); return; }
+        if (preparationFailed || preparationPending) { publishResult("blocked", home, initialAdmissionFailure("prepare", preparationFailure, id)); return; }
         epoch = home?.epoch ?? state.states[0]?.epoch ?? null;
         if (state.initialConflict) { publishResult("blocked", home, "This session has conflicting initial homes. Run /spider roam doctor for details."); return; }
         const frozenState = state.states.find(row => row.state === "frozen");
@@ -262,6 +263,8 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
           if (admitted && result) {
             participating = true; observed.add(id);
             publish(result.kind, result.home); watchSignals();
+          } else if (preparationPending && result?.kind === "ordinary" && !setupFailure) {
+            publish("ordinary", null);
           } else {
             let detail = `late-admission-${stage}-failed. ${result?.blockers[0]?.detail ?? VERIFY}`;
             try { await release(); } catch { detail = `late-admission-lock-release-failed. ${detail}`; }
@@ -309,6 +312,10 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
         const version = ports.captureVersion?.() ?? null;
         if (version === null || version === captureVersion) return admission;
         captureVersion = version;
+        if (preparationPending) {
+          await start(lastContext, false, true);
+          return admission;
+        }
         const ticket = generation;
         let state: Awaited<ReturnType<AdmissionPorts["load"]>>;
         try { state = await ports.load(sessionId); }
@@ -517,7 +524,8 @@ export function createAdmissionPorts(options: ParticipantLockOptions = {}): Admi
         }
         if (!participantReady) return null;
       }
-      return `${observed}|${discoveryFiles.map(dbVersion).join('|')}`;
+      const file = context.sessionManager.getSessionFile();
+      return `${observed}|${file ? fileVersion(file) : 'no-session-file'}|${discoveryFiles.map(dbVersion).join('|')}`;
     },
     setupDiagnostic(id, failure) {
       const db = openDb(join(paths.globalRoot, "spider.db"), { fileMustExist: true, checkpointOnClose: false });

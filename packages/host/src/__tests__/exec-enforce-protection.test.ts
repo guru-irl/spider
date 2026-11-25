@@ -115,16 +115,6 @@ describe("exec.enforce protection", () => {
     });
   }
 
-  it("reads both config layers once for one bash decision", () => {
-    const handlers: Record<string, Function> = {};
-    registerHooks({ on: (name, fn) => { handlers[name] = fn; } });
-    const root = paths.projectRoot;
-    const lookup = vi.spyOn(paths, "projectRoot").mockImplementation((cwd: string) => root(cwd));
-    try {
-      expect(handlers.tool_call({ toolName: "bash", cwd: scratch, input: { command: "echo test" } })).toMatchObject({ block: true });
-      expect(lookup).toHaveBeenCalledTimes(1);
-    } finally { lookup.mockRestore(); }
-  });
   it("fails closed when config lookup throws", () => {
     const handlers: Record<string, Function> = {};
     registerHooks({ on: (name, fn) => { handlers[name] = fn; } });

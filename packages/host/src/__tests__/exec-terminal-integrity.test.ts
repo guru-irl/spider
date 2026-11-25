@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "@spider/db-core";
 import { PolyglotExecutor, runExec, runBatch, detectRuntimes } from "@spider/context";
@@ -13,6 +13,7 @@ const opts = { expanded: false } as any;
 async function sleep(ms: number): Promise<void> {
   await new Promise((r) => setTimeout(r, ms));
 }
+const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 function render(details: any, args: any, text = ""): string {
   const result = { content: text ? [{ type: "text", text }] : [], details };
@@ -51,13 +52,15 @@ describe("exec terminal-state outcome matrix — through the REAL host mapping +
   });
 
   it("C-1: real signal death with a live descendant (PROBE_C2 reproduction) renders as a KNOWN signal outcome, never 'detached'/'exit unknown', and discloses the real job dir path", async () => {
-    const root = makeFixture();
+    const root = makeFixture(), release = join(root, "release-signal"), finished = join(root, "signal-finished");
+    let started = false;
     try {
       const args = {
         action: "exec", language: "shell",
-        code: `(i=1; while [ $i -le 20 ]; do sleep 0.1; i=$((i+1)); done) & echo BEFORE_SIGNAL; kill -TERM $$`,
+        code: `(while [ ! -e ${shellQuote(release)} ]; do sleep 0.02; done; printf done > ${shellQuote(finished)}) & echo BEFORE_SIGNAL; kill -TERM $$`,
         background: true,
       };
+      started = true;
       const res = await runExec(args, { cwd: root } as any);
       const d = res.details as any;
       const text = render(d, args, res.text);
@@ -75,9 +78,11 @@ describe("exec terminal-state outcome matrix — through the REAL host mapping +
         expect(text).toMatch(/retained/i);
         expect(text).toContain(d.backgroundJob.dir); // real path disclosed, never blank
       }
-      await sleep(2500);
     } finally {
-      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      writeFileSync(release, "");
+      try {
+        if (started) await vi.waitFor(() => expect(existsSync(finished)).toBe(true), { timeout: 5000, interval: 20 });
+      } finally { rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
     }
   }, 15_000);
 
@@ -105,15 +110,17 @@ describe("exec terminal-state outcome matrix — through the REAL host mapping +
   });
 
   it("real timeout handoff: neutral 'detached', exit unknown, real pid/job/receipt paths disclosed (never blank)", async () => {
-    const root = makeFixture();
+    const root = makeFixture(), release = join(root, "release-timeout");
+    let receipt: string | undefined;
     try {
       const args = {
         action: "exec", language: "shell",
-        code: "i=1; while [ $i -le 20 ]; do echo tick; sleep 0.1; i=$((i+1)); done",
+        code: `while [ ! -e ${shellQuote(release)} ]; do sleep 0.02; done; echo tick`,
         background: true, timeout: 150,
       };
       const res = await runExec(args, { cwd: root } as any);
       const d = res.details as any;
+      receipt = d.backgroundJob?.receipt;
       expect(d.outcome).toBe("timeout");
       const text = render(d, args, res.text);
       expect(text).not.toContain("✓");
@@ -128,10 +135,11 @@ describe("exec terminal-state outcome matrix — through the REAL host mapping +
       expect(text).not.toMatch(/appears when it exits/i);
       expect(text).toContain(d.backgroundJob.dir);
       expect(text).toContain(d.backgroundJob.receipt);
-      await sleep(2200);
-      rmSync(d.backgroundJob.dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     } finally {
-      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      writeFileSync(release, "");
+      try {
+        if (receipt) await vi.waitFor(() => expect(existsSync(receipt!)).toBe(true), { timeout: 5000, interval: 20 });
+      } finally { rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
     }
   }, 15_000);
 

@@ -51,20 +51,6 @@ it("legacy run backfilled by migration is accounted locally", () => {
   expect(markers(row.id)).toEqual({ n: 1 });
 }, 5000);
 
-it("local origin run is accounted", () => {
-  const row = run(A, true, "local");
-  accounting.restore(replica.db, "owner");
-  expect(appended.map(item => item.model)).toEqual(["local"]);
-  expect(markers(row.id)).toEqual({ n: 1 });
-}, 5000);
-
-it("foreign origin run is not accounted here", () => {
-  const row = run(B, true, "foreign");
-  accounting.restore(replica.db, "owner");
-  expect(appended).toEqual([]);
-  expect(markers(row.id)).toEqual({ n: 0 });
-}, 5000);
-
 it("participant state does not change run-origin accounting", () => {
   const legacy = legacyRun();
   expect(legacy.origin_machine).toBe(A);

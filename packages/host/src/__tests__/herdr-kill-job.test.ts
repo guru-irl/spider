@@ -3,7 +3,8 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { installFixtureRuntime, mountedFixture } from './herdr-wiring-fixture.js';
+import { mountedFixture } from './herdr-wiring-fixture.js';
+import { seedMountedRuntime } from './herdr-runtime-seed.testutil.js';
 import { processStartIdentity } from '../../../herdr/src/jobs/handoff.js';
 import { killOwnedJob } from '../herdr/kill-job.js';
 import { HerdrError } from '../../../herdr/src/client/parse.js';
@@ -12,10 +13,11 @@ import { freshDb } from '../../../subagents/src/__tests__/helpers/testutil.js';
 
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
+
 it('kills a session-owned detached job by prefix, including descendants, and sends a cancelled notice', async () => {
   const f = await mountedFixture('fake', 'tui', true, false, true, true);
   try {
-    await installFixtureRuntime(f);
+    await seedMountedRuntime(f);
     const execution = f.mount.execution();
     const code = `process.on('SIGTERM',()=>{});const {spawn}=require('node:child_process');const child=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});console.log('child-ready '+process.pid);setInterval(()=>{},1000)"],{stdio:['ignore','pipe','inherit']});child.stdout.on('data',b=>process.stdout.write(b));console.log('parent-ready '+process.pid);setInterval(()=>{},1000)`;
     const job = await execution.remote!.execute({ owner: execution.owner!, on: 'remote.invalid' as never,
@@ -46,7 +48,7 @@ it('kills a session-owned detached job by prefix, including descendants, and sen
 it('still kills an ignoring descendant after its group leader exits on TERM', async () => {
   const f = await mountedFixture('fake', 'tui', true, false, true, true);
   try {
-    await installFixtureRuntime(f);
+    await seedMountedRuntime(f);
     const execution = f.mount.execution();
     const code = `const {spawn}=require('node:child_process');const child=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});console.log('child-ready '+process.pid);setInterval(()=>{},1000)"],{stdio:['ignore','pipe','inherit']});child.stdout.on('data',b=>process.stdout.write(b));setInterval(()=>{},1000)`;
     const job = await execution.remote!.execute({ owner: execution.owner!, on: 'remote.invalid' as never,
@@ -63,7 +65,7 @@ it('still kills an ignoring descendant after its group leader exits on TERM', as
 it('stops an identifiable older-runtime job by its unique program path', async () => {
   const f = await mountedFixture('fake', 'tui', true, false, true, true);
   try {
-    await installFixtureRuntime(f);
+    await seedMountedRuntime(f);
     const execution = f.mount.execution();
     const job = await execution.remote!.execute({ owner: execution.owner!, on: 'remote.invalid' as never,
       source: { kind: 'code', language: 'shell', code: 'printf legacy-ready; sleep 30' }, background: true, timeout: 100 });
@@ -115,7 +117,7 @@ it('preserves subagent kill and names an unowned job on a miss', async () => {
 it('lets the owning session IPC cancel a detached job but refuses an unowned ID', async () => {
   const f = await mountedFixture('fake', 'tui', true, false, true, true);
   try {
-    await installFixtureRuntime(f);
+    await seedMountedRuntime(f);
     const execution = f.mount.execution();
     const job = await execution.remote!.execute({ owner: execution.owner!, on: 'remote.invalid' as never,
       source: { kind: 'code', language: 'shell', code: 'printf ipc-ready; sleep 30' }, background: true, timeout: 100 });
@@ -136,7 +138,7 @@ it('adds a conservative SIGTERM hint to an older 143 receipt', () => {
 it('reports a conventional signal exit in both the receipt and completion notice', async () => {
   const f = await mountedFixture('fake', 'tui', true, false, true, true);
   try {
-    await installFixtureRuntime(f);
+    await seedMountedRuntime(f);
     const execution = f.mount.execution();
     const job = await execution.remote!.execute({ owner: execution.owner!, on: 'remote.invalid' as never,
       source: { kind: 'code', language: 'shell', code: 'sleep 1; exit 143' }, background: true, timeout: 50 });

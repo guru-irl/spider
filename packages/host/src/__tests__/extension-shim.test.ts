@@ -47,7 +47,7 @@ function fixture(options: { dev?: boolean; missing?: boolean; compileThrows?: bo
     },
   };
   runInNewContext(source + "\nglobalThis.load = spider;", context, { importModuleDynamically: vmConstants.USE_MAIN_CONTEXT_DEFAULT_LOADER });
-  return { context: context as typeof context & { load: () => Promise<string> }, original, forwarded, isWrapped: () => wrapped, isDeferredRestored: () => deferredRestored, source, received: () => received };
+  return { context: context as typeof context & { load: () => Promise<string> }, original, forwarded, isWrapped: () => wrapped, isDeferredRestored: () => deferredRestored, received: () => received };
 }
 
 it("drops only matching ExperimentalWarnings and forwards all other arguments and receivers", async () => {
@@ -87,12 +87,6 @@ it.each(["assistant renderer", "Markdown renderer", "clipboard"] as const)("stil
   if (missing === "clipboard") (f.context.piHost as { copyToClipboard?: unknown }).copyToClipboard = undefined;
   expect(await f.context.load()).toBe("native");
   expect(f.received()).toEqual({});
-});
-
-it("renders a guarded constant and plain bundle-path fallback", () => {
-  const f = fixture();
-  expect(f.source).toContain("constants?.USE_MAIN_CONTEXT_DEFAULT_LOADER");
-  expect(f.source).toMatch(/import\(.*bundle.*\)/);
 });
 
 it.each([

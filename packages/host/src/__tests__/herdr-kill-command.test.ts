@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
-import { mountedFixture, installFixtureRuntime } from './herdr-wiring-fixture.js';
+import { mountedFixture } from './herdr-wiring-fixture.js';
+import { seedMountedRuntime } from './herdr-runtime-seed.testutil.js';
 import { processStartIdentity } from '../../../herdr/src/jobs/handoff.js';
 import { killTarget, menuItems } from '../../../herdr/assets/agents/move.js';
 
@@ -9,7 +10,7 @@ afterEach(() => { vi.unstubAllEnvs(); vi.resetModules(); });
 it('kills a live remote command through its owner without killing the observer instead', async () => {
   const f = await mountedFixture('fake', 'tui', true, false, true, true);
   try {
-    await installFixtureRuntime(f);
+    await seedMountedRuntime(f);
     const execution = f.mount.execution();
     const code = `const {spawn}=require('node:child_process');process.on('SIGTERM',()=>console.log('parent-term'));const child=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>console.log('child-term'));console.log('child-ready '+process.pid);setInterval(()=>{},1000)"],{stdio:['ignore','pipe','inherit']});child.stdout.on('data',b=>process.stdout.write(b));console.log('parent-ready '+process.pid);setInterval(()=>{},1000)`;
     const job = await execution.remote!.execute({ owner: execution.owner!, on: 'remote.invalid' as never,

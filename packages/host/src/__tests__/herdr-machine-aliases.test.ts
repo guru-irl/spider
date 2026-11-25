@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, it, vi } from 'vitest';
 import { join } from 'node:path';
-import { installFixtureRuntime, mountedFixture } from './herdr-wiring-fixture.js';
+import { mountedFixture } from './herdr-wiring-fixture.js';
+import { seedMountedRuntime } from './herdr-runtime-seed.testutil.js';
 import { createClientFixture } from '../../../herdr/src/__tests__/testutil.js';
 import { createHcClient } from '../../../herdr/src/client/hc.js';
 import { resolveMachine } from '../herdr/machine.js';
@@ -35,8 +36,7 @@ it('uses aliases in a child remote execution', async () => {
   vi.stubEnv('PI_SPIDER_TOP_SESSION_ID', 'parent-fixture');
   const f = await mountedFixture('fake', 'tui', true, true, true, true);
   try {
-    vi.stubEnv('PI_SUBAGENT_CHILD', '0');
-    try { await installFixtureRuntime(f); } finally { vi.stubEnv('PI_SUBAGENT_CHILD', '1'); }
+    await seedMountedRuntime(f);
     const execution = f.mount.execution();
     const result = await execution.remote!.execute({ owner: execution.owner!, on: 'MANAGED.EXAMPLE.INVALID' as never,
       source: { kind: 'code', language: 'shell', code: 'printf child-alias-ok' } });
@@ -47,7 +47,7 @@ it('uses aliases in a child remote execution', async () => {
 it('uses a configured alias for execution and file preflight, and explains misses', async () => {
   const f = await mountedFixture('fake', 'tui', true, false, true, true);
   try {
-    await installFixtureRuntime(f);
+    await seedMountedRuntime(f);
     const execution = f.mount.execution();
     const result = await execution.remote!.execute({ owner: execution.owner!, on: 'MANAGED.EXAMPLE.INVALID' as never,
       source: { kind: 'code', language: 'shell', code: 'printf alias-ok' } });

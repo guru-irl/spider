@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: MIT
 import { afterEach, expect, test, vi } from 'vitest';
-import { access, copyFile, cp, mkdir, writeFile } from 'node:fs/promises';
+import { access, copyFile, cp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { openDbAt } from '@spider/db-core';
 import { createHerdrHarness } from '../../../herdr/src/__tests__/testutil.js';
 import { crashFakeCore } from '../../../herdr/src/__tests__/fake-core-crash.js';
-import { setupHerdr, standardHerdrConfigPath } from '../../../herdr/src/setup/installer.js';
+import { runtimeInstallPath, standardHerdrConfigPath } from '../../../herdr/src/setup/installer.js';
 import { isCoreAvailable } from '../../../herdr/src/client/liveness.js';
 import { HerdrError } from '../../../herdr/src/client/parse.js';
-import { createProductionHerdrCliPorts } from '../herdr/ports.js';
 import { writeFixturePaneEndpoint } from '../../../herdr/src/__tests__/endpoint-fixture.js';
 import { controlConfig } from '../control.js';
 import { mountHerdr, type HerdrMount } from '../herdr/mount.js';
@@ -40,20 +39,11 @@ async function fixture(mode: 'fake' | 'hc' = 'fake') {
     machines: [{ name: 'remote.invalid', aliases: [], nodePath: process.execPath,
       runtime: { cwd: null, directory: join(h.directories.remote, 'programs'), commands: {} } }] }));
   await writeFile(join(h.directories.app, 'settings.json'), '{}');
-  const ports = createProductionHerdrCliPorts(h.root, h.localEnv);
   vi.stubEnv('SPIDER_TEST_FIXTURE_CHECKOUT', resolve('.'));
-  const cwd = vi.spyOn(process, 'cwd').mockReturnValue(h.directories.local);
-  try {
-    const request = await ports.request(), parts = await ports.setupParts(request);
-    await setupHerdr(request, { ...parts,
-      // No app window or cutover: exercise the real installer and runtime bootstrap.
-      preflight: async () => ({ fingerprint: 'notice-test', coreIdentity: h.owner!.terminal,
-        mods: ['panel', 'machines'].map(name => ({ directory: join(h.directories.app, 'mods', `spider-${name}`) })),
-        targets: [{ machine: 'remote.invalid' as never, nodePath: process.execPath, coreStartedAt: 'isolated' }], retiredTerminals: [], layoutExport: true }),
-      stageLook: async () => [], generateTemplates: async () => [], cutover: async () => ({ terminals: [], identities: {} }),
-      verify: async () => ({ checks: [], failures: [], warnings: [], probes: [] }),
-    });
-  } finally { cwd.mockRestore(); await ports.dispose(); }
+  const directory = join(h.directories.remote, 'programs');
+  const runtime = await readFile(join(h.root, 'dist/herdr/remote-runtime.mjs'));
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await writeFile(runtimeInstallPath(directory, runtime), runtime);
   const dbPath = join(h.root, 'runs.db'), globalPath = join(h.root, 'global.db');
   openDbAt(dbPath, 'worktree').close(); openDbAt(globalPath, 'global').close();
   const hooks = new Map<string, Function[]>(), notices: string[] = [], errors: unknown[] = [];

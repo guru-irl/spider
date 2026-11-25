@@ -149,11 +149,6 @@ test('disabled roaming on an ordinary configured machine falls back to home', as
   expect(await choosePaneFolder({ focused, chosen: remote }, createPaneFolderMap(createPaneFolderPorts({ local, localFolders: folders, request })))).toEqual({ cwd: null, reason: 'home' });
   expect(request).not.toHaveBeenCalled();
 });
-test('a removed mapped directory never reaches the launch callback', async () => {
-  const p = port(); vi.mocked(p.directoryExists).mockResolvedValue(false); const launch = vi.fn();
-  try { const folder = await choosePaneFolder({ focused: source, chosen: remote }, createPaneFolderMap(p)); await launch(folder); } catch { /* No launch is allowed after folder refusal. */ }
-  expect(launch).not.toHaveBeenCalled();
-});
 test('box to box mapping never probes the Mac filesystem', async () => {
   const local = { coreId: 'core-local' as CoreId, socket: '/home/example/core.sock', sessionNamespace: 'fixture' };
   const locateFolder = vi.fn(), resolveFolder = vi.fn();

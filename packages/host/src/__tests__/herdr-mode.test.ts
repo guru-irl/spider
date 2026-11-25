@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 import { afterEach, expect, test, vi } from 'vitest';
 import { existsSync } from 'node:fs';
-import { readFile, stat } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { ProcessTerminal } from '@earendil-works/pi-tui';
 import { openDbAt } from '@spider/db-core';
-import { setupHerdr } from '../../../herdr/src/setup/installer.js';
+import { runtimeInstallPath, setupHerdr } from '../../../herdr/src/setup/installer.js';
 import { createTerminalRegistry, terminalIdentityKey } from '../../../herdr/src/sessions/registry.js';
 import { createProcessPresence } from '../../../herdr/src/sessions/presence.js';
 import { createMachineCache } from '../../../herdr/src/ssh/cache.js';
@@ -26,15 +26,22 @@ afterEach(async () => {
   }
 });
 
-async function fixture(mode: ExtensionContext['mode']) {
+async function fixture(mode: ExtensionContext['mode'], install = false) {
   const f = await setupFixture();
-  await setupHerdr(f.request, { ...f.parts,
-    preflight: async () => ({ fingerprint: 'mode-test', coreIdentity: f.h.owner!.terminal,
-      mods: ['panel', 'machines'].map(name => ({ directory: join(f.h.directories.app, 'mods', `spider-${name}`) })),
-      targets: [{ machine: 'remote.invalid' as never, nodePath: process.execPath, coreStartedAt: 'isolated' }], retiredTerminals: [], layoutExport: true }),
-    stageLook: async () => [], generateTemplates: async () => [], cutover: async () => ({ terminals: [], identities: {} }),
-    verify: async () => ({ checks: [], failures: [], warnings: [], probes: [] }),
-  });
+  if (install) {
+    await setupHerdr(f.request, { ...f.parts,
+      preflight: async () => ({ fingerprint: 'mode-test', coreIdentity: f.h.owner!.terminal,
+        mods: ['panel', 'machines'].map(name => ({ directory: join(f.h.directories.app, 'mods', `spider-${name}`) })),
+        targets: [{ machine: 'remote.invalid' as never, nodePath: process.execPath, coreStartedAt: 'isolated' }], retiredTerminals: [], layoutExport: true }),
+      stageLook: async () => [], generateTemplates: async () => [], cutover: async () => ({ terminals: [], identities: {} }),
+      verify: async () => ({ checks: [], failures: [], warnings: [], probes: [] }),
+    });
+  } else {
+    const directory = f.request.config.machines[0].runtime.directory;
+    const runtime = await readFile(join(f.root, 'dist/herdr/remote-runtime.mjs'));
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await writeFile(runtimeInstallPath(directory, runtime), runtime);
+  }
   for (const [key, value] of Object.entries(f.h.localEnv)) if (value !== undefined) vi.stubEnv(key, value);
   vi.stubEnv('SPIDER_GLOBAL_ROOT', f.h.directories.global); vi.stubEnv('PI_SUBAGENT_CHILD', '0');
   controlConfig('set', f.h.root, 'herdr.config', f.request.configPath, 'global');
@@ -80,7 +87,7 @@ test.each(['json', 'print'] as const)('a %s mount leaves the interactive mapping
 }, 60000);
 
 test('a nonnested tui top-level mount activates, publishes and replaces the terminal mapping', async () => {
-  const f = await fixture('tui');
+  const f = await fixture('tui', true);
   await f.registry.record({ owner: f.h.owner!, recordedAt: 1, coreStartedAt: 1,
     environment: { agentDirectory: f.h.directories.agent, extensionArguments: [] } });
   await f.fire('session_start');

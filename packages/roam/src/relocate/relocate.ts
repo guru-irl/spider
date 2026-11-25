@@ -71,6 +71,24 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
       };
       const moving = movingHome(plan);
       const committed = committedHome(plan);
+      if (home.state === "moving" && request.destinationMachine === plan.source.machineId) {
+        step = "stop-source";
+        value(await ports.stopSource(plan, moving));
+        const restored: RunningHome = { ...home, state: "running", destination: null,
+          epoch: home.epoch + 1, updatedAt: plan.startedAt };
+        step = "commit-home";
+        value(await ports.activate(restored, plan.sourcePlacement));
+        await cas(home, restored);
+        value(await ports.publishHome(restored, restored.machineId));
+        step = "start-destination";
+        value(await ports.start(restored, plan.sourcePlacement));
+        step = "confirm";
+        const confirmed = value(await ports.confirm(restored, plan.sourcePlacement));
+        const result = { moveId, home: restored, placement: plan.sourcePlacement,
+          terminal: confirmed.terminal, disposition: "undone" as const };
+        await save({ ...checkpoint, terminal: confirmed.terminal, result });
+        return { ok: true, value: result };
+      }
       step = "mark-moving";
       if (home.state !== "moving") await cas(plan.source, moving);
       if (!done(step)) {

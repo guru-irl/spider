@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { relocate } from "../relocate/relocate";
-import { deferred, destination, ports, request, running, source, state } from "./relocate-fakes";
+import { deferred, destination, ports, request, running, sessionId, source, state, third } from "./relocate-fakes";
 
 const protocol = (effects: string[]) => effects.filter(e => !e.startsWith("save-"));
 
@@ -35,6 +35,22 @@ describe("relocate", () => {
     expect(s.snapshots.size).toBe(1); expect(s.segments.size).toBe(1);
     expect(s.installed.size).toBe(1); expect(s.pushed.size).toBe(1);
     expect(s.processes).toEqual(new Set([destination]));
+  });
+
+  it.each(["mark-moving", "stop-source", "pull-source", "push-destination", "install-destination"] as const)("source target undoes an incomplete move after %s", async step => {
+    const s = state(); s.failAfter = `save-${step}`;
+    expect((await relocate(request, ports(s))).ok).toBe(false);
+    const before = s.effects.length;
+    expect(await relocate({ sessionId, destinationMachine: source }, ports(s))).toMatchObject({
+      ok: true, value: { disposition: "undone", moveId: "v0-move-1", terminal: "terminal-source",
+        home: { machineId: source, state: "running", epoch: 3, moveId: "v0-move-1" } },
+    });
+    expect(protocol(s.effects.slice(before))).toEqual([
+      "lock-free", "stop-source", "activate-source", "cas-running",
+      "publish-source-running", "start-source", "confirm-source",
+    ]);
+    expect(s.processes).toEqual(new Set([source]));
+    expect(s.backups.has(source)).toBe(true);
   });
 
   it("capture waits for source lock freedom", async () => {

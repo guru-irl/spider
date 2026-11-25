@@ -1156,6 +1156,13 @@ is not proof of absent authorization. Unsafe authorization files or any retained
 pair marker keep cleanup unconfirmed. Cleanup generates no credentials and
 checks authorization absence again before closing the target record.
 
+After a peer upgrade, revoke and background reconciliation use the configured
+CLI for the recorded machine ID. The configured global root and agent directory
+must still match enrollment. Only the executable changes; the recorded pair,
+resource names, fence, and consent remain unchanged. Without a configured peer,
+cleanup uses the recorded executable. A stored identity pin never substitutes
+for a live endpoint's cleanup proof.
+
 With both boxes reachable and no live terminals, a plain revoke from the hub
 stops and disables any remaining pair units, removes the target key and source route,
 and closes all three pair records. Repeated revokes have no further effects.

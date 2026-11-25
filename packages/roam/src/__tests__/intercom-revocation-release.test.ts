@@ -13,11 +13,12 @@ const A = "00000000-0000-4000-8000-000000000002", B = "00000000-0000-4000-8000-0
 const CURRENT_CLI = "/fixture/current/cli";
 afterEach(cleanupPairScenarios);
 
-async function retainedPair() {
+async function retainedPair(keys: "before-key" | "with-key" = "before-key") {
   const f = await scenario();
-  expect(await provisionIntercomEnrollment(f.request, { ...f.enrollment, async connect(pair, pins) {
-    await f.enrollment.connect(pair, pins); return "peer-port-unreachable";
-  } })).toMatchObject({ code: 3, reason: "intercom-peer-port-unreachable" });
+  const enrollment = keys === "before-key" ? { ...f.enrollment, async connect(pair, pins) {
+    await f.enrollment.connect(pair, pins); return "peer-port-unreachable" as const;
+  } } satisfies typeof f.enrollment : f.enrollment;
+  expect((await provisionIntercomEnrollment(f.request, enrollment)).code).toBe(keys === "before-key" ? 3 : 0);
   const ports = () => createProductionIntercomRevocationPorts({ root: f.root, localMachineId: HUB, hub: true, transport: f.transport,
     localCore: async () => { throw new Error("not an endpoint"); }, fenceLocal: async () => { throw new Error("not an endpoint"); },
     cleanupLocal: async () => { throw new Error("not an endpoint"); }, notify: async () => {} });
@@ -34,7 +35,8 @@ async function retainedPair() {
   expect(await registry.get("pair-1")).toMatchObject({ state: "revoked", fenceId: source!.fenceId,
     cleanupReason: "intercom-revocation-cleanup-pending", unit: { closedFenceId: source!.fenceId } });
   expect(source?.resources?.route.targetCoreId).toBe("core-b");
-  expect(source?.resources?.publicKey).toBeUndefined();
+  expect(source?.resources?.publicKey).toBe(keys === "before-key" ? undefined : f.publicKey);
+  if (keys === "with-key") await f.locals.get(A)!.run(["/fixture/hc", "machine", "rm", "spider-pair-pair-1"], { timeoutMs: 1000, maxBytes: 1024 });
   expect(f.machines()).toEqual([]);
 
   const config = parseConfig({ enabled: false, role: "hub", machineId: HUB, hubMachineId: HUB, coreUnit: "fixture.service",
@@ -64,27 +66,45 @@ async function retainedPair() {
   return { ...f, config, saveConfig, run };
 }
 
-it.each(["cli", "maintenance"] as const)("%s uses the selected cleanup release for an old pair with absent units", async entry => {
-  const f = await retainedPair(), before = f.calls.length;
+it.each([
+  ["cli", "before-key"], ["maintenance", "before-key"], ["cli", "with-key"], ["maintenance", "with-key"],
+] as const)("%s uses the selected cleanup release for an old pair with absent units (%s)", async (entry, keys) => {
+  const f = await retainedPair(keys), before = f.calls.length;
   expect(await f.run(entry)).toMatchObject({ code: 0, value: { cleanupReason: null } });
   for (const root of [f.root, f.source.globalRoot, f.target.globalRoot]) {
     const record = await createIntercomRegistry(root).get("pair-1");
     expect(record).toMatchObject({ state: "revoked", cleanupReason: null });
     // Choosing an upgraded executable must not rewrite enrollment consent.
     expect(record!.pair.target.cli).toBe("/fixture/cli");
-    expect(record!.resources?.publicKey).toBeUndefined();
+    expect(record!.resources?.publicKey).toBe(keys === "before-key" ? undefined : f.publicKey);
   }
   expect(f.machines()).toEqual([]);
   expect(f.calls.slice(before).some(call => /(?:--user (?:start|stop|disable)|machine add|keygen)/.test(call))).toBe(false);
 }, 10_000);
 
-it.each(["cli", "maintenance"] as const)("%s will not select an upgraded helper from a different cleanup root", async entry => {
+it.each([
+  ["cli", "globalRoot"], ["maintenance", "globalRoot"], ["cli", "agentDir"], ["maintenance", "agentDir"],
+] as const)("%s will not select an upgraded helper with a different %s", async (entry, field) => {
   const f = await retainedPair();
-  f.config.peers.find(peer => peer.machineId === B)!.globalRoot = f.otherSource.globalRoot; f.saveConfig();
+  f.config.peers.find(peer => peer.machineId === B)![field] = f.otherSource.globalRoot; f.saveConfig();
   expect(await f.run(entry)).toMatchObject({ code: 3 });
   for (const root of [f.root, f.target.globalRoot]) expect((await createIntercomRegistry(root).get("pair-1"))?.cleanupReason).toBeTruthy();
   expect(await createIntercomRegistry(f.otherSource.globalRoot).get("pair-1")).toBeNull();
 }, 10_000);
+
+it("target-local cleanup of absent units remains pending without source proof", async () => {
+  const f = await retainedPair(), queue = f.queues.get(B)!;
+  const config = parseConfig(JSON.parse(readFileSync(join(f.target.globalRoot, "roam", "config.json"), "utf8")));
+  const maintenance = createProductionIntercomMaintenance({ root: f.target.globalRoot, config, binary: "/fixture/hc", env: {},
+    localPorts: f.locals.get(B), localCore: async () => "core-b",
+    transport: { ...f.transport, async pinIntercomPeer() { throw Object.assign(new Error("unavailable"), { code: "machine-not-found" }); } },
+    fenceLocal: async input => ({ machineId: B, peer: A, edgeEpoch: input.edgeEpoch,
+      fenceId: queue.fencePair(A, input.edgeEpoch, input.fenceId).fence.fenceId, exchanges: "closed", inFlight: 0 }) });
+  expect(await maintenance.recoverRevocations(queue)).toMatchObject([{ code: 0, value: { cleanupReason: "intercom-revocation-cleanup-pending" } }]);
+  const record = await createIntercomRegistry(f.target.globalRoot).get("pair-1");
+  expect(record).toMatchObject({ state: "revoked", cleanupReason: "intercom-revocation-cleanup-pending", unit: { closedFenceId: record!.fenceId } });
+  expect((await createIntercomRegistry(f.source.globalRoot).get("pair-1"))?.unit?.closedFenceId).toBeNull();
+});
 
 it("a source with no pair route cannot replace target acknowledgment with its stored identity", async () => {
   const f = await retainedPair(), queue = f.queues.get(A)!;

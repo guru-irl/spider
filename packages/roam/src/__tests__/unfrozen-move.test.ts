@@ -7,7 +7,7 @@ import type { Home } from "@spider/db-core/roam/types";
 import { DEFAULT_LIMITS, disabledIntercom, type MovePorts, type MoveCheck, type Operation, type PreparedMove } from "../contracts";
 import { assignInitialHome, sessionHome } from "../homes";
 import { openFreezeJournal } from "../journal";
-import { moveSession, cancelMove, authorizeMoveAbort, readMoveReservation } from "../move";
+import { moveSession, cancelMove, recoverMove, authorizeMoveAbort, readMoveReservation } from "../move";
 import { freezeParticipant, unfreezeParticipant, type FreezePorts } from "../../../host/src/roam/freeze";
 import type { SessionAddress } from "@spider/intercom/protocol";
 import { MoveAdapterError } from "../move-ports";
@@ -110,6 +110,26 @@ it("a completed freeze still requires abort authorization and preserves its fenc
   expect(await cancelMove("move-a", f.ports)).toMatchObject({ code: 3, reason: "move-abort-pending", refusal: { blockers: ["abort-authorization-pending"] } });
   expect(f.admissionOpen).toBe(false); expect(f.intakeOpen).toBe(false);
   expect(f.store.db.prepare("SELECT state FROM roam_sessions WHERE session_id='session-a'").get()).toEqual({ state: "frozen" });
+});
+
+it.each(['cancel', 'recover'] as const)('%s names the ownership repair instead of a cancel/recover loop', async action => {
+  const f = fixture(); f.ports.freeze = async () => { throw new MoveAdapterError('session-control-refused'); };
+  await moveSession(f.request, f.ports);
+  f.ports.unfreeze = async () => { throw new MoveAdapterError('ownership-unavailable'); };
+  await cancelMove('move-a', f.ports);
+  const result = await (action === 'cancel' ? cancelMove : recoverMove)('move-a', f.ports);
+  expect(result).toMatchObject({ code: 3, repairCommand: null, refusal: { blockers: ['ownership-unavailable'], message: expect.stringMatching(/Restore.*process.*boot.*inspection/) } });
+  expect(readMoveReservation('session-a', f.journal)?.moveId).toBe('move-a');
+  const report = await runLocalDoctor({ root: f.root, hubService: async () => ({ running: true, socketAvailable: true, lastExitCode: null }) });
+  expect(report.diagnostics).toContainEqual(expect.objectContaining({ reason: expect.stringMatching(/ownership-unavailable.*Restore.*process.*boot/), repairCommand: null }));
+});
+
+it.each([false, true])('cancel with unavailable move control names enable in JSON and text output: json=%s', async json => {
+  const f = fixture(); vi.stubEnv('SPIDER_GLOBAL_ROOT', f.root);
+  const out: string[] = [], err: string[] = [];
+  expect(await main(['roam', 'cancel', 'move-a', ...(json ? ['--json'] : [])], { out: text => out.push(text), err: text => err.push(text) })).toBe(1);
+  if (json) expect(JSON.parse(out.join(''))).toMatchObject({ reason: 'move-control-unavailable', repairCommand: 'spider roam enable' });
+  else expect(err.join('')).toContain('spider roam enable');
 });
 
 it("cancel retains the adapter cause instead of an empty preflight refusal", async () => {

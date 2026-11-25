@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
+import { homedir } from 'node:os';
 import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths, openDbAt, type Db } from "@spider/db-core";
@@ -30,6 +31,13 @@ import { registerAdmission, type AdmissionGate } from "../roam/admission";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { fixtureIntercom } from "../roam/__tests__/intercom-move-fixture";
 
+const processRows = vi.hoisted(() => ({ value: null as string | null }));
+vi.mock('node:child_process', async original => {
+  const actual = await original<typeof import('node:child_process')>();
+  return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) =>
+    processRows.value !== null && args[0] === 'ps' && args[1]?.[0] === '-U' ? processRows.value : actual.execFileSync(...args) };
+});
+
 const HUB = "00000000-0000-4000-8000-000000000001";
 const BOX = "00000000-0000-4000-8000-000000000002";
 // Opaque repository keys can contain colons. Their workspace is the last component.
@@ -37,7 +45,7 @@ const REPO = "origin:fixture-repo", WORKSPACE = "fixture-workspace";
 const WORKTREE: StoreKey = `worktree:${REPO}:${WORKSPACE}`;
 const ROSTER: StoreKey[] = ["global", `repo:${REPO}`, WORKTREE];
 const fixtures: ReturnType<typeof createReplica>[] = [], dbs: Db[] = [];
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const db of dbs.splice(0)) db.close(); for (const f of fixtures.splice(0)) f.close(); });
+afterEach(() => { processRows.value = null; vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const db of dbs.splice(0)) db.close(); for (const f of fixtures.splice(0)) f.close(); });
 
 async function fixture(beforeMapping = true, bound = false, box = false, worktreeOnly = false) {
   const machineId = box ? BOX : HUB;
@@ -140,6 +148,22 @@ async function fixture(beforeMapping = true, bound = false, box = false, worktre
   const locks = createBothLocks({ root: leases.root, file: async () => file, inventory, identity: { pid: process.pid, startIdentity } });
   return { global, config, worktree, sessionId, file, cwd, context, gate, location, boundKeys, boundDbs, journal, machine, activate, compose, mountRepository, live: () => live, freezeControl: (operation: Operation) => handler({ op: "freeze", operation }), locks };
 }
+
+it('the production move probe accounts for an unrelated Pi registered in the normal runtime', async () => {
+  const f = await fixture();
+  processRows.value = `${process.pid} pi node pi`;
+  const otherFile = join(f.global.root, 'other-session.jsonl'); writeFileSync(otherFile, '{}\n');
+  const normalPresence = createProcessPresence(join(homedir(), '.pi', 'agent', 'spider', 'herdr'));
+  await normalPresence.record({ pid: process.pid, startIdentity: processStartTime(process.pid)!, sessionId: 'other-session', sessionFile: otherFile, sessionName: null, kind: 'top-level', hcAddress: null });
+  let mounted: Awaited<ReturnType<typeof f.compose>> | undefined;
+  try {
+    mounted = await f.compose();
+    expect(await mounted.bindings.participant!.probe(f.sessionId)).toEqual({ kind: 'absent' });
+  } finally {
+    await mounted?.close(); await f.machine.close();
+    await normalPresence.remove({ pid: process.pid, startIdentity: processStartTime(process.pid)! });
+  }
+});
 
 it.each(["activation", "composition"])("%s starts a capture-ready box with a worktree-only location", async path => {
   const f = await fixture(true, false, true);

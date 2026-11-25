@@ -51,8 +51,8 @@ describe('duration-balanced test shards', () => {
   });
 
   it('records measured durations for every checkpoint model group', () => {
-    const groups = files.filter(file => /\/setup-checkpoint-model(?:-seed-\d+)?\.test\.ts$/.test(file));
-    expect(groups).toHaveLength(9);
+    const groups = files.filter(file => /\/setup-checkpoint-model(?:-seed)?\.test\.ts$/.test(file));
+    expect(groups).toHaveLength(2);
     for (const file of groups) expect(durations[file], file).toBeGreaterThan(0);
   });
 

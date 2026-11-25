@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { homedir } from 'node:os';
 import { openDb, paths, type Db } from "@spider/db-core";
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
@@ -209,14 +209,24 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
       catch { return { ok: false, reason: "participant-launch-unavailable" }; }
     }
     if (journal.lookupOperation?.(operationId)) return { ok: true, launchId: operationId };
-    const herdr = loadHerdrConfig(root), hc = createProductionLocalExactHc({ binary: herdr.core.binary, env: process.env, probe: inventory.probe });
+    const herdr = loadHerdrConfig(root);
+    let hc: ReturnType<typeof createProductionLocalExactHc> | undefined;
     try {
       const coreClient = createHcClient({ binary: herdr.core.binary, env: process.env });
-      const core = await coreClient.identity(); await coreClient.dispose();
+      const core = await coreClient.identity().finally(() => coreClient.dispose());
+      const env = { ...process.env, SPIDER_GLOBAL_ROOT: root, PI_CODING_AGENT_DIR: herdr.agentDirectory,
+        HC_SESSION: core.sessionNamespace, HC_SOCKET: core.socket,
+        PATH: [dirname(process.execPath), process.env.PATH].filter(Boolean).join(delimiter) };
+      const exactHc = createProductionLocalExactHc({ binary: herdr.core.binary, env, probe: inventory.probe });
+      hc = exactHc;
       const bytes = readFileSync(intent.file);
-      const adapter = createExactLaunchAdapter({ journal, hc, clock: { now: clock.now, wait: (ms, signal) => new Promise((done, reject) => { const timer = setTimeout(done, ms); signal.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted")); }, { once: true }); }) },
+      const adapter = createExactLaunchAdapter({ journal, hc: { ...exactHc, run(request, observer) {
+        // hc's core may have a different PATH from the hub. Carry the interpreter
+        // selection in the terminal command, not just the CLI's environment.
+        return exactHc.run({ ...request, argv: ["/usr/bin/env", `PATH=${env.PATH}`, ...request.argv] }, observer);
+      } }, clock: { now: clock.now, wait: (ms, signal) => new Promise((done, reject) => { const timer = setTimeout(done, ms); signal.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted")); }, { once: true }); }) },
         base: { leases: inventory.leases, processInventory: inventory, processIdentity: { pid: process.pid, startIdentity: processStartTime(process.pid) ?? "unavailable" },
-          env: { ...process.env, SPIDER_GLOBAL_ROOT: root, PI_CODING_AGENT_DIR: herdr.agentDirectory, HC_SESSION: core.sessionNamespace, HC_SOCKET: core.socket }, machineId: config.machineId,
+          env, machineId: config.machineId,
           core: { coreId: core.coreId, session: core.sessionNamespace, socket: core.socket }, bootId: localBootId, shell: "/bin/sh", sessionBytes: config.limits.sessionBytes,
           async limits() { const value = (await gitRun(root, ["/bin/sh", "-c", "ulimit -Sn; ulimit -Hn"])).toString().trim().split("\n"); return { soft: Number(value[0]), hard: value[1] === "unlimited" ? Infinity : Number(value[1]) }; } } });
       await adapter.launch({ sessionId, file: intent.file, cwd: intent.cwd, epoch: intent.epoch, moveId: intent.moveId, pi,
@@ -224,7 +234,7 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
       return { ok: true, launchId: operationId };
     } catch {
       return journal.lookupOperation?.(operationId) ? { ok: true, launchId: operationId } : { ok: false, reason: "participant-launch-unavailable" };
-    } finally { await hc.dispose(); }
+    } finally { await hc?.dispose(); }
   };
   const address = { sessionId, scopeId: null };
   const evidenceCall = async <T>(kind: string, operation: Operation): Promise<T | null> => {
@@ -309,6 +319,9 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
           const herdr = loadHerdrConfig(root), hc = createProductionLocalExactHc({ binary: herdr.core.binary, env: process.env, probe: inventory.probe });
           try {
             const signal = AbortSignal.timeout(config.limits.controlMs), coreId = await hc.coreId(signal), bootId = await localBootId();
+            // A replacement core cannot supply a receipt for this reserved launch.
+            // Recording its identity would strand repair when the selected core returns.
+            if (coreId !== lock.pendingCoreId) throw new Error("move-launch-core-mismatch");
             const reconcile = createLaunchReconciler({ journal, inspectLock: () => inspectIdLock(join(root, "herdr"), home.sessionId), coreId: hc.coreId, bootId: () => localBootId(), terminals: hc.terminals,
               clock: { now: clock.now, wait: (ms, signal) => new Promise((done, reject) => { const timer = setTimeout(done, ms); signal.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted")); }, { once: true }); }) } });
             const receipt = await recordMoveLaunchAbsence({ journal, operationId: home.moveId, launchId: exactId, sessionId: home.sessionId, epoch: home.epoch, coreId, bootId,

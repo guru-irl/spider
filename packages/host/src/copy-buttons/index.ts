@@ -24,6 +24,8 @@ export type CopyButtonsOptions = {
 };
 type State = { options: CopyButtonsOptions; enabled: boolean; preparing?: boolean; hovered?: object; trackingMove?: boolean; hoverSeen?: boolean; detach?: () => void };
 type MarkdownInternals = {
+  // Pi's Markdown stores horizontal padding as a private runtime field.
+  paddingX?: unknown;
   renderToken(token: Token, width: number, nextTokenType?: string, styleContext?: unknown): string[];
   render(width: number): string[];
   handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined;
@@ -44,6 +46,7 @@ const labels = (style?: IconStyle): Record<Format, string> => ({ text: `${icon(s
 const DONE = "✓ copied";
 const COLUMN = Math.max(...[...Object.values(labels("text")), ...Object.values(labels("nerd")), DONE].map(visibleWidth));
 const GROUP_WIDTH = COLUMN * 2 + 1;
+const FRAME = { left: "▏", right: "▕", top: "▔", bottom: "▁", topLeft: "🭽", topRight: "🭾", bottomLeft: "🭼", bottomRight: "🭿" } as const;
 const dim = (text: string) => `\x1b[2m${text}\x1b[22m`;
 const pad = (text: string) => text + " ".repeat(Math.max(0, COLUMN - visibleWidth(text)));
 
@@ -65,7 +68,8 @@ function addButtons(md: Markdown, host: CopyButtonsHost, state: State, source: s
   let copied: Copied | undefined;
   let timeKey: string | undefined;
   let formattedTime = "";
-  let out: { raw: string[]; copied: Copied | undefined; show: boolean; frame: boolean; width: number; time: string; iconStyle?: IconStyle; lines: string[]; hits: Hit[] } | undefined;
+  let renderedPadding: number | undefined;
+  let out: { raw: string[]; copied: Copied | undefined; show: boolean; frame: boolean; width: number; padding: number; time: string; iconStyle?: IconStyle; lines: string[]; hits: Hit[] } | undefined;
 
   const addBlock = (block: Block, lines: string[]) => {
     const last = lines.findLastIndex(line => line !== "");
@@ -103,9 +107,17 @@ function addButtons(md: Markdown, host: CopyButtonsHost, state: State, source: s
     blocks = [];
     sectionStart = undefined;
     sourceIndex = 0;
-    // Reserve the frame in both hover states so its appearance never reflows text.
+    // The frame replaces Markdown's side padding in both hover states.
     const frame = state.enabled && state.options.isFullscreen() && width >= 3;
-    const next = base.render.call(md, frame ? width - 2 : width);
+    const paddingX = self.paddingX;
+    const readablePadding = typeof paddingX === "number" && Number.isSafeInteger(paddingX) && paddingX >= 0 ? paddingX : undefined;
+    const renderPadding = readablePadding === undefined ? undefined : frame ? 0 : readablePadding;
+    if (renderPadding !== undefined && renderPadding !== renderedPadding) md.invalidate();
+    renderedPadding = renderPadding;
+    if (frame && readablePadding !== undefined) self.paddingX = 0;
+    let next: string[];
+    try { next = base.render.call(md, frame ? width - 2 : width); }
+    finally { if (frame && readablePadding !== undefined) self.paddingX = paddingX; }
     sectionStart = undefined;
     if (next === raw) blocks = previous;
     raw = next;
@@ -120,9 +132,10 @@ function addButtons(md: Markdown, host: CopyButtonsHost, state: State, source: s
       }
     }
     const time = frame ? formattedTime : "";
+    const padding = renderPadding ?? 1;
     const iconStyle = state.options.iconStyle;
-    if (!out || out.raw !== next || out.copied !== copied || out.show !== show || out.frame !== frame || out.width !== width || out.time !== time || out.iconStyle !== iconStyle) {
-      out = { raw: next, copied, show, frame, width, time, iconStyle, ...decorate(next, blocks, copied, width, show, frame, full, time, state.options.border ?? dim, iconStyle) };
+    if (!out || out.raw !== next || out.copied !== copied || out.show !== show || out.frame !== frame || out.width !== width || out.padding !== padding || out.time !== time || out.iconStyle !== iconStyle) {
+      out = { raw: next, copied, show, frame, width, padding, time, iconStyle, ...decorate(next, blocks, copied, width, padding, show, frame, full, time, state.options.border ?? dim, iconStyle) };
     }
     return out.lines;
   };
@@ -156,7 +169,7 @@ function addButtons(md: Markdown, host: CopyButtonsHost, state: State, source: s
   };
 }
 
-function decorate(raw: string[], blocks: Block[], copied: Copied | undefined, width: number, show: boolean, frame: boolean, full: string | undefined, time: string, border: (text: string) => string, iconStyle?: IconStyle): { lines: string[]; hits: Hit[] } {
+function decorate(raw: string[], blocks: Block[], copied: Copied | undefined, width: number, padding: number, show: boolean, frame: boolean, full: string | undefined, time: string, border: (text: string) => string, iconStyle?: IconStyle): { lines: string[]; hits: Hit[] } {
   const LABELS = labels(iconStyle);
   const lines: string[] = [];
   const hits: Hit[] = [];
@@ -169,10 +182,13 @@ function decorate(raw: string[], blocks: Block[], copied: Copied | undefined, wi
     }
     const text = copied?.block === block && copied.format === "text" ? DONE : LABELS.text;
     const md = copied?.block === block && copied.format === "md" ? DONE : LABELS.md;
-    hits.push({ row: lines.length + 1, start: 1, end: COLUMN + 1, block, format: "text" });
-    hits.push({ row: lines.length + 1, start: COLUMN + 2, end: GROUP_WIDTH + 1, block, format: "md" });
-    const timeText = GROUP_WIDTH + 1 + visibleWidth(time) <= innerWidth ? time : "";
-    lines.push(`${dim(pad(text))} ${dim(pad(md))}${" ".repeat(innerWidth - GROUP_WIDTH - visibleWidth(timeText))}${dim(timeText)}`);
+    // Drop the timestamp before reducing the inset; the buttons always take priority.
+    const timeText = GROUP_WIDTH + 1 + visibleWidth(time) + padding * 2 <= innerWidth ? time : "";
+    const inset = Math.min(padding, Math.floor((innerWidth - GROUP_WIDTH) / 2));
+    const start = innerWidth - inset - GROUP_WIDTH;
+    hits.push({ row: lines.length + 1, start: start + 1, end: start + COLUMN + 1, block, format: "text" });
+    hits.push({ row: lines.length + 1, start: start + COLUMN + 2, end: start + GROUP_WIDTH + 1, block, format: "md" });
+    lines.push(`${" ".repeat(inset)}${dim(timeText)}${" ".repeat(start - inset - visibleWidth(timeText))}${dim(pad(text))} ${dim(pad(md))}${" ".repeat(inset)}`);
   };
   for (const [row, line] of raw.entries()) {
     const marks = [...line.matchAll(MARKER)];
@@ -187,7 +203,7 @@ function decorate(raw: string[], blocks: Block[], copied: Copied | undefined, wi
   if (!frame || lines.length === 0) return { lines, hits };
   const edge = (text: string) => show ? border(text) : " ".repeat(visibleWidth(text));
   return {
-    lines: [edge(`┌${"─".repeat(innerWidth)}┐`), ...lines.map(line => `${edge("│")}${line}${edge("│")}`), edge(`└${"─".repeat(innerWidth)}┘`)],
+    lines: [edge(`${FRAME.topLeft}${FRAME.top.repeat(innerWidth)}${FRAME.topRight}`), ...lines.map(line => `${edge(FRAME.left)}${line}${edge(FRAME.right)}`), edge(`${FRAME.bottomLeft}${FRAME.bottom.repeat(innerWidth)}${FRAME.bottomRight}`)],
     hits,
   };
 }

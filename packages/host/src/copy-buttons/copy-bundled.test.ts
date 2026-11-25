@@ -59,7 +59,7 @@ function fixture() {
     input(`\x1b[<35;${x + 1};${y + 1}M`);
   };
   tui.start();
-  return { chat, assistant, screen, move };
+  return { tui, chat, assistant, screen, move };
 }
 const plain = (component: Component) => component.render(60).map(stripTerminalSequences);
 
@@ -67,7 +67,7 @@ it("uses Pi's bundled spacers and tool components for one line around a reply", 
   expect(piTui.Spacer).not.toBe(NativeSpacer);
   expect(piHost.ToolExecutionComponent).not.toBe(NativeTool);
   const app = fixture();
-  const below = new piHost.ToolExecutionComponent("example", "call", {}, { outputPad: 1 });
+  const below = new piHost.ToolExecutionComponent("example", "call", {}, { outputPad: 1 }, undefined, app.tui, "/project");
   const belowBody = plain(below).slice(1);
   app.chat.addChild(app.assistant); app.chat.addChild(below);
   app.screen();

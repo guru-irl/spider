@@ -66,13 +66,13 @@ function fixture(width = 60) {
   return { tui, chat, assistant, screen, move, click, copied, shutdown: () => handlers.get("session_shutdown")?.({}, context) };
 }
 function plain(component: Component, width = 60) { return component.render(width).map(stripTerminalSequences); }
-function tool(name: string) { return new ToolExecutionComponent(name, name, {}, { outputPad: 1 }); }
+function tool(name: string, tui: TuiAltScreen) { return new ToolExecutionComponent(name, name, {}, { outputPad: 1 }, undefined, tui, "/project"); }
 
 describe("fullscreen reply seams", () => {
   it("uses exactly the top and bottom outline rows between tool panels, without hover movement", () => {
     const app = fixture();
-    const above = tool("tool-above");
-    const below = tool("tool-below");
+    const above = tool("tool-above", app.tui);
+    const below = tool("tool-below", app.tui);
     const belowBody = plain(below).slice(1);
     app.chat.addChild(above); app.chat.addChild(app.assistant); app.chat.addChild(below);
     app.screen();
@@ -96,7 +96,7 @@ describe("fullscreen reply seams", () => {
     const toolCall = message("");
     toolCall.content = [{ type: "toolCall", id: "call", name: "later-tool", arguments: {} }];
     const invisible = new AssistantMessageComponent(toolCall, false, theme, undefined, 1);
-    const later = tool("later-tool");
+    const later = tool("later-tool", app.tui);
     const laterBody = plain(later).slice(1);
     app.chat.addChild(app.assistant); app.chat.addChild(invisible); app.chat.addChild(later);
     app.screen();
@@ -143,8 +143,8 @@ describe("fullscreen reply seams", () => {
       renderCall: () => new Text("Tool call", 0, 0),
       renderResult: (_result: unknown, options: { expanded: boolean }) => new Text(options.expanded ? "Expanded result" : "Collapsed result", 0, 0),
     } : undefined;
-    const below = new ToolExecutionComponent("example", "example", {}, { outputPad: 1 }, definition as never);
-    below.updateResult({ content: [{ type: "text", text: Array.from({ length: 12 }, (_, i) => `line-${i}`).join("\n") }], details: undefined }, false);
+    const below = new ToolExecutionComponent("example", "example", {}, { outputPad: 1 }, definition as never, app.tui, "/project");
+    below.updateResult({ content: [{ type: "text", text: Array.from({ length: 12 }, (_, i) => `line-${i}`).join("\n") }], details: undefined, isError: false }, false);
     app.chat.addChild(app.assistant); app.chat.addChild(below);
     const before = app.screen();
     const reply = before.findIndex(line => line.includes("Reply"));

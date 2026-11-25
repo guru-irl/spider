@@ -64,6 +64,21 @@ it("routes an enrolled epoch-bound location query through the real agent boundar
   expect(move).not.toHaveBeenCalled();
 }, 5000);
 
+it.each([
+  ["fetch a shared merge base on the destination", "fetch a shared merge base on the destination"],
+  ["fetch the required commits on both machines", "fetch the required commits on both machines"],
+  ["fetch the required commits on the destination", "fetch the required commits on the destination"],
+  ["PRIVATE-GIT-ERROR", "fetch the required commits on the destination"],
+] as const)("remote prerequisite refusal only exposes registered guidance: %s", async (hint, repair) => {
+  const f = fixture(), request = { ...operation("remote-export", "move-export", {
+    sessionId: "session-a", moveId: "move-a", sourceMachine: HUB, stage: "pre" }), expectedEpoch: 2 };
+  f.ports.move = async () => { throw Object.assign(new Error(`workspace-prerequisite-missing: ${hint}`), { code: "workspace-prerequisite-missing" }); };
+  const result = await handleAgentOperation(request, f.ports);
+  expect(result).toMatchObject({ code: 1, reason: "workspace-prerequisite-missing", causeCode: "workspace-prerequisite-missing",
+    repairCommand: repair, failure: { step: "remote-prepare", code: "workspace-prerequisite-missing" } });
+  expect(JSON.stringify(result)).not.toContain("PRIVATE-GIT-ERROR");
+});
+
 async function stagedImport() {
   const destination = fixture("worktree");
   const source = createReplica("worktree", HUB);

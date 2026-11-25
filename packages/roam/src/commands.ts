@@ -1,6 +1,6 @@
 import { copyHostingWarning, hostingWarningText, validHostingWarning, type HostingWarning } from "./hosting-warning";
 import { safeAgentOperationKind, safeCauseCode } from "./cause-codes";
-import { moveFailureRepair, safeMoveCause, parseMoveFailure } from "./move-failure";
+import { moveFailureRepair, safeMoveCause, safeMoveRepair, parseMoveFailure } from "./move-failure";
 import type { RoamStatus } from "./diagnostics";
 import { isAbsolute } from "node:path";
 import { MOVE_REFUSAL_MESSAGES, type MoveRefusal, type MoveRefusalCode, type SourceCleanup, type Outcome, type RoamConfig } from "./contracts";
@@ -112,7 +112,7 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
   const moveCause = candidate === "move-first-home-withheld" && !withheld ? undefined : candidate;
   const causeCode = moveCause ?? safeCauseCode(result.causeCode);
   // provision.ts is the sole producer of permission repairs and binds them to the destination home.
-  const safeRepair = (value: unknown): string | null => typeof value === "string" && (moveCause === "move-workspace-unmapped" && value === "spider roam repo map <repo> <path>" ||
+  const safeRepair = (value: unknown): string | null => typeof value === "string" && (moveCause !== undefined && safeMoveRepair(moveCause, value) === value || moveCause === "move-workspace-unmapped" && value === "spider roam repo map <repo> <path>" ||
     withheld?.storeCheck === "store-machine-mismatch" && value === `spider roam stores retire ${withheld.machineId}` || /^spider roam (?:recover|doctor|cancel|claim|provision|forget|disable|stop|enable)(?: [A-Za-z0-9._-]+)?$/.test(value) ||
     /^spider roam provision [A-Za-z0-9._-]+ --operation-id [A-Za-z0-9._-]+$/.test(value) ||
     result.reason === "destination-permissions-unsafe" && isPermissionRepairCommand(value)) ? value : null;
@@ -207,7 +207,7 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
       const rawWarning = rawRefusal.hostingWarning;
       const warning: HostingWarning | undefined = code === "move-destination-pending" && validHostingWarning(rawWarning)
         ? copyHostingWarning(rawWarning) : undefined;
-      const message = MOVE_REFUSAL_MESSAGES[code as MoveRefusalCode] + (moveCause ? ` ${moveFailureRepair(moveCause)}` : "") + (warning ? ` ${hostingWarningText(warning)}` : "");
+      const message = MOVE_REFUSAL_MESSAGES[code as MoveRefusalCode] + (moveCause ? ` ${moveFailureRepair(moveCause, repair)}` : "") + (warning ? ` ${hostingWarningText(warning)}` : "");
       if (rawRefusal.message === message) try {
         refusal = { code: code as MoveRefusalCode, message, blockers: rawRefusal.blockers.map(validateBlockerId), ...(warning ? { hostingWarning: warning } : {}),
           ...(moveCause === "move-first-home-withheld" && withheld ? { firstHomeWithheld: withheld } : {}) };

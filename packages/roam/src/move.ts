@@ -10,7 +10,7 @@ import type { IntercomIntakeFence, SessionEndpoint } from "@spider/intercom/prot
 import { validHostingWarning } from "./hosting-warning";
 import { peerErrorCode } from "./peer-errors";
 import { withPrivateTransferDiagnostic } from "./private-transfer-diagnostics";
-import { MoveCompositionError, MoveStepError, safeMoveCause, moveFailureRepair, moveFailureDetail, parseMoveFailure, withMoveStep, type MoveCauseCode, type MoveFailureDetail } from "./move-failure";
+import { MoveCompositionError, MoveStepError, safeMoveCause, moveFailureRepair, moveRepairCommand, moveFailureDetail, parseMoveFailure, prerequisiteRepair, safeMoveRepair, isSupervisorMoveCause, withMoveStep, type MoveCauseCode, type MoveFailureDetail } from "./move-failure";
 import { safeMoveFailureStep, type MoveFailureStep } from "./cause-codes";
 import { MOVE_REFUSAL_MESSAGES } from "./contracts";
 import type { DestinationObservation, FreezeAck, Journal, MoveCheck, MovePorts, MoveRequest, MoveResult, SourceCleanup, MoveRefusal, MoveRefusalCode, MoveSessionOutcome, ValidatedBlockerId, Operation, Outcome, PreparedMove } from "./contracts";
@@ -120,7 +120,7 @@ function recordFailure(request: MoveRequest, ports: MovePorts, failure: MoveFail
     ports.journal.record(diagnosticId, "done", json(failure));
   } catch { /* Diagnostic storage cannot change the safety outcome. */ }
 }
-function outcome(request: MoveRequest, ports: MovePorts, code: Outcome<MoveResult>["code"], reason: MoveRefusalCode | "moved" | "same-home", value: MoveResult | null = null, blockers: readonly ValidatedBlockerId[] = [], cause?: MoveCauseCode, firstHomeWithheld?: FirstHomeWithheld, failure?: MoveFailureDetail): MoveSessionOutcome {
+function outcome(request: MoveRequest, ports: MovePorts, code: Outcome<MoveResult>["code"], reason: MoveRefusalCode | "moved" | "same-home", value: MoveResult | null = null, blockers: readonly ValidatedBlockerId[] = [], cause?: MoveCauseCode, firstHomeWithheld?: FirstHomeWithheld, failure?: MoveFailureDetail, repairHint?: string): MoveSessionOutcome {
   if (code !== 0 && !failure) {
     let step: MoveFailureStep = firstHomeWithheld ? "initial-home" : "preflight";
     if (!firstHomeWithheld) try {
@@ -135,9 +135,10 @@ function outcome(request: MoveRequest, ports: MovePorts, code: Outcome<MoveResul
     epoch: current && current !== "unknown" ? current.epoch : null, repairCommand: reason === 'move-ownership-unavailable' ? null : reason === 'move-abort-pending' ? `spider roam cancel ${request.operation.id}` : reason === "initial-home-conflict" ? "spider roam claim" : code === 3 && text(request?.operation?.id) ? `spider roam recover ${request.operation.id}` : null };
   if (code === 0 && value) return { ...envelope, code: 0, ok: true, value, ...(failure ? { failure } : {}) };
   if (code === 0 || reason === "moved" || reason === "same-home") refuse("move-journal-invalid");
-  return { ...envelope, ...(cause ? { causeCode: cause, repairCommand: reason === 'move-ownership-unavailable' ? null : envelope.repairCommand ?? (cause === "move-first-home-withheld" && firstHomeWithheld?.storeCheck === "store-machine-mismatch"
+  const specificRepair = cause && moveRepairCommand(cause, request.destinationMachine, repairHint);
+  return { ...envelope, ...(cause ? { causeCode: cause, repairCommand: reason === 'move-ownership-unavailable' ? null : specificRepair ?? envelope.repairCommand ?? (cause === "move-first-home-withheld" && firstHomeWithheld?.storeCheck === "store-machine-mismatch"
       ? `spider roam stores retire ${firstHomeWithheld.machineId}` : cause === "move-workspace-unmapped" ? "spider roam repo map <repo> <path>" : "spider roam doctor") } : {}), code, ok: false, value: null, ...(failure ? { failure } : {}),
-    refusal: { code: reason, blockers, message: MOVE_REFUSAL_MESSAGES[reason] + (cause ? ` ${moveFailureRepair(cause)}` : ""),
+    refusal: { code: reason, blockers, message: MOVE_REFUSAL_MESSAGES[reason] + (cause ? ` ${moveFailureRepair(cause, specificRepair)}` : ""),
       ...(firstHomeWithheld ? { firstHomeWithheld } : {}) } };
 }
 export function parseSourceCleanup(value: unknown): SourceCleanup {
@@ -170,7 +171,9 @@ function completedOutcome(value: unknown, id: string): MoveSessionOutcome {
     try { home(result.value.home); warnings(result.value.warnings); parseSourceCleanup(result.value.sourceCleanup); } catch { refuse("move-journal-invalid"); }
   } else if (result.ok === false) {
     if (result.code === 0 || result.value !== null || !result.refusal || !Object.hasOwn(MOVE_REFUSAL_MESSAGES, result.refusal.code) ||
-        result.reason !== result.refusal.code || result.refusal.message !== MOVE_REFUSAL_MESSAGES[result.refusal.code] + (cause ? ` ${moveFailureRepair(cause)}` : "") || !Array.isArray(result.refusal.blockers)) refuse("move-journal-invalid");
+        result.reason !== result.refusal.code || result.refusal.message !== MOVE_REFUSAL_MESSAGES[result.refusal.code] + (cause ? ` ${moveFailureRepair(cause, result.repairCommand)}` : "") || !Array.isArray(result.refusal.blockers)) refuse("move-journal-invalid");
+    if (cause && (isSupervisorMoveCause(cause) || cause === "workspace-prerequisite-missing" || cause === "workspace-prerequisite-invalid" || cause === "workspace-fetch-unavailable") &&
+        safeMoveRepair(cause, result.repairCommand) !== result.repairCommand) refuse("move-journal-invalid");
     const withheld = parseFirstHomeWithheld(result.refusal.firstHomeWithheld);
     if (cause === "move-first-home-withheld" ? result.reason !== "move-source-home-mismatch" || !withheld || !isDeepStrictEqual(withheld, result.refusal.firstHomeWithheld)
       : result.refusal.firstHomeWithheld !== undefined) refuse("move-journal-invalid");
@@ -389,7 +392,12 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
     await action("home-replicate", () => ports.replicateHome(committed));
     const destinationOperation = participantOperation(request, committed);
     const started = await action("start", () => ports.start(committed, prepared, destinationOperation));
-    if (started.code !== 0) refuse("move-destination-pending");
+    if (started.code !== 0) {
+      const cause = safeMoveCause(started.reason);
+      if (cause && isSupervisorMoveCause(cause)) throw Object.assign(new MoveError("move-destination-pending"),
+        { code: cause, failure: { step: "start", code: cause } });
+      refuse("move-destination-pending");
+    }
     if (started.operationId !== destinationOperation.id || !sameHome(started.home, committed) || started.epoch !== committed.epoch) refuse("move-readiness-invalid");
     const readiness = readinessReply(started.value, committed, prepared, destinationOperation);
     state("destination-ready", { readiness: json(readiness) });
@@ -457,7 +465,8 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
     const firstHomeWithheld = error instanceof FirstHomeWithheldError ? error.firstHomeWithheld : undefined;
     const candidate = error instanceof MoveCompositionError ? error.code : error instanceof MoveError && "code" in error ? safeMoveCause(error.code) : undefined;
     const cause = candidate === "move-first-home-withheld" && !firstHomeWithheld ? undefined : candidate;
-    const result = outcome(request, ports, code, reason, null, blockers, cause, firstHomeWithheld, failure);
+    const result = outcome(request, ports, code, reason, null, blockers, cause, firstHomeWithheld, failure,
+      cause === "workspace-prerequisite-missing" ? prerequisiteRepair(error) : undefined);
     if (!checked && (begunNew || recovering) && code !== 3) {
       ports.journal.record(id, "done", json(result));
       if (slot) ports.journal.record(slot, "released", { moveId: id });

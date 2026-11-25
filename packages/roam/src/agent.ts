@@ -1,6 +1,6 @@
 import { openDbReadOnly } from "@spider/db-core";
 import { causeCode } from "./cause-codes";
-import { moveFailureCause, moveFailureDetail } from "./move-failure";
+import { moveFailureCause, moveFailureDetail, prerequisiteRepair } from "./move-failure";
 import { moveOperationStep } from "./cause-codes";
 import { syncHandshake } from "./revocation";
 import { inspectSession, verifyFrozenSession } from "./session-file";
@@ -553,7 +553,7 @@ async function dispatchAgentOperation(operation: Operation, ports: AgentPorts): 
           ? plainObject(exported) && plainObject(exported.workspace) ? exported.workspace.stage : undefined
           : operation.args.stage;
         return { ...outcome(1, cause, id), causeCode: cause, failure: moveFailureDetail(error, moveOperationStep(operation.kind, stage)),
-          epoch: operation.expectedEpoch, repairCommand: "spider roam doctor" };
+          epoch: operation.expectedEpoch, repairCommand: cause === "workspace-prerequisite-missing" ? prerequisiteRepair(error) : "spider roam doctor" };
       }
     }
     if (["session-start", "session-stop", "session-resume"].includes(operation.kind)) {

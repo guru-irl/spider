@@ -60,10 +60,10 @@ describe("copy buttons", () => {
     const lines = render(md);
     const pairs = lines.map((line, row) => line.includes("⧉ text") && line.includes("⧉ md") ? row : -1).filter(row => row >= 0);
     expect(pairs).toHaveLength(4);
-    expect(lines[pairs[0]]).toContain("```");
-    expect(lines[pairs[1]]).toContain("Next");
+    expect(lines[pairs[0] - 1]).toContain("```");
+    expect(lines[pairs[1] - 1]).toContain("Next");
     expect(lines[pairs[2] - 1]).toContain("─");
-    expect(lines[pairs[3]]).toContain("Tail end");
+    expect(lines[pairs[3] - 1]).toContain("Tail end");
     const expected = [
       ["const x = 1;", "```ts\nconst x = 1;\n```"],
       ["Quote\nNext", "> **Quote**\n> Next"],

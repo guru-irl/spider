@@ -48,6 +48,8 @@ it('all fifteen upstream tests are present and selected by the CI Vitest configu
   const selected = new Set(globSync(configuration.test?.include ?? configDefaults.include,
     { cwd: root, exclude: configuration.test?.exclude ?? configDefaults.exclude }));
   expect(expected.filter(name => !selected.has(name))).toEqual([]);
+  // The selector's approved root roster must stay equal to full Vitest discovery.
+  expect([...selected].sort()).toEqual(globSync('packages/**/src/**/*.test.ts', { cwd: root, exclude: configDefaults.exclude }).sort());
   const workflow = readFileSync(resolve(root, '.github/workflows/ci.yml'), 'utf8');
   const jobs = parse(workflow).jobs;
   const full = jobs.test;

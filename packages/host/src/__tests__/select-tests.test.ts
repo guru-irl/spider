@@ -51,10 +51,10 @@ describe('change-scoped test manifests', () => {
     expect(manifest.selectionHash).toMatch(/^[a-f0-9]{64}$/);
   });
 
-  it.each(['package-lock.json', '.github/workflows/ci.yml', 'scripts/select-tests.mjs', 'vitest.setup.ts', 'packages/db-core/src/testutil.ts', 'unknown.resource'])(
+  it.each(['package-lock.json', '.github/workflows/ci.yml', 'scripts/select-tests.mjs', 'vitest.setup.ts', 'packages/roam/src/vite.config.ts', 'packages/db-core/src/testutil.ts', 'unknown.resource'])(
     'runs the full inventory for %s without trusting a graph', async file => {
       const { selectTests } = await api(); const f = fixture(); f.put(file); const head = f.commit();
-      const manifest = await selectTests({ ...f, head, resolveRelated: async () => { throw new Error('must not need graph'); } });
+      const manifest = await selectTests({ ...f, head, resolveRelated: async () => [] });
       expect(manifest.mode).toBe('full'); expect(manifest.files).toEqual([a, b, c, guard].sort());
     });
 

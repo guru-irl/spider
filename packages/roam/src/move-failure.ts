@@ -1,18 +1,20 @@
 import { safeCauseCode, safeMoveFailureStep, type MoveFailureStep } from "./cause-codes";
+import { MOVE_REFUSAL_MESSAGES } from "./contracts";
 import { ownershipFailureCode, ownershipRepair, type OwnershipFailureCode } from './ownership-failure';
 
 export interface MoveFailureDetail { step: MoveFailureStep; code: string }
 // A bounded token can still contain private data. Only registered codes may leave the adapter.
 const safeDetailCode = (value: unknown): value is string => typeof value === "string" && /^[a-z0-9-]{1,64}$/.test(value) &&
-  (value === "unknown" || safeMoveCause(value) !== undefined || safeCauseCode(value) !== undefined);
+  (value === "unknown" || Object.hasOwn(MOVE_REFUSAL_MESSAGES, value) || safeMoveCause(value) !== undefined || safeCauseCode(value) !== undefined);
 export function parseMoveFailure(value: unknown): MoveFailureDetail | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const row = value as Partial<MoveFailureDetail>, step = safeMoveFailureStep(row.step);
   return step && safeDetailCode(row.code) ? { step, code: row.code } : undefined;
 }
 export function moveFailureDetail(error: unknown, step: MoveFailureStep): MoveFailureDetail {
-  const row = error && typeof error === "object" ? error as { code?: unknown; failure?: unknown } : {};
-  return parseMoveFailure(row.failure) ?? { step, code: safeDetailCode(row.code) ? row.code : "unknown" };
+  const row = error && typeof error === "object" ? error as { code?: unknown; failure?: unknown; refusal?: { code?: unknown } } : {};
+  const code = row.code ?? row.refusal?.code;
+  return parseMoveFailure(row.failure) ?? { step, code: safeDetailCode(code) ? code : "unknown" };
 }
 
 export class MoveStepError extends Error {

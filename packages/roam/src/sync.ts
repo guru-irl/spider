@@ -300,7 +300,8 @@ export function createSync(ports: SyncPorts): SyncAdapter {
         if (!missing) assignInitialHome(globalDb, id, [...origins][0], config.hubMachineId);
         else try {
           if (!globalDb.prepare("SELECT 1 FROM session_homes WHERE session_id=?").get(id))
-            withheld = parseFirstHomeWithheld({ machineId: missing.machineId, storeKind: missing.store.scope });
+            withheld = parseFirstHomeWithheld({ machineId: missing.machineId, storeKind: missing.store.scope,
+              ...(missing.store.check === "store-machine-mismatch" ? { storeCheck: "store-machine-mismatch" } : {}) });
         } catch { /* The diagnostic must not change synchronization. */ }
       }
       try { globalDb.raw.transaction(() => writeLocal(globalDb, "first-home-withheld", id, withheld ?? undefined)).immediate(); }

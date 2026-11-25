@@ -26,7 +26,10 @@ import { MOVE_REFUSAL_MESSAGES, type Operation, type Outcome } from "./contracts
 import { dispatchArtifactCommand, handleAgentOperation } from "./agent";
 import { openLocalCore, openLocalRuntime, readLocalIdentity } from "./runtime";
 import { listStoreKeys } from "./store-inventory";
-import { pruneMissingStores, StorePruneError } from "./store-prune";
+import { pruneMissingStores, StorePruneError, type PruneResult } from "./store-prune";
+import { retireForeignStores } from "./store-retire";
+import { revokedMachineIds } from "./revocation";
+import { openRoamPathReadOnly } from "@spider/db-core/roam/reads";
 import { createStorePort } from "./stores";
 import { loadHerdrConfig, startProductionHub } from "./production-hub";
 export { startProductionHub } from "./production-hub";
@@ -59,6 +62,7 @@ const HELP = `Usage: spider <command>
   spider roam claim <session> <machine>
   spider roam forget <machine> --confirm "destroyed <machine UUID or alias>"
   spider roam stores prune [--confirm]
+  spider roam stores retire <machine> [--confirm]
   spider roam repo map <repo-key> <path>
   spider roam memory tag <store-key> <uuid> <machine|all>
   spider move <session> <machine>
@@ -104,7 +108,8 @@ function valid(args: readonly string[], literalFrom: number): boolean {
     case "sync": case "doctor": return args.length === 2 || args.length === 3 && item(2);
     case "provision": case "recover": case "cancel": case "forget": case "claim": case "stop": case "resume":
       return args.length === (args[1] === "claim" ? 4 : 3) && args.slice(2).every((_value, index) => item(index + 2));
-    case "stores": return args[2] === "prune" && (args.length === 3 || args.length === 4 && args[3] === "--confirm");
+    case "stores": return args[2] === "prune" && (args.length === 3 || args.length === 4 && args[3] === "--confirm") ||
+      args[2] === "retire" && item(3) && (args.length === 4 || args.length === 5 && args[4] === "--confirm");
     case "repo": return args[2] === "map" && args.length === 5 && item(3) && item(4);
     case "memory": return args[2] === "tag" && args.length === 6 && item(3) && item(4) && item(5);
     default: return false;
@@ -464,6 +469,43 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       ...(result.causeCode ? { causeCode: result.causeCode } : {}),
       ...(result.operationId ? { operationId: result.operationId } : {}),
       ...(result.repairCommand ? { repairCommand: result.repairCommand } : {}) }, jsonOutput, `${result.message.split("\n").map(clean).join("\n")}\n`);
+  }
+  if (argv[0] === "roam" && argv[1] === "stores" && argv[2] === "retire") {
+    try {
+      const core = openLocalCore(root);
+      try {
+        if (core.config.role !== "hub") return emitOutcome(io, outcome(1, "mac-hub-required"), jsonOutput);
+        const machine = resolveControlMachine(argv[3], core.config);
+        if (!machine) return emitOutcome(io, outcome(2, "machine-not-enrolled"), jsonOutput);
+        const confirm = argv[4] === "--confirm";
+        const proof = openRoamPathReadOnly(join(root, "roam", "journal.db"));
+        let retiredMachines: string[];
+        try { retiredMachines = proof ? revokedMachineIds(proof) : []; } finally { proof?.close(); }
+        let result: PruneResult;
+        if (machine === core.config.machineId) result = retireForeignStores(core.db, machine, retiredMachines, confirm);
+        else {
+          const peer = core.config.peers.find(peer => peer.machineId === machine);
+          if (!peer) return emitOutcome(io, outcome(2, "machine-not-enrolled"), jsonOutput);
+          const herdr = loadHerdrConfig(root), transport = createTransport({ binary: herdr.core.binary, env: process.env, enrolled: core.config.peers });
+          const operation: Operation = { id: randomUUID(), kind: "stores-retire", machineId: machine, expectedEpoch: null,
+            args: { sourceMachine: core.config.hubMachineId, retiredMachines, confirm } };
+          const handle = await transport.resolve(peer), bytes = await transport.exec(handle, ["roam", "agent", JSON.stringify(operation)],
+            { timeoutMs: core.config.limits.controlMs, maxBytes: core.config.limits.replyBytes });
+          const reply = parseRoamJson(bytes.toString("utf8")) as unknown as Outcome<PruneResult>;
+          if (reply.operationId !== operation.id || reply.code !== 0 || !reply.value ||
+              !Array.isArray(reply.value.candidates) || !Array.isArray(reply.value.removed) || !Array.isArray(reply.value.unavailable))
+            return emitOutcome(io, outcome(reply.code === 3 ? 3 : 1, "stores-retire-unavailable"), jsonOutput);
+          result = reply.value;
+        }
+        const refused = result.unavailable.length > 0;
+        const entries = result.candidates.map(row => `${confirm ? "Retired" : "Candidate"} ${clean(row.key)}: ${clean(row.path)}`);
+        entries.push(...result.unavailable.map(row => `Refused ${clean(row.key)}: ${clean(row.path)} (${clean(row.check)}). ${clean(row.repair)}`));
+        entries.push(refused ? `${result.removed.length} registrations retired. Other registrations remain refused. No store files or data were deleted. Sync, then retry the move.` : confirm
+          ? `Retired ${result.removed.length} registrations. No store files or data were deleted. Sync, then retry the move.`
+          : "Dry run. Nothing changed. Add --confirm after inspecting these proven retired owners; no store files or data will be deleted.");
+        return emitOutcome(io, outcome(refused ? 1 : 0, refused ? "stores-retire-refused" : confirm ? "stores-retired" : "stores-retire-preview", result), jsonOutput, entries.join("\n") + "\n");
+      } finally { core.close(); }
+    } catch { return emitOutcome(io, outcome(1, "stores-retire-unavailable"), jsonOutput, "Cannot prove safe store retirement. Run spider roam doctor on the affected machine.\n"); }
   }
   if (argv[0] === "roam" && argv[1] === "stores" && argv[2] === "prune") {
     try {

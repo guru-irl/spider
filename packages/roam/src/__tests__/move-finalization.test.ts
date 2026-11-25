@@ -60,3 +60,24 @@ it("an unknown failure after check but before freeze is pending rather than a pr
   const f = await fixture(); f.ports.seed = async () => { throw new Error("fixture-seed-unavailable"); };
   expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 3, reason: "move-pending" });
 });
+
+it.each([
+  ["intercom-blocker", "intercom-inspect", "move-intercom-blocked"],
+  ["start-reply", "start", "move-readiness-invalid"],
+  ["endpoint-reply", "destination-endpoint", "intercom-endpoint-not-ready"],
+] as const)("names and journals validation refused outside the %s adapter", async (fault, step, code) => {
+  const f = await fixture();
+  if (fault === "intercom-blocker") f.ports.intercom.ports.inspect = async () => ({ blockers: [{ id: "blocker-1", kind: "pending-ask", detail: "fixture" }], cancelledWork: [], warnings: [] });
+  else if (fault === "start-reply") {
+    const start = f.ports.start;
+    f.ports.start = async (...args) => ({ ...await start(...args), operationId: "wrong-operation" });
+  } else {
+    const endpoint = f.ports.intercom.destinationEndpoint;
+    f.ports.intercom.destinationEndpoint = async home => ({ ...await endpoint(home), homeEpoch: 99 });
+  }
+  const result = await moveSession(f.request, f.ports);
+  expect(result).toMatchObject({ code: 3, reason: code, failure: { step, code } });
+  expect(f.ports.journal.read(f.request.operation.id).filter(row => row.action === "move-failure")).toEqual([
+    { action: "move-failure", result: { step, code } },
+  ]);
+});

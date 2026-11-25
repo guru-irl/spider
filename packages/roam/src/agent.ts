@@ -30,7 +30,7 @@ type ImportRequest = { kind: "import"; key: StoreKey; sourceMachine: string; tra
   artifact: string; sha256: string; header: BatchHeader };
 type ExportRequest = { kind: "export"; key: StoreKey; after: number; targetBytes: number; batchId: string };
 type AssembleRequest = { kind: "assemble"; sourceMachine: string; transferId: string; artifact: string; sha256: string };
-type Request = { kind: "release-export"; exportId: string; sha256: string } | { kind: "stores" } | { kind: "inventory"; key: StoreKey } | { kind: "enable-capture"; key: StoreKey } | { kind: "recheck-store"; key: StoreKey } | ImportRequest | ExportRequest | AssembleRequest
+type Request = { kind: "stores-retire"; retiredMachines: string[]; confirm: boolean } | { kind: "release-export"; exportId: string; sha256: string } | { kind: "stores" } | { kind: "inventory"; key: StoreKey } | { kind: "enable-capture"; key: StoreKey } | { kind: "recheck-store"; key: StoreKey } | ImportRequest | ExportRequest | AssembleRequest
   | { kind: "split"; artifact: string; digest: string; head: string; pageBytes: number; index: number }
   | { kind: "cursor"; key: StoreKey; sourceMachine: string; stream: string }
   | { kind: "receipt"; key: StoreKey; sourceMachine: string; batchId: string };
@@ -63,6 +63,13 @@ function parseRequest(operation: Operation, ports: AgentPorts): Request {
   }
   artifactId(operation.id);
   const args = operation.args;
+  if (operation.kind === "stores-retire") {
+    fields(args, ["sourceMachine", "retiredMachines", "confirm"]);
+    if (ports.config.role !== "box" || args.sourceMachine !== ports.config.hubMachineId ||
+        !Array.isArray(args.retiredMachines) || args.retiredMachines.some(id => !isMachineId(id) || id === ports.config.machineId || id === ports.config.hubMachineId) ||
+        typeof args.confirm !== "boolean") throw new Error("Invalid retirement authority");
+    return { kind: "stores-retire", retiredMachines: args.retiredMachines as string[], confirm: args.confirm };
+  }
   if (operation.kind === "release-export") {
     fields(args, ["exportId", "sha256"]);
     if (typeof args.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(args.sha256)) throw new Error("Invalid export acknowledgment");
@@ -616,7 +623,11 @@ async function dispatchParsedOperation(operation: Operation, request: Request, p
       ports.journal.record(id, "done", { value: { released: request.exportId, sha256: request.sha256 } });
       return outcome(0, "complete", id, { released: request.exportId, sha256: request.sha256 });
     }
-    if (request.kind === "stores") {
+    if (request.kind === "stores-retire") {
+      const { retireForeignStores } = await import("./store-retire");
+      value = JSON.parse(JSON.stringify(retireForeignStores(openStore(ports, "global", true).db,
+        ports.config.machineId, request.retiredMachines, request.confirm))) as JsonObject;
+    } else if (request.kind === "stores") {
       const problems: JsonObject[] = [], ungathered: JsonObject[] = [];
       const stores = listStoreKeys(openStore(ports, "global", true).db, { onUngathered: store => { ungathered.push({ ...store }); },
         onProblem: entry => { problems.push({ entry, reason: "Unsafe or unreadable store skipped" }); } });

@@ -18,6 +18,7 @@ export type PublicControl =
   | { kind: "stop" | "resume"; session: string }
   | { kind: "forget"; machine: string; confirmation: string }
   | { kind: "stores-prune"; confirm: boolean }
+  | { kind: "stores-retire"; machine: string; confirm: boolean }
   | { kind: "repo-map"; repoKey: string; path: string }
   | { kind: "memory-tag"; storeKey: string; uuid: string; machine: string }
   | { kind: "provision"; machine: string; options: readonly string[] };
@@ -37,6 +38,7 @@ export function parsePublicControl(input: readonly string[]): PublicControl | nu
   if ((command === "stop" || command === "resume") && args.length === 3 && plain(a)) return { kind: command, session: a };
   if (command === "claim" && args.length === 4 && plain(a) && plain(b)) return { kind: command, session: a, machine: b };
   if (command === "forget" && args.length === 5 && plain(a) && b === "--confirm" && /^destroyed [A-Za-z0-9._-]+$/.test(c)) return { kind: command, machine: a, confirmation: c };
+  if (command === "stores" && a === "retire" && plain(b) && (args.length === 4 || args.length === 5 && c === "--confirm")) return { kind: "stores-retire", machine: b, confirm: c === "--confirm" };
   if (command === "stores" && a === "prune" && (args.length === 3 || args.length === 4 && b === "--confirm")) return { kind: "stores-prune", confirm: b === "--confirm" };
   if (command === "repo" && a === "map" && args.length === 5 && plain(b) && plain(c) && isAbsolute(c)) return { kind: "repo-map", repoKey: b, path: c };
   if (command === "memory" && a === "tag" && plain(b) && plain(c)) {
@@ -60,7 +62,7 @@ export function parsePublicControl(input: readonly string[]): PublicControl | nu
   return null;
 }
 export function controlRefusal(control: PublicControl, config: RoamConfig): string | null {
-  if (!config.enabled && !["status", "doctor", "enable", "disable", "provision", "forget", "stop", "stores-prune"].includes(control.kind)) return "roaming-disabled";
+  if (!config.enabled && !["status", "doctor", "enable", "disable", "provision", "forget", "stop", "stores-prune", "stores-retire"].includes(control.kind)) return "roaming-disabled";
   if (config.role === "box" && !(control.kind === "status" || control.kind === "repo-map" || control.kind === "stores-prune" || control.kind === "doctor" && control.machine === undefined)) return "mac-hub-required";
   return null;
 }
@@ -110,7 +112,8 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
   const moveCause = candidate === "move-first-home-withheld" && !withheld ? undefined : candidate;
   const causeCode = moveCause ?? safeCauseCode(result.causeCode);
   // provision.ts is the sole producer of permission repairs and binds them to the destination home.
-  const safeRepair = (value: unknown): string | null => typeof value === "string" && (moveCause === "move-workspace-unmapped" && value === "spider roam repo map <repo> <path>" || /^spider roam (?:recover|doctor|cancel|claim|provision|forget|disable|stop|enable)(?: [A-Za-z0-9._-]+)?$/.test(value) ||
+  const safeRepair = (value: unknown): string | null => typeof value === "string" && (moveCause === "move-workspace-unmapped" && value === "spider roam repo map <repo> <path>" ||
+    withheld?.storeCheck === "store-machine-mismatch" && value === `spider roam stores retire ${withheld.machineId}` || /^spider roam (?:recover|doctor|cancel|claim|provision|forget|disable|stop|enable)(?: [A-Za-z0-9._-]+)?$/.test(value) ||
     /^spider roam provision [A-Za-z0-9._-]+ --operation-id [A-Za-z0-9._-]+$/.test(value) ||
     result.reason === "destination-permissions-unsafe" && isPermissionRepairCommand(value)) ? value : null;
   const repair = safeRepair(result.repairCommand);
@@ -147,8 +150,11 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
     if (Array.isArray(raw.unavailable)) value.unavailable = raw.unavailable.flatMap(item => {
       const entry = pruneEntry(item);
       if (!entry || !item || typeof item !== "object" || !("check" in item)) return [];
-      return [{ ...entry, check: item.check === "session-in-use" ? "session-in-use" : "path-unavailable",
-        repair: item.check === "session-in-use" ? "Recover or finish the session action before pruning its workspace." : "Mount or restore the path, then inspect again. Nothing was pruned." }];
+      const check = ["session-in-use", "machine-not-retired", "identity-unavailable"].includes(String(item.check)) ? String(item.check) : "path-unavailable";
+      return [{ ...entry, check,
+        repair: check === "machine-not-retired" ? "The hub must prove this owner destroyed with spider roam forget. Live or unknown owners cannot be retired."
+          : check === "identity-unavailable" ? "Restore the store or repair its permissions before inspecting retirement again."
+          : check === "session-in-use" ? "Recover or finish the session action before changing its store registration." : "Mount or restore the path, then inspect again. Nothing changed." }];
     });
     if (raw.presentation === "pending" || raw.presentation === "complete") value.presentation = raw.presentation;
     if (Array.isArray(raw.homes)) {
@@ -192,7 +198,7 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
     });
   }
   const sourceCleanup = value.sourceCleanup as SourceCleanup | undefined;
-  const failure = result.code !== 0 && result.reason.startsWith("move-") ||
+  const failure = result.code !== 0 && Object.hasOwn(MOVE_REFUSAL_MESSAGES, result.reason) ||
     result.code === 0 && result.reason === "moved" && sourceCleanup?.status === "pending" ? parseMoveFailure(result.failure) : undefined;
   let refusal: MoveRefusal | undefined;
   if (result.refusal && typeof result.refusal === "object" && !Array.isArray(result.refusal)) {

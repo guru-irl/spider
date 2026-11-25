@@ -205,8 +205,9 @@ it.each([
     code: "uninspectable", check: "store-machine-mismatch" }]);
   const rows = problems.map(error => storeInventoryDiagnostic(file, error));
   expect(rows).toEqual(expect.arrayContaining([expect.objectContaining({ reason: expect.stringContaining("store-uninspectable:worktree:store-machine-mismatch"),
-    repairCommand: expect.stringContaining("belongs to another machine identity") })]));
-  expect(JSON.stringify(rows)).not.toContain(HUB); expect(JSON.stringify(rows)).not.toContain(BOX);
+    repairCommand: `spider roam stores retire ${BOX}` })]));
+  expect(JSON.stringify(rows)).not.toContain(HUB);
+  expect(JSON.stringify(rows.map(row => row.reason))).toContain(`spider roam stores retire ${BOX}`);
   const result = await handleAgentOperation({ id: "foreign-store", machineId: BOX, expectedEpoch: null, kind: "stores", args: {} }, ports);
   expect(result).toMatchObject({ code: 0, value: { stores: ["global"], ungathered } });
   expect(worktree.db.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get()).toEqual({ machine_id: HUB, store_key: assigned ? key : null });

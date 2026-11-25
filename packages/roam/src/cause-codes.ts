@@ -33,7 +33,7 @@ const causeCodes = new Set<string>([
   "invalid-byte-limit", "invalid-cli-deadline", "unresolved-peer", "service-not-loaded", "service-failed", "service-timeout", "service-spawn-error",
 ]);
 
-const agentOperationKinds = ["stores", "inventory", "enable-capture", "recheck-store", "export", "import", "release-export", "split", "assemble", "cursor", "receipt",
+const agentOperationKinds = ["stores", "stores-retire", "inventory", "enable-capture", "recheck-store", "export", "import", "release-export", "split", "assemble", "cursor", "receipt",
   "mirror-export", "sync-handshake", "supervisor-retire"] as const;
 export type AgentOperationKind = typeof agentOperationKinds[number];
 const agentKindSet = new Set<string>(agentOperationKinds);

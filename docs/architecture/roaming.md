@@ -47,14 +47,14 @@ rollout must retain the admission and origin guards.
 The installed `spider roam` command provides status, doctor, sync, enable,
 disable, provisioning, repository mapping, memory tagging, and session controls.
 The hub also provides `spider move`, `roam recover`, `roam cancel`, `roam claim`,
-and `roam forget`. Add `--json` at the end for machine-readable output. For a
+`roam stores retire <machine>`, and `roam forget`. Add `--json` at the end for machine-readable output. For a
 machine alias starting with a dash, use `spider roam sync -- <alias>` or
 `spider roam sync --machine <alias>`. Doctor supports the same forms. On a box,
 only local status, doctor, store pruning, and repository mapping run locally. Repository mapping
 also requires the box participation flag. Other controls direct the user to the hub.
 
 While roaming is disabled, status, doctor, enable, disable, provision, and
-`stores prune`, `stop <session>`, and confirmed `forget <box>` remain available. Stop addresses a
+`stores prune`, `stores retire <machine>`, `stop <session>`, and confirmed `forget <box>` remain available. Stop addresses a
 session, not a box. Disabled forget takes the hub single-instance lock and runs
 recovery without enabling roaming or starting the hub. It refuses if the hub is
 running or roaming becomes enabled. Ownership recovery can finish while pane
@@ -177,9 +177,20 @@ unconfirmed session slots while any registered or mapped store is ungathered.
 When a relevant unreadable worktree or replica prevents the first home, a move
 still refuses with `move-source-home-mismatch`. It adds the cause
 `move-first-home-withheld`, the responsible machine ID, and the store kind.
-The retained evidence contains no store key or path. Use the store-inventory
-diagnostics to find and restore the store, then sync and retry the move. A new
-inventory replaces the old evidence without changing the home assignment gate.
+The retained evidence contains no store key or path. An identity mismatch also
+retains `storeCheck: store-machine-mismatch` and names
+`spider roam stores retire <machine>` as the repair. Other store failures point
+to doctor. Restore the store or complete a proved retirement, then sync and
+retry the move. A new inventory replaces the old evidence without changing the
+home assignment gate.
+
+Every move refusal includes `failure.step` and a registered `failure.code`.
+Validation outside an adapter uses the step that owns the check. A withheld
+first home names `initial-home`. A `move-failure` journal row retains the same
+detail. Repeated identical failures do not duplicate the row. Refusals before
+an operation starts, or with conflicting arguments, use a separate diagnostic
+operation so they cannot reserve a session or alter another request. Diagnostic
+storage failures never relax the move's safety checks.
 
 Enable succeeds with warnings that name each ungathered scope and path. Doctor
 reports `store-missing:<scope>:enoent` or
@@ -190,10 +201,27 @@ writer-open and recovery guidance. One broken project store does not block the
 box's other stores. An unreadable global catalog still prevents discovery.
 
 A registered or mapped store with a different machine identity reports
-`store-uninspectable:<scope>:store-machine-mismatch`, without printing either
-machine ID. It remains ungathered and retains the same first-home fence. Use a
-matching machine catalog or a fresh isolated catalog; an existing foreign store
-has no supported in-place adoption or prune command.
+`store-uninspectable:<scope>:store-machine-mismatch`, without printing the
+foreign owner's identity. It remains ungathered and retains the same first-home
+fence. Doctor names `spider roam stores retire <machine>` for the affected
+machine. Run that command on the hub to preview registry references whose owner
+has a durable destruction revocation from `spider roam forget`. Add `--confirm`
+after inspecting the preview. A changed local identity or absence from enrollment
+is not destruction proof. A live or unknown owner remains refused.
+
+Retirement removes only proved foreign project registrations, repository
+references, and workspace mappings with their redirects. It retains store files,
+portable data, and session locations. A store needed by a current home or an
+unfinished home action remains registered. Each removed reference and its full
+original row commit with a `store-retire` local audit entry in one transaction.
+The hub sends only its validated revocation identities to an enrolled box. The
+box accepts retirement instructions only from its hub. Unavailable references
+remain registered while independently proved references can retire. The command
+works while roaming is disabled. Repeating a completed retirement changes
+nothing. After retirement, sync establishes any eligible first homes.
+
+There is no in-place adoption command. Use the matching machine catalog when
+the foreign identity is live or its destruction cannot be proved.
 
 A mapped worktree can exist before capture creates its project database.
 `mapWorkspace` accepts this state when no replica needs merging. Inventory does

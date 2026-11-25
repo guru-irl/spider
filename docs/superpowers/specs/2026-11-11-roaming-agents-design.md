@@ -594,8 +594,12 @@ Recheck at `input`, `before_agent_start`, `turn_start`, `tool_call`, `user_bash`
 | `spider roam forget <machine>` | Confirm destruction, revoke identity, and restore affected homes from mirrors, accepting the stated split-copy and data-loss costs. |
 | `spider roam stop <session>`, `resume <session>` | Change desired hosting state without changing the home. |
 | `spider roam repo map <repo-key> <path>`, `claim <session> <machine>` | Resolve explicit identity ambiguity with the checks above. |
+| `spider roam stores prune [--confirm]` | Preview or remove confirmed missing local registry references without deleting store files. |
+| `spider roam stores retire <machine> [--confirm]` | On the hub, preview or remove foreign-store registry references only for identities durably revoked by confirmed destruction. Works while disabled. Retain files, data, session locations, and references needed by current homes or unfinished home actions. Live or unknown owners refuse. |
 
 Mac controls use a mode-0600 same-user socket. Doctor, local status, and repo mapping can run on a box. Other box commands point to the Mac. No model-callable operation provisions credentials or changes homes directly. Exit codes are 0 for verified completion or no-op, 1 for refusal or failure, 2 for invalid arguments, and 3 for durable pending or unknown outcome. JSON includes a stable reason, operation ID, current home, epoch, and repair command.
+
+Move refusals include a step, a registered code, and one deduplicated failure diagnostic in the local journal. A refused request cannot alter another operation's journal or reserve a session. Diagnostic storage remains best effort.
 
 Refusals name the home, exact blockers, or missing evidence. For an unknown destination, say `The source is paused to avoid running two copies.` Success names the destination, terminal, and intercom address and repeats applicable warnings. Never print secrets, conversation bodies, uncommitted contents, or message bodies in diagnostics.
 

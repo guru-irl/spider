@@ -30,6 +30,14 @@ export function revokeMachine(db: Db, machineId: MachineId): void {
   }).immediate();
   if (!isRevoked(db, machineId)) throw new Error("Revocation was not persisted");
 }
+/** Only the private hub journal is destruction proof; enrollment absence is not. */
+export function revokedMachineIds(db: Db): MachineId[] {
+  privateJournal(db);
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='roam_machine_revocations'").get()) return [];
+  const rows = db.prepare("SELECT machine_id FROM roam_machine_revocations ORDER BY machine_id").all() as { machine_id: string }[];
+  if (rows.some(row => !isMachineId(row.machine_id))) throw new Error("Invalid machine revocation evidence");
+  return rows.map(row => row.machine_id);
+}
 export function syncHandshake(db: Db, machineId: MachineId): SyncHandshake {
   return isRevoked(db, machineId) ? { kind: "retire-only", reason: "machine-revoked", machineId }
     : { kind: "accepted", reason: "ok", machineId };

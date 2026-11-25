@@ -11,7 +11,7 @@ import { validHostingWarning } from "./hosting-warning";
 import { peerErrorCode } from "./peer-errors";
 import { withPrivateTransferDiagnostic } from "./private-transfer-diagnostics";
 import { MoveCompositionError, MoveStepError, safeMoveCause, moveFailureRepair, moveFailureDetail, parseMoveFailure, withMoveStep, type MoveCauseCode, type MoveFailureDetail } from "./move-failure";
-import type { MoveFailureStep } from "./cause-codes";
+import { safeMoveFailureStep, type MoveFailureStep } from "./cause-codes";
 import { MOVE_REFUSAL_MESSAGES } from "./contracts";
 import type { DestinationObservation, FreezeAck, Journal, MoveCheck, MovePorts, MoveRequest, MoveResult, SourceCleanup, MoveRefusal, MoveRefusalCode, MoveSessionOutcome, ValidatedBlockerId, Operation, Outcome, PreparedMove } from "./contracts";
 import { casHome, sessionHome } from "./homes";
@@ -101,13 +101,42 @@ function endpointReply(endpoint: SessionEndpoint, fence: IntercomIntakeFence, cu
       endpoint.machineId !== current.machineId || endpoint.homeEpoch !== current.epoch || !text(endpoint.activationEpoch)) refuse("intercom-endpoint-not-ready");
 }
 function json(value: unknown): JsonObject { return JSON.parse(JSON.stringify(value)) as JsonObject; }
+/** Diagnostics must not reserve an invalid request or mutate a completed operation. */
+function recordFailure(request: MoveRequest, ports: MovePorts, failure: MoveFailureDetail): void {
+  const id = text(request?.operation?.id) ? request.operation.id : "invalid-move";
+  try {
+    const rows = ports.journal.read(id);
+    const ownsOperation = isDeepStrictEqual(rows.find(row => row.action === "move-request")?.result, json(request));
+    const previous = ownsOperation ? rows.filter(row => row.action === "move-failure").at(-1) : undefined;
+    if (previous && isDeepStrictEqual(previous.result, failure)) return;
+    if (ownsOperation) try { ports.journal.record(id, "move-failure", json(failure)); return; }
+    catch { /* An unbegun or completed request needs a separate diagnostic operation. */ }
+    const diagnosticId = `move-refusal-${createHash("sha256").update(JSON.stringify([id, failure])).digest("hex")}`;
+    const begun = ports.journal.begin({ id: diagnosticId, kind: "move-refusal", machineId: ports.config.machineId,
+      expectedEpoch: null, args: { moveId: id } });
+    if (begun.kind === "done") return;
+    if (!ports.journal.read(diagnosticId).some(row => row.action === "move-failure"))
+      ports.journal.record(diagnosticId, "move-failure", json(failure));
+    ports.journal.record(diagnosticId, "done", json(failure));
+  } catch { /* Diagnostic storage cannot change the safety outcome. */ }
+}
 function outcome(request: MoveRequest, ports: MovePorts, code: Outcome<MoveResult>["code"], reason: MoveRefusalCode | "moved" | "same-home", value: MoveResult | null = null, blockers: readonly ValidatedBlockerId[] = [], cause?: MoveCauseCode, firstHomeWithheld?: FirstHomeWithheld, failure?: MoveFailureDetail): MoveSessionOutcome {
+  if (code !== 0 && !failure) {
+    let step: MoveFailureStep = firstHomeWithheld ? "initial-home" : "preflight";
+    if (!firstHomeWithheld) try {
+      const last = ports.journal.read(request?.operation?.id ?? "invalid-move").filter(row => row.action === "move-action-start").at(-1)?.result.action;
+      step = last === "prestage" ? "remote-prepare" : safeMoveFailureStep(last) ?? "preflight";
+    } catch { /* Retain preflight when the journal cannot be observed. */ }
+    failure = { step, code: cause ?? reason };
+  }
+  if (failure) recordFailure(request, ports, failure);
   const current = sessionHome(ports.globalDb, request?.sessionId ?? "");
   const envelope = { code, reason, operationId: text(request?.operation?.id) ? request.operation.id : "invalid-move", home: current === "unknown" ? null : current,
     epoch: current && current !== "unknown" ? current.epoch : null, repairCommand: reason === 'move-ownership-unavailable' ? null : reason === 'move-abort-pending' ? `spider roam cancel ${request.operation.id}` : reason === "initial-home-conflict" ? "spider roam claim" : code === 3 && text(request?.operation?.id) ? `spider roam recover ${request.operation.id}` : null };
   if (code === 0 && value) return { ...envelope, code: 0, ok: true, value, ...(failure ? { failure } : {}) };
   if (code === 0 || reason === "moved" || reason === "same-home") refuse("move-journal-invalid");
-  return { ...envelope, ...(cause ? { causeCode: cause, repairCommand: reason === 'move-ownership-unavailable' ? null : envelope.repairCommand ?? (cause === "move-workspace-unmapped" ? "spider roam repo map <repo> <path>" : "spider roam doctor") } : {}), code, ok: false, value: null, ...(failure ? { failure } : {}),
+  return { ...envelope, ...(cause ? { causeCode: cause, repairCommand: reason === 'move-ownership-unavailable' ? null : envelope.repairCommand ?? (cause === "move-first-home-withheld" && firstHomeWithheld?.storeCheck === "store-machine-mismatch"
+      ? `spider roam stores retire ${firstHomeWithheld.machineId}` : cause === "move-workspace-unmapped" ? "spider roam repo map <repo> <path>" : "spider roam doctor") } : {}), code, ok: false, value: null, ...(failure ? { failure } : {}),
     refusal: { code: reason, blockers, message: MOVE_REFUSAL_MESSAGES[reason] + (cause ? ` ${moveFailureRepair(cause)}` : ""),
       ...(firstHomeWithheld ? { firstHomeWithheld } : {}) } };
 }
@@ -243,8 +272,9 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
   let checked = false, begunNew = false, slot: string | null = null;
   let moved: { source: Home; value: MoveResult } | null = null;
   let cleanupDone: MoveResult | null = null;
-  let adapterFailure: MoveFailureDetail | undefined;
+  let activeStep: MoveFailureStep = "preflight";
   const action = async <T>(name: MoveFailureStep | "check" | "prestage", effect: () => Promise<T> | T): Promise<T> => {
+    activeStep = name === "check" ? "preflight" : name === "prestage" ? "remote-prepare" : name;
     if (recovering) {
       const completed = actionReceipt(ports.journal.read(id), name);
       if (completed) return structuredClone(completed.result.value) as T;
@@ -256,8 +286,7 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
     try { value = await (name === "prestage" || name === "transfer"
       ? withPrivateTransferDiagnostic(ports.journal, id, name === "prestage" ? "pre" : "final", "result", effect) : effect()); }
     catch (error) {
-      adapterFailure = moveFailureDetail(error, name === "check" ? "preflight" : name === "prestage" ? "remote-prepare" : name);
-      throw error;
+      throw error instanceof MoveStepError ? error : new MoveStepError(activeStep, error);
     }
     const receipt = { action: name, value: value === undefined ? null : json(value) };
     const previous = cleanupRetry ? ports.journal.read(id).filter(row => row.action === "move-action-complete" && row.result.action === name).at(-1) : null;
@@ -285,7 +314,8 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
           return outcome(request, ports, 3, "move-pending");
         }
       }
-      return result;
+      return !result.ok && !result.failure ? outcome(request, ports, result.code, result.refusal.code, null,
+        result.refusal.blockers, safeMoveCause(result.causeCode), result.refusal.firstHomeWithheld) : result;
     }
     begunNew = begun.kind === "new";
     if (begunNew) ports.journal.record(id, "move-request", json(request));
@@ -320,15 +350,17 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
       if (!await ports.barriers(check.source.machineId, seeded)) refuse("move-barriers-pending");
     });
     if (!committedBefore) {
-      const initial = sessionHome(ports.globalDb, request.sessionId);
-      const marker = ports.globalDb.prepare("SELECT machine_id FROM session_homes WHERE session_id=?").get(request.sessionId) as { machine_id: string } | undefined;
-      if (marker?.machine_id === "") refuse("initial-home-conflict");
-      if (!initial) {
-        const withheld = readFirstHomeWithheld(ports.globalDb, request.sessionId);
-        if (withheld) throw new FirstHomeWithheldError(withheld);
-      }
-      if (!initial || initial === "unknown" || !sameHome(initial, check.source)) refuse("move-source-home-mismatch");
-      await action("initial-home", () => initial);
+      const initial = await action("initial-home", () => {
+        const initial = sessionHome(ports.globalDb, request.sessionId);
+        const marker = ports.globalDb.prepare("SELECT machine_id FROM session_homes WHERE session_id=?").get(request.sessionId) as { machine_id: string } | undefined;
+        if (marker?.machine_id === "") refuse("initial-home-conflict");
+        if (!initial) {
+          const withheld = readFirstHomeWithheld(ports.globalDb, request.sessionId);
+          if (withheld) throw new FirstHomeWithheldError(withheld);
+        }
+        if (!initial || initial === "unknown" || !sameHome(initial, check.source)) refuse("move-source-home-mismatch");
+        return initial;
+      });
       await action("source-home-replicate", () => ports.replicateHome(initial));
     }
     const pre = await action("prestage", async () => { const value = await ports.prepare(structuredClone(check), structuredClone(request.operation)); preparedReply(check, value, request.operation, "pre"); return value; });
@@ -397,12 +429,8 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
   } catch (caught) {
     const error = caught instanceof MoveStepError ? caught.cause : caught;
     const rows = ports.journal.read(id), failedAction = rows.filter(row => row.action === 'move-action-start').at(-1)?.result.action;
-    const failure = adapterFailure;
-    if (failure) {
-      const previous = rows.filter(row => row.action === "move-failure").at(-1);
-      if (!previous || !isDeepStrictEqual(previous.result, failure)) try { ports.journal.record(id, "move-failure", json(failure)); }
-      catch { /* Missing diagnostic storage never changes the move outcome. */ }
-    }
+    const failure = moveFailureDetail(caught, activeStep);
+    recordFailure(request, ports, failure);
     if (cleanupDone) {
       await releaseMovePower(powerKey).catch(() => {});
       return outcome(request, ports, 0, 'moved', cleanupDone);

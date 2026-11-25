@@ -1,4 +1,9 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { openDb } from "@spider/db-core";
+import { createReplica } from "@spider/db-core/testutil";
+import { revokedMachineIds, revokeMachine } from "../revocation";
+import { retireForeignStores } from "../store-retire";
+import { listStoreKeys, storeInventoryDiagnostic } from "../store-inventory";
 import { join } from "node:path";
 import * as processIdentity from "../../../subagents/src/process-identity";
 import { recordLocation } from "@spider/db-core/roam/catalog";
@@ -72,12 +77,15 @@ it("reports the machine and kind when a missing mapped store withholds the first
   expect(result).toMatchObject({ code: 1, reason: "move-source-home-mismatch", causeCode: "move-first-home-withheld",
     refusal: { firstHomeWithheld: { machineId: BOX2, storeKind: "worktree" } } });
   expect(actions).toEqual([]);
-  expect(result).not.toHaveProperty("failure");
+  expect(result).toHaveProperty("failure", { step: "initial-home", code: "move-first-home-withheld" });
+  expect(input.f.journal.read(result.operationId!).filter(row => row.action === "move-failure")).toEqual([
+    { action: "move-failure", result: { step: "initial-home", code: "move-first-home-withheld" } },
+  ]);
   expect(sessionHome(input.f.global.db, SESSION)).toBeNull();
   expect(readLocal(input.f.global.db, "first-home-withheld", SESSION)).toEqual({ machineId: BOX2, storeKind: "worktree" });
   expect(await replay()).toEqual(result);
   const safe = safeControlOutcome(result), text = controlText(safe);
-  expect(safe).toMatchObject({ causeCode: "move-first-home-withheld", refusal: { firstHomeWithheld: { machineId: BOX2, storeKind: "worktree" } } });
+  expect(safe).toMatchObject({ failure: { step: "initial-home", code: "move-first-home-withheld" }, causeCode: "move-first-home-withheld", refusal: { firstHomeWithheld: { machineId: BOX2, storeKind: "worktree" } } });
   expect(safeControlOutcome(safe)).toEqual(safe);
   expect(text).toContain("move-first-home-withheld");
   expect(text).toContain(BOX2);
@@ -150,4 +158,35 @@ it("does not expose malformed retained withholding evidence", async () => {
   expect(result.causeCode).toBeUndefined();
   expect(actions).toEqual([]);
   expect(JSON.stringify(safeControlOutcome(result))).not.toContain("private");
+});
+
+it("names the supported retirement command and establishes the first home after a proved repair", async () => {
+  const input = await fixture(), old = "00000000-0000-4000-8000-000000000099";
+  const foreign = createReplica("worktree", old), remote = input.f.remotes.get(BOX2)!.global;
+  const proof = openDb(join(input.f.global.root, "roam", "journal.db"));
+  try {
+    remote.db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES ('foreign',?,?,1,1)").run(foreign.root, foreign.db.raw.name);
+    const { result, actions } = await firstMove(input);
+    expect(result).toMatchObject({ code: 1, reason: "move-source-home-mismatch", causeCode: "move-first-home-withheld",
+      repairCommand: `spider roam stores retire ${BOX2}`, failure: { step: "initial-home", code: "move-first-home-withheld" },
+      refusal: { firstHomeWithheld: { machineId: BOX2, storeKind: "worktree", storeCheck: "store-machine-mismatch" } } });
+    expect(actions).toEqual([]);
+    const safe = safeControlOutcome(result);
+    expect(safe.repairCommand).toBe(`spider roam stores retire ${BOX2}`);
+    expect(safeControlOutcome(safe)).toEqual(safe);
+    expect(controlText(safe)).toContain(`spider roam stores retire ${BOX2}`);
+    expect(JSON.stringify(safe)).not.toContain(old);
+    expect(JSON.stringify(safe)).not.toContain(foreign.root);
+    const diagnostics: ReturnType<typeof storeInventoryDiagnostic>[] = [];
+    listStoreKeys(remote.db, { onProblem: (path, error) => diagnostics.push(storeInventoryDiagnostic(path, error)) });
+    expect(diagnostics).toContainEqual(expect.objectContaining({ repairCommand: `spider roam stores retire ${BOX2}` }));
+    expect(retireForeignStores(remote.db, BOX2, [], true).removed).toEqual([]);
+    await input.sync.sync();
+    expect(sessionHome(input.f.global.db, SESSION)).toBeNull();
+    revokeMachine(proof, old);
+    expect(retireForeignStores(remote.db, BOX2, revokedMachineIds(proof), true).removed).toEqual([{ key: "project:foreign", path: foreign.db.raw.name }]);
+    await input.sync.sync();
+    expect(sessionHome(input.f.global.db, SESSION)).toMatchObject({ machineId: BOX, epoch: 1 });
+    expect(readLocal(input.f.global.db, "first-home-withheld", SESSION)).toBeUndefined();
+  } finally { proof.close(); foreign.close(); }
 });

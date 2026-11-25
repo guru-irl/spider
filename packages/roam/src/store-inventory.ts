@@ -43,10 +43,12 @@ export class StoreInventoryError extends Error {
   readonly check: string;
   readonly path: string;
   readonly scope: "repo" | "worktree" | "replica";
-  constructor(path: string, scope: "repo" | "worktree" | "replica", error?: unknown) {
+  readonly machineId?: string;
+  constructor(path: string, scope: "repo" | "worktree" | "replica", error?: unknown, machineId?: string) {
     const code = error && typeof error === "object" && "code" in error ? String(error.code) : "inspect-failed";
     super("Store inventory problem", { cause: error });
     this.path = path; this.scope = scope;
+    this.machineId = isRoamUuid(machineId) ? machineId : undefined;
     this.code = code === "ENOENT" ? "store-missing" : "store-uninspectable";
     this.check = /^[A-Z_]{1,64}$/.test(code) ? code.toLowerCase().replaceAll("_", "-")
       : /^diagnostic-snapshot-(?:changing|wal-unpublished|wal-index-missing|wal-invalid)$/.test(code) ? code : "inspect-failed";
@@ -56,9 +58,11 @@ export function storeInventoryDiagnostic(entry: string, error?: unknown, severit
   const problem = error instanceof StoreInventoryError ? error : new StoreInventoryError(entry, "replica", error);
   const path = problem.path.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 512);
   return { severity: problem.code === "store-missing" ? "warning" : severity,
-    reason: `${problem.code}:${problem.scope}:${problem.check}: ${problem.code === "store-uninspectable" ? "Cannot inspect store " : ""}${path}${problem.code === "store-missing" ? ". Ungathered: restore or mount the path. Planned stores stay registered until created; prune only a confirmed deletion." : ""}`,
+    reason: `${problem.code}:${problem.scope}:${problem.check}: ${problem.code === "store-uninspectable" ? "Cannot inspect store " : ""}${path}${problem.code === "store-missing" ? ". Ungathered: restore or mount the path. Planned stores stay registered until created; prune only a confirmed deletion."
+      : problem.check === "store-machine-mismatch" ? `. Use the matching catalog, or run ${problem.machineId ? `spider roam stores retire ${problem.machineId}` : "the repair command"} on the hub to preview retirement. Only identities with durable destruction proof can retire. Add --confirm after inspecting the preview. Live or unknown owners remain refused.` : ""}`,
     repairCommand: problem.code === "store-missing" ? "Restore or mount the path; use spider roam stores prune for a confirmed deletion. Planned stores must be created before capture."
       : problem.check.startsWith("diagnostic-snapshot-") ? "Open the store with its writer to publish or recover its WAL, then rerun spider roam doctor."
+      : problem.check === "store-machine-mismatch" && problem.machineId ? `spider roam stores retire ${problem.machineId}`
       : problem.check === "store-machine-mismatch" ? "This store belongs to another machine identity. Use a matching machine catalog, then rerun spider roam doctor."
       : "Restore the store or repair its permissions or database, then rerun spider roam doctor." };
 }
@@ -73,7 +77,7 @@ function foreignMachine(recorded: unknown, local: unknown): boolean {
 function keyAt(file: string, machine: string, open: (file: string) => Db | undefined, options: InventoryOptions, replica = false, scope: "repo" | "worktree" | "replica" = "replica"): StoreKey | null {
   let db: Db | undefined;
   const problem = (error?: unknown, incomplete = true) => {
-    const issue = new StoreInventoryError(file, scope, error);
+    const issue = new StoreInventoryError(file, scope, error, machine);
     options.onProblem?.(file, issue);
     ungathered(issue, null, options);
     if (incomplete) options.onIncomplete?.(file, issue);
@@ -125,7 +129,7 @@ export function listStoreKeys(source: RoamCatalogSource, options: InventoryOptio
   for (const key of mapped) {
     let db: Db | undefined, file = key as string;
     const problem = (error?: unknown) => {
-      const issue = new StoreInventoryError(file, key.startsWith("worktree:") ? "worktree" : "repo", error);
+      const issue = new StoreInventoryError(file, key.startsWith("worktree:") ? "worktree" : "repo", error, machine);
       options.onProblem?.(file, issue);
       ungathered(issue, key, options);
       options.onIncomplete?.(file, issue);

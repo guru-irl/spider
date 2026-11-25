@@ -1,5 +1,5 @@
 // packages/subagents/src/__tests__/message-store.test.ts
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { openDbAt } from "@spider/db-core";
 import type { Db } from "@spider/db-core";
 import { join } from "node:path";
@@ -148,17 +148,19 @@ describe("MessageStore", () => {
     expect(row2.read_at).toBe(firstTimestamp);
   });
 
+  // Fixed 2026-11-25: a delayed test could assign equal enqueue timestamps.
   it("ordering is oldest-first", () => {
     // Mutation: flip the ORDER BY → must fail
-    const wait = Date.now();
-    while (Date.now() - wait < 2) {}
-    const id1 = store.enqueue({ toSession: "sess-order", body: "first" });
-    
-    while (Date.now() - wait < 4) {}
-    const id2 = store.enqueue({ toSession: "sess-order", body: "second" });
-    
-    while (Date.now() - wait < 6) {}
-    const id3 = store.enqueue({ toSession: "sess-order", body: "third" });
+    const clock = vi.spyOn(Date, "now");
+    let id1: number, id2: number, id3: number;
+    try {
+      clock.mockReturnValue(1000);
+      id1 = store.enqueue({ toSession: "sess-order", body: "first" });
+      clock.mockReturnValue(2000);
+      id2 = store.enqueue({ toSession: "sess-order", body: "second" });
+      clock.mockReturnValue(3000);
+      id3 = store.enqueue({ toSession: "sess-order", body: "third" });
+    } finally { clock.mockRestore(); }
 
     const pending = store.pending("sess-order");
     expect(pending).toHaveLength(3);

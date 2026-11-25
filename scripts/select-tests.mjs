@@ -140,6 +140,11 @@ export async function selectTests({ root = process.cwd(), base, head = 'HEAD', r
       catch { result.mode = 'full'; result.fallback = 'graph shutdown failed'; for (const file of inventory) add(file, 'graph shutdown fallback'); }
     }
   }
+  result.selectionAudit = result.changedPaths.some(file => [
+    'scripts/select-tests.mjs', 'scripts/test-resources.json',
+    'scripts/run-selected-tests.mjs', 'scripts/check-test-selection.mjs',
+    'scripts/replay-test-selection.mjs', '.github/workflows/ci.yml',
+  ].includes(file));
   result.optional = optionalSuites(result.changedPaths, result.mode === 'full');
   result.files = sorted(reasons.keys());
   result.reasons = Object.fromEntries(result.files.map(file => [file, sorted(reasons.get(file))]));
@@ -151,6 +156,9 @@ export async function selectTests({ root = process.cwd(), base, head = 'HEAD', r
 export function validateManifest(manifest, { root = process.cwd(), testedSha = git(root, 'rev-parse', 'HEAD').trim() } = {}) {
   if (manifest?.version !== 1 || manifest.testedSha !== testedSha) throw new Error('manifest revision SHA does not match checkout');
   if (manifest.selectionHash !== manifestDigest(manifest)) throw new Error('manifest checksum does not match');
+  if (manifest.policyHash !== hash(readFileSync(policyPath))) throw new Error('manifest resource policy changed');
+  if (manifest.timingHash !== hash(readFileSync(timingPath))) throw new Error('manifest timing table changed');
+  if (manifest.selectorHash !== hash(readFileSync(fileURLToPath(import.meta.url)))) throw new Error('manifest selector changed');
   const inventory = testInventory(root);
   if (manifest.inventoryHash !== hash(canonical(inventory))) throw new Error('manifest inventory changed');
   if (!Array.isArray(manifest.files) || manifest.files.some(file => !safePath(file) || !inventory.includes(file)) || canonical(manifest.files) !== canonical(sorted(manifest.files))) throw new Error('invalid manifest files');
@@ -166,7 +174,7 @@ async function main() {
   mkdirSync(dirname(resolve(output)), { recursive: true });
   writeFileSync(output, JSON.stringify(manifest, null, 2) + '\n');
   if (process.env.GITHUB_OUTPUT) writeFileSync(process.env.GITHUB_OUTPUT,
-    Object.entries(manifest.optional).map(([key, value]) => `${key}=${value}\n`).join('') + `selection-hash=${manifest.selectionHash}\n`, { flag: 'a' });
+    Object.entries(manifest.optional).map(([key, value]) => `${key}=${value}\n`).join('') + `audit=${manifest.selectionAudit}\nselection-hash=${manifest.selectionHash}\n`, { flag: 'a' });
   console.log(`Selection: ${manifest.mode}, ${manifest.files.length} files, ${manifest.selectionMs} ms, ${manifest.selectionHash}`);
   if (manifest.fallback) console.log(`Full fallback: ${manifest.fallback}`);
 }

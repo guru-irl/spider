@@ -24,9 +24,11 @@ jobs:
     needs: [pr-test, test, herdr-acceptance, chrome]
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '26.x'
@@ -94,6 +96,29 @@ jobs:
             if (a.selectionHash !== b.selectionHash) throw new Error("PR shards selected different manifests");
             console.log(`Both shards used ${a.selectionHash}`);
           '
+
+      - name: Replay historical red PR runs
+        if: always() && github.event_name == 'pull_request' && needs.pr-test.outputs.audit == 'true'
+        # Inconclusive historical infrastructure runs block enforcement, not the
+        # existing full-suite shadow gate. Misses remain explicit in the report.
+        continue-on-error: ${{ vars.CI_SCOPED_TESTS != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/replay-test-selection.mjs --recent 20 --output .spider/scratch/selection-replay
+
+      - name: Save selector audit evidence
+        if: always() && github.event_name == 'pull_request' && needs.pr-test.outputs.audit == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: selection-audit
+          path: |
+            .spider/scratch/selection-replay/corpus.json
+            .spider/scratch/selection-replay/replay.json
+            .spider/scratch/selection-replay/summary.json
+            .spider/scratch/selection-replay/*/selection.json
+            .spider/scratch/selection-replay/*/selection.log
+          include-hidden-files: true
+          if-no-files-found: error
 
       - name: Prepare optional PR acceptance environment
         if: github.event_name == 'pull_request' && needs.pr-test.outputs.acceptance == 'true'
@@ -164,6 +189,7 @@ jobs:
     outputs:
       acceptance: ${{ steps.selection.outputs.acceptance }}
       chrome: ${{ steps.selection.outputs.chrome }}
+      audit: ${{ steps.selection.outputs.audit }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -201,6 +227,10 @@ jobs:
           node scripts/select-tests.mjs --base "$BASE_SHA" --head "$(git rev-parse HEAD)" --output ".spider/scratch/test-results/selection-${{ matrix.shard }}.json"
           node scripts/test-shard-budget.mjs --manifest ".spider/scratch/test-results/selection-${{ matrix.shard }}.json" > ".spider/scratch/test-results/budget-${{ matrix.shard }}.json"
 
+      - name: Probe selector graph on isolated inputs
+        if: matrix.shard == 1 && steps.selection.outputs.audit == 'true'
+        run: node scripts/check-test-selection.mjs
+
       - name: Test selected shard
         env:
           SCOPED_TESTS: ${{ vars.CI_SCOPED_TESTS }}
@@ -218,6 +248,17 @@ jobs:
           path: |
             .spider/scratch/test-results/selection-${{ matrix.shard }}.json
             .spider/scratch/test-results/budget-${{ matrix.shard }}.json
+          include-hidden-files: true
+          if-no-files-found: error
+
+      - name: Save graph probe evidence
+        if: always() && matrix.shard == 1 && steps.selection.outputs.audit == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: selection-probes
+          path: |
+            .spider/scratch/selection-probes/*.json
+            .spider/scratch/selection-probes/*.log
           include-hidden-files: true
           if-no-files-found: error
 

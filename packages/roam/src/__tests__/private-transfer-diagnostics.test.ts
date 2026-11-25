@@ -7,7 +7,7 @@ import { scratchDbPath } from "@spider/db-core/testutil";
 import type { JsonObject } from "@spider/db-core/roam/types";
 import { main as roamCli } from "../cli";
 import { openJournal } from "../journal";
-import { withPrivateTransferDiagnostic } from "../private-transfer-diagnostics";
+import { parsePrivateTransferDiagnostic, withPrivateTransferDiagnostic } from "../private-transfer-diagnostics";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -23,6 +23,15 @@ function fixture() {
   vi.stubEnv("SPIDER_GLOBAL_ROOT", root);
   return { journal, root };
 }
+
+it.each(["pre", "final"] as const)("validates and projects the %s stage for private evidence", stage => {
+  expect(parsePrivateTransferDiagnostic({ stage, phase: "export", code: "ENOENT", codeSource: "code", privatePayload: "fixture-private" }))
+    .toEqual({ stage, phase: "export", code: "ENOENT", codeSource: "code" });
+});
+
+it.each([undefined, null, "invalid", {}, 1])("rejects private evidence with invalid stage %j", stage => {
+  expect(parsePrivateTransferDiagnostic({ stage, phase: "export", code: "ENOENT", codeSource: "code" })).toBeUndefined();
+});
 
 it("does not write private failure evidence for a successful transfer", async () => {
   const { journal } = fixture(), value = { complete: true };

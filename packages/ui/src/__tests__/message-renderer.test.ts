@@ -9,15 +9,15 @@ describe("message renderer", () => {
   it.each([
     { delivery: "delivered", delivered: true, transformed: false, icon: "✓", status: "delivered" },
     { delivery: "delivered", delivered: true, transformed: true, icon: "✓", status: "delivered, transformed" },
-    { delivery: "accepted but not confirmed", delivered: false, icon: "⚠", status: "accepted but not confirmed" },
-    { delivery: "no reply yet, delivery unknown", delivered: false, icon: "⚠", status: "no reply yet, delivery unknown" },
-    { delivery: "child-accepted", delivered: false, icon: "⚠", status: "accepted but not confirmed" },
-    { delivery: "refused", delivered: false, icon: "✗", status: "refused" },
-    { delivery: "broker-accepted", delivered: false, icon: "⚠", status: "broker accepted · acknowledgement unconfirmed" },
+    { delivery: "accepted but not confirmed", delivered: false, icon: "⚠\uFE0F", status: "accepted but not confirmed" },
+    { delivery: "no reply yet, delivery unknown", delivered: false, icon: "⚠\uFE0F", status: "no reply yet, delivery unknown" },
+    { delivery: "child-accepted", delivered: false, icon: "⚠\uFE0F", status: "accepted but not confirmed" },
+    { delivery: "refused", delivered: false, icon: "❌", status: "refused" },
+    { delivery: "broker-accepted", delivered: false, icon: "⚠\uFE0F", status: "broker accepted · acknowledgement unconfirmed" },
   ] as const)("renders $delivery (transformed=$transformed) with truthful severity", row => {
     const text = renderMessageResult({ verb: "send", body: "correction", to: "run", ...row, error: "Delivery diagnostic." }, { theme: id, width: 120 }).join("\n");
     expect(text).toContain(row.icon); expect(text).toContain(row.status);
-    if (row.icon !== "✗") expect(text).not.toContain("✗");
+    if (row.icon !== "❌") expect(text).not.toContain("❌");
   });
   it.each(["queued", "broker-accepted", undefined] as const)("keeps %s delivery notes neutral instead of turning them into error headlines", delivery => {
     const colored = { ...id, fg: (token: string, text: string) => token === "error" ? `\x1b[31m${text}\x1b[39m` : text };
@@ -32,7 +32,7 @@ describe("message renderer", () => {
   it.each([false, true])("uses one failure glyph and error styling for unavailable delivery (expanded=%s)", expanded => {
     const colored = { ...id, fg: (token: string, text: string) => token === "error" ? `\x1b[31m${text}\x1b[39m` : text };
     const out = renderMessageResult({ verb: "send", to: "peer", body: "", delivered: false, delivery: "unavailable", error: "One-shot child cannot receive messages.\nStart a fresh run." }, { theme: colored, width: 120, expanded }).join("\n");
-    expect(out.match(/✗/g)).toHaveLength(1);
+    expect(out.match(/❌/g)).toHaveLength(1);
     expect(out).toContain("recipient unavailable");
     expect(out).toContain("\x1b[31mOne-shot child cannot receive messages.");
     if (expanded) expect(out).toContain("Start a fresh run.");
@@ -48,9 +48,9 @@ describe("message renderer", () => {
     expect(text).toMatch(/hello there/);
     for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(50);
   });
-  it("undelivered message shows ✗ and no body line when body empty", () => {
+  it("undelivered message shows ❌ and no body line when body empty", () => {
     const lines = renderMessageResult({ verb: "send", to: "x", body: "", delivered: false }, { theme: id, width: 40 });
-    expect(lines.join("\n")).toContain("✗");
+    expect(lines.join("\n")).toContain("❌");
     expect(lines.filter((l) => l.trim())).toHaveLength(1);
   });
   it("reply/ask/broadcast verbs render distinct arrows", () => {

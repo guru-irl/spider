@@ -922,7 +922,9 @@ it.each(["readiness", "refusal"] as const)("recovery refuses conflicting final s
   f.ports.journal.record(f.request.operation.id, "move-action-complete", { action: "start", value: JSON.parse(JSON.stringify(value)) });
   const saved = f.ports.journal.read(f.request.operation.id);
   expect(await recoverMove(f.request.operation.id, f.ports)).toMatchObject({ code: 3, reason: "move-journal-invalid" });
-  expect(f.ports.journal.read(f.request.operation.id)).toEqual(saved);
+  expect(f.ports.journal.read(f.request.operation.id)).toEqual([...saved, {
+    action: "move-recovery-refused", result: { reason: "move-journal-invalid", blockers: [] },
+  }]);
   expect(f.events.filter(event => event === "start")).toHaveLength(1);
 }, 5000);
 

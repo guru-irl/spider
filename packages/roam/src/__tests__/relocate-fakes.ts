@@ -57,6 +57,7 @@ export interface FakeState {
   backups: Set<MachineId>;
   processes: Set<MachineId>;
   effects: string[];
+  attempts: string[];
   safetyViolations: string[];
   homesWritten: RelocateHome[];
   ids: number;
@@ -75,7 +76,7 @@ export function assertSafeHistories(): void {
 export function state(): FakeState {
   const result: FakeState = { home: running(), journal: new Map(), replicaHomes: new Map([[source, running()]]), captures: new Map(), pushed: new Set(),
     installed: new Map(), snapshots: new Set(), segments: new Set(), seeds: new Set(),
-    backups: new Set([source]), processes: new Set([source]), effects: [], safetyViolations: [], homesWritten: [],
+    backups: new Set([source]), processes: new Set([source]), effects: [], attempts: [], safetyViolations: [], homesWritten: [],
     ids: 0, locked: false, stopAcknowledged: false, failAfter: null, failBefore: null,
     refuse: null, stopBarrier: null, casWinner: null };
   histories.push(result);
@@ -90,6 +91,7 @@ export function deferred() {
 // Every new ports object sees only durable state, never another invocation's locals.
 export function ports(s: FakeState): RelocatePorts {
   const before = (effect: string) => {
+    s.attempts.push(effect);
     expect(s.locked).toBe(true);
     if (s.failBefore === effect) { s.failBefore = null; throw new Error("reply unavailable"); }
   };

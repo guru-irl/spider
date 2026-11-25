@@ -243,12 +243,16 @@ describe("relocate", () => {
     p.stopSource = async (...args) => { entered.resolve(); return stop(...args); };
     const pending = relocate(request, p);
     await entered.promise;
-    expect(s.effects).not.toContain("pull-source");
-    expect(s.effects).not.toContain("push-destination");
-    expect(s.effects).not.toContain("install-destination");
-    expect(s.effects).not.toContain("start-destination");
-    expect(s.processes).toEqual(new Set([source]));
-    barrier.resolve();
+    try {
+      // Let the immediate journal promises settle without releasing the only
+      // real barrier. A missing await must expose an attempted capture here.
+      for (let turn = 0; turn < 20; turn++) await Promise.resolve();
+      expect(s.attempts).not.toContain("pull-source");
+      expect(s.attempts).not.toContain("push-destination");
+      expect(s.attempts).not.toContain("install-destination");
+      expect(s.attempts).not.toContain("start-destination");
+      expect(s.processes).toEqual(new Set([source]));
+    } finally { barrier.resolve(); }
     expect((await pending).ok).toBe(true);
     expect(s.effects.indexOf("lock-free")).toBeLessThan(s.effects.indexOf("pull-source"));
   });

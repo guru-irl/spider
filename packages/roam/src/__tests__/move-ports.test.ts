@@ -42,6 +42,9 @@ import { abortCleanupId, cancelMove, recoverMove, rollbackMoveId } from "../move
 import { createProductionRecoveryPorts } from "../recovery-transport";
 import { createMovePorts, handleMoveParticipantOperation, unboundMoveEffects, recoverMoveAdapters, createMoveWorkspacePorts, readRollbackEvidence, createRollbackIntercomPorts, createHubMoveEvidencePorts, createPushedMoveEvidencePorts, forgetMachineWithAdapters } from "../move-ports";
 import type { MoveAdapterBindings } from "../move-ports";
+import { createUsageIngestThrough } from "../../../host/src/roam/usage-ingest";
+import { discoverUsageSources } from "../../../host/src/usage/discovery";
+import { openUsageLedger } from "../../../host/src/usage/ledger";
 
 const HUB = "00000000-0000-4000-8000-000000000001", BOX = "00000000-0000-4000-8000-000000000002";
 const REPO = "repo:fixture-repo" as StoreKey;
@@ -59,7 +62,9 @@ async function fixture(worktreeMachine = HUB, homeless = false) {
   const global = createReplica("global", HUB), worktree = createReplica("worktree", worktreeMachine), repository = createReplica("repo", HUB); closes.push(() => global.close(), () => worktree.close(), () => repository.close());
   const repo = join(root, "repo"); mkdirSync(repo); git(repo, ["init", "-q", "--initial-branch=main"]);
   writeFileSync(join(repo, "tracked.txt"), "fixture\n"); git(repo, ["add", "."]); git(repo, ["commit", "-q", "-m", "fixture"]);
-  const file = join(root, "original.jsonl"); writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: SESSION, cwd: repo, timestamp: "2026-01-01T00:00:00Z" }) + "\n" +
+  const file = homeless ? join(root, "sessions", "project", "original.jsonl") : join(root, "original.jsonl");
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: SESSION, cwd: repo, timestamp: "2026-01-01T00:00:00Z" }) + "\n" +
     JSON.stringify({ type: "message", id: "leaf-a", parentId: null, timestamp: "2026-01-01T00:00:00Z", message: { role: "user", content: "fixture", timestamp: 1 } }) + "\n", { mode: 0o600 });
   worktree.db.prepare("INSERT INTO sessions(id,started_at,origin_machine) VALUES(?,?,?)").run(SESSION, 1, HUB);
   if (!homeless) seedSession(worktree.db, SESSION, 1, WT, 100);
@@ -84,6 +89,7 @@ async function fixture(worktreeMachine = HUB, homeless = false) {
   const authority = createRunningIntentAuthority(global.db);
   const bindings: MoveAdapterBindings = {
     globalDb: global.db, privateDb, root, clock: { now: () => 1, later: () => () => {} },
+    checkSessionFile: async () => {},
     power: { pid: 900, spawn: async () => { events.push("power"); return { exited: Promise.resolve(), stop: async () => { events.push("power-release"); } }; }, onExit: () => () => {}, notice: () => {} },
     sync: { sync: async () => { events.push("sync"); return []; }, barriers: async () => true },
     stores: { open: key => key === "global" ? global.db : key === WT ? worktree.db : key === REPO ? repository.db : (() => { throw new Error("Unknown store"); })(),
@@ -1162,6 +1168,10 @@ it("destroyed mirror partial recovery never reports uncommitted homes as success
 }, 5000);
 
 async function mountFirstMoveSource(f: Awaited<ReturnType<typeof transferFixture>>, order: string[]) {
+  f.global.db.prepare("UPDATE projects SET real_path=? WHERE project_key='source'").run(f.repo);
+  const usageRoots = { registryDb: f.global.db.raw.name, sessionsDir: join(f.root, "sessions"), ledgerFile: join(f.root, "usage.db"),
+    authPath: join(f.root, "auth.json"), leaseDir: join(f.root, "usage-leases") };
+  const ingestThrough = createUsageIngestThrough(usageRoots, SESSION, HUB);
   const record = f.journal.record; f.journal.record = (id, action, value) => { if (process.env.SPIDER_FIRST_MOVE_TRACE) console.error("first-move", action, value.action ?? value.state ?? ""); record(id, action, value); };
   const identity = { bootId: "source-boot", pid: process.pid, startTime: "fixture-source" };
   f.owner({ kind: "live", identity });
@@ -1177,7 +1187,12 @@ async function mountFirstMoveSource(f: Awaited<ReturnType<typeof transferFixture
     async lock() {
       const socket = await serveSessionControl({ sessionId: SESSION, runtimeRoot: f.bindings.participant!.runtimeRoot, ports: {
         gate, journal: f.journal, stores: f.bindings.participant!.stores.map(row => row.db), expectedStores: ["global", REPO, WT], intercom: { address: f.bindings.intercom!.address, ports: f.bindings.intercom!.ports },
-        async drain() {}, async resume() {}, async ingestThrough() {}, authorizeAbort: async () => null, onHubRestored: () => () => {},
+        async drain() {}, async resume() {}, async ingestThrough(file, size) {
+          expect(sessionHome(f.global.db, SESSION)).toMatchObject({ machineId: HUB, epoch: 1, moveId: null });
+          const source = (await discoverUsageSources(usageRoots)).sources.find(source => source.path === file);
+          expect(source?.roaming?.localMachine).toBe(HUB);
+          await ingestThrough(file, size);
+        }, authorizeAbort: async () => null, onHubRestored: () => () => {},
         initialInspect: async operation => {
           if (operation.expectedEpoch !== 1 || sessionHome(f.global.db, SESSION) !== null || readSessionState(f.worktree.db, SESSION)) throw new Error("Not an unassigned origin");
           return { blockers: [], owner: identity, file: f.file, cwd: f.repo, leaf: f.sourceManifest.leaf };
@@ -1238,6 +1253,10 @@ it("never-homed persistent Mac session seeds syncs admits freezes and moves to a
   expect(sessionHome(f.global.db, SESSION)).toMatchObject({ machineId: BOX, epoch: 2 });
   expect(readSessionState(f.worktree.db, SESSION)).toMatchObject({ state: "retired", epoch: 1 });
   expect(readSessionState(f.remoteWorktree.db, SESSION)).toMatchObject({ state: "active", epoch: 2 });
+  const ack = f.journal.read("app-absent").find(row => row.action === "move-action-complete" && row.result.action === "freeze")!.result.value as unknown as FreezeAck;
+  const ledger = openUsageLedger(join(f.root, "usage.db"));
+  try { expect(ledger.getImportState(f.file)).toMatchObject({ offset: ack.size, size: ack.size }); }
+  finally { ledger.close(); }
 }, 5000);
 it("a conflict marker refuses the first move and names explicit claim before seeding or freeze", async () => {
   const f = await fixture(HUB, true);

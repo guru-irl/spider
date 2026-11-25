@@ -164,7 +164,7 @@ export async function selectTests({ root = process.cwd(), base, head = 'HEAD', r
   result.selectionAudit = result.changedPaths.some(file => [
     'scripts/select-tests.mjs', 'scripts/test-resources.json',
     'scripts/run-selected-tests.mjs', 'scripts/check-test-selection.mjs',
-    'scripts/replay-test-selection.mjs', '.github/workflows/ci.yml',
+    'scripts/measure-test-selection.mjs', 'scripts/replay-test-selection.mjs', '.github/workflows/ci.yml',
   ].includes(file));
   result.optional = optionalSuites(result.changedPaths, result.mode === 'full');
   result.files = sorted(reasons.keys());

@@ -37,7 +37,8 @@
         "scripts/test-durations.json",
         "scripts/update-test-durations.mjs",
         "scripts/test-bundle.ts",
-        "scripts/check-test-selection.mjs"
+        "scripts/check-test-selection.mjs",
+        "scripts/measure-test-selection.mjs"
       ],
       "tests": [],
       "related": [],

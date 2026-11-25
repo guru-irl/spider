@@ -2,7 +2,9 @@ import { execFileSync } from "node:child_process";
 import { delimiter, dirname, join, relative, isAbsolute, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
-import { parseLocationStores } from "@spider/db-core/roam/catalog";
+import { parseLocationStores, recordLocation } from "@spider/db-core/roam/catalog";
+import { localEntries, readLocal, writeLocal } from "@spider/db-core/roam/local-state";
+import { inspectSession } from "../session-file";
 import { seedSession, enableMemoryCapture } from "@spider/db-core/roam/seed";
 import { createStorePort } from "../stores";
 import { parsePlacement, object, text } from "./journal";
@@ -18,7 +20,7 @@ import { selectedSocket } from "@spider/herdr/client/parse";
 import type { Operation, Clock } from "../contracts";
 import { createLocalExactHc, resolveParticipantPi } from "../launcher";
 import { requestSessionControl } from "../session-socket";
-import type { MovingHome, RelocateAdapterOptions, RelocateHome, RunningHome, SessionId, SessionOwner, SessionPlacement, V0Result } from "./types";
+import type { MovingHome, RelocateAdapterOptions, RelocateHome, RunningHome, SessionId, SessionOwner, SessionPlacement, SessionMachinePorts, SupervisorEntry, V0Result } from "./types";
 import { refusal } from "./remote";
 
 export interface LocalIO {
@@ -58,7 +60,7 @@ export function localLaunchEnvironment(env: Readonly<NodeJS.ProcessEnv> = proces
 }
 export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
   const lockRoot = join(options.root,"herdr");
-  const env = localLaunchEnvironment();
+  const env = {...localLaunchEnvironment(),SPIDER_GLOBAL_ROOT:options.root};
   const binary = process.env.SPIDER_ROAM_HC ?? "hc";
   const pi = resolveParticipantPi(env);
   const hc = createLocalExactHc({
@@ -177,7 +179,8 @@ export async function inspectLocalSource(id: SessionId, options: RelocateAdapter
     await normalRepository(root,options);
     const head = (await options.git.run(root,["git","rev-parse","--verify","HEAD^{commit}"])).toString().trim();
     const knownHome = row.home_json ? object(JSON.parse(row.home_json)) : null;
-    const historyMachine = typeof knownHome?.historyMachine === "string" ? knownHome.historyMachine : options.config.machineId;
+    const knownPlacement = readLocal<unknown>(options.globalDb,"relocate-managed",id);
+    const historyMachine = knownPlacement ? parsePlacement(knownPlacement).historyMachine : typeof knownHome?.historyMachine === "string" ? knownHome.historyMachine : options.config.machineId;
     const placement = parsePlacement({sessionId:id,machineId:options.config.machineId,repoKey,workspaceId,repository:map.path,cwd:row.cwd,file:row.file,stores:[...new Set(["global",`repo:${repoKey}`,...keys])],historyMachine});
     return {ok:true,value:{placement,epoch,state,root,relativeCwd,head}};
   } catch { return refusal("unsupported-workspace","The source checkout or membership could not be inspected safely."); }
@@ -248,5 +251,70 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
       return {ok:true,value:launched};
     }); } catch { return refusal("start-pending","The launch reply is pending; retry without starting another copy."); }
   }
-  return {owner,start,confirm,stop:(id:SessionId,moving:MovingHome|null=null)=>stopLocalSession(id,moving,io,options.clock,options.limits.readyMs)};
+  async function locate(machineId: string,id: SessionId): Promise<V0Result<SessionPlacement>> {
+    if (machineId !== options.config.machineId) return refusal("machine-not-found","The requested placement is not local.");
+    try {
+      const known = readLocal<unknown>(options.globalDb,"relocate-managed",id);
+      let placement: SessionPlacement;
+      if (known) placement=parsePlacement(known);
+      else { const source=await inspectLocalSource(id,options,true);if(!source.ok)return source;placement=source.value.placement; }
+      if (placement.machineId !== machineId || placement.sessionId !== id) return refusal("destination-copy-missing","The local copy has a different identity.");
+      const session=await inspectSession(placement.file,id,undefined,options.limits);
+      if (session.cwd !== placement.cwd) return refusal("destination-copy-missing","The local transcript cwd no longer matches its recorded copy.");
+      return {ok:true,value:placement};
+    } catch {return refusal("destination-copy-missing","The destination has no verified local session copy.");}
+  }
+  async function publishHome(home: RelocateHome,machineId: string): Promise<V0Result<void>> {
+    try { return machineId === options.config.machineId && exactHome(await options.homes.read(home.sessionId),home) ? {ok:true,value:undefined} : refusal("sync-failed","The exact home is not present on the local machine."); }
+    catch {return refusal("sync-failed","The local home cannot be read back.");}
+  }
+  async function activate(home: RunningHome,placement: SessionPlacement): Promise<V0Result<void>> {
+    try {
+      parsePlacement(placement);
+      const current=await options.homes.read(home.sessionId);
+      const allowed=exactHome(current,home) || current?.state === "moving" && current.moveId === home.moveId && current.epoch+1 === home.epoch && (current.machineId === home.machineId || current.destination === home.machineId) || current?.state === "stopped" && current.machineId === home.machineId && current.epoch+1 === home.epoch;
+      if (!allowed || home.state !== "running" || home.destination !== null || home.machineId !== options.config.machineId || placement.machineId !== home.machineId || home.sessionId !== placement.sessionId) return refusal("home-conflict","The home does not authorize this local activation.");
+      const stores=createStorePort(options.config,options.globalDb);
+      try { for(const key of placement.stores) if(key.startsWith("worktree:")) {
+        const db=stores.openStore(key).db;
+        const old=db.prepare("SELECT epoch FROM roam_sessions WHERE session_id=?").get(home.sessionId) as {epoch:number}|undefined;
+        if(old && old.epoch>home.epoch) return refusal("home-conflict","The local membership has a newer epoch.");
+        db.prepare("INSERT INTO roam_sessions(session_id,epoch,state) VALUES (?,?,'active') ON CONFLICT(session_id) DO UPDATE SET epoch=excluded.epoch,state='active'").run(home.sessionId,home.epoch);
+      }} finally {stores.close();}
+      await seedLocalPlacement(placement,home.epoch,options);
+      writeLocal(options.globalDb,"relocate-managed",home.sessionId,placement);
+      recordLocation(options.globalDb,{sessionId:home.sessionId,stores:placement.stores,home,file:placement.file,cwd:placement.cwd});
+      return {ok:true,value:undefined};
+    } catch {return refusal("install-failed","Local capture membership could not be activated.");}
+  }
+  async function stop(id: SessionId,moving: MovingHome|null=null): Promise<V0Result<void>> {
+    try {
+      if(moving && !exactHome(await options.homes.read(id),moving))return refusal("home-conflict","The source moving home changed before shutdown.");
+      const stopped=await stopLocalSession(id,moving,io,options.clock,options.limits.readyMs);if(!stopped.ok)return stopped;
+      const known=readLocal<unknown>(options.globalDb,"relocate-managed",id);
+      const row=options.globalDb.prepare("SELECT stores_json FROM roam_locations WHERE session_id=?").get(id) as {stores_json:string}|undefined;
+      const keys=known?parsePlacement(known).stores:row?parseLocationStores(JSON.parse(row.stores_json)):[];
+      const stores=createStorePort(options.config,options.globalDb);
+      try {for(const key of keys)if(key.startsWith("worktree:"))stores.openStore(key).db.prepare("UPDATE roam_sessions SET state='frozen' WHERE session_id=? AND state='active'").run(id);}
+      finally {stores.close();}
+      return stopped;
+    }catch{return refusal("stop-timeout","The stopped source membership could not be frozen.");}
+  }
+  async function entries(): Promise<readonly SupervisorEntry[]> {
+    const homes=await options.homes.list(), byId=new Map(homes.map(home=>[home.sessionId,home]));
+    const placements=new Map(localEntries<unknown>(options.globalDb,"relocate-managed").map(row=>[row.key as SessionId,parsePlacement(row.value)]));
+    const ids=new Set([...placements.keys(),...homes.filter(home=>home.machineId===options.config.machineId || home.state === "moving" && home.destination===options.config.machineId).map(home=>home.sessionId)]);
+    const result: SupervisorEntry[]=[];
+    for(const sessionId of ids) {
+      let placement=placements.get(sessionId)??null;
+      if(!placement) { const found=await locate(options.config.machineId,sessionId);if(found.ok)placement=found.value; }
+      result.push({sessionId,home:byId.get(sessionId)??null,placement});
+    }
+    return result;
+  }
+  return {owner,start,confirm,stop,locate,publishHome,activate,entries};
+}
+export function createLocalSessionMachinePorts(options: RelocateAdapterOptions): SessionMachinePorts {
+  const local=createLocalRuntime(options);
+  return {locate:local.locate,publishHome:local.publishHome,activate:local.activate,start:local.start,confirm:local.confirm};
 }

@@ -75,10 +75,14 @@ async function fixture(mappedRepository: boolean, occupied = false, complete = f
     mkdirSync(join(global.root, "roam"), { recursive: true, mode: 0o700 });
     writeFileSync(join(global.root, "roam", "config.json"), JSON.stringify(configs.get(global.machineId)), { mode: 0o600 });
     writeFileSync(join(global.root, "roam", "machine.json"), JSON.stringify({ machineId: global.machineId }), { mode: 0o600 });
+    mkdirSync(join(global.root, "herdr"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(global.root, "herdr", "config.json"), JSON.stringify({ mode: "core-only", globalRoot: global.root,
+      agentDirectory: join(global.root, "agent"), core: { binary: "/fixture/hc", config: "/fixture/core.json" }, shellRc: "/fixture/shellrc", machines: [] }), { mode: 0o600 });
     configs.set(global.machineId, readLocalIdentity(global.root));
     journals.set(global.machineId, openFreezeJournal(join(global.root, "roam", "journal.db"))); enableMemoryCapture(global.db, "global");
   }
-  const calls: Operation[] = [];
+  const calls: Operation[] = [], importFailures: unknown[] = [];
+  const importControl: { before?: (runtime: HostMoveRuntime) => void } = {};
   let owner: Probe = { kind: "absent" }, ready: HubOperationReadiness | null = null;
   const empty = () => ({ asks: [], pendingDispatch: [], unknownOutcomes: [], unobservedReceipts: [] });
   const transport: Transport = { resolve: async peer => peer, read: async (_peer, path) => readFileSync(path),
@@ -99,8 +103,7 @@ async function fixture(mappedRepository: boolean, occupied = false, complete = f
             mounted = await createHostMoveBindings({ root: target.root, globalDb: target.db, config: targetConfig, journal, sessionId: SESSION, transport, operation: op });
             mounted.bindings.participant!.auth = async () => [];
             mounted.bindings.participant!.writers = async () => [];
-            mounted.bindings.participant!.sessionTarget = async () => join(destination.root, "incoming.jsonl");
-            mounted.bindings.participant!.withBothLocks = async (_id, effect) => effect();
+            if (op.kind !== "move-import") mounted.bindings.participant!.withBothLocks = async (_id, effect) => effect();
             mounted.bindings.participant!.probe = async () => owner;
             mounted.bindings.participant!.wake = async request => {
               const authority = createRunningIntentAuthority(target.db), intent = await authority.get(SESSION);
@@ -114,7 +117,9 @@ async function fixture(mappedRepository: boolean, occupied = false, complete = f
             mounted.bindings.participant!.readiness = async query => ready && query.epoch === ready.epoch && query.launchId === ready.opId ? ready : null;
             mounted.bindings.participant!.observation = async home => ({ home: sessionHome(target.db, SESSION) as typeof home, owner,
               readiness: ready && home.epoch === ready.epoch ? { ...ready, opId: createRunningIntentAuthority(target.db).operationId(SESSION)! } : null, launchFailure: null, retired: false });
-            return mounted.dispatch(op);
+            if (op.kind === "move-import") importControl.before?.(mounted);
+            try { return await mounted.dispatch(op); }
+            catch (error) { if (op.kind === "move-import") importFailures.push(error); throw error; }
           } });
         return Buffer.from(JSON.stringify(reply));
       } finally { await mounted?.close(); stores.close(); }
@@ -144,7 +149,7 @@ async function fixture(mappedRepository: boolean, occupied = false, complete = f
   if (!complete) runtime.ports.freeze = async () => { throw Error("fixture-freeze-stop"); };
   runtime.bindings.handoff!.readyTarget = async home => ({ machineId: home.machineId, alias: null, sessionId: SESSION, homeEpoch: home.epoch, coreId: "fixture-core", terminalId: "fixture-terminal" });
   runtime.bindings.handoff!.presentReadyTarget = async () => ({ status: "complete", reason: "presented", presentation: null });
-  return { source, destination, runtime, worktree, checkout, nativeRoot, repository, calls, journals, transport };
+  return { source, destination, runtime, worktree, checkout, nativeRoot, repository, calls, journals, transport, importControl, importFailures };
 }
 let current: Awaited<ReturnType<typeof fixture>>, pendingOperation: string;
 beforeEach(async context => { current = await fixture(!context.task.name.includes("unmapped repository"), context.task.name.includes("occupied"), context.task.name.includes("completed")); }, 5000);
@@ -157,6 +162,26 @@ for (const checkpoint of ["prestage", "transfer"]) beforeEach(async context => {
       : await current.runtime.control({ op: "recover", operationId: pendingOperation });
     pendingOperation = reply.operationId!;
   } finally { journal.record = record; }
+}, 5000);
+
+it("a fresh import selects its own repo and workspace among multiple destination maps", async () => {
+  const f = current;
+  for (const [repoKey, workspaceId, name] of [["aaa-repo", WORKSPACE, "other-repo"], [REPO, "000-other-workspace", "other-workspace"]]) {
+    const path = join(f.destination.root, name);
+    git(f.repository, ["worktree", "add", "-q", "--detach", path]);
+    await mapWorkspace(f.destination.db, { repoKey, workspaceId, path });
+    initializeStore(f.destination, `worktree:${repoKey}:${workspaceId}`);
+  }
+  await mapWorkspace(f.destination.db, { repoKey: REPO, workspaceId: WORKSPACE, path: f.repository });
+  initializeStore(f.destination, WT);
+  expect(f.destination.db.prepare("SELECT count(*) AS count FROM roam_workspace_maps").get()).toEqual({ count: 4 });
+  expect(f.destination.db.prepare("SELECT 1 FROM roam_locations WHERE session_id=?").get(SESSION)).toBeUndefined();
+  await f.runtime.control({ op: "move", session: SESSION, machine: "box.invalid" });
+  expect(f.importFailures.map(error => error instanceof Error ? error.stack : error)).toEqual([]);
+  const location = f.destination.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id=?").get(SESSION) as { file: string; cwd: string };
+  const directory = f.repository.replace(/^\//, "").replace(/\//g, "-");
+  expect(location).toEqual({ file: join(f.destination.root, "agent", "sessions", `--${directory}--`, `${SESSION}.jsonl`), cwd: f.repository });
+  expect(JSON.parse(readFileSync(location.file, "utf8").split("\n")[0])).toMatchObject({ type: "session", id: SESSION, cwd: f.repository });
 }, 5000);
 
 it("a public move retains the remote workspace-plan error code", async () => {

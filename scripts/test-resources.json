@@ -332,6 +332,7 @@
       "packages/host/src/__tests__/herdr-pane-installation.test.ts",
       "packages/host/src/__tests__/herdr-presence.test.ts",
       "packages/host/src/__tests__/herdr-remote-file.test.ts",
+      "packages/host/src/__tests__/herdr-runtime-seed.testutil.ts",
       "packages/host/src/__tests__/herdr-setup-agent-dir.test.ts",
       "packages/host/src/__tests__/herdr-setup-cross-machine.test.ts",
       "packages/host/src/__tests__/herdr-setup-fixture.ts",

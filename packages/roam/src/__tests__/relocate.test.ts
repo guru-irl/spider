@@ -79,6 +79,25 @@ describe("relocate", () => {
     expect(s.segments.size).toBe(1); expect(s.processes).toEqual(new Set([destination]));
   });
 
+  it("already running here creates no move", async () => {
+    const s = state(); const home = structuredClone(s.home);
+    expect(await relocate({ sessionId, destinationMachine: source }, ports(s))).toMatchObject({
+      ok: true, value: { disposition: "already-home", moveId: null, terminal: "terminal-source" },
+    });
+    expect(s.home).toEqual(home); expect(s.ids).toBe(0);
+    expect(s.effects).toEqual(["locate-source", "start-source", "confirm-source"]);
+    expect(s.snapshots.size).toBe(0); expect(s.pushed.size).toBe(0);
+  });
+
+  it("completed same-home call never writes its finished journal", async () => {
+    const s = state(); expect((await relocate(request, ports(s))).ok).toBe(true);
+    const home = structuredClone(s.home); const journal = structuredClone(s.journal);
+    const before = s.effects.length; s.failBefore = "save";
+    expect(await relocate(request, ports(s))).toMatchObject({ ok: true, value: { disposition: "already-home" } });
+    expect(s.home).toEqual(home); expect(s.journal).toEqual(journal); expect(s.ids).toBe(1);
+    expect(s.effects.slice(before)).toEqual(["locate-destination", "start-destination", "confirm-destination"]);
+  });
+
   it("capture waits for source lock freedom", async () => {
     const s = state();
     const barrier = deferred();

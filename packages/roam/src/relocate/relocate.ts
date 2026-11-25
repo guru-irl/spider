@@ -70,6 +70,15 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
           return { ok: true, value: result };
         }
       }
+      if (home.state === "running" && home.machineId === request.destinationMachine) {
+        moveId = home.moveId;
+        const placement = value(await ports.locate(home.machineId, request.sessionId));
+        step = "start-destination";
+        value(await ports.start(home, placement));
+        step = "confirm";
+        const confirmed = value(await ports.confirm(home, placement));
+        return { ok: true, value: { moveId, home, placement, terminal: confirmed.terminal, disposition: "already-home" } };
+      }
       let checkpoint: RelocateCheckpoint;
       if (home.state === "moving") {
         moveId = home.moveId;

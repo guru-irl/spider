@@ -44,7 +44,7 @@ async function fixture(mode: 'fake' | 'hc' = 'fake', endingOwner = false, inProc
     await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(h.localSocket, resolve); });
     const close = h.close;
     h.close = async () => { if (server.listening) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); await close(); };
-    vi.spyOn(hcModule, 'createHcClient').mockImplementation(() => ({ ...h.hc, dispose: async () => {} }));
+    vi.spyOn(hcModule, 'createHcClient').mockImplementation(() => ({ ...h.hc, onMachineAvailable: () => () => {}, dispose: async () => {} }));
     vi.spyOn(hostPorts, 'coreStartedAt').mockResolvedValue(Date.now());
   }
   const endOwner = join(h.root, 'end-owner');

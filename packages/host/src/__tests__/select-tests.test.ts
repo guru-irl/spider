@@ -196,6 +196,14 @@ describe('change-scoped test manifests', () => {
     expect(omitted.filter(file => !file.endsWith('/select-tests.test.ts'))).toEqual([]);
   });
 
+  it('falls back instead of passing empty when a changed helper has no classified consumer', async () => {
+    const { selectTests } = await api(); const f = fixture();
+    f.put('packages/roam/src/__tests__/computed-helper.ts', 'export const value = 2;');
+    const result = await selectTests({ ...f, head: f.commit(), resolveRelated: async () => [] });
+    expect(result.mode).toBe('full'); expect(result.files).toHaveLength(4);
+    expect(result.fallback).toMatch(/consumer/);
+  });
+
   it('makes an empty selection explicit only for a valid no-change comparison', async () => {
     const { selectTests } = await api(); const f = fixture();
     const result = await selectTests({ ...f, head: f.base, resolveRelated: async () => [] });

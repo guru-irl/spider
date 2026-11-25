@@ -88,7 +88,7 @@ describe("relocate", () => {
       ok: true, value: { disposition: "already-home", moveId: null, terminal: "terminal-source" },
     });
     expect(s.home).toEqual(home); expect(s.ids).toBe(0);
-    expect(s.effects).toEqual(["locate-source", "start-source", "confirm-source"]);
+    expect(s.effects).toEqual(["locate-source", "publish-source-running", "activate-source", "start-source", "confirm-source"]);
     expect(s.snapshots.size).toBe(0); expect(s.pushed.size).toBe(0);
   });
 
@@ -98,7 +98,7 @@ describe("relocate", () => {
     const before = s.effects.length; s.failBefore = "save";
     expect(await relocate(request, ports(s))).toMatchObject({ ok: true, value: { disposition: "already-home" } });
     expect(s.home).toEqual(home); expect(s.journal).toEqual(journal); expect(s.ids).toBe(1);
-    expect(s.effects.slice(before)).toEqual(["locate-destination", "start-destination", "confirm-destination"]);
+    expect(s.effects.slice(before)).toEqual(["locate-destination", "publish-destination-running", "activate-destination", "start-destination", "confirm-destination"]);
   });
 
   it("stopped source can move and stopped local copy can resume", async () => {
@@ -201,6 +201,29 @@ describe("relocate", () => {
     expect(s.home).toEqual(winner);
     const losing = s.effects.slice(before);
     expect(losing.some(e => e.startsWith("activate-") || e.startsWith("start-") || e.startsWith("publish-"))).toBe(false);
+  });
+
+  it.each(["cas-running", "publish-source-running", "start-source", "confirm-source"])("interrupted undo resumes only the source after %s", async boundary => {
+    const s = state(); s.failAfter = "save-install-destination";
+    expect((await relocate(request, ports(s))).ok).toBe(false);
+    s.failAfter = boundary;
+    const undo = { sessionId, destinationMachine: source };
+    expect((await relocate(undo, ports(s))).ok).toBe(false);
+    const before = s.effects.length;
+    expect(await relocate(undo, ports(s))).toMatchObject({ ok: true, value: { disposition: "undone", moveId: "v0-move-1" } });
+    expect(protocol(s.effects.slice(before))).toEqual(["publish-source-running", "activate-source", "start-source", "confirm-source"]);
+    expect(s.home).toMatchObject({ machineId: source, state: "running", epoch: 3 });
+    expect(s.processes).toEqual(new Set([source])); expect(s.snapshots.size).toBe(1);
+  });
+
+  it("stopped-home resume recovers after the CAS reply is lost", async () => {
+    const s = state(); s.home = { ...running(), state: "stopped" }; s.processes.clear();
+    s.failAfter = "cas-running";
+    const resume = { sessionId, destinationMachine: source };
+    expect((await relocate(resume, ports(s))).ok).toBe(false);
+    expect(await relocate(resume, ports(s))).toMatchObject({ ok: true, value: { disposition: "already-home", home: { epoch: 2 } } });
+    expect(s.replicaHomes.get(source)).toEqual(s.home);
+    expect(s.ids).toBe(0); expect(s.snapshots.size).toBe(0);
   });
 
   it("capture waits for source lock freedom", async () => {

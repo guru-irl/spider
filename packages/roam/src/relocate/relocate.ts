@@ -1,6 +1,6 @@
 import type {
   MovingHome, RelocateCheckpoint, RelocateHome, RelocateId, RelocateOutcome,
-  RelocatePlan, RelocatePorts, RelocateRequest, RelocateStep, RunningHome,
+  RelocatePlan, RelocatePorts, RelocateRequest, RelocateStep, RunningHome, SessionPlacement,
   V0Refusal, V0RefusalCode, V0Result,
 } from "./types";
 
@@ -18,6 +18,10 @@ function movingHome(plan: RelocatePlan): MovingHome {
 function committedHome(plan: RelocatePlan): RunningHome {
   return { ...plan.source, machineId: plan.destinationPlacement.machineId, state: "running",
     epoch: plan.source.epoch + 2, moveId: plan.moveId, destination: null, updatedAt: plan.startedAt };
+}
+function restoredHome(plan: RelocatePlan): RunningHome {
+  return { ...plan.source, state: "running", epoch: plan.source.epoch + 2,
+    moveId: plan.moveId, destination: null, updatedAt: plan.startedAt };
 }
 const steps: readonly RelocateStep[] = ["check", "mark-moving", "stop-source", "pull-source",
   "push-destination", "install-destination", "commit-home", "start-destination", "confirm"];
@@ -76,11 +80,21 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
         home = await ports.homes.initialize(request.sessionId, source);
       }
       if (home.state === "running" && home.machineId === request.destinationMachine && home.moveId) {
-        const pending = await ports.journal.load(home.moveId);
-        if (pending && !pending.result && pending.installed && pending.plan.moveId === home.moveId &&
-            pending.plan.destinationPlacement.machineId === home.machineId && pending.plan.source.epoch + 2 === home.epoch) {
+        let pending: RelocateCheckpoint | null;
+        try { pending = await ports.journal.load(home.moveId); } catch { pending = null; }
+        let recovery: { placement: SessionPlacement; disposition: "relocated" | "undone" } | null = null;
+        try {
+          if (pending && pending.result === null) {
+            if (pending.installed && sameHome(committedHome(pending.plan), home)) {
+              recovery = { placement: pending.installed.placement, disposition: "relocated" };
+            } else if (sameHome(restoredHome(pending.plan), home)) {
+              recovery = { placement: pending.plan.sourcePlacement, disposition: "undone" };
+            }
+          }
+        } catch { /* An authoritative settled home can resume without a journal. */ }
+        if (pending && recovery) {
           moveId = home.moveId;
-          const placement = pending.installed.placement;
+          const { placement, disposition } = recovery;
           step = "commit-home";
           value(await ports.publishHome(home, home.machineId));
           value(await ports.activate(home, placement));
@@ -88,8 +102,8 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
           value(await ports.start(home, placement));
           step = "confirm";
           const confirmed = value(await ports.confirm(home, placement));
-          const result = { moveId, home, placement, terminal: confirmed.terminal, disposition: "relocated" as const };
-          await save({ ...pending, completed: [...new Set([...pending.completed, "commit-home", "start-destination", "confirm"] as const)],
+          const result = { moveId, home, placement, terminal: confirmed.terminal, disposition };
+          await save({ ...pending, completed: disposition === "relocated" ? steps : pending.completed,
             terminal: confirmed.terminal, result });
           return { ok: true, value: result };
         }
@@ -104,6 +118,10 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
           value(await ports.activate(resumed, placement));
           await cas(home, resumed);
           value(await ports.publishHome(resumed, resumed.machineId));
+        } else {
+          step = "commit-home";
+          value(await ports.publishHome(resumed, resumed.machineId));
+          value(await ports.activate(resumed, placement));
         }
         step = "start-destination";
         value(await ports.start(resumed, placement));

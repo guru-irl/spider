@@ -47,6 +47,7 @@ function capture(plan: RelocatePlan): CapturedSession {
 export interface FakeState {
   home: RelocateHome | null;
   journal: Map<RelocateId, RelocateCheckpoint>;
+  replicaHomes: Map<MachineId, RelocateHome>;
   captures: Map<RelocateId, CapturedSession>;
   pushed: Set<RelocateId>;
   installed: Map<RelocateId, string>;
@@ -72,7 +73,7 @@ export function assertSafeHistories(): void {
   for (const s of histories.splice(0)) expect(s.safetyViolations).toEqual([]);
 }
 export function state(): FakeState {
-  const result: FakeState = { home: running(), journal: new Map(), captures: new Map(), pushed: new Set(),
+  const result: FakeState = { home: running(), journal: new Map(), replicaHomes: new Map([[source, running()]]), captures: new Map(), pushed: new Set(),
     installed: new Map(), snapshots: new Set(), segments: new Set(), seeds: new Set(),
     backups: new Set([source]), processes: new Set([source]), effects: [], safetyViolations: [], homesWritten: [],
     ids: 0, locked: false, stopAcknowledged: false, failAfter: null, failBefore: null,
@@ -149,6 +150,7 @@ export function ports(s: FakeState): RelocatePorts {
     }),
     publishHome: async (home, machine) => perform(`publish-${machine}-${home.state}`, () => {
       expect(home).toEqual(s.home);
+      s.replicaHomes.set(machine, structuredClone(home));
     }),
     stopSource: async (plan, moving) => perform("stop-source", async () => {
       expect(moving.state).toBe("moving"); expect(moving.moveId).toBe(plan.moveId);
@@ -181,6 +183,7 @@ export function ports(s: FakeState): RelocatePorts {
     }),
     start: async (home, p) => perform(`start-${p.machineId}`, () => {
       expect(s.home).toEqual(home); expect(home.state).toBe("running");
+      expect(s.replicaHomes.get(p.machineId)).toEqual(home);
       expect(home.machineId).toBe(p.machineId); s.processes.add(p.machineId);
       return { terminal: `terminal-${p.machineId}` };
     }),

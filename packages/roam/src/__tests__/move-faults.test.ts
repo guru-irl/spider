@@ -205,6 +205,29 @@ function fixture(fault = "") {
     current() { const home = sessionHome(global.db, "session-a"); if (!home || home === "unknown") throw new Error("home unavailable"); return home; } };
 }
 
+it.each([
+  { error: Object.assign(new Error("fixture-private /home/fixture/not-public"), { code: "ENOENT" }), code: "ENOENT", codeSource: "code" },
+  { error: Object.assign(new Error("fixture-private /home/fixture/not-public"), { code: 2 }), code: "2", codeSource: "code" },
+  { error: new Error("workspace-prerequisite-missing: fixture-private /home/fixture/not-public"), code: "workspace-prerequisite-missing", codeSource: "message-prefix" },
+  { error: Object.assign(new Error("fixture-private /home/fixture/not-public"), { code: "unsafe code\n/home/fixture/not-public" }), code: "untyped-error", codeSource: "untyped" },
+  { error: new moves.MoveError("move-prepared-invalid"), code: "move-prepared-invalid", codeSource: "refusal" },
+])("keeps private transfer diagnostics local for $codeSource $code", async ({ error, code, codeSource }) => {
+  const f = fixture();
+  f.ports.transfer = async () => { throw error; };
+  const outcome = await moves.moveSession(f.request, f.ports);
+  expect(outcome).toMatchObject({ code: 3, reason: codeSource === "refusal" ? "move-prepared-invalid" : "move-pending", value: null });
+  expect(f.current()).toEqual(f.sourceHome);
+  const diagnostic = f.journal.read(f.request.operation.id).filter(row => row.action === "move-transfer-diagnostic").map(row => row.result);
+  expect(diagnostic).toEqual([{ phase: "result", code, codeSource,
+    fingerprint: createHash("sha256").update(error.message).digest("hex") }]);
+  const publicOutput = JSON.stringify(safeControlOutcome(outcome)) + controlText(safeControlOutcome(outcome));
+  for (const text of ["fixture-private", "/home/fixture/not-public", "ENOENT", "fingerprint", "message-prefix"]) {
+    expect(publicOutput).not.toContain(text);
+  }
+  expect(JSON.stringify(diagnostic)).not.toContain("/home/fixture/not-public");
+  expect(JSON.stringify(diagnostic)).not.toContain("fixture-private");
+});
+
 const actionFaults = ["check", "power", "seed", "seed-barriers", "initial-home", "source-home-replicate", "prestage", "freeze", "intercom-inspect", "transfer", "final-barriers", "generation-check", "home-commit", "home-replicate", "start", "destination-inspect", "destination-endpoint", "intercom-ready", "source-retire", "final-inspect", "cleanup", "power-release"];
 const forwardFaults = [...actionFaults.map(action => `reply:${action}`), ...actionFaults.map(action => `effect:${action}`), ...actionFaults.map(action => `before:${action}`), ...["checked", "frozen", "transferred", "home-committed", "destination-ready", "source-stopped", "done"].map(state => `state:${state}`),
   "intake-closed", "store-freeze:0", "store-freeze:1", "workspace-prepared", "file-install", "readiness-receipt", "source-shutdown", "source-retirement", "cleanup", "done-receipt", "reservation-release",

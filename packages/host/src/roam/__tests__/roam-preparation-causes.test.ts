@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { dirname, join } from "node:path";
 import { migrate, openDb, paths } from "@spider/db-core";
 import * as repoMap from "@spider/db-core/roam/repo-map";
@@ -16,7 +17,7 @@ import { MoveCompositionError } from "@spider/roam/move-failure";
 import { createRunningIntentAuthority } from "@spider/roam/session-control";
 import { recordMoveSetupFailure } from "@spider/roam/setup-diagnostics";
 import { createHostSessionFixture } from "../../__tests__/fixtures/pi-events";
-import { registerAdmission, type AdmissionPorts } from "../admission";
+import { createAdmissionPorts, registerAdmission, type AdmissionPorts } from "../admission";
 import { createParticipantAdmission, productionParticipantAdmission } from "../readiness";
 
 vi.mock("node:child_process", async importOriginal => {
@@ -35,7 +36,7 @@ vi.mock("child_process", async () => await import("node:child_process"));
 
 const BOX = "00000000-0000-4000-8000-000000000002";
 const HUB = "00000000-0000-4000-8000-000000000001";
-const SESSION = "session-1";
+const SESSION = "00000000-0000-4000-8000-000000000003";
 const FIRST = 1_700_000_000_000;
 const LAST = FIRST + 30_000;
 const cleanups: Array<() => Promise<void>> = [];
@@ -45,7 +46,7 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-type Failure = "freeze" | "cwd" | "header" | "cwd-header" | "invalid-header" | "mapping" | "stores" | "seed" | "unknown" | "success";
+type Failure = "freeze" | "cwd" | "header" | "cwd-header" | "invalid-header" | "mapping" | "stores" | "seed" | "unknown" | "success" | "fresh";
 function fixture(failure: Failure, participant = false) {
   vi.stubEnv("PI_SUBAGENT_CHILD", "0");
   const parent = dirname(scratchDbPath("preparation-causes"));
@@ -56,10 +57,11 @@ function fixture(failure: Failure, participant = false) {
   db.prepare("UPDATE roam_meta SET store_key='global',capture_enabled=1 WHERE id=1").run();
   const config = parseConfig({ role: "box", machineId: BOX, hubMachineId: HUB, coreUnit: "fixture.service" });
   const journal = openJournal(join(root, "roam", "journal.db"));
-  const worktree = failure === "success" ? createReplica("worktree", BOX) : null;
+  const worktree = failure === "success" || failure === "fresh" ? createReplica("worktree", BOX) : null;
   if (failure === "freeze") openFreezeJournal(join(root, "roam", "journal.db")).beginFreeze(SESSION, "move-1", 1);
-  const file = join(root, "session.jsonl");
-  writeFileSync(file, failure === "invalid-header" ? "invalid" : JSON.stringify({ type: "session", id: failure === "header" ? "other-session" : SESSION,
+  const manager = failure === "fresh" ? SessionManager.create(root, join(root, "sessions"), { id: SESSION }) : undefined;
+  const file = manager?.getSessionFile() ?? join(root, "session.jsonl");
+  if (!manager) writeFileSync(file, failure === "invalid-header" ? "invalid" : JSON.stringify({ type: "session", id: failure === "header" ? "other-session" : SESSION,
     cwd: failure === "cwd-header" ? "/home/fixture/other" : root, version: 3 }) + "\n");
   const hooks = createParticipantAdmission({ cwd: () => failure === "cwd" ? undefined : root,
     async open() {
@@ -73,17 +75,23 @@ function fixture(failure: Failure, participant = false) {
     },
     async terminal() { throw new Error("Unexpected terminal lookup"); },
   });
-  const host = createHostSessionFixture({ cwd: root, sessionId: SESSION, sessionFile: file });
+  const host = createHostSessionFixture({ cwd: root, sessionId: SESSION, sessionFile: file, sessionManager: manager });
+  if (manager) Object.assign(host.ctx.sessionManager, { getHeader: () => manager.getHeader() });
+  let revision = 0;
   const ports: AdmissionPorts = { expectedEpoch: null, localMachine: async () => BOX, knownParticipant: () => participant,
     warnOnce() {}, prepare: hooks.prepare,
-    load: async () => ({ home: null, states: participant ? [{ sessionId: SESSION, epoch: 1, state: "active", moveId: null, freezeSeq: null }] : [],
-      origin: participant ? BOX : null, participating: participant, captureSafe: true, unfinishedFreeze: false, initialConflict: false }),
+    captureVersion: () => `${existsSync(file) ? "persisted" : "unpersisted"}:${revision}`,
+    load: async () => {
+      const active = participant || failure === "fresh" && !!worktree?.db.prepare("SELECT 1 FROM roam_sessions WHERE session_id=?").get(SESSION);
+      return { home: null, states: active ? [{ sessionId: SESSION, epoch: 1, state: "active" as const, moveId: null, freezeSeq: null }] : [],
+        origin: active ? BOX : null, participating: active, captureSafe: true, unfinishedFreeze: false, initialConflict: false };
+    },
     lock: async () => async () => {}, setupDiagnostic: (id, value) => recordMoveSetupFailure(db, id, value),
   };
   const gate = registerAdmission(host.pi as never, ports);
   cleanups.push(async () => { await gate.close(); db.close(); worktree?.close(); rmSync(root, { recursive: true, force: true }); });
   const start = async () => { for (const handler of host.hooks.get("session_start") ?? []) await handler({}, host.ctx); };
-  return { db, root, gate, start, worktree };
+  return { db, root, gate, start, worktree, manager, file, bumpCapture: () => { revision++; } };
 }
 
 it.each([
@@ -111,6 +119,77 @@ it.each([
   expect(diagnostic?.reason).toContain("2023-11-14T22:13:50.000Z");
   expect(diagnostic?.reason).not.toContain(f.root);
   expect(diagnostic?.reason).not.toContain("private");
+});
+
+it("captures a fresh native session after its first persistence without reloading", async () => {
+  const f = fixture("fresh");
+  expect(f.manager!.getHeader()).toMatchObject({ type: "session", version: 3, id: SESSION, cwd: f.root });
+  expect(existsSync(f.file)).toBe(false);
+  await f.start();
+  expect(f.gate.inspect()).toEqual({ kind: "ordinary", home: null, blockers: [] });
+  expect(readLocal(f.db, "move-setup", "admission")).toBeUndefined();
+  expect(f.worktree!.db.prepare("SELECT 1 FROM roam_sessions WHERE session_id=?").get(SESSION)).toBeUndefined();
+  f.bumpCapture();
+  await f.gate.refreshInitialHome();
+  expect(f.gate.inspect()).toEqual({ kind: "ordinary", home: null, blockers: [] });
+  f.manager!.appendMessage({ role: "user", content: "fixture", timestamp: FIRST });
+  await f.gate.refreshInitialHome();
+  expect(f.worktree!.db.prepare("SELECT state,epoch FROM roam_sessions WHERE session_id=?").get(SESSION)).toEqual({ state: "active", epoch: 1 });
+  expect(readLocal(f.db, "move-setup", "admission")).toBeUndefined();
+});
+
+it("changes the production discovery revision when a fresh file first persists", async () => {
+  const f = fixture("fresh");
+  const previous = paths.globalRoot;
+  paths.globalRoot = f.root;
+  cleanups.push(async () => { paths.globalRoot = previous; });
+  const directory = join(f.root, "roam");
+  chmodSync(directory, 0o700);
+  writeFileSync(join(directory, "config.json"), JSON.stringify(parseConfig({ role: "box", machineId: BOX, hubMachineId: HUB,
+    coreUnit: "fixture.service" })), { mode: 0o600 });
+  writeFileSync(join(directory, "machine.json"), JSON.stringify({ machineId: BOX }), { mode: 0o600 });
+  vi.spyOn(paths, "projectRoot").mockReturnValue(dirname(f.worktree!.db.raw.name));
+  const host = createHostSessionFixture({ cwd: f.root, sessionId: SESSION, sessionManager: f.manager });
+  const ports = createAdmissionPorts();
+  ports.setContext(host.ctx as never);
+  await ports.load(SESSION);
+  const unpersisted = ports.captureVersion!();
+  expect(unpersisted).not.toBeNull();
+  expect(ports.captureVersion!()).toBe(unpersisted);
+  f.manager!.appendMessage({ role: "user", content: "fixture", timestamp: FIRST });
+  expect(ports.captureVersion!()).not.toBe(unpersisted);
+});
+
+it.each([
+  { id: "other-session" }, { cwd: "/home/fixture/other" }, { version: 4 },
+])("does not defer a missing native file with a mismatched header %j", async patch => {
+  const f = fixture("fresh");
+  const header = f.manager!.getHeader()!;
+  vi.spyOn(f.manager!, "getHeader").mockReturnValue({ ...header, ...patch });
+  await f.start();
+  expect(f.gate.inspect().setupFailure).toEqual({ stage: "preparation", causeCode: "participant-header-invalid" });
+  expect(f.worktree!.db.prepare("SELECT 1 FROM roam_sessions WHERE session_id=?").get(SESSION)).toBeUndefined();
+});
+
+it("does not defer a known participant whose native file is missing", async () => {
+  const f = fixture("fresh", true);
+  await f.start();
+  expect(f.gate.inspect().kind).toBe("blocked");
+  expect(f.worktree!.db.prepare("SELECT 1 FROM roam_sessions WHERE session_id=?").get(SESSION)).toBeUndefined();
+});
+
+it("makes a persisted native participant private before it can be supervised", async () => {
+  const f = fixture("fresh");
+  const previous = process.umask(0o022);
+  try { f.manager!.appendMessage({ role: "user", content: "fixture", timestamp: FIRST }); }
+  finally { process.umask(previous); }
+  expect(statSync(f.file).mode & 0o777).toBe(0o644);
+  const bytes = readFileSync(f.file);
+  await f.start();
+  expect(f.gate.inspect()).toMatchObject({ kind: "ordinary" });
+  expect(f.worktree!.db.prepare("SELECT state,epoch FROM roam_sessions WHERE session_id=?").get(SESSION)).toEqual({ state: "active", epoch: 1 });
+  expect(statSync(f.file).mode & 0o777).toBe(0o600);
+  expect(readFileSync(f.file)).toEqual(bytes);
 });
 
 it("seeds a valid participant without leaving a setup diagnostic", async () => {

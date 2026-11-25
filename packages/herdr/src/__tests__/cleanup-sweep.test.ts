@@ -38,18 +38,27 @@ it('activates and reconciles a large backlog without waiting for unreachable cle
 });
 
 it('a timed out get does not block later jobs and failed jobs back off without repeated reports', async () => {
-  const f = await backlog(6), original = f.hc.get, stuck = deferred<never>();
-  let now = 1000;
-  const get = vi.spyOn(f.hc, 'get').mockImplementation(address => address === f.handles[0].address ? stuck.promise : original(address));
+  const f = await backlog(6), original = f.hc.get, stuck = deferred<never>(), attempts = [deferred(), deferred()];
+  let now = 1000, count = 0;
+  const get = vi.spyOn(f.hc, 'get').mockImplementation(address => {
+    if (address !== f.handles[0].address) return original(address);
+    attempts[count++]?.resolve(); return stuck.promise;
+  });
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
   const jobs = f.monitor({ clock: () => now });
-  await expect(bounded(jobs.activate(f.owner))).resolves.toBeUndefined();
-  await vi.waitFor(() => expect(f.terminals.has(f.handles[5].address)).toBe(false));
-  await vi.waitFor(async () => expect((await f.store.read()).jobs[0].cleanupFailure).toMatchObject({ code: 'cleanup-timeout', attempts: 1 }), { timeout: 6500 });
-  for (let i = 0; i < 3; i++) await jobs.reconcile();
-  expect(get.mock.calls.filter(([address]) => address === f.handles[0].address)).toHaveLength(1);
-  expect(f.errors).toEqual([]);
-  now += 60000; await jobs.reconcile();
-  await vi.waitFor(() => expect(get.mock.calls.filter(([address]) => address === f.handles[0].address)).toHaveLength(2));
+  try {
+    await expect(bounded(jobs.activate(f.owner))).resolves.toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1); await attempts[0].promise;
+    await vi.advanceTimersByTimeAsync(5000);
+    await vi.waitFor(() => expect(f.terminals.has(f.handles[5].address)).toBe(false));
+    await vi.waitFor(async () => expect((await f.store.read()).jobs[0].cleanupFailure).toMatchObject({ code: 'cleanup-timeout', attempts: 1 }), { timeout: 6500 });
+    for (let i = 0; i < 3; i++) await jobs.reconcile();
+    expect(get.mock.calls.filter(([address]) => address === f.handles[0].address)).toHaveLength(1);
+    expect(f.errors).toEqual([]);
+    now += 60000; await jobs.reconcile();
+    await vi.advanceTimersByTimeAsync(1); await attempts[1].promise;
+    expect(get.mock.calls.filter(([address]) => address === f.handles[0].address)).toHaveLength(2);
+  } finally { await jobs.shutdown('reload'); vi.useRealTimers(); }
 });
 
 it('notice consumption preserves the command result while removal is stuck or fails', async () => {

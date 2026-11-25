@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { afterEach, expect, test } from 'vitest';
+import { afterEach, expect, test, vi } from 'vitest';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHcClient, invokeCli } from '../client/hc.js';
@@ -51,11 +51,28 @@ test('an observer refuses a dead local core before spawning attach', async () =>
 test('events with no core remain unspawned through reconnect polls and disposal', async () => {
   const h = await createClientFixture(); fixtures.push(h);
   const client = createHcClient({ binary: h.hcBinary, env: { ...h.localEnv, HC_TERMINAL_SOCKET: join(h.root, 'absent.sock'), HC_SOCKET: join(h.root, 'absent.sock') } }); clients.push(client);
-  const stream = client.events();
-  await expect(stream.ready).rejects.toMatchObject({ code: 'core-unavailable' });
-  await new Promise(resolve => setTimeout(resolve, 4200));
-  expect(await h.calls()).toEqual([]);
-  await client.dispose();
-  await new Promise(resolve => setTimeout(resolve, 2100));
-  expect(await h.calls()).toEqual([]);
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  let scheduled!: () => void;
+  const nextReconnect = () => new Promise<void>(resolve => { scheduled = resolve; });
+  const original = globalThis.setTimeout;
+  const timers = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: (...args: any[]) => void, ms?: number, ...args: any[]) => {
+    const timer = original(callback, ms, ...args);
+    if (ms === 2000) scheduled();
+    return timer;
+  }) as typeof setTimeout);
+  try {
+    const first = nextReconnect();
+    const stream = client.events();
+    await expect(stream.ready).rejects.toMatchObject({ code: 'core-unavailable' });
+    await first;
+    for (let i = 0; i < 2; i++) {
+      const next = nextReconnect();
+      await vi.advanceTimersByTimeAsync(2000);
+      await next;
+    }
+    expect(await h.calls()).toEqual([]);
+    await client.dispose();
+    await vi.advanceTimersByTimeAsync(2100);
+    expect(await h.calls()).toEqual([]);
+  } finally { timers.mockRestore(); vi.useRealTimers(); }
 }, 10000);

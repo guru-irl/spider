@@ -6,19 +6,14 @@ import { createServer } from 'node:net';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, readFile, chmod, rm } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
-import { build } from 'vite';
 import { runHerdrCli } from '../setup/cli.js';
 import { installSshShim, createExecutionEnvironmentPolicy } from '../ssh/shim.js';
 import { globalConfigForTest } from '../../../db-core/src/__tests__/global-config.testutil.js';
 
 let root: string, cli: string;
 beforeAll(async () => {
-  root = await mkdtemp(resolve('.spider/scratch/admin-cli-')); cli = join(root, 'cli.mjs');
+  root = await mkdtemp(resolve('.spider/scratch/admin-cli-')); cli = resolve('dist/herdr/cli.mjs');
   execFileSync('git', ['init', '-q', root]);
-  const external = [/^node:/, /^@earendil-works\//, /^better-sqlite3(?:\/|$)/, /^sqlite-vec(?:\/|$)/, /^fastembed(?:\/|$)/, /^onnxruntime-/, /^turndown(?:\/|$)/];
-  await build({ configFile: false, logLevel: 'silent', define: { 'import.meta.spiderHerdrRuntimeEntry': 'false', 'import.meta.spiderPaneEndpointEntry': 'false' },
-    ssr: { noExternal: [/^@spider\//] }, build: { ssr: true, outDir: root, emptyOutDir: false, minify: false,
-      rollupOptions: { input: resolve('packages/herdr/src/bin/cli.ts'), external, output: { entryFileNames: 'cli.mjs', codeSplitting: false } } } });
 });
 afterAll(async () => { if (root) await rm(root, { recursive: true, force: true }); });
 async function call(argv: readonly string[], env: NodeJS.ProcessEnv = process.env, stdin = '') {

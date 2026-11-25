@@ -7,9 +7,35 @@ import { closeAgentConsoles, registerAgentConsoleLifecycle } from '../remote/con
 import { createJobHandoff } from '../jobs/handoff.js';
 import { createJobStore } from '../jobs/store.js';
 import type { HcClient, HcEvent, MachineName, RunId } from '../contracts.js';
+import { monitorFixture } from './herdr-monitor-fixture.js';
 
 const harnesses: HerdrHarness[] = [];
 afterEach(async () => { for (const h of harnesses.splice(0)) { await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); } });
+
+async function raceFixture() {
+  const f = await monitorFixture();
+  const notFound = () => Object.assign(new Error('not found'), { code: 'not_found' });
+  let sequence = 10;
+  const hc: HcClient = { ...f.hc,
+    kill: async address => {
+      const terminal = f.terminals.get(address); if (!terminal) throw notFound();
+      const finish = { exitCode: 0, reason: 'exited', signal: null, finishedAt: 1 };
+      Object.assign(terminal, { state: 'finished', ...finish });
+      f.emit({ type: 'finished', seq: sequence++, terminal: address, data: finish });
+    },
+    rm: async address => { if (!f.terminals.delete(address)) throw notFound(); f.emit({ type: 'removed', seq: sequence++, terminal: address }); },
+    events: () => {
+      const source = f.hc.events();
+      return { ...source, subscribe: listener => {
+        let active = true;
+        const off = source.subscribe(listener);
+        queueMicrotask(() => { if (active) listener({ type: 'snapshot', seq: 1, terminals: [...f.terminals.values()].map(terminal => ({ ...terminal, labels: { ...terminal.labels } })) }); });
+        return () => { active = false; off(); };
+      } };
+    },
+  };
+  return { hc, owner: f.owner, root: f.f.root, nodeBinary: process.execPath, localEnv: { HC_TERMINAL_ID: f.owner.terminal.terminalId } };
+}
 
 it('rechecks a console when the run finishes during an earlier liveness check', async () => {
   const h = await createHerdrHarness('fake'); harnesses.push(h); await h.start();
@@ -41,7 +67,7 @@ it('rechecks a console when the run finishes during an earlier liveness check', 
 }, 30000);
 
 it('retries closing an ended run console after the machine reconnects without closing other terminals', async () => {
-  const h = await createHerdrHarness('fake'); harnesses.push(h); await h.start();
+  const h = await raceFixture();
   const callbacks = new Map<string, Function>();
   const pi = { on: (name: string, handler: Function) => { callbacks.set(name, handler); return () => callbacks.delete(name); } } as unknown as ExtensionAPI;
   let notifyRunEnd: (run: RunId) => void = () => {};
@@ -74,8 +100,8 @@ it('retries closing an ended run console after the machine reconnects without cl
   } finally { life.dispose(); }
 }, 30000);
 
-it.each(['unavailable', 'not_found'] as const)('the journal handoff retries a real ended-run close after %s', async failure => {
-  const h = await createHerdrHarness('fake'); harnesses.push(h); await h.start();
+it.each(['unavailable', 'not_found'] as const)('the journal handoff retries an ended-run close after %s', async failure => {
+  const h = await raceFixture();
   const owner = h.owner!, run = 'handoff-retry-run' as RunId;
   const launch = (kind: string) => h.hc.run({ argv: [h.nodeBinary, '-e', 'setInterval(()=>{},1000)'], cwd: null, on: 'remote.invalid' as MachineName,
     labels: { 'spider.kind': kind, 'spider.session': owner.sessionId, 'spider.machine': 'remote.invalid', 'spider.run': run }, noNotify: true, background: true, outliveParent: true });
@@ -102,7 +128,7 @@ it.each(['unavailable', 'not_found'] as const)('the journal handoff retries a re
 }, 30000);
 
 it('confirms a missing console after the machine reconnects', async () => {
-  const h = await createHerdrHarness('fake'); harnesses.push(h); await h.start();
+  const h = await raceFixture();
   const owner = h.owner!, run = 'vanished-retry-run' as RunId;
   const console = await h.hc.run({ argv: [h.nodeBinary, '-e', 'setInterval(()=>{},1000)'], cwd: null, on: 'remote.invalid' as MachineName,
     labels: { 'spider.kind': 'remote-console', 'spider.session': owner.sessionId, 'spider.machine': 'remote.invalid', 'spider.run': run }, noNotify: true, background: true, outliveParent: true });
@@ -125,7 +151,7 @@ it('confirms a missing console after the machine reconnects', async () => {
 }, 30000);
 
 it('does not close a terminal whose console label changes after inventory', async () => {
-  const h = await createHerdrHarness('fake'); harnesses.push(h); await h.start();
+  const h = await raceFixture();
   const owner = h.owner!, run = 'relabelled-run' as RunId;
   const terminal = await h.hc.run({ argv: [h.nodeBinary, '-e', 'setInterval(()=>{},1000)'], cwd: null, on: 'remote.invalid' as MachineName,
     labels: { 'spider.kind': 'remote-console', 'spider.session': owner.sessionId, 'spider.machine': 'remote.invalid', 'spider.run': run }, noNotify: true, background: true, outliveParent: true });
@@ -136,7 +162,7 @@ it('does not close a terminal whose console label changes after inventory', asyn
 }, 30000);
 
 it('reconstructs ended-run console cleanup on reload without closing a live run', async () => {
-  const h = await createHerdrHarness('fake'); harnesses.push(h); await h.start();
+  const h = await raceFixture();
   const callbacks = new Map<string, Function>();
   const pi = { on: (name: string, handler: Function) => { callbacks.set(name, handler); return () => callbacks.delete(name); } } as unknown as ExtensionAPI;
   const owner = h.owner!;
@@ -153,7 +179,7 @@ it('reconstructs ended-run console cleanup on reload without closing a live run'
 }, 30000);
 
 it('reaps a finished run console recovered in a missed-event snapshot', async () => {
-  const h = await createHerdrHarness('fake'); harnesses.push(h); await h.start();
+  const h = await raceFixture();
   const callbacks = new Map<string, Function>();
   const pi = { on: (name: string, handler: Function) => { callbacks.set(name, handler); return () => callbacks.delete(name); } } as unknown as ExtensionAPI;
   let notifyRunEnd: (run: RunId) => void = () => {}, deliver: (event: HcEvent) => void = () => {};

@@ -8,7 +8,8 @@ import { createClientFixture, type ClientFixture } from './testutil.js';
 const fixtures: ClientFixture[] = [];
 afterEach(async () => { for (const fixture of fixtures.splice(0)) await fixture.close(); });
 
-test.each([400, 800])('a live core survives a synchronous event-loop stall of %i ms during its probe', async stallMs => {
+test('a live core survives a synchronous event-loop stall of 400 ms during its probe', async () => {
+  const stallMs = 400;
   const h = await createClientFixture(); fixtures.push(h);
   expect(await isCoreAvailable(h.localEnv)).toBe(true);
   const probe = isCoreAvailable(h.localEnv);

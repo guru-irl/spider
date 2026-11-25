@@ -7,12 +7,19 @@ import { bounded, cleanup, deferred, finish, monitorFixture, on, program } from 
 
 it('collects output slower than event readiness without a warning or a stuck finished job', async () => {
   const h = await monitorFixture(); h.early();
-  const collect = h.options.outputCollector.collect;
-  h.options.outputCollector.collect = async job => { await delay(2500); return collect(job); };
+  const collect = h.options.outputCollector.collect, entered = deferred(), release = deferred();
+  h.options.outputCollector.collect = async job => { entered.resolve(); await release.promise; return collect(job); };
   const jobs = h.monitor();
-  const handle = await jobs.start(program, h.owner, on, {});
-  await expect(bounded(handle.finished, 4000)).resolves.toEqual(finish);
-  expect(h.errors).toEqual([]);
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    const starting = jobs.start(program, h.owner, on, {});
+    await entered.promise;
+    await vi.advanceTimersByTimeAsync(2500);
+    release.resolve();
+    const handle = await starting;
+    await expect(bounded(handle.finished, 4000)).resolves.toEqual(finish);
+    expect(h.errors).toEqual([]);
+  } finally { release.resolve(); vi.useRealTimers(); }
 }, 12000);
 
 it('a remote collection cannot hold the writer or launch another collection for the same job', async () => {

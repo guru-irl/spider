@@ -47,14 +47,16 @@ async function fixture(mode: 'fake' | 'hc') {
   } finally { await production.dispose(); }
 }
 
-async function failRoot(mode: 'fake' | 'hc', kind: 'normal' | 'alias' | 'different-uid' = 'normal') {
+async function fixtureWithUmask(mode: 'fake' | 'hc') {
   const previousUmask = process.umask(0o022);
-  let installed: Awaited<ReturnType<typeof fixture>>;
-  try { installed = await fixture(mode); } finally { process.umask(previousUmask); }
+  try { return await fixture(mode); } finally { process.umask(previousUmask); }
+}
+
+async function failRoot(installed: Awaited<ReturnType<typeof fixture>>, kind: 'normal' | 'alias' | 'different-uid' = 'normal') {
   const { h, on, root, runtime } = installed;
   expect(h.localSocket).toContain(h.root); expect(h.remoteSocket).toContain(h.root);
   expect(h.localCoreId).not.toBe(h.remoteCoreId);
-  const directory = join(root, 'job');
+  const directory = join(root, `job-${kind}`);
   if (kind === 'alias') { await mkdir(join(h.root, 'redirect')); await symlink(join(h.root, 'redirect'), directory); }
   const nonce = '0123456789abcdef0123456789abcdef', programNonce = 'f'.repeat(32);
   const requestPath = join(directory, 'request.json');
@@ -63,7 +65,7 @@ async function failRoot(mode: 'fake' | 'hc', kind: 'normal' | 'alias' | 'differe
   await h.hc.fileWrite(on, requestPath + '.sha256', Buffer.from(sha256(request)));
   if (kind !== 'alias') {
     const folderMode = (await stat(directory)).mode & 0o777;
-    console.info(`${mode === 'hc' ? 'real' : 'fake'} hc job folder with umask 0022: ${folderMode.toString(8)}`);
+    console.info(`${h.mode === 'hc' ? 'real' : 'fake'} hc job folder with umask 0022: ${folderMode.toString(8)}`);
     expect(folderMode).toBe(0o755);
   }
   await chmod(root, 0o755);
@@ -86,5 +88,11 @@ async function failRoot(mode: 'fake' | 'hc', kind: 'normal' | 'alias' | 'differe
   expect(logs).toMatchObject({ complete: true, receipt: { outcome: 'spawn-error', error: expect.stringMatching(/0700.*rerun.*setup/i) } });
 }
 
-it('publishes early failures only in real, owned hc folders', async () => { await failRoot('fake'); await failRoot('fake', 'alias'); await failRoot('fake', 'different-uid'); }, 45000);
-it.skipIf(process.env.SPIDER_HERDR_E2E !== '1' || !existsSync(process.env.SPIDER_HERDR_HC_BINARY || join(homedir(), '.local/bin/hc')))('real isolated hc creates a 0755 job folder and publishes the early failure (requires hc and SPIDER_HERDR_E2E=1)', () => failRoot('hc'), 45000);
+it('publishes early failures only in real, owned hc folders', async () => {
+  const installed = await fixtureWithUmask('fake');
+  for (const kind of ['normal', 'alias', 'different-uid'] as const) {
+    try { await failRoot(installed, kind); }
+    finally { await chmod(installed.root, 0o700); }
+  }
+}, 45000);
+it.skipIf(process.env.SPIDER_HERDR_E2E !== '1' || !existsSync(process.env.SPIDER_HERDR_HC_BINARY || join(homedir(), '.local/bin/hc')))('real isolated hc creates a 0755 job folder and publishes the early failure (requires hc and SPIDER_HERDR_E2E=1)', async () => failRoot(await fixtureWithUmask('hc')), 45000);

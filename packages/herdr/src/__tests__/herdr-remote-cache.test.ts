@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { afterEach, expect, it } from 'vitest';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { afterEach, expect, it, vi } from 'vitest';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -13,11 +13,11 @@ import { parseHerdrConfig } from '../config.js';
 import { setupHerdr, type SetupRequest } from '../setup/installer.js';
 import { createJobMonitor } from '../jobs/monitor.js';
 import { executeRemote, type RemoteExecutionPorts } from '../remote/execute.js';
-import { installRuntimeDirectory } from '../remote/runtime.js';
-import type { HcClient, MachineName } from '../contracts.js';
+import { installRuntimeDirectory, sha256 } from '../remote/runtime.js';
+import type { HcClient, JobHandle, JobPort, MachineName, Owner } from '../contracts.js';
 
 const cleanups: (() => Promise<void>)[] = [];
-afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
+afterEach(async () => { vi.unstubAllEnvs(); for (const close of cleanups.splice(0).reverse()) await close(); });
 async function fixture(mode: 'fake' | 'hc' = 'fake') {
   const h: HerdrHarness = await createHerdrHarness(mode); cleanups.push(async () => { await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); }); await h.start();
   const on = 'remote.invalid' as MachineName, root = join(h.directories.remote, 'programs'), coreConfig = join(h.root, 'core.toml'); await writeFile(coreConfig, 'notes = false\n');
@@ -53,8 +53,39 @@ async function fixture(mode: 'fake' | 'hc' = 'fake') {
   return { h, runtime, ports, execute, reads: () => reads, fail: (error?: Error) => { failure = error; }, path: (path: string) => { targetPath = path; } };
 }
 
+async function cacheFixture() {
+  vi.stubEnv('HC_TERMINAL_ID', '');
+  const root = await mkdtemp(resolve('.spider/scratch/runtime-cache-'));
+  cleanups.push(async () => { await rm(root, { recursive: true, force: true }); });
+  const owner = { sessionId: 'cache-session', generation: 'generation', name: null, cwd: root, sessionFile: null,
+    terminal: { coreId: 'core', terminalId: 'owner', address: 'owner', socket: '/fixture/core.sock', sessionNamespace: 'fixture' } } as Owner;
+  const on = 'remote.invalid' as MachineName, bytes = Buffer.from('fixture runtime');
+  const runtime = { path: '/fixture/runtime.mjs', sha256: sha256(bytes) };
+  let targetPath = runtime.path, reads = 0, failure: Error | undefined, sequence = 0;
+  const unexpected = async (): Promise<never> => { throw new Error('Unexpected HC operation'); };
+  const hc: HcClient = { identity: unexpected, caller: unexpected, machines: unexpected, run: unexpected, get: unexpected, read: unexpected,
+    kill: unexpected, rm: unexpected, setLabels: unexpected, fileWrite: unexpected,
+    fileRead: async (_machine, path) => {
+      reads++; if (failure) throw failure;
+      if (path !== runtime.path) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      return bytes;
+    }, events: () => { throw new Error('Unexpected HC events'); } };
+  const jobs: JobPort = { start: async prepare => {
+    await prepare(); const id = `job-${++sequence}` as JobHandle['id'];
+    const localDirectory = join(root, id); await mkdir(localDirectory);
+    return { id, address: `${on}/${id}` as JobHandle['address'], remoteDirectory: '/fixture/remote', localDirectory,
+      finished: Promise.resolve({ reason: 'exited', exitCode: 0, signal: null, finishedAt: 1000 }), cancel: unexpected };
+  }, detach: async () => {}, toolReturned: async () => {}, consumeNotice: async () => {}, dispose() {} };
+  const ports: RemoteExecutionPorts = { hc, jobs, prepare: prepareRemoteProgram, environmentPolicy: env => env, clock: Date.now,
+    target: async () => ({ on, cwd: root, directory: '/fixture/programs', commands: { javascript: [process.execPath] }, environment: {}, nodePath: process.execPath, runtimePath: targetPath, runtimeSha256: runtime.sha256 }),
+    logSink: async job => ({ collect: async () => ({ stdout: 'ok\n', stderr: '', stdoutBytes: 3, stderrBytes: 0, complete: true, capped: false,
+      receipt: { version: 1, jobId: job.id, nonce: 'nonce', requestSha256: 'a'.repeat(64), indexSha256: 'b'.repeat(64), outcome: 'exited', exitCode: 0, signal: null, finishedAt: 1000, stdoutBytes: 3, stderrBytes: 0 } }), dispose() {} }) };
+  const execute = () => executeRemote({ on, owner, source: { kind: 'code', language: 'javascript', code: 'console.log("ok")' } }, ports);
+  return { h: { owner }, runtime, ports, execute, reads: () => reads, fail: (error?: Error) => { failure = error; }, path: (path: string) => { targetPath = path; } };
+}
+
 it('verifies once for repeated and concurrent commands, but not for a different runtime path', async () => {
-  const f = await fixture();
+  const f = await cacheFixture();
   const results = await Promise.all([f.execute(), f.execute()]);
   expect(results.map(result => result.outcome)).toEqual(['exited', 'exited']);
   expect(await f.execute()).toMatchObject({ outcome: 'exited', stdout: 'ok\n' }); expect(f.reads()).toBe(1);
@@ -90,7 +121,7 @@ it('invalidates the verified digest after an unknown result without a receipt', 
 }, 45000);
 
 it('does not tell users to rerun setup for a dead core or an unavailable machine', async () => {
-  const f = await fixture();
+  const f = await cacheFixture();
   for (const code of ['core-unavailable', 'machine-not-found']) {
     const error = Object.assign(new Error('transport is unavailable'), { code }); f.fail(error);
     await expect(f.execute()).rejects.toBe(error);

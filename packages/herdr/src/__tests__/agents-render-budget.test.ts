@@ -19,6 +19,24 @@ import { replaySpacesBRecipe } from './spaces-b-fixture.js';
 
 afterEach(() => vi.restoreAllMocks());
 
+const agentsFactories = new Map<string, (host: Record<string, any>) => any>();
+function agentsFactory(version: SpacesAVersion, presented: boolean, host: Record<string, any>) {
+  const names = Object.keys(host), key = JSON.stringify([version, presented, names]);
+  let factory = agentsFactories.get(key);
+  if (!factory) {
+    const recipe = loadPublishedSpacesARecipe(version);
+    const files = presented
+      ? replaySpacesBRecipe(version, loadSpacesAFiles(version), JSON.parse(readFileSync(new URL('../../assets/look/cross-machine-patches.json', import.meta.url), 'utf8')).versions[version])
+      : replaySpacesARecipe(version, loadSpacesAFiles(version), recipe.aFragments, recipe);
+    let source = files.agents!['main.js']!;
+    source = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)*import .*;\s*$/gm, '').replace('export default class ', 'class ');
+    const name = /class (\w+) extends View/.exec(source)![1];
+    factory = new Function('host', `const { ${names.join(', ')} } = host; ${source}; return ${name};`) as (host: Record<string, any>) => any;
+    agentsFactories.set(key, factory);
+  }
+  return factory(host);
+}
+
 function fixture(version: SpacesAVersion, count: number, finished: number, presented = false) {
   const now = Date.now(), contract = HerdrLabelContract;
   const state: any = { agents: [], terminals: [], panes: [], spaces: [{ id: 'space', name: 'Work', tabs: [] }], feeds: [], errors: [],
@@ -80,14 +98,7 @@ function fixture(version: SpacesAVersion, count: number, finished: number, prese
     exec: async (...args: unknown[]) => { execCalls.push(args); return { code: 0, stdout: '{}' }; }, hc: async (args: string[]) => ({ code: 0, stdout: JSON.stringify(args[0] === 'server' ? { core: { id: 'core' } } : { machines: state.inventory }) }),
     localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => { storageWrites.push([key, value]); storage.set(key, value); }, removeItem: (key: string) => storage.delete(key) },
   };
-  const recipe = loadPublishedSpacesARecipe(version);
-  const files = presented
-    ? replaySpacesBRecipe(version, loadSpacesAFiles(version), JSON.parse(readFileSync(new URL('../../assets/look/cross-machine-patches.json', import.meta.url), 'utf8')).versions[version])
-    : replaySpacesARecipe(version, loadSpacesAFiles(version), recipe.aFragments, recipe);
-  let source = files.agents!['main.js']!;
-  source = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)*import .*;\s*$/gm, '').replace('export default class ', 'class ');
-  const name = /class (\w+) extends View/.exec(source)![1];
-  const Agents = new Function('host', `const { ${Object.keys(host).join(', ')} } = host; ${source}; return ${name};`)(host);
+  const Agents = agentsFactory(version, presented, host);
   const view = new Agents(); view.init({}, cx);
   const flush = async () => {
     for (let i = 0; i < 80; i++) {

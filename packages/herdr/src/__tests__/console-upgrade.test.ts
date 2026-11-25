@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { createHash } from 'node:crypto';
-import { openRetainedConsole as ensureAgentConsole } from './console-view-fixture.js';
+import { openRetainedConsole } from './console-view-fixture.js';
 import { afterEach, expect, it, vi } from 'vitest';
 import { setTimeout as delay } from 'node:timers/promises';
 import { join } from 'node:path';
 import { parseRuntimePublication } from '../remote/runtime.js';
-import type { HcClient, JobHandle, JobPort, MachineName, RunId } from '../contracts.js';
-import { startWithAgentConsole, type AgentConsoleLaunch } from '../remote/console.js';
+import type { HcClient, HcRunRequest, JobHandle, JobPort, MachineName, Owner, RunId, TerminalAddress, TerminalSummary } from '../contracts.js';
+import { ensureAgentConsole as retainAgentConsole, openAgentConsoleView, startWithAgentConsole, type AgentConsoleLaunch } from '../remote/console.js';
 import { createHerdrHarness, type HerdrHarness } from './testutil.js';
 import { createRemoteTestFixture } from './acceptance/c.js';
 
@@ -20,7 +20,7 @@ afterEach(async () => {
   }
 });
 
-async function fixture() {
+async function processFixture() {
   const h = await createHerdrHarness('fake'); harnesses.push(h); await h.start();
   const remote = await createRemoteTestFixture(h);
   const on = 'remote.invalid' as MachineName;
@@ -38,8 +38,57 @@ async function fixture() {
       'spider.view-generation': h.owner!.generation,
       ...(runtime ? { 'spider.runtime': runtime } : {}), ...(run ? { 'spider.run': run } : {}), ...ownerLabels },
   });
-  const ensure = (hc: HcClient = h.hc, env = h.localEnv) => ensureAgentConsole(request, hc, env);
+  const ensure = (hc: HcClient = h.hc, env: Readonly<NodeJS.ProcessEnv> = h.localEnv) => openRetainedConsole(request, hc, env);
   const calls = async () => (await h.calls()).filter(call => call.argv[0] === 'run' && call.argv.includes('spider.kind=remote-console'));
+  return { h, request, seed, ensure, calls, errors, setIdle: (value: boolean) => { idle = value; } };
+}
+
+let fixtureNumber = 0;
+const ensureAgentConsole = async (request: AgentConsoleLaunch, hc: HcClient, env: Readonly<NodeJS.ProcessEnv>) => {
+  const store = await retainAgentConsole(request, hc, env); if (!store) return null;
+  return openAgentConsoleView({ ...request, job: undefined, displayLeaseFile: '/fixture/display-lease.json' }, hc, env);
+};
+
+async function fixture(real = false) {
+  if (real) return processFixture();
+  const owner = { sessionId: `upgrade-${++fixtureNumber}`, generation: 'generation', name: 'Owner', cwd: '/fixture', sessionFile: null,
+    terminal: { coreId: 'owner-core', terminalId: 'owner-terminal', address: 'owner-terminal', socket: '/fixture/core.sock', sessionNamespace: 'fixture' } } as Owner;
+  const on = 'remote.invalid' as MachineName;
+  const files = new Map<string, Buffer>(), terminals = new Map<TerminalAddress, TerminalSummary>(), launches: HcRunRequest[] = [];
+  const notFound = () => Object.assign(new Error('not found'), { code: 'not_found' });
+  const hc: HcClient = {
+    identity: async () => owner.terminal, caller: async () => owner.terminal,
+    machines: async () => [{ id: 'remote-core' as never, name: on, aliases: [], state: 'connected', sessionNamespace: 'fixture', runtime: null }],
+    run: async input => {
+      launches.push(input); const address = `${on}/console-${launches.length}` as TerminalAddress;
+      terminals.set(address, { address, parent: null, state: 'live', labels: { ...input.labels }, status: null, exitCode: null, reason: null, signal: null, finishedAt: null });
+      return { address, coreId: 'remote-core' as never };
+    },
+    get: async address => { const terminal = terminals.get(address); if (!terminal) throw notFound(); return { ...terminal, labels: { ...terminal.labels } }; },
+    kill: async address => { const terminal = terminals.get(address); if (!terminal) throw notFound(); terminal.state = 'finished'; },
+    rm: async address => { if (!terminals.delete(address)) throw notFound(); },
+    read: async () => '', setLabels: async () => { throw new Error('Unexpected label write'); },
+    fileRead: async (_on, file) => { const value = files.get(file); if (!value) throw Object.assign(new Error('missing'), { code: 'ENOENT' }); return value; },
+    fileWrite: async (_on, file, bytes) => { files.set(file, bytes); },
+    events: () => ({ ready: Promise.resolve(), lookup: async address => terminals.get(address) ?? null,
+      subscribe: listener => { listener({ type: 'snapshot', seq: 1, terminals: [...terminals.values()].map(terminal => ({ ...terminal, labels: { ...terminal.labels } })) }); return () => {}; }, dispose: () => {} }),
+  };
+  const h = { owner, hc, localEnv: { HC_TERMINAL_ID: owner.terminal.terminalId } };
+  let idle = true;
+  const errors: unknown[] = [];
+  const request: AgentConsoleLaunch = { owner, on, target: { on, cwd: null, directory: '/fixture/remote', commands: {}, environment: {}, nodePath: '/fixture/node', runtimePath: '/fixture/runtime.mjs', runtimeSha256: 'current-runtime' },
+    source: { kind: 'code', language: 'shell', code: 'echo ready' }, isConsoleIdle: async () => idle, reportError: error => { errors.push(error); } };
+  const seed = async (runtime?: string, run?: string, kind = 'remote-console', ownerLabels: Record<string, string> = {}) => hc.run({
+    argv: ['/fixture/node', '-e', 'setInterval(()=>{},1000)'], cwd: null, on, background: true, outliveParent: true, noNotify: true,
+    labels: { 'spider.kind': kind, 'spider.session': owner.sessionId, 'spider.machine': on,
+      'spider.owner-core': owner.terminal.coreId, 'spider.owner-terminal': owner.terminal.terminalId,
+      'spider.console-key': JSON.stringify([JSON.stringify([owner.sessionId, run ?? null]), on]),
+      'spider.console-id': 'console-' + createHash('sha256').update(JSON.stringify([JSON.stringify([owner.sessionId, run ?? null]), on])).digest('hex'),
+      'spider.view-generation': owner.generation,
+      ...(runtime ? { 'spider.runtime': runtime } : {}), ...(run ? { 'spider.run': run } : {}), ...ownerLabels },
+  });
+  const ensure = (client: HcClient = hc, env: Readonly<NodeJS.ProcessEnv> = h.localEnv) => ensureAgentConsole(request, client, env);
+  const calls = async () => launches.filter(call => call.labels['spider.kind'] === 'remote-console');
   return { h, request, seed, ensure, calls, errors, setIdle: (value: boolean) => { idle = value; } };
 }
 
@@ -100,7 +149,7 @@ it('replaces a cached console when the target runtime changes', async () => {
 }, 30000);
 
 it('serializes concurrent replacements into one new console', async () => {
-  const f = await fixture(); const old = await f.seed('older-runtime');
+  const f = await fixture(true); const old = await f.seed('older-runtime');
   const [a, b] = await Promise.all([f.ensure(), f.ensure()]);
   expect(a!.address).not.toBe(old.address);
   expect(b!.address).toBe(a!.address);

@@ -268,11 +268,11 @@ export async function disableRoaming(root: string): Promise<ControlResult> {
     if (initial.role !== "hub") return { code: 1, reason: "mac-hub-required", message: "Run this command on the Mac hub." };
     return await locked(root, initial, async () => {
       const config = readLocalIdentity(root), socket = join(root, "roam", "hub.sock"), journalFile = join(root, "roam", "journal.db");
-      const plistDir = join(homedir(), "Library", "LaunchAgents"), plist = hubServiceFile(root, plistDir);
-      assertTestConfigPath(plist);
       const pendingMove = readPendingMoves(journalFile)?.[0];
       if (pendingMove) return { code: 1, reason: `move-in-progress:${pendingMove.operationId}`, operationId: pendingMove.operationId,
         repairCommand: `spider roam cancel ${pendingMove.operationId}`, message: `Move ${pendingMove.operationId} is pending at ${pendingMove.step}. Run spider roam cancel ${pendingMove.operationId} before disabling roaming.` };
+      const plistDir = join(homedir(), "Library", "LaunchAgents"), plist = hubServiceFile(root, plistDir);
+      assertTestConfigPath(plist);
       const servicePresent = () => hubServiceExists(root, plistDir);
       const finish = async (): Promise<ControlResult> => {
         // Unload KeepAlive before publishing the disabled flag, so a failed unload can be retried.
@@ -299,8 +299,9 @@ export async function disableRoaming(root: string): Promise<ControlResult> {
       catch {
         // A missing journal proves a no-op only for a disabled hub with no service.
         return locked(root, config, async () => {
-          const hasJournal = existsSync(journalFile);
-          if (hasJournal ? homeChangeInProgress(journalFile) !== false : config.enabled || servicePresent())
+          const hasJournal = existsSync(journalFile), moving = hasJournal ? homeChangeInProgress(journalFile) : null;
+          if (moving === true) return { code: 1 as const, reason: 'home-change-in-progress', repairCommand: 'spider roam doctor', message: 'A home change is pending. Finish its session action before disabling roaming. Run spider roam doctor.' };
+          if (hasJournal ? moving !== false : config.enabled || servicePresent())
             return { code: 3 as const, reason: "disable-safety-unverified", repairCommand: "spider roam doctor", message: "Cannot verify the hub is safe to disable. Run spider roam doctor." };
           return finish();
         }, "roam-hub", 1000);

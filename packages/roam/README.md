@@ -46,8 +46,10 @@ readiness. Control requests use elapsed-time deadlines, even during partial repl
 It blocks with `hub-startup-pending` only when the service is stopped, or when
 a running service still fails the probe after that bound. Unknown service
 metadata produces a `hub-startup-unverified` warning. The diagnostic names
-the last exit code and error log path, without reading log contents, and asks
-to check the service and that log rather than repeatedly reinstalling it.
+the last exit code and error log path without reading log contents. Check the
+service and that log. The startup repair is `spider roam enable`, which starts
+the supported hub service. An unavailable move-control connection names the
+same command.
 
 After upgrading a hub enabled on an earlier release, run `spider roam enable`
 again to reinstall its service with the correct entry. The packaged
@@ -297,6 +299,30 @@ on the peer's next verified sync round while that skipped move remains pending.
 There is no timer retry loop, and completed moves do not trigger a later pass.
 Terminal recovery, including a terminal refusal, clears that move's saved
 recovery diagnostic. Unfinished moves keep their warning and recovery command.
+
+## Cancel before a completed freeze
+
+A move whose freeze never completed can finish cancellation after its session
+exits, including after a hub or machine restart. Cancellation still verifies
+the source home, abort authority, session ID lock, and canonical file lease.
+A completed freeze retains its abort authorization and intake-fence checks.
+
+The ownership probe reads identity-matched session registrations from the local
+runtime and the normal runtime. Unrelated registered Pi sessions do not block
+absence. A changed boot or process start identity proves only the recorded
+owner gone. An unidentified replacement, unreadable process identity, or a live
+owner still blocks cancellation. Foreign runtime registrations remain read-only.
+
+An ownership refusal returns code `3` with `move-ownership-unavailable` and its
+specific cause. The response and doctor give the repair steps instead of
+sending cancellation back to recovery. Quit unregistered Pi sessions normally,
+or restore the reported process, boot, or ownership-record inspection before
+retrying cancellation. Do not delete ownership files to bypass the checks.
+
+A known pending move refuses disable with code `1` before service inspection or
+any disable changes. The hub and CLI name the move and its cancel repair.
+Doctor reports the move as blocking and also returns code `1`, even when
+roaming is disabled. Code `3` remains for partial disable or unverified safety.
 
 ## Partial disable
 

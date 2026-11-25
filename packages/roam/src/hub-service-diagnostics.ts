@@ -50,5 +50,5 @@ export function hubStartupDiagnostics(root: string, state: HubServiceObservation
   const pending = state.running === false || state.running === true && !state.socketAvailable;
   const code = pending ? "hub-startup-pending" : "hub-startup-unverified";
   const detail = state.running === false ? "Hub service is not running." : state.running === true ? "Hub service did not answer a ready status probe within 2 seconds." : "Hub service state cannot be verified.";
-  return [{ severity: pending ? "block" : "warning", reason: `${code}: ${detail} Last exit code: ${state.lastExitCode ?? "unknown"}. Error log: ${join(root, "roam", "logs", "hub.err.log")}. Check the hub service and its error log on the Mac hub before retrying.`, repairCommand: null }];
+  return [{ severity: pending ? "block" : "warning", reason: `${code}: ${detail} Last exit code: ${state.lastExitCode ?? "unknown"}. Error log: ${join(root, "roam", "logs", "hub.err.log")}. Check the hub service and its error log on the Mac hub before retrying.`, repairCommand: 'spider roam enable' }];
 }

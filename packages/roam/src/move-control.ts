@@ -22,7 +22,7 @@ export function guardMoveControl(enabled: () => boolean, handler?: MoveControlHa
     const request = parseMoveControlRequest(input);
     if (!enabled() && request?.op !== "forget") return { code: 1, reason: "roaming-disabled", value: null };
     if (!request) return { code: 2, reason: "invalid-move-control", value: null };
-    if (!handler) return { code: 1, reason: "move-control-unavailable", value: null };
-    try { return await handler(request); } catch { return { code: 1, reason: "move-control-unavailable", value: null }; }
+    if (!handler) return { code: 1, reason: "move-control-unavailable", repairCommand: 'spider roam enable', value: null };
+    try { return await handler(request); } catch { return { code: 1, reason: "move-control-unavailable", repairCommand: 'spider roam enable', value: null }; }
   };
 }

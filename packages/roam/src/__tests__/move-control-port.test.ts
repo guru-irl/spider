@@ -23,8 +23,12 @@ it.each([
   expect(effect).toHaveBeenCalledOnce();
   expect(effect).toHaveBeenCalledWith(parseMoveControlRequest(input));
 }, 5000);
+it('cancel without a move handler names the hub startup repair', async () => {
+  expect(await guardMoveControl(() => true)({ op: 'cancel', operationId: 'move-a' })).toMatchObject({ code: 1, reason: 'move-control-unavailable', repairCommand: 'spider roam enable' });
+});
+
 it("unavailable control evidence does not leak exception text", async () => {
   const value = await guardMoveControl(() => true, async () => { throw new Error("SECRET-SENTINEL"); })({ op: "recover", operationId: "move-a" });
-  expect(value).toMatchObject({ code: 1, reason: "move-control-unavailable" });
+  expect(value).toMatchObject({ code: 1, reason: "move-control-unavailable", repairCommand: 'spider roam enable' });
   expect(JSON.stringify(value)).not.toContain("SECRET-SENTINEL");
 }, 5000);

@@ -104,10 +104,10 @@ function json(value: unknown): JsonObject { return JSON.parse(JSON.stringify(val
 function outcome(request: MoveRequest, ports: MovePorts, code: Outcome<MoveResult>["code"], reason: MoveRefusalCode | "moved" | "same-home", value: MoveResult | null = null, blockers: readonly ValidatedBlockerId[] = [], cause?: MoveCauseCode, firstHomeWithheld?: FirstHomeWithheld, failure?: MoveFailureDetail): MoveSessionOutcome {
   const current = sessionHome(ports.globalDb, request?.sessionId ?? "");
   const envelope = { code, reason, operationId: text(request?.operation?.id) ? request.operation.id : "invalid-move", home: current === "unknown" ? null : current,
-    epoch: current && current !== "unknown" ? current.epoch : null, repairCommand: reason === "initial-home-conflict" ? "spider roam claim" : code === 3 && text(request?.operation?.id) ? `spider roam recover ${request.operation.id}` : null };
+    epoch: current && current !== "unknown" ? current.epoch : null, repairCommand: reason === 'move-ownership-unavailable' ? null : reason === 'move-abort-pending' ? `spider roam cancel ${request.operation.id}` : reason === "initial-home-conflict" ? "spider roam claim" : code === 3 && text(request?.operation?.id) ? `spider roam recover ${request.operation.id}` : null };
   if (code === 0 && value) return { ...envelope, code: 0, ok: true, value, ...(failure ? { failure } : {}) };
   if (code === 0 || reason === "moved" || reason === "same-home") refuse("move-journal-invalid");
-  return { ...envelope, ...(cause ? { causeCode: cause, repairCommand: envelope.repairCommand ?? (cause === "move-workspace-unmapped" ? "spider roam repo map <repo> <path>" : "spider roam doctor") } : {}), code, ok: false, value: null, ...(failure ? { failure } : {}),
+  return { ...envelope, ...(cause ? { causeCode: cause, repairCommand: reason === 'move-ownership-unavailable' ? null : envelope.repairCommand ?? (cause === "move-workspace-unmapped" ? "spider roam repo map <repo> <path>" : "spider roam doctor") } : {}), code, ok: false, value: null, ...(failure ? { failure } : {}),
     refusal: { code: reason, blockers, message: MOVE_REFUSAL_MESSAGES[reason] + (cause ? ` ${moveFailureRepair(cause)}` : ""),
       ...(firstHomeWithheld ? { firstHomeWithheld } : {}) } };
 }

@@ -23,6 +23,7 @@ export interface MountOpts {
   cwd: string;
   registration?: AgentsUIRegistration;
   formatRunCost?: import("@spider/ui").RunCostFormatter;
+  piVersion?: string;
   admitted?: () => boolean;
   // Injectable for tests — defaults to real dispatch that calls into spider action handler
   dispatch?: (action: string, args: Record<string, unknown>) => Promise<unknown>;
@@ -51,9 +52,10 @@ export function mountAgentsUI(
     iconStyle: controlConfig("get", opts.cwd, "ui.icons") === "nerd" ? "nerd" : "text",
     registration: opts.registration,
     formatRunCost: opts.formatRunCost,
-    actions: createAgentActions(pi, {
+    piVersion: opts.piVersion,
+    actions: dispatch ? createAgentActions(pi, {
       ui: ctx.ui,
       dispatch,
-    }),
+    }) : undefined,
   });
 }

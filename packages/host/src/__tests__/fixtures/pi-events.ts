@@ -74,4 +74,6 @@ export function createHostSessionFixture(options: {
   });
   return { pi, ctx, hooks, sent, setPersistMessages(value: boolean) { persist = value; } };
 }
-export const hostUnitPorts: { intercomBroker: IntercomBrokerPort } = { intercomBroker: async (_connect: () => Promise<void>): Promise<void> => {} };
+export const hostUnitPorts: { intercomBroker: IntercomBrokerPort; piVersion: string } = {
+  intercomBroker: async (_connect: () => Promise<void>): Promise<void> => {}, piVersion: "1.2.0",
+};

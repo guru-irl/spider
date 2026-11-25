@@ -79,5 +79,6 @@ export default async function spider(pi: unknown): Promise<unknown> {
   const copy = piHost.copyToClipboard;
   const copyButtons = typeof AssistantMessageComponent === "function" && typeof Markdown === "function" && typeof copy === "function"
     ? { host: { AssistantMessageComponent, Markdown }, copy } : undefined;
-  return mod.default(pi, copyButtons ? { copyButtons } : {});
+  const piVersion = typeof piHost.VERSION === "string" ? piHost.VERSION : undefined;
+  return mod.default(pi, { ...(copyButtons ? { copyButtons } : {}), ...(piVersion === undefined ? {} : { piVersion }) });
 }

@@ -93,6 +93,7 @@ export { AgentFooter, formatDuration, formatAgentLine } from "./agents/footer";
 export { AgentList } from "./agents/agent-list";
 export { renderGridCell } from "./agents/grid-cell";
 export { AgentDetail } from "./agents/agent-detail";
+export type { DetailRead, DetailBackTarget, DetailOptions } from "./agents/agent-detail";
 export { Spinner, BRAILLE_FRAMES } from "./components/spinner";
 export { renderProgressBar } from "./components/progress-bar";
 export { renderDiffView } from "./components/diff-view";

@@ -3,6 +3,9 @@ import { icon, type IconStyle } from "../icons.js";
 
 export type AgentStatus = "queued" | "running" | "paused" | "done" | "failed" | "cancelled";
 
+/** An event read from run_events, distinct from an unpersisted bus notification. */
+export type StoredRunEvent = RunEvent & { id: number };
+
 export type RunUsageCosts = readonly { provider?: string; cost: number }[];
 export type RunCostFormatter = (costs: RunUsageCosts) => string;
 
@@ -29,7 +32,7 @@ export interface RunSource {
   getRun(runId: string): RunRow | undefined;
   subscribe(fn: (e: RunEvent) => void): () => void;
   /** All run_events for one run, chronological — powers the detail conversation view. */
-  listEvents?(runId: string): RunEvent[];
+  listEvents?(runId: string): StoredRunEvent[];
 }
 
 export interface AgentActions {

@@ -10,11 +10,11 @@ import { renderMessageResult } from "../renderers/message.js";
 import { renderExecCall, renderExecResult } from "../renderers/exec.js";
 import { renderGridCell } from "../agents/grid-cell.js";
 import { AgentDetail } from "../agents/agent-detail.js";
-import { AgentStore, applyEvent } from "../agents/store.js";
+import { applyEvent } from "../agents/store.js";
 import { Spinner } from "../components/spinner.js";
 import { renderModels } from "../screens/models-view.js";
 import { renderConfig } from "../screens/config-view.js";
-import type { AgentSnapshot, RunRow, ThemeAdapter } from "../agents/types.js";
+import type { AgentSnapshot, ThemeAdapter } from "../agents/types.js";
 
 const theme = (iconStyle: "text" | "nerd"): ThemeAdapter & { iconStyle: "text" | "nerd" } => ({
   fg: (_token, text) => text, bg: (_token, text) => text, bold: text => text, glyph: "🕸", iconStyle,
@@ -129,11 +129,10 @@ describe("icon styles in rendered rows", () => {
     expect(renderGridCell(theme("nerd"), opts).join("\n")).toContain("\u{F0156} read — failed");
     const log = applyEvent(agent, { ...event, type: "log", summary: "✗ user text" });
     expect(formatAgentLine(theme("nerd"), log, 100, 0, "◆")).toContain("✗ user text");
-    const row: RunRow = { id: "one", session_id: "s", name: "scribe", agent: "worker", status: "running", step_count: 1, token_count: 0 };
-    const store = new AgentStore({ listActive: () => [row], getRun: () => row, subscribe: () => () => {}, listEvents: () => [event] });
-    store.start();
-    try { expect(new AgentDetail(store, "one", theme("nerd")).render(100).join("\n")).toContain("\u{F0156} read — failed"); }
-    finally { store.stop(); }
+    const detail = new AgentDetail("one", theme("nerd"), { viewport: () => ({ safeHeight: 15 }), requestRender: () => {} });
+    detail.update({ kind: "loaded", run: agent, events: [{ ...event, id: 1 }] });
+    try { expect(detail.render(100).join("\n")).toContain("\u{F0156} read — failed"); }
+    finally { detail.dispose(); }
   });
 
   it("keeps failed-tool provenance aligned when the activity tail rolls over", () => {
@@ -153,21 +152,53 @@ describe("icon styles in rendered rows", () => {
   });
 
   it("renders handoffs and kill warnings in agent detail", () => {
-    const row: RunRow = { id: "one", session_id: "s", name: "scribe", agent: "worker", status: "cancelled", step_count: 1, token_count: 0 };
-    const store = new AgentStore({ listActive: () => [row], getRun: () => row, subscribe: () => () => {},
-      listEvents: () => [{ runId: "one", sessionId: "s", ts: 1, type: "handoff", summary: "next" }] });
-    store.start();
+    const opts = { now: () => 0, viewport: () => ({ safeHeight: 15 }), requestRender: () => {} };
+    const text = new AgentDetail("one", theme("text"), opts);
+    const nerd = new AgentDetail("one", theme("nerd"), opts);
     try {
-      const text = new AgentDetail(store, "one", theme("text"), { now: () => 0 });
-      const nerd = new AgentDetail(store, "one", theme("nerd"), { now: () => 0 });
-      text.handleInput("k"); nerd.handleInput("k");
+      for (const detail of [text, nerd]) {
+        detail.update({ kind: "loaded", run: agent, events: [{ id: 1, runId: "one", sessionId: "s", ts: 1, type: "handoff", summary: "next" }] });
+        detail.onKill(() => {});
+        detail.render(80);
+        detail.handleInput("k");
+      }
       const a = text.render(80), b = nerd.render(80);
       expect(a.join("\n")).toContain("⇢ next");
       expect(b.join("\n")).toContain("\u{F19B0} next");
-      expect(a.join("\n")).toContain("⚠ kill");
-      expect(b.join("\n")).toContain("\u{F002A} kill");
+      expect(a.join("\n")).toContain("⚠ k again to kill");
+      expect(b.join("\n")).toContain("\u{F002A} k again to kill");
+      expect(a[0]).toContain("🕸 scribe");
+      expect(b[0]).toContain("\u{F167A} scribe");
       expect(b.map(visibleWidth)).toEqual(a.map(visibleWidth));
-    } finally { store.stop(); }
+    } finally { text.dispose(); nerd.dispose(); }
+  });
+
+  it("styles failed detail status and live failed activity", () => {
+    const detail = new AgentDetail("one", theme("nerd"), { viewport: () => ({ safeHeight: 15 }), requestRender: () => {} });
+    try {
+      detail.update({ kind: "loaded", run: { ...agent, status: "failed" }, events: [] });
+      expect(detail.render(80)[0]).toContain("\u{F0156} failed");
+      detail.update({ kind: "loaded", run: { ...agent, activity: "✗ read — failed", activityIsError: true }, events: [] });
+      expect(detail.render(80).join("\n")).toContain("\u{F0156} read — failed");
+    } finally { detail.dispose(); }
+  });
+
+  it("keeps narrow kill confirmation actionable when the icon does not fit", () => {
+    for (const style of ["text", "nerd"] as const) {
+      const killed: string[] = [];
+      const detail = new AgentDetail("one", theme(style), { viewport: () => ({ safeHeight: 15 }), requestRender: () => {} });
+      try {
+        detail.update({ kind: "loaded", run: agent, events: [] });
+        detail.onKill(id => killed.push(id));
+        detail.render(24);
+        detail.handleInput("k");
+        const controls = detail.render(24).at(-2)!;
+        expect(controls).toContain("k again to kill");
+        expect(controls).toContain("Esc");
+        detail.handleInput("k");
+        expect(killed).toEqual(["one"]);
+      } finally { detail.dispose(); }
+    }
   });
 
   it("uses the matching gutter for expanded command output", () => {

@@ -1,4 +1,4 @@
-import type { AgentSnapshot, HandoffEdge, RunEvent, RunRow, RunSource, RunCostFormatter } from "./types";
+import type { AgentSnapshot, HandoffEdge, RunEvent, RunRow, RunSource, RunCostFormatter, StoredRunEvent } from "./types";
 
 const RETENTION_MS = 10_000;
 const TAIL_CAP = 20;
@@ -119,7 +119,7 @@ export class AgentStore {
   selectedRunId(): string | undefined { if (!this.selecting) return undefined; return this.snapshot()[this.sel]?.runId; }
 
   /** Full chronological event log for one run (assistant text + tool calls/results). */
-  events(runId: string): RunEvent[] { return this.src.listEvents?.(runId) ?? []; }
+  events(runId: string): StoredRunEvent[] { return this.src.listEvents?.(runId) ?? []; }
 
   hasRunning(): boolean {
     for (const a of this.agents.values()) if (a.status === "running" || a.status === "queued") return true;

@@ -17,6 +17,22 @@ describe("createRunSource", () => {
     expect(src.getRun("r1")?.status).toBe("running");
   });
 
+  it("returns database ids in timestamp then id order", () => {
+    const db = openDb(scratchDbPath("runsrc-events")); opened.push(db); migrate(db, "project");
+    appendRunEvent(db, { runId: "run", sessionId: "s", ts: 20, type: "message", summary: "later" });
+    appendRunEvent(db, { runId: "run", sessionId: "s", ts: 10, type: "message", summary: "same" });
+    appendRunEvent(db, { runId: "run", sessionId: "s", ts: 10, type: "message", summary: "same" });
+    db.prepare("UPDATE run_events SET payload = ? WHERE run_id = ? AND ts = ?").run("{bad json", "run", 20);
+    const source = createRunSource(db, "s");
+    const events = source.listEvents!("run");
+    expect(events.map(event => event.ts)).toEqual([10, 10, 20]);
+    expect(events.every(event => typeof event.id === "number" && Number.isInteger(event.id))).toBe(true);
+    expect(new Set(events.map(event => event.id)).size).toBe(3);
+    expect(events[0]!.id).toBeLessThan(events[1]!.id);
+    expect(source.listEvents!("run").map(event => event.id)).toEqual(events.map(event => event.id));
+    expect(events[2]!.payload).toBeUndefined();
+  });
+
   it("subscribe fires only for the matching session on appendRunEvent", () => {
     const db = openDb(scratchDbPath("runsrc2")); opened.push(db); migrate(db, "project");
     const src = createRunSource(db, "s");

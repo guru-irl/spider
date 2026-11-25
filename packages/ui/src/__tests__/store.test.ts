@@ -4,6 +4,7 @@ import type { RunRow, RunSource, RunEvent } from "../agents/types";
 import { openDb, migrate, appendRunEvent } from "@spider/db-core";
 import { scratchDbPath, cleanupScratch } from "@spider/db-core/testutil";
 import type { Db } from "@spider/db-core";
+import { createRunSource as createHostRunSource } from "../../../host/src/agents/run-source";
 
 const opened: { close(): void }[] = [];
 afterEach(() => { for (const d of opened) d.close(); opened.length = 0; cleanupScratch(); });
@@ -83,6 +84,29 @@ describe("AgentStore", () => {
     expect(store.togglePin("r1")).toBe(false); // unpin
     expect(store.isPinned("r1")).toBe(false);
     store.stop();
+  });
+
+  it("preserves source event identities after retention", () => {
+    const db = openDb(scratchDbPath("store-retained-events")); opened.push(db); migrate(db, "project");
+    db.prepare(`INSERT INTO runs (id, session_id, agent, status, step_count, token_count, started_at, ended_at)
+                VALUES ('r1','s','worker','done',0,0,0,1)`).run();
+    appendRunEvent(db, { runId: "r1", sessionId: "s", ts: 1, type: "message", summary: "same" });
+    appendRunEvent(db, { runId: "r1", sessionId: "s", ts: 1, type: "message", summary: "same" });
+    const persistence = createHostRunSource(db, "s");
+    const source: RunSource = { ...persistence, listActive: () => [persistence.getRun("r1")!] };
+    let now = 1;
+    const store = new AgentStore(source, () => now);
+    store.start();
+    try {
+      const before = store.events("r1");
+      expect(before).toHaveLength(2);
+      expect(before.every(event => typeof event.id === "number")).toBe(true);
+      expect(new Set(before.map(event => event.id)).size).toBe(2);
+      now = 10_002;
+      expect(store.snapshot()).toEqual([]);
+      expect(store.getById("r1")?.status).toBe("done");
+      expect(store.events("r1").map(event => event.id)).toEqual(before.map(event => event.id));
+    } finally { store.stop(); }
   });
 
   it("updates activity + counts on a bus event and notifies once", () => {

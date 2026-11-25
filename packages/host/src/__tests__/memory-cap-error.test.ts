@@ -26,7 +26,7 @@ describe.each(cases)("error fallback for $action $command $sub $op", args => {
     it(`shows thrown content errors (expanded=${expanded})`, () => {
       const out = body(args, { details: {}, content: [{ type: "text", text: errorText }] }, expanded, theme, true);
       expect(out).toContain(errorText);
-      expect(out).toContain("✗");
+      expect(out).toContain("❌");
       expect(out).not.toContain("undefined");
     });
     it(`shows returned details errors (expanded=${expanded})`, () => {
@@ -40,7 +40,7 @@ describe.each(cases)("error fallback for $action $command $sub $op", args => {
 it.each([undefined, null, {}])("remember without a status is an error, not a success receipt (%j)", details => {
   const out = body({ action: "remember" }, { details, content: [{ type: "text", text: errorText }] });
   expect(out).toContain(errorText);
-  expect(out).toContain("✗");
+  expect(out).toContain("❌");
   expect(out).not.toContain("status:");
 });
 
@@ -58,7 +58,7 @@ it.each([
   { details: {}, content: [{ type: "image", data: "fixture" }] },
 ])("shows a useful fallback for non-text or empty errors (%j)", result => {
   const out = body({ action: "remember" }, result, false, theme, true);
-  expect(out).toContain("✗");
+  expect(out).toContain("❌");
   expect(out).not.toContain("undefined");
   expect(out).toMatch(/unavailable|failed|no message/i);
 });
@@ -118,7 +118,7 @@ it("renders a thrown exec through pi's root-exported ToolExecutionComponent", as
     expect(context).toMatchObject({ args: { action: "exec", code: "x" }, isError: true });
     const out = row.render(240).join("\n");
     expect(out).toContain(errorText);
-    expect(out).toContain("✗");
+    expect(out).toContain("❌");
     expect(out).not.toContain("exit 0");
   } finally { vi.unstubAllEnvs(); }
 });
@@ -156,7 +156,7 @@ it.each(["queued", "broker-accepted"])("keeps %s message notes neutral through h
     details: { delivered: false, delivery, queued: true, error: "Recipient offline. Retry later." }, content: [],
   }, false, colored);
   expect(out).toContain("│ Recipient offline. Retry later.");
-  expect(out).not.toContain("✗");
+  expect(out).not.toContain("❌");
   expect(out).not.toContain("\x1b[31m");
 });
 
@@ -177,16 +177,16 @@ it.each([false, true])("forwards explicit command error flags for bare details (
     result: { text: "Execution refused by policy", details: {}, isError },
   } }, { expanded }, theme).render(240).join("\n");
   const failed = render(true);
-  expect(failed).toContain("✗ Execution refused by policy");
+  expect(failed).toContain("❌ Execution refused by policy");
   expect(failed).not.toContain("exit 0");
   const succeeded = render(false);
   expect(succeeded).toContain("exit 0");
-  expect(succeeded).not.toContain("✗");
+  expect(succeeded).not.toContain("❌");
   expect(succeeded).not.toContain("Execution refused by policy");
 });
 
 it.each([80, 240])("preserves the cap headline at width %i through host's outer fit boundary", width => {
   const headline = "Not stored: global memory is full (7,952 of 8,000 chars used). This entry is 470 chars; free at least 422.";
   const out = renderSpiderResult({ details: {}, content: [{ type: "text", text: headline + "\nHelp is expanded only." }] }, { expanded: false }, theme, { args: { action: "remember" }, isError: true }).render(width);
-  expect(out.join(" ").replace(/\s+/g, " ").trim()).toBe(`✗ ${headline}`);
+  expect(out.join(" ").replace(/\s+/g, " ").trim()).toBe(`❌ ${headline}`);
 });

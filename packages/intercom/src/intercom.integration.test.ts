@@ -1791,7 +1791,7 @@ test("intercom tool renders compact call and result rows", async () => {
     content: [{ type: "text", text: "Missing 'to' or 'message' parameter" }],
     details: { error: true, reason: "Missing target" },
   }, { isPartial: false, expanded: true }, renderTheme, { isError: false, expanded: true }));
-  assert.match(errorText, /✗ Missing 'to' or 'message' parameter/);
+  assert.match(errorText, /❌ Missing 'to' or 'message' parameter/);
   assert.match(errorText, /Reason: Missing target/);
 });
 
@@ -1908,14 +1908,14 @@ test("contact supervisor tool renders reason and reply state", async () => {
       content: [{ type: "text", text: "Reply from supervisor:\nUse stable API" }],
       details: { structuredReplyParseError: "reply JSON must include a responses array" },
     }, { isPartial: false }, renderTheme, { isError: false }));
-    assert.match(warningText, /⚠ Reply from supervisor:\nUse stable API/);
+    assert.match(warningText, /⚠\uFE0F Reply from supervisor:\nUse stable API/);
     assert.match(warningText, /Structured reply parse issue: reply JSON must include a responses array/);
 
     const failureText = renderToText(supervisorTool.renderResult({
       content: [{ type: "text", text: "Invalid reason" }],
       details: { error: true },
     }, { isPartial: false }, renderTheme, { isError: false }));
-    assert.match(failureText, /✗ Invalid reason/);
+    assert.match(failureText, /❌ Invalid reason/);
   });
 });
 

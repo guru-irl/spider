@@ -123,7 +123,7 @@ describe("render-result exec/index wiring (Phase 8)", () => {
   ] as const)("shows %s foreground timeout without success", (action, details, status) => {
     const out = lines(action, details, { commands: [{ code: "run" }] }).join("\n");
     expect(out).toContain(status);
-    expect(out).toContain("✗");
+    expect(out).toContain("❌");
     expect(out).not.toContain("✓");
   });
 
@@ -134,7 +134,7 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     ], { commands: [{ code: "first" }, { code: "second" }] }).join("\n");
     expect(out).toContain("timed out · exit 0");
     expect(out).toContain("signal SIGTERM");
-    expect(out).toContain("✗");
+    expect(out).toContain("❌");
     expect(out).not.toContain("✓");
   });
 
@@ -143,7 +143,7 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     expect(out).toContain("timed out · outcome unknown");
     expect(out).toContain("job/receipt");
     expect(out).not.toContain("✓");
-    expect(out).not.toContain("✗");
+    expect(out).not.toContain("❌");
   });
 
   it("shows an unknown timeout alongside a separate batch failure", () => {
@@ -153,7 +153,7 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     ], { commands: [{ code: "first" }, { code: "second" }] }).join("\n");
     expect(out).toContain("timed out · outcome unknown");
     expect(out).toContain("exit 2");
-    expect(out).toContain("✗");
+    expect(out).toContain("❌");
     expect(out).not.toContain("✓");
   });
 
@@ -162,7 +162,7 @@ describe("render-result exec/index wiring (Phase 8)", () => {
       { stdout: "ok", stderr: "", exitCode: 0, timedOut: false },
       { stdout: "bad", stderr: "boom", exitCode: 1, timedOut: false },
     ]).join("\n");
-    expect(out).toContain("✗");
+    expect(out).toContain("❌");
   });
 
   it("index routes to the bespoke renderer with source + chunk counts", () => {
@@ -281,7 +281,7 @@ describe("render-result exec/index wiring (Phase 8)", () => {
   it("leaves collapsed stderr hidden as on main", () => {
     const rows = renderSpiderResult({ details: { stdout: "", stderr: "private error", exitCode: 1 } },
       { expanded: false }, theme, { args: { action: "exec", code: "run" } }).render(80);
-    expect(rows.join("\n")).toContain("✗ exit 1 · 0 lines");
+    expect(rows.join("\n")).toContain("❌ exit 1 · 0 lines");
     expect(rows.join("\n")).not.toContain("stderr");
     expect(rows.join("\n")).not.toContain("private error");
   });

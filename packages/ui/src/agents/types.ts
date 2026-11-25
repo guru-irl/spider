@@ -56,9 +56,12 @@ export function agentGlyph(theme: ThemeAdapter): string {
   return theme.iconStyle === undefined ? theme.glyph : icon(theme.iconStyle, "agent");
 }
 
+/** Child reports mark failed tools with `✗` (stored in run events); older or current text icons may lead too. */
+const FAILURE_MARKERS = [...new Set(["✗", icon("text", "failure")])];
+
 export function activityText(theme: ThemeAdapter, text: string, isError: boolean | undefined): string {
-  const marker = icon("text", "failure");
-  return isError && text.startsWith(`${marker} `) ? icon(theme.iconStyle, "failure") + text.slice(marker.length) : text;
+  const marker = isError ? FAILURE_MARKERS.find(m => text.startsWith(`${m} `)) : undefined;
+  return marker ? icon(theme.iconStyle, "failure") + text.slice(marker.length) : text;
 }
 
 export interface FooterModel {

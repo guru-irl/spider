@@ -39,7 +39,7 @@ describe("result width policy", () => {
 
   it.each([30, 80])("hangs continuation rows after every leading marker at width %i", (width) => {
     const payload = "x".repeat(180);
-    const prefixes = [" ⎿ ", " ✓ ", " ✗ ", " 12. ◆ ", " • ", " │ ", "    ↳ ", "    ⤴ ", "     ", " ● ", " ✗ → ", " - "];
+    const prefixes = [" ⎿ ", " ✓ ", " ✗ ", " 12. ◆ ", " • ", " │ ", "    ↳ ", "    ⤴ ", "     ", " ● ", " ✗ → ", " - ", " \u274C ", " \u26A0\uFE0F ", " \u274C → ", " \u{F002A}  "];
     for (const prefix of prefixes) {
       const rows = fitResultLines([prefix + payload], width, true).map(stripped);
       expect(rows.length, prefix).toBeGreaterThan(1);
@@ -47,7 +47,7 @@ describe("result width policy", () => {
       const indent = " ".repeat(visibleWidth(prefix));
       expect(rows.slice(1).every((row) => row.startsWith(indent + "x")), prefix).toBe(true);
       expect(rows.every((row) => visibleWidth(row) <= width), prefix).toBe(true);
-      expect(rows.map((row) => row.slice(prefix.length)).join(""), prefix).toBe(payload);
+      expect(rows.map((row, i) => row.slice(i === 0 ? prefix.length : indent.length)).join(""), prefix).toBe(payload);
     }
   });
 

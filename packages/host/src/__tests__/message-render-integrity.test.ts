@@ -11,16 +11,16 @@ describe("message delivery rendering", () => {
   it.each([
     { delivery: "delivered", delivered: true, transformed: false, icon: "✓", status: "delivered" },
     { delivery: "delivered", delivered: true, transformed: true, icon: "✓", status: "delivered, transformed" },
-    { delivery: "accepted but not confirmed", delivered: false, icon: "⚠", status: "accepted but not confirmed" },
-    { delivery: "no reply yet, delivery unknown", delivered: false, icon: "⚠", status: "no reply yet, delivery unknown" },
-    { delivery: "child-accepted", delivered: false, icon: "⚠", status: "accepted but not confirmed" },
-    { delivery: "refused", delivered: false, icon: "✗", status: "refused" },
-    { delivery: "broker-accepted", delivered: false, icon: "⚠", status: "broker accepted · acknowledgement unconfirmed" },
+    { delivery: "accepted but not confirmed", delivered: false, icon: "⚠\uFE0F", status: "accepted but not confirmed" },
+    { delivery: "no reply yet, delivery unknown", delivered: false, icon: "⚠\uFE0F", status: "no reply yet, delivery unknown" },
+    { delivery: "child-accepted", delivered: false, icon: "⚠\uFE0F", status: "accepted but not confirmed" },
+    { delivery: "refused", delivered: false, icon: "❌", status: "refused" },
+    { delivery: "broker-accepted", delivered: false, icon: "⚠\uFE0F", status: "broker accepted · acknowledgement unconfirmed" },
   ])("renders $delivery (transformed=$transformed) with truthful severity", row => {
     const text = render({ ...row, recipientAcknowledged: false, error: "Delivery diagnostic." });
     expect(text).toContain(row.icon); expect(text).toContain(row.status);
     expect(text).toContain("Delivery diagnostic.");
-    if (row.icon !== "✗") expect(text).not.toContain("✗");
+    if (row.icon !== "❌") expect(text).not.toContain("❌");
   });
   it("labels broker acceptance without claiming a recipient acknowledgement", () => {
     const text = render({ delivered: true, queued: true, delivery: "broker-accepted", recipientAcknowledged: false });

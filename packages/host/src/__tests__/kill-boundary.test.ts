@@ -54,16 +54,16 @@ describe("kill handler → renderer boundary", () => {
     expect(rendered).toContain("kill(s) failed");
 
     // The fail glyph must appear (for the failed run)
-    expect(rendered).toContain("✗");
+    expect(rendered).toContain("❌");
     
     // At least one run must show failed outcome (not just in the error banner)
-    // Check that there's a row with the ✗ glyph followed by outcome text
-    const hasFailedOutcome = rendered.includes("✗") && 
-      (rendered.includes("· failed") || rendered.match(/✗.*·.*failed/));
+    // Check that there's a row with the ❌ glyph followed by outcome text
+    const hasFailedOutcome = rendered.includes("❌") && 
+      (rendered.includes("· failed") || rendered.match(/❌.*·.*failed/));
     expect(hasFailedOutcome).toBe(true);
 
     // The success/warn glyph must appear (for successful runs)
-    expect(rendered).toMatch(/✓|⚠/);
+    expect(rendered).toMatch(/✓|⚠\uFE0F/);
 
     // The failure cause must appear
     expect(rendered).toContain("SQLITE_BUSY");
@@ -85,8 +85,8 @@ describe("kill handler → renderer boundary", () => {
 
     expect(rendered).toContain("alpha");
     expect(rendered).toContain("beta");
-    expect(rendered).toMatch(/✓|⚠/);
-    expect(rendered).not.toContain("✗");
+    expect(rendered).toMatch(/✓|⚠\uFE0F/);
+    expect(rendered).not.toContain("❌");
   });
 
   it("renders resolution failure (unknown id) with error only", async () => {
@@ -97,7 +97,7 @@ describe("kill handler → renderer boundary", () => {
     const rendered = renderKillResult(res.details as any, ctx).join("\n");
 
     expect(rendered).toContain("ghost");
-    expect(rendered).toContain("✗");
+    expect(rendered).toContain("❌");
     expect(rendered).toContain("no active run");
   });
 });

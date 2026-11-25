@@ -19,8 +19,8 @@ describe("renderer helpers", () => {
   });
   it("statusIcon maps status to a glyph", () => {
     expect(statusIcon(id, "ok")).toContain("✓");
-    expect(statusIcon(id, "fail")).toContain("✗");
-    expect(statusIcon(id, "warn")).toContain("⚠");
+    expect(statusIcon(id, "fail")).toContain("❌");
+    expect(statusIcon(id, "warn")).toContain("⚠\uFE0F");
     expect(statusIcon(id, "on")).toContain("●");
     expect(statusIcon(id, "off")).toContain("○");
     expect(statusIcon(id, "paused")).toContain("■");

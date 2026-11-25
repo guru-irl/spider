@@ -44,6 +44,11 @@ function originHashes() {
 
 function normalAssertion(text, name, upstream) {
   let value = text.replaceAll('\u2014', '\\u2014');
+  // Spider draws failures and warnings as emoji (a cross mark, and a warning sign with
+  // U+FE0F). Compare them as upstream's text glyphs.
+  if (!upstream && name === 'intercom.integration.test.ts') {
+    value = value.replaceAll('\u274C', '\u2717').replaceAll('\u26A0\\uFE0F', '\u26A0');
+  }
   if (upstream && name === 'broker/paths.test.ts') {
     value = value.replaceAll('/home/rcroh', '/home/fixture').replaceAll('/tmp/pi-agent', '/home/fixture/pi-agent');
   }

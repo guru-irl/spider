@@ -40,8 +40,8 @@ describe("host icon rendering", () => {
     const result = { details: { run: { name: "scribe", agent: "worker", status: "failed", task: "read", result: "done" } } };
     const render = (iconStyle: "text" | "nerd") => renderSpiderResult(result, {}, theme, { args: { action: "run" }, iconStyle }).render(100);
     const text = render("text"), nerd = render("nerd");
-    expect(text.join("\n")).toContain("✗ scribe");
-    expect(nerd.join("\n")).toContain("\u{F0156} scribe");
+    expect(text.join("\n")).toContain("❌ scribe");
+    expect(nerd.join("\n")).toContain("\u{F0156}  scribe");
     expect(text.join("\n")).toContain("↳ read");
     expect(nerd.join("\n")).toContain("\u{F060D} read");
     expect(text.join("\n")).toContain("⤴ done");
@@ -64,15 +64,15 @@ describe("host icon rendering", () => {
       renderSpiderResult({ details }, {}, theme, { args: { action: "control", command: action }, iconStyle }).render(100);
     const text = render("doctor", { ok: false, lines: ["- storage: unavailable"] }, "text");
     const nerd = render("doctor", { ok: false, lines: ["- storage: unavailable"] }, "nerd");
-    expect(text.join("\n")).toContain("✗ issues found");
-    expect(nerd.join("\n")).toContain("\u{F0156} issues found");
+    expect(text.join("\n")).toContain("❌ issues found");
+    expect(nerd.join("\n")).toContain("\u{F0156}  issues found");
     expect(nerd.join("\n")).toContain("\u{F060D} storage");
     equalWidths(text, nerd);
     for (const command of ["config", "models"]) {
       const a = render(command, { ok: false, error: "not available" }, "text");
       const b = render(command, { ok: false, error: "not available" }, "nerd");
-      expect(a.join("\n")).toContain("✗ not available");
-      expect(b.join("\n")).toContain("\u{F0156} not available");
+      expect(a.join("\n")).toContain("❌ not available");
+      expect(b.join("\n")).toContain("\u{F0156}  not available");
       equalWidths(a, b);
     }
   });
@@ -96,15 +96,15 @@ describe("host icon rendering", () => {
     const done = { details: { status: "cancelled", name: "scribe", output: "result" } };
     const text = renderSubagentDone(done, {}, theme, "text").render(100);
     const nerd = renderSubagentDone(done, {}, theme, "nerd").render(100);
-    expect(text.join("\n")).toContain("⚠ scribe");
-    expect(nerd.join("\n")).toContain("\u{F002A} scribe");
+    expect(text.join("\n")).toContain("⚠\uFE0F scribe");
+    expect(nerd.join("\n")).toContain("\u{F002A}  scribe");
     expect(nerd.join("\n")).toContain("\u{F0BCA}  spider");
     equalWidths(text, nerd);
     const report = { data: { status: "failed", errors: [], memoryStaged: 0, skillsStaged: 0, todosAdded: 0 } };
     const a = renderOrganismEntry(report, {}, theme, "text").render(100);
     const b = renderOrganismEntry(report, {}, theme, "nerd").render(100);
-    expect(a.join("\n")).toContain("⚠ organism");
-    expect(b.join("\n")).toContain("\u{F002A} organism");
+    expect(a.join("\n")).toContain("⚠\uFE0F organism");
+    expect(b.join("\n")).toContain("\u{F002A}  organism");
     equalWidths(a, b);
     const escalation = { details: { runId: "run-one", severity: "warning", summary: "attention" } };
     expect(renderEscalationMessage(escalation, {}, theme, "nerd").render(100).join("\n")).toContain("\u{F002A}");

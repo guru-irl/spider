@@ -54,8 +54,14 @@ async function network(destination: string, liveSource = false) {
       closes.push(() => rmSync(global.root, { recursive: true, force: true }));
     }
     closes.push(() => global.close(), () => worktree.close(), () => repository.close());
-    const repo = join(global.root, "checkout"), file = join(global.root, "session.jsonl");
-    mkdirSync(repo); mkdirSync(join(global.root, "roam"), { mode: 0o700 });
+    const repo = join(global.root, "checkout"), agentDirectory = join(global.root, "agent");
+    const sessions = join(agentDirectory, "sessions", `--${repo.replace(/^\//, "").replace(/\//g, "-")}--`);
+    const file = join(sessions, "session.jsonl");
+    mkdirSync(repo); mkdirSync(sessions, { recursive: true }); mkdirSync(join(global.root, "roam"), { mode: 0o700 });
+    mkdirSync(join(global.root, "herdr"), { mode: 0o700 });
+    writeFileSync(join(global.root, "herdr", "config.json"), JSON.stringify({ mode: "core-only", globalRoot: global.root,
+      core: { binary: "/fixture/hc", config: join(global.root, "core.json") }, agentDirectory,
+      shellRc: join(global.root, "rc"), machines: [] }), { mode: 0o600 });
     if (id === HUB) {
       git(repo, ["init", "-q", "--initial-branch=main"]); writeFileSync(join(repo, "tracked.txt"), "fixture\n"); git(repo, ["add", "."]); git(repo, ["commit", "-q", "-m", "fixture"]); git(repo, ["remote", "add", "origin", repo]);
     } else git(repo, ["clone", "-q", initial.get(HUB)!.repo, "."]);
@@ -151,8 +157,6 @@ async function network(destination: string, liveSource = false) {
 
 async function activateLiveSource(source: { global: ReturnType<typeof createReplica>; runtime: HostMoveRuntime; journal: ReturnType<typeof openFreezeJournal>; repo: string; file: string }) {
   const root = source.global.root, participant = source.runtime.bindings.participant!;
-  mkdirSync(join(root, "herdr"), { recursive: true, mode: 0o700 });
-  writeFileSync(join(root, "herdr", "config.json"), JSON.stringify({ mode: "core-only", core: { binary: "/fixture/hc", config: join(root, "core.json") }, agentDirectory: join(root, "agent"), globalRoot: root, shellRc: join(root, "rc"), machines: [] }), { mode: 0o600 });
   const identity = { pid: process.pid, startIdentity: processStartTime(process.pid)! }, bootId = await localBootId();
   const leases = createSessionLeases(join(root, "herdr")), inventory = { leases, presence: createProcessPresence(leases.root), processes: async () => [], probe: async () => ({ kind: "live" as const, startIdentity: identity.startIdentity }) };
   const lease = await leases.claim(source.file, identity, inventory, { mode: "cutover", bootId });
@@ -180,7 +184,7 @@ async function activateLiveSource(source: { global: ReturnType<typeof createRepl
   const mount = vi.spyOn(moveRuntime, "createHostMoveBindings").mockResolvedValue(source.runtime);
   const createLive = liveRuntime.createLiveFreezePorts;
   const live = vi.spyOn(liveRuntime, "createLiveFreezePorts").mockImplementation(input => ({ ...createLive({ ...input, routeStores: input.routeStores.filter(db => db.prepare("SELECT 1 FROM sqlite_master WHERE name='message_mirror'").get()), usageRoots: {
-    registryDb: join(root, "spider.db"), ledgerFile: join(root, "usage.db"), sessionsDir: join(root, "sessions"), authPath: join(root, "auth.json"), leaseDir: join(root, "usage-leases"),
+    registryDb: join(root, "spider.db"), ledgerFile: join(root, "usage.db"), sessionsDir: join(root, "agent", "sessions"), authPath: join(root, "agent", "auth.json"), leaseDir: join(root, "usage-leases"),
   } }), ingestThrough: async () => {} }));
   const caller = vi.spyOn(hcClient, "createHcClient").mockReturnValue({ caller: async () => ({ coreId: "fixture-core", address: "fixture-terminal" }), dispose: async () => {} } as never);
   const producer = { pause() {}, resume() {} };
@@ -206,7 +210,23 @@ for (const checkpoint of ["seed", "prestage", "transfer"]) beforeEach(async () =
   } finally { journal.record = record; }
 }, 5000);
 
-it("a production-composed box source rolls back to its live original process", async () => {
+// A configuration change after the recorded check must not strand a frozen move.
+// Keep the transcript in place so all freeze hashes and ownership proofs stay valid.
+beforeEach(async context => {
+  const f = current.source;
+  if (!context.task.name.endsWith("with changed folder policy")) {
+    await expect(f.runtime.bindings.checkSessionFile!(f.file)).resolves.toBeUndefined();
+    return;
+  }
+  const file = join(f.global.root, "herdr", "config.json");
+  const config = JSON.parse(readFileSync(file, "utf8"));
+  config.agentDirectory = join(f.global.root, "replacement-agent");
+  mkdirSync(join(config.agentDirectory, "sessions"), { recursive: true });
+  writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  await expect(f.runtime.bindings.checkSessionFile!(f.file)).rejects.toMatchObject({ code: "move-session-dir-unsupported" });
+});
+
+it.each(["unchanged", "changed"])("a production-composed box source rolls back to its live original process with %s folder policy", async () => {
   const f = current, participant = f.destination.runtime.bindings.participant!, before = readFileSync(f.source.file, "utf8");
   participant.wake = async () => ({ ok: false, reason: "fixture-proved-no-start" });
   const observe = participant.observation;
@@ -226,7 +246,7 @@ it("a production-composed box source rolls back to its live original process", a
   expect(f.boxDials).toEqual([]);
 }, 5000);
 
-it("a production-composed frozen box source cancels without dialing the hub", async () => {
+it.each(["unchanged", "changed"])("a production-composed frozen box source cancels without dialing the hub with %s folder policy", async () => {
   const f = current;
   expect(await cancelMove(operation.id, f.hub.runtime.ports)).toMatchObject({ code: 0, reason: "cancelled" });
   expect(sessionHome(f.hub.global.db, SESSION)).toMatchObject({ machineId: BOX, epoch: 1 });
@@ -235,7 +255,10 @@ it("a production-composed frozen box source cancels without dialing the hub", as
   expect(f.boxDials).toEqual([]);
 }, 5000);
 
-it.each(["the hub", "another box"])("a production-composed box source completes a move to %s without outbound peers", async () => {
+it.each([
+  ["the hub", "unchanged"], ["another box", "unchanged"],
+  ["the hub", "changed"], ["another box", "changed"],
+])("a production-composed box source completes a move to %s without outbound peers with %s folder policy", async () => {
   const f = current;
   const result = await recoverMove(operation.id, f.hub.runtime.ports);
   expect(result).toMatchObject({ code: 0, reason: "moved" });

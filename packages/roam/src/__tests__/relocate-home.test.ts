@@ -72,6 +72,17 @@ describe("v0 hub home store", () => {
     expect(db.prepare("SELECT state,epoch,move_id FROM session_homes WHERE session_id='unfinished'").get()).toEqual({state:null,epoch:8,move_id:"old-move"});
   });
 
+  it("an unassigned global key does not gate home mutation", async () => {
+    const {db,homes} = fixture();
+    db.exec("UPDATE roam_meta SET store_key=NULL, capture_enabled=0");
+    const current = await homes.initialize(SESSION,HUB);
+    expect(await homes.compareAndSwap(current,next(current))).toEqual({kind:"applied",home:next(current)});
+    expect(db.prepare("SELECT store_key,capture_enabled FROM roam_meta").get()).toEqual({store_key:null,capture_enabled:0});
+    db.exec("UPDATE roam_meta SET store_key='repo:other'");
+    await expect(homes.initialize("other" as SessionId,HUB)).rejects.toThrow(/identity/i);
+    expect(await homes.list()).toEqual([next(current)]);
+  });
+
   it("invalid identities and epoch overflow cannot write", async () => {
     const {db,homes} = fixture();
     await expect(homes.initialize("" as SessionId,HUB)).rejects.toThrow();

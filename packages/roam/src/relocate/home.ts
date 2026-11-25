@@ -54,7 +54,8 @@ export function createHomeStore(options: HomeStoreOptions): HomeStore {
   function requireHub(): void {
     if (localMachineId !== hubMachineId) throw new Error("Only the hub may mutate homes");
     const meta = db.prepare("SELECT machine_id, store_key FROM roam_meta WHERE id=1").get() as HomeRow | undefined;
-    if (meta?.machine_id !== localMachineId || meta.store_key !== "global") throw new Error("Home database identity does not match the hub");
+    if (meta?.machine_id !== localMachineId || (meta.store_key !== "global" && meta.store_key !== null))
+      throw new Error("Home database identity does not match the hub");
   }
   return {
     async read(id) { sessionId(id); return parseHome(find(id)); },

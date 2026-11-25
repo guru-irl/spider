@@ -63,7 +63,9 @@ it.each(["package", "linked"])("passes pi's actual bundled classes through the %
     const pi = VIRTUAL_MODULES['@earendil-works/pi-coding-agent'];
     const tui = VIRTUAL_MODULES['@earendil-works/pi-tui'];
     if (result?.copyButtons?.host?.AssistantMessageComponent !== pi.AssistantMessageComponent ||
-        result?.copyButtons?.host?.Markdown !== tui.Markdown || result?.copyButtons?.copy !== pi.copyToClipboard) {
+        result?.copyButtons?.host?.ToolExecutionComponent !== pi.ToolExecutionComponent ||
+        result?.copyButtons?.host?.Markdown !== tui.Markdown || result?.copyButtons?.host?.Spacer !== tui.Spacer ||
+        result?.copyButtons?.copy !== pi.copyToClipboard) {
       throw new Error('bridge did not pass host classes and clipboard');
     }
     const id = s => s;

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AssistantMessageComponent, UserMessageComponent, initTheme } from "@earendil-works/pi-coding-agent";
-import { Markdown, stripTerminalSequences, visibleWidth, type Component, type MarkdownTheme, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { ToolExecutionComponent, AssistantMessageComponent, UserMessageComponent, initTheme } from "@earendil-works/pi-coding-agent";
+import { Spacer, Markdown, stripTerminalSequences, visibleWidth, type Component, type MarkdownTheme, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { installCopyButtons, registerCopyButtons } from "./index.js";
 
@@ -19,7 +19,7 @@ const message = (text: string): AssistantMessage => ({
 function fixture(fullscreen = true) {
   const copied: string[] = [];
   const render = vi.fn();
-  installCopyButtons({ AssistantMessageComponent, Markdown }, {
+  installCopyButtons({ AssistantMessageComponent, ToolExecutionComponent, Markdown, Spacer }, {
     isFullscreen: () => fullscreen,
     copy: async text => { copied.push(text); },
     requestRender: render,
@@ -134,7 +134,7 @@ describe("copy buttons", () => {
 
   it("reports a synchronous clipboard failure without showing confirmation", () => {
     const errors: unknown[] = [];
-    installCopyButtons({ AssistantMessageComponent, Markdown }, {
+    installCopyButtons({ AssistantMessageComponent, ToolExecutionComponent, Markdown, Spacer }, {
       isFullscreen: () => true,
       copy: () => { throw new Error("clipboard unavailable"); },
       requestRender: () => {}, onError: error => errors.push(error),
@@ -206,10 +206,11 @@ describe("copy buttons", () => {
     hover(md);
     const lines = render(md);
     const rows = lines.map((line, row) => line.includes("⧉ text") ? row : -1).filter(row => row >= 0);
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(1);
+    expect(lines[rows[0]].match(/⧉ md/g)).toHaveLength(2);
     click(md, rows[0], "⧉ md"); await Promise.resolve();
     expect(copied.at(-1)).toBe("```js\nx()\n```");
-    click(md, rows[1], "⧉ md"); await Promise.resolve();
+    click(md, rows[0], "⧉ md"); await Promise.resolve();
     expect(copied.at(-1)).toBe(input);
   });
 
@@ -221,7 +222,7 @@ describe("copy buttons", () => {
       setWidget: (_key: string, make: (tui: unknown) => unknown) => make({ mode: "fullscreen", requestRender: () => {} }),
       notify: vi.fn(),
     } };
-    registerCopyButtons(pi as never, { AssistantMessageComponent, Markdown }, () => ({ "copyButtons.enabled": true }), async text => { copied.push(text); });
+    registerCopyButtons(pi as never, { AssistantMessageComponent, ToolExecutionComponent, Markdown, Spacer }, () => ({ "copyButtons.enabled": true }), async text => { copied.push(text); });
     events.get("session_start")?.({}, context);
     const assistant = new AssistantMessageComponent(undefined, false, theme, undefined, 0);
     assistant.updateContent(message("Hello"), false);
@@ -242,7 +243,7 @@ describe("copy buttons", () => {
     const previous = markdown(existing.assistant);
     hover(previous);
     expect(render(previous).join("\n")).toContain("⧉ text");
-    registerCopyButtons(pi as never, { AssistantMessageComponent, Markdown }, () => ({ "copyButtons.enabled": false }), async () => {});
+    registerCopyButtons(pi as never, { AssistantMessageComponent, ToolExecutionComponent, Markdown, Spacer }, () => ({ "copyButtons.enabled": false }), async () => {});
     events.get("session_start")?.({}, context);
     expect(setWidget).not.toHaveBeenCalled();
     expect(render(previous).join("\n")).not.toContain("⧉ text");
@@ -252,7 +253,7 @@ describe("copy buttons", () => {
     events.get("session_start")?.({}, context);
     expect(setWidget).not.toHaveBeenCalled();
     vi.stubEnv("PI_SUBAGENT_CHILD", "1");
-    registerCopyButtons(pi as never, { AssistantMessageComponent, Markdown }, () => ({ "copyButtons.enabled": true }), async () => {});
+    registerCopyButtons(pi as never, { AssistantMessageComponent, ToolExecutionComponent, Markdown, Spacer }, () => ({ "copyButtons.enabled": true }), async () => {});
     events.get("session_start")?.({}, context);
     expect(setWidget).not.toHaveBeenCalled();
     vi.unstubAllEnvs();
@@ -262,7 +263,7 @@ describe("copy buttons", () => {
     const events = new Map<string, (event: unknown, ctx: unknown) => void>();
     const pi = { on: (name: string, handler: (event: unknown, ctx: unknown) => void) => events.set(name, handler) };
     const setWidget = vi.fn();
-    registerCopyButtons(pi as never, { AssistantMessageComponent, Markdown }, () => ({ "copyButtons.enabled": true }), async () => {});
+    registerCopyButtons(pi as never, { AssistantMessageComponent, ToolExecutionComponent, Markdown, Spacer }, () => ({ "copyButtons.enabled": true }), async () => {});
     events.get("session_start")?.({}, { mode: "rpc", hasUI: true, cwd: "/project", ui: { setWidget, notify: vi.fn() } });
     expect(setWidget).not.toHaveBeenCalled();
   });
@@ -272,7 +273,7 @@ describe("copy buttons", () => {
     const pi = { on: (name: string, handler: (event: unknown, ctx: unknown) => void) => events.set(name, handler) };
     const copied: string[] = [];
     let style: "text" | "nerd" = "text";
-    registerCopyButtons(pi as never, { AssistantMessageComponent, Markdown }, () => ({ "ui.icons": style }), async text => { copied.push(text); });
+    registerCopyButtons(pi as never, { AssistantMessageComponent, ToolExecutionComponent, Markdown, Spacer }, () => ({ "ui.icons": style }), async text => { copied.push(text); });
     const context = { hasUI: true, mode: "tui", cwd: "/project", ui: {
       setWidget: (_key: string, make: (tui: unknown) => unknown) => make({ mode: "fullscreen", requestRender: () => {} }), notify: vi.fn(),
     } };

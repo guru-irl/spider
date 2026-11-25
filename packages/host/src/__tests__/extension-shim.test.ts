@@ -27,8 +27,8 @@ function fixture(options: { dev?: boolean; missing?: boolean; compileThrows?: bo
     .replace("export default async function spider", "async function spider");
   const context = {
     process, URL, isNativeError, pathToFileURL: (path: string) => new URL(path),
-    piHost: { AssistantMessageComponent: class AssistantMessageComponent {}, copyToClipboard: async (_text: string) => {} },
-    piTui: { Markdown: class Markdown {} },
+    piHost: { AssistantMessageComponent: class AssistantMessageComponent {}, ToolExecutionComponent: class ToolExecutionComponent {}, copyToClipboard: async (_text: string) => {} },
+    piTui: { Markdown: class Markdown {}, Spacer: class Spacer {} },
     statSync: () => ({ mtimeNs: 1n, size: 2n }),
     constants: options.missing ? undefined : { USE_MAIN_CONTEXT_DEFAULT_LOADER: Symbol("loader") },
     runInThisContext: () => {
@@ -74,10 +74,15 @@ it("drops only matching ExperimentalWarnings and forwards all other arguments an
   expect(f.isDeferredRestored()).toBe(true);
 });
 
-it("passes pi's assistant and Markdown classes and clipboard into the native bundle", async () => {
+it("passes pi's renderer and spacing classes and clipboard into the native bundle", async () => {
   const f = fixture();
   await f.context.load();
-  expect(f.received()).toEqual({ copyButtons: { host: { AssistantMessageComponent: f.context.piHost.AssistantMessageComponent, Markdown: f.context.piTui.Markdown }, copy: f.context.piHost.copyToClipboard } });
+  expect(f.received()).toEqual({ copyButtons: { host: {
+    AssistantMessageComponent: f.context.piHost.AssistantMessageComponent,
+    ToolExecutionComponent: f.context.piHost.ToolExecutionComponent,
+    Markdown: f.context.piTui.Markdown,
+    Spacer: f.context.piTui.Spacer,
+  }, copy: f.context.piHost.copyToClipboard } });
 });
 
 it.each(["1.2.0", "1.2.1"])("passes running pi version %s into the native bundle", async version => {
@@ -102,10 +107,12 @@ it.each([undefined, null, 12])("omits an unavailable or non-string host version"
   expect(f.received()).not.toHaveProperty("piVersion");
 });
 
-it.each(["assistant renderer", "Markdown renderer", "clipboard"] as const)("still loads spider if pi does not expose the %s", async missing => {
+it.each(["assistant renderer", "Markdown renderer", "tool renderer", "spacer", "clipboard"] as const)("still loads spider if pi does not expose the %s", async missing => {
   const f = fixture();
   if (missing === "assistant renderer") (f.context.piHost as { AssistantMessageComponent?: unknown }).AssistantMessageComponent = undefined;
   if (missing === "Markdown renderer") (f.context.piTui as { Markdown?: unknown }).Markdown = undefined;
+  if (missing === "tool renderer") (f.context.piHost as { ToolExecutionComponent?: unknown }).ToolExecutionComponent = undefined;
+  if (missing === "spacer") (f.context.piTui as { Spacer?: unknown }).Spacer = undefined;
   if (missing === "clipboard") (f.context.piHost as { copyToClipboard?: unknown }).copyToClipboard = undefined;
   expect(await f.context.load()).toBe("native");
   expect(f.received()).toEqual({});

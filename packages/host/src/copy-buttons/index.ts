@@ -3,8 +3,8 @@
  * See NOTICE.md for attribution and licence. Pi exposes no assistant-render hook,
  * so this patches its assistant prototype and individual Markdown instances.
  */
-import type { AssistantMessageComponent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { type Component, type Markdown, type TUI, type TuiMouseEvent, type TuiMouseEventResult, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import type { ToolExecutionComponent, AssistantMessageComponent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { type Spacer, type Component, type Markdown, type TUI, type TuiMouseEvent, type TuiMouseEventResult, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { Lexer, type MarkedToken, type Token } from "marked";
 import { icon, type IconStyle } from "@spider/ui";
 import { blocksToPlain } from "./plain.js";
@@ -13,7 +13,15 @@ type Format = "text" | "md";
 type Block = Record<Format, string>;
 type Hit = { row: number; start: number; end: number; block: number; format: Format };
 type Copied = { block: number; format: Format };
-export type CopyButtonsHost = { AssistantMessageComponent: typeof AssistantMessageComponent; Markdown: typeof Markdown };
+type Seam = { group: object; internalBefore?: Seam; internalAfter?: Seam; externalBefore?: Seam; externalAfter?: Seam };
+const SEAM = Symbol.for("spider.copy-buttons.seam");
+type SeamedMarkdown = Markdown & { [SEAM]?: Seam };
+export type CopyButtonsHost = {
+  AssistantMessageComponent: typeof AssistantMessageComponent;
+  ToolExecutionComponent: typeof ToolExecutionComponent;
+  Markdown: typeof Markdown;
+  Spacer: typeof Spacer;
+};
 export type CopyButtonsOptions = {
   isFullscreen: () => boolean;
   copy: (text: string) => Promise<void>;
@@ -55,6 +63,8 @@ function addButtons(md: Markdown, host: CopyButtonsHost, state: State, source: s
   const self = md as unknown as MarkdownInternals;
   const base = host.Markdown.prototype as unknown as MarkdownInternals;
   if (self.handleMouse || typeof base.renderToken !== "function" || typeof base.render !== "function") return;
+  const seam: Seam = { group: messageGroup };
+  (md as SeamedMarkdown)[SEAM] = seam;
   let depth = 0;
   let blocks: Block[] = [];
   let sectionStart: number | undefined;
@@ -65,7 +75,7 @@ function addButtons(md: Markdown, host: CopyButtonsHost, state: State, source: s
   let timeKey: string | undefined;
   let formattedTime = "";
   let renderedPadding: number | undefined;
-  let out: { raw: string[]; copied: Copied | undefined; show: boolean; frame: boolean; width: number; padding: number; time: string; iconStyle?: IconStyle; lines: string[]; hits: Hit[] } | undefined;
+  let out: { raw: string[]; copied: Copied | undefined; show: boolean; frame: boolean; omitTop: boolean; sharedTop: boolean; width: number; padding: number; time: string; iconStyle?: IconStyle; lines: string[]; hits: Hit[] } | undefined;
 
   const addBlock = (block: Block, lines: string[]) => {
     const last = lines.findLastIndex(line => line !== "");
@@ -118,6 +128,9 @@ function addButtons(md: Markdown, host: CopyButtonsHost, state: State, source: s
     if (next === raw) blocks = previous;
     raw = next;
     const show = frame && state.hovered === messageGroup;
+    const omitTop = frame && !!(seam.internalBefore ?? seam.externalBefore);
+    const after = seam.internalAfter ?? seam.externalAfter;
+    const sharedTop = frame && !!after && after.group !== messageGroup && state.hovered === after.group;
     if (frame) {
       const date = new Date(timestamp);
       const today = new Date();
@@ -130,8 +143,8 @@ function addButtons(md: Markdown, host: CopyButtonsHost, state: State, source: s
     const time = frame ? formattedTime : "";
     const padding = renderPadding ?? 1;
     const iconStyle = state.options.iconStyle;
-    if (!out || out.raw !== next || out.copied !== copied || out.show !== show || out.frame !== frame || out.width !== width || out.padding !== padding || out.time !== time || out.iconStyle !== iconStyle) {
-      out = { raw: next, copied, show, frame, width, padding, time, iconStyle, ...decorate(next, blocks, copied, width, padding, show, frame, full, time, state.options.border ?? dim, iconStyle) };
+    if (!out || out.raw !== next || out.copied !== copied || out.show !== show || out.frame !== frame || out.omitTop !== omitTop || out.sharedTop !== sharedTop || out.width !== width || out.padding !== padding || out.time !== time || out.iconStyle !== iconStyle) {
+      out = { raw: next, copied, show, frame, omitTop, sharedTop, width, padding, time, iconStyle, ...decorate(next, blocks, copied, width, padding, show, frame, omitTop, sharedTop, full, time, state.options.border ?? dim, iconStyle) };
     }
     return out.lines;
   };
@@ -139,6 +152,8 @@ function addButtons(md: Markdown, host: CopyButtonsHost, state: State, source: s
     if (!state.enabled || !state.options.isFullscreen()) return undefined;
     if (event.type === "move") {
       if (state.trackingMove) state.hoverSeen = true;
+      // A shared seam belongs to the reply whose frame is currently visible.
+      if (out?.sharedTop && event.y === out.lines.length - 1) return undefined;
       if (state.hovered !== messageGroup) {
         state.hovered = messageGroup;
         state.options.requestRender();
@@ -165,7 +180,7 @@ function addButtons(md: Markdown, host: CopyButtonsHost, state: State, source: s
   };
 }
 
-function decorate(raw: string[], blocks: Block[], copied: Copied | undefined, width: number, padding: number, show: boolean, frame: boolean, full: string | undefined, time: string, border: (text: string) => string, iconStyle?: IconStyle): { lines: string[]; hits: Hit[] } {
+function decorate(raw: string[], blocks: Block[], copied: Copied | undefined, width: number, padding: number, show: boolean, frame: boolean, omitTop: boolean, sharedTop: boolean, full: string | undefined, time: string, border: (text: string) => string, iconStyle?: IconStyle): { lines: string[]; hits: Hit[] } {
   const LABELS = labels(iconStyle);
   const textWidth = visibleWidth(LABELS.text);
   const mdWidth = visibleWidth(LABELS.md);
@@ -175,21 +190,27 @@ function decorate(raw: string[], blocks: Block[], copied: Copied | undefined, wi
   const hits: Hit[] = [];
   const innerWidth = frame ? width - 2 : width;
   const last = full === undefined ? -1 : raw.findLastIndex(line => stripTerminalSequences(line.replace(MARKER, "")).trim() !== "");
-  const addRow = (block: number) => {
-    if (!show) {
-      lines.push(" ".repeat(innerWidth));
-      return;
-    }
-    const text = copied?.block === block && copied.format === "text" ? `${icon(iconStyle, "copied")} text` : LABELS.text;
-    const md = copied?.block === block && copied.format === "md" ? `${icon(iconStyle, "copied")} md` : LABELS.md;
-    // Drop the timestamp before reducing the inset; the buttons always take priority.
-    const timeText = groupWidth + 1 + visibleWidth(time) + padding * 2 <= innerWidth ? time : "";
-    const inset = Math.min(padding, Math.floor((innerWidth - groupWidth) / 2));
-    const start = innerWidth - inset - groupWidth;
-    const mdStart = start + textWidth + gap.length;
-    hits.push({ row: lines.length + 1, start: start + 1, end: start + textWidth + 1, block, format: "text" });
-    hits.push({ row: lines.length + 1, start: mdStart + 1, end: mdStart + mdWidth + 1, block, format: "md" });
-    lines.push(`${" ".repeat(inset)}${dim(timeText)}${" ".repeat(start - inset - visibleWidth(timeText))}${dim(text)}${gap}${dim(md)}${" ".repeat(inset)}`);
+  let finalBlock: number | undefined;
+  const actionRow = (block: number, bottom: boolean, preceding?: number) => {
+    const fill = (count: number) => bottom ? border(FRAME.bottom.repeat(count)) : " ".repeat(count);
+    if (!show) return " ".repeat(innerWidth);
+    const bothFit = preceding !== undefined && groupWidth * 2 + gap.length <= innerWidth;
+    const shown = bothFit ? [preceding, block] : [block];
+    const totalWidth = groupWidth * shown.length + gap.length * (shown.length - 1);
+    // For a final block, time is dropped before either action pair.
+    const timeText = (preceding === undefined || bothFit) && totalWidth + 1 + visibleWidth(time) + padding * 2 <= innerWidth ? time : "";
+    const inset = Math.min(padding, Math.floor((innerWidth - totalWidth) / 2));
+    const start = innerWidth - inset - totalWidth;
+    const groups = shown.map((item, index) => {
+      const x = start + index * (groupWidth + gap.length);
+      const mdStart = x + textWidth + gap.length;
+      hits.push({ row: lines.length + (omitTop ? 0 : 1), start: x + 1, end: x + textWidth + 1, block: item, format: "text" });
+      hits.push({ row: lines.length + (omitTop ? 0 : 1), start: mdStart + 1, end: mdStart + mdWidth + 1, block: item, format: "md" });
+      const text = copied?.block === item && copied.format === "text" ? `${icon(iconStyle, "copied")} text` : LABELS.text;
+      const md = copied?.block === item && copied.format === "md" ? `${icon(iconStyle, "copied")} md` : LABELS.md;
+      return `${dim(text)}${fill(gap.length)}${dim(md)}`;
+    });
+    return `${fill(inset)}${dim(timeText)}${fill(start - inset - visibleWidth(timeText))}${groups.join(fill(gap.length))}${fill(inset)}`;
   };
   for (const [row, line] of raw.entries()) {
     const marks = [...line.matchAll(MARKER)];
@@ -197,14 +218,17 @@ function decorate(raw: string[], blocks: Block[], copied: Copied | undefined, wi
     const block = marks.map(([, i]) => Number(i)).find(i => blocks[i] !== undefined);
     lines.push(clean);
     if (!frame || innerWidth < groupWidth) continue;
-    if (block !== undefined) addRow(block);
-    else if (row === last) { addRow(blocks.length); continue; }
-    if (row === last && full !== undefined) addRow(blocks.length);
+    if (block !== undefined && row === last) finalBlock = block;
+    else if (block !== undefined) lines.push(actionRow(block, false));
   }
   if (!frame || lines.length === 0) return { lines, hits };
   const edge = (text: string) => show ? border(text) : " ".repeat(visibleWidth(text));
+  const bottom = sharedTop ? border(`${FRAME.topLeft}${FRAME.top.repeat(innerWidth)}${FRAME.topRight}`)
+    : full !== undefined && last >= 0 && innerWidth >= groupWidth
+      ? `${edge(FRAME.bottomLeft)}${actionRow(blocks.length, true, finalBlock)}${edge(FRAME.bottomRight)}`
+      : edge(`${FRAME.bottomLeft}${FRAME.bottom.repeat(innerWidth)}${FRAME.bottomRight}`);
   return {
-    lines: [edge(`${FRAME.topLeft}${FRAME.top.repeat(innerWidth)}${FRAME.topRight}`), ...lines.map(line => `${edge(FRAME.left)}${line}${edge(FRAME.right)}`), edge(`${FRAME.bottomLeft}${FRAME.bottom.repeat(innerWidth)}${FRAME.bottomRight}`)],
+    lines: [...(omitTop ? [] : [edge(`${FRAME.topLeft}${FRAME.top.repeat(innerWidth)}${FRAME.topRight}`)]), ...lines.map(line => `${edge(FRAME.left)}${line}${edge(FRAME.right)}`), bottom],
     hits,
   };
 }
@@ -215,9 +239,82 @@ function clearHover(state: State): void {
   state.options.requestRender();
 }
 
+type SpacingPatch = { suppress: (width: number) => boolean; skipped: boolean };
+const SPACING = Symbol.for("spider.copy-buttons.spacing");
+type SpacedComponent = Component & { [SPACING]?: SpacingPatch };
+
+// A following tool owns its leading spacer, and Pi inserts a sibling spacer
+// before user messages. Suppress only the row already supplied by a reply.
+function patchFollowingSpace(component: SpacedComponent, suppress: (width: number) => boolean): void {
+  const existing = component[SPACING];
+  if (existing) { existing.suppress = suppress; return; }
+  const patch: SpacingPatch = { suppress, skipped: false };
+  component[SPACING] = patch;
+  const render = component.render;
+  component.render = function (width) {
+    const lines = render.call(this, width);
+    patch.skipped = patch.suppress(width) && lines.length > 0 && stripTerminalSequences(lines[0]).trim() === "";
+    return patch.skipped ? lines.slice(1) : lines;
+  };
+  const handleMouse = component.handleMouse;
+  if (handleMouse) component.handleMouse = function (event) {
+    return handleMouse.call(this, patch.skipped ? { ...event, y: event.y + 1, height: event.height + 1 } : event);
+  };
+}
+
+function reconcileTranscriptSeams(tui: TUI, host: CopyButtonsHost, state: State): void {
+  const root = tui as unknown as { children?: Component[] };
+  const lists: Component[][] = [];
+  const assistants: AssistantInternals[] = [];
+  const seen = new Set<object>();
+  const visit = (item: object) => {
+    if (seen.has(item)) return;
+    seen.add(item);
+    if (item instanceof host.AssistantMessageComponent) assistants.push(item as unknown as AssistantInternals);
+    const children = (item as { children?: Component[] }).children;
+    if (!Array.isArray(children)) return;
+    lists.push(children);
+    children.forEach(visit);
+  };
+  visit(root);
+  for (const assistant of assistants) {
+    for (const child of assistant.contentContainer?.children ?? []) {
+      const seam = (child as SeamedMarkdown)[SEAM];
+      if (seam) { seam.externalBefore = undefined; seam.externalAfter = undefined; }
+    }
+  }
+  const boundary = (component: Component | undefined, first: boolean): Seam | undefined => {
+    if (!(component instanceof host.AssistantMessageComponent)) return undefined;
+    const children = (component as unknown as AssistantInternals).contentContainer?.children ?? [];
+    const child = first ? children.find(item => !(item instanceof host.Spacer)) : children.at(-1);
+    return child && (child as SeamedMarkdown)[SEAM];
+  };
+  const previousBoundary = (children: Component[], index: number): Seam | undefined => {
+    let previous = index - 1;
+    while (previous >= 0 && children[previous] instanceof host.AssistantMessageComponent &&
+      (children[previous] as unknown as AssistantInternals).contentContainer?.children?.length === 0) previous--;
+    return boundary(children[previous], false);
+  };
+  for (const children of lists) {
+    for (let i = 1; i < children.length; i++) {
+      const previous = previousBoundary(children, i);
+      if (!previous) continue;
+      const current = children[i];
+      const next = boundary(current, true);
+      if (next) { previous.externalAfter = next; next.externalBefore = previous; }
+      if (current instanceof host.Spacer || current instanceof host.ToolExecutionComponent) {
+        patchFollowingSpace(current, width => {
+          const index = children.indexOf(current);
+          return state.enabled && state.options.isFullscreen() && width >= 3 && index > 0 && !!previousBoundary(children, index);
+        });
+      }
+    }
+  }
+}
+
 // Pi consumes fullscreen mouse input before extension listeners. Observe its
 // viewport dispatch without consuming or changing the event.
-function observeViewport(tui: TUI, state: State): () => void {
+function observeViewport(tui: TUI, host: CopyButtonsHost, state: State): () => void {
   const viewport = tui as unknown as { handleViewportInput?: (data: string) => unknown; doRender?: () => void; readonly viewportTop?: number };
   const original = viewport.handleViewportInput;
   if (typeof original !== "function") return () => {};
@@ -259,6 +356,7 @@ function observeViewport(tui: TUI, state: State): () => void {
   const draw = viewport.doRender;
   const drawn = function (this: unknown): void {
     const before = viewport.viewportTop;
+    if (state.enabled) reconcileTranscriptSeams(tui, host, state);
     draw?.call(this);
     top = viewport.viewportTop;
     if (state.enabled && before !== top) clearHover(state);
@@ -297,6 +395,18 @@ export function installCopyButtons(host: CopyButtonsHost, options: CopyButtonsOp
     const children = this.contentContainer.children.filter((child): child is Markdown => child instanceof host.Markdown);
     const messageGroup = {};
     for (const [i, child] of children.entries()) addButtons(child, host, state, text[i] ?? "", i === children.length - 1 ? text.join("\n\n") : undefined, message!.timestamp, messageGroup);
+    // Pi reserves a spacer before a visible message and after thinking. The
+    // frame's top row supplies that space when the next child is a reply.
+    const all = this.contentContainer.children;
+    for (let i = 0; i + 1 < all.length; i++) {
+      const child = all[i];
+      const current = (child as SeamedMarkdown)[SEAM];
+      const next = (all[i + 1] as SeamedMarkdown)[SEAM];
+      if (current && next) { current.internalAfter = next; next.internalBefore = current; }
+      if (!(child instanceof host.Spacer) || !next) continue;
+      const render = child.render;
+      child.render = width => state.enabled && state.options.isFullscreen() && width >= 3 ? [] : render.call(child, width);
+    }
   };
   if (!previous?.implementation) {
     proto[PATCH] = patch;
@@ -331,7 +441,7 @@ export function registerCopyButtons(pi: Pick<ExtensionAPI, "on">, host: CopyButt
         tui = current;
         const state = (host.AssistantMessageComponent.prototype as unknown as PatchedProto)[PATCH]?.state;
         if (state) state.detach?.();
-        const detach = state && observeViewport(current, state);
+        const detach = state && observeViewport(current, host, state);
         if (state) state.detach = detach;
         return {
           render: () => [], invalidate: () => {},

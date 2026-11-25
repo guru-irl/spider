@@ -4,11 +4,15 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { PassThrough } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import { mkdir, cp, writeFile, readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { createServer } from 'node:net';
 import { execFileSync } from 'node:child_process';
 import { openGlobal, setGlobalDbPathForTests, type Db } from '@spider/db-core';
 import { cleanupScratch } from '@spider/db-core/testutil';
 import { createHerdrHarness } from '../../../herdr/src/__tests__/testutil.js';
+import { createMemoryViewerHarness } from '../../../herdr/src/__tests__/viewer-memory-hc.fixture.js';
+import * as hcModule from '../../../herdr/src/client/hc.js';
+import * as hostPorts from '../herdr/ports.js';
 import { setupHerdr, standardHerdrConfigPath, type SetupRequest } from '../../../herdr/src/setup/installer.js';
 import { parseHerdrConfig } from '../../../herdr/src/config.js';
 import { createProductionHerdrCliPorts, createViewerPorts } from '../herdr/ports.js';
@@ -26,10 +30,23 @@ vi.mock('@spider/db-core', async importOriginal => {
   return { ...actual, openGlobalReadOnly: () => { const db = actual.openGlobalReadOnly(); if (db) { observed.readonly.push(db); const close = db.close.bind(db); db.close = () => { observed.closed++; close(); }; } return db; } };
 });
 const cleanups: (() => void | Promise<void>)[] = [];
-afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); for (const db of observed.readonly.splice(0)) if (db.raw.open) db.close(); observed.closed = 0; vi.unstubAllEnvs(); setGlobalDbPathForTests(null); cleanupScratch(); });
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); for (const db of observed.readonly.splice(0)) if (db.raw.open) db.close(); observed.closed = 0; vi.restoreAllMocks(); vi.unstubAllEnvs(); setGlobalDbPathForTests(null); cleanupScratch(); });
 
-async function fixture(mode: 'fake' | 'hc' = 'fake', endingOwner = false) {
-  const h = await createHerdrHarness(mode); cleanups.push(() => h.close()); await h.start();
+async function fixture(mode: 'fake' | 'hc' = 'fake', endingOwner = false, inProcess = false) {
+  const h = inProcess ? await createMemoryViewerHarness() : await createHerdrHarness(mode);
+  cleanups.push(() => h.close());
+  if (!inProcess) await h.start();
+  else {
+    h.localEnv.HC_TERMINAL_ID = h.owner!.terminal.terminalId;
+    h.localEnv.HC_TERMINAL_SOCKET = h.localSocket;
+    await mkdir(dirname(h.localSocket), { recursive: true });
+    const server = createServer(socket => { socket.on('error', () => {}); socket.end(); });
+    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(h.localSocket, resolve); });
+    const close = h.close;
+    h.close = async () => { if (server.listening) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); await close(); };
+    vi.spyOn(hcModule, 'createHcClient').mockImplementation(() => ({ ...h.hc, dispose: async () => {} }));
+    vi.spyOn(hostPorts, 'coreStartedAt').mockResolvedValue(Date.now());
+  }
   const endOwner = join(h.root, 'end-owner');
   if (endingOwner) {
     const parent = await h.hc.run({ argv: [process.execPath, '-e', `const fs=require('node:fs'); const t=setInterval(()=>{if(fs.existsSync(${JSON.stringify(endOwner)})){clearInterval(t);process.exit(0)}},50)`], cwd: h.root, parent: null, background: true, outliveParent: true, noNotify: true, labels: {} });
@@ -41,7 +58,7 @@ async function fixture(mode: 'fake' | 'hc' = 'fake', endingOwner = false) {
   const configPath = standardHerdrConfigPath(h.directories.global);
   const request: SetupRequest = { config: parseHerdrConfig({ enabled: true, app: { binary: h.appBinary, home: h.directories.app },
     core: { binary: h.hcBinary, config: join(h.localEnv.XDG_CONFIG_HOME!, 'herdr-core/config.toml') },
-    agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [{ name: 'remote.invalid', nodePath: process.execPath, runtime: { directory: join(h.directories.remote, 'programs'), cwd: null, commands: {} } }] }),
+    agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: inProcess ? [] : [{ name: 'remote.invalid', nodePath: process.execPath, runtime: { directory: join(h.directories.remote, 'programs'), cwd: null, commands: {} } }] }),
     configPath, packageRoot: h.root, journalRoot: join(h.directories.global, 'herdr/setup') };
   await mkdir(join(h.root, 'packages/herdr'), { recursive: true });
   await cp(resolve('packages/herdr/assets'), join(h.root, 'packages/herdr/assets'), { recursive: true });
@@ -92,7 +109,7 @@ test('production subscriptions close both read-only binding handles at unsubscri
 }, 30000);
 
 test('a mounted reload reattaches its viewer without reconnecting or final-state notices', async () => {
-  const f = await fixture(); const abort = new AbortController(); const output = new PassThrough(); let text = ''; let clients = 0, snapshots = 0;
+  const f = await fixture('fake', false, true); const abort = new AbortController(); const output = new PassThrough(); let text = ''; let clients = 0, snapshots = 0;
   output.on('data', bytes => { text += bytes.toString(); });
   const session = f.h.owner!.sessionId; const { id } = f.store.create({ sessionId: session, agent: 'worker' }); f.store.start(id);
   const ports = createViewerPorts(['--feed-root', join(f.h.directories.global, 'herdr'), '--session', session, '--run', id], { stdin: new PassThrough(), stdout: output, signal: abort.signal })!;
@@ -112,7 +129,7 @@ test('a mounted reload reattaches its viewer without reconnecting or final-state
 }, 30000);
 
 test.each(['new', 'resume', 'fork'] as const)('a viewer of an owner replaced by %s becomes final read-only within the reconnect bound', async reason => {
-  const f = await fixture(); const abort = new AbortController(); const output = new PassThrough(); let text = ''; let attempts = 0;
+  const f = await fixture('fake', false, true); const abort = new AbortController(); const output = new PassThrough(); let text = ''; let attempts = 0;
   output.on('data', bytes => { text += bytes.toString(); });
   const oldSession = f.h.owner!.sessionId; const { id } = f.store.create({ sessionId: oldSession, agent: 'worker' }); f.store.start(id);
   const feedRoot = join(f.h.directories.global, 'herdr'); let changed = () => {}; let now = Date.now();

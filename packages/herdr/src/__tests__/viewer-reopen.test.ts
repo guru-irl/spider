@@ -4,6 +4,7 @@ import { expect, test } from 'vitest';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHerdrHarness } from './testutil.js';
+import { createMemoryViewerHarness } from './viewer-memory-hc.fixture.js';
 import { createViewerLauncher } from '../viewers/register.js';
 import { createAuxiliaryPanes } from '../jobs/placement.js';
 import { HerdrError } from '../client/parse.js';
@@ -18,7 +19,10 @@ for (const mode of modes) test.each([
   { limit: 1, finishedEvent: true }, { limit: 2, finishedEvent: true },
   { limit: 1, finishedEvent: false }, { limit: 2, finishedEvent: false },
 ])(`${mode}: reopens with $limit slots and finishedEvent=$finishedEvent without waiting for the old pane`, async ({ limit, finishedEvent }) => {
-  const h = await createHerdrHarness(mode); await h.start(); const owner = h.owner!;
+  const realCore = mode === 'hc' || limit === 1 && finishedEvent;
+  const h = realCore ? await createHerdrHarness(mode) : await createMemoryViewerHarness();
+  if (realCore) await h.start();
+  const owner = h.owner!;
   const executable = join(h.root, 'viewer.mjs'); await writeFile(executable, 'setInterval(() => {}, 1000);');
   const placement = { space: 'space', tab: 'owner-tab', pane: 'owner-pane' } as OwnerPlacement;
   const layout = new Map<TerminalAddress, OwnerPlacement>([[owner.terminal.address, placement]]);

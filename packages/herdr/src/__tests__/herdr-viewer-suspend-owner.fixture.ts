@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+import { Socket } from 'node:net';
 import { startSessionEndpoint } from '../feed/ipc-server.js';
 import { publishSessionFeed } from '../feed/publisher.js';
 import type { AppClient, HcClient, Owner, OwnerPlacement, RunCursor, RunId, RunSummary, RunViewFrame, SessionFeed, TerminalAddress } from '../contracts.js';
@@ -10,6 +11,11 @@ import { submitViewerSteer } from '../viewers/steering.js';
 
 const { owner, root, runId } = JSON.parse(process.env.HERDR_VIEWER_OWNER!) as { owner: Owner; root: string; runId: RunId };
 if (process.env.HERDR_VIEWER_MODE === 'viewer') {
+  // Preserve a real socket timeout, but wait less than the production deadline.
+  const setTimeout = Socket.prototype.setTimeout;
+  Socket.prototype.setTimeout = function (ms: number, callback?: () => void) {
+    return setTimeout.call(this, ms === 25000 ? 5000 : ms, callback);
+  };
   const abort = new AbortController();
   process.once('SIGTERM', () => abort.abort());
   const clients: ReturnType<typeof createSessionIpcClient>[] = [];
@@ -55,7 +61,7 @@ process.on('message', async (message: { type: 'output' | 'finish' | 'stop' | 'pl
       tabTerminals: async () => [], ownerPlacement: async address => { if (address === viewer) throw new HerdrError('owner-unplaced', 'Viewer is parked'); return placement; },
       awaitPane: async () => {
         process.send?.({ type: 'placement-pending' });
-        await new Promise(resolve => setTimeout(resolve, 10000));
+        await new Promise(resolve => setTimeout(resolve, 3000));
         throw new HerdrError('pane-timeout', 'Pane was not acknowledged');
       },
       command: async () => ({}),
@@ -67,7 +73,7 @@ process.on('message', async (message: { type: 'output' | 'finish' | 'stop' | 'pl
       kill: async () => { process.kill(message.viewerPid!, 'SIGTERM'); }, rm: async () => {},
     } as unknown as HcClient;
     panes = createAuxiliaryPanes({ hc, discardSubagentViewer: async (_id, _owner, viewer) => { await hc.kill(viewer); await hc.rm(viewer); }, app, subagentViewer: async () => viewer, automaticSubagentPanes: true, clock: Date.now });
-    void panes.acquire('subagent', runId, owner, { timeoutMs: 10000, automatic: true }).catch(error => process.send?.({ type: 'placement-failed', code: error.code }));
+    void panes.acquire('subagent', runId, owner, { timeoutMs: 3000, automatic: true }).catch(error => process.send?.({ type: 'placement-failed', code: error.code }));
   }
   if (message.type === 'output') {
     history.push('UNKNOWN_STEER_APPLIED\n');

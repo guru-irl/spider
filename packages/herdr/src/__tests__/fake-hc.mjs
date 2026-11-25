@@ -394,6 +394,13 @@ async function daemonMode() {
           for (const e of step.beforeReply || []) apply(e);
           for (const [p, bytes] of Object.entries(step.writes || {})) { if (!p.startsWith(root + '/')) throw new Error('Unfenced scenario write'); mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, bytes); }
           if (step.delayMs) await delay(step.delayMs);
+          if (step.waitSocket) {
+            if (!step.waitSocket.startsWith(root + '/')) throw new Error('Unfenced scenario gate');
+            await new Promise((resolve, reject) => {
+              const gate = connect(step.waitSocket);
+              gate.once('end', resolve); gate.once('error', reject); gate.resume();
+            });
+          }
           if ('reply' in step || step.stderr || step.exitCode) { s.end(JSON.stringify({ result: step.reply, stderr: step.stderr, exitCode: step.exitCode }) + '\n'); return; }
         }
         const terminalIndex = args[0] === 'attach' ? attachTerminalIndex(args) : 1;

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
-import { expect, test } from 'vitest';
+import { afterAll, beforeAll, expect, test } from 'vitest';
 import { fork, type ChildProcess } from 'node:child_process';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { builtinModules } from 'node:module';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { build } from 'vite';
@@ -10,14 +11,20 @@ import { createClientFixture } from './testutil.js';
 import { createSessionIpcClient } from '../feed/ipc-client.js';
 import type { IpcDescriptor, Owner, RunCursor, RunId, SessionId } from '../contracts.js';
 
-test.each([false, true])('a suspended real owner resumes its viewer without replay or resend (pending placement: %s)', async pendingPlacement => {
-  const f = await createClientFixture();
-  const directory = join(f.root, 'owner-js');
+let directory: string;
+beforeAll(async () => {
+  await mkdir(resolve('.spider/scratch'), { recursive: true });
+  directory = await mkdtemp(resolve('.spider/scratch/suspend-owner-'));
   const builtins = new Set(builtinModules.flatMap(name => [name, `node:${name}`]));
   await build({ configFile: false, logLevel: 'silent', ssr: { noExternal: true }, build: {
     target: 'node22', outDir: directory, ssr: fileURLToPath(new URL('./herdr-viewer-suspend-owner.fixture.ts', import.meta.url)),
     rollupOptions: { external: id => builtins.has(id) || id === 'better-sqlite3', output: { format: 'es', entryFileNames: 'owner.mjs', codeSplitting: false } },
   } });
+});
+afterAll(async () => { if (directory) await rm(directory, { recursive: true, force: true }); });
+
+test.each([false, true])('a suspended real owner resumes its viewer without replay or resend (pending placement: %s)', async pendingPlacement => {
+  const f = await createClientFixture();
   const sessionId = 'suspend-owner' as SessionId;
   const runId = '10000000-0000-4000-8000-000000000001' as RunId;
   const owner = { sessionId, generation: 'activation', terminal: { coreId: 'core', terminalId: 'owner', address: 'owner', socket: f.localSocket, sessionNamespace: 'fixture' }, cwd: f.root, sessionFile: null, name: null } as Owner;

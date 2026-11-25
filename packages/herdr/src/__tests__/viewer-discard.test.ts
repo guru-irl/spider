@@ -3,13 +3,14 @@ import { expect, it } from 'vitest';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHerdrHarness } from './testutil.js';
+import { createMemoryViewerHarness } from './viewer-memory-hc.fixture.js';
 import { createViewerLauncher } from '../viewers/register.js';
 import type { RunId, TerminalAddress } from '../contracts.js';
 
 it.each([false, true])('discards an unclaimed viewer but preserves one reused by another opener (reused=%s)', async reused => {
-  const h = await createHerdrHarness('fake');
+  const h = reused ? await createMemoryViewerHarness() : await createHerdrHarness('fake');
   try {
-    await h.start();
+    if (!reused) await h.start();
     const executable = join(h.root, 'viewer-fixture.mjs');
     await writeFile(executable, 'setInterval(() => {}, 1000);');
     const owner = h.owner!, runId = '10000000-0000-4000-8000-000000000001' as RunId;
@@ -27,12 +28,11 @@ it.each([false, true])('discards an unclaimed viewer but preserves one reused by
 }, 15000);
 
 it('waits for discard to finish before a new opener can claim the viewer', async () => {
-  const h = await createHerdrHarness('fake');
+  const h = await createMemoryViewerHarness();
   let release!: () => void, entered!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; }), killing = new Promise<void>(resolve => { entered = resolve; });
   let discarding: Promise<void> | undefined, reopening: Promise<TerminalAddress> | undefined;
   try {
-    await h.start();
     const executable = join(h.root, 'viewer-fixture.mjs');
     await writeFile(executable, 'setInterval(() => {}, 1000);');
     const owner = h.owner!, runId = '10000000-0000-4000-8000-000000000002' as RunId;

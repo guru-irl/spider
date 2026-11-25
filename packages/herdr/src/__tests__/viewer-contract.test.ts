@@ -14,10 +14,22 @@ const frames: RunViewFrame[] = [
   { runId, cursor, kind: 'event', data: { text: 'Hello', events: [event] } },
   { runId, cursor, kind: 'gap', data: { reason: 'rotated' } },
   { runId, cursor, kind: 'end', data: { reason: 'run-not-owned' } },
+  { runId, cursor, kind: 'snapshot', data: { run: { ...run, status: 'running', childMode: 'rpc', canSteer: true } } },
 ];
 
 test.each(frames)('decodes the approved $kind viewer frame', frame => {
   expect(parseRunViewFrame(JSON.stringify(frame))).toEqual(frame);
+});
+
+const piSnapshot = (view: unknown) => JSON.stringify({ runId: 'run', cursor: 'one', kind: 'snapshot', data: {
+  run: { id: 'run', ownerSessionId: 'owner', name: 'review', status: 'running', childMode: 'rpc', canSteer: true, startedAt: 1, finishedAt: null, viewer: null, result: null },
+  view,
+} });
+test('accepts a snapshot with pi model metadata', () => {
+  expect(parseRunViewFrame(piSnapshot({ protocol: 2, sessionFile: null, model: 'example/model-one', thinking: 'high', contextWindow: 200000 }))).not.toBeNull();
+});
+test.each([{ contextWindow: '200k' }, { contextWindow: -1 }, { contextWindow: 0 }, { model: [] }, { thinking: {} }])('invalid pi footer metadata is rejected, not rendered', invalid => {
+  expect(parseRunViewFrame(piSnapshot({ protocol: 2, ...invalid }))).toBeNull();
 });
 
 test.each(['queued', 'running', 'paused', 'done', 'failed', 'cancelled'] as const)('snapshot preserves canonical run state %s', status => {

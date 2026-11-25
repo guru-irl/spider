@@ -16,7 +16,7 @@ it.each((['startup', 'reload', 'new', 'resume', 'fork'] as const).flatMap(reason
   { reason, requested: 'auto' as const, hc: false, child: false, active: false },
   { reason, requested: true as const, hc: true, child: true, active: false },
 ]))('session $reason requested=$requested HC=$hc child=$child replaces only its own activation', async ({ reason, requested, hc, child, active }) => {
-  const f = await mountedFixture('fake', 'tui', true, child, hc, false, requested);
+  const f = await mountedFixture('fake', 'tui', true, child, hc, false, requested, false, false, true, undefined, { fastInactive: !active });
   const { join } = await import('node:path'); const { readFile } = await import('node:fs/promises'); const { existsSync } = await import('node:fs');
   const { createSessionIpcClient } = await import('../../../herdr/src/feed/ipc-client.js');
   try {
@@ -67,7 +67,7 @@ it.each((['startup', 'reload', 'new', 'resume', 'fork'] as const).flatMap(reason
 }, 30000);
 
 it('inactive saved-session bookkeeping ignores live conflicts and replaces crashed leases', async () => {
-  const f = await mountedFixture('fake', 'tui', true, false, true, false, false);
+  const f = await mountedFixture('fake', 'tui', true, false, true, false, false, false, false, true, undefined, { fastInactive: true });
   const { spawn } = await import('node:child_process'); const { join } = await import('node:path'); const { writeFile } = await import('node:fs/promises');
   const { createProcessInventory } = await import('../herdr/ports.js'); const { processStartTime } = await import('../../../subagents/src/process-identity.js');
   const file = join(f.h.root, 'saved.jsonl'), inventory = createProcessInventory(join(f.config.globalRoot, 'herdr'));

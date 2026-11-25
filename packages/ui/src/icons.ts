@@ -24,6 +24,7 @@ const ICONS = {
   pin: { text: "📌", nerd: "\u{F0931} " },
   modelDefault: { text: "⟵", nerd: "\u{F004D}" },
   copy: { text: "⧉", nerd: "\u{F018F}" },
+  copied: { text: "✓", nerd: "\u{F012C}" },
 } as const;
 
 export type IconRole = keyof typeof ICONS;

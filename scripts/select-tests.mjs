@@ -8,7 +8,24 @@ import { fileURLToPath } from 'node:url';
 
 const policyPath = fileURLToPath(new URL('./test-resources.json', import.meta.url));
 const timingPath = fileURLToPath(new URL('./test-durations.json', import.meta.url));
-const policy = JSON.parse(readFileSync(policyPath, 'utf8'));
+const policyContent = () => {
+  try { return readFileSync(policyPath); }
+  catch { return Buffer.from('<unreadable resource policy>'); }
+};
+const policyBytes = policyContent();
+let policy, policyFailure;
+try {
+  policy = JSON.parse(policyBytes.toString());
+  if (policy.version !== 1 || !Array.isArray(policy.rules)) throw new Error('unsupported policy schema');
+  const arrays = [policy.bundles.entries, policy.bundles.consumers,
+    ...['chrome', 'acceptance', 'stories'].map(name => policy.optional[name]),
+    ...policy.rules.flatMap(rule => [rule.inputs, rule.tests, rule.related])];
+  if (arrays.some(value => !Array.isArray(value) || value.some(pattern => typeof pattern !== 'string'))
+    || policy.rules.some(rule => typeof rule.reason !== 'string')) throw new Error('invalid policy rules');
+} catch {
+  policyFailure = 'invalid or missing resource policy';
+  policy = { rules: [], bundles: { entries: [], consumers: [] }, optional: { chrome: [], acceptance: [], stories: [] } };
+}
 const rootTest = /^packages\/[^/]+\/src\/.+\.test\.ts$/;
 const code = /\.[cm]?[jt]sx?$/;
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -33,6 +50,7 @@ function manifestDigest(manifest) {
 }
 
 export function optionalSuites(changedPaths, fallback = false) {
+  fallback ||= Boolean(policyFailure);
   return Object.fromEntries(Object.entries(policy.optional).map(([name, patterns]) => [name,
     fallback || changedPaths.some(file => matches(file, patterns) || policy.rules.some(rule => rule.full && matches(file, rule.inputs))),
   ]));
@@ -75,7 +93,7 @@ export async function selectTests({ root = process.cwd(), base, head = 'HEAD', r
   const result = {
     version: 1, mode: 'scoped', baseSha: null, requestedBase: base ?? null,
     testedSha: git(root, 'rev-parse', 'HEAD').trim(), changedPaths: [],
-    timingHash: hash(readFileSync(timingPath)), policyHash: hash(readFileSync(policyPath)),
+    timingHash: hash(readFileSync(timingPath)), policyHash: hash(policyBytes),
     selectorHash: hash(readFileSync(fileURLToPath(import.meta.url))),
     inventoryHash: hash(canonical(inventory)), fallback: null,
   };
@@ -88,6 +106,7 @@ export async function selectTests({ root = process.cwd(), base, head = 'HEAD', r
       git(root, 'rev-parse', '--verify', `${base}^{commit}`);
     } catch { throw new Error('base or head revision is unavailable'); }
     if (target !== result.testedSha) throw new Error('tested revision is not the checkout HEAD');
+    if (git(root, 'status', '--porcelain', '--untracked-files=no').trim()) throw new Error('tracked checkout differs from the tested revision');
     result.baseSha = git(root, 'merge-base', base, target).trim();
     const fields = git(root, 'diff', '--name-status', '-z', '--no-renames', result.baseSha, target).split('\0');
     fields.pop();
@@ -97,6 +116,7 @@ export async function selectTests({ root = process.cwd(), base, head = 'HEAD', r
       changes.push({ status: fields[i], file: fields[i + 1] });
     }
     result.changedPaths = sorted(changes.map(change => change.file));
+    if (policyFailure) throw new Error(policyFailure);
     if (changes.some(change => change.status === 'D')) throw new Error('deleted input requires the full inventory until base-graph support');
     const seeds = new Set();
     for (const { file } of changes) {
@@ -155,8 +175,9 @@ export async function selectTests({ root = process.cwd(), base, head = 'HEAD', r
 
 export function validateManifest(manifest, { root = process.cwd(), testedSha = git(root, 'rev-parse', 'HEAD').trim() } = {}) {
   if (manifest?.version !== 1 || manifest.testedSha !== testedSha) throw new Error('manifest revision SHA does not match checkout');
+  if (git(root, 'status', '--porcelain', '--untracked-files=no').trim()) throw new Error('tracked checkout changed after selection');
   if (manifest.selectionHash !== manifestDigest(manifest)) throw new Error('manifest checksum does not match');
-  if (manifest.policyHash !== hash(readFileSync(policyPath))) throw new Error('manifest resource policy changed');
+  if (manifest.policyHash !== hash(policyContent())) throw new Error('manifest resource policy changed');
   if (manifest.timingHash !== hash(readFileSync(timingPath))) throw new Error('manifest timing table changed');
   if (manifest.selectorHash !== hash(readFileSync(fileURLToPath(import.meta.url)))) throw new Error('manifest selector changed');
   const inventory = testInventory(root);

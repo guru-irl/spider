@@ -913,12 +913,13 @@ it("disable reports a real filesystem cause and keeps its enabled flag", async (
   const launchctl = join(f.root, "launchctl"); writeFileSync(launchctl, "fixture", { mode: 0o700 }); vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", launchctl);
   vi.spyOn(launchd, "removeHubService").mockImplementation(async () => { readFileSync(join(f.root, "missing-private-file")); });
   expect(await f.invoke(["roam", "disable", "--json"])).toBe(3);
-  expect(JSON.parse(f.out.join(""))).toMatchObject({ reason: "disable-pending", causeCode: "ENOENT", repairCommand: null });
+  expect(JSON.parse(f.out.join(""))).toMatchObject({ reason: "disable-pending", causeCode: "ENOENT", repairCommand: "spider roam disable" });
   expect(JSON.parse(readFileSync(file, "utf8")).enabled).toBe(true);
   expect(existsSync(plist)).toBe(true);
   f.out.length = 0;
   expect(await f.invoke(["roam", "disable"])).toBe(3);
   expect(f.err.join("")).toContain("ENOENT");
+  expect(f.err.join("")).toContain("retry spider roam disable");
   expect(f.err.join("")).not.toContain("missing-private-file");
   expect(f.err.join("")).not.toContain("Run spider roam doctor");
 }, 5000);

@@ -297,8 +297,11 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
         const participantId = `${home.moveId}-session-start-${config.machineId}`;
         const ready = await operationReadiness(home.sessionId, operation.id) ?? (home.moveId ? await operationReadiness(home.sessionId, participantId) : null);
         const state = readLocal<{ epoch: number; moveId: string; retired: boolean; activationCancelled: boolean; launchFailure: string | null }>(globalDb, "move-retirement", home.sessionId);
-        let owner = await probe(home.sessionId), launchFailure: string | null = null;
         const lock = await inspectIdLock(join(root, "herdr"), home.sessionId), intent = await authority.get(home.sessionId);
+        // Pending locks belong to the launch coordinator, not an adopted session.
+        // Only exact exit proof plus handoff cancellation below can establish absence.
+        let owner: Probe = lock?.pendingOperationId ? { kind: "uncertain" } : await probe(home.sessionId);
+        let launchFailure: string | null = null;
         const exactId = lock?.pendingOperationId;
         if (!ready && exactId && lock.pendingCoreId && home.moveId && intent?.epoch === home.epoch && intent.moveId === home.moveId) {
           const herdr = loadHerdrConfig(root), hc = createProductionLocalExactHc({ binary: herdr.core.binary, env: process.env, probe: inventory.probe });
@@ -319,6 +322,9 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
           const receipt = readMoveLaunchAbsenceReceipt(journal, home.moveId, exactId);
           if (!receipt || await cancelPendingHandoff(root, { sessionId: home.sessionId, moveId: home.moveId, launchId: exactId, absenceReceipt: receipt }) === "refused") {
             owner = { kind: "uncertain" }; launchFailure = null;
+          } else {
+            owner = await probe(home.sessionId);
+            if (owner.kind !== "absent") launchFailure = null;
           }
         }
         const held = heldClaims.getStore();

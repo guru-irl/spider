@@ -5,8 +5,9 @@ import type { GitPorts, WorkspaceSnapshot } from "./contracts";
 import { stageArtifact } from "./artifacts";
 import { artifactId as validateArtifactId, privateDirectory } from "./staging";
 export class WorkspacePrerequisiteError extends Error {
-  readonly code = "workspace-prerequisite-missing";
-  constructor(repair: string) { super(`workspace-prerequisite-missing: ${repair}`); }
+  constructor(repair: string, readonly code: "workspace-prerequisite-missing" | "workspace-prerequisite-invalid" = "workspace-prerequisite-missing") {
+    super(`${code}: ${repair}`);
+  }
 }
 
 export interface SnapshotHeads { index: string; working: string }
@@ -116,7 +117,7 @@ export async function bundleWorkspace(
     throw new WorkspacePrerequisiteError("fetch the required commits on the destination");
   }
   const oid = snapshot.objectFormat === "sha1" ? /^[a-f0-9]{40}$/ : /^[a-f0-9]{64}$/;
-  if (!verified.every(commit => oid.test(commit))) throw new Error("workspace-prerequisite-invalid: fetch the required commits on the destination");
+  if (!verified.every(commit => oid.test(commit))) throw new WorkspacePrerequisiteError("verify the Git history on both machines", "workspace-prerequisite-invalid");
   const sharedBases = new Set<string>();
   for (const commit of verified) {
     try { await ports.run(snapshot.root, ["git", "cat-file", "-e", `${commit}^{commit}`]); }
@@ -125,7 +126,7 @@ export async function bundleWorkspace(
     try {
       bases = (await ports.run(snapshot.root, ["git", "merge-base", "--all", commit, snapshot.head])).toString("utf8").trim().split("\n");
     } catch { continue; /* A verified destination tip may have unrelated history. */ }
-    if (!bases.every(base => oid.test(base))) throw new Error("workspace-prerequisite-invalid");
+    if (!bases.every(base => oid.test(base))) throw new WorkspacePrerequisiteError("verify the Git history on both machines", "workspace-prerequisite-invalid");
     // Each base is reachable from a destination-verified tip, even when that tip is ahead of source HEAD.
     for (const base of bases) sharedBases.add(base);
   }

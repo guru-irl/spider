@@ -1,6 +1,7 @@
 import { safeCauseCode, safeMoveFailureStep, type MoveFailureStep } from "./cause-codes";
 import { MOVE_REFUSAL_MESSAGES } from "./contracts";
 import { ownershipFailureCode, ownershipRepair, type OwnershipFailureCode } from './ownership-failure';
+import { isMachineId } from "./machine-id";
 
 export interface MoveFailureDetail { step: MoveFailureStep; code: string }
 // A bounded token can still contain private data. Only registered codes may leave the adapter.
@@ -32,7 +33,9 @@ export async function withMoveStep<T>(step: MoveFailureStep, effect: () => T | P
 const moveCauses = ["participant-pi-unavailable", "participant-stores-unavailable", "participant-config-unavailable",
   "participant-context-unavailable", "participant-home-unavailable", "participant-freeze-unfinished", "participant-cwd-unavailable",
   "participant-header-invalid", "participant-header-mismatch", "participant-store-mapping-failed", "participant-seed-failed",
-  "move-adapter-unavailable", "move-workspace-unmapped", "move-checkout-conflict", "move-first-home-withheld", "move-session-dir-unsupported"] as const;
+  "move-adapter-unavailable", "move-workspace-unmapped", "move-checkout-conflict", "move-first-home-withheld", "move-session-dir-unsupported",
+  "supervisor-release-unavailable", "supervisor-identity-unavailable", "supervisor-root-mismatch", "supervisor-release-mismatch",
+  "workspace-prerequisite-missing", "workspace-prerequisite-invalid", "workspace-fetch-unavailable"] as const;
 export type MoveCauseCode = typeof moveCauses[number] | OwnershipFailureCode;
 
 export function safeMoveCause(value: unknown): MoveCauseCode | undefined {
@@ -52,7 +55,40 @@ export class MoveCompositionError extends Error {
     super(code); this.code = code; this.failure = parseMoveFailure(failure);
   }
 }
-export function moveFailureRepair(cause: MoveCauseCode): string {
+const prerequisiteRepairs = ["fetch a shared merge base on the destination", "fetch the required commits on the destination",
+  "fetch the required commits on both machines"] as const;
+export function isSupervisorMoveCause(cause: MoveCauseCode): boolean {
+  return cause === "supervisor-release-unavailable" || cause === "supervisor-identity-unavailable" ||
+    cause === "supervisor-root-mismatch" || cause === "supervisor-release-mismatch";
+}
+/** Only fixed guidance and a validated destination identity may cross the adapter boundary. */
+export function safeMoveRepair(cause: MoveCauseCode, value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  if (cause === "workspace-prerequisite-missing" && (prerequisiteRepairs as readonly string[]).includes(value)) return value;
+  if (cause === "workspace-prerequisite-invalid" && value === "verify the Git history on both machines") return value;
+  if (cause === "workspace-fetch-unavailable" && value === "fetch origin on the destination") return value;
+  if (isSupervisorMoveCause(cause) && value.startsWith("spider roam provision ") && isMachineId(value.slice("spider roam provision ".length))) return value;
+  return undefined;
+}
+export function moveRepairCommand(cause: MoveCauseCode, destinationMachine: string, hint?: string): string | undefined {
+  if (isSupervisorMoveCause(cause) && isMachineId(destinationMachine)) return `spider roam provision ${destinationMachine}`;
+  if (cause === "workspace-prerequisite-missing") return safeMoveRepair(cause, hint) ?? prerequisiteRepairs[1];
+  if (cause === "workspace-prerequisite-invalid") return "verify the Git history on both machines";
+  if (cause === "workspace-fetch-unavailable") return "fetch origin on the destination";
+  return undefined;
+}
+export function prerequisiteRepair(error: unknown): string {
+  if (error instanceof MoveStepError) return prerequisiteRepair(error.cause);
+  const row = error && typeof error === "object" ? error as { code?: unknown; message?: unknown; repairCommand?: unknown } : {};
+  const prefix = "workspace-prerequisite-missing: ";
+  const message = typeof row.message === "string" && row.message.startsWith(prefix) ? row.message.slice(prefix.length) : undefined;
+  return safeMoveRepair("workspace-prerequisite-missing", row.repairCommand) ?? safeMoveRepair("workspace-prerequisite-missing", message) ?? prerequisiteRepairs[1];
+}
+export function moveFailureRepair(cause: MoveCauseCode, repair?: unknown): string {
+  if (isSupervisorMoveCause(cause)) return `Run ${safeMoveRepair(cause, repair) ?? "spider roam provision <machine>"} to restore the destination supervisor, then retry or recover the move.`;
+  if (cause === "workspace-prerequisite-missing") return `To proceed, ${safeMoveRepair(cause, repair) ?? prerequisiteRepairs[1]}, then retry or recover the move.`;
+  if (cause === "workspace-prerequisite-invalid") return "You can verify the Git history on both machines, then retry or recover the move.";
+  if (cause === "workspace-fetch-unavailable") return "Check Git credentials and fetch origin on the destination, then retry or recover the move.";
   const ownership = ownershipFailureCode(cause);
   if (ownership) return ownershipRepair(ownership);
   if (cause === "move-session-dir-unsupported") return "Roaming requires the transcript to be in the agent's sessions folder. Restart the session without --session-dir.";

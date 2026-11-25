@@ -1,6 +1,6 @@
 import { participantLaunchId, participantLaunchSuccessor } from "./participant-launch";
 import { supervisorPreflight } from "./participant-runtime";
-import { withMoveStep, parseMoveFailure, type MoveFailureDetail } from "./move-failure";
+import { withMoveStep, parseMoveFailure, safeMoveRepair, type MoveFailureDetail } from "./move-failure";
 import { withPrivateTransferDiagnostic, type TransferDiagnosticPhase } from "./private-transfer-diagnostics";
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
@@ -139,7 +139,7 @@ export interface MoveAdapterBindings {
 }
 export class MoveAdapterError extends MoveError {
   readonly failure?: MoveFailureDetail;
-  constructor(readonly code: string, failure?: MoveFailureDetail) {
+  constructor(readonly code: string, failure?: MoveFailureDetail, readonly repairCommand?: string) {
     super("move-preflight-refused", [validateBlockerId(code)]); this.message = code; this.name = "MoveAdapterError";
     this.failure = parseMoveFailure(failure);
   }
@@ -238,7 +238,8 @@ function successful<T>(outcome: Outcome<T>): T {
   if (outcome.code !== 0 || outcome.value === null) {
     let code: string;
     try { code = validateBlockerId(outcome.reason); } catch { code = "participant-operation-refused"; }
-    throw new MoveAdapterError(code, parseMoveFailure(outcome.failure));
+    throw new MoveAdapterError(code, parseMoveFailure(outcome.failure),
+      code === "workspace-prerequisite-missing" ? safeMoveRepair(code, outcome.repairCommand) : undefined);
   }
   return outcome.value;
 }

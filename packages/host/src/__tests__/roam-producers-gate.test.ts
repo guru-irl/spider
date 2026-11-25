@@ -98,6 +98,6 @@ it("an already mounted agents UI cannot dispatch after admission closes", async 
   expect(install).toHaveBeenCalledOnce();
   admitted = false;
   const actions = install.mock.calls[0][2].actions!;
-  await actions.kill("run-1");
+  await expect(actions.kill("run-1")).rejects.toThrow(/Session ownership is not available/);
   expect(dispatch).not.toHaveBeenCalled();
 }, 5000);

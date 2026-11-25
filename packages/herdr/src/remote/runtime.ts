@@ -589,7 +589,7 @@ export async function runRemoteConsole(directory: string, options: RemoteConsole
         const prefix = `  ${tag(job)}`; const width = columns();
         if (width !== undefined && width <= prefix.length) { result = consoleClip(prefix + result, width); }
         else { result = prefix + (color === 2 ? consoleDim(width === undefined ? result : consoleClip(result, width - prefix.length)) : consoleColor(color, width === undefined ? result : consoleClip(result, width - prefix.length))); }
-        await releaseConsoleHold(job.command.directory, directory); write(`${result}\n`); active.delete(jobId);
+        write(`${result}\n`); await releaseConsoleHold(job.command.directory, directory); active.delete(jobId);
       } catch { /* A receipt may be absent or still being published. */ }
     }
     try { await delay(options.pollMs ?? 100, undefined, { signal: options.signal }); }

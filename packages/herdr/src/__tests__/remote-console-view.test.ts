@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, it } from 'vitest';
 import { access, mkdir, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createHash } from 'node:crypto';
@@ -37,9 +38,9 @@ async function fixture(columns?: number) {
   const root = await createFixtureRoot(); roots.push(root);
   const directory = join(root, '.consoles', 'agent'); await mkdir(directory, { recursive: true });
   let output = ''; let count = 0;
-  const start = () => {
+  const start = (observe?: (text: string) => void) => {
     let stopped = false;
-    const options = { get signal() { return stopped ? AbortSignal.abort() : undefined; }, pollMs: 5, columns, write: (text: string) => { output += text; } };
+    const options = { get signal() { return stopped ? AbortSignal.abort() : undefined; }, pollMs: 5, columns, write: (text: string) => { observe?.(text); output += text; } };
     sessions.push({ stop: () => { stopped = true; }, done: runRemoteConsole(directory, options) });
   };
   const title = async (value: string) => writeFile(join(directory, 'console.json'), publication({ version: 1, title: value }));
@@ -58,10 +59,10 @@ async function fixture(columns?: number) {
       await writeFile(join(dir, 'receipt.json'), JSON.stringify({ version: 1, jobId: id, nonce: '0123456789abcdef', requestSha256: '0'.repeat(64), indexSha256: '1'.repeat(64), outcome, exitCode, signal, ...times, stdoutBytes: offsets.stdout, stderrBytes: offsets.stderr }));
     };
     const settled = async () => {
+      // The console writes the final row before it releases the hold.
       await waitFor(async () => { try { await access(join(dir, '.spider-console-hold')); return false; } catch { return true; } });
-      await delay(5);
     };
-    return { stream, finish, settled };
+    return { stream, finish, settled, hold: join(dir, '.spider-console-hold') };
   };
   return { start, title, job, raw: () => output, text: () => plain(output), waitText: (text: string) => waitFor(() => output.includes(text)), directory };
 }
@@ -272,6 +273,14 @@ it('does not let a signal name create a new terminal row', async () => {
   await job.finish('signal', null, 'SIGTERM\nforged'); f.start(); await job.settled();
   expect(f.text()).toContain('✗ signal SIGTERM\\x0aforged');
   expect(f.text()).not.toContain('\nforged');
+});
+it('shows the final row before it releases the job to cleanup', async () => {
+  const f = await fixture(); const job = await f.job('order', 'finish');
+  const holdAtResult: boolean[] = [];
+  await job.finish('exited', 0);
+  f.start(text => { if (plain(text).includes('✓ exit 0')) holdAtResult.push(existsSync(job.hold)); });
+  await job.settled();
+  expect(holdAtResult).toEqual([true]);
 });
 it('replaces an escaped control that cannot fit in a narrow content row', async () => {
   const f = await fixture(7); const job = await f.job('escape', 'wrap');

@@ -55,7 +55,7 @@ export async function assessSessionLiveness(file: string, ports: ProcessInventor
   const uncertain = [...snapshot.unknownPids, ...snapshot.uncertainPids]; const live: number[] = [];
   for (const r of snapshot.records) if (r.sessionFile !== null && await canonicalSessionFile(r.sessionFile) === canonical) live.push(r.pid);
   const lease = await ports.leases.get(canonical);
-  if (lease && !(lease.bootId && bootId && bootIdChanged(lease.bootId, bootId))) { const p = await ports.probe(lease.pid); if (p.kind === 'unknown' || p.kind === 'live' && p.startIdentity !== lease.startIdentity) uncertain.push(lease.pid); else if (p.kind === 'live') live.push(lease.pid); }
+  if (lease && !(lease.bootId && bootId && bootIdChanged(lease.bootId, bootId))) { const p = await ports.probe(lease.pid); if (p.kind === 'unknown') uncertain.push(lease.pid); else if (p.kind === 'live' && p.startIdentity === lease.startIdentity) live.push(lease.pid); }
   if (uncertain.length) return { kind: 'uncertain', pids: [...new Set(uncertain)] };
   return live.length ? { kind: 'live', pids: [...new Set(live)] } : { kind: 'free' };
 }

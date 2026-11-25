@@ -1,3 +1,4 @@
+import type { SessionId } from '@spider/herdr/contracts';
 import { afterEach, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -23,7 +24,7 @@ async function fixture() {
   writeFileSync(file, '{}\n'); writeFileSync(unrelated, '{}\n');
   const identity = { pid: process.pid, startIdentity: processStartTime(process.pid)! };
   const presence = createProcessPresence(other);
-  await presence.record({ ...identity, sessionId: 'other-session', sessionFile: unrelated, sessionName: null, kind: 'top-level', hcAddress: null });
+  await presence.record({ ...identity, sessionId: 'other-session' as SessionId, sessionFile: unrelated, sessionName: null, kind: 'top-level', hcAddress: null });
   return { root, local, other, file, unrelated, identity, presence };
 }
 
@@ -36,14 +37,14 @@ it('an unrelated identity-matched Pi in another runtime does not block dormant o
 
 it('a different runtime registration for the target file still blocks dormant control', async () => {
   const f = await fixture();
-  await f.presence.record({ ...f.identity, sessionId: 'target-session', sessionFile: f.file, sessionName: null, kind: 'top-level', hcAddress: null });
+  await f.presence.record({ ...f.identity, sessionId: 'target-session' as SessionId, sessionFile: f.file, sessionName: null, kind: 'top-level', hcAddress: null });
   expect(await assessSessionLiveness(f.file, createProcessInventory(f.local, false, [f.other]))).toMatchObject({ kind: 'live', pids: [process.pid] });
 });
 
 it('a reused PID in a different runtime remains an unidentified live process', async () => {
   const f = await fixture();
   await f.presence.remove(f.identity);
-  await f.presence.record({ ...f.identity, startIdentity: 'old-start', sessionId: 'other-session', sessionFile: f.unrelated, sessionName: null, kind: 'top-level', hcAddress: null });
+  await f.presence.record({ ...f.identity, startIdentity: 'old-start', sessionId: 'other-session' as SessionId, sessionFile: f.unrelated, sessionName: null, kind: 'top-level', hcAddress: null });
   expect(await assessSessionLiveness(f.file, createProcessInventory(f.local, false, [f.other]))).toMatchObject({ kind: 'uncertain', pids: [process.pid] });
   expect(await f.presence.list()).toHaveLength(1);
 });
@@ -59,7 +60,7 @@ it('a stale file lease does not block absence when its reused PID is proved unre
 
 it('a read-only inventory never removes a stale registration from another runtime', async () => {
   const f = await fixture();
-  await f.presence.record({ pid: 99999991, startIdentity: 'gone-start', sessionId: 'old-session', sessionFile: f.unrelated, sessionName: null, kind: 'top-level', hcAddress: null });
+  await f.presence.record({ pid: 99999991, startIdentity: 'gone-start', sessionId: 'old-session' as SessionId, sessionFile: f.unrelated, sessionName: null, kind: 'top-level', hcAddress: null });
   await assessSessionLiveness(f.file, createProcessInventory(f.local, true, [f.other]));
   expect(await f.presence.list()).toHaveLength(2);
 });

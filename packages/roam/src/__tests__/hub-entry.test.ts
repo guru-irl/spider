@@ -351,7 +351,7 @@ it("disabled disable is a no-op only when no home change or live hub is unverifi
   expect(existsSync(join(f.root, "roam", "journal.db"))).toBe(false);
   const journal = openJournal(join(f.root, "roam", "journal.db"));
   journal.begin({ id: "pending-home", machineId: HUB, expectedEpoch: 1, kind: "move", args: {} });
-  expect((await command(f, ["roam", "disable"])).code).toBe(3);
+  expect((await command(f, ["roam", "disable"])).code).toBe(1);
   journal.record("pending-home", "done", { complete: true });
   expect((await command(f, ["roam", "disable"])).code).toBe(0);
   // An absent socket and plist do not prove that the old hub stopped scheduling.
@@ -397,7 +397,10 @@ it("disabled retries finish service removal only after the hub and pending move 
     expect(existsSync(f.socket)).toBe(false);
     const journal = openJournal(join(f.root, "roam", "journal.db"));
     journal.begin({ id: "pending-home", machineId: HUB, expectedEpoch: 1, kind: "move", args: {} });
-    expect((await command(f, ["roam", "disable"])).code).toBe(3);
+    // A known blocker refuses this attempt without changing the service.
+    const refused = await command(f, ["roam", "disable"]);
+    expect(refused.code).toBe(1);
+    expect(refused.err).toContain('spider roam cancel pending-home');
     expect(existsSync(plist)).toBe(true);
     journal.record("pending-home", "done", { complete: true });
     const resumed = await command(f, ["roam", "disable"]);

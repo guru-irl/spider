@@ -275,6 +275,36 @@ describe('CI acceptance contract', () => {
     expect(ci.jobs.test!.if).toContain("mode == 'full'");
   });
 
+  it('forces the complete matrix and optional suites on a full dispatch at the requested ref', () => {
+    const ci = workflow('ci');
+    expect(ci.on.workflow_dispatch).toEqual({ inputs: { force_full: {
+      description: 'Run all tests, Chrome, and packed acceptance before merge',
+      type: 'boolean', required: true, default: true,
+    } } });
+    // Evaluate the actual job conditions, not a second routing implementation.
+    const applies = (job: Job, event: string, full = false, mode = 'scoped'): boolean => Boolean(Function('github', 'inputs', 'needs', 'always', `return (${job.if});`)(
+      { event_name: event }, { force_full: full }, { 'pr-test': { outputs: { mode } } }, () => true,
+    ));
+    expect(applies(ci.jobs['pr-test']!, 'workflow_dispatch', true)).toBe(false);
+    for (const id of ['test', 'chrome', 'herdr-acceptance', 'checks']) expect(applies(ci.jobs[id]!, 'workflow_dispatch', true), id).toBe(true);
+    expect(ci.jobs.test!.strategy!.matrix.shard).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    expect(ci.jobs.chrome!.strategy!.matrix.include).toHaveLength(4);
+    expect(step(ci.jobs['herdr-acceptance']!, 'Herdr packed acceptance (no hc, app or SSH)').run).toContain('test:herdr:e2e:ci -- --built');
+    for (const job of Object.values(ci.jobs)) {
+      const checkout = job.steps.find(item => item.uses === 'actions/checkout@v4')!;
+      expect(checkout.with?.ref).toBeUndefined(); // Dispatch checkout must keep the requested ref.
+    }
+    const gate = step(ci.jobs.checks!, 'Require every applicable job to pass');
+    const run = (needs: unknown) => spawnSync('bash', ['-c', gate.run!], { env: { ...process.env, EVENT: 'workflow_dispatch', NEEDS_JSON: JSON.stringify(needs) } }).status;
+    const full = { 'pr-test': { result: 'skipped' }, test: { result: 'success' }, chrome: { result: 'success' }, 'herdr-acceptance': { result: 'success' } };
+    expect(run(full)).toBe(0);
+    for (const id of ['test', 'chrome', 'herdr-acceptance']) for (const result of ['failure', 'cancelled', 'skipped']) expect(run({ ...full, [id]: { result } })).not.toBe(0);
+    expect(applies(ci.jobs['pr-test']!, 'pull_request')).toBe(true);
+    expect(applies(ci.jobs.test!, 'pull_request')).toBe(false);
+    expect(applies(ci.jobs.test!, 'pull_request', false, 'full')).toBe(true);
+    for (const id of ['test', 'chrome', 'herdr-acceptance']) expect(applies(ci.jobs[id]!, 'push'), id).toBe(true);
+  });
+
   it('sends a selection over the two-runner budget to the full matrix', () => {
     const select = step(workflow('ci').jobs['pr-test']!, 'Select affected tests');
     const root = mkdtempSync(join(process.cwd(), '.spider/scratch/selection-budget-'));

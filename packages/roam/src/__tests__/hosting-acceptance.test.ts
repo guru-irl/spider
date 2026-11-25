@@ -65,7 +65,11 @@ function provisionFixture() {
     async confirm() { actions.push("confirm"); return state.consent; },
     systemd: {
       unitDir: `${home}/.config/systemd/user`,
-      async writeUnit(name, bytes) { actions.push(`write:${name}`); writeFileSync(join(units, name), bytes, { mode: 0o600 }); },
+      async writeUnit(name, bytes) {
+        actions.push(`write:${name}`);
+        const file = join(units, name), changed = !existsSync(file) || readFileSync(file, "utf8") !== bytes;
+        writeFileSync(file, bytes, { mode: 0o600 }); return changed;
+      },
       async systemctl(argv) {
         actions.push(`systemctl:${argv.join(" ")}`);
         if (argv[0] === "--user" && ["stop", "restart", "kill"].includes(argv[1]) && argv.includes("herdr-core.service")) {

@@ -41,6 +41,7 @@ import { createMovePorts, handleMoveParticipantOperation, type MoveAdapterBindin
 import type { Operation, Transport } from "../contracts";
 import { sessionHome } from "../homes";
 import { moveSession } from "../move";
+import * as supervisorReadiness from "../supervisor-readiness";
 
 const BOX = "00000000-0000-4000-8000-000000000002", HUB = "00000000-0000-4000-8000-000000000001";
 const fixtures: ReturnType<typeof createReplica>[] = [];
@@ -57,6 +58,7 @@ function fixture(enabled = true, homed = true) {
   writeFileSync(join(global.root, "roam", "config.json"), JSON.stringify(config), { mode: 0o600 });
   enrollFixtureCore(global.root);
   writeFileSync(join(global.root, "roam", "active-release.json"), JSON.stringify(join(global.root, "release")), { mode: 0o600 });
+  vi.spyOn(supervisorReadiness, "inspectSupervisorReadiness").mockImplementation(async root => ({ root, release: join(root, "release"), pid: process.pid }));
   const file = join(worktree.root, "s.jsonl"); writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: "s-1", cwd: worktree.root }) + "\n", { mode: 0o600 });
   global.db.prepare("UPDATE roam_meta SET capture_enabled=1 WHERE id=1").run();
   if (homed) global.db.prepare("INSERT INTO session_homes VALUES (?,?,2,?,1)").run("s-1", BOX, "move-1");
@@ -717,6 +719,7 @@ it("standalone start rechecks persisted enrollment before effects", async () => 
 
 async function supervisorPreflightFixture(mismatch: "root" | "release" | null) {
   const f = fixture(), hub = createReplica("global", HUB); fixtures.push(hub);
+  vi.mocked(supervisorReadiness.inspectSupervisorReadiness).mockRestore();
   const release = join(f.global.root, "release"), pi = "/fixture/pi", agentDir = join(f.global.root, "agent");
   writeFileSync(join(f.global.root, "roam", "active-release.json"), JSON.stringify(release), { mode: 0o600 });
   vi.stubEnv("SPIDER_ROAM_PI", pi); vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);

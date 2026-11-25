@@ -253,7 +253,9 @@ function command(file: string, argv: string[], env: NodeJS.ProcessEnv, timeout: 
 function supervisorSystemctl(argv: unknown): void {
   if (!Array.isArray(argv) || (JSON.stringify(argv) !== JSON.stringify(["--user", "daemon-reload"]) &&
     JSON.stringify(argv) !== JSON.stringify(["--user", "enable", "spider-roam-supervisor.service"]) &&
-    JSON.stringify(argv) !== JSON.stringify(["--user", "disable", "spider-roam-supervisor.service"]))) bad("invalid-systemctl");
+    JSON.stringify(argv) !== JSON.stringify(["--user", "disable", "spider-roam-supervisor.service"]) &&
+    JSON.stringify(argv) !== JSON.stringify(["--user", "start", "spider-roam-supervisor.service"]) &&
+    JSON.stringify(argv) !== JSON.stringify(["--user", "restart", "spider-roam-supervisor.service"]))) bad("invalid-systemctl");
   command("systemctl", argv, process.env, 30_000);
 }
 class NpmInstallFailure extends Error {
@@ -800,11 +802,34 @@ async function run(): Promise<unknown> {
   if (action === "unit-write") {
     ensurePrivate(home, unitDir, false);
     if (request.unit !== "spider-roam-supervisor.service" || typeof request.contents !== "string" || Buffer.byteLength(request.contents) > 1024 * 1024) bad("invalid-unit");
-    installFile(rootPath(unitDir), { path: request.unit, bytes: Buffer.from(request.contents), mode: 0o600 });
-    return true;
+    const contents = Buffer.from(request.contents), sha256 = digest(contents);
+    // Save the decision before the write: a transport retry must not turn a changed unit into an unchanged one.
+    const receiptFile = "supervisor-unit.json", saved = readPrivateBytes(stage, receiptFile, 1024);
+    let changed: boolean;
+    if (saved) {
+      const receipt = JSON.parse(saved.toString("utf8"));
+      if (!receipt || Object.keys(receipt).sort().join() !== "changed,sha256" || receipt.sha256 !== sha256 || typeof receipt.changed !== "boolean") bad("invalid-provision-reply");
+      changed = receipt.changed;
+    } else {
+      const previous = readPrivateBytes(unitDir, request.unit, 1024 * 1024);
+      changed = !previous || !previous.equals(contents);
+      atomicWrite(join(stage, receiptFile), Buffer.from(JSON.stringify({ changed, sha256 })), 0o600, true);
+    }
+    installFile(rootPath(unitDir), { path: request.unit, bytes: contents, mode: 0o600 });
+    return { changed };
   }
   if (action === "systemctl") {
+    const restart = JSON.stringify(request.argv) === JSON.stringify(["--user", "restart", "spider-roam-supervisor.service"]);
+    const restarted = "supervisor-restarted.json";
+    if (restart) {
+      const prior = readPrivateBytes(stage, restarted, 1024);
+      if (prior) {
+        if (prior.toString("utf8") !== '{"version":1}') bad("invalid-provision-reply");
+        return true;
+      }
+    }
     supervisorSystemctl(request.argv);
+    if (restart) atomicWrite(join(stage, restarted), Buffer.from('{"version":1}'), 0o600, true);
     return true;
   }
   if (action === "verify") {

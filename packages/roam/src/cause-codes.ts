@@ -18,6 +18,7 @@ const causeCodes = new Set<string>([
   "diagnostic-snapshot-wal-index-missing", "diagnostic-snapshot-unsafe",
   "missing-hc", "spawn-error", "spawn_failed", "stdin-error", "cli-error", "cli-aborted", "cli-exit", "cli-timeout",
   "active-release-unavailable", "active-release-layout-invalid", "invalid-intercom-readiness",
+  "supervisor-release-unavailable", "supervisor-identity-unavailable", "supervisor-root-mismatch", "supervisor-release-mismatch",
   ...HELPER_EXCHANGE_ERRORS, "broker-unavailable", "helper-timeout", "bridge-exchange-failed", "unsafe-helper-route",
   "intercom-mode-not-peers", "intercom-route-missing", "intercom-edge-must-be-revoked", "invalid-intercom-config",
   "broker-start-timeout", "broker-start-aborted", "broker-start-exited", "broker-start-failed", "unsafe-broker-start", "unsupported-broker",

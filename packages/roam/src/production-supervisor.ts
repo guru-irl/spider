@@ -1,10 +1,13 @@
 import { createPendingHandoffControl, pendingHandoffLifecycle } from "./pending-handoff";
 import { machineMoveEvidence } from "./machine-move-evidence";
 import { openFreezeJournal } from "./journal";
-import { lstatSync, watch } from "node:fs";
+import { lstatSync, realpathSync, watch } from "node:fs";
 import { createHash } from "node:crypto";
 import { readFile, readdir, readlink } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { serveSupervisorReadiness } from "./supervisor-readiness";
+
 import { assertTestConfigPath, openDbReadOnly } from "@spider/db-core";
 import type { HcClient, TerminalAddress } from "@spider/herdr";
 import type { HostingObservation } from "./hosting";
@@ -38,6 +41,9 @@ import { HerdrError, parseCore } from "@spider/herdr/client/parse";
 import { requireCoreAvailable } from "@spider/herdr/client/liveness";
 
 import { readSupervisorCorePin, supervisorCoreEnvironment, type SupervisorCorePin } from "./enrollment";
+
+// Capture the loaded bundle, not the active-release pointer that provisioning may change later.
+const loadedRelease = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), "../.."));
 export interface SupervisorCore {
   pin: SupervisorCorePin; identity: import("@spider/herdr").CoreIdentity; pid: number; env: Readonly<NodeJS.ProcessEnv>;
 }
@@ -326,7 +332,15 @@ export function createProductionSupervisorConnection(input: { root: string; conf
 export async function startProductionSupervisor(root: string, options: { system?: SupervisorSystemPorts; clock?: Clock;
   intercomLocalPorts?: Omit<LocalPairPorts, "enrollBridge" | "inspectBridge" | "inspectFence"> } = {}): Promise<CoreBoundSupervisor> {
   assertBoxEnrollment(readLocalIdentity(root));
-  return startCoreBoundSupervisor(readSupervisorCorePin(root), process.env, coreState => startEnrolledSupervisor(root, { ...options, coreState }), options.clock);
+  const identity = { root: realpathSync(root), release: loadedRelease, pid: process.pid };
+  const service = await startCoreBoundSupervisor(readSupervisorCorePin(root), process.env, coreState => startEnrolledSupervisor(root, { ...options, coreState }), options.clock);
+  let readiness: Awaited<ReturnType<typeof serveSupervisorReadiness>>;
+  try { readiness = await serveSupervisorReadiness(identity); }
+  catch (error) { await service.stop(); throw error; }
+  let stopping: Promise<void> | undefined;
+  return { failed: service.failed, stop() {
+    return stopping ??= (async () => { try { await readiness.close(); } finally { await service.stop(); } })();
+  } };
 }
 
 async function startEnrolledSupervisor(root: string, options: { coreState: SupervisorCore; system?: SupervisorSystemPorts; clock?: Clock;

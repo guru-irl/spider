@@ -7,7 +7,7 @@ import { runRoleGroup, fourRoleGroup } from "./run-role.js";
 import { shortSessionName } from "./session-name.js";
 import { dashboardLabel, supportedDetailId } from "./dashboard-identities.js";
 import { DAY_MS, invalidQuery, safeTimestamp, validateParams } from "./dashboard-selection.js";
-import { flowFromCube, modelRows, readSessionCorrectedComponents, readCorrectionFactors, readSessionUsageCube, sessionCandidatesSql, sessionModelStyles, sessionOwnerResolver, sumValues, UNATTRIBUTED_SESSION_ID } from "./query-redesign-shared.js";
+import { flowFromCube, modelRows, readSessionCorrectedComponents, readCorrectionFactors, readSessionUsageCube, sessionCandidatesSql, sessionModelStyles, sessionOwnerResolver, sumValues, UNATTRIBUTED_SESSION_ID, type SessionUsageScope } from "./query-redesign-shared.js";
 
 type Session = { id: string; name: string; project: string | null };
 type Run = { id: string; sessionId: string | null; parentRunId: string | null; name: string | null; role: string | null; agent: string | null; model: string | null; thinking: string | null; start: number | null; end: number | null; status: string | null };
@@ -210,7 +210,7 @@ function boundResponse(ctx: DashboardQueryContext, data: SessionData): SessionDa
   return data;
 }
 
-export function scopedRange(scope: Scope, range: SessionRange): Scope {
+export function scopedRange<T extends SessionUsageScope>(scope: T, range: SessionRange): T {
   // Time filtering follows global canonical selection, so out-of-range reports and copies cannot reappear.
   return { ...scope, bindings: { ...scope.bindings, ...range },
     sql: `${scope.sql.replace(", session_candidates AS MATERIALIZED (", ", whole_session_candidates AS MATERIALIZED (")},

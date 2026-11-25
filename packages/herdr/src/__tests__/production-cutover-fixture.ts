@@ -1,21 +1,18 @@
 // SPDX-License-Identifier: MIT
-import { afterEach, expect, it, vi } from 'vitest';
-import { mkdir, writeFile, readFile, chmod, access, copyFile, symlink } from 'node:fs/promises';
+import { afterAll, expect, it } from 'vitest';
+import { mkdir, mkdtemp, rm, writeFile, readFile, chmod, copyFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { spawn, execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { build } from 'vite';
 import { createHerdrHarness } from './isolated.js';
 import { writeFixturePaneEndpoint } from './endpoint-fixture.js';
-import { createProductionHerdrCliPorts } from '../../../host/src/herdr/ports.js';
-import { readJournal, saveJournal } from '../setup/backup.js';
-import { rollbackHerdr } from '../setup/installer.js';
-import { createTerminalRegistry, writePrivateJson } from '../sessions/registry.js';
-import { readCutoverRecovery, setupSpaces } from '../spaces/setup.js';
+import { writePrivateJson } from '../sessions/registry.js';
+import { readCutoverRecovery } from '../spaces/setup.js';
 import { shellQuote } from '../sessions/resume.js';
 import type { SetupRequest } from '../setup/installer.js';
 
@@ -24,6 +21,130 @@ export async function until(read: () => Promise<boolean>, timeout = 15000): Prom
   while (Date.now() < deadline) { if (await read()) return; await delay(25); }
   throw new Error('Isolated fixture did not reach the required state');
 }
+// Each test file builds once, but every case gets its own runtime files and core.
+let cliBuild: Promise<string> | undefined;
+let cliBuildRoot: string | undefined;
+async function buildFixtureCli(): Promise<string> {
+  const scratch = resolve('.spider/scratch');
+  await mkdir(scratch, { recursive: true });
+  const root = cliBuildRoot = await mkdtemp(join(scratch, 'cutover-build-'));
+  const source = join(root, 'entry.ts');
+  const module = (path: string) => JSON.stringify(fileURLToPath(new URL(path, import.meta.url)));
+  // The generated entry uses the real composition. Only the external app and pi are substituted.
+  await writeFile(source, `
+import {readFile,writeFile,appendFile,access} from 'node:fs/promises';
+import {dirname,join} from 'node:path';
+import {randomUUID} from 'node:crypto';
+import {setTimeout as delay} from 'node:timers/promises';
+import {createProductionHerdrCliPorts,coreStartedAt,createProcessInventory} from ${module('../../../host/src/herdr/ports.ts')};
+import {runHerdrCli} from ${module('../setup/cli.ts')};
+import {setupHerdr,rollbackHerdr} from ${module('../setup/installer.ts')};
+import {setupSpaces} from ${module('../spaces/setup.ts')};
+import {createHcClient} from ${module('../client/hc.ts')};
+import {registerHerdrSessions} from ${module('../sessions/register.ts')};
+import {createTerminalRegistry,writePrivateJson} from ${module('../sessions/registry.ts')};
+import {publishSessionFeed} from ${module('../feed/publisher.ts')};
+import {processStartTime} from ${module('../../../subagents/src/process-identity.ts')};
+const cliDirectory=dirname(process.argv[1]);
+const fixtureRoot=cliDirectory.endsWith('/dist/herdr')?dirname(dirname(cliDirectory)):cliDirectory;
+const configPath=join(fixtureRoot,'config.json');
+const a=process.argv.slice(2), c=JSON.parse(await readFile(configPath,'utf8'));
+const controlPath=join(fixtureRoot,'control.json'), root=c.globalRoot+'/herdr';
+const settings=async()=>JSON.parse(await readFile(controlPath,'utf8'));
+if(a[0]==='terminal-shell') {
+  // File requests avoid typing into terminals. CLI children inherit a real hc terminal ancestry.
+  const {spawn}=await import('node:child_process'), {openSync,closeSync}=await import('node:fs');
+  const {readdir,rename}=await import('node:fs/promises');
+  const directory=join(fixtureRoot,'shell-requests');
+  process.env.PATH=join(fixtureRoot,'bin')+':'+process.env.PATH;
+  if(a[1])process.env.HC_TERMINAL_ID=a[1];
+  await writeFile(directory+'/ready','ready');
+  for(;;) {
+    for(const file of (await readdir(directory)).filter(file=>file.endsWith('.json'))) {
+      const path=directory+'/'+file, request=JSON.parse(await readFile(path,'utf8'));
+      await rename(path,path+'.running');
+      const out=openSync(request.output,'w'), err=openSync(request.error,'w');
+      const child=spawn(process.execPath,[join(fixtureRoot,'cli.mjs'),...request.argv],{cwd:fixtureRoot,env:process.env,stdio:['ignore',out,err]});
+      closeSync(out);closeSync(err);
+      const outcome=new Promise(resolve=>{child.once('error',error=>resolve({code:1,error:String(error)}));child.once('close',(code,signal)=>resolve({code,signal}));});
+      await writeFile(request.done,JSON.stringify(await outcome));
+    }
+    await delay(25);
+  }
+} else if(a[0]==='pi-stub') {
+  const options=await settings(); if(options.earlyExit)process.exit(23);
+  await delay(options.activationDelay??250);
+  const file=a[a.indexOf('--session')+1], header=JSON.parse((await readFile(file,'utf8')).split('\\n')[0]);
+  const hc=createHcClient({binary:c.core.binary,env:process.env}), terminal=await hc.caller(process.env);
+  const owner={sessionId:header.id,generation:'authoritative',terminal,cwd:process.cwd(),sessionFile:file,name:'Selected'};
+  const identity={pid:process.pid,startIdentity:processStartTime(process.pid)};
+  const inventory=createProcessInventory(root), handlers=new Map();
+  const registration=registerHerdrSessions({on:(name,handler)=>{handlers.set(name,handler);return()=>{};}},{...inventory,registry:createTerminalRegistry(root),processIdentity:identity,launchEnvironment:{agentDirectory:c.agentDirectory,extensionArguments:[]},coreStartedAt:()=>Date.now()-1,env:process.env,owner:()=>owner,currentSession:()=>({...identity,sessionFile:file,sessionName:owner.name,kind:'top-level',hcAddress:terminal.address})});
+  await handlers.get('session_start')({}, {mode:'tui',hasUI:true,sessionManager:{getSessionId:()=>header.id}});
+  const feed={version:1,sessionId:header.id,generation:owner.generation,revision:1,updatedAt:Date.now(),owner,placement:null,lifecycle:'live',status:{native:null,effective:null,message:null},runs:{rows:[],total:0,truncated:false},todos:{rows:[],total:0,truncated:false},triggers:[],pace:{scope:'session',used:null,budget:null,projected:null,remaining:null,periodStart:null,periodEnd:null,updatedAt:null,unavailableReason:'fixture'},approvals:[],notifications:[],ipc:null,errors:[]};
+  const publish=async()=>{feed.updatedAt=Date.now();await publishSessionFeed(root,feed);}; await publish();
+  const timer=setInterval(()=>{void publish();},1000);
+  await appendFile(join(fixtureRoot,'launches.jsonl'),JSON.stringify({...identity,sessionFile:file,sessionId:header.id,cwd:process.cwd()})+'\\n');
+  await writeFile(join(fixtureRoot,'ready'),'ready');
+  while(!(await settings()).exit)await delay(25);
+  clearInterval(timer); await registration.dispose(); await hc.dispose();
+} else if(a[0]==='app') {
+  if(a[1]==='--version'){console.log('herdr-app 0.1.12');process.exit(0);}
+  const docPath=join(fixtureRoot,'layout.json'), doc=JSON.parse(await readFile(docPath,'utf8'));
+  const command=a[2], flag=k=>a[a.indexOf('--'+k)+1];
+  if(a[1]==='ls'){console.log(JSON.stringify(doc));process.exit(0);}
+  const hc=createHcClient({binary:c.core.binary,env:process.env}); let reply={};
+  if(command==='space.new'||command==='tab.new') {
+    let space=command==='space.new'?{id:randomUUID(),name:flag('name'),tabs:[]}:doc.spaces.find(s=>s.id===flag('space'));
+    if(command==='space.new')doc.spaces.push(space);
+    const id=randomUUID(), argv=JSON.parse(flag('argv'));
+    const handle=await hc.run({argv,cwd:flag('folder'),parent:null,outliveParent:true,background:true,noNotify:true,labels:{'herdr.space':space.id,'herdr.tab':id}});
+    space.tabs.push({id,name:command==='space.new'?flag('tab'):flag('name'),terminals:[{terminal:handle.address,pane:randomUUID()}]});reply={space:space.id,tab:id,terminal:handle.address};
+  } else if(command==='tab.rename') {for(const s of doc.spaces)for(const t of s.tabs)if(t.id===flag('id'))t.name=flag('name');}
+  else if(command==='tab.close') {for(const s of doc.spaces){for(const t of s.tabs)if(t.id===flag('id')){await hc.kill(t.terminals[0].terminal).catch(()=>{});await hc.rm(t.terminals[0].terminal);}s.tabs=s.tabs.filter(t=>t.id!==flag('id'));}}
+  else if(!['space.select','layout.switch','app.theme'].includes(command))throw Error('Unexpected app command '+command);
+  await writeFile(docPath,JSON.stringify(doc)); await hc.dispose();
+  if((await settings()).lostReply && ['space.new','tab.new'].includes(command)){const v=await settings();delete v.lostReply;await writePrivateJson(controlPath,v);process.kill(process.ppid,'SIGKILL');await delay(50);process.exit(1);}
+  console.log(JSON.stringify(reply));
+} else {
+  const ports=createProductionHerdrCliPorts(fixtureRoot,process.env);
+  try {
+    const request=await ports.request(configPath);
+    if(a[0]==='spaces') {const result=await setupSpaces(c,ports.spacePorts(request));console.log(JSON.stringify(result));}
+    else if(a[0]==='setup-cutover') {
+      const parts=await ports.setupParts(request);
+      // Installation plans are not under test; real settings/notes, transaction, preflight and cutover remain.
+      await setupHerdr(request,{...parts,stageLook:async()=>[],installFiles:async()=>[],generateTemplates:async()=>[],installResume:async()=>[],ensureRuntime:async()=>[],verify:async()=>({checks:[],failures:[],warnings:[]})});
+    } else process.exitCode=await runHerdrCli(a,ports);
+  } finally {await ports.dispose();}
+}
+`);
+  // Faults kill the real CLI after its durable journal write, without changing the shipped implementation.
+  const fault = `
+    if (process.env.CUTOVER_FAULT_FILE) {
+      const fs = await import('node:fs/promises'); const file = process.env.CUTOVER_FAULT_FILE;
+      const value = JSON.parse(await fs.readFile(file, 'utf8'));
+      if (value.kind === __KIND__) { value.seen = (value.seen ?? 0) + 1; await fs.writeFile(file, JSON.stringify(value)); if (value.seen === value.at) { value.kind = 'spent'; await fs.writeFile(file, JSON.stringify(value)); process.kill(process.pid, 'SIGKILL'); } }
+    }`;
+  await build({ configFile: false, logLevel: 'silent', define: { 'import.meta.spiderHerdrRuntimeEntry': 'false', 'import.meta.spiderPaneEndpointEntry': 'false' }, ssr: { noExternal: true }, plugins: [{ name: 'journal-faults', transform(code, id) {
+    if (id.endsWith('/host/src/herdr/ports.ts')) {
+      const site = "const child = spawn(spawnRequest.argv[0], spawnRequest.argv.slice(1),";
+      if (!code.includes(site)) throw new Error('Session launcher site not found');
+      const guard = `if (spawnRequest.argv[0] !== 'pi' || spawnRequest.env.PATH?.split(':')[0] !== join(packageRoot, 'bin') || spawnRequest.env.PI_CODING_AGENT_DIR !== join(packageRoot, 'p')) throw new Error('Unexpected session launcher'); `;
+      return code.replace(site, guard + site);
+    }
+    if (id.endsWith('/sessions/registry.ts')) return code.replace('await rename(temporary, path);', `await rename(temporary, path); if(path.endsWith('/spaces.json')) {${fault.replace('__KIND__', "'spaces'")}}`);
+    if (id.endsWith('/setup/backup.ts')) {
+      const site = /await atomicWrite\(path, bytes, (?:0o600|384), current.hash\);/;
+      if (!site.test(code)) throw new Error('Installer journal fault site not found');
+      return code.replace(site, match => match + fault.replace('__KIND__', "'installer'"));
+    }
+  } }], build: { ssr: source, outDir: root, emptyOutDir: false, rollupOptions: { external: id => id.startsWith('node:') || ['@earendil-works/', 'better-sqlite3', 'sqlite-vec', 'onnxruntime-', 'fastembed', '@huggingface/', '@xenova/', 'turndown', 'typebox'].some(prefix => id.startsWith(prefix)), output: { entryFileNames: 'cli.mjs' } } } });
+  return join(root, 'cli.mjs');
+}
+function sharedFixtureCli(): Promise<string> { return cliBuild ??= buildFixtureCli(); }
+afterAll(async () => { if (cliBuildRoot) await rm(cliBuildRoot, { recursive: true, force: true }); });
+
 export async function fixture(mode: 'fake' | 'hc', terminalShell = false): Promise<{
     h: import("./isolated.js").HerdrHarness;
     root: string;
@@ -50,115 +171,9 @@ export async function fixture(mode: 'fake' | 'hc', terminalShell = false): Promi
 }> {
   const h = await createHerdrHarness(mode), root = h.root, bin = join(root, 'bin'); await mkdir(bin);
   execFileSync('git', ['init', '-q', root]);
-  const configPath = join(root, 'config.json'), control = join(root, 'control.json'), source = join(root, 'entry.ts');
-  const module = (path: string) => JSON.stringify(fileURLToPath(new URL(path, import.meta.url)));
+  const configPath = join(root, 'config.json'), control = join(root, 'control.json');
+  await copyFile(await sharedFixtureCli(), join(root, 'cli.mjs'));
   await writeFile(control, '{}');
-  // The generated entry uses the real composition. Only the external app and pi are substituted.
-  await writeFile(source, `
-import {readFile,writeFile,appendFile,access} from 'node:fs/promises';
-import {randomUUID} from 'node:crypto';
-import {setTimeout as delay} from 'node:timers/promises';
-import {createProductionHerdrCliPorts,coreStartedAt,createProcessInventory} from ${module('../../../host/src/herdr/ports.ts')};
-import {runHerdrCli} from ${module('../setup/cli.ts')};
-import {setupHerdr,rollbackHerdr} from ${module('../setup/installer.ts')};
-import {setupSpaces} from ${module('../spaces/setup.ts')};
-import {createHcClient} from ${module('../client/hc.ts')};
-import {registerHerdrSessions} from ${module('../sessions/register.ts')};
-import {createTerminalRegistry,writePrivateJson} from ${module('../sessions/registry.ts')};
-import {publishSessionFeed} from ${module('../feed/publisher.ts')};
-import {processStartTime} from ${module('../../../subagents/src/process-identity.ts')};
-const a=process.argv.slice(2), c=JSON.parse(await readFile(${JSON.stringify(configPath)},'utf8'));
-const controlPath=${JSON.stringify(control)}, root=c.globalRoot+'/herdr';
-const settings=async()=>JSON.parse(await readFile(controlPath,'utf8'));
-if(a[0]==='terminal-shell') {
-  // File requests avoid typing into terminals. CLI children inherit a real hc terminal ancestry.
-  const {spawn}=await import('node:child_process'), {openSync,closeSync}=await import('node:fs');
-  const {readdir,rename}=await import('node:fs/promises');
-  const directory=${JSON.stringify(join(root, 'shell-requests'))};
-  process.env.PATH=${JSON.stringify(bin)}+':'+process.env.PATH;
-  if(a[1])process.env.HC_TERMINAL_ID=a[1];
-  await writeFile(directory+'/ready','ready');
-  for(;;) {
-    for(const file of (await readdir(directory)).filter(file=>file.endsWith('.json'))) {
-      const path=directory+'/'+file, request=JSON.parse(await readFile(path,'utf8'));
-      await rename(path,path+'.running');
-      const out=openSync(request.output,'w'), err=openSync(request.error,'w');
-      const child=spawn(${JSON.stringify(h.nodeBinary)},[${JSON.stringify(join(root, 'cli.mjs'))},...request.argv],{cwd:${JSON.stringify(root)},env:process.env,stdio:['ignore',out,err]});
-      closeSync(out);closeSync(err);
-      const outcome=new Promise(resolve=>{child.once('error',error=>resolve({code:1,error:String(error)}));child.once('close',(code,signal)=>resolve({code,signal}));});
-      await writeFile(request.done,JSON.stringify(await outcome));
-    }
-    await delay(25);
-  }
-} else if(a[0]==='pi-stub') {
-  const options=await settings(); if(options.earlyExit)process.exit(23);
-  await delay(options.activationDelay??250);
-  const file=a[a.indexOf('--session')+1], header=JSON.parse((await readFile(file,'utf8')).split('\\n')[0]);
-  const hc=createHcClient({binary:c.core.binary,env:process.env}), terminal=await hc.caller(process.env);
-  const owner={sessionId:header.id,generation:'authoritative',terminal,cwd:process.cwd(),sessionFile:file,name:'Selected'};
-  const identity={pid:process.pid,startIdentity:processStartTime(process.pid)};
-  const inventory=createProcessInventory(root), handlers=new Map();
-  const registration=registerHerdrSessions({on:(name,handler)=>{handlers.set(name,handler);return()=>{};}},{...inventory,registry:createTerminalRegistry(root),processIdentity:identity,launchEnvironment:{agentDirectory:c.agentDirectory,extensionArguments:[]},coreStartedAt:()=>Date.now()-1,env:process.env,owner:()=>owner,currentSession:()=>({...identity,sessionFile:file,sessionName:owner.name,kind:'top-level',hcAddress:terminal.address})});
-  await handlers.get('session_start')({}, {mode:'tui',hasUI:true,sessionManager:{getSessionId:()=>header.id}});
-  const feed={version:1,sessionId:header.id,generation:owner.generation,revision:1,updatedAt:Date.now(),owner,placement:null,lifecycle:'live',status:{native:null,effective:null,message:null},runs:{rows:[],total:0,truncated:false},todos:{rows:[],total:0,truncated:false},triggers:[],pace:{scope:'session',used:null,budget:null,projected:null,remaining:null,periodStart:null,periodEnd:null,updatedAt:null,unavailableReason:'fixture'},approvals:[],notifications:[],ipc:null,errors:[]};
-  const publish=async()=>{feed.updatedAt=Date.now();await publishSessionFeed(root,feed);}; await publish();
-  const timer=setInterval(()=>{void publish();},1000);
-  await appendFile(${JSON.stringify(join(root, 'launches.jsonl'))},JSON.stringify({...identity,sessionFile:file,sessionId:header.id,cwd:process.cwd()})+'\\n');
-  await writeFile(${JSON.stringify(join(root, 'ready'))},'ready');
-  while(!(await settings()).exit)await delay(25);
-  clearInterval(timer); await registration.dispose(); await hc.dispose();
-} else if(a[0]==='app') {
-  if(a[1]==='--version'){console.log('herdr-app 0.1.12');process.exit(0);}
-  const docPath=${JSON.stringify(join(root, 'layout.json'))}, doc=JSON.parse(await readFile(docPath,'utf8'));
-  const command=a[2], flag=k=>a[a.indexOf('--'+k)+1];
-  if(a[1]==='ls'){console.log(JSON.stringify(doc));process.exit(0);}
-  const hc=createHcClient({binary:c.core.binary,env:process.env}); let reply={};
-  if(command==='space.new'||command==='tab.new') {
-    let space=command==='space.new'?{id:randomUUID(),name:flag('name'),tabs:[]}:doc.spaces.find(s=>s.id===flag('space'));
-    if(command==='space.new')doc.spaces.push(space);
-    const id=randomUUID(), argv=JSON.parse(flag('argv'));
-    const handle=await hc.run({argv,cwd:flag('folder'),parent:null,outliveParent:true,background:true,noNotify:true,labels:{'herdr.space':space.id,'herdr.tab':id}});
-    space.tabs.push({id,name:command==='space.new'?flag('tab'):flag('name'),terminals:[{terminal:handle.address,pane:randomUUID()}]});reply={space:space.id,tab:id,terminal:handle.address};
-  } else if(command==='tab.rename') {for(const s of doc.spaces)for(const t of s.tabs)if(t.id===flag('id'))t.name=flag('name');}
-  else if(command==='tab.close') {for(const s of doc.spaces){for(const t of s.tabs)if(t.id===flag('id')){await hc.kill(t.terminals[0].terminal).catch(()=>{});await hc.rm(t.terminals[0].terminal);}s.tabs=s.tabs.filter(t=>t.id!==flag('id'));}}
-  else if(!['space.select','layout.switch','app.theme'].includes(command))throw Error('Unexpected app command '+command);
-  await writeFile(docPath,JSON.stringify(doc)); await hc.dispose();
-  if((await settings()).lostReply && ['space.new','tab.new'].includes(command)){const v=await settings();delete v.lostReply;await writePrivateJson(controlPath,v);process.kill(process.ppid,'SIGKILL');await delay(50);process.exit(1);}
-  console.log(JSON.stringify(reply));
-} else {
-  const ports=createProductionHerdrCliPorts(${JSON.stringify(root)},process.env);
-  try {
-    const request=await ports.request(${JSON.stringify(configPath)});
-    if(a[0]==='spaces') {const result=await setupSpaces(c,ports.spacePorts(request));console.log(JSON.stringify(result));}
-    else if(a[0]==='setup-cutover') {
-      const parts=await ports.setupParts(request);
-      // Installation plans are not under test; real settings/notes, transaction, preflight and cutover remain.
-      await setupHerdr(request,{...parts,stageLook:async()=>[],installFiles:async()=>[],generateTemplates:async()=>[],installResume:async()=>[],ensureRuntime:async()=>[],verify:async()=>({checks:[],failures:[],warnings:[]})});
-    } else process.exitCode=await runHerdrCli(a,ports);
-  } finally {await ports.dispose();}
-}
-`);
-  // Faults kill the real CLI after its durable journal write, without changing the shipped implementation.
-  const fault = `
-    if (process.env.CUTOVER_FAULT_FILE) {
-      const fs = await import('node:fs/promises'); const file = process.env.CUTOVER_FAULT_FILE;
-      const value = JSON.parse(await fs.readFile(file, 'utf8'));
-      if (value.kind === __KIND__) { value.seen = (value.seen ?? 0) + 1; await fs.writeFile(file, JSON.stringify(value)); if (value.seen === value.at) { value.kind = 'spent'; await fs.writeFile(file, JSON.stringify(value)); process.kill(process.pid, 'SIGKILL'); } }
-    }`;
-  await build({ configFile: false, logLevel: 'silent', define: { 'import.meta.spiderHerdrRuntimeEntry': 'false', 'import.meta.spiderPaneEndpointEntry': 'false' }, ssr: { noExternal: true }, plugins: [{ name: 'journal-faults', transform(code, id) {
-    if (id.endsWith('/host/src/herdr/ports.ts')) {
-      const site = "const child = spawn(spawnRequest.argv[0], spawnRequest.argv.slice(1),";
-      if (!code.includes(site)) throw new Error('Session launcher site not found');
-      const guard = `if (spawnRequest.argv[0] !== 'pi' || spawnRequest.env.PATH?.split(':')[0] !== ${JSON.stringify(bin)} || spawnRequest.env.PI_CODING_AGENT_DIR !== ${JSON.stringify(h.directories.agent)}) throw new Error('Unexpected session launcher'); `;
-      return code.replace(site, guard + site);
-    }
-    if (id.endsWith('/sessions/registry.ts')) return code.replace('await rename(temporary, path);', `await rename(temporary, path); if(path.endsWith('/spaces.json')) {${fault.replace('__KIND__', "'spaces'")}}`);
-    if (id.endsWith('/setup/backup.ts')) {
-      const site = /await atomicWrite\(path, bytes, (?:0o600|384), current.hash\);/;
-      if (!site.test(code)) throw new Error('Installer journal fault site not found');
-      return code.replace(site, match => match + fault.replace('__KIND__', "'installer'"));
-    }
-  } }], build: { ssr: source, outDir: root, emptyOutDir: false, rollupOptions: { external: id => id.startsWith('node:') || ['@earendil-works/', 'better-sqlite3', 'sqlite-vec', 'onnxruntime-', 'fastembed', '@huggingface/', '@xenova/', 'turndown', 'typebox'].some(prefix => id.startsWith(prefix)), output: { entryFileNames: 'cli.mjs' } } } });
   await writeFixturePaneEndpoint(root);
   const cli = join(root, 'cli.mjs'), app = join(bin, 'app');
   await mkdir(join(root, 'dist/herdr'), { recursive: true }); await copyFile(cli, join(root, 'dist/herdr/cli.mjs'));

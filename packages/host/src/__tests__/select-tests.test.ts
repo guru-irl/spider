@@ -170,8 +170,22 @@ describe('change-scoped test manifests', () => {
     expect(result.optional).toEqual({ chrome: true, acceptance: true, stories: true });
   });
 
-  it('requires selector compatibility audits when selection policy changes', async () => {
-    const { selectTests } = await api(); const f = fixture(); f.put('scripts/test-resources.json', '{}');
+  it('measures a separate cohort without measured slow files while retaining unknown timings', async () => {
+    const { selectTests } = await api(); const f = fixture();
+    const manifest = await selectTests({ ...f, base: 'missing', head: f.base });
+    const file = resolve('scripts/measure-test-selection.mjs');
+    const { existsSync } = await import('node:fs');
+    expect(existsSync(file), 'the CI measurement script must exist').toBe(true);
+    const { measurementPlan } = await import(/* @vite-ignore */ file);
+    const plan = measurementPlan(manifest, { root: f.root, shard: '1/2', durations: { [a]: 6000, [b]: 5000, [guard]: 1 } });
+    expect(plan.files).toEqual([b, guard, c].sort());
+    expect(plan.excludedSlowFiles).toEqual([a]); expect(plan.unmeasuredFiles).toEqual([c]);
+    expect(plan.sourceSelectionHash).toBe(manifest.selectionHash);
+    expect(manifest.files).toHaveLength(4);
+  });
+
+  it.each(['scripts/test-resources.json', 'scripts/measure-test-selection.mjs'])('requires selector compatibility audits when selection policy changes: %s', async file => {
+    const { selectTests } = await api(); const f = fixture(); f.put(file, '{}');
     const result = await selectTests({ ...f, head: f.commit() });
     expect(result.selectionAudit).toBe(true);
     expect((await selectTests({ ...f, head: f.git('rev-parse', 'HEAD'), base: f.git('rev-parse', 'HEAD') })).selectionAudit).toBe(false);

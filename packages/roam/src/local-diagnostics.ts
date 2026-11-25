@@ -1,4 +1,5 @@
 import { readMoveSetupDiagnostics } from "./setup-diagnostics";
+import { parsePrivateTransferDiagnostic, type PrivateTransferDiagnostic } from "./private-transfer-diagnostics";
 import { corePinDiagnostics } from "./core-pin-diagnostics";
 import { hubStartupDiagnostics, inspectHubService, type HubServiceObservation } from "./hub-service-diagnostics";
 import { hubServiceExists, hubServiceFile, hubServiceSelectionMatches } from "./launchd";
@@ -339,6 +340,22 @@ export function localMoveSetupDiagnostics(root: string): Diagnostic[] {
   try { db = openOwned(join(root, "spider.db")); return db && Number(db.pragma("user_version")) === SCHEMA_VERSION ? readMoveSetupDiagnostics(db) : []; }
   catch { return [{ severity: "warning", reason: "Move setup diagnostic unavailable. Run spider roam doctor and retry setup.", repairCommand: "spider roam doctor" }]; }
   finally { db?.close(); }
+}
+
+/** Explicit private observation only. Ordinary doctor must not publish these codes. */
+export function localPrivateTransferDiagnostics(root: string, operationId: string): PrivateTransferDiagnostic[] {
+  let db: Db | undefined;
+  try {
+    db = openOwned(join(root, "roam", "journal.db"));
+    if (!db || !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='roam_operation_actions'").get()) return [];
+    const rows = db.prepare("SELECT result_json FROM roam_operation_actions WHERE operation_id=? AND action='move-transfer-diagnostic' ORDER BY seq DESC LIMIT 32")
+      .all(operationId) as { result_json: string }[];
+    return rows.reverse().flatMap(row => {
+      if (row.result_json.length > 1024) return [];
+      try { const parsed = parsePrivateTransferDiagnostic(JSON.parse(row.result_json)); return parsed ? [parsed] : []; }
+      catch { return []; }
+    });
+  } finally { db?.close(); }
 }
 
 function pendingPublicationDiagnostics(root: string, records: readonly IntercomPairRecord[]): Diagnostic[] {

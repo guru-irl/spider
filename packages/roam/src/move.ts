@@ -9,6 +9,7 @@ import type { Home, HubOperationReadiness, JsonObject, Probe, StoreBarrier } fro
 import type { IntercomIntakeFence, SessionEndpoint } from "@spider/intercom/protocol";
 import { validHostingWarning } from "./hosting-warning";
 import { peerErrorCode } from "./peer-errors";
+import { withPrivateTransferDiagnostic } from "./private-transfer-diagnostics";
 import { MoveCompositionError, MoveStepError, safeMoveCause, moveFailureRepair, moveFailureDetail, parseMoveFailure, withMoveStep, type MoveCauseCode, type MoveFailureDetail } from "./move-failure";
 import type { MoveFailureStep } from "./cause-codes";
 import { MOVE_REFUSAL_MESSAGES } from "./contracts";
@@ -252,7 +253,7 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
     if (!cleanupRetry || !ports.journal.read(id).some(row => row.action === "move-action-start" && row.result.action === name))
       ports.journal.record(id, "move-action-start", { action: name });
     let value: T;
-    try { value = await effect(); }
+    try { value = await (name === "transfer" ? withPrivateTransferDiagnostic(ports.journal, id, "result", effect) : effect()); }
     catch (error) {
       adapterFailure = moveFailureDetail(error, name === "check" ? "preflight" : name === "prestage" ? "remote-prepare" : name);
       throw error;

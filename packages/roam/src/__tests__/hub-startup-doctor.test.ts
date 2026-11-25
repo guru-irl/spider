@@ -28,7 +28,7 @@ it.each([
   const report = await runLocalDoctor({ root, hubService: async () => state });
   const issue = report.diagnostics.find(row => row.reason.startsWith("hub-startup-pending:"));
   expect(issue).toMatchObject({ severity: "block" });
-  expect(issue?.repairCommand).toBeNull();
+  expect(issue?.repairCommand).toBe('spider roam enable');
   expect(issue?.reason).toContain("Check the hub service and its error log");
   expect(issue?.reason).not.toMatch(/spider roam (enable|doctor)/);
   expect(issue?.reason).toContain(`Last exit code: ${state.lastExitCode}`);
@@ -163,7 +163,7 @@ it("doctor's default observer reports a failed service without opening the error
   vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", binary);
   const report = await runLocalDoctor({ root });
   expect(report.diagnostics).toContainEqual(expect.objectContaining({ severity: "block", reason: expect.stringContaining("Last exit code: 1") }));
-  expect(report.diagnostics.find(row => row.reason.startsWith("hub-startup"))?.repairCommand).toBeNull();
+  expect(report.diagnostics.find(row => row.reason.startsWith("hub-startup"))?.repairCommand).toBe('spider roam enable');
   expect(JSON.stringify(report)).not.toContain("private fixture log contents");
 });
 
@@ -176,7 +176,7 @@ it("the public JSON doctor returns a blocked startup issue with exit metadata an
   const report = JSON.parse(out.join(""));
   expect(report).toMatchObject({ code: 1, reason: "doctor-blocked", value: { enabled: true } });
   expect(report.value.diagnostics).toContainEqual(expect.objectContaining({ severity: "block", reason: expect.stringContaining("hub-startup-pending:") }));
-  expect(report.value.diagnostics.find((row: { reason: string }) => row.reason.startsWith("hub-startup"))?.repairCommand).toBeNull();
+  expect(report.value.diagnostics.find((row: { reason: string }) => row.reason.startsWith("hub-startup"))?.repairCommand).toBe('spider roam enable');
   expect(out.join("")).toContain("Last exit code: 1"); expect(out.join("")).toContain(join(root, "roam/logs/hub.err.log"));
   expect(out.join("") + err.join("")).not.toContain("private fixture log contents");
 });

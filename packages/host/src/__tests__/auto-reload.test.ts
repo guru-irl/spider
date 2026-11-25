@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { activeChildCount, registerChild, registerShared, releaseShared, reloadWouldInterrupt, unregisterChild } from "@spider/subagents";
 import { withPiEvents, hostUnitPorts } from "./fixtures/pi-events.js";
+import { agentsHostFixture } from "./fixtures/agents-host.js";
 import { clearActions } from "../dispatch.js";
 import { registerAutoReload } from "../auto-reload.js";
 import * as reloadModule from "../auto-reload.js";
@@ -36,7 +37,7 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-function hostForCommand(options: { sendUserMessage?: (text: string) => void; onRegistration?: (name: string, handler: (...args: unknown[]) => unknown) => void } = {}) {
+function hostForCommand(options: { sendUserMessage?: (text: string) => void; onRegistration?: (name: string, handler: (...args: unknown[]) => unknown) => void; piVersion?: string } = {}) {
   const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
   const hooks = new Map<string, Array<(...args: unknown[]) => unknown>>();
   const pi = withPiEvents({
@@ -53,7 +54,7 @@ function hostForCommand(options: { sendUserMessage?: (text: string) => void; onR
     },
   });
   vi.stubEnv("PI_SUBAGENT_CHILD", "0");
-  spiderExtension(pi as never, hostUnitPorts);
+  spiderExtension(pi as never, { ...hostUnitPorts, piVersion: options.piVersion });
   shutdowns.push(async () => { for (const handler of [...(hooks.get("session_shutdown") ?? [])]) await handler({ reason: "quit" }); });
   return { commands, hooks };
 }
@@ -165,7 +166,7 @@ it("waits for the real /todos overlay until the user closes it", async () => {
 });
 
 it("waits for the real /agents selector until escape closes it", async () => {
-  const { commands, hooks } = hostForCommand();
+  const { commands, hooks } = hostForCommand({ piVersion: "1.2.0" });
   const cwd = hostDirectory();
   const { db } = openSessionRunDb(cwd, "agents-overlay");
   try {
@@ -173,26 +174,23 @@ it("waits for the real /agents selector until escape closes it", async () => {
                 VALUES ('agents-run','agents-overlay','worker','running',1,0,0)`).run();
   } finally { db.close(); }
   const reload = vi.fn(async () => {});
-  let overlay!: { handleInput(key: string): void; dispose(): void };
-  const theme = { fg: (_name: string, value: string) => value, bg: (_name: string, value: string) => value,
-    bold: (value: string) => value, italic: (value: string) => value };
-  const custom = vi.fn((factory: (...args: any[]) => typeof overlay) => new Promise<void>(resolve => {
-    overlay = factory({ requestRender() {} }, theme, {}, resolve);
-  }));
+  const terminal = agentsHostFixture();
   const context = { mode: "tui", hasUI: true, cwd, isIdle: () => true, hasPendingMessages: () => false,
     sessionManager: { getSessionId: () => "agents-overlay", getSessionFile: () => undefined, getEntries: () => [], getBranch: () => [] },
     getContextUsage: () => null,
-    ui: { getEditorText: () => "", notify: vi.fn(), setWidget: vi.fn(), setFooter: vi.fn(), custom, theme }, reload };
-  for (const handler of [...(hooks.get("session_start") ?? [])]) await handler({ reason: "startup" }, context);
-  const open = commands.get("agents")!.handler("", context);
-  expect(custom).toHaveBeenCalledOnce();
-  await commands.get("spider-reload")!.handler("", context);
-  expect(reload).not.toHaveBeenCalled();
-  overlay.handleInput(String.fromCharCode(27));
-  await open;
-  overlay.dispose();
-  await commands.get("spider-reload")!.handler("", context);
-  expect(reload).toHaveBeenCalledOnce();
+    ui: { ...terminal.ui, getEditorText: () => "", setFooter: vi.fn() }, reload };
+  try {
+    for (const handler of [...(hooks.get("session_start") ?? [])]) await handler({ reason: "startup" }, context);
+    const open = commands.get("agents")!.handler("", context);
+    await terminal.settle();
+    expect(terminal.ui.custom).toHaveBeenCalledOnce();
+    await commands.get("spider-reload")!.handler("", context);
+    expect(reload).not.toHaveBeenCalled();
+    await terminal.send(String.fromCharCode(27));
+    await open;
+    await commands.get("spider-reload")!.handler("", context);
+    expect(reload).toHaveBeenCalledOnce();
+  } finally { terminal.close(); }
 });
 
 it("releases reload after the real /todos overlay throws", async () => {

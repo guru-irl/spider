@@ -1,16 +1,27 @@
 // packages/host/src/agents/run-source.ts
 import { bus, type Db } from "@spider/db-core";
-import type { RunEvent, RunRow, RunSource, RunUsageCosts } from "@spider/ui";
+import type { RunEvent, RunRow, RunSource, RunUsageCosts, StoredRunEvent } from "@spider/ui";
 import { runUsageSummary, sumUsage } from "@spider/subagents";
 
 const RETENTION_MS = 10_000;
+
+interface StoredEventRow {
+  id: number;
+  run_id: string | null;
+  session_id: string;
+  ts: number;
+  type: string;
+  tool: string | null;
+  summary: string | null;
+  payload: string | null;
+}
 
 export function createRunSource(db: Db, sessionId: string): RunSource {
   const listStmt = db.prepare(
     `SELECT * FROM runs WHERE session_id = ? AND (ended_at IS NULL OR ended_at > ?) ORDER BY started_at ASC`);
   const getStmt = db.prepare(`SELECT * FROM runs WHERE id = ?`);
   const eventsStmt = db.prepare(
-    `SELECT run_id, session_id, ts, type, tool, summary, payload FROM run_events WHERE run_id = ? ORDER BY ts ASC, id ASC`);
+    `SELECT id, run_id, session_id, ts, type, tool, summary, payload FROM run_events WHERE run_id = ? ORDER BY ts ASC, id ASC`);
   const safeParse = (s: unknown): unknown => { if (typeof s !== "string") return undefined; try { return JSON.parse(s); } catch { return undefined; } };
   const costs = new Map<string, { tokens: number | undefined; cost: number; usageCosts: RunUsageCosts; compactionCount?: number }>();
   const withCost = (row: RunRow): RunRow => {
@@ -30,8 +41,9 @@ export function createRunSource(db: Db, sessionId: string): RunSource {
       const row = getStmt.get(runId) as RunRow | undefined;
       return row ? withCost(row) : undefined;
     },
-    listEvents(runId: string): RunEvent[] {
-      return (eventsStmt.all(runId) as any[]).map((r) => ({
+    listEvents(runId: string): StoredRunEvent[] {
+      return (eventsStmt.all(runId) as StoredEventRow[]).map((r) => ({
+        id: r.id,
         runId: r.run_id ?? undefined,
         sessionId: r.session_id,
         ts: r.ts,

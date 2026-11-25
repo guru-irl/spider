@@ -80,6 +80,28 @@ it("passes pi's assistant and Markdown classes and clipboard into the native bun
   expect(f.received()).toEqual({ copyButtons: { host: { AssistantMessageComponent: f.context.piHost.AssistantMessageComponent, Markdown: f.context.piTui.Markdown }, copy: f.context.piHost.copyToClipboard } });
 });
 
+it.each(["1.2.0", "1.2.1"])("passes running pi version %s into the native bundle", async version => {
+  const f = fixture();
+  (f.context.piHost as { VERSION?: unknown }).VERSION = version;
+  await f.context.load();
+  expect(f.received()).toMatchObject({ piVersion: version });
+});
+
+it("passes the host version even when copy buttons are unavailable", async () => {
+  const f = fixture();
+  (f.context.piHost as { VERSION?: unknown }).VERSION = "1.2.0";
+  (f.context.piHost as { copyToClipboard?: unknown }).copyToClipboard = undefined;
+  await f.context.load();
+  expect(f.received()).toEqual({ piVersion: "1.2.0" });
+});
+
+it.each([undefined, null, 12])("omits an unavailable or non-string host version", async version => {
+  const f = fixture();
+  (f.context.piHost as { VERSION?: unknown }).VERSION = version;
+  await f.context.load();
+  expect(f.received()).not.toHaveProperty("piVersion");
+});
+
 it.each(["assistant renderer", "Markdown renderer", "clipboard"] as const)("still loads spider if pi does not expose the %s", async missing => {
   const f = fixture();
   if (missing === "assistant renderer") (f.context.piHost as { AssistantMessageComponent?: unknown }).AssistantMessageComponent = undefined;

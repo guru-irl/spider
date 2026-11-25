@@ -91,6 +91,7 @@ import { openSessionHistoryDb, openSessionRunDb } from "./session-run-db";
 export { openSessionRunDb } from "./session-run-db";
 import { mountAgentsUI } from "./agents/mount";
 import { registerAgentsUI } from "./agents/agents-ui";
+import { STALE_SHIM_NOTICE } from "./shim-version";
 import { renderSpiderResult, renderSpiderCall, renderSubagentDone, renderCommandOutput, renderEscalationMessage, renderOrganismEntry } from "./render-result";
 import { modelReviewer } from "./memory-reviewer";
 import { createAdmissionPorts, protectAdmissionApi, registerAdmission } from "./roam/admission.js";
@@ -126,6 +127,7 @@ const organismRuntimes = new WeakMap<object, HostOrganismRuntime>();
 const usageRuntimes = new WeakMap<object, UsageAccounting>();
 const usageServices = new WeakMap<object, ReturnType<typeof registerUsage>>();
 const sessionSchedulers = new WeakMap<object, SessionScheduler>();
+const staleShims = new WeakMap<object, { notice: string }>();
 
 // A-M3 (branch-review A-architecture.md): per-pi-instance record of a `registerRouting`
 // setup failure, read by doctor so it is surfaced instead of fully swallowed. Mirrors
@@ -403,6 +405,8 @@ async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnap
     case "doctor": {
       const report = controlDoctor(cwd, ctx?.sessionId ?? doctorSessionId, loadedBundle, await (usageService ?? (ctx ? usageServices.get(ctx.pi as object) : undefined))?.doctor());
       report.lines.push(...piSettingsDoctorLines((ctx?.pi ?? doctorPi) as ExtensionAPI, ctx?.parentModel));
+      const shim = staleShims.get((ctx?.pi ?? doctorPi) as object);
+      if (shim) report.lines.push(`- ${shim.notice}`);
       if (intercomConflict((ctx?.pi ?? doctorPi) as ExtensionAPI)) { report.ok = false; report.lines.push("- intercom-extension-conflict"); }
       if (ctx) {
         // Routing setup failures remain visible independently of organism diagnostics.
@@ -891,7 +895,7 @@ async function dispatchWithDoctorSnapshot(
   }
 }
 
-export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBroker?: IntercomBrokerPort; bootId?: () => Promise<string>; copyButtons?: { host: CopyButtonsHost; copy: (text: string) => Promise<void> } } = {}): void {
+export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBroker?: IntercomBrokerPort; bootId?: () => Promise<string>; copyButtons?: { host: CopyButtonsHost; copy: (text: string) => Promise<void> }; piVersion?: string } = {}): void {
   // Admission must be the first session_start registration, before any producer opens a writer.
   const admissionPorts = createAdmissionPorts(ports.bootId ? { bootId: ports.bootId } : {});
   let activationContext: ExtensionContext | undefined;
@@ -952,6 +956,18 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
     () => activity.busy() || !!intercom?.hasPendingInboundAsks() || !!scheduler?.blocksReload() || organism.blocksReload(), activity);
   const setForHost = <T>(map: WeakMap<object, T>, value: T) => { map.set(hostPi, value); map.set(pi, value); };
   const clearForHost = <T>(map: WeakMap<object, T>, value: T) => { for (const key of [hostPi, pi]) if (map.get(key) === value) map.delete(key); };
+  const staleShim = ports.piVersion === undefined ? { notice: STALE_SHIM_NOTICE } : undefined;
+  if (staleShim) {
+    setForHost(staleShims, staleShim);
+    let reported = false;
+    pi.on("session_start", (_event, ctx) => {
+      if (reported) return;
+      reported = true;
+      const context = ctx as ExtensionContext;
+      if (context?.hasUI) context.ui.notify(staleShim.notice, "warning");
+      else process.stderr.write(`${staleShim.notice}\n`);
+    });
+  }
   const loopCommand = registerLoopSchedule(pi as unknown as ExtensionAPI, createTimeMath(), ordinaryWorkAllowed);
   scheduler = loopCommand.scheduler;
   setForHost(sessionSchedulers, loopCommand.scheduler);
@@ -1411,6 +1427,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
         cwd,
         registration: agentsUI,
         admitted: ordinaryWorkAllowed,
+        piVersion: ports.piVersion,
         formatRunCost: makeRunCostFormatter(() => usageServices.get(pi)?.snapshot()),
         dispatch: (action, args) => {
           if (!ordinaryWorkAllowed()) throw new Error("Session ownership is not available; run /spider roam doctor.");
@@ -1536,6 +1553,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
       clearForHost(usageRuntimes, accounting);
       clearForHost(usageServices, usageService);
       clearForHost(sessionSchedulers, loopCommand.scheduler);
+      if (staleShim) clearForHost(staleShims, staleShim);
       if (routingSetupError) clearForHost(routingSetupErrors, routingSetupError);
       routingDbs.clear();
       currentContext = undefined;

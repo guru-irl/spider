@@ -12,6 +12,13 @@ import { renderSubagentDone, renderSpiderResult } from "../render-result";
 const dbs: Db[] = [], files: string[] = [];
 afterEach(() => { for (const db of dbs.splice(0)) db.close(); vi.restoreAllMocks(); for (const path of files.splice(0)) rmSync(path, { force: true }); });
 const theme = { fg: (_t: string, s: string) => s, bg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => s, glyph: "🕸" };
+function renderDetail(store: AgentStore, id: string): string {
+  const detail = new AgentDetail(id, theme, { viewport: () => ({ safeHeight: 20 }), requestRender: () => {} });
+  detail.update({ kind: "loaded", run: store.getById(id), events: store.events(id) });
+  const rendered = detail.render(120).join("\n");
+  detail.dispose();
+  return rendered;
+}
 const usage = { input: 1_000_000, output: 200_000, cacheRead: 0, cacheWrite: 0, totalTokens: 1_200_000,
   cost: { input: 0.5, output: 0.34, cacheRead: 0, cacheWrite: 0, total: 0.84 } };
 function fixture() {
@@ -39,13 +46,13 @@ it("renders two stored compactions, including one with unknown model, on every u
   try {
     expect(source.getRun(run.id)?.compactionCount).toBeUndefined(); // Warm cache with no data.
     event({ type: "compaction_end", aborted: false, result: { summary: "first", usage } });
-    expect(new AgentDetail(store, run.id, theme).render(120).join("\n")).toContain("1 compaction");
+    expect(renderDetail(store, run.id)).toContain("1 compaction");
     event({ type: "message_start", message: { role: "assistant", provider: "fixture", model: "actual" } });
     event({ type: "entry_appended", entry: { type: "compaction", id: "boundary", summary: "second", usage } });
     const want = "1.2M tokens · $0.84 · 2 compactions";
-    expect(new AgentDetail(store, run.id, theme).render(120).join("\n")).toContain(want);
+    expect(renderDetail(store, run.id)).toContain(want);
     const restored = new AgentStore(createRunSource(f.db, "owner")); restored.start();
-    try { expect(new AgentDetail(restored, run.id, theme).render(120).join("\n")).toContain(want); }
+    try { expect(renderDetail(restored, run.id)).toContain(want); }
     finally { restored.stop(); }
     finish({ exitCode: 0, result: "fixture report" }); await new Promise(resolve => setImmediate(resolve));
     expect(messages[0].content.split("\n")[1]).toBe("1,200,000 tokens · $0.84 · 2 compactions");
@@ -134,10 +141,10 @@ it("injects live and restored tokens and cost into the agents run detail", () =>
   const f = fixture(), store = new AgentStore(createRunSource(f.db, "owner")); store.start();
   try {
     recordRunUsage(f.db, f.id, { provider: "fixture", model: "actual", usage });
-    expect(new AgentDetail(store, f.id, theme).render(120).join("\n")).toContain("1.2M tokens · $0.84");
+    expect(renderDetail(store, f.id)).toContain("1.2M tokens · $0.84");
     store.stop();
     const restored = new AgentStore(createRunSource(f.db, "owner")); restored.start();
-    try { expect(new AgentDetail(restored, f.id, theme).render(120).join("\n")).toContain("1.2M tokens · $0.84"); }
+    try { expect(renderDetail(restored, f.id)).toContain("1.2M tokens · $0.84"); }
     finally { restored.stop(); }
   } finally { store.stop(); }
 });

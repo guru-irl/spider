@@ -5,8 +5,10 @@ import { join, resolve } from "node:path";
 import { setGlobalDbPathForTests, type Db } from "@spider/db-core";
 import { RunStore, recordRunUsage } from "@spider/subagents";
 import spiderExtension, { buildActionCtx } from "../extension";
+import { mountAgentsUI } from "../agents/mount";
 import { makeAsyncNotifier } from "../../../subagents/src/actions/run";
 import { assertPreflightIsolation, assertPostOpenIsolation, gitInit } from "./fixture-safety";
+import { agentsHostFixture } from "./fixtures/agents-host";
 const state = vi.hoisted(() => ({ factor: 2 }));
 // The external worker boundary is replaced, not the host conversion or renderers.
 vi.mock("../usage/mount", () => ({ registerUsage: () => ({ reload() {}, doctor: async () => ({ ok: true, lines: [] }),
@@ -27,7 +29,7 @@ function fixture() {
   const tools: any[] = [], hooks = new Map<string, Function[]>(), commands = new Map<string, any>();
   const pi = { on: (name: string, callback: Function) => { const list = hooks.get(name) ?? []; list.push(callback); hooks.set(name, list); },
     registerTool: (tool: any) => tools.push(tool), registerCommand: (name: string, def: any) => commands.set(name, def) };
-  vi.stubEnv("PI_SUBAGENT_CHILD", "1"); spiderExtension(withPiEvents(pi), hostUnitPorts); vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  vi.stubEnv("PI_SUBAGENT_CHILD", "1"); spiderExtension(withPiEvents(pi), { ...hostUnitPorts, piVersion: "1.2.0" }); vi.stubEnv("PI_SUBAGENT_CHILD", "0");
   const ctx = buildActionCtx(pi, { action: "run" }, "owner", root); handles.push(ctx.db, ctx.repoDb, ctx.globalDb);
   assertPostOpenIsolation(ctx, { worktree: root, repo: root, global: root });
   const runs = new RunStore(ctx.db), { id } = runs.create({ sessionId: "owner", agent: "worker" });
@@ -54,20 +56,29 @@ it("injects snapshot calibration into the registered run-card renderer", () => {
 });
 // Break: the extension's real session mount forgets the formatter, even though a manual mount works.
 it("calibrates the agents detail through the extension session-start mount", async () => {
-  state.factor = 2; const f = fixture(); let widget: any, selector: any, finish!: () => void;
-  const ui = { setWidget: (_key: string, value: any) => { if (value) widget = value; }, notify() {},
-    custom: <T>(factory: any) => new Promise<T>(resolve => { finish = () => resolve(undefined as T); selector = factory({ requestRender() {} }, theme, {}, resolve); }) };
-  const ctx = { cwd: f.root, mode: "rpc", hasUI: true, ui, sessionManager: { getSessionId: () => "owner" } };
-  let component: any;
+  state.factor = 2; const f = fixture(), terminal = agentsHostFixture();
+  const ctx = { cwd: f.root, mode: "rpc", hasUI: true, ui: terminal.ui, sessionManager: { getSessionId: () => "owner" } };
   try {
     for (const hook of f.hooks.get("session_start") ?? []) await hook({}, ctx);
-    component = widget({ requestRender() {} }, theme);
-    f.commands.get("agents").handler(); selector.handleInput("\r");
-    expect(component.render(120).join("\n")).toContain("1.2k tokens · 60 credits");
+    const pending = f.commands.get("agents").handler();
+    await terminal.settle(); await terminal.send("\r");
+    const detail = terminal.focused()!;
+    expect(detail.render(96).join("\n")).toContain("1.2k tokens · 60 credits");
     state.factor = 3;
-    expect(component.render(120).join("\n")).toContain("1.2k tokens · 90 credits");
+    expect(detail.render(96).join("\n")).toContain("1.2k tokens · 90 credits");
+    await terminal.send("\u001b"); await terminal.send("\u001b"); await pending;
+
+    let open!: () => Promise<void>;
+    const pi = { registerCommand: (_name: string, def: { handler: () => Promise<void> }) => { open = def.handler; }, registerShortcut() {} };
+    const dispose = mountAgentsUI(pi as never, { ui: terminal.ui } as never, { db: f.ctx.db, sessionId: "owner", cwd: f.root,
+      formatRunCost: () => "60 credits", piVersion: "1.2.0" });
+    try {
+      const direct = open(); await terminal.settle(); await terminal.send("\r");
+      expect(terminal.focused()!.render(96).join("\n")).toContain("1.2k tokens · 60 credits");
+      await terminal.send("\u001b"); await terminal.send("\u001b"); await direct;
+    } finally { dispose(); }
   } finally {
-    finish?.(); component?.dispose?.();
     for (const hook of f.hooks.get("session_shutdown") ?? []) await hook({}, ctx);
+    await terminal.settle(); terminal.close();
   }
 });

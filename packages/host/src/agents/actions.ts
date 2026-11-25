@@ -22,11 +22,15 @@ export function createAgentActions(
     resume: () => unavailable("resume"),
     follow: () => { /* UI-local pin; no runtime call */ },
     kill: async (runId: string) => {
-      try {
-        await ctx.dispatch?.("kill", { id: runId });
-        ctx.ui.notify("subagent killed", "info");
-      } catch (err) {
-        ctx.ui.notify(`kill failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+      if (!ctx.dispatch) throw new Error("kill unavailable");
+      const result = await ctx.dispatch("kill", { id: runId });
+      if (!result || typeof result !== "object") return;
+      const response = result as { error?: unknown; isError?: unknown; content?: unknown; details?: { error?: unknown } };
+      if (typeof response.error === "string" && response.error) throw new Error(response.error);
+      if (response.isError === true) {
+        const message = typeof response.content === "string" && response.content ? response.content
+          : typeof response.details?.error === "string" && response.details.error ? response.details.error : "kill failed";
+        throw new Error(message);
       }
     },
   };

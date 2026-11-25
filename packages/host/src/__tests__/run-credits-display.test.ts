@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { openDbAt, type Db } from "@spider/db-core";
 import { RunStore, recordRunUsage } from "@spider/subagents";
-import { AgentStore, AgentDetail } from "@spider/ui";
+import { AgentStore, AgentDetail, type RunCostFormatter } from "@spider/ui";
 import { makeAsyncNotifier } from "../../../subagents/src/actions/run";
 import { createRunSource } from "../agents/run-source";
 import { renderSpiderResult, renderSubagentDone } from "../render-result";
@@ -13,6 +13,11 @@ import { makeRunCostFormatter } from "../run-credits";
 const dbs: Db[] = [], files: string[] = [];
 afterEach(() => { for (const db of dbs.splice(0)) db.close(); for (const file of files.splice(0)) rmSync(file, { force: true }); });
 const theme = { fg: (_: string, s: string) => s, bg: (_: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => s, glyph: "🕸" };
+function detailFor(store: AgentStore, id: string, formatRunCost?: RunCostFormatter): AgentDetail {
+  const detail = new AgentDetail(id, theme, { viewport: () => ({ safeHeight: 20 }), requestRender: () => {}, formatRunCost });
+  detail.update({ kind: "loaded", run: store.getById(id), events: store.events(id) });
+  return detail;
+}
 const usage = { input: 1000, output: 200, cacheRead: 0, cacheWrite: 0, totalTokens: 1200,
   cost: { input: 0.2, output: 0.1, cacheRead: 0, cacheWrite: 0, total: 0.3 } };
 function fixture() {
@@ -38,12 +43,14 @@ it("renders injected credit text on collapsed and expanded run cards", () => {
 // Break: the agents store drops usage attribution or does not use the current formatter on render.
 it("renders the latest credit text on the agents detail without rescanning usage", () => {
   const f = fixture(); let text = "60 credits";
-  const store = new AgentStore(createRunSource(f.db, "owner"), Date.now, () => text); store.start();
+  const formatRunCost = () => text;
+  const store = new AgentStore(createRunSource(f.db, "owner"), Date.now, formatRunCost); store.start();
   try {
-    const detail = new AgentDetail(store, f.id, theme);
+    const detail = detailFor(store, f.id, formatRunCost);
     expect(detail.render(120).join("\n")).toContain("1.2k tokens · 60 credits · 1 compaction");
     text = "90 credits";
     expect(detail.render(120).join("\n")).toContain("1.2k tokens · 90 credits · 1 compaction");
+    detail.dispose();
   } finally { store.stop(); }
 });
 // Break: the notifier does not persist converted text or the completion renderer discards it.
@@ -75,7 +82,7 @@ it.each([
   const formatRunCost = makeRunCostFormatter(() => item.factor === undefined ? undefined : { calibration: { status: "calibrated", factor: item.factor } });
   const source = createRunSource(f.db, "owner"), store = new AgentStore(source, Date.now, formatRunCost); store.start();
   const want = `1.2k tokens · ${item.want} · 1 compaction`;
-  try { expect(new AgentDetail(store, f.id, theme).render(120).join("\n")).toContain(want); }
+  try { const detail = detailFor(store, f.id); expect(detail.render(120).join("\n")).toContain(want); detail.dispose(); }
   finally { store.stop(); }
   const messages: any[] = [];
   makeAsyncNotifier({ db: f.db, formatRunCost, pi: { sendMessage: (message: any) => messages.push(message) } })(f.runs.get(f.id), "done", "fixture output");

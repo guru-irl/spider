@@ -3,8 +3,11 @@ import { openDiagnosticSnapshot } from "./diagnostic-snapshot";
 import { safeMoveFailureStep } from "./cause-codes";
 import { parseMoveFailure } from "./move-failure";
 import type { JsonObject } from "@spider/db-core/roam/types";
+import { MOVE_REFUSAL_MESSAGES } from './contracts';
+import { validateBlockerId } from './move';
+import { ownershipFailureCode, ownershipRepair } from './ownership-failure';
 
-export interface PendingMove { operationId: string; step: string; repairCommand: string }
+export interface PendingMove { operationId: string; step: string; repairCommand: string | null; detail?: string }
 
 /** Read-only evidence. An unreadable journal is not proof that moves are absent. */
 export function readPendingMoves(file: string): PendingMove[] | null {
@@ -25,6 +28,11 @@ export function readPendingMoves(file: string): PendingMove[] | null {
         const action = rows.filter(row => row.action === "move-action-start").at(-1)?.result.action;
         const step = aborting ? "cancel" : failure?.step ?? safeMoveFailureStep(action) ?? "preflight";
         const repair = aborting || !frozen && !transferring ? "cancel" : "recover";
+        const refused = rows.filter(row => row.action === 'move-recovery-refused').at(-1)?.result;
+        if (refused?.reason === 'move-ownership-unavailable' && Array.isArray(refused.blockers)) {
+          const blockers = refused.blockers.map(validateBlockerId);
+          return { operationId, step, repairCommand: null, detail: `Blockers: ${blockers.join(', ')}. ${MOVE_REFUSAL_MESSAGES['move-ownership-unavailable']} ${ownershipRepair(ownershipFailureCode(refused.causeCode) ?? 'ownership-unavailable')}` };
+        }
         return { operationId, step, repairCommand: `spider roam ${repair} ${operationId}` };
       });
     } finally { db.close(); }

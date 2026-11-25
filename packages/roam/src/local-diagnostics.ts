@@ -494,7 +494,7 @@ export function localHubServiceDiagnostics(root: string): Diagnostic[] {
 export function localPendingMoveDiagnostics(root: string): Diagnostic[] {
   const inventory: Diagnostic[] = [], moves = readPendingMoves(join(root, "roam", "journal.db"));
   if (moves === null) inventory.push({ severity: "warning", reason: "pending-moves-unavailable: Cannot inspect pending moves.", repairCommand: "spider roam doctor" });
-  else for (const move of moves) inventory.push({ severity: "warning", reason: `move-pending: Move ${move.operationId} is pending at ${move.step}.`, repairCommand: move.repairCommand });
+  else for (const move of moves) inventory.push({ severity: "block", reason: `move-pending: Move ${move.operationId} is pending at ${move.step}.${move.detail ? ` ${move.detail}` : ''}`, repairCommand: move.repairCommand });
   return inventory;
 }
 

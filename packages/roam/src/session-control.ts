@@ -13,6 +13,7 @@ import { localEntries, readLocal, writeLocal } from "@spider/db-core/roam/local-
 import type { Home, JsonObject, HubOperationReadiness, Probe, ProcessIdentity, StoreKey } from "@spider/db-core/roam/types";
 import type { Diagnostic, HostIntent, Journal, Operation, Outcome, RoamConfig } from "./contracts";
 import { isMachineId } from "./machine-id";
+import { OwnershipFailure, ownershipControlFailure } from './ownership-failure';
 import { parseHubReadiness, validReadiness } from "@spider/db-core/roam/readiness";
 export { validReadiness } from "@spider/db-core/roam/readiness";
 import type { RunningIntentSource } from "./supervisor";
@@ -46,7 +47,8 @@ export function createBothLocks(input: BothLocksOptions): <T>(sessionId: string,
         !Number.isSafeInteger(input.identity.pid) || input.identity.pid <= 0 || !text(input.identity.startIdentity)) throw new Error("Session lock evidence unavailable");
     const bootId = (await (input.bootId ?? localBootId)()).trim();
     const current = await input.inventory.probe(input.identity.pid);
-    if (!bootId || current.kind !== "live" || current.startIdentity !== input.identity.startIdentity) throw new Error("Session lock identity unavailable");
+    if (!bootId) throw new OwnershipFailure('ownership-boot-unavailable');
+    if (current.kind !== "live" || current.startIdentity !== input.identity.startIdentity) throw new OwnershipFailure('ownership-process-unavailable');
     const id = await claimIdLock(input.root, sessionId, input.identity, input.inventory.probe, { exclusive: true, bootId: async () => bootId });
     try {
       const file = await input.file(sessionId);
@@ -99,7 +101,7 @@ export async function controlSession(operation: Operation, ports: SessionControl
   const sessionId = operation.args.sessionId as string;
   let owner: Probe;
   try { owner = await ports.probe(sessionId); }
-  catch { return result(3, "ownership-unavailable"); }
+  catch (error) { return result(3, ownershipControlFailure(error) ?? "ownership-unavailable"); }
   if (!validProbe(owner) || owner.kind === "uncertain") return result(3, "ownership-unavailable");
   try {
     if (operation.kind !== "session-inspect") {
@@ -143,7 +145,7 @@ export async function controlSession(operation: Operation, ports: SessionControl
       if (operation.kind === "session-retire" && dormant.code === 0) ports.journal.record(operation.id, "done", dormant as unknown as JsonObject);
       return dormant;
     });
-  } catch { return result(3, "session-control-unavailable"); }
+  } catch (error) { return result(3, ownershipControlFailure(error) ?? "session-control-unavailable"); }
 }
 
 export interface ParticipantPorts {

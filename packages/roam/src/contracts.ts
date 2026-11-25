@@ -231,6 +231,7 @@ export const MOVE_REFUSAL_MESSAGES = {
   "move-pending": "This move is pending to avoid running two copies. Reconcile it before retrying.",
   "move-rollback-proof-missing": "Rollback readmission proof is missing.",
   "move-abort-pending": "Waiting for the hub to confirm the cancelled move.",
+  "move-ownership-unavailable": "Source ownership cannot be proved.",
 } as const;
 export type MoveRefusalCode = keyof typeof MOVE_REFUSAL_MESSAGES;
 export interface MoveRefusal { code: MoveRefusalCode; blockers: readonly ValidatedBlockerId[]; message: string; hostingWarning?: import("./hosting-warning").HostingWarning;

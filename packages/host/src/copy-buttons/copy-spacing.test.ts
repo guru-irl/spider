@@ -165,6 +165,40 @@ describe("fullscreen reply seams", () => {
     expect(plain(app.chat)).toEqual([...plain(original), ...plain(new Spacer(1)), ...plain(user)]);
   });
 
+  it("uses one seam before reasoning in the next assistant message", () => {
+    const app = fixture();
+    const response = message("Later reply");
+    response.content.unshift({ type: "thinking", thinking: "Later reasoning" });
+    const next = new AssistantMessageComponent(response, false, theme, undefined, 1);
+    app.chat.addChild(app.assistant); app.chat.addChild(next);
+    const before = app.screen();
+    const reply = before.findIndex(line => line.includes("Reply"));
+    const reasoning = before.findIndex(line => line.includes("Later reasoning"));
+    expect(reasoning - reply).toBe(2);
+    app.move("Reply");
+    const after = app.screen();
+    expect(after).toHaveLength(before.length);
+    expect(after[reply + 1]).toMatch(/^🭼.*🭿$/u);
+    expect(after[reply + 2]).toContain("Later reasoning");
+  });
+
+  it("uses one seam before a truncation notice in the same assistant message", () => {
+    const app = fixture();
+    const response = message("Reply");
+    response.stopReason = "length";
+    app.assistant.updateContent(response, false);
+    app.chat.addChild(app.assistant);
+    const before = app.screen();
+    const reply = before.findIndex(line => line.includes("Reply"));
+    const notice = before.findIndex(line => line.includes("Response was truncated"));
+    expect(notice - reply).toBe(2);
+    app.move("Reply");
+    const after = app.screen();
+    expect(after).toHaveLength(before.length);
+    expect(after[reply + 1]).toMatch(/^🭼.*🭿$/u);
+    expect(after[reply + 2]).toContain("Response was truncated");
+  });
+
   it("uses the outline row in place of Pi's spacer after reasoning", () => {
     const app = fixture();
     const response = message("Reply");

@@ -4,6 +4,7 @@ import { causeCode, safeCauseCode, type CauseStep } from "./cause-codes";
 import { agentFailureCode, AgentResponseError, peerPreflightIssue } from "./peer-errors";
 import { setEnrolledPeerEnabled } from "./peer-enabled";
 import { openJournal } from "./journal";
+import { readPendingMoves } from "./pending-moves";
 import { parseDoctorReport, remoteDoctor } from "./remote-observations";
 import { INTERCOM_UNIQUENESS_DESCRIPTION } from "./intercom-readiness";
 import { execFile } from "node:child_process";
@@ -30,7 +31,7 @@ import { listStoreKeys, parseUngathered } from "./store-inventory";
 import { createStorePort } from "./stores";
 import { createTransport, createProvisionTransport } from "./transport";
 
-export interface ControlResult { code: 0 | 1 | 2 | 3; reason: string; message: string; causeCode?: string; issues?: readonly { reason: string; repairCommand: string; detail?: string; causeCode?: string }[];
+export interface ControlResult { code: 0 | 1 | 2 | 3; reason: string; message: string; causeCode?: string; operationId?: string; repairCommand?: string; issues?: readonly { reason: string; repairCommand: string; detail?: string; causeCode?: string }[];
   information?: readonly { machine: string; reason: string }[] }
 const clean = (text: string) => text.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 1000);
 function preflightCheck(reason: string): string {
@@ -267,6 +268,9 @@ export async function disableRoaming(root: string): Promise<ControlResult> {
       const config = readLocalIdentity(root), socket = join(root, "roam", "hub.sock"), journalFile = join(root, "roam", "journal.db");
       const plistDir = join(homedir(), "Library", "LaunchAgents"), plist = hubServiceFile(root, plistDir);
       assertTestConfigPath(plist);
+      const pendingMove = readPendingMoves(journalFile)?.[0];
+      if (pendingMove) return { code: 1, reason: `move-in-progress:${pendingMove.operationId}`, operationId: pendingMove.operationId,
+        repairCommand: `spider roam cancel ${pendingMove.operationId}`, message: `Move ${pendingMove.operationId} is pending at ${pendingMove.step}. Run spider roam cancel ${pendingMove.operationId} before disabling roaming.` };
       const servicePresent = () => hubServiceExists(root, plistDir);
       const finish = async (): Promise<ControlResult> => {
         // Unload KeepAlive before publishing the disabled flag, so a failed unload can be retried.
@@ -295,16 +299,18 @@ export async function disableRoaming(root: string): Promise<ControlResult> {
         return locked(root, config, async () => {
           const hasJournal = existsSync(journalFile);
           if (hasJournal ? homeChangeInProgress(journalFile) !== false : config.enabled || servicePresent())
-            return { code: 3 as const, reason: "disable-safety-unverified", message: "Cannot verify the hub is safe to disable. Run spider roam doctor." };
+            return { code: 3 as const, reason: "disable-safety-unverified", repairCommand: "spider roam doctor", message: "Cannot verify the hub is safe to disable. Run spider roam doctor." };
           return finish();
         }, "roam-hub", 1000);
       }
-      if (reply.code !== 0) return { code: reply.code, reason: /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/.test(reply.reason) ? reply.reason : "disable-refused", message: clean(reply.reason) };
+      if (reply.code !== 0) return { code: reply.code, reason: /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/.test(reply.reason) ? reply.reason : "disable-refused",
+        operationId: reply.operationId, repairCommand: reply.repairCommand ?? "spider roam doctor",
+        message: clean(reply.reason) || "The hub refused disable. Run spider roam doctor." };
       return finish();
     });
   } catch (error) {
     const cause = causeCode(error, step);
-    return { code: 3, reason: changed ? "disable-pending" : "disable-safety-unverified", ...(changed ? { causeCode: cause } : {}),
+    return { code: 3, reason: changed ? "disable-pending" : "disable-safety-unverified", repairCommand: changed ? "spider roam disable" : "spider roam doctor", ...(changed ? { causeCode: cause } : {}),
       message: changed ? `Hub disable needs reconciliation (${cause}). Resolve the cause, then retry spider roam disable.` : "Cannot verify the hub is safe to disable. Run spider roam doctor." };
   }
 }

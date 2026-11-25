@@ -16,7 +16,7 @@ import { observeLocalHosting } from "./production-supervisor";
 import { homedir, userInfo } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { roamingCliEntry } from "./package-layout";
-import { inspectLocalConsumers, isPendingLaunchDiagnostic, localHubServiceDiagnostics, localPendingLaunchDiagnostics, localStoreInventoryDiagnostics, localHostingWarningDiagnostics, localMoveSetupDiagnostics, localPublicationDiagnostics, localPrivateTransferDiagnostics, runLocalDoctor, runLocalStatus } from "./local-diagnostics";
+import { inspectLocalConsumers, isPendingLaunchDiagnostic, localHubServiceDiagnostics, localPendingMoveDiagnostics, localPendingLaunchDiagnostics, localStoreInventoryDiagnostics, localHostingWarningDiagnostics, localMoveSetupDiagnostics, localPublicationDiagnostics, localPrivateTransferDiagnostics, runLocalDoctor, runLocalStatus } from "./local-diagnostics";
 import { requestHubControl } from "./control-socket";
 import { parseRoamJson, storeScope } from "@spider/db-core/roam/codec";
 import { mapRepository } from "@spider/db-core/roam/repo-map";
@@ -461,7 +461,9 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
   if (argv[0] === "roam" && (argv[1] === "enable" || argv[1] === "disable")) {
     const result = argv[1] === "enable" ? await enableRoaming(root, () => roamingCliEntry(options?.bundleUrl ?? new URL(import.meta.url)), options?.bundleUrl) : await disableRoaming(root);
     return emitOutcome(io, { ...outcome(result.code, result.reason, result.issues || result.information ? { issues: result.issues, information: result.information } : null),
-      ...(result.causeCode ? { causeCode: result.causeCode } : {}) }, jsonOutput, `${result.message.split("\n").map(clean).join("\n")}\n`);
+      ...(result.causeCode ? { causeCode: result.causeCode } : {}),
+      ...(result.operationId ? { operationId: result.operationId } : {}),
+      ...(result.repairCommand ? { repairCommand: result.repairCommand } : {}) }, jsonOutput, `${result.message.split("\n").map(clean).join("\n")}\n`);
   }
   if (argv[0] === "roam" && argv[1] === "stores" && argv[2] === "prune") {
     try {
@@ -594,7 +596,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
             rows.push(...await localPendingLaunchDiagnostics({ root, machineId: config.machineId }));
           }
           rows.push(...localHostingWarningDiagnostics(root), ...localMoveSetupDiagnostics(root), ...await localPublicationDiagnostics(root));
-          if (config?.role === "hub") rows.push(...localHubServiceDiagnostics(root));
+          if (config?.role === "hub") rows.push(...localHubServiceDiagnostics(root), ...localPendingMoveDiagnostics(root));
           if (config?.role === "box") {
             rows.push(...corePinDiagnostics(inspectSupervisorCorePin(root, process.env), config.machineId));
             rows.push({ severity: "info", reason: `Recorded core unit ${config.coreUnit ?? "unavailable"} (diagnostic only).`, repairCommand: null });

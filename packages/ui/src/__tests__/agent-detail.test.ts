@@ -6,7 +6,7 @@ import type { AgentSnapshot, StoredRunEvent, ThemeAdapter } from "../agents/type
 import { plainTheme, snapshot, storedEvent } from "./fixtures/agent-detail";
 
 function run(overrides: Partial<AgentSnapshot> = {}): AgentSnapshot {
-  return snapshot({ name: "critic", role: "reviewer", model: "gpt", thinking: "high", phase: "review",
+  return snapshot({ name: "critic", role: "reviewer", model: "fixture-model", thinking: "high", phase: "review",
     stepCount: 4, tokenCount: 88, startedAt: 0, task: "Inspect the change", ...overrides });
 }
 
@@ -47,7 +47,7 @@ describe("AgentDetail bounded rendering", () => {
     expect(strip(lines[0]!)).toContain("…");
     expect(lines.every(line => visibleWidth(line) <= 60)).toBe(true);
     const header = lines.slice(1, 5).map(strip);
-    expect(header[0]).toContain("gpt");
+    expect(header[0]).toContain("fixture-model");
     expect(header[0]).toContain("reviewer");
     expect(header[0]).toContain("high");
     expect(header[0]).toContain("4 turns");

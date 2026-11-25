@@ -136,6 +136,18 @@ it("rejects unknown participant verbs and uncertain ownership without effects", 
   expect(f.journal.read(operation.id)).toEqual([]);
 }, 5000);
 
+it.each([1, 2])('preserves the ownership cause from probe %s without dormant effects', async refusalAt => {
+  const f = fixture(); let probes = 0, effects = 0;
+  const operation: Operation = { id: 'abort-owner', kind: 'session-unfreeze', machineId: BOX, expectedEpoch: 2, args: { sessionId: 'session-1', moveId: 'move-1' } };
+  const ports: control.SessionControlPorts = { journal: f.journal,
+    async probe() { if (++probes === refusalAt) throw Object.assign(new Error('ownership unavailable'), { code: 'ownership-unregistered-process' }); return { kind: 'absent' }; },
+    withBothLocks: async (_id, fn) => fn(),
+    async live() { throw new Error('must not call live'); },
+    async dormant(op) { effects++; return { code: 0, reason: 'unfrozen', operationId: op.id, home: null, epoch: 2, repairCommand: null, value: {} }; } };
+  expect(await control.controlSession(operation, ports)).toMatchObject({ code: 3, reason: 'ownership-unregistered-process', repairCommand: null });
+  expect(effects).toBe(0);
+});
+
 it("dormant control rechecks dormancy while holding both locks", async () => {
   const f = fixture();
   const operation: Operation = { id: "freeze-dormant", kind: "session-freeze", machineId: BOX, expectedEpoch: 2,

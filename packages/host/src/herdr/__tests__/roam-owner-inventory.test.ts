@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createProcessPresence } from '@spider/herdr/sessions/presence';
-import { assessSessionLiveness } from '@spider/herdr/sessions/lease';
+import { assessSessionLiveness, createSessionLeases } from '@spider/herdr/sessions/lease';
 import { createBothLocks } from '@spider/roam/session-control';
 import { processStartTime } from '../../../../subagents/src/process-identity';
 import { createProcessInventory } from '../process-inventory';
@@ -46,6 +46,15 @@ it('a reused PID in a different runtime remains an unidentified live process', a
   await f.presence.record({ ...f.identity, startIdentity: 'old-start', sessionId: 'other-session', sessionFile: f.unrelated, sessionName: null, kind: 'top-level', hcAddress: null });
   expect(await assessSessionLiveness(f.file, createProcessInventory(f.local, false, [f.other]))).toMatchObject({ kind: 'uncertain', pids: [process.pid] });
   expect(await f.presence.list()).toHaveLength(1);
+});
+
+it('a stale file lease does not block absence when its reused PID is proved unrelated', async () => {
+  const f = await fixture();
+  const inventory = createProcessInventory(f.local, false, [f.other]);
+  const leases = createSessionLeases(f.local);
+  await leases.claim(f.file, { ...f.identity, startIdentity: 'old-start' }, inventory, { mode: 'bookkeeping' });
+  const locks = createBothLocks({ root: f.local, inventory, file: async () => f.file, identity: f.identity, bootId: async () => 'boot-a' });
+  expect(await locks('target-session', async held => held!.owns())).toBe(true);
 });
 
 it('a read-only inventory never removes a stale registration from another runtime', async () => {

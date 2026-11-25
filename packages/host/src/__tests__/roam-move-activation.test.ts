@@ -18,6 +18,7 @@ import { sessionHome } from "@spider/roam/homes";
 import { startMachineMoveSocket } from "@spider/roam/machine-move-socket";
 import { createBothLocks } from "@spider/roam/session-control";
 import { createSessionLeases } from "@spider/herdr/sessions/lease";
+import { claimIdLock } from '@spider/herdr/sessions/id-lock';
 import { createProcessPresence } from "@spider/herdr/sessions/presence";
 import { processStartTime } from "../../../subagents/src/process-identity";
 import * as localRuntime from "@spider/roam/runtime";
@@ -31,7 +32,11 @@ import { registerAdmission, type AdmissionGate } from "../roam/admission";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { fixtureIntercom } from "../roam/__tests__/intercom-move-fixture";
 
-const processRows = vi.hoisted(() => ({ value: null as string | null }));
+const processRows = vi.hoisted(() => ({ value: null as string | null, boot: null as string | null }));
+vi.mock('@spider/herdr/sessions/id-lock', async original => {
+  const actual = await original<typeof import('@spider/herdr/sessions/id-lock')>();
+  return { ...actual, localBootId: () => processRows.boot === null ? actual.localBootId() : Promise.resolve(processRows.boot) };
+});
 vi.mock('node:child_process', async original => {
   const actual = await original<typeof import('node:child_process')>();
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) =>
@@ -45,7 +50,7 @@ const REPO = "origin:fixture-repo", WORKSPACE = "fixture-workspace";
 const WORKTREE: StoreKey = `worktree:${REPO}:${WORKSPACE}`;
 const ROSTER: StoreKey[] = ["global", `repo:${REPO}`, WORKTREE];
 const fixtures: ReturnType<typeof createReplica>[] = [], dbs: Db[] = [];
-afterEach(() => { processRows.value = null; vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const db of dbs.splice(0)) db.close(); for (const f of fixtures.splice(0)) f.close(); });
+afterEach(() => { processRows.value = null; processRows.boot = null; vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const db of dbs.splice(0)) db.close(); for (const f of fixtures.splice(0)) f.close(); });
 
 async function fixture(beforeMapping = true, bound = false, box = false, worktreeOnly = false) {
   const machineId = box ? BOX : HUB;
@@ -163,6 +168,43 @@ it('the production move probe accounts for an unrelated Pi registered in the nor
     await mounted?.close(); await f.machine.close();
     await normalPresence.remove({ pid: process.pid, startIdentity: processStartTime(process.pid)! });
   }
+});
+
+it.each(['no-lock', 'previous-boot', 'exited-owner'] as const)('an unidentified Pi cannot become an absent owner with %s', async mode => {
+  const f = await fixture(); processRows.value = `${process.pid} pi node pi`; processRows.boot = 'boot-b';
+  let lock: Awaited<ReturnType<typeof claimIdLock>> | undefined;
+  if (mode !== 'no-lock') lock = await claimIdLock(join(f.global.root, 'herdr'), f.sessionId,
+    { pid: 99999991, startIdentity: 'old-start' }, async () => ({ kind: 'absent' }), { bootId: async () => mode === 'previous-boot' ? 'boot-a' : 'boot-b' });
+  let mounted: Awaited<ReturnType<typeof f.compose>> | undefined;
+  try {
+    mounted = await f.compose();
+    await expect(mounted.bindings.participant!.probe(f.sessionId)).rejects.toMatchObject({ code: 'ownership-unregistered-process' });
+  } finally { await mounted?.close(); await lock?.release(); await f.machine.close(); }
+});
+
+it('a missing boot identity never proves a matching live lock absent', async () => {
+  const f = await fixture(); processRows.boot = '';
+  const lock = await claimIdLock(join(f.global.root, 'herdr'), f.sessionId,
+    { pid: process.pid, startIdentity: processStartTime(process.pid)! }, async () => ({ kind: 'live', startIdentity: processStartTime(process.pid)! }), { bootId: async () => 'boot-a' });
+  let mounted: Awaited<ReturnType<typeof f.compose>> | undefined;
+  try {
+    mounted = await f.compose();
+    await expect(mounted.bindings.participant!.probe(f.sessionId)).rejects.toMatchObject({ code: 'ownership-boot-unavailable' });
+  } finally { await mounted?.close(); await lock.release(); await f.machine.close(); }
+});
+
+it('a reused lock PID is absent only when its replacement is proved unrelated', async () => {
+  const f = await fixture(); processRows.value = `${process.pid} pi node pi`; processRows.boot = 'boot-a';
+  const lock = await claimIdLock(join(f.global.root, 'herdr'), f.sessionId,
+    { pid: process.pid, startIdentity: 'old-start' }, async () => ({ kind: 'live', startIdentity: 'old-start' }), { bootId: async () => 'boot-a' });
+  const other = join(f.global.root, 'other.jsonl'); writeFileSync(other, '{}\n');
+  const presence = createProcessPresence(join(f.global.root, 'herdr'));
+  await presence.record({ pid: process.pid, startIdentity: processStartTime(process.pid)!, sessionId: 'other-session', sessionFile: other, sessionName: null, kind: 'top-level', hcAddress: null });
+  let mounted: Awaited<ReturnType<typeof f.compose>> | undefined;
+  try {
+    mounted = await f.compose();
+    expect(await mounted.bindings.participant!.probe(f.sessionId)).toEqual({ kind: 'absent' });
+  } finally { await mounted?.close(); await lock.release(); await f.machine.close(); }
 });
 
 it.each(["activation", "composition"])("%s starts a capture-ready box with a worktree-only location", async path => {

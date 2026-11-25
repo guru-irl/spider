@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AssistantMessageComponent } from "@earendil-works/pi-coding-agent";
-import { Markdown, stripTerminalSequences, visibleWidth, type Component, type MarkdownTheme, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { ToolExecutionComponent, AssistantMessageComponent } from "@earendil-works/pi-coding-agent";
+import { Spacer, Markdown, stripTerminalSequences, visibleWidth, type Component, type MarkdownTheme, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 
 const identity = (text: string) => text;
@@ -14,7 +14,7 @@ const message: AssistantMessage = {
   usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
   stopReason: "stop", timestamp: 0,
 };
-const host = { AssistantMessageComponent, Markdown };
+const host = { AssistantMessageComponent, ToolExecutionComponent, Markdown, Spacer };
 const proto = AssistantMessageComponent.prototype;
 const original = proto.updateContent;
 const patch = Symbol.for("spider.copy-buttons.updateContent");

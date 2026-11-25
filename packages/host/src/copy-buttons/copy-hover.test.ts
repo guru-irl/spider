@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AssistantMessageComponent, initTheme } from "@earendil-works/pi-coding-agent";
-import { Markdown, Text, TuiAltScreen, getCapabilities, setCapabilities, stripTerminalSequences, visibleWidth, type Component, type MarkdownTheme, type Terminal, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { ToolExecutionComponent, AssistantMessageComponent, initTheme } from "@earendil-works/pi-coding-agent";
+import { Spacer, Markdown, Text, TuiAltScreen, getCapabilities, setCapabilities, stripTerminalSequences, visibleWidth, type Component, type MarkdownTheme, type Terminal, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { installCopyButtons, registerCopyButtons } from "./index.js";
 
@@ -19,7 +19,7 @@ function fixture(text: string, timestamp?: number, fullscreen = true, padding = 
   const copied: string[] = [];
   const requestRender = vi.fn();
   let isFullscreen = fullscreen;
-  installCopyButtons({ AssistantMessageComponent, Markdown }, {
+  installCopyButtons({ AssistantMessageComponent, ToolExecutionComponent, Markdown, Spacer }, {
     isFullscreen: () => isFullscreen,
     copy: async value => { copied.push(value); },
     requestRender,
@@ -34,6 +34,9 @@ function fixture(text: string, timestamp?: number, fullscreen = true, padding = 
 }
 function render(md: Markdown, width = 60): string[] {
   return md.render(width).map(stripTerminalSequences);
+}
+function column(line: string, text: string): number {
+  return visibleWidth(line.slice(0, line.indexOf(text)));
 }
 function mouse(md: Markdown, type: TuiMouseEvent["type"], x = 1, y = 0) {
   const lines = render(md);
@@ -62,7 +65,7 @@ function fullscreenFixture(long = false) {
   const events = new Map<string, (event: unknown, ctx: unknown) => void>();
   const pi = { on: (name: string, handler: (event: unknown, ctx: unknown) => void) => events.set(name, handler) };
   const copied: string[] = [];
-  registerCopyButtons(pi as never, { AssistantMessageComponent, Markdown }, () => ({}), async text => { copied.push(text); });
+  registerCopyButtons(pi as never, { AssistantMessageComponent, ToolExecutionComponent, Markdown, Spacer }, () => ({}), async text => { copied.push(text); });
   const uiTheme = { fg: (token: string, text: string) => token === "borderMuted" ? `\x1b[38;5;245m${text}\x1b[39m` : text };
   let widget: (Component & { dispose?: () => void }) | undefined;
   const context = { mode: "tui", hasUI: true, cwd: "/project", ui: {
@@ -84,7 +87,7 @@ function fullscreenFixture(long = false) {
     const lines = screen();
     const y = lines.findIndex(line => line.includes(text));
     if (y < 0) throw new Error(`Not on screen: ${text}`);
-    return { x: lines[y].indexOf(text), y };
+    return { x: column(lines[y], text), y };
   };
   const move = (text: string) => { const { x, y } = at(text); send(`\x1b[<35;${x + 1};${y + 1}M`); };
   return { tui, terminal, screen, send, move, at, copied, selected, opened, assistant, resize: () => resize(),
@@ -293,7 +296,7 @@ describe("assistant copy hover", () => {
     mouse(md, "move");
     const lines = render(md);
     const y = lines.findIndex(line => line.includes("⧉ text"));
-    const x = lines[y].indexOf("⧉ text");
+    const x = column(lines[y], "⧉ text");
     const clickAt = (col: number) => (md as Component).handleMouse?.({ type: "click", button: "left", x: col, y, screenX: col, screenY: y, width: 60, height: lines.length, shift: false, alt: false, ctrl: false });
     expect(clickAt(x + 5)).toEqual({ handled: true });
     await Promise.resolve();
@@ -313,7 +316,7 @@ describe("assistant copy hover", () => {
     mouse(first.md, "move");
     const lines = render(first.md);
     const y = lines.findIndex(line => line.includes("⧉ md"));
-    const x = lines[y].indexOf("⧉ md");
+    const x = column(lines[y], "⧉ md");
     render(other);
     mouse(other, "move");
     const event: TuiMouseEvent = { type: "click", button: "left", x, y, screenX: x, screenY: y, width: 60, height: lines.length, shift: false, alt: false, ctrl: false };
@@ -362,7 +365,7 @@ describe("assistant copy hover", () => {
     render(md);
     mouse(md, "move");
     const row = render(md).find(line => line.includes("⧉ text"));
-    expect(row).toMatch(/^▏Jan 3 03:15\s+⧉ text\s+⧉ md▕$/);
+    expect(row).toMatch(/^🭼Jan 3 03:15▁+⧉ text▁▁▁⧉ md🭿$/u);
   });
 
   it("updates the timestamp label when the system time zone changes", () => {
@@ -397,7 +400,7 @@ describe("assistant copy hover", () => {
     render(md);
     mouse(md, "move");
     const row = render(md).find(line => line.includes("⧉ text"));
-    expect(row).toMatch(/^▏Jan 2 21:00.*⧉ text/);
+    expect(row).toMatch(/^🭼Jan 2 21:00.*⧉ text/u);
   });
 
   it("adds the local month and day when the message was sent on an earlier day", () => {
@@ -407,7 +410,7 @@ describe("assistant copy hover", () => {
     const { md } = fixture("Yesterday", Date.UTC(2024, 0, 1, 8, 15));
     render(md);
     mouse(md, "move");
-    expect(render(md).find(line => line.includes("⧉ text"))).toMatch(/^▏Jan 1 03:15.*⧉ text/);
+    expect(render(md).find(line => line.includes("⧉ text"))).toMatch(/^🭼Jan 1 03:15.*⧉ text/u);
   });
 
   it("keeps extremely narrow layouts within the terminal width", () => {
@@ -438,8 +441,8 @@ describe("assistant copy hover", () => {
     expect(after.join("\n")).toContain("⧉ text");
     expect(after.join("\n")).not.toContain("08:15");
     const controls = after.find(line => line.includes("⧉ text"))!;
-    expect(controls.indexOf("⧉ text")).toBe(12);
-    expect(controls.indexOf("⧉ md")).toBe(21);
+    expect(column(controls, "⧉ text")).toBe(12);
+    expect(column(controls, "⧉ md")).toBe(21);
     expect(after).toHaveLength(before.length);
     expect(after.findIndex(line => line.includes("Hello"))).toBe(before.findIndex(line => line.includes("Hello")));
     expect(after.every(line => visibleWidth(line) <= 26)).toBe(true);
@@ -449,7 +452,7 @@ describe("assistant copy hover", () => {
     vi.useFakeTimers();
     vi.stubEnv("TZ", "UTC");
     vi.setSystemTime(new Date("2024-01-03T18:00:00Z"));
-    const { md } = fixture("```js\nx()\n```", Date.UTC(2024, 0, 1, 8, 15));
+    const { md } = fixture("```js\nx()\n```\n\nEnd", Date.UTC(2024, 0, 1, 8, 15));
     const before = render(md, 26);
     const event: TuiMouseEvent = { type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width: 26, height: before.length, shift: false, alt: false, ctrl: false };
     (md as Component).handleMouse?.(event);
@@ -466,7 +469,7 @@ describe("assistant copy hover", () => {
     vi.useFakeTimers();
     vi.stubEnv("TZ", "UTC");
     vi.setSystemTime(new Date("2024-01-03T18:00:00Z"));
-    const { md, copied } = fixture("Intro\n\n```js\nx()\n```", Date.UTC(2024, 0, 1, 8, 15));
+    const { md, copied } = fixture("Intro\n\n```js\nx()\n```\n\nEnd", Date.UTC(2024, 0, 1, 8, 15));
     const before = render(md, 26);
     const motion: TuiMouseEvent = { type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width: 26, height: before.length, shift: false, alt: false, ctrl: false };
     (md as Component).handleMouse?.(motion);
@@ -517,7 +520,7 @@ describe("assistant copy hover", () => {
     mouse(md, "move");
     const after = render(md);
     expect(after[0]).toMatch(/^🭽▔+🭾$/u);
-    expect(after.at(-1)).toMatch(/^🭼▁+🭿$/u);
+    expect(after.at(-1)).toMatch(/^🭼.*⧉ text▁▁▁⧉ md🭿$/u);
     expect(after.filter(line => line.includes("First line"))[0]).toMatch(/^▏.*▕$/);
     expect(after).toHaveLength(before.length);
     expect(after.every(line => visibleWidth(line) <= 60)).toBe(true);
@@ -529,7 +532,7 @@ describe("assistant copy hover", () => {
     }
   });
 
-  it("aligns reply text with reasoning and preserves Pi's single spacer", () => {
+  it("aligns reply text with reasoning and uses the outline as the single spacer", () => {
     vi.stubEnv("TZ", "UTC");
     initTheme(undefined, false);
     const { assistant } = fixture("Hello", Date.UTC(2024, 0, 3, 8, 15));
@@ -542,18 +545,14 @@ describe("assistant copy hover", () => {
     const thinking = before.findIndex(line => line.includes("Thinking about it"));
     expect(thinking).toBeGreaterThanOrEqual(0);
     expect(before[thinking].indexOf("Thinking about it")).toBe(1);
-    expect(before[thinking + 1].trim()).toBe("");
-    expect(before[thinking + 2]).toBe(" ".repeat(60));
-    expect(before[thinking + 3]).toBe(` Hello${" ".repeat(54)}`);
-    expect(before[thinking + 4]).toBe(" ".repeat(60));
-    expect(before[thinking + 5]).toBe(" ".repeat(60));
+    expect(before[thinking + 1]).toBe(" ".repeat(60));
+    expect(before[thinking + 2]).toBe(` Hello${" ".repeat(54)}`);
+    expect(before[thinking + 3]).toBe(" ".repeat(60));
     mouse(md, "move");
     const after = assistant.render(60).map(stripTerminalSequences);
-    expect(after[thinking + 1].trim()).toBe("");
-    expect(after[thinking + 2]).toBe(`🭽${"▔".repeat(58)}🭾`);
-    expect(after[thinking + 3]).toBe(`▏Hello${" ".repeat(53)}▕`);
-    expect(after[thinking + 4]).toMatch(/^▏Jan 3 08:15\s+⧉ text\s+⧉ md▕$/);
-    expect(after[thinking + 5]).toBe(`🭼${"▁".repeat(58)}🭿`);
+    expect(after[thinking + 1]).toBe(`🭽${"▔".repeat(58)}🭾`);
+    expect(after[thinking + 2]).toBe(`▏Hello${" ".repeat(53)}▕`);
+    expect(after[thinking + 3]).toMatch(/^🭼Jan 3 08:15▁+⧉ text▁▁▁⧉ md🭿$/u);
     expect(after).toHaveLength(before.length);
   });
 
@@ -599,7 +598,7 @@ describe("assistant copy hover", () => {
     expect(after).toHaveLength(before.length);
     expect(before.findIndex(line => line.includes("Hello"))).toBe(textRow);
     expect(after[textRow]).not.toContain("⧉ text");
-    expect(after[textRow + 1]).toMatch(/^▏Jan 3 08:15\s+⧉ text\s+⧉ md▕$/);
+    expect(after[textRow + 1]).toMatch(/^🭼Jan 3 08:15▁+⧉ text▁▁▁⧉ md🭿$/u);
     expect(before[textRow + 1]).not.toContain("⧉ text");
   });
 
@@ -619,9 +618,9 @@ describe("assistant copy hover", () => {
     const lines = render(md);
     const text = lines.find(line => line.includes("Hello"))!;
     const row = lines.find(line => line.includes("⧉ text"))!;
-    expect(row.indexOf("Jan 3 08:15")).toBe(text.indexOf("Hello"));
-    expect(row.indexOf("Jan 3 08:15")).toBe(1);
-    expect(row.indexOf("⧉ md") + 4).toBe(59);
+    expect(column(row, "Jan 3 08:15")).toBe(text.indexOf("Hello"));
+    expect(column(row, "Jan 3 08:15")).toBe(1);
+    expect(column(row, "⧉ md") + 4).toBe(59);
   });
 
   it("falls back to a one-cell inset when Markdown padding is unavailable", () => {
@@ -632,8 +631,8 @@ describe("assistant copy hover", () => {
     const internals = md as unknown as { paddingX?: number };
     delete internals.paddingX;
     const row = render(md).find(line => line.includes("⧉ text"))!;
-    expect(row.indexOf("Jan 3 08:15")).toBe(2);
-    expect(row.indexOf("⧉ md") + 4).toBe(58);
+    expect(column(row, "Jan 3 08:15")).toBe(2);
+    expect(column(row, "⧉ md") + 4).toBe(58);
   });
 
   it.each([[28, 26], [16, 15]])("drops time before reducing an unavailable-padding fallback at width %i", (width, groupEnd) => {
@@ -644,7 +643,7 @@ describe("assistant copy hover", () => {
     delete (md as unknown as { paddingX?: number }).paddingX;
     const row = render(md, width).find(line => line.includes("⧉ text"))!;
     expect(row).not.toContain("Jan 3 08:15");
-    expect(row.indexOf("⧉ md") + 4).toBe(groupEnd);
+    expect(column(row, "⧉ md") + 4).toBe(groupEnd);
     expect(visibleWidth(row)).toBe(width);
   });
 
@@ -653,8 +652,8 @@ describe("assistant copy hover", () => {
     mouse(md, "move");
     const row = render(md, 21).find(line => line.includes("⧉ text"))!;
     expect(visibleWidth(row)).toBe(21);
-    expect(row.indexOf("⧉ text")).toBe(7);
-    expect(row.indexOf("⧉ md") + 4).toBe(20);
+    expect(column(row, "⧉ text")).toBe(7);
+    expect(column(row, "⧉ md") + 4).toBe(20);
   });
 
   it("keeps controls and drops the date when the two no longer fit", () => {
@@ -666,17 +665,17 @@ describe("assistant copy hover", () => {
       return render(md, width);
     };
     const minimum = move(15);
-    expect(minimum.find(line => line.includes("⧉ text"))).toBe("▏⧉ text   ⧉ md▕");
+    expect(minimum.find(line => line.includes("⧉ text"))).toBe("🭼⧉ text▁▁▁⧉ md🭿");
     expect(minimum.every(line => visibleWidth(line) <= 15)).toBe(true);
     const sixteen = move(16);
-    expect(sixteen.find(line => line.includes("⧉ text"))!.indexOf("⧉ md") + 4).toBe(15);
+    expect(column(sixteen.find(line => line.includes("⧉ text"))!, "⧉ md") + 4).toBe(15);
     const seventeen = move(17);
-    expect(seventeen.find(line => line.includes("⧉ text"))!.indexOf("⧉ md") + 4).toBe(16);
+    expect(column(seventeen.find(line => line.includes("⧉ text"))!, "⧉ md") + 4).toBe(16);
     const narrow = move(26);
     expect(narrow.join("\n")).toContain("⧉ text");
     expect(narrow.join("\n")).not.toContain("Jan 3 08:15");
     const fits = move(27);
-    expect(fits.find(line => line.includes("⧉ text"))).toMatch(/^▏Jan 3 08:15 ⧉ text   ⧉ md▕$/);
+    expect(fits.find(line => line.includes("⧉ text"))).toMatch(/^🭼Jan 3 08:15▁⧉ text▁▁▁⧉ md🭿$/u);
   });
 
   it.each([80, 30])("ends the natural-width controls at the reply margin at width %i", width => {
@@ -686,7 +685,7 @@ describe("assistant copy hover", () => {
     (md as Component).handleMouse?.({ type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width, height: before.length, shift: false, alt: false, ctrl: false });
     const lines = render(md, width);
     const row = lines.find(line => line.includes("⧉ text"))!;
-    expect(row).toBe(`▏Jan 3 08:15${" ".repeat(width - 26)}⧉ text   ⧉ md▕`);
+    expect(row).toBe(`🭼Jan 3 08:15${"▁".repeat(width - 26)}⧉ text▁▁▁⧉ md🭿`);
     expect(visibleWidth(row)).toBe(width);
   });
 
@@ -731,9 +730,9 @@ describe("assistant copy hover", () => {
     mouse(md, "move");
     const lines = render(md);
     const y = lines.findIndex(line => line.includes("⧉ text"));
-    const textX = lines[y].indexOf("⧉ text");
-    const mdX = lines[y].indexOf("⧉ md");
-    const timeX = lines[y].indexOf("Jan 3 08:15");
+    const textX = column(lines[y], "⧉ text");
+    const mdX = column(lines[y], "⧉ md");
+    const timeX = column(lines[y], "Jan 3 08:15");
     expect(timeX).toBe(1);
     expect(textX).toBe(46);
     expect(mdX).toBe(55);
@@ -746,8 +745,8 @@ describe("assistant copy hover", () => {
     expect(click(textX)).toEqual({ handled: true });
     await Promise.resolve();
     const confirmed = render(md)[y];
-    expect(confirmed.indexOf("✓ text")).toBe(textX);
-    expect(confirmed.indexOf("⧉ md")).toBe(mdX);
+    expect(column(confirmed, "✓ text")).toBe(textX);
+    expect(column(confirmed, "⧉ md")).toBe(mdX);
     expect(click(mdX)).toEqual({ handled: true });
     await Promise.resolve();
     expect(copied).toEqual(["Bold", "**Bold**"]);

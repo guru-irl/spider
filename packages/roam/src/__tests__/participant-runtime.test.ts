@@ -263,11 +263,11 @@ it.each(["null", "object", "string", "empty", "non-string", "unknown kind", "mis
       expect((await createIntentStore(f.global.root).get("s-1"))?.value).toMatchObject({
         intent: { suspended: null }, supervision: { kind: "idle", nextAttemptAt: null } });
       expect(readLocal(f.global.db, "supervisor-hosting-error", "s-1") ?? null).toEqual(pass < 3 ? null
-        : { code: "supervisor-hosting-error", check: "inspection", since: 1, count: 3 });
+        : { code: "supervisor-hosting-error", check: "inspection", since: 1, count: 3, causeCode: "inspection-unavailable" });
     }
     expect(launches).toBe(0);
     expect(log.mock.calls.map(args => JSON.parse(String(args[0])))).toEqual([{
-      event: "supervisor-hosting-error", sessionId: "s-1", code: "supervisor-hosting-error", check: "inspection",
+      event: "supervisor-hosting-error", sessionId: "s-1", code: "supervisor-hosting-error", check: "inspection", causeCode: "inspection-unavailable",
     }]);
   } finally { await supervisor.stop(); log.mockRestore(); }
 }, 5000);
@@ -1095,3 +1095,29 @@ it("retains resume diagnostics through hub control routing", async () => {
   const safe = safeControlOutcome({ ...result, operationId: result.operationId ?? "", home: result.home ?? null, epoch: result.epoch ?? null, repairCommand: result.repairCommand ?? null });
   expect(controlText(safe)).toContain(diagnostic.reason); expect(controlText(safe)).toContain(`spider roam doctor ${BOX}`);
 }, 5000);
+
+
+it("reports disabled destination capture without launching or changing the reservation", async () => {
+  const f = fixture(); await handleSessionOperation(f.operation, f.ports, { wake: async () => {} });
+  const intents = createIntentStore(f.global.root), authority = createRunningIntentAuthority(f.global.db);
+  const intent = (await authority.get("s-1"))!;
+  const reserved = { intent, failures: [], supervision: { kind: "launching" as const, operationId: "exact-reservation", phase: "reserved" as const } };
+  await intents.update("s-1", null, reserved);
+  f.worktree.db.prepare("UPDATE roam_meta SET capture_enabled=0 WHERE id=1").run();
+  let launches = 0;
+  const log = vi.spyOn(console, "error").mockImplementation(() => {});
+  const supervisor = createParticipantSupervisor({ root: f.global.root, agent: f.ports,
+    clock: { now: () => 1, later: () => () => {} }, events: { subscribe: () => () => {} },
+    owner: async () => ({ kind: "absent" }), diagnostics: async () => [], stop: async () => ({ kind: "absent" }), notify: async () => {},
+    async launch() { launches++; throw new Error("must not launch"); } });
+  try {
+    for (let pass = 0; pass < 3; pass++) await supervisor.reconcile();
+    expect(readLocal(f.global.db, "supervisor-hosting-error", "s-1")).toEqual({ code: "supervisor-hosting-error", check: "inspection",
+      causeCode: "participant-capture-uninitialized", since: 1, count: 3 });
+    expect(log.mock.calls.map(args => JSON.parse(String(args[0])))).toEqual([{ event: "supervisor-hosting-error", sessionId: "s-1",
+      code: "supervisor-hosting-error", check: "inspection", causeCode: "participant-capture-uninitialized" }]);
+    expect((await intents.get("s-1"))?.value).toEqual(reserved);
+    expect(launches).toBe(0);
+    expect(f.worktree.db.prepare("SELECT capture_enabled FROM roam_meta WHERE id=1").get()).toEqual({ capture_enabled: 0 });
+  } finally { await supervisor.stop(); }
+});

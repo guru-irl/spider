@@ -379,3 +379,27 @@ it.each([true, false])("shows non-stopping hosting warnings in doctor and text a
     }
   } finally { global.close(); }
 });
+
+
+it("shows safe inspection causes and cancellation advice in doctor and cached status", async () => {
+  const root = fixture(); configure(root, false);
+  const global = openDb(join(root, "spider.db"));
+  try {
+    migrate(global, "global", { machineId: HUB, globalRoot: root });
+    writeLocal(global, "supervisor-hosting-error", "session-local", { code: "supervisor-hosting-error", check: "inspection", since: 1,
+      count: 3, causeCode: "EACCES" });
+    writeLocal(global, "peer-hosting-warnings", BOX, [{ sessionId: "session-remote", code: "supervisor-hosting-error", check: "inspection", since: 1,
+      count: 3, causeCode: "participant-capture-uninitialized" }]);
+    const before = snapshot(root);
+    for (const command of ["doctor", "status"]) {
+      const out: string[] = [];
+      await main(["roam", command, "--json"], { out: text => out.push(text), err() {} });
+      const parsed = JSON.parse(out.join("")), diagnostics = command === "doctor" ? parsed.value.diagnostics : parsed.diagnostics;
+      expect(diagnostics).toContainEqual(expect.objectContaining({ code: "supervisor-hosting-error", severity: "warning",
+        reason: expect.stringMatching(/session-local.*inspection.*EACCES.*cancel hosting.*on the hub/), repairCommand: "spider roam stop session-local" }));
+      if (command === "status") expect(diagnostics).toContainEqual(expect.objectContaining({ code: "supervisor-hosting-error",
+        reason: expect.stringMatching(/session-remote.*participant-capture-uninitialized/), repairCommand: "spider roam stop session-remote" }));
+      expect(snapshot(root)).toEqual(before);
+    }
+  } finally { global.close(); }
+});

@@ -1,4 +1,7 @@
 import * as sessionFiles from "../session-file";
+import { createParticipantSupervisor } from "../participant-supervisor";
+import { createBoxParticipantWake } from "../participant-runtime";
+import { createIntentStore } from "../intent";
 import { readLocal } from "@spider/db-core/roam/local-state";
 import { isDeepStrictEqual } from "node:util";
 // SPDX-License-Identifier: MIT
@@ -839,7 +842,7 @@ it("gathers source barriers after a transient shortcut failure", async () => {
 }, 5000);
 
 it("destination start retains the enrolled hub even when the caller targets the box", async () => {
-  const f = await fixture(), home = casHome(f.global.db, f.home, BOX, f.operation.id, HUB);
+  const f = await fixture(BOX), home = casHome(f.global.db, f.home, BOX, f.operation.id, HUB);
   f.bindings.participant!.config = { ...f.config, role: "box", machineId: BOX };
   f.worktree.db.prepare("UPDATE roam_sessions SET state='retired'").run();
   const start = f.ports.start(home, { session: f.sourceManifest, workspace: f.sourceWorkspace } as PreparedMove, { ...f.operation, machineId: BOX });
@@ -1835,3 +1838,63 @@ it("duplicate store keys from a peer are refused before import staging", async (
   await expect(handleMoveParticipantOperation(operation, f.journal, f.bindings)).rejects.toThrow("Invalid roaming location stores");
   expect(f.journal.read(f.operation.id).some(row => row.action === "move-import-intent")).toBe(false);
 }, 5000);
+
+
+it.each([false, true])("destination activation enables capture before exact hosting with several maps, already activated=%s", async alreadyActivated => {
+  const f = await fixture(BOX), home = casHome(f.global.db, f.home, BOX, f.operation.id, HUB);
+  f.global.db.prepare("UPDATE roam_meta SET machine_id=? WHERE id=1").run(BOX);
+  const config = { ...f.config, machineId: BOX, role: "box" as const };
+  const authority = createRunningIntentAuthority(f.global.db), intents = createIntentStore(f.root);
+  const prepared = { session: f.sourceManifest, workspace: f.sourceWorkspace } as PreparedMove;
+  const operation: Operation = { id: "destination-start", kind: "session-start", machineId: BOX, expectedEpoch: 2,
+    args: { sourceMachine: HUB, sessionId: SESSION, moveId: f.operation.id, prepared: prepared as unknown as JsonObject } };
+  for (let n = 0; n < 4; n++) f.global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path,snapshot_json) VALUES(?,?,?,NULL)")
+    .run("other-repo", `workspace-${n}`, join(f.root, `other-${n}`));
+  const agent = { config, root: join(f.root, "roam", "staging"), journal: f.journal, openStore(key: StoreKey) {
+    if (key === "global") return { db: f.global.db, effects: {} as never, policy: {} as never };
+    if (key === WT) return { db: f.worktree.db, effects: {} as never, policy: {} as never };
+    throw new Error("must not inspect an unrelated mapped store");
+  } };
+  let owner: Probe = { kind: "absent" }, launches = 0;
+  const supervisor = createParticipantSupervisor({ root: f.root, agent, clock: { now: () => 1, later: () => () => {} },
+    events: { subscribe: () => () => {} }, owner: async () => owner, diagnostics: async () => [],
+    stop: async () => ({ kind: "absent" }), notify: async () => {},
+    async launch(intent, operationId, mode, beforeSpawn?: import("../supervisor").LaunchInvocation["beforeSpawn"]) {
+      expect(mode).toBe("initial");
+      expect((await intents.get(SESSION))?.value.supervision).toEqual({ kind: "launching", phase: "reserved", operationId });
+      expect(await beforeSpawn!()).toBe("admitted");
+      launches++; owner = { kind: "live", identity: { bootId: "boot", pid: 42, startTime: "start" } };
+      const ready: HubOperationReadiness = { origin: "hub-operation", opId: operationId, sessionId: SESSION, epoch: 2,
+        file: f.file, cwd: f.repo, core: "core-a", terminal: "terminal-a" };
+      f.journal.begin({ id: operationId, kind: "exact-session-launch", machineId: BOX, expectedEpoch: 2, args: {} });
+      recordReadiness(f.journal, ready); writeLocal(f.global.db, "participant-ready", SESSION, ready);
+      return { code: 0, reason: "ready", operationId, home, epoch: 2, repairCommand: null, value: ready };
+    } });
+  let reconcile = false;
+  const participant = { ...f.bindings.participant!, config, probe: async () => owner,
+    wake: createBoxParticipantWake({ root: f.root, db: f.global.db, config, journal: f.journal,
+      async wake() { if (reconcile) await supervisor.reconcile(); } }),
+    async readiness(query: { launchId: string }) { return readReadiness(f.journal, query.launchId); } };
+  const bindings = { ...f.bindings, participant };
+  try {
+    if (alreadyActivated) {
+      expect(await handleMoveParticipantOperation(operation, f.journal, bindings)).toMatchObject({ code: 3, reason: "readiness-pending" });
+      expect((await intents.get(SESSION))?.value.supervision.kind).toBe("launching");
+    } else f.worktree.db.prepare("UPDATE roam_sessions SET state='retired',epoch=2 WHERE session_id=?").run(SESSION);
+    // Imported destination stores have a valid layout and key, but capture defaults to off.
+    f.worktree.db.prepare("UPDATE roam_meta SET capture_enabled=0 WHERE id=1").run();
+    reconcile = true;
+    if (alreadyActivated) {
+      // A recorded launch reuses its reservation. The supervisor sweep observes the repaired capture.
+      expect(await handleMoveParticipantOperation(operation, f.journal, bindings)).toMatchObject({ code: 3, reason: "readiness-pending" });
+      await supervisor.reconcile();
+    }
+    expect(await handleMoveParticipantOperation(operation, f.journal, bindings)).toMatchObject({ code: 0, value: { sessionId: SESSION, epoch: 2 } });
+    expect(f.worktree.db.prepare("SELECT capture_enabled FROM roam_meta WHERE id=1").get()).toEqual({ capture_enabled: 1 });
+    expect((await intents.get(SESSION))?.value.supervision.kind).toBe("live");
+    await supervisor.reconcile();
+    await handleMoveParticipantOperation(operation, f.journal, bindings);
+    expect(launches).toBe(1);
+    expect(f.global.db.prepare("SELECT count(*) AS n FROM roam_workspace_maps").get()).toEqual({ n: 5 });
+  } finally { await supervisor.stop(); }
+});

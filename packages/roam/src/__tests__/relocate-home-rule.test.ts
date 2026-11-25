@@ -15,5 +15,5 @@ it("only a local running home admits", () => {
     [{...base,state:"stopped",destination:null},false],
     [null,false],
   ];
-  for (const [home,want] of homes) expect(canRunHome(home,LOCAL),JSON.stringify(home)).toBe(want);
+  for (const [home,want] of homes) expect.soft(canRunHome(home,LOCAL),JSON.stringify(home)).toBe(want);
 });

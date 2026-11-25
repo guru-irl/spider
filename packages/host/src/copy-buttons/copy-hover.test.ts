@@ -287,7 +287,7 @@ describe("assistant copy hover", () => {
     expect(app.screen().join("\n")).not.toContain("⧉ text");
   });
 
-  it("copies from padded button cells but not the gap between buttons", async () => {
+  it("copies from the last text label cell but not the following gap", async () => {
     const { md, copied } = fixture("**Bold**");
     render(md);
     mouse(md, "move");
@@ -295,10 +295,10 @@ describe("assistant copy hover", () => {
     const y = lines.findIndex(line => line.includes("⧉ text"));
     const x = lines[y].indexOf("⧉ text");
     const clickAt = (col: number) => (md as Component).handleMouse?.({ type: "click", button: "left", x: col, y, screenX: col, screenY: y, width: 60, height: lines.length, shift: false, alt: false, ctrl: false });
-    expect(clickAt(x + 7)).toEqual({ handled: true });
+    expect(clickAt(x + 5)).toEqual({ handled: true });
     await Promise.resolve();
     expect(copied).toEqual(["Bold"]);
-    expect(clickAt(x + 8)).toBeUndefined();
+    expect(clickAt(x + 6)).toBeUndefined();
     expect(copied).toEqual(["Bold"]);
   });
 
@@ -362,7 +362,7 @@ describe("assistant copy hover", () => {
     render(md);
     mouse(md, "move");
     const row = render(md).find(line => line.includes("⧉ text"));
-    expect(row).toMatch(/^▏Jan 3 03:15\s+⧉ text\s+⧉ md\s+▕$/);
+    expect(row).toMatch(/^▏Jan 3 03:15\s+⧉ text\s+⧉ md▕$/);
   });
 
   it("updates the timestamp label when the system time zone changes", () => {
@@ -415,15 +415,15 @@ describe("assistant copy hover", () => {
     const two = render(md, 2);
     expect(two.every(line => visibleWidth(line) <= 2)).toBe(true);
     expect(two.join("\n")).not.toContain("⧉ text");
-    const nineteen = render(md, 19);
-    const event: TuiMouseEvent = { type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width: 19, height: nineteen.length, shift: false, alt: false, ctrl: false };
+    const fifteen = render(md, 15);
+    const event: TuiMouseEvent = { type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width: 15, height: fifteen.length, shift: false, alt: false, ctrl: false };
     (md as Component).handleMouse?.(event);
-    const hovered = render(md, 19);
-    expect(hovered.every(line => visibleWidth(line) <= 19)).toBe(true);
+    const hovered = render(md, 15);
+    expect(hovered.every(line => visibleWidth(line) <= 15)).toBe(true);
     expect(hovered.join("\n")).toContain("⧉ text");
-    const eighteen = render(md, 18);
-    expect(eighteen.every(line => visibleWidth(line) <= 18)).toBe(true);
-    expect(eighteen.join("\n")).not.toContain("⧉ text");
+    const fourteen = render(md, 14);
+    expect(fourteen.every(line => visibleWidth(line) <= 14)).toBe(true);
+    expect(fourteen.join("\n")).not.toContain("⧉ text");
   });
 
   it("keeps controls without reflow when the timestamp does not fit", () => {
@@ -431,18 +431,18 @@ describe("assistant copy hover", () => {
     vi.stubEnv("TZ", "UTC");
     vi.setSystemTime(new Date("2024-01-03T18:00:00Z"));
     const { md } = fixture("Hello", Date.UTC(2024, 0, 3, 8, 15));
-    const before = render(md, 28);
-    const event: TuiMouseEvent = { type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width: 28, height: before.length, shift: false, alt: false, ctrl: false };
+    const before = render(md, 26);
+    const event: TuiMouseEvent = { type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width: 26, height: before.length, shift: false, alt: false, ctrl: false };
     (md as Component).handleMouse?.(event);
-    const after = render(md, 28);
+    const after = render(md, 26);
     expect(after.join("\n")).toContain("⧉ text");
     expect(after.join("\n")).not.toContain("08:15");
     const controls = after.find(line => line.includes("⧉ text"))!;
-    expect(controls.indexOf("⧉ text")).toBe(10);
-    expect(controls.indexOf("⧉ md")).toBe(19);
+    expect(controls.indexOf("⧉ text")).toBe(12);
+    expect(controls.indexOf("⧉ md")).toBe(21);
     expect(after).toHaveLength(before.length);
     expect(after.findIndex(line => line.includes("Hello"))).toBe(before.findIndex(line => line.includes("Hello")));
-    expect(after.every(line => visibleWidth(line) <= 28)).toBe(true);
+    expect(after.every(line => visibleWidth(line) <= 26)).toBe(true);
   });
 
   it("keeps a complete border around extra block action rows at narrow widths", () => {
@@ -450,14 +450,14 @@ describe("assistant copy hover", () => {
     vi.stubEnv("TZ", "UTC");
     vi.setSystemTime(new Date("2024-01-03T18:00:00Z"));
     const { md } = fixture("```js\nx()\n```", Date.UTC(2024, 0, 1, 8, 15));
-    const before = render(md, 28);
-    const event: TuiMouseEvent = { type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width: 28, height: before.length, shift: false, alt: false, ctrl: false };
+    const before = render(md, 26);
+    const event: TuiMouseEvent = { type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width: 26, height: before.length, shift: false, alt: false, ctrl: false };
     (md as Component).handleMouse?.(event);
-    const after = render(md, 28);
+    const after = render(md, 26);
     expect(after).toHaveLength(before.length);
     for (const line of after.slice(1, -1)) {
       expect(line).toMatch(/^▏.*▕$/);
-      expect(visibleWidth(line)).toBe(28);
+      expect(visibleWidth(line)).toBe(26);
     }
     expect(after.join("\n").match(/⧉ text/g)).toHaveLength(2);
   });
@@ -467,13 +467,13 @@ describe("assistant copy hover", () => {
     vi.stubEnv("TZ", "UTC");
     vi.setSystemTime(new Date("2024-01-03T18:00:00Z"));
     const { md, copied } = fixture("Intro\n\n```js\nx()\n```", Date.UTC(2024, 0, 1, 8, 15));
-    const before = render(md, 28);
-    const motion: TuiMouseEvent = { type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width: 28, height: before.length, shift: false, alt: false, ctrl: false };
+    const before = render(md, 26);
+    const motion: TuiMouseEvent = { type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width: 26, height: before.length, shift: false, alt: false, ctrl: false };
     (md as Component).handleMouse?.(motion);
-    const after = render(md, 28);
+    const after = render(md, 26);
     const y = after.findIndex(line => line.includes("⧉ md"));
     const x = after[y].indexOf("⧉ md");
-    expect(x).toBe(19);
+    expect(x).toBe(21);
     expect(after[y]).not.toContain("Jan 1 08:15");
     expect((md as Component).handleMouse?.({ ...motion, type: "click", button: "left", x, y, screenX: x, screenY: y, height: after.length })).toEqual({ handled: true });
     await Promise.resolve();
@@ -485,15 +485,15 @@ describe("assistant copy hover", () => {
     vi.stubEnv("TZ", "UTC");
     vi.setSystemTime(new Date("2024-01-03T18:00:00Z"));
     const { md } = fixture("Hello", Date.UTC(2024, 0, 1, 8, 15));
-    const before = render(md, 28);
-    const event: TuiMouseEvent = { type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width: 28, height: before.length, shift: false, alt: false, ctrl: false };
+    const before = render(md, 26);
+    const event: TuiMouseEvent = { type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width: 26, height: before.length, shift: false, alt: false, ctrl: false };
     (md as Component).handleMouse?.(event);
-    const after = render(md, 28);
+    const after = render(md, 26);
     expect(after.join("\n")).not.toContain("Jan 1 08:15");
     expect(after.join("\n")).toContain("⧉ text");
     expect(after).toHaveLength(before.length);
     expect(after.findIndex(line => line.includes("Hello"))).toBe(before.findIndex(line => line.includes("Hello")));
-    expect(after.every(line => visibleWidth(line) <= 28)).toBe(true);
+    expect(after.every(line => visibleWidth(line) <= 26)).toBe(true);
   });
 
   it("preserves wide and combining text cells when the border appears", () => {
@@ -552,7 +552,7 @@ describe("assistant copy hover", () => {
     expect(after[thinking + 1].trim()).toBe("");
     expect(after[thinking + 2]).toBe(`🭽${"▔".repeat(58)}🭾`);
     expect(after[thinking + 3]).toBe(`▏Hello${" ".repeat(53)}▕`);
-    expect(after[thinking + 4]).toMatch(/^▏Jan 3 08:15\s+⧉ text\s+⧉ md\s+▕$/);
+    expect(after[thinking + 4]).toMatch(/^▏Jan 3 08:15\s+⧉ text\s+⧉ md▕$/);
     expect(after[thinking + 5]).toBe(`🭼${"▁".repeat(58)}🭿`);
     expect(after).toHaveLength(before.length);
   });
@@ -599,7 +599,7 @@ describe("assistant copy hover", () => {
     expect(after).toHaveLength(before.length);
     expect(before.findIndex(line => line.includes("Hello"))).toBe(textRow);
     expect(after[textRow]).not.toContain("⧉ text");
-    expect(after[textRow + 1]).toMatch(/^▏Jan 3 08:15\s+⧉ text\s+⧉ md\s+▕$/);
+    expect(after[textRow + 1]).toMatch(/^▏Jan 3 08:15\s+⧉ text\s+⧉ md▕$/);
     expect(before[textRow + 1]).not.toContain("⧉ text");
   });
 
@@ -621,7 +621,7 @@ describe("assistant copy hover", () => {
     const row = lines.find(line => line.includes("⧉ text"))!;
     expect(row.indexOf("Jan 3 08:15")).toBe(text.indexOf("Hello"));
     expect(row.indexOf("Jan 3 08:15")).toBe(1);
-    expect(row.indexOf("⧉ md") + 8).toBe(59);
+    expect(row.indexOf("⧉ md") + 4).toBe(59);
   });
 
   it("falls back to a one-cell inset when Markdown padding is unavailable", () => {
@@ -633,10 +633,10 @@ describe("assistant copy hover", () => {
     delete internals.paddingX;
     const row = render(md).find(line => line.includes("⧉ text"))!;
     expect(row.indexOf("Jan 3 08:15")).toBe(2);
-    expect(row.indexOf("⧉ md") + 8).toBe(58);
+    expect(row.indexOf("⧉ md") + 4).toBe(58);
   });
 
-  it.each([[31, 29], [20, 19]])("drops time before reducing an unavailable-padding fallback at width %i", (width, groupEnd) => {
+  it.each([[28, 26], [16, 15]])("drops time before reducing an unavailable-padding fallback at width %i", (width, groupEnd) => {
     vi.stubEnv("TZ", "UTC");
     const { md } = fixture("Hi", Date.UTC(2024, 0, 3, 8, 15), true, 3);
     mouse(md, "move");
@@ -644,7 +644,7 @@ describe("assistant copy hover", () => {
     delete (md as unknown as { paddingX?: number }).paddingX;
     const row = render(md, width).find(line => line.includes("⧉ text"))!;
     expect(row).not.toContain("Jan 3 08:15");
-    expect(row.indexOf("⧉ md") + 8).toBe(groupEnd);
+    expect(row.indexOf("⧉ md") + 4).toBe(groupEnd);
     expect(visibleWidth(row)).toBe(width);
   });
 
@@ -653,8 +653,8 @@ describe("assistant copy hover", () => {
     mouse(md, "move");
     const row = render(md, 21).find(line => line.includes("⧉ text"))!;
     expect(visibleWidth(row)).toBe(21);
-    expect(row.indexOf("⧉ text")).toBe(3);
-    expect(row.indexOf("⧉ md") + 8).toBe(20);
+    expect(row.indexOf("⧉ text")).toBe(7);
+    expect(row.indexOf("⧉ md") + 4).toBe(20);
   });
 
   it("keeps controls and drops the date when the two no longer fit", () => {
@@ -665,19 +665,64 @@ describe("assistant copy hover", () => {
       (md as Component).handleMouse?.({ type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width, height: lines.length, shift: false, alt: false, ctrl: false });
       return render(md, width);
     };
-    const minimum = move(19);
-    expect(minimum.join("\n")).toContain("⧉ text");
-    expect(minimum.find(line => line.includes("⧉ text"))).toMatch(/^▏⧉ text\s+⧉ md\s*▕$/);
-    expect(minimum.every(line => visibleWidth(line) <= 19)).toBe(true);
-    const twenty = move(20);
-    expect(twenty.find(line => line.includes("⧉ text"))!.indexOf("⧉ md") + 8).toBe(19);
-    const twentyOne = move(21);
-    expect(twentyOne.find(line => line.includes("⧉ text"))!.indexOf("⧉ md") + 8).toBe(20);
-    const narrow = move(30);
+    const minimum = move(15);
+    expect(minimum.find(line => line.includes("⧉ text"))).toBe("▏⧉ text   ⧉ md▕");
+    expect(minimum.every(line => visibleWidth(line) <= 15)).toBe(true);
+    const sixteen = move(16);
+    expect(sixteen.find(line => line.includes("⧉ text"))!.indexOf("⧉ md") + 4).toBe(15);
+    const seventeen = move(17);
+    expect(seventeen.find(line => line.includes("⧉ text"))!.indexOf("⧉ md") + 4).toBe(16);
+    const narrow = move(26);
     expect(narrow.join("\n")).toContain("⧉ text");
     expect(narrow.join("\n")).not.toContain("Jan 3 08:15");
-    const fits = move(31);
-    expect(fits.find(line => line.includes("⧉ text"))).toMatch(/^▏Jan 3 08:15\s+⧉ text\s+⧉ md\s+▕$/);
+    const fits = move(27);
+    expect(fits.find(line => line.includes("⧉ text"))).toMatch(/^▏Jan 3 08:15 ⧉ text   ⧉ md▕$/);
+  });
+
+  it.each([80, 30])("ends the natural-width controls at the reply margin at width %i", width => {
+    vi.stubEnv("TZ", "UTC");
+    const { md } = fixture("Hello", Date.UTC(2024, 0, 3, 8, 15));
+    const before = render(md, width);
+    (md as Component).handleMouse?.({ type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width, height: before.length, shift: false, alt: false, ctrl: false });
+    const lines = render(md, width);
+    const row = lines.find(line => line.includes("⧉ text"))!;
+    expect(row).toBe(`▏Jan 3 08:15${" ".repeat(width - 26)}⧉ text   ⧉ md▕`);
+    expect(visibleWidth(row)).toBe(width);
+  });
+
+  it.each([80, 30])("keeps both labels in place when either icon flips at width %i", async width => {
+    vi.stubEnv("TZ", "UTC");
+    const { md, copied } = fixture("**Bold**", Date.UTC(2024, 0, 3, 8, 15));
+    const before = render(md, width);
+    const event: TuiMouseEvent = { type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width, height: before.length, shift: false, alt: false, ctrl: false };
+    (md as Component).handleMouse?.(event);
+    const lines = render(md, width);
+    const y = lines.findIndex(line => line.includes("⧉ text"));
+    const initial = lines[y];
+    const textX = width - 14;
+    const mdX = width - 5;
+    const click = (x: number) => (md as Component).handleMouse?.({ ...event, type: "click", button: "left", x, y, screenX: x, screenY: y });
+    expect(click(textX)).toEqual({ handled: true });
+    await Promise.resolve();
+    expect(render(md, width)[y]).toBe(initial.replace("⧉ text", "✓ text"));
+    expect(click(mdX)).toEqual({ handled: true });
+    await Promise.resolve();
+    expect(render(md, width)[y]).toBe(initial.replace("⧉ md", "✓ md"));
+    expect(copied).toEqual(["Bold", "**Bold**"]);
+  });
+
+  it("limits click targets to the natural labels and leaves all three gap cells to pi", async () => {
+    vi.stubEnv("TZ", "UTC");
+    const { md, copied } = fixture("**Bold**", Date.UTC(2024, 0, 3, 8, 15));
+    mouse(md, "move");
+    const lines = render(md);
+    const y = lines.findIndex(line => line.includes("⧉ text"));
+    const click = (x: number) => (md as Component).handleMouse?.({ type: "click", button: "left", x, y, screenX: x, screenY: y, width: 60, height: lines.length, shift: false, alt: false, ctrl: false });
+    for (const x of [1, 25, 45, 52, 53, 54, 59]) expect(click(x)).toBeUndefined();
+    expect(copied).toEqual([]);
+    for (const x of [46, 51, 55, 58]) expect(click(x)).toEqual({ handled: true });
+    await Promise.resolve();
+    expect(copied).toEqual(["Bold", "Bold", "**Bold**", "**Bold**"]);
   });
 
   it("moves click targets with the buttons and leaves the rest to pi", async () => {
@@ -690,8 +735,8 @@ describe("assistant copy hover", () => {
     const mdX = lines[y].indexOf("⧉ md");
     const timeX = lines[y].indexOf("Jan 3 08:15");
     expect(timeX).toBe(1);
-    expect(textX).toBe(42);
-    expect(mdX).toBe(51);
+    expect(textX).toBe(46);
+    expect(mdX).toBe(55);
     const click = (x: number, row = y) => (md as Component).handleMouse?.({ type: "click", button: "left", x, y: row, screenX: x, screenY: row, width: 60, height: lines.length, shift: false, alt: false, ctrl: false });
     expect(click(timeX)).toBeUndefined();
     expect(click(timeX + 15)).toBeUndefined();
@@ -701,7 +746,7 @@ describe("assistant copy hover", () => {
     expect(click(textX)).toEqual({ handled: true });
     await Promise.resolve();
     const confirmed = render(md)[y];
-    expect(confirmed.indexOf("✓ copied")).toBe(textX);
+    expect(confirmed.indexOf("✓ text")).toBe(textX);
     expect(confirmed.indexOf("⧉ md")).toBe(mdX);
     expect(click(mdX)).toEqual({ handled: true });
     await Promise.resolve();

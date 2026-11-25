@@ -25,6 +25,13 @@ const agent: AgentSnapshot = {
 };
 
 describe("icon styles in rendered rows", () => {
+  it.each(["text", "nerd"] as const)("keeps copy and copied icons equally wide in %s style", style => {
+    expect(() => icon(style, "copied")).not.toThrow();
+    const copied = icon(style, "copied");
+    expect(copied).toBe(style === "text" ? "✓" : "\u{F012C}");
+    expect(visibleWidth(copied)).toBe(visibleWidth(icon(style, "copy")));
+  });
+
   it("returns each role's specified text and Nerd Font glyph with equal cell widths", () => {
     const roles: [IconRole, string, string][] = [
       ["agent", "\u{1F916}", "\u{F167A} "], ["spider", "\u{1F578}\uFE0F", "\u{F0BCA} "], ["warning", "\u26A0\uFE0F", "\u{F002A} "], ["failure", "\u274C", "\u{F0156} "],

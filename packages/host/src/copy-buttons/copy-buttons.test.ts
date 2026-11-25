@@ -147,7 +147,7 @@ describe("copy buttons", () => {
     expect(() => click(md, row, "⧉ text")).not.toThrow();
     expect(errors).toHaveLength(1);
     expect((errors[0] as Error).message).toBe("clipboard unavailable");
-    expect(render(md)[row]).not.toContain("✓ copied");
+    expect(render(md)[row]).not.toContain("✓ text");
   });
 
   it("leaves pi alone when a required renderer internal is missing", () => {
@@ -168,7 +168,7 @@ describe("copy buttons", () => {
     const before = render(md)[row];
     click(md, row, "⧉ text"); await Promise.resolve();
     const after = render(md)[row];
-    expect(after).toContain("✓ copied");
+    expect(after).toContain("✓ text");
     expect(after.indexOf("⧉ md")).toBe(before.indexOf("⧉ md"));
     await vi.advanceTimersByTimeAsync(1500);
     expect(render(md)[row]).toBe(before);
@@ -301,6 +301,7 @@ describe("copy buttons", () => {
     expect((md as Component).handleMouse?.(event)).toEqual({ handled: true });
     await Promise.resolve();
     expect(copied).toEqual(["Hello"]);
+    expect(render(md)[row]).toBe(after.replace("\u{F018F} md", "\u{F012C} md"));
   });
 
   it("does not double wrap when activated twice", async () => {

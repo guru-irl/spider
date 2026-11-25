@@ -11,6 +11,10 @@ import { HerdrError, object, text, integer, nullableInteger, nullableText, absol
 import { compactFailedPhase } from './diagnostics.js';
 import { MAX_FAILED_TERMINAL_CLEANUP_ATTEMPTS } from './cleanup.js';
 
+export function jobJournalRoot(globalRoot: string): string {
+  return join(globalRoot, 'herdr', 'jobs');
+}
+
 export interface JournalJob extends JobRecord {
   nonce: string;
   releaseDeadlineAt: number;

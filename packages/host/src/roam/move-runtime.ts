@@ -35,6 +35,7 @@ import { inspectIdLock, inspectReleasedIdLock, localBootId } from "@spider/herdr
 import { processStartTime } from "../../../subagents/src/process-identity";
 import { createTerminalRegistry } from "@spider/herdr/sessions/registry";
 import { createHcClient } from "@spider/herdr/client/hc";
+import { jobJournalRoot } from "@spider/herdr/jobs/store";
 import { createHostRoamPresentationPorts } from "./readiness";
 import { createDormantControl } from "./control";
 import { createBlockerPorts } from "./evidence";
@@ -345,7 +346,7 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
       dormant(context) {
         return createDormantControl({ ...context, blockerPorts: createBlockerPorts({ sessionId: context.sessionId, address: context.intercom.address,
           activity: { busy: () => false, bashRunning: () => false, promptOpen: () => false },
-          routeStores: [globalDb], jobRoots: [join(root, "jobs")], scratchRoots: [join(root, "scratch")], broker: context.evidence.broker.inspectFreezeBlockers.bind(context.evidence.broker),
+          routeStores: [globalDb], jobRoots: [jobJournalRoot(root)], scratchRoots: [join(root, "scratch")], broker: context.evidence.broker.inspectFreezeBlockers.bind(context.evidence.broker),
           bridge: context.evidence.bridge, settlement: context.evidence.settlement }), ingestThrough: createUsageIngestThrough({ registryDb: globalDb.raw.name, ledgerFile: join(root, "usage.db"), sessionsDir: join(loadHerdrConfig(root).agentDirectory, "sessions"), authPath: join(loadHerdrConfig(root).agentDirectory, "auth.json"), leaseDir: join(root, "usage-leases") }, context.sessionId, config.machineId) });
       },
       async retireFailed(home, operation) {

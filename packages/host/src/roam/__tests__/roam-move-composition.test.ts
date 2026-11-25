@@ -7,6 +7,7 @@ import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { once } from "node:events";
 import { createReplica } from "@spider/db-core/testutil";
+import { createJobStore, type JournalJob } from "@spider/herdr/jobs/store";
 import { DEFAULT_LIMITS, disabledIntercom, type RoamConfig } from "@spider/roam/contracts";
 import { openFreezeJournal } from "@spider/roam/journal";
 import { unboundMoveEffects, moveEffectReason } from "@spider/roam/move-ports";
@@ -212,6 +213,17 @@ async function inspectProductionActivation(initializeScratch: boolean) {
     const inventory = { presence: createProcessPresence(leases.root), leases, processes: async () => [], probe: async () => ({ kind: "live" as const, startIdentity }) };
     await createBothLocks({ root: leases.root, file: async () => file, inventory, identity: { pid: process.pid, startIdentity } })(sessionId, async () => {
       expect((await live.inspect()).blockers).toEqual([]);
+      const owner = { sessionId, generation: "generation", cwd: "/fixture", sessionFile: null, name: null,
+        terminal: { coreId: "core", terminalId: "terminal", address: "terminal", socket: "/fixture/socket", sessionNamespace: "fixture" } } as JournalJob["owner"];
+      const remote: JournalJob = { version: 1, id: "remote-job" as never, owner, machine: "box.invalid" as never,
+        kind: "exec", phase: { kind: "running", address: "box/terminal" as never, releasedAt: 1 }, viewer: null,
+        remoteDirectory: "/fixture/remote", localDirectory: "/fixture/local", detached: true, noticeMode: "async", notice: "pending",
+        nonce: "nonce", releaseDeadlineAt: 1, originalFinish: null, output: null, callerOwned: true, uncertain: false,
+        evidenceConflict: false, noticeDelivered: false, settledMarked: false, terminalExpired: false, updatedAt: 1 };
+      const store = createJobStore(join(global.root, "herdr", "jobs"), sessionId as never);
+      await store.write({ version: 1, sessionId: sessionId as never, revision: 1, updatedAt: 1, jobs: [remote] });
+      expect((await live.inspect()).blockers).toEqual([{ kind: "remote-job", id: "remote-job", detail: "A remote job is still active." }]);
+      await store.write({ version: 1, sessionId: sessionId as never, revision: 2, updatedAt: 2, jobs: [] });
       const child = spawn(process.execPath, ["-e", "process.stdin.resume()"], { stdio: ["pipe", "ignore", "ignore"] });
       await once(child, "spawn");
       const job = join(scratch[0], "bg", "active-job"); mkdirSync(job, { recursive: true });

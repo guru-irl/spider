@@ -15,6 +15,7 @@ import { loadHerdrConfig } from "@spider/roam/production-hub";
 import { sessionHome } from "@spider/roam/homes";
 import { createTransport } from "@spider/roam/transport";
 import { createHcClient } from "@spider/herdr/client/hc";
+import { jobJournalRoot } from "@spider/herdr/jobs/store";
 import { inspectIdLock } from "@spider/herdr/sessions/id-lock";
 import type { AdmissionGate } from "./admission";
 import { createLiveFreezePorts, inspectLiveOwner, type LiveFreezeInput } from "./live";
@@ -58,7 +59,7 @@ export async function createMoveActivation(input: MoveActivationInput): Promise<
     for (const root of scratchRoots) mkdirSync(root, { recursive: true });
     const live = createLiveFreezePorts({ ...input, globalRoot: input.root, machineId: config.machineId, stores: stores.map(row => row.db), expectedStores,
       resolveStores: () => resolveStores().map(row => row.db),
-      routeStores: [core.db], address, jobRoots: [join(input.root, "herdr", "jobs")], scratchRoots,
+      routeStores: [core.db], address, jobRoots: [jobJournalRoot(input.root)], scratchRoots,
       broker: bindings.evidence!.broker, bridge: bindings.evidence!.bridge, settlement: bindings.evidence!.settlement,
       authorizeAbort: bindings.evidence!.authorizeAbort, onHubRestored: bindings.evidence!.onHubRestored,
       intercom: { address, ports: bindings.intercom!.ports }, shutdown: async () => { input.context()?.shutdown(); } });

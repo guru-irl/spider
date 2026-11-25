@@ -39,7 +39,8 @@ export async function readHostJobJournals(roots: readonly string[], sessionId: s
   if (!Array.isArray(roots) || !roots.length || !ID.test(sessionId)) throw new Error("Job journal roster unavailable");
   const top: JournalJob[] = [], children: JournalJob[] = [];
   for (const root of new Set(roots)) {
-    await ensurePrivateDirectory(root, true);
+    try { await ensurePrivateDirectory(root, true); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
     const sessions = join(root, "sessions"), own = join(sessions, sessionId), runs = join(own, "runs");
     if (!await directory(sessions) || !await directory(own)) continue;
     const journal = await readJournal(join(own, "jobs.json"), sessionId);

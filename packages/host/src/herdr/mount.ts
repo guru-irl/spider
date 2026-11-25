@@ -29,7 +29,7 @@ import { HERDR_KINDS, HERDR_LABELS } from '@spider/herdr';
 import { registerHerdrJobs, type JobRegistrationPorts } from '@spider/herdr/jobs/register';
 import type { JobMonitor } from '@spider/herdr/jobs/monitor';
 import { foregroundJobsStopped, processStartIdentity } from '@spider/herdr/jobs/handoff';
-import { createJobStore } from '@spider/herdr/jobs/store';
+import { createJobStore, jobJournalRoot } from '@spider/herdr/jobs/store';
 import { createRemoteExecutor } from '@spider/herdr/remote/execute';
 import { registerAgentConsoleLifecycle } from '@spider/herdr/remote/console';
 import { createViewerLauncher, registerHerdrViewers } from '@spider/herdr/viewers/register';
@@ -297,7 +297,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
 
   const bindDb = (o: Owner) => options.dataSource?.resolveRunDb(o) ?? openSessionHistoryDb(o.cwd, o.sessionId);
   const withStore = <T>(o: Owner, read: (store: RunStore) => T): T => { const { db } = bindDb(o); try { return read(new RunStore(db)); } finally { db.close(); } };
-  const journalRoot = () => join(need(config).globalRoot, 'herdr', 'jobs');
+  const journalRoot = () => jobJournalRoot(need(config).globalRoot);
   const templatePorts: TemplatePorts = {
     globalModelDefaultLayers: () => ({ global: modelDefaultLayers(need(context).cwd).global }),
     modelRegistry: { getAll: () => need(context).modelRegistry.getAll(), getAvailable: () => need(context).modelRegistry.getAvailable(), find: (provider, id) => need(context).modelRegistry.find(provider, id) },

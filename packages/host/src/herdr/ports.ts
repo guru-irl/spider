@@ -19,7 +19,7 @@ import { createAppClient } from '@spider/herdr/client/app';
 import { parseHerdrConfig } from '@spider/herdr/config';
 import { runSshShim, ordinaryExecutionEnvironment, SSH_DESCRIPTOR_ENV } from '@spider/herdr/ssh/shim';
 import { runRemoteObserver, observerMarker } from '@spider/herdr/jobs/observer';
-import { createJobStore, type JournalJob } from '@spider/herdr/jobs/store';
+import { createJobStore, jobJournalRoot, type JournalJob } from '@spider/herdr/jobs/store';
 import { preflightSpaces, setupSpaces, readCutoverRecovery, reconcileSpaceJournal, planSpaceCutover, tabTerminals, forgetCutoverTabs, type SpaceSetupPorts, type LayoutSnapshot } from '@spider/herdr/spaces/setup';
 import { inspectPanePlacement } from '@spider/herdr/panes/store';
 import { createRoamPresentationPorts, type RoamPresentationPorts } from './roam-presentations.js';
@@ -1002,7 +1002,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         return { failures: [] };
       }
       if (item === 'jobs') {
-        const root = join(request.config.globalRoot, 'herdr/jobs'), information: DoctorInformation[] = [];
+        const root = jobJournalRoot(request.config.globalRoot), information: DoctorInformation[] = [];
         const directories = async (path: string) => {
           try { return (await readdir(path, { withFileTypes: true })).filter(entry => entry.isDirectory() && /^[a-zA-Z0-9_-]{1,160}$/.test(entry.name)); }
           catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }

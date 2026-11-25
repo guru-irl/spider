@@ -125,6 +125,54 @@ it.each(["intercom-revocation-cleanup-pending", "intercom-revocation-unconfirmed
   expect(f.calls).toEqual([]); expect(f.previews).toEqual([]);
 }, 5000);
 
+it.each([null, "intercom-revocation-cleanup-pending", "intercom-revocation-unconfirmed"] as const)(
+  "checks the central predecessor of a fresh pair with cleanup reason %s", async cleanupReason => {
+    const f = fixture(false), registry = await retiredPair(f);
+    if (cleanupReason !== null) await registry.finishRevocation("pair-1", cleanupReason);
+    const before = await registry.get("pair-1"), fenceId = "00000000-0000-4000-8000-000000000006";
+    f.request.pairs[0] = { ...f.request.pairs[0], pairId: "pair-fresh", edgeEpoch: "edge-fresh" };
+    f.transport.transport.exec = async (machine, argv, options) => {
+      if (argv[2] !== "observe-fence") throw new Error("setup before consent");
+      const input = JSON.parse(options.stdin.toString());
+      f.calls.push({ machine: machine.machineId, command: argv[2], input });
+      return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-fence", ok: true,
+        value: { machineId: machine.machineId, peer: input.peer, fence: { fenceId, edgeEpoch: "edge-1" }, revocationPending: false } }));
+    };
+    expect(await registry.get("pair-fresh")).toBeNull();
+    const result = await provisionIntercomEnrollment(f.request, await ports(f));
+    if (cleanupReason === null) {
+      expect(result).toMatchObject({ code: 1, reason: "peer-consent-required" });
+      expect(f.previews).toHaveLength(1);
+    } else {
+      expect(result).toMatchObject({ code: 3, reason: "revocation-pending" });
+      expect(f.previews).toEqual([]); expect(f.calls).toEqual([]);
+    }
+    expect(await registry.get("pair-1")).toEqual(before); expect(await registry.get("pair-fresh")).toBeNull();
+  }, 5000);
+
+it.each(["missing-epoch", "wrong-epoch", "wrong-fence", "missing-owner", "wrong-closed-fence", "endpoint-epoch-conflict"] as const)(
+  "requires the central owner of a retained predecessor fence: %s", async failure => {
+    const f = fixture(false), registry = await retiredPair(f), file = join(f.root, "roam", "intercom", "enrollments", "pair-1.json");
+    const record = JSON.parse(readFileSync(file, "utf8")), fenceId = record.fenceId;
+    if (failure === "missing-epoch") delete record.revocationEpoch;
+    if (failure === "wrong-epoch") record.revocationEpoch = "edge-other";
+    if (failure === "wrong-fence") record.fenceId = "00000000-0000-4000-8000-000000000007";
+    if (failure === "wrong-closed-fence") record.unit = { name: "spider-pair-pair-1-connect.service", file: join(f.root, "unit.service"),
+      contents: "synthetic unit", localPort: 22, main: null, closedFenceId: "00000000-0000-4000-8000-000000000007" };
+    if (failure === "missing-owner") rmSync(file); else writeFileSync(file, JSON.stringify(record), { mode: 0o600 });
+    const before = await registry.list();
+    f.request.pairs[0] = { ...f.request.pairs[0], pairId: "pair-fresh", edgeEpoch: "edge-fresh" };
+    f.transport.transport.exec = async (machine, argv, options) => {
+      if (argv[2] !== "observe-fence") throw new Error("setup before consent");
+      const input = JSON.parse(options.stdin.toString()), edgeEpoch = failure === "endpoint-epoch-conflict" && machine.machineId === B ? "edge-other" : "edge-1";
+      return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-fence", ok: true,
+        value: { machineId: machine.machineId, peer: input.peer, fence: { fenceId, edgeEpoch }, revocationPending: false } }));
+    };
+    expect(await provisionIntercomEnrollment(f.request, await ports(f)))
+      .toMatchObject({ code: 3, reason: "revocation-pending" });
+    expect(f.previews).toEqual([]); expect(await registry.get("pair-fresh")).toBeNull(); expect(await registry.list()).toEqual(before);
+  }, 5000);
+
 it("retains a same-operation pending fence only after recorded command approval", async () => {
   const f = fixture(true), registry = await retiredPair(f);
   const next = { ...f.request.pairs[0], edgeEpoch: "edge-2" };
@@ -161,7 +209,7 @@ it.each(["unequal", "central-mismatch"] as const)("names %s endpoint fence confl
     const input = JSON.parse(options.stdin.toString());
     const fenceId = kind === "unequal" && machine.machineId === A ? null : "00000000-0000-4000-8000-000000000007";
     return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-fence", ok: true,
-      value: { machineId: machine.machineId, peer: input.peer, fence: fenceId ? { fenceId } : null, revocationPending: false } }));
+      value: { machineId: machine.machineId, peer: input.peer, fence: fenceId ? { fenceId, edgeEpoch: "edge-1" } : null, revocationPending: false } }));
   };
   expect(await provisionIntercomEnrollment(f.request, await ports(f))).toMatchObject({ code: 3, reason: "intercom-pair-fence-conflict" });
   expect(await (await import("../intercom-registry")).createIntercomRegistry(f.root).get("pair-1")).toMatchObject({ state: "revoked", operationId: "retired-1" });

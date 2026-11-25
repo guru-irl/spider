@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -12,8 +12,9 @@ import { enableMemoryCapture } from "@spider/db-core/roam/seed";
 import type { HubOperationReadiness, Probe, StoreKey } from "@spider/db-core/roam/types";
 import { createRunningIntentAuthority, recordReadiness } from "@spider/roam/session-control";
 import { createDormantControl } from "../control";
-import { DEFAULT_LIMITS, disabledIntercom, type Operation, type RoamConfig, type Transport } from "@spider/roam/contracts";
+import { DEFAULT_LIMITS, disabledIntercom, type MoveCheck, type Operation, type Outcome, type PreparedMove, type RoamConfig, type Transport } from "@spider/roam/contracts";
 import { openFreezeJournal } from "@spider/roam/journal";
+import { snapshotWorkspace } from "@spider/roam/workspace";
 import { createStorePort } from "@spider/roam/stores";
 import { handleAgentOperation } from "@spider/roam/agent";
 import { handleArtifactRequest } from "@spider/roam/artifacts";
@@ -24,6 +25,7 @@ import type { HubControlReply } from "@spider/roam/control-socket";
 import { assignInitialHome, sessionHome } from "@spider/roam/homes";
 import { readLocalIdentity } from "@spider/roam/runtime";
 import { createHostMoveBindings, type HostMoveRuntime } from "../move-runtime";
+import * as processInventory from "../../herdr/process-inventory";
 
 const HUB = "00000000-0000-4000-8000-000000000001", BOX = "00000000-0000-4000-8000-000000000002";
 const REPO = "fixture-repo", WORKSPACE = "12345678-0000-4000-8000-000000000003", SESSION = "checkout-session";
@@ -32,7 +34,7 @@ const closes: Array<() => void | Promise<void>> = [];
 function publicOutcome(reply: HubControlReply) {
   return safeControlOutcome({ ...reply, operationId: reply.operationId ?? "", home: reply.home ?? null, epoch: reply.epoch ?? null, repairCommand: reply.repairCommand ?? null });
 }
-afterEach(async () => { for (const close of closes.splice(0).reverse()) await close(); });
+afterEach(async () => { try { for (const close of closes.splice(0).reverse()) await close(); } finally { vi.restoreAllMocks(); } });
 function git(root: string, args: string[]): string {
   return execFileSync("git", args, { cwd: root, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env,
     GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid",
@@ -45,6 +47,9 @@ function initializeStore(global: ReturnType<typeof createReplica>, key: StoreKey
   closes.push(() => db.close()); return db;
 }
 async function fixture(mappedRepository: boolean, occupied = false, complete = false) {
+  const createInventory = processInventory.createProcessInventory;
+  // Unrelated host sessions are outside these isolated fixture roots.
+  vi.spyOn(processInventory, "createProcessInventory").mockImplementation(root => ({ ...createInventory(root), processes: async () => [] }));
   const source = createReplica("global", HUB), destination = createReplica("global", BOX);
   closes.push(() => source.close(), () => destination.close());
   const sourceRoot = join(source.root, "source-checkout"), repository = join(destination.root, "mapped-repo"), nativeRoot = join(destination.root, "native-checkout");
@@ -82,7 +87,7 @@ async function fixture(mappedRepository: boolean, occupied = false, complete = f
     journals.set(global.machineId, openFreezeJournal(join(global.root, "roam", "journal.db"))); enableMemoryCapture(global.db, "global");
   }
   const calls: Operation[] = [], importFailures: unknown[] = [];
-  const importControl: { before?: (runtime: HostMoveRuntime) => void } = {};
+  const importControl: { before?: (operation: Operation) => void; realLocks?: boolean } = {};
   let owner: Probe = { kind: "absent" }, ready: HubOperationReadiness | null = null;
   const empty = () => ({ asks: [], pendingDispatch: [], unknownOutcomes: [], unobservedReceipts: [] });
   const transport: Transport = { resolve: async peer => peer, read: async (_peer, path) => readFileSync(path),
@@ -103,7 +108,7 @@ async function fixture(mappedRepository: boolean, occupied = false, complete = f
             mounted = await createHostMoveBindings({ root: target.root, globalDb: target.db, config: targetConfig, journal, sessionId: SESSION, transport, operation: op });
             mounted.bindings.participant!.auth = async () => [];
             mounted.bindings.participant!.writers = async () => [];
-            if (op.kind !== "move-import") mounted.bindings.participant!.withBothLocks = async (_id, effect) => effect();
+            if (op.kind !== "move-import" || !importControl.realLocks) mounted.bindings.participant!.withBothLocks = async (_id, effect) => effect();
             mounted.bindings.participant!.probe = async () => owner;
             mounted.bindings.participant!.wake = async request => {
               const authority = createRunningIntentAuthority(target.db), intent = await authority.get(SESSION);
@@ -117,7 +122,7 @@ async function fixture(mappedRepository: boolean, occupied = false, complete = f
             mounted.bindings.participant!.readiness = async query => ready && query.epoch === ready.epoch && query.launchId === ready.opId ? ready : null;
             mounted.bindings.participant!.observation = async home => ({ home: sessionHome(target.db, SESSION) as typeof home, owner,
               readiness: ready && home.epoch === ready.epoch ? { ...ready, opId: createRunningIntentAuthority(target.db).operationId(SESSION)! } : null, launchFailure: null, retired: false });
-            if (op.kind === "move-import") importControl.before?.(mounted);
+            if (op.kind === "move-import") importControl.before?.(op);
             try { return await mounted.dispatch(op); }
             catch (error) { if (op.kind === "move-import") importFailures.push(error); throw error; }
           } });
@@ -149,7 +154,22 @@ async function fixture(mappedRepository: boolean, occupied = false, complete = f
   if (!complete) runtime.ports.freeze = async () => { throw Error("fixture-freeze-stop"); };
   runtime.bindings.handoff!.readyTarget = async home => ({ machineId: home.machineId, alias: null, sessionId: SESSION, homeEpoch: home.epoch, coreId: "fixture-core", terminalId: "fixture-terminal" });
   runtime.bindings.handoff!.presentReadyTarget = async () => ({ status: "complete", reason: "presented", presentation: null });
-  return { source, destination, runtime, worktree, checkout, nativeRoot, repository, calls, journals, transport, importControl, importFailures };
+  const stageImport = async (destinationRoot: string) => {
+    const operation: Operation = { id: "fixture-import", kind: "move", machineId: HUB, expectedEpoch: 1, args: { sessionId: SESSION } };
+    journals.get(HUB)!.begin(operation);
+    const check: MoveCheck = { source: home, destinationMachine: BOX, repoKey: REPO, workspaceId: WORKSPACE, sourceRoot, sourceFile: file,
+      sourceCwd: sourceRoot, destinationRoot, destinationCwd: destinationRoot, storeKeys: ["global", `repo:${REPO}`, WT], warnings: [] };
+    let pending: Operation | undefined;
+    importControl.before = op => { pending = op; throw new Error("fixture-import-boundary"); };
+    try { await runtime.ports.prepare(check, operation); }
+    catch (error) { if (!pending) throw error; }
+    finally { delete importControl.before; }
+    if (!pending) throw new Error("fixture-import-not-staged");
+    const importing = pending;
+    return async () => JSON.parse((await transport.exec(configs.get(HUB)!.peers[0], ["roam", "agent", JSON.stringify(importing)],
+      { timeoutMs: DEFAULT_LIMITS.controlMs, maxBytes: DEFAULT_LIMITS.replyBytes })).toString()) as Outcome<PreparedMove>;
+  };
+  return { source, destination, runtime, worktree, checkout, nativeRoot, repository, calls, journals, transport, importControl, importFailures, stageImport };
 }
 let current: Awaited<ReturnType<typeof fixture>>, pendingOperation: string;
 beforeEach(async context => { current = await fixture(!context.task.name.includes("unmapped repository"), context.task.name.includes("occupied"), context.task.name.includes("completed")); }, 5000);
@@ -164,25 +184,95 @@ for (const checkpoint of ["prestage", "transfer"]) beforeEach(async context => {
   } finally { journal.record = record; }
 }, 5000);
 
-it("a fresh import selects its own repo and workspace among multiple destination maps", async () => {
-  const f = current;
-  for (const [repoKey, workspaceId, name] of [["aaa-repo", WORKSPACE, "other-repo"], [REPO, "000-other-workspace", "other-workspace"]]) {
-    const path = join(f.destination.root, name);
-    git(f.repository, ["worktree", "add", "-q", "--detach", path]);
-    await mapWorkspace(f.destination.db, { repoKey, workspaceId, path });
-    initializeStore(f.destination, `worktree:${repoKey}:${workspaceId}`);
+describe("import workspace targets", () => {
+  let importSession: () => Promise<Outcome<PreparedMove>>, destinationWorktree: ReturnType<typeof initializeStore>;
+  beforeEach(async () => {
+    const f = current;
+    f.importControl.realLocks = true;
+    for (const [repoKey, workspaceId, name] of [["aaa-repo", WORKSPACE, "other-repo"], [REPO, "000-other-workspace", "other-workspace"]]) {
+      const path = join(f.destination.root, name);
+      git(f.repository, ["worktree", "add", "-q", "--detach", path]);
+      await mapWorkspace(f.destination.db, { repoKey, workspaceId, path });
+      initializeStore(f.destination, `worktree:${repoKey}:${workspaceId}`);
+    }
+    await mapWorkspace(f.destination.db, { repoKey: REPO, workspaceId: WORKSPACE, path: f.repository });
+    destinationWorktree = initializeStore(f.destination, WT);
+  }, 5000);
+  beforeEach(async () => {
+    const f = current, journal = f.journals.get(BOX)!;
+    journal.begin({ id: "fixture-baseline", kind: "workspace-export", machineId: BOX, expectedEpoch: 1, args: {} });
+    const snapshot = await snapshotWorkspace({ root: f.repository, cwd: f.repository, repoKey: REPO, workspaceId: WORKSPACE,
+      moveId: "fixture-baseline", stage: "final", writers: [] }, { ...f.runtime.bindings.participant!.git, journal, limits: DEFAULT_LIMITS });
+    f.destination.db.prepare("UPDATE roam_workspace_maps SET snapshot_json=? WHERE repo_key=? AND workspace_id=?").run(JSON.stringify(snapshot), REPO, WORKSPACE);
+    expect(f.destination.db.prepare("SELECT count(*) AS count FROM roam_workspace_maps").get()).toEqual({ count: 4 });
+    expect(f.destination.db.prepare("SELECT 1 FROM roam_locations WHERE session_id=?").get(SESSION)).toBeUndefined();
+  }, 5000);
+  beforeEach(async () => { importSession = await current.stageImport(current.repository); }, 5000);
+  function sessionFile(f: typeof current, workspace = f.repository) {
+    const directory = workspace.replace(/^\//, "").replace(/\//g, "-");
+    return join(f.destination.root, "agent", "sessions", `--${directory}--`, `${SESSION}.jsonl`);
   }
-  await mapWorkspace(f.destination.db, { repoKey: REPO, workspaceId: WORKSPACE, path: f.repository });
-  initializeStore(f.destination, WT);
-  expect(f.destination.db.prepare("SELECT count(*) AS count FROM roam_workspace_maps").get()).toEqual({ count: 4 });
-  expect(f.destination.db.prepare("SELECT 1 FROM roam_locations WHERE session_id=?").get(SESSION)).toBeUndefined();
-  await f.runtime.control({ op: "move", session: SESSION, machine: "box.invalid" });
-  expect(f.importFailures.map(error => error instanceof Error ? error.stack : error)).toEqual([]);
-  const location = f.destination.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id=?").get(SESSION) as { file: string; cwd: string };
-  const directory = f.repository.replace(/^\//, "").replace(/\//g, "-");
-  expect(location).toEqual({ file: join(f.destination.root, "agent", "sessions", `--${directory}--`, `${SESSION}.jsonl`), cwd: f.repository });
-  expect(JSON.parse(readFileSync(location.file, "utf8").split("\n")[0])).toMatchObject({ type: "session", id: SESSION, cwd: f.repository });
-}, 5000);
+  function expectInstalled(f: typeof current, file: string) {
+    expect(f.destination.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id=?").get(SESSION)).toEqual({ file, cwd: f.repository });
+    expect(JSON.parse(readFileSync(file, "utf8").split("\n")[0])).toMatchObject({ type: "session", id: SESSION, cwd: f.repository });
+  }
+  it("a fresh import selects its own repo and workspace among multiple destination maps", async () => {
+    const f = current, reply = await importSession();
+    expect(reply.code).toBe(0);
+    expect(reply.value!.session.file).toBe(sessionFile(f));
+    expectInstalled(f, sessionFile(f));
+  }, 5000);
+  it("an import refuses when its matching map disappears instead of guessing another workspace", async () => {
+    const f = current;
+    f.importControl.before = () => { f.destination.db.prepare("DELETE FROM roam_workspace_maps WHERE repo_key=? AND workspace_id=?").run(REPO, WORKSPACE); };
+    const reply = await importSession();
+    expect(reply).toMatchObject({ code: 1, reason: "move-adapter-unavailable", causeCode: "move-adapter-unavailable",
+      failure: { step: "remote-prepare", code: "unknown" } });
+    expect(JSON.stringify(reply)).not.toContain("participant-location-unavailable");
+    expect(f.importFailures).toHaveLength(1);
+    expect(f.importFailures[0]).toMatchObject({ message: "participant-location-unavailable" });
+    expect(f.destination.db.prepare("SELECT 1 FROM roam_locations WHERE session_id=?").get(SESSION)).toBeUndefined();
+    expect(existsSync(sessionFile(f))).toBe(false);
+    expect(f.journals.get(BOX)!.read("fixture-import")).toContainEqual(expect.objectContaining({ action: "move-transfer-diagnostic",
+      result: expect.objectContaining({ stage: "pre", phase: "participant-import", code: "participant-location-unavailable", codeSource: "message-prefix" }) }));
+    for (const db of [f.source.db, f.destination.db, f.worktree, destinationWorktree]) {
+      expect(db.prepare("SELECT 1 FROM sqlite_master WHERE name='roam_operation_actions'").get()).toBeUndefined();
+      expect(db.prepare("SELECT count(*) AS count FROM roam_changes WHERE body_json LIKE '%move-transfer-diagnostic%'").get()).toEqual({ count: 0 });
+    }
+  }, 5000);
+  it("a fresh import still uses the sole matching workspace map", async () => {
+    const f = current;
+    f.destination.db.prepare("DELETE FROM roam_workspace_maps WHERE repo_key!=? OR workspace_id!=?").run(REPO, WORKSPACE);
+    expect(f.destination.db.prepare("SELECT count(*) AS count FROM roam_workspace_maps").get()).toEqual({ count: 1 });
+    const reply = await importSession();
+    expect(reply.code).toBe(0);
+    expect(reply.value!.session.file).toBe(sessionFile(f));
+    expectInstalled(f, sessionFile(f));
+  }, 5000);
+  it("the first import lock uses the verified new checkout before its map exists", async () => {
+    const f = current, pending = f.calls.find(op => op.kind === "move-import")!;
+    f.destination.db.prepare("DELETE FROM roam_workspace_maps WHERE repo_key=? AND workspace_id=?").run(REPO, WORKSPACE);
+    const check = { ...(pending.args.check as unknown as MoveCheck), destinationRoot: f.checkout, destinationCwd: f.checkout };
+    const operation = { ...pending, args: { ...pending.args, check } } as unknown as Operation;
+    const mounted = await createHostMoveBindings({ root: f.destination.root, globalDb: f.destination.db, config: readLocalIdentity(f.destination.root),
+      journal: f.journals.get(BOX)!, sessionId: SESSION, transport: f.transport, operation });
+    try {
+      await mounted.bindings.participant!.withBothLocks(SESSION, async () => {
+        expect(await mounted.bindings.participant!.sessionTarget(SESSION, "fixture-import")).toBe(sessionFile(f, f.checkout));
+        expect(f.destination.db.prepare("SELECT 1 FROM roam_workspace_maps WHERE repo_key=? AND workspace_id=?").get(REPO, WORKSPACE)).toBeUndefined();
+      });
+    } finally { await mounted.close(); }
+  }, 5000);
+  it("an existing session location wins over the incoming workspace map", async () => {
+    const f = current, file = join(f.destination.root, "remembered.jsonl");
+    recordLocation(f.destination.db, { sessionId: SESSION, stores: ["global", `repo:${REPO}`, WT], home: null, file, cwd: f.repository });
+    const reply = await importSession();
+    expect(reply.code).toBe(0);
+    expect(reply.value!.session.file).toBe(file);
+    expectInstalled(f, file);
+    expect(existsSync(sessionFile(f))).toBe(false);
+  }, 5000);
+});
 
 it("a public move retains the remote workspace-plan error code", async () => {
   const f = current, exec = f.transport.exec;

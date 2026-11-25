@@ -22,6 +22,7 @@ import { createSessionLeases } from "@spider/herdr/sessions/lease";
 import { claimIdLock } from '@spider/herdr/sessions/id-lock';
 import { createProcessPresence } from "@spider/herdr/sessions/presence";
 import { processStartTime } from "../../../subagents/src/process-identity";
+import * as processIdentity from "../../../subagents/src/process-identity";
 import * as localRuntime from "@spider/roam/runtime";
 import * as control from "../roam/control";
 import * as sessionSocket from "@spider/roam/session-socket";
@@ -178,6 +179,21 @@ it.each(['no-lock', 'previous-boot', 'exited-owner'] as const)('an unidentified 
     mounted = await f.compose();
     await expect(mounted.bindings.participant!.probe(f.sessionId)).rejects.toMatchObject({ code: 'ownership-unregistered-process' });
   } finally { await mounted?.close(); await lock?.release(); await f.machine.close(); }
+});
+
+it.each(['matching-live', 'unreadable'] as const)('the production move probe refuses absence for a %s lock owner', async mode => {
+  const f = await fixture(); processRows.value = ''; processRows.boot = 'boot-a';
+  const startIdentity = processStartTime(process.pid)!;
+  const lock = await claimIdLock(join(f.global.root, 'herdr'), f.sessionId,
+    { pid: process.pid, startIdentity }, async () => ({ kind: 'live', startIdentity }), { bootId: async () => 'boot-a' });
+  let mounted: Awaited<ReturnType<typeof f.compose>> | undefined;
+  try {
+    mounted = await f.compose();
+    if (mode === 'unreadable') {
+      vi.spyOn(processIdentity, 'processStartTime').mockReturnValue(null);
+      await expect(mounted.bindings.participant!.probe(f.sessionId)).rejects.toMatchObject({ code: 'ownership-process-unavailable' });
+    } else expect(await mounted.bindings.participant!.probe(f.sessionId)).toEqual({ kind: 'live', identity: { bootId: 'boot-a', pid: process.pid, startTime: startIdentity } });
+  } finally { vi.restoreAllMocks(); await mounted?.close(); await lock.release(); await f.machine.close(); }
 });
 
 it('a missing boot identity never proves a matching live lock absent', async () => {

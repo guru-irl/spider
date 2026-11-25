@@ -602,7 +602,9 @@ function assertParticipant(operation: Operation, participant: MoveParticipantBin
 export async function handleMoveParticipantOperation(operation: Operation, journal: Journal, bindings: MoveAdapterBindings): Promise<Outcome<JsonObject>> {
   const participant = required(bindings.participant, "participant"); assertParticipant(operation, participant);
   if (participant.config.role === "box" && ["move-diagnostics", "session-start"].includes(operation.kind)) {
-    const diagnostic = await supervisorPreflight(participant.root, participant.config.machineId);
+    const diagnostic = await supervisorPreflight(participant.root, participant.config.machineId) ??
+      (operation.kind === "session-start" && !participantCaptureInitialized(participant.globalDb, participant.config.machineId, "global")
+        ? { reason: "participant-capture-uninitialized", repairCommand: "spider roam enable" } : null);
     if (diagnostic) return { code: 1, reason: diagnostic.reason, operationId: operation.id, home: null, epoch: operation.expectedEpoch,
       repairCommand: diagnostic.repairCommand, value: null, failure: { step: operation.kind === "move-diagnostics" ? "destination-diagnostics" : "start", code: diagnostic.reason } };
   }

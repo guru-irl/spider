@@ -2,7 +2,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Peer } from "../contracts";
+import { handleAgentOperation } from "../agent";
+import type { Operation, Peer } from "../contracts";
 import { parseConfig } from "../config";
 import { openJournal } from "../journal";
 import { runLocalDoctor } from "../local-diagnostics";
@@ -18,8 +19,8 @@ import * as launchd from "../launchd";
 import * as controlSocket from "../control-socket";
 
 const HUB = "00000000-0000-4000-8000-000000000001", BOX = "00000000-0000-4000-8000-000000000002";
-const roots: string[] = [];
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+const roots: string[] = [], closes: Array<() => void> = [];
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const close of closes.splice(0)) close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 function fixture() {
   const scratch = join(process.cwd(), ".spider", "scratch"); mkdirSync(scratch, { recursive: true });
@@ -39,7 +40,14 @@ function fixture() {
   const peer: Peer = { machineId: BOX, alias: "box-1.invalid", node: process.execPath, pi: join(bin, "pi"), cli: join(bin, "cli"), core, globalRoot: box };
   const config = parseConfig({ enabled: false, role: "hub", machineId: HUB, hubMachineId: HUB, peers: [peer], discoveryRoots: [], coreUnit: "fixture.service" });
   const journal = openJournal(join(root, "journal.db"));
-  const transport = { transport: { async resolve(value: Peer) { return value; } }, async executeProvision(_peer: Peer, request: Record<string, unknown>) {
+  const db = openDb(join(box, "spider.db")); migrate(db, "global", { machineId: BOX, globalRoot: box }); closes.push(() => db.close());
+  const participantJournal = openJournal(join(roam, "journal.db"));
+  const transport = { transport: { async resolve(value: Peer) { return value; }, async exec(_peer: Peer, argv: readonly string[]) {
+    return Buffer.from(JSON.stringify(await handleAgentOperation(JSON.parse(argv[2]) as Operation, {
+      config: parseConfig(JSON.parse(readFileSync(join(roam, "config.json"), "utf8"))), root: box, journal: participantJournal,
+      openStore(key) { if (key !== "global") throw new Error("Unexpected store"); return { db, effects: {} as never, policy: {} as never }; },
+    })));
+  } }, async executeProvision(_peer: Peer, request: Record<string, unknown>) {
     const child = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", PROVISION_REMOTE_SCRIPT], {
       input: JSON.stringify({ ...request, core, coreId: "fixture-core" }), encoding: "utf8", timeout: 5000,
       env: { ...process.env, HOME: root, PATH: bin },

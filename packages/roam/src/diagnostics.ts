@@ -1,3 +1,5 @@
+import { sessionHome } from "./homes";
+import { participantCaptureInitialized } from "./session-control";
 import { hostingWarningDiagnostic, readHostingWarnings, validHostingWarnings } from "./hosting-warning";
 import { parseSourceCleanup } from "./move";
 import { SCHEMA_VERSION, validateRoamLayout, type Db } from "@spider/db-core";
@@ -261,13 +263,14 @@ export function readStatus(config: RoamConfig, ports: StatusPorts): RoamStatus {
   });
   const diagnostics: Diagnostic[] = [];
   if (ports.globalDb) try {
-    for (const warning of readHostingWarnings(ports.globalDb)) diagnostics.push(hostingWarningDiagnostic(warning.sessionId, warning));
+    const captureReady = participantCaptureInitialized(ports.globalDb, config.machineId, "global");
+    for (const warning of readHostingWarnings(ports.globalDb)) diagnostics.push(hostingWarningDiagnostic(warning.sessionId, warning, sessionHome(ports.globalDb, warning.sessionId), captureReady));
     for (const peer of config.peers) {
       const warnings = readLocal<unknown>(ports.globalDb, "peer-hosting-warnings", peer.machineId);
       if (warnings === undefined) continue;
       if (!validHostingWarnings(warnings)) throw new Error("Invalid peer hosting warnings");
       for (const warning of warnings) {
-        const diagnostic = hostingWarningDiagnostic(warning.sessionId, warning);
+        const diagnostic = hostingWarningDiagnostic(warning.sessionId, warning, sessionHome(ports.globalDb, warning.sessionId));
         diagnostics.push({ ...diagnostic, reason: `${peer.alias}: ${diagnostic.reason}` });
       }
     }

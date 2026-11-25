@@ -1,4 +1,5 @@
 import type { Db } from "@spider/db-core";
+import type { Home } from "@spider/db-core/roam/types";
 import type { Diagnostic } from "./contracts";
 import { localEntries } from "@spider/db-core/roam/local-state";
 import { safeCauseCode } from "./cause-codes";
@@ -56,7 +57,18 @@ export function hostingWarningText(warning: HostingWarning): string {
     warning.signal === undefined ? undefined : `signal ${warning.signal}`, warning.exitStatus].filter(Boolean).join(", ");
   return `${warning.code} (${warning.check}${details ? `: ${details}` : ""}); hosting checks will retry automatically.`;
 }
-export function hostingWarningDiagnostic(sessionId: string, warning: HostingWarning): Diagnostic {
+export function hostingWarningDiagnostic(sessionId: string, warning: HostingWarning, home?: Home | null | "unknown", globalCaptureReady?: boolean): Diagnostic {
+  if (warning.check === "inspection" && warning.causeCode === "participant-capture-uninitialized" && globalCaptureReady === false) {
+    const repairCommand = "spider roam enable";
+    return { code: warning.code, severity: "warning", reason: hostingWarningReason(sessionId, warning) +
+      ` Global capture is not initialized. Run ${repairCommand} on the hub.`, repairCommand };
+  }
+  if (warning.check === "inspection" && warning.causeCode === "participant-capture-uninitialized" &&
+      home && home !== "unknown" && home.sessionId === sessionId && home.moveId && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(home.moveId)) {
+    const repairCommand = `spider roam recover ${home.moveId}`;
+    return { code: warning.code, severity: "warning", reason: hostingWarningReason(sessionId, warning) +
+      ` To initialize capture, run ${repairCommand} on the hub.`, repairCommand };
+  }
   const repairCommand = warning.check === "inspection" && /^[A-Za-z0-9._-]{1,256}$/.test(sessionId) ? `spider roam stop ${sessionId}` : null;
   return { code: warning.code, severity: "warning", reason: hostingWarningReason(sessionId, warning) +
     (repairCommand ? ` To cancel hosting, run ${repairCommand} on the hub.` : ""), repairCommand };

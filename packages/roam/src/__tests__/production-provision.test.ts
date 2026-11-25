@@ -23,7 +23,12 @@ it("composes target-fenced ports, peer locking and durable launcher configuratio
     records.set(id, [...(records.get(id) ?? []), { action, result }]);
   }, read: id => records.get(id) ?? [] };
   const transport: Transport = { async resolve(peer) { return peer; }, async bootstrapProbe() { throw new Error("unexpected probe"); },
-    async exec() { throw new Error("unexpected exec"); }, async run() { throw new Error("unexpected run"); }, async read() { throw new Error("unexpected read"); }, async write() { throw new Error("unexpected write"); } };
+    async exec(peer, argv) {
+      const operation = JSON.parse(argv[2]);
+      expect(peer).toEqual(bootstrapPeer);
+      expect(operation).toMatchObject({ kind: "enable-capture", machineId: bootstrapPeer.machineId, expectedEpoch: null, args: { storeKey: "global" } });
+      return Buffer.from(JSON.stringify({ code: 0, operationId: operation.id, epoch: null, value: { storeKey: "global", enabled: true } }));
+    }, async run() { throw new Error("unexpected run"); }, async read() { throw new Error("unexpected read"); }, async write() { throw new Error("unexpected write"); } };
   const core = { local: "fixture-local-core", remote: "fixture-core" }, claims: typeof core[] = [], participation: boolean[] = [];
   const previews: { home: string; core: typeof core }[] = [];
   const port = { transport, async probeAgentDirectory() { return { status: "default" as const, core }; },

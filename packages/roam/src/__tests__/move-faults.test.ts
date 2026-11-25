@@ -237,10 +237,10 @@ it.each(forwardFaults)("restart after action and before reply at %s", async poin
   expect(f.hit).toBe(true);
   await releaseMovePower(movePowerKey(f.ports, "move-a"));
   const recovered = await moves.recoverMove("move-a", f.ports);
-  const expectedCode = point === "before:check" || point === "effect:check" ? 1 : point === "before:start" ? 3 : 0;
+  const expectedCode = point === "before:check" || point === "effect:check" ? 1 : 0;
   expect(recovered.code, JSON.stringify(recovered)).toBe(expectedCode);
   expect(f.current()).toMatchObject(point === "before:check" || point === "effect:check" ? { machineId: HUB, epoch: 1 } : { machineId: BOX, epoch: 2 });
-  if (point === "before:start") expect(f.sourceActive).toBe(false);
+  if (point === "before:start") { expect(f.sourceActive).toBe(false); expect(f.destinationActive).toBe(true); }
   const ownersAtEveryObservation = f.ownersAtEveryObservation;
   expect(ownersAtEveryObservation.every(n => n <= 1)).toBe(true);
   expect(readFileSync(f.file, "utf8")).toBe(f.original);
@@ -435,7 +435,7 @@ it("restart reacquires power before observing uncertain ownership", async () => 
   await releaseMovePower(movePowerKey(f.ports, "move-a"));
   let heldAtInspection = false;
   const inspect = f.ports.inspect;
-  f.ports.inspect = async (...args) => { heldAtInspection = f.held; return inspect(...args); };
+  f.ports.inspect = async (...args) => { heldAtInspection = f.held; return { ...await inspect(...args), owner: { kind: "uncertain" } }; };
   const result = await moves.recoverMove("move-a", f.ports);
   expect(result.code).toBe(3); expect(heldAtInspection).toBe(true); expect(f.held).toBe(true);
 }, 5000);

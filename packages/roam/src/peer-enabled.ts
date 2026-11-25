@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Diagnostic, Journal, Peer, RoamConfig, Transport } from "./contracts";
+import type { Diagnostic, Journal, Operation, Peer, RoamConfig, Transport } from "./contracts";
 import type { ProvisionTransport } from "./transport";
 import { remoteDoctor } from "./remote-observations";
 export async function setEnrolledPeerEnabled(input: { config: RoamConfig; peer: Peer; enabled: boolean; restoreAutostart?: boolean; operationId?: string; journal: Journal; transport: ProvisionTransport }): Promise<void> {
@@ -16,6 +16,17 @@ export async function setEnrolledPeerEnabled(input: { config: RoamConfig; peer: 
   if (!journal.read(operationId).some(row => row.action === "provision-consent"))
     journal.record(operationId, "provision-consent", { approved: true, scope: "roaming-enabled", target: peer.alias, machineId: peer.machineId, enabled, ...autostart });
   const handle = await transport.transport.resolve(peer);
+  if (enabled) {
+    const operation: Operation = { id: randomUUID(), machineId: peer.machineId, expectedEpoch: null, kind: "enable-capture", args: { storeKey: "global" } };
+    const bytes = await transport.transport.exec(handle, ["roam", "agent", JSON.stringify(operation)],
+      { timeoutMs: config.limits.controlMs, maxBytes: config.limits.replyBytes });
+    let reply: unknown;
+    try { reply = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); } catch { throw new Error("peer-capture-unconfirmed"); }
+    if (!reply || typeof reply !== "object" || !("operationId" in reply) || reply.operationId !== operation.id ||
+        !("code" in reply) || reply.code !== 0 || !("value" in reply) || !reply.value || typeof reply.value !== "object" ||
+        !("storeKey" in reply.value) || reply.value.storeKey !== "global" || !("enabled" in reply.value) || reply.value.enabled !== true)
+      throw new Error("peer-capture-unconfirmed");
+  }
   const result = await transport.executeProvision(handle, { action: "roaming-enabled", operationId, machineId: peer.machineId,
     globalRoot: peer.globalRoot, node: peer.node, pi: peer.pi, cli: peer.cli, hubMachineId: config.machineId, enabled, ...autostart });
   if (!result || typeof result !== "object" || !("enabled" in result) || result.enabled !== enabled) throw new Error("peer-enabled-unconfirmed");

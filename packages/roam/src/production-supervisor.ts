@@ -407,10 +407,9 @@ async function startEnrolledSupervisor(root: string, options: { coreState: Super
           try { beforeReadiness = !readReadiness(runtime.journal, operationId); } catch { /* Missing diagnostic evidence does not alter the launch error. */ }
           if (beforeReadiness) {
             const launchExit = await recordedLaunchExit(runtime.journal, hc, eventClient, intent, operationId, runtime.config.machineId);
-            if (launchExit) {
-              const cause = error && typeof error === "object" && "code" in error ? safeCauseCode(error.code) : undefined;
-              throw Object.assign(new Error("Participant launch failed"), { code: cause ?? "launch-unavailable", launchExit });
-            }
+            const cause = error && typeof error === "object" && "code" in error ? safeCauseCode(error.code) : undefined;
+            throw Object.assign(new Error("Participant launch failed"), { code: cause ?? "launch-unavailable",
+              launchExit: launchExit ?? { exitStatus: "exit-status-unavailable" } });
           }
           throw error;
         }
@@ -418,7 +417,7 @@ async function startEnrolledSupervisor(root: string, options: { coreState: Super
           const beforeReadiness = !readReadiness(runtime.journal, operationId);
           const launchExit = beforeReadiness ? await recordedLaunchExit(runtime.journal, hc, eventClient, intent, operationId, runtime.config.machineId) : undefined;
           return { code: 1, reason: "adopted-exited", operationId, home: null, epoch: intent.epoch, repairCommand: null, value: null,
-            ...(beforeReadiness ? { launchExit: launchExit ?? {} } : {}) };
+            ...(beforeReadiness ? { launchExit: launchExit ?? { exitStatus: "exit-status-unavailable" } } : {}) };
         }
         const ready = readReadiness(runtime.journal, operationId);
         return { code: ready ? 0 : 3, reason: ready ? "ready" : "readiness-pending", operationId, home: null, epoch: intent.epoch, repairCommand: null, value: ready };

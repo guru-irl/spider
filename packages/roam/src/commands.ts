@@ -1,6 +1,6 @@
 import { copyHostingWarning, hostingWarningText, validHostingWarning, type HostingWarning } from "./hosting-warning";
 import { safeAgentOperationKind, safeCauseCode } from "./cause-codes";
-import { moveFailureRepair, safeMoveCause } from "./move-failure";
+import { moveFailureRepair, safeMoveCause, parseMoveFailure } from "./move-failure";
 import type { RoamStatus } from "./diagnostics";
 import { isAbsolute } from "node:path";
 import { MOVE_REFUSAL_MESSAGES, type MoveRefusal, type MoveRefusalCode, type SourceCleanup, type Outcome, type RoamConfig } from "./contracts";
@@ -188,6 +188,9 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
         ...(issue.detail === "Start Herdr or check hc on this machine." ? { detail: issue.detail } : {}) }] : [];
     });
   }
+  const sourceCleanup = value.sourceCleanup as SourceCleanup | undefined;
+  const failure = result.code !== 0 && result.reason.startsWith("move-") ||
+    result.code === 0 && result.reason === "moved" && sourceCleanup?.status === "pending" ? parseMoveFailure(result.failure) : undefined;
   let refusal: MoveRefusal | undefined;
   if (result.refusal && typeof result.refusal === "object" && !Array.isArray(result.refusal)) {
     const rawRefusal = result.refusal as Record<string, unknown>, code = rawRefusal.code;
@@ -204,16 +207,17 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
   }
   return { code: [0, 1, 2, 3].includes(result.code) ? result.code : 1, reason: safeReason(result.reason), operationId: token(result.operationId) ?? "",
     home, epoch: Number.isSafeInteger(result.epoch) ? result.epoch : null, repairCommand: repair, value: Object.keys(value).length ? value : null,
-    ...(causeCode ? { causeCode } : {}),
+    ...(causeCode ? { causeCode } : {}), ...(failure ? { failure } : {}),
     ...(result.code !== 0 && safeAgentOperationKind(result.operationKind) ? { operationKind: safeAgentOperationKind(result.operationKind) } : {}),
     ...(refusal ? { refusal } : {}) };
 }
 export function controlText(result: SafeControlOutcome, destinationAlias?: string): string {
   const value = result.value as { destinationRoot?: string; presentation?: string; terminal?: string; intercomAddress?: string; warnings?: string[]; candidates?: string[]; sourceCleanup?: SourceCleanup; diagnostics?: { reason: string; repairCommand: string | null }[] } | null;
+  const failureText = result.failure ? `\nMove step ${result.failure.step}: ${result.failure.code}` : "";
   const movedText = value?.intercomAddress ? `Moved to ${destinationAlias ?? result.home?.machineId ?? "destination"}; terminal ${value.terminal ?? "pending"}; intercom ${value.intercomAddress}.\n${value.destinationRoot ? `Checkout: ${value.destinationRoot}\n` : ""}${value.warnings?.map(controlWarningText).join("\n") ?? ""}\n` : "Moved.\n";
   if (result.code === 0 && value?.sourceCleanup) switch (value.sourceCleanup.status) {
     case 'done': break;
-    case 'pending': return `${movedText}Source cleanup pending: ${MOVE_REFUSAL_MESSAGES[value.sourceCleanup.reason].replace(/\.$/, '')}. It finishes on its own; check with \`spider roam status\`.\n`;
+    case 'pending': return `${movedText}Source cleanup pending: ${MOVE_REFUSAL_MESSAGES[value.sourceCleanup.reason].replace(/\.$/, '')}. It finishes on its own; check with \`spider roam status\`.${failureText}\n`;
     default: { const exhaustive: never = value.sourceCleanup; return exhaustive; }
   }
   if (result.code === 0 && value?.presentation === "pending") return "recovered; the pane appears when Herdr opens\n";
@@ -223,7 +227,7 @@ export function controlText(result: SafeControlOutcome, destinationAlias?: strin
     ? "\nThe source is paused to avoid running two copies." : "";
   const withheld = result.causeCode === "move-first-home-withheld" ? result.refusal?.firstHomeWithheld : undefined;
   const withheldText = withheld ? `\nmove-first-home-withheld: ${withheld.machineId} (${withheld.storeKind} store).` : "";
-  return `${result.reason === "mac-hub-required" ? "Run this command on the Mac hub." : result.reason}${explanation ? `\n${explanation}` : ""}${withheldText}${result.refusal?.blockers.length ? `\nBlockers: ${result.refusal.blockers.join(", ")}` : ""}${result.home ? `\nCurrent home: ${result.home.machineId} (epoch ${result.home.epoch}).` : ""}${pause}${diagnosticText}${result.repairCommand ? `\n${result.repairCommand}` : ""}${value?.candidates?.length ? `\nCandidates: ${value.candidates.join(", ")}` : ""}\n`;
+  return `${result.reason === "mac-hub-required" ? "Run this command on the Mac hub." : result.reason}${explanation ? `\n${explanation}` : ""}${withheldText}${failureText}${result.refusal?.blockers.length ? `\nBlockers: ${result.refusal.blockers.join(", ")}` : ""}${result.home ? `\nCurrent home: ${result.home.machineId} (epoch ${result.home.epoch}).` : ""}${pause}${diagnosticText}${result.repairCommand ? `\n${result.repairCommand}` : ""}${value?.candidates?.length ? `\nCandidates: ${value.candidates.join(", ")}` : ""}\n`;
 }
 
 export function sourceCleanupStatusText(item: NonNullable<RoamStatus['sourceCleanups']>[number]): string {

@@ -84,6 +84,7 @@ export interface Operation { id: string; machineId: MachineId; expectedEpoch: nu
 export interface Outcome<T> {
   code: 0 | 1 | 2 | 3; reason: string; operationId: string; home: Home | null;
   epoch: number | null; repairCommand: string | null; value: T | null; causeCode?: string; operationKind?: AgentOperationKind;
+  failure?: import("./move-failure").MoveFailureDetail;
 }
 export interface CallOptions {
   timeoutMs: number; maxBytes: number; stdin?: Buffer;

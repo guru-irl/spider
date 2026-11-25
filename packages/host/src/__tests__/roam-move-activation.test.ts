@@ -69,7 +69,10 @@ async function fixture(beforeMapping = true, bound = false, box = false, worktre
   if (!box && !worktreeOnly) await mountRepository();
   const worktree = openDbAt(join(cwd, ".spider", "project.db"), "worktree"); dbs.push(worktree);
   worktree.prepare("UPDATE roam_meta SET machine_id=? WHERE id=1").run(machineId);
-  const sessionId = "ordinary-source", file = join(cwd, "session.jsonl");
+  const sessionId = "ordinary-source", sessionsDir = join(global.root, "agent", "sessions");
+  const sessionDirectory = join(sessionsDir, `--${cwd.replace(/^\//, "").replace(/\//g, "-")}--`);
+  mkdirSync(sessionDirectory, { recursive: true });
+  const file = join(sessionDirectory, "session.jsonl");
   writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: sessionId, cwd }) + "\n" +
     JSON.stringify({ type: "model_change", id: "leaf-1", parentId: null, timestamp: "2026-01-01T00:00:00Z" }) + "\n");
   const insert = (db: Db) => db.prepare("INSERT INTO sessions(id,started_at,origin_machine) VALUES(?,1,?)").run(sessionId, machineId);
@@ -106,7 +109,7 @@ async function fixture(beforeMapping = true, bound = false, box = false, worktre
   const snapshot = { asks: [], pendingDispatch: [], unknownOutcomes: [], unobservedReceipts: [] };
   const machine = await startMachineMoveSocket(global.root, () => true, { broker: async () => snapshot, bridge: async () => snapshot, settlement: async () => null, intake: fixtureIntercom(sessionId).ports } as never);
   vi.spyOn(localRuntime, "openLocalCore").mockReturnValue({ root: global.root, config, db: global.db, close() {} });
-  vi.spyOn(usageMount, "resolveUsageRoots").mockReturnValue({ registryDb: join(global.root, "spider.db"), ledgerFile: join(global.root, "usage.db"), sessionsDir: join(global.root, "sessions"), authPath: join(global.root, "auth.json"), leaseDir: join(global.root, "usage-leases") });
+  vi.spyOn(usageMount, "resolveUsageRoots").mockReturnValue({ registryDb: join(global.root, "spider.db"), ledgerFile: join(global.root, "usage.db"), sessionsDir, authPath: join(global.root, "agent", "auth.json"), leaseDir: join(global.root, "usage-leases") });
   vi.spyOn(paths, "scratch").mockImplementation(scope => join(global.root, scope === "global" ? "scratch" : "project-scratch"));
   const gate: AdmissionGate = {
     inspect: () => ({ kind: admitted ? "ordinary" : "control-only", home: (() => { const home = sessionHome(global.db, sessionId); return home === "unknown" ? null : home; })(), blockers: [] }),

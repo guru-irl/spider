@@ -29,7 +29,7 @@ export async function withMoveStep<T>(step: MoveFailureStep, effect: () => T | P
 const moveCauses = ["participant-pi-unavailable", "participant-stores-unavailable", "participant-config-unavailable",
   "participant-context-unavailable", "participant-home-unavailable", "participant-freeze-unfinished", "participant-cwd-unavailable",
   "participant-header-invalid", "participant-header-mismatch", "participant-store-mapping-failed", "participant-seed-failed",
-  "move-adapter-unavailable", "move-workspace-unmapped", "move-checkout-conflict", "move-first-home-withheld"] as const;
+  "move-adapter-unavailable", "move-workspace-unmapped", "move-checkout-conflict", "move-first-home-withheld", "move-session-dir-unsupported"] as const;
 export type MoveCauseCode = typeof moveCauses[number];
 
 export function safeMoveCause(value: unknown): MoveCauseCode | undefined {
@@ -48,6 +48,7 @@ export class MoveCompositionError extends Error {
   }
 }
 export function moveFailureRepair(cause: MoveCauseCode): string {
+  if (cause === "move-session-dir-unsupported") return "Roaming requires the transcript to be in the agent's sessions folder. Restart the session without --session-dir.";
   if (cause === "move-first-home-withheld") return "Restore the reported store on the named machine, then retry the move.";
   if (cause === "move-workspace-unmapped") return "Run spider roam repo map <repo> <path> on the destination, then retry the move.";
   return cause === "participant-pi-unavailable"

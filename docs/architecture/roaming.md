@@ -785,6 +785,8 @@ session. `spider move <session> box-1.invalid` also accepts an unambiguous
 session name or ID prefix. Use `mac` as the destination to return home.
 Box-side commands direct you to the Mac without creating a move request.
 Children, transient sessions, and busy sessions cannot move.
+Roaming requires the transcript to be inside the agent's `sessions` folder, including paths that resolve there through a symlink.
+A transcript outside that folder refuses preflight with `move-session-dir-unsupported` before seeding, assigning a home or freezing; restart the session without `--session-dir`.
 
 `/move` keeps one footer status while it waits, rather than posting periodic
 progress notices. The start and result notices remain. A lost control reply

@@ -40,6 +40,7 @@ import { createHostRoamPresentationPorts } from "./readiness";
 import { createDormantControl } from "./control";
 import { createBlockerPorts } from "./evidence";
 import { createUsageIngestThrough } from "./usage-ingest";
+import { assertStandardSessionFile } from "@spider/roam/session-folder";
 
 import { createExactLaunchAdapter, createProductionLocalExactHc, createLaunchReconciler, resolveParticipantPi } from "@spider/roam/launcher";
 import { inspectSession } from "@spider/roam/session-file";
@@ -259,6 +260,7 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
         const exited = new Promise<void>(done => child.once("exit", () => done()));
         return { exited, async stop() { if (child.exitCode === null) child.kill("SIGTERM"); await exited; } };
       } },
+    checkSessionFile: file => assertStandardSessionFile(file, join(loadHerdrConfig(root).agentDirectory, "sessions")),
     stores: { open: openMoveStore, head: key => {
       const db = openMoveStore(key), meta = db.prepare("SELECT stream_id FROM roam_meta WHERE id=1").get() as { stream_id: string };
       return { storeKey: key, stream: meta.stream_id, through: (db.prepare("SELECT coalesce(max(seq),0) AS seq FROM roam_changes").get() as { seq: number }).seq };

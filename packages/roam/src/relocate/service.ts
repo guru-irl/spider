@@ -6,6 +6,18 @@ import { isMachineId } from "../machine-id";
 import { privateDirectory } from "../staging";
 import type { RelocateRequest, SetHomeRequest, V0ControlServices } from "./types";
 
+export async function runV0Service(start: () => Promise<{ stop(): Promise<void> }>): Promise<void> {
+  let signal!: () => void;
+  const stopped = new Promise<void>(done => { signal = done; });
+  process.once("SIGTERM", signal); process.once("SIGINT", signal);
+  let service: { stop(): Promise<void> } | undefined;
+  try { service = await start(); await stopped; }
+  finally {
+    process.off("SIGTERM", signal); process.off("SIGINT", signal);
+    await service?.stop();
+  }
+}
+
 const MAX_REQUEST = 32 * 1024, MAX_REPLY = 1024 * 1024;
 const text = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(value);
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === "object" && !Array.isArray(value); }

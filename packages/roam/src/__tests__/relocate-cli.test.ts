@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { DEFAULT_LIMITS, disabledIntercom, type RoamConfig } from "../contracts";
 import type { RunningHome, SessionId, V0ControlServices } from "../relocate/types";
 import { parseV0Control, runV0Control } from "../relocate/cli";
-import { serveV0Control, requestV0Services } from "../relocate/service";
+import { serveV0Control, requestV0Services, runV0Service } from "../relocate/service";
 import { parsePublicControl } from "../commands";
 import { main } from "../cli";
 import * as legacySocket from "../control-socket";
@@ -30,6 +30,18 @@ function fixture(confirmation: string | null = null) {
   return { out, err, prompts, services, io };
 }
 describe("v0 controls", () => {
+  it("v0 service signal handling drains and removes its listeners", async () => {
+    let entered!: () => void, release!: () => void;
+    const starting = new Promise<void>(done => { entered = done; });
+    const drain = new Promise<void>(done => { release = done; });
+    const stop = vi.fn(async () => { await drain; });
+    const before = process.listenerCount("SIGTERM");
+    let finished = false;
+    const running = runV0Service(async () => { entered(); return { stop }; }).then(() => { finished = true; });
+    await starting; process.emit("SIGTERM"); await Promise.resolve();
+    expect(finished).toBe(false); release(); await running;
+    expect(stop).toHaveBeenCalledOnce(); expect(process.listenerCount("SIGTERM")).toBe(before);
+  });
   it("the private v0 socket dispatches only the new services", async () => {
     const f = fixture(); const root = mkdtempSync(join(resolve(".spider/scratch"), "dvs-")); roots.push(root);
     const socket = await serveV0Control(root, f.services);

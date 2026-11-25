@@ -15,10 +15,14 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   checks:
-    name: checks
+    # Branch protection matches these exact middle-dot characters.
+    name: typecheck · test · build
+    needs: [pr-test, test, herdr-acceptance, chrome]
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -47,6 +51,7 @@ jobs:
         run: npm run typecheck
 
       - name: Herdr acceptance typecheck
+        if: github.event_name != 'pull_request' || needs.pr-test.outputs.acceptance == 'true'
         run: TMPDIR="$PWD/.spider/scratch/tmp" npm run typecheck:herdr:e2e
 
       - name: Verify bundle shape
@@ -69,7 +74,164 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
+      - name: Download PR selections
+        if: github.event_name == 'pull_request'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-selection-*
+          path: .spider/scratch/selections
+          merge-multiple: true
+
+      - name: Require identical PR selections
+        if: github.event_name == 'pull_request'
+        run: |
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { validateManifest } from "./scripts/select-tests.mjs";
+            const read = n => JSON.parse(readFileSync(`.spider/scratch/selections/selection-${n}.json`, "utf8"));
+            const a = read(1), b = read(2);
+            validateManifest(a); validateManifest(b);
+            if (a.selectionHash !== b.selectionHash) throw new Error("PR shards selected different manifests");
+            console.log(`Both shards used ${a.selectionHash}`);
+          '
+
+      - name: Prepare optional PR acceptance environment
+        if: github.event_name == 'pull_request' && needs.pr-test.outputs.acceptance == 'true'
+        run: |
+          mkdir -p "$PWD/.spider/scratch/e2"
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+          test ! -e "$rundir"
+          echo "XDG_RUNTIME_DIR=" >> "$GITHUB_ENV"
+
+      - name: PR Herdr confidence utilities
+        if: github.event_name == 'pull_request' && needs.pr-test.outputs.acceptance == 'true'
+        timeout-minutes: 5
+        run: |
+          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_REAL_MACHINE -u SPIDER_HERDR_TEST_DISPLAY_UUID TMPDIR="$PWD/.spider/scratch/tmp" node node_modules/vitest/vitest.mjs run --config packages/herdr/e2e/vitest.config.ts --maxWorkers 2 packages/herdr/e2e/scenarios/runner-contract.test.ts packages/herdr/e2e/harness/__tests__/pi-observations.test.ts packages/herdr/e2e/native packages/herdr/e2e/controls
+
+      - name: PR Herdr packed acceptance
+        if: github.event_name == 'pull_request' && needs.pr-test.outputs.acceptance == 'true'
+        timeout-minutes: 10
+        run: |
+          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_REAL_MACHINE -u SPIDER_HERDR_TEST_DISPLAY_UUID TMPDIR="$PWD/.spider/scratch/tmp" npm run test:herdr:e2e:ci -- --built
+
+      - name: PR installed Chrome tests
+        if: github.event_name == 'pull_request' && needs.pr-test.outputs.chrome == 'true'
+        timeout-minutes: 10
+        run: |
+          command -v google-chrome
+          mkdir -p "$PWD/.spider/scratch/playwright/tmp" "$PWD/.spider/scratch/playwright/npm-cache" "$PWD/.spider/scratch/playwright/npm-logs"
+          export TMPDIR="$PWD/.spider/scratch/playwright/tmp"
+          export npm_config_cache="$PWD/.spider/scratch/playwright/npm-cache"
+          export npm_config_logs_dir="$PWD/.spider/scratch/playwright/npm-logs"
+          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID CI=true npm run -s test:e2e
+
+      - name: Optional PR failure artifacts
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: optional-pr-failures
+          path: |
+            .spider/scratch/e2/
+            playwright-results/
+            playwright-report/
+          include-hidden-files: true
+          if-no-files-found: ignore
+
+      - name: Require every applicable job to pass
+        if: always()
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            jq -e '.["pr-test"].result == "success" and all(to_entries[]; .key == "pr-test" or .value.result == "skipped")' <<< "$NEEDS_JSON"
+          else
+            jq -e '.["pr-test"].result == "skipped" and all(to_entries[]; .key == "pr-test" or .value.result == "success")' <<< "$NEEDS_JSON"
+          fi
+
+  pr-test:
+    if: github.event_name == 'pull_request'
+    name: PR tests ${{ matrix.shard }}/2
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    outputs:
+      acceptance: ${{ steps.selection.outputs.acceptance }}
+      chrome: ${{ steps.selection.outputs.chrome }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+
+      - name: Prepare isolated scratch
+        run: mkdir -p "$PWD/.spider/scratch/tmp" "$PWD/.spider/scratch/test-results"
+
+      - name: Install SQLite CLI
+        run: command -v sqlite3 || { sudo apt-get update && sudo apt-get install -y sqlite3; }
+
+      - name: Install
+        run: npm ci
+
+      # Tests keep hc sockets inside their own state homes, as on macOS. With
+      # XDG_RUNTIME_DIR empty, hc falls back to /run/user/<uid> when it exists,
+      # so remove the runner's copy for the rest of the job.
+      - name: Remove runner runtime directory
+        run: |
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+          test ! -e "$rundir"
+          echo "XDG_RUNTIME_DIR=" >> "$GITHUB_ENV"
+
+      - name: Select affected tests
+        id: selection
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          node scripts/select-tests.mjs --base "$BASE_SHA" --head "$(git rev-parse HEAD)" --output ".spider/scratch/test-results/selection-${{ matrix.shard }}.json"
+          node scripts/test-shard-budget.mjs --manifest ".spider/scratch/test-results/selection-${{ matrix.shard }}.json" > ".spider/scratch/test-results/budget-${{ matrix.shard }}.json"
+
+      - name: Test selected shard
+        env:
+          SCOPED_TESTS: ${{ vars.CI_SCOPED_TESTS }}
+        run: |
+          # Default to full PR tests while collecting proposed-selection evidence.
+          shadow=--shadow
+          if [ "$SCOPED_TESTS" = true ]; then shadow=; fi
+          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR TMPDIR="$PWD/.spider/scratch/tmp" node scripts/run-selected-tests.mjs --manifest ".spider/scratch/test-results/selection-${{ matrix.shard }}.json" --shard ${{ matrix.shard }}/2 --report .spider/scratch/test-results/shard-${{ matrix.shard }}.json $shadow
+
+      - name: Save proposed selection and budget
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-selection-${{ matrix.shard }}
+          path: |
+            .spider/scratch/test-results/selection-${{ matrix.shard }}.json
+            .spider/scratch/test-results/budget-${{ matrix.shard }}.json
+          include-hidden-files: true
+          if-no-files-found: error
+
+      - name: Shard timing report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.shard }}
+          path: .spider/scratch/test-results/shard-${{ matrix.shard }}.json
+          include-hidden-files: true
+          if-no-files-found: warn
+
   test:
+    if: github.event_name != 'pull_request'
     name: test shard ${{ matrix.shard }}/12
     strategy:
       fail-fast: false
@@ -119,6 +281,7 @@ jobs:
           if-no-files-found: warn
 
   herdr-acceptance:
+    if: github.event_name != 'pull_request'
     name: herdr acceptance
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -168,6 +331,7 @@ jobs:
           if-no-files-found: ignore
 
   chrome:
+    if: github.event_name != 'pull_request'
     # The three states-gallery tests take most of the browser time, so each runs in
     # its own job and the other tests share one. Keep the widths in step with
     # visual-acceptance.e2e.ts; playwright-config.test.ts checks that they match.
@@ -216,18 +380,3 @@ jobs:
             playwright-results/
             playwright-report/
           if-no-files-found: ignore
-
-  required:
-    # These are U+00B7 MIDDLE DOT characters. Branch protection matches the job
-    # name without the workflow prefix. See docs/release-process.md.
-    name: typecheck · test · build
-    needs: [checks, test, herdr-acceptance, chrome]
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Require every job to pass
-        env:
-          NEEDS_JSON: ${{ toJSON(needs) }}
-        run: |
-          jq -e 'length > 0 and all(.[]; .result == "success")' <<< "$NEEDS_JSON"

@@ -264,6 +264,34 @@ describe('CI acceptance contract', () => {
     expect(ci.jobs.test!.if).toContain("mode == 'full'");
   });
 
+  it('sends a selection over the two-runner budget to the full matrix', () => {
+    const select = step(workflow('ci').jobs['pr-test']!, 'Select affected tests');
+    const root = mkdtempSync(join(process.cwd(), '.spider/scratch/selection-budget-'));
+    try {
+      mkdirSync(join(root, 'bin')); mkdirSync(join(root, '.spider/scratch/test-results'), { recursive: true });
+      writeFileSync(join(root, 'bin/node'), [
+        '#!/bin/sh',
+        'case "$1" in',
+        '  scripts/select-tests.mjs) printf "chrome=false\\nmode=scoped\\naudit=false\\n" > "$GITHUB_OUTPUT" ;;',
+        '  scripts/test-shard-budget.mjs) printf "%s\\n" "$*" > "$ROOT/budget-args"; exit "$BUDGET_EXIT" ;;',
+        '  *) exit 9 ;;',
+        'esac',
+      ].join('\n') + '\n', { mode: 0o700 });
+      const outputs = (exit: number): string => {
+        const output = join(root, `output-${exit}`);
+        const env = { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, GITHUB_OUTPUT: output, BUDGET_EXIT: String(exit), ROOT: root, BASE_SHA: 'base' };
+        const result = spawnSync('bash', ['-e', '-c', select.run!.replaceAll('${{ matrix.shard }}', '1')], { cwd: root, env, encoding: 'utf8' });
+        expect(result.status, result.stderr).toBe(0);
+        return readFileSync(output, 'utf8');
+      };
+      expect(outputs(0)).toBe('chrome=false\nmode=scoped\naudit=false\n');
+      expect(outputs(1)).toBe('chrome=false\nmode=full\naudit=false\n');
+      expect(readFileSync(join(root, 'budget-args'), 'utf8')).toMatch(/ --limit-ms 300000(\s|$)/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('uses only Node 26 with npm caches and gives every CI job an explicit timeout', () => {
     for (const name of ['ci', 'release', 'publish']) for (const [id, job] of Object.entries(workflow(name).jobs)) {
       for (const node of (job.steps ?? []).filter(item => item.uses === 'actions/setup-node@v4')) {

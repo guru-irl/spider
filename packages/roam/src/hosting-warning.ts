@@ -1,4 +1,5 @@
 import type { Db } from "@spider/db-core";
+import type { Diagnostic } from "./contracts";
 import { localEntries } from "@spider/db-core/roam/local-state";
 import { safeCauseCode } from "./cause-codes";
 
@@ -25,7 +26,7 @@ export function validHostingWarning(value: unknown): value is HostingWarning {
   return row.code === HOSTING_WARNING_CODE && ["running-intent", "intent-view", "inspection", "restart", "launch"].includes(row.check) &&
     Number.isSafeInteger(row.since) && row.since >= 0 &&
     (row.count === 3 || row.check === "launch" && row.causeCode === "participant-exited-before-readiness" && (row.count === 1 || row.count === 2)) &&
-    (row.causeCode === undefined || row.check === "launch" && safeCauseCode(row.causeCode) !== undefined) &&
+    (row.causeCode === undefined || (row.check === "launch" || row.check === "inspection") && safeCauseCode(row.causeCode) !== undefined) &&
     (row.exitCode === undefined || row.check === "launch" && row.causeCode !== undefined && validExitCode(row.exitCode)) &&
     (row.signal === undefined || row.check === "launch" && row.causeCode !== undefined && validSignal(row.signal)) &&
     (row.exitStatus === undefined || row.check === "launch" && row.causeCode !== undefined && row.exitStatus === "exit-status-unavailable" &&
@@ -54,6 +55,11 @@ export function hostingWarningText(warning: HostingWarning): string {
   const details = [warning.causeCode, warning.exitCode === undefined ? undefined : `exit code ${warning.exitCode}`,
     warning.signal === undefined ? undefined : `signal ${warning.signal}`, warning.exitStatus].filter(Boolean).join(", ");
   return `${warning.code} (${warning.check}${details ? `: ${details}` : ""}); hosting checks will retry automatically.`;
+}
+export function hostingWarningDiagnostic(sessionId: string, warning: HostingWarning): Diagnostic {
+  const repairCommand = warning.check === "inspection" && /^[A-Za-z0-9._-]{1,256}$/.test(sessionId) ? `spider roam stop ${sessionId}` : null;
+  return { code: warning.code, severity: "warning", reason: hostingWarningReason(sessionId, warning) +
+    (repairCommand ? ` To cancel hosting, run ${repairCommand} on the hub.` : ""), repairCommand };
 }
 export function hostingWarningReason(sessionId: string, warning: HostingWarning): string {
   const id = sessionId.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 256);

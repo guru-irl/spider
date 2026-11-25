@@ -4,7 +4,7 @@ import { corePinDiagnostics } from "./core-pin-diagnostics";
 import { hubStartupDiagnostics, inspectHubService, type HubServiceObservation } from "./hub-service-diagnostics";
 import { hubServiceExists, hubServiceFile, hubServiceSelectionMatches } from "./launchd";
 import { inspectSupervisorCorePin } from "./enrollment";
-import { hostingWarningReason, readHostingWarnings } from "./hosting-warning";
+import { hostingWarningDiagnostic, readHostingWarnings } from "./hosting-warning";
 import { execFile, execFileSync } from "node:child_process";
 import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -324,7 +324,7 @@ function readDoctorCatalog(db: Db, projects: DoctorProject[], globalPath: string
 }
 
 function hostingWarningDiagnostics(db: Db): Diagnostic[] {
-  return readHostingWarnings(db).map(warning => ({ code: warning.code, severity: "warning", reason: hostingWarningReason(warning.sessionId, warning), repairCommand: null }));
+  return readHostingWarnings(db).map(warning => hostingWarningDiagnostic(warning.sessionId, warning));
 }
 
 /** Read hosting warnings even when hub scheduling is disabled. */

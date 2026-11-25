@@ -26,7 +26,7 @@ import type { IntercomFederationClient } from "@spider/intercom/broker/client";
 import type { IntercomBridge } from "./intercom-bridge";
 import type { FreezeJournal } from "./journal";
 import { createMovePower, type PowerPorts } from "./power";
-import { controlSession, createRunningIntentAuthority, recordReadiness, startParticipant, type ParticipantIntentOwner } from "./session-control";
+import { controlSession, createRunningIntentAuthority, participantCaptureInitialized, recordReadiness, startParticipant, type ParticipantIntentOwner } from "./session-control";
 import { requestSessionControl } from "./session-socket";
 import { isRevoked } from "./revocation";
 import { isMachineId } from "./machine-id";
@@ -958,9 +958,41 @@ async function activatePrepared(operation: Operation, prepared: PreparedMove, pa
   if (!participant.config.enabled && !launchPending) throw new MoveAdapterError("roaming-disabled");
   if (!launchPending && (await participant.auth()).some(row => row.severity === "block")) throw new MoveAdapterError("participant-auth-unavailable");
   const intent = { sessionId: home.sessionId, epoch: home.epoch, desired: "running" as const, suspended: null, file: manifest.file, cwd: manifest.cwd, moveId: home.moveId };
+  const worktrees = location(participant.globalDb, home.sessionId).stores.filter(key => storeScope(key) === "worktree").map(key => {
+    const store = participant.stores.find(row => row.key === key);
+    if (!store) throw new MoveAdapterError("participant-stores-unavailable");
+    return store;
+  });
+  if (!worktrees.length) throw new MoveAdapterError("participant-stores-unavailable");
+  async function initializeCapture(): Promise<void> {
+    for (const { key, db } of worktrees) {
+      const meta = db.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id: string; store_key: string | null };
+      if (meta.machine_id !== participant.config.machineId || meta.store_key !== key) throw new MoveAdapterError("participant-store-mismatch");
+      let seeded;
+      do {
+        if (!sameHome(sessionHome(participant.globalDb, home.sessionId), home) || !await participant.identityCurrent()) throw new MoveAdapterError("participant-home-mismatch");
+        seeded = seedSession(db, home.sessionId, home.epoch, key, participant.config.limits.targetBatchBytes);
+        if (seeded.retryable) throw new MoveAdapterError("session-too-busy-to-seed");
+        if (!seeded.complete) await yieldToLoop();
+      } while (!seeded.complete);
+    }
+  }
   const started = await startParticipant({ ...operation, kind: "session-start" }, home, intent, { journal, machineId: participant.config.machineId, hubMachineId: participant.config.hubMachineId,
     identityCurrent: participant.identityCurrent,
-    wake: async () => { if (!launchPending) await participantLaunch(operation, home, participant, journal); },
+    wake: async () => {
+      if (launchPending) return;
+      // Older activations persisted running intent without enabling imported worktree capture.
+      if (worktrees.some(({ key, db }) => !participantCaptureInitialized(db, participant.config.machineId, key))) {
+        await participant.withBothLocks(home.sessionId, async () => {
+          if ((await participant.probe(home.sessionId)).kind !== "absent" || !isDeepStrictEqual(await authority.get(home.sessionId), intent)) throw new MoveAdapterError("participant-owner-uncertain");
+          await verifyWorkspace(prepared.workspace, createMoveWorkspacePorts(participant.globalDb, gitPorts(participant, journal), join(participant.root, "roam", "staging"), []));
+          const current = await inspectSession(manifest.file, home.sessionId, manifest.leaf, participant.config.limits);
+          if (current.sha256 !== manifest.sha256 || current.size !== manifest.size || current.cwd !== manifest.cwd) throw new MoveAdapterError("participant-file-mismatch");
+          await initializeCapture();
+        });
+      }
+      await participantLaunch(operation, home, participant, journal);
+    },
     readiness: async () => launchPending ? null : participantReady(operation, home, participant, journal),
     async activate() {
       if ((await participant.probe(home.sessionId)).kind !== "absent") throw new MoveAdapterError("participant-owner-uncertain");
@@ -971,11 +1003,12 @@ async function activatePrepared(operation: Operation, prepared: PreparedMove, pa
         if (atLaunch.sha256 !== manifest.sha256 || atLaunch.size !== manifest.size || atLaunch.cwd !== manifest.cwd) throw new MoveAdapterError("participant-file-mismatch");
         if (!sameHome(sessionHome(participant.globalDb, home.sessionId), home) || !await participant.identityCurrent()) throw new MoveAdapterError("participant-home-mismatch");
         journal.record(operation.id, "participant-file-verified", json(atLaunch));
-        for (const { key, db } of participant.stores) if (storeScope(key) === "worktree") db.raw.transaction(() => {
+        for (const { db } of worktrees) db.raw.transaction(() => {
           const state = db.prepare("SELECT state,epoch FROM roam_sessions WHERE session_id=?").get(home.sessionId) as { state: string; epoch: number } | undefined;
           if (!state || state.state === "frozen" || state.epoch > home.epoch) throw new MoveAdapterError("participant-store-mismatch");
           db.prepare("UPDATE roam_sessions SET state='active',epoch=?,move_id=?,freeze_seq=NULL WHERE session_id=?").run(home.epoch, home.moveId, home.sessionId);
         }).immediate();
+        await initializeCapture();
         persistExportedSnapshot(participant.globalDb, { ...prepared.workspace.snapshot, root: prepared.workspace.root });
         await authority.set(intent, operation.id, recordedIntentOwner(home, operation, participant, journal));
       });

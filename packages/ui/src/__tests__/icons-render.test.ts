@@ -27,7 +27,7 @@ const agent: AgentSnapshot = {
 describe("icon styles in rendered rows", () => {
   it("returns each role's specified text and Nerd Font glyph with equal cell widths", () => {
     const roles: [IconRole, string, string][] = [
-      ["agent", "🕸", "\u{F167A}"], ["spider", "🕸", "\u{F0BCA}"], ["warning", "⚠", "\u{F002A}"], ["failure", "✗", "\u{F0156}"],
+      ["agent", "\u{1F578}\uFE0F", "\u{F167A} "], ["spider", "\u{1F578}\uFE0F", "\u{F0BCA} "], ["warning", "⚠", "\u{F002A}"], ["failure", "✗", "\u{F0156}"],
       ["gutter", "⎿", "\u{F060D}"], ["task", "↳", "\u{F060D}"], ["result", "⤴", "\u{F005C}"],
       ["message", "✉", "\u{F01F0}"], ["reply", "↩", "\u{F0F20}"], ["broadcast", "⇉", "\u{F0B23}"],
       ["handoff", "⇢", "\u{F19B0}"], ["pin", "📌", "\u{F0931} "], ["modelDefault", "⟵", "\u{F004D}"],
@@ -42,7 +42,7 @@ describe("icon styles in rendered rows", () => {
   });
   it("preserves a custom agent glyph on an adapter with no icon style", () => {
     const custom: ThemeAdapter = { ...theme("text"), glyph: "◆", iconStyle: undefined };
-    expect(formatAgentLine(custom, agent, 100, 0, "○")).toContain("○ ◆  scribe");
+    expect(formatAgentLine(custom, agent, 100, 0, "○")).toContain("○ ◆ scribe");
     const opts = { agent, width: 100, height: 2, focused: false, pinned: false, now: 0, spinner: new Spinner() };
     expect(renderGridCell(custom, opts)[0]).toContain("◆ scribe");
   });
@@ -50,7 +50,7 @@ describe("icon styles in rendered rows", () => {
   it("keeps the agent marker and its following spaces aligned", () => {
     const text = formatAgentLine(theme("text"), agent, 100, 0, "◆");
     const nerd = formatAgentLine(theme("nerd"), agent, 100, 0, "◆");
-    expect(text).toContain("◆ 🕸  scribe");
+    expect(text).toContain("◆ \u{1F578}\uFE0F scribe");
     expect(nerd).toContain("◆ \u{F167A}  scribe");
     expect(visibleWidth(nerd)).toBe(visibleWidth(text));
   });
@@ -66,8 +66,8 @@ describe("icon styles in rendered rows", () => {
   it("uses the spider icon in cards and preserves their width", () => {
     const text = card(theme("text"), "Agents", [], 40)[0];
     const nerd = card(theme("nerd"), "Agents", [], 40)[0];
-    expect(text).toContain("🕸 Agents");
-    expect(nerd).toContain("\u{F0BCA} Agents");
+    expect(text).toContain("\u{1F578}\uFE0F Agents");
+    expect(nerd).toContain("\u{F0BCA}  Agents");
     expect(nerd).not.toContain("\u{F167A}");
     expect(visibleWidth(nerd)).toBe(visibleWidth(text));
   });
@@ -76,8 +76,8 @@ describe("icon styles in rendered rows", () => {
     const call = { kind: "exec" as const, commands: ["echo"] };
     const text = renderExecCall(call, { theme: theme("text"), width: 80 });
     const nerd = renderExecCall(call, { theme: theme("nerd"), width: 80 });
-    expect(text[0]).toMatch(/^🕸 spider exec/);
-    expect(nerd[0]).toMatch(/^\u{F0BCA} spider exec/u);
+    expect(text[0]).toMatch(/^\u{1F578}\u{FE0F} spider exec/u);
+    expect(nerd[0]).toMatch(/^\u{F0BCA}  spider exec/u);
     expect(nerd.map(visibleWidth)).toEqual(text.map(visibleWidth));
     expect(formatAgentLine(theme("nerd"), agent, 100, 0, "◆")).toContain("◆ \u{F167A}  scribe");
   });
@@ -109,8 +109,8 @@ describe("icon styles in rendered rows", () => {
       focused: false, pinned: true, now: 0, spinner: new Spinner() };
     const text = renderGridCell(theme("text"), opts);
     const nerd = renderGridCell(theme("nerd"), opts);
-    expect(text[0]).toContain("✗ 🕸 scribe 📌");
-    expect(nerd[0]).toContain("\u{F0156} \u{F167A} scribe \u{F0931} ");
+    expect(text[0]).toContain("✗ \u{1F578}\uFE0F scribe 📌");
+    expect(nerd[0]).toContain("\u{F0156} \u{F167A}  scribe \u{F0931} ");
     expect(text[2]).toContain("↳ read files");
     expect(nerd[2]).toContain("\u{F060D} read files");
     expect(nerd.map(visibleWidth)).toEqual(text.map(visibleWidth));

@@ -31,7 +31,7 @@ describe("host icon rendering", () => {
     const args = { action: "run" };
     const text = renderSpiderCall(args, theme, style("text")).render(100);
     const nerd = renderSpiderCall(args, theme, style("nerd")).render(100);
-    expect(text[0]).toContain("🕸  spider");
+    expect(text[0]).toContain("\u{1F578}\uFE0F spider");
     expect(nerd[0]).toContain("\u{F0BCA}  spider");
     equalWidths(text, nerd);
   });

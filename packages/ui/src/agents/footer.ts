@@ -39,7 +39,7 @@ export function formatAgentLine(t: ThemeAdapter, a: AgentSnapshot, width: number
   if (a.activity) parts.push(sep, t.fg("dim", activityText(t, a.activity, a.activityIsError)));
   // ONLY the leading status marker (spinner while running, glyph otherwise) is status-coloured;
   // the name/text stay a constant tool-title colour (no green-on-success noise).
-  return truncateToWidth(`${t.fg(statusToken(a.status), lead)} ${t.fg("toolTitle", agentGlyph(t))}  ${parts.join(" ")}`, width, "…");
+  return truncateToWidth(`${t.fg(statusToken(a.status), lead)} ${t.fg("toolTitle", agentGlyph(t))} ${parts.join(" ")}`, width, "…");
 }
 
 export class AgentFooter implements Component {

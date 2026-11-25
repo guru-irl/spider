@@ -4,7 +4,7 @@ import { theme, Panel, SectionRule, StatusLine, LiveWidget } from "../index";
 
 describe("@spider/ui skeleton", () => {
   it("theme exposes the 🕸 glyph and a token() lookup", () => {
-    expect(theme.glyph).toBe("🕸");
+    expect(theme.glyph).toBe("\u{1F578}\uFE0F");
     expect(typeof theme.token("accent")).toBe("string");
   });
 

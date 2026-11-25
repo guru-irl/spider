@@ -44,15 +44,12 @@ const labels = (style?: IconStyle): Record<Format, string> => ({ text: `${icon(s
 const DONE = "✓ copied";
 const COLUMN = Math.max(...[...Object.values(labels("text")), ...Object.values(labels("nerd")), DONE].map(visibleWidth));
 const GROUP_WIDTH = COLUMN * 2 + 1;
-const TIME_WIDTH = 12;
 const dim = (text: string) => `\x1b[2m${text}\x1b[22m`;
 const pad = (text: string) => text + " ".repeat(Math.max(0, COLUMN - visibleWidth(text)));
 
-function formatTime(date: Date, today: Date): string {
+function formatTime(date: Date): string {
   const time = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(date);
-  return date.toDateString() === today.toDateString()
-    ? time
-    : `${new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(date)} ${time}`;
+  return `${new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(date)} ${time}`;
 }
 
 function addButtons(md: Markdown, host: CopyButtonsHost, state: State, source: string, full: string | undefined, timestamp: number, messageGroup: object): void {
@@ -119,7 +116,7 @@ function addButtons(md: Markdown, host: CopyButtonsHost, state: State, source: s
       const key = `${today.toDateString()}|${date.getTimezoneOffset()}`;
       if (key !== timeKey) {
         timeKey = key;
-        formattedTime = formatTime(date, today);
+        formattedTime = formatTime(date);
       }
     }
     const time = frame ? formattedTime : "";
@@ -165,40 +162,27 @@ function decorate(raw: string[], blocks: Block[], copied: Copied | undefined, wi
   const hits: Hit[] = [];
   const innerWidth = frame ? width - 2 : width;
   const last = full === undefined ? -1 : raw.findLastIndex(line => stripTerminalSequences(line.replace(MARKER, "")).trim() !== "");
-  const addRow = (clean: string, block: number) => {
-    const col = Math.max(0, innerWidth - GROUP_WIDTH - 1);
-    const body = clean.trimEnd();
-    const bodyWidth = visibleWidth(body);
-    // Reserve action space even while hidden. Stack the date only when needed.
-    const timeWidth = Math.min(TIME_WIDTH, Math.max(0, col - 1));
-    const timeCol = Math.max(0, col - timeWidth - 1);
-    if (bodyWidth > 0 && bodyWidth + 2 > timeCol) { lines.push(clean); clean = ""; }
-    const prefix = clean ? body : "";
-    const start = clean ? bodyWidth : 0;
-    const stackedTime = visibleWidth(time) > timeWidth;
-    if (stackedTime) {
-      lines.push(show ? `${" ".repeat(Math.max(0, innerWidth - visibleWidth(time)))}${dim(time)}` : " ".repeat(innerWidth));
-    }
+  const addRow = (block: number) => {
     if (!show) {
-      lines.push(clean || " ".repeat(innerWidth));
+      lines.push(" ".repeat(innerWidth));
       return;
     }
     const text = copied?.block === block && copied.format === "text" ? DONE : LABELS.text;
     const md = copied?.block === block && copied.format === "md" ? DONE : LABELS.md;
-    hits.push({ row: lines.length + 1, start: col + 1, end: col + COLUMN + 1, block, format: "text" });
-    hits.push({ row: lines.length + 1, start: col + COLUMN + 2, end: col + GROUP_WIDTH + 1, block, format: "md" });
-    const timeText = time && !stackedTime ? `${" ".repeat(timeWidth - visibleWidth(time))}${time} ` : "";
-    lines.push(`${prefix}${" ".repeat(col - start - visibleWidth(timeText))}${dim(timeText)}${dim(pad(text))} ${dim(pad(md))}${" ".repeat(Math.max(0, innerWidth - col - GROUP_WIDTH))}`);
+    hits.push({ row: lines.length + 1, start: 1, end: COLUMN + 1, block, format: "text" });
+    hits.push({ row: lines.length + 1, start: COLUMN + 2, end: GROUP_WIDTH + 1, block, format: "md" });
+    const timeText = GROUP_WIDTH + 1 + visibleWidth(time) <= innerWidth ? time : "";
+    lines.push(`${dim(pad(text))} ${dim(pad(md))}${" ".repeat(innerWidth - GROUP_WIDTH - visibleWidth(timeText))}${dim(timeText)}`);
   };
   for (const [row, line] of raw.entries()) {
     const marks = [...line.matchAll(MARKER)];
     const clean = marks.length ? line.replace(MARKER, "") : line;
     const block = marks.map(([, i]) => Number(i)).find(i => blocks[i] !== undefined);
-    if (!frame || innerWidth < GROUP_WIDTH + 1) { lines.push(clean); continue; }
-    if (block !== undefined) addRow(clean, block);
-    else if (row === last) { addRow(clean, blocks.length); continue; }
-    else lines.push(clean);
-    if (row === last && full !== undefined) addRow("", blocks.length);
+    lines.push(clean);
+    if (!frame || innerWidth < GROUP_WIDTH) continue;
+    if (block !== undefined) addRow(block);
+    else if (row === last) { addRow(blocks.length); continue; }
+    if (row === last && full !== undefined) addRow(blocks.length);
   }
   if (!frame || lines.length === 0) return { lines, hits };
   const edge = (text: string) => show ? border(text) : " ".repeat(visibleWidth(text));

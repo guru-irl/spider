@@ -56,4 +56,15 @@ Status: **kept** means byte-identical to upstream, **changed** means adapted in 
 | `why/references/sources/slack.md` | removed | Team chat connector, not reachable from spider. |
 | `why/references/synthesizer-prompt.md` | changed | Source list, citation kinds, spot-check tools, and Sources Consulted lines match the four categories plus an out-of-reach line. |
 
+## Official pstack plugin
+
+- **Upstream:** https://github.com/cursor/plugins
+- **Commit:** `ca782ed8b3c2c521cead8e1720d55c3a5dbf2347`
+- **Path:** `pstack/skills/<skill>/...`, copied to `skills/<skill>/...`
+
+| Upstream file | Status | Adaptation |
+|---|---|---|
+| `ketchup/SKILL.md` | changed | Pi command names; charts rendered with a script instead of an unshipped command; file paths when chat cannot show media. |
+| `ketchup-video/SKILL.md` | changed | Pi command names; video written under git-ignored `.spider/scratch/`; file path when chat cannot show video. |
+
 Files added by spider, with no upstream counterpart: `package.json`, `README.md`, `UPSTREAM.md`, `src/__tests__/*`. `LICENSE` is upstream's, verbatim.

@@ -1,12 +1,83 @@
 import { afterEach, expect, it } from "vitest";
-import { chmodSync, mkdirSync, symlinkSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createReplica } from "@spider/db-core/testutil";
 import { localEntries, readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { pruneMissingStores } from "../store-prune";
+import { listStoreKeys, storeInventoryDiagnostic } from "../store-inventory";
 const fixtures: ReturnType<typeof createReplica>[] = [];
 afterEach(() => { for (const fixture of fixtures.splice(0)) fixture.close(); });
 function fixture() { const f = createReplica("global", "00000000-0000-4000-8000-000000000001"); fixtures.push(f); return f; }
+
+it.each(["project", "repository"] as const)("lists and prunes a deleted %s store folder only after confirmation", kind => {
+  const f = fixture(), container = join(f.root, "container"), folder = join(container, kind === "project" ? ".spider" : "spider");
+  const file = join(folder, kind === "project" ? "project.db" : "repo.db"), sentinel = join(container, "keep.txt");
+  mkdirSync(folder, { recursive: true }); writeFileSync(sentinel, "keep"); rmSync(folder, { recursive: true });
+  f.db.prepare("INSERT INTO projects(project_key,real_path,db_path,git_common_dir,created_at,last_seen_at) VALUES ('fixture',?,?,?,1,1)")
+    .run(container, kind === "project" ? file : f.db.raw.name, kind === "repository" ? container : null);
+  const problems: Array<{ path: string; error: unknown }> = [];
+  listStoreKeys(f.db, { onProblem: (path, error) => problems.push({ path, error }) });
+  const problem = problems.find(item => item.path === file);
+  expect(problem).toBeDefined();
+  expect(storeInventoryDiagnostic(file, problem?.error)).toMatchObject({
+    reason: expect.stringContaining(`store-missing:${kind === "project" ? "worktree" : "repo"}:enoent:`),
+    repairCommand: expect.stringContaining("spider roam stores prune"),
+  });
+  const entry = { key: `${kind}:fixture`, path: file };
+  expect(pruneMissingStores(f.db)).toMatchObject({ candidates: [entry], unavailable: [], removed: [] });
+  expect(f.db.prepare("SELECT project_key FROM projects").all()).toEqual([{ project_key: "fixture" }]);
+  expect(localEntries(f.db, "store-prune")).toEqual([]);
+  expect(pruneMissingStores(f.db, true)).toMatchObject({ candidates: [entry], unavailable: [], removed: [entry] });
+  expect(existsSync(sentinel)).toBe(true);
+  expect(existsSync(folder)).toBe(false);
+  expect(localEntries<{ removed: unknown[] }>(f.db, "store-prune")[0].value.removed).toEqual([
+    expect.objectContaining({ ...entry, table: "projects", row: expect.objectContaining({ project_key: "fixture" }) }),
+  ]);
+  if (kind === "project") expect(f.db.prepare("SELECT project_key FROM projects").all()).toEqual([]);
+  else expect(f.db.prepare("SELECT git_common_dir FROM projects").get()).toEqual({ git_common_dir: null });
+});
+
+it.each(["missing-container", "symlink-folder", "dangling-folder", "symlink-container", "symlink-ancestor"] as const)("keeps a project with an unsafe %s", mode => {
+  const f = fixture(), real = join(f.root, "real"), alias = join(f.root, "alias");
+  const container = mode === "symlink-ancestor" ? join(alias, "container") : join(f.root, "container");
+  mkdirSync(real);
+  if (mode === "symlink-container") symlinkSync(real, container);
+  else if (mode === "symlink-ancestor") { mkdirSync(join(real, "container")); symlinkSync(real, alias); }
+  else if (mode !== "missing-container") mkdirSync(container);
+  if (mode === "symlink-folder") symlinkSync(real, join(container, ".spider"));
+  if (mode === "dangling-folder") symlinkSync(join(f.root, "absent"), join(container, ".spider"));
+  const file = join(container, ".spider", "project.db");
+  f.db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES ('keep',?,?,1,1)").run(container, file);
+  expect(pruneMissingStores(f.db, true)).toMatchObject({ candidates: [], removed: [], unavailable: [
+    expect.objectContaining({ path: file, check: "path-unavailable", repair: expect.stringMatching(/mount or restore/i) }),
+  ] });
+  expect(f.db.prepare("SELECT project_key FROM projects").all()).toEqual([{ project_key: "keep" }]);
+  expect(localEntries(f.db, "store-prune")).toEqual([]);
+});
+
+it.each(["store-folder", "containing-folder"] as const)("keeps a project when its %s is a file", mode => {
+  const f = fixture(), container = join(f.root, "container"), folder = join(container, ".spider");
+  if (mode === "store-folder") { mkdirSync(container); writeFileSync(folder, "not a directory"); }
+  else writeFileSync(container, "not a directory");
+  const file = join(folder, "project.db");
+  f.db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES ('keep',?,?,1,1)").run(container, file);
+  expect(pruneMissingStores(f.db, true)).toMatchObject({ candidates: [], removed: [], unavailable: [
+    expect.objectContaining({ path: file, check: "path-unavailable" }),
+  ] });
+  expect(f.db.prepare("SELECT project_key FROM projects").all()).toEqual([{ project_key: "keep" }]);
+  expect(localEntries(f.db, "store-prune")).toEqual([]);
+});
+
+it.each([0, 0o111])("reports an inspect error for a containing folder with mode %i", mode => {
+  const f = fixture(), container = join(f.root, "denied"), file = join(container, ".spider", "project.db");
+  mkdirSync(container);
+  f.db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES ('keep',?,?,1,1)").run(container, file);
+  chmodSync(container, mode);
+  try { expect(() => pruneMissingStores(f.db, true)).toThrow(expect.objectContaining({ path: file, check: "eacces" })); }
+  finally { chmodSync(container, 0o700); }
+  expect(f.db.prepare("SELECT project_key FROM projects").all()).toEqual([{ project_key: "keep" }]);
+  expect(localEntries(f.db, "store-prune")).toEqual([]);
+});
 it("prunes missing mapped directories and their redirects, retaining planned empty directories", () => {
   const f = fixture(), planned = join(f.root, "planned"); mkdirSync(planned);
   f.db.prepare("INSERT INTO roam_repo_maps(repo_key,path) VALUES ('gone',?)").run(join(f.root, "deleted"));

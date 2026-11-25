@@ -1,5 +1,7 @@
 # Superplan: pstack skills and pi 1.2 features
 
+This plan records the original 31-skill scope. Spider now ships 33 pstack skills. See the [package README](../../../packages/pstack/README.md) for the current list.
+
 This plan adds 31 pstack skills to spider, each one a separate skill adapted to spider and pi, and adds routing for them to the instruction block that every spider session loads. It also adds the pi 1.2 features that help spider now, and fixes the spider defects that the pre-plan reviews found. Each phase gets its own implementation plan, written with the writing-plans skill. Implementation started on 2026-10-20.
 
 The decision record, with one row for every pstack skill, superpowers skill and pi item, is `docs/superpowers/specs/2026-10-19-pstack-integration-decisions.md`.

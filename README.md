@@ -24,7 +24,7 @@ It replaces `pi-subagents`, `context-mode`, and the standalone todo tool.
 - Define [loops and scheduled wakeups](docs/guide/loop-and-schedule.md) with names and wall-clock due times. Interval, cron, self-paced, and one-shot triggers survive reload and same-session resume.
 - Use [Herdr integration](docs/guide/herdr.md) for remote execution, agent consoles, subagent viewers, and the spider panel inside a Herdr terminal workspace.
 
-Spider bundles the superpowers workflow skills and 31 skills adapted from [pstack](https://github.com/michael-denyer/pstack-claude). The pstack set includes `how`, `why`, `teach`, writing guidance and decision principles. `spider skill` lists and views both collections next to project skills, and shows each skill's source even when names overlap. Background curation never touches bundled skills.
+Spider bundles the superpowers workflow skills and 33 skills adapted from [pstack](packages/pstack/README.md). The pstack set includes `how`, `why`, `teach`, `ketchup`, `ketchup-video`, writing guidance and decision principles. `spider skill` lists and views both collections next to project skills, and shows each skill's source even when names overlap. Background curation never touches bundled skills.
 
 ## Requirements
 

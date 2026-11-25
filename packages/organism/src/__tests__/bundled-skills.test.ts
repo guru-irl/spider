@@ -31,7 +31,7 @@ describe("bundled skill inventory", () => {
       }
       expect(result.display).toContain(`bundled ${collection}`);
     }
-    expect(rows.filter(row => row.source === "bundled pstack")).toHaveLength(31);
+    expect(rows.filter(row => row.source === "bundled pstack")).toHaveLength(33);
     expect(new SkillStore(deps.db).list()).toEqual([]);
   });
 

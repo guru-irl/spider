@@ -25,7 +25,7 @@ precedence over skills.
 
 ## pstack skills
 
-spider also ships 31 skills adapted from pstack. Use them alongside the
+spider also ships 33 skills adapted from pstack. Use them alongside the
 superpowers skills above; they replace none of them.
 
 - \`how\`: how code works, a walkthrough before changing it, or where code should

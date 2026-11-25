@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -108,6 +109,17 @@ describe('change-scoped test manifests', () => {
     expect(() => validateManifest(manifest, { root: f.root, testedSha: f.base })).toThrow(/revision|SHA/i);
   });
 
+  it('rejects internally consistent manifests from another policy or timing table', async () => {
+    const { selectTests, validateManifest } = await api(); const f = fixture();
+    const manifest = await selectTests({ ...f, head: f.base });
+    for (const field of ['policyHash', 'timingHash', 'selectorHash']) {
+      const stale = { ...manifest, [field]: 'f'.repeat(64) };
+      const { selectionHash: _hash, selectionMs: _time, ...payload } = stale;
+      stale.selectionHash = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+      expect(() => validateManifest(stale, { root: f.root })).toThrow(/policy|timing|selector/);
+    }
+  });
+
   it('prepares exact manifest files before two-way sharding and never reapplies changed filtering', async () => {
     const { selectTests } = await api(); const f = fixture(); f.put('docs/guide/example.md', 'changed'); const head = f.commit();
     const manifest = await selectTests({ ...f, head, resolveRelated: async () => [] });
@@ -134,6 +146,13 @@ describe('change-scoped test manifests', () => {
     expect(budget.fileCount).toBe(4); expect(budget.shards).toHaveLength(2);
     expect(budget.shards.every((shard: { workersMs: number[] }) => shard.workersMs.length === 3)).toBe(true);
     expect(budget).toHaveProperty('withoutSlowFiles');
+  });
+
+  it('requires selector compatibility audits when selection policy changes', async () => {
+    const { selectTests } = await api(); const f = fixture(); f.put('scripts/test-resources.json', '{}');
+    const result = await selectTests({ ...f, head: f.commit() });
+    expect(result.selectionAudit).toBe(true);
+    expect((await selectTests({ ...f, head: f.git('rev-parse', 'HEAD'), base: f.git('rev-parse', 'HEAD') })).selectionAudit).toBe(false);
   });
 
   it('routes optional suites conservatively while skipping unrelated document changes', async () => {

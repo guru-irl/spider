@@ -56,6 +56,7 @@ export interface FakeState {
   backups: Set<MachineId>;
   processes: Set<MachineId>;
   effects: string[];
+  safetyViolations: string[];
   homesWritten: RelocateHome[];
   ids: number;
   locked: boolean;
@@ -66,12 +67,18 @@ export interface FakeState {
   stopBarrier: Promise<void> | null;
   casWinner: RelocateHome | null;
 }
+const histories: FakeState[] = [];
+export function assertSafeHistories(): void {
+  for (const s of histories.splice(0)) expect(s.safetyViolations).toEqual([]);
+}
 export function state(): FakeState {
-  return { home: running(), journal: new Map(), captures: new Map(), pushed: new Set(),
+  const result: FakeState = { home: running(), journal: new Map(), captures: new Map(), pushed: new Set(),
     installed: new Map(), snapshots: new Set(), segments: new Set(), seeds: new Set(),
-    backups: new Set([source]), processes: new Set([source]), effects: [], homesWritten: [],
+    backups: new Set([source]), processes: new Set([source]), effects: [], safetyViolations: [], homesWritten: [],
     ids: 0, locked: false, stopAcknowledged: false, failAfter: null, failBefore: null,
     refuse: null, stopBarrier: null, casWinner: null };
+  histories.push(result);
+  return result;
 }
 export function deferred() {
   let resolve!: () => void;
@@ -87,12 +94,12 @@ export function ports(s: FakeState): RelocatePorts {
   };
   const effect = (name: string) => {
     s.effects.push(name);
-    expect(s.processes.size).toBeLessThanOrEqual(1);
-    if (s.stopAcknowledged && s.home?.state === "moving") expect(s.processes.size).toBe(0);
-    if (s.home?.machineId === destination && s.home.state === "running") {
-      expect(s.processes.has(source)).toBe(false);
-    }
-    if (!s.stopAcknowledged) expect(s.processes.has(destination)).toBe(false);
+    // Record rather than throw: production handles arbitrary port failures, so a
+    // thrown assertion could otherwise masquerade as the fault being injected.
+    if (s.processes.size > 1) s.safetyViolations.push(`${name}: two running copies`);
+    if (s.stopAcknowledged && s.home?.state === "moving" && s.processes.size !== 0) s.safetyViolations.push(`${name}: running while moving after stop`);
+    if (s.home?.machineId === destination && s.home.state === "running" && s.processes.has(source)) s.safetyViolations.push(`${name}: source runs after commit`);
+    if (!s.stopAcknowledged && s.processes.has(destination)) s.safetyViolations.push(`${name}: destination runs before source stop`);
     if (s.failAfter === name) { s.failAfter = null; throw new Error("reply unavailable"); }
   };
   const perform = async <T>(name: string, run: () => T | Promise<T>): Promise<V0Result<T>> => {

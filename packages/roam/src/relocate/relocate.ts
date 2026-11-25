@@ -161,7 +161,16 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
       step = "mark-moving";
       if (home.state !== "moving") await cas(plan.source, moving);
       if (!done(step)) {
-        value(await ports.publishHome(moving, moving.machineId));
+        try { value(await ports.publishHome(moving, moving.machineId)); }
+        catch (error) {
+          // The one safe rollback boundary: no destination work has begun.
+          const restored: RunningHome = { ...moving, state: "running", destination: null, epoch: moving.epoch + 1 };
+          await cas(moving, restored);
+          // Best effort: the authoritative running home is safe even if the
+          // source is still unreachable. Its loop can reactivate on later sync.
+          try { value(await ports.publishHome(restored, restored.machineId)); } catch { /* keep the original refusal */ }
+          throw error;
+        }
         await complete(step);
       }
       step = "stop-source";

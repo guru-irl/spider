@@ -1,9 +1,11 @@
-import { describe, expect, it } from "vitest";
-import type { RelocateCheckpoint } from "../relocate/types";
+import { afterEach, describe, expect, it } from "vitest";
+import type { RelocateCheckpoint, RelocateId } from "../relocate/types";
 import { relocate } from "../relocate/relocate";
-import { deferred, destination, ports, request, running, sessionId, source, state, third } from "./relocate-fakes";
+import { assertSafeHistories, deferred, destination, ports, request, running, sessionId, source, state, third } from "./relocate-fakes";
 
 const protocol = (effects: string[]) => effects.filter(e => !e.startsWith("save-"));
+
+afterEach(assertSafeHistories);
 
 describe("relocate", () => {
   // Missing awaits, wrong CAS epochs, or start-before-commit violate these public port effects.
@@ -140,6 +142,65 @@ describe("relocate", () => {
     });
     expect(s.home).toEqual(home); expect(s.journal).toEqual(journal);
     expect(s.effects.slice(before)).toEqual([]); expect(s.ids).toBe(1);
+  });
+
+  it.each([
+    ["check", "save-check"], ["mark-moving", "cas-moving"], ["stop-source", "save-stop-source"],
+    ["pull-source", "pull-source"], ["push-destination", "push-destination"],
+    ["install-destination", "install-destination"], ["commit-home", "cas-running"],
+    ["start-destination", "start-destination"], ["confirm", "save-confirm"],
+  ])("fault after %s resumes without two copies", async (step, boundary) => {
+    const s = state(); s.failAfter = boundary;
+    expect((await relocate(request, ports(s))).ok).toBe(false);
+    const pendingId = s.home!.moveId;
+    expect((await relocate(request, ports(s))).ok).toBe(true);
+    expect(s.home).toMatchObject({ sessionId, machineId: destination, state: "running", epoch: 3,
+      moveId: step === "check" ? "v0-move-2" : pendingId });
+    expect(s.ids).toBe(step === "check" ? 2 : 1);
+    expect(s.snapshots.size).toBe(1); expect(s.segments.size).toBe(1);
+    expect(s.installed.size).toBe(1); expect(s.processes).toEqual(new Set([destination]));
+    expect(s.backups.has(source)).toBe(true);
+  });
+
+  it("pre-CAS orphan is inert and a new move ID completes", async () => {
+    const s = state(); s.failAfter = "save-check";
+    expect((await relocate(request, ports(s))).ok).toBe(false);
+    const orphan = structuredClone(s.journal.get("v0-move-1" as RelocateId));
+    expect(s.home).toEqual(running()); expect(s.homesWritten).toEqual([]);
+    expect(await relocate(request, ports(s))).toMatchObject({ ok: true, value: { moveId: "v0-move-2" } });
+    expect(s.journal.get("v0-move-1" as RelocateId)).toEqual(orphan);
+    expect(s.homesWritten.filter(h => h.state === "moving")).toHaveLength(1);
+    expect(s.seeds).toEqual(new Set([sessionId])); expect(s.ids).toBe(2);
+    expect([...s.captures.keys()]).toEqual(["v0-move-2"]);
+    expect([...s.segments]).toEqual(["v0-move-2"]);
+  });
+
+  it.each(["before", "after"])("failed source publication restores only the source: %s delivery", async when => {
+    const s = state();
+    if (when === "before") s.failBefore = "publish-source-moving";
+    else s.failAfter = "publish-source-moving";
+    const result = await relocate(request, ports(s));
+    expect(result).toMatchObject({ ok: false, step: "mark-moving", refusal: { code: "sync-failed" },
+      home: { machineId: source, state: "running", epoch: 3, moveId: "v0-move-1" } });
+    expect(s.home).toMatchObject({ machineId: source, state: "running", epoch: 3 });
+    expect(s.effects).not.toContain("install-destination"); expect(s.effects).not.toContain("start-destination");
+    expect(s.processes).toEqual(new Set([source]));
+    expect(s.homesWritten).toHaveLength(2);
+  });
+
+  it.each(["mark-moving", "commit-home"])("CAS conflict has no losing effects: %s", async boundary => {
+    const s = state();
+    if (boundary === "commit-home") {
+      s.failAfter = "save-install-destination";
+      expect((await relocate(request, ports(s))).ok).toBe(false);
+    }
+    const winner = { ...running(), epoch: 20, machineId: third };
+    s.casWinner = winner;
+    const before = s.effects.length;
+    expect(await relocate(request, ports(s))).toMatchObject({ ok: false, refusal: { code: "home-conflict" }, home: winner });
+    expect(s.home).toEqual(winner);
+    const losing = s.effects.slice(before);
+    expect(losing.some(e => e.startsWith("activate-") || e.startsWith("start-") || e.startsWith("publish-"))).toBe(false);
   });
 
   it("capture waits for source lock freedom", async () => {

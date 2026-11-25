@@ -183,6 +183,22 @@
       "reason": "The source-text configuration guard parses production files from disk."
     },
     {
+      "id": "runtime-compiler-smoke",
+      "inputs": [
+        "packages/*/src/**/*.ts",
+        "packages/*/src/**/*.tsx",
+        "packages/*/src/**/*.js",
+        "packages/*/src/**/*.mjs",
+        "!packages/*/src/**/__tests__/**",
+        "!packages/*/src/**/*.test.ts"
+      ],
+      "tests": [
+        "packages/roam/src/__tests__/provision-core-pin.test.ts"
+      ],
+      "related": [],
+      "reason": "Retain the provisioning runtime-compiler sentinel on production edits, including subprocess startup failures outside the import graph."
+    },
+    {
       "id": "legacy-widget",
       "inputs": [
         "packages/subagents/src/index.ts"
@@ -415,7 +431,10 @@
       "playwright.config.*",
       "packages/db-core/src/**",
       "packages/models/src/**",
-      "packages/host/src/extension.ts"
+      "packages/host/src/extension.ts",
+      "packages/roam/**",
+      "packages/intercom/**",
+      "packages/host/src/roam/**"
     ],
     "acceptance": [
       "packages/herdr/**",

@@ -15,7 +15,7 @@ const checkout = `test shard\tcheckout\t2026-01-01T00:00:00Z [command]/usr/bin/g
 describe('historical selector recall', () => {
   it('uses the tested merge SHA and includes failed suites with no assertions', async () => {
     const { observeRun } = await api();
-    const observation = observeRun({ run, logs: checkout, jobs: [{ name: 'test shard 1/12', conclusion: 'failure' }], reports: [{ testResults: [
+    const observation = observeRun({ run, logs: checkout, mergeCommit: { sha: testedSha, parents: [{ sha: baseSha }, { sha: headSha }] }, jobs: [{ name: 'test shard 1/12', conclusion: 'failure' }], reports: [{ testResults: [
       { name: `/home/runner/work/project/project/${file}`, status: 'failed', assertionResults: [] },
       { name: 'packages/host/src/example.test.ts', status: 'passed', assertionResults: [] },
     ] }] });
@@ -30,6 +30,31 @@ describe('historical selector recall', () => {
     const observation = observeRun({ ...input, mergeCommit: { sha: testedSha, parents: [{ sha: baseSha }, { sha: headSha }] } });
     expect(observation.baseSha).toBe(baseSha); expect(observation.inconclusive).toEqual([]);
     expect(observeRun({ ...input, mergeCommit: { sha: testedSha, parents: [{ sha: baseSha }] } }).baseSha).toBeNull();
+  });
+
+  it('prefers the verified tested merge parent over a PR base that moved later', async () => {
+    const { observeRun } = await api();
+    const observation = observeRun({ run: { ...run, pull_requests: [{ base: { sha: 'd'.repeat(40) } }] }, logs: checkout,
+      mergeCommit: { sha: testedSha, parents: [{ sha: baseSha }, { sha: headSha }] },
+      reports: [{ testResults: [{ name: file, status: 'failed' }] }] });
+    expect(observation.baseSha).toBe(baseSha); expect(observation.inconclusive).toEqual([]);
+  });
+
+  it('does not accept a mutable PR API base without a verified tested merge', async () => {
+    const { observeRun } = await api();
+    const observation = observeRun({ run, logs: checkout, reports: [{ testResults: [{ name: file, status: 'failed' }] }] });
+    expect(observation.baseSha).toBeNull();
+    expect(observation.inconclusive.some((reason: string) => reason.includes('base'))).toBe(true);
+  });
+
+  it('does not turn optional-suite installation failures into observed browser test failures', async () => {
+    const { observeRun } = await api();
+    const input = { run, logs: checkout, mergeCommit: { sha: testedSha, parents: [{ sha: baseSha }, { sha: headSha }] } };
+    const setup = observeRun({ ...input, jobs: [{ name: 'chrome states gallery', conclusion: 'failure', steps: [{ name: 'Install', conclusion: 'failure' }] }] });
+    expect(setup.externalFailures).toEqual([]);
+    expect(setup.inconclusive.some((reason: string) => reason.includes('optional') || reason.includes('infrastructure'))).toBe(true);
+    const test = observeRun({ ...input, jobs: [{ name: 'chrome states gallery', conclusion: 'failure', steps: [{ name: 'Installed Chrome smoke', conclusion: 'failure' }] }] });
+    expect(test.externalFailures).toEqual(['chrome']); expect(test.inconclusive).toEqual([]);
   });
 
   it('retains failed files from logs when a failed shard has no artifact', async () => {

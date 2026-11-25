@@ -91,6 +91,15 @@ describe('change-scoped test manifests', () => {
     expect(assets.files).toContain(b);
   });
 
+  it('keeps the runtime compiler smoke on production source changes outside its import graph', async () => {
+    const { selectTests } = await api(); const f = fixture();
+    const compiler = 'packages/roam/src/__tests__/provision-core-pin.test.ts';
+    f.put(compiler, 'export {};'); const base = f.commit();
+    f.put('packages/roam/src/value.ts', 'export const value = 2;');
+    const result = await selectTests({ ...f, base, head: f.commit(), resolveRelated: async () => [] });
+    expect(result.mode).toBe('scoped'); expect(result.files).toContain(compiler);
+  });
+
   it('maps every bundle entry to its runtime consumers when Vite marks the entry affected', async () => {
     const { selectTests } = await api(); const f = fixture(); f.put('packages/roam/src/store.ts', 'changed'); const head = f.commit();
     const manifest = await selectTests({ ...f, head, resolveRelated: async (_seeds: string[], entries: string[]) => {
@@ -210,6 +219,9 @@ describe('change-scoped test manifests', () => {
     expect(optionalSuites(['docs/architecture/example.md'])).toEqual({ chrome: false, acceptance: false, stories: false });
     expect(optionalSuites(['docs/guide/herdr.md'])).toEqual({ chrome: false, acceptance: true, stories: true });
     expect(optionalSuites(['packages/host/src/usage/web/app.ts'])).toEqual({ chrome: true, acceptance: true, stories: true });
+    expect(optionalSuites(['packages/roam/src/cli.ts']).chrome).toBe(true);
+    expect(optionalSuites(['packages/intercom/src/protocol.ts']).chrome).toBe(true);
+    expect(optionalSuites(['packages/host/src/roam/readiness.ts']).chrome).toBe(true);
     expect(optionalSuites(['unknown.file'], true)).toEqual({ chrome: true, acceptance: true, stories: true });
   });
 

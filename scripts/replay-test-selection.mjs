@@ -19,7 +19,8 @@ export function observeRun({ run, jobs = [], reports = [], reportShards, mergeCo
   const checkouts = unique([...plain.matchAll(/git log -1 --format=%H[^\n]*\n[^\n]*?\b([a-f0-9]{40})\b/g)].map(match => match[1]));
   const testedSha = checkouts.length === 1 ? checkouts[0] : null;
   const verifiedMerge = mergeCommit?.sha === testedSha && mergeCommit.parents?.length === 2 && mergeCommit.parents[1].sha === run.head_sha;
-  const baseSha = run.pull_requests?.[0]?.base?.sha ?? (verifiedMerge ? mergeCommit.parents[0].sha : null);
+  // PR API base SHAs move with the target branch; only the tested merge pins it.
+  const baseSha = verifiedMerge ? mergeCommit.parents[0].sha : null;
   const failedFiles = [];
   for (const report of reports) for (const result of report.testResults ?? []) {
     if (result.status === 'failed' || result.assertionResults?.some(assertion => assertion.status === 'failed')) {
@@ -32,8 +33,14 @@ export function observeRun({ run, jobs = [], reports = [], reportShards, mergeCo
     if (file) failedFiles.push(file);
   }
   const failedJobs = jobs.filter(job => job.conclusion === 'failure');
-  const externalFailures = unique(failedJobs.flatMap(job => /^chrome\b/i.test(job.name) ? ['chrome'] : /herdr acceptance/i.test(job.name) ? ['acceptance'] : /headless story/i.test(job.name) ? ['stories'] : []));
-  const inconclusive = [];
+  const externalFailures = [], inconclusive = [];
+  for (const job of failedJobs) {
+    const gate = /^chrome\b/i.test(job.name) ? 'chrome' : /herdr acceptance/i.test(job.name) ? 'acceptance' : /headless story/i.test(job.name) ? 'stories' : null;
+    if (!gate) continue;
+    const testFailed = job.steps?.some(step => step.conclusion === 'failure' && /smoke|acceptance|headless story|^test(?: |$)/i.test(step.name));
+    if (testFailed) externalFailures.push(gate);
+    else inconclusive.push(`failed optional ${gate} job has no confirmed test-step failure`);
+  }
   if (checkouts.length !== 1) inconclusive.push('missing or conflicting tested checkout SHA');
   if (!baseSha) inconclusive.push('missing historical base SHA');
   if (failedJobs.some(job => /^(?:test shard|PR tests)/i.test(job.name)) && !reports.length) inconclusive.push('failed test jobs have no JSON reports');
@@ -45,7 +52,7 @@ export function observeRun({ run, jobs = [], reports = [], reportShards, mergeCo
   return {
     runId: run.id, url: run.html_url, headSha: run.head_sha,
     testedSha, baseSha,
-    failedFiles: unique(failedFiles), externalFailures, inconclusive,
+    failedFiles: unique(failedFiles), externalFailures: unique(externalFailures), inconclusive,
     failedJobs: failedJobs.map(job => job.name), reportCount: reports.length,
   };
 }

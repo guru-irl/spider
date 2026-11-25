@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       force_full:
-        description: Run all tests, Chrome, and packed acceptance before merge
+        description: Run all tests, Chrome, packed acceptance, and headless stories before merge
         type: boolean
         required: true
         default: true
@@ -32,10 +32,52 @@ jobs:
   checks:
     # Branch protection matches these exact middle-dot characters.
     name: typecheck · test · build
-    needs: [pr-test, test, herdr-acceptance, chrome]
+    needs: [verify, pr-test, test, herdr-acceptance, chrome, stories]
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 2
+    steps:
+      - name: Require every applicable job to pass
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            jq -e '.verify.result == "success" and .["pr-test"].result == "success" and .test.result == "skipped" and .chrome.result == "skipped" and .["herdr-acceptance"].result == "skipped" and .stories.result == "skipped"' <<< "$NEEDS_JSON"
+          else
+            jq -e '.["pr-test"].result == "skipped" and .verify.result == "success" and .test.result == "success" and .chrome.result == "success" and .["herdr-acceptance"].result == "success" and .stories.result == "success"' <<< "$NEEDS_JSON"
+          fi
+
+      - name: Download PR selections
+        if: github.event_name == 'pull_request'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-selection-*
+          path: .spider/scratch/selections
+          merge-multiple: true
+
+      - name: Require identical PR selections
+        if: github.event_name == 'pull_request'
+        run: |
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { createHash } from "node:crypto";
+            const read = n => {
+              const manifest = JSON.parse(readFileSync(`.spider/scratch/selections/selection-${n}.json`, "utf8"));
+              const { selectionHash, selectionMs, ...payload } = manifest;
+              if (manifest.testedSha !== process.env.GITHUB_SHA) throw new Error("PR selection used a different checkout");
+              if (selectionHash !== createHash("sha256").update(JSON.stringify(payload)).digest("hex")) throw new Error("PR manifest checksum does not match");
+              return manifest;
+            };
+            const a = read(1), b = read(2);
+            if (a.selectionHash !== b.selectionHash) throw new Error("PR shards selected different manifests");
+            console.log(`Both shards used ${a.selectionHash}`);
+          '
+
+  verify:
+    name: typecheck and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -64,7 +106,7 @@ jobs:
         run: npm run typecheck
 
       - name: Herdr acceptance typecheck
-        if: github.event_name != 'pull_request' || needs.pr-test.outputs.acceptance == 'true'
+        if: github.event_name != 'pull_request'
         run: TMPDIR="$PWD/.spider/scratch/tmp" npm run typecheck:herdr:e2e
 
       - name: Verify bundle shape
@@ -87,106 +129,6 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
-      - name: Download PR selections
-        if: github.event_name == 'pull_request'
-        uses: actions/download-artifact@v4
-        with:
-          pattern: test-selection-*
-          path: .spider/scratch/selections
-          merge-multiple: true
-
-      - name: Require identical PR selections
-        if: github.event_name == 'pull_request'
-        run: |
-          node --input-type=module -e '
-            import { readFileSync } from "node:fs";
-            import { validateManifest } from "./scripts/select-tests.mjs";
-            const read = n => JSON.parse(readFileSync(`.spider/scratch/selections/selection-${n}.json`, "utf8"));
-            const a = read(1), b = read(2);
-            validateManifest(a); validateManifest(b);
-            if (a.selectionHash !== b.selectionHash) throw new Error("PR shards selected different manifests");
-            console.log(`Both shards used ${a.selectionHash}`);
-          '
-
-      - name: Replay historical red PR runs
-        if: always() && github.event_name == 'pull_request' && needs.pr-test.outputs.audit == 'true'
-        # Inconclusive historical infrastructure runs block enforcement, not the
-        # existing full-suite shadow gate. Misses remain explicit in the report.
-        continue-on-error: ${{ vars.CI_SCOPED_TESTS != 'true' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node scripts/replay-test-selection.mjs --recent 20 --output .spider/scratch/selection-replay
-
-      - name: Save selector audit evidence
-        if: always() && github.event_name == 'pull_request' && needs.pr-test.outputs.audit == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: selection-audit
-          path: |
-            .spider/scratch/selection-replay/corpus.json
-            .spider/scratch/selection-replay/replay.json
-            .spider/scratch/selection-replay/summary.json
-            .spider/scratch/selection-replay/*/selection.json
-            .spider/scratch/selection-replay/*/selection.log
-          include-hidden-files: true
-          if-no-files-found: error
-
-      - name: Prepare optional PR acceptance environment
-        if: github.event_name == 'pull_request' && needs.pr-test.outputs.acceptance == 'true'
-        run: |
-          mkdir -p "$PWD/.spider/scratch/e2"
-          rundir="/run/user/$(id -u)"
-          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
-          sudo rm -rf "$rundir"
-          test ! -e "$rundir"
-          echo "XDG_RUNTIME_DIR=" >> "$GITHUB_ENV"
-
-      - name: PR Herdr confidence utilities
-        if: github.event_name == 'pull_request' && needs.pr-test.outputs.acceptance == 'true'
-        timeout-minutes: 5
-        run: |
-          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_REAL_MACHINE -u SPIDER_HERDR_TEST_DISPLAY_UUID TMPDIR="$PWD/.spider/scratch/tmp" node node_modules/vitest/vitest.mjs run --config packages/herdr/e2e/vitest.config.ts --maxWorkers 2 packages/herdr/e2e/scenarios/runner-contract.test.ts packages/herdr/e2e/harness/__tests__/pi-observations.test.ts packages/herdr/e2e/native packages/herdr/e2e/controls
-
-      - name: PR Herdr packed acceptance
-        if: github.event_name == 'pull_request' && needs.pr-test.outputs.acceptance == 'true'
-        timeout-minutes: 10
-        run: |
-          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_REAL_MACHINE -u SPIDER_HERDR_TEST_DISPLAY_UUID TMPDIR="$PWD/.spider/scratch/tmp" npm run test:herdr:e2e:ci -- --built
-
-      - name: PR installed Chrome tests
-        if: github.event_name == 'pull_request' && needs.pr-test.outputs.chrome == 'true'
-        timeout-minutes: 10
-        run: |
-          command -v google-chrome
-          mkdir -p "$PWD/.spider/scratch/playwright/tmp" "$PWD/.spider/scratch/playwright/npm-cache" "$PWD/.spider/scratch/playwright/npm-logs"
-          export TMPDIR="$PWD/.spider/scratch/playwright/tmp"
-          export npm_config_cache="$PWD/.spider/scratch/playwright/npm-cache"
-          export npm_config_logs_dir="$PWD/.spider/scratch/playwright/npm-logs"
-          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID CI=true npm run -s test:e2e
-
-      - name: Optional PR failure artifacts
-        if: failure() && github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
-        with:
-          name: optional-pr-failures
-          path: |
-            .spider/scratch/e2/
-            playwright-results/
-            playwright-report/
-          include-hidden-files: true
-          if-no-files-found: ignore
-
-      - name: Require every applicable job to pass
-        if: always()
-        env:
-          NEEDS_JSON: ${{ toJSON(needs) }}
-          EVENT: ${{ github.event_name }}
-        run: |
-          if [ "$EVENT" = pull_request ]; then
-            jq -e '.["pr-test"].result == "success" and (((.["pr-test"].outputs.mode == "full") and (.test.result == "success")) or ((.["pr-test"].outputs.mode == "scoped") and (.test.result == "skipped"))) and .chrome.result == "skipped" and .["herdr-acceptance"].result == "skipped"' <<< "$NEEDS_JSON"
-          else
-            jq -e '.["pr-test"].result == "skipped" and all(to_entries[]; .key == "pr-test" or .value.result == "success")' <<< "$NEEDS_JSON"
-          fi
 
   pr-test:
     if: github.event_name == 'pull_request' && !inputs.force_full
@@ -236,52 +178,13 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          node scripts/select-tests.mjs --base "$BASE_SHA" --head "$(git rev-parse HEAD)" --output ".spider/scratch/test-results/selection-${{ matrix.shard }}.json"
-          # Two runners must finish a scoped selection well inside the job limit; a larger one runs on the full matrix.
-          if ! node scripts/test-shard-budget.mjs --manifest ".spider/scratch/test-results/selection-${{ matrix.shard }}.json" --limit-ms 300000 > ".spider/scratch/test-results/budget-${{ matrix.shard }}.json"; then
-            perl -pi -e 's/^mode=scoped$/mode=full/' "$GITHUB_OUTPUT"
-            echo "The selection exceeds the two-runner budget, so the full matrix runs instead."
-          fi
-
-      - name: Probe selector graph on isolated inputs
-        if: matrix.shard == 1 && steps.selection.outputs.audit == 'true'
-        run: node scripts/check-test-selection.mjs
-
-      - name: Save graph probe evidence
-        if: always() && matrix.shard == 1 && steps.selection.outputs.audit == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: selection-probes
-          path: |
-            .spider/scratch/selection-probes/*.json
-            .spider/scratch/selection-probes/*.log
-          include-hidden-files: true
-          if-no-files-found: error
+          node scripts/select-tests.mjs --base "$BASE_SHA" --head "$(git rev-parse HEAD)" --budget-ms 65000 --output ".spider/scratch/test-results/selection-${{ matrix.shard }}.json"
+          node scripts/test-shard-budget.mjs --manifest ".spider/scratch/test-results/selection-${{ matrix.shard }}.json" --limit-ms 65000 > ".spider/scratch/test-results/budget-${{ matrix.shard }}.json"
 
       - name: Test selected shard
-        if: steps.selection.outputs.mode != 'full'
         id: tests
         run: |
-          # Scoped execution is the PR default; full fallback uses the 12-shard job.
-          shadow=
-          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR TMPDIR="$PWD/.spider/scratch/tmp" node scripts/run-selected-tests.mjs --manifest ".spider/scratch/test-results/selection-${{ matrix.shard }}.json" --shard ${{ matrix.shard }}/2 --report .spider/scratch/test-results/shard-${{ matrix.shard }}.json $shadow
-
-      - name: Measure without recorded slow files
-        if: steps.selection.outputs.audit == 'true' && steps.selection.outputs.mode != 'full'
-        continue-on-error: true
-        timeout-minutes: 5
-        run: |
-          shadow=
-          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR TMPDIR="$PWD/.spider/scratch/tmp" node scripts/measure-test-selection.mjs --manifest ".spider/scratch/test-results/selection-${{ matrix.shard }}.json" --shard ${{ matrix.shard }}/2 --output ".spider/scratch/test-results/measurement-${{ matrix.shard }}.json" $shadow
-
-      - name: Save measurement evidence
-        if: always() && steps.selection.outputs.audit == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-measurement-${{ matrix.shard }}
-          path: .spider/scratch/test-results/measurement-${{ matrix.shard }}*.json
-          include-hidden-files: true
-          if-no-files-found: warn
+          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR TMPDIR="$PWD/.spider/scratch/tmp" node scripts/run-selected-tests.mjs --manifest ".spider/scratch/test-results/selection-${{ matrix.shard }}.json" --shard ${{ matrix.shard }}/2 --report .spider/scratch/test-results/shard-${{ matrix.shard }}.json
 
       - name: Save proposed selection and budget
         if: always()
@@ -304,8 +207,7 @@ jobs:
           if-no-files-found: warn
 
   test:
-    needs: [pr-test]
-    if: always() && (inputs.force_full || github.event_name != 'pull_request' || needs.pr-test.outputs.mode == 'full')
+    if: inputs.force_full || github.event_name != 'pull_request'
     name: test shard ${{ matrix.shard }}/12
     strategy:
       fail-fast: false
@@ -353,6 +255,10 @@ jobs:
           path: .spider/scratch/test-results/shard-${{ matrix.shard }}.json
           include-hidden-files: true
           if-no-files-found: warn
+
+  stories:
+    if: inputs.force_full || github.event_name != 'pull_request'
+    uses: ./.github/workflows/herdr-stories.yml
 
   herdr-acceptance:
     if: inputs.force_full || github.event_name != 'pull_request'

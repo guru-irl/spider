@@ -61,6 +61,17 @@ describe('duration-balanced test shards', () => {
     expect(Math.max(...shards.map(shard => wallTime(shard, durations)))).toBeLessThan(420_000);
   });
 
+  it('models two PR machines with three workers and per-file import time', async () => {
+    const { testBudget } = await import(/* @vite-ignore */ `${process.cwd()}/scripts/test-shard-budget.mjs`);
+    const result = testBudget(['a', 'b', 'c', 'd', 'e', 'f', 'g'], { a: 10, b: 10, c: 6, d: 4, e: 2, f: 12, g: 8 }, 2, 3, 2);
+    expect(result.aggregateMs).toBe(52);
+    expect(result.predictedMaxMs).toBe(14);
+    expect(result.shards).toEqual([
+      { shard: 1, predictedMs: 14, workersMs: [14, 10, 8], files: ['f', 'g', 'c'] },
+      { shard: 2, predictedMs: 12, workersMs: [12, 12, 10], files: ['a', 'b', 'd', 'e'] },
+    ]);
+  });
+
   it('rejects invalid shard counts and permits empty shards', () => {
     expect(() => partitionFiles(files, durations, 0)).toThrow(/positive integer/);
     expect(() => partitionFiles(files, durations, 1.5)).toThrow(/positive integer/);

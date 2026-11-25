@@ -80,21 +80,16 @@ export async function createGraphResolver(root, inventory) {
   };
 }
 
-// This rule changes only scoped PR execution. Full runs retain every test.
-export async function deferSlowTests({ root, files, changedPaths, durations = JSON.parse(readFileSync(timingPath)) }) {
-  const changed = new Set(changedPaths);
-  const sourceDirectories = new Set(changedPaths.filter(file => /^packages\/[^/]+\/src\//.test(file)
-    && code.test(file) && !rootTest.test(file) && !file.includes('/__tests__/')).map(dirname));
-  const candidates = files.filter(file => (durations[file] ?? 0) > 5000
-    && !changed.has(file) && !sourceDirectories.has(dirname(file)));
-  if (!candidates.length) return { files: sorted(files), deferred: [] };
+// Share the existing static-import check between the PR priority rule and the
+// unbudgeted selector's slow-file audit. Type-only imports count; dynamic and
+// transitive imports do not.
+async function directImportMatcher(root, changed) {
   const { default: ts } = await import('typescript');
   const config = ts.findConfigFile(root, ts.sys.fileExists);
   const parsed = config ? ts.getParsedCommandLineOfConfigFile(config, {}, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: () => { throw new Error('invalid module resolution config'); } }) : undefined;
   const options = parsed?.options ?? { moduleResolution: ts.ModuleResolutionKind.Bundler, allowJs: true, resolveJsonModule: true };
   const cache = ts.createModuleResolutionCache(root, file => file, options);
-  const deferred = [];
-  for (const file of sorted(candidates)) {
+  return file => {
     const importer = resolve(root, file);
     const source = ts.createSourceFile(importer, readFileSync(importer, 'utf8'), ts.ScriptTarget.Latest, true);
     const imports = source.statements.flatMap(statement => {
@@ -104,17 +99,40 @@ export async function deferSlowTests({ root, files, changedPaths, durations = JS
         && statement.moduleReference.expression && ts.isStringLiteral(statement.moduleReference.expression)) return [statement.moduleReference.expression.text];
       return [];
     });
-    const direct = imports.some(specifier => {
+    return imports.some(specifier => {
       const target = ts.resolveModuleName(specifier, importer, options, ts.sys, cache).resolvedModule;
       return target && changed.has(relative(root, target.resolvedFileName).replaceAll('\\', '/'));
     });
-    if (!direct) deferred.push({ file, durationMs: durations[file], rule: 'slow test is unchanged, has no direct static import of a changed module, and shares no directory with changed source' });
-  }
+  };
+}
+
+export async function testPriorities({ root, files, changedPaths }) {
+  const changed = new Set(changedPaths);
+  const sourceDirectories = new Set(changedPaths.filter(file => /^packages\/[^/]+\/src\//.test(file)
+    && code.test(file) && !rootTest.test(file) && !file.includes('/__tests__/')).map(dirname));
+  const direct = await directImportMatcher(root, changed);
+  return Object.fromEntries(files.map(file => [file,
+    changed.has(file) || direct(file) ? 0 : sourceDirectories.has(dirname(file).replace(/\/__tests__$/, '')) ? 1 : 2,
+  ]));
+}
+
+// The unbudgeted selector remains available for full-inventory safety audits.
+export async function deferSlowTests({ root, files, changedPaths, durations = JSON.parse(readFileSync(timingPath)) }) {
+  const changed = new Set(changedPaths);
+  const sourceDirectories = new Set(changedPaths.filter(file => /^packages\/[^/]+\/src\//.test(file)
+    && code.test(file) && !rootTest.test(file) && !file.includes('/__tests__/')).map(dirname));
+  const candidates = files.filter(file => (durations[file] ?? 0) > 5000
+    && !changed.has(file) && !sourceDirectories.has(dirname(file)));
+  if (!candidates.length) return { files: sorted(files), deferred: [] };
+  const direct = await directImportMatcher(root, changed);
+  const deferred = sorted(candidates).filter(file => !direct(file)).map(file => ({
+    file, durationMs: durations[file], rule: 'slow test is unchanged, has no direct static import of a changed module, and shares no directory with changed source',
+  }));
   const excluded = new Set(deferred.map(entry => entry.file));
   return { files: sorted(files).filter(file => !excluded.has(file)), deferred };
 }
 
-export async function selectTests({ root = process.cwd(), base, head = 'HEAD', resolveRelated: injectedGraph } = {}) {
+export async function selectTests({ root = process.cwd(), base, head = 'HEAD', resolveRelated: injectedGraph, budgetMs } = {}) {
   root = resolve(root);
   const started = performance.now();
   const inventory = testInventory(root);
@@ -184,8 +202,10 @@ export async function selectTests({ root = process.cwd(), base, head = 'HEAD', r
       }
     }
     if (changes.length && !reasons.size) throw new Error('changed inputs have no classified test consumer');
-    const scoped = await deferSlowTests({ root, files: sorted(reasons.keys()), changedPaths: result.changedPaths });
-    result.deferred = scoped.deferred.map(entry => ({ ...entry, reasons: sorted(reasons.get(entry.file)) }));
+    if (budgetMs === undefined) {
+      const scoped = await deferSlowTests({ root, files: sorted(reasons.keys()), changedPaths: result.changedPaths });
+      result.deferred = scoped.deferred.map(entry => ({ ...entry, reasons: sorted(reasons.get(entry.file)) }));
+    }
   } catch (error) {
     result.mode = 'full';
     // Avoid embedding local paths or command output in a portable manifest.
@@ -204,6 +224,15 @@ export async function selectTests({ root = process.cwd(), base, head = 'HEAD', r
     'scripts/measure-test-selection.mjs', 'scripts/replay-test-selection.mjs', '.github/workflows/ci.yml',
   ].includes(file));
   result.optional = optionalSuites(result.changedPaths, result.mode === 'full');
+  if (budgetMs !== undefined) {
+    const { cutToBudget, PR_IMPORT_MS } = await import('./test-shard-budget.mjs');
+    const files = sorted(reasons.keys());
+    const priorities = await testPriorities({ root, files, changedPaths: result.changedPaths });
+    const cut = cutToBudget({ files, durations: JSON.parse(readFileSync(timingPath)), priorities, limitMs: budgetMs, importMs: PR_IMPORT_MS });
+    result.budget = { candidateMode: result.mode, ...cut.budget };
+    result.mode = 'scoped';
+    result.deferred = cut.deferred.map(entry => ({ ...entry, reasons: sorted(reasons.get(entry.file)) }));
+  }
   const deferred = new Set(result.deferred.map(entry => entry.file));
   result.files = sorted(reasons.keys()).filter(file => !deferred.has(file));
   result.reasons = Object.fromEntries(result.files.map(file => [file, sorted(reasons.get(file))]));
@@ -230,12 +259,17 @@ async function main() {
   const args = process.argv.slice(2);
   const get = name => { const i = args.indexOf(name); return i < 0 ? undefined : args[i + 1]; };
   const output = get('--output') ?? '.spider/scratch/test-selection.json';
-  const manifest = await selectTests({ base: get('--base'), head: get('--head') ?? 'HEAD' });
+  const manifest = await selectTests({ base: get('--base'), head: get('--head') ?? 'HEAD',
+    budgetMs: get('--budget-ms') === undefined ? undefined : Number(get('--budget-ms')) });
   mkdirSync(dirname(resolve(output)), { recursive: true });
   writeFileSync(output, JSON.stringify(manifest, null, 2) + '\n');
   if (process.env.GITHUB_OUTPUT) writeFileSync(process.env.GITHUB_OUTPUT,
     Object.entries(manifest.optional).map(([key, value]) => `${key}=${value}\n`).join('') + `mode=${manifest.mode}\naudit=${manifest.selectionAudit}\nselection-hash=${manifest.selectionHash}\n`, { flag: 'a' });
   console.log(`Selection: ${manifest.mode}, ${manifest.files.length} files, ${manifest.selectionMs} ms, ${manifest.selectionHash}`);
-  if (manifest.fallback) console.log(`Full fallback: ${manifest.fallback}`);
+  if (manifest.fallback) console.log(`Full-inventory candidates: ${manifest.fallback}`);
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    const { selectionSummary } = await import('./test-shard-budget.mjs');
+    writeFileSync(process.env.GITHUB_STEP_SUMMARY, selectionSummary(manifest), { flag: 'a' });
+  }
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();

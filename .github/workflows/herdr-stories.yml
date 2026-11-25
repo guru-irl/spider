@@ -1,16 +1,7 @@
 name: Herdr headless stories
 
 on:
-  pull_request:
-    paths:
-      - "**"
-      - ".*"
-      - ".*/**"
-      - "!docs/**"
-      - "!README.md"
-      - "!packages/*/README.md"
-      - "!packages/*/skills/**"
-      - "docs/guide/herdr.md"
+  workflow_call:
   workflow_dispatch:
     inputs:
       stories:

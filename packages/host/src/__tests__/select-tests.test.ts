@@ -22,6 +22,7 @@ function fixture() {
     writeFileSync(join(root, file), value);
   }
   for (const file of [a, b, c, guard, 'packages/roam/src/store.ts', 'packages/herdr/assets/templates/role.md', 'docs/guide/example.md']) put(file);
+  for (const file of ['scripts/test-shard-budget.mjs', 'scripts/test-shards.ts']) put(file, readFileSync(file, 'utf8'));
   function commit() { git('add', '.'); git('commit', '-qm', 'test: fixture'); return git('rev-parse', 'HEAD'); }
   const base = commit();
   return { root, git, put, commit, base };
@@ -37,6 +38,46 @@ async function api() {
 }
 
 describe('change-scoped test manifests', () => {
+  it('ranks changed tests and direct static imports before neighbors and transitive importers', async () => {
+    const { testPriorities } = await api(); const f = fixture();
+    const source = 'packages/roam/src/feature/value.ts';
+    const changed = 'packages/roam/src/checks/changed.test.ts';
+    const direct = 'packages/roam/src/checks/direct.test.ts';
+    const typeOnly = 'packages/roam/src/checks/types.test.ts';
+    const nearby = 'packages/roam/src/feature/nearby.test.ts';
+    const child = 'packages/roam/src/feature/__tests__/child.test.ts';
+    const transitive = 'packages/roam/src/checks/transitive.test.ts';
+    const dynamic = 'packages/roam/src/checks/dynamic.test.ts';
+    f.put(source, 'export const value = 1; export type Value = number;');
+    f.put(changed);
+    f.put(direct, 'import { value } from "../feature/value.js"; void value;');
+    f.put(typeOnly, 'import type { Value } from "../feature/value.js"; export type V = Value;');
+    f.put(nearby); f.put(child);
+    f.put('packages/roam/src/checks/helper.ts', 'export { value } from "../feature/value.js";');
+    f.put(transitive, 'import { value } from "./helper.js"; void value;');
+    f.put(dynamic, 'const load = () => import("../feature/value.js");');
+    expect(await testPriorities({ root: f.root, files: [changed, direct, typeOnly, nearby, child, transitive, dynamic], changedPaths: [source, changed] })).toEqual({
+      [changed]: 0, [direct]: 0, [typeOnly]: 0, [nearby]: 1, [child]: 1, [transitive]: 2, [dynamic]: 2,
+    });
+  });
+
+  it('cuts full-inventory candidates to the PR budget and checksums all deferred files', async () => {
+    const { selectTests, validateManifest } = await api(); const f = fixture();
+    f.put('unknown.resource');
+    const head = f.commit();
+    // These fixture paths use the real timing table; the guard exceeds 1 ms.
+    const manifest = await selectTests({ ...f, head, budgetMs: 1 });
+    expect(manifest.mode).toBe('scoped');
+    expect(manifest.fallback).toMatch(/unclassified/);
+    expect(manifest.budget).toMatchObject({ candidateMode: 'full', limitMs: 1, machines: 2, workerCount: 3 });
+    expect(manifest.budget.predictedMaxMs).toBeLessThanOrEqual(1);
+    expect([...manifest.files, ...manifest.deferred.map((entry: { file: string }) => entry.file)].sort()).toEqual([a, b, c, guard].sort());
+    expect(manifest.deferred.map((entry: { file: string }) => entry.file)).toContain(guard);
+    expect(validateManifest(manifest, { root: f.root })).toEqual(manifest.files);
+    const tampered = structuredClone(manifest); tampered.deferred.pop();
+    expect(() => validateManifest(tampered, { root: f.root })).toThrow(/checksum/);
+  });
+
   it('defers only distant recorded slow tests and records why they wait for the full run', async () => {
     // Catches removing deferral, widening proximity to transitive imports, or
     // treating a changed test as a changed production-source directory.
@@ -83,6 +124,29 @@ describe('change-scoped test manifests', () => {
     expect(selector.validateManifest(manifest, { root: f.root })).toEqual(manifest.files);
     const tampered = structuredClone(manifest); tampered.deferred.pop();
     expect(() => selector.validateManifest(tampered, { root: f.root })).toThrow(/checksum/);
+  });
+
+  it('writes the budgeted CLI manifest and every deferred file to the step summary', () => {
+    const f = fixture();
+    f.put('scripts/select-tests.mjs', readFileSync('scripts/select-tests.mjs', 'utf8'));
+    f.put('scripts/test-resources.json', readFileSync('scripts/test-resources.json', 'utf8'));
+    f.put('scripts/test-durations.json', JSON.stringify({ [a]: 75_001, [b]: 100, [c]: 100, [guard]: 100 }));
+    const base = f.commit(); f.put('unknown.resource'); const head = f.commit();
+    const output = join(f.root, 'selection.json'), summary = join(f.root, 'summary.md'), actions = join(f.root, 'outputs');
+    execFileSync(process.execPath, [join(f.root, 'scripts/select-tests.mjs'), '--base', base, '--head', head, '--budget-ms', '75000', '--output', output], {
+      cwd: f.root, env: { ...process.env, GITHUB_STEP_SUMMARY: summary, GITHUB_OUTPUT: actions }, stdio: 'pipe',
+    });
+    const manifest = JSON.parse(readFileSync(output, 'utf8'));
+    expect(manifest.mode).toBe('scoped');
+    expect(manifest.files).toEqual([b, c, guard].sort());
+    expect(manifest.deferred).toMatchObject([{ file: a, durationMs: 75_001 }]);
+    expect(manifest.budget).toMatchObject({ limitMs: 75_000, importMs: 700, candidateMode: 'full' });
+    expect(readFileSync(summary, 'utf8')).toContain(`\`${a}\``);
+    expect(readFileSync(summary, 'utf8')).toMatch(/full run.*Chrome/);
+    expect(readFileSync(summary, 'utf8')).toMatch(/full run.*acceptance/);
+    expect(readFileSync(actions, 'utf8')).toContain('mode=scoped\n');
+    expect(readFileSync(actions, 'utf8')).toContain('chrome=true\n');
+    expect(readFileSync(actions, 'utf8')).toContain('acceptance=true\n');
   });
 
   it('unions the Vite graph with source-text guards and records stable provenance', async () => {

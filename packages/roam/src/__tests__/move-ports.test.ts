@@ -19,7 +19,7 @@ import { createSync } from "../sync";
 import { handleAgentOperation } from "../agent";
 import { appendMirror } from "../mirrors";
 import { forgetMachine } from "../forget";
-import { moveSession } from "../move";
+import { moveSession, resumeMove } from "../move";
 import type { Home, HubOperationReadiness, JsonObject, Probe, StoreKey } from "@spider/db-core/roam/types";
 import { createSessionLeases } from "@spider/herdr/sessions/lease";
 import { createProcessPresence } from "@spider/herdr/sessions/presence";
@@ -165,6 +165,36 @@ async function fixture(worktreeMachine = HUB, homeless = false) {
   return { root, file, repo, global, worktree, repository, journal, privateDb, sourceManifest, sourceWorkspace, home, operation, config, bindings, transport, ports, check, events, targets, remoteOperations, fence,
     owner(value: Probe) { owner = value; }, fenceGeneration(generation: string) { heldFence = { ...fence, generation }; }, reopened: () => reopened };
 }
+
+it.each([
+  ["workspace-plan", "mapping-failed", "mapping-failed"],
+  ["workspace-plan", undefined, "unknown"],
+  ["workspace-plan", "/fixture/private-file", "unknown"],
+  ["destination-diagnostics", "diagnostics-unavailable", "diagnostics-unavailable"],
+] as const)("move reports the failing %s adapter without exposing error text", async (step, code, detailCode) => {
+  const f = await fixture();
+  const fail = async (): Promise<never> => { throw Object.assign(new Error("PRIVATE-ADAPTER-SENTINEL"), { code }); };
+  if (step === "workspace-plan") f.bindings.mapping = fail;
+  else {
+    const exec = f.transport.exec;
+    f.transport.exec = async (peer, argv, options) => {
+      const op = JSON.parse(argv[2]) as Operation;
+      if (step === "destination-diagnostics" && op.kind === "move-diagnostics") {
+        return Buffer.from(JSON.stringify(await handleAgentOperation(op, { config: { ...f.config, role: "box", machineId: BOX },
+          root: f.root, journal: f.journal, openStore: () => { throw new Error("Unexpected store"); },
+          move: fail })));
+      }
+      return exec(peer, argv, options);
+    };
+  }
+  const result = await resumeMove({ operation: f.operation, sessionId: SESSION, destinationMachine: BOX }, f.ports);
+  expect(result).toMatchObject({ code: 1, reason: "move-preflight-refused", causeCode: "move-adapter-unavailable",
+    failure: { step, code: detailCode } });
+  expect(f.journal.read(f.operation.id)).toContainEqual(expect.objectContaining({ action: "move-failure", result: { step, code: detailCode } }));
+  expect(JSON.stringify(result)).not.toContain("PRIVATE-ADAPTER-SENTINEL");
+  expect(JSON.stringify(result)).not.toContain("/fixture/private-file");
+  expect(sessionHome(f.global.db, SESSION)).toEqual(f.home);
+});
 
 it("move preflight accepts the mixed store list written by the catalog", async () => {
   const f = await fixture();

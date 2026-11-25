@@ -609,6 +609,7 @@ it.each([
 it.each([
   [{ exitCode: 127 }, "exit code 127"],
   [{ signal: 15 }, "signal 15"],
+  [{ exitStatus: "exit-status-unavailable" as const }, "exit-status-unavailable"],
 ])("reports terminal status from a thrown launch error: %s", async (launchExit, detail) => {
   const module = await supervisorModule(); if (!module) return;
   const f = fixture(), publish = f.ports.hostingWarning!;
@@ -701,6 +702,7 @@ it("does not publish an exited-launch warning after a concurrent stop wins the s
 it.each([
   [{ exitCode: 23 }, "exit code 23"],
   [{ signal: 9 }, "signal 9"],
+  [{ exitStatus: "exit-status-unavailable" as const }, "exit-status-unavailable"],
 ])("reports an early participant exit and clears it after a successful launch: %s", async (launchExit, detail) => {
   const module = await supervisorModule(); if (!module) return;
   const f = fixture(), launch = f.ports.launch, publish = f.ports.hostingWarning!;
@@ -788,6 +790,9 @@ it("accepts legacy hosting warnings but rejects unsafe remote launch details", (
     { causeCode: "ENOENT", exitCode: -1 }, { causeCode: "ENOENT", exitCode: 256 },
     { causeCode: "ENOENT", signal: 0 }, { causeCode: "ENOENT", signal: 256 },
     { causeCode: "ENOENT", signal: "9" }, { causeCode: "ENOENT", check: "inspection" },
+    { causeCode: "ENOENT", exitStatus: "private detail" }, { exitStatus: "exit-status-unavailable" },
+    { causeCode: "ENOENT", exitStatus: "exit-status-unavailable", exitCode: 23 },
+    { causeCode: "ENOENT", exitStatus: "exit-status-unavailable", check: "inspection" },
     { count: 1, causeCode: "ENOENT" }, { exitCode: 23 },
   ]) expect(validHostingWarnings([{ ...legacy, ...invalid }]), JSON.stringify(invalid)).toBe(false);
 });

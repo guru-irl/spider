@@ -28,6 +28,7 @@ type _Operation = Assert<Equal<Operation, { id: string; machineId: MachineId; ex
 type _Outcome = Assert<Equal<Outcome<{ ok: boolean }>, {
   code: 0 | 1 | 2 | 3; reason: string; operationId: string; home: Home | null; epoch: number | null;
   repairCommand: string | null; value: { ok: boolean } | null; causeCode?: string; operationKind?: import("../cause-codes").AgentOperationKind;
+  failure?: { step: import("../cause-codes").MoveFailureStep; code: string };
 }>>;
 type _CallOptions = Assert<Equal<CallOptions, { timeoutMs: number; maxBytes: number; stdin?: Buffer; remoteTimeoutMs?: number;
   postReserveMs?: number; signal?: AbortSignal; stdinForTimeout?: (remoteTimeoutMs: number) => Buffer; onConnected?: (connected: boolean) => void }>>;
@@ -68,7 +69,7 @@ type _PlacementPort = Assert<Equal<PlacementPort, { reconcile(rows: readonly Rea
 type _HubPorts = Assert<Equal<HubPorts, { config: RoamConfig; sync: SyncService; journal: Journal; clock: Clock; placement: PlacementPort }>>;
 type _HostingWarning = Assert<Equal<HostingWarning, { code: "supervisor-hosting-error";
   check: "running-intent" | "intent-view" | "inspection" | "restart" | "launch"; since: number; count: number;
-  causeCode?: string; exitCode?: number; signal?: number }>>;
+  causeCode?: string; exitCode?: number; signal?: number; exitStatus?: "exit-status-unavailable" }>>;
 type _Diagnostic = Assert<Equal<Diagnostic, { code?: HostingWarning["code"]; reason: string; severity: "info" | "warning" | "block"; repairCommand: string | null; writerEpoch?: number }>>;
 type _HostIntent = Assert<Equal<HostIntent, {
   sessionId: string; epoch: number; desired: "running" | "stopped"; suspended: string | null; file: string; cwd: string; moveId: string | null;

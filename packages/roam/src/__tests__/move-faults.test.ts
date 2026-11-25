@@ -28,6 +28,36 @@ afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(
 const encode = (value: unknown): JsonObject => JSON.parse(JSON.stringify(value));
 const digest = (file: string) => createHash("sha256").update(readFileSync(file)).digest("hex");
 
+it.each([
+  ["seed", "seed"], ["prepare", "remote-prepare"], ["freeze", "freeze"], ["transfer", "transfer"],
+  ["verifySource", "verify-source"], ["start", "start"], ["inspect", "destination-inspect"],
+] as const)("persists the safe cause of a failing %s adapter on a pending move", async (adapter, step) => {
+  const f = fixture();
+  f.ports[adapter] = async () => { throw Object.assign(new Error("PRIVATE-ADAPTER-SENTINEL"), { code: "fixture-adapter-failed" }); };
+  const result = await moves.moveSession(f.request, f.ports);
+  expect(result).toMatchObject({ code: 3, causeCode: "move-adapter-unavailable", failure: { step, code: "fixture-adapter-failed" } });
+  const safe = safeControlOutcome(result);
+  expect(safe).toMatchObject({ failure: { step, code: "fixture-adapter-failed" } });
+  expect(controlText(safe)).toContain(`${step}: fixture-adapter-failed`);
+  expect(f.journal.read(f.request.operation.id)).toContainEqual(expect.objectContaining({ action: "move-failure", result: { step, code: "fixture-adapter-failed" } }));
+  expect(JSON.stringify({ result, safe })).not.toContain("PRIVATE-ADAPTER-SENTINEL");
+});
+
+it.each([["retire", "source-retire"], ["cleanup", "cleanup"]] as const)("names a failing %s adapter without changing move success", async (adapter, step) => {
+  const f = fixture();
+  f.ports[adapter] = async () => { throw Object.assign(new Error("PRIVATE-CLEANUP-SENTINEL"), { code: "fixture-cleanup-failed" }); };
+  const result = await moves.moveSession(f.request, f.ports);
+  expect(result).toMatchObject({ code: 0, reason: "moved", failure: { step, code: "fixture-cleanup-failed" },
+    value: { sourceCleanup: { status: "pending" } } });
+  expect(result.causeCode).toBeUndefined();
+  const safe = safeControlOutcome(result);
+  expect(safe).toMatchObject({ failure: { step, code: "fixture-cleanup-failed" } });
+  expect(controlText(safe)).toContain(`${step}: fixture-cleanup-failed`);
+  expect(f.journal.read(f.request.operation.id)).toContainEqual(expect.objectContaining({ action: "move-failure", result: { step, code: "fixture-cleanup-failed" } }));
+  expect(moves.moveEvidence.completedOutcome(JSON.parse(JSON.stringify(result)), f.request.operation.id)).toEqual(result);
+  expect(JSON.stringify({ result, safe })).not.toContain("PRIVATE-CLEANUP-SENTINEL");
+});
+
 // Effects use real home transactions, membership rows, files and durable journals.
 // Only process, power, participant transport and boot identity are synthetic.
 function fixture(fault = "") {

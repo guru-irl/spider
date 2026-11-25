@@ -144,7 +144,7 @@ async function fixture(mappedRepository: boolean, occupied = false, complete = f
   if (!complete) runtime.ports.freeze = async () => { throw Error("fixture-freeze-stop"); };
   runtime.bindings.handoff!.readyTarget = async home => ({ machineId: home.machineId, alias: null, sessionId: SESSION, homeEpoch: home.epoch, coreId: "fixture-core", terminalId: "fixture-terminal" });
   runtime.bindings.handoff!.presentReadyTarget = async () => ({ status: "complete", reason: "presented", presentation: null });
-  return { source, destination, runtime, worktree, checkout, nativeRoot, repository, calls, journals };
+  return { source, destination, runtime, worktree, checkout, nativeRoot, repository, calls, journals, transport };
 }
 let current: Awaited<ReturnType<typeof fixture>>, pendingOperation: string;
 beforeEach(async context => { current = await fixture(!context.task.name.includes("unmapped repository"), context.task.name.includes("occupied"), context.task.name.includes("completed")); }, 5000);
@@ -158,6 +158,21 @@ for (const checkpoint of ["prestage", "transfer"]) beforeEach(async context => {
     pendingOperation = reply.operationId!;
   } finally { journal.record = record; }
 }, 5000);
+
+it("a public move retains the remote workspace-plan error code", async () => {
+  const f = current, exec = f.transport.exec;
+  f.transport.exec = async (peer, argv, options) => {
+    const operation = JSON.parse(argv[2]) as Operation;
+    if (operation.kind !== "move-workspace-map") return exec(peer, argv, options);
+    return Buffer.from(JSON.stringify({ code: 1, reason: "move-adapter-unavailable", causeCode: "move-adapter-unavailable",
+      operationId: operation.id, epoch: operation.expectedEpoch, value: null,
+      failure: { step: "workspace-plan", code: "workspace-probe-failed" } }));
+  };
+  const result = publicOutcome(await f.runtime.control({ op: "move", session: SESSION, machine: "box.invalid" }));
+  expect(result).toMatchObject({ code: 1, reason: "move-preflight-refused", causeCode: "move-adapter-unavailable",
+    failure: { step: "workspace-plan", code: "workspace-probe-failed" } });
+  expect(controlText(result)).toContain("workspace-plan: workspace-probe-failed");
+});
 
 it("a public move refuses an unmapped repository before seed or freeze with the workspace cause and repo-map repair", async () => {
   const f = current, before = sessionHome(f.source.db, SESSION);

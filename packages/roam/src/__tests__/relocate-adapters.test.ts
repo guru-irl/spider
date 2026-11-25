@@ -13,7 +13,8 @@ import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { openJournal } from "../journal";
 import { createRelocateJournal } from "../relocate/journal";
-import { createV0SyncTransport } from "../relocate/remote";
+import { createV0SyncTransport, handleRelocateAgent } from "../relocate/remote";
+import { createRelocateAdapters } from "../relocate/adapters";
 import type { Peer, Transport } from "../contracts";
 import type { RelocateCheckpoint, RelocateId, SessionId } from "../relocate/types";
 import type { MachineId } from "@spider/db-core/roam/types";
@@ -70,6 +71,37 @@ describe("relocate adapters", () => {
     f.global.db.prepare("UPDATE roam_repo_maps SET worktree_command_json='[\"tool\"]'").run();expect(await inspectLocalDestination(source.value.placement,"sub",f.options)).toMatchObject({ok:false,refusal:{code:"unsupported-workspace"}});
     f.global.db.prepare("UPDATE roam_repo_maps SET worktree_command_json=NULL").run();await f.options.git.run(f.root,["git","config","core.sparseCheckout","true"]);expect(await inspectLocalDestination(source.value.placement,"sub",f.options)).toMatchObject({ok:false,refusal:{code:"unsupported-workspace"}});
     await f.options.git.run(f.root,["git","config","core.sparseCheckout","false"]);f.global.db.prepare("DELETE FROM roam_repo_maps").run();expect(await inspectLocalDestination(source.value.placement,"sub",f.options)).toMatchObject({ok:false,refusal:{code:"repo-unmapped"}});
+  });
+  it("private data handler excludes legacy move and recovery",async()=>{
+    const f=adapterFixture();
+    const operation={id:"data-stores",machineId:hub,expectedEpoch:null,kind:"stores",args:{}};
+    expect(await handleRelocateAgent({version:1,kind:"data",operation},f.options)).toMatchObject({ok:true,value:{version:1,outcome:{code:0,operationId:"data-stores",value:{protocol:1,schema:14}}}});
+    for(const kind of ["move","retire","mirror-export","sync-handshake","session-freeze","session-retire"])
+      expect(await handleRelocateAgent({version:1,kind:"data",operation:{...operation,kind}},f.options)).toMatchObject({ok:false,refusal:{code:"invalid-arguments"}});
+  });
+  it("publication requires the exact replicated home",async()=>{
+    const f=adapterFixture(),peer:Peer={machineId:box,alias:"peer",node:"node",pi:"pi",cli:"cli",core:"core",globalRoot:"/peer"};
+    f.options.config={...f.options.config,peers:[peer]};
+    const wanted={...checkpoint().plan.source,state:"moving" as const,epoch:2,moveId:"v0-publish" as RelocateId,destination:box};
+    let observed:unknown=wanted;
+    f.options.transport.exec=async(_peer,_argv,options)=>{const input=JSON.parse(options.stdin!.toString());expect(input.kind).toBe("home");return Buffer.from(JSON.stringify({ok:true,value:{version:1,home:observed}}));};
+    f.options.homes.read=async()=>wanted;
+    const adapters=createRelocateAdapters(f.options);
+    expect(await adapters.ports.publishHome(wanted,hub)).toEqual({ok:true,value:undefined});
+    for(const delta of [{epoch:1},{state:"running",destination:null},{destination:hub},{moveId:"v0-other"},{machineId:box},{sessionId:"other"}]){
+      observed={...wanted,...delta};expect(await adapters.ports.publishHome(wanted,box)).toMatchObject({ok:false,refusal:{code:"sync-failed"}});
+    }
+    observed=wanted;expect(await adapters.ports.publishHome(wanted,box)).toEqual({ok:true,value:undefined});await adapters.dispose();
+  });
+  it("factory preflight refuses unreachable or unprovisioned destinations without effects",async()=>{
+    const f=adapterFixture(),peer:Peer={machineId:box,alias:"peer",node:"node",pi:"pi",cli:"cli",core:"core",globalRoot:"/peer"};f.options.config={...f.options.config,peers:[peer]};
+    const adapters=createRelocateAdapters(f.options);
+    expect(await adapters.ports.initialSource(id)).toEqual({ok:true,value:hub});
+    f.options.transport.resolve=async()=>{throw new Error("unreachable");};
+    expect(await adapters.ports.check({sessionId:id,destinationMachine:box},checkpoint().plan.source,"v0-check" as RelocateId)).toMatchObject({ok:false,refusal:{code:"destination-unreachable"}});
+    f.options.transport.resolve=async p=>p;f.options.transport.exec=async()=>Buffer.from(JSON.stringify({ok:true,value:{version:1,machineId:box,pi:false,spider:true}}));
+    expect(await adapters.ports.check({sessionId:id,destinationMachine:box},checkpoint().plan.source,"v0-check" as RelocateId)).toMatchObject({ok:false,refusal:{code:"destination-not-provisioned"}});
+    expect(f.options.journal.read("v0-check")).toEqual([]);await adapters.dispose();
   });
   it("v0 sync uses data-only private dispatch", async () => {
     const calls: {argv:readonly string[];options:unknown}[] = [];

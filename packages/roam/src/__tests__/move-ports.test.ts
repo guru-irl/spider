@@ -69,7 +69,7 @@ async function fixture(worktreeMachine = HUB, homeless = false) {
   const root = mkdtempSync(join(dirname(scratchDbPath("move-ports")), "mp-")); roots.push(root);
   mkdirSync(join(root, "roam"), { mode: 0o700 });
   writeFileSync(join(root, "roam", "active-release.json"), JSON.stringify(join(root, "release")), { mode: 0o600 });
-  vi.spyOn(supervisorReadiness, "inspectSupervisorReadiness").mockImplementation(async selectedRoot => ({ root: selectedRoot, release: join(root, "release"), pid: process.pid }));
+  vi.spyOn(supervisorReadiness, "inspectSupervisorReadiness").mockImplementation(async selectedRoot => ({ root: selectedRoot, release: join(selectedRoot, "release"), pid: process.pid }));
   const global = createReplica("global", HUB), worktree = createReplica("worktree", worktreeMachine), repository = createReplica("repo", HUB); closes.push(() => global.close(), () => worktree.close(), () => repository.close());
   const repo = join(root, "repo"); mkdirSync(repo); git(repo, ["init", "-q", "--initial-branch=main"]);
   writeFileSync(join(repo, "tracked.txt"), "fixture\n"); git(repo, ["add", "."]); git(repo, ["commit", "-q", "-m", "fixture"]);
@@ -588,6 +588,9 @@ async function transferFixture(homeless = false, sessionOnly = false) {
   mkdirSync(join(remoteRoot, "roam"), { recursive: true, mode: 0o700 });
   writeFileSync(join(remoteRoot, "roam", "active-release.json"), JSON.stringify(join(f.root, "release")), { mode: 0o600 });
   const remoteJournal = openFreezeJournal(join(remoteRoot, "journal.db"));
+  // Task 5 preflights the destination's own provisioned supervisor release.
+  mkdirSync(join(remoteRoot, "roam"), { mode: 0o700 });
+  writeFileSync(join(remoteRoot, "roam", "active-release.json"), JSON.stringify(join(remoteRoot, "release")), { mode: 0o600 });
   const config = { ...f.config, machineId: BOX, role: "box" as const };
   const leases = createSessionLeases(join(remoteRoot, "herdr")), inventory = { leases, presence: createProcessPresence(leases.root), processes: async () => [], probe: async () => ({ kind: "live" as const, startIdentity: "fixture-lock" }) };
   const withBothLocks = createBothLocks({ root: leases.root, inventory, identity: { pid: 900, startIdentity: "fixture-lock" }, file: async () => target, bootId: async () => "fixture-boot" });
@@ -1053,7 +1056,10 @@ beforeEach(async context => {
 }, 5000);
 let transferArtifacts: string[] = [];
 beforeEach(async context => {
-  if (appCases.some(prefix => context.task.name.startsWith(prefix))) interruptedFixture = await interruptedSetup.run();
+  if (appCases.some(prefix => context.task.name.startsWith(prefix))) {
+    interruptedFixture = await interruptedSetup.run();
+    expect(interruptedFixture.initial.code, JSON.stringify(interruptedFixture.initial)).toBe(3);
+  }
   if (context.task.name.startsWith("real Git artifacts")) {
     const f = preparedFixture, exec = f.transport.exec; transferArtifacts = [];
     f.transport.exec = async (peer, argv, options) => {
@@ -1708,7 +1714,7 @@ beforeEach(async context => {
 }, 5000);
 it("never-homed persistent Mac session seeds syncs admits freezes and moves to a fake box", async () => {
   const order = firstOrder, { f, initial } = await firstSetup.run();
-  expect(initial.code).toBe(0);
+  expect(initial.code, JSON.stringify(initial)).toBe(0);
   expect([...new Set(order)]).toEqual(["seed", "sync", "hub-epoch1", "admit", "freeze", "start", "ready", "retire"]);
   const check = f.journal.read("app-absent").find(row => row.action === "move-action-complete" && row.result.action === "check")!.result.value as unknown as MoveCheck;
   expect(check.source).toMatchObject({ machineId: HUB, epoch: 1, moveId: null });

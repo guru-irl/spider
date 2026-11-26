@@ -1,3 +1,6 @@
+import { parseV0Control, runV0Control, readV0Confirmation } from "./relocate/cli";
+import { requestV0Services } from "./relocate/service";
+import type { V0ControlServices, V0Result } from "./relocate/types";
 import { corePinDiagnostics } from "./core-pin-diagnostics";
 import { inspectSupervisorCorePin } from "./enrollment";
 import { HOSTING_WARNING_CODE } from "./hosting-warning";
@@ -62,6 +65,8 @@ const HELP = `Usage: spider <command>
   spider roam repo map <repo-key> <path>
   spider roam memory tag <store-key> <uuid> <machine|all>
   spider move <session> <machine>
+  spider roam relocate <session> <machine>
+  spider roam set-home <session> <machine> --force
 
 Add --json at the end of a control for machine-readable output.
 For sync or doctor, use -- <machine> or --machine <machine> for names starting with a dash.
@@ -131,7 +136,7 @@ function setupPendingCause(error: unknown): { code: string } {
   return { code: enrollmentCauseCode(error) };
 }
 
-export async function main(argv: readonly string[], io: CommandIO, options?: { bundleUrl?: URL; stdin?: Buffer; pairPorts?: LocalPairPorts; fencePort?: typeof requestHelperFence; intercomOptions?: IntercomCliOptions; intercomDoctor?: Parameters<typeof runLocalDoctor>[0]["intercomDoctor"]; runDisabledForget?: RunDisabledForget; moveFactory?: import("./move-runtime-contracts").MoveRuntimeFactory; placementFactory?: import("./contracts").PlacementFactory }): Promise<number> {
+export async function main(argv: readonly string[], io: CommandIO, options?: { bundleUrl?: URL; stdin?: Buffer; pairPorts?: LocalPairPorts; fencePort?: typeof requestHelperFence; intercomOptions?: IntercomCliOptions; intercomDoctor?: Parameters<typeof runLocalDoctor>[0]["intercomDoctor"]; runDisabledForget?: RunDisabledForget; moveFactory?: import("./move-runtime-contracts").MoveRuntimeFactory; placementFactory?: import("./contracts").PlacementFactory; v0?: { services?: V0ControlServices; catalog?: readonly { id: string; name: string | null }[]; confirmation?(prompt: string): Promise<string | null>; agent?(input: unknown, root: string): Promise<V0Result<unknown>> } }): Promise<number> {
   let root = process.env.SPIDER_GLOBAL_ROOT || join(homedir(), ".pi", "agent", "spider");
   const privateRoot = argv[0] === "--global-root";
   if (privateRoot) {
@@ -144,6 +149,33 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       argv.length === 2 && argv[0] === "roam" && ["--help", "-h", "help"].includes(argv[1])) {
     io.out(HELP);
     return 0;
+  }
+  if (argv[0] === "roam" && argv[1] === "agent" && argv[2] === "--v0") {
+    if (argv.length !== 3) { io.out(`${JSON.stringify({ ok: false, refusal: { code: "invalid-arguments", message: "Invalid private v0 request.", nextStep: "Use the private v0 agent protocol." } })}\n`); return 2; }
+    let input: unknown;
+    try { input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await readArtifactInput(4 * 1024 * 1024, options?.stdin))); }
+    catch { io.out(`${JSON.stringify({ ok: false, refusal: { code: "invalid-arguments", message: "Invalid private v0 request.", nextStep: "Send bounded UTF-8 JSON to the private v0 agent." } })}\n`); return 2; }
+    if (!options?.v0?.agent) throw new Error("V0 production agent composition is not installed");
+    const result = await options.v0.agent(input, root); io.out(`${JSON.stringify(result)}\n`); return result.ok ? 0 : 1;
+  }
+  if (argv[0] === "roam" && ["relocate", "set-home"].includes(argv[1])) {
+    const control = parseV0Control(argv), json = argv.at(-1) === "--json";
+    const refusal = (code: "invalid-arguments" | "home-unavailable", message: string, nextStep: string, exit: number) => {
+      const result = { ok: false, refusal: { code, message, nextStep } };
+      if (json) io.out(`${JSON.stringify(result)}\n`); else io.err(`${message}\n${nextStep}\n`); return exit;
+    };
+    if (!control) return refusal("invalid-arguments", "Invalid v0 command arguments.", "Use roam relocate <session> <machine> or roam set-home <session> <machine> --force.", 2);
+    try {
+      const config = readLocalIdentity(root);
+      let catalog = options?.v0?.catalog ?? [];
+      if (!options?.v0?.catalog && config.role === "hub" && (config.enabled || control.kind === "set-home")) {
+        const core = openLocalCore(root);
+        try { catalog = core.db.prepare("SELECT id,name FROM sessions").all() as { id: string; name: string | null }[]; }
+        finally { core.close(); }
+      }
+      const confirmation = options?.v0?.confirmation ?? readV0Confirmation;
+      return await runV0Control(control, config, catalog, options?.v0?.services ?? requestV0Services(root), { ...io, confirmation }, { json });
+    } catch { return refusal("home-unavailable", "The v0 home service could not be opened.", "Start the v0 hub on the Mac, then retry this command.", 1); }
   }
   const publicInput = argv[0] === "move" || argv[0] === "roam" && !["agent", "artifact", "observe", "intercom", "hub"].includes(argv[1]);
   const jsonOutput = publicInput && argv.at(-1) === "--json";

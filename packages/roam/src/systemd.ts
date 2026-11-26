@@ -13,7 +13,7 @@ function quote(value: string, executable: boolean): string {
 }
 
 /** Render the supervisor only. Installation and service calls belong to injected ports. */
-export function renderSupervisorUnit(input: { node: string; supervisor: string; coreUnit: string; globalRoot: string; agentDir?: string; pi?: string }): string {
+export function renderSupervisorUnit(input: { node: string; supervisor: string; coreUnit: string; globalRoot: string; agentDir?: string; pi?: string; mode?: "v0" }): string {
   const node = path(input.node), supervisor = path(input.supervisor), root = path(input.globalRoot);
   const pi = input.pi === undefined ? null : path(input.pi);
   const agentDir = input.agentDir === undefined ? null : path(input.agentDir);
@@ -26,7 +26,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart=${quote(node, true)} ${quote(supervisor, true)}
+ExecStart=${quote(node, true)} ${quote(supervisor, true)}${input.mode === "v0" ? " --v0" : ""}
 Environment=${quote(`SPIDER_GLOBAL_ROOT=${root}`, false)}
 ${pi === null ? "" : `Environment=${quote(`SPIDER_ROAM_PI=${pi}`, false)}\n`}${agentDir === null ? "" : `Environment=${quote(`PI_CODING_AGENT_DIR=${agentDir}`, false)}\n`}Restart=on-failure
 RestartSec=10s

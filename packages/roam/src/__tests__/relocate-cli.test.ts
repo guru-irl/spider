@@ -15,6 +15,7 @@ import * as productionSupervisor from "../production-supervisor";
 import * as controls from "../production-controls";
 import * as diagnostics from "../local-diagnostics";
 import { createReplica } from "@spider/db-core/testutil";
+import { openDbAt, registerProject, setGlobalDbPathForTests } from "@spider/db-core";
 import { writeLocal } from "@spider/db-core/roam/local-state";
 import { createV0Runtime, startV0Hub, startV0Supervisor } from "../relocate/runtime";
 import { handleRelocateAgent } from "../relocate/remote";
@@ -196,6 +197,38 @@ describe("v0 controls", () => {
     }
     const f = fixture(phrase); expect(await runV0Control({ kind: "set-home", session: "session-abc", machine: "box-a", force: true, confirmation: null }, { ...config, enabled: false }, catalog, f.services, f.io, { json: true })).toBe(0);
     expect(f.services.setHome).toHaveBeenCalledWith({ sessionId: "session-abc", destinationMachine: box, force: true, confirmation: phrase });
+  });
+  it("relocates a fresh session found only in its registered project database", async () => {
+    const f = fixture();
+    const root = mkdtempSync(join(resolve(".spider/scratch"), "fresh-cli-")); roots.push(root);
+    mkdirSync(join(root, "roam"), { mode: 0o700 });
+    writeFileSync(join(root, "roam", "config.json"), JSON.stringify(config), { mode: 0o600 });
+    const globalPath = join(root, "spider.db");
+    const global = openDbAt(globalPath, "global");
+    const projectRoot = join(root, "project"); mkdirSync(projectRoot);
+    const projectPath = join(projectRoot, "project.db");
+    const project = openDbAt(projectPath, "worktree");
+    setGlobalDbPathForTests(globalPath);
+    try {
+      // Session startup registers the project before inserting its session row.
+      registerProject({ projectKey: projectRoot, realPath: projectRoot, dbPath: projectPath });
+      project.prepare("INSERT INTO sessions(id,name,started_at) VALUES (?,?,?)").run("session-abc", "fresh", 1);
+      expect(global.prepare("SELECT name FROM sqlite_master WHERE name='sessions'").get()).toBeUndefined();
+      expect(global.prepare("SELECT session_id FROM roam_locations").all()).toEqual([]);
+      expect(project.prepare("SELECT store_key FROM roam_meta WHERE id=1").get()).toEqual({ store_key: null });
+      global.prepare("UPDATE roam_meta SET machine_id=? WHERE id=1").run(mac);
+      writeFileSync(join(root, "roam", "machine.json"), JSON.stringify({ machineId: mac }), { mode: 0o600 });
+      // Publish both WALs before the CLI's independent read-only handles open.
+      project.close(); global.close();
+      vi.stubEnv("SPIDER_GLOBAL_ROOT", root);
+      for (const target of ["session-abc", "session-ab", "fresh"]) {
+        f.out.length = 0;
+        const code = await main(["roam", "relocate", target, "box-a", "--json"], f.io, { v0: { services: f.services } });
+        expect(JSON.parse(f.out.join(""))).toMatchObject({ ok: true, value: { home: { sessionId: "session-abc", machineId: box } } });
+        expect(code).toBe(0);
+        expect(f.services.relocate).toHaveBeenLastCalledWith({ sessionId: "session-abc", destinationMachine: box });
+      }
+    } finally { setGlobalDbPathForTests(null); project.close(); global.close(); }
   });
   it("v0 controls bypass legacy hub and deferred gates", async () => {
     const f = fixture(); const root = mkdtempSync(join(resolve(".spider/scratch"), "dv0-")); roots.push(root); mkdirSync(join(root, "roam"), { mode: 0o700 });

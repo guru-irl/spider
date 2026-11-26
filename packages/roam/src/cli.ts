@@ -1,4 +1,5 @@
 import { parseV0Control, runV0Control, readV0Confirmation } from "./relocate/cli";
+import { v0SessionCatalog } from "./relocate/session-catalog";
 import { requestV0Services, runV0Service } from "./relocate/service";
 import { startV0Hub, runV0Agent } from "./relocate/runtime";
 import type { V0ControlServices, V0Result } from "./relocate/types";
@@ -175,7 +176,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       let catalog = options?.v0?.catalog ?? [];
       if (!options?.v0?.catalog && config.role === "hub" && (config.enabled || control.kind === "set-home")) {
         const core = openLocalCore(root);
-        try { catalog = core.db.prepare("SELECT id,name FROM sessions").all() as { id: string; name: string | null }[]; }
+        try { catalog = v0SessionCatalog(core.db); }
         finally { core.close(); }
       }
       const confirmation = options?.v0?.confirmation ?? readV0Confirmation;

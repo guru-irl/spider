@@ -561,7 +561,20 @@ export function createAdmissionPorts(options: ParticipantLockOptions = {}): Admi
   const cache = () => participantCache(paths.globalRoot);
   return {
     ...productionParticipantAdmission(() => context?.cwd),
-    v0Lookup: id=>loadRelocateAdmission(id,paths.globalRoot),
+    async v0Lookup(id) {
+      const result = await loadRelocateAdmission(id, paths.globalRoot);
+      if (result.kind === "unavailable" && context?.cwd) {
+        // Global failure must not erase accessible legacy participation evidence.
+        // This is discovery only: the unavailable v0 result still blocks admission.
+        let worktree: Db | undefined;
+        try {
+          worktree = openDbReadOnlyAt(join(paths.projectRoot(context.cwd), "project.db"));
+          if (worktree && hasTable(worktree, "roam_sessions") && readSessionState(worktree, id)) cache().known.add(id);
+        } catch { /* Unknown provenance cannot make an unavailable home runnable. */ }
+        finally { worktree?.close(); }
+      }
+      return result;
+    },
     async v0Ready(id,file,home) {
       const runtime=createV0Runtime(paths.globalRoot);
       try {

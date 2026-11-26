@@ -1,13 +1,20 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { openDb } from "@spider/db-core";
+import { openDb, migrate } from "@spider/db-core";
 import { scratchDbPath } from "@spider/db-core/testutil";
 import type { HomeStore } from "@spider/roam/relocate/types";
-import { readRelocateAdmission, prepareRelocateAdmission } from "../relocate-admission";
+import { readRelocateAdmission, prepareRelocateAdmission, loadRelocateAdmission } from "../relocate-admission";
+import { createReplica } from "@spider/db-core/testutil";
+import { writeLocal } from "@spider/db-core/roam/local-state";
+import { DEFAULT_LIMITS, disabledIntercom } from "@spider/roam/contracts";
+import { createHomeStore } from "@spider/roam/relocate/home";
+import { writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import * as admissionLookup from "../relocate-admission";
+import { join } from "node:path";
 import type { SessionMachinePorts, SessionPlacement } from "@spider/roam/relocate/types";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { HomeAdmission, RunningHome, SessionId } from "@spider/roam/relocate/types";
 import { createHostSessionFixture } from "../../__tests__/fixtures/pi-events";
-import { protectAdmissionApi, registerAdmission, type AdmissionGate, type AdmissionPorts } from "../admission";
+import { protectAdmissionApi, registerAdmission, createAdmissionPorts, type AdmissionGate, type AdmissionPorts } from "../admission";
 
 const id = "session-v0" as SessionId;
 const local = "11111111-1111-4111-8111-111111111111";
@@ -29,6 +36,31 @@ function fixture(initial: HomeAdmission) {
   async function emit(name: string, event = {}) { let result; for (const fn of host.hooks.get(name) ?? []) result = await fn(event, host.ctx); return result; }
   return { gate, ports, release, close, emit, host, setHome(value: HomeAdmission) { current = value; } };
 }
+it("production lookup reads v0 homes without legacy admission",async()=>{
+  const f=createReplica("global",local),db=openDb(join(f.root,"spider.db"));
+  migrate(db,"global",{machineId:local,globalRoot:f.root});
+  try {
+    mkdirSync(join(f.root,"roam"),{mode:0o700});
+    const config={enabled:false,role:"hub",machineId:local,hubMachineId:local,peers:[],discoveryRoots:[],coreUnit:"core",syncMs:10000,limits:DEFAULT_LIMITS,intercom:disabledIntercom()};
+    writeFileSync(join(f.root,"roam","config.json"),JSON.stringify(config),{mode:0o600});
+    writeFileSync(join(f.root,"roam","machine.json"),JSON.stringify({machineId:local}),{mode:0o600});
+    expect(await loadRelocateAdmission(id,f.root)).toEqual({kind:"unmanaged"});
+    unlinkSync(join(f.root,"roam","config.json"));
+    expect(await loadRelocateAdmission(id,f.root)).toEqual({kind:"unmanaged"});
+    writeFileSync(join(f.root,"roam","config.json"),JSON.stringify(config),{mode:0o600});
+    const homes=createHomeStore({db,localMachineId:local,hubMachineId:local});
+    const running=await homes.initialize(id,local);
+    expect(await loadRelocateAdmission(id,f.root)).toEqual({kind:"managed",home:running});
+    writeLocal(db,"relocate-managed",id,{synthetic:true});db.prepare("DELETE FROM session_homes WHERE session_id=?").run(id);
+    expect(await loadRelocateAdmission(id,f.root)).toEqual({kind:"managed",home:null});
+    expect(await loadRelocateAdmission(id,join(f.root,"missing"))).toEqual({kind:"unavailable"});
+  }finally{db.close();f.close();}
+});
+it("production admission ports use the v0 lookup seam",async()=>{
+  const lookup=vi.spyOn(admissionLookup,"loadRelocateAdmission").mockResolvedValue({kind:"managed",home});
+  try{const ports=createAdmissionPorts();expect(await ports.v0Lookup!(id)).toEqual({kind:"managed",home});expect(lookup).toHaveBeenCalledWith(id,expect.any(String));expect(ports.v0Ready).toBeTypeOf("function");}
+  finally{lookup.mockRestore();}
+});
 it("successful SQL discovery distinguishes legacy rows from managed missing homes", async () => {
   const db = openDb(scratchDbPath("v0-admission-query"));
   const homes: HomeStore = { read: vi.fn(async () => home), initialize: vi.fn(), compareAndSwap: vi.fn(), list: vi.fn() };

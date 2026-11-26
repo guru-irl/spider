@@ -23,6 +23,10 @@ import { isMachineId } from "@spider/roam/machine-id";
 import { isRevoked } from "@spider/roam/revocation";
 import type { HostIntent, RoamConfig } from "@spider/roam/contracts";
 import type { HomeAdmission, RunningHome, SessionId } from "@spider/roam/relocate/types";
+import { createV0Runtime } from "@spider/roam/relocate/runtime";
+import { createLocalSessionMachinePorts } from "@spider/roam/relocate/local";
+import { loadRelocateAdmission, prepareRelocateAdmission } from "./relocate-admission";
+import { serveRelocateShutdown } from "./relocate-control";
 
 export interface Admission { kind: "pending" | "ordinary" | "control-only" | "blocked"; home: Home | null; blockers: readonly Blocker[]; setupFailure?: MoveSetupFailure }
 export interface AdmissionGate {
@@ -557,6 +561,15 @@ export function createAdmissionPorts(options: ParticipantLockOptions = {}): Admi
   const cache = () => participantCache(paths.globalRoot);
   return {
     ...productionParticipantAdmission(() => context?.cwd),
+    v0Lookup: id=>loadRelocateAdmission(id,paths.globalRoot),
+    async v0Ready(id,file,home) {
+      const runtime=createV0Runtime(paths.globalRoot);
+      try {
+        await prepareRelocateAdmission(home,file,createLocalSessionMachinePorts(runtime.options));
+        const control=await serveRelocateShutdown({sessionId:id,runtimeRoot:join(paths.globalRoot,"roam","s"),machineId:runtime.options.config.machineId,home:()=>runtime.homes.read(id),async shutdown(){if(!context)throw new Error("Session context unavailable");context.shutdown();}});
+        return {async close(){try{await control.close();}finally{await runtime.close();}}};
+      }catch(error){await runtime.close();throw error;}
+    },
     expectedEpoch: null,
     lockUntracked() { try { const current = readLocalIdentity(paths.globalRoot); return current.enabled && current.role === "hub"; } catch { return false; } },
     setContext(ctx) { context = ctx; },

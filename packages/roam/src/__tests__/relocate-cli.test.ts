@@ -25,7 +25,9 @@ import { main as supervisorMain } from "../supervisor-main";
 import * as v0RuntimeApi from "../relocate/runtime";
 
 const mac = "11111111-1111-4111-8111-111111111111", box = "22222222-2222-4222-8222-222222222222";
-const config: RoamConfig = { enabled: true, role: "hub", machineId: mac, hubMachineId: mac, peers: [{ machineId: box, alias: "box-a", node: "/node", pi: "/pi", cli: "/spider", core: "/core", globalRoot: "/root" }], discoveryRoots: [], coreUnit: "core", syncMs: 10_000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
+// The public CLI's built-in local selector, not a remote hostname.
+const macSelector = "mac";
+const config: RoamConfig = { enabled: true, role: "hub", machineId: mac, hubMachineId: mac, peers: [{ machineId: box, alias: "box-a.invalid", node: "/node", pi: "/pi", cli: "/spider", core: "/core", globalRoot: "/root" }], discoveryRoots: [], coreUnit: "core", syncMs: 10_000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
 const catalog = [{ id: "session-abc", name: "first" }, { id: "session-abd", name: "second" }, { id: "first", name: null }];
 const home: RunningHome = { sessionId: "session-abc" as SessionId, machineId: box, epoch: 3, updatedAt: 1, state: "running", destination: null, moveId: null };
 const roots: string[] = [];
@@ -78,9 +80,12 @@ describe("v0 controls", () => {
   it("v0 hub and supervisor entries drain on shutdown",async()=>{
     const source=createReplica("global",mac),target=createReplica("global",box);
     const idle={now:()=>1,later:()=>()=>{}};
-    const hub=await startV0Hub(source.root,{openCore:()=>({root:source.root,config:{...config,enabled:false,peers:[]},db:source.db,close:vi.fn()}),clock:idle});
-    const supervisor=await startV0Supervisor(target.root,{openCore:()=>({root:target.root,config:{...config,role:"box",machineId:box,enabled:false,peers:[]},db:target.db,close:vi.fn()}),clock:idle});
-    try {expect(await requestV0Services(source.root).setHome({sessionId:"missing" as SessionId,destinationMachine:mac,force:true,confirmation:"bad"})).toMatchObject({ok:false,refusal:{code:"confirmation-required"}});}
+    const unused=async()=>{throw new Error("Idle services must not call transport");};
+    const transport:Transport={resolve:unused,bootstrapProbe:unused,exec:unused,run:unused,read:unused,write:unused};
+    const hubRoot=mkdtempSync(join(resolve(".spider/scratch"),"dvh-")),boxRoot=mkdtempSync(join(resolve(".spider/scratch"),"dvb-"));roots.push(hubRoot,boxRoot);
+    const hub=await startV0Hub(hubRoot,{openCore:()=>({root:hubRoot,config:{...config,enabled:false,peers:[]},db:source.db,close:vi.fn()}),transport,clock:idle});
+    const supervisor=await startV0Supervisor(boxRoot,{openCore:()=>({root:boxRoot,config:{...config,role:"box",machineId:box,enabled:false,peers:[]},db:target.db,close:vi.fn()}),transport,clock:idle});
+    try {expect(await requestV0Services(hubRoot).setHome({sessionId:"missing" as SessionId,destinationMachine:mac,force:true,confirmation:"bad"})).toMatchObject({ok:false,refusal:{code:"confirmation-required"}});}
     finally {await hub.stop();await hub.stop();await supervisor.stop();await supervisor.stop();source.close();target.close();}
   });
   it("v0 CLI and supervisor entrypoints bypass legacy services",async()=>{
@@ -152,29 +157,29 @@ describe("v0 controls", () => {
     expect(agent).toHaveBeenCalledTimes(2);
   });
   it("parse relocate and forced set-home without changing move", () => {
-    expect(parseV0Control(["roam", "relocate", "session-abc", "box-a", "--json"])).toEqual({ kind: "relocate", session: "session-abc", machine: "box-a" });
-    expect(parseV0Control(["roam", "set-home", "first", "mac", "--force"])).toEqual({ kind: "set-home", session: "first", machine: "mac", force: true, confirmation: null });
-    for (const args of [["roam", "relocate"], ["roam", "relocate", "bad/id", "box-a"], ["roam", "relocate", "first", "-box"], ["roam", "relocate", "first", "box-a", "--yes"], ["roam", "set-home", "first", "mac"], ["roam", "set-home", "first", "mac", "--force", "--confirm", "yes"], ["move", "first", "mac"], ["roam", "move", "first", "mac"]]) expect(parseV0Control(args)).toBeNull();
-    expect(parsePublicControl(["move", "first", "mac"])).toEqual({ kind: "move", session: "first", machine: "mac" });
+    expect(parseV0Control(["roam", "relocate", "session-abc", "box-a.invalid", "--json"])).toEqual({ kind: "relocate", session: "session-abc", machine: "box-a.invalid" });
+    expect(parseV0Control(["roam", "set-home", "first", "mac", "--force"])).toEqual({ kind: "set-home", session: "first", machine: macSelector, force: true, confirmation: null });
+    for (const args of [["roam", "relocate"], ["roam", "relocate", "bad/id", "box-a.invalid"], ["roam", "relocate", "first", "-box"], ["roam", "relocate", "first", "box-a.invalid", "--yes"], ["roam", "set-home", "first", "mac"], ["roam", "set-home", "first", "mac", "--force", "--confirm", "yes"], ["move", "first", "mac"], ["roam", "move", "first", "mac"]]) expect(parseV0Control(args)).toBeNull();
+    expect(parsePublicControl(["move", "first", "mac"])).toEqual({ kind: "move", session: "first", machine: macSelector });
     expect(parsePublicControl(["roam", "relocate", "first", "mac"])).toBeNull();
   });
   it("resolve session and machine with existing rules", async () => {
     for (const [target, expected] of [["first", "first"], ["session-abc", "session-abc"], ["session-abc", "session-abc"], ["second", "session-abd"]]) {
-      const f = fixture(); expect(await runV0Control({ kind: "relocate", session: target, machine: "box-a" }, config, catalog, f.services, f.io)).toBe(0);
+      const f = fixture(); expect(await runV0Control({ kind: "relocate", session: target, machine: "box-a.invalid" }, config, catalog, f.services, f.io)).toBe(0);
       expect(f.services.relocate).toHaveBeenCalledWith({ sessionId: expected, destinationMachine: box });
     }
-    const macTarget = fixture(); await runV0Control({ kind: "relocate", session: "session-abc", machine: "mac" }, config, catalog, macTarget.services, macTarget.io);
+    const macTarget = fixture(); await runV0Control({ kind: "relocate", session: "session-abc", machine: macSelector }, config, catalog, macTarget.services, macTarget.io);
     expect(macTarget.services.relocate).toHaveBeenCalledWith({ sessionId: "session-abc", destinationMachine: mac });
-    const ambiguous = fixture(); expect(await runV0Control({ kind: "relocate", session: "session-ab", machine: "box-a" }, config, catalog, ambiguous.services, ambiguous.io)).toBe(1);
+    const ambiguous = fixture(); expect(await runV0Control({ kind: "relocate", session: "session-ab", machine: "box-a.invalid" }, config, catalog, ambiguous.services, ambiguous.io)).toBe(1);
     expect(ambiguous.services.relocate).not.toHaveBeenCalled(); expect(ambiguous.err.join("")).toContain("session-abc"); expect(ambiguous.err.join("")).toContain("session-abd");
-    const duplicate = fixture(); await runV0Control({ kind: "relocate", session: "first", machine: "box-a" }, { ...config, peers: [...config.peers, { ...config.peers[0], machineId: mac }] }, catalog, duplicate.services, duplicate.io);
+    const duplicate = fixture(); await runV0Control({ kind: "relocate", session: "first", machine: "box-a.invalid" }, { ...config, peers: [...config.peers, { ...config.peers[0], machineId: mac }] }, catalog, duplicate.services, duplicate.io);
     expect(duplicate.services.relocate).not.toHaveBeenCalled();
   });
   it("relocate from a box is one actionable refusal", async () => {
-    const f = fixture(); expect(await runV0Control({ kind: "relocate", session: "first", machine: "mac" }, { ...config, role: "box", machineId: box }, catalog, f.services, f.io, { json: true })).toBe(1);
+    const f = fixture(); expect(await runV0Control({ kind: "relocate", session: "first", machine: macSelector }, { ...config, role: "box", machineId: box }, catalog, f.services, f.io, { json: true })).toBe(1);
     expect(JSON.parse(f.out.join(""))).toMatchObject({ ok: false, refusal: { code: "mac-required", message: expect.any(String), nextStep: expect.stringContaining("Mac") } });
     expect(f.out).toHaveLength(1); expect(f.services.relocate).not.toHaveBeenCalled();
-    const disabled = fixture(); await runV0Control({ kind: "relocate", session: "first", machine: "mac" }, { ...config, enabled: false }, catalog, disabled.services, disabled.io);
+    const disabled = fixture(); await runV0Control({ kind: "relocate", session: "first", machine: macSelector }, { ...config, enabled: false }, catalog, disabled.services, disabled.io);
     expect(disabled.services.relocate).not.toHaveBeenCalled(); expect(disabled.err.join("")).toContain("replication");
   });
   it("real confirmation requires a TTY and resolves EOF without writing JSON stdout", async () => {
@@ -190,22 +195,22 @@ describe("v0 controls", () => {
   it("force prompts for the exact phrase", async () => {
     const phrase = `reassign session-abc to ${box}; source will not run`;
     for (const value of [null, "", "yes", phrase + " ", phrase.toUpperCase()]) {
-      const f = fixture(value); expect(await runV0Control({ kind: "set-home", session: "session-abc", machine: "box-a", force: true, confirmation: null }, config, catalog, f.services, f.io, { json: true })).toBe(1);
+      const f = fixture(value); expect(await runV0Control({ kind: "set-home", session: "session-abc", machine: "box-a.invalid", force: true, confirmation: null }, config, catalog, f.services, f.io, { json: true })).toBe(1);
       expect(f.services.setHome).not.toHaveBeenCalled(); expect(JSON.parse(f.out.join("")).refusal.code).toBe("confirmation-required");
       expect(f.prompts[0]).toContain(phrase); expect(f.prompts[0]).toMatch(/unsynced conversation.*lost/i);
     }
-    const f = fixture(phrase); expect(await runV0Control({ kind: "set-home", session: "session-abc", machine: "box-a", force: true, confirmation: null }, { ...config, enabled: false }, catalog, f.services, f.io, { json: true })).toBe(0);
+    const f = fixture(phrase); expect(await runV0Control({ kind: "set-home", session: "session-abc", machine: "box-a.invalid", force: true, confirmation: null }, { ...config, enabled: false }, catalog, f.services, f.io, { json: true })).toBe(0);
     expect(f.services.setHome).toHaveBeenCalledWith({ sessionId: "session-abc", destinationMachine: box, force: true, confirmation: phrase });
   });
   it("v0 controls bypass legacy hub and deferred gates", async () => {
     const f = fixture(); const root = mkdtempSync(join(resolve(".spider/scratch"), "dv0-")); roots.push(root); mkdirSync(join(root, "roam"), { mode: 0o700 });
     writeFileSync(join(root, "roam", "config.json"), JSON.stringify(config), { mode: 0o600 }); writeFileSync(join(root, "roam", "machine.json"), JSON.stringify({ machineId: mac }), { mode: 0o600 }); vi.stubEnv("SPIDER_GLOBAL_ROOT", root);
     const forbidden = [vi.spyOn(legacySocket, "requestHubControl"), vi.spyOn(productionHub, "startProductionHub"), vi.spyOn(productionSupervisor, "startProductionSupervisor"), vi.spyOn(controls, "enableRoaming"), vi.spyOn(diagnostics, "runLocalDoctor")];
-    expect(await main(["roam", "relocate", "session-abc", "box-a", "--json"], f.io, { v0: { services: f.services, catalog, confirmation: f.io.confirmation } })).toBe(0);
+    expect(await main(["roam", "relocate", "session-abc", "box-a.invalid", "--json"], f.io, { v0: { services: f.services, catalog, confirmation: f.io.confirmation } })).toBe(0);
     expect(JSON.parse(f.out.join(""))).toMatchObject({ ok: true as const, value: { home: { machineId: box }, terminal: "core:term" } });
     for (const spy of forbidden) expect(spy).not.toHaveBeenCalled();
     vi.mocked(f.services.relocate).mockResolvedValueOnce({ ok: false, refusal: { code: "start-pending", message: "The session has not started.", nextStep: "Retry relocation on the Mac." }, step: "confirm", home, moveId: null });
-    f.out.length = 0; expect(await main(["roam", "relocate", "session-abc", "box-a", "--json"], f.io, { v0: { services: f.services, catalog } })).toBe(1);
+    f.out.length = 0; expect(await main(["roam", "relocate", "session-abc", "box-a.invalid", "--json"], f.io, { v0: { services: f.services, catalog } })).toBe(1);
     expect(JSON.parse(f.out.join(""))).toMatchObject({ step: "confirm", refusal: { code: "start-pending", nextStep: "Retry relocation on the Mac." } });
     for (const spy of forbidden) expect(spy).not.toHaveBeenCalled();
   });

@@ -100,7 +100,7 @@ it.each(["never-started", "exited-without-adoption"] as const)("rollback retains
   const config: RoamConfig = { enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture", syncMs: 1000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
   const sessionId = "rollback-session", file = join(global.root, "session.jsonl"), home = { sessionId, machineId: HUB, epoch: 2, moveId: "move-a", updatedAt: 1 };
   recordLocation(global.db, { sessionId, stores: ["global"], home, file, cwd: global.root });
-  global.db.prepare("INSERT INTO session_homes VALUES (?,?,2,'move-a',1)").run(sessionId, HUB);
+  global.db.prepare("INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES (?,?,2,'move-a',1)").run(sessionId, HUB);
   const journal = openFreezeJournal(join(global.root, "roam", "journal.db"));
   journal.begin({ id: "move-a", machineId: HUB, expectedEpoch: 1, kind: "move", args: {} });
   journal.begin({ id: "launch-a", machineId: HUB, expectedEpoch: 2, kind: "exact-session-launch", args: { sessionId } });
@@ -194,7 +194,7 @@ async function inspectProductionActivation(initializeScratch: boolean) {
   worktree.db.prepare("INSERT INTO sessions(id,started_at,origin_machine) VALUES(?,1,?)").run(sessionId, HUB);
   worktree.db.prepare("INSERT INTO roam_sessions(session_id,epoch,state) VALUES(?,1,'active')").run(sessionId);
   global.db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES(?,?,?,1,1)").run("fixture", worktree.root, worktree.db.raw.name);
-  global.db.prepare("INSERT INTO session_homes VALUES(?,?,1,NULL,1)").run(sessionId, HUB);
+  global.db.prepare("INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES(?,?,1,NULL,1)").run(sessionId, HUB);
   const home = { sessionId, machineId: HUB, epoch: 1, moveId: null, updatedAt: 1 };
   recordLocation(global.db, { sessionId, stores: ["global", worktree.storeKey], home, file, cwd: worktree.root });
   const snapshot = { asks: [], pendingDispatch: [], unknownOutcomes: [], unobservedReceipts: [] };
@@ -332,7 +332,7 @@ it("the hub obtains a box presentation target from that box's guarded readiness"
   const config: RoamConfig = { enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB, peers: [{ machineId: BOX, alias: "box-1.invalid", node: "/bin/node", pi: "/bin/pi", cli: "/bin/spider", core: "core-a", globalRoot: "/fixture/global" }], discoveryRoots: [], coreUnit: "fixture", syncMs: 1000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
   mkdirSync(join(global.root, "roam"), { mode: 0o700 });
   const journal = openFreezeJournal(join(global.root, "roam", "journal.db")), home = { sessionId: "session-a", machineId: BOX, epoch: 2, moveId: "move-a", updatedAt: 1 };
-  global.db.prepare("INSERT INTO session_homes VALUES(?,?,?,?,?)").run(home.sessionId, BOX, home.epoch, home.moveId, home.updatedAt);
+  global.db.prepare("INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES(?,?,?,?,?)").run(home.sessionId, BOX, home.epoch, home.moveId, home.updatedAt);
   const target = { machineId: BOX, alias: null, sessionId: home.sessionId, homeEpoch: home.epoch, coreId: "box-core", terminalId: "box-terminal" }, calls: string[] = [];
   const unused = async (): Promise<never> => { throw new Error("unused transport method"); };
   const transport: import("@spider/roam/contracts").Transport = { resolve: async peer => peer, bootstrapProbe: unused, run: unused, read: unused, write: unused, async exec(peer, argv) {
@@ -351,7 +351,7 @@ it("production handoff captures before freeze and presents only a current ready 
   mkdirSync(join(global.root, "roam"), { mode: 0o700 });
   const journal = openFreezeJournal(join(global.root, "roam", "journal.db"));
   const home = { sessionId: "session-a", machineId: HUB, epoch: 1, moveId: null, updatedAt: 1 };
-  global.db.prepare("INSERT INTO session_homes VALUES(?,?,?,?,?)").run(home.sessionId, HUB, 1, null, 1);
+  global.db.prepare("INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES(?,?,?,?,?)").run(home.sessionId, HUB, 1, null, 1);
   const source = parsePaneTarget({ coreId: "core-a", terminalId: "t1", address: "core-a/t1", createdMs: 10, identityLabels: { "spider.session": "session-a", "spider.generation": "gen-1" }, alias: null, machineId: HUB, kind: "session", sessionId: "session-a", generation: "gen-1", homeEpoch: 1, runId: null, consoleId: null, name: null, cwd: "/example" });
   const store = createPanePlacementStore(join(global.root, "roam", "placement")), calls: string[] = [];
   let captureAvailable = true;
@@ -387,7 +387,7 @@ it.each(['box-to-box without a Mac view', 'app closed', 'service down', 'core-on
   mkdirSync(join(global.root, 'roam'), { mode: 0o700 });
   const config: RoamConfig = { enabled: true, role: 'hub', machineId: HUB, hubMachineId: HUB, peers: [{ machineId: BOX, alias: 'box-1.invalid', core: 'box-core', node: '/bin/node', pi: '/bin/pi', cli: '/bin/spider', globalRoot: '/example' }], discoveryRoots: [], coreUnit: 'fixture', syncMs: 1000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
   const home = { sessionId: 'session-a', machineId: scenario === 'box-to-box without a Mac view' ? BOX : HUB, epoch: 1, moveId: null, updatedAt: 1 };
-  global.db.prepare('INSERT INTO session_homes VALUES(?,?,?,?,?)').run(home.sessionId, home.machineId, 1, null, 1);
+  global.db.prepare('INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES(?,?,?,?,?)').run(home.sessionId, home.machineId, 1, null, 1);
   const source = parsePaneTarget({ coreId: home.machineId === BOX ? 'box-core' : 'core-a', terminalId: 't1', address: home.machineId === BOX ? 'box-core/t1' : 't1', createdMs: 10, identityLabels: { 'spider.session': 'session-a', 'spider.generation': 'gen-1' }, alias: home.machineId === BOX ? 'box-1.invalid' : null, machineId: home.machineId, kind: 'session', sessionId: 'session-a', generation: 'gen-1', homeEpoch: 1, runId: null, consoleId: null, name: null, cwd: '/example' });
   const stateRoot = join(global.root, 'roam', 'placement'), calls: string[] = [];
   if (scenario === 'app closed') await createPanePlacementStore(stateRoot).update(state => ({ ...state,
@@ -435,7 +435,7 @@ it("revoked alias reuse and a home change during readiness cannot reach presenta
   vi.spyOn(presentationPorts, 'createProductionRoamPresentationPorts').mockReturnValue(concrete);
   const ports = createHostRoamPresentationPorts({ root: global.root, globalDb: global.db, revocationDb, config });
   const locator = { machineId: BOX, alias: null, sessionId: 'session-a', homeEpoch: 2, coreId: 'core-remote', terminalId: 't1' } as const;
-  global.db.prepare('INSERT INTO session_homes VALUES(?,?,?,?,?)').run('session-a', BOX, 2, 'move-a', 1);
+  global.db.prepare('INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES(?,?,?,?,?)').run('session-a', BOX, 2, 'move-a', 1);
   try {
     expect(await ports.presentReadyTarget(locator)).toMatchObject({ status: 'pending', reason: 'presentation-readiness-unavailable' });
     expect(calls).toEqual([]);
@@ -485,7 +485,7 @@ it.each(["00000000-0000-4000-8000-000000000002", HUB, null])("mapping uses the a
   mkdirSync(localRoot);
   const { recordLocation } = await import("@spider/db-core/roam/catalog");
   recordLocation(global.db, { sessionId, stores: ["global"], home: null, file: join(global.root, "session.jsonl"), cwd: localRoot });
-  if (sourceMachine) global.db.prepare("INSERT INTO session_homes VALUES(?,?,2,NULL,1)").run(sessionId, sourceMachine);
+  if (sourceMachine) global.db.prepare("INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES(?,?,2,NULL,1)").run(sessionId, sourceMachine);
   execFileSync("git", ["init", "-q", "--initial-branch=main"], { cwd: localRoot, stdio: "ignore" });
   execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], { cwd: localRoot, stdio: "ignore" });
   await mapRepository(global.db, { repoKey: "fixture", path: localRoot });

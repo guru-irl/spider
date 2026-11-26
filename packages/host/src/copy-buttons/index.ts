@@ -382,6 +382,8 @@ export function installCopyButtons(host: CopyButtonsHost, options: CopyButtonsOp
   const proto = host.AssistantMessageComponent?.prototype as unknown as PatchedProto | undefined;
   const markdown = host.Markdown?.prototype as unknown as MarkdownInternals | undefined;
   if (!proto || typeof proto.updateContent !== "function" || !markdown || typeof markdown.renderToken !== "function" || typeof markdown.render !== "function") return;
+  // Shims linked before these host classes were added omit them.
+  if (typeof host.Spacer !== "function" || typeof host.ToolExecutionComponent !== "function") return;
   const previous = proto[PATCH];
   if (previous) disableCopyButtons(host);
   // The legacy wrapper may be captured by another extension. Leave the stack

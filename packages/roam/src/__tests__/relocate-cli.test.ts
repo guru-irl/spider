@@ -228,7 +228,7 @@ describe("v0 controls", () => {
       vi.stubEnv("SPIDER_GLOBAL_ROOT", root);
       for (const target of ["session-abc", "session-ab", "fresh"]) {
         f.out.length = 0;
-        const code = await main(["roam", "relocate", target, "box-a", "--json"], f.io, { v0: { services: f.services } });
+        const code = await main(["roam", "relocate", target, "box-a.invalid", "--json"], f.io, { v0: { services: f.services } });
         expect(JSON.parse(f.out.join(""))).toMatchObject({ ok: true, value: { home: { sessionId: "session-abc", machineId: box } } });
         expect(code).toBe(0);
         expect(f.services.relocate).toHaveBeenLastCalledWith({ sessionId: "session-abc", destinationMachine: box });

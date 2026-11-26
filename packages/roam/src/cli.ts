@@ -1,5 +1,6 @@
 import { parseV0Control, runV0Control, readV0Confirmation } from "./relocate/cli";
-import { requestV0Services } from "./relocate/service";
+import { requestV0Services, runV0Service } from "./relocate/service";
+import { startV0Hub, runV0Agent } from "./relocate/runtime";
 import type { V0ControlServices, V0Result } from "./relocate/types";
 import { corePinDiagnostics } from "./core-pin-diagnostics";
 import { inspectSupervisorCorePin } from "./enrollment";
@@ -136,7 +137,7 @@ function setupPendingCause(error: unknown): { code: string } {
   return { code: enrollmentCauseCode(error) };
 }
 
-export async function main(argv: readonly string[], io: CommandIO, options?: { bundleUrl?: URL; stdin?: Buffer; pairPorts?: LocalPairPorts; fencePort?: typeof requestHelperFence; intercomOptions?: IntercomCliOptions; intercomDoctor?: Parameters<typeof runLocalDoctor>[0]["intercomDoctor"]; runDisabledForget?: RunDisabledForget; moveFactory?: import("./move-runtime-contracts").MoveRuntimeFactory; placementFactory?: import("./contracts").PlacementFactory; v0?: { services?: V0ControlServices; catalog?: readonly { id: string; name: string | null }[]; confirmation?(prompt: string): Promise<string | null>; agent?(input: unknown, root: string): Promise<V0Result<unknown>> } }): Promise<number> {
+export async function main(argv: readonly string[], io: CommandIO, options?: { bundleUrl?: URL; stdin?: Buffer; pairPorts?: LocalPairPorts; fencePort?: typeof requestHelperFence; intercomOptions?: IntercomCliOptions; intercomDoctor?: Parameters<typeof runLocalDoctor>[0]["intercomDoctor"]; runDisabledForget?: RunDisabledForget; moveFactory?: import("./move-runtime-contracts").MoveRuntimeFactory; placementFactory?: import("./contracts").PlacementFactory; v0?: { hub?(root: string): Promise<{ stop(): Promise<void> }>; services?: V0ControlServices; catalog?: readonly { id: string; name: string | null }[]; confirmation?(prompt: string): Promise<string | null>; agent?(input: unknown, root: string): Promise<V0Result<unknown>> } }): Promise<number> {
   let root = process.env.SPIDER_GLOBAL_ROOT || join(homedir(), ".pi", "agent", "spider");
   const privateRoot = argv[0] === "--global-root";
   if (privateRoot) {
@@ -155,8 +156,12 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
     let input: unknown;
     try { input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await readArtifactInput(4 * 1024 * 1024, options?.stdin))); }
     catch { io.out(`${JSON.stringify({ ok: false, refusal: { code: "invalid-arguments", message: "Invalid private v0 request.", nextStep: "Send bounded UTF-8 JSON to the private v0 agent." } })}\n`); return 2; }
-    if (!options?.v0?.agent) throw new Error("V0 production agent composition is not installed");
-    const result = await options.v0.agent(input, root); io.out(`${JSON.stringify(result)}\n`); return result.ok ? 0 : 1;
+    const result = await (options?.v0?.agent ?? runV0Agent)(input, root); io.out(`${JSON.stringify(result)}\n`); return result.ok ? 0 : 1;
+  }
+  if (argv[0] === "roam" && argv[1] === "hub-v0") {
+    if(argv.length!==2){io.err("Use spider roam hub-v0.\n");return 2;}
+    try{await runV0Service(()=> (options?.v0?.hub ?? startV0Hub)(root));return 0;}
+    catch{io.err("The v0 hub could not start. Check the local roaming configuration.\n");return 1;}
   }
   if (argv[0] === "roam" && ["relocate", "set-home"].includes(argv[1])) {
     const control = parseV0Control(argv), json = argv.at(-1) === "--json";

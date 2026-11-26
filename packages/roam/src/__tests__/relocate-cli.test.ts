@@ -21,6 +21,8 @@ import { handleRelocateAgent } from "../relocate/remote";
 import * as hcApi from "@spider/herdr/client/hc";
 import type { CoreIdentity } from "@spider/herdr/contracts";
 import type { Transport } from "../contracts";
+import { main as supervisorMain } from "../supervisor-main";
+import * as v0RuntimeApi from "../relocate/runtime";
 
 const mac = "11111111-1111-4111-8111-111111111111", box = "22222222-2222-4222-8222-222222222222";
 const config: RoamConfig = { enabled: true, role: "hub", machineId: mac, hubMachineId: mac, peers: [{ machineId: box, alias: "box-a", node: "/node", pi: "/pi", cli: "/spider", core: "/core", globalRoot: "/root" }], discoveryRoots: [], coreUnit: "core", syncMs: 10_000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
@@ -80,6 +82,18 @@ describe("v0 controls", () => {
     const supervisor=await startV0Supervisor(target.root,{openCore:()=>({root:target.root,config:{...config,role:"box",machineId:box,enabled:false,peers:[]},db:target.db,close:vi.fn()}),clock:idle});
     try {expect(await requestV0Services(source.root).setHome({sessionId:"missing" as SessionId,destinationMachine:mac,force:true,confirmation:"bad"})).toMatchObject({ok:false,refusal:{code:"confirmation-required"}});}
     finally {await hub.stop();await hub.stop();await supervisor.stop();await supervisor.stop();source.close();target.close();}
+  });
+  it("v0 CLI and supervisor entrypoints bypass legacy services",async()=>{
+    const f=fixture(),hubStop=vi.fn(async()=>{}),supervisorStop=vi.fn(async()=>{});
+    const hub=vi.fn(async()=>{queueMicrotask(()=>process.emit("SIGTERM"));return {stop:hubStop};});
+    const supervisor=vi.fn(async()=>{queueMicrotask(()=>process.emit("SIGTERM"));return {stop:supervisorStop};});
+    const oldHub=vi.spyOn(productionHub,"startProductionHub"),oldSupervisor=vi.spyOn(productionSupervisor,"startProductionSupervisor");
+    expect(await main(["roam","hub-v0"],f.io,{v0:{hub}})).toBe(0);
+    expect(await supervisorMain(["--v0"],f.io,{startV0:supervisor})).toBe(0);
+    expect(hubStop).toHaveBeenCalledOnce();expect(supervisorStop).toHaveBeenCalledOnce();expect(oldHub).not.toHaveBeenCalled();expect(oldSupervisor).not.toHaveBeenCalled();
+    const agent=vi.spyOn(v0RuntimeApi,"runV0Agent").mockResolvedValue({ok:true,value:{version:1}});
+    expect(await main(["--global-root","/fixture/root","roam","agent","--v0"],f.io,{stdin:Buffer.from('{"version":1,"kind":"hello"}')})).toBe(0);
+    expect(agent).toHaveBeenCalledWith({version:1,kind:"hello"},"/fixture/root");
   });
   it("v0 service signal handling drains and removes its listeners", async () => {
     let entered!: () => void, release!: () => void;

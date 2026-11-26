@@ -9,7 +9,7 @@ import { openJournal } from "../journal";
 import { transferArtifact, handleArtifactRequest } from "../artifacts";
 import { openStaging } from "../staging";
 import type { ArtifactManifest } from "../contracts";
-import { captureLocalSession, installLocalSession } from "../relocate/transfer";
+import { captureLocalSession, installLocalSession, resolveVerifiedArtifact } from "../relocate/transfer";
 import type { RelocateAdapterOptions, RelocateId, RelocatePlan, RunningHome } from "../relocate/types";
 import { stopLocalSession, type LocalIO } from "../relocate/local";
 import type { SessionId } from "../relocate/types";
@@ -50,17 +50,40 @@ function transferFixture(linked=false) {
  target.db.prepare("INSERT INTO roam_repo_maps(repo_key,path,worktree_command_json) VALUES ('fixture-repo',?,NULL)").run(repository);
  return {options,destination,plan,home,git,base,sourceRoot,checkout,file};
 }
-async function receiveArtifactLocally(manifest:ArtifactManifest,source:RelocateAdapterOptions,destination:RelocateAdapterOptions) {
+async function receiveArtifactLocally(manifest:ArtifactManifest,source:RelocateAdapterOptions,destination:RelocateAdapterOptions,fault?:"lost"|"corrupt") {
+ let injected=false;
  const transport:Transport={...source.transport,exec:async(_peer,argv,options)=>{
    if(argv[0]!=="roam"||argv[1]!=="artifact"||argv[2]!=="receive")throw new Error("unexpected argv");
    const store=openStaging(join(destination.root,"roam","staging"),source.config.machineId,destination.limits);
-   try{return await handleArtifactRequest(JSON.parse(argv[3]),options.stdin,{store,journal:destination.journal,machineId:destination.config.machineId,limits:destination.limits});}finally{store.close();}
+   try{
+    const input=JSON.parse(argv[3]);let bytes=options.stdin;
+    const inject=!injected && input.action==="chunk" && bytes;
+    if(inject && fault==="corrupt"){bytes=Buffer.from(bytes!);bytes[0]^=1;injected=true;}
+    const reply=await handleArtifactRequest(input,bytes,{store,journal:destination.journal,machineId:destination.config.machineId,limits:destination.limits});
+    if(inject && fault==="lost"){injected=true;throw new Error("lost chunk acknowledgement");}
+    return reply;
+   }finally{store.close();}
  }};
  const peer={machineId:destination.config.machineId,alias:"peer",node:"node",pi:"pi",cli:"cli",core:"core",globalRoot:destination.root};
  const result=await transferArtifact(peer,manifest,{transport,journal:source.journal,root:join(source.root,"roam","staging"),limits:source.limits,operationId:`${manifest.id}-push`});
  if(result.code!==0)throw new Error(JSON.stringify(result));
 }
 describe("v0 real transfer",()=>{
+ it("chunk retries preserve verified bytes",async()=>{
+  const f=transferFixture(),captured=await captureLocalSession(f.plan,f.options,async()=>({kind:"free"}));
+  if(!captured.ok)throw new Error(JSON.stringify(captured));
+  for(const manifest of [captured.value.transcriptArtifact,captured.value.bundleArtifact]){
+   await receiveArtifactLocally(manifest,f.options,f.destination,"lost");
+   await receiveArtifactLocally(manifest,f.options,f.destination);
+   const bytes=readFileSync(await resolveVerifiedArtifact(manifest,hub,f.destination));
+   expect(bytes.length).toBe(manifest.byteLength);
+   expect(createHash("sha256").update(bytes).digest("hex")).toBe(manifest.sha256);
+  }
+  const bad=transferFixture(),result=await captureLocalSession(bad.plan,bad.options,async()=>({kind:"free"}));
+  if(!result.ok)throw new Error(JSON.stringify(result));
+  await expect(receiveArtifactLocally(result.value.transcriptArtifact,bad.options,bad.destination,"corrupt")).rejects.toThrow();
+  await expect(resolveVerifiedArtifact(result.value.transcriptArtifact,hub,bad.destination)).rejects.toThrow();
+ });
  it.each([false,true])("capture preserves staged unstaged and untracked work (linked=%s)",async(linked)=>{
   const f=transferFixture(linked),head=f.git(f.sourceRoot,"rev-parse","HEAD"),branch=f.git(f.sourceRoot,"symbolic-ref","HEAD"),index=f.git(f.sourceRoot,"write-tree"),body=readFileSync(f.file);
   const result=await captureLocalSession(f.plan,f.options,async()=>({kind:"free"}));
@@ -70,14 +93,16 @@ describe("v0 real transfer",()=>{
   expect(readFileSync(join(f.sourceRoot,"file.txt"),"utf8")).toBe("unstaged\n");expect(readFileSync(join(f.sourceRoot,"untracked.txt"),"utf8")).toBe("untracked\n");expect(readFileSync(f.file)).toEqual(body);
   expect(await captureLocalSession(f.plan,f.options,async()=>({kind:"free"}))).toEqual(result);
  });
- it("install rewrites cwd and appends one segment",async()=>{
-  const f=transferFixture(),captured=await captureLocalSession(f.plan,f.options,async()=>({kind:"free"}));if(!captured.ok)throw new Error(JSON.stringify(captured));
+ it.each([false,true])("install rewrites cwd and appends one segment (linked=%s)",async(linked)=>{
+  const f=transferFixture(linked),captured=await captureLocalSession(f.plan,f.options,async()=>({kind:"free"}));if(!captured.ok)throw new Error(JSON.stringify(captured));
   for(const manifest of [captured.value.transcriptArtifact,captured.value.bundleArtifact])await receiveArtifactLocally(manifest,f.options,f.destination);
   const installed=await installLocalSession(f.plan,captured.value,f.home,f.destination,undefined,async()=>({kind:"free"}));
   expect(installed).toMatchObject({ok:true});if(!installed.ok)throw new Error(JSON.stringify(installed));
   const bytes=readFileSync(f.plan.destinationPlacement.file),lines=bytes.toString().trimEnd().split("\n"),header=JSON.parse(lines[0]);
   expect(header.id).toBe(id);expect(header.cwd).toBe(join(f.checkout,"sub"));expect(lines[1]).toBe(readFileSync(f.file,"utf8").trimEnd().split("\n")[1]);
   expect(bytes.toString().match(/"spider-roam-segment"/g)).toHaveLength(1);expect(bytes.toString()).toContain('"epoch":3');
+  if(linked) expect(f.git(f.checkout,"symbolic-ref","HEAD")).toBe(captured.value.workspace.branch);
+  else expect(f.destination.journal.read(f.plan.moveId)).toEqual(expect.arrayContaining([expect.objectContaining({action:"workspace-branch-conflict"})]));
   expect(f.git(f.checkout,"rev-parse","HEAD")).toBe(captured.value.workspace.head);expect(f.git(f.checkout,"write-tree")).toBe(captured.value.workspace.indexTree);expect(readFileSync(join(f.checkout,"file.txt"),"utf8")).toBe("unstaged\n");expect(readFileSync(join(f.checkout,"untracked.txt"),"utf8")).toBe("untracked\n");
   expect(await installLocalSession(f.plan,captured.value,f.home,f.destination,undefined,async()=>({kind:"free"}))).toEqual(installed);expect(readFileSync(f.plan.destinationPlacement.file)).toEqual(bytes);
  });

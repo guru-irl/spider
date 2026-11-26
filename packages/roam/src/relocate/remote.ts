@@ -12,7 +12,7 @@ import { object, text } from "./journal";
 import { isMachineId } from "../machine-id";
 import type { V0RefusalCode, V0Result, RelocateAdapterOptions, RelocatePlan, SessionId, SessionPlacement, RunningHome, MovingHome } from "./types";
 
-export const dataKinds = new Set(["stores", "inventory", "enable-capture", "export", "release-export", "split", "assemble", "cursor", "receipt", "import", "recheck-store"]);
+export const dataKinds: ReadonlySet<string> = new Set(["stores", "inventory", "enable-capture", "export", "release-export", "split", "assemble", "cursor", "receipt", "import", "recheck-store"]);
 export function refusal<T = never>(code: V0RefusalCode, message: string, nextStep = "Retry spider roam relocate with the same session and target."): V0Result<T> {
   return {ok:false,refusal:{code,message,nextStep}};
 }

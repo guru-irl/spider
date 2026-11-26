@@ -48,7 +48,7 @@ it("successful SQL discovery distinguishes legacy rows from managed missing home
 });
 it("readiness activates the locked exact file at the home epoch", async () => {
   const placement: SessionPlacement = { sessionId: id, machineId: local, repoKey: "repo", workspaceId: "ws", repository: "/fixture", cwd: "/fixture", file: "/fixture/session.jsonl", stores: ["global", "repo:repo", "worktree:repo:ws"], historyMachine: local };
-  const machine: SessionMachinePorts = { locate: vi.fn(async () => ({ ok: true, value: placement })), activate: vi.fn(async () => ({ ok: true, value: undefined })), start: vi.fn(), confirm: vi.fn(), publishHome: vi.fn() };
+  const machine: SessionMachinePorts = { locate: vi.fn(async () => ({ ok: true as const, value: placement })), activate: vi.fn(async () => ({ ok: true as const, value: undefined })), start: vi.fn(), confirm: vi.fn(), publishHome: vi.fn() };
   await prepareRelocateAdmission(home, placement.file, machine);
   expect(machine.locate).toHaveBeenCalledWith(local, id); expect(machine.activate).toHaveBeenCalledWith(home, placement);
   vi.mocked(machine.activate).mockClear();

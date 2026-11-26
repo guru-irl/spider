@@ -9,7 +9,7 @@ const foreign = "box-b" as MachineId;
 const id = "session-a" as SessionId;
 const running = (epoch = 1): RunningHome => ({ sessionId: id, machineId: local, epoch, moveId: null, updatedAt: 1, state: "running", destination: null });
 const placement: SessionPlacement = { sessionId: id, machineId: local, repoKey: "repo", workspaceId: "ws", repository: "/repo", cwd: "/repo", file: "/session.jsonl", stores: [], historyMachine: local };
-const ok = { ok: true, value: undefined } as const;
+const ok = { ok: true as const, value: undefined } as const;
 function fixture() {
   let entries: readonly SupervisorEntry[] = [{ sessionId: id, home: running(), placement }];
   let owner: SessionOwner = { kind: "free" };
@@ -19,7 +19,7 @@ function fixture() {
     machineId: local, clock, entries: vi.fn(async () => entries), owner: vi.fn(async () => owner),
     stop: vi.fn(async (session) => { effects.push(`stop:${session}`); return ok; }),
     activate: vi.fn(async (home) => { effects.push(`activate:${home.epoch}`); return ok; }),
-    start: vi.fn(async (home) => { effects.push(`start:${home.epoch}`); return { ok: true, value: { terminal: "core:term" } }; }),
+    start: vi.fn(async (home) => { effects.push(`start:${home.epoch}`); return { ok: true as const, value: { terminal: "core:term" } }; }),
     report: vi.fn(),
   };
   return { ports, effects, setEntries: (value: readonly SupervisorEntry[]) => { entries = value; }, setOwner: (value: SessionOwner) => { owner = value; } };
@@ -66,7 +66,7 @@ describe("v0 home supervisor", () => {
   });
   it("ticks serialize and stop drains", async () => {
     vi.useFakeTimers(); const f = fixture(); let release!: () => void;
-    vi.mocked(f.ports.start).mockImplementationOnce(async () => { await new Promise<void>(r => { release = r; }); return { ok: true, value: { terminal: "term" } }; });
+    vi.mocked(f.ports.start).mockImplementationOnce(async () => { await new Promise<void>(r => { release = r; }); return { ok: true as const, value: { terminal: "term" } }; });
     const loop = createHomeSupervisor(f.ports); const first = loop.tick();
     await vi.waitFor(() => expect(f.ports.start).toHaveBeenCalledTimes(1));
     const second = loop.tick(); let drained = false; const stopping = loop.stop().then(() => { drained = true; });

@@ -13,7 +13,7 @@ const hub = "11111111-1111-4111-8111-111111111111", box = "22222222-2222-4222-82
 const id = "33333333-3333-4333-8333-333333333333" as SessionId;
 const fixtures: {close():void}[] = [];
 afterEach(()=>{ vi.restoreAllMocks(); vi.unstubAllEnvs(); for(const f of fixtures.splice(0)) f.close(); });
-export function runtimeFixture() {
+function runtimeFixture() {
  const db = createReplica("global", box);fixtures.push(db);
  const home: RunningHome = {sessionId:id,machineId:box,epoch:3,state:"running",destination:null,moveId:"v0-run" as RunningHome["moveId"],updatedAt:1};
  const placement: SessionPlacement = {sessionId:id,machineId:box,repoKey:"repo",workspaceId:"workspace",repository:"/mapped",cwd:"/mapped/sub",file:"/sessions/exact.jsonl",stores:["global"],historyMachine:hub};

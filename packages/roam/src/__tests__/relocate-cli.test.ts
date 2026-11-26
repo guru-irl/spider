@@ -24,8 +24,8 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const root of r
 function fixture(confirmation: string | null = null) {
   const out: string[] = [], err: string[] = [], prompts: string[] = [];
   const services: V0ControlServices = {
-    relocate: vi.fn(async () => ({ ok: true, value: { moveId: null, home, terminal: "core:term", disposition: "relocated", placement: { sessionId: home.sessionId, machineId: box, repoKey: "repo", workspaceId: "ws", repository: "/repo", cwd: "/repo", file: "/session.jsonl", stores: [], historyMachine: mac } } })),
-    setHome: vi.fn(async () => ({ ok: true, value: home })),
+    relocate: vi.fn(async () => ({ ok: true as const, value: { moveId: null, home, terminal: "core:term", disposition: "relocated" as const, placement: { sessionId: home.sessionId, machineId: box, repoKey: "repo", workspaceId: "ws", repository: "/repo", cwd: "/repo", file: "/session.jsonl", stores: [], historyMachine: mac } } })),
+    setHome: vi.fn(async () => ({ ok: true as const, value: home })),
   };
   const io = { out: (text: string) => out.push(text), err: (text: string) => err.push(text), confirmation: vi.fn(async (prompt: string) => { prompts.push(prompt); return confirmation; }) };
   return { out, err, prompts, services, io };
@@ -48,10 +48,10 @@ describe("v0 controls", () => {
     const socket = await serveV0Control(root, f.services);
     try {
       const client = requestV0Services(root);
-      expect(await client.relocate({ sessionId: home.sessionId, destinationMachine: box })).toMatchObject({ ok: true, value: { terminal: "core:term" } });
+      expect(await client.relocate({ sessionId: home.sessionId, destinationMachine: box })).toMatchObject({ ok: true as const, value: { terminal: "core:term" } });
       expect(f.services.relocate).toHaveBeenCalledWith({ sessionId: home.sessionId, destinationMachine: box });
       const confirmation = `reassign session-abc to ${box}; source will not run`;
-      expect(await client.setHome({ sessionId: home.sessionId, destinationMachine: box, force: true, confirmation })).toMatchObject({ ok: true, value: home });
+      expect(await client.setHome({ sessionId: home.sessionId, destinationMachine: box, force: true, confirmation })).toMatchObject({ ok: true as const, value: home });
       expect(f.services.setHome).toHaveBeenCalledWith({ sessionId: home.sessionId, destinationMachine: box, force: true, confirmation });
     } finally { await socket.close(); await socket.close(); }
   });
@@ -71,11 +71,11 @@ describe("v0 controls", () => {
     await lateClosed;
     const calls = vi.mocked(f.services.relocate).mock.calls.length;
     expect(stopped).toBe(false); release();
-    expect(await first).toMatchObject({ ok: true }); await stopping;
+    expect(await first).toMatchObject({ ok: true as const }); await stopping;
     expect(calls).toBe(1);
   });
   it("private v0 agent parses bounded UTF-8 stdin before forwarding", async () => {
-    const f = fixture(); const agent = vi.fn(async (_input: unknown, _root: string) => ({ ok: true, value: { version: 1 } }));
+    const f = fixture(); const agent = vi.fn(async (_input: unknown, _root: string) => ({ ok: true as const, value: { version: 1 } }));
     expect(await main(["--global-root", "/fixture/root", "roam", "agent", "--v0"], f.io, { stdin: Buffer.from('{"version":1,"kind":"version"}'), v0: { agent } })).toBe(0);
     expect(agent).toHaveBeenCalledWith({ version: 1, kind: "version" }, "/fixture/root");
     const chunkRequest = { version: 1, kind: "chunk", data: Buffer.alloc(DEFAULT_LIMITS.chunkBytes, 7).toString("base64") };
@@ -138,7 +138,7 @@ describe("v0 controls", () => {
     writeFileSync(join(root, "roam", "config.json"), JSON.stringify(config), { mode: 0o600 }); writeFileSync(join(root, "roam", "machine.json"), JSON.stringify({ machineId: mac }), { mode: 0o600 }); vi.stubEnv("SPIDER_GLOBAL_ROOT", root);
     const forbidden = [vi.spyOn(legacySocket, "requestHubControl"), vi.spyOn(productionHub, "startProductionHub"), vi.spyOn(productionSupervisor, "startProductionSupervisor"), vi.spyOn(controls, "enableRoaming"), vi.spyOn(diagnostics, "runLocalDoctor")];
     expect(await main(["roam", "relocate", "session-abc", "box-a", "--json"], f.io, { v0: { services: f.services, catalog, confirmation: f.io.confirmation } })).toBe(0);
-    expect(JSON.parse(f.out.join(""))).toMatchObject({ ok: true, value: { home: { machineId: box }, terminal: "core:term" } });
+    expect(JSON.parse(f.out.join(""))).toMatchObject({ ok: true as const, value: { home: { machineId: box }, terminal: "core:term" } });
     for (const spy of forbidden) expect(spy).not.toHaveBeenCalled();
     vi.mocked(f.services.relocate).mockResolvedValueOnce({ ok: false, refusal: { code: "start-pending", message: "The session has not started.", nextStep: "Retry relocation on the Mac." }, step: "confirm", home, moveId: null });
     f.out.length = 0; expect(await main(["roam", "relocate", "session-abc", "box-a", "--json"], f.io, { v0: { services: f.services, catalog } })).toBe(1);

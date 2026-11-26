@@ -61,7 +61,7 @@ async function releasedControlsFixture() {
   const f = await fixture(), file = join(f.remote, "session.jsonl"), stateRoot = join(f.remote, "herdr");
   const intent = { sessionId: "session-1", epoch: 1, desired: "stopped" as const, suspended: null, file, cwd: f.remote, moveId: null };
   f.db.prepare("UPDATE roam_meta SET store_key='global' WHERE id=1").run();
-  f.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run("session-1", BOX);
+  f.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES (?,?,1,NULL,1)").run("session-1", BOX);
   writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: "session-1", cwd: f.remote }) + "\n", { mode: 0o600 });
   const authority = createRunningIntentAuthority(f.db), intents = createIntentStore(f.remote);
   await authority.set(intent, "start-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
@@ -205,7 +205,7 @@ it("doctor and enable clear the missing started terminal block after stop settle
   const intent = { sessionId: "session-1", epoch: 1, desired: "running" as const, suspended: null, file, cwd: f.remote, moveId: null };
   f.db.prepare("UPDATE roam_meta SET store_key='global' WHERE id=1").run();
   writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: "session-1", cwd: f.remote }) + "\n", { mode: 0o600 });
-  f.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run("session-1", BOX);
+  f.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES (?,?,1,NULL,1)").run("session-1", BOX);
   const worktree = createReplica("worktree", BOX); replicas.push(worktree);
   worktree.db.prepare("UPDATE roam_meta SET capture_enabled=1 WHERE id=1").run();
   worktree.db.prepare("INSERT INTO sessions(id,started_at,origin_machine) VALUES (?,1,?)").run("session-1", BOX);

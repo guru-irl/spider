@@ -54,7 +54,7 @@ async function participantFixture() {
   enrollFixtureCore(root, "core-1");
   writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: "session-1", cwd: worktree.root }) + "\n", { mode: 0o600 });
   global.db.prepare("UPDATE roam_meta SET capture_enabled=1 WHERE id=1").run();
-  global.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run("session-1", BOX);
+  global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES (?,?,1,NULL,1)").run("session-1", BOX);
   worktree.db.prepare("INSERT INTO sessions(id,started_at,origin_machine) VALUES (?,1,?)").run("session-1", BOX);
   worktree.db.prepare("INSERT INTO roam_sessions(session_id,epoch,state) VALUES (?,1,'active')").run("session-1");
   worktree.db.prepare("UPDATE roam_meta SET capture_enabled=1 WHERE id=1").run();
@@ -132,7 +132,7 @@ async function productionLaunchFixture(boundary?: "crash" | "stale" | "lost-invo
     pi: "/home/fixture/pi", cli: "/home/fixture/spider", core: "/home/fixture/hc", globalRoot: "/home/fixture/global" }] };
   writeFileSync(join(hub.root, "roam", "machine.json"), JSON.stringify({ machineId: HUB }), { mode: 0o600 });
   writeFileSync(join(hub.root, "roam", "config.json"), JSON.stringify(hubConfig), { mode: 0o600 });
-  hub.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run("session-1", BOX);
+  hub.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES (?,?,1,NULL,1)").run("session-1", BOX);
   await hub.db.raw.backup(join(hub.root, "spider.db"));
   const release = join(hub.root, "release.js");
   writeFileSync(release, "// SPIDER_BUILD_ID=01234567@2026-01-01T00:00:00.000Z v0.1.0\n", { mode: 0o600 });

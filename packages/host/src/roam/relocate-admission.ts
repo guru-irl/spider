@@ -1,7 +1,7 @@
 import type { Db } from "@spider/db-core";
 import type { HomeAdmission, HomeStore, RunningHome, SessionId, SessionMachinePorts } from "@spider/roam/relocate/types";
 import { resolve, join } from "node:path";
-import { openDbReadOnlyAt } from "@spider/db-core";
+import { openDbReadOnlyAt, openGlobalReadOnly, paths } from "@spider/db-core";
 import { readLocal } from "@spider/db-core/roam/local-state";
 import { createHomeStore } from "@spider/roam/relocate/home";
 import { readLocalIdentity } from "@spider/roam/runtime";
@@ -9,7 +9,7 @@ import { readLocalIdentity } from "@spider/roam/runtime";
 export async function loadRelocateAdmission(sessionId: SessionId, root: string): Promise<HomeAdmission> {
   let db: Db | undefined;
   try {
-    db=openDbReadOnlyAt(join(root,"spider.db"));
+    db=root===paths.globalRoot ? openGlobalReadOnly() : openDbReadOnlyAt(join(root,"spider.db"));
     if(!db)return {kind:"unavailable"};
     const cursors=db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='roam_cursors'").get();
     const managed=!!cursors && readLocal(db,"relocate-managed",sessionId)!==undefined;

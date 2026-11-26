@@ -14,6 +14,13 @@ import * as productionHub from "../production-hub";
 import * as productionSupervisor from "../production-supervisor";
 import * as controls from "../production-controls";
 import * as diagnostics from "../local-diagnostics";
+import { createReplica } from "@spider/db-core/testutil";
+import { writeLocal } from "@spider/db-core/roam/local-state";
+import { createV0Runtime, startV0Hub, startV0Supervisor } from "../relocate/runtime";
+import { handleRelocateAgent } from "../relocate/remote";
+import * as hcApi from "@spider/herdr/client/hc";
+import type { CoreIdentity } from "@spider/herdr/contracts";
+import type { Transport } from "../contracts";
 
 const mac = "11111111-1111-4111-8111-111111111111", box = "22222222-2222-4222-8222-222222222222";
 const config: RoamConfig = { enabled: true, role: "hub", machineId: mac, hubMachineId: mac, peers: [{ machineId: box, alias: "box-a", node: "/node", pi: "/pi", cli: "/spider", core: "/core", globalRoot: "/root" }], discoveryRoots: [], coreUnit: "core", syncMs: 10_000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
@@ -31,6 +38,49 @@ function fixture(confirmation: string | null = null) {
   return { out, err, prompts, services, io };
 }
 describe("v0 controls", () => {
+  it("production v0 runtime composes only approved ports", async () => {
+    const source=createReplica("global",mac),target=createReplica("global",box);
+    const sourceConfig={...config,peers:[{...config.peers[0],globalRoot:target.root}]};
+    const targetConfig:RoamConfig={...config,role:"box",machineId:box,peers:[{...config.peers[0],machineId:mac,globalRoot:source.root}]};
+    const calls:string[][]=[];
+    let remote:ReturnType<typeof createV0Runtime>;
+    const raw:Transport={resolve:async p=>p,bootstrapProbe:async()=>{throw new Error("unused provisioning");},run:async()=>{throw new Error("hub-side remote launch forbidden");},read:async()=>{throw new Error("unused read");},write:async()=>{throw new Error("unused write");},exec:async(_p,argv,options)=>{
+      calls.push([...argv]);expect(argv).toEqual(["roam","agent","--v0"]);
+      return Buffer.from(JSON.stringify(await handleRelocateAgent(JSON.parse(options.stdin!.toString()),remote.options)));
+    }};
+    const forbidden=[vi.spyOn(productionHub,"startProductionHub"),vi.spyOn(productionSupervisor,"startProductionSupervisor"),vi.spyOn(controls,"enableRoaming"),vi.spyOn(diagnostics,"runLocalDoctor")];
+    const local=createV0Runtime(source.root,{openCore:()=>({root:source.root,config:sourceConfig,db:source.db,close(){}}),transport:raw});
+    remote=createV0Runtime(target.root,{openCore:()=>({root:target.root,config:targetConfig,db:target.db,close(){}}),transport:raw});
+    try {
+      const sid="production-v0" as SessionId,home=await local.homes.initialize(sid,mac);
+      const file=join(source.root,"session.jsonl"),pi=join(source.root,"pi");
+      writeFileSync(file,JSON.stringify({type:"session",version:3,id:sid,cwd:source.root,timestamp:"2020-01-01T00:00:00Z"})+"\n"+JSON.stringify({type:"message",id:"entry",parentId:null,timestamp:"2020-01-01T00:00:00Z",message:{role:"user",content:[{type:"text",text:"synthetic"}]}})+"\n");
+      writeFileSync(pi,"#!/bin/sh\n",{mode:0o700});vi.stubEnv("SPIDER_ROAM_PI",pi);
+      writeLocal(source.db,"relocate-managed",sid,{sessionId:sid,machineId:mac,repoKey:"repo",workspaceId:"ws",repository:source.root,cwd:source.root,file,stores:["global"],historyMachine:mac});
+      vi.spyOn(hcApi,"observeCoreIdentity").mockResolvedValue({coreId:"local",sessionNamespace:"local",socket:"/local.sock"} as CoreIdentity);
+      const launches:string[][]=[];
+      vi.spyOn(hcApi,"invokeCli").mockImplementation(async(_bin,argv)=>{if(argv[0]==="ls")return {terminals:[]};launches.push([...argv]);return {address:"local:t"};});
+      // Runtime captures executable selection at creation, before the command.
+      const active=createV0Runtime(source.root,{openCore:()=>({root:source.root,config:sourceConfig,db:source.db,close(){}}),transport:raw});
+      try {
+        expect(await active.services.relocate({sessionId:sid,destinationMachine:mac})).toMatchObject({ok:false,step:"confirm",refusal:{code:"start-pending"}});
+        expect(launches).toHaveLength(1);expect(launches[0].slice(-3)).toEqual([pi,"--session",file]);
+        expect(await active.homes.read(sid)).toEqual(home);
+        expect(await active.services.setHome({sessionId:sid,destinationMachine:mac,force:true,confirmation:`reassign ${sid} to ${mac}; source will not run`})).toMatchObject({ok:true,value:{epoch:2,machineId:mac,state:"running"}});
+        expect((await active.sync.sync(box)).every(result=>result.code===0)).toBe(true);
+        expect(await remote.homes.read(sid)).toEqual(await active.homes.read(sid));expect(calls.length).toBeGreaterThan(0);
+      } finally {await active.close();}
+      for(const spy of forbidden)expect(spy).not.toHaveBeenCalled();
+    } finally {await local.close();await remote.close();source.close();target.close();}
+  });
+  it("v0 hub and supervisor entries drain on shutdown",async()=>{
+    const source=createReplica("global",mac),target=createReplica("global",box);
+    const idle={now:()=>1,later:()=>()=>{}};
+    const hub=await startV0Hub(source.root,{openCore:()=>({root:source.root,config:{...config,enabled:false,peers:[]},db:source.db,close:vi.fn()}),clock:idle});
+    const supervisor=await startV0Supervisor(target.root,{openCore:()=>({root:target.root,config:{...config,role:"box",machineId:box,enabled:false,peers:[]},db:target.db,close:vi.fn()}),clock:idle});
+    try {expect(await requestV0Services(source.root).setHome({sessionId:"missing" as SessionId,destinationMachine:mac,force:true,confirmation:"bad"})).toMatchObject({ok:false,refusal:{code:"confirmation-required"}});}
+    finally {await hub.stop();await hub.stop();await supervisor.stop();await supervisor.stop();source.close();target.close();}
+  });
   it("v0 service signal handling drains and removes its listeners", async () => {
     let entered!: () => void, release!: () => void;
     const starting = new Promise<void>(done => { entered = done; });

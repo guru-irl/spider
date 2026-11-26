@@ -1,4 +1,8 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mapWorkspace } from "@spider/db-core/roam/repo-map";
+import { replicaPath } from "@spider/db-core/roam/catalog";
+import { createSync } from "../sync";
+import { captureLocalSession } from "../relocate/transfer";
 import { execFileSync } from "node:child_process";
 import { afterEach } from "vitest";
 import { createReplica } from "@spider/db-core/testutil";
@@ -71,6 +75,40 @@ describe("relocate adapters", () => {
     f.global.db.prepare("UPDATE roam_repo_maps SET worktree_command_json='[\"tool\"]'").run();expect(await inspectLocalDestination(source.value.placement,"sub",f.options)).toMatchObject({ok:false,refusal:{code:"unsupported-workspace"}});
     f.global.db.prepare("UPDATE roam_repo_maps SET worktree_command_json=NULL").run();await f.options.git.run(f.root,["git","config","core.sparseCheckout","true"]);expect(await inspectLocalDestination(source.value.placement,"sub",f.options)).toMatchObject({ok:false,refusal:{code:"unsupported-workspace"}});
     await f.options.git.run(f.root,["git","config","core.sparseCheckout","false"]);f.global.db.prepare("DELETE FROM roam_repo_maps").run();expect(await inspectLocalDestination(source.value.placement,"sub",f.options)).toMatchObject({ok:false,refusal:{code:"repo-unmapped"}});
+  });
+  it("incoming worktree rows arrive before checkout install",async()=>{
+    const f=adapterFixture(),global=createReplica("global",box),repo=createReplica("repo",box);fixtures.push(global,repo);
+    const repository=join(global.root,"repo");execFileSync("git",["clone",f.root,repository],{stdio:"pipe"});
+    global.db.prepare("INSERT INTO roam_repo_maps(repo_key,path,worktree_command_json) VALUES ('fixture-repo',?,NULL)").run(repository);writeLocal(global.db,"mapping-redirect",repo.storeKey,repo.db.raw.name);
+    const peer:Peer={machineId:box,alias:"peer",node:"node",pi:"pi",cli:"cli",core:"core",globalRoot:global.root};f.options.config={...f.options.config,peers:[peer]};
+    const localSource=await inspectLocalSource(id,f.options);if(!localSource.ok)throw new Error(JSON.stringify(localSource));
+    const destination:RelocateAdapterOptions={...f.options,root:global.root,globalDb:global.db,config:{...f.options.config,role:"box",machineId:box,peers:[{...peer,machineId:hub,globalRoot:f.options.root}]},journal:openJournal(join(global.root,"journal.db"))};
+    const localDestination=await inspectLocalDestination(localSource.value.placement,"sub",destination);if(!localDestination.ok)throw new Error(JSON.stringify(localDestination));
+    const plan={moveId:"v0-incoming" as RelocateId,source:checkpoint().plan.source,sourcePlacement:localSource.value.placement,destinationPlacement:localDestination.value.placement,destinationPrerequisites:[localDestination.value.head],startedAt:1};
+    const moving={...plan.source,state:"moving" as const,epoch:2,moveId:plan.moveId,destination:box};f.options.homes.read=destination.homes.read=async()=>moving;f.options.homes.list=destination.homes.list=async()=>[moving];
+    await seedLocalPlacement(localSource.value.placement,1,f.options);f.global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES (?,?,2,?,1)").run(id,hub,plan.moveId);
+    f.worktree.db.prepare("UPDATE roam_sessions SET state='frozen'").run();
+    const raw:Transport={...f.options.transport,exec:async(_peer,argv,options)=>{
+      if(argv[1]==="agent")return Buffer.from(JSON.stringify(await handleRelocateAgent(JSON.parse(options.stdin!.toString()),destination)));
+      if(argv[1]==="artifact"){const result=await handleRelocateAgent({version:1,kind:"artifact",sourceMachine:hub,input:JSON.parse(argv[3]),bytes:options.stdin?.toString("base64")??null},destination);if(!result.ok)throw new Error(JSON.stringify(result));return Buffer.from(JSON.stringify((result.value as {wire:unknown}).wire));}
+      throw new Error("unexpected private command");
+    },read:async(_peer,file)=>readFileSync(file)};
+    f.options.transport=raw;
+    const stores=createStorePort(f.options.config,f.global.db);fixtures.push(stores);
+    const sync=createSync({config:f.options.config,globalDb:f.global.db,transport:createV0SyncTransport(raw),journal:f.options.journal,clock:f.options.clock,stores});f.options.sync=sync;
+    const adapters=createRelocateAdapters(f.options),captured=await captureLocalSession(plan,f.options,async()=>({kind:"free"}));if(!captured.ok)throw new Error(JSON.stringify(captured));
+    const sourceBytes=readFileSync(join(f.root,"file.txt")),targetBytes=readFileSync(join(repository,"file.txt"));
+    expect(await adapters.ports.pushDestination(plan,captured.value)).toEqual({ok:true,value:undefined});
+    const key="worktree:fixture-repo:fixture-workspace" as const;
+    expect(existsSync(replicaPath(global.db,key))).toBe(true);expect(existsSync(join(localDestination.value.placement.cwd,".."))).toBe(false);
+    const incoming=createStorePort(destination.config,global.db,{unmappedWorktree:key});
+    try{expect(incoming.openStore(key).db.prepare("SELECT id FROM sessions WHERE id=?").all(id)).toEqual([{id}]);}finally{incoming.close();}
+    expect(await handleRelocateAgent({version:1,kind:"data",operation:{id:"unrelated",machineId:box,expectedEpoch:null,kind:"inventory",args:{storeKey:"worktree:unrelated:other"}}},destination)).toMatchObject({ok:false,refusal:{code:"repo-unmapped"}});
+    expect(readFileSync(join(f.root,"file.txt"))).toEqual(sourceBytes);expect(readFileSync(join(repository,"file.txt"))).toEqual(targetBytes);
+    const checkout=join(localDestination.value.placement.cwd,"..");execFileSync("git",["-C",repository,"worktree","add","--detach",checkout],{stdio:"pipe"});
+    await mapWorkspace(global.db,{repoKey:"fixture-repo",workspaceId:"fixture-workspace",path:checkout});
+    const attached=createStorePort(destination.config,global.db);try{expect(attached.openStore(key).db.prepare("SELECT id FROM sessions WHERE id=?").all(id)).toEqual([{id}]);}finally{attached.close();}
+    await adapters.dispose();sync.stop();await sync.drain();
   });
   it("remote prerequisites are advertised only when source objects exist",async()=>{
     const f=adapterFixture(),head=(await f.options.git.run(f.root,["git","rev-parse","HEAD"])).toString().trim();

@@ -192,4 +192,23 @@ describe("copy button reload", () => {
     expect(base).toHaveBeenCalledTimes(2);
     expect(other).toHaveBeenCalledTimes(2);
   });
+
+  it("leaves messages untouched when an older shim omits Spacer and ToolExecutionComponent", async () => {
+    const { registerCopyButtons } = await import("./index.js");
+    const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
+    const pi = { on: (name: string, handler: (event: unknown, ctx: unknown) => void) => handlers.set(name, handler) };
+    const legacyHost = { AssistantMessageComponent, Markdown } as unknown as typeof host;
+    registerCopyButtons(pi as never, legacyHost, () => ({}), async () => {});
+    const expected = new Markdown("**Bold**", 0, 0, theme).render(90);
+    const rendered = (assistant: AssistantMessageComponent) => {
+      const children = (assistant as unknown as { contentContainer: { children: Component[] } }).contentContainer.children;
+      return children.find((child): child is Markdown => child instanceof Markdown)?.render(90);
+    };
+    expect(rendered(new AssistantMessageComponent(message, false, theme, undefined, 0))).toEqual(expected);
+    handlers.get("session_start")?.({}, { mode: "tui", hasUI: true, cwd: "/project", ui: {
+      setWidget: (_key: string, make: (tui: unknown) => unknown) => make({ mode: "fullscreen", requestRender: () => {} }),
+      notify: vi.fn(),
+    } });
+    expect(rendered(new AssistantMessageComponent(message, false, theme, undefined, 0))).toEqual(expected);
+  });
 });

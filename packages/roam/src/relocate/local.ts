@@ -51,7 +51,8 @@ export async function probeLocalProcess(pid: number): ReturnType<LocalIO["probe"
 /** HC selection is local. No inherited terminal, remote target, or lease survives. */
 export function localLaunchEnvironment(env: Readonly<NodeJS.ProcessEnv> = process.env): NodeJS.ProcessEnv {
   const clean = safeLaunchEnvironment(env);
-  for (const key of Object.keys(clean)) if (key.startsWith("HC_")) delete clean[key];
+  for (const key of Object.keys(clean)) if (/^(HC_|PI_|SPIDER_)/.test(key) || key === "NODE_OPTIONS") delete clean[key];
+  clean.PI_SUBAGENT_CHILD = "0";
   clean.HC_SESSION = "default";
   clean.HC_SOCKET = selectedSocket(clean);
   clean.PI_CODING_AGENT_DIR = env.PI_CODING_AGENT_DIR ?? join(homedir(),".pi","agent");
@@ -62,7 +63,7 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
   const lockRoot = join(options.root,"herdr");
   const env = {...localLaunchEnvironment(),SPIDER_GLOBAL_ROOT:options.root};
   const binary = process.env.SPIDER_ROAM_HC ?? "hc";
-  const pi = resolveParticipantPi(env);
+  const pi = resolveParticipantPi(process.env);
   const hc = createLocalExactHc({
     coreId: async signal => (await observeCoreIdentity(binary,env,{signal})).coreId,
     invoke:(argv,signal)=>invokeCli(binary,argv,env,options.limits.replyBytes,undefined,{signal}),

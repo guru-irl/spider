@@ -8,7 +8,7 @@ import { createReplica } from "@spider/db-core/testutil";
 import type { RelocateAdapterOptions, RunningHome, SessionId, SessionPlacement } from "../relocate/types";
 import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import { openJournal } from "../journal";
-import { createLocalRuntime, createLocalIO, type LocalIO } from "../relocate/local";
+import { createLocalRuntime, createLocalIO, localLaunchEnvironment, type LocalIO } from "../relocate/local";
 const hub = "11111111-1111-4111-8111-111111111111", box = "22222222-2222-4222-8222-222222222222";
 const id = "33333333-3333-4333-8333-333333333333" as SessionId;
 const fixtures: {close():void}[] = [];
@@ -31,6 +31,14 @@ function runtimeFixture() {
  return {options,io,home,placement,launches,signalled,setHome:(v:typeof current)=>current=v,setLock:(v:typeof lock)=>lock=v,setProbe:(v:typeof probe)=>probe=v,setTerminals:(v:typeof terminals)=>terminals=v};
 }
 describe("v0 local runtime",()=>{
+ it("resumed pi does not inherit worker or offline execution context",()=>{
+  const env=localLaunchEnvironment({PATH:"/local/bin",PI_SUBAGENT_CHILD:"1",PI_SPIDER_SESSION:"old",PI_OFFLINE:"1",SPIDER_GLOBAL_ROOT:"/old",SPIDER_SUBAGENT_ID:"old",NODE_OPTIONS:"--inspect",HC_TERMINAL_ID:"remote",AUTH_TOKEN:"local-auth"});
+  expect(env.PI_SUBAGENT_CHILD).toBe("0");
+  expect(env.PI_SPIDER_SESSION).toBeUndefined();expect(env.PI_OFFLINE).toBeUndefined();
+  expect(env.SPIDER_SUBAGENT_ID).toBeUndefined();expect(env.SPIDER_GLOBAL_ROOT).toBeUndefined();
+  expect(env.NODE_OPTIONS).toBeUndefined();expect(env.HC_TERMINAL_ID).toBeUndefined();
+  expect(env.AUTH_TOKEN).toBe("local-auth");expect(env.PI_CODING_AGENT_DIR).toBeTruthy();
+ });
  it("detached exact-file launch uses the destination environment",async()=>{
   const f=runtimeFixture(),pi=join(f.options.root,"pi");writeFileSync(pi,"#!/bin/sh\n",{mode:0o700});
   vi.stubEnv("SPIDER_ROAM_PI",pi);vi.stubEnv("HC_TERMINAL_ID","inherited");vi.stubEnv("HC_SESSION","foreign");vi.stubEnv("HC_SOCKET","/foreign.sock");vi.stubEnv("SPIDER_HERDR_LEASE_TOKEN","fake-lease");vi.stubEnv("SPIDER_HERDR_HANDOFF_FILE","/foreign-handoff");vi.stubEnv("SPIDER_GLOBAL_ROOT","/foreign-root");vi.stubEnv("AUTH_TOKEN","synthetic-secret");

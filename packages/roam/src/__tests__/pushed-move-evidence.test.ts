@@ -16,7 +16,7 @@ it("pushed rollback proof survives reopen and binds live and broker lookups to t
   const config: RoamConfig = { enabled: true, role: "box", machineId: BOX, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture", syncMs: 120000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
   const journal = openFreezeJournal(join(f.root, "roam", "journal.db"));
   const source = { sessionId: "s-1", machineId: BOX, epoch: 1, moveId: null, updatedAt: 1 }, restored = { ...source, epoch: 3, moveId: rollbackMoveId("move-a"), updatedAt: 2 };
-  f.db.prepare("INSERT INTO session_homes VALUES(?,?,?,?,?)").run(restored.sessionId, BOX, restored.epoch, restored.moveId, restored.updatedAt);
+  f.db.prepare("INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES(?,?,?,?,?)").run(restored.sessionId, BOX, restored.epoch, restored.moveId, restored.updatedAt);
   const operation: Operation = { id: "readmit-a", kind: "move-readmit", machineId: BOX, expectedEpoch: 3, args: { sourceMachine: HUB, sessionId: "s-1", moveId: "move-a", source, restoredHome: restored } };
   const proof = { currentHome: restored, rollbackReceipt: restored, check: { source } };
   const feeds = createPushedMoveEvidencePorts(f.db, config);

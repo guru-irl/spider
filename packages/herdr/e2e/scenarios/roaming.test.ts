@@ -267,7 +267,7 @@ async function mirrorAndRetire(suite: Suite): Promise<void> {
       globalRoot: root, shellRc: join(suite.root, 'shellrc'), spaces: [], machines: [] }), { mode: 0o600 });
     const db = openDb(join(root, 'spider.db'));
     try {
-      if (root === hub) db.prepare('INSERT INTO session_homes VALUES (?,?,1,NULL,1)').run(sessionId, BOX);
+      if (root === hub) db.prepare('INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES (?,?,1,NULL,1)').run(sessionId, BOX);
       if (root === box) recordLocation(db, { sessionId, file, cwd, stores: ['global'], home: { sessionId, machineId: BOX, epoch: 1, moveId: null, updatedAt: 1 } });
     } finally { db.close(); }
   }

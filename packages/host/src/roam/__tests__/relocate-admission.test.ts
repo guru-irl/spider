@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { openDb, migrate } from "@spider/db-core";
+import { openDb, migrate, paths, setGlobalDbPathForTests } from "@spider/db-core";
 import { scratchDbPath } from "@spider/db-core/testutil";
 import type { HomeStore } from "@spider/roam/relocate/types";
 import { readRelocateAdmission, prepareRelocateAdmission, loadRelocateAdmission } from "../relocate-admission";
@@ -7,7 +7,7 @@ import { createReplica } from "@spider/db-core/testutil";
 import { writeLocal } from "@spider/db-core/roam/local-state";
 import { DEFAULT_LIMITS, disabledIntercom } from "@spider/roam/contracts";
 import { createHomeStore } from "@spider/roam/relocate/home";
-import { writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { writeFileSync, mkdirSync, unlinkSync, existsSync } from "node:fs";
 import * as admissionLookup from "../relocate-admission";
 import { join } from "node:path";
 import type { SessionMachinePorts, SessionPlacement } from "@spider/roam/relocate/types";
@@ -36,6 +36,33 @@ function fixture(initial: HomeAdmission) {
   async function emit(name: string, event = {}) { let result; for (const fn of host.hooks.get(name) ?? []) result = await fn(event, host.ctx); return result; }
   return { gate, ports, release, close, emit, host, setHome(value: HomeAdmission) { current = value; } };
 }
+it("a missing global DB admits an unmanaged session without creating the DB", async () => {
+  const f = createReplica("global", local);
+  const dbPath = join(f.root, "spider.db");
+  try {
+    expect(existsSync(dbPath)).toBe(false);
+    const admission = await loadRelocateAdmission(id, f.root);
+    expect(admission).toEqual({ kind: "unmanaged" });
+    const session = fixture(admission);
+    await session.emit("session_start");
+    expect(session.gate.inspect().kind).toBe("ordinary");
+    setGlobalDbPathForTests(dbPath);
+    expect(await loadRelocateAdmission(id, paths.globalRoot)).toEqual({ kind: "unmanaged" });
+    expect(existsSync(dbPath)).toBe(false);
+  } finally { setGlobalDbPathForTests(null); f.close(); }
+});
+it.each(["corrupt", "directory"])("an existing %s global DB fails closed", async kind => {
+  const f = createReplica("global", local);
+  const dbPath = join(f.root, "spider.db");
+  try {
+    if (kind === "corrupt") writeFileSync(dbPath, "not a SQLite database");
+    else mkdirSync(dbPath);
+    expect(existsSync(dbPath)).toBe(true);
+    expect(await loadRelocateAdmission(id, f.root)).toEqual({ kind: "unavailable" });
+    setGlobalDbPathForTests(dbPath);
+    expect(await loadRelocateAdmission(id, paths.globalRoot)).toEqual({ kind: "unavailable" });
+  } finally { setGlobalDbPathForTests(null); f.close(); }
+});
 it("production lookup reads v0 homes without legacy admission",async()=>{
   const f=createReplica("global",local),db=openDb(join(f.root,"spider.db"));
   migrate(db,"global",{machineId:local,globalRoot:f.root});
@@ -53,7 +80,10 @@ it("production lookup reads v0 homes without legacy admission",async()=>{
     expect(await loadRelocateAdmission(id,f.root)).toEqual({kind:"managed",home:running});
     writeLocal(db,"relocate-managed",id,{synthetic:true});db.prepare("DELETE FROM session_homes WHERE session_id=?").run(id);
     expect(await loadRelocateAdmission(id,f.root)).toEqual({kind:"managed",home:null});
-    expect(await loadRelocateAdmission(id,join(f.root,"missing"))).toEqual({kind:"unavailable"});
+    const unreadableRoot = join(f.root, "unreadable");
+    mkdirSync(unreadableRoot);
+    writeFileSync(join(unreadableRoot, "spider.db"), "not a SQLite database");
+    expect(await loadRelocateAdmission(id,unreadableRoot)).toEqual({kind:"unavailable"});
   }finally{db.close();f.close();}
 });
 it("production admission ports use the v0 lookup seam",async()=>{

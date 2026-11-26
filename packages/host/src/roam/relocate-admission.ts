@@ -10,7 +10,7 @@ export async function loadRelocateAdmission(sessionId: SessionId, root: string):
   let db: Db | undefined;
   try {
     db=root===paths.globalRoot ? openGlobalReadOnly() : openDbReadOnlyAt(join(root,"spider.db"));
-    if(!db)return {kind:"unavailable"};
+    if(!db)return {kind:"unmanaged"};
     const cursors=db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='roam_cursors'").get();
     const managed=!!cursors && readLocal(db,"relocate-managed",sessionId)!==undefined;
     const table=db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_homes'").get();

@@ -231,7 +231,7 @@ test('one readiness through the hub and move paths has exactly one presentation 
   let hub: Awaited<ReturnType<typeof runHub>> | undefined;
   try {
     await f.operations().prepareHandoff(f.source.sessionId!, f.source);
-    global.db.prepare('INSERT INTO session_homes VALUES(?,?,?,?,?)').run('session-1', boxId, 2, 'move-a', 1);
+    global.db.prepare('INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES(?,?,?,?,?)').run('session-1', boxId, 2, 'move-a', 1);
     const peer = { machineId: boxId, alias: 'box-1.invalid', core: 'core-remote', node: '/bin/node', pi: '/bin/pi', cli: '/bin/spider', globalRoot: '/example' };
     const placement = createRoamPlacement({ stateRoot: f.stateRoot, hc: f.hc, app: null, hcBinary: '/unused/hc', registry: { list: async () => [] } as never,
       presentation: { resolveTarget: async () => f.remote, presentReadyTarget: target => f.operations().presentReadyTarget(target) } });
@@ -559,7 +559,7 @@ test('box-to-box cleanup without a Mac view retires the source once after curren
     journal.begin({ id: taskId, kind: 'move-presentation', machineId: hubId, expectedEpoch: 3, args: { moveId: operation.id, sessionId: 'session-1' } });
     const proof = { source, stopped: { kind: 'absent' }, destination: { home, owner: { kind: 'live', identity: { bootId: 'boot', pid: 42, startTime: 'start' } }, readiness: { origin: 'hub-operation', opId: operation.id, sessionId: 'session-1', epoch: 3, file: '/example/session.jsonl', cwd: '/example', core: 'core-destination', terminal: 't4' }, retired: false, launchFailure: null } };
     journal.record(taskId, 'source-view-request', JSON.parse(JSON.stringify({ operation, check: { source, destinationMachine: destinationId }, proof })));
-    global.db.prepare('INSERT INTO session_homes VALUES(?,?,?,?,?)').run('session-1', destinationId, 4, 'newer-move', 1);
+    global.db.prepare('INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES(?,?,?,?,?)').run('session-1', destinationId, 4, 'newer-move', 1);
     let cleanupCalls = 0, presentationCalls = 0;
     const bindings: MoveAdapterBindings = { globalDb: global.db, participant: { config } as never,
       handoff: { prepareHandoff: async () => ({ capture: 'durable', presentation: await f.operations().prepareHandoff(f.remote.sessionId!, f.remote) }), readyTarget: async () => locator,

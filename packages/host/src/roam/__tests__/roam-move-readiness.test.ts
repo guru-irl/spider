@@ -31,7 +31,7 @@ it("proved live readmit publishes readiness for an originally untracked held loc
 async function launchReadinessFixture() {
   const f = createReplica("global", HUB), journal = openFreezeJournal(join(f.root, "journal.db"));
   const file = join(f.root, "session.jsonl"), home = { sessionId: "session-a", machineId: HUB, epoch: 4, moveId: "move-a", updatedAt: 1 };
-  f.db.prepare("INSERT INTO session_homes VALUES(?,?,?,?,?)").run(home.sessionId, HUB, home.epoch, home.moveId, home.updatedAt);
+  f.db.prepare("INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES(?,?,?,?,?)").run(home.sessionId, HUB, home.epoch, home.moveId, home.updatedAt);
   await createRunningIntentAuthority(f.db).set({ sessionId: home.sessionId, file, cwd: f.root, epoch: home.epoch, desired: "running", suspended: null, moveId: home.moveId },
     "intent-a", { kind: "hub-return", machineId: HUB, moveId: "move-a" });
   for (const id of ["intent-a", "launch-a", "launch-b"]) journal.begin({ id, machineId: HUB, kind: id === "intent-a" ? "session-start" : "exact-session-launch", expectedEpoch: home.epoch, args: { sessionId: home.sessionId } });

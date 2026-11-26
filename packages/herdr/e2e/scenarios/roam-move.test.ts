@@ -497,7 +497,7 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
     const global = openDb(join(hub.root, 'spider.db')), worktree = openDb(join(cwd, '.spider', 'project.db'));
     try {
       seedSession(worktree, sessionId, 1, WT, 1024 * 1024);
-      global.prepare('INSERT INTO session_homes VALUES (?,?,1,NULL,1)').run(sessionId, HUB);
+      global.prepare('INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES (?,?,1,NULL,1)').run(sessionId, HUB);
       recordLocation(global, { sessionId, file: originalFile, cwd, stores: ['global', `repo:${REPO}`, WT], home: { sessionId, machineId: HUB, epoch: 1, moveId: null, updatedAt: 1 } });
     } finally { worktree.close(); global.close(); }
     original = await suite.launchPi({ mode: 'interactive', cwd, args: ['--session', originalFile], extraEnv: hub.env }) as InteractiveDriver;

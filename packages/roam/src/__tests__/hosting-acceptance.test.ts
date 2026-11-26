@@ -158,7 +158,7 @@ it("A11 deliberate stop is durable", async () => {
     const file = join(worktree.root, "session.jsonl"), sessionId = "session-1";
     writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: sessionId, cwd: worktree.root }) + "\n", { mode: 0o600 });
     global.db.prepare("UPDATE roam_meta SET capture_enabled=1 WHERE id=1").run();
-    global.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run(sessionId, BOX);
+    global.db.prepare("INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES (?,?,1,NULL,1)").run(sessionId, BOX);
     worktree.db.prepare("INSERT INTO sessions(id,started_at,origin_machine) VALUES (?,1,?)").run(sessionId, BOX);
     worktree.db.prepare("INSERT INTO roam_sessions(session_id,epoch,state) VALUES (?,1,'active')").run(sessionId);
     worktree.db.prepare("UPDATE roam_meta SET capture_enabled=1 WHERE id=1").run();

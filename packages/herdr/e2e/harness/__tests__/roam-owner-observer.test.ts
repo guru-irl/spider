@@ -26,6 +26,22 @@ function events(): Array<Record<string, unknown>> {
 // The observer targets the packed owner's decision, not an independently
 // reconstructed check. The sample has the same owner inputs and branches.
 const sampleBundle = `
+function createLocalIO(options) {
+  const binary = 'hc';
+  const env = { HC_SESSION: 'd', HC_SOCKET: '/owned/d.sock' };
+  const invokeCli = async () => options.reply;
+  return {
+    async terminals(id, admittedPid) {
+      async function list(args, pidFilter) {
+        const reply = await invokeCli(binary, args, env, options.limits.replyBytes, void 0, { timeoutMs: options.limits.controlMs });
+        if (!reply || typeof reply !== "object" || !("terminals" in reply) || !Array.isArray(reply.terminals)) throw new Error("Terminal list unavailable");
+        return reply.terminals.map(row => ({ terminal: row.address, state: row.state, pid: row.pid }));
+      }
+      return list(['ls', '--all', '--json', '--label', 'spider.session=' + id]);
+    },
+    async launch({ home, placement }) { return { terminal: 'new' }; },
+  };
+}
 function createLocalRuntime(options, io) {
   async function inspectOwner(id, placement) {
     try {
@@ -57,7 +73,7 @@ function createLocalRuntime(options, io) {
   return { owner, start };
 }
 function sameOwner(left, right) { return left === right; }
-export { createLocalRuntime };
+export { createLocalIO, createLocalRuntime };
 `;
 
 it('records the lock, live terminals, home and decision seen by start', async () => {
@@ -80,4 +96,60 @@ it('records the lock, live terminals, home and decision seen by start', async ()
     expect.objectContaining({ event: 'owner-value', phase: 'terminals', value: terminals }),
     expect.objectContaining({ event: 'owner-value', phase: 'result', value: { owner: { kind: 'unknown' } } }),
   ]));
+});
+
+it('records the selected core and its terminal reply without recording screen text', async () => {
+  const file = join(root, 'sample.mjs');
+  writeFileSync(file, instrumentOwnerBundle(sampleBundle));
+  const mod = await import(/* @vite-ignore */ pathToFileURL(file).href) as {
+    createLocalIO(options: unknown): { terminals(id: string): Promise<unknown> };
+    createLocalRuntime(options: unknown, io: unknown): { start(home: unknown, placement: unknown): Promise<unknown> };
+  };
+  const reply = { terminals: [{ address: 't9', state: 'live', pid: 818,
+    labels: { 'spider.session': 'session' }, screen: 'private screen text' }] };
+  const options = { config: { machineId: 'destination' }, limits: { replyBytes: 1000, controlMs: 2000 }, reply };
+  const io = { ...mod.createLocalIO(options), inspect: async () => null,
+    probe: async () => ({ kind: 'absent' }), claimFree: async () => {}, writerBlockers: async () => [] };
+  expect(await mod.createLocalRuntime(options, io).start(
+    { sessionId: 'session', machineId: 'destination', epoch: 3, state: 'running' },
+    { machineId: 'destination' },
+  )).toEqual({ ok: false, code: 'start-pending' });
+  expect(events()).toContainEqual(expect.objectContaining({
+    event: 'terminal-list', machineId: 'destination', sessionId: 'session', namespace: 'd', socket: '/owned/d.sock',
+    terminals: [expect.objectContaining({ address: 't9', state: 'live', pid: 818, labels: { 'spider.session': 'session' } })],
+  }));
+  expect(JSON.stringify(events())).not.toContain('private screen text');
+});
+
+it('records an inspection error and preserves the unknown decision', async () => {
+  const file = join(root, 'sample.mjs');
+  writeFileSync(file, instrumentOwnerBundle(sampleBundle));
+  const mod = await import(/* @vite-ignore */ pathToFileURL(file).href) as {
+    createLocalRuntime(options: unknown, io: unknown): { owner(id: string): Promise<unknown> };
+  };
+  const error = Object.assign(new Error('fixture list unavailable'), { code: 'EIO' });
+  const io = { inspect: async () => null, terminals: async () => { throw error; },
+    probe: async () => ({ kind: 'absent' }), claimFree: async () => {}, writerBlockers: async () => [] };
+  expect(await mod.createLocalRuntime({ config: { machineId: 'destination' } }, io).owner('session')).toEqual({ kind: 'unknown' });
+  expect(events()).toEqual(expect.arrayContaining([
+    expect.objectContaining({ event: 'owner-error', error: expect.objectContaining({ message: 'fixture list unavailable', code: 'EIO' }) }),
+    expect.objectContaining({ event: 'owner-value', phase: 'result', value: { owner: { kind: 'unknown' } } }),
+  ]));
+});
+
+it('does not change an owner decision when the evidence directory is unavailable', async () => {
+  vi.stubEnv('SPIDER_HERDR_E2E_OWNER_DIR', join(root, 'missing'));
+  const file = join(root, 'sample.mjs');
+  writeFileSync(file, instrumentOwnerBundle(sampleBundle));
+  const mod = await import(/* @vite-ignore */ pathToFileURL(file).href) as {
+    createLocalRuntime(options: unknown, io: unknown): { owner(id: string): Promise<unknown> };
+  };
+  const io = { inspect: async () => null, terminals: async () => [],
+    probe: async () => ({ kind: 'absent' }), claimFree: async () => {}, writerBlockers: async () => [] };
+  expect(await mod.createLocalRuntime({ config: { machineId: 'destination' } }, io).owner('session')).toEqual({ kind: 'free' });
+});
+
+it('refuses to instrument unknown or ambiguous packed entries', () => {
+  expect(() => instrumentOwnerBundle('export const unknown = 1;')).toThrow();
+  expect(() => instrumentOwnerBundle(sampleBundle + sampleBundle)).toThrow();
 });

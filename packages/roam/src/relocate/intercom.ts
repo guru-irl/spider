@@ -371,7 +371,7 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
       if (code) return envelope(refused(code));
     } catch { return envelope(refused("unreachable")); }
 
-    const signal = AbortSignal.timeout(request.kind === "ask" ? Math.min(request.timeoutMs, V0_ASK_MAX_MS) : V0_INTERCOM_MS);
+    const signal = request.kind === "ask" ? undefined : AbortSignal.timeout(V0_INTERCOM_MS);
     let result: V0Reply;
     try {
       result = request.kind === "lookup"

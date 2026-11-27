@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { openDbAt } from "@spider/db-core";
 import { parseV0AgentReply, type V0AgentRequest, type V0BrokerOp, type V0Endpoint, type V0Reply, type V0Text } from "@spider/intercom/roam-v0";
 import type { LocalSessionInfo, RemoteSessionInfo } from "@spider/intercom/types";
 import type { CallOptions, Peer, Transport } from "../contracts";
 import { main } from "../cli";
-import { createV0Intercom } from "../relocate/intercom";
+import { createV0Intercom, hasV0IntercomConfig } from "../relocate/intercom";
 
 const MAC = "11111111-1111-4111-8111-111111111111";
 const BOX = "22222222-2222-4222-8222-222222222222";
@@ -295,6 +295,71 @@ describe("roaming v0 intercom", () => {
     const plan = await remotePlan(f.intercom, "ben", [alice, collision]);
     expect(await plan.send(message)).toEqual({ kind: "socket_delivered", id: message.id });
     expect(f.inbox).toHaveLength(1);
+  });
+
+  it("revalidates the source, target, route, and endpoint after confirmation", async () => {
+    for (const change of ["source-home", "target-home", "source-endpoint", "route", "target-endpoint"] as const) {
+      const f = paired(), plan = await remotePlan(f.intercom);
+      if (change === "source-home" || change === "target-home") {
+        const db = openDbAt(join(f.sender.root, "spider.db"), "global");
+        try {
+          db.prepare("UPDATE session_homes SET state='moving',destination=?,move_id=?,epoch=epoch+1 WHERE session_id=?")
+            .run(change === "source-home" ? BOX : MAC, "v0-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", change === "source-home" ? "alice" : "ben");
+        } finally { db.close(); }
+      } else if (change === "source-endpoint") f.state.source = { ...aliceEndpoint, endpointEpoch: "replacement" };
+      else if (change === "target-endpoint") f.state.live = [{ ...ben, endpointEpoch: "replacement" }];
+      else configure(f.sender.root, [peer(BOX, "renamed", f.receiver)], []);
+      expect(await plan.send(message)).toEqual({ kind: "refused", code: change.endsWith("home") ? "moving" : "changed" });
+      expect(f.inbox).toEqual([]);
+      expect(f.calls.filter(call => call.request.kind === "deliver")).toHaveLength(change === "target-endpoint" ? 1 : 0);
+    }
+  });
+
+  it("lets the broker report an ask timeout instead of aborting it first", async () => {
+    const { root } = boxFixture();
+    vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+    const broker = async (_dir: string, op: V0BrokerOp, signal?: AbortSignal): Promise<V0Reply> => {
+      if (op.kind !== "ask") throw new Error("expected ask");
+      return new Promise(resolve => {
+        const timer = setTimeout(() => resolve({ kind: "no_reply", id: op.message.id }), op.timeoutMs);
+        signal?.addEventListener("abort", () => { clearTimeout(timer); resolve({ kind: "unknown", id: op.message.id }); }, { once: true });
+      });
+    };
+    const ask = { version: 1, requestId: "ask-timeout", toMachineId: BOX, from: findBen.from,
+      kind: "ask", target: ben, message, timeoutMs: 40 };
+    expect(await createV0Intercom(root, { broker }).handle(ask)).toEqual({
+      version: 1, requestId: "ask-timeout", machineId: BOX, kind: "no_reply", id: message.id,
+    });
+  });
+
+  it("keeps a long ask budget and caps it at ten minutes", async () => {
+    const f = paired(), plan = await remotePlan(f.intercom);
+    expect(await plan.ask(message, 60_000)).toEqual({ kind: "no_reply", id: message.id });
+    const ask = f.calls.find(call => call.request.kind === "ask");
+    expect(ask?.options.timeoutMs).toBeGreaterThan(60_000);
+    expect(ask?.options.postReserveMs).toBe(2000);
+    expect(ask?.request.kind === "ask" && ask.request.timeoutMs).toBeLessThanOrEqual(60_000);
+    expect(await plan.ask({ ...message, id: "long-ask" }, 2_000_000)).toEqual({ kind: "no_reply", id: "long-ask" });
+    const long = f.calls.find(call => call.request.kind === "ask" && call.request.message.id === "long-ask");
+    expect(long?.options.timeoutMs).toBeLessThanOrEqual(600_000);
+    expect(long?.request.kind === "ask" && long.request.timeoutMs).toBeLessThanOrEqual(600_000);
+  });
+
+  it("rejects unsafe v0 configuration without falling back to legacy routing", async () => {
+    const box = boxFixture(), mac = machineFixture(MAC);
+    vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+    const from: LocalSessionInfo = { ...alice, id: "stable-ben", name: "ben", address: ben.address,
+      endpointEpoch: ben.endpointEpoch, v0HomeEpoch: ben.homeEpoch };
+    const transport = vi.fn((): Pick<Transport, "resolve" | "exec"> => { throw new Error("must not create a route"); });
+    const intercom = createV0Intercom(box.root, { transport });
+    configure(box.root, [peer(MAC, "mac", mac)], [{ machineId: MAC, alias: "mac" }]);
+    expect(hasV0IntercomConfig(box.root)).toBe(true);
+    expect(await intercom.prepare({ to: "alice", from, locals: [from] })).toEqual({ kind: "refused", code: "not-configured" });
+    configure(box.root, [], [{ machineId: MAC, alias: "mac" }]);
+    chmodSync(join(box.root, "roam", "intercom-v0.json"), 0o644);
+    expect(hasV0IntercomConfig(box.root)).toBe(true);
+    expect(await intercom.prepare({ to: "alice", from, locals: [from] })).toEqual({ kind: "refused", code: "not-configured" });
+    expect(transport).not.toHaveBeenCalled();
   });
 
   it("keeps an unhomed caller local and refuses an explicit remote target", async () => {

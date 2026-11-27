@@ -100,7 +100,7 @@ async function readLegacyEvidence(root: string): Promise<{ inventory: LegacyUpgr
   const readRow = <T>(db: Db, sql: string, ...args: unknown[]) => record(db.prepare(sql).get(...args) as T | undefined);
   try {
     const snapshot = openDiagnosticSnapshot;
-    const journalKinds = new Map<string, string>();
+    const journalKinds = new Map<string, string>(), revokedMachines: string[] = [];
     const activeFreezes = new Set<string>(), completedFreezes = new Set<string>(), requiredStores = new Set<string>();
     const v0Maps = new Set<string>();
     const v0Owners = new Map<string, { placement: SessionPlacement; epoch: number }>();
@@ -113,7 +113,7 @@ async function readLegacyEvidence(root: string): Promise<{ inventory: LegacyUpgr
     record(!!db);
     if (db) try {
       const operations = readRows<{ operation_id: unknown; machine_id: unknown; kind: string; result_json: unknown }>(db,
-        "SELECT operation_id,machine_id,kind,result_json FROM roam_operations WHERE kind IN ('move','move-session','move-abort-cleanup','exact-session-launch') ORDER BY operation_id");
+        "SELECT operation_id,machine_id,kind,result_json FROM roam_operations WHERE kind IN ('move','move-session','move-abort-cleanup','exact-session-launch','forget-machine','restore-destroyed-home') ORDER BY operation_id");
       for (const operation of operations) {
         const id = operation.operation_id;
         if (typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id) || !isMachineId(operation.machine_id) ||
@@ -193,6 +193,12 @@ async function readLegacyEvidence(root: string): Promise<{ inventory: LegacyUpgr
               if (parseSourceCleanup(value.sourceCleanup).status === "pending") findings.push(label);
             } catch { unknown.push(`${label} unavailable`); }
           } else if (result.code !== 1 && result.code !== 2) unknown.push(`move operation ${id} terminal result invalid`);
+        }
+      }
+      if (readRow(db, "SELECT 1 FROM sqlite_master WHERE type='table' AND name='roam_machine_revocations'")) {
+        for (const { machine_id } of readRows<{ machine_id: unknown }>(db, "SELECT machine_id FROM roam_machine_revocations ORDER BY machine_id")) {
+          if (!isMachineId(machine_id)) throw new Error("Invalid machine revocation");
+          revokedMachines.push(machine_id);
         }
       }
       const preparations = new Map<string, { id: string; root: string; digest: string; key: string }>();
@@ -280,6 +286,19 @@ async function readLegacyEvidence(root: string): Promise<{ inventory: LegacyUpgr
       if (!meta || !isMachineId(meta.machine_id) || config && meta.machine_id !== config.machineId || !(meta.store_key === null || meta.store_key === "global")) throw new Error("Global store identity mismatch");
       if (!configured && global.prepare("SELECT 1 FROM session_homes UNION ALL SELECT 1 FROM roam_locations UNION ALL SELECT 1 FROM roam_repo_maps UNION ALL SELECT 1 FROM roam_workspace_maps LIMIT 1").get())
         unknown.push("roaming identity unavailable");
+      if (revokedMachines.length) {
+        // The legacy hub commits revocation before opening the recovery operation.
+        // v0 shares the revocation table but does not restore v0-owned homes.
+        const hasState = readRow(global, "SELECT 1 FROM pragma_table_info('session_homes') WHERE name='state'");
+        for (const machineId of revokedMachines) {
+          const homes = readRows<{ session_id: unknown }>(global,
+            `SELECT session_id FROM session_homes WHERE machine_id=?${hasState ? " AND state IS NULL" : ""} ORDER BY session_id`, machineId);
+          for (const { session_id } of homes) {
+            if (typeof session_id !== "string" || !session_id) throw new Error("Invalid revoked machine home");
+            findings.push(`revoked machine ${machineId} has unrestored legacy session ${safeId(session_id)}`);
+          }
+        }
+      }
       for (const row of localEntries<unknown>(global, "relocate-managed")) {
         const placement = parsePlacement(row.value);
         if (row.key !== placement.sessionId) throw new Error("Invalid v0 managed placement");

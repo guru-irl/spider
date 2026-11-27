@@ -20,6 +20,7 @@ import { parseDoctorReport } from "../remote-observations";
 import * as snapshots from "../diagnostic-snapshot";
 import { peerEnabledDiagnostics } from "../peer-enabled";
 import { readLocalIdentity } from "../runtime";
+import { revokeMachine } from "../revocation";
 import type { Peer, Transport } from "../contracts";
 
 const roots: string[] = [];
@@ -304,6 +305,41 @@ it.each(["move-session", "move-abort-cleanup", "exact-session-launch"] as const)
     expect(report.value.diagnostics.some((row: { reason: string }) => row.reason.startsWith("legacy-upgrade-blocked:"))).toBe(true);
   },
 );
+
+it.each(["forget-machine", "restore-destroyed-home"] as const)("blocks a pending %s operation", async kind => {
+  const { root, journal } = fixture(), id = `${kind}-fixture`;
+  journal.begin({ id, kind, machineId: hub, expectedEpoch: kind === "forget-machine" ? null : 2,
+    args: kind === "forget-machine" ? { destroyedMachine: box } : { destroyedMachine: box, sessionId: "destroyed-session" } });
+  expect(await inspectLegacyUpgrade(root)).toEqual({ status: "legacy-upgrade-blocked", findings: [`${kind} operation ${id}`] });
+});
+
+it.each(["legacy and v0", "v0 only", "no remaining"] as const)("checks a revoked machine with %s homes", async homes => {
+  const { root } = fixture();
+  // Revocation commits before the old hub begins a recovery operation.
+  const journal = openDb(join(root, "roam", "journal.db"));
+  try { revokeMachine(journal, box); } finally { journal.close(); }
+  const global = openDb(join(root, "spider.db"));
+  try {
+    const home = global.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,updated_at,move_id,state) VALUES (?,?,2,1,?,?)");
+    home.run("restored-session", hub, "forget-completed", null);
+    if (homes === "legacy and v0") home.run("unrestored-session", box, null, null);
+    if (homes !== "no remaining") home.run("v0-session", box, null, "running");
+  } finally { global.close(); }
+  expect(await inspectLegacyUpgrade(root)).toEqual(homes === "legacy and v0"
+    ? { status: "legacy-upgrade-blocked", findings: [`revoked machine ${box} has unrestored legacy session unrestored-session`] }
+    : { status: "legacy-upgrade-ready", findings: [] });
+});
+
+it("settled destroyed-machine recovery and unfinished presentation do not block upgrade", async () => {
+  const { root, journal } = fixture();
+  journal.begin({ id: "forget-machine-settled", kind: "forget-machine", machineId: hub, expectedEpoch: null, args: { destroyedMachine: box } });
+  journal.record("forget-machine-settled", "done", { code: 0, reason: "destroyed-machine-recovered", results: [] });
+  journal.begin({ id: "restore-settled", kind: "restore-destroyed-home", machineId: hub, expectedEpoch: 2, args: { destroyedMachine: box, sessionId: "restored-session" } });
+  journal.record("restore-settled", "done", { home: { sessionId: "restored-session", machineId: hub, epoch: 2, moveId: "restore-settled", updatedAt: 1 } });
+  journal.begin({ id: "restore-settled-presentation", kind: "forget-presentation", machineId: hub, expectedEpoch: 2,
+    args: { restoreOperationId: "restore-settled", sessionId: "restored-session" } });
+  expect(await inspectLegacyUpgrade(root)).toEqual({ status: "legacy-upgrade-ready", findings: [] });
+});
 
 it("doctor blocks an uncommitted legacy home action even after the move receipt is terminal", async () => {
   const f = fixture();

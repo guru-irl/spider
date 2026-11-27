@@ -172,6 +172,27 @@ it("does not block frozen membership governed by a settled v0 home", async () =>
   ]));
 });
 
+it("doctor blocks an unfinished legacy workspace preparation even after a terminal receipt", async () => {
+  const f = fixture(), id = "workspace-move-1", checkout = join(f.root, "checkout"), oid = "a".repeat(40);
+  mkdirSync(checkout);
+  const snapshot = { root: checkout, repoKey: "fixture-repo", workspaceId: "fixture-workspace", moveId: id, stage: "final",
+    head: oid, branch: null, objectFormat: "sha1", indexTree: oid, workingTree: oid, relativeCwd: "", sparsePatterns: null,
+    worktreeConfig: null, droppedConfigKeys: [], normalization: { autocrlf: null, eol: null }, sparse: { enabled: false, cone: null },
+    refs: [`refs/spider-roam/${id}/final/index`, `refs/spider-roam/${id}/final/working`], prerequisites: [],
+    bundle: { kind: "ready", artifactId: "fixture-bundle", byteLength: 1 } };
+  const digest = createHash("sha256").update(JSON.stringify([snapshot.repoKey, snapshot.workspaceId, snapshot.moveId, snapshot.stage,
+    snapshot.head, snapshot.branch, snapshot.objectFormat, snapshot.indexTree, snapshot.workingTree, snapshot.relativeCwd,
+    snapshot.sparsePatterns, snapshot.worktreeConfig, snapshot.normalization, snapshot.sparse, snapshot.refs, snapshot.prerequisites, snapshot.bundle])).digest("hex");
+  f.journal.begin({ id, kind: "move", machineId: hub, expectedEpoch: 1, args: {} });
+  f.journal.record(id, "workspace-prepare-start", { root: checkout, stage: "final", digest, snapshotJson: JSON.stringify(snapshot), previousJson: null, settingsJournalVersion: 1 });
+  f.journal.record(id, "done", { code: 1, reason: "cancelled" });
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-blocked.*workspace-move-1.*worktree:fixture-repo:fixture-workspace/) }),
+  ]));
+});
+
 it("doctor blocks an unpublished replica mapping fence with no map intent", async () => {
   const f = fixture(), key = "worktree:fixture-repo:fenced-workspace", file = replica(f.root, key);
   const store = openDb(file);

@@ -199,7 +199,8 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
     const result = await configureV0Service(root, argv[1] === "enable", {
       resolveCli: () => roamingCliEntry(options?.bundleUrl ?? new URL(import.meta.url)), ...options?.v0?.lifecycle,
     });
-    return emitOutcome(io, { ...outcome(result.code, result.reason, result.information ? { information: result.information } : null),
+    const value = result.information || result.issues ? { information: result.information, issues: result.issues } : null;
+    return emitOutcome(io, { ...outcome(result.code, result.reason, value),
       ...(result.repairCommand ? { repairCommand: result.repairCommand } : {}) }, json, `${result.message.split("\n").map(clean).join("\n")}\n`);
   }
   const publicInput = argv[0] === "roam" && !["agent", "artifact", "observe", "intercom", "hub"].includes(argv[1]);

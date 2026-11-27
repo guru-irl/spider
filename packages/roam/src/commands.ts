@@ -187,7 +187,10 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
       const pairDetail = typeof issue.detail === "string" && (
         /^preflight-failed:[^:]+:intercom-fence-mismatch$/.test(reason ?? "") && /^Pair [A-Za-z0-9][A-Za-z0-9._-]{0,127} does not match the current fence\.$/.test(issue.detail) ||
         /^preflight-failed:[^:]+:intercom-revocation-unconfirmed$/.test(reason ?? "") && /^Pair [A-Za-z0-9][A-Za-z0-9._-]{0,127} has an unconfirmed revocation\.$/.test(issue.detail));
+      const legacyLaunchWarning = ["roaming-enabled", "enable-unavailable", "enable-pending"].includes(result.reason) && issue.severity === "warning" &&
+        /^(?:exact-launch:[A-Za-z0-9-]+(?::[A-Za-z0-9._-]+)?|legacy-launch-check-unavailable(?::[A-Za-z0-9-]+)?)$/.test(reason ?? "");
       return reason && repairCommand ? [{ reason, repairCommand, ...(cause ? { causeCode: cause } : {}),
+        ...(legacyLaunchWarning ? { severity: "warning" } : {}),
         ...(pairDetail || issue.detail === "Start Herdr or check hc on this machine." ? { detail: issue.detail } : {}) }] : [];
     });
   }

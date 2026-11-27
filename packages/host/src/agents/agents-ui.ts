@@ -44,7 +44,7 @@ function compatibilityNotice(reason: string, piVersion?: string): string {
     return `Run detail needs a relinked spider shim: ${SHIM_RELINK}`;
   }
   if (reason.startsWith("Unsupported pi version:")) {
-    return `Run detail needs pi 1.2.0 (running ${killError(piVersion)}); the list still works`;
+    return `Run detail needs pi 1.2.0 or 1.5.2 (running ${killError(piVersion)}); the list still works`;
   }
   return "Run detail can't read this pi layout; update spider";
 }

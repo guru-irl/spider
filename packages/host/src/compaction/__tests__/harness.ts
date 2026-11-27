@@ -3,6 +3,7 @@ import { beforeEach, vi } from 'vitest';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type * as Pi from '@earendil-works/pi-coding-agent';
+import { createAssistantMessageEventStream } from '@earendil-works/pi-ai';
 
 const observed = vi.hoisted(() => ({ summaryCalls: [] as any[] }));
 export const summaryCalls: any[] = observed.summaryCalls;
@@ -76,3 +77,16 @@ export function setup(child = false): any {
 }
 beforeEach(() => { summaryCalls.length = 0; });
 export const pi: typeof Pi = await import('@earendil-works/pi-coding-agent');
+
+// Pi 1.4 stopped deriving summary output limits from reserveTokens. Probe the
+// real generator without the recording wrapper, provider IO, or version checks.
+const actualPi = await vi.importActual<typeof Pi>('@earendil-works/pi-coding-agent');
+let nativeOutputLimit: number | undefined;
+await actualPi.generateSummaryWithUsage([], sessionModel, 1000, undefined, undefined, undefined,
+  undefined, undefined, undefined, (_model, _context, options) => {
+    nativeOutputLimit = options?.maxTokens;
+    const stream = createAssistantMessageEventStream();
+    stream.end(assistant('## Goal\nFixture summary'));
+    return stream;
+  });
+export const summaryOutputLimit = (legacyLimit: number): number | undefined => nativeOutputLimit === undefined ? undefined : legacyLimit;

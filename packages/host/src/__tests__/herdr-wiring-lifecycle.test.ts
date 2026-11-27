@@ -115,6 +115,7 @@ it('pi reload preserves a real unsent editor draft while replacing Herdr IPC', a
   const noop = () => {};
   Object.assign(native, {
     editor: draftEditor, defaultEditor, editorContainer: new Container(), ui,
+    extensionDialogs: [], extensionOverlays: new Map(),
     session: { isStreaming: false, isCompacting: false, reload: async ({ beforeSessionStart }: { beforeSessionStart(): void }) => {
       await f.emit('session_shutdown', { reason: 'reload' }); beforeSessionStart(); await f.emit('session_start', { reason: 'reload' });
     }, resourceLoader: { getThemes: () => ({ themes: [] }) }, modelRuntime: { getError: () => undefined } },

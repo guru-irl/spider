@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { test, beforeEach } from 'vitest';
-import { setup, summaryCalls, pi, user, assistant } from './harness.js';
+import { setup, summaryCalls, pi, user, assistant, summaryOutputLimit } from './harness.js';
 
 beforeEach(() => { summaryCalls.length = 0; });
 
 // Break: omit/lower the parent floor, apply it only to manual compaction, or mutate preparation settings.
 for (const reason of ['manual', 'threshold', 'overflow']) {
-  test(`${reason} default reserve requests 64000 output tokens without changing preparation`, async () => {
+  test(`${reason} default reserve follows pi output policy without changing preparation`, async () => {
     const f = setup();
     f.event.reason = reason;
     f.event.willRetry = reason === 'overflow';
@@ -16,7 +16,7 @@ for (const reason of ['manual', 'threshold', 'overflow']) {
     assert.ok(result?.compaction, 'parent floor must not trigger fallback');
     assert.equal(f.requests.length, 1);
     assert.equal(summaryCalls.length, 1);
-    assert.equal(f.requests[0].options.maxTokens, 64000);
+    assert.equal(f.requests[0].options.maxTokens, summaryOutputLimit(64000));
     assert.equal(summaryCalls[0].reserveTokens, 80000);
     assert.equal(f.requests[0].model.id, 'summary-model');
     assert.equal(f.requests[0].options.reasoning, 'high');
@@ -36,7 +36,7 @@ for (const { reserve, maxTokens, wantReserve, wantLimit } of [
   { reserve: 160000, maxTokens: 96000, wantReserve: 160000, wantLimit: 96000 },
   { reserve: 16384, maxTokens: 32000, wantReserve: 80000, wantLimit: 32000 },
 ]) {
-  test(`reserve ${reserve} and model max ${maxTokens} request ${wantLimit} output tokens`, async () => {
+  test(`reserve ${reserve} and model max ${maxTokens} follow pi output policy (legacy limit ${wantLimit})`, async () => {
     const f = setup();
     f.event.preparation.settings = Object.freeze({ enabled: true, reserveTokens: reserve, keepRecentTokens: 20000 });
     const model = { ...f.registry.find('fixture-provider', 'summary-model'), maxTokens };
@@ -45,7 +45,8 @@ for (const { reserve, maxTokens, wantReserve, wantLimit } of [
     assert.ok((await f.run())?.compaction);
     assert.equal(summaryCalls.length, 1);
     assert.equal(f.requests.length, 1);
-    assert.equal(f.requests[0].options.maxTokens, wantLimit);
+    assert.equal(f.requests[0].options.maxTokens, summaryOutputLimit(wantLimit));
+    assert.equal(f.requests[0].model.maxTokens, maxTokens);
     assert.equal(summaryCalls[0].reserveTokens, wantReserve);
     assert.equal(f.event.preparation.settings.reserveTokens, reserve);
     assert.deepEqual(f.notices, []);
@@ -53,7 +54,7 @@ for (const { reserve, maxTokens, wantReserve, wantLimit } of [
 }
 
 // Break: move the parent-only floor into the shared helper or child call.
-test('child still requests 800 output tokens from its 1000 reserve', async () => {
+test('child follows pi output policy with its unchanged 1000 reserve', async () => {
   const f = setup(true);
   const sm = pi.SessionManager.inMemory(f.ctx.cwd);
   sm.appendMessage(user('HISTORY ' + 'h'.repeat(2000)));
@@ -67,7 +68,7 @@ test('child still requests 800 output tokens from its 1000 reserve', async () =>
   assert.equal(summaryCalls.length, 1);
   assert.equal(summaryCalls[0].reserveTokens, 1000);
   assert.equal(f.requests.length, 1);
-  assert.equal(f.requests[0].options.maxTokens, 800);
+  assert.equal(f.requests[0].options.maxTokens, summaryOutputLimit(800));
   assert.equal(f.requests[0].model.id, 'session-model');
   assert.equal(f.requests[0].options.reasoning, 'low');
 });

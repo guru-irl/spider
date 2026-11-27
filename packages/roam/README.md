@@ -20,6 +20,73 @@ with the source to undo. If neither works and you have a verified backup, use
 `spider roam set-home <session> <machine> --force` to recover. The move does not
 start a second copy of the session.
 
+## Roaming v0 intercom
+
+V0 intercom sends text to a live, admitted session on its current home. It
+looks up names at the receiving broker. A successful send means the broker
+accepted the socket write, not that the recipient consumed the message. There
+is no remote mailbox or automatic retry. If delivery is unknown, check the
+recipient before sending again.
+
+On each participating machine, put a private `intercom-v0.json` file in the
+`roam` directory under its global root. The file must be owned by the current
+user and have mode `0600`. Enable roaming and disable legacy intercom
+federation in the existing roaming configuration. Each `sendTo` entry needs an
+absolute `agentDir` that matches the target's configured Herdr agent directory.
+The two lists grant intercom permission; they do not install a Herdr route or
+create credentials. A missing or invalid file does not change move or sync
+behavior.
+
+For a Mac-initiated ask to one box, configure the Mac with the already
+provisioned box peer:
+
+```json
+{
+  "version": 1,
+  "sendTo": [{
+    "machineId": "22222222-2222-4222-8222-222222222222",
+    "alias": "box-a",
+    "node": "/path/to/node",
+    "pi": "/path/to/pi",
+    "cli": "/path/to/spider/roam/cli.mjs",
+    "core": "/path/to/hc",
+    "globalRoot": "/path/to/box-global-root",
+    "agentDir": "/path/to/box-agent-directory"
+  }],
+  "acceptFrom": []
+}
+```
+
+On that box, accept the Mac's machine ID without an outbound Mac route:
+
+```json
+{
+  "version": 1,
+  "sendTo": [],
+  "acceptFrom": [{
+    "machineId": "11111111-1111-4111-8111-111111111111",
+    "alias": "mac"
+  }]
+}
+```
+
+Replace the example IDs and paths with the provisioned values. The Mac can ask
+`box-a/name`, and the recipient can use the normal intercom reply. The reply
+travels on the same Mac-initiated call. A box cannot initiate a send or ask to
+the Mac. Remote asks wait for their own timeout, capped at nine minutes. A
+reply after the call closes is refused. Messages and replies are text only,
+and each encoded request and reply is limited to 256 KiB.
+
+For a separately approved A-to-B route, add B's provisioned peer to A's
+`sendTo` and add A's `{ "machineId": "...", "alias": "box-a" }` to B's
+`acceptFrom`. B does not need an outbound A entry. This directed route does not
+use the Mac as a relay. Do not configure the Mac in a box's `sendTo`.
+
+A bare remote name checks configured peers with running homes. If a peer is
+unavailable or more than one live endpoint matches, use a qualified name or a
+full persistent session ID. A local live alias takes precedence over a remote
+name, while a full persistent ID takes precedence over an alias.
+
 ## Legacy enable and broker readiness
 
 `production-controls.ts` completes read-only peer preflight before starting

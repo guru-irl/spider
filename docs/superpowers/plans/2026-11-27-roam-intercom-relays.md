@@ -38,7 +38,7 @@ JSON, Vitest, GitHub Actions, systemd user services, and launchd agents.
 - The linked machine considers the relay up while a valid call is in progress and for 10 seconds
   after the last call ends normally. If any call ends without a normal reply, mark the link down at
   once. A failed call still marks the link down on the relay. Reconnect backoff is 1, 2, 4 and up to
-  60 seconds between attempts.
+  30 seconds between attempts.
 - Upgrade relays and machines together. There is no version negotiation. Relays keep no message text
   after the outcome is returned. Link logs never contain message text.
 - Use strict TDD. Record red and green evidence. Test one file at a time with `--maxWorkers=1`. Assert
@@ -295,7 +295,7 @@ expect(stateImmediatelyAfterAbort).toBe('down');
 // ignores duplicate and old-generation results
 expect(outcomesAfterLateAndDuplicateResults).toEqual([{ kind: 'unknown', id: 'lost' }]);
 expect(currentSubmissionSettledByOldResult).toBe(false);
-expect(reconnectIntervalsMs.slice(0, 7)).toEqual([1000, 2000, 4000, 8000, 16000, 32000, 60000]);
+expect(reconnectIntervalsMs.slice(0, 7)).toEqual([1000, 2000, 4000, 8000, 16000, 30000, 30000]);
 expect(() => decodeRelayPollReply(oversizeLine)).toThrow();
 expect(() => decodeRelayPollReply(invalidUtf8Line)).toThrow();
 expect(decodeRelayPollReply(fullBatch).submissions).toHaveLength(16);

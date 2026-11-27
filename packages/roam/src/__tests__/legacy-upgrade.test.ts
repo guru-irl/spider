@@ -14,6 +14,7 @@ import { createIntentStore } from "../intent";
 
 const roots: string[] = [];
 const hub = "11111111-1111-4111-8111-111111111111";
+const box = "22222222-2222-4222-8222-222222222222";
 afterEach(() => {
   vi.unstubAllEnvs();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -119,6 +120,36 @@ it("doctor blocks an interrupted repository map by its store key", async () => {
   const report = JSON.parse(io.out.mock.calls.at(-1)![0]);
   expect(report.value.diagnostics).toEqual(expect.arrayContaining([
     expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-blocked.*repo:fixture-repo/) }),
+  ]));
+});
+
+it.each(["checkpoint", "incoming"] as const)("does not classify a %s-owned v0 workspace map as legacy", async origin => {
+  const f = fixture(), checkout = join(f.root, "checkout"), other = join(f.root, "other"), id = "v0-33333333-3333-4333-8333-333333333333";
+  mkdirSync(join(checkout, "src"), { recursive: true }); mkdirSync(other);
+  mkdirSync(join(checkout, ".git"));
+  const localIsSource = origin === "checkpoint", sourceMachine = localIsSource ? hub : box, destinationMachine = localIsSource ? box : hub;
+  const placement = (machineId: string, root: string) => ({ sessionId: "session-v0", machineId, historyMachine: sourceMachine,
+    repoKey: "fixture-repo", workspaceId: "workspace-1", repository: root, cwd: join(root, "src"),
+    file: join(root, "session.jsonl"), stores: ["global", "repo:fixture-repo", "worktree:fixture-repo:workspace-1"] });
+  const plan = { moveId: id, source: { sessionId: "session-v0", machineId: sourceMachine, epoch: 1, updatedAt: 1,
+    state: "running", destination: null, moveId: null }, sourcePlacement: placement(sourceMachine, localIsSource ? checkout : other),
+    destinationPlacement: placement(destinationMachine, localIsSource ? other : checkout), destinationPrerequisites: [], startedAt: 1 };
+  const key = "worktree:fixture-repo:workspace-1", identity = JSON.stringify(["fixture-repo", "workspace-1"]);
+  f.journal.begin({ id, kind: "relocate-v0", machineId: hub, expectedEpoch: 1, args: { plan } });
+  if (origin === "checkpoint") f.journal.record(id, "relocate-checkpoint", { checkpoint: { plan, completed: [], captured: null, installed: null, terminal: null, result: null } });
+  else f.journal.record(id, "relocate-incoming", { plan, expectedKey: key });
+  const db = openDb(join(f.root, "spider.db"));
+  try {
+    writeLocal(db, "mapping-intent", JSON.stringify(["workspace", identity]), { kind: "workspace", identity,
+      target_path: checkout, store_key: key, command_json: null, attempt_id: "attempt-v0" });
+    if (origin === "incoming") writeLocal(db, "relocate-incoming", key, { moveId: id });
+    else db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state,destination) VALUES (?,?,2,?,1,'moving',?)")
+      .run("session-v0", sourceMachine, id, destinationMachine);
+  } finally { db.close(); }
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(0);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "info", reason: expect.stringMatching(/^legacy-upgrade-ready/) }),
   ]));
 });
 

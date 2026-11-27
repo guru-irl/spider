@@ -12,6 +12,10 @@ import { afterEach, expect, it, vi } from "vitest";
 import { main } from "../cli";
 import { openFreezeJournal, openJournal } from "../journal";
 import { createIntentStore } from "../intent";
+import { parseDoctorReport } from "../remote-observations";
+import { peerEnabledDiagnostics } from "../peer-enabled";
+import { readLocalIdentity } from "../runtime";
+import type { Peer, Transport } from "../contracts";
 
 const roots: string[] = [];
 const hub = "11111111-1111-4111-8111-111111111111";
@@ -45,6 +49,19 @@ function replica(root: string, key: string) {
   } finally { db.close(); }
   return file;
 }
+
+it("treats a null remote doctor enabled state as unavailable, not disabled", async () => {
+  const f = fixture(), peer: Peer = { machineId: box, alias: "fixture-box", node: "/fixture/node", pi: "/fixture/pi",
+    cli: "/fixture/spider", core: "/fixture/hc", globalRoot: "/fixture/global" };
+  const value = { enabled: null, diagnostics: [], consumers: [] };
+  expect(() => parseDoctorReport(value)).toThrow(/invalid remote doctor report/i);
+  const transport = { async resolve() { return peer; }, async exec() {
+    return Buffer.from(JSON.stringify({ version: 1, machineId: box, kind: "doctor", value }));
+  } } as unknown as Transport;
+  const findings = await peerEnabledDiagnostics({ ...readLocalIdentity(f.root), peers: [peer] }, transport);
+  expect(findings).toEqual([expect.objectContaining({ severity: "warning", reason: `peer-enabled-unavailable:${box}` })]);
+  expect(findings.some(row => row.reason.startsWith("peer-enabled-mismatch:"))).toBe(false);
+});
 
 it("disabled doctor reports the unfinished legacy move and source cleanup by operation ID", async () => {
   const f = fixture();

@@ -1040,6 +1040,26 @@ it("reinstalls when effective sparse settings change after installation", async 
   expect(recovery?.result.workingApplied).toBe(true);
 }, 5000);
 
+it("refuses a file edit during installed-checkout verification", async () => {
+  const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
+  const file = join(f.destination, "tracked.txt"), run = f.ports.run;
+  let edited = false;
+  f.ports.run = async (cwd, argv, options) => {
+    const result = await run(cwd, argv, options);
+    if (!edited && argv[0] === "git" && argv[1] === "write-tree" &&
+        options?.env?.GIT_INDEX_FILE?.includes(".workspace-recovery-inspect-")) {
+      writeFileSync(file, "late user edit\n");
+      edited = true;
+    }
+    return result;
+  };
+
+  await expect(prepareWorkspace(snapshot, f.destination, f.ports)).rejects.toThrow(/workspace-preparation-diverged/i);
+  expect(edited).toBe(true);
+  expect(readFileSync(file, "utf8")).toBe("late user edit\n");
+  expect(f.ports.journal.read(snapshot.moveId).some(row => row.action === "workspace-prepared")).toBe(false);
+}, 5000);
+
 it("refuses a settings change during installed-checkout verification", async () => {
   const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
   const config = join(f.destination, ".git", "config.worktree"), run = f.ports.run;

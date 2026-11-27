@@ -3087,8 +3087,11 @@ Usage:
             });
             if (!result.delivered) {
               const errorText = result.reason ?? "Session may not exist or has disconnected.";
-              if (result.reason === "Session not found") {
+              if (result.reason === "Session not found" || result.reason === "The asker is no longer waiting.") {
                 dismissIncomingAsk(target.message.id);
+              }
+              if (result.reason === "The asker is no longer waiting.") {
+                return { content: [{ type: "text", text: result.reason }], details: deliveryDetails(result) };
               }
               return {
                 content: [{ type: "text", text: `Reply to "${target.from.name || target.from.id}" was not delivered: ${errorText}` }],

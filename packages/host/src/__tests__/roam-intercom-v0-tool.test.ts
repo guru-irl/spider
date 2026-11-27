@@ -1,16 +1,18 @@
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
+import net from "node:net";
 import { join } from "node:path";
 import { rmSync, writeFileSync } from "node:fs";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { IntercomClient } from "../../../intercom/src/broker/client.js";
-import { getAgentDirPath, getIntercomDirPath } from "../../../intercom/src/broker/paths.js";
+import { getAgentDirPath, getBrokerSocketPath, getIntercomDirPath } from "../../../intercom/src/broker/paths.js";
+import { createMessageReader, writeMessage } from "../../../intercom/src/broker/framing.js";
 import { requestV0Broker } from "../../../intercom/src/broker/roam-v0-client.js";
 import type { RemoteSessionInfo } from "../../../intercom/src/types.js";
 import { INTERCOM_HOST_EVENT } from "../../../intercom/src/host-api.js";
 import { registerIntercomOnce } from "../../../intercom/src/single-instance.js";
 import { startTestBroker, stopTestBroker, testBrokerEnv } from "../../../intercom/src/test-support.js";
-import type { V0Code, V0Prepare, V0Text, V0ToolOptions } from "../../../intercom/src/roam-v0.js";
+import { V0_ASK_MAX_MS, type V0Code, type V0Prepare, type V0Text, type V0ToolOptions } from "../../../intercom/src/roam-v0.js";
 
 let broker: ChildProcessWithoutNullStreams;
 let observer: IntercomClient;
@@ -120,7 +122,7 @@ it("returns the reply to a named remote ask", async () => {
 
 it("reports a remote ask timeout or lost call without resending", async () => {
   const oldTimeout = process.env.PI_INTERCOM_ASK_TIMEOUT_MS;
-  process.env.PI_INTERCOM_ASK_TIMEOUT_MS = "600001";
+  process.env.PI_INTERCOM_ASK_TIMEOUT_MS = String(V0_ASK_MAX_MS + 1);
   const questions: V0Text[] = [], budgets: number[] = [];
   let outcome: "no_reply" | "unknown" = "no_reply";
   const prepare: V0Prepare = async () => ({
@@ -140,7 +142,7 @@ it("reports a remote ask timeout or lost call without resending", async () => {
     expect(unknown.content[0].text).toBe(`Delivery could not be confirmed (ID ${questions[1].id}). Check the recipient before sending again.`);
     expect(unknown.details).toMatchObject({ error: true, delivery: "unknown", messageId: questions[1].id });
     expect(questions).toHaveLength(2);
-    expect(budgets).toEqual([600000, 600000]);
+    expect(budgets).toEqual([V0_ASK_MAX_MS, V0_ASK_MAX_MS]);
   } finally {
     await f.cleanup();
     if (oldTimeout === undefined) delete process.env.PI_INTERCOM_ASK_TIMEOUT_MS;
@@ -226,6 +228,40 @@ it("replies to a peer ask without consulting legacy home routing", async () => {
     expect(reply.details).toMatchObject({ delivered: true, replyTo: "bound-question" });
     expect(await pending).toMatchObject({ kind: "replied", id: "bound-question", text: "answer" });
   } finally { await f.cleanup(); }
+});
+
+it("shows the broker's exact refusal for a late peer reply", async () => {
+  const f = await fixture({ homeEpoch: () => 7, prepare: async () => ({ kind: "legacy" }) });
+  const from: RemoteSessionInfo = {
+    remote: true, id: "peer-session", address: { sessionId: "peer-session", scopeId: null },
+    machineId: "peer-machine", machineAlias: "peer", homeEpoch: 3,
+    activationEpoch: "peer-connection", endpointEpoch: "peer-connection", name: "ben",
+    cwd: "", model: "", startedAt: 0, lastActivity: 0,
+  };
+  let socket: net.Socket | undefined;
+  try {
+    const own = (await observer.listSessions()).find(session => session.id === "sender-session")!;
+    socket = net.connect(getBrokerSocketPath());
+    const askSocket = socket;
+    const completed = new Promise<any>((resolve, reject) => {
+      askSocket.on("error", reject);
+      askSocket.on("data", createMessageReader(value => {
+        const frame = value as any;
+        if (frame.type === "health_ok") writeMessage(askSocket, {
+          type: "roam_v0", requestId: "late-request", kind: "ask", from,
+          target: { address: { sessionId: "sender-session", scopeId: null }, name: "alice", homeEpoch: 7, endpointEpoch: own.endpointEpoch! },
+          message: { id: "late-question", timestamp: 123, text: "hello" }, timeoutMs: 100,
+        });
+        if (frame.type === "roam_v0_result") resolve(frame);
+      }, reject));
+      askSocket.on("connect", () => writeMessage(askSocket, { type: "health", requestId: "late-health" }));
+    });
+    await vi.waitFor(() => expect(f.inbound.some(message => message.customType === "intercom_message")).toBe(true));
+    expect(await completed).toMatchObject({ kind: "no_reply", id: "late-question" });
+    const reply = await f.tool.execute("reply", { action: "reply", replyTo: "late-question", message: "too late" }, new AbortController().signal, undefined, f.ctx);
+    expect(reply.content[0].text).toBe("The asker is no longer waiting.");
+    expect(reply.details).toMatchObject({ delivered: false });
+  } finally { socket?.destroy(); await f.cleanup(); }
 });
 
 it("does not dispatch a remote ask when confirmation is refused", async () => {

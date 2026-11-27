@@ -132,6 +132,10 @@ A target accepts a relayed message only if the carrying relay is in its `relays`
 machine is in its `acceptFrom` list. Links add no listening port and no new route: they ride the
 relay's existing machine route. Relays keep no message text after the outcome is returned.
 
+`hello.relay` is self-asserted. The endpoint checks that the claimed ID is in `relays`, but does
+not bind the claim to a separate identity. Under the v0 trust model, permission to run `exec` on
+a machine already grants access to that account.
+
 Routes, keys and service installation stay operator prerequisites, as in the v0 intercom design.
 Spider checks the configuration and refuses with a doctor row when something is missing.
 

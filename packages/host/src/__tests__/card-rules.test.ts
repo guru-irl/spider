@@ -83,7 +83,14 @@ test.each([
   ["notification: escalation question", "❓ question", "The rebuild"],
   ["run paragraph breaks", "Read the logs", "Manifest missing"],
   ["search paragraph breaks", "Check files before upload", "Check the manifest after building"],
-  ["loop", "Loop check-release", "Next check is scheduled"],
+  ["loop paragraphs", "Loop check-release", "Next check is scheduled"],
+  ["message paragraphs", "Please check the two paths", "Then read the logs"],
+  ["remember paragraphs", "Check the output directory", "Then check the manifest"],
+  ["recall paragraphs", "Check the output directory", "Then check the manifest"],
+  ["todo paragraphs", "Check the packaging job", "Then read the logs"],
+  ["skill view paragraphs", "Use the packaging report", "Check the build output"],
+  ["skill distill paragraphs", "Write a short skill", "Include the manifest"],
+  ["control memory status paragraphs", "Check the output directory", "Then check the manifest"],
 ])("fixture %s exercises its branch", (name, first, second) => {
   const fixture = fixtures.find(f => f.name === name);
   expect(fixture).toBeDefined();

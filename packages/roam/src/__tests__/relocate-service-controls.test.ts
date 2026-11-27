@@ -78,6 +78,52 @@ it("a missing global database is unverified and refuses enable without creating 
   expect(f.calls).toEqual([]);
 });
 
+it.each(["missing", "corrupt"] as const)("unrelated %s project is a warning and does not prevent enable", async condition => {
+  const f = fixture("hub"), checkout = join(f.root, "deleted-project"), directory = join(checkout, ".spider"), file = join(directory, "project.db");
+  mkdirSync(directory, { recursive: true });
+  if (condition === "corrupt") writeFileSync(file, "corrupt project fixture");
+  const global = openDb(join(f.root, "spider.db"));
+  try {
+    global.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES (?,?,?,1,1)").run("deleted-project", checkout, file);
+    global.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES (?,?,?)").run("fixture-repo", "deleted", checkout);
+    writeLocal(global, "mapping-redirect", "worktree:fixture-repo:deleted", file);
+  } finally { global.close(); }
+  const before = condition === "corrupt" ? readFileSync(file) : null, io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io, { v0: { lifecycle: f.options } })).toBe(0);
+  const diagnostics = JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics;
+  expect(diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "warning", reason: expect.stringContaining(file) }),
+    expect.objectContaining({ severity: "info", reason: expect.stringMatching(/^legacy-upgrade-ready/) }),
+  ]));
+  expect(diagnostics.some((row: { severity: string }) => row.severity === "block")).toBe(false);
+  const result = await configureV0Service(f.root, true, f.options);
+  expect(result.code, result.message).toBe(0);
+  expect(f.enabled()).toBe(true);
+  if (before) expect(readFileSync(file)).toEqual(before); else expect(existsSync(file)).toBe(false);
+});
+
+it.each(["missing", "corrupt"] as const)("a %s project named in an unfinished freeze remains unverified", async condition => {
+  const f = fixture("hub"), checkout = join(f.root, "needed-project"), directory = join(checkout, ".spider"), file = join(directory, "project.db"), key = "worktree:fixture-repo:needed";
+  mkdirSync(directory, { recursive: true });
+  if (condition === "corrupt") writeFileSync(file, "corrupt required fixture");
+  const global = openDb(join(f.root, "spider.db"));
+  try { global.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES (?,?,?)").run("fixture-repo", "needed", checkout); }
+  finally { global.close(); }
+  const freeze = openFreezeJournal(join(f.root, "roam", "journal.db"));
+  freeze.beginFreeze("session-needed", "move-needed", 1);
+  freeze.bindFreezeRoster("session-needed", "move-needed", 1, ["global", key]);
+  const files = [join(f.root, "spider.db"), join(f.root, "roam", "journal.db"), join(f.root, "roam", "config.json")], before = files.map(path => readFileSync(path));
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io, { v0: { lifecycle: f.options } })).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-unverified.*worktree:fixture-repo:needed/) }),
+  ]));
+  expect((await configureV0Service(f.root, true, f.options)).reason).toBe("legacy-upgrade-unverified");
+  expect(files.map(path => readFileSync(path))).toEqual(before);
+  expect(f.calls).toEqual([]); expect(f.enabled()).toBe(false);
+  if (condition === "corrupt") expect(readFileSync(file, "utf8")).toBe("corrupt required fixture"); else expect(existsSync(file)).toBe(false);
+});
+
 it.each(["hub", "box"] as const)("enable refuses an adopted pending launch without changing %s evidence or services", async role => {
   const f = fixture(role), stateRoot = join(f.root, "herdr"), file = join(f.root, "session.jsonl"), journalFile = join(f.root, "roam", "journal.db");
   writeFileSync(file, "fixture transcript\n", { mode: 0o600 });

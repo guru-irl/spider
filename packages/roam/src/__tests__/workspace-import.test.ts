@@ -890,8 +890,7 @@ it("resumes an installed new checkout without reimporting its bundle", async () 
   expect(git(destination, "ls-files", "-t", "--", "skip/item.txt")).toBe("S skip/item.txt");
 }, 5000);
 
-async function interruptedInstalledFixture() {
-  const f = fixture(), snapshot = sparseSnapshot(f);
+async function interruptedInstalledFixture(f = fixture(), snapshot = sparseSnapshot(f)) {
   const { prepareWorkspace } = await import("../workspace-import");
   const record = f.ports.journal.record.bind(f.ports.journal);
   f.ports.journal.record = (id, action, result) => {
@@ -964,6 +963,29 @@ it("restores an installed checkout when only HEAD was reset", async () => {
   const prepared = await prepareWorkspace(snapshot, f.destination, f.ports);
 
   expect(prepared.previous).toEqual(f.previous);
+  expect(git(f.destination, "rev-parse", "HEAD")).toBe(snapshot.head);
+  expect(git(f.destination, "write-tree")).toBe(snapshot.indexTree);
+  expect(tree(f.destination, f.root)).toBe(snapshot.workingTree);
+  const recovery = f.ports.journal.read(snapshot.moveId).find(row => row.action === "workspace-settings-recovery-complete");
+  expect(recovery?.result.workingApplied).toBe(true);
+}, 5000);
+
+it("restores an installed checkout when only the index was reset", async () => {
+  const f = fixture();
+  git(f.destination, "fetch", "--quiet", f.snapshot.root, f.snapshot.head);
+  git(f.destination, "update-ref", "--no-deref", "HEAD", f.snapshot.head);
+  const previous = { ...f.previous, head: f.snapshot.head };
+  f.setPrevious(previous);
+  const target = { ...f.snapshot, worktreeConfig: "[core]\n\tsparseCheckout = false\n" };
+  const { snapshot, prepareWorkspace } = await interruptedInstalledFixture(f, target);
+  git(f.destination, "read-tree", previous.indexTree);
+  expect(git(f.destination, "rev-parse", "HEAD")).toBe(snapshot.head);
+  expect(git(f.destination, "write-tree")).toBe(previous.indexTree);
+  expect(tree(f.destination, f.root)).toBe(snapshot.workingTree);
+
+  const prepared = await prepareWorkspace(snapshot, f.destination, f.ports);
+
+  expect(prepared.previous).toEqual(previous);
   expect(git(f.destination, "rev-parse", "HEAD")).toBe(snapshot.head);
   expect(git(f.destination, "write-tree")).toBe(snapshot.indexTree);
   expect(tree(f.destination, f.root)).toBe(snapshot.workingTree);

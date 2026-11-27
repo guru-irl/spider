@@ -14,7 +14,7 @@ import { inspectLocalSource, inspectLocalDestination, seedLocalPlacement } from 
 import type { RelocateAdapterOptions } from "../relocate/types";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { openJournal } from "../journal";
 import { createRelocateJournal } from "../relocate/journal";
 import { createV0SyncTransport, handleRelocateAgent } from "../relocate/remote";
@@ -31,7 +31,7 @@ function checkpoint(): RelocateCheckpoint {
   return {plan:{moveId:"v0-journal" as RelocateId,source,sourcePlacement:placement,destinationPlacement:{...placement,machineId:box,repository:"/destination",cwd:"/destination/sub",file:"/sessions/destination.jsonl"},destinationPrerequisites:[],startedAt:1},completed:["check"],captured:null,installed:null,terminal:null,result:null};
 }
 const fixtures: {close():void}[] = [];
-afterEach(()=>{for(const f of fixtures.splice(0).reverse())f.close();});
+afterEach(()=>{vi.unstubAllEnvs();for(const f of fixtures.splice(0).reverse())f.close();});
 function adapterFixture() {
  const global=createReplica("global",hub),repo=createReplica("repo",hub),worktree=createReplica("worktree",hub);fixtures.push(global,repo,worktree);
  const root=join(global.root,"checkout");mkdirSync(root);
@@ -92,6 +92,18 @@ describe("relocate adapters", () => {
     expect(await inspectLocalSource(id,f.options)).toMatchObject({ok:false});
     f.worktree.db.prepare("DELETE FROM roam_sessions").run();expect((await inspectLocalSource(id,f.options)).ok).toBe(false);
     f.global.db.prepare("DELETE FROM roam_locations").run();expect(await inspectLocalSource(id,f.options)).toMatchObject({ok:false,refusal:{code:"session-not-found"}});
+  });
+  it.each(["check", "private seed"])("reports retryable capture contention through %s", async route => {
+    const f=adapterFixture(), source=await inspectLocalSource(id,f.options);
+    if(!source.ok)throw new Error(JSON.stringify(source));
+    vi.stubEnv("SPIDER_ROAM_PI", process.execPath);
+    f.worktree.db.prepare("INSERT INTO runs (id,session_id,agent,status,task) VALUES ('busy-run',?,'worker','running',?)")
+      .run(id,"x".repeat(16*1024*1024+1));
+    const result=route === "check"
+      ? await createRelocateAdapters(f.options).ports.check({sessionId:id,destinationMachine:hub},checkpoint().plan.source,"v0-busy" as RelocateId)
+      : await handleRelocateAgent({version:1,kind:"seed",placement:source.value.placement,epoch:1},f.options);
+    expect(result).toMatchObject({ok:false,refusal:{code:"session-busy",nextStep:"Close running subagents, then rerun relocate."}});
+    expect(f.worktree.db.prepare("SELECT * FROM roam_seed_progress").all()).toEqual([]);
   });
   it("source is seeded while active and not during final pull",async()=>{
     const f=adapterFixture(),result=await inspectLocalSource(id,f.options);

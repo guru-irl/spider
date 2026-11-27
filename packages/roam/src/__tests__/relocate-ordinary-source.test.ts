@@ -91,6 +91,33 @@ describe("ordinary Mac source", () => {
     expect(f.project.prepare("SELECT * FROM roam_changes").all()).toEqual(changes);
     expect(await f.adapters.ports.pullSource(p)).toMatchObject({ ok: true, value: { session: { sessionId: sid } } });
   });
+  it("reports retryable seed contention when capturing a stopped ordinary source", async () => {
+    const f = fixture(), { plan: p, moving } = await plan(f);
+    await f.homes.compareAndSwap(p.source, moving);
+    f.project.prepare("INSERT INTO runs (id,session_id,agent,status,task) VALUES ('busy-run',?,'worker','cancelled',?)")
+      .run(sid,"x".repeat(16*1024*1024+1));
+    const busy = {ok:false,refusal:{code:"session-busy",nextStep:"Close running subagents, then rerun relocate."}};
+    expect(await f.adapters.ports.stopSource(p,moving)).toMatchObject(busy);
+    expect(await f.homes.read(sid)).toEqual(moving);
+    expect(f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id=?").get(sid)).toEqual({file:null,cwd:null});
+    expect(await f.adapters.ports.stopSource(p,moving)).toMatchObject(busy);
+    f.project.prepare("DELETE FROM runs WHERE id='busy-run'").run();
+    expect(await f.adapters.ports.stopSource(p,moving)).toEqual({ok:true,value:undefined});
+    expect(f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id=?").get(sid)).toEqual({file:f.file,cwd:f.cwd});
+    expect(f.project.prepare("SELECT epoch,state FROM roam_sessions WHERE session_id=?").get(sid)).toEqual({epoch:1,state:"frozen"});
+  });
+  it("resumes partial ordinary seeding before freezing the source", async () => {
+    const f=fixture(), {plan:p,moving}=await plan(f);
+    f.options.limits={...f.options.limits,hardBatchBytes:1024};
+    const insert=f.project.prepare("INSERT INTO runs (id,session_id,agent,status,task) VALUES (?,?, 'worker','done',?)");
+    for(let i=0;i<66;i++)insert.run(`run-${i}`,sid,"x".repeat(1024));
+    await f.homes.compareAndSwap(p.source,moving);
+    expect(await f.adapters.ports.stopSource(p,moving)).toMatchObject({ok:false,refusal:{code:"session-busy"}});
+    expect(f.project.prepare("SELECT state FROM roam_sessions WHERE session_id=?").get(sid)).toEqual({state:"active"});
+    expect(await f.adapters.ports.stopSource(p,moving)).toEqual({ok:true,value:undefined});
+    expect(f.project.prepare("SELECT state FROM roam_sessions WHERE session_id=?").get(sid)).toEqual({state:"frozen"});
+    expect(f.project.prepare("SELECT count(*) AS count FROM roam_changes WHERE entity='runs'").get()).toEqual({count:66});
+  });
   it("does not capture while source stop cannot prove terminal exit", async () => {
     const f = fixture(), { plan: p, moving } = await plan(f);
     await f.homes.compareAndSwap(p.source, moving);

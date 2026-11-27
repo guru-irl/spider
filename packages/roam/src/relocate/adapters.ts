@@ -9,7 +9,7 @@ import { storedManifestLimits } from "../artifact-layout";
 import type { Peer } from "../contracts";
 import { createRelocateJournal, parseCaptured, parseHome, parsePlacement, parsePlan, text, object } from "./journal";
 import { callV0, createV0ArtifactTransport, handleRelocateAgent, refusal } from "./remote";
-import { createLocalRuntime, exactHome, inspectLocalSource, inspectLocalDestination, seedLocalPlacement, captureOrdinarySource, type LocalSource } from "./local";
+import { createLocalRuntime, exactHome, inspectLocalSource, inspectLocalDestination, seedLocalPlacement, captureOrdinarySource, SessionSeedBusy, seedBusyRefusal, type LocalSource } from "./local";
 import { captureLocalSession, installLocalSession, stagingRoot } from "./transfer";
 import type { RelocateAdapterOptions, RelocateAdapters, RelocateId, RelocatePorts, SessionId, SessionPlacement, SettledHome, V0Result, RelocatePlan, CapturedSession, RunningHome, InstalledSession } from "./types";
 
@@ -96,7 +96,7 @@ export function createRelocateAdapters(options: RelocateAdapterOptions): Relocat
       }else{const reply=await rpc(source.machineId,{version:1,kind:"seed",placement:ready.value.placement,epoch:source.epoch,allowStopped:source.state==="stopped"});if(!reply.ok)return reply;}
       const plan=parsePlan({moveId,source,sourcePlacement:ready.value.placement,destinationPlacement:destination,destinationPrerequisites:prerequisite?[head]:[],startedAt:options.clock.now()});
       return {ok:true,value:plan};
-    }catch{return refusal("unsupported-workspace","The source or destination checkout could not pass v0 check.");}
+    }catch(error){return error instanceof SessionSeedBusy ? seedBusyRefusal(error) : refusal("unsupported-workspace","The source or destination checkout could not pass v0 check.");}
   }
   async function sync(machineId:string):Promise<V0Result<void>> {
     if(machineId===options.config.machineId)return {ok:true,value:undefined};
@@ -137,9 +137,9 @@ export function createRelocateAdapters(options: RelocateAdapterOptions): Relocat
   const ports:RelocatePorts={...shared,journal,initialSource,check,
     async stopSource(plan,moving){
       if(plan.source.machineId===options.config.machineId){
-        const stopped=await local.stop(plan.source.sessionId,moving);if(!stopped.ok)return stopped;
+        const stopped=await local.stop(plan.source.sessionId,moving,true);if(!stopped.ok)return stopped;
         try {await captureOrdinarySource(plan,options);}
-        catch {return refusal("stop-timeout","The stopped ordinary source could not be captured.");}
+        catch (error) {return error instanceof SessionSeedBusy ? seedBusyRefusal(error) : refusal("stop-timeout","The stopped ordinary source could not be captured.");}
         // Freeze any membership created after the first, confirmed stop.
         return local.stop(plan.source.sessionId,moving);
       }

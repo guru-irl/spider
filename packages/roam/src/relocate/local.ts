@@ -280,7 +280,7 @@ export interface LocalSource {placement:SessionPlacement;epoch:number;state:"act
 export async function inspectLocalSource(id: SessionId, options: RelocateAdapterOptions, allowStopped = false): Promise<V0Result<LocalSource>> {
   try {
     const row = options.globalDb.prepare("SELECT stores_json,home_json,file,cwd FROM roam_locations WHERE session_id=?").get(id) as {stores_json:string;home_json:string|null;file:string|null;cwd:string|null}|undefined;
-    if (!row) {
+    if (!row || row.file === null && row.cwd === null) {
       const ordinary = await discoverOrdinarySource(id, options);
       if (ordinary.ok) await normalRepository(ordinary.value.root, options);
       return ordinary;
@@ -364,7 +364,7 @@ export async function seedLocalPlacement(placement: SessionPlacement, epoch: num
   } finally {stores.close();}
 }
 export async function captureOrdinarySource(plan: RelocatePlan, options: RelocateAdapterOptions): Promise<void> {
-  if (options.globalDb.prepare("SELECT 1 FROM roam_locations WHERE session_id=?").get(plan.source.sessionId)) return;
+  if (options.globalDb.prepare("SELECT 1 FROM roam_locations WHERE session_id=? AND file IS NOT NULL AND cwd IS NOT NULL").get(plan.source.sessionId)) return;
   const home = await options.homes.read(plan.source.sessionId);
   if (!home || home.state !== "moving" || home.machineId !== options.config.machineId || home.moveId !== plan.moveId || home.epoch !== plan.source.epoch + 1 || home.destination !== plan.destinationPlacement.machineId) throw new Error("Ordinary capture requires the moving home");
   const ready = await inspectLocalSource(plan.source.sessionId, options);
@@ -375,7 +375,7 @@ export async function captureOrdinarySource(plan: RelocatePlan, options: Relocat
 }
 export interface LocalRuntime extends SessionMachinePorts {
   owner(id: SessionId, placement?: SessionPlacement): Promise<SessionOwner>;
-  stop(id: SessionId, moving?: MovingHome | null): Promise<V0Result<void>>;
+  stop(id: SessionId, moving?: MovingHome | null, beforeOrdinaryCapture?: boolean): Promise<V0Result<void>>;
   entries(): Promise<readonly SupervisorEntry[]>;
 }
 export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO = createLocalIO(options)): LocalRuntime {
@@ -460,7 +460,7 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
       return {ok:true,value:undefined};
     }); } catch (error) {return error instanceof SessionSeedBusy ? seedBusyRefusal(error) : refusal("install-failed","Local capture membership could not be activated.");}
   }
-  async function stop(id: SessionId,moving: MovingHome|null=null): Promise<V0Result<void>> {
+  async function stop(id: SessionId,moving: MovingHome|null=null,beforeOrdinaryCapture=false): Promise<V0Result<void>> {
     try { return await withSessionState(id,async()=>{
       const current = await options.homes.read(id).catch(error => {
         if (moving) throw error;
@@ -472,7 +472,11 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
       }
       const stopped=await stopLocalSession(id,moving,io,options.clock,options.limits.readyMs);if(!stopped.ok)return stopped;
       const known=readLocal<unknown>(options.globalDb,"relocate-managed",id);
-      const row=options.globalDb.prepare("SELECT stores_json FROM roam_locations WHERE session_id=?").get(id) as {stores_json:string}|undefined;
+      const row=options.globalDb.prepare("SELECT stores_json,file,cwd FROM roam_locations WHERE session_id=?").get(id) as {stores_json:string;file:string|null;cwd:string|null}|undefined;
+      // A first-time ordinary source may be cataloged by mapWorkspace before
+      // it finishes seeding. Keep its membership seedable until capture
+      // records the verified transcript and cwd. The moving home bars pi.
+      if (beforeOrdinaryCapture && moving && !known && row?.file === null && row.cwd === null) return stopped;
       const keys=known?parsePlacement(known).stores:row?parseLocationStores(JSON.parse(row.stores_json)):[];
       const stores=createStorePort(options.config,options.globalDb);
       try {for(const key of keys)if(key.startsWith("worktree:"))stores.openStore(key).db.prepare("UPDATE roam_sessions SET state='frozen' WHERE session_id=? AND state='active'").run(id);}

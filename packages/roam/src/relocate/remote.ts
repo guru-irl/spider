@@ -4,7 +4,7 @@ import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { createAgentPorts, handleAgentOperation, handleAgentArtifactRequest } from "../agent";
 import { createStorePort } from "../stores";
 import { resolveParticipantPi } from "../launcher";
-import { createLocalRuntime, inspectLocalSource, inspectLocalDestination, seedLocalPlacement, exactHome } from "./local";
+import { createLocalRuntime, inspectLocalSource, inspectLocalDestination, seedLocalPlacement, exactHome, SessionSeedBusy, seedBusyRefusal } from "./local";
 import { beginLocalMove, captureLocalSession, installLocalSession, stagingRoot } from "./transfer";
 import { json, parseCaptured, parseHome, parsePlan, parsePlacement } from "./journal";
 import type { Operation, Peer, Transport } from "../contracts";
@@ -173,7 +173,7 @@ export async function handleRelocateAgent(input:unknown,options:RelocateAdapterO
         }
       }
     }
-  }catch{return refusal("invalid-arguments","The private v0 operation could not be completed safely.");}
+  }catch(error){return error instanceof SessionSeedBusy ? seedBusyRefusal(error) : refusal("invalid-arguments","The private v0 operation could not be completed safely.");}
 }
 export function guardV0PeerTransport(transport: Transport, authorize: (machineId: string) => void): Transport {
   const check = (peer: Peer) => authorize(peer.machineId);

@@ -58,6 +58,22 @@ describe("relocate", () => {
     expect(s.backups.has(source)).toBe(true);
   });
 
+  it("undo delivers a previously unpublished moving home before asking the source to stop", async () => {
+    const s = state(), p = ports(s);
+    s.failAfter = "cas-moving";
+    expect(await relocate(request, p)).toMatchObject({ ok: false, step: "mark-moving", home: { state: "moving" } });
+    expect(s.replicaHomes.get(source)).toEqual(running());
+    const stop = p.stopSource;
+    p.stopSource = async (plan, moving) => s.replicaHomes.get(source)?.state === "moving"
+      ? stop(plan, moving) : { ok: false, refusal: refusal("home-conflict") };
+    expect(await relocate({ sessionId, destinationMachine: source }, p)).toMatchObject({ ok: true, value: {
+      disposition: "undone", home: { machineId: source, epoch: 3, state: "running" },
+    } });
+    expect(s.effects.indexOf("publish-source-moving")).toBeLessThan(s.effects.indexOf("stop-source"));
+    expect(s.processes).toEqual(new Set([source]));
+    expect(s.snapshots.size).toBe(0);
+  });
+
   it("reports a busy session lock without changing the home", async () => {
     const s = state(), p = ports(s);
     p.withSession = async () => { throw Object.assign(new Error("The operation lock is busy"), { name: "HerdrError", code: "lock-occupied" }); };

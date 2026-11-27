@@ -234,6 +234,11 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts, r
       const moving = movingHome(plan);
       const committed = committedHome(plan);
       if (home.state === "moving" && request.destinationMachine === plan.source.machineId) {
+        if (!done("mark-moving")) {
+          step = "mark-moving";
+          value(await ports.publishHome(moving, moving.machineId));
+          await complete(step);
+        }
         step = "stop-source";
         value(await ports.stopSource(plan, moving));
         const restored: RunningHome = { ...home, state: "running", destination: null,

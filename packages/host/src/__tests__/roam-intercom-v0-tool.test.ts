@@ -1,8 +1,10 @@
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { join } from "node:path";
+import { rmSync, writeFileSync } from "node:fs";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { IntercomClient } from "../../../intercom/src/broker/client.js";
+import { getIntercomDirPath } from "../../../intercom/src/broker/paths.js";
 import { registerIntercomOnce } from "../../../intercom/src/single-instance.js";
 import { startTestBroker, stopTestBroker, testBrokerEnv } from "../../../intercom/src/test-support.js";
 import type { V0Prepare, V0Text, V0ToolOptions } from "../../../intercom/src/roam-v0.js";
@@ -33,7 +35,10 @@ afterAll(async () => {
   vi.unstubAllEnvs();
 });
 
-async function fixture(v0?: V0ToolOptions) {
+async function fixture(v0?: V0ToolOptions, options: { confirm?: () => Promise<boolean> } = {}) {
+  const configPath = join(getIntercomDirPath(), "config.json");
+  if (options.confirm) writeFileSync(configPath, JSON.stringify({ confirmSend: true }), { mode: 0o600 });
+  let sessionId = "sender-session";
   const hooks = new Map<string, Array<(event: any, ctx: any) => unknown>>();
   const tools: Array<{ name: string; execute: (...args: any[]) => Promise<any> }> = [];
   const entries: Array<{ type: string; data: unknown }> = [];
@@ -49,9 +54,9 @@ async function fixture(v0?: V0ToolOptions) {
   };
   const ctx = {
     cwd: process.cwd(), mode: "tui" as const, model: { id: "fixture" }, hasUI: true,
-    sessionManager: { getSessionId: () => "sender-session", getEntries: () => [] },
+    sessionManager: { getSessionId: () => sessionId, getEntries: () => [] },
     isIdle: () => true, hasPendingMessages: () => false, abort() {},
-    ui: { notify() {}, getEditorText: () => "", confirm: async () => true },
+    ui: { notify() {}, getEditorText: () => "", confirm: options.confirm ?? (async () => true) },
   };
   registerIntercomOnce(pi as never, undefined, undefined, v0);
   const emit = async (name: string, event: unknown = {}) => { for (const handler of hooks.get(name) ?? []) await handler(event, ctx); };
@@ -61,8 +66,9 @@ async function fixture(v0?: V0ToolOptions) {
   }, { timeout: 2000, interval: 20 });
   return {
     ctx, entries,
+    switchSession(id: string) { sessionId = id; },
     tool: tools.find(tool => tool.name === "intercom")!,
-    async cleanup() { await emit("session_shutdown", { reason: "quit" }); },
+    async cleanup() { await emit("session_shutdown", { reason: "quit" }); rmSync(configPath, { force: true }); },
   };
 }
 
@@ -81,6 +87,29 @@ it("sends by name and reports socket dispatch, not consumption", async () => {
     expect(sent).toEqual([{ id: result.details.messageId, timestamp: expect.any(Number), text: "i5:fixture" }]);
     expect(f.entries).toContainEqual(expect.objectContaining({ type: "intercom_sent", data: expect.objectContaining({ messageId: result.details.messageId }) }));
   } finally { await f.cleanup(); }
+});
+
+it("does not send when confirmation finishes in a different session", async () => {
+  const sent: V0Text[] = [];
+  let finish!: (value: boolean) => void;
+  let confirmationOpened = false;
+  const confirm = () => new Promise<boolean>(resolve => { finish = resolve; confirmationOpened = true; });
+  const prepare: V0Prepare = async () => ({
+    kind: "remote", label: "b/ben",
+    async send(message) { sent.push(message); return { kind: "socket_delivered", id: message.id }; },
+    async ask(message) { return { kind: "no_reply", id: message.id }; },
+  });
+  const f = await fixture({ homeEpoch: () => 7, prepare }, { confirm });
+  try {
+    const pending = f.tool.execute("send", { action: "send", to: "ben", message: "private text" }, new AbortController().signal, undefined, f.ctx);
+    await vi.waitFor(() => expect(confirmationOpened).toBe(true));
+    expect(sent).toEqual([]);
+    f.switchSession("different-session");
+    finish(true);
+    const result = await pending;
+    expect(result.details).toMatchObject({ error: true });
+    expect(sent).toEqual([]);
+  } finally { finish?.(false); await f.cleanup(); }
 });
 
 it("reports uncertainty without a legacy send", async () => {

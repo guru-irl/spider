@@ -70,7 +70,7 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     expect(run.filter((row) => visible(row).endsWith("…"))).toHaveLength(2);
     expect(run.filter((row) => visible(row).endsWith("…")).map((row) => visible(row))).toEqual([
       "   ↳ " + "x".repeat(74) + "…",
-      "   " + "x".repeat(76) + "…",
+      "   ⤴ " + "x".repeat(74) + "…",
     ]);
     expect(fallback.map(visible)).toEqual([" " + "x".repeat(78) + "…"]);
     expect(visible(memory.at(-1) ?? "")).toBe(" ⎿ " + "x".repeat(76) + "…");
@@ -269,10 +269,10 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     expect(rows.every(row => visibleWidth(row) <= 30)).toBe(true);
   });
 
-  it("expanded run output hangs the payload at column 3", () => {
+  it("expanded run output marks the payload at column 3", () => {
     const rendered = renderSpiderResult({ details: { run: { status: "done", result: "payload" } } },
       { expanded: true }, theme, { args: { action: "run" } }).render(80);
-    expect(rendered).toContain("   payload");
+    expect(rendered).toContain("   ⤴ payload");
   });
 
   it("collapsed exec still shows one shortened preview row", () => {

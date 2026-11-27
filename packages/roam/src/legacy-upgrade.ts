@@ -299,7 +299,13 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
       if (storeProblem) unknown.push("registered store or replica unavailable");
     } finally { global.close(); }
     const stateRoot = join(root, "herdr"), pending = await pendingHandoffs(stateRoot);
-    for (const handoff of pending) findings.push(`handoff session ${safeId(handoff.sessionId)} operation ${safeId(handoff.operationId)}`);
+    for (const handoff of pending) {
+      const label = `handoff session ${safeId(handoff.sessionId)} operation ${safeId(handoff.operationId)}`;
+      const lock = await inspectIdLock(stateRoot, handoff.sessionId), boot = await localBootId();
+      if (!lock || lock.pendingOperationId !== handoff.operationId || !boot) { unknown.push(`${label} owner unavailable`); continue; }
+      if (lock.bootId === boot && (await probeProcess(lock.identity.pid)).kind === "unknown") { unknown.push(`${label} owner unavailable`); continue; }
+      findings.push(label);
+    }
     for (const state of await inspectIntentViews(root)) {
       if (state.supervision.kind !== "live") continue;
       const label = `live hosting session ${safeId(state.intent.sessionId)}`;
@@ -322,7 +328,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
       if (reservation.phase === "invoking") {
         const owner = await inspectAdoptedOwner({ root: stateRoot, sessionId: reservation.sessionId, operationId: reservation.operationId,
           file: reservation.file, leases: createSessionLeases(stateRoot), bootId: localBootId, probe: probeProcess });
-        if ((owner.kind === "missing" || owner.kind === "unavailable") && !pending.some(row => row.sessionId === reservation.sessionId && row.operationId === reservation.operationId)) {
+        if (owner.kind === "unavailable" || owner.kind === "missing" && !pending.some(row => row.sessionId === reservation.sessionId && row.operationId === reservation.operationId)) {
           unknown.push(`${label} owner unavailable`);
           continue;
         }

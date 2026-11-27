@@ -98,7 +98,7 @@ import { modelReviewer } from "./memory-reviewer";
 import { createAdmissionPorts, protectAdmissionApi, registerAdmission } from "./roam/admission.js";
 import { ordinaryWorkAllowed as isOrdinaryWorkAllowed } from "./roam/activation.js";
 import { createHostIntercomPorts, registerRoamIntercom } from "./roam/intercom.js";
-import type { V0Prepare } from "../../intercom/src/roam-v0.js";
+import type { V0Prepare } from "@spider/intercom/roam-v0";
 
 export { registerGlobalAction as registerAction };
 

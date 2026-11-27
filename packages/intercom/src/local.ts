@@ -2200,17 +2200,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
   pi.registerMessageRenderer("intercom_message", (message, options, theme) => {
     const details = message.details as { from: SessionInfo; message: Message; replyCommand?: string; bodyText?: string } | undefined;
     if (!details) return undefined;
-    const component = new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText, !options.expanded);
-    if (!details.from.remote || details.from.cwd) return component;
-    const sender = qualifiedName(details.from);
-    return {
-      invalidate: () => component.invalidate(),
-      render(width: number) {
-        const lines = component.render(width);
-        if (lines[0]) lines[0] = lines[0].replace(`${sender} ()`, `${sender}   `).replace(`${sender} (`, `${sender}  `);
-        return lines;
-      },
-    };
+    return new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText, !options.expanded);
   });
 
   pi.on("tool_result", (event) => {
@@ -2504,12 +2494,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     }));
   }
 
+  const advertiseV0 = v0 !== undefined && process.env.PI_SUBAGENT_CHILD !== "1";
   pi.registerTool(defineTool({
     name: "intercom",
     label: "Intercom",
-    description: `Send a message to another pi session ${v0 ? "on this machine or a configured roaming peer" : "running on this machine"}.
+    description: `Send a message to another pi session ${advertiseV0 ? "on this machine or a configured roaming peer" : "running on this machine"}.
 Use this to communicate findings, request help, or coordinate work with other sessions.
-${v0 ? `
+${advertiseV0 ? `
 For roaming v0, list is local only. Use a bare name, peer/name, or full session ID for a remote target.
 Use peer/name if the name is ambiguous. Remote sends, asks, and replies are text only and are not queued.
 ${V0_MAC_REPLY_ONLY_MESSAGE}
@@ -2531,7 +2522,7 @@ Usage:
   intercom({ action: "reply", message: "..." })                      → Reply to the active/single pending ask
   intercom({ action: "pending" })                                      → List unresolved inbound asks
   intercom({ action: "status" })                  → Show connection status`,
-    promptSnippet: v0
+    promptSnippet: advertiseV0
       ? "Use to coordinate with local pi sessions or named roaming peers: send updates, ask for help, or check intercom connectivity."
       : "Use to coordinate with other local pi sessions: list peers, send updates, ask for help, or check intercom connectivity.",
 
@@ -2541,7 +2532,7 @@ Usage:
         description: "Action: 'list', 'list-cwd', 'send', 'ask', 'reply', 'pending', 'status', or 'cancel'",
       }),
       to: Type.Optional(Type.String({
-        description: `Target session: name, full session ID, or the short id shown in parentheses by 'list' (a leading ID prefix resolves). For send/ask with cwd, omit to target the sole live session in that cwd or the newly opened project-pane session. For 'reply', disambiguates the pending ask.${v0 ? " For roaming v0, use a bare name, configured peer/name, or full session ID; list shows local sessions only." : ""}`,
+        description: `Target session: name, full session ID, or the short id shown in parentheses by 'list' (a leading ID prefix resolves). For send/ask with cwd, omit to target the sole live session in that cwd or the newly opened project-pane session. For 'reply', disambiguates the pending ask.${advertiseV0 ? " For roaming v0, use a bare name, configured peer/name, or full session ID; list shows local sessions only." : ""}`,
       })),
       message: Type.Optional(Type.String({
         description: "Message to send (for 'send', 'ask', or 'reply' action)",
@@ -2803,7 +2794,7 @@ Usage:
                 }
                 if (result.kind === "unknown") {
                   return { content: [{ type: "text", text: `Delivery could not be confirmed (ID ${result.id}). Check the recipient before sending again.` }],
-                    details: { delivered: false, delivery: "unknown", messageId: result.id, outcomeKnown: false, retryable: false } };
+                    details: { error: true, delivered: false, delivery: "unknown", messageId: result.id, outcomeKnown: false, retryable: false } };
                 }
                 if (result.kind !== "socket_delivered") {
                   return { content: [{ type: "text", text: "Message was not delivered." }], details: { error: true } };

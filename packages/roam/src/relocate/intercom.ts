@@ -375,7 +375,6 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
       } catch { return refused("home-unreadable"); }
       const currentPeer = current.sendTo.find(item => item.machineId === pinnedPeer.machineId);
       if (!currentPeer || !samePeer(currentPeer, pinnedPeer)) return refused("changed");
-      if (!locals.some(local => local.id === from.id && endpointOf(local) !== null && sameEndpoint(endpointOf(local)!, source))) return refused("changed");
       try {
         const active = await bounded(Math.min(deadline, setupDeadline), abort, s => broker(current.agentDir,
           { kind: "lookup", scopeId: source.address.scopeId, selector: { by: "id", value: source.address.sessionId } }, s));

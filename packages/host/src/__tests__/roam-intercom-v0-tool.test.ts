@@ -393,6 +393,11 @@ it.each([
     expect(legacyAdapter).toHaveBeenCalledTimes(scenario.skipLegacy ? 0 : 1);
     if (scenario.kind === "ordinary" && scenario.home !== "moving") {
       const tool = (host.pi as any).getAllTools().find((item: any) => item.name === "intercom");
+      if (scenario.child) {
+        expect(tool.description).not.toContain("configured roaming peer");
+        expect(tool.parameters.properties.to.description).not.toContain("roaming v0");
+        expect(tool.promptSnippet).not.toContain("roaming");
+      }
       const result = await tool.execute("host-local-send", { action: "send", to: "observer", message: "local only" }, new AbortController().signal, undefined, host.ctx);
       expect(result.details).toMatchObject({ delivered: true, delivery: "socket_delivered" });
     }
@@ -738,6 +743,9 @@ it("renders and replies to a peer ask through the private broker", async () => {
     expect(rendered).toContain("From: peer/ben");
     expect(rendered).toContain("i5:fixture");
     expect(rendered).not.toContain("peer/ben ()");
+    const collapsed = renderer(incoming, { expanded: false }, { fg: (_: string, text: string) => text });
+    const narrowWidth = "╭ From: peer/ben  Ctrl+O expands ╮".length;
+    expect(collapsed.render(narrowWidth)[0]).toMatch(/From: peer\/ben +Ctrl\+O expands/);
     const reply = await f.tool.execute("reply", { action: "reply", replyTo: "peer-question", message: "ack i5:fixture" }, new AbortController().signal, undefined, f.ctx);
     expect(reply.details).toMatchObject({ delivered: true, replyTo: "peer-question" });
     expect(await pending).toMatchObject({ kind: "replied", id: "peer-question", replyId: reply.details.messageId, text: "ack i5:fixture" });
@@ -1487,7 +1495,7 @@ it("reports a dropped remote send or ask as unknown without retrying", async () 
       const result = await f.tool.execute(action, { action, to: "ben", message: "hello" }, new AbortController().signal, undefined, f.ctx);
       const message = attempted[attempted.length - 1];
       expect(result.content[0].text).toBe(`Delivery could not be confirmed (ID ${message.id}). Check the recipient before sending again.`);
-      expect(result.details).toMatchObject({ delivery: "unknown", messageId: message.id, delivered: false });
+      expect(result.details).toMatchObject({ error: true, delivery: "unknown", messageId: message.id, delivered: false });
     }
     expect(attempted).toHaveLength(2);
   } finally { await f.cleanup(); }
@@ -1507,7 +1515,7 @@ it("reports uncertainty without a legacy send", async () => {
     const result = await f.tool.execute("send", { action: "send", to: "observer", message: "uncertain" }, new AbortController().signal, undefined, f.ctx);
     expect(sent).toHaveLength(1);
     expect(result.content[0].text).toBe(`Delivery could not be confirmed (ID ${sent[0].id}). Check the recipient before sending again.`);
-    expect(result.details).toMatchObject({ delivery: "unknown", messageId: sent[0].id, delivered: false });
+    expect(result.details).toMatchObject({ error: true, delivery: "unknown", messageId: sent[0].id, delivered: false });
     expect(legacyInbox).toEqual([]);
   } finally { observer.off("message", onMessage); await f.cleanup(); }
 });

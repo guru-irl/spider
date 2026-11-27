@@ -2571,7 +2571,8 @@ Usage:
         }
         try {
           const sessionId = statusClient.sessionId;
-          const sessions = await statusClient.listSessions();
+          const listed = await statusClient.listSessions();
+          const sessions = v0 ? listed.filter(session => !session.remote) : listed;
           return {
             content: [{ type: "text", text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${sessionId}\nActive sessions: ${sessions.length}` }],
             details: { connected: true, sessionId, activeSessions: sessions.length },
@@ -2610,7 +2611,8 @@ Usage:
         case "list": {
           try {
             const mySessionId = connectedClient.sessionId;
-            const sessions = await connectedClient.listSessions();
+            const listed = await connectedClient.listSessions();
+            const sessions = v0 ? listed.filter(session => !session.remote) : listed;
             const currentSession = sessions.find(s => s.id === mySessionId);
             const otherSessions = sessions.filter(s => s.id !== mySessionId);
 
@@ -2642,7 +2644,8 @@ Usage:
         case "list-cwd": {
           try {
             const mySessionId = connectedClient.sessionId;
-            const sessions = await connectedClient.listSessions();
+            const listed = await connectedClient.listSessions();
+            const sessions = v0 ? listed.filter(session => !session.remote) : listed;
             const currentSession = sessions.find(s => s.id === mySessionId);
 
             if (!currentSession) {

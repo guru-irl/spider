@@ -195,6 +195,27 @@ it.each([
   }
 });
 
+it.each([true, false])("lists remote federation sessions only when v0 is disabled (%s)", async v0Enabled => {
+  const f = await fixture(v0Enabled ? { homeEpoch: () => 7, prepare: async () => ({ kind: "legacy" }) } : undefined);
+  const remote: RemoteSessionInfo = { remote: true, id: "legacy-remote", address: { sessionId: "legacy-remote", scopeId: null },
+    machineId: "peer-machine", machineAlias: "peer", homeEpoch: 3, activationEpoch: "peer-connection", endpointEpoch: "peer-connection",
+    name: "legacy-remote-name", cwd: process.cwd(), model: "fixture", startedAt: 0, lastActivity: 0 };
+  const originalList = IntercomClient.prototype.listSessions;
+  const list = vi.spyOn(IntercomClient.prototype, "listSessions").mockImplementation(async function (this: IntercomClient, options) {
+    return [...await originalList.call(this, options), remote];
+  });
+  try {
+    for (const action of ["list", "list-cwd"] as const) {
+      const result = await f.tool.execute(action, { action }, new AbortController().signal, undefined, f.ctx);
+      if (v0Enabled) expect(result.content[0].text).not.toContain("legacy-remote-name");
+      else expect(result.content[0].text).toContain("legacy-remote-name");
+      expect(result.content[0].text).toContain("observer");
+    }
+    const status = await f.tool.execute("status", { action: "status" }, new AbortController().signal, undefined, f.ctx);
+    expect(status.details.activeSessions).toBe(v0Enabled ? 2 : 3);
+  } finally { list.mockRestore(); await f.cleanup(); }
+});
+
 it("sends by name and reports socket dispatch, not consumption", async () => {
   const sent: V0Text[] = [];
   const prepare: V0Prepare = async () => ({

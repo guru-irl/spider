@@ -346,6 +346,17 @@ it.each(["checkpoint", "incoming"] as const)("does not classify a %s-owned v0 wo
   expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
     expect.objectContaining({ severity: "info", reason: expect.stringMatching(/^legacy-upgrade-ready/) }),
   ]));
+  if (origin === "incoming") {
+    const stale = openDb(join(f.root, "spider.db"));
+    try { stale.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state,destination) VALUES (?,?,10,?,1,'running',NULL)")
+      .run("session-v0", box, "v0-44444444-4444-4444-8444-444444444444"); } finally { stale.close(); }
+    expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+    expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-blocked.*worktree:fixture-repo:workspace-1/) }),
+    ]));
+    const restore = openDb(join(f.root, "spider.db"));
+    try { restore.prepare("DELETE FROM session_homes WHERE session_id=?").run("session-v0"); } finally { restore.close(); }
+  }
   const changed = openDb(join(f.root, "spider.db"));
   try { writeLocal(changed, "mapping-intent", JSON.stringify(["workspace", identity]), { kind: "workspace", identity,
     target_path: other, store_key: key, command_json: null, attempt_id: "attempt-not-v0" }); } finally { changed.close(); }

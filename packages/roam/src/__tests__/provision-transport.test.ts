@@ -357,6 +357,24 @@ it("does not resolve a different core after claiming an identity", async () => {
   expect(f.calls).toHaveLength(before);
 }, 5000);
 
+it("launches both provisioning paths as JavaScript modules", async () => {
+  const f = fixture(); f.consent();
+  const port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
+  const requestFile = `${bootstrapPeer.globalRoot}/roam/provision/op-1/release-request`;
+  await port.launchRelease(handle, "op-1", requestFile);
+  const launch = f.controlCalls.find(call => call[0] === "run")!;
+  expect(launch.slice(launch.indexOf("--") + 1)).toEqual([
+    bootstrapPeer.node, "--input-type=module", "-e", expect.any(String), requestFile,
+  ]);
+
+  await port.executeProvision(handle, { action: "pair-unit-repair", operationId: "op-1", machineId: bootstrapPeer.machineId,
+    globalRoot: bootstrapPeer.globalRoot, node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi });
+  const exec = f.calls.at(-1)!.argv;
+  expect(exec.slice(exec.indexOf("--") + 1)).toEqual([
+    bootstrapPeer.node, "--input-type=module", "-e", expect.any(String),
+  ]);
+});
+
 it("launches only a consented release in a labelled outliving background terminal", async () => {
   const f = fixture(), port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
   const request = `${bootstrapPeer.globalRoot}/roam/provision/op-1/release-request`;

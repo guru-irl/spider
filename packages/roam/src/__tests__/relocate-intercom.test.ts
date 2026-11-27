@@ -76,6 +76,7 @@ function paired() {
   vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
   configure(sender.root, [peer(BOX, "box", receiver)], []);
   const inbox: { from: RemoteSessionInfo; message: V0Text }[] = [];
+  const asks: V0Text[] = [];
   const calls: { machineId: string; request: V0AgentRequest; options: CallOptions }[] = [];
   const state: { fault: "none" | "drop" | "truncated" | "wrong-id" | "wrong-machine"; live: V0Endpoint[]; source: V0Endpoint } = {
     fault: "none", live: [ben], source: aliceEndpoint,
@@ -85,7 +86,7 @@ function paired() {
       endpoint.address.scopeId === op.scopeId && (op.selector.by === "id" ? endpoint.address.sessionId === op.selector.value
         : endpoint.name?.toLowerCase() === op.selector.value.toLowerCase())) };
     if (!state.live.some(endpoint => endpoint.endpointEpoch === op.target.endpointEpoch)) return { kind: "refused", code: "changed" };
-    if (op.kind === "ask") return { kind: "no_reply", id: op.message.id };
+    if (op.kind === "ask") { asks.push(op.message); return { kind: "no_reply", id: op.message.id }; }
     inbox.push({ from: op.from, message: op.message });
     return { kind: "socket_delivered", id: op.message.id };
   };
@@ -113,7 +114,7 @@ function paired() {
     },
   });
   const intercom = createV0Intercom(sender.root, { broker: localBroker, transport });
-  return { sender, receiver, inbox, calls, state, intercom };
+  return { sender, receiver, inbox, asks, calls, state, intercom };
 }
 
 async function remotePlan(intercom: ReturnType<typeof createV0Intercom>, to = "box/ben", locals = [alice]) {
@@ -306,6 +307,22 @@ describe("roaming v0 intercom", () => {
       expect(f.calls.filter(call => call.request.kind === "deliver")).toHaveLength(1);
     },
   );
+
+  it("returns unknown without asking twice when the reply is lost", async () => {
+    const f = paired(), plan = await remotePlan(f.intercom);
+    f.state.fault = "drop";
+    expect(await plan.ask(message, 5000)).toEqual({ kind: "unknown", id: message.id });
+    expect(f.asks).toEqual([message]);
+    expect(f.calls.filter(call => call.request.kind === "ask")).toHaveLength(1);
+  });
+
+  it("honors a cancelled send before making a remote call", async () => {
+    const f = paired(), plan = await remotePlan(f.intercom);
+    const controller = new AbortController(); controller.abort();
+    expect(await plan.send(message, controller.signal)).toEqual({ kind: "refused", code: "unreachable" });
+    expect(f.calls.map(call => call.request.kind)).toEqual(["lookup"]);
+    expect(f.inbox).toEqual([]);
+  });
 
   it("rejects an oversized encoded message before remote dispatch", async () => {
     const f = paired(), plan = await remotePlan(f.intercom);

@@ -118,7 +118,7 @@ async function restartAndRestore(suite: Suite): Promise<void> {
     const first = await fixture.waitOwner();
     const nativeFirst = await suite.hc(['get', first.terminal, '--json']);
     expect(nativeFirst.exitCode, nativeFirst.stderr).toBe(0);
-    expect(nativeFirst.json).toMatchObject({ state: 'live' });
+    expect(nativeFirst.json).toMatchObject({ address: first.terminal, state: 'live', pid: first.pid });
     assertNativeLaunch(nativeFirst.json, await suite.cores!.records(), fixture, suite.cores!.local.namespace, fixture.sessionId, fixture.machineId, fixture.epoch);
     const startup = await event(fixture, first, 'session_start', row => row.sessionId === fixture.sessionId);
     expect(startup).toMatchObject({ mode: 'tui', stdinTTY: true, sessionFile: fixture.file, cwd: fixture.cwd, hcTerminal: first.terminal });
@@ -163,7 +163,7 @@ async function restartAndRestore(suite: Suite): Promise<void> {
     expect(lease).toMatchObject({ pid: restored.pid, startIdentity: adopted!.identity.startIdentity });
     const nativeRestored = await suite.hc(['get', restored.terminal, '--json']);
     expect(nativeRestored.exitCode, nativeRestored.stderr).toBe(0);
-    expect(nativeRestored.json).toMatchObject({ state: 'live' });
+    expect(nativeRestored.json).toMatchObject({ address: restored.terminal, state: 'live', pid: restored.pid });
     assertNativeLaunch(nativeRestored.json, (await suite.cores!.records()).slice(recordsBeforeRestart), fixture,
       suite.cores!.local.namespace, fixture.sessionId, fixture.machineId, fixture.epoch);
     const ownersAfterRestart = await fixture.owners(); expect(ownersAfterRestart).toHaveLength(1);

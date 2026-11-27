@@ -991,7 +991,13 @@ catch (error) {
 
 // Linux limits each exec argument to 128 KiB, even when ARG_MAX is larger.
 // Keep stdin available for the request and argv[1] for release request files.
-const provisionPayload = gzipSync(stripTypeScriptTypes(provisionSource)).toString("base64");
-export const PROVISION_REMOTE_SCRIPT: string = `import { gunzipSync } from "node:zlib";
+let provisionScript: string | undefined;
+export function getProvisionRemoteScript(): string {
+  if (provisionScript === undefined) {
+    const provisionPayload = gzipSync(stripTypeScriptTypes(provisionSource)).toString("base64");
+    provisionScript = `import { gunzipSync } from "node:zlib";
 const source = gunzipSync(Buffer.from(${JSON.stringify(provisionPayload)}, "base64")).toString("utf8");
 await import("data:text/javascript;base64," + Buffer.from(source).toString("base64"));`;
+  }
+  return provisionScript;
+}

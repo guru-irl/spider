@@ -18,7 +18,7 @@ import { createLocalDiagnosticPorts } from '../../../roam/src/local-diagnostics.
 import { createIntentStore } from '../../../roam/src/intent.js';
 import { installSupervisorCorePin } from '../../../roam/src/enrollment.js';
 import { DEFAULT_LIMITS } from '../../../roam/src/contracts.js';
-import { PROVISION_REMOTE_SCRIPT } from '../../../roam/src/provision-remote-script.js';
+import { getProvisionRemoteScript } from '../../../roam/src/provision-remote-script.js';
 import { renderSupervisorUnit } from '../../../roam/src/systemd.js';
 import type { SupervisorSystemPorts } from '../../../roam/src/production-supervisor.js';
 import { readObserved, type ObservedEvent } from '../harness/pi.js';
@@ -204,7 +204,7 @@ export async function hostingFixture(suite: Suite, name = 'hosting'): Promise<Ho
       supervisor: suite.packed.roamSupervisor, maximum: DEFAULT_LIMITS.agentBytes, chunkBytes: DEFAULT_LIMITS.chunkBytes };
     const execute = async (request: Record<string, unknown>) => {
       const process = spawnOwned(suite.ledger, { label: 'hosting-unit-install', command: globalThis.process.execPath,
-        args: ['--input-type=module-typescript', '-e', PROVISION_REMOTE_SCRIPT], env: { ...suite.env, HOME: home }, cwd: suite.root, stdio: 'pipe' });
+        args: ['--input-type=module', '-e', getProvisionRemoteScript()], env: { ...suite.env, HOME: home }, cwd: suite.root, stdio: 'pipe' });
       const stdout: Buffer[] = [], stderr: Buffer[] = [];
       process.child.stdout!.on('data', chunk => stdout.push(Buffer.from(chunk)));
       process.child.stderr!.on('data', chunk => stderr.push(Buffer.from(chunk)));

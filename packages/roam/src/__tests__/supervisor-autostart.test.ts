@@ -7,7 +7,7 @@ import { parseConfig } from "../config";
 import { openJournal } from "../journal";
 import { runLocalDoctor } from "../local-diagnostics";
 import { setEnrolledPeerEnabled } from "../peer-enabled";
-import { PROVISION_REMOTE_SCRIPT } from "../provision-remote-script";
+import { getProvisionRemoteScript } from "../provision-remote-script";
 import { migrate, openDb } from "@spider/db-core";
 import { enableRoaming } from "../production-controls";
 import * as productionHub from "../production-hub";
@@ -40,7 +40,7 @@ function fixture() {
   const config = parseConfig({ enabled: false, role: "hub", machineId: HUB, hubMachineId: HUB, peers: [peer], discoveryRoots: [], coreUnit: "fixture.service" });
   const journal = openJournal(join(root, "journal.db"));
   const transport = { transport: { async resolve(value: Peer) { return value; } }, async executeProvision(_peer: Peer, request: Record<string, unknown>) {
-    const child = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", PROVISION_REMOTE_SCRIPT], {
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", getProvisionRemoteScript()], {
       input: JSON.stringify({ ...request, core, coreId: "fixture-core" }), encoding: "utf8", timeout: 5000,
       env: { ...process.env, HOME: root, PATH: bin },
     });

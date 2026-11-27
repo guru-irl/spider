@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { DEFAULT_LIMITS } from "../contracts";
 import type { Peer, Transport } from "../contracts";
 import type { ProvisionTransport } from "../transport";
-import { createHcProvisionAdapter, PROVISION_REMOTE_SCRIPT } from "../provision-adapter";
+import { createHcProvisionAdapter, getProvisionRemoteScript } from "../provision-adapter";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -24,7 +24,7 @@ function fixture() {
   const transport = { async resolve(value: Peer) { return value; } } as Transport;
   const remote = { transport, async executeProvision(_peer: Peer, request: Record<string, unknown>) {
     requests.push(String(request.action));
-    const child = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", PROVISION_REMOTE_SCRIPT], {
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", getProvisionRemoteScript()], {
       input: JSON.stringify({ ...request, core: peer.core, coreId: "fixture-core" }), encoding: "utf8", timeout: 4000,
       env: { ...process.env, HOME: home, PATH: bin, SPIDER_GLOBAL_ROOT: globalRoot },
     });

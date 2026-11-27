@@ -2,7 +2,7 @@ import { afterEach, expect, it } from "vitest";
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { PROVISION_REMOTE_SCRIPT } from "../provision-remote-script";
+import { getProvisionRemoteScript } from "../provision-remote-script";
 
 const roots: string[] = [];
 function fixture() {
@@ -21,7 +21,7 @@ function fixture() {
     chunks: [{ name: "release-" + "b".repeat(32) + "-0", size: 1, sha256: "c".repeat(64) }] };
   return { home, parent, npmPrefix, bin, request, receipt: join(roam, "provision/op-1/release-request"),
     run(prelude = "") {
-      const child = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", prelude + PROVISION_REMOTE_SCRIPT], {
+      const child = spawnSync(process.execPath, ["--input-type=module", "-e", prelude + getProvisionRemoteScript()], {
         input: JSON.stringify(request), encoding: "utf8", env: { ...process.env, HOME: home }, timeout: 4000,
       });
       expect(child.status, child.stderr).toBe(0); return JSON.parse(child.stdout);

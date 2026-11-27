@@ -112,7 +112,9 @@ describe("the live relay soak reliability gate", () => {
   it("rejects a second independent sink receipt for one message", () => {
     const evidence = copy();
     evidence.links[0].receipts.push({ ...evidence.links[0].receipts[0] });
-    expect(checkRelaySoak(evidence).violations).toContain("duplicate-receipt");
+    const result = checkRelaySoak(evidence);
+    expect(result.ok).toBe(false);
+    expect(result.violations).toContain("duplicate-receipt");
   });
 
   it("rejects missing, duplicate, or late final outcomes", () => {
@@ -133,7 +135,9 @@ describe("the live relay soak reliability gate", () => {
     expect(checkRelaySoak(evidence).violations).not.toContain("unknown-outside-fault");
     const outside = link.outcomes[0];
     outside.kind = "unknown";
-    expect(checkRelaySoak(evidence).violations).toContain("unknown-outside-fault");
+    const rejected = checkRelaySoak(evidence);
+    expect(rejected.ok).toBe(false);
+    expect(rejected.violations).toContain("unknown-outside-fault");
     outside.kind = "socket_delivered";
     fault.linkIds = [evidence.links[1].id];
     expect(checkRelaySoak(evidence).violations).toContain("unknown-outside-fault");
@@ -317,7 +321,9 @@ describe("the live relay soak reliability gate", () => {
   it("requires complete before and after birth-identity censuses with no new helpers", () => {
     const absent = copy();
     absent.processes.pop();
-    expect(checkRelaySoak(absent).violations).toContain("cleanup");
+    const withoutCensus = checkRelaySoak(absent);
+    expect(withoutCensus.ok).toBe(false);
+    expect(withoutCensus.violations).toContain("cleanup");
     const incomplete = copy();
     incomplete.processes[0].after.complete = false;
     expect(checkRelaySoak(incomplete).violations).toContain("cleanup");

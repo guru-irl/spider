@@ -248,6 +248,13 @@ Keep both `state` and `relay-state` records. The checker uses their
 `sinceMs` transition times, not when the tool observed them. If a transition
 and the fault share a clock, their difference needs no offset adjustment.
 
+The 60-second RSS gap limit excludes time from a fault on the relay clock
+until the first resumed RSS sample. For `relay-kill`, that sample must be
+from a replacement dial birth. A dial that survives sleep can resume with
+its original birth. The baseline still covers the whole run. The RSS check
+adds no restart limit, but each link must recover within 60 seconds after
+the fault clears.
+
 For a relay kill or a Herdr restart, add `process` with the affected
 `machineId`, `pid`, `birthId`, `bootId`, and `observedMs`. Observe that process
 on its own machine within five seconds before the fault. For an endpoint kill,

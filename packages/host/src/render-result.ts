@@ -4,9 +4,9 @@
 // as the title, so renderResult renders only the BODY (no header of its own — that
 // would double the "spider"). `options.expanded` reflects the in-chat Ctrl+O toggle;
 // `context.args` are the call params; `result.details` is the structured payload.
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi, Box } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, Box } from "@earendil-works/pi-tui";
 import { icon, type Component, type IconStyle } from "@spider/ui";
-import { cachedLines, formatRunUsage, renderErrorResult, renderExecCall, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, sectionRule, fitResultLines, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
+import { cachedLines, formatRunUsage, renderErrorResult, renderExecCall, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, statusIcon, fitResultLines, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -67,23 +67,12 @@ function restoreCardBackground(lines: string[], theme: any, background: string):
 
 function clip(s: string, w: number): string { return visibleWidth(s) > w ? truncateToWidth(s, w, "…") : s; }
 function shortModel(m?: string | null): string { if (!m) return "—"; return (m.split("/").pop() ?? m).replace(/^claude-/, ""); }
-function wrap(text: string, w: number, max: number): string[] {
-  const words = text.replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
-  const out: string[] = []; let cur = "";
-  for (const word of words) {
-    const cand = cur ? cur + " " + word : word;
-    if (visibleWidth(cand) > w && cur) { out.push(cur); cur = word; } else { cur = cand; }
-    if (out.length >= max) { cur = ""; break; }
-  }
-  if (cur && out.length < max) out.push(cur);
-  return out.slice(0, max).map((l) => clip(l, w));
-}
-
 function textComponent(result: any, expanded = false): Component {
   const blocks: any[] = Array.isArray(result?.content) ? result.content : [];
   const raw = blocks.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text as string).join("\n");
+  const lines = (expanded ? raw : raw.replace(/\x1b\[[0-9;]*m/g, "")).trim().split("\n");
   return {
-    render: (w: number) => fitResultLines((expanded ? raw : raw.replace(/\x1b\[[0-9;]*m/g, "")).split("\n"), w, expanded),
+    render: (w: number) => fitResultLines(lines.map(line => line.trim() ? ` ${line}` : ""), w, expanded, 3),
     invalidate() {},
   };
 }
@@ -97,9 +86,7 @@ interface RunLike { token_count?: number; cost?: number; usageCosts?: RunUsageCo
 
 /** Wrap the text after a row marker, with continuations in column 3. */
 function cardRow(prefix: string, text: string, width: number, expanded: boolean): string[] {
-  if (!expanded) return [clip(prefix + text, width)];
-  const [first, ...rest] = wrapTextWithAnsi(text, Math.max(1, width - visibleWidth(prefix)));
-  return [prefix + first, ...rest.map(line => `   ${line}`)].map(line => clip(line, width));
+  return fitResultLines([prefix + text], width, expanded, 3);
 }
 
 function runBlock(t: T, r: RunLike, width: number, expanded: boolean, formatRunCost: RunCostFormatter, includeSubject: boolean): string[] {
@@ -155,7 +142,7 @@ function renderRun(t: T, details: any, expanded: boolean, formatRunCost: RunCost
       const anyTask = runs.some((r) => (r.task ?? "").trim());
       const anyOut = runs.some((r) => (r.result ?? "").trim().split("\n").length > 2);
       if (!expanded && (anyTask || anyOut)) lines.push(t.fg("dim", ` ctrl+o to expand${anyOut ? " output" : " instructions"}`));
-      return fitResultLines(lines, width, expanded);
+      return fitResultLines(lines, width, expanded, 3);
     },
     invalidate() {},
   };
@@ -173,38 +160,27 @@ function adaptTheme(t: T): ThemeAdapter {
 
 const SEARCH_GLYPH: Record<string, string> = { memory: "◆", content: "▪", todo: "▣", message: icon("text", "message") };
 
-/** Unified-search hits rendered in the parallel-run style (renderRun/runBlock): a leading
- *  blank, a muted count line, then one 2-line block per hit — `n. ◆ title · kind · source`
- *  plus a single-line (collapsed) or wrapped (expanded) snippet. No Panel border, no repeated
- *  🕸 header (the spider call line already shows `🕸 spider · search`). */
+/** Render each search hit with its snippet under the shared result count. */
 function renderSearch(t: T, rows: any, expanded: boolean): Component {
   const list: any[] = Array.isArray(rows) ? rows : [];
   return {
     render(width: number): string[] {
-      if (list.length === 0) return ["", t.fg("muted", "   (no results)")];
+      if (!list.length) return fitResultLines([t.fg("muted", " (no results)")], width, expanded, 3);
       const sep = t.fg("dim", "·");
-      const lines: string[] = [t.fg("muted", `  ${list.length} result${list.length === 1 ? "" : "s"}`)];
-      list.forEach((r, i) => {
-        const glyph = t.fg("toolTitle", r?.kind === "message" ? icon(t.iconStyle, "message") : SEARCH_GLYPH[String(r?.kind)] ?? "•");
-        const num = t.fg("dim", `${i + 1}.`);
-        const title = t.bold(String(r?.title || "untitled"));
-        const kind = t.italic(t.fg("toolTitle", String(r?.kind ?? "")));
-        const src = r?.source ? ` ${sep} ${t.fg("muted", String(r.source))}` : "";
-        lines.push(expanded ? `  ${num} ${glyph} ${title} ${sep} ${kind}${src}` : clip(`  ${num} ${glyph} ${title} ${sep} ${kind}${src}`, width));
-        const snippet = expanded ? String(r?.snippet ?? "") : String(r?.snippet ?? "").replace(/\s+/g, " ").trim();
-        if (snippet) {
-          if (expanded) {
-            const body = snippet.split("\n");
-            for (let j = 0; j < body.length; j++) lines.push(`     ${t.fg("dim", (j === 0 ? `${icon(t.iconStyle, "task")} ` : "  ") + body[j])}`);
-          } else {
-            lines.push(`     ${t.fg("dim", `${icon(t.iconStyle, "task")} ` + clip(snippet, Math.max(1, width - 7)))}`);
-          }
-        }
-      });
-      if (!expanded && list.some((r) => String(r?.snippet ?? "").length > 0)) {
-        lines.push(t.fg("dim", "  ctrl+o to expand"));
+      const lines = [t.fg("muted", ` ${list.length} result${list.length === 1 ? "" : "s"}`)];
+      const gutter = ` ${t.fg("dim", icon(t.iconStyle, "gutter"))} `;
+      for (const [i, hit] of list.entries()) {
+        if (i > 0) lines.push("");
+        const glyph = t.fg("toolTitle", hit?.kind === "message" ? icon(t.iconStyle, "message") : SEARCH_GLYPH[String(hit?.kind)] ?? "•");
+        const title = t.bold(String(hit?.title || "untitled"));
+        const kind = t.italic(t.fg("toolTitle", String(hit?.kind ?? "")));
+        const source = hit?.source ? ` ${sep} ${t.fg("muted", String(hit.source))}` : "";
+        lines.push(` ${t.fg("dim", `${i + 1}.`)} ${glyph} ${title} ${sep} ${kind}${source}`);
+        const snippet = String(hit?.snippet ?? "");
+        if (snippet) lines.push(gutter + t.fg("dim", expanded ? snippet : snippet.replace(/\s+/gu, " ").trim()));
       }
-      return fitResultLines(["", ...lines], width, expanded);
+      if (!expanded && list.some(hit => hit?.snippet)) lines.push(t.fg("dim", " ctrl+o to expand"));
+      return fitResultLines(lines, width, expanded, 3);
     },
     invalidate() {},
   };
@@ -226,9 +202,9 @@ function renderDoctor(t: T, details: any, expanded: boolean): Component {
   return {
     render(width: number): string[] {
       const clipDoctor = (line: string, w: number) => expanded ? line : clip(line, w);
-      const glyph = t.fg(ok === undefined ? "dim" : "toolTitle", ok === true ? "✓" : ok === false ? icon(t.iconStyle, "failure") : "○");
+      const glyph = statusIcon(adaptTheme(t), ok === true ? "ok" : ok === false ? "fail" : "off");
       const summary = ok === true ? "all checks passed" : ok === false ? "issues found" : "check status unknown";
-      const out = ["", clipDoctor(` ${glyph} ${t.fg("muted", summary)}`, width)];
+      const out = [clipDoctor(` ${glyph} ${t.fg("muted", summary)}`, width)];
       for (const c of checks) {
         const idx = c.indexOf(":");
         if (idx > 0) {
@@ -239,7 +215,7 @@ function renderDoctor(t: T, details: any, expanded: boolean): Component {
           out.push(clipDoctor(` ${t.fg("dim", `${icon(t.iconStyle, "gutter")} `)}${t.fg("muted", c)}`, width));
         }
       }
-      return fitResultLines(out, width, expanded);
+      return fitResultLines(out, width, expanded, 3);
     },
     invalidate() {},
   };
@@ -252,15 +228,14 @@ function renderControlInsights(t: T, details: any, expanded: boolean): Component
   const g: InsightGraphView = details && Array.isArray(details.nodes)
     ? details
     : { nodes: [], edges: [], stats: { nodes: 0, edges: 0, linkedPct: 0 } };
-  return { render: (w: number) => ["", ...renderInsights(g, th, w, expanded)], invalidate() {} };
+  return { render: (w: number) => renderInsights(g, th, w, expanded, true), invalidate() {} };
 }
 
-/** `control stats` — render the StatsSummary details as a body-only stats view (leading blank
- *  for the gutter style; the tool shell owns the header). Never throws on a missing/partial summary. */
+/** Render the stats summary below the tool title. */
 function renderControlStats(t: T, details: any, expanded: boolean): Component {
   const th = adaptTheme(t);
   const summary: StatsSummary = details ?? { tokenSavings: { indexedChunks: 0, estTokensSaved: 0 }, rowCounts: {}, models: [] };
-  return { render: (w: number) => ["", ...renderStats(summary, th, w, expanded)], invalidate() {} };
+  return { render: (w: number) => renderStats(summary, th, w, expanded, true), invalidate() {} };
 }
 
 /** `control models` — render the copilot catalog (tier-grouped, availability + role defaults)
@@ -270,69 +245,87 @@ function renderControlModels(t: T, details: any, expanded: boolean): Component {
   const th = adaptTheme(t);
   if (details && details.catalog === undefined && (details.ok !== undefined || details.error !== undefined)) {
     const line = details.ok
-      ? th.fg("accent", "●") + " " + th.fg("text", details.cleared === false
+      ? statusIcon(th, "ok") + " " + th.fg("text", details.cleared === false
         ? `no local override for ${String(details.role ?? "")}`
         : details.cleared ? `clear ${String(details.role ?? "")} (local)`
         : `set ${String(details.role ?? "")} → ${String(details.ref ?? "")} (global)`)
       : th.fg("error", icon(th.iconStyle, "failure")) + " " + th.fg("text", String(details.error ?? "failed"));
     const shadow = details.ok && details.shadowedBy
       ? `This worktree overrides it with ${String(details.shadowedBy.ref)} in ${String(details.shadowedBy.file)}` : "";
-    return { render: (w: number) => ["", ...fitResultLines([line, ...(shadow ? [shadow] : []), ...renderConfigErrors(th, details, w, expanded)], w, expanded)], invalidate() {} };
+    return { render: (w: number) => fitResultLines([` ${line}`, ...(shadow ? [detailRow(t, shadow)] : []), ...renderConfigErrors(t, details)], w, expanded, 3), invalidate() {} };
   }
   const catalog: ModelEntry[] = Array.isArray(details?.catalog) ? details.catalog : [];
   const defaults: Record<string, string> = (details?.defaults as Record<string, string>) ?? {};
   const origins = details?.sources && details?.global ? { sources: details.sources, global: details.global } : undefined;
-  return { render: (w: number) => ["", ...renderModels(catalog, defaults, th, w, origins, expanded, modelThinkingDisplay(catalog, defaults)), ...renderConfigErrors(th, details, w, expanded)], invalidate() {} };
+  return { render: (w: number) => [...renderModels(catalog, defaults, th, w, origins, expanded, modelThinkingDisplay(catalog, defaults), true), ...renderConfigErrors(t, details)], invalidate() {} };
 }
 
-function renderConfigErrors(th: ReturnType<typeof adaptTheme>, details: any, width: number, expanded = false): string[] {
-  return Array.isArray(details?.errors)
-    ? fitResultLines(details.errors.map((error: unknown) => th.fg("error", String(error))), width, expanded) : [];
+function detailRow(t: T, text: string, color = "toolOutput"): string {
+  return ` ${t.fg("dim", icon(t.iconStyle, "gutter"))} ${t.fg(color, text)}`;
+}
+
+function renderConfigErrors(t: T, details: any): string[] {
+  return Array.isArray(details?.errors) ? details.errors.map((error: unknown) => detailRow(t, String(error), "error")) : [];
 }
 
 /** Render current config values or a scoped set/unset confirmation. Never throws. */
 function renderControlConfig(t: T, details: any, expanded: boolean): Component {
   const th = adaptTheme(t);
   if (details && details.config && typeof details.config === "object") {
-    return { render: (w: number) => ["", ...renderConfig(details.config, th, w, expanded, UI_CONFIG_SCHEMA), ...renderConfigErrors(th, details, w, expanded)], invalidate() {} };
+    return { render: (w: number) => [...renderConfig(details.config, th, w, expanded, UI_CONFIG_SCHEMA, true), ...renderConfigErrors(t, details)], invalidate() {} };
   }
   if (details && (details.ok !== undefined || details.error !== undefined)) {
     const line = details.error
       ? th.fg("error", icon(th.iconStyle, "failure")) + " " + th.fg("text", String(details.error))
-      : th.fg("accent", "●") + " " + th.fg("text", `${details.op === "unset" ? "unset" : "set"} ${String(details.key ?? "")}${details.op === "unset" ? "" : ` → ${typeof details.value === "object" && details.value !== null ? JSON.stringify(details.value) : String(details.value ?? "")}`}${details.scope ? ` (${String(details.scope)})` : ""}${details.key === "ui.footer" ? " (applies from next session)" : ""}`);
+      : statusIcon(th, "ok") + " " + th.fg("text", `${details.op === "unset" ? "unset" : "set"} ${String(details.key ?? "")}${details.op === "unset" ? "" : ` → ${typeof details.value === "object" && details.value !== null ? JSON.stringify(details.value) : String(details.value ?? "")}`}${details.scope ? ` (${String(details.scope)})` : ""}${details.key === "ui.footer" ? " (applies from next session)" : ""}`);
     const destination = details.ok && details.file ? `Config file: ${String(details.file)}` : "";
     const shadow = details.ok && details.shadowedBy ? `Shadowed by ${String(details.shadowedBy)} config` : "";
-    return { render: (w: number) => ["", ...fitResultLines([line, ...(destination ? [destination] : []), ...(shadow ? [shadow] : [])], w, expanded)], invalidate() {} };
+    return { render: (w: number) => fitResultLines([` ${line}`, ...[destination, shadow].filter(Boolean).map(text => detailRow(t, text))], w, expanded, 3), invalidate() {} };
   }
   if (details?.key !== undefined) {
     const source = details.source === undefined || (details.value === undefined && details.source === "unset")
       ? "" : ` (${typeof details.source === "string" ? details.source : JSON.stringify(details.source)})`;
-    return { render: (w: number) => ["", `${String(details.key)}: ${details.value === undefined ? "(unset)" : typeof details.value === "object" && details.value !== null ? JSON.stringify(details.value) : String(details.value)}${source}`, ...renderConfigErrors(th, details, w, expanded)], invalidate() {} };
+    return { render: () => [` ${String(details.key)}: ${details.value === undefined ? "(unset)" : typeof details.value === "object" && details.value !== null ? JSON.stringify(details.value) : String(details.value)}${source}`, ...renderConfigErrors(t, details)], invalidate() {} };
   }
-  return textComponent({ details }, expanded);
+  return plainBody("(no configuration)", expanded);
 }
 
-/** `control memory consolidate` — body-only active-memory list: a `memory · N active · X chars`
- *  rule, then one `◆ [category] content` line per active entry. Never throws on a partial payload. */
-function renderControlMemory(t: T, details: any, expanded = false): Component {
-  const th = adaptTheme(t);
+/** Active entries are named by category and content, not their storage IDs. */
+function renderControlMemory(t: T, details: any, expanded: boolean): Component {
   const entries: any[] = Array.isArray(details?.entries) ? details.entries : [];
-  const usage = Number(details?.usage ?? 0);
   return {
     render(w: number): string[] {
-      const out = ["", sectionRule(th, `memory · ${entries.length} active · ${usage} chars`, w)];
-      if (!entries.length) out.push(th.fg("dim", " (no active memories)"));
-      for (const e of entries) {
-        const cat = th.fg("accent", `[${String(e?.category ?? "?")}]`);
-        out.push(` ${th.fg("dim", "◆")} ${cat} ${th.fg("text", String(e?.uuid ?? ""))}`);
-        for (const line of expanded ? String(e?.content ?? "").split("\n") : wrap(String(e?.content ?? ""), Math.max(1, w - 3), 1)) {
-          out.push(` ${th.fg("dim", `${icon(t.iconStyle, "gutter")} `)}${th.fg("text", line)}`);
-        }
+      const out = [t.fg("muted", ` ${entries.length} active · ${Number(details?.usage ?? 0)} chars`)];
+      if (!entries.length) out.push(t.fg("dim", " (no active memories)"));
+      for (const [i, entry] of entries.entries()) {
+        if (i > 0) out.push("");
+        out.push(` ${t.fg("dim", "◆")} ${t.fg("accent", `[${String(entry?.category ?? "?")}]`)}`);
+        const content = String(entry?.content ?? "");
+        if (content) out.push(detailRow(t, expanded ? content : content.replace(/\s+/gu, " ").trim()));
       }
-      return fitResultLines(out, w, expanded);
+      return fitResultLines(out, w, expanded, 3);
     },
     invalidate() {},
   };
+}
+
+function renderUpstreamWatch(t: T, details: any, expanded: boolean): Component {
+  if (details?.marked) {
+    const { package: name, ref, sha } = details.marked;
+    return { render: w => fitResultLines([` ${t.fg("success", "✓")} Marked ${name} reviewed at ${sha ?? ref}`], w, expanded, 3), invalidate() {} };
+  }
+  const packages: any[] = Array.isArray(details?.packages) ? details.packages : [];
+  const rows = [` ${packages.length} packages checked · ${details?.todosAdded ?? 0} new cherry-pick todos`];
+  for (const [i, pkg] of packages.entries()) {
+    if (i > 0) rows.push("");
+    const candidates: any[] = Array.isArray(pkg.candidates) ? pkg.candidates : [];
+    const state = pkg.state === "up-to-date" ? "up to date" : pkg.state === "candidates" ? `${candidates.length} candidates` : String(pkg.state).replaceAll("-", " ");
+    const glyph = statusIcon(adaptTheme(t), pkg.state === "up-to-date" ? "ok" : pkg.state === "candidates" ? "off" : "warn");
+    rows.push(` ${glyph} ${pkg.package} · ${state}`);
+    if (pkg.reason) rows.push(detailRow(t, String(pkg.reason).split("\n")[0]));
+    for (const candidate of candidates) rows.push(detailRow(t, `${String(candidate.commit).slice(0, 7)} ${candidate.subject}`));
+  }
+  return { render: (w: number) => fitResultLines(rows, w, expanded, 3), invalidate() {} };
 }
 
 /** Match pi's truncateTail defaults and reverse byte accounting (core/tools/truncate.js).
@@ -694,8 +687,8 @@ function renderSpiderResultBody(
       return { render: (w: number) => renderKillResult(details as KillDetails, { theme: th, width: w, expanded }), invalidate() {} };
     }
     case "remember": {
-      const body = wrapBespoke(renderRememberResult(details as StageResult, expanded));
-      return { render: (width: number) => fitResultLines([...body.render(width), ...thinkingNoticeLines(t, details, width, expanded)], width, expanded), invalidate: () => body.invalidate?.() };
+      const body = wrapBespoke(renderRememberResult(details as StageResult, expanded, adaptTheme(t)));
+      return { render: (width: number) => fitResultLines([...body.render(width), ...thinkingNoticeLines(t, details, width, expanded)], width, expanded, 3), invalidate: () => body.invalidate?.() };
     }
     case "recall": return wrapBespoke(renderRecallResult(details as MemoryRecord[], expanded));
     case "todo": {
@@ -710,9 +703,14 @@ function renderSpiderResultBody(
       if (op === "distill") return plainBody(renderDistill(String(details?.prompt ?? "")), expanded);
       return plainBody(renderSkillView((details?.row ?? details ?? undefined) as SkillRow | undefined), expanded);
     }
+    case "notify": {
+      if (details?.ok !== true) return textComponent(result, expanded);
+      const publication = details.presentation === "panel-feed" ? " · panel feed" : "";
+      return { render: w => fitResultLines([` ${t.fg("success", "✓")} Notification stored${publication}`], w, expanded, 3), invalidate() {} };
+    }
     case "import": return wrapBespoke(renderImportResult(details as any, expanded, t.iconStyle));
     case "control":
-      if (sub === "pending") return wrapBespoke(renderPending(details as MemoryRecord[], expanded, t.iconStyle));
+      if (sub === "pending") return wrapBespoke(renderPending(details as MemoryRecord[], expanded, adaptTheme(t)));
       if (sub === "doctor") return renderDoctor(t, details, expanded);
       if (sub === "stats") return renderControlStats(t, details, expanded);
       if (sub === "models") return renderControlModels(t, details, expanded);
@@ -729,19 +727,15 @@ function renderSpiderResultBody(
       if (context?.args?.command === "memory" && sub === "status") return renderControlMemory(t, details, expanded);
       if (context?.args?.command === "memory" && sub === "forget") {
         const archived = details?.ok === true && details?.removed?.status === "archived";
-        return {
-          render: (w: number) => [
-            "",
-            ...fitResultLines([` ${t.fg(archived ? "success" : "error", archived ? "✓ archived memory" : `${icon(t.iconStyle, "failure")} memory was not archived`)}`], w, expanded),
-            ...fitResultLines([` ${t.fg("toolOutput", String(details?.uuid ?? ""))} ${t.fg("muted", String(details?.scope ?? ""))}`], w, expanded),
-          ],
-          invalidate() {},
-        };
+        const status = archived ? `archived memory${details.scope ? ` · ${details.scope}` : ""}` : "memory was not archived";
+        const glyph = statusIcon(adaptTheme(t), archived ? "ok" : "fail");
+        return { render: w => fitResultLines([` ${glyph} ${status}`], w, expanded, 3), invalidate() {} };
       }
-      if (context?.args?.command === "memory" && sub === "approve") return wrapBespoke(renderRememberResult(details as StageResult, expanded));
+      if (context?.args?.command === "memory" && sub === "approve") return wrapBespoke(renderRememberResult(details as StageResult, expanded, adaptTheme(t)));
       if (context?.args?.command === "memory" && sub === "reject") return {
-        render: (w: number) => ["", ...fitResultLines([` ${t.fg("toolOutput", `Rejected pending memory ${details?.uuid ?? ""}`)}`], w, expanded)], invalidate() {},
+        render: w => fitResultLines([` ${t.fg("success", "✓")} Rejected pending memory`], w, expanded, 3), invalidate() {},
       };
+      if (sub === "upstream-watch") return renderUpstreamWatch(t, details, expanded);
       if (context?.args?.command === "skill" && sub === "curate") return plainBody(renderCurateResult(details), expanded);
       return textComponent(result, expanded);
     default:
@@ -776,8 +770,8 @@ export function renderSpiderResult(result: any, options: any, theme: any, contex
     const action = String(context?.args?.action ?? "");
     const rows = body.render(width);
     const lines = isExecAction(action)
-      ? [...(execCallCommands(action, context.args).some(command => command.trim()) ? [""] : []), ...(rows[0] === "" ? rows.slice(1) : rows)]
-      : fitResultLines(rows, width, options?.expanded === true);
+      ? [...(execCallCommands(action, context.args).some(command => command.trim()) ? [""] : []), ...rows]
+      : fitResultLines(rows, width, options?.expanded === true, 3);
     return restoreCardBackground(lines, theme, cardBackground(context));
   }, () => {
     body?.invalidate?.();
@@ -864,7 +858,12 @@ export function renderCommandOutput(message: any, options: NotificationOptions, 
   const result = d.result ?? {};
   const expanded = options?.expanded === true;
   const normalized = toToolResult(result);
-  const context = { args, expanded, isError: normalized.isError, iconStyle };
+  const details = normalized.details as { warning?: string; delivery?: string; recipientAcknowledged?: boolean } | undefined;
+  const pendingMessage = args.action === "message" && (
+    ["queued", "child-accepted", "accepted but not confirmed", "no reply yet, delivery unknown"].includes(details?.delivery ?? "")
+    || details?.delivery === "broker-accepted" && details.recipientAcknowledged !== true
+  );
+  const context = { args, expanded, isError: normalized.isError, isPartial: !normalized.isError && (Boolean(details?.warning) || pendingMessage), iconStyle };
   const background = cardBackground(context);
   const box = new Box(options.outputPad ?? 1, 1, text => mkTheme(theme).bg(background, text));
   box.addChild(renderSpiderCall(args, theme, context) as any);
@@ -898,7 +897,7 @@ export function renderOrganismEntry(entry: unknown, options: NotificationOptions
           lines.push(detail("Review: spider control memory sub=pending · spider skill op=list"));
         }
       }
-      return restoreCardBackground(fitResultLines(lines, width, options?.expanded === true), theme, background);
+      return restoreCardBackground(fitResultLines(lines, width, options?.expanded === true, 3), theme, background);
     },
     invalidate() {},
   });
@@ -909,7 +908,7 @@ export function renderOrganismEntry(entry: unknown, options: NotificationOptions
 export function renderEscalationMessage(message: any, options: NotificationOptions, theme: any, iconStyle?: IconStyle): Component {
   const d = message?.details ?? {};
   const severity = d.severity === "blocked" || d.severity === "question" ? d.severity : "warning";
-  const escalationDetails: EscalationDetails = { severity, summary: d.summary ?? "Escalation" };
+  const escalationDetails: EscalationDetails = { severity, summary: typeof d.summary === "string" ? d.summary : "Escalation" };
   const background = severity === "blocked" ? "toolErrorBg" : "toolPendingBg";
   const th = adaptTheme(mkTheme(theme, iconStyle));
   const box = new Box(options.outputPad ?? 1, 1, text => th.bg(background, text));

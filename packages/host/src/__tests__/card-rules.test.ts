@@ -27,21 +27,27 @@ for (const fixture of fixtures) {
           };
           const rendered = fixture.render(width, expanded, style);
           for (const line of rendered) check("width", visibleWidth(line) <= width, stripTerminalSequences(line));
-          // Some full titles cannot fit in 20 columns, but the card must still fit.
-          if (width === 20) continue;
           const plain = rendered.map(line => stripTerminalSequences(line).trimEnd());
           const titleIndex = plain.findIndex(Boolean);
           const pad = fixture.notification ? 1 : 0;
           const title = plain[titleIndex]?.slice(pad) ?? "";
           const titlePrefix = `${icon(style, "spider")} spider · ${fixture.verb}`;
-          check("title", title === titlePrefix || title.startsWith(`${titlePrefix} `), title);
+          // The full escalation title cannot fit in 20 columns even without its subject.
+          if (width >= 30) {
+            check("title", title === titlePrefix || title.startsWith(`${titlePrefix} `), title);
+            check("italic verb", Boolean(rendered[titleIndex]?.includes(`\x1b[3m\x1b[36m${fixture.verb}\x1b[39m\x1b[23m`)), title);
+          }
           if (fixture.notification) check("one-spacer", titleIndex === 1, `${titleIndex} blank rows`);
           else check("title starts at top", titleIndex === 0, `${titleIndex} blank rows`);
           const body = plain.slice(titleIndex + 1).map(line => line.slice(pad));
           if (!fixture.callDetails && !fixture.callOnly) check("blank-under-title", Boolean(body[0]));
-          for (const line of body.filter(Boolean)) {
-            check("columns", /^ {1}(?:\S| {2}\S)/u.test(line), line);
+          if (fixture.callDetails) {
+            const gap = body.indexOf("");
+            check("call separator", fixture.callOnly ? gap === -1 : gap > 0 && Boolean(body[gap + 1]));
+            const commandRows = gap === -1 ? body : body.slice(0, gap);
+            check("command gutter", commandRows[0]?.startsWith(` ${icon(style, "gutter")}`) === true, commandRows[0]);
           }
+          for (const line of body.filter(Boolean)) check("columns", /^ {1}(?:\S| {2}\S)/u.test(line), line);
           for (const line of plain) {
             check("no-bar", !line.includes("│"), line);
             for (const id of fixture.runIds) check("no-ids", !line.includes(id) && !line.includes(id.slice(0, 8)), line);

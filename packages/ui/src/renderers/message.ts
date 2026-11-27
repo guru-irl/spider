@@ -38,7 +38,7 @@ export function renderMessageResult(details: MessageDetails, ctx: RenderCtx): st
       const lines = details.error.split("\n");
       const shown = expanded ? lines : lines.slice(0, 1);
       const rows = fitResultLines(shown.map((line, i) =>
-        ` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg(i === 0 ? "error" : "toolOutput", line)}`), width, true);
+        ` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg(i === 0 ? "error" : "toolOutput", line)}`), width, true, 3);
       out.push(...(expanded ? rows : rows.slice(0, 4)));
     }
     else {
@@ -46,5 +46,5 @@ export function renderMessageResult(details: MessageDetails, ctx: RenderCtx): st
       for (const line of lines) out.push(trim(` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("toolOutput", line)}`, width, ""));
     }
   }
-  return fitResultLines(out, width, expanded);
+  return fitResultLines(out, width, expanded, 3);
 }

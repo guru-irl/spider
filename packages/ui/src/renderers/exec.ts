@@ -44,7 +44,7 @@ export function renderExecCall(
   const body = shown.map(command => gutter + theme.fg("toolOutput", command));
   const extra = preview.length - shown.length;
   if (extra > 0) body.push(gutter + theme.fg("dim", `… +${extra} more line${extra === 1 ? "" : "s"}`));
-  return [truncateToWidth(head, width, "…"), ...fitResultLines(body, width, expanded)];
+  return [truncateToWidth(head, width, "…"), ...fitResultLines(body, width, expanded, 3)];
 }
 
 /** Render the exit status and output. The call owns the command in both modes. */
@@ -63,7 +63,7 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
     for (const p of details.preview ?? []) {
       out.push(trim(` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("toolOutput", p)}`, width, ""));
     }
-    return fitResultLines(out, width, expanded);
+    return fitResultLines(out, width, expanded, 3);
   }
 
   // C-H2: a batch with MORE THAN ONE distinct failure kind has no single exitCode/
@@ -84,7 +84,7 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
     out.push(...outputRows(details, ctx, shown));
     const rest = preview.length - shown.length;
     if (rest > 0) out.push(trim(` ${theme.fg("muted", `${uiIcon(theme.iconStyle, "gutter")} … ${rest} more`)}`, width, ""));
-    return fitResultLines(out, width, expanded);
+    return fitResultLines(out, width, expanded, 3);
   }
 
   // The command was detached at a timeout handoff and is still running somewhere: the
@@ -115,7 +115,7 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
     const preview = details.preview ?? [];
     const shown = expanded ? preview : preview.slice(-1);
     out.push(...outputRows(details, ctx, shown));
-    return fitResultLines(out, width, expanded);
+    return fitResultLines(out, width, expanded, 3);
   }
 
   // C-1/I-3: a KNOWN terminal outcome (exited/signal/spawn-error/aborted) whose
@@ -148,7 +148,7 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
     out.push(...outputRows(details, ctx, shown));
     const rest = preview.length - shown.length;
     if (rest > 0) out.push(trim(` ${theme.fg("muted", `${uiIcon(theme.iconStyle, "gutter")} … ${rest} more`)}`, width, ""));
-    return fitResultLines(out, width, expanded);
+    return fitResultLines(out, width, expanded, 3);
   }
 
   // M-c: a genuinely unknown exit code that ISN'T the detached-at-handoff shape
@@ -182,7 +182,7 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
     const preview = details.preview ?? [];
     const shown = expanded ? preview : preview.slice(0, 1);
     out.push(...outputRows(details, ctx, shown));
-    return fitResultLines(out, width, expanded);
+    return fitResultLines(out, width, expanded, 3);
   }
 
   const icon = statusIcon(theme, details.ok ? "ok" : "fail");
@@ -203,5 +203,5 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
       ` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("muted", `indexed → ${details.indexed.source} (${details.indexed.chunks} chunks)`)}`,
       width, ""));
   }
-  return fitResultLines(out, width, expanded);
+  return fitResultLines(out, width, expanded, 3);
 }

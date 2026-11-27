@@ -1,6 +1,5 @@
-// packages/ui/src/renderers/bind.ts
-import { fitResultLines, resultTrimmer, statusIcon } from "./types.js";
-import type { RenderCtx } from "./types.js";
+import { icon as uiIcon } from "../icons.js";
+import { fitResultLines, statusIcon, type RenderCtx } from "./types.js";
 
 export interface BindDetails {
   ok: boolean;
@@ -8,47 +7,14 @@ export interface BindDetails {
   path?: string;
 }
 
-/** Render the bind/unbind result as a themed card. */
-export function renderBindResult(details: BindDetails, ctx: RenderCtx): string[] {
-  const { theme, width } = ctx;
-  const expanded = ctx.expanded === true;
-  const trim = resultTrimmer(expanded);
-  const out: string[] = [""];
-  
-  // Status header
-  if (details.ok) {
-    out.push(trim(
-      ` ${statusIcon(theme, "ok")} ${theme.fg("success", details.path ? "Session bound" : "Session unbound")}`,
-      width, ""
-    ));
-  } else {
-    out.push(trim(
-      ` ${statusIcon(theme, "fail")} ${theme.fg("error", "Failed")}`,
-      width, ""
-    ));
+/** Render the bind or unbind result below the tool title. */
+export function renderBindResult(details: BindDetails, { theme, width, expanded = false }: RenderCtx): string[] {
+  const status = details.ok ? details.path ? "Session bound" : "Session unbound" : "Failed";
+  const rows = [` ${statusIcon(theme, details.ok ? "ok" : "fail")} ${theme.fg(details.ok ? "success" : "error", status)}`];
+  const gutter = ` ${theme.fg("dim", uiIcon(theme.iconStyle, "gutter"))} `;
+  if (details.path) rows.push(gutter + theme.fg("muted", `path: ${details.path}`));
+  for (const line of details.message?.split("\n") ?? []) {
+    if (line.trim()) rows.push(gutter + theme.fg("muted", line.trim()));
   }
-  
-  // Path if provided
-  if (details.path) {
-    out.push("");
-    out.push(trim(
-      ` ${theme.fg("dim", "path:")} ${theme.fg("muted", details.path)}`,
-      width, "…"
-    ));
-  }
-  
-  // Message (includes the scope rule for bind)
-  if (details.message) {
-    out.push("");
-    const lines = details.message.split("\n");
-    for (const line of lines) {
-      if (line.trim()) {
-        out.push(trim(` ${theme.fg("muted", line)}`, width, "…"));
-      } else {
-        out.push("");
-      }
-    }
-  }
-  
-  return fitResultLines(out, width, expanded);
+  return fitResultLines(rows, width, expanded, 3);
 }

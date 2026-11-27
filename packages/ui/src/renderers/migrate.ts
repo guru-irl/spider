@@ -1,5 +1,5 @@
-import { fitResultLines, resultTrimmer, statusIcon } from "./types.js";
-import type { RenderCtx } from "./types.js";
+import { icon as uiIcon } from "../icons.js";
+import { fitResultLines, statusIcon, type RenderCtx } from "./types.js";
 
 export interface MigrateDetails {
   dryRun: boolean;
@@ -11,77 +11,21 @@ export interface MigrateDetails {
   message?: string;
 }
 
-/** Render the migrate result as a themed card. */
-export function renderMigrateResult(details: MigrateDetails, ctx: RenderCtx): string[] {
-  const { theme, width } = ctx;
-  const expanded = ctx.expanded === true;
-  const trim = resultTrimmer(expanded);
-  const out: string[] = [""];
-  
-  // Dry-run vs applied header
-  if (details.dryRun) {
-    out.push(trim(
-      ` ${statusIcon(theme, "on")} ${theme.fg("info", "Dry-run preview (no changes made)")}`,
-      width, ""
-    ));
-  } else if (details.applied) {
-    out.push(trim(
-      ` ${statusIcon(theme, "ok")} ${theme.fg("success", "Migration applied")}`,
-      width, ""
-    ));
+export function renderMigrateResult(details: MigrateDetails, { theme, width, expanded = false }: RenderCtx): string[] {
+  const out: string[] = [];
+  const gutter = ` ${theme.fg("dim", uiIcon(theme.iconStyle, "gutter"))} `;
+  if (details.dryRun) out.push(` ${statusIcon(theme, "on")} ${theme.fg("info", "Dry-run preview (no changes made)")}`);
+  else if (details.applied) out.push(` ${statusIcon(theme, "ok")} ${theme.fg("success", "Migration applied")}`);
+  if (details.backupDir) out.push(gutter + theme.fg("muted", `backup: ${details.backupDir}`));
+  const counts = Object.entries(details.moved ?? details.wouldMove ?? {}).filter(([, count]) => count > 0);
+  if (counts.length) {
+    out.push(` ${theme.fg("dim", `${details.dryRun ? "would move" : "moved"}:`)}`);
+    for (const [table, count] of counts) out.push(gutter + `${theme.bold(table)}: ${theme.fg("info", String(count))}`);
   }
-  
-  // Backup location
-  if (details.backupDir) {
-    out.push("");
-    out.push(trim(
-      ` ${theme.fg("dim", "backup:")} ${theme.fg("muted", details.backupDir)}`,
-      width, "…"
-    ));
+  if (details.ambiguous?.length) {
+    out.push(` ${statusIcon(theme, "warn")} ${theme.fg("warning", "Ambiguous rows (kept, needs review)")}`);
+    for (const { table, reason } of details.ambiguous) out.push(gutter + `${theme.bold(table)}: ${theme.fg("muted", reason)}`);
   }
-  
-  // Show moved/would-move counts
-  const counts = details.moved ?? details.wouldMove;
-  if (counts && Object.keys(counts).length > 0) {
-    out.push("");
-    const verb = details.dryRun ? "would move" : "moved";
-    out.push(trim(` ${theme.fg("dim", `${verb}:`)}`, width, ""));
-    
-    for (const [table, count] of Object.entries(counts)) {
-      if (count > 0) {
-        out.push(trim(
-          `   ${theme.fg("muted", "·")} ${theme.bold(table)}: ${theme.fg("info", String(count))}`,
-          width, ""
-        ));
-      }
-    }
-  }
-  
-  // Report ambiguous rows
-  if (details.ambiguous && details.ambiguous.length > 0) {
-    out.push("");
-    out.push(trim(
-      ` ${statusIcon(theme, "warn")} ${theme.fg("warning", "Ambiguous rows (kept, needs review)")}`,
-      width, ""
-    ));
-    
-    for (const amb of details.ambiguous) {
-      out.push(trim(
-        `   ${theme.fg("muted", "·")} ${theme.bold(amb.table)}: ${theme.fg("muted", amb.uuid)}`,
-        width, "…"
-      ));
-      out.push(trim(
-        `     ${theme.fg("dim", amb.reason)}`,
-        width, "…"
-      ));
-    }
-  }
-  
-  // Generic message
-  if (details.message) {
-    out.push("");
-    out.push(trim(` ${theme.fg("muted", details.message)}`, width, "…"));
-  }
-  
-  return fitResultLines(out, width, expanded);
+  if (details.message) out.push(` ${theme.fg("muted", details.message)}`);
+  return fitResultLines(out.length ? out : [" (no changes made)"], width, expanded, 3);
 }

@@ -54,16 +54,16 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     expect(rows.some((row) => row.includes("\x1b[48;5;160m") && row.includes("short"))).toBe(true);
   });
 
-  it("keeps collapsed truncation markers for run, fallback, and memory forget", () => {
+  it("keeps collapsed truncation markers for run, fallback, and memory content", () => {
     const x = "x".repeat(200);
     const render = (result: unknown, args: Record<string, unknown>) =>
       renderSpiderResult(result, { expanded: false }, theme, { args }).render(80);
     const run = render({ details: { run: { status: "done", task: x, result: x } } }, { action: "run" });
     const fallback = render({ content: [{ type: "text", text: x }] }, { action: "unknown" });
-    const forget = render({ details: { ok: true, removed: { status: "archived" }, uuid: x } },
-      { action: "control", command: "memory", sub: "forget" });
+    const memory = render({ details: { entries: [{ category: "insight", content: x }] } },
+      { action: "control", command: "memory", sub: "status" });
     const visible = (row: string) => row.replace(/\x1b\[[0-9;]*m/g, "");
-    for (const [name, rows] of [["run", run], ["fallback", fallback], ["forget", forget]] as const) {
+    for (const [name, rows] of [["run", run], ["fallback", fallback], ["memory", memory]] as const) {
       expect(rows.every((row) => visibleWidth(row) <= 80), name).toBe(true);
       expect(rows.some((row) => visible(row).endsWith("…")), name).toBe(true);
     }
@@ -72,17 +72,17 @@ describe("render-result exec/index wiring (Phase 8)", () => {
       "   ↳ " + "x".repeat(74) + "…",
       "   " + "x".repeat(76) + "…",
     ]);
-    expect(fallback.map(visible)).toEqual(["x".repeat(79) + "…"]);
-    expect(visible(forget.at(-1) ?? "")).toBe(" " + "x".repeat(78) + "…");
+    expect(fallback.map(visible)).toEqual([" " + "x".repeat(78) + "…"]);
+    expect(visible(memory.at(-1) ?? "")).toBe(" ⎿ " + "x".repeat(76) + "…");
   });
 
   it.each([
-    ["models set", { ok: true, role: "worker", ref: "x".repeat(200) }, { command: "models" }, "● set worker → "],
-    ["models cleared", { ok: true, cleared: true, role: "x".repeat(200) }, { command: "models" }, "● clear "],
-    ["models shadow", { ok: true, role: "worker", ref: "ok", shadowedBy: { ref: "x".repeat(200), file: "local" } }, { command: "models" }, "This worktree overrides it with "],
-    ["config set", { ok: true, key: "option", value: "x".repeat(200) }, { command: "config" }, "● set option → "],
-    ["config errors", { config: {}, errors: ["x".repeat(200)] }, { command: "config" }, "x"],
-    ["memory status header", { entries: [{ category: "insight", uuid: "x".repeat(200) }] }, { command: "memory", sub: "status" }, " ◆ [insight] "],
+    ["models set", { ok: true, role: "worker", ref: "x".repeat(200) }, { command: "models" }, " ✓ set worker → "],
+    ["models cleared", { ok: true, cleared: true, role: "x".repeat(200) }, { command: "models" }, " ✓ clear "],
+    ["models shadow", { ok: true, role: "worker", ref: "ok", shadowedBy: { ref: "x".repeat(200), file: "local" } }, { command: "models" }, " ⎿ This worktree overrides it with "],
+    ["config set", { ok: true, key: "option", value: "x".repeat(200) }, { command: "config" }, " ✓ set option → "],
+    ["config errors", { config: {}, errors: ["x".repeat(200)] }, { command: "config" }, " ⎿ x"],
+    ["memory status content", { entries: [{ category: "insight", content: "x".repeat(200) }] }, { command: "memory", sub: "status" }, " ⎿ x"],
   ] as const)("collapsed %s ends at width 80 with an ellipsis", (_name, details, args, prefix) => {
     const rows = renderSpiderResult({ details }, { expanded: false }, theme,
       { args: { action: "control", ...args } }).render(80);
@@ -96,7 +96,7 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     const raw = `\x1b[31m${"x".repeat(200)}\x1b[0m`;
     const rows = renderSpiderResult({ content: [{ type: "text", text: raw }] },
       { expanded: false }, theme, { args: { action: "unknown" } }).render(80);
-    expect(rows.map((row) => row.replace(/\x1b\[[0-9;]*m/g, ""))).toEqual(["x".repeat(79) + "…"]);
+    expect(rows.map((row) => row.replace(/\x1b\[[0-9;]*m/g, ""))).toEqual([" " + "x".repeat(78) + "…"]);
     expect(rows.join("")).not.toContain("\x1b[31m");
   });
 
@@ -107,7 +107,7 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     const full = render(true);
     const short = render(false);
     expect(full.every((row) => visibleWidth(row) <= 80)).toBe(true);
-    expect(full.join("")).toContain(value);
+    expect(full.map(row => row.trim()).join("")).toContain(value);
     expect(short.every((row) => visibleWidth(row) <= 80)).toBe(true);
     expect(short.at(-1)).toContain("…");
   });
@@ -249,25 +249,24 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     const dimTheme = { ...theme, fg: (token: string, text: string) => token === "dim" ? `\x1b[2m${text}\x1b[22m` : text };
     const rows = renderSpiderResult({ details: [{ kind: "content", title: "item", snippet: "x".repeat(180) }] },
       { expanded: true }, dimTheme, { args: { action: "search" } }).render(30);
-    const snippet = rows.filter((row) => /^ {5,7}(?:\x1b\[2m)?(?:↳ |x)/.test(row));
+    const snippet = rows.filter(row => /^ (?:⎿ |  x)/u.test(row.replace(/\x1b\[[0-9;]*m/g, "")));
     expect(snippet.length).toBeGreaterThan(1);
     expect(snippet.every((row) => row.includes("\x1b[2m"))).toBe(true);
-    expect(snippet.slice(1).every((row) => row.replace(/\x1b\[[0-9;]*m/g, "").startsWith("       x"))).toBe(true);
+    expect(snippet.slice(1).every((row) => row.replace(/\x1b\[[0-9;]*m/g, "").startsWith("   x"))).toBe(true);
   });
 
   it.each([
     ["recall", { action: "recall" }],
     ["pending", { action: "control", command: "memory", sub: "pending" }],
-  ] as const)("expanded %s hangs continuation under a short category label", (_name, args) => {
+  ] as const)("expanded %s hangs continuation at column 3 after a category label", (_name, args) => {
     const payload = "x".repeat(180);
     const rows = renderSpiderResult({ details: [{ category: "insight", content: payload, uuid: "record-1" }] },
       { expanded: true }, theme, { args }).render(30);
-    const marker = "[insight] ";
-    const start = rows.findIndex((row) => row.startsWith(marker));
+    const start = rows.findIndex(row => /^ (?:○ )?\[insight\](?: |$)/u.test(row));
     expect(start).toBeGreaterThanOrEqual(0);
-    expect(rows[start]).toMatch(/^\[insight\] x/);
-    expect(rows[start + 1]).toMatch(/^ {10}x/);
-    expect(rows.slice(start).every((row) => visibleWidth(row) <= 30)).toBe(true);
+    expect(rows[start + 1]).toMatch(/^ {3}x/u);
+    expect((rows.join("").match(/x+/gu) ?? []).join("")).toBe(payload);
+    expect(rows.every(row => visibleWidth(row) <= 30)).toBe(true);
   });
 
   it("expanded run output hangs the payload at column 3", () => {

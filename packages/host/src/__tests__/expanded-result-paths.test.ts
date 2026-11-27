@@ -16,7 +16,7 @@ describe("expanded result path coverage", () => {
     ["fetch", { sources: [payload], count: 1 }, {}],
     ["kill", { requested: "all", killed: [{ runId: "id", name: payload, outcome: "killed", via: "pid" }] }, {}],
     ["remember", { status: "active", content: payload }, {}],
-    ["import", { perSession: [{ sessionId: payload, status: "ok", candidates: 1, chunks: 1 }] }, {}],
+    ["import", { perSession: [{ sessionId: "internal-session-id", name: payload, status: "ok", candidates: 1, chunks: 1 }] }, {}],
     ["skill", [{ name: payload }], { op: "list" }],
     ["control", [{ category: "note", content: payload, uuid: "id" }], { sub: "pending" }],
     ["control", { dryRun: true, backupDir: payload }, { command: "migrate" }],
@@ -25,8 +25,6 @@ describe("expanded result path coverage", () => {
     ["control", { nodes: [{ id: "a", label: payload, kind: "skill" }], edges: [], stats: { nodes: 1, edges: 0, linkedPct: 0 } }, { command: "insights" }],
     ["control", { catalog: [], defaults: { worker: payload }, sources: { worker: "global" }, global: { worker: payload } }, { command: "models" }],
     ["control", { tokenSavings: { indexedChunks: 0, estTokensSaved: 0 }, rowCounts: { [payload]: 1 }, models: [] }, { command: "stats" }],
-    ["control", { ok: true, removed: { status: "archived" }, uuid: payload }, { command: "memory", sub: "forget" }],
-    ["control", { uuid: payload }, { command: "memory", sub: "reject" }],
   ] as const)("%s expanded path retains its payload (%#)", (action, details, args) => {
     const rows = renderSpiderResult({ details }, { expanded: true }, theme, { args: { action, ...args } }).render(80);
     // Models defaults deliberately show the same ref twice: once in the default and once in the shadow reference.
@@ -34,6 +32,17 @@ describe("expanded result path coverage", () => {
       expect((rows.join("").match(/z{2,}/g) ?? []).join("")).toBe(action === "fetch" ? payload + payload : payload);
       expect(rows.every((row) => visibleWidth(row) <= 80)).toBe(true);
     } else check(rows, 80);
+  });
+
+  it.each([
+    ["forget", { ok: true, removed: { status: "archived" }, uuid: payload }, "archived memory"],
+    ["reject", { uuid: payload }, "Rejected pending memory"],
+  ] as const)("expanded memory %s keeps the outcome but not the internal ID", (sub, details, status) => {
+    const args = { action: "control", command: "memory", sub };
+    const rows = renderSpiderResult({ details }, { expanded: true }, theme, { args }).render(80);
+    expect(rows.every(row => visibleWidth(row) <= 80)).toBe(true);
+    expect(rows.join("\n")).toContain(status);
+    expect(rows.join("\n")).not.toContain(payload.slice(0, 8));
   });
 
   it("boxed command and subagent notifications use the 78-column inner width", () => {

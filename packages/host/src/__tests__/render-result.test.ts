@@ -237,7 +237,8 @@ describe("renderSpiderResult dispatcher", () => {
     const out = c.render(80).join("\n");
     expect(out).toMatch(/2 nodes/);
     expect(out).toContain("TDD");
-    expect(out).toMatch(/mem:u1|skill:tdd/);
+    expect(out).toContain("prefers tabs → TDD");
+    expect(out).not.toMatch(/mem:u1|skill:tdd/);
     expect(out).not.toMatch(/\{|"linkedPct"/); // NOT raw JSON
   });
 
@@ -251,7 +252,7 @@ describe("renderSpiderResult dispatcher", () => {
     expect(out).not.toMatch(/\{\s*"moved"/);
   });
 
-  it("control memory status → active-memory list with identifiers (no raw JSON)", () => {
+  it("control memory status → active-memory list without internal identifiers or raw JSON", () => {
     const details = { entries: [{ uuid: "memory-to-review", category: "preference", content: "tabs over spaces" }], usage: 1234 };
     const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "control", command: "memory", sub: "status" }));
     assertComponent(c);
@@ -259,7 +260,7 @@ describe("renderSpiderResult dispatcher", () => {
     expect(out).toMatch(/1 active · 1234/);
     expect(out).toContain("preference");
     expect(out).toContain("tabs over spaces");
-    expect(out).toContain("memory-to-review");
+    expect(out).not.toContain("memory-to-review");
     expect(out).not.toMatch(/"entries"/);
   });
 

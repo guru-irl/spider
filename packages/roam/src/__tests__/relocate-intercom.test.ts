@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openDbAt } from "@spider/db-core";
+import { HerdrError } from "@spider/herdr/client/parse";
 import { testTmpDir } from "@spider/intercom/test-support";
 import { parseV0AgentReply, parseV0BrokerReply, V0_ASK_MAX_MS, V0_INTERCOM_BYTES, V0_INTERCOM_MS, type V0AgentRequest, type V0BrokerOp, type V0Endpoint, type V0Reply, type V0Text } from "@spider/intercom/roam-v0";
 import type { LocalSessionInfo, RemoteSessionInfo } from "@spider/intercom/types";
@@ -727,6 +728,40 @@ describe("roaming v0 intercom", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it.each(["mode", "link", "size", "syntax"] as const)("keeps live local routing with invalid route file %s", async fault => {
+    const f = paired();
+    const file = join(f.sender.root, "roam", "intercom-v0.json");
+    switch (fault) {
+      case "mode": chmodSync(file, 0o644); break;
+      case "link": renameSync(file, `${file}.old`); symlinkSync(`${file}.old`, file); break;
+      case "size": writeFileSync(file, " ".repeat(64 * 1024 + 1)); break;
+      case "syntax": writeFileSync(file, "{bad"); break;
+    }
+    const target: LocalSessionInfo = { ...alice, id: "stable-local", name: "local",
+      address: { sessionId: "local-id", scopeId: "scope-1" }, endpointEpoch: "local-socket", v0HomeEpoch: undefined };
+    expect(await f.intercom.prepare({ to: "local", from: alice, locals: [alice, target] })).toEqual({
+      kind: "local", target: { id: "stable-local", endpointEpoch: "local-socket" },
+    });
+    const unhomed = { ...alice, v0HomeEpoch: undefined };
+    expect(await f.intercom.prepare({ to: "local", from: unhomed, locals: [unhomed, target] })).toEqual({ kind: "legacy" });
+    for (const to of ["box/ben", "ben", "unmatched-name"]) {
+      // An exact remote home still wins over a live local alias.
+      expect(await f.intercom.prepare({ to, from: unhomed, locals: [unhomed, { ...target, name: "ben" }] }))
+        .toEqual({ kind: "refused", code: "invalid-config" });
+    }
+    expect(f.calls).toEqual([]);
+  });
+
+  it("reports a configured alias missing from Herdr without dispatching", async () => {
+    const f = paired();
+    const exec = vi.fn<Transport["exec"]>();
+    const { prepare } = createV0Intercom(f.sender.root, { transport: () => ({
+      resolve: async () => { throw new HerdrError("machine-not-found", "fixture alias not found"); }, exec,
+    }) });
+    expect(await prepare({ to: "box/ben", from: alice, locals: [alice] })).toEqual({ kind: "refused", code: "invalid-config" });
+    expect(exec).not.toHaveBeenCalled();
+  });
+
   it("rejects unsafe v0 configuration without falling back to legacy routing", async () => {
     const box = boxFixture(), mac = machineFixture(MAC);
     vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
@@ -736,11 +771,11 @@ describe("roaming v0 intercom", () => {
     const intercom = createV0Intercom(box.root, { transport });
     configure(box.root, [peer(MAC, "mac", mac)], [{ machineId: MAC, alias: "mac" }]);
     expect(hasV0IntercomConfig(box.root)).toBe(true);
-    expect(await intercom.prepare({ to: "alice", from, locals: [from] })).toEqual({ kind: "refused", code: "not-configured" });
+    expect(await intercom.prepare({ to: "alice", from, locals: [from] })).toEqual({ kind: "refused", code: "invalid-config" });
     configure(box.root, [], [{ machineId: MAC, alias: "mac" }]);
     chmodSync(join(box.root, "roam", "intercom-v0.json"), 0o644);
     expect(hasV0IntercomConfig(box.root)).toBe(true);
-    expect(await intercom.prepare({ to: "alice", from, locals: [from] })).toEqual({ kind: "refused", code: "not-configured" });
+    expect(await intercom.prepare({ to: "alice", from, locals: [from] })).toEqual({ kind: "refused", code: "invalid-config" });
     expect(transport).not.toHaveBeenCalled();
   });
 
@@ -917,7 +952,7 @@ describe("roaming v0 intercom", () => {
     ];
     for (const bad of badConfigs) {
       configure(f.sender.root, bad.sendTo, bad.acceptFrom);
-      expect(await f.intercom.prepare({ to: "box/ben", from: alice, locals: [alice] })).toEqual({ kind: "refused", code: "not-configured" });
+      expect(await f.intercom.prepare({ to: "box/ben", from: alice, locals: [alice] })).toEqual({ kind: "refused", code: "invalid-config" });
     }
     expect(f.calls.filter(call => call.request.kind === "deliver")).toHaveLength(1);
   });
@@ -925,11 +960,16 @@ describe("roaming v0 intercom", () => {
   it("rejects a mismatched configured agent directory and global database identity", async () => {
     const f = paired();
     vi.stubEnv("PI_CODING_AGENT_DIR", f.receiver.agentDir);
-    expect(await f.intercom.prepare({ to: "box/ben", from: alice, locals: [alice] })).toEqual({ kind: "refused", code: "not-configured" });
+    expect(await f.intercom.prepare({ to: "box/ben", from: alice, locals: [alice] })).toEqual({ kind: "refused", code: "invalid-config" });
     vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
     const db = openDbAt(join(f.sender.root, "spider.db"), "global");
     try { db.prepare("UPDATE roam_meta SET machine_id=? WHERE id=1").run(OTHER); } finally { db.close(); }
-    expect(await f.intercom.prepare({ to: "box/ben", from: alice, locals: [alice] })).toEqual({ kind: "refused", code: "unreachable" });
+    const target: LocalSessionInfo = { ...alice, id: "stable-local", name: "local",
+      address: { sessionId: "local-id", scopeId: "scope-1" }, endpointEpoch: "local-socket", v0HomeEpoch: undefined };
+    expect(await f.intercom.prepare({ to: "local", from: alice, locals: [alice, target] })).toEqual({
+      kind: "local", target: { id: "stable-local", endpointEpoch: "local-socket" },
+    });
+    expect(await f.intercom.prepare({ to: "box/ben", from: alice, locals: [alice, target] })).toEqual({ kind: "refused", code: "home-unreadable" });
     expect(f.calls).toEqual([]);
   });
 

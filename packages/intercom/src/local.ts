@@ -49,6 +49,8 @@ const V0_REFUSAL_TEXT: Record<V0Code, string> = {
   changed: "The session or connection changed. Resolve the recipient again.",
   unreachable: "The route is unavailable. Try again when it is up.",
   "not-configured": "No route is configured to that session.",
+  "invalid-config": "The roaming intercom route is invalid. Check roam/intercom-v0.json.",
+  "home-unreadable": "The local home record could not be read for roaming intercom.",
   "reply-only": V0_MAC_REPLY_ONLY_MESSAGE,
   unauthorized: "The receiving machine refused this message.",
   unsupported: "This roaming intercom operation is not supported.",

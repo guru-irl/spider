@@ -94,7 +94,8 @@ const hubSessionId = "hub-session";
 
 type RunBoxTool = (action: "send" | "ask", to: string, message: string) => ReturnType<ToolDefinition["execute"]>;
 
-async function withConfiguredBoxHost(run: (execute: RunBoxTool, sessionId: string) => Promise<void>, admitted = true) {
+async function withConfiguredBoxHost(run: (execute: RunBoxTool, sessionId: string) => Promise<void>, admitted = true,
+  fault?: "route-config" | "home-store") {
   const admissionModule = await import("../roam/admission.js");
   const { default: spiderExtension } = await import("../extension.js");
   const cwd = mkdtempSync(join(testTmpDir(), "host-box-"));
@@ -119,7 +120,7 @@ async function withConfiguredBoxHost(run: (execute: RunBoxTool, sessionId: strin
     writeFileSync(join(roam, "config.json"), JSON.stringify(config), { mode: 0o600 });
     writeFileSync(join(roam, "machine.json"), JSON.stringify({ machineId: boxMachineId }), { mode: 0o600 });
     writeFileSync(join(roam, "intercom-v0.json"), JSON.stringify({ version: 1, sendTo: [],
-      acceptFrom: [{ machineId: hubMachineId, alias: "mac" }] }), { mode: 0o600 });
+      acceptFrom: [{ machineId: hubMachineId, alias: "mac" }] }), { mode: fault === "route-config" ? 0o644 : 0o600 });
     writeFileSync(join(herdr, "config.json"), JSON.stringify({ mode: "core-only", globalRoot: root,
       core: { binary: process.execPath, config: join(root, "core.toml") }, agentDirectory: getAgentDirPath(),
       shellRc: join(root, "shell.rc"), machines: [] }), { mode: 0o600 });
@@ -148,6 +149,11 @@ async function withConfiguredBoxHost(run: (execute: RunBoxTool, sessionId: strin
     const tool = pi.getAllTools().find(tool => tool.name === "intercom");
     expect(tool).toBeDefined();
     await vi.waitFor(async () => expect((await observer.listSessions()).some(session => session.id === sessionId)).toBe(true));
+    if (fault === "home-store") {
+      const db = openDbAt(dbPath, "global");
+      try { db.prepare("UPDATE roam_meta SET machine_id=? WHERE id=1").run(hubMachineId); }
+      finally { db.close(); }
+    }
     await run((action, to, message) => tool!.execute(`host-${action}`, { action, to, message },
       new AbortController().signal, undefined, host.ctx as unknown as ExtensionToolContext), sessionId);
   } finally {
@@ -214,6 +220,37 @@ it("keeps unhomed sends local without falling back to a legacy mailbox for a rem
   } finally {
     observer.off("message", readLocal);
     await mailbox.disconnect();
+  }
+});
+
+it.each([
+  { fault: "route-config", admitted: true, code: "invalid-config", reason: "roam/intercom-v0.json" },
+  { fault: "route-config", admitted: false, code: "invalid-config", reason: "roam/intercom-v0.json" },
+  { fault: "home-store", admitted: true, code: "home-unreadable", reason: "The local home record could not be read" },
+  { fault: "home-store", admitted: false, code: "home-unreadable", reason: "The local home record could not be read" },
+] as const)("keeps tool sends and asks local with $fault failure, admitted=$admitted", async ({ fault, admitted, code, reason }) => {
+  const inbox: string[] = [], replies: Promise<unknown>[] = [];
+  const onMessage = (from: { id: string }, incoming: { id: string; content: { text: string }; expectsReply?: boolean }) => {
+    inbox.push(incoming.content.text);
+    if (incoming.expectsReply) replies.push(observer.send(from.id, { text: "local answer", replyTo: incoming.id }));
+  };
+  observer.on("message", onMessage);
+  try {
+    await withConfiguredBoxHost(async execute => {
+      const send = await execute("send", "observer", "local update");
+      expect(send.details).toMatchObject({ delivered: true, delivery: "socket_delivered" });
+      const ask = await execute("ask", "observer", "local question");
+      expect(ask.content[0]).toMatchObject({ text: expect.stringContaining("local answer") });
+      for (const action of ["send", "ask"] as const) {
+        const remote = await execute(action, "mac/observer", "do not deliver");
+        expect(remote.details).toMatchObject({ error: true, code });
+        expect(remote.content[0]).toMatchObject({ text: expect.stringContaining(reason) });
+      }
+      expect(inbox).toEqual(["local update", "local question"]);
+    }, admitted, fault);
+  } finally {
+    observer.off("message", onMessage);
+    await Promise.all(replies);
   }
 });
 

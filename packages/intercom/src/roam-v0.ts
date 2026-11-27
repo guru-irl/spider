@@ -21,7 +21,7 @@ export interface V0Text {
 }
 export type V0Code = "moving" | "offline" | "no-match" | "ambiguous" | "incomplete"
   | "changed" | "unreachable" | "not-configured" | "unauthorized"
-  | "unsupported" | "invalid" | "self" | "reply-only";
+  | "unsupported" | "invalid" | "self" | "reply-only" | "invalid-config" | "home-unreadable";
 export type V0Refused = { kind: "refused"; code: V0Code };
 export type V0Delivery = V0Refused
   | { kind: "socket_delivered"; id: string }
@@ -67,7 +67,7 @@ export interface V0ToolOptions {
 
 const codes: ReadonlySet<string> = new Set<V0Code>([
   "moving", "offline", "no-match", "ambiguous", "incomplete", "changed", "unreachable",
-  "not-configured", "unauthorized", "unsupported", "invalid", "self", "reply-only",
+  "not-configured", "unauthorized", "unsupported", "invalid", "self", "reply-only", "invalid-config", "home-unreadable",
 ]);
 
 function record(value: unknown): value is Record<string, unknown> {

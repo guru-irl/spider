@@ -27,6 +27,18 @@ function socketPath(root: string): string {
   if (process.platform === "win32" || Buffer.byteLength(path) > (process.platform === "darwin" ? 103 : 107)) throw new Error("V0 control socket path is unsupported or too long");
   return path;
 }
+export async function probeV0Control(root: string, timeoutMs: number): Promise<boolean> {
+  const path = socketPath(root);
+  try { if (!lstatSync(path).isSocket()) return false; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+  return new Promise<boolean>(done => {
+    const socket = createConnection(path);
+    const finish = (available: boolean) => { socket.destroy(); done(available); };
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+    socket.setTimeout(timeoutMs, () => finish(false));
+  });
+}
 function decode(bytes: Buffer): unknown { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
 type Request = { version: 1; kind: "relocate"; request: RelocateRequest } | { version: 1; kind: "set-home"; request: SetHomeRequest };
 function parse(bytes: Buffer): Request {

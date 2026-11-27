@@ -1,9 +1,11 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { assertTestConfigPath } from "@spider/db-core";
 import type { Diagnostic } from "./contracts";
-import { hubServiceLabel } from "./launchd";
+import { hubServiceFile, hubServiceLabel } from "./launchd";
+import { probeV0Control } from "./relocate/service";
 import { launchctlBinary } from "./service-manager";
 import { waitReady } from "./hub-readiness";
 
@@ -15,8 +17,15 @@ export interface HubServiceObservation {
 interface ServicePrint { code: number | null; stdout: string }
 const DOCTOR_HUB_DEADLINE_MS = 2000;
 
+export function observedHubServiceMode(root: string): "v0" | undefined {
+  const file = hubServiceFile(root, join(homedir(), "Library", "LaunchAgents"), "v0");
+  assertTestConfigPath(file);
+  return existsSync(file) ? "v0" : undefined;
+}
+
 /** Query metadata and read-only status. The error log is never opened. */
 export async function inspectHubService(root: string, print?: () => Promise<ServicePrint>): Promise<HubServiceObservation> {
+  const mode = observedHubServiceMode(root);
   const socket = join(root, "roam", "hub.sock"); assertTestConfigPath(socket);
   const end = Date.now() + DOCTOR_HUB_DEADLINE_MS;
   let running: boolean | null = null, lastExitCode: number | null = null;
@@ -25,7 +34,7 @@ export async function inspectHubService(root: string, print?: () => Promise<Serv
     const query = print ?? (() => new Promise<ServicePrint>((done, reject) => {
       let binary: string;
       try { binary = launchctlBinary(); } catch (error) { reject(error); return; }
-      execFile(binary, ["print", `gui/${process.getuid?.()}/${hubServiceLabel(root)}`], { timeout: DOCTOR_HUB_DEADLINE_MS, killSignal: "SIGKILL", maxBuffer: 64 * 1024 }, (error, stdout) => {
+      execFile(binary, ["print", `gui/${process.getuid?.()}/${hubServiceLabel(root, mode)}`], { timeout: DOCTOR_HUB_DEADLINE_MS, killSignal: "SIGKILL", maxBuffer: 64 * 1024 }, (error, stdout) => {
         done({ code: !error ? 0 : error.killed || error.signal ? null : typeof error.code === "number" ? error.code : null, stdout });
       });
     }));
@@ -41,7 +50,9 @@ export async function inspectHubService(root: string, print?: () => Promise<Serv
   } catch { /* Unknown metadata alone cannot prove a stopped service. */ }
   finally { if (timer !== undefined) clearTimeout(timer); }
   const remaining = end - Date.now();
-  const socketAvailable = remaining > 0 && running !== false && (running === true || existsSync(socket)) && await waitReady(socket, remaining);
+  const socketAvailable = remaining > 0 && running !== false && (mode === "v0"
+    ? await probeV0Control(root, remaining).catch(() => false)
+    : (running === true || existsSync(socket)) && await waitReady(socket, remaining));
   return { running, socketAvailable, lastExitCode };
 }
 
@@ -50,5 +61,6 @@ export function hubStartupDiagnostics(root: string, state: HubServiceObservation
   const pending = state.running === false || state.running === true && !state.socketAvailable;
   const code = pending ? "hub-startup-pending" : "hub-startup-unverified";
   const detail = state.running === false ? "Hub service is not running." : state.running === true ? "Hub service did not answer a ready status probe within 2 seconds." : "Hub service state cannot be verified.";
-  return [{ severity: pending ? "block" : "warning", reason: `${code}: ${detail} Last exit code: ${state.lastExitCode ?? "unknown"}. Error log: ${join(root, "roam", "logs", "hub.err.log")}. Check the hub service and its error log on the Mac hub before retrying.`, repairCommand: 'spider roam enable' }];
+  const log = observedHubServiceMode(root) === "v0" ? "hub-v0.err.log" : "hub.err.log";
+  return [{ severity: pending ? "block" : "warning", reason: `${code}: ${detail} Last exit code: ${state.lastExitCode ?? "unknown"}. Error log: ${join(root, "roam", "logs", log)}. Check the hub service and its error log on the Mac hub before retrying.`, repairCommand: 'spider roam enable' }];
 }

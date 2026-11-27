@@ -209,11 +209,11 @@ export function hubServiceExists(globalRoot: string, plistDir: string): boolean 
 }
 
 /** Compare the managed service's effective hc selection, including older plists. */
-export function hubServiceSelectionMatches(globalRoot: string, plistDir: string, env: Readonly<NodeJS.ProcessEnv>, serviceHome: string = serviceManagerHome()): boolean | null {
-  const root = absolute(globalRoot), directory = absolute(plistDir), label = hubServiceLabel(root), file = hubServiceFile(root, directory);
+export function hubServiceSelectionMatches(globalRoot: string, plistDir: string, env: Readonly<NodeJS.ProcessEnv>, serviceHome: string = serviceManagerHome(), mode?: "v0"): boolean | null {
+  const root = absolute(globalRoot), directory = absolute(plistDir), label = hubServiceLabel(root, mode), file = hubServiceFile(root, directory, mode);
   assertTestConfigPath(file);
   let definition = managedDefinition(file, root, label);
-  if (!definition && label !== LABEL) {
+  if (!definition && mode !== "v0" && label !== LABEL) {
     const legacy = join(directory, `${LABEL}.plist`);
     assertTestConfigPath(legacy);
     definition = managedDefinition(legacy, root, LABEL, true);

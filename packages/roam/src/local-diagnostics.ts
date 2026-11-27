@@ -3,7 +3,7 @@ import { localEntries } from "@spider/db-core/roam/local-state";
 import type { V0Refusal } from "./relocate/types";
 import { parsePrivateTransferDiagnostic, type PrivateTransferDiagnostic } from "./private-transfer-diagnostics";
 import { corePinDiagnostics } from "./core-pin-diagnostics";
-import { hubStartupDiagnostics, inspectHubService, type HubServiceObservation } from "./hub-service-diagnostics";
+import { hubStartupDiagnostics, inspectHubService, observedHubServiceMode, type HubServiceObservation } from "./hub-service-diagnostics";
 import { hubServiceExists, hubServiceFile, hubServiceSelectionMatches } from "./launchd";
 import { inspectSupervisorCorePin } from "./enrollment";
 import { hostingWarningDiagnostic, readHostingWarnings } from "./hosting-warning";
@@ -44,9 +44,13 @@ import { readPrivateBytes } from "./selected-files";
 function missing(error: unknown): boolean { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
 type SupervisorAutostart = "enabled" | "disabled" | "unknown";
 export async function inspectSupervisorAutostart(): Promise<SupervisorAutostart> {
-  if (!existsSync(join(homedir(), ".config/systemd/user/spider-roam-supervisor.service"))) return "unknown";
+  const v0 = "spider-roam-supervisor-v0.service", legacy = "spider-roam-supervisor.service";
+  const configHome = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+  const unit = existsSync(join(configHome,"systemd","user",v0)) ? v0
+    : existsSync(join(homedir(),".config","systemd","user",legacy)) ? legacy : null;
+  if (!unit) return "unknown";
   return new Promise(resolve => {
-    execFile("systemctl", ["--user", "is-enabled", "spider-roam-supervisor.service"], { timeout: 5000, maxBuffer: 4096 }, (error, stdout) => {
+    execFile("systemctl", ["--user", "is-enabled", unit], { timeout: 5000, maxBuffer: 4096 }, (error, stdout) => {
       const state = stdout.trim();
       if (!error && state === "enabled") resolve("enabled");
       else if (!error && state === "enabled-runtime" || error && error.code === 1 && state === "disabled") resolve("disabled");
@@ -155,8 +159,9 @@ export async function probeLocal(pid: number, usage: boolean, options: {
 }
 
 function serviceExecutables(root: string): { label: string; file: string }[] {
-  const directory = join(homedir(), "Library", "LaunchAgents"), scoped = hubServiceFile(root, directory);
-  const file = existsSync(scoped) || !hubServiceExists(root, directory) ? scoped : join(directory, "com.spider.roam.hub.plist");
+  const directory = join(homedir(), "Library", "LaunchAgents"), mode = observedHubServiceMode(root);
+  const scoped = hubServiceFile(root, directory, mode);
+  const file = mode || existsSync(scoped) || !hubServiceExists(root, directory) ? scoped : join(directory, "com.spider.roam.hub.plist");
   let text: string;
   try {
     const stat = lstatSync(file);
@@ -486,7 +491,7 @@ export async function localPendingLaunchDiagnostics(input: {
 
 export function localHubServiceDiagnostics(root: string): Diagnostic[] {
   try {
-    const matches = hubServiceSelectionMatches(root, join(homedir(), "Library", "LaunchAgents"), process.env);
+    const matches = hubServiceSelectionMatches(root, join(homedir(), "Library", "LaunchAgents"), process.env, undefined, observedHubServiceMode(root));
     return matches === false ? [{ severity: "warning", reason: "hub-core-selection-mismatch: The hub service selects a different core. Run spider roam enable again from the intended environment.", repairCommand: "spider roam enable" }] : [];
   } catch {
     return [{ severity: "warning", reason: "hub-core-selection-unavailable: Cannot inspect the hub service core selection.", repairCommand: null }];

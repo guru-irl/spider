@@ -5,6 +5,8 @@ import { runLocalDoctor } from "../local-diagnostics";
 import { inspectHubService, hubStartupDiagnostics } from "../hub-service-diagnostics";
 import * as controlSocket from "../control-socket";
 import { main } from "../cli";
+import { hubServiceFile } from "../launchd";
+import { serveV0Control } from "../relocate/service";
 
 const roots: string[] = [];
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -35,6 +37,20 @@ it.each([
   expect(issue?.reason).toContain(join(root, "roam/logs/hub.err.log"));
   expect(JSON.stringify(report)).not.toContain("private fixture log contents");
   expect(readFileSync(join(root, "roam/config.json"), "utf8")).toBe(before);
+});
+
+it("doctor inspects the v0 control socket and points to the v0 service log", async () => {
+  const root=fixture(), directory=join(root,"Library","LaunchAgents");
+  mkdirSync(directory,{recursive:true});writeFileSync(hubServiceFile(root,directory,"v0"),"fixture definition");
+  const unexpected=async()=>{throw new Error("doctor must not send a mutation request");};
+  const endpoint=await serveV0Control(root,{relocate:unexpected,setHome:unexpected});
+  try {
+    const state=await inspectHubService(root,async()=>({code:0,stdout:"state = running\npid = 123\n"}));
+    expect(state).toMatchObject({running:true,socketAvailable:true});
+    expect(hubStartupDiagnostics(root,state)).toEqual([]);
+  } finally {await endpoint.close();}
+  const stopped=await inspectHubService(root,async()=>({code:113,stdout:""}));
+  expect(hubStartupDiagnostics(root,stopped)[0]?.reason).toContain(join(root,"roam/logs/hub-v0.err.log"));
 });
 
 it("a healthy enabled hub has no startup diagnostic", async () => {

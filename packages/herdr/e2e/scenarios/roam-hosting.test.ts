@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { readFile, readdir } from 'node:fs/promises';
+import { access, readFile, readdir } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { inspectIdLock } from '../../src/sessions/id-lock.js';
 import { createSessionLeases } from '../../src/sessions/lease.js';
@@ -13,17 +14,17 @@ import { registerScenarios, storyId, type ScenarioDefinition } from '../harness/
 import type { Suite } from '../harness/suite.js';
 import { deadline, waitFor } from '../harness/wait.js';
 
-async function send(suite: Suite, owner: HostedOwner, message: string): Promise<void> {
-  const result = await suite.hc(['send', '--json', '--force', owner.terminal, message]);
+async function send(fixture: Pick<V0HostingFixture, 'hc'>, owner: HostedOwner, message: string): Promise<void> {
+  const result = await fixture.hc(['send', '--json', '--force', owner.terminal, message]);
   expect(result.exitCode, result.stderr).toBe(0);
 }
-type ObservableFixture = Pick<V0HostingFixture, 'events' | 'suite'>;
+type ObservableFixture = Pick<V0HostingFixture, 'events' | 'hc'>;
 async function event(fixture: ObservableFixture, owner: HostedOwner, type: string, predicate: (row: ObservedEvent) => boolean, ms = 30_000): Promise<ObservedEvent> {
   const rows = await waitFor(`hosted session ${type}`, () => fixture.events(owner.pid), values => values.some(row => row.type === type && predicate(row)), deadline(ms), { reconcileMs: 100 });
   return rows.find(row => row.type === type && predicate(row))!;
 }
 async function runTool(fixture: ObservableFixture, owner: HostedOwner, marker: string, id: string): Promise<ObservedEvent> {
-  await send(fixture.suite, owner, mark(marker));
+  await send(fixture, owner, mark(marker));
   const result = await event(fixture, owner, 'tool_execution_end', row => row.toolCallId === id);
   expect(result.isError).toBe(false);
   return result;
@@ -39,25 +40,42 @@ async function restartAndRestore(suite: Suite): Promise<void> {
   } });
   const fixture = await v0HostingFixture(suite);
   try {
-    const before = await digestFile(fixture.coreUnit);
-    await fixture.provisionUnit();
     const unitDirectory = dirname(fixture.supervisorUnit);
-    const expectedUnits = ['herdr-core.service', 'spider-roam-supervisor-v0.service'];
+    const existingUnits = ['herdr-core.service', 'unrelated.service'];
+    const expectedUnits = [...existingUnits, 'spider-roam-supervisor-v0.service'].sort();
+    const before = await Promise.all([digestFile(fixture.coreUnit), digestFile(fixture.unrelatedUnit)]);
+    const sentinel = await fixture.sentinel();
+    const provision = await fixture.provision();
+    expect(provision).toMatchObject({ code: 0, value: { hostingReady: expect.any(Boolean) } });
+    expect(await fixture.participating()).toBe(false);
+    await access(fixture.supervisor, constants.X_OK);
+    expect(await digestFile(fixture.supervisor)).toBe(suite.packed.digests['dist/roam/supervisor.mjs']);
+    expect((await readdir(unitDirectory)).sort()).toEqual(existingUnits);
+    expect(await fixture.serviceCommands()).toEqual([]);
+    expect(await Promise.all([digestFile(fixture.coreUnit), digestFile(fixture.unrelatedUnit)])).toEqual(before);
+    expect(await fixture.sentinel()).toEqual(sentinel);
+
+    await fixture.enable();
+    expect(await fixture.participating()).toBe(true);
     expect((await readdir(unitDirectory)).sort()).toEqual(expectedUnits);
     const unit = await readFile(fixture.supervisorUnit, 'utf8');
     expect(unit).toMatch(/^ExecStart=.*supervisor\.mjs.*--v0$/m);
     expect(unit).not.toMatch(/^(After|Requires|PartOf)=/m);
-    expect((await readFile(fixture.systemctlLog, 'utf8')).trim().split('\n')).toEqual([
-      '--user daemon-reload', '--user enable --now spider-roam-supervisor-v0.service',
-    ]);
+    const commands = await fixture.serviceCommands();
+    expect(commands).toEqual(['--user daemon-reload', '--user enable --now spider-roam-supervisor-v0.service']);
+    expect(await Promise.all([digestFile(fixture.coreUnit), digestFile(fixture.unrelatedUnit)])).toEqual(before);
+    expect(await fixture.sentinel()).toEqual(sentinel);
+    await suite.evidence('R04-provision.json', { provision, units: expectedUnits, commands, sentinel });
+
+    await fixture.seedHome();
     const home = fixture.home();
     expect(home).toMatchObject({ session_id: fixture.sessionId, machine_id: fixture.machineId, epoch: fixture.epoch, state: 'running', destination: null });
     await fixture.start();
     const first = await fixture.waitOwner();
-    const nativeFirst = await suite.hc(['get', first.terminal, '--json']);
+    const nativeFirst = await fixture.hc(['get', first.terminal, '--json']);
     expect(nativeFirst.exitCode, nativeFirst.stderr).toBe(0);
     expect(nativeFirst.json).toMatchObject({ address: first.terminal, state: 'live', pid: first.pid });
-    assertNativeLaunch(nativeFirst.json, await suite.cores!.records(), fixture, suite.cores!.local.namespace, fixture.sessionId, fixture.machineId, fixture.epoch);
+    assertNativeLaunch(nativeFirst.json, await suite.cores!.records(), fixture, suite.cores!.dest.namespace, fixture.sessionId, fixture.machineId, fixture.epoch);
     const startup = await event(fixture, first, 'session_start', row => row.sessionId === fixture.sessionId);
     expect(startup).toMatchObject({ mode: 'tui', stdinTTY: true, sessionFile: fixture.file, cwd: fixture.cwd, hcTerminal: first.terminal });
     const probe = await runTool(fixture, first, 'probe', 'hosting-probe');
@@ -82,10 +100,10 @@ async function restartAndRestore(suite: Suite): Promise<void> {
     const schedule = await runTool(fixture, first, 'schedule', 'schedule-trigger');
     await event(fixture, first, 'agent_settled', row => Number(row.at) >= Number(schedule.at));
     const recordsBeforeRestart = (await suite.cores!.records()).length;
-    suite.cores!.local.env.PATH = '/usr/bin:/bin';
-    delete suite.cores!.local.env.SPIDER_ROAM_PI;
+    suite.cores!.dest.env.PATH = '/usr/bin:/bin';
+    delete suite.cores!.dest.env.SPIDER_ROAM_PI;
     await fixture.restartCore();
-    const ambient = await suite.hc(['exec', '--timeout', '5', '--', '/bin/sh', '-c',
+    const ambient = await fixture.hc(['exec', '--timeout', '5', '--', '/bin/sh', '-c',
       'if command -v pi >/dev/null 2>&1; then exit 41; fi; [ "${SPIDER_ROAM_PI+x}" != x ]']);
     expect(ambient.exitCode, ambient.stderr).toBe(0);
     const restored = await fixture.waitOwner(first.pid);
@@ -99,11 +117,11 @@ async function restartAndRestore(suite: Suite): Promise<void> {
     expect(adopted).toMatchObject({ identity: { pid: restored.pid }, pendingOperationId: null });
     const lease = await createSessionLeases(join(fixture.root, 'herdr')).get(restored.file);
     expect(lease).toMatchObject({ pid: restored.pid, startIdentity: adopted!.identity.startIdentity });
-    const nativeRestored = await suite.hc(['get', restored.terminal, '--json']);
+    const nativeRestored = await fixture.hc(['get', restored.terminal, '--json']);
     expect(nativeRestored.exitCode, nativeRestored.stderr).toBe(0);
     expect(nativeRestored.json).toMatchObject({ address: restored.terminal, state: 'live', pid: restored.pid });
     assertNativeLaunch(nativeRestored.json, (await suite.cores!.records()).slice(recordsBeforeRestart), fixture,
-      suite.cores!.local.namespace, fixture.sessionId, fixture.machineId, fixture.epoch);
+      suite.cores!.dest.namespace, fixture.sessionId, fixture.machineId, fixture.epoch);
     const ownersAfterRestart = await fixture.owners(); expect(ownersAfterRestart).toHaveLength(1);
     const listing = await runTool(fixture, restored, 'list', 'list-triggers');
     expect(JSON.stringify(listing.result)).toContain('fixture-wakeup');
@@ -113,20 +131,21 @@ async function restartAndRestore(suite: Suite): Promise<void> {
     const deliveries = entries.filter(row => row.type === 'message' && row.message?.role === 'user' && JSON.stringify(row.message.content).includes(mark('trigger')));
     expect(deliveries).toHaveLength(1);
     expect((await fixture.owners()).map(value => value.pid)).toEqual([restored.pid]);
-    const launchCount = assertHostedLaunches(await suite.cores!.records(), suite.pi.launcher, fixture.file);
+    const launchCount = assertHostedLaunches(await suite.cores!.records(), fixture.pi, fixture.file);
     const finalUnits = (await readdir(unitDirectory)).sort();
     expect(finalUnits).toEqual(expectedUnits);
     const coreAfter = await digestFile(fixture.coreUnit);
-    expect(coreAfter).toBe(before);
+    expect(coreAfter).toBe(before[0]);
+    expect(await digestFile(fixture.unrelatedUnit)).toBe(before[1]);
     await suite.evidence('R04-restart.json', { sessionId: fixture.sessionId, file: fixture.file, cwd: fixture.cwd, home,
       first: { pid: first.pid, terminal: first.terminal }, restored: { pid: restored.pid, terminal: restored.terminal },
       lockPid: adopted!.identity.pid, leasePid: lease!.pid, owners: ownersAfterRestart.length,
-      coreUnitUnchanged: coreAfter === before, ambientPiAbsent: ambient.exitCode === 0, triggerEntries: deliveries.length,
+      coreUnitUnchanged: coreAfter === before[0], ambientPiAbsent: ambient.exitCode === 0, triggerEntries: deliveries.length,
       launchCount, unitFiles: finalUnits });
   } finally { await fixture.close(); }
 }
 
 export const scenarios: readonly ScenarioDefinition[] = [
-  { id: storyId('R04'), title: 'Core restart restores one exact owner and its trigger', tiers: ['headless'], run: restartAndRestore },
+  { id: storyId('R04'), title: 'Provision leaves hosting off; local enable and core restart keep one owner', tiers: ['headless'], run: restartAndRestore },
 ];
 registerScenarios(scenarios);

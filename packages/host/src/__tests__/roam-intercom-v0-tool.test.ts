@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { EventEmitter, once } from "node:events";
 import net from "node:net";
+import { PassThrough } from "node:stream";
 import { join } from "node:path";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
@@ -92,9 +93,9 @@ const boxMachineId = "22222222-2222-4222-8222-222222222222";
 const hubMachineId = "11111111-1111-4111-8111-111111111111";
 const hubSessionId = "hub-session";
 
-type RunBoxTool = (action: "send" | "ask", to: string, message: string) => ReturnType<ToolDefinition["execute"]>;
+type RunBoxTool = (action: "send" | "ask" | "reply", to: string | undefined, message: string) => ReturnType<ToolDefinition["execute"]>;
 
-async function withConfiguredBoxHost(run: (execute: RunBoxTool, sessionId: string) => Promise<void>, admitted = true,
+async function withConfiguredBoxHost(run: (execute: RunBoxTool, sessionId: string, host: ReturnType<typeof createHostSessionFixture>) => Promise<void>, admitted = true,
   fault?: "route-config" | "home-store") {
   const admissionModule = await import("../roam/admission.js");
   const { default: spiderExtension } = await import("../extension.js");
@@ -155,7 +156,7 @@ async function withConfiguredBoxHost(run: (execute: RunBoxTool, sessionId: strin
       finally { db.close(); }
     }
     await run((action, to, message) => tool!.execute(`host-${action}`, { action, to, message },
-      new AbortController().signal, undefined, host.ctx as unknown as ExtensionToolContext), sessionId);
+      new AbortController().signal, undefined, host.ctx as unknown as ExtensionToolContext), sessionId, host);
   } finally {
     try {
       for (const handler of host.hooks.get("session_shutdown") ?? []) await handler({ reason: "quit" }, host.ctx);
@@ -252,6 +253,36 @@ it.each([
     observer.off("message", onMessage);
     await Promise.all(replies);
   }
+});
+
+it("keeps a remote ask waiting after the agent reads ordinary stdin EOF", async () => {
+  const { main } = await import("@spider/roam/cli");
+  await withConfiguredBoxHost(async (execute, sessionId, host) => {
+    const input = new PassThrough();
+    const stdin = vi.spyOn(process, "stdin", "get").mockReturnValue(input as typeof process.stdin);
+    const output: string[] = [], errors: string[] = [];
+    const frame = JSON.stringify({ version: 1, requestId: "channel-1", kind: "ask", toMachineId: boxMachineId,
+      from: { machineId: hubMachineId, address: { sessionId: hubSessionId, scopeId: null }, name: "mac",
+        endpointEpoch: "mac-connection", homeEpoch: 3 },
+      target: { address: { sessionId, scopeId: null }, name: "host-box", homeEpoch: 7,
+        endpointEpoch: (await observer.listSessions()).find(session => session.id === sessionId)!.endpointEpoch },
+      message: { id: "channel-question", timestamp: 123, text: "channel fixture question" }, timeoutMs: 2000,
+    });
+    const pending = main(["--global-root", paths.globalRoot, "roam", "agent", "--v0", "intercom"],
+      { out: text => output.push(text), err: text => errors.push(text) });
+    try {
+      const closed = once(input, "close");
+      input.end(frame);
+      await closed;
+      await vi.waitFor(() => expect(host.sent.find(message => message.customType === "intercom_message")?.details?.message?.id)
+        .toBe("channel-question"));
+      const reply = await execute("reply", undefined, "answer");
+      expect(reply.details).toMatchObject({ delivered: true });
+      expect(await pending).toBe(0);
+      expect(JSON.parse(output[0])).toMatchObject({ kind: "replied", id: "channel-question", text: "answer" });
+      expect(errors).toEqual([]);
+    } finally { input.destroy(); stdin.mockRestore(); await pending; }
+  });
 });
 
 it("limits a box's no-match message to the routes checked", async () => {

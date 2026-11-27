@@ -156,7 +156,12 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
             else if (action.action === "released" && reserved !== null && record.moveId === reserved) reserved = null;
             else throw new Error("Invalid move reservation history");
           }
-          if (reserved !== null) findings.push(`move reservation ${id} operation ${reserved}`);
+          if (reserved !== null) {
+            const label = `move reservation ${id} operation ${reserved}`;
+            const linked = db.prepare("SELECT kind FROM roam_operations WHERE operation_id=?").get(reserved) as { kind?: unknown } | undefined;
+            if (linked?.kind !== "move") unknown.push(`${label} journal missing`);
+            else findings.push(label);
+          }
         } else if (result === null) {
           findings.push(`${operation.kind} operation ${id}`);
           if (operation.kind === "move") {
@@ -257,13 +262,25 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
       if (!meta || !isMachineId(meta.machine_id) || config && meta.machine_id !== config.machineId || !(meta.store_key === null || meta.store_key === "global")) throw new Error("Global store identity mismatch");
       if (!configured && global.prepare("SELECT 1 FROM session_homes UNION ALL SELECT 1 FROM roam_locations UNION ALL SELECT 1 FROM roam_repo_maps UNION ALL SELECT 1 FROM roam_workspace_maps LIMIT 1").get())
         unknown.push("roaming identity unavailable");
-      const homeActions = global.prepare("SELECT move_id,session_id,expected_epoch,args_digest FROM roam_home_actions WHERE committed_home_json IS NULL AND cancelled=0 ORDER BY move_id").all() as
-        Array<{ move_id: unknown; session_id: unknown; expected_epoch: unknown; args_digest: unknown }>;
+      const homeActions = global.prepare("SELECT move_id,session_id,expected_epoch,args_digest,cancelled,committed_home_json FROM roam_home_actions ORDER BY move_id").all() as
+        Array<{ move_id: unknown; session_id: unknown; expected_epoch: unknown; args_digest: unknown; cancelled: unknown; committed_home_json: unknown }>;
       for (const action of homeActions) {
         if (typeof action.move_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(action.move_id) ||
-            typeof action.session_id !== "string" || !action.session_id || !Number.isSafeInteger(action.expected_epoch) ||
-            typeof action.args_digest !== "string" || !/^[0-9a-f]{64}$/.test(action.args_digest)) throw new Error("Invalid legacy home action");
+            typeof action.session_id !== "string" || !action.session_id) throw new Error("Invalid legacy home action");
         const label = `home action session ${safeId(action.session_id)} operation ${action.move_id}`;
+        if (action.cancelled !== 0 && action.cancelled !== 1) { unknown.push(`${label} state invalid`); continue; }
+        if (action.committed_home_json !== null) {
+          try {
+            if (typeof action.committed_home_json !== "string") throw new Error("Invalid committed home");
+            const committed: unknown = JSON.parse(action.committed_home_json);
+            if (!committed || typeof committed !== "object" || Array.isArray(committed) || action.cancelled !== 0) throw new Error("Invalid committed home");
+          } catch { unknown.push(`${label} receipt invalid`); }
+          continue;
+        }
+        if (action.cancelled === 1) continue;
+        if (!Number.isSafeInteger(action.expected_epoch) || typeof action.args_digest !== "string" || !/^[0-9a-f]{64}$/.test(action.args_digest)) {
+          unknown.push(`${label} record invalid`); continue;
+        }
         if (journalKinds.get(action.move_id) !== "move") unknown.push(`${label} journal missing`);
         else findings.push(label);
       }

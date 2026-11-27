@@ -1320,12 +1320,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     const deliveredEntry = { ...entry, message: injectedMessage, replyCommand, intercom: { sessionId: currentSessionId, activationEpoch } };
     replyTracker.queueTurnContext({ from: entry.from, message: injectedMessage, receivedAt: Date.now() });
     const senderDisplay = entry.from.remote ? qualifiedName(entry.from) : entry.from.name || entry.from.id.slice(0, 8);
+    const senderCwd = entry.from.remote && !entry.from.cwd ? "" : ` (${entry.from.cwd})`;
     const replyInstruction = replyCommand ? `\n\nTo reply, use the intercom tool: ${replyCommand}` : "";
     const deliveryMetadata = formatInboundDeliveryMetadata(injectedMessage);
     pi.sendMessage(
       {
         customType: "intercom_message",
-        content: `**From ${senderDisplay}** (${entry.from.cwd})${replyInstruction}\n\n_${deliveryMetadata}_\n\n${entry.bodyText}`,
+        content: `**From ${senderDisplay}**${senderCwd}${replyInstruction}\n\n_${deliveryMetadata}_\n\n${entry.bodyText}`,
         display: true,
         details: deliveredEntry,
       },
@@ -2189,7 +2190,17 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
   pi.registerMessageRenderer("intercom_message", (message, options, theme) => {
     const details = message.details as { from: SessionInfo; message: Message; replyCommand?: string; bodyText?: string } | undefined;
     if (!details) return undefined;
-    return new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText, !options.expanded);
+    const component = new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText, !options.expanded);
+    if (!details.from.remote || details.from.cwd) return component;
+    const sender = qualifiedName(details.from);
+    return {
+      invalidate: () => component.invalidate(),
+      render(width: number) {
+        const lines = component.render(width);
+        if (lines[0]) lines[0] = lines[0].replace(`${sender} ()`, `${sender}   `).replace(`${sender} (`, `${sender}  `);
+        return lines;
+      },
+    };
   });
 
   pi.on("tool_result", (event) => {

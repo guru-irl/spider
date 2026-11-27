@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { rmSync, writeFileSync } from "node:fs";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { IntercomClient } from "../../../intercom/src/broker/client.js";
-import { getIntercomDirPath } from "../../../intercom/src/broker/paths.js";
+import { getAgentDirPath, getIntercomDirPath } from "../../../intercom/src/broker/paths.js";
+import { requestV0Broker } from "../../../intercom/src/broker/roam-v0-client.js";
+import type { RemoteSessionInfo } from "../../../intercom/src/types.js";
 import { registerIntercomOnce } from "../../../intercom/src/single-instance.js";
 import { startTestBroker, stopTestBroker, testBrokerEnv } from "../../../intercom/src/test-support.js";
 import type { V0Code, V0Prepare, V0Text, V0ToolOptions } from "../../../intercom/src/roam-v0.js";
@@ -41,20 +43,24 @@ async function fixture(v0?: V0ToolOptions, options: { confirm?: () => Promise<bo
   let sessionId = "sender-session";
   const hooks = new Map<string, Array<(event: any, ctx: any) => unknown>>();
   const tools: Array<{ name: string; execute: (...args: any[]) => Promise<any> }> = [];
-  const entries: Array<{ type: string; data: unknown }> = [];
+  const entries: Array<{ type: string; data: unknown }> = [], physicalEntries: any[] = [], inbound: any[] = [];
+  const renderers = new Map<string, (...args: any[]) => any>();
   const bus = new EventEmitter();
   const pi = {
     events: { on(name: string, handler: (value: unknown) => void) { bus.on(name, handler); return () => { bus.off(name, handler); }; },
       emit(name: string, value: unknown) { bus.emit(name, value); } },
     on(name: string, handler: (event: any, ctx: any) => unknown) { hooks.set(name, [...(hooks.get(name) ?? []), handler]); },
-    getSessionName: () => "alice", setSessionName() {}, registerMessageRenderer() {}, registerShortcut() {}, registerCommand() {},
-    appendEntry(type: string, data: unknown) { entries.push({ type, data }); }, sendMessage() {},
+    getSessionName: () => "alice", setSessionName() {},
+    registerMessageRenderer(name: string, renderer: (...args: any[]) => any) { renderers.set(name, renderer); },
+    registerShortcut() {}, registerCommand() {},
+    appendEntry(type: string, data: unknown) { entries.push({ type, data }); },
+    sendMessage(message: any) { inbound.push(message); physicalEntries.push({ ...message, type: "custom_message", id: `entry-${physicalEntries.length}` }); },
     registerTool(tool: { name: string; execute: (...args: any[]) => Promise<any> }) { tools.push(tool); },
     getAllTools: () => tools, getActiveTools: () => tools.map(tool => tool.name), setActiveTools() {},
   };
   const ctx = {
     cwd: process.cwd(), mode: "tui" as const, model: { id: "fixture" }, hasUI: true,
-    sessionManager: { getSessionId: () => sessionId, getEntries: () => [] },
+    sessionManager: { getSessionId: () => sessionId, getEntries: () => physicalEntries },
     isIdle: () => true, hasPendingMessages: () => false, abort() {},
     ui: { notify() {}, getEditorText: () => "", confirm: options.confirm ?? (async () => true) },
   };
@@ -65,7 +71,7 @@ async function fixture(v0?: V0ToolOptions, options: { confirm?: () => Promise<bo
     expect((await observer.listSessions()).some(session => session.id === "sender-session")).toBe(true);
   }, { timeout: 2000, interval: 20 });
   return {
-    ctx, entries,
+    ctx, entries, inbound, renderers,
     switchSession(id: string) { sessionId = id; },
     tool: tools.find(tool => tool.name === "intercom")!,
     async cleanup() { await emit("session_shutdown", { reason: "quit" }); rmSync(configPath, { force: true }); },
@@ -163,6 +169,38 @@ it("allows only one outstanding remote ask", async () => {
     finish({ kind: "no_reply", id: questions[0].id });
     await first;
   } finally { if (questions[0]) finish?.({ kind: "no_reply", id: questions[0].id }); await f.cleanup(); }
+});
+
+it("renders and replies to a peer ask through the private broker", async () => {
+  const f = await fixture({ homeEpoch: () => 7, prepare: async () => ({ kind: "legacy" }) });
+  const from: RemoteSessionInfo = {
+    remote: true, id: "peer-session", address: { sessionId: "peer-session", scopeId: null },
+    machineId: "peer-machine", machineAlias: "peer", homeEpoch: 3,
+    activationEpoch: "peer-connection", endpointEpoch: "peer-connection", name: "ben",
+    cwd: "", model: "", startedAt: 0, lastActivity: 0,
+  };
+  try {
+    const own = (await observer.listSessions()).find(session => session.id === "sender-session")!;
+    const pending = requestV0Broker(getAgentDirPath(), {
+      kind: "ask", from,
+      target: { address: { sessionId: "sender-session", scopeId: null }, name: "alice", homeEpoch: 7, endpointEpoch: own.endpointEpoch! },
+      message: { id: "peer-question", timestamp: 123, text: "i5:fixture" }, timeoutMs: 2000,
+    });
+    await vi.waitFor(() => expect(f.inbound.some(message => message.customType === "intercom_message")).toBe(true));
+    const incoming = f.inbound.find(message => message.customType === "intercom_message");
+    expect(incoming.content).toContain("**From peer/ben**");
+    expect(incoming.content).toContain("i5:fixture");
+    expect(incoming.content).not.toContain("**From peer/ben** ()");
+    const renderer = f.renderers.get("intercom_message")!;
+    const component = renderer(incoming, { expanded: true }, { fg: (_: string, text: string) => text });
+    const rendered = component.render(100).join("\n");
+    expect(rendered).toContain("From: peer/ben");
+    expect(rendered).toContain("i5:fixture");
+    expect(rendered).not.toContain("peer/ben ()");
+    const reply = await f.tool.execute("reply", { action: "reply", replyTo: "peer-question", message: "ack i5:fixture" }, new AbortController().signal, undefined, f.ctx);
+    expect(reply.details).toMatchObject({ delivered: true, replyTo: "peer-question" });
+    expect(await pending).toMatchObject({ kind: "replied", id: "peer-question", replyId: reply.details.messageId, text: "ack i5:fixture" });
+  } finally { await f.cleanup(); }
 });
 
 it("does not dispatch a remote ask when confirmation is refused", async () => {

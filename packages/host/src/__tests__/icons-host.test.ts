@@ -36,7 +36,7 @@ describe("host icon rendering", () => {
     equalWidths(text, nerd);
   });
 
-  it("uses configured failure and task markers in a run result", () => {
+  it("uses configured failure, task and result markers in a run result", () => {
     const result = { details: { run: { name: "scribe", agent: "worker", status: "failed", task: "read", result: "done" } } };
     const render = (iconStyle: "text" | "nerd") => renderSpiderResult(result, {}, theme, { args: { action: "run" }, iconStyle }).render(100);
     const text = render("text"), nerd = render("nerd");
@@ -44,8 +44,8 @@ describe("host icon rendering", () => {
     expect(nerd.join("\n")).toContain("\u{F0156}  failed · scribe");
     expect(text.join("\n")).toContain("↳ read");
     expect(nerd.join("\n")).toContain("\u{F060D} read");
-    expect(text).toContain("   done");
-    expect(nerd).toContain("   done");
+    expect(text).toContain("   ⤴ done");
+    expect(nerd).toContain("   \u{F005C} done");
     equalWidths(text, nerd);
   });
 

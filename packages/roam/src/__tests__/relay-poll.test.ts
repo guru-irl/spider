@@ -161,7 +161,7 @@ function carrier(forward: (s: RelaySubmit, signal: AbortSignal) => Promise<Relay
   const stop = new AbortController();
   const views: RelayLinkView[] = [];
   const calls: { poll: RelayPoll; argv: readonly string[]; options: CallOptions;
-    reply(submissions?: readonly RelaySubmit[], header?: Partial<RelayReady>): void; reject(): void }[] = [];
+    reply(submissions?: readonly RelaySubmit[], header?: Partial<Pick<RelayReady, "pollId" | "linkId" | "machineId">>): void; reject(): void }[] = [];
   const resolves: Peer[] = [];
   const pinned = { ...peer };
   const transport: Pick<Transport, "resolve" | "exec"> = {

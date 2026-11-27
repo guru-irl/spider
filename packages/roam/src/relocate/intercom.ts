@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { lstatSync } from "node:fs";
+import { join } from "node:path";
 import { openRoamPathReadOnly } from "@spider/db-core/roam/reads";
-import type { MachineId } from "@spider/db-core/roam/types";
 import { HerdrError } from "@spider/herdr/client/parse";
 import { requestV0Broker } from "@spider/intercom/broker/roam-v0-client";
 import {
@@ -10,14 +9,12 @@ import {
   type V0AgentReply, type V0AgentRequest, type V0Code, type V0Endpoint, type V0Prepare, type V0Refused, type V0Reply, type V0Text,
 } from "@spider/intercom/roam-v0";
 import type { LocalSessionInfo } from "@spider/intercom/types";
-import { readPeer } from "../config";
 import { DEFAULT_LIMITS, type Peer, type RoamConfig, type Transport } from "../contracts";
-import { loadHerdrConfig } from "../host-config";
-import { isMachineId } from "../machine-id";
 import { readLocalIdentity } from "../runtime";
 import { createTransport } from "../transport";
 import { createHomeStore } from "./home";
 import { localHerdrConnection } from "./local";
+import { isV0Alias, readV0Routes, type V0Routes } from "./intercom-routes";
 import type { RelocateHome, SessionId } from "./types";
 
 export interface V0IntercomDeps {
@@ -25,68 +22,14 @@ export interface V0IntercomDeps {
   transport?: (peers: readonly Peer[]) => Pick<Transport, "resolve" | "exec">;
 }
 
-interface AcceptedPeer { machineId: MachineId; alias: string }
-interface Routes { agentDir: string; sendTo: readonly Peer[]; acceptFrom: readonly AcceptedPeer[] }
 const POST_CHECK_MS = 2000;
 const ASK_REPLY_RESERVE_MS = 10_000;
 const REMOTE_ASK_STARTUP_MS = 9500;
-
-function object(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-function keys(value: Record<string, unknown>, expected: readonly string[]): boolean {
-  return Object.keys(value).length === expected.length && expected.every(key => Object.hasOwn(value, key));
-}
-function alias(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && value.length <= 255 && value.trim() === value
-    && !/[\u0000-\u001f\u007f-\u009f]/.test(value);
-}
-function distinct(peers: readonly { machineId: string; alias: string }[], local: string): boolean {
-  return peers.every(peer => peer.machineId !== local) && new Set(peers.map(peer => peer.machineId)).size === peers.length
-    && new Set(peers.map(peer => peer.alias.toLowerCase())).size === peers.length;
-}
 
 /** A present but invalid file opts in and fails closed rather than falling back to federation. */
 export function hasV0IntercomConfig(root: string): boolean {
   try { lstatSync(join(root, "roam", "intercom-v0.json")); return true; }
   catch (error) { return (error as NodeJS.ErrnoException).code !== "ENOENT"; }
-}
-
-function readRoutes(root: string, config: RoamConfig): Routes {
-  if (!config.enabled || config.intercom.enabled) throw new Error("Intercom v0 is not enabled");
-  const file = join(root, "roam", "intercom-v0.json");
-  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  let value: unknown;
-  try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.nlink !== 1 || stat.size > 64 * 1024 ||
-        typeof process.getuid === "function" && stat.uid !== process.getuid() ||
-        process.platform !== "win32" && (stat.mode & 0o7777) !== 0o600) throw new Error("Unsafe intercom configuration");
-    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(readFileSync(fd)));
-  } finally { closeSync(fd); }
-  if (!object(value) || !keys(value, ["version", "sendTo", "acceptFrom"]) || value.version !== 1 ||
-      !Array.isArray(value.sendTo) || value.sendTo.length > 8 || !Array.isArray(value.acceptFrom) || value.acceptFrom.length > 8)
-    throw new Error("Invalid intercom configuration");
-  const sendTo = value.sendTo.map(readPeer);
-  if (sendTo.some(peer => !peer.agentDir || !isAbsolute(peer.agentDir) || !alias(peer.alias)) ||
-      !distinct(sendTo, config.machineId) || config.role === "box" && sendTo.some(peer => peer.machineId === config.hubMachineId))
-    throw new Error("Invalid intercom routes");
-  const acceptFrom = value.acceptFrom.map((entry): AcceptedPeer => {
-    if (!object(entry) || !keys(entry, ["machineId", "alias"]) || !isMachineId(entry.machineId) || !alias(entry.alias))
-      throw new Error("Invalid intercom source");
-    return { machineId: entry.machineId, alias: entry.alias };
-  });
-  if (!distinct(acceptFrom, config.machineId) || config.role === "hub" && acceptFrom.length > 0)
-    throw new Error("Invalid intercom sources");
-  const outboundAliases = new Map(sendTo.map(peer => [peer.alias.toLowerCase(), peer.machineId]));
-  for (const source of acceptFrom) {
-    const outbound = outboundAliases.get(source.alias.toLowerCase());
-    if (outbound !== undefined && outbound !== source.machineId) throw new Error("Conflicting intercom aliases");
-  }
-  const agentDir = loadHerdrConfig(root).agentDirectory;
-  if (!isAbsolute(agentDir) || process.env.PI_CODING_AGENT_DIR !== undefined && process.env.PI_CODING_AGENT_DIR !== agentDir)
-    throw new Error("Intercom agent directory mismatch");
-  return { agentDir, sendTo, acceptFrom };
 }
 
 async function withHomes<T>(root: string, config: RoamConfig, read: (homes: ReturnType<typeof createHomeStore>) => Promise<T>): Promise<T> {
@@ -144,7 +87,7 @@ function selectedTarget(to: string): { kind: "bare"; value: string } | { kind: "
   if (to.length > 1024 || to.indexOf("/", slash + 1) >= 0 || /[\u0000-\u001f\u007f-\u009f]/.test(to)) return null;
   try {
     const machine = decodeURIComponent(to.slice(0, slash)), value = decodeURIComponent(to.slice(slash + 1));
-    return alias(machine) && value.length > 0 && value.length <= 256 && value.trim().length > 0 &&
+    return isV0Alias(machine) && value.length > 0 && value.length <= 256 && value.trim().length > 0 &&
       !/[\u0000-\u001f\u007f-\u009f]/.test(value) ? { kind: "qualified", machine, value } : null;
   } catch { return null; }
 }
@@ -180,7 +123,7 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
 } {
   const broker = deps.broker ?? requestV0Broker;
 
-  async function callPeer(configured: Routes, peer: Peer, request: V0AgentRequest, deadline: number,
+  async function callPeer(configured: V0Routes, peer: Peer, request: V0AgentRequest, deadline: number,
     deliveryDeadline: number, signal?: AbortSignal): Promise<V0Reply> {
     if (!parseV0AgentRequest(request)) return refused("invalid");
     let invoked = false;
@@ -241,8 +184,8 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
     const deadline = performance.now() + V0_INTERCOM_MS;
     const selector = selectedTarget(to);
     if (!selector) return refused("invalid");
-    let config: RoamConfig | undefined, configured: Routes | undefined;
-    try { config = readLocalIdentity(root); configured = readRoutes(root, config); }
+    let config: RoamConfig | undefined, configured: V0Routes | undefined;
+    try { config = readLocalIdentity(root); configured = readV0Routes(root, config); }
     catch { /* Neither identity nor routes are needed to reach a known local peer. */ }
     let all: readonly RelocateHome[] | null = null;
     if (config) {
@@ -358,8 +301,8 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
       // Leave time for the ask result and Herdr's post-check after the ask's timeout.
       const deadline = askMs === undefined ? setupDeadline
         : started + Math.min(DEFAULT_LIMITS.directMs, askMs + ASK_REPLY_RESERVE_MS + POST_CHECK_MS);
-      let identity: RoamConfig, current: Routes;
-      try { identity = readLocalIdentity(root); current = readRoutes(root, identity); }
+      let identity: RoamConfig, current: V0Routes;
+      try { identity = readLocalIdentity(root); current = readV0Routes(root, identity); }
       catch { return refused("invalid-config"); }
       if (identity.machineId !== machineId || current.agentDir !== agentDir) return refused("changed");
       try {
@@ -403,8 +346,8 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
     try { config = readLocalIdentity(root); } catch { return null; }
     const envelope = (result: V0Reply): V0AgentReply => ({ version: 1, requestId: request.requestId, machineId: config.machineId, ...result });
     if (config.role === "hub" || request.toMachineId !== config.machineId) return envelope(refused("unauthorized"));
-    let configured: Routes;
-    try { configured = readRoutes(root, config); } catch { return envelope(refused("invalid-config")); }
+    let configured: V0Routes;
+    try { configured = readV0Routes(root, config); } catch { return envelope(refused("invalid-config")); }
     const source = configured.acceptFrom.find(peer => peer.machineId === request.from.machineId);
     if (!source) return envelope(refused("unauthorized"));
     try {

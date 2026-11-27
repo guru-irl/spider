@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { expect } from 'vitest';
+import { listV0RelayLinks, submitV0Relay } from '@spider/intercom/broker/roam-relay-client';
+import { requestV0Broker } from '@spider/intercom/broker/roam-v0-client';
+import { decodeRelayPollReply, encodeRelayPoll, type RelayPoll, type RelayResult, type RelaySubmit } from '@spider/intercom/relay-protocol';
 import { mark, parentTurns } from '../fixtures/child-scripts.js';
 import { relayFixture } from '../fixtures/roam-relays.js';
 import type { ScriptTurn } from '../fixtures/scripted-provider.js';
@@ -95,20 +100,78 @@ async function relayDelivery(suite: Suite): Promise<void> {
 
 async function relayPoll(suite: Suite): Promise<void> {
   const fixture = await relayFixture(suite);
-  try {
-    const relay = { machineId: '00000000-0000-4000-8000-000000000001', alias: 'relay-1.invalid' };
-    const hello = { type: 'hello', version: 1, relay, toMachineId: fixture.sender.machineId, linkId: 'carrier-link', pollId: 'empty' };
-    const reach = { type: 'reach', peers: [relay] };
+  const relay = { machineId: '00000000-0000-4000-8000-000000000001', alias: 'relay-1.invalid' };
+  const { sender, target } = fixture;
+  const linkId = 'carrier-link';
+  const calls: Promise<unknown>[] = [];
+  function open(pollId: string, holdMs: RelayPoll['holdMs'], results: readonly RelayResult[] = []) {
+    const input = encodeRelayPoll({ holdMs, hello: { type: 'hello', version: 1, relay, toMachineId: sender.machineId, linkId, pollId },
+      reach: { type: 'reach', peers: [relay] }, results });
     const started = performance.now();
-    const first = await suite.cores!.hc(['exec', '--on', 'dest.invalid', '--timeout', '25', '--stdin', '--',
-      '/usr/bin/env', `PI_CODING_AGENT_DIR=${fixture.sender.agent}`, process.execPath, suite.packed.roamCli,
-      '--global-root', fixture.sender.root, 'roam', 'agent', '--v0', 'link', '--hold-ms', '20000'],
-      'local', { input: `${JSON.stringify(hello)}\n${JSON.stringify(reach)}\n` });
-    await suite.evidence('H-relay-poll-empty.json', { callMs: Math.round(performance.now() - started), first });
-    expect(first.json, first.stdout || first.stderr).toEqual({ type: 'ready', version: 1, ok: true,
-      machineId: fixture.sender.machineId, linkId: hello.linkId, pollId: 'empty' });
-    expect(first.exitCode, first.stderr).toBe(0);
-  } finally { await fixture.close(); }
+    let returned = false;
+    const reply = suite.cores!.hc(['exec', '--on', 'dest.invalid', '--timeout', '25', '--stdin', '--',
+      '/usr/bin/env', `PI_CODING_AGENT_DIR=${sender.agent}`, process.execPath, suite.packed.roamCli,
+      '--global-root', sender.root, 'roam', 'agent', '--v0', 'link', '--hold-ms', String(holdMs)],
+      'local', { input: input.toString('utf8') }).then(async result => {
+      returned = true;
+      const callMs = Math.round(performance.now() - started);
+      await suite.evidence(`H-relay-poll-${pollId}.json`, { holdMs, callMs, result });
+      expect(result.exitCode, result.stdout || result.stderr).toBe(0);
+      const reply = decodeRelayPollReply(Buffer.from(result.stdout));
+      expect(reply.ready).toEqual({ type: 'ready', version: 1, ok: true, machineId: sender.machineId, linkId, pollId });
+      return { callMs, submissions: reply.submissions };
+    });
+    calls.push(reply);
+    void reply.catch(() => {});
+    return { reply, returned: () => returned };
+  }
+  async function startedAfter(prior: number, call: ReturnType<typeof open>): Promise<number> {
+    return waitFor('the private broker records the new held call', async () => {
+      if (call.returned()) await call.reply;
+      expect(call.returned()).toBe(false);
+      const links = await listV0RelayLinks(sender.agent);
+      return links.find(link => link.linkId === linkId && link.state === 'up')?.lastCallMs ?? -1;
+    }, lastCallMs => lastCallMs > prior, deadline(20_000));
+  }
+  const stop = new AbortController();
+  try {
+    const emptyCall = open('empty', 20_000);
+    const firstStart = await startedAfter(-1, emptyCall);
+    const empty = await emptyCall.reply;
+    expect(empty.submissions).toEqual([]);
+
+    const origin = await requestV0Broker(sender.agent, { kind: 'lookup', scopeId: null, selector: { by: 'id', value: sender.id } });
+    if (origin.kind !== 'matches' || origin.targets.length !== 1) throw new Error('sender is not a live v0 endpoint');
+    const message = { id: 'carrier-message', timestamp: Date.now(), text: 'held relay carrier fixture' };
+    const submission: RelaySubmit = { type: 'submit', kind: 'send', from: { machineId: sender.machineId, ...origin.targets[0] },
+      target: { machineId: target.machineId, selector: { by: 'id', value: target.id } }, message };
+    const take = open('handoff', 20_000);
+    const handoffStart = await startedAfter(firstStart, take);
+    const sent = submitV0Relay(sender.agent, relay.machineId, submission, stop.signal);
+    calls.push(sent);
+    const handoff = await take.reply;
+    expect(handoff.submissions).toEqual([submission]);
+
+    const overlap = open('overlap', 20_000);
+    const overlapStart = await startedAfter(handoffStart, overlap);
+    const result: RelayResult = { type: 'result', messageId: message.id, attempted: true,
+      outcome: { kind: 'socket_delivered', id: message.id } };
+    const [quick, outcome] = await Promise.all([open('result', 0, [result]).reply, sent]);
+    expect(quick.submissions).toEqual([]);
+    expect(outcome).toEqual(result);
+    expect(overlap.returned()).toBe(false);
+    const final = await overlap.reply;
+    expect(final.submissions).toEqual([]);
+    const proof = { emptyCallMs: empty.callMs, handoffCallMs: handoff.callMs, handoffId: message.id, resultCallMs: quick.callMs,
+      resultBeforeHeldReply: true, finalCallMs: final.callMs, callStartMs: [firstStart, handoffStart, overlapStart] };
+    await suite.evidence('H-relay-poll-proof.json', proof);
+    console.log(`H-relay-poll calls: ${JSON.stringify(proof)}`);
+  } finally {
+    stop.abort();
+    try { await fixture.close(); } finally { await Promise.allSettled(calls); }
+  }
+  for (const endpoint of [sender, target]) expect(existsSync(join(endpoint.agent, 'intercom', 'broker.sock'))).toBe(false);
+  console.log('H-relay-poll cleanup: all four exec calls settled and both private broker sockets are gone');
 }
 
 export const scenarios: readonly ScenarioDefinition[] = [

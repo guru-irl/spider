@@ -1,5 +1,7 @@
 import { createFederation } from "./federation.js";
 import { parseV0BrokerReply, parseV0BrokerRequest, v0ExplicitName, v0TextFits, V0_ASK_MAX_MS, V0_INTERCOM_FEATURE, type V0Delivery, type V0Endpoint } from "../roam-v0.js";
+import { parseRelayBrokerRequest, relayRefused, RELAY_BROKER_FEATURE, type RelayBrokerRequest } from "../relay-protocol.js";
+import { createRelayLinks } from "./relay-links.js";
 import { MOVE_FENCE_FEATURE, type IntercomIntakeAction, type IntercomIntakeFence } from "../protocol.js";
 import { isIntercomIntakeAction, isIntercomIntakeFence } from "./protocol.js";
 import { RECEIPT_ACK_FEATURE, RECEIPT_EVIDENCE_FEATURE, compatibleReceipt, FEDERATION_FEATURE, FREEZE_BLOCKERS_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, addressKey, sessionAddress, type SessionAddress, type RemoteSessionInfo, type FederationDispatchResult, type FederationBrokerMessage, type SessionEndpoint, type LocalSessionInfo } from "../protocol.js";
@@ -61,6 +63,26 @@ function serializedPayloadSize(payload: unknown): number | null {
   } catch {
     return null;
   }
+}
+
+function writeRelayFrames(socket: net.Socket, signal: AbortSignal, frames: readonly unknown[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const closed = new Error("Private relay socket closed before reply");
+    if (signal.aborted || socket.destroyed || !socket.writable) { reject(closed); return; }
+    const abort = () => reject(closed);
+    signal.addEventListener("abort", abort, { once: true });
+    try {
+      for (const frame of frames) writeMessage(socket, frame);
+      socket.end(() => {
+        signal.removeEventListener("abort", abort);
+        if (signal.aborted || socket.errored) reject(closed);
+        else resolve();
+      });
+    } catch (error) {
+      signal.removeEventListener("abort", abort);
+      reject(error);
+    }
+  });
 }
 
 interface ConnectedSession {
@@ -266,6 +288,11 @@ class IntercomBroker {
   private helperToken: string | null = null;
   private helperNegotiated = new Set<net.Socket>();
   private v0Requests = new Set<net.Socket>();
+  private relayLinks = createRelayLinks({ now: Date.now, later(ms, fn) {
+    const timer = setTimeout(fn, ms);
+    timer.unref();
+    return () => clearTimeout(timer);
+  } });
   private v0Asks = new Map<string, V0AskRoute>();
   private helpers = new Set<net.Socket>();
   private helperPending = new Map<string, { socket: net.Socket; requestId: string; timer: NodeJS.Timeout }>();
@@ -368,6 +395,12 @@ class IntercomBroker {
     };
     armRegistrationTimeout();
     const holdV0Connection = () => clearRegistrationTimeout();
+    let relayAbort: AbortController | undefined;
+    const holdRelayConnection = () => {
+      clearRegistrationTimeout();
+      relayAbort = new AbortController();
+      return relayAbort.signal;
+    };
     const connection: ConnectionState = {
       socket,
       tokens: RATE_LIMIT_CAPACITY,
@@ -387,7 +420,7 @@ class IntercomBroker {
         } else {
           armRegistrationTimeout();
         }
-      }, holdV0Connection);
+      }, holdV0Connection, holdRelayConnection);
     }, (error) => {
       socket.destroy(error);
     });
@@ -395,6 +428,7 @@ class IntercomBroker {
     socket.on("data", reader);
 
     socket.on("close", () => {
+      relayAbort?.abort();
       clearRegistrationTimeout();
       this.connections.delete(socket);
       this.helperNegotiated.delete(socket);
@@ -736,12 +770,46 @@ class IntercomBroker {
     }, 5000);
   }
 
+  private async handleRelay(socket: net.Socket, request: RelayBrokerRequest, signal: AbortSignal): Promise<void> {
+    const { requestId } = request;
+    switch (request.kind) {
+      case "poll":
+        await this.relayLinks.poll(request.poll, signal, ({ ready, submissions }) => writeRelayFrames(socket, signal, [
+          { type: "roam_v0_relay_ready", requestId, ready, count: submissions.length },
+          ...submissions.map(submit => ({ type: "roam_v0_relay_submission", requestId, submit })),
+        ]));
+        // A fenced call did not get as far as writing its reply.
+        if (!socket.writableEnded) socket.destroy();
+        return;
+      case "list": {
+        const links = this.relayLinks.list();
+        await writeRelayFrames(socket, signal, [
+          { type: "roam_v0_relay_links", requestId, count: links.length },
+          ...links.map(link => ({ type: "roam_v0_relay_link", requestId, link })),
+        ]);
+        return;
+      }
+      case "submit": {
+        const { from, message } = request.submit;
+        const live = [...this.sessions.values()].some(session => session.info.address &&
+          addressKey(session.info.address) === addressKey(from.address) && session.info.endpointEpoch === from.endpointEpoch &&
+          session.info.v0HomeEpoch === from.homeEpoch && v0ExplicitName(session.info) === from.name &&
+          !session.socket.destroyed && !session.socket.writableEnded && session.socket.writable);
+        const result = live ? await this.relayLinks.submit(request.relayId, request.submit, signal, request.remainingMs)
+          : relayRefused(message.id, "unauthorized");
+        await writeRelayFrames(socket, signal, [{ type: "roam_v0_relay_result", requestId, result }]);
+        return;
+      }
+    }
+  }
+
   private handleMessage(
     socket: net.Socket,
     msg: unknown,
     currentKey: string | null,
     setKey: (key: string | null) => void,
     holdV0Connection: () => void,
+    holdRelayConnection: () => AbortSignal,
   ): void {
     if (typeof msg !== "object" || msg === null || !("type" in msg) || typeof msg.type !== "string") {
       throw new Error("Invalid client message");
@@ -752,6 +820,14 @@ class IntercomBroker {
     const hasEndpointAuth = clientMessage.stateId === BROKER_STATE_ID;
 
     if (this.v0Requests.has(socket)) throw new Error("roam-v0-one-request-only");
+    if (clientMessage.type === "roam_v0_relay") {
+      if (typeof LISTEN_TARGET !== "string" || currentKey !== null || !this.helperNegotiated.has(socket)) throw new Error("roam-v0-relay-private-socket-required");
+      this.v0Requests.add(socket);
+      const request = parseRelayBrokerRequest(msg);
+      if (!request) throw new Error("invalid-roam-v0-relay-request");
+      void this.handleRelay(socket, request, holdRelayConnection()).catch(() => socket.destroy());
+      return;
+    }
     if (clientMessage.type === "roam_v0") {
       if (typeof LISTEN_TARGET !== "string" || currentKey !== null || !this.helperNegotiated.has(socket)) throw new Error("roam-v0-private-socket-required");
       this.v0Requests.add(socket);
@@ -834,7 +910,7 @@ class IntercomBroker {
         requestId: clientMessage.requestId,
         protocol: INTERCOM_PROTOCOL_NAME,
         version: INTERCOM_PROTOCOL_VERSION,
-        ...(typeof LISTEN_TARGET === "string" ? { implementation: "spider", features: [HELPER_EXCHANGE_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, FEDERATION_FEATURE, V0_INTERCOM_FEATURE] } : {}),
+        ...(typeof LISTEN_TARGET === "string" ? { implementation: "spider", features: [HELPER_EXCHANGE_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, FEDERATION_FEATURE, V0_INTERCOM_FEATURE, RELAY_BROKER_FEATURE] } : {}),
       });
       return;
     }
@@ -2290,6 +2366,7 @@ class IntercomBroker {
 
   private shutdown(): void {
     console.log("Broker shutting down");
+    this.relayLinks.close();
 
     for (const session of this.sessions.values()) {
       session.socket.end();

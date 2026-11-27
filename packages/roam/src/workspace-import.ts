@@ -1660,12 +1660,14 @@ export async function abortWorkspace(prepared: PreparedWorkspace, ports: Workspa
     }
     assertTrees(await inspectTrees(prepared.root, ports), recorded.snapshot, "workspace-abort-diverged");
     ports.journal.record(prepared.moveId, "workspace-abort-start", { root: prepared.root });
-    if (recorded.previous) {
+    const previous = recorded.previous;
+    if (previous) {
       const common = text(await git(ports, prepared.root, ["rev-parse", "--path-format=absolute", "--git-common-dir"]));
-      await verifyLfs(recorded.previous, prepared.root, common, ports);
-      await applyTrees(prepared.root, recorded.snapshot, recorded.previous, ports, transition);
-      await restoreBranch(prepared.root, recorded.previous, ports, prepared.moveId);
-      assertTrees(await inspectTrees(prepared.root, ports), recorded.previous, "workspace-abort-failed");
+      const headTree = text(await git(ports, prepared.root, ["rev-parse", "--verify", `${previous.head}^{tree}`]));
+      await verifyLfs([headTree, previous.indexTree, previous.workingTree], prepared.root, common, ports);
+      await applyTrees(prepared.root, recorded.snapshot, previous, ports, transition);
+      await restoreBranch(prepared.root, previous, ports, prepared.moveId);
+      assertTrees(await inspectTrees(prepared.root, ports), previous, "workspace-abort-failed");
     }
     ports.journal.record(prepared.moveId, "workspace-aborted", { root: prepared.root, retained: recorded.previous === null });
   });

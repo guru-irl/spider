@@ -105,6 +105,12 @@ type Service = { stop(): Promise<void> };
 type StartSupervisor = (root: string, options: { system: SupervisorSystemPorts; clock: ReturnType<typeof fixtureClock> }) => Promise<Service>;
 
 export interface HostedOwner { pid: number; terminal: string; sessionId: string; file: string; cwd: string }
+export function observedHostedOwner(event: ObservedEvent, sessionId: string): HostedOwner | null {
+  if (event.type !== 'session_start' || event.sessionId !== sessionId) return null;
+  if (typeof event.sessionFile !== 'string' || typeof event.cwd !== 'string' || typeof event.hcTerminal !== 'string')
+    throw new Error('incomplete hosted owner observation');
+  return { pid: event.pid, terminal: event.hcTerminal, sessionId, file: event.sessionFile, cwd: event.cwd };
+}
 export interface HostingFixture {
   suite: Suite; root: string; cwd: string; sessionId: string; file: string; coreUnit: string; supervisorUnit: string; systemctlLog: string; shellLog: string;
   start(): Promise<void>; settle(): Promise<void>; close(): Promise<void>; waitOwner(previousPid?: number): Promise<HostedOwner>;
@@ -366,8 +372,8 @@ export async function v0HostingFixture(suite: Suite): Promise<V0HostingFixture> 
   const owners = async () => {
     const rows: HostedOwner[] = [];
     for (const item of await domain.processes()) {
-      const entry = (await events(item.pid)).find(event => event.type === 'session_start' && event.sessionId === sessionId && event.sessionFile === file);
-      if (entry && typeof entry.hcTerminal === 'string') rows.push({ pid: item.pid, terminal: entry.hcTerminal, sessionId, file, cwd });
+      const entry = (await events(item.pid)).find(event => event.type === 'session_start' && event.sessionId === sessionId);
+      if (entry) rows.push(observedHostedOwner(entry, sessionId)!);
     }
     return rows;
   };
@@ -378,6 +384,7 @@ export async function v0HostingFixture(suite: Suite): Promise<V0HostingFixture> 
       return owners();
     }, values => values.length === 1 && values[0].pid !== previousPid, deadline(60_000), { reconcileMs: 100 });
     const owner = rows[0], lock = await inspectIdLock(herdr, sessionId);
+    if (owner.file !== file || owner.cwd !== cwd) throw new Error('session owner has the wrong file or cwd');
     if (!lock || lock.identity.pid !== owner.pid || lock.pendingOperationId !== null) {
       await suite.evidence('R04-lock-failure.json', { owner, lock, events: await events(owner.pid) });
       throw new Error('session owner did not adopt its ID lock');

@@ -43,10 +43,11 @@ describe("expanded result path coverage", () => {
     check(done.render(80), 80);
   });
 
-  it("expanded escalation keeps the full run identifier", () => {
+  it("expanded escalation keeps the summary and omits the internal run identifier", () => {
     const runId = "run-identifier-123456789";
     const lines = renderEscalationMessage({ details: { runId, severity: "warning", summary: "note" } }, { expanded: true }, theme).render(80);
-    expect(lines.join("\n")).toContain(runId);
+    expect(lines.join("\n")).toContain("warning · note");
+    expect(lines.join("\n")).not.toContain(runId.slice(0, 8));
   });
 
   it("escalation and organism messages wrap long text in their boxes", () => {

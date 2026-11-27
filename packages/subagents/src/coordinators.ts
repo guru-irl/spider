@@ -308,7 +308,7 @@ export function setupEscalationNotifier(ctx: any, store: RunStore): () => void {
       ctx.pi?.sendMessage?.(
         {
           customType: "spider.escalation",
-          content: `🚨 *escalation* "${runName}" · ${run.agent} · *${severity}*\n\n${summary}`,
+          content: `🚨 *escalation* "${runName}" (run ${e.runId}) · ${run.agent} · *${severity}*\n\n${summary}`,
           display: true,
           details: {
             runId: e.runId,

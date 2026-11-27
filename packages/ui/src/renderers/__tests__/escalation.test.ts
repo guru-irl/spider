@@ -1,59 +1,35 @@
 import { describe, it, expect } from "vitest";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { renderEscalation } from "../escalation";
+import { renderEscalation, type EscalationDetails } from "../escalation";
 import type { RenderCtx } from "../types";
-import type { ThemeAdapter } from "../../agents/types.js";
 
-describe("escalation renderer", () => {
-  const id: ThemeAdapter = { fg: (_t, s) => s, bg: (_t, s) => s, bold: (s) => s, glyph: "🕸" };
-  const ctx: RenderCtx = { theme: id, width: 80 };
+const run = { runId: "beb58fc6-193f-4247-bb38-c59612f6985d", agent: "worker", name: "tia-3" };
+const theme: RenderCtx["theme"] = { fg: (_token, text) => text, bg: (_token, text) => text, bold: text => text, glyph: "🕸️" };
 
-  // Mutation: remove severity rendering → must fail
-  it("the rendered card contains the summary and reflects severity", () => {
-    const lines = renderEscalation({
-      runId: "r1",
-      severity: "blocked",
-      summary: "Need approval for destructive operation",
-      agent: "worker",
-      name: "cleanup-task",
-    }, ctx);
+function render(severity: EscalationDetails["severity"], summary: string, width: number, expanded = false) {
+  return renderEscalation({ ...run, severity, summary }, { theme, width, expanded });
+}
 
-    const output = lines.join("\n");
-    expect(output).toContain("Need approval for destructive operation");
-    expect(output).toContain("blocked");
-    expect(output).toContain("worker");
-    expect(output).toContain("cleanup-task");
+describe("escalation status rows", () => {
+  it.each([
+    ["blocked", "❌ blocked"], ["question", "❓ question"], ["warning", "⚠️ warning"],
+  ] as const)("shows a %s marker and starts the summary on the status row", (severity, status) => {
+    expect(render(severity, "Check the release manifest.", 80)).toEqual([` ${status} · Check the release manifest.`]);
   });
 
-  it("handles all severity levels", () => {
-    const severities: Array<"blocked" | "question" | "warning"> = ["blocked", "question", "warning"];
-    for (const severity of severities) {
-      const lines = renderEscalation({
-        runId: "r2",
-        severity,
-        summary: `Test ${severity}`,
-        agent: "worker",
-        name: "test",
-      }, ctx);
-      
-      const output = lines.join("\n");
-      expect(output).toContain(severity);
-      expect(output).toContain(`Test ${severity}`);
-    }
+  it("prints only the status for an empty summary", () => {
+    expect(render("warning", "", 80)).toEqual([" ⚠️ warning"]);
   });
 
-  it("truncates long lines to width", () => {
-    const longSummary = "A".repeat(200);
-    const lines = renderEscalation({
-      runId: "r3",
-      severity: "warning",
-      summary: longSummary,
-      agent: "worker",
-      name: "test",
-    }, ctx);
-
-    for (const line of lines) {
-      expect(visibleWidth(line)).toBeLessThanOrEqual(ctx.width);
-    }
+  it.each([20, 30, 80])("wraps the entire summary at width %i in both modes", width => {
+    const summary = "The release manifest is missing some entries.\n\nCheck these paths before packaging: " + "界🙂".repeat(80);
+    const rows = render("warning", summary, width);
+    expect(rows).toEqual(render("warning", summary, width, true));
+    expect(rows[0]).toMatch(/^ ⚠️ warning · /u);
+    expect(rows.slice(1).every(row => row.startsWith("   "))).toBe(true);
+    expect(rows.every(row => visibleWidth(row) <= width)).toBe(true);
+    const body = rows.join("\n").replace(/^ ⚠️ warning · /u, "");
+    expect(body.replace(/\s+/gu, "")).toBe(summary.replace(/\s+/gu, ""));
+    expect(rows.join("\n")).not.toContain(run.runId.slice(0, 8));
   });
 });

@@ -106,13 +106,24 @@ function isEvidence(value: unknown): value is RelaySoakEvidence {
   return entries(value.processes, item => object(item) && text(item.machineId) && census(item.before) && census(item.after));
 }
 
-function covers<T>(items: readonly T[], timestamp: (item: T) => number, startMs: number, endMs: number, gapMs: number): boolean {
+interface TimeSpan { startMs: number; endMs: number }
+
+function covers<T>(items: readonly T[], timestamp: (item: T) => number, startMs: number, endMs: number, gapMs: number,
+  pauses: readonly TimeSpan[] = []): boolean {
   const times = items.map(timestamp).sort((a, b) => a - b);
   if (!times.length || times[0] > startMs || times[times.length - 1] < endMs) return false;
   const first = times.findLastIndex(value => value <= startMs);
   let previous = times[first];
   for (let i = first + 1; i < times.length && previous < endMs; i++) {
-    if (times[i] - previous > gapMs) return false;
+    let elapsed = times[i] - previous, cursor = previous;
+    // Pauses are sorted by start. The cursor avoids subtracting overlaps twice.
+    for (const pause of pauses) {
+      const from = Math.max(cursor, pause.startMs), through = Math.min(times[i], pause.endMs);
+      if (from >= through) continue;
+      elapsed -= through - from;
+      cursor = through;
+    }
+    if (elapsed > gapMs) return false;
     previous = times[i];
   }
   return previous >= endMs;
@@ -239,7 +250,23 @@ export function checkRelaySoak(evidence: RelaySoakEvidence): { ok: boolean; viol
     }
     const rss = [...link.rss].sort((a, b) => a.atMs - b.atMs);
     const rssStart = startMs + clock.minOffsetMs, rssEnd = endMs + clock.maxOffsetMs;
-    if (!covers(rss, sample => sample.atMs, rssStart, rssEnd, RSS_GAP_MS) ||
+    const pauses: TimeSpan[] = [];
+    for (const fault of linkFaults) {
+      if (fault.clock !== "relay") continue;
+      let resumed: SoakRss | undefined;
+      if (fault.kind === "relay-kill") {
+        if (!fault.process) continue;
+        const killed = birthKey(fault.process);
+        if (!dialBirths.has(killed)) continue;
+        resumed = rss.find(sample => sample.atMs >= fault.startMs && birthKey(sample.process) !== killed);
+      } else {
+        // A sleeping dial can resume with the same birth when the fault clears.
+        resumed = rss.find(sample => sample.atMs >= fault.clearMs);
+      }
+      if (resumed) pauses.push({ startMs: fault.startMs, endMs: resumed.atMs });
+    }
+    pauses.sort((a, b) => a.startMs - b.startMs);
+    if (!covers(rss, sample => sample.atMs, rssStart, rssEnd, RSS_GAP_MS, pauses) ||
         rss.some(sample => !dialBirths.has(birthKey(sample.process)))) fail("rss");
     const baseline = rss.findLast(sample => sample.atMs <= rssStart);
     if (!baseline || rss.some(sample => sample.atMs >= baseline.atMs && sample.atMs <= rssEnd && sample.bytes > baseline.bytes + rssAllowanceBytes)) fail("rss");

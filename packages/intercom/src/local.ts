@@ -16,7 +16,7 @@ import { InlineMessageComponent } from "./ui/inline-message.js";
 import { getAskTimeoutMs, loadConfig, type IntercomConfig } from "./config.js";
 import { EXTENSION_BUS_FEATURE } from "./types.js";
 import type { Attachment, BrokerMessage, LocalSessionInfo, Message, MessageControl, MessageReceipt, MessageReceiptStatus, SessionInfo, SessionRegistration } from "./types.js";
-import type { V0Code, V0ToolOptions } from "./roam-v0.js";
+import { V0_ASK_MAX_MS, type V0Code, type V0ToolOptions } from "./roam-v0.js";
 import {
   INTERCOM_EXTENSION_REGISTER_EVENT,
   INTERCOM_EXTENSION_REGISTRY_READY_EVENT,
@@ -2890,6 +2890,26 @@ Usage:
                 content: [{ type: "text", text: "openProjectPaneIfMissing requires a target cwd." }],
                 details: { error: true },
               };
+            }
+            if (v0 && to && currentSessionId && v0.homeEpoch(currentSessionId) !== undefined) {
+              const sessions = await connectedClient.listSessions();
+              const locals = sessions.filter((session): session is LocalSessionInfo => !session.remote);
+              const from = locals.find(session => session.id === connectedClient.sessionId && session.address?.sessionId === currentSessionId);
+              if (from) {
+                const plan = await v0.prepare({ to, from, locals, signal: _signal });
+                if (plan.kind === "remote") {
+                  questionId = randomUUID();
+                  const question = { id: questionId, timestamp: Date.now(), text: message };
+                  const result = await plan.ask(question, Math.min(askTimeoutMs, V0_ASK_MAX_MS), _signal);
+                  if (result.kind === "replied") {
+                    pi.appendEntry("intercom_sent", { to: plan.label, message: { text: message }, messageId: question.id, timestamp: question.timestamp });
+                    pi.appendEntry("intercom_received", { from: plan.label, message: { text: result.text }, messageId: result.replyId, timestamp: Date.now() });
+                    return { content: [{ type: "text", text: `**Reply from ${plan.label}:**\n${result.text}` }],
+                      details: { delivery: "replied", messageId: question.id, replyId: result.replyId } };
+                  }
+                  return { content: [{ type: "text", text: "No reply was received." }], details: { error: true } };
+                }
+              }
             }
             let target: DeliveryTarget;
             if (cwd) {

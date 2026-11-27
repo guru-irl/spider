@@ -89,6 +89,27 @@ it("sends by name and reports socket dispatch, not consumption", async () => {
   } finally { await f.cleanup(); }
 });
 
+it("returns the reply to a named remote ask", async () => {
+  const questions: V0Text[] = [];
+  const prepare: V0Prepare = async () => ({
+    kind: "remote", label: "b/ben",
+    async send(message) { return { kind: "socket_delivered", id: message.id }; },
+    async ask(message) {
+      questions.push(message);
+      return { kind: "replied", id: message.id, replyId: "reply-fixture", text: "ack i5:fixture" };
+    },
+  });
+  const f = await fixture({ homeEpoch: () => 7, prepare });
+  try {
+    const result = await f.tool.execute("ask", { action: "ask", to: "ben", message: "i5:fixture" }, new AbortController().signal, undefined, f.ctx);
+    expect(result.content[0].text).toBe("**Reply from b/ben:**\nack i5:fixture");
+    expect(result.details).toMatchObject({ delivery: "replied", messageId: questions[0].id, replyId: "reply-fixture" });
+    expect(questions).toEqual([{ id: result.details.messageId, timestamp: expect.any(Number), text: "i5:fixture" }]);
+    expect(f.entries).toContainEqual(expect.objectContaining({ type: "intercom_sent", data: expect.objectContaining({ messageId: questions[0].id }) }));
+    expect(f.entries).toContainEqual(expect.objectContaining({ type: "intercom_received", data: expect.objectContaining({ messageId: "reply-fixture" }) }));
+  } finally { await f.cleanup(); }
+});
+
 it("does not send when confirmation finishes in a different session", async () => {
   const sent: V0Text[] = [];
   let finish!: (value: boolean) => void;

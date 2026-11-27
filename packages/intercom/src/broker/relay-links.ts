@@ -37,7 +37,8 @@ interface Link {
   view: RelayLinkView;
   toMachineId: string;
   calls: Map<Hold, ActiveCall>;
-  pending: Map<string, Pending>;
+  // A null entry still owns a handed-off slot, but no text or local waiter.
+  pending: Map<string, Pending | null>;
   grace: { untilMs: number; cancel(): void } | null;
 }
 interface KnownRelay {
@@ -58,7 +59,8 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
     link.view = { ...link.view, state: "down", sinceMs, lastError: error };
     clearGrace(link);
     for (const call of link.calls.values()) call.cancel();
-    for (const pending of link.pending.values()) pending.fail(failure);
+    for (const pending of link.pending.values()) pending?.fail(failure);
+    link.pending.clear();
     observe?.(link.view);
   }
   function refresh(link: Link): void {
@@ -78,7 +80,7 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
     const now = clock.now();
     const submissions: RelaySubmit[] = [];
     for (const pending of link.pending.values()) {
-      if (pending.stage.kind !== "waiting" || expire(pending, now)) continue;
+      if (pending?.stage.kind !== "waiting" || expire(pending, now)) continue;
       submissions.push(pending.stage.submit);
       pending.stage = { kind: "handed" };
       pending.arm(pending.deadlineMs);
@@ -153,9 +155,12 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
       let carried = 0;
       for (const result of results) {
         const pending = link.pending.get(result.messageId);
-        if (!pending || pending.stage.kind !== "handed" || expire(pending, now)) continue;
-        pending.finish(result);
-        if (result.outcome.kind === "socket_delivered") carried++;
+        if (pending === undefined || pending?.stage.kind === "waiting") continue;
+        if (pending && !expire(pending, now)) {
+          pending.finish(result);
+          if (result.outcome.kind === "socket_delivered") carried++;
+        }
+        link.pending.delete(result.messageId);
       }
       link.view = { ...link.view, relay: hello.relay, reach: reach.peers, lastCallMs: now,
         messagesCarried: link.view.messagesCarried + carried };
@@ -182,7 +187,7 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
     if (!link || link.view.state !== "up" || signal?.aborted || remainingMs <= 0)
       return Promise.resolve(relayRefused(id, "unreachable"));
     const now = clock.now();
-    for (const pending of link.pending.values()) expire(pending, now);
+    for (const pending of link.pending.values()) if (pending) expire(pending, now);
     if (link.pending.has(id)) return Promise.resolve(relayRefused(id, "invalid"));
     if (link.pending.size >= RELAY_MAX_SLOTS) return Promise.resolve(relayRefused(id, "relay-busy"));
 
@@ -196,10 +201,17 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
         finish(result) {
           cancelTimer();
           signal?.removeEventListener("abort", abort);
-          link.pending.delete(id);
           resolve(result);
         },
-        fail(code) { pending.finish(pending.stage.kind === "waiting" ? relayRefused(id, code) : relayUnknown(id)); },
+        fail(code) {
+          if (pending.stage.kind === "waiting") {
+            link.pending.delete(id);
+            pending.finish(relayRefused(id, code));
+          } else {
+            link.pending.set(id, null);
+            pending.finish(relayUnknown(id));
+          }
+        },
         arm(until) {
           cancelTimer();
           cancelTimer = clock.later(Math.max(0, until - clock.now()), () => pending.fail("unreachable"));

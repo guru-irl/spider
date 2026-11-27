@@ -89,8 +89,8 @@ module.syncBuiltinESMExports();
 `);
 });
 
-function invoke(write = true, nativeHome = false, failBackup = false, script = join(root, "scripts/sync-copilot-models.mjs"), extraEnv: NodeJS.ProcessEnv = {}) {
-  return spawnSync(process.execPath, ["--import", join(fixture, "boundary.mjs"), script, ...(write ? ["--write"] : [])], {
+function invoke(write = true, nativeHome = false, failBackup = false, script = join(root, "scripts/sync-copilot-models.mjs"), extraEnv: NodeJS.ProcessEnv = {}, cliArgs: string[] = []) {
+  return spawnSync(process.execPath, ["--import", join(fixture, "boundary.mjs"), script, ...(write ? ["--write"] : []), ...cliArgs], {
     cwd: fixture, encoding: "utf8",
     env: { ...process.env, HOME: fixture, USERPROFILE: fixture, FIXTURE_HOME: fixture, PI_CODING_AGENT_DIR: undefined,
       PATH: fakePath, FIXTURE_NATIVE_HOME: nativeHome ? "1" : "0", FIXTURE_FAIL_BACKUP: failBackup ? "1" : "0",
@@ -124,6 +124,34 @@ describe("Copilot model sync catalog", () => {
     expect(saved().providers["github-copilot"].models).toEqual([{ id: "model-b", compactAtPercent: 60 }]);
     expect(saved().providers["github-copilot"].modelOverrides).toEqual({ "model-a": { compactAtPercent: 30 } });
     expect(result.stdout).toContain("1.0.0");
+  });
+
+  // A stale snapshot cannot identify the installation that will read this file.
+  it("refuses without writing when pi is absent from PATH", () => {
+    const emptyPath = join(fixture, "empty-bin");
+    mkdirSync(emptyPath);
+    const before = config();
+    writeFileSync(join(fixture, "catalog.json"), JSON.stringify({ data: [model("model-c", "Example")] }));
+    writeFileSync(modelsPath, JSON.stringify(before));
+    const result = invoke(true, false, false, undefined, { PATH: emptyPath, SPIDER_PIAI_MODELS: undefined });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("--pi-root <dir>");
+    expect(readFileSync(modelsPath, "utf8")).toBe(JSON.stringify(before));
+    expect(readdirSync(join(fixture, ".pi/agent"))).toEqual(["models.json"]);
+  });
+
+  // The documented override must select an installation without a pi on PATH.
+  it("accepts an explicit pi root when pi is absent from PATH", () => {
+    const other = installPi("pi-override", 'export const GITHUB_COPILOT_MODELS = [{ id: "model-c" }];\n', "2.0.0");
+    const emptyPath = join(fixture, "empty-bin");
+    mkdirSync(emptyPath);
+    writeFileSync(join(fixture, "catalog.json"), JSON.stringify({ data: [] }));
+    writeFileSync(modelsPath, JSON.stringify({ providers: { "github-copilot": { models: [{ id: "model-c", compactAtPercent: 70 }] } } }));
+    const result = invoke(true, false, false, undefined, { PATH: emptyPath, SPIDER_PIAI_MODELS: undefined }, ["--pi-root", other.piRoot]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(saved().providers["github-copilot"].models).toEqual([]);
+    expect(saved().providers["github-copilot"].modelOverrides).toEqual({ "model-c": { compactAtPercent: 70 } });
+    expect(result.stdout).toContain("2.0.0");
   });
 
   // Treating the keyed catalog as a snapshot adds a model already built in.

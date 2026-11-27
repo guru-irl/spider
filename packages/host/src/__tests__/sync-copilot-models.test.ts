@@ -51,7 +51,7 @@ const originalWrite = fs.writeFileSync;
 if (process.env.FIXTURE_FAIL_BACKUP === '1') fs.copyFileSync = () => { throw new Error('fixture backup failed'); };
 if (process.env.FIXTURE_FAIL_RENAME === '1') fs.renameSync = () => { throw new Error('fixture rename failed'); };
 if (process.env.FIXTURE_FAIL_WRITE === '1') fs.writeFileSync = (path, data, ...args) => {
-  if (String(path).startsWith(process.env.FIXTURE_HOME + '/.pi/agent/models.json')) {
+  if (typeof path === 'number' || String(path).startsWith(process.env.FIXTURE_HOME + '/.pi/agent/models.json')) {
     originalWrite(path, 'partial fixture', ...args);
     throw new Error('fixture write failed');
   }

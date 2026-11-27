@@ -149,15 +149,45 @@ it("a foreign replica cannot offer a local managed home without a fence", async 
 
     expect(gate.inspect().kind).toBe("blocked");
     expect(lock).not.toHaveBeenCalled();
+    expect(await inspectIdLock(join(f.root, "herdr"), id)).toBeNull();
+    expect(await createSessionLeases(join(f.root, "herdr")).get(file)).toBeNull();
     expect(await loadRelocateAdmission(id, f.root)).toEqual({ kind: "unavailable" });
     expect(db.prepare("SELECT * FROM session_homes WHERE session_id=?").get(id)).toEqual(before);
   } finally { db.close(); f.close(); }
 });
 
-it("a journal-only legacy freeze fences a fresh admission with no global DB", async () => {
+it("a matching box replica can read its own managed running home", async () => {
+  const box = "22222222-2222-4222-8222-222222222222";
+  const f = createReplica("global", box), db = openDb(join(f.root, "spider.db"));
+  migrate(db, "global", { machineId: box, globalRoot: f.root });
+  try {
+    mkdirSync(join(f.root, "roam"), { mode: 0o700 });
+    const config = { enabled: false, role: "box", machineId: box, hubMachineId: local, peers: [], discoveryRoots: [], coreUnit: "core", syncMs: 10_000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
+    writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify(config), { mode: 0o600 });
+    writeFileSync(join(f.root, "roam", "machine.json"), JSON.stringify({ machineId: box }), { mode: 0o600 });
+    db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state) VALUES(?,?,3,NULL,1,'running')").run(id, box);
+    writeLocal(db, "relocate-managed", id, { synthetic: true });
+    expect(await loadRelocateAdmission(id, f.root)).toEqual({ kind: "managed", home: { ...home, machineId: box } });
+  } finally { db.close(); f.close(); }
+});
+
+it.each([
+  ["no global DB", false, false, "control-only"],
+  ["no global home row", true, false, "control-only"],
+  ["an unreadable worktree", false, true, "blocked"],
+] as const)("a journal-only legacy freeze fences a fresh admission with %s", async (_case, hasGlobal, corruptWorktree, expected) => {
   const f = createReplica("global", local), dbPath = join(f.root, "spider.db");
   const cwd = join(f.root, "worktree"), file = join(f.root, "session.jsonl"), journalPath = join(f.root, "roam", "journal.db");
   mkdirSync(cwd); mkdirSync(join(f.root, "roam"), { mode: 0o700 });
+  if (hasGlobal) {
+    const global = openDb(dbPath);
+    migrate(global, "global", { machineId: local, globalRoot: f.root });
+    global.close();
+  }
+  if (corruptWorktree) {
+    mkdirSync(join(cwd, ".spider"));
+    writeFileSync(join(cwd, ".spider", "project.db"), "not a SQLite database");
+  }
   writeFileSync(file, JSON.stringify({ type: "session", version: 3, id, cwd }) + "\n", { mode: 0o600 });
   const journal = openDb(journalPath);
   journal.exec("CREATE TABLE freeze_journal(session_id TEXT, move_id TEXT, epoch INTEGER, state TEXT)");
@@ -179,7 +209,7 @@ it("a journal-only legacy freeze fences a fresh admission with no global DB", as
   try {
     expect(ports.knownParticipant(id)).toBe(false);
     await emit("session_start");
-    expect(gate.inspect().kind).toBe("control-only");
+    expect(gate.inspect().kind).toBe(expected);
     expect(await emit("input")).toEqual({ action: "handled" });
     expect(await emit("tool_call", { toolName: "edit" })).toMatchObject({ block: true });
     expect(await emit("user_bash", { command: "echo unsafe" })).toMatchObject({ result: { exitCode: 1 } });
@@ -189,7 +219,12 @@ it("a journal-only legacy freeze fences a fresh admission with no global DB", as
     expect(lock).not.toHaveBeenCalled();
     expect(await inspectIdLock(join(f.root, "herdr"), id)).toBeNull();
     expect(await createSessionLeases(join(f.root, "herdr")).get(file)).toBeNull();
-    expect(existsSync(dbPath)).toBe(false);
+    expect(existsSync(dbPath)).toBe(hasGlobal);
+    if (hasGlobal) {
+      const global = openDb(dbPath, { fileMustExist: true });
+      try { expect(global.prepare("SELECT * FROM session_homes").all()).toEqual([]); }
+      finally { global.close(); }
+    }
     const after = openDb(journalPath, { fileMustExist: true });
     try { expect(after.prepare("SELECT * FROM freeze_journal").all()).toEqual(before); }
     finally { after.close(); }

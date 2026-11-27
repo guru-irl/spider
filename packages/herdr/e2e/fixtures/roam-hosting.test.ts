@@ -1,24 +1,26 @@
 import { expect, it } from 'vitest';
-import { countHostedLaunches, observedHostedOwner, parseV0SupervisorUnit } from './roam-hosting.js';
+import { assertHostedLaunches, observedHostedOwner, parseV0SupervisorUnit } from './roam-hosting.js';
 
-it('counts every launch attempt for the session by label or exact file', () => {
-  const file = '/fixture/project/session.jsonl';
-  const launch = (label: string, sessionFile: string, namespace = 'l') => ({
+it('rejects a third exact Pi launch but excludes viewers and consoles of the same session', () => {
+  const file = '/fixture/project/session.jsonl', pi = '/fixture/pi';
+  const record = (kind: string, command: string[], namespace = 'l') => ({
     at: 1, pid: 101, ppid: 100, namespace, socket: '/fixture/hc.sock', cwd: '/fixture/project', terminal: null,
-    argv: ['run', '--json', '--label', label, '--', '/fixture/pi', '--session', sessionFile],
+    argv: ['run', '--json', '--label', `spider.kind=${kind}`, '--label', 'spider.session=session-1', '--', ...command],
   });
-  const first = launch('spider.session=session-1', file);
-  const restored = launch('spider.session=session-1', file);
-  const other = launch('spider.session=other', '/fixture/other.jsonl');
-  const nonLaunch = { ...first, argv: ['get', '--json', 'terminal'] };
-  const argumentAfterSeparator = { ...other, argv: ['run', '--', '/fixture/pi', '--label', 'spider.session=session-1'] };
-  const baseline = [first, other, nonLaunch, argumentAfterSeparator, restored];
+  const first = record('session', ['/usr/bin/env', 'PATH=/bin', pi, '--session', file]);
+  const restored = record('session', ['/usr/bin/env', 'PATH=/bin', pi, '--session', file]);
+  const viewer = record('subagent-viewer', ['/fixture/viewer.mjs', '--run', 'child', '--session', 'session-1']);
+  const console = record('remote-console', ['/fixture/console.mjs', '--session', 'session-1']);
+  const anotherSession = record('session', ['/usr/bin/env', 'PATH=/bin', pi, '--session', '/fixture/other.jsonl']);
+  const otherProgram = record('session', ['/fixture/reader', '--session', file]);
+  const nonLaunch = { ...first, argv: ['get', '--', pi, '--session', file] };
+  const baseline = [first, viewer, console, anotherSession, otherProgram, nonLaunch, restored];
 
-  expect(countHostedLaunches([], 'session-1', file)).toBe(0);
-  expect(countHostedLaunches([first], 'session-1', file)).toBe(1);
-  expect(countHostedLaunches(baseline, 'session-1', file)).toBe(2);
-  expect(countHostedLaunches([...baseline, launch('spider.session=session-1', '/fixture/wrong.jsonl')], 'session-1', file)).toBe(3);
-  expect(countHostedLaunches([...baseline, launch('spider.session=other', file, 'd')], 'session-1', file)).toBe(3);
+  expect(() => assertHostedLaunches([], pi, file)).toThrow(/expected \+?0 to be 2/);
+  expect(() => assertHostedLaunches([first], pi, file)).toThrow(/expected 1 to be 2/);
+  expect(assertHostedLaunches(baseline, pi, file)).toBe(2);
+  const duplicate = { ...first, namespace: 'd', argv: ['run', '--', pi, '--session', file] };
+  expect(() => assertHostedLaunches([...baseline, duplicate], pi, file)).toThrow(/expected 3 to be 2/);
 });
 
 it('counts each observed owner of the session even when its file is wrong', () => {

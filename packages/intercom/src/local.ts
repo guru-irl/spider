@@ -2740,11 +2740,12 @@ Usage:
             const generation = runtimeGeneration;
             let v0Target: { id: string; endpointEpoch: string } | undefined;
             let v0Source: LocalSessionInfo | undefined;
-            if (v0 && to && currentSessionId && v0.homeEpoch(currentSessionId) !== undefined) {
+            if (v0 && to && currentSessionId) {
+              const sourceEpoch = v0.homeEpoch(currentSessionId);
               const sessions = await connectedClient.listSessions();
               const locals = sessions.filter((session): session is LocalSessionInfo => !session.remote);
               const from = locals.find(session => session.id === connectedClient.sessionId && session.address?.sessionId === currentSessionId);
-              if (!from || from.v0HomeEpoch !== v0.homeEpoch(currentSessionId)) {
+              if (!from || from.v0HomeEpoch !== sourceEpoch || v0.homeEpoch(currentSessionId) !== sourceEpoch) {
                 return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
               }
               v0Source = from;
@@ -2755,6 +2756,9 @@ Usage:
                 }
                 if (plan.kind === "local") v0Target = plan.target;
                 if (plan.kind === "remote") {
+                  if (from.v0HomeEpoch === undefined) {
+                    return { content: [{ type: "text", text: V0_REFUSAL_TEXT["not-configured"] }], details: { error: true, code: "not-configured" } };
+                  }
                   if (unsupportedV0Options) {
                     return { content: [{ type: "text", text: "Remote intercom supports text only; cwd, attachments, reply, retry, and pane options are unavailable." }],
                       details: { error: true, code: "unsupported" } };
@@ -2835,7 +2839,7 @@ Usage:
               }
             }
             if (v0Target && (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
-                !v0Source?.address || v0Source.v0HomeEpoch === undefined || v0?.homeEpoch(v0Source.address.sessionId) !== v0Source.v0HomeEpoch)) {
+                !v0Source?.address || v0?.homeEpoch(v0Source.address.sessionId) !== v0Source.v0HomeEpoch)) {
               return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
             }
             const result = await connectedClient.send(sendTo, {
@@ -2918,11 +2922,12 @@ Usage:
                 details: { error: true },
               };
             }
-            if (v0 && to && currentSessionId && v0.homeEpoch(currentSessionId) !== undefined) {
+            if (v0 && to && currentSessionId) {
+              const sourceEpoch = v0.homeEpoch(currentSessionId);
               const sessions = await connectedClient.listSessions();
               const locals = sessions.filter((session): session is LocalSessionInfo => !session.remote);
               const from = locals.find(session => session.id === connectedClient.sessionId && session.address?.sessionId === currentSessionId);
-              if (!from || from.v0HomeEpoch !== v0.homeEpoch(currentSessionId)) {
+              if (!from || from.v0HomeEpoch !== sourceEpoch || v0.homeEpoch(currentSessionId) !== sourceEpoch) {
                 return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
               }
               v0Source = from;
@@ -2937,6 +2942,9 @@ Usage:
                   if (selected) resolvedAddresses.set(selected.id, { address: sessionAddress(selected, getIntercomScopeId() ?? null), remote: false, activationEpoch: selected.activationEpoch });
                 }
                 if (plan.kind === "remote") {
+                  if (from.v0HomeEpoch === undefined) {
+                    return { content: [{ type: "text", text: V0_REFUSAL_TEXT["not-configured"] }], details: { error: true, code: "not-configured" } };
+                  }
                   if (unsupportedV0Options) {
                     return { content: [{ type: "text", text: "Remote intercom supports text only; cwd, attachments, reply, retry, and pane options are unavailable." }],
                       details: { error: true, code: "unsupported" } };
@@ -3026,7 +3034,7 @@ Usage:
               };
             }
             if (v0Target && (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
-                !v0Source?.address || v0Source.v0HomeEpoch === undefined || v0?.homeEpoch(v0Source.address.sessionId) !== v0Source.v0HomeEpoch)) {
+                !v0Source?.address || v0?.homeEpoch(v0Source.address.sessionId) !== v0Source.v0HomeEpoch)) {
               return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
             }
             questionId = randomUUID();

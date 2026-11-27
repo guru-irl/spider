@@ -162,7 +162,7 @@ it.each([
   vi.spyOn(admissionModule, "registerAdmission").mockReturnValue(gate as never);
   vi.spyOn(runtimeModule, "readLocalIdentity").mockReturnValue({ enabled: scenario.enabled, intercom: { enabled: scenario.legacy } } as never);
   const legacyAdapter = vi.spyOn(hostIntercom, "registerRoamIntercom");
-  const prepare = vi.fn<V0Prepare>(async () => { throw new Error("inactive v0 routing ran"); });
+  const prepare = vi.fn<V0Prepare>(async () => ({ kind: "legacy" }));
   const factory = { hasConfig: vi.fn(() => scenario.configured), create: vi.fn(() => ({ prepare })) };
   const host = createHostSessionFixture({ cwd: root, sessionId, sessionName: "host-gate", sessionManager: manager });
   if (scenario.child) host.ctx.mode = "rpc";
@@ -185,7 +185,7 @@ it.each([
       const result = await tool.execute("host-local-send", { action: "send", to: "observer", message: "local only" }, new AbortController().signal, undefined, host.ctx);
       expect(result.details).toMatchObject({ delivered: true, delivery: "socket_delivered" });
     }
-    expect(prepare).not.toHaveBeenCalled();
+    expect(prepare).toHaveBeenCalledTimes(scenario.create && scenario.kind === "ordinary" && scenario.home !== "moving" ? 1 : 0);
   } finally {
     for (const handler of host.hooks.get("session_shutdown") ?? []) await handler({ reason: "quit" }, host.ctx);
     vi.restoreAllMocks();
@@ -212,21 +212,36 @@ it("sends by name and reports socket dispatch, not consumption", async () => {
   } finally { await f.cleanup(); }
 });
 
-it("keeps opt-out and unhomed sends on the local broker", async () => {
+it("keeps opt-out sends on the local broker", async () => {
   const received: string[] = [];
   const onMessage = (_from: unknown, message: any) => received.push(message.content.text);
   observer.on("message", onMessage);
+  const f = await fixture();
   try {
-    for (const v0 of [undefined, { homeEpoch: () => undefined, prepare: async () => { throw new Error("unhomed routing must not run"); } } satisfies V0ToolOptions]) {
-      const f = await fixture(v0);
-      try {
-        const result = await f.tool.execute("local-send", { action: "send", to: "observer", message: "local message" }, new AbortController().signal, undefined, f.ctx);
-        expect(result.details).toMatchObject({ delivered: true, delivery: "socket_delivered" });
-        await vi.waitFor(() => expect(received.length).toBeGreaterThan(0));
-        expect(received.shift()).toBe("local message");
-      } finally { await f.cleanup(); }
-    }
-  } finally { observer.off("message", onMessage); }
+    const result = await f.tool.execute("local-send", { action: "send", to: "observer", message: "local message" }, new AbortController().signal, undefined, f.ctx);
+    expect(result.details).toMatchObject({ delivered: true, delivery: "socket_delivered" });
+    await vi.waitFor(() => expect(received).toEqual(["local message"]));
+  } finally { observer.off("message", onMessage); await f.cleanup(); }
+});
+
+it("keeps unhomed sends local and refuses explicit remote targets", async () => {
+  const received: string[] = [];
+  const onMessage = (_from: unknown, message: any) => received.push(message.content.text);
+  observer.on("message", onMessage);
+  const prepare = vi.fn<V0Prepare>(async ({ to, from }) => {
+    expect(from.v0HomeEpoch).toBeUndefined();
+    return to === "b/ben" ? { kind: "refused", code: "not-configured" } : { kind: "legacy" };
+  });
+  const f = await fixture({ homeEpoch: () => undefined, prepare });
+  try {
+    const local = await f.tool.execute("local-send", { action: "send", to: "observer", message: "local message" }, new AbortController().signal, undefined, f.ctx);
+    expect(local.details).toMatchObject({ delivered: true, delivery: "socket_delivered" });
+    await vi.waitFor(() => expect(received).toEqual(["local message"]));
+    const remote = await f.tool.execute("remote-send", { action: "send", to: "b/ben", message: "do not queue" }, new AbortController().signal, undefined, f.ctx);
+    expect(remote.details).toMatchObject({ error: true, code: "not-configured" });
+    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(received).toEqual(["local message"]);
+  } finally { observer.off("message", onMessage); await f.cleanup(); }
 });
 
 it("returns the reply to a named remote ask", async () => {

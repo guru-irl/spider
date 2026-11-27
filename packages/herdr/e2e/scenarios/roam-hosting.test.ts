@@ -152,6 +152,8 @@ async function restartAndRestore(suite: Suite): Promise<void> {
     expect(restored.pid).not.toBe(first.pid);
     expect(restored.terminal).not.toBe(first.terminal);
     expect(restored.file).toBe(first.file); expect(restored.sessionId).toBe(first.sessionId);
+    const restoredStartup = (await fixture.events(restored.pid)).find(row => row.type === 'session_start' && row.sessionId === fixture.sessionId);
+    expect(restoredStartup).toMatchObject({ mode: 'tui', stdinTTY: true, sessionFile: fixture.file, cwd: fixture.cwd, hcTerminal: restored.terminal });
     expect(fixture.home()).toEqual(home);
     const adopted = await inspectIdLock(join(fixture.root, 'herdr'), restored.sessionId);
     expect(adopted).toMatchObject({ identity: { pid: restored.pid }, pendingOperationId: null });

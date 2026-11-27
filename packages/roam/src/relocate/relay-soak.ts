@@ -27,6 +27,7 @@ type SoakState = "up" | "connecting" | "down" | "unavailable";
 
 interface BirthIdentity { pid: number; birthId: string; bootId: string }
 interface ObservedProcess extends BirthIdentity { machineId: string; observedMs: number }
+/** sentMs and receivedMs are on the relay; remoteMs is the linked peer's clock. */
 interface ClockSample { sentMs: number; remoteMs: number; receivedMs: number }
 interface SoakClock {
   /** Bounds on relay clock minus submitting peer clock, valid for the whole run. */
@@ -114,9 +115,9 @@ function covers<T>(items: readonly T[], timestamp: (item: T) => number, startMs:
 
 function validClock(clock: SoakClock, startMs: number, endMs: number): boolean {
   if (clock.fromMs > startMs || clock.toMs < endMs + V0_INTERCOM_MS || clock.minOffsetMs > clock.maxOffsetMs ||
-      !covers(clock.samples, sample => sample.sentMs, startMs, endMs, CLOCK_GAP_MS)) return false;
+      !covers(clock.samples, sample => sample.remoteMs, startMs, endMs, CLOCK_GAP_MS)) return false;
   return clock.samples.every(sample => sample.sentMs <= sample.receivedMs &&
-    clock.minOffsetMs <= sample.remoteMs - sample.receivedMs && clock.maxOffsetMs >= sample.remoteMs - sample.sentMs);
+    clock.minOffsetMs <= sample.sentMs - sample.remoteMs && clock.maxOffsetMs >= sample.receivedMs - sample.remoteMs);
 }
 
 function lastStateAt(sorted: readonly SoakStateEvent[], atMs: number): SoakState | undefined {

@@ -1,5 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { createHomeStore } from "@spider/roam/relocate/home";
+import type { SessionId } from "@spider/roam/relocate/types";
 import { join } from "node:path";
 import { createReplica } from "@spider/db-core/testutil";
 import { paths } from "@spider/db-core";
@@ -15,6 +17,22 @@ import { createClientFixture } from "../../../../herdr/src/__tests__/testutil";
 import { createHostSessionFixture } from "../../__tests__/fixtures/pi-events";
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
+it("a v0 home bypasses legacy activation while keeping the admission lock", async () => {
+  const global = createReplica("global", "00000000-0000-4000-8000-000000000001");
+  try {
+    mkdirSync(join(global.root, "roam"), { mode: 0o700 });
+    const config: RoamConfig = { enabled: true, role: "hub", machineId: global.machineId, hubMachineId: global.machineId, peers: [], discoveryRoots: [], coreUnit: "fixture", syncMs: 1000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
+    writeFileSync(join(global.root, "roam", "config.json"), JSON.stringify(config), { mode: 0o600 });
+    writeFileSync(join(global.root, "roam", "machine.json"), JSON.stringify({ machineId: global.machineId }), { mode: 0o600 });
+    const homes = createHomeStore({ db: global.db, hubMachineId: global.machineId, localMachineId: global.machineId });
+    await homes.initialize("session-v0" as SessionId, global.machineId);
+    await global.db.raw.backup(join(global.root, "spider.db"));
+    const legacy = vi.spyOn(runtime, "openLocalCore").mockImplementation(() => { throw new Error("legacy runtime forbidden"); });
+    const host = createHostSessionFixture({ cwd: global.root, sessionId: "session-v0", sessionFile: join(global.root, "session.jsonl") });
+    expect(await createMoveActivation({ root: global.root, sessionId: "session-v0", file: host.ctx.sessionManager.getSessionFile()!, context: () => host.ctx, gate: {} } as never)).toBeNull();
+    expect(legacy).not.toHaveBeenCalled();
+  } finally { global.close(); }
+});
 it.each(["journal", "move-bindings", "live-freeze", "socket-publication"] as const)("production activation retains %s as a safe setup stage", async stage => {
   const fixture = await createClientFixture();
   const global = createReplica("global", "00000000-0000-4000-8000-000000000001");

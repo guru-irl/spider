@@ -17,7 +17,7 @@ test('inspect the browser capture protocol', async () => {
       if (!message) return;
       if (message.includes('"method":"Page.captureScreenshot"')) {
         try {
-          const event = JSON.parse(message);
+          const event = JSON.parse(message.slice(0, message.lastIndexOf('}') + 1));
           pending.set(event.id, new Date().toISOString()); screenshots++;
           console.log('capture start', event.id, JSON.stringify(event.params));
         } catch { console.log('unparsed capture request', message.slice(0, 300)); }

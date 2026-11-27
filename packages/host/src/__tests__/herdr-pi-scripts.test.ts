@@ -55,8 +55,10 @@ https.request = (_url, options, callback) => {
   const catalogDir = join(piRoot, 'node_modules', '@earendil-works', 'pi-ai', 'dist', 'providers');
   mkdirSync(fakeBin);
   mkdirSync(join(piRoot, 'dist', 'bundle'), { recursive: true });
+  mkdirSync(join(piRoot, 'dist', 'core'), { recursive: true });
   mkdirSync(catalogDir, { recursive: true });
   writeFileSync(join(piRoot, 'package.json'), JSON.stringify({ name: '@earendil-works/pi-coding-agent', version: '1.0.0', type: 'module' }));
+  writeFileSync(join(piRoot, 'dist', 'core', 'model-config.js'), 'export const ModelsJsonSchemas = { modelOverride: { properties: { name: {} } } };\n');
   writeFileSync(executable, '#!/usr/bin/env node\n');
   chmodSync(executable, 0o755);
   writeFileSync(join(catalogDir, 'github-copilot.models.js'), 'export const GITHUB_COPILOT_MODELS = [{ id: "fixture-builtin" }];\n');
@@ -72,6 +74,7 @@ https.request = (_url, options, callback) => {
     const result = run('sync-copilot-models.mjs', env, ['--import', mock, '--']);
     // The --write argument is passed after the script name below in the dedicated invocation.
     expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).not.toContain('override support unavailable');
     expect(readFileSync(join(agent, 'models.json'), 'utf8')).toBe(original);
     const write = spawnSync(process.execPath, ['--import', mock, resolve('scripts/sync-copilot-models.mjs'), '--write'], { cwd: process.cwd(), env, encoding: 'utf8', timeout: 10000 });
     expect(write.status, write.stderr).toBe(0);

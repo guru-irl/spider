@@ -2,9 +2,14 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { migrate, openDb } from "@spider/db-core";
+import { claimIdLock, localBootId } from "@spider/herdr/sessions/id-lock";
+import { createSessionLeases } from "@spider/herdr/sessions/lease";
+import { createProcessPresence } from "@spider/herdr/sessions/presence";
+import { processStartIdentity } from "@spider/herdr/jobs/handoff";
 import { afterEach, expect, it, vi } from "vitest";
 import { main } from "../cli";
 import { openFreezeJournal, openJournal } from "../journal";
+import { createIntentStore } from "../intent";
 
 const roots: string[] = [];
 const hub = "11111111-1111-4111-8111-111111111111";
@@ -62,5 +67,33 @@ it("doctor blocks an unresolved legacy freeze roster even without a pending move
   const report = JSON.parse(io.out.mock.calls.at(-1)![0]);
   expect(report.value.diagnostics).toEqual(expect.arrayContaining([
     expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-blocked.*session-freeze.*freeze-move-1/) }),
+  ]));
+});
+
+it("doctor blocks an adopted launch that still has an unreconciled reservation", async () => {
+  const f = fixture(), stateRoot = join(f.root, "herdr"), file = join(f.root, "session.jsonl");
+  writeFileSync(file, "fixture transcript\n", { mode: 0o600 });
+  await createIntentStore(f.root).update("session-adopted", null, {
+    intent: { sessionId: "session-adopted", epoch: 1, desired: "running", suspended: null, file, cwd: f.root, moveId: null },
+    failures: [], supervision: { kind: "launching", operationId: "launch-adopted", phase: "invoking" },
+  });
+  f.journal.begin({ id: "launch-adopted", kind: "exact-session-launch", machineId: hub, expectedEpoch: 1, args: { sessionId: "session-adopted" } });
+  f.journal.record("launch-adopted", "done", { code: 0, reason: "ready" });
+  const boot = await localBootId(), startIdentity = processStartIdentity(process.pid);
+  expect(boot).toBeTruthy(); expect(startIdentity).toBeTruthy();
+  const launcher = { pid: 98765, startIdentity: "fixture-launcher" }, adopted = { pid: process.pid, startIdentity: startIdentity! };
+  const probe = async (pid: number) => pid === launcher.pid ? { kind: "live" as const, startIdentity: launcher.startIdentity }
+    : { kind: "live" as const, startIdentity: adopted.startIdentity };
+  const lock = await claimIdLock(stateRoot, "session-adopted", launcher, probe, { bootId: async () => boot });
+  const handoff = await lock.prepareHandoff("launch-adopted", file, "fixture-core");
+  await claimIdLock(stateRoot, "session-adopted", adopted, probe, { bootId: async () => boot, handoff });
+  const leases = createSessionLeases(stateRoot);
+  await leases.claim(file, adopted, { leases, presence: createProcessPresence(stateRoot), processes: async () => [], probe },
+    { mode: "cutover", bootId: boot });
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  const report = JSON.parse(io.out.mock.calls.at(-1)![0]);
+  expect(report.value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-blocked.*session-adopted.*launch-adopted/) }),
   ]));
 });

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 import { defineConfig } from 'vite';
 import { builtinModules } from 'node:module';
+import { archiveMaps, sourcemap } from './scripts/tia/build-maps.mjs';
 
 const entries = {
   cli: 'packages/herdr/src/bin/cli.ts',
@@ -22,10 +23,11 @@ export default defineConfig(({ mode }) => {
   const entry = entries[mode];
   if (!entry) throw new Error(`Unknown Herdr build entry: ${mode}`);
   return {
+    plugins: archiveMaps('herdr'),
     ssr: { target: 'node', noExternal: true },
     build: {
       target: 'node22', outDir: 'dist/herdr', emptyOutDir: mode === 'cli',
-      minify: false, sourcemap: false, ssr: entry,
+      minify: false, sourcemap, ssr: entry,
       rollupOptions: {
         external: id => builtins.has(id) || peers.some(peer => id === peer || id.startsWith(`${peer}/`)),
         output: {

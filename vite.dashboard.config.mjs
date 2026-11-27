@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { isAbsolute, relative, resolve } from "node:path";
 import { usageBrowserBoundary } from "./scripts/usage-dashboard-browser-boundary.mjs";
 import { fixtureApiMiddleware } from "./scripts/usage-dashboard-fixtures.mjs";
+import { archiveMaps, sourcemap } from "./scripts/tia/build-maps.mjs";
 const checkout = fileURLToPath(new URL(".", import.meta.url));
 const root = resolve(checkout, "packages/host/src/usage/web");
 const scratch = resolve(checkout, ".spider/scratch");
@@ -24,10 +25,10 @@ export default defineConfig(({ mode }) => ({
         throw new Error("dashboard non-production builds require an explicit absolute output directory under owned scratch");
       }
     },
-  }],
+  }, ...archiveMaps('dashboard')],
   build: {
     outDir: resolve(checkout, "dist/dashboard"), emptyOutDir: true,
-    target: "es2022", sourcemap: false, modulePreload: { polyfill: false }, assetsInlineLimit: 0,
+    target: "es2022", sourcemap, modulePreload: { polyfill: false }, assetsInlineLimit: 0,
     rollupOptions: {
       input: { index: resolve(root, "index.html"), ...(["development", "e2e"].includes(mode) ? { states: resolve(root, "states.html") } : {}) },
       output: { entryFileNames: "assets/[name]-[hash].js", chunkFileNames: "assets/[name]-[hash].js", assetFileNames: "assets/[name]-[hash][extname]" },

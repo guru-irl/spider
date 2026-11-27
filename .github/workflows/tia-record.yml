@@ -1,0 +1,82 @@
+name: TIA execution recording
+
+on:
+  push:
+    branches: [ci/tia-measure]
+
+permissions:
+  contents: read
+
+jobs:
+  record:
+    if: contains(github.event.head_commit.message, '[tia-record]')
+    name: record shard ${{ matrix.shard }}/6
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ONNXRUNTIME_NODE_INSTALL: skip
+      TIA_WORK: ${{ github.workspace }}/.spider/scratch/tia
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+
+      - name: Prepare isolated scratch
+        run: mkdir -p "$PWD/.spider/scratch/tmp" "$TIA_WORK/raw" "$TIA_WORK/maps" "$TIA_WORK/results"
+
+      - name: Install SQLite CLI
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+
+      - name: Install and build with source maps
+        env:
+          SPIDER_BUILD_SOURCEMAP: '1'
+          SPIDER_TIA_MAPS: ${{ env.TIA_WORK }}/maps
+        run: npm ci
+
+      - name: Remove runner runtime directory
+        run: |
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+          test ! -e "$rundir"
+          echo "XDG_RUNTIME_DIR=" >> "$GITHUB_ENV"
+
+      - name: Verify isolation with two files and one worker slot
+        if: matrix.shard == 1
+        continue-on-error: true
+        env:
+          TMPDIR: ${{ github.workspace }}/.spider/scratch/tmp
+        run: |
+          bash scripts/tia/with-recorder.sh "$TIA_WORK/probe" npx vitest run --maxWorkers=1 \
+            packages/herdr/src/__tests__/ipc-cli.test.ts packages/todo/src/__tests__/store.test.ts \
+            --reporter=default --reporter=json --outputFile="$TIA_WORK/probe-vitest.json"
+          node scripts/tia/reduce.mjs "$TIA_WORK/probe" "$TIA_WORK/maps" "$TIA_WORK/probe-vitest.json" "$TIA_WORK/results/isolation.json"
+          node scripts/tia/check-isolation.mjs "$TIA_WORK/results/isolation.json"
+
+      - name: Record test shard
+        id: tests
+        env:
+          TMPDIR: ${{ github.workspace }}/.spider/scratch/tmp
+        run: |
+          bash scripts/tia/with-recorder.sh "$TIA_WORK/raw" npx vitest run --shard=${{ matrix.shard }}/6 --maxWorkers=2 \
+            --reporter=default --reporter=json --outputFile="$TIA_WORK/vitest.json"
+
+      - name: Reduce process snapshots
+        if: always() && (steps.tests.outcome == 'success' || steps.tests.outcome == 'failure')
+        run: node scripts/tia/reduce.mjs "$TIA_WORK/raw" "$TIA_WORK/maps" "$TIA_WORK/vitest.json" "$TIA_WORK/results/records.json"
+
+      - name: Save per-test records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tia-records-${{ matrix.shard }}
+          path: ${{ env.TIA_WORK }}/results/*.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7

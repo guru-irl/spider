@@ -7,6 +7,8 @@ import { builtinModules } from "node:module";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { captureBuildId, formatBuildId } from "./scripts/build-id.mjs";
+import MagicString from "magic-string";
+import { archiveMaps, recordMaps, sourcemap } from "./scripts/tia/build-maps.mjs";
 
 const version = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version;
 const checkout = fileURLToPath(new URL(".", import.meta.url));
@@ -23,10 +25,12 @@ function buildIdPlugin() {
       identity = captureBuildId({ version, cwd: checkout, now: () => new Date(time) });
     },
     renderChunk(code) {
-      return {
-        code: `// ${formatBuildId(identity)}\n` + code.replaceAll("__SPIDER_BUILD_ID_PLACEHOLDER__", JSON.stringify(identity)),
-        map: null,
-      };
+      const header = `// ${formatBuildId(identity)}\n`;
+      if (!recordMaps) return { code: header + code.replaceAll("__SPIDER_BUILD_ID_PLACEHOLDER__", JSON.stringify(identity)), map: null };
+      const chunk = new MagicString(code);
+      chunk.replaceAll("__SPIDER_BUILD_ID_PLACEHOLDER__", JSON.stringify(identity));
+      chunk.prepend(header);
+      return { code: chunk.toString(), map: chunk.generateMap({ hires: true }) };
     },
   };
 }
@@ -46,7 +50,7 @@ const isExternal = (id) =>
 
 export default defineConfig({
   define: { __SPIDER_BUILD__: "__SPIDER_BUILD_ID_PLACEHOLDER__", 'import.meta.spiderHerdrRuntimeEntry': 'false', 'import.meta.spiderPaneEndpointEntry': 'false', 'import.meta.spiderIntercomBrokerRelative': JSON.stringify('./intercom/broker.mjs') },
-  plugins: [buildIdPlugin()],
+  plugins: [buildIdPlugin(), ...archiveMaps()],
   // SSR build: bundle every dep EXCEPT our explicit externals, using node conditions.
   ssr: {
     target: "node",
@@ -57,7 +61,7 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: false,
     minify: false,
-    sourcemap: false,
+    sourcemap,
     ssr: "packages/host/src/extension.ts",
     rollupOptions: {
       external: isExternal,

@@ -428,6 +428,21 @@ it("finds frozen legacy evidence in a retained replica after its mapping is publ
   ]));
 });
 
+it.each(["orphan", "missing-target"] as const)("reports a %s mapping redirect as unverified", async situation => {
+  const f = fixture(), key = "worktree:fixture-repo:workspace-1", checkout = join(f.root, "missing-checkout"), target = join(checkout, ".spider", "project.db");
+  const global = openDb(join(f.root, "spider.db"));
+  try {
+    writeLocal(global, "mapping-redirect", key, target);
+    if (situation === "missing-target") global.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES (?,?,?)")
+      .run("fixture-repo", "workspace-1", checkout);
+  } finally { global.close(); }
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-unverified.*worktree:fixture-repo:workspace-1/) }),
+  ]));
+});
+
 it("does not block a published mapping's retained replica fence", async () => {
   const f = fixture(), key = "worktree:fixture-repo:workspace-1", file = replica(f.root, key);
   const source = openDb(file);

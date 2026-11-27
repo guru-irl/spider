@@ -149,6 +149,23 @@ it("sends by name and reports socket dispatch, not consumption", async () => {
   } finally { await f.cleanup(); }
 });
 
+it("keeps opt-out and unhomed sends on the local broker", async () => {
+  const received: string[] = [];
+  const onMessage = (_from: unknown, message: any) => received.push(message.content.text);
+  observer.on("message", onMessage);
+  try {
+    for (const v0 of [undefined, { homeEpoch: () => undefined, prepare: async () => { throw new Error("unhomed routing must not run"); } } satisfies V0ToolOptions]) {
+      const f = await fixture(v0);
+      try {
+        const result = await f.tool.execute("local-send", { action: "send", to: "observer", message: "local message" }, new AbortController().signal, undefined, f.ctx);
+        expect(result.details).toMatchObject({ delivered: true, delivery: "socket_delivered" });
+        await vi.waitFor(() => expect(received.length).toBeGreaterThan(0));
+        expect(received.shift()).toBe("local message");
+      } finally { await f.cleanup(); }
+    }
+  } finally { observer.off("message", onMessage); }
+});
+
 it("returns the reply to a named remote ask", async () => {
   const questions: V0Text[] = [];
   const prepare: V0Prepare = async () => ({

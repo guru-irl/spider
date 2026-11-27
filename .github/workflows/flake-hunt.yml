@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        cohort: [importer, checkout, legacy]
+        cohort: ${{ fromJSON(contains(github.event.head_commit.message, '[checkout hunt only]') && '["checkout"]' || '["importer","checkout","legacy"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -27,6 +27,7 @@ export interface V0IntercomDeps {
 interface AcceptedPeer { machineId: MachineId; alias: string }
 interface Settings { config: RoamConfig; agentDir: string; sendTo: readonly Peer[]; acceptFrom: readonly AcceptedPeer[] }
 const POST_CHECK_MS = 2000;
+const ASK_REPLY_RESERVE_MS = 2000;
 
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -315,13 +316,13 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
 
     async function dispatch(kind: "deliver" | "ask", message: V0Text, timeoutMs: number | undefined, abort?: AbortSignal) {
       if (kind === "ask" && (!Number.isSafeInteger(timeoutMs) || timeoutMs! <= 0)) return refused("invalid");
-      const started = performance.now(), deliveryDeadline = started + V0_INTERCOM_MS;
+      const started = performance.now();
       const askMs = kind === "ask" ? Math.min(timeoutMs!, V0_ASK_MAX_MS) : undefined;
       const askDeadline = askMs === undefined ? undefined : started + askMs;
-      const setupDeadline = Math.min(deliveryDeadline, askDeadline ?? deliveryDeadline);
-      // DEFAULT_LIMITS.directMs matches Herdr's DIRECT_MAX_MS in client/argv-client.ts.
-      const deadline = started + (askMs === undefined ? V0_INTERCOM_MS
-        : Math.min(DEFAULT_LIMITS.directMs, askMs + V0_INTERCOM_MS + POST_CHECK_MS));
+      const setupDeadline = askDeadline ?? started + V0_INTERCOM_MS;
+      // Leave time for the ask result and Herdr's post-check after the ask's timeout.
+      const deadline = askMs === undefined ? setupDeadline
+        : started + Math.min(DEFAULT_LIMITS.directMs, askMs + ASK_REPLY_RESERVE_MS + POST_CHECK_MS);
       let current: Settings;
       try { current = settings(root); } catch { return refused("not-configured"); }
       if (current.config.machineId !== configured.config.machineId || current.agentDir !== configured.agentDir) return refused("changed");
@@ -362,7 +363,7 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
     if (!request) return null;
     const started = performance.now();
     const askDeadline = request.kind === "ask" ? started + request.timeoutMs : undefined;
-    const deliveryDeadline = Math.min(started + V0_INTERCOM_MS, askDeadline ?? Infinity);
+    const deliveryDeadline = askDeadline ?? started + V0_INTERCOM_MS;
     let configured: Settings;
     try { configured = settings(root); }
     catch {

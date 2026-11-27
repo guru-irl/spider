@@ -1,25 +1,38 @@
 import { join } from "node:path";
 import { storeScope } from "@spider/db-core/roam/codec";
+import { processStartIdentity } from "@spider/herdr/jobs/handoff";
+import { listPendingIdLocks, localBootId } from "@spider/herdr/sessions/id-lock";
+import { createSessionLeases, type ProcessProbe } from "@spider/herdr/sessions/lease";
 import type { Diagnostic } from "./contracts";
 import { openDiagnosticSnapshot } from "./diagnostic-snapshot";
+import { inspectIntentReservations } from "./intent";
+import { inspectAdoptedOwner } from "./launcher";
 
 export type LegacyUpgradeInventory =
   | { status: "legacy-upgrade-ready"; findings: readonly [] }
   | { status: "legacy-upgrade-blocked"; findings: readonly string[] }
   | { status: "legacy-upgrade-unverified"; findings: readonly string[] };
 
+function safeId(id: string): string { return id.replace(/[^A-Za-z0-9._:-]/g, "?").slice(0, 128); }
+async function probeProcess(pid: number): Promise<ProcessProbe> {
+  try {
+    const identity = processStartIdentity(pid);
+    return identity === null ? { kind: "absent" } : { kind: "live", startIdentity: identity };
+  } catch { return { kind: "unknown" }; }
+}
+
 /** Inspect local evidence without opening the source journal for writing. */
 export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeInventory> {
   try {
+    const findings: string[] = [], unknown: string[] = [];
     const db = openDiagnosticSnapshot(join(root, "roam", "journal.db"));
-    if (!db) return { status: "legacy-upgrade-ready", findings: [] };
-    try {
+    if (db) try {
       const moves = db.prepare("SELECT operation_id FROM roam_operations WHERE kind='move' AND result_json IS NULL ORDER BY operation_id")
         .all() as { operation_id: unknown }[];
-      const findings = moves.map(({ operation_id }) => {
+      findings.push(...moves.map(({ operation_id }) => {
         if (typeof operation_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(operation_id)) throw new Error("Invalid move ID");
         return `move ${operation_id}`;
-      });
+      }));
       const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('freeze_journal','freeze_store_rosters')").all() as { name: string }[]).map(row => row.name));
       if (tables.has("freeze_journal") !== tables.has("freeze_store_rosters")) throw new Error("Incomplete freeze journal");
       if (tables.has("freeze_journal")) {
@@ -40,8 +53,23 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
           findings.push(`freeze session ${row.session_id.replace(/[^A-Za-z0-9._:-]/g, "?").slice(0, 128)} operation ${row.move_id.replace(/[^A-Za-z0-9._:-]/g, "?").slice(0, 128)}`);
         }
       }
-      return findings.length ? { status: "legacy-upgrade-blocked", findings } : { status: "legacy-upgrade-ready", findings: [] };
     } finally { db.close(); }
+    const stateRoot = join(root, "herdr"), pending = await listPendingIdLocks(stateRoot);
+    for (const handoff of pending) findings.push(`handoff session ${safeId(handoff.sessionId)} operation ${safeId(handoff.operationId)}`);
+    for (const reservation of await inspectIntentReservations(root)) {
+      const label = `launch session ${safeId(reservation.sessionId)} operation ${safeId(reservation.operationId)}`;
+      if (reservation.phase === "invoking") {
+        const owner = await inspectAdoptedOwner({ root: stateRoot, sessionId: reservation.sessionId, operationId: reservation.operationId,
+          file: reservation.file, leases: createSessionLeases(stateRoot), bootId: localBootId, probe: probeProcess });
+        if ((owner.kind === "missing" || owner.kind === "unavailable") && !pending.some(row => row.sessionId === reservation.sessionId && row.operationId === reservation.operationId)) {
+          unknown.push(`${label} owner unavailable`);
+          continue;
+        }
+      }
+      findings.push(label);
+    }
+    return unknown.length ? { status: "legacy-upgrade-unverified", findings: [...unknown, ...findings] }
+      : findings.length ? { status: "legacy-upgrade-blocked", findings } : { status: "legacy-upgrade-ready", findings: [] };
   } catch {
     return { status: "legacy-upgrade-unverified", findings: ["local evidence unavailable"] };
   }

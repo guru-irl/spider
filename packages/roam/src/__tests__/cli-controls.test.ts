@@ -646,14 +646,15 @@ it("unknown machines and malformed options cannot dispatch a sync", async () => 
   expect(f.calls).toEqual([]);
 }, 5000);
 
-it("disabled local doctor prints one line without inspecting move bindings", async () => {
+it("disabled local doctor prints status and upgrade readiness without inspecting move bindings", async () => {
   const f = await fixture(HUB, undefined, false), file = join(f.root, "roam/config.json");
   const config = JSON.parse(readFileSync(file, "utf8")); config.enabled = false; config.peers = [];
   writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
   const global = openDb(join(f.root, "spider.db")); migrate(global, "global", { machineId: HUB, globalRoot: f.root }); global.close();
   const doctor = vi.spyOn(localDiagnostics, "runLocalDoctor");
   expect(await f.invoke(["roam", "doctor"])).toBe(0);
-  expect(f.out.join("")).toBe("Roaming is disabled.\nlegacy-upgrade-ready: No unfinished legacy work was found. See docs/guide/roaming-upgrade.md.\n"); expect(f.err).toEqual([]);
+  expect(f.out.join("")).toBe("Roaming is disabled.\nlegacy-upgrade-ready: No unfinished legacy work was found. See the roaming upgrade guide in the spider repository at docs/guide/roaming-upgrade.md.\n");
+  expect(f.err).toEqual([]);
   expect(doctor).not.toHaveBeenCalled();
 }, 5000);
 
@@ -665,7 +666,7 @@ it("disabled local doctor adds only real peer flag mismatches", async () => {
   vi.spyOn(transportModule, "createTransport").mockReturnValue({} as never);
   vi.spyOn(remoteObservations, "remoteDoctor").mockResolvedValue({ enabled: true, diagnostics: [], consumers: [] });
   expect(await f.invoke(["roam", "doctor"])).toBe(0);
-  expect(f.out.join("").trim().split("\n")).toEqual(["Roaming is disabled.", "legacy-upgrade-ready: No unfinished legacy work was found. See docs/guide/roaming-upgrade.md.", `peer-enabled-mismatch:${BOX}`]);
+  expect(f.out.join("").trim().split("\n")).toEqual(["Roaming is disabled.", "legacy-upgrade-ready: No unfinished legacy work was found. See the roaming upgrade guide in the spider repository at docs/guide/roaming-upgrade.md.", `peer-enabled-mismatch:${BOX}`]);
   expect(f.out.join("")).not.toContain("adapter-unbound");
 }, 5000);
 

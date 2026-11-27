@@ -126,6 +126,7 @@ it("reports a remote ask timeout or lost call without resending", async () => {
     const timedOut = await f.tool.execute("ask-1", args, new AbortController().signal, undefined, f.ctx);
     expect(timedOut.content[0].text).toBe(`No reply was received (ID ${questions[0].id}).`);
     expect(timedOut.details).toMatchObject({ error: true, delivery: "no_reply", messageId: questions[0].id });
+    expect(f.entries.some(entry => entry.type === "intercom_sent")).toBe(false);
     outcome = "unknown";
     const unknown = await f.tool.execute("ask-2", args, new AbortController().signal, undefined, f.ctx);
     expect(unknown.content[0].text).toBe(`Delivery could not be confirmed (ID ${questions[1].id}). Check the recipient before sending again.`);

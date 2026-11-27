@@ -2938,7 +2938,6 @@ Usage:
                       details: { delivery: "replied", messageId: question.id, replyId: result.replyId } };
                   }
                   if (result.kind === "no_reply") {
-                    pi.appendEntry("intercom_sent", { to: plan.label, message: { text: message }, messageId: question.id, timestamp: question.timestamp });
                     return { content: [{ type: "text", text: `No reply was received (ID ${result.id}).` }],
                       details: { error: true, delivery: "no_reply", messageId: result.id } };
                   }

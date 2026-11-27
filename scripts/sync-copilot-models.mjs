@@ -232,13 +232,20 @@ function providerCompatDifferences(shadow, builtin, provider, prior) {
 async function main() {
   const { models: builtin, snapshot } = await resolveBuiltinIds();
   const mj = readModels();
-  const { token, available } = loadAuth();
-  if (available.size === 0) console.warn("[sync-copilot-models] WARNING: availableModelIds empty in auth.json — nothing will be considered usable.");
-  const all = await fetchModels(token);
   mj.providers ||= {};
   mj.providers["github-copilot"] ||= {};
   const gh = mj.providers["github-copilot"];
   gh.models ||= [];
+  const positions = new Map();
+  for (const [index, entry] of gh.models.entries()) {
+    if (positions.has(entry.id)) {
+      fail(`duplicate model ID ${entry.id}: models[${positions.get(entry.id)}] and models[${index}]; no changes were written.`);
+    }
+    positions.set(entry.id, index);
+  }
+  const { token, available } = loadAuth();
+  if (available.size === 0) console.warn("[sync-copilot-models] WARNING: availableModelIds empty in auth.json — nothing will be considered usable.");
+  const all = await fetchModels(token);
   const existing = new Set([...gh.models.map((m) => m.id), ...Object.keys(gh.modelOverrides || {})]);
   const candidates = all.filter((m) => m.capabilities?.type === "chat" && m.model_picker_enabled && available.has(m.id));
   const missing = candidates.filter((m) => !builtin.has(m.id) && !existing.has(m.id));

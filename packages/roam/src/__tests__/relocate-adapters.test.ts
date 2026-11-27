@@ -19,6 +19,7 @@ import { openJournal } from "../journal";
 import { createRelocateJournal } from "../relocate/journal";
 import { createV0SyncTransport, handleRelocateAgent } from "../relocate/remote";
 import { createRelocateAdapters } from "../relocate/adapters";
+import { assignInitialHome, casHome } from "../homes";
 import type { Peer, Transport } from "../contracts";
 import type { RelocateCheckpoint, RelocateId, SessionId } from "../relocate/types";
 import type { MachineId } from "@spider/db-core/roam/types";
@@ -84,6 +85,18 @@ describe("relocate adapters", () => {
     const previous=activated;f.options.sync.sync=async()=>{throw new Error("offline");};
     expect(await adapters.setHome.activate(home,placement)).toMatchObject({ok:false,refusal:{code:"sync-failed"}});
     expect(activated).toBe(previous);
+  });
+  it("refuses legacy source adoption after a recorded move without calling it unfinished",async()=>{
+    const f=adapterFixture();
+    const original=assignInitialHome(f.global.db,id,hub,hub);
+    if(original==="conflict")throw new Error("fixture has no initial home");
+    const completed=casHome(f.global.db,original,box,"fixture-completed-move",hub);
+    expect(completed).toMatchObject({machineId:box,epoch:2});
+    expect(await createRelocateAdapters(f.options).ports.initialSource(id)).toMatchObject({ok:false,refusal:{
+      code:"home-conflict",message:expect.stringMatching(/recorded move or claim/i),nextStep:expect.stringContaining("spider roam doctor"),
+    }});
+    expect(f.global.db.prepare("SELECT machine_id,epoch,state FROM session_homes WHERE session_id=?").get(id))
+      .toEqual({machine_id:box,epoch:2,state:null});
   });
   it("source readiness precedes home initialization",async()=>{
     const f=adapterFixture();

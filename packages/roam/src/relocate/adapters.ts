@@ -11,6 +11,7 @@ import { createRelocateJournal, parseCaptured, parseHome, parsePlacement, parseP
 import { callV0, createV0ArtifactTransport, handleRelocateAgent, refusal } from "./remote";
 import { createLocalRuntime, exactHome, inspectLocalSource, inspectLocalDestination, seedLocalPlacement, captureOrdinarySource, SessionSeedBusy, seedBusyRefusal, type LocalSource } from "./local";
 import { captureLocalSession, installLocalSession, stagingRoot } from "./transfer";
+import { legacyRecordedHomeRefusal } from "./home";
 import type { RelocateAdapterOptions, RelocateAdapters, RelocateId, RelocatePorts, SessionId, SessionPlacement, SettledHome, V0Result, RelocatePlan, CapturedSession, RunningHome, InstalledSession } from "./types";
 
 export function createRelocateAdapters(options: RelocateAdapterOptions): RelocateAdapters {
@@ -43,7 +44,8 @@ export function createRelocateAdapters(options: RelocateAdapterOptions): Relocat
       const location=options.globalDb.prepare("SELECT home_json FROM roam_locations WHERE session_id=?").get(id) as {home_json:string|null}|undefined;
       const catalog=location?.home_json?object(JSON.parse(location.home_json)):null;
       const known=legacy?.machine_id??catalog?.machineId;
-      if(legacy && (!isMachineId(legacy.machine_id) || legacy.move_id!==null))return refusal("home-conflict","The legacy home is unowned or has an unfinished move.");
+      if(legacy && !isMachineId(legacy.machine_id))return refusal("home-conflict","The legacy home has no verified owner.","Keep the existing home and run spider roam doctor on the Mac.");
+      if(legacy && legacy.move_id!==null)return {ok:false,refusal:legacyRecordedHomeRefusal};
       if(known!==undefined) {
         if(!isMachineId(known))return refusal("home-conflict","The source has no ordinary home owner.");
         const ready=await sourceInfo(known,id);if(!ready.ok)return ready;

@@ -51,7 +51,7 @@ before replacing an old service.
 To replace a core pin, finish or undo moves and move homes off the box. Disable
 roaming on the hub and locally on the box. If an owned legacy supervisor is
 still active, follow the approved stop procedure in
-[Replace an enrolled core pin](../architecture/roaming.md#replace-an-enrolled-core-pin).
+[Stop an owned legacy supervisor](roaming-upgrade.md#stop-an-owned-legacy-supervisor).
 Retry `spider roam provision <machine> --replace-core-pin` on the hub with the
 same authentication options. Re-enable v0 locally on the destination when ready.
 

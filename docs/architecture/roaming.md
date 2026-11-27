@@ -582,9 +582,7 @@ match the enrolled core. Terminal-specific hc variables are removed for this che
    `spider roam relocate <session> mac` or relocate it to another ready box.
 2. Run `spider roam disable` on the hub and locally on the box.
 3. If an owned legacy supervisor remains active, follow the approved
-   [legacy upgrade procedure](../guide/roaming-upgrade.md). Verify that the
-   legacy unit belongs to this roaming root before stopping it with
-   `systemctl --user stop spider-roam-supervisor.service` on the box.
+   [legacy stop procedure](../guide/roaming-upgrade.md#stop-an-owned-legacy-supervisor).
 4. On the hub, run `spider roam provision <machine> --replace-core-pin` with
    the same authentication options as before.
 5. When the box is ready, run `spider roam enable` locally on the box to
@@ -615,7 +613,7 @@ again. A successful check clears the failure count. A confirmed PID or core
 identity change stops hosting immediately.
 
 The legacy supervisor restarts a stopped pinned core. Follow the approved
-[legacy stop procedure](#replace-an-enrolled-core-pin) before stopping that
+[legacy stop procedure](../guide/roaming-upgrade.md#stop-an-owned-legacy-supervisor) before stopping that
 core. The hub's enable switch does not control the box's systemd service.
 
 Doctor blocks hosting for a missing, unsafe, unreadable, or changed pin. A

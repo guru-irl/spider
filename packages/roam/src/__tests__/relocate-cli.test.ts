@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
+import { processStartIdentity } from "@spider/herdr/jobs/handoff";
+import { claimIdLock, type IdLockHandle } from "@spider/herdr/sessions/id-lock";
 import { createConnection } from "node:net";
 import { PassThrough } from "node:stream";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -45,6 +48,42 @@ function fixture(confirmation: string | null = null) {
   return { out, err, prompts, services, io };
 }
 describe("v0 controls", () => {
+  it("production runtime confirms a supervisor-first pending start", async () => {
+    const source=createReplica("global",mac), sid="production-race" as SessionId;
+    const child=spawn(process.execPath,["-e",`process.title="pi";process.once("message",()=>process.exit(0));process.send("ready");`],{stdio:["ignore","ignore","ignore","ipc"]});
+    const exited=once(child,"exit");
+    let held:IdLockHandle|undefined, runtime:ReturnType<typeof createV0Runtime>|undefined;
+    try {
+      const [ready]=await Promise.race([once(child,"message"),exited]);expect(ready).toBe("ready");
+      const pid=child.pid!, startIdentity=processStartIdentity(pid);
+      if(!startIdentity)throw new Error("fixture process identity unavailable");
+      const checkout=join(source.root,"checkout"), file=join(checkout,"session.jsonl");mkdirSync(checkout);
+      writeFileSync(file,JSON.stringify({type:"session",version:3,id:sid,cwd:checkout,timestamp:"2020-01-01T00:00:00Z"})+"\n"+
+        JSON.stringify({type:"message",id:"entry",parentId:null,timestamp:"2020-01-01T00:00:00Z",message:{role:"user",content:[{type:"text",text:"synthetic"}]}})+"\n");
+      const placement={sessionId:sid,machineId:mac,repoKey:"repo",workspaceId:"ws",repository:checkout,cwd:checkout,file,stores:["global" as const],historyMachine:mac};
+      let listings=0, launches=0;
+      vi.spyOn(hcApi,"invokeCli").mockImplementation(async(_binary,argv)=>{
+        if(argv[0]==="ls") {
+          listings++;
+          if(listings===2)held=await claimIdLock(join(source.root,"herdr"),sid,{pid,startIdentity},async()=>({kind:"unknown"}));
+          return {terminals:[{address:"core:t",state:"live",pid}]};
+        }
+        if(argv[0]==="get")return {address:"core:t",state:"live",pid,cwd:checkout,argv:["pi","--session",file],
+          labels:{"spider.kind":"session","spider.session":sid,"spider.machine":mac,"spider.roam.epoch":"1"}};
+        if(argv[0]==="run"){launches++;return {address:"core:other"};}
+        throw new Error("unexpected terminal request");
+      });
+      const sourceConfig={...config,peers:[],limits:{...config.limits,readyMs:1_000}};
+      runtime=createV0Runtime(source.root,{openCore:()=>({root:source.root,config:sourceConfig,db:source.db,close(){}})});
+      const initial=await runtime.homes.initialize(sid,mac);
+      writeLocal(source.db,"relocate-managed",sid,placement);
+      expect(await runtime.services.relocate({sessionId:sid,destinationMachine:mac})).toMatchObject({ok:true,value:{home:initial,terminal:"core:t",disposition:"already-home"}});
+      expect(listings).toBeGreaterThanOrEqual(2);expect(launches).toBe(0);expect(child.exitCode).toBeNull();
+    } finally {
+      await runtime?.close();await held?.release();
+      if(child.connected)child.send("exit");await exited;source.close();
+    }
+  });
   it("production v0 runtime composes only approved ports", async () => {
     const source=createReplica("global",mac),target=createReplica("global",box);
     const sourceConfig={...config,limits:{...config.limits,readyMs:20},peers:[{...config.peers[0],globalRoot:target.root}]};

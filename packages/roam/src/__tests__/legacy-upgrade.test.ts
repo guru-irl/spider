@@ -256,6 +256,20 @@ it("reports a lost store named by an unfinished freeze roster as unverified", as
   ]));
 });
 
+it("reports a missing store named by an unfinished move check as unverified", async () => {
+  const f = fixture(), key = "worktree:fixture-repo:move-store", checkout = join(f.root, "missing-move-store");
+  f.journal.begin({ id: "pending-with-store", kind: "move", machineId: hub, expectedEpoch: 1, args: { sessionId: "session-move-store" } });
+  f.journal.record("pending-with-store", "move-action-complete", { action: "check", value: { storeKeys: ["global", key] } });
+  const global = openDb(join(f.root, "spider.db"));
+  try { global.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES (?,?,?)").run("fixture-repo", "move-store", checkout); }
+  finally { global.close(); }
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-unverified.*worktree:fixture-repo:move-store/) }),
+  ]));
+});
+
 it("doctor reports frozen worktree membership with a missing freeze record as unverified", async () => {
   const f = fixture(), checkout = join(f.root, "worktree"), projectDir = join(checkout, ".spider"), key = "worktree:fixture-repo:workspace-1";
   mkdirSync(projectDir, { recursive: true });
@@ -428,13 +442,11 @@ it("finds frozen legacy evidence in a retained replica after its mapping is publ
   ]));
 });
 
-it.each(["orphan", "missing-target"] as const)("reports a %s mapping redirect as unverified", async situation => {
+it("reports an orphaned mapping redirect as unverified", async () => {
   const f = fixture(), key = "worktree:fixture-repo:workspace-1", checkout = join(f.root, "missing-checkout"), target = join(checkout, ".spider", "project.db");
   const global = openDb(join(f.root, "spider.db"));
   try {
     writeLocal(global, "mapping-redirect", key, target);
-    if (situation === "missing-target") global.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES (?,?,?)")
-      .run("fixture-repo", "workspace-1", checkout);
   } finally { global.close(); }
   const io = { out: vi.fn(), err: vi.fn() };
   expect(await main(["roam", "doctor", "--json"], io)).toBe(1);

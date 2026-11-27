@@ -31,7 +31,7 @@ interface ObservedProcess extends BirthIdentity { machineId: string; observedMs:
 interface ClockSample { sentMs: number; remoteMs: number; receivedMs: number }
 interface SoakClock {
   /** Bounds on relay clock minus submitting peer clock, valid for the whole run. */
-  fromMs: number; toMs: number; minOffsetMs: number; maxOffsetMs: number;
+  fromMs: number; toMs: number; minOffsetMs: number; maxOffsetMs: number; maxDriftMs: number;
   samples: readonly ClockSample[];
 }
 interface SoakRun { role: "dial" | "submit"; startMs: number; endMs: number; rssAllowanceBytes: number; machineId: string; process: BirthIdentity }
@@ -82,7 +82,7 @@ function isEvidence(value: unknown): value is RelaySoakEvidence {
     if (!object(link) || !text(link.id) || !text(link.relayId) || !text(link.peerId) ||
         link.topology !== "laptop-to-box" && link.topology !== "box-to-box" || !object(link.clock)) return false;
     const clock = link.clock;
-    return time(clock.fromMs) && time(clock.toMs) && integer(clock.minOffsetMs) && integer(clock.maxOffsetMs) &&
+    return time(clock.fromMs) && time(clock.toMs) && integer(clock.minOffsetMs) && integer(clock.maxOffsetMs) && time(clock.maxDriftMs) &&
       entries(clock.samples, sample => object(sample) && time(sample.sentMs) && time(sample.remoteMs) && time(sample.receivedMs)) &&
       entries(link.runs, run => object(run) && (run.role === "dial" || run.role === "submit") && time(run.startMs) && time(run.endMs) && time(run.rssAllowanceBytes) && text(run.machineId) && identity(run.process)) &&
       entries(link.submissions, submit => event(submit) && object(submit) && time(submit.deadlineMs) &&
@@ -117,7 +117,8 @@ function validClock(clock: SoakClock, startMs: number, endMs: number): boolean {
   if (clock.fromMs > startMs || clock.toMs < endMs + V0_INTERCOM_MS || clock.minOffsetMs > clock.maxOffsetMs ||
       !covers(clock.samples, sample => sample.remoteMs, startMs, endMs, CLOCK_GAP_MS)) return false;
   return clock.samples.every(sample => sample.sentMs <= sample.receivedMs &&
-    clock.minOffsetMs <= sample.sentMs - sample.remoteMs && clock.maxOffsetMs >= sample.receivedMs - sample.remoteMs);
+    clock.minOffsetMs <= sample.sentMs - sample.remoteMs - clock.maxDriftMs &&
+    clock.maxOffsetMs >= sample.receivedMs - sample.remoteMs + clock.maxDriftMs);
 }
 
 function lastStateAt(sorted: readonly SoakStateEvent[], atMs: number): SoakState | undefined {

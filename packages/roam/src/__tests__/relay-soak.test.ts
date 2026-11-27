@@ -29,7 +29,7 @@ function completeEvidence(): Evidence {
       rssAllowanceBytes: ALLOWANCE, machineId: role === "dial" ? relayId : peerId,
       process: { pid: 200 + index * 2 + roleIndex, birthId: `birth-${index}-${roleIndex}`, bootId: `boot-${role === "dial" ? relayId : peerId}` } })),
     clock: {
-      fromMs: START, toMs: END + MINUTE, minOffsetMs: 0, maxOffsetMs: 0,
+      fromMs: START, toMs: END + MINUTE, minOffsetMs: 0, maxOffsetMs: 0, maxDriftMs: 0,
       samples: Array.from({ length: 49 }, (_, i) => ({ sentMs: START + i * 10 * MINUTE,
         remoteMs: START + i * 10 * MINUTE, receivedMs: START + i * 10 * MINUTE })),
     },
@@ -221,6 +221,15 @@ describe("the live relay soak reliability gate", () => {
     const submit = affected.submissions.find(item => item.atMs === injected.startMs)!;
     affected.outcomes.find(item => item.id === submit.id)!.kind = "unknown";
     expect(checkRelaySoak(unknown).violations).toContain("unknown-outside-fault");
+  });
+
+  it("requires each offset interval to include the declared clock-drift margin", () => {
+    const evidence = copy();
+    evidence.links[0].clock.maxDriftMs = 100;
+    expect(checkRelaySoak(evidence).violations).toContain("clock");
+    evidence.links[0].clock.minOffsetMs = -100;
+    evidence.links[0].clock.maxOffsetMs = 100;
+    expect(checkRelaySoak(evidence).violations).not.toContain("clock");
   });
 
   it("fails closed on missing, inconsistent, or gapped clock bounds", () => {

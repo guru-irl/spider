@@ -5,7 +5,7 @@ import type { CliRequestOptions } from '@spider/herdr/client/cli-transport';
 import { HerdrError, object, parseCore, selectedSocket, text } from '@spider/herdr/client/parse';
 import { DEFAULT_LIMITS } from './contracts';
 import { BOOTSTRAP_HOME_SCRIPT, BOOTSTRAP_AGENT_DIRECTORY_SCRIPT, BOOTSTRAP_IDENTITY_SCRIPT, BOOTSTRAP_SCRIPT, BOOTSTRAP_SETTINGS_SCRIPT } from './bootstrap-script';
-import { getProvisionRemoteScript } from './provision-remote-script';
+import { getProvisionRemoteScript, UnsupportedProvisioningNodeError } from './provision-remote-script';
 import { validIntercomReadiness } from './intercom-readiness';
 import { isCorePinStatus } from './enrollment';
 import { isMachineId } from './machine-id';
@@ -302,6 +302,7 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
           client.run(state.peer.alias, [state.peer.node, '--input-type=module', '-e', getProvisionRemoteScript(), requestFile],
             { 'spider.operation': operationId, 'spider.machine': state.peer.machineId }, { signal }))).value;
       } catch (error) {
+        if (error instanceof UnsupportedProvisioningNodeError) throw error;
         const allowed = new Set(['core-changed', 'core-unavailable', 'machine-not-found', 'machine-ambiguous', 'machine-not-enrolled',
           'peer-invalidated', 'cli-timeout', 'cli-aborted', 'cli-exit', 'missing-hc', 'spawn-error', 'reply-too-large']);
         const candidate = error instanceof HerdrError ? error.code : '';
@@ -348,6 +349,7 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
           } finally { stdin.fill(0); }
         });
       } catch (error) {
+        if (error instanceof UnsupportedProvisioningNodeError) throw error;
         const allowed = new Set(['core-changed', 'core-unavailable', 'machine-not-found', 'machine-ambiguous', 'machine-not-enrolled',
           'peer-invalidated', 'cli-timeout', 'cli-aborted', 'cli-exit', 'stdin-error', 'missing-hc', 'spawn-error', 'reply-too-large', 'invalid-provision-request']);
         const candidate = error instanceof HerdrError ? error.code : '';

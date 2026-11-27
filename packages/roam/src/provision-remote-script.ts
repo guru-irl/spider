@@ -1,4 +1,3 @@
-import { stripTypeScriptTypes } from "node:module";
 import { gzipSync } from "node:zlib";
 import { selectedRemoteSource } from "./selected-remote-source";
 import authSource from "./auth.ts?raw";
@@ -989,11 +988,21 @@ catch (error) {
 }
 `;
 
+export class UnsupportedProvisioningNodeError extends Error {
+  readonly code = "node-type-stripping-unavailable";
+  constructor() {
+    super("Node's stripTypeScriptTypes feature is unavailable; provisioning needs a Node version that provides it.");
+    this.name = "UnsupportedProvisioningNodeError";
+  }
+}
+
 // Linux limits each exec argument to 128 KiB, even when ARG_MAX is larger.
 // Keep stdin available for the request and argv[1] for release request files.
 let provisionScript: string | undefined;
 export function getProvisionRemoteScript(): string {
   if (provisionScript === undefined) {
+    const { stripTypeScriptTypes } = process.getBuiltinModule("node:module");
+    if (typeof stripTypeScriptTypes !== "function") throw new UnsupportedProvisioningNodeError();
     const provisionPayload = gzipSync(stripTypeScriptTypes(provisionSource)).toString("base64");
     provisionScript = `import { gunzipSync } from "node:zlib";
 const source = gunzipSync(Buffer.from(${JSON.stringify(provisionPayload)}, "base64")).toString("utf8");

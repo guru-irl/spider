@@ -45,7 +45,7 @@ function fixture(confirmation: string | null = null) {
 describe("v0 controls", () => {
   it("production v0 runtime composes only approved ports", async () => {
     const source=createReplica("global",mac),target=createReplica("global",box);
-    const sourceConfig={...config,peers:[{...config.peers[0],globalRoot:target.root}]};
+    const sourceConfig={...config,limits:{...config.limits,readyMs:20},peers:[{...config.peers[0],globalRoot:target.root}]};
     const targetConfig:RoamConfig={...config,role:"box",machineId:box,peers:[{...config.peers[0],machineId:mac,globalRoot:source.root}]};
     const calls:string[][]=[];
     let remote:ReturnType<typeof createV0Runtime>;

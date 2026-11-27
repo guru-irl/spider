@@ -111,7 +111,7 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
     return {options,adapters,homes,sync,services:{
       async relocate(request) {
         if (forgotten(request.destinationMachine)) return { ...revokedDestination, step: "check", home: null, moveId: null };
-        return relocate(request,relocatePorts);
+        return relocate(request,relocatePorts,{ clock: localClock, timeoutMs: config.limits.readyMs });
       },
       async setHome(request) {
         if (forgotten(request.destinationMachine)) return revokedDestination;

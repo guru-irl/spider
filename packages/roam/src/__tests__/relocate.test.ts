@@ -1,7 +1,9 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RelocateCheckpoint, RelocateId } from "../relocate/types";
 import { relocate } from "../relocate/relocate";
-import { assertSafeHistories, deferred, destination, ports, request, running, sessionId, source, state, third } from "./relocate-fakes";
+import { assertSafeHistories, deferred, destination, ports, refusal, request, running, sessionId, source, state, third } from "./relocate-fakes";
+
+const readyClock = { now: Date.now, later(ms: number, fn: () => void) { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
 
 const protocol = (effects: string[]) => effects.filter(e => !e.startsWith("save-"));
 
@@ -292,6 +294,43 @@ describe("relocate", () => {
     expect(s.home).toBeNull();
     expect(s.effects).toEqual(["initial-source", "check", "save-check"]);
     expect(s.processes).toEqual(new Set([source]));
+  });
+
+  it("waits for a cold destination to confirm without starting twice", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = state(), p = ports(s);
+      const confirm = p.confirm;
+      let ready = false;
+      p.confirm = async (...args) => ready ? confirm(...args) : { ok: false, refusal: refusal("start-pending") };
+      const moving = relocate(request, p, { clock: readyClock, timeoutMs: 2_000 });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(s.home).toMatchObject({ machineId: destination, state: "running" });
+      ready = true;
+      await vi.advanceTimersByTimeAsync(500);
+      expect(await moving).toMatchObject({ ok: true, value: { terminal: "terminal-destination" } });
+      expect(s.effects.filter(e => e === "start-destination")).toHaveLength(1);
+      expect(s.processes).toEqual(new Set([destination]));
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("returns a committed start-pending result at the deadline even if a probe stalls", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = state(), p = ports(s), stalled = deferred();
+      p.confirm = async () => { await stalled.promise; return { ok: true, value: { terminal: "terminal-destination" } }; };
+      const moving = relocate(request, p, { clock: readyClock, timeoutMs: 1_000 });
+      let result: Awaited<typeof moving> | undefined;
+      void moving.then(value => { result = value; });
+      await vi.advanceTimersByTimeAsync(999);
+      expect(result).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      stalled.resolve();
+      expect(result).toMatchObject({ ok: false, step: "confirm", home: { machineId: destination, state: "running" }, refusal: {
+        code: "start-pending", message: expect.stringContaining("committed"), nextStep: expect.stringContaining("spider roam relocate"),
+      } });
+      expect(s.processes).toEqual(new Set([destination]));
+    } finally { vi.useRealTimers(); }
   });
 
   it("first move adopts the legacy epoch only after validating it", async () => {

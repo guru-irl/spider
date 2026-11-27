@@ -20,6 +20,7 @@ it("imports without type stripping support and reports it on provisioning", asyn
   expect(() => provision.getProvisionRemoteScript()).toThrowError(
     expect.objectContaining({
       name: "UnsupportedProvisioningNodeError",
+      code: "node-type-stripping-unavailable",
       message: expect.stringMatching(/stripTypeScriptTypes.*provisioning.*Node/i),
     }),
   );

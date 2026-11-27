@@ -78,8 +78,20 @@ function productionSession(f: ReturnType<typeof fixture>, sessionId: SessionId =
   return { file, lockRoot, ports, lock, pin, abort, host, gate, emit };
 }
 
-async function expectOrdinaryWorkRefused(session: ReturnType<typeof productionSession>) {
-  expect(session.gate.inspect().kind).toBe("blocked");
+function legacyWorktree(f: ReturnType<typeof fixture>, state: "active" | "frozen", epoch: number) {
+  const directory = join(f.root, "worktree", ".spider");
+  mkdirSync(directory, { recursive: true });
+  const db = openDb(join(directory, "project.db"));
+  migrate(db, "worktree", { machineId: hub, globalRoot: f.root });
+  db.prepare("INSERT INTO sessions(id,reason,started_at,origin_machine) VALUES(?,?,?,?)").run(sid, "fixture", 1, hub);
+  db.prepare("INSERT INTO roam_sessions(session_id,epoch,state,move_id) VALUES(?,?,?,?)")
+    .run(sid, epoch, state, state === "frozen" ? "legacy-move" : null);
+  db.prepare("UPDATE roam_meta SET store_key=?,capture_enabled=1 WHERE id=1").run("worktree:fixture:workspace");
+  return db;
+}
+
+async function expectOrdinaryWorkRefused(session: ReturnType<typeof productionSession>, kind: "blocked" | "control-only" = "blocked") {
+  expect(session.gate.inspect().kind).toBe(kind);
   expect(await session.emit("input", { text: "work" })).toEqual({ action: "handled" });
   await session.emit("before_agent_start");
   expect(session.abort).toHaveBeenCalledOnce();
@@ -170,6 +182,61 @@ it("only the authoritative Mac clears an away fence for a newer local running ho
   expect(await loadRelocateAdmission(sid, f.root)).toEqual({ kind: "managed", home: returned });
   expect(existsSync(f.fence)).toBe(false);
   expect(await store.read(sid)).toEqual(returned);
+});
+
+it.each(["pre-v0", "migrated"] as const)("a fresh admission refuses a foreign %s legacy home", async version => {
+  const f = fixture();
+  if (version === "pre-v0") {
+    f.removeDb();
+    const old = openDb(f.file);
+    old.exec("CREATE TABLE roam_meta(id INTEGER PRIMARY KEY, machine_id TEXT, store_key TEXT)");
+    old.prepare("INSERT INTO roam_meta VALUES(1,?,'global')").run(hub);
+    old.exec("CREATE TABLE session_homes(session_id TEXT PRIMARY KEY, machine_id TEXT, epoch INTEGER, move_id TEXT, updated_at INTEGER)");
+    old.close(); f.openRestoredDb();
+  }
+  f.db().prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES(?,?,3,?,1)").run(sid, box, "legacy-move");
+  const worktree = legacyWorktree(f, "active", 3);
+  const beforeHome = f.db().prepare("SELECT * FROM session_homes WHERE session_id=?").get(sid);
+  const beforeState = worktree.prepare("SELECT * FROM roam_sessions WHERE session_id=?").get(sid);
+  const session = productionSession(f);
+  try {
+    expect(session.ports.knownParticipant(sid)).toBe(false);
+    await session.emit("session_start");
+    await expectOrdinaryWorkRefused(session);
+    expect(f.db().prepare("SELECT * FROM session_homes WHERE session_id=?").get(sid)).toEqual(beforeHome);
+    expect(worktree.prepare("SELECT * FROM roam_sessions WHERE session_id=?").get(sid)).toEqual(beforeState);
+  } finally { await session.gate.close(); worktree.close(); }
+});
+
+it("a fresh admission keeps a frozen legacy worktree closed without a global DB", async () => {
+  const f = fixture(); f.removeDb();
+  const worktree = legacyWorktree(f, "frozen", 1);
+  const before = worktree.prepare("SELECT * FROM roam_sessions WHERE session_id=?").get(sid);
+  const session = productionSession(f);
+  try {
+    expect(session.ports.knownParticipant(sid)).toBe(false);
+    await session.emit("session_start");
+    await expectOrdinaryWorkRefused(session, "control-only");
+    expect(session.ports.knownParticipant(sid)).toBe(true);
+    expect(existsSync(f.file)).toBe(false);
+    expect(worktree.prepare("SELECT * FROM roam_sessions WHERE session_id=?").get(sid)).toEqual(before);
+  } finally { await session.gate.close(); worktree.close(); }
+});
+
+it("a verified legacy freeze keeps its ownership-only control path", async () => {
+  const f = fixture(), worktree = legacyWorktree(f, "frozen", 1), session = productionSession(f);
+  const release = vi.fn(async () => {});
+  session.lock.mockResolvedValue(release);
+  try {
+    expect(session.ports.knownParticipant(sid)).toBe(false);
+    await session.emit("session_start");
+    expect(session.gate.inspect().kind).toBe("control-only");
+    expect(session.lock).toHaveBeenCalledOnce();
+    expect(session.lock).toHaveBeenCalledWith(sid, session.file);
+    expect(await session.emit("input", { text: "work" })).toEqual({ action: "handled" });
+    expect(await session.emit("tool_call", { toolName: "edit" })).toMatchObject({ block: true });
+  } finally { await session.gate.close(); worktree.close(); }
+  expect(release).toHaveBeenCalledOnce();
 });
 
 it.each(["deleted", "empty", "older", "equal"] as const)("a fresh admission refuses the away backup after a %s global store", async state => {

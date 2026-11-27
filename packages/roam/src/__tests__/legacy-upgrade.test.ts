@@ -73,6 +73,21 @@ it("reports a move reservation whose operation record is missing as unverified",
   ]));
 });
 
+it.each(["valid", "missing-fields", "wrong-session", "wrong-move", "wrong-epoch", "overflow"] as const)("checks a %s committed home receipt", async condition => {
+  const f = fixture(), global = openDb(join(f.root, "spider.db"));
+  const home = condition === "missing-fields" ? {} : { sessionId: condition === "wrong-session" ? "other-session" : "session-committed",
+    machineId: box, epoch: condition === "wrong-epoch" ? 9 : condition === "overflow" ? Number.MAX_SAFE_INTEGER + 1 : 2,
+    moveId: condition === "wrong-move" ? "other-move" : "committed-move", updatedAt: 1 };
+  try { global.prepare("INSERT INTO roam_home_actions(move_id,session_id,expected_epoch,args_digest,committed_home_json) VALUES (?,?,?,?,?)")
+    .run("committed-move", "session-committed", condition === "overflow" ? Number.MAX_SAFE_INTEGER : 1, "a".repeat(64), JSON.stringify(home)); } finally { global.close(); }
+  const io = { out: vi.fn(), err: vi.fn() }, code = await main(["roam", "doctor", "--json"], io);
+  expect(code).toBe(condition === "valid" ? 0 : 1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    condition === "valid" ? expect.objectContaining({ severity: "info", reason: expect.stringMatching(/^legacy-upgrade-ready/) })
+      : expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-unverified.*committed-move/) }),
+  ]));
+});
+
 it("reports a lost home-action journal record as unverified without changing evidence", async () => {
   const f = fixture(), globalFile = join(f.root, "spider.db"), journalFile = join(f.root, "roam", "journal.db");
   const global = openDb(globalFile);

@@ -2,11 +2,11 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { openDbReadOnlyAt } from '@spider/db-core';
-import { parseHubReadiness } from '@spider/db-core/roam/readiness';
 import { inspectIdLock } from '../../src/sessions/id-lock.js';
+import { createSessionLeases } from '../../src/sessions/lease.js';
 import { expect } from 'vitest';
-import { digestFile, hasFile, hostingFixture, type HostedOwner, type HostingFixture } from '../fixtures/roam-hosting.js';
+import { digestFile, hasFile, hostingFixture, v0HostingFixture, type HostedOwner, type HostingFixture } from '../fixtures/roam-hosting.js';
+import { assertNativeLaunch } from '../fixtures/relocate-assertions.js';
 import { mark, parentTurns, runChild, text, tool } from '../fixtures/child-scripts.js';
 import { writeScript, type ObservedEvent } from '../harness/pi.js';
 import { registerScenarios, storyId, type ScenarioDefinition } from '../harness/scenario.js';
@@ -17,11 +17,12 @@ async function send(suite: Suite, owner: HostedOwner, message: string): Promise<
   const result = await suite.hc(['send', '--json', '--force', owner.terminal, message]);
   expect(result.exitCode, result.stderr).toBe(0);
 }
-async function event(fixture: HostingFixture, owner: HostedOwner, type: string, predicate: (row: ObservedEvent) => boolean, ms = 30_000): Promise<ObservedEvent> {
+type ObservableFixture = Pick<HostingFixture, 'events' | 'suite'>;
+async function event(fixture: ObservableFixture, owner: HostedOwner, type: string, predicate: (row: ObservedEvent) => boolean, ms = 30_000): Promise<ObservedEvent> {
   const rows = await waitFor(`hosted session ${type}`, () => fixture.events(owner.pid), values => values.some(row => row.type === type && predicate(row)), deadline(ms), { reconcileMs: 100 });
   return rows.find(row => row.type === type && predicate(row))!;
 }
-async function runTool(fixture: HostingFixture, owner: HostedOwner, marker: string, id: string): Promise<ObservedEvent> {
+async function runTool(fixture: ObservableFixture, owner: HostedOwner, marker: string, id: string): Promise<ObservedEvent> {
   await send(fixture.suite, owner, mark(marker));
   const result = await event(fixture, owner, 'tool_execution_end', row => row.toolCallId === id);
   expect(result.isError).toBe(false);
@@ -98,16 +99,26 @@ async function restartAndRestore(suite: Suite): Promise<void> {
     list: parentTurns(tool('list-triggers', { action: 'loop' })),
     trigger: [text('scheduled check delivered')],
   } });
-  const fixture = await hostingFixture(suite), before = await digestFile(fixture.coreUnit);
+  const fixture = await v0HostingFixture(suite), before = await digestFile(fixture.coreUnit);
   try {
     await fixture.provisionUnit();
     expect(fixture.supervisorUnit).toMatch(/spider-roam-supervisor-v0\.service$/);
     const unit = await readFile(fixture.supervisorUnit, 'utf8');
     expect(unit).toMatch(/^ExecStart=.*supervisor\.mjs.*--v0$/m);
     expect(unit).not.toMatch(/^(After|Requires|PartOf)=/m);
+    expect((await readFile(fixture.systemctlLog, 'utf8')).trim().split('\n')).toEqual([
+      '--user daemon-reload', '--user enable --now spider-roam-supervisor-v0.service',
+    ]);
+    expect(hasFile(join(fixture.root, 'roam', 'hub.sock'))).toBe(false);
+    expect(hasFile(join(fixture.root, 'roam', 'relocate.sock'))).toBe(false);
+    const home = fixture.home();
+    expect(home).toMatchObject({ session_id: fixture.sessionId, machine_id: fixture.machineId, epoch: fixture.epoch, state: 'running', destination: null });
     await fixture.start();
     const first = await fixture.waitOwner();
-    expect((await suite.hc(['get', first.terminal, '--json'])).json).toMatchObject({ state: 'live' });
+    const nativeFirst = await suite.hc(['get', first.terminal, '--json']);
+    expect(nativeFirst.exitCode, nativeFirst.stderr).toBe(0);
+    expect(nativeFirst.json).toMatchObject({ state: 'live' });
+    assertNativeLaunch(nativeFirst.json, await suite.cores!.records(), fixture, suite.cores!.local.namespace, fixture.sessionId, fixture.machineId, fixture.epoch);
     const startup = await event(fixture, first, 'session_start', row => row.sessionId === fixture.sessionId);
     expect(startup).toMatchObject({ mode: 'tui', stdinTTY: true, sessionFile: fixture.file, cwd: fixture.cwd, hcTerminal: first.terminal });
     const probe = await runTool(fixture, first, 'probe', 'hosting-probe');
@@ -128,31 +139,29 @@ async function restartAndRestore(suite: Suite): Promise<void> {
     expect(children).toHaveLength(1);
     expect(children[0].ownerSessionId).toBe(fixture.sessionId);
     await event(fixture, first, 'agent_settled', row => Number(row.at) >= Number(childCall.at));
-    await runTool(fixture, first, 'schedule', 'schedule-trigger');
-    await event(fixture, first, 'agent_settled', () => true);
+    const schedule = await runTool(fixture, first, 'schedule', 'schedule-trigger');
+    await event(fixture, first, 'agent_settled', row => Number(row.at) >= Number(schedule.at));
+    const recordsBeforeRestart = (await suite.cores!.records()).length;
     suite.cores!.local.env.PATH = '/usr/bin:/bin';
     delete suite.cores!.local.env.SPIDER_ROAM_PI;
     await fixture.restartCore();
     const ambient = await suite.hc(['exec', '--timeout', '5', '--', '/bin/sh', '-c',
       'if command -v pi >/dev/null 2>&1; then exit 41; fi; [ "${SPIDER_ROAM_PI+x}" != x ]']);
     expect(ambient.exitCode, ambient.stderr).toBe(0);
-    await waitFor('restart records the lost owner', fixture.state, row => row?.value.supervision.kind === 'idle' && row.value.failures.length === 1, deadline(30_000));
-    fixture.advance(5_000);
     const restored = await fixture.waitOwner(first.pid);
     expect(restored.pid).not.toBe(first.pid);
     expect(restored.terminal).not.toBe(first.terminal);
     expect(restored.file).toBe(first.file); expect(restored.sessionId).toBe(first.sessionId);
+    expect(fixture.home()).toEqual(home);
     const adopted = await inspectIdLock(join(fixture.root, 'herdr'), restored.sessionId);
     expect(adopted).toMatchObject({ identity: { pid: restored.pid }, pendingOperationId: null });
-    const journal = openDbReadOnlyAt(join(fixture.root, 'roam', 'journal.db'));
-    if (!journal) throw new Error('exact launch journal unavailable');
-    try {
-      const row = journal.prepare("SELECT result_json FROM roam_operation_actions WHERE operation_id=? AND action='ready-durable'")
-        .get(adopted!.operationId) as { result_json: string } | undefined;
-      expect(row).toBeDefined();
-      expect(parseHubReadiness(JSON.parse(row!.result_json))).toMatchObject({ opId: adopted!.operationId,
-        sessionId: restored.sessionId, file: restored.file, cwd: restored.cwd, terminal: restored.terminal });
-    } finally { journal.close(); }
+    const lease = await createSessionLeases(join(fixture.root, 'herdr')).get(restored.file);
+    expect(lease).toMatchObject({ pid: restored.pid, startIdentity: adopted!.identity.startIdentity });
+    const nativeRestored = await suite.hc(['get', restored.terminal, '--json']);
+    expect(nativeRestored.exitCode, nativeRestored.stderr).toBe(0);
+    expect(nativeRestored.json).toMatchObject({ state: 'live' });
+    assertNativeLaunch(nativeRestored.json, (await suite.cores!.records()).slice(recordsBeforeRestart), fixture,
+      suite.cores!.local.namespace, fixture.sessionId, fixture.machineId, fixture.epoch);
     const ownersAfterRestart = await fixture.owners(); expect(ownersAfterRestart).toHaveLength(1);
     const listing = await runTool(fixture, restored, 'list', 'list-triggers');
     expect(JSON.stringify(listing.result)).toContain('fixture-wakeup');
@@ -162,6 +171,8 @@ async function restartAndRestore(suite: Suite): Promise<void> {
     const deliveries = entries.filter(row => row.type === 'message' && row.message?.role === 'user' && JSON.stringify(row.message.content).includes(mark('trigger')));
     expect(deliveries).toHaveLength(1);
     expect((await fixture.owners()).map(value => value.pid)).toEqual([restored.pid]);
+    expect(hasFile(join(fixture.root, 'roam', 'hub.sock'))).toBe(false);
+    expect(hasFile(join(fixture.root, 'roam', 'relocate.sock'))).toBe(false);
     expect(await digestFile(fixture.coreUnit)).toBe(before);
     await suite.evidence('R04-restart.json', { sessionId: fixture.sessionId, firstTerminal: first.terminal, restoredTerminal: restored.terminal, owners: ownersAfterRestart.length, triggerEntries: deliveries.length });
   } finally { await fixture.close(); }

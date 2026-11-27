@@ -40,18 +40,21 @@ const messageChars = [icon("text", "message"), icon("nerd", "message")].join("")
 const resultPrefix = new RegExp(`^([ \\t]*(?:(?:\\d+\\.[ \\t]+)?(?:[│✓✗⚠●○■◆▪▣•·\\-*]|${markerGlyphs})(?:[ \\t]*[→◆▪▣${messageChars}])?[ \\t]+|\\[[^\\]\\n]+\\][ \\t]+|\\d+\\.[ \\t]+|[ \\t]+))`, "u");
 
 /** Fit result rows at the final render boundary, preserving ANSI state across wraps. */
-export function fitResultLines(lines: readonly string[], width: number, expanded: boolean): string[] {
+export function fitResultLines(lines: readonly string[], width: number, expanded: boolean, hangingIndent?: number): string[] {
   const w = Math.max(1, width);
   return lines.flatMap((line) => {
     if (!expanded) return [truncateToWidth(line, w, "…")];
+    if (hangingIndent !== undefined && !line.includes("\n") && visibleWidth(line) <= w) return [line];
     // Locate the visible marker first; ANSI spans inside its styling do not count as cells.
     const plain = line.replace(/\x1b\[[0-9;]*m/g, "");
-    const prefix = resultPrefix.exec(plain)?.[1];
-    if (prefix && visibleWidth(prefix) < w) {
-      // Long bracketed labels are not useful as hanging indents at narrow widths.
-      if (/^[ \t]*\[[^\]\n]+\][ \t]+$/u.test(prefix) && w - visibleWidth(prefix) < 20) {
-        return wrapTextWithAnsi(line, w);
-      }
+    let prefix = resultPrefix.exec(plain)?.[1];
+    // A long bracketed label should not consume the width available for the text.
+    if (prefix && /^[ \t]*\[[^\]\n]+\][ \t]+$/u.test(prefix) && w - visibleWidth(prefix) < 20) {
+      prefix = hangingIndent === undefined ? undefined : /^[ \t]+/u.exec(plain)?.[0];
+    }
+    const indentWidth = hangingIndent ?? (prefix ? visibleWidth(prefix) : 0);
+    const reserved = Math.max(prefix ? visibleWidth(prefix) : 0, indentWidth);
+    if (prefix && reserved < w) {
       let end = 0;
       let visible = 0;
       while (visible < prefix.length) {
@@ -64,9 +67,9 @@ export function fitResultLines(lines: readonly string[], width: number, expanded
         }
       }
       const marker = line.slice(0, end);
-      const indent = " ".repeat(visibleWidth(prefix));
+      const indent = " ".repeat(indentWidth);
       const state = sgrCodes(marker);
-      return wrapTextWithAnsi(state + line.slice(end), w - visibleWidth(prefix))
+      return wrapTextWithAnsi(state + line.slice(end), w - reserved)
         .map((row, i) => (i === 0 ? marker + row.slice(state.length) : indent + row));
     }
     return wrapTextWithAnsi(line, w);

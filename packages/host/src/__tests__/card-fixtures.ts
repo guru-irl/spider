@@ -95,6 +95,7 @@ export function cardFixtures(): CardFixture[] {
     tool("index", { action: "index", path: "docs/release.md" }, { source: "release guide", chunkCount: 12 }),
     tool("fetch", { action: "fetch", url: "https://example.com/packaging" }, { count: 1, chunks: 12, embedded: 8, sources: ["packaging guide"], urls: ["https://example.com/packaging"] }),
     tool("message run", { action: "message", to: runId.slice(0, 8), message: "Please check the two paths in the report." }, { runId, runName: run.name, delivered: true, delivery: "delivered" }, { runIds: [runId] }),
+    // The host can format a supplied peer name. The current relay omits it, so real peer calls use the typed target.
     tool("message peer", { action: "message", to: sessionId, message: "Can you confirm the release target?" }, { sessionName: "release", delivered: true, delivery: "broker-accepted" }, { runIds: [sessionId] }),
     tool("message refused", { action: "message", to: runId, message: "Check the logs again." }, { runId, runName: run.name, delivered: false, delivery: "refused", error: "The run has already finished." }, { runIds: [runId], isError: true }),
     tool("kill", { action: "kill", id: runId }, { requested: runId, killed: [{ runId, name: run.name, outcome: "killed", via: "handle", lastActivity: "Reading the packaging log" }] }, { runIds: [runId] }),

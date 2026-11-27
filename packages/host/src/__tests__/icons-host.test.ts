@@ -77,18 +77,17 @@ describe("host icon rendering", () => {
     }
   });
 
-  it("uses spider markers in import and pending-memory panels", () => {
+  it("keeps the spider marker only in the import and pending-memory titles", () => {
     for (const [args, details] of [
       [{ action: "import" }, { imported: 0, skipped: 0, staged: 0, committed: 0 }],
       [{ action: "control", command: "memory", sub: "pending" }, []],
     ] as const) {
-      const render = (iconStyle: "text" | "nerd") => renderSpiderResult({ details }, {}, theme, { args, iconStyle }).render(100);
-      const text = render("text"), nerd = render("nerd");
-      expect(text.join("\n")).toContain("🕸");
-      expect(nerd.join("\n")).toContain("\u{F0BCA}");
-      expect(nerd.join("\n")).not.toContain("\u{F167A}");
-      expect(nerd.join("\n")).not.toContain("🕸");
-      equalWidths(text, nerd);
+      for (const iconStyle of ["text", "nerd"] as const) {
+        const call = renderSpiderCall(args, theme, { iconStyle }).render(100).join("\n");
+        const result = renderSpiderResult({ details }, {}, theme, { args, iconStyle }).render(100).join("\n");
+        expect(call).toContain(iconStyle === "text" ? "🕸️" : "\u{F0BCA}");
+        expect(result).not.toMatch(/[🕸\u{F0BCA}\u{F167A}]/u);
+      }
     }
   });
 

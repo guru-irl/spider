@@ -6,7 +6,7 @@ export function renderTodoChecklist(details: TodoChecklistDetails, { theme, widt
   const glyph = (done: boolean) => done ? theme.fg("success", "✓") : theme.fg("muted", "○");
   const itemRow = (item: TodoItemView) =>
     ` ${glyph(item.done)} ${theme.fg("accent", `#${item.id}`)} ${theme.fg(item.done ? "dim" : "text", item.text)}`;
-  const fit = (lines: string[]) => fitResultLines(lines, width, expanded);
+  const fit = (lines: string[]) => fitResultLines(lines, width, expanded, 3);
   switch (details.kind) {
     case "item": return fit([itemRow(details.item)]);
     case "removed": {

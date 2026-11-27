@@ -124,6 +124,8 @@ describe("card background through the right edge", () => {
       expect(plain[2]).toBe(`  ${marker} · short`);
       expect(plain.join("\n")).not.toContain("beb58fc6");
     }
+    const pending = renderCommandOutput({ details: { args: { action: "message", to: "peer" }, result: { details: { delivered: false, queued: true, delivery: "queued" } } } }, {}, distinct).render(60);
+    checkCard(pending, 60, backgrounds.toolPendingBg);
     const done = renderSubagentDone({ details: { status: "failed", name: "worker", output: "failure ".repeat(20) } }, {}, distinct).render(30);
     checkCard(done, 30, backgrounds.toolErrorBg);
   });

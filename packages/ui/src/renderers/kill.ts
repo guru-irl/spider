@@ -22,18 +22,18 @@ export function renderKillResult(details: KillDetails, ctx: RenderCtx): string[]
   // Empty-state branch (currently only reachable when requested="all" since
   // resolveKillTargets returns [] only for "all"; kept defensive for API robustness)
   if (rows.length === 0 && !details.error) {
-    const target = details.requested && details.requested !== "all" ? ` matching '${details.requested}'` : "";
-    return fitResultLines(["", trim(` ${theme.fg("muted", `no active subagents${target} to kill`)}`, width, "")], width, expanded);
+    return fitResultLines([trim(` ${theme.fg("muted", `no active subagents to kill`)}`, width, "")], width, expanded, 3);
   }
   
-  const out: string[] = [""];
+  const out: string[] = [];
   
   // Error banner — show ABOVE rows when both error and rows exist (partial failure),
   // or alone when rows are empty (resolution failure)
   if (details.error) {
     out.push(trim(` ${statusIcon(theme, "fail")} ${theme.fg("error", details.error)}`, width, "…"));
   }
-  for (const r of rows) {
+  for (const [i, r] of rows.entries()) {
+    if (i > 0) out.push("");
     // killed -> ok (green), already-finished/no-process -> warn (yellow)
     const isKilled = r.outcome === "killed";
     const isBenign = r.outcome === "already-finished" || r.outcome === "no-process";
@@ -51,5 +51,5 @@ export function renderKillResult(details: KillDetails, ctx: RenderCtx): string[]
       out.push(trim(` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("error", `error: ${r.error}`)}`, width, ""));
     }
   }
-  return fitResultLines(out, width, expanded);
+  return fitResultLines(out, width, expanded, 3);
 }

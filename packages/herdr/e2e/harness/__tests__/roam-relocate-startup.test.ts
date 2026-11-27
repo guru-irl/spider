@@ -43,6 +43,7 @@ describe('relocation fixture service startup', () => {
       await expect(relocateFixture(suite)).rejects.toThrow('stop before session launch');
       const hubConfig = JSON.parse(readFileSync(join(global, 'roam', 'config.json'), 'utf8'));
       expect(hubConfig.peers[0].node).toBe(process.execPath);
+      expect(hubConfig.syncMs).toBe(5_000);
       expect(started.map(({ label, command, args }) => ({ label, command, args }))).toEqual([
         { label: 'v0-supervisor', command: process.execPath, args: ['supervisor.mjs', '--v0'] },
         { label: 'v0-hub', command: process.execPath, args: ['cli.mjs', 'roam', 'hub-v0'] },

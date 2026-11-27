@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { describe, expect, it } from 'vitest';
-import { assertNativeLaunch, assertRelocatedCopy } from './relocate-assertions.js';
+import { assertNativeLaunch, assertRelocatedCopy, waitForReplicatedHome } from './relocate-assertions.js';
+import { deadline } from '../harness/wait.js';
 
 const source = { cwd: '/fixture/source', file: '/fixture/hub/sessions/a.jsonl' };
 const away = { cwd: '/fixture/destination/worktree', file: '/fixture/box/sessions/a.jsonl' };
@@ -49,5 +50,23 @@ describe('native launch evidence', () => {
     expect(() => check({ cwd: away.cwd, argv: launch }, [])).toThrow();
     expect(() => check({ cwd: away.cwd, argv: launch }, [{ ...record, namespace: 'l' }])).toThrow();
     expect(() => check({ cwd: away.cwd, argv: launch }, [record, record])).toThrow();
+  });
+});
+
+describe('replicated home evidence', () => {
+  const home = { session_id: 's1', machine_id: 'hub', epoch: 5, state: 'running', destination: null, move_id: 'm1' };
+
+  it('waits for the replica to converge to the complete authoritative record', async () => {
+    let reads = 0;
+    const result = await waitForReplicatedHome(() => ++reads === 1 ? { ...home, epoch: 4, state: 'moving' } : home, home, deadline(2_000));
+    expect(reads).toBe(2);
+    expect(result).toEqual(home);
+  });
+
+  it('rejects absent and mismatched records at the deadline', async () => {
+    for (const candidate of [null, { ...home, session_id: 'other' }, { ...home, machine_id: 'box' },
+      { ...home, epoch: 4 }, { ...home, state: 'moving' }, { ...home, destination: 'box' }, { ...home, move_id: 'other' }]) {
+      await expect(waitForReplicatedHome(() => candidate, home, deadline(20))).rejects.toThrow();
+    }
   });
 });

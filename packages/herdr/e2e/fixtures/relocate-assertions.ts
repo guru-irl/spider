@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { expect } from 'vitest';
+import { waitFor, type Deadline } from '../harness/wait.js';
 
 interface Placement { cwd: string; file: string }
 
@@ -38,4 +39,18 @@ export function assertNativeLaunch(native: unknown, records: readonly RunRecord[
   const launch = args.slice(end + 1);
   expect(launch.slice(-2)).toEqual(['--session', placement.file]);
   expect(native).toMatchObject({ cwd: placement.cwd, argv: launch });
+}
+
+interface HomeRow {
+  session_id: string; machine_id: string; epoch: number; state: string;
+  destination: string | null; move_id: string | null;
+}
+
+export async function waitForReplicatedHome(read: () => HomeRow | null, home: HomeRow, limit: Deadline): Promise<HomeRow> {
+  const row = await waitFor('replicated home matches the authoritative home', read, value =>
+    value !== null && value.session_id === home.session_id && value.machine_id === home.machine_id &&
+    value.epoch === home.epoch && value.state === home.state && value.destination === home.destination && value.move_id === home.move_id, limit);
+  expect(row).toEqual(home);
+  if (!row) throw new Error('replicated home is missing');
+  return row;
 }

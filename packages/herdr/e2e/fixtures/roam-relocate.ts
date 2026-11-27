@@ -75,7 +75,8 @@ export async function relocateFixture(suite: Suite): Promise<RelocateFixture> {
     await mkdir(join(machine.root, 'herdr'), { recursive: true, mode: 0o700 });
     await writeFile(join(machine.root, 'roam', 'machine.json'), JSON.stringify({ machineId: machine.id }), { mode: 0o600 });
     await writeFile(join(machine.root, 'roam', 'config.json'), JSON.stringify({ enabled: true, role: machine === hub ? 'hub' : 'box',
-      machineId: machine.id, hubMachineId: HUB, peers: machine === hub ? [peer] : [], discoveryRoots: [], coreUnit: 'fixture.service' }), { mode: 0o600 });
+      machineId: machine.id, hubMachineId: HUB, peers: machine === hub ? [peer] : [], discoveryRoots: [], coreUnit: 'fixture.service',
+      syncMs: 5_000 }), { mode: 0o600 });
     await writeFile(join(machine.root, 'herdr', 'config.json'), JSON.stringify({ app: { binary: join(suite.root, 'closed-app'), home: suite.directories.HERDR_APP_HOME },
       core: { binary: cores.wrapper, config: join(suite.root, 'core.toml') }, globalRoot: machine.root, agentDirectory: machine.agent,
       shellRc: join(suite.root, 'shellrc'), spaces: [], machines: [] }), { mode: 0o600 });

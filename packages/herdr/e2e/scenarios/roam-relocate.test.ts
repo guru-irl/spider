@@ -4,7 +4,8 @@ import { readFile } from 'node:fs/promises';
 import { expect } from 'vitest';
 import { relocateFixture } from '../fixtures/roam-relocate.js';
 import { verifyRelocatedTranscript } from '../fixtures/relocate-transcript.js';
-import { assertRelocatedCopy } from '../fixtures/relocate-assertions.js';
+import { assertRelocatedCopy, waitForReplicatedHome } from '../fixtures/relocate-assertions.js';
+import { deadline } from '../harness/wait.js';
 import { text } from '../fixtures/child-scripts.js';
 import { registerScenarios, storyId, type ScenarioDefinition } from '../harness/scenario.js';
 import type { Suite } from '../harness/suite.js';
@@ -39,7 +40,10 @@ async function roundTrip(suite: Suite): Promise<void> {
     expect(afterAwayTurn.subarray(0, arrived.length).equals(arrived)).toBe(true);
 
     const returning = await fixture.relocate(id, 'mac');
-    expect(fixture.home()).toMatchObject({ session_id: id, machine_id: hub.id, epoch: 5, state: 'running', destination: null });
+    const finalHome = fixture.home();
+    expect(finalHome).toMatchObject({ session_id: id, machine_id: hub.id, epoch: 5, state: 'running', destination: null });
+    if (!finalHome) throw new Error('final home is missing');
+    await waitForReplicatedHome(() => fixture.home(box), finalHome, deadline(20_000));
     const returned = await fixture.owner(hub, returning.terminal, id, returning);
     expect(returned).toMatchObject({ sessionId: id, file: returning.file, cwd: returning.cwd });
     assertRelocatedCopy(away, returned, hub.repository, hub.agent);
@@ -55,7 +59,7 @@ async function roundTrip(suite: Suite): Promise<void> {
     expect(afterHomeTurn.length).toBeGreaterThan(homeBytes.length);
     expect(afterHomeTurn.subarray(0, homeBytes.length).equals(homeBytes)).toBe(true);
     await suite.evidence('R18-relocate.json', { sessionId: id, initialHome: null, outwardTranscript, returnTranscript,
-      owners: [source, away, returned], finalHome: fixture.home(), elapsedMs: Date.now() - started,
+      owners: [source, away, returned], finalHome, boxHome: fixture.home(box), elapsedMs: Date.now() - started,
       coverage: 'Two owned cores with synthetic transport; no native app or SSH.' });
   } finally { await fixture.close(); }
 }

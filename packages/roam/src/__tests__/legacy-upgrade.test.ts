@@ -222,6 +222,7 @@ it.each(["move-session", "move-abort-cleanup", "exact-session-launch"] as const)
     }
     f.journal.begin({ id, kind, machineId: hub, expectedEpoch: 1, args: { sessionId: "session-slot" } });
     if (kind === "move-session") f.journal.record(id, "reserved", { moveId: "settled-move", destinationMachine: hub });
+    if (kind === "move-abort-cleanup") f.journal.record(id, "abort-cleanup-request", { moveId: "settled-move", sessionId: "session-slot", check: { storeKeys: ["global"] } });
     const io = { out: vi.fn(), err: vi.fn() };
     expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
     const report = JSON.parse(io.out.mock.calls.at(-1)![0]);
@@ -271,6 +272,32 @@ it("reports a lost store named by an unfinished freeze roster as unverified", as
   expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
   expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
     expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-unverified.*worktree:fixture-repo:lost-store/) }),
+  ]));
+});
+
+it("reports a missing abort-cleanup request as unverified", async () => {
+  const f = fixture();
+  f.journal.begin({ id: "orphan-abort", kind: "move-abort-cleanup", machineId: hub, expectedEpoch: 1, args: {} });
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-unverified.*orphan-abort/) }),
+  ]));
+});
+
+it("reports a missing store named by unfinished abort cleanup as unverified", async () => {
+  const f = fixture(), key = "worktree:fixture-repo:abort-store", checkout = join(f.root, "missing-abort-store");
+  f.journal.begin({ id: "old-aborted-move", kind: "move", machineId: hub, expectedEpoch: 1, args: {} });
+  f.journal.record("old-aborted-move", "done", { code: 1, reason: "cancelled" });
+  f.journal.begin({ id: "abort-pending", kind: "move-abort-cleanup", machineId: hub, expectedEpoch: 1, args: {} });
+  f.journal.record("abort-pending", "abort-cleanup-request", { moveId: "old-aborted-move", sessionId: "session-abort-store", check: { storeKeys: ["global", key] } });
+  const global = openDb(join(f.root, "spider.db"));
+  try { global.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES (?,?,?)").run("fixture-repo", "abort-store", checkout); }
+  finally { global.close(); }
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-unverified.*worktree:fixture-repo:abort-store/) }),
   ]));
 });
 

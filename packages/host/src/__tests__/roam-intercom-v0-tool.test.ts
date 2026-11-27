@@ -205,6 +205,28 @@ it("refuses remote-only unsupported options without dispatching", async () => {
   } finally { await f.cleanup(); }
 });
 
+it("refuses unsupported remote ask options without dispatching", async () => {
+  const questions: V0Text[] = [];
+  const prepare: V0Prepare = async () => ({
+    kind: "remote", label: "b/ben",
+    async send(message) { return { kind: "socket_delivered", id: message.id }; },
+    async ask(message) { questions.push(message); return { kind: "no_reply", id: message.id }; },
+  });
+  const f = await fixture({ homeEpoch: () => 7, prepare });
+  try {
+    const unsupported = [
+      { cwd: "/fixture" }, { attachments: [{ type: "snippet", name: "x", content: "x" }] },
+      { replyTo: "question" }, { supersedes: "old" }, { retryOf: "old" },
+      { openProjectPaneIfMissing: true }, { focus: true },
+    ];
+    for (const flags of unsupported) {
+      const result = await f.tool.execute("ask", { action: "ask", to: "ben", message: "private text", ...flags }, new AbortController().signal, undefined, f.ctx);
+      expect(result.details).toMatchObject({ error: true });
+      expect(questions).toEqual([]);
+    }
+  } finally { await f.cleanup(); }
+});
+
 it("does not retarget a local roaming send after the recipient reconnects", async () => {
   const inbox: unknown[] = [];
   const prepare: V0Prepare = async ({ locals }) => {

@@ -2587,6 +2587,8 @@ Usage:
       const messageId = params.messageId?.trim() || undefined;
       const supersedes = params.supersedes?.trim() || undefined;
       const retryOf = params.retryOf?.trim() || undefined;
+      const unsupportedV0Options = cwd !== undefined || attachments !== undefined || Boolean(replyTo || supersedes || retryOf || messageId) ||
+        openProjectPaneIfMissing !== undefined || focus !== undefined;
 
       switch (action) {
         case "list": {
@@ -2732,8 +2734,7 @@ Usage:
                 }
                 if (plan.kind === "local") v0Target = plan.target;
                 if (plan.kind === "remote") {
-                  if (cwd !== undefined || attachments !== undefined || replyTo || supersedes || retryOf || messageId ||
-                      openProjectPaneIfMissing !== undefined || focus !== undefined) {
+                  if (unsupportedV0Options) {
                     return { content: [{ type: "text", text: "Remote intercom supports text only; cwd, attachments, reply, retry, and pane options are unavailable." }],
                       details: { error: true, code: "unsupported" } };
                   }
@@ -2898,6 +2899,10 @@ Usage:
               if (from) {
                 const plan = await v0.prepare({ to, from, locals, signal: _signal });
                 if (plan.kind === "remote") {
+                  if (unsupportedV0Options) {
+                    return { content: [{ type: "text", text: "Remote intercom supports text only; cwd, attachments, reply, retry, and pane options are unavailable." }],
+                      details: { error: true, code: "unsupported" } };
+                  }
                   questionId = randomUUID();
                   const question = { id: questionId, timestamp: Date.now(), text: message };
                   const result = await plan.ask(question, Math.min(askTimeoutMs, V0_ASK_MAX_MS), _signal);

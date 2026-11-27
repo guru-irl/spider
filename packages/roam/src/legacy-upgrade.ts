@@ -306,18 +306,22 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
             typeof action.session_id !== "string" || !action.session_id) throw new Error("Invalid legacy home action");
         const label = `home action session ${safeId(action.session_id)} operation ${action.move_id}`;
         if (action.cancelled !== 0 && action.cancelled !== 1) { unknown.push(`${label} state invalid`); continue; }
+        if (!Number.isSafeInteger(action.expected_epoch) || Number(action.expected_epoch) < 1 || typeof action.args_digest !== "string" || !/^[0-9a-f]{64}$/.test(action.args_digest)) {
+          unknown.push(`${label} record invalid`); continue;
+        }
         if (action.committed_home_json !== null) {
           try {
             if (typeof action.committed_home_json !== "string") throw new Error("Invalid committed home");
             const committed: unknown = JSON.parse(action.committed_home_json);
             if (!committed || typeof committed !== "object" || Array.isArray(committed) || action.cancelled !== 0) throw new Error("Invalid committed home");
+            const home = committed as Record<string, unknown>;
+            if (home.sessionId !== action.session_id || home.moveId !== action.move_id || !isMachineId(home.machineId) ||
+                !Number.isSafeInteger(home.epoch) || home.epoch !== Number(action.expected_epoch) + 1 || !Number.isSafeInteger(home.updatedAt) || Number(home.updatedAt) < 0)
+              throw new Error("Invalid committed home");
           } catch { unknown.push(`${label} receipt invalid`); }
           continue;
         }
         if (action.cancelled === 1) continue;
-        if (!Number.isSafeInteger(action.expected_epoch) || typeof action.args_digest !== "string" || !/^[0-9a-f]{64}$/.test(action.args_digest)) {
-          unknown.push(`${label} record invalid`); continue;
-        }
         if (journalKinds.get(action.move_id) !== "move") unknown.push(`${label} journal missing`);
         else findings.push(label);
       }

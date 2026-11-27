@@ -163,7 +163,12 @@ export interface MemoryRecordView {
 }
 export interface MemoryCardDetails { mode: "remember" | "recall"; records: MemoryRecordView[]; staged: number; }
 export interface TodoItemView { id: number; text: string; done: boolean; }
-export interface TodoChecklistDetails { scope: string; items: TodoItemView[]; done: number; total: number; }
+export type TodoChecklistDetails =
+  | { kind: "item"; item: TodoItemView }
+  | { kind: "removed"; item: TodoItemView; sessionName?: string }
+  | { kind: "cleared"; removed: number; kept?: number }
+  | { kind: "list"; groups: { label?: string; items: TodoItemView[] }[] }
+  | { kind: "sessions"; sessions: { label: string; done: number; total: number; current: boolean }[] };
 export interface RunView { runId: string; name: string; role?: string; status: string; model?: string; steps: number; tokens: number; phase?: string; }
 export interface RunResultDetails { runs: RunView[]; pipeline: { from: string; to: string; phase?: string }[]; }
 export interface MessageDetails {

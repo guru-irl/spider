@@ -179,8 +179,7 @@ describe("renderSpiderResult dispatcher", () => {
     const c = renderSpiderResult(mkResult(details), opts, theme, mkCtx({ action: "todo", op: "add" }));
     assertComponent(c);
     const out = c.render(80).join("\n");
-    expect(out).toContain("new task");
-    expect(out).toMatch(/0\/1/);
+    expect(out).toBe(" ○ #3 new task");
   });
 
   it("control stats → token-savings + rows + model table card (no raw JSON)", () => {
@@ -304,6 +303,30 @@ describe("renderSpiderResult dispatcher", () => {
 });
 
 const marker = { fg: (t: string, s: string) => `⟨${t}|${s}⟩`, bold: (s: string) => s, italic: (s: string) => s };
+
+describe("todo receipts", () => {
+  const item = { seq: 935, text: "Check the manifest", session: "session-id", name: "Release" };
+  const render = (op: string, details: object, args: object = {}) =>
+    renderSpiderResult({ details }, {}, theme, mkCtx({ action: "todo", op, ...args })).render(80);
+
+  it("prints only the changed item for add and toggle", () => {
+    expect(render("add", { ...item, done: false })).toEqual([" ○ #935 Check the manifest"]);
+    expect(render("toggle", { ...item, done: true, current: true })).toEqual([" ✓ #935 Check the manifest"]);
+    expect(render("toggle", { ...item, done: false, current: true })).toEqual([" ○ #935 Check the manifest"]);
+  });
+
+  it("omits the current session label even with an explicit selector", () => {
+    expect(render("remove", { ...item, current: true }, { session: "Release" })).toEqual([" Removed #935 Check the manifest"]);
+    expect(render("remove", { ...item, current: false }, { session: "session-id" })).toEqual([" Removed #935 Check the manifest from Release"]);
+  });
+
+  it.each(["toggle", "remove"])("keeps a missing %s target an error rather than showing an empty list", op => {
+    const rows = render(op, { error: 'todo: id "935" not found in session "beb58fc6-193f-4247-bb38-c59612f6985d"' });
+    expect(rows.join("\n")).toContain('id "935" not found');
+    expect(rows.join("\n")).not.toContain("beb58fc6");
+    expect(rows.join("\n")).not.toContain("completed");
+  });
+});
 
 describe("run status rows", () => {
   it("marks running work with the accent glyph in column 1", () => {
@@ -736,17 +759,15 @@ describe("todo mutation results", () => {
     const c = renderSpiderResult(mkResult({ seq: 2, text: "obsolete", done: false, session: "previous-session", name: "Cleanup" }), opts, theme, mkCtx({ action: "todo", op: "remove", session: "previous" }));
     const text = c.render(100).join("\n");
     expect(text).toMatch(/removed.*#2.*obsolete/i);
-    expect(text).toContain("previous-session");
-    expect(text).toContain("Cleanup");
+    expect(text).toContain("from Cleanup");
+    expect(text).not.toContain("previous-session");
     expect(text).not.toContain("completed");
   });
 
-  it("todo toggle shows the resolved session id and name", () => {
+  it("todo toggle shows the completed item without exposing its session id", () => {
     const c = renderSpiderResult(mkResult({ seq: 2, text: "leftover", done: true, session: "previous-session", name: "Cleanup" }), opts, theme, mkCtx({ action: "todo", op: "toggle", session: "previous" }));
     const text = c.render(100).join("\n");
-    expect(text).toContain("#2");
-    expect(text).toContain("previous-session");
-    expect(text).toContain("Cleanup");
+    expect(text).toBe(" ✓ #2 leftover");
   });
 
   it.each([{ removed: 1, kept: 2 }, { removed: 3, kept: 0 }])("todo clear displays counts %j", (details) => {

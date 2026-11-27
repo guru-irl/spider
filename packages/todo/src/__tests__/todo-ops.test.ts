@@ -22,7 +22,7 @@ describe("todo mutations", () => {
     addTodo(ctx.db, "other", "otherword");
     expect(matches("obsoleteword")).toHaveLength(1);
     const result = await action({ op: "remove", id: removed.seq }, {});
-    expect(result.details).toEqual({ ...removed, session: "current" });
+    expect(result.details).toEqual({ ...removed, session: "current", current: true });
     expect(listTodos(ctx.db, "current")).toEqual([kept]);
     expect(listTodos(ctx.db, "other")).toHaveLength(1);
     expect(matches("obsoleteword")).toEqual([]);
@@ -49,13 +49,22 @@ describe("todo mutations", () => {
       const target = addTodo(ctx.db, "previous-session", "leftover");
       const result = await action({ op, id: target.seq, session }, {});
       expect(toToolResult(result).isError).toBe(false);
-      expect(result.details).toEqual({ ...target, done: op === "toggle", session: "previous-session", name: "Cleanup" });
-      const content = toToolResult(result).content.map((block) => block.text).join("\n");
-      expect(content).toContain("previous-session");
-      expect(content).toContain("Cleanup");
+      const before = { ...target, done: op === "toggle", session: "previous-session", name: "Cleanup" };
+      expect(result.details).toEqual({ ...before, current: false });
+      expect(toToolResult(result).content).toEqual([{ type: "text", text: JSON.stringify(before, null, 2) }]);
       expect(listTodos(ctx.db, "current")).toEqual([local]);
       if (op === "remove") expect(listTodos(ctx.db, "previous-session")).toEqual([]);
     }
+  });
+
+  it.each(["toggle", "remove"])("%s marks an explicit selector for the caller's own session as current", async op => {
+    const action = setup();
+    ctx.db.prepare("INSERT INTO sessions(id, name, started_at) VALUES (?, ?, ?)").run("current", "Release", 1);
+    const item = addTodo(ctx.db, "current", "check the manifest");
+    const result = await action({ op, id: item.seq, session: "release" }, {});
+    const before = { ...item, done: op === "toggle", session: "current", name: "Release" };
+    expect(result.details).toEqual({ ...before, current: true });
+    expect(toToolResult(result).content).toEqual([{ type: "text", text: JSON.stringify(before, null, 2) }]);
   });
 
   it.each(["toggle", "remove"])("%s rejects all, unresolved and ambiguous selectors without mutation", async (op) => {

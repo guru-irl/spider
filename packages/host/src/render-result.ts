@@ -581,39 +581,28 @@ function toMessageDetails(args: any, details: any): MessageDetails {
   };
 }
 
-/** Normalize the todo action's varied `details` (single Todo | Todo[] | SessionSummary[] |
- *  SessionGroup[] | {ok}) into a TodoChecklistDetails for renderTodoChecklist. Never throws. */
+/** Convert session metadata into labels; the stored IDs belong to the agent payload. */
 function toTodoDetails(args: any, details: any): TodoChecklistDetails {
-  const toItem = (x: any) => ({ id: Number(x?.seq ?? x?.id ?? 0), text: String(x?.text ?? ""), done: x?.done === true });
-  let items: { id: number; text: string; done: boolean }[] = [];
-  let scope = "session";
-  if (Array.isArray(details)) {
-    if (details.length && Array.isArray(details[0]?.todos)) {
-      // view → SessionGroup[]: flatten, label each todo with its session
-      scope = "all";
-      for (const g of details) {
-        const label = String(g?.name ?? g?.session ?? "");
-        for (const td of (g?.todos ?? [])) items.push({ ...toItem(td), text: `[${label}] ${td?.text ?? ""}` });
-      }
-    } else if (details.length && details[0]?.total !== undefined && details[0]?.session !== undefined) {
-      // sessions → SessionSummary[]
-      scope = "sessions";
-      items = details.map((s: any, i: number) => ({
-        id: i + 1,
-        text: `${s?.current ? "▸ " : ""}${s?.name ?? s?.session} — ${s?.done ?? 0}/${s?.total ?? 0}`,
-        done: (s?.total ?? 0) > 0 && (s?.done ?? 0) >= (s?.total ?? 0),
-      }));
-    } else {
-      // list → Todo[]
-      items = details.map(toItem);
+  const item = (x: any) => ({ id: Number(x?.seq ?? x?.id ?? 0), text: String(x?.text ?? ""), done: x?.done === true });
+  const label = (x: any) => x?.name || (x?.current ? "Current session" : "Unnamed session");
+  const rows: any[] = Array.isArray(details) ? details : [];
+  switch (args?.op) {
+    case "add":
+    case "toggle":
+      return { kind: "item", item: item(details) };
+    case "remove": {
+      const current = details?.current ?? (args.session == null);
+      return { kind: "removed", item: item(details), sessionName: current ? undefined : details?.name || "another session" };
     }
-  } else if (details && (details.seq !== undefined || details.text !== undefined)) {
-    // add/toggle → single Todo
-    items = [toItem(details)];
-    if (details.session) scope = details.name ? `${details.session} (${details.name})` : String(details.session);
+    case "clear":
+      return { kind: "cleared", removed: details?.removed ?? 0, kept: details?.kept };
+    case "view":
+      return { kind: "list", groups: rows.map(group => ({ label: label(group), items: (group.todos ?? []).map(item) })) };
+    case "sessions":
+      return { kind: "sessions", sessions: rows.map(session => ({ label: label(session), done: session.done, total: session.total, current: session.current === true })) };
+    default:
+      return { kind: "list", groups: [{ items: rows.map(item) }] };
   }
-  const done = items.filter((it) => it.done).length;
-  return { scope, items, done, total: items.length };
 }
 
 function renderSpiderResultBody(
@@ -650,7 +639,10 @@ function renderSpiderResultBody(
       const d = { ...toMessageDetails(context?.args, details), error: message };
       return { render: (width: number) => renderMessageResult(d, { theme: th, width, expanded }), invalidate() {} };
     }
-    return { render: (width: number) => renderErrorResult(message, { theme: th, width, expanded }), invalidate() {} };
+    const displayMessage = action === "todo"
+      ? message.replace(/\bsession "[0-9a-f]{8}(?:(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})?"/giu, "the selected session")
+      : message;
+    return { render: (width: number) => renderErrorResult(displayMessage, { theme: th, width, expanded }), invalidate() {} };
   }
 
   switch (action) {
@@ -699,15 +691,6 @@ function renderSpiderResultBody(
     }
     case "recall": return wrapBespoke(renderRecallResult(details as MemoryRecord[], expanded));
     case "todo": {
-      const op = context?.args?.op;
-      if (op === "remove" && details?.seq !== undefined) {
-        const session = details?.session ?? "current";
-        const label = details?.name ? `${session} (${details.name})` : session;
-        return plainBody(`Removed #${details.seq}${details.text ? ` ${details.text}` : ""} from session ${label}`, expanded);
-      }
-      if (op === "clear" && details?.removed !== undefined) {
-        return plainBody(`Removed ${details.removed} todos${details.kept === undefined ? "" : `; kept ${details.kept} open todos`}`, expanded);
-      }
       const d = toTodoDetails(context?.args, details);
       const th = adaptTheme(t);
       return { render: (w: number) => renderTodoChecklist(d, { theme: th, width: w, expanded }), invalidate() {} };

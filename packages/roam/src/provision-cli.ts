@@ -136,6 +136,9 @@ function reportPermissionTightening(count: number | null, out: (text: string) =>
   out(count === null ? "Installer permission tightenings: unavailable for this saved operation.\n"
     : `Installer permission tightenings: ${count === MAX_PERMISSION_TIGHTENINGS ? "at least " : ""}${count} entries.\n`);
 }
+function reportDestinationEnable(target: string, out: (text: string) => void): void {
+  out(`Run spider roam enable locally on ${safe(target)} when the box is ready to host.\n`);
+}
 function presentInventory(preview: ProvisionPreview, out: (text: string) => void): void {
   const value = preview.inventory;
   out(`Inventory for ${safe(preview.target)}: ${safe(value.platform)}, Node ${safe(value.nodeVersion)}, pi ${safe(value.piVersion ?? "missing")}.\n`);
@@ -153,7 +156,7 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
   const refused = (code: 1 | 3, reason: string): Outcome<ProvisionResult> => ({ code, reason, operationId, home: null, epoch: null, repairCommand: null, value: null });
   try {
     const config = readLocalIdentity(input.root); if (config.role !== "hub") throw new Error("provision-requires-hub");
-    io.out(`The broker starts at enable (spider roam enable), if it is not already running.${config.enabled ? "" : " Roaming is disabled; provisioning will not enable the box or start hosting."}\n`);
+    io.out(`Provisioning installs and verifies the release without changing the box's roaming service.${config.enabled ? "" : " The hub is disabled, so provisioning leaves box participation disabled."}\n`);
     const configured = config.peers.find(peer => peer.alias === input.target || peer.machineId === input.target);
     if (!configured) throw new Error("provision-target-unavailable");
     const tty = options.tty ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
@@ -236,12 +239,13 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
       const permissionTightenings = saved.permissionTightenings ?? null;
       reportPermissionTightening(permissionTightenings, io.out);
       io.out(`${safe(done!.reason as string)}\n`);
+      reportDestinationEnable(peer.alias, io.out);
       return { code: 0, reason: done!.reason as string, operationId: done!.operationId as string, home: null, epoch: null, repairCommand: null,
         value: { hostingReady: saved.hostingReady, permissionTightenings, ...(repairs !== undefined ? { privateModeRepairs: repairs } : {}) } };
     }
     let shownSettings: { fingerprint: string | null; keys: readonly string[] } = { fingerprint: null, keys: [] };
     const ports = createProductionProvisionPorts({ root: input.root, hubMachineId: config.machineId, peer, operationId: `${operationId}-install`, transport, journal, limits: config.limits,
-      source: { agentRoot, releaseFile: pinned.file, piProviders: input.useDestinationAuth ? [] : ["github-copilot"] }, destination, unitDir: posix.join(home, ".config/systemd/user"),
+      source: { agentRoot, releaseFile: pinned.file, piProviders: input.useDestinationAuth ? [] : ["github-copilot"] }, destination,
       release: { pi: "1.2.0", intercom: "spider-owned", spiderSha256: pinned.sha256, nodeRange: "22.23.4 || 26.4.0" },
       async present(preview) { shownSettings = { fingerprint: preview.settingsFingerprint, keys: [...preview.settingsKeys] }; presentInventory(preview, io.out); },
       async confirm() { return confirmProvision(journal, { ...request, settingsFingerprint: shownSettings.fingerprint, settingsKeys: shownSettings.keys },
@@ -257,19 +261,22 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
       const hash = (id: string) => createHash("sha256").update(id).digest("hex");
       io.out(`Core pin replaced. Previous identity SHA-256: ${hash(replaced.oldCoreId)}. New identity SHA-256: ${hash(replaced.newCoreId)}.\n`);
     }
-    if (result.repairCommand && ["core-pin-changed", "core-pin-conflict"].includes(result.reason)) {
-      io.err(`Stop hosting and move sessions off the box, then run ${result.repairCommand} with the same authentication options.\n`);
+    const target = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,255}$/.test(peer.alias) ? peer.alias : peer.machineId;
+    if (["core-pin-changed", "core-pin-conflict", "core-pin-in-use"].includes(result.reason)) {
+      const retry = result.repairCommand ?? `spider roam provision ${target} --replace-core-pin`;
+      io.err("Finish or undo moves and move homes off the box first. Run spider roam disable on the hub and locally on the box.\n");
+      io.err("If an owned legacy supervisor is still active, follow the approved old-release stop procedure in docs/guide/roaming-upgrade.md.\n");
+      io.err(`Then run ${retry} on the hub with the same authentication options.\n`);
+      reportDestinationEnable(peer.alias, io.err);
     }
     if (result.reason === "destination-permissions-unsafe" && result.repairCommand) {
       io.err(`Unsafe permissions on ${safe(peer.alias)}. On the box, run ${result.repairCommand}.\n`);
     }
-    if (result.reason === "core-pin-in-use") io.err("Move sessions off this box, run spider roam disable on the hub, and stop spider-roam-supervisor.service on the box before retrying.\n");
     if (result.code === 0 && journal.read(`${operationId}-install`).some(row => row.action === "done" && row.result.code === 0)) {
       journal.record(operationId, "provision-completed", { installOperationId: `${operationId}-install`, releaseHash: pinned.sha256, contextDigest });
       await removeProvisionSource(input.root, operationId);
     }
     if (result.reason === "release-pending") {
-      const target = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,255}$/.test(peer.alias) ? peer.alias : peer.machineId;
       const repairCommand = `spider roam provision ${target} --operation-id ${operationId}`;
       io.err(`Installation is still finishing on ${safe(peer.alias)}. Rerun ${repairCommand} with the same options to confirm.\n`);
       return { ...result, repairCommand };
@@ -278,7 +285,9 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
     if (result.reason === "npm-install-failed") io.err(`The destination's ${safe(posix.join(peer.globalRoot, "roam", "provision", `${operationId}-install`, "release-receipt.json"))} contains structured npm failure details. Fix the installation error, then retry with a new operation ID.\n`);
     if (["peer-core-unit-required", "peer-core-unit-ambiguous"].includes(result.reason)) io.err("Set coreUnit on this destination's peer entry in the hub roaming config, then retry.\n");
     if (result.code === 0 && result.value) reportPermissionTightening(result.value.permissionTightenings, io.out);
-    (result.code === 0 ? io.out : io.err)(`${safe(result.reason)}\n`); return result;
+    (result.code === 0 ? io.out : io.err)(`${safe(result.reason)}\n`);
+    if (result.code === 0) reportDestinationEnable(peer.alias, io.out);
+    return result;
   } catch (error) {
     if (error instanceof SelectedFilesError) {
       const files = error.files.filter(file => file.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(file));

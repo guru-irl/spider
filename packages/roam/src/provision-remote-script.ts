@@ -50,8 +50,13 @@ if (authForRemote === authSource || authForRemote.includes('from "./') || config
     enrollmentForRemote === enrollmentSource || enrollmentForRemote.includes('from "./')) throw new Error("Cannot assemble provisioning program");
 const enrollmentConfigForRemote = `const parseRoamConfig = (() => {\nconst DEFAULT_LIMITS = ${JSON.stringify(DEFAULT_LIMITS)};\nconst DEFAULT_INTERCOM_LIMITS = ${JSON.stringify(DEFAULT_INTERCOM_LIMITS)};\n${machineIdForRemote}\n${configForRemote}\nreturn parseConfig;\n})();\n`;
 
+const provisionActions = ["roaming-enabled", "enrollment", "prepare", "secret-chunk", "cleanup", "install-files", "auth-install", "release-prepare",
+  "release-observe", "switchover", "verify", "clear-secrets", "permission-summary", "agent-private-modes", "pair-unit-repair"];
+const supportedProvisionActions = new Set(provisionActions);
+export const isProvisionAction = (action: string): boolean => supportedProvisionActions.has(action);
+
 const provisionSource: string = selectedRemoteSource + "\n" + authForRemote + "\n" + receiptSource + "\n" + releaseRequestSource + "\n" + enrollmentConfigForRemote + enrollmentForRemote + "\n" + enrollmentSocketForRemote + intercomForRemote + String.raw`
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { spawn, spawnSync } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
@@ -247,16 +252,6 @@ function assemble(stage: string, chunks: unknown, maximum: number): Buffer {
   }
   return Buffer.concat(pieces, size);
 }
-function command(file: string, argv: string[], env: NodeJS.ProcessEnv, timeout: number): void {
-  const child = spawnSync(file, argv, { env, stdio: "ignore", timeout });
-  if (child.status !== 0 || child.error || child.signal) bad("command-failed");
-}
-function supervisorSystemctl(argv: unknown): void {
-  if (!Array.isArray(argv) || (JSON.stringify(argv) !== JSON.stringify(["--user", "daemon-reload"]) &&
-    JSON.stringify(argv) !== JSON.stringify(["--user", "enable", "spider-roam-supervisor.service"]) &&
-    JSON.stringify(argv) !== JSON.stringify(["--user", "disable", "spider-roam-supervisor.service"]))) bad("invalid-systemctl");
-  command("systemctl", argv, process.env, 30_000);
-}
 class NpmInstallFailure extends Error {
   readonly code = "npm-install-failed";
   readonly diagnostic: NpmDiagnostic;
@@ -421,27 +416,33 @@ function releaseTerminals(core: string, coreId: string, operationId: string, mac
   releaseCore(core, coreId);
   return rows.some(row => row.state === "live") ? "live" : rows.length ? "finished" : "none";
 }
+function supervisorUnitIdle(name: string): boolean {
+  const unit = spawnSync("systemctl", ["--user", "show", name, "--property=Id,LoadState,ActiveState,MainPID", "--all"],
+    { encoding: "utf8", timeout: 5000, maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"] });
+  // Linux show exits 0 for not-found; a failed command is not evidence of absence.
+  if (unit.error || unit.signal || unit.status !== 0 || unit.stderr !== "") return false;
+  const lines = unit.stdout.split("\n");
+  if (lines.length !== 5 || lines.pop() !== "") return false;
+  const evidence = new Set(lines);
+  return evidence.has("Id=" + name) && evidence.has("MainPID=0") && (
+    evidence.has("LoadState=not-found") && evidence.has("ActiveState=inactive") ||
+    evidence.has("LoadState=loaded") && (evidence.has("ActiveState=inactive") || evidence.has("ActiveState=failed")));
+}
 async function run(): Promise<unknown> {
   // One request per short-lived process. Every child inherits this mask; no restore is needed.
   process.umask(0o022);
-  if (request.action === "roaming-enabled") {
-    if (typeof request.enabled !== "boolean" || request.restoreAutostart !== undefined &&
-        (request.restoreAutostart !== true || !request.enabled)) bad("invalid-request");
+  const action = text("action");
+  if (action !== "release" && !${JSON.stringify(provisionActions)}.includes(action)) bad("unknown-provision-action");
+  if (action === "roaming-enabled") {
+    if (typeof request.enabled !== "boolean" || Object.hasOwn(request, "restoreAutostart")) bad("invalid-request");
     releaseCore(text("core"), text("coreId"));
     setBoxRoamingEnabled(text("globalRoot"), text("machineId"), text("hubMachineId"), request.enabled);
-    if (request.restoreAutostart && existsSync(join(homedir(), ".config/systemd/user/spider-roam-supervisor.service"))) {
-      try { supervisorSystemctl(["--user", "enable", "spider-roam-supervisor.service"]); }
-      catch (error) {
-        // Participation is independent of autostart; doctor reports its actual state.
-        if (!error || typeof error !== "object" || !("code" in error) || error.code !== "command-failed") throw error;
-      }
-    }
     return { enabled: request.enabled };
   }
-  const home = text("home"), globalRoot = text("globalRoot"), agentDir = text("agentDir"), npmPrefix = text("npmPrefix"), unitDir = text("unitDir");
-  const operationId = text("operationId"), machineId = text("machineId"), action = text("action");
+  const home = text("home"), globalRoot = text("globalRoot"), agentDir = text("agentDir"), npmPrefix = text("npmPrefix");
+  const operationId = text("operationId"), machineId = text("machineId");
   if (resolve(home) !== home || realpathSync(home) !== home || homedir() !== home ||
-      !inside(home, globalRoot) || !inside(home, agentDir) || !inside(home, npmPrefix) || !inside(home, unitDir) ||
+      !inside(home, globalRoot) || !inside(home, agentDir) || !inside(home, npmPrefix) ||
       !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(operationId)) bad("unsafe-context");
   directory(globalRoot, false);
   const roam = join(globalRoot, "roam"); directory(roam, true);
@@ -462,7 +463,6 @@ async function run(): Promise<unknown> {
     else if (action === "secret-chunk") key = [action, request.name, request.offset];
     else if (action === "cleanup") key = [action, request.names];
     else if (action === "install-files") key = [action, request.file?.path];
-    else if (action === "systemctl") key = [action, request.argv];
     const step = createHash("sha256").update(JSON.stringify(key)).digest("hex");
     const intent = "intent-" + step, file = join(intentDir, intent);
     const hash = createHash("sha256").update(JSON.stringify(request)).digest("hex");
@@ -471,7 +471,13 @@ async function run(): Promise<unknown> {
       if (!bytes) return false;
       try {
         const prior = JSON.parse(bytes.toString("utf8"));
-        if (!prior || Object.keys(prior).length !== 2 || prior.version !== 1 || prior.digest !== hash) bad("operation-arguments-changed");
+        if (!prior || Object.keys(prior).length !== 2 || prior.version !== 1) bad("operation-arguments-changed");
+        if (prior.digest === hash) return true;
+        // Old short-write intents hashed the whole request in wire order. Accept only the exact old payload, with the fixed unitDir field restored for comparison.
+        if (Object.hasOwn(request, "unitDir")) bad("operation-arguments-changed");
+        const legacy = Object.fromEntries(Object.entries(request).flatMap(([key, value]) => key === "npmPrefix"
+          ? [[key, value], ["unitDir", join(home, ".config/systemd/user")]] : [[key, value]]));
+        if (prior.digest !== createHash("sha256").update(JSON.stringify(legacy)).digest("hex")) bad("operation-arguments-changed");
         return true;
       } finally { bytes.fill(0); }
     };
@@ -542,26 +548,28 @@ async function run(): Promise<unknown> {
     if (releaseCore(corePin.binary, corePin.coreId, env) !== pid) bad("core-changed");
     if (request.replaceCorePin !== undefined && typeof request.replaceCorePin !== "boolean") bad("invalid-request");
     if (request.replaceCorePin) {
-      const configBytes = readPrivateBytes(roam, "config.json", maximum);
-      if (!configBytes) bad("core-pin-required");
-      const config = parseRoamConfig(JSON.parse(configBytes.toString("utf8")));
-      if (config.role !== "box" || config.machineId !== machineId || config.hubMachineId !== text("hubMachineId")) bad("enrollment-conflict");
       const { DatabaseSync } = await import("node:sqlite");
       const replacement = replaceSupervisorCorePin(globalRoot, corePin, operationId, () => {
-        if (config.enabled) bad("core-pin-in-use");
-        const unit = spawnSync("systemctl", ["--user", "show", "spider-roam-supervisor.service", "--property=ActiveState", "--value"],
-          { encoding: "utf8", timeout: 5000, maxBuffer: 4096, stdio: ["ignore", "pipe", "ignore"] });
-        if (unit.status !== 0 || !["inactive", "failed"].includes(unit.stdout.trim())) bad("core-pin-in-use");
+        const configBytes = readPrivateBytes(roam, "config.json", maximum);
+        if (!configBytes) bad("core-pin-required");
+        const config = parseRoamConfig(JSON.parse(configBytes.toString("utf8")));
+        if (config.role !== "box" || config.machineId !== machineId || config.hubMachineId !== text("hubMachineId")) bad("enrollment-conflict");
+        if (config.enabled || !supervisorUnitIdle("spider-roam-supervisor.service") || !supervisorUnitIdle("spider-roam-supervisor-v0.service")) bad("core-pin-in-use");
         const file = join(globalRoot, "spider.db");
-        if (exists(file)) {
+        if (exists(file)) try {
           const info = lstatSync(file);
           if (!info.isFile() || info.isSymbolicLink() || !own(info) || info.nlink !== 1) bad("core-pin-in-use");
           const db = new DatabaseSync(file, { readOnly: true });
           try {
-            if ((db.prepare("SELECT machine_id FROM roam_meta WHERE id=1").get() as { machine_id?: unknown } | undefined)?.machine_id !== machineId ||
-                db.prepare("SELECT 1 FROM session_homes WHERE machine_id = ? LIMIT 1").get(machineId)) bad("core-pin-in-use");
+            if ((db.prepare("SELECT machine_id FROM roam_meta WHERE id=1").get() as { machine_id?: unknown } | undefined)?.machine_id !== machineId) bad("core-pin-in-use");
+            const columns = db.prepare("PRAGMA table_info(session_homes)").all().map(row => row.name).sort().join(",");
+            const local = "SELECT 1 FROM session_homes WHERE machine_id = ?";
+            if (columns === "epoch,machine_id,move_id,session_id,updated_at") {
+              if (db.prepare(local + " LIMIT 1").get(machineId)) bad("core-pin-in-use");
+            } else if (columns !== "destination,epoch,machine_id,move_id,session_id,state,updated_at" ||
+                db.prepare(local + " OR (state = 'moving' AND destination = ?) LIMIT 1").get(machineId, machineId)) bad("core-pin-in-use");
           } finally { db.close(); }
-        }
+        } catch { bad("core-pin-in-use"); }
         if (releaseCore(corePin.binary, corePin.coreId, env) !== pid) bad("core-changed");
       });
       const enrollment = installBoxEnrollment(globalRoot, machineId, text("hubMachineId"), text("coreUnit"));
@@ -724,7 +732,7 @@ async function run(): Promise<unknown> {
       if (!Array.isArray(request.chunks) || !request.chunks.length || request.chunks.length > 10_000 ||
           request.chunks.some((chunk: any) => !chunk || typeof chunk !== "object" || !/^release-[a-f0-9]{32}-[0-9]{1,5}$/.test(name(chunk.name)) ||
             !Number.isSafeInteger(chunk.size) || chunk.size < 0 || chunk.size > chunkBytes || !/^[a-f0-9]{64}$/.test(chunk.sha256))) bad("invalid-chunks");
-      const immutable = { action: "release", operationId, machineId, home, globalRoot, agentDir, npmPrefix, unitDir, core, coreId,
+      const immutable = { action: "release", operationId, machineId, home, globalRoot, agentDir, npmPrefix, core, coreId,
         node, pi: text("pi"), cli, supervisor, maximum, chunkBytes, timeout: request.timeout, sha256: sha, piVersion: request.piVersion, chunks: request.chunks };
       atomicWrite(join(stage, "release-request"), Buffer.from(JSON.stringify(immutable)), 0o600, true);
       return true;
@@ -797,16 +805,6 @@ async function run(): Promise<unknown> {
         if (finished.state === "finished" || finished.state === "failed") pruneReleaseChunks(stage);
       } catch { /* A later receipt observation retries cleanup. */ }
     }
-  }
-  if (action === "unit-write") {
-    ensurePrivate(home, unitDir, false);
-    if (request.unit !== "spider-roam-supervisor.service" || typeof request.contents !== "string" || Buffer.byteLength(request.contents) > 1024 * 1024) bad("invalid-unit");
-    installFile(rootPath(unitDir), { path: request.unit, bytes: Buffer.from(request.contents), mode: 0o600 });
-    return true;
-  }
-  if (action === "systemctl") {
-    supervisorSystemctl(request.argv);
-    return true;
   }
   if (action === "verify") {
     const verification = { corePin: inspectSupervisorCorePin(globalRoot, process.env), piSignedIn: false, nativeSqlite: false, extensionLoaded: false, exactSession: false,

@@ -178,7 +178,7 @@ it("previews and records the fixed selection and exact selected Copilot auth byt
   expect(await main(["roam", "provision", f.request.target, "--release", f.release,
     "--yes", "--consent", "copilot-auth", "--operation-id", "preview-1"], { out(text) { output += text; }, err(text) { errors += text; } })).toBe(0);
   const size = Buffer.byteLength(JSON.stringify({ "github-copilot": copilot }) + "\n");
-  expect(output).toContain("The broker starts at enable");
+  expect(output).toContain("without changing the box's roaming service");
   expect(output).toContain(`Selected auth.json: ${size} bytes, mode 600.`);
   expect(output).not.toContain("selected-fixture"); expect(output).not.toContain("other-fixture");
   expect(output).not.toContain("fixture instructions"); expect(output).not.toContain("fixture theme"); expect(errors).toBe("");
@@ -285,7 +285,10 @@ it("prunes the completed source snapshot and safely replays without repacking", 
   expect(await main([...args, "--release", f.release], io)).toBe(0);
   expect(f.journal.read("prune-done-install").at(-1)?.action).toBe("done");
   expect(existsSync(join(f.root, "roam", "provision-source", "prune-done"))).toBe(false);
+  expect(output).toContain("Run spider roam enable locally on box-1.invalid");
+  output = "";
   expect(await main(args, io)).toBe(0);
+  expect(output).toContain("Run spider roam enable locally on box-1.invalid");
   expect(install).toHaveBeenCalledTimes(1); expect(transport).toHaveBeenCalledTimes(2);
   expect(resolvePeer).not.toHaveBeenCalled(); expect(remoteFlag).not.toHaveBeenCalled();
   expect(output).toContain("installed"); expect(errors).toBe("");
@@ -304,6 +307,24 @@ it("prunes the completed source snapshot and safely replays without repacking", 
   expect(readFileSync(join(unrelated, "prune-done", "keep"), "utf8")).toBe("unrelated");
   expect(install).toHaveBeenCalledTimes(1);
 }, 5000);
+
+it.each(["core-pin-changed", "core-pin-in-use"])("explains how to replace a %s pin safely", async reason => {
+  const f = fixture(), agent = join(f.root, "agent"); mkdirSync(agent, { mode: 0o700 });
+  writeFileSync(join(f.root, "roam", "machine.json"), JSON.stringify({ machineId: HUB }), { mode: 0o600 });
+  writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify({ enabled: false, role: "hub", machineId: HUB, hubMachineId: HUB,
+    peers: [{ machineId: f.request.machineId, alias: f.request.target, node: "/home/fixture/bin/node", pi: "/home/fixture/.local/bin/pi", cli: "/home/fixture/cli", core: "/home/fixture/hc", globalRoot: "/home/fixture/.pi/agent/spider" }], coreUnit: "fixture.service" }), { mode: 0o600 });
+  vi.stubEnv("PI_CODING_AGENT_DIR", agent); vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root);
+  vi.spyOn(hubModule, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
+  vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: {} } as never);
+  vi.spyOn(provisionModule, "provision").mockImplementation(async request => ({ code: 3, reason,
+    operationId: request.operation.id, home: null, epoch: null, value: null,
+    repairCommand: reason === "core-pin-changed" ? "spider roam provision box-1.invalid --replace-core-pin" : null }));
+  let errors = "";
+  const args = ["roam", "provision", f.request.target, "--yes", "--use-destination-auth", "--release", f.release];
+  expect(await main(reason === "core-pin-in-use" ? [...args, "--replace-core-pin"] : args,
+    { out() {}, err(text) { errors += text; } })).toBe(3);
+  expect(errors).toMatch(/finish or undo.*move.*move homes off.*spider roam disable.*hub.*locally on.*box.*legacy.*old-release.*--replace-core-pin.*same authentication options.*spider roam enable locally on box-1\.invalid/is);
+});
 
 it("retains the source snapshot while provisioning is pending", async () => {
   const f = fixture(), agent = join(f.root, "agent"); mkdirSync(agent, { mode: 0o700 });
@@ -436,7 +457,7 @@ it("reports shared-parent preview permissions before mutation through the CLI", 
         return Buffer.from(JSON.stringify({ version: 1, kind: "provision", value: inspectRelease(key, () => "absent") }));
       }
       expect(request.action).toBe("switchover");
-      for (const key of ["home", "globalRoot", "agentDir", "npmPrefix", "unitDir", "node", "pi", "cli", "core", "supervisor"]) {
+      for (const key of ["home", "globalRoot", "agentDir", "npmPrefix", "node", "pi", "cli", "core", "supervisor"]) {
         if (typeof request[key] === "string") request[key] = request[key].replace(/^\/home\/fixture(?=\/|$)/, home);
       }
       const child = spawnSync(process.execPath, ["--input-type=module", "-e", getProvisionRemoteScript()], {

@@ -12,11 +12,11 @@ type InventoryFn = (peer: Peer, transport: Transport) => Promise<Inventory>;
 type DoctorFn = (peer: Peer, ports: DoctorPorts) => Promise<readonly import("../contracts").Diagnostic[]>;
 
 function fixture(value: Inventory = healthyInventory()) {
-  const adminRepairCalls: readonly string[][] = [], probeCalls: string[] = [], probeOptions: unknown[] = [];
+  const adminRepairCalls: string[][] = [], probeCalls: string[] = [], probeOptions: unknown[] = [];
   const transport: Transport = {
     async resolve(peer) { probeCalls.push("resolve"); return peer; },
     async bootstrapProbe(_peer, kind, options) { probeCalls.push(kind); probeOptions.push(options); return structuredClone(value); },
-    async exec() { throw new Error("unexpected command"); },
+    async exec(_peer, argv) { adminRepairCalls.push([...argv]); throw new Error("unexpected command"); },
     async run() { throw new Error("unexpected launch"); },
     async read() { throw new Error("unexpected read"); },
     async write() { throw new Error("unexpected write"); },
@@ -27,7 +27,6 @@ function fixture(value: Inventory = healthyInventory()) {
   const ports: DoctorPorts = {
     transport, journal, limits: DEFAULT_LIMITS,
     async confirm() { throw new Error("unexpected confirmation"); },
-    systemd: { unitDir: "/fixture/units", async systemctl(argv) { (adminRepairCalls as string[][]).push([...argv]); } },
     async resources() { throw new Error("local resource probe is forbidden"); },
     async bootId() { throw new Error("boot probe is forbidden"); },
     release: { pi: "1.2.0", intercom: "spider-owned", spiderSha256: "a".repeat(64), nodeRange: "22.23.4 || 26.4.0" },

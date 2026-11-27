@@ -14,8 +14,8 @@ function fixture() {
   const scratch = join(process.cwd(), ".spider", "scratch"); mkdirSync(scratch, { recursive: true });
   const root = mkdtempSync(join(scratch, "pair-provision-")); roots.push(root);
   const home = join(root, "home"), globalRoot = join(home, "global"), agentDir = join(home, "agent");
-  const npmPrefix = join(home, "prefix"), unitDir = join(home, "units"), bin = join(home, "bin");
-  for (const dir of [home, globalRoot, agentDir, npmPrefix, unitDir, bin]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const npmPrefix = join(home, "prefix"), bin = join(home, "bin");
+  for (const dir of [home, globalRoot, agentDir, npmPrefix, bin]) mkdirSync(dir, { recursive: true, mode: 0o700 });
   mkdirSync(join(globalRoot, "roam"), { mode: 0o700 });
   const peer: Peer = { machineId: "11111111-1111-4111-8111-111111111111", alias: "box-1.invalid", node: join(bin, "node"),
     pi: join(npmPrefix, "bin", "pi"), cli: join(npmPrefix, "release", "cli.mjs"), core: join(bin, "hc"), globalRoot };
@@ -34,7 +34,7 @@ function fixture() {
     return reply.value;
   } } as unknown as ProvisionTransport;
   const options = { peer, operationId: "op-1", destination: { home, agentDir, npmPrefix, supervisor: join(npmPrefix, "release", "supervisor.mjs") },
-    unitDir, limits: { ...DEFAULT_LIMITS, chunkBytes: 32 }, transport: remote, piProviders: [] };
+    limits: { ...DEFAULT_LIMITS, chunkBytes: 32 }, transport: remote, piProviders: [] };
   return { root, home, globalRoot, agentDir, peer, options, requests };
 }
 function fakePairRepairCli(f: ReturnType<typeof fixture>, reply: string, exit = 0, stopped = false): string {

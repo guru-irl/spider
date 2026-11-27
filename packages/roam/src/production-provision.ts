@@ -11,7 +11,7 @@ import { setEnrolledPeerEnabled } from "./peer-enabled";
 
 export interface ProductionProvisionOptions {
   root: string; hubMachineId: string; peer: Peer; operationId: string; transport: ProvisionTransport; journal: Journal; limits: Limits;
-  source: ProvisionPorts["source"]; destination: ProvisionPorts["destination"]; unitDir: string;
+  source: ProvisionPorts["source"]; destination: ProvisionPorts["destination"];
   release: ProvisionPorts["release"]; configuredClis?: ProvisionPorts["configuredClis"];
   present: ProvisionPorts["present"]; confirm: ProvisionPorts["confirm"]; report: ProvisionPorts["report"];
   resources: ProvisionPorts["resources"]; bootId: ProvisionPorts["bootId"]; lockOptions?: ProcessLockOptions;
@@ -38,21 +38,26 @@ export async function setProvisionParticipation(input: Pick<ProductionProvisionO
 /** Bind production effects to one peer and operation; UI and resource probes stay injected. */
 export function createProductionProvisionPorts(input: ProductionProvisionOptions): ProvisionPorts {
   const adapter = createHcProvisionAdapter({ peer: input.peer, operationId: input.operationId, destination: input.destination,
-    unitDir: input.unitDir, limits: input.limits, transport: input.transport, piProviders: input.source.piProviders });
+    limits: input.limits, transport: input.transport, piProviders: input.source.piProviders });
   const lock = createProvisionLock(input.root, input.lockOptions);
   return {
     hubMachineId: input.hubMachineId, transport: input.transport.transport, journal: input.journal, limits: input.limits, ...(input.peer.coreUnit ? { coreUnit: input.peer.coreUnit } : {}),
     ...(input.configuredClis ? { configuredClis: input.configuredClis } : {}),
     source: input.source, destination: input.destination, release: input.release,
     confirm: input.confirm, present: input.present, report: input.report, resources: input.resources, bootId: input.bootId,
-    systemd: adapter.systemd, transfer: adapter, verifyPeer: adapter.verifyPeer, permissionTightening: adapter.permissionTightening,
+    transfer: adapter, verifyPeer: adapter.verifyPeer, permissionTightening: adapter.permissionTightening,
     withPeerLock: lock,
     async assertCorePinReplaceIdle(peer) {
       const core = openLocalCore(input.root);
       try {
-        if (core.config.enabled || core.db.prepare("SELECT 1 FROM session_homes WHERE machine_id = ? LIMIT 1").get(peer.machineId)) {
-          throw Object.assign(new Error("Stop hosting and move sessions off this box before replacing its core pin"), { code: "core-pin-in-use" });
-        }
+        const inUse = () => Object.assign(new Error("Finish or undo moves and move homes off this box before replacing its core pin"), { code: "core-pin-in-use" });
+        if (core.config.enabled) throw inUse();
+        const columns = (core.db.prepare("PRAGMA table_info(session_homes)").all() as { name: string }[]).map(row => row.name).sort().join(",");
+        const local = "SELECT 1 FROM session_homes WHERE machine_id = ?";
+        if (columns === "epoch,machine_id,move_id,session_id,updated_at") {
+          if (core.db.prepare(local + " LIMIT 1").get(peer.machineId)) throw inUse();
+        } else if (columns !== "destination,epoch,machine_id,move_id,session_id,state,updated_at" ||
+            core.db.prepare(local + " OR (state = 'moving' AND destination = ?) LIMIT 1").get(peer.machineId, peer.machineId)) throw inUse();
       } finally { core.close(); }
     },
     bootstrap: { async probeAgentDirectory(peer, home) {

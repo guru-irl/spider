@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { decodeRelayPoll, encodeRelayPollReply, type RelayPoll, type RelaySubmit, type RelayResult } from "@spider/intercom/relay-protocol";
-import type { Clock, Peer } from "../contracts";
+import type { Clock, Peer, RoamConfig } from "../contracts";
+import type { V0Routes } from "../relocate/intercom-routes";
 import { assembleRelaySoak, checkRelaySoak, relaySoakMain, runRelaySoakDial, runRelaySoakSubmit, runRelaySoakBurst,
   type RelaySoakEvidence, type RelaySoakFault, type RelaySoakLinkEvidence, type RelaySoakRecord } from "../relocate/relay-soak";
 
@@ -468,6 +469,63 @@ describe("the opt-in soak drivers", () => {
     expect(records.filter(event => event.type === "submission-error")).toMatchObject([{ id: "cadence-2" }]);
     expect(records.some(event => event.type === "state" && event.state === "up")).toBe(true);
     expect(JSON.stringify(records)).not.toContain("do-not-log-this-error");
+  });
+
+  it("dials only the configured sendTo peer through the production carrier", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START - 1000);
+    const controller = new AbortController(), output: string[] = [], errors: string[] = [];
+    const config = { machineId: RELAY, intercom: { machineAlias: "relay.invalid" } } as unknown as RoamConfig;
+    const routes: V0Routes = { version: 2, agentDir: "/agent", sendTo: [fixturePeer], acceptFrom: [], relays: [RELAY], linkTo: [PEER] };
+    const file = JSON.stringify({ root: "/fixture", startMs: START, rssAllowanceBytes: ALLOWANCE, links: [fixtureLink] });
+    let opened!: (peer: Peer) => void;
+    const connected = new Promise<Peer>(resolve => { opened = resolve; });
+    const transport = {
+      async resolve(peer: Peer) { opened(peer); return peer; },
+      async exec(_peer: Peer, _argv: readonly string[], options: { signal?: AbortSignal }) {
+        return new Promise<Buffer>((_resolve, reject) => {
+          if (options.signal?.aborted) reject(new Error("aborted"));
+          else options.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+      },
+    };
+    const io = { out: (value: string) => output.push(value), err: (value: string) => errors.push(value) };
+    const deps = { readText: () => file, readIdentity: () => config, readRoutes: () => routes,
+      createTransport: () => transport, processIdentity: async () => fixtureProcess, clock: realClock,
+      signal: controller.signal, rssBytes: () => 100_000_000 };
+    const run = relaySoakMain(["dial", "/run.json", fixtureLink.id], io, deps);
+    expect(await Promise.race([connected, run.then(code => { throw new Error(`dial exited ${code}`); })])).toEqual(fixturePeer);
+    controller.abort();
+    expect(await run).toBe(0);
+    expect(output.map(line => JSON.parse(line)).some(record => record.type === "run" && record.machineId === RELAY)).toBe(true);
+    expect(errors).toEqual([]);
+    const missing = { ...deps, readRoutes: () => ({ ...routes, sendTo: [] }), signal: new AbortController().signal };
+    expect(await relaySoakMain(["dial", "/run.json", fixtureLink.id], io, missing)).not.toBe(0);
+  });
+
+  it("submits the burst through the private-broker adapter with the configured live origin", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START + MINUTE);
+    const output: string[] = [], sent: RelaySubmit[] = [];
+    const config = { machineId: PEER, intercom: { machineAlias: "peer.invalid" } } as unknown as RoamConfig;
+    const routes: V0Routes = { version: 2, agentDir: "/agent", sendTo: [], acceptFrom: [], relays: [RELAY], linkTo: [] };
+    const deps = { readText: () => JSON.stringify({ root: "/fixture", startMs: START, rssAllowanceBytes: ALLOWANCE, links: [fixtureLink] }),
+      readIdentity: () => config, readRoutes: () => routes, processIdentity: async () => fixtureProcess, clock: realClock,
+      signal: new AbortController().signal,
+      submitRelay: async (agentDir: string, relayId: string, submit: RelaySubmit) => {
+        expect([agentDir, relayId]).toEqual(["/agent", RELAY]);
+        sent.push(submit);
+        return { type: "result" as const, messageId: submit.message.id, attempted: false as const,
+          outcome: { kind: "refused" as const, code: "relay-busy" as const } };
+      },
+    };
+    const io = { out: (value: string) => output.push(value), err: () => {} };
+    expect(await relaySoakMain(["submit", "/run.json", fixtureLink.id, "--burst"], io, deps)).toBe(0);
+    expect(sent).toHaveLength(100);
+    expect(sent.every(item => item.from.machineId === PEER && item.target.machineId === RELAY)).toBe(true);
+    expect(new Set(sent.map(item => item.message.id)).size).toBe(100);
+    expect(output.map(line => JSON.parse(line)).filter(record => record.type === "outcome")).toHaveLength(100);
+    expect(output.join("")).not.toContain("relay-soak");
   });
 
   it("starts exactly 100 distinct extra submissions before any burst result settles", async () => {

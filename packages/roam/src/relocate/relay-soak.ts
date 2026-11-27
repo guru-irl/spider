@@ -1,9 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { processStartIdentity } from "@spider/herdr/jobs/handoff";
+import { localBootId } from "@spider/herdr/sessions/id-lock";
+import { listV0RelayLinks, submitV0Relay } from "@spider/intercom/broker/roam-relay-client";
 import { V0_INTERCOM_MS } from "@spider/intercom/roam-v0";
-import { decodeRelayPoll, isRelayResult, type RelayLinkView, type RelayPeer, type RelayResult, type RelaySubmit } from "@spider/intercom/relay-protocol";
-import type { Clock, Peer, Transport } from "../contracts";
+import { decodeRelayPoll, isRelayResult, isRelaySubmit, type RelayLinkView, type RelayPeer, type RelayResult, type RelaySubmit } from "@spider/intercom/relay-protocol";
+import type { Clock, Peer, RoamConfig, Transport } from "../contracts";
+import { readLocalIdentity } from "../runtime";
+import { createTransport as createRoamTransport } from "../transport";
+import { isV0Alias, readV0Routes, type V0Routes } from "./intercom-routes";
+import { localHerdrConnection } from "./local";
 import { runRelayPollLoop } from "./relay-poll";
 
 const SOAK_MS = 8 * 60 * 60 * 1000;
@@ -499,22 +507,106 @@ export function assembleRelaySoak(manifest: RelaySoakManifest, readRecords: (pat
 }
 
 export interface RelaySoakIo { out(text: string): void; err(text: string): void }
-export interface RelaySoakCliDeps { readText(path: string): string }
+export interface RelaySoakCliDeps {
+  readText(path: string): string;
+  readIdentity(root: string): RoamConfig;
+  readRoutes(root: string, config: RoamConfig): V0Routes;
+  createTransport(root: string, routes: V0Routes): Pick<Transport, "resolve" | "exec">;
+  processIdentity(): Promise<BirthIdentity>;
+  submitRelay(agentDir: string, relayId: string, submit: RelaySubmit, signal: AbortSignal): Promise<RelayResult>;
+  listRelays(agentDir: string, signal: AbortSignal): Promise<readonly RelayLinkView[]>;
+  clock: Clock; signal: AbortSignal; rssBytes(): number;
+}
+interface RelaySoakRunFile { root: string; startMs: number; rssAllowanceBytes: number; links: readonly RelaySoakRunLink[] }
 
-/** The check command reads local evidence only. Other commands are opt-in. */
+function parseRunFile(value: unknown): RelaySoakRunFile {
+  if (!object(value) || !exactKeys(value, ["root", "startMs", "rssAllowanceBytes", "links"]) ||
+      !text(value.root) || !isAbsolute(value.root) || !time(value.startMs) || !time(value.startMs + SOAK_MS) ||
+      !time(value.rssAllowanceBytes) || !Array.isArray(value.links) || value.links.length === 0) throw new Error("Invalid soak run file");
+  const links: RelaySoakRunLink[] = value.links.map(item => {
+    if (!object(item) || !exactKeys(item, ["id", "topology", "relayId", "peerId", "from", "target"]) || !text(item.id) ||
+        !text(item.relayId) || !text(item.peerId) || item.relayId === item.peerId ||
+        item.topology !== "laptop-to-box" && item.topology !== "box-to-box" || !object(item.from) || item.from.machineId !== item.peerId ||
+        !isRelaySubmit({ type: "submit", kind: "send", from: item.from, target: item.target,
+          message: { id: "soak-validation", timestamp: value.startMs, text: "relay-soak" } })) throw new Error("Invalid soak link");
+    return item as unknown as RelaySoakRunLink;
+  });
+  if (new Set(links.map(link => link.id)).size !== links.length) throw new Error("Duplicate soak link");
+  return { root: value.root, startMs: value.startMs, rssAllowanceBytes: value.rssAllowanceBytes, links };
+}
+
+const systemClock: Clock = { now: () => Date.now(), later(ms, fn) { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
+async function ownProcessIdentity(): Promise<BirthIdentity> {
+  const birthId = processStartIdentity(process.pid), bootId = await localBootId();
+  if (!birthId || !bootId) throw new Error("Process identity is unavailable");
+  return { pid: process.pid, birthId, bootId };
+}
+
+/** The check command reads local evidence only. Dial and submit are explicit operator actions. */
 export async function relaySoakMain(args: readonly string[], io: RelaySoakIo,
   overrides: Partial<RelaySoakCliDeps> = {}): Promise<number> {
   const readText = overrides.readText ?? ((path: string) => readFileSync(path, "utf8"));
-  if (args[0] !== "check" || args.length !== 2) { io.err("Usage: relay-soak check <evidence-file>\n"); return 2; }
-  let result: ReturnType<typeof checkRelaySoak>;
+  if (args[0] === "check" && args.length === 2) {
+    let result: ReturnType<typeof checkRelaySoak>;
+    try {
+      const raw: unknown = JSON.parse(readText(args[1]));
+      const evidence = object(raw) && Array.isArray(raw.links) && raw.links.length > 0 &&
+        raw.links.every(link => object(link) && Array.isArray(link.recordFiles))
+        ? assembleRelaySoak(raw as unknown as RelaySoakManifest, path => readText(resolve(dirname(args[1]), path)))
+        : raw as RelaySoakEvidence;
+      result = checkRelaySoak(evidence);
+    } catch { result = { ok: false, violations: ["evidence"] }; }
+    io.out(`${JSON.stringify(result)}\n`);
+    return result.ok ? 0 : 1;
+  }
+  const dial = args[0] === "dial" && args.length === 3;
+  const submit = args[0] === "submit" && (args.length === 3 || args.length === 4 && args[3] === "--burst");
+  if (!dial && !submit) {
+    io.err("Usage: relay-soak dial <run-file> <link-id> | submit <run-file> <link-id> [--burst] | check <evidence-file>\n");
+    return 2;
+  }
   try {
-    const raw: unknown = JSON.parse(readText(args[1]));
-    const evidence = object(raw) && Array.isArray(raw.links) && raw.links.length > 0 &&
-      raw.links.every(link => object(link) && Array.isArray(link.recordFiles))
-      ? assembleRelaySoak(raw as unknown as RelaySoakManifest, path => readText(resolve(dirname(args[1]), path)))
-      : raw as RelaySoakEvidence;
-    result = checkRelaySoak(evidence);
-  } catch { result = { ok: false, violations: ["evidence"] }; }
-  io.out(`${JSON.stringify(result)}\n`);
-  return result.ok ? 0 : 1;
+    const run = parseRunFile(JSON.parse(readText(args[1]))), link = run.links.find(item => item.id === args[2]);
+    if (!link) throw new Error("Soak link not found");
+    const config = (overrides.readIdentity ?? readLocalIdentity)(run.root);
+    const routes = (overrides.readRoutes ?? readV0Routes)(run.root, config);
+    if (routes.version !== 2 || !routes.relays.includes(link.relayId)) throw new Error("Soak relay is not configured");
+    const identity = await (overrides.processIdentity ?? ownProcessIdentity)();
+    if (!identity || !object(identity) || !identity.pid || !identity.birthId || !identity.bootId) throw new Error("Process identity is unavailable");
+    const clock = overrides.clock ?? systemClock, signal = overrides.signal ?? new AbortController().signal;
+    const common = { link, clock, signal, startMs: run.startMs, endMs: run.startMs + SOAK_MS,
+      rssAllowanceBytes: run.rssAllowanceBytes, process: identity, emit: (record: RelaySoakRecord) => io.out(`${JSON.stringify(record)}\n`) };
+    if (dial) {
+      const peer = routes.sendTo.find(item => item.machineId === link.peerId), alias = config.intercom.machineAlias ?? link.relayId;
+      if (config.machineId !== link.relayId || !routes.linkTo.includes(link.peerId) || !peer || !isV0Alias(alias)) throw new Error("Soak peer is not pinned");
+      const transport = overrides.createTransport?.(run.root, routes) ?? createRoamTransport({ ...localHerdrConnection(run.root), enrolled: routes.sendTo });
+      await runRelaySoakDial({ ...common, relay: { machineId: link.relayId, alias }, peer, transport,
+        rssBytes: overrides.rssBytes ?? (() => process.memoryUsage().rss) });
+    } else {
+      if (config.machineId !== link.peerId) throw new Error("Soak origin is not local");
+      const submitRelay = overrides.submitRelay ?? submitV0Relay, listRelays = overrides.listRelays ?? listV0RelayLinks;
+      const options = { ...common, submit: (relayId: string, frame: RelaySubmit, callSignal: AbortSignal) => submitRelay(routes.agentDir, relayId, frame, callSignal),
+        list: (callSignal: AbortSignal) => listRelays(routes.agentDir, callSignal) };
+      if (args[3] === "--burst") await runRelaySoakBurst(options);
+      else await runRelaySoakSubmit(options);
+    }
+    return 0;
+  } catch {
+    io.err("relay-soak: cannot start; check the run file and local prerequisites\n");
+    return 1;
+  }
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const controller = new AbortController(), stop = () => controller.abort();
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+  try {
+    process.exitCode = await relaySoakMain(process.argv.slice(2), {
+      out: text => { process.stdout.write(text); }, err: text => { process.stderr.write(text); },
+    }, { signal: controller.signal });
+  } finally {
+    process.removeListener("SIGINT", stop);
+    process.removeListener("SIGTERM", stop);
+  }
 }

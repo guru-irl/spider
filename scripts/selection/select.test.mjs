@@ -148,6 +148,19 @@ test('runs tests using Herdr e2e files through the graph or record', async () =>
     records: { [a]: row({ reads: [0] }) }, unmapped: { [file]: [b] } }), a, b);
 });
 
+test('runs the reserved-machine guard when Herdr e2e test source changes', async () => {
+  const reserved = 'packages/herdr/src/__tests__/reserved-machines.test.ts';
+  const result = await fixture({ inventory: [...inventory, reserved], records: { [reserved]: row() },
+    changes: [changed('packages/herdr/e2e/fixtures/relocate-assertions.test.ts')] });
+  assertSelected(result, reserved);
+});
+
+test('runs the bundle reader inventory guard when a test adds a literal consumer', async () => {
+  const bundleGuard = 'packages/host/src/__tests__/bundle-readers.test.ts';
+  const result = await fixture({ inventory: [...inventory, bundleGuard], records: { [bundleGuard]: row() }, changes: [changed(a)] });
+  assertSelected(result, a, bundleGuard);
+});
+
 test('runs bundle executors and readers for build config', async () => {
   assertSelected(await fixture({ changes: [changed('vite.config.mjs')],
     records: { [b]: row({ ranBundle: true }) } }), b, bundleReader);

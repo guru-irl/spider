@@ -33,6 +33,7 @@
       ],
       "tests": [
         "packages/host/src/__tests__/selection.test.ts",
+        "packages/host/src/__tests__/bundle-readers.test.ts",
         "packages/host/src/__tests__/ci-workflows.test.ts",
         "packages/host/src/__tests__/readme.test.ts",
         "packages/host/src/__tests__/intercom-upstream-inventory.test.ts",
@@ -203,6 +204,26 @@
       ],
       "related": [],
       "reason": "Full-inventory guards must see additions and changes to test files."
+    },
+    {
+      "id": "reserved-machines",
+      "inputs": [
+        "packages/**/__tests__/**/*.{ts,mts,js,mjs}",
+        "packages/**/*.{test,spec}.{ts,mts,js,mjs}"
+      ],
+      "tests": ["packages/herdr/src/__tests__/reserved-machines.test.ts"],
+      "related": [],
+      "reason": "The reserved-machine guard scans test source and helpers, including Herdr e2e."
+    },
+    {
+      "id": "bundle-reader-inventory",
+      "inputs": [
+        "packages/*/src/**/__tests__/**/*.{ts,mjs}",
+        "packages/*/src/**/*test*.{ts,mjs}"
+      ],
+      "tests": ["packages/host/src/__tests__/bundle-readers.test.ts"],
+      "related": [],
+      "reason": "The bundle reader guard inventories literal dependencies on ignored build output."
     },
     {
       "id": "parity-script",

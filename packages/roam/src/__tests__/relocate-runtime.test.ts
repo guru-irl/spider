@@ -5,6 +5,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, delimiter } from "node:path";
 import * as hcApi from "@spider/herdr/client/hc";
 import type { CoreIdentity } from "@spider/herdr/contracts";
+import { processStartIdentity } from "@spider/herdr/jobs/handoff";
+import { claimIdLock, type IdLockHandle } from "@spider/herdr/sessions/id-lock";
 import { join } from "node:path";
 import { createReplica } from "@spider/db-core/testutil";
 import { recordLocation } from "@spider/db-core/roam/catalog";
@@ -54,24 +56,29 @@ function localCheckout(f: ReturnType<typeof runtimeFixture>) {
  return {file, placement, moving};
 }
 describe("v0 local runtime",()=>{
- it.each(["open", "idle"])("refuses to acknowledge stop for a lockless unlabelled pi with an %s transcript", async mode => {
+ it.each(["open transcript", "idle transcript", "other session's lock"])("names the checkout-wide stop and start rule for a pi: %s", async mode => {
   const f = runtimeFixture();
   const {file, placement, moving} = localCheckout(f);
   const child = spawn(process.execPath, ["-e", `
     const fs = require("node:fs");
     const [file, mode] = process.argv.slice(1);
     process.title = "pi";
-    const fd = fs.openSync(file, "a");
-    if (mode === "idle") fs.closeSync(fd);
-    const exit = () => { if (mode === "open") fs.closeSync(fd); process.exit(0); };
+    const fd = mode === "other session's lock" ? null : fs.openSync(file, "a");
+    if (mode === "idle transcript") fs.closeSync(fd);
+    const exit = () => { if (mode === "open transcript") fs.closeSync(fd); process.exit(0); };
     process.once("message", exit);
     process.once("disconnect", exit);
     process.send("ready");
   `, file, mode], {cwd: placement.cwd, stdio: ["ignore", "ignore", "ignore", "ipc"]});
   const exited = once(child, "exit");
+  let otherLock: IdLockHandle | undefined;
   try {
    const [ready] = await Promise.race([once(child, "message"), exited]);
    expect(ready).toBe("ready");
+   if (mode === "other session's lock") {
+    const pid = child.pid!;
+    otherLock = await claimIdLock(join(f.options.root,"herdr"),"other-session",{pid,startIdentity:processStartIdentity(pid)!},async()=>({kind:"unknown"}));
+   }
    const local = createLocalRuntime(f.options);
    const stopped = await local.stop(id, moving);
    expect(child.exitCode).toBeNull();
@@ -79,10 +86,15 @@ describe("v0 local runtime",()=>{
     message: expect.stringContaining(`PID ${child.pid} (pi)`), nextStep: "Close these, then rerun relocate."}});
    expect(await local.owner(id)).toEqual({kind: "unknown"});
    f.options.homes.read = async () => f.home;
-   expect(await local.start(f.home, placement)).toMatchObject({ok: false, refusal: {code: "session-busy"}});
+   const started = await local.start(f.home, placement);
+   expect(started).toMatchObject({ok: false, refusal: {code: "session-busy"}});
+   const checkoutScope = {refusal:{message:expect.stringMatching(/every pi in this checkout.*other sessions/i)}};
+   expect(stopped).toMatchObject(checkoutScope);
+   expect(started).toMatchObject(checkoutScope);
   } finally {
    if (child.connected) child.send("exit");
    await exited;
+   await otherLock?.release();
   }
  });
  it("does not report a session stopped while its subagent run is active", async () => {

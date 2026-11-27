@@ -174,13 +174,15 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
 }
 
 type StopRetryCommand = "relocate" | "set-home --force";
-function busy<T>(blockers: readonly string[], retry: StopRetryCommand = "relocate"): V0Result<T> {
+function busy<T>(blockers: readonly string[], retry: StopRetryCommand = "relocate", scope: "session" | "checkout" = "session"): V0Result<T> {
   const list = [...new Set(blockers)], shown = list.slice(0,12);
-  return refusal("session-busy",`Local session processes or jobs are still present: ${shown.join(", ")}${list.length > shown.length ? `, and ${list.length-shown.length} more` : ""}.`,`Close these, then rerun ${retry}.`);
+  const more = list.length > shown.length ? `, and ${list.length-shown.length} more` : "";
+  const note = scope === "checkout" ? " Close every pi in this checkout, including pi for other sessions." : "";
+  return refusal("session-busy",`Local processes or jobs are still present: ${shown.join(", ")}${more}.${note}`,`Close these, then rerun ${retry}.`);
 }
 async function checkWritersStopped(scan: () => Promise<readonly string[]>, retry: StopRetryCommand = "relocate"): Promise<V0Result<void>> {
   const blockers = await scan();
-  return blockers.length ? busy(blockers, retry) : {ok:true,value:undefined};
+  return blockers.length ? busy(blockers, retry, "checkout") : {ok:true,value:undefined};
 }
 function unverifiedStop(retry: StopRetryCommand = "relocate"): V0Result<void> {
   return refusal("stop-timeout","The local session or its jobs could not be checked safely.",`Close the local pi session and its jobs, then rerun ${retry}.`);
@@ -432,7 +434,7 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
     try { return await withSessionState(home.sessionId,async()=>{
       if (!await runnable(home,placement)) return refusal("start-pending","The local running home does not authorize launch.");
       const {owner:current,blockers} = await inspectOwner(home.sessionId,placement);
-      if (blockers) return busy(blockers);
+      if (blockers) return busy(blockers, "relocate", "checkout");
       if (current.kind === "live") return current.terminal ? {ok:true,value:{terminal:current.terminal}} : refusal("start-pending","The running pi terminal cannot be located.");
       if (current.kind !== "free") return refusal("start-pending","A session owner or pending terminal is still present.");
       // Reread immediately before the only spawn call.

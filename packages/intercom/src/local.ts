@@ -2898,6 +2898,9 @@ Usage:
               const from = locals.find(session => session.id === connectedClient.sessionId && session.address?.sessionId === currentSessionId);
               if (from) {
                 const plan = await v0.prepare({ to, from, locals, signal: _signal });
+                if (plan.kind === "refused") {
+                  return { content: [{ type: "text", text: V0_REFUSAL_TEXT[plan.code] }], details: { error: true, code: plan.code } };
+                }
                 if (plan.kind === "remote") {
                   if (unsupportedV0Options) {
                     return { content: [{ type: "text", text: "Remote intercom supports text only; cwd, attachments, reply, retry, and pane options are unavailable." }],

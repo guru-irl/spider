@@ -270,6 +270,17 @@ it("reports routing refusals without sending to a local mailbox", async () => {
   } finally { observer.off("message", onMessage); await f.cleanup(); }
 });
 
+it("reports a remote ask's route refusal without a local fallback", async () => {
+  const prepare: V0Prepare = async () => ({ kind: "refused", code: "not-configured" });
+  const f = await fixture({ homeEpoch: () => 7, prepare });
+  try {
+    const result = await f.tool.execute("ask", { action: "ask", to: "ben", message: "hello" }, new AbortController().signal, undefined, f.ctx);
+    expect(result.content[0].text).toBe("No route is configured to that session.");
+    expect(result.details).toMatchObject({ error: true, code: "not-configured" });
+    expect(f.entries.some(entry => entry.type === "intercom_sent")).toBe(false);
+  } finally { await f.cleanup(); }
+});
+
 it("reports a receiver's moving refusal without claiming a send", async () => {
   const prepare: V0Prepare = async () => ({
     kind: "remote", label: "b/ben",

@@ -157,7 +157,9 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
     let input: unknown;
     try { input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await readArtifactInput(4 * 1024 * 1024, options?.stdin))); }
     catch { io.out(`${JSON.stringify({ ok: false, refusal: { code: "invalid-arguments", message: "Invalid private v0 request.", nextStep: "Send bounded UTF-8 JSON to the private v0 agent." } })}\n`); return 2; }
-    const result = await (options?.v0?.agent ?? runV0Agent)(input, root); io.out(`${JSON.stringify(result)}\n`); return result.ok ? 0 : 1;
+    const result = await (options?.v0?.agent ?? runV0Agent)(input, root);
+    // A valid protocol reply is transport success; callers inspect its refusal.
+    io.out(`${JSON.stringify(result)}\n`); return 0;
   }
   if (argv[0] === "roam" && argv[1] === "hub-v0") {
     if(argv.length!==2){io.err("Use spider roam hub-v0.\n");return 2;}

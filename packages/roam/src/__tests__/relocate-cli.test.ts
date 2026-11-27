@@ -18,7 +18,7 @@ import { createReplica } from "@spider/db-core/testutil";
 import { openDbAt, registerProject, setGlobalDbPathForTests } from "@spider/db-core";
 import { writeLocal } from "@spider/db-core/roam/local-state";
 import { createV0Runtime, startV0Hub, startV0Supervisor } from "../relocate/runtime";
-import { handleRelocateAgent } from "../relocate/remote";
+import { callV0, handleRelocateAgent } from "../relocate/remote";
 import * as hcApi from "@spider/herdr/client/hc";
 import type { CoreIdentity } from "@spider/herdr/contracts";
 import type { Transport } from "../contracts";
@@ -156,6 +156,27 @@ describe("v0 controls", () => {
       expect(JSON.parse(f.out.join("")).refusal.code).toBe("invalid-arguments");
     }
     expect(agent).toHaveBeenCalledTimes(2);
+  });
+  it("preserves a private agent refusal across an exit-checking transport", async () => {
+    const result = { ok: false as const, refusal: { code: "session-not-found" as const, message: "The session has no local location.", nextStep: "Select a locally captured session." } };
+    const transport: Transport = {
+      resolve: async peer => peer,
+      bootstrapProbe: async () => { throw new Error("unused"); },
+      run: async () => { throw new Error("unused"); },
+      read: async () => { throw new Error("unused"); },
+      write: async () => { throw new Error("unused"); },
+      async exec(peer, argv, options) {
+        let stdout = "";
+        const exit = await main(["--global-root", peer.globalRoot, ...argv], { out: text => { stdout += text; }, err: () => {} }, {
+          stdin: options.stdin,
+          v0: { agent: async () => result },
+        });
+        // The real command transport rejects nonzero exits before returning bytes.
+        if (exit !== 0) throw new Error(`CLI exited with ${exit}`);
+        return Buffer.from(stdout);
+      },
+    };
+    expect(await callV0(transport, config.peers[0], { version: 1, kind: "source", sessionId: "missing" }, DEFAULT_LIMITS)).toEqual(result);
   });
   it("parse relocate and forced set-home without changing move", () => {
     expect(parseV0Control(["roam", "relocate", "session-abc", "box-a.invalid", "--json"])).toEqual({ kind: "relocate", session: "session-abc", machine: "box-a.invalid" });

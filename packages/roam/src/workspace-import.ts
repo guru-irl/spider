@@ -149,9 +149,12 @@ async function inspectTrees(root: string, ports: WorkspaceImportPorts): Promise<
   });
 }
 
-function assertTrees(actual: Trees, expected: WorkspaceSnapshot, prefix: string): void {
-  const differences = [actual.head !== expected.head && "HEAD", actual.indexTree !== expected.indexTree && "index",
+function treeDifferences(actual: Trees, expected: WorkspaceSnapshot) {
+  return [actual.head !== expected.head && "HEAD", actual.indexTree !== expected.indexTree && "index",
     actual.workingTree !== expected.workingTree && "working tree"].filter(Boolean);
+}
+function assertTrees(actual: Trees, expected: WorkspaceSnapshot, prefix: string): void {
+  const differences = treeDifferences(actual, expected);
   if (differences.length) throw new Error(`${prefix}: ${differences.join(", ")} differs`);
 }
 
@@ -585,6 +588,17 @@ async function verifyNormalization(snapshot: WorkspaceSnapshot, base: WorkspaceS
   }
 }
 
+/** Git tree IDs do not include the index's skip-worktree bits. */
+async function matchesSparseBits(root: string, snapshot: WorkspaceSnapshot, ports: WorkspaceImportPorts): Promise<boolean> {
+  const entries = nulFields(await git(ports, root, ["ls-files", "-t", "-z"]));
+  for (const entry of entries) if (entry.length < 3 || entry[1] !== 32) throw new Error("workspace-sparse-inspection-failed");
+  const skipped = (entry: Buffer): boolean => entry[0] === 83 || entry[0] === 115;
+  if (!snapshot.sparse.enabled) return entries.every(entry => !skipped(entry));
+  const included = new Set((await sparseTreePaths(root, snapshot.indexTree, snapshot, ports))
+    .filter(entry => entry.included).map(entry => entry.path.toString("hex")));
+  return entries.every(entry => skipped(entry) === !included.has(entry.subarray(2).toString("hex")));
+}
+
 async function restoreSparseBits(root: string, snapshot: WorkspaceSnapshot, ports: WorkspaceImportPorts, index?: string): Promise<void> {
   const entries = nulFields(await git(ports, root, ["ls-files", "-t", "-z"], index));
   const paths: Buffer[] = [], skipped: Buffer[] = [];
@@ -688,11 +702,14 @@ async function mappedSettings(root: string, ports: WorkspaceImportPorts): Promis
     effectiveSparse: { enabled: enabled ?? false, cone } };
 }
 
-function assertMappedSettings(actual: MappedSettings, expected: SettingValues & { sparse?: WorkspaceSnapshot["sparse"] }, reason = "workspace-config-diverged"): void {
-  const differences = [actual.config.value !== expected.worktreeConfig && "worktreeConfig",
+function mappedSettingDifferences(actual: MappedSettings, expected: SettingValues & { sparse?: WorkspaceSnapshot["sparse"] }) {
+  return [actual.config.value !== expected.worktreeConfig && "worktreeConfig",
     actual.sparse.value !== expected.sparsePatterns && "sparsePatterns",
     expected.sparse && actual.effectiveSparse.enabled !== expected.sparse.enabled && "sparse.enabled",
     expected.sparse && actual.effectiveSparse.cone !== expected.sparse.cone && "sparse.cone"].filter(Boolean);
+}
+function assertMappedSettings(actual: MappedSettings, expected: SettingValues & { sparse?: WorkspaceSnapshot["sparse"] }, reason = "workspace-config-diverged"): void {
+  const differences = mappedSettingDifferences(actual, expected);
   if (differences.length) throw new Error(`${reason}: ${differences.join(", ")}`);
 }
 
@@ -1287,7 +1304,8 @@ export async function recoverInterruptedWorkspace(snapshot: WorkspaceSnapshot, d
     await recoverInterruptedWorkspaceLocked(snapshot, destination, common, ports);
   });
 }
-async function recoverInterruptedWorkspaceLocked(snapshot: WorkspaceSnapshot, destination: string, common: string, ports: WorkspaceImportPorts): Promise<void> {
+async function recoverInterruptedWorkspaceLocked(snapshot: WorkspaceSnapshot, destination: string, common: string, ports: WorkspaceImportPorts,
+  finishInstalled = false): Promise<void> {
   const replay = settingsReplay(snapshot, destination, ports);
   if (!replay) return;
   if (!checkPath(destination, "directory", true)) throw new Error("workspace-preparation-missing");
@@ -1307,6 +1325,32 @@ async function recoverInterruptedWorkspaceLocked(snapshot: WorkspaceSnapshot, de
     if (!sameSettings(state, t.target)) throw new Error("workspace-recovery-diverged: settings changed");
     ports.journal.record(snapshot.moveId, "workspace-settings-transition-complete", { root: destination, transitionId: t.transitionId });
     return;
+  }
+  if (finishInstalled && workingApplied && snapshotDigest(snapshot) === t.digest && !replay.recoveryFrom && !replay.installPending &&
+      replay.installCompleted === installSteps(t).length) {
+    const rows = ports.journal.read(snapshot.moveId);
+    // Move diagnostics may follow installation without changing this checkout.
+    const installed = rows.filter(row => row.action.startsWith("workspace-") && row.result.root === destination).at(-1);
+    if (installed?.action === "workspace-config-installed" && installed.result.digest === t.digest &&
+        !rows.some(row => row.action === "workspace-aborted" && row.result.root === destination)) {
+      const started = startedRecord(t.snapshot, destination, ports);
+      if (!started || t.snapshot.bundle.kind !== "ready") throw new Error("workspace-journal-invalid");
+      if (installed.result.sparseEnabled !== t.snapshot.sparse.enabled || t.snapshot.sparse.enabled &&
+          installed.result.sparseCone !== (t.snapshot.sparse.cone ?? false)) throw new Error("workspace-journal-invalid");
+      const settings = await mappedSettings(destination, ports);
+      const expected = expectedInstalled(t.snapshot, destination, ports);
+      if (!mappedSettingDifferences(settings, expected).length &&
+          !treeDifferences(await inspectTrees(destination, ports), t.snapshot).length &&
+          await matchesSparseBits(destination, t.snapshot, ports)) {
+        if (!sameSettings(readRecoveryState(paths), t.target)) throw new Error("workspace-recovery-diverged: settings changed");
+        ports.journal.record(snapshot.moveId, "workspace-prepared", {
+          root: destination, stage: t.stage, digest: t.digest, snapshotJson: t.snapshotJson,
+          previousJson: started.previous === null ? null : JSON.stringify(started.previous), artifactId: t.snapshot.bundle.artifactId,
+        });
+        ports.journal.record(snapshot.moveId, "workspace-settings-transition-complete", { root: destination, transitionId: t.transitionId });
+        return;
+      }
+    }
   }
   if (!replay.recoveryFrom) {
     ports.journal.record(snapshot.moveId, "workspace-settings-recovery-start", { root: destination, transitionId: t.transitionId,
@@ -1391,7 +1435,7 @@ export async function prepareWorkspace(snapshot: WorkspaceSnapshot, destination:
       const mappedCommon = text(await git(ports, destination, ["rev-parse", "--path-format=absolute", "--git-common-dir"]));
       if (realpathSync(mappedCommon) !== realpathSync(repositoryCommon)) throw new Error("workspace-repository-mismatch");
     }
-    await recoverInterruptedWorkspaceLocked(snapshot, destination, repositoryCommon, ports);
+    await recoverInterruptedWorkspaceLocked(snapshot, destination, repositoryCommon, ports, true);
     const actions = ports.journal.read(snapshot.moveId);
     if (actions.some(entry => entry.action === "workspace-aborted" && entry.result.root === destination)) throw new Error("workspace-aborted");
     const recorded = preparedRecord(snapshot.moveId, destination, ports);

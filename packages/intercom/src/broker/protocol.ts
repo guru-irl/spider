@@ -281,6 +281,7 @@ export function isSessionInfo(value: unknown): value is SessionInfo {
   if (value.endpointEpoch !== undefined && typeof value.endpointEpoch !== "string") {
     return false;
   }
+  if (value.v0HomeEpoch !== undefined && (!Number.isSafeInteger(value.v0HomeEpoch) || Number(value.v0HomeEpoch) < 1)) return false;
 
   if (value.name !== undefined && typeof value.name !== "string") {
     return false;
@@ -315,6 +316,11 @@ export function isSessionId(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function isV0Identifier(value: unknown, limit: number): value is string {
+  return typeof value === "string" && value.length <= limit && value.trim().length > 0
+    && !/[\u0000-\u001f\u007f-\u009f]/.test(value);
+}
+
 export function isSessionRegistration(value: unknown): value is SessionRegistration {
   if (isRecord(value) && (value.remote !== undefined && value.remote !== false || value.address !== undefined && !isSessionAddress(value.address))) return false;
   if (!isRecord(value)) {
@@ -332,6 +338,11 @@ export function isSessionRegistration(value: unknown): value is SessionRegistrat
   }
 
   if (value.homeEpoch !== undefined && value.homeEpoch !== null && (!Number.isSafeInteger(value.homeEpoch) || Number(value.homeEpoch) < 1)) return false;
+  if (value.v0HomeEpoch !== undefined) {
+    if (!Number.isSafeInteger(value.v0HomeEpoch) || Number(value.v0HomeEpoch) < 1 || !isSessionAddress(value.address) ||
+        !isV0Identifier(value.address.sessionId, 256) ||
+        value.address.scopeId !== null && !isV0Identifier(value.address.scopeId, 1024)) return false;
+  }
   if (value.activationEpoch !== undefined && (typeof value.activationEpoch !== "string" || !value.activationEpoch)) return false;
   if (value.name !== undefined && typeof value.name !== "string") {
     return false;

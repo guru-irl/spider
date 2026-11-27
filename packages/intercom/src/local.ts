@@ -2611,8 +2611,8 @@ Usage:
       const messageId = params.messageId?.trim() || undefined;
       const supersedes = params.supersedes?.trim() || undefined;
       const retryOf = params.retryOf?.trim() || undefined;
-      const unsupportedV0Options = cwd !== undefined || attachments !== undefined || Boolean(replyTo || supersedes || retryOf || messageId) ||
-        openProjectPaneIfMissing !== undefined || focus !== undefined;
+      const unsupportedV0Options = cwd !== undefined || attachments !== undefined || params.replyTo !== undefined || params.supersedes !== undefined ||
+        params.retryOf !== undefined || params.messageId !== undefined || openProjectPaneIfMissing !== undefined || focus !== undefined;
 
       switch (action) {
         case "list": {
@@ -3129,8 +3129,8 @@ Usage:
 
           try {
             const target = replyTracker.resolveReplyTarget({ to, replyTo });
-            if (v0 && target.from.remote && (cwd !== undefined || attachments !== undefined || Boolean(supersedes || retryOf || messageId) ||
-                openProjectPaneIfMissing !== undefined || focus !== undefined)) {
+            if (v0 && target.from.remote && (cwd !== undefined || attachments !== undefined || params.supersedes !== undefined ||
+                params.retryOf !== undefined || params.messageId !== undefined || openProjectPaneIfMissing !== undefined || focus !== undefined)) {
               return { content: [{ type: "text", text: "Remote intercom replies support text only; cwd, attachments, retry, and pane options are unavailable." }],
                 details: { error: true, code: "unsupported" } };
             }

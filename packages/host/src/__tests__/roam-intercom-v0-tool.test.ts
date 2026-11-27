@@ -462,6 +462,7 @@ it("refuses unsupported remote reply options and leaves the ask pending", async 
     const unsupported = [
       { cwd: "/fixture" }, { attachments: [{ type: "snippet", name: "x", content: "x" }] },
       { supersedes: "old" }, { retryOf: "old" }, { messageId: "old" },
+      { supersedes: " " }, { retryOf: " " }, { messageId: " " },
       { openProjectPaneIfMissing: true }, { focus: true },
     ];
     for (const flags of unsupported) {
@@ -709,7 +710,8 @@ it("refuses remote-only unsupported options without dispatching", async () => {
   try {
     const unsupported = [
       { cwd: "/fixture" }, { attachments: [{ type: "snippet", name: "x", content: "x" }] },
-      { replyTo: "question" }, { supersedes: "old" }, { retryOf: "old" },
+      { replyTo: "question" }, { supersedes: "old" }, { retryOf: "old" }, { messageId: "old" },
+      { replyTo: " " }, { supersedes: " " }, { retryOf: " " }, { messageId: " " },
       { openProjectPaneIfMissing: true }, { focus: true },
     ];
     for (const flags of unsupported) {
@@ -731,7 +733,8 @@ it("refuses unsupported remote ask options without dispatching", async () => {
   try {
     const unsupported = [
       { cwd: "/fixture" }, { attachments: [{ type: "snippet", name: "x", content: "x" }] },
-      { replyTo: "question" }, { supersedes: "old" }, { retryOf: "old" },
+      { replyTo: "question" }, { supersedes: "old" }, { retryOf: "old" }, { messageId: "old" },
+      { replyTo: " " }, { supersedes: " " }, { retryOf: " " }, { messageId: " " },
       { openProjectPaneIfMissing: true }, { focus: true },
     ];
     for (const flags of unsupported) {

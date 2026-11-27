@@ -504,6 +504,45 @@ it("does not answer a remote ask after the replier's home epoch changes", async 
   } finally { abort.abort(); await pending; await f.cleanup(); }
 });
 
+it("does not record a completed remote reply in a replacement session", async () => {
+  const f = await fixture({ homeEpoch: () => 7, prepare: async () => ({ kind: "legacy" }) });
+  const from: RemoteSessionInfo = {
+    remote: true, id: "peer-session", address: { sessionId: "peer-session", scopeId: null },
+    machineId: "peer-machine", machineAlias: "peer", homeEpoch: 3,
+    activationEpoch: "peer-connection", endpointEpoch: "peer-connection", name: "ben",
+    cwd: "", model: "", startedAt: 0, lastActivity: 0,
+  };
+  const abort = new AbortController();
+  let pendingAsk: ReturnType<typeof requestV0Broker> | undefined, reply: Promise<any> | undefined;
+  let finish!: () => void, delivered = false;
+  const originalSend = IntercomClient.prototype.send;
+  const send = vi.spyOn(IntercomClient.prototype, "send").mockImplementation(async function (this: IntercomClient, to, options) {
+    const result = await originalSend.call(this, to, options);
+    if (options.replyTo === "reply-switch-question") {
+      await new Promise<void>(resolve => { delivered = true; finish = resolve; });
+    }
+    return result;
+  });
+  try {
+    const own = (await observer.listSessions()).find(session => session.id === "sender-session")!;
+    pendingAsk = requestV0Broker(getAgentDirPath(), {
+      kind: "ask", from,
+      target: { address: { sessionId: "sender-session", scopeId: null }, name: "alice", homeEpoch: 7, endpointEpoch: own.endpointEpoch! },
+      message: { id: "reply-switch-question", timestamp: 123, text: "hello" }, timeoutMs: 2000,
+    }, abort.signal);
+    await vi.waitFor(() => expect(f.inbound.some(message => message.customType === "intercom_message")).toBe(true));
+    reply = f.tool.execute("reply", { action: "reply", replyTo: "reply-switch-question", message: "answer" }, new AbortController().signal, undefined, f.ctx);
+    await vi.waitFor(() => expect(delivered).toBe(true));
+    f.switchSession("replacement-session");
+    await f.emit("turn_start");
+    finish();
+    const result = await reply;
+    expect(result.details).toMatchObject({ delivery: "unknown", outcomeKnown: false });
+    expect(f.entries.some(entry => entry.type === "intercom_sent")).toBe(false);
+    expect(await pendingAsk).toMatchObject({ kind: "replied", id: "reply-switch-question", text: "answer" });
+  } finally { finish?.(); abort.abort(); await reply; await pendingAsk; send.mockRestore(); await f.cleanup(); }
+});
+
 it("replies to a peer ask without consulting legacy home routing", async () => {
   const f = await fixture({ homeEpoch: () => 7, prepare: async () => ({ kind: "legacy" }) }, { homeUnavailable: true });
   const from: RemoteSessionInfo = {

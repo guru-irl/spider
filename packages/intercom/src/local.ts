@@ -3148,20 +3148,28 @@ Usage:
                 details: { error: true },
               };
             }
+            const generation = runtimeGeneration;
+            let replySource: { sessionId: string; epoch: number } | undefined;
             if (v0 && target.from.remote) {
-              const generation = runtimeGeneration, ownSessionId = currentSessionId;
+              const ownSessionId = currentSessionId;
               const sessions = await connectedClient.listSessions();
               const from = sessions.find((session): session is LocalSessionInfo => !session.remote && session.id === connectedClient.sessionId && session.address?.sessionId === ownSessionId);
               if (!ownSessionId || !from || from.v0HomeEpoch === undefined || v0.homeEpoch(ownSessionId) !== from.v0HomeEpoch ||
                   !getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected()) {
                 return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
               }
+              replySource = { sessionId: ownSessionId, epoch: from.v0HomeEpoch };
             } else await resolveSessionTarget(connectedClient, target.from.id);
             const result = await connectedClient.send(target.from.id, {
               text: message,
               attachments,
               replyTo: target.message.id,
             });
+            if (replySource && (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
+                v0?.homeEpoch(replySource.sessionId) !== replySource.epoch)) {
+              return { content: [{ type: "text", text: `Delivery could not be confirmed (ID ${result.id}). Check the recipient before sending again.` }],
+                details: { error: true, delivered: false, delivery: "unknown", messageId: result.id, outcomeKnown: false, retryable: false } };
+            }
             if (!result.delivered) {
               const errorText = result.reason ?? "Session may not exist or has disconnected.";
               if (result.reason === "Session not found" || result.reason === "The asker is no longer waiting.") {

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openDbAt } from "@spider/db-core";
@@ -8,6 +8,7 @@ import type { RelaySubmit } from "@spider/intercom/relay-protocol";
 import type { V0RelayAgentRequest } from "@spider/intercom/roam-v0";
 import { startTestBroker, stopTestBroker, testBrokerEnv, testTmpDir } from "@spider/intercom/test-support";
 import type { Message, SessionInfo } from "@spider/intercom/types";
+import { buildIntercom } from "../../../../scripts/build-intercom.mjs";
 import { main } from "../cli";
 import type { Peer, Transport } from "../contracts";
 import * as intercom from "../relocate/intercom";
@@ -21,6 +22,7 @@ const aliases = { [HUB]: "hub.invalid", [ORIGIN]: "origin.invalid", [RELAY]: "re
 const roots: string[] = [];
 const clients: IntercomClient[] = [];
 const brokers: ReturnType<typeof startTestBroker>[] = [];
+const brokerBuild = mkdtempSync(join(testTmpDir(), "rf-build-"));
 
 function machine(id: keyof typeof aliases) {
   const root = mkdtempSync(join(testTmpDir(), "rf-"));
@@ -59,7 +61,7 @@ function writeHome(m: Machine, sessionId: string, owner: Machine, epoch: number,
 }
 
 async function startBroker(m: Machine) {
-  const broker = startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], {
+  const broker = startTestBroker(process.execPath, [join(brokerBuild, "broker.mjs")], {
     env: { ...testBrokerEnv(), PI_CODING_AGENT_DIR: m.agentDir }, stdio: ["pipe", "pipe", "pipe"],
   });
   brokers.push(broker);
@@ -147,6 +149,8 @@ async function forwardingFixture(mode: "remote" | "local" | "hub" = "remote") {
   return { origin, relay, receiver, grant, recipient, transport, calls, faults, submit, forward, record, received };
 }
 
+beforeAll(() => buildIntercom(brokerBuild));
+afterAll(() => rmSync(brokerBuild, { recursive: true, force: true }));
 beforeEach(() => vi.stubEnv("PI_CODING_AGENT_DIR", undefined));
 afterEach(async () => {
   for (const client of clients.splice(0)) await client.disconnect();

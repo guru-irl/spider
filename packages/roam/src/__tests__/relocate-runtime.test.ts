@@ -18,6 +18,7 @@ import { openJournal } from "../journal";
 import { createLocalRuntime, createLocalIO, localLaunchEnvironment, seedLocalPlacement, type LocalIO } from "../relocate/local";
 import { createHomeSupervisor } from "../relocate/supervisor";
 import { relocate } from "../relocate/relocate";
+import { handleRelocateAgent } from "../relocate/remote";
 import { assertSafeHistories, destination, ports, request, state } from "./relocate-fakes";
 const hub = "11111111-1111-4111-8111-111111111111", box = "22222222-2222-4222-8222-222222222222";
 const id = "33333333-3333-4333-8333-333333333333" as SessionId;
@@ -72,7 +73,7 @@ function supervisorRace(f: ReturnType<typeof runtimeFixture>) {
   return hubStart;
  };
  p.confirm = local.confirm;
- return {p,started,hubStart:()=>hubStart};
+ return {p,started,hubStart:()=>hubStart,confirmPending:(home:RunningHome,placement:SessionPlacement)=>local.confirm(home,placement,true)};
 }
 function claimFixtureLock(f: ReturnType<typeof runtimeFixture>) {
  f.setLock({identity:{pid:42,startIdentity:"pi-42"},bootId:"boot",pendingOperationId:null,pendingFile:null,pendingCoreId:null,operationId:null});
@@ -464,10 +465,7 @@ describe("v0 local runtime",()=>{
   expect(await local.start(f.home,f.placement)).toMatchObject({ok:false,refusal:{code:"start-pending"}});
   expect(await local.start(f.home,f.placement)).toMatchObject({ok:false,refusal:{code:"start-pending"}});
   expect(await local.owner(id)).toEqual({kind:"unknown"});expect(f.launches).toHaveLength(1);
-  f.setLock({identity:{pid:42,startIdentity:"pi-42"},bootId:"boot",pendingOperationId:null,pendingFile:null,pendingCoreId:null,operationId:null});f.setProbe({kind:"live",startIdentity:"pi-42",pi:true});
-  const terminal = {terminal:"core:t",state:"live" as const,pid:42,owned:true as const,
-   launch:{sessionId:f.home.sessionId,machineId:f.home.machineId,epoch:f.home.epoch,cwd:f.placement.cwd,file:f.placement.file}};
-  f.setTerminals([terminal]);
+  f.setLock({identity:{pid:42,startIdentity:"pi-42"},bootId:"boot",pendingOperationId:null,pendingFile:null,pendingCoreId:null,operationId:null});f.setProbe({kind:"live",startIdentity:"pi-42",pi:true});f.setTerminals([{terminal:"core:t",state:"live",pid:42}]);
   expect(await local.start(f.home,f.placement)).toEqual({ok:true,value:{terminal:"core:t"}});
   expect(await local.confirm(f.home,f.placement)).toEqual({ok:true,value:{terminal:"core:t"}});
   expect(f.launches).toHaveLength(1);
@@ -475,7 +473,7 @@ describe("v0 local runtime",()=>{
  it("confirms a supervisor-first launch without starting a second pi", async () => {
   const f = runtimeFixture(), race = supervisorRace(f), start = race.p.start;
   race.p.start = async (...args) => { const result=await start(...args); claimFixtureLock(f); return result; };
-  const outcome = await relocate(request,race.p,{clock:readyClock,timeoutMs:1_000});
+  const outcome = await relocate(request,race.p,{clock:readyClock,timeoutMs:1_000,confirmPending:race.confirmPending});
   expect(race.hubStart()).toMatchObject({ok:false,refusal:{code:"start-pending"}});
   expect(f.launches).toHaveLength(1);
   expect(outcome).toMatchObject({ok:true,value:{terminal:"core:t",disposition:"relocated"}});
@@ -484,7 +482,7 @@ describe("v0 local runtime",()=>{
   vi.useFakeTimers();
   try {
    const f = runtimeFixture(), race = supervisorRace(f);
-   const pending = relocate(request,race.p,{clock:readyClock,timeoutMs:1_000});
+   const pending = relocate(request,race.p,{clock:readyClock,timeoutMs:1_000,confirmPending:race.confirmPending});
    let result: Awaited<typeof pending> | undefined;
    void pending.then(value=>{result=value;});
    await race.started;
@@ -500,7 +498,7 @@ describe("v0 local runtime",()=>{
   vi.useFakeTimers();
   try {
    const f = runtimeFixture(), race = supervisorRace(f);
-   const pending = relocate(request,race.p,{clock:readyClock,timeoutMs:1_000});
+   const pending = relocate(request,race.p,{clock:readyClock,timeoutMs:1_000,confirmPending:race.confirmPending});
    let result: Awaited<typeof pending> | undefined;
    void pending.then(value=>{result=value;});
    await race.started;
@@ -524,7 +522,7 @@ describe("v0 local runtime",()=>{
    : {address:"core:t",state:"live",pid:42,labels,cwd:mismatch === "checkout" ? "/other/sub" : f.placement.cwd,
       argv:["pi","--session",mismatch === "session file" ? "/other/session.jsonl" : f.placement.file]});
   const local = createLocalRuntime(f.options,{...f.io,terminals:createLocalIO(f.options).terminals});
-  expect(await local.confirm(f.home,f.placement)).toMatchObject({ok:false,refusal:{code:"start-pending"}});
+  expect(await local.confirm(f.home,f.placement,true)).toMatchObject({ok:false,refusal:{code:"start-pending"}});
  });
  it("does not confirm an owner whose terminal launch details are unavailable", async () => {
   const f = runtimeFixture();
@@ -533,7 +531,30 @@ describe("v0 local runtime",()=>{
    ? {terminals:[{address:"core:t",state:"live",pid:42}]}
    : {address:"core:t",state:"live",pid:42,labels:{"spider.kind":"session","spider.session":id,"spider.machine":box,"spider.roam.epoch":"3"}});
   const local = createLocalRuntime(f.options,{...f.io,terminals:createLocalIO(f.options).terminals});
-  expect(await local.confirm(f.home,f.placement)).toMatchObject({ok:false,refusal:{code:"start-pending"}});
+  expect(await local.confirm(f.home,f.placement,true)).toMatchObject({ok:false,refusal:{code:"start-pending"}});
+ });
+ it.each([true,false])("private exact confirmation acknowledges only a matching launch (match=%s)", async matches => {
+  const f = runtimeFixture();
+  const child = spawn(process.execPath,["-e",`process.title="pi";process.once("message",()=>process.exit(0));process.send("ready");`],{stdio:["ignore","ignore","ignore","ipc"]});
+  const exited = once(child,"exit");
+  let held: IdLockHandle | undefined;
+  try {
+   const [ready] = await Promise.race([once(child,"message"),exited]);
+   expect(ready).toBe("ready");
+   const pid = child.pid!, startIdentity = processStartIdentity(pid);
+   if (!startIdentity) throw new Error("fixture process identity unavailable");
+   held = await claimIdLock(join(f.options.root,"herdr"),id,{pid,startIdentity},async()=>({kind:"unknown"}));
+   vi.spyOn(hcApi,"invokeCli").mockImplementation(async (_binary,argv) => argv[0] === "ls"
+    ? {terminals:[{address:"core:t",state:"live",pid}]}
+    : {address:"core:t",state:"live",pid,cwd:f.placement.cwd,argv:["pi","--session",f.placement.file],
+       labels:{"spider.kind":"session","spider.session":id,"spider.machine":box,"spider.roam.epoch":matches ? "3" : "2"}});
+   const result = await handleRelocateAgent({version:1,kind:"confirm",home:f.home,placement:f.placement,exact:true},f.options);
+   expect(result).toMatchObject(matches ? {ok:true,value:{version:1,terminal:"core:t",exact:true}} : {ok:false,refusal:{code:"start-pending"}});
+  } finally {
+   await held?.release();
+   if (child.connected) child.send("exit");
+   await exited;
+  }
  });
  it("confirm requires a live pi with the matching ID lock",async()=>{
   const f=runtimeFixture(),local=createLocalRuntime(f.options,f.io);

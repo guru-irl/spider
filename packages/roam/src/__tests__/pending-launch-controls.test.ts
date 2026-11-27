@@ -17,6 +17,7 @@ import { main } from "../cli";
 import { disabledIntercom } from "../contracts";
 import { handleAgentOperation } from "../agent";
 import { openJournal } from "../journal";
+import { revokeMachine } from "../revocation";
 import { readLocalIdentity } from "../runtime";
 import { localPendingLaunchDiagnostics, runLocalDoctor } from "../local-diagnostics";
 import * as transportModule from "../transport";
@@ -202,6 +203,17 @@ it("disabled remote doctor and enable agree on the pending launch and its stop r
   expect(enable.code).toBe(0);
   expect(enable.value.value.issues).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "warning", reason: expect.stringContaining("exact-launch"), repairCommand: "spider roam stop session-1" })]));
   expect(JSON.stringify(enable.value)).not.toContain("spider roam provision");
+});
+
+it("enable skips pending launch observation for a forgotten box", async () => {
+  const f = await fixture(), journalPath = join(f.root, "roam", "journal.db");
+  openJournal(journalPath);
+  const journal = openDb(journalPath, { fileMustExist: true });
+  try { revokeMachine(journal, BOX); } finally { journal.close(); }
+  const enable = await f.invoke(["roam", "enable", "--json"]);
+  expect(enable.code).toBe(0);
+  expect(vi.mocked(transportModule.createTransport)).not.toHaveBeenCalled();
+  expect(enable.value.value.issues).toEqual([]);
 });
 
 it("doctor and enable clear the missing started terminal block after stop settles", async () => {

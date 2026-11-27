@@ -4,7 +4,7 @@ import { causeCode, safeCauseCode, type CauseStep } from "./cause-codes";
 import { agentFailureCode, AgentResponseError, peerPreflightIssue } from "./peer-errors";
 import { setEnrolledPeerEnabled } from "./peer-enabled";
 import { openJournal } from "./journal";
-import { revokeMachine } from "./revocation";
+import { isRevoked, revokeMachine } from "./revocation";
 import { readPendingMoves } from "./pending-moves";
 import { parseDoctorReport, remoteDoctor } from "./remote-observations";
 import { INTERCOM_UNIQUENESS_DESCRIPTION } from "./intercom-readiness";

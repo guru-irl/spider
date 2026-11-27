@@ -171,6 +171,20 @@ export async function handleRelocateAgent(input:unknown,options:RelocateAdapterO
     }
   }catch{return refusal("invalid-arguments","The private v0 operation could not be completed safely.");}
 }
+export function guardV0PeerTransport(transport: Transport, isRevoked: (machineId: string) => boolean): Transport {
+  function check(peer: Peer) {
+    if (isRevoked(peer.machineId)) throw new Error("V0 peer was forgotten");
+  }
+  return {
+    ...transport,
+    async resolve(peer, options) { check(peer); return transport.resolve(peer, options); },
+    async exec(peer, argv, options) { check(peer); return transport.exec(peer, argv, options); },
+    async run(peer, argv, operationId) { check(peer); return transport.run(peer, argv, operationId); },
+    async read(peer, path, options) { check(peer); return transport.read(peer, path, options); },
+    async write(peer, path, bytes, timeoutMs) { check(peer); return transport.write(peer, path, bytes, timeoutMs); },
+  };
+}
+
 export function createV0ArtifactTransport(transport:Transport,sourceMachine:string):Transport {
   return {...transport,async exec(peer,argv,options){
     if(argv.length!==4 || argv[0]!=="roam" || argv[1]!=="artifact" || argv[2]!=="receive")return transport.exec(peer,argv,options);

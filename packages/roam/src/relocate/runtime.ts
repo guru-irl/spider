@@ -1,9 +1,10 @@
 import { execFile } from "node:child_process";
 import { join } from "node:path";
-import { openDb } from "@spider/db-core";
+import { openDb, openDbReadOnly, type Db } from "@spider/db-core";
 import { createStorePort } from "../stores";
 import { openLocalCore, type LocalCore } from "../runtime";
 import { openJournal } from "../journal";
+import { isRevoked } from "../revocation";
 import { createTransport } from "../transport";
 import { createSync } from "../sync";
 import type { Clock, GitPorts, Transport } from "../contracts";
@@ -12,7 +13,7 @@ import { createHomeStore } from "./home";
 import { relocate } from "./relocate";
 import { setHome } from "./set-home";
 import { createRelocateAdapters } from "./adapters";
-import { createV0SyncTransport, createV0ArtifactTransport, handleRelocateAgent } from "./remote";
+import { createV0SyncTransport, createV0ArtifactTransport, guardV0PeerTransport, handleRelocateAgent } from "./remote";
 import { localLaunchEnvironment } from "./local";
 import { parseCaptured } from "./journal";
 import { resolveVerifiedArtifact } from "./transfer";
@@ -45,16 +46,41 @@ const runGit: GitPorts["run"] = (cwd, argv, options) => new Promise((done, rejec
 /** Each machine opens only its own stores. No legacy hub or supervisor runs. */
 export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}): V0Runtime {
   const core=(overrides.openCore ?? openLocalCore)(root);
-  const stores=createStorePort(core.config,core.db);
+  let stores: ReturnType<typeof createStorePort> | undefined;
+  let revocationDb: Db | undefined;
+  function closeStores() {
+    try { stores?.close(); }
+    finally { try { revocationDb?.close(); } finally { core.close(); } }
+  }
   try {
-    const journal=openJournal(join(root,"roam","journal.db"));
-    const homes=createHomeStore({db:core.db,hubMachineId:core.config.hubMachineId,localMachineId:core.config.machineId});
-    const raw=overrides.transport ?? createTransport({binary:process.env.SPIDER_ROAM_HC ?? "hc",env:{...localLaunchEnvironment(),SPIDER_GLOBAL_ROOT:root},enrolled:core.config.peers});
-    const transport=createV0ArtifactTransport(createV0SyncTransport(raw),core.config.machineId);
+    const journalFile=join(root,"roam","journal.db");
+    const journal=openJournal(journalFile);
+    if (core.config.role === "hub") {
+      revocationDb = openDbReadOnly(journalFile);
+      if (!revocationDb) throw new Error("Cannot read peer revocations from the private journal");
+    }
+    const forgotten = (machine: string) => machine !== core.config.machineId && !!revocationDb && isRevoked(revocationDb, machine);
+    const config = { ...core.config, get peers() { return core.config.peers.filter(peer => !forgotten(peer.machineId)); } };
+    stores=createStorePort(config,core.db);
+    const homeStore=createHomeStore({db:core.db,hubMachineId:config.hubMachineId,localMachineId:config.machineId});
+    const homes: HomeStore = {
+      ...homeStore,
+      async initialize(sessionId, source) {
+        if (forgotten(source)) throw new Error("Cannot adopt a home on a forgotten peer");
+        return homeStore.initialize(sessionId, source);
+      },
+      async compareAndSwap(expected, next) {
+        if (forgotten(next.machineId) || next.destination !== null && forgotten(next.destination))
+          throw new Error("Cannot assign a home to a forgotten peer");
+        return homeStore.compareAndSwap(expected, next);
+      },
+    };
+    const raw=guardV0PeerTransport(overrides.transport ?? createTransport({binary:process.env.SPIDER_ROAM_HC ?? "hc",env:{...localLaunchEnvironment(),SPIDER_GLOBAL_ROOT:root},enrolled:core.config.peers}),forgotten);
+    const transport=createV0ArtifactTransport(createV0SyncTransport(raw),config.machineId);
     const localClock=overrides.clock ?? clock;
-    const sync=createSync({config:core.config,globalDb:core.db,transport,journal,clock:localClock,stores});
+    const sync=createSync({config,globalDb:core.db,transport,journal,clock:localClock,stores});
     const git:GitPorts={run:overrides.gitRun ?? runGit,journal,limits:core.config.limits,scratch:join(root,"roam","staging"),worktreeCommand:null};
-    const options:RelocateAdapterOptions={root,config:core.config,globalDb:core.db,homes,journal,sync,transport:raw,clock:localClock,git,limits:core.config.limits,workspaceImport:{...git,
+    const options:RelocateAdapterOptions={root,config,globalDb:core.db,homes,journal,sync,transport:raw,clock:localClock,git,limits:core.config.limits,workspaceImport:{...git,
       async resolveCommonRepository({repoKey}) {
         const row=core.db.prepare("SELECT path,worktree_command_json FROM roam_repo_maps WHERE repo_key=?").get(repoKey) as {path:string;worktree_command_json:string|null}|undefined;
         return row?.worktree_command_json === null ? row.path : null;
@@ -74,10 +100,20 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
     }};
     const adapters=createRelocateAdapters(options);
     let closing:Promise<void>|undefined;
-    return {options,adapters,homes,sync,services:{relocate:request=>relocate(request,adapters.ports),setHome:request=>setHome(request,adapters.setHome)},
-      close() {return closing ??= (async()=>{sync.stop();try {await sync.drain();await adapters.dispose();}finally{stores.close();core.close();}})();},
+    const revokedDestination = { ok: false, refusal: { code: "machine-revoked", message: "The destination machine was forgotten.", nextStep: "Choose another configured machine or the Mac." } } as const;
+    return {options,adapters,homes,sync,services:{
+      async relocate(request) {
+        if (forgotten(request.destinationMachine)) return { ...revokedDestination, step: "check", home: null, moveId: null };
+        return relocate(request,adapters.ports);
+      },
+      async setHome(request) {
+        if (forgotten(request.destinationMachine)) return revokedDestination;
+        return setHome(request,adapters.setHome);
+      },
+    },
+      close() {return closing ??= (async()=>{sync.stop();try {await sync.drain();await adapters.dispose();}finally{closeStores();}})();},
     };
-  } catch(error) {stores.close();core.close();throw error;}
+  } catch(error) {closeStores();throw error;}
 }
 export async function runV0Agent(input: unknown, root: string): Promise<V0Result<unknown>> {
   const runtime=createV0Runtime(root);

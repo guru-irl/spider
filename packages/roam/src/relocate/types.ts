@@ -41,7 +41,9 @@ export type V0RefusalCode =
   | "unsupported-workspace" | "destination-dirty"
   | "confirmation-required" | "destination-copy-missing"
   | "stop-timeout" | "sync-failed" | "transfer-failed"
-  | "install-failed" | "start-pending" | "journal-unavailable";
+  | "install-failed" | "start-pending" | "journal-unavailable"
+  // lane 3: entry-C1
+  | "machine-revoked";
 
 export interface V0Refusal {
   code: V0RefusalCode;

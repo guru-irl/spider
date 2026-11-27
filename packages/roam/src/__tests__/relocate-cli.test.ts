@@ -197,6 +197,15 @@ describe("v0 controls", () => {
     const duplicate = fixture(); await runV0Control({ kind: "relocate", session: "first", machine: "box-a.invalid" }, { ...config, peers: [...config.peers, { ...config.peers[0], machineId: mac }] }, catalog, duplicate.services, duplicate.io);
     expect(duplicate.services.relocate).not.toHaveBeenCalled();
   });
+  it.each([true, false])("set-home to the Mac explains how to start the session (enabled=%s)", async enabled => {
+    const f = fixture(`reassign session-abc to ${mac}; source will not run`);
+    vi.mocked(f.services.setHome).mockResolvedValue({ ok: true, value: { ...home, machineId: mac } });
+    expect(await runV0Control({ kind: "set-home", session: "session-abc", machine: macSelector, force: true, confirmation: null },
+      { ...config, enabled }, catalog, f.services, f.io)).toBe(0);
+    const advice = f.out.join("");
+    expect(advice).toContain("spider roam relocate session-abc mac");
+    expect(advice.includes("spider roam enable")).toBe(!enabled);
+  });
   it("prints the branch recovery command on successful relocate", async () => {
     const f = fixture();
     const result = await f.services.relocate({ sessionId: home.sessionId, destinationMachine: box });

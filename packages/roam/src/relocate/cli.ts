@@ -38,7 +38,13 @@ export async function runV0Control(control: V0PublicControl, config: RoamConfig,
       const branch = result.value.branchRecovery;
       if (branch) io.out(`Git HEAD is detached. The saved branch ${branch.savedBranch} was left unchanged. In the destination checkout, run ${branch.command} to save the imported commit on a branch.\n`);
     }
-    else io.out(`Home assigned to ${result.value.machineId}.\n`);
+    else {
+      io.out(`Home assigned to ${result.value.machineId}.\n`);
+      if (result.value.machineId === config.hubMachineId) {
+        if (!config.enabled) io.out("Run spider roam enable on the Mac first.\n");
+        io.out(`Run spider roam relocate ${result.value.sessionId} mac to start the session.\n`);
+      }
+    }
     return result.ok ? 0 : 1;
   };
   const refuse = (refusal: V0Refusal) => emit({ ok: false, refusal });

@@ -5,10 +5,10 @@
 **Goal:** Deliver a roaming v0 intercom message through a relay when the sender cannot reach the target
 directly.
 
-**Architecture:** A relay makes held, buffered exec calls to the machines in `linkTo`. Their brokers
-hand submissions to those calls and correlate the results. The relay uses replicated homes to deliver
-locally or by the existing direct transport. The asker's broker owns the wait for a routed reply,
-independently of the relay that carried the question.
+**Architecture:** A relay makes buffered exec calls to the machines in `linkTo`. Held polls take
+submissions. Separate hold-0 calls return results and can also take submissions. The relay uses
+replicated homes to deliver locally or by the existing direct transport. The asker's broker owns the
+wait for a routed reply, independently of the relay that carried the question.
 
 **Tech Stack:** TypeScript, Node.js, Herdr core 0.1.16, private Unix broker sockets, newline-delimited
 JSON, Vitest, GitHub Actions, systemd user services, and launchd agents.
@@ -27,12 +27,18 @@ JSON, Vitest, GitHub Actions, systemd user services, and launchd agents.
   prerequisites.
 - Keep the `reply-only` rule, text only, 256 KiB per message, and the 9-minute limit on asks. Refuse
   instead of queuing. Never resend a confirmed or `unknown` outcome.
-- The relay starts the next call at once. The endpoint returns at its 1-second hold deadline if there
-  are no submissions. A sender waits at most 2 seconds for hand-off.
+- The relay starts the next held poll at once. The endpoint returns at its 20-second hold deadline
+  if there are no submissions. A separate hold-0 call sends settled results without waiting for the
+  held poll and takes any waiting submissions at once. Allow at most one call of each kind per link.
+  Only one call can take a given submission. A sender waits at most 2 seconds for hand-off.
+- Both kinds of poll use a 25-second remote timeout and a 30-second call timeout, including the
+  existing 2-second post-check reserve. Keep the 20-second v0 send budget and all other timeouts.
 - At most 16 messages can wait on one link before or after hand-off. After hand-off, only
   `attempted: false` permits failover. After an attempted delivery the outcome is final.
-- The linked machine considers the link down after 30 seconds without a valid call. Reconnect backoff is
-  1, 2, 4 and up to 60 seconds between attempts.
+- The linked machine considers the relay up while a valid call is in progress and for 10 seconds
+  after the last call ends normally. If any call ends without a normal reply, mark the link down at
+  once. A failed call still marks the link down on the relay. Reconnect backoff is 1, 2, 4 and up to
+  60 seconds between attempts.
 - Upgrade relays and machines together. There is no version negotiation. Relays keep no message text
   after the outcome is returned. Link logs never contain message text.
 - Use strict TDD. Record red and green evidence. Test one file at a time with `--maxWorkers=1`. Assert
@@ -166,8 +172,9 @@ npm test -- --config packages/herdr/e2e/vitest.config.ts --maxWorkers=1 packages
   private-command `invalid-arguments` response and exit 2 instead of that row. In either case run the
   same send assertion. Do not accept a missing route, broker, home, or tool invocation as red evidence.
   Register cores, routes, processes, and agent directories in the ledger. For the stop case, wait for
-  the lease to go down, then send again. Observe within 40 seconds to allow the 30-second recency rule
-  and the doctor read. Restart the relay and deliver a fresh marker; the refused marker must still be
+  the link to go down, then send again. Observe within 40 seconds. An abnormal call end marks the link
+  down at once. After a normal end, allow any other in-flight call to finish and the 10-second grace
+  period to expire. Restart the relay and deliver a fresh marker; the refused marker must still be
   absent.
 - [ ] **Step 5: Verify the contracts and commit.** Rerun the same two utility files, one at a time. Kill
   mutants that omit explicit `R19`, add it to the matrix defaults, or add it to the runner defaults.
@@ -208,7 +215,8 @@ npm test -- --config packages/herdr/e2e/vitest.config.ts --maxWorkers=1 packages
   `{ attempted: true; outcome: Extract<V0Delivery, { kind: 'socket_delivered' | 'refused' | 'unknown' }> }`
   or
   `{ attempted: false; outcome: V0Refused | { kind: 'refused'; code: 'relay-busy' | 'relay-stopping' } }`.
-- Produces: `RelayPoll = { hello: RelayHello; reach: RelayReach; results: readonly RelayResult[] }`.
+- Produces: `RelayPoll = { holdMs: 0 | 20000; hello: RelayHello; reach: RelayReach; results: readonly RelayResult[] }`.
+  `holdMs` travels as a private CLI argument, not in an NDJSON frame.
   `RelayHello` is
   `{ type: 'hello'; version: number; relay: RelayPeer; toMachineId: string; linkId: string; pollId: string }`.
   `RelayReach` is `{ type: 'reach'; peers: readonly RelayPeer[] }`. `RelayPollReply` is
@@ -217,7 +225,8 @@ npm test -- --config packages/herdr/e2e/vitest.config.ts --maxWorkers=1 packages
   `{ ok: true }` or
   `{ ok: false; code: 'version-mismatch' | 'invalid-config' | 'unauthorized' | 'unreachable' | 'relay-busy' }`.
   A refused batch contains no submissions.
-- Produces: `encodeRelayPoll(poll: RelayPoll): Buffer`, `decodeRelayPoll(input: Buffer): RelayPoll`,
+- Produces: `encodeRelayPoll(poll: RelayPoll): Buffer`,
+  `decodeRelayPoll(input: Buffer, holdMs: RelayPoll['holdMs']): RelayPoll`,
   `encodeRelayPollReply(reply: RelayPollReply): Buffer`, and
   `decodeRelayPollReply(input: Buffer): RelayPollReply`. The decoders throw a fixed protocol error on
   invalid input.
@@ -227,13 +236,14 @@ npm test -- --config packages/herdr/e2e/vitest.config.ts --maxWorkers=1 packages
   `submitV0Relay(agentDir: string, relayId: string, submit: RelaySubmit, signal?: AbortSignal): Promise<RelayResult>`.
   `RelayLinkView` has `relay`, `reach`, `linkId`, `state: 'up' | 'connecting' | 'down'`, `sinceMs`,
   `lastCallMs: number | null`, `lastError: string | null`, and `messagesCarried: number`.
+  `lastCallMs` advances when a valid call starts. Track liveness from call completion separately.
 - Produces: `createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkView) => void): RelayLinks`
   in `relay-links.ts`. `RelayClock` has `now(): number` and
   `later(ms: number, fn: () => void): () => void`, matching the roam `Clock`. `RelayLinks` exposes
   `poll(poll: RelayPoll, signal?: AbortSignal): Promise<RelayPollReply>`,
   `submit(relayId: string, submit: RelaySubmit, signal?: AbortSignal): Promise<RelayResult>`,
   `list(): readonly RelayLinkView[]`, and `close(): void`.
-- Produces: `runV0LinkOnce(root: string, input: Buffer, signal?: AbortSignal): Promise<Buffer>` and
+- Produces: `runV0LinkOnce(root: string, input: Buffer, holdMs: RelayPoll['holdMs'], signal?: AbortSignal): Promise<Buffer>` and
   `runRelayPollLoop(options: RelayPollLoopOptions): Promise<void>` in `relay-poll.ts`. Options:
   `relay: RelayPeer`, `peer: Peer`, `transport: Pick<Transport, 'resolve' | 'exec'>`, `clock: Clock`,
   `signal: AbortSignal`, `reach(): readonly RelayPeer[]`,
@@ -242,26 +252,46 @@ npm test -- --config packages/herdr/e2e/vitest.config.ts --maxWorkers=1 packages
 
 - [ ] **Step 1: Write the carrier story and behavioral reds.** Add a second explicit headless
   definition, `H-relay-poll`, in the relay scenario file. Drive the packed endpoint with
-  `hc exec --on dest.invalid --stdin` and the real private broker. For the story red, send literal
+  `hc exec --on dest.invalid --timeout 25 --stdin -- <spider> roam agent --v0 link --hold-ms 20000`
+  and the real private broker. Use the 30-second poll call budget. For the story red, send literal
   synthetic `hello` and `reach` lines. Assert that the first reply is a successful `ready` with no
-  submissions. Do not import unimplemented modules in this scenario commit, even by deferred import.
-  Use fake time in the unit tests to prove hold versus early return without timing a cold CLI boot.
-  Real-broker tests use `startTestBroker` as in
-  `packages/intercom/src/broker/roam-v0.test.ts:229`.
+  submissions. Do not import unimplemented modules in this scenario commit, even by deferred import. Use fake time to prove hold versus early return
+  without timing a cold CLI boot. Measure liveness from the end of the last normal call, not from its
+  start. Abort a call while another one is active and read the link state before advancing the clock.
+  In the fake transport, keep the next held reply pending while a prior delivery settles. Inspect the
+  result on the actual hold-0 request before releasing the held reply. Keep the hold-0 reply pending
+  while another result settles. Check that the next hold-0 call waits only for that reply. Test
+  competing calls with one live submission and check both replies. Also check that a hold-0 call with
+  a waiting submission and no held call takes the submission without advancing time. Real-broker
+  tests use `startTestBroker` as in `packages/intercom/src/broker/roam-v0.test.ts:229`.
 
 ```ts
 // holds an empty poll and wakes early for a live submission
-expect(settledAt999Ms).toBe(false);
-expect(emptyAtMs1000.submissions).toEqual([]);
+expect(settledAt19999Ms).toBe(false);
+expect(emptyAtMs20000.submissions).toEqual([]);
 expect(earlyPoll.submissions.map(s => s.message.id)).toEqual(['early']);
+// sends a result before the next held call returns
+expect(callWithResult).toMatchObject({ holdMs: 0, results: [{ messageId: 'earlier' }] });
+expect(heldCallReturnedAtResultSend).toBe(false);
+expect(secondResultCallStartedBeforeFirstReturned).toBe(false);
+expect(nextHoldZeroCall.results.map(r => r.messageId)).toEqual(['another']);
+for (const options of [heldCallOptions, resultCallOptions]) {
+  expect(options).toMatchObject({ remoteTimeoutMs: 25000, timeoutMs: 30000, postReserveMs: 2000 });
+}
+// hands a submission to exactly one of two competing calls
+expect([...heldReply.submissions, ...resultCallReply.submissions].map(s => s.message.id)).toEqual(['once']);
+expect(holdZeroReplyBeforeClockAdvance.submissions.map(s => s.message.id)).toEqual(['waiting']);
 // refuses overflow
 expect(seventeenth).toMatchObject({ attempted: false, outcome: { code: 'relay-busy' } });
 // does not hand off an expired submission
 expect(expired).toMatchObject({ attempted: false, outcome: { kind: 'refused' } });
 expect(nextPoll.submissions).not.toContainEqual(expiredSubmission);
-// drops a stalled link at the recency deadline
-expect(stateAt29999).toBe('up');
-expect(stateAt30000).toBe('down');
+// keeps an active call up and expires 10 seconds after the last normal call ends
+expect(stateDuringHoldAt19999Ms).toBe('up');
+expect(stateAt9999MsAfterCallEnd).toBe('up');
+expect(stateAt10000MsAfterCallEnd).toBe('down');
+// drops immediately when either call ends without a reply
+expect(stateImmediatelyAfterAbort).toBe('down');
 // ignores duplicate and old-generation results
 expect(outcomesAfterLateAndDuplicateResults).toEqual([{ kind: 'unknown', id: 'lost' }]);
 expect(currentSubmissionSettledByOldResult).toBe(false);
@@ -300,42 +330,59 @@ expect(() => readV0Routes(v2LinkWithoutSendTo, config)).toThrow();
   checks from `requestV0Broker`, with a separate relay capability and ops. Do not relax `roam_v0`'s
   one-request rule or start a broker from an exec. Send one poll request with bounded metadata. Return
   `ready` with the submission count followed by separate length-prefixed submission records, not one
-  aggregate over the broker's 1 MiB frame limit. Clean up the hold timer on socket close. Keep the v0
-  broker health check, but do not use its 2-second request timer as the wait for a result. The send's
-  20-second budget includes health, hand-off, and the result. Correlate by relay, link, poll, and
-  message ID. Accept one held call per link. Apply results before taking new submissions. Atomically
-  take or expire each submission: at 2 seconds without hand-off, return `attempted: false`; after it
-  could have left the broker, failure or expiry returns `unknown`. A replaced generation cannot take a
-  later submit or settle it with an old result. A closed local client releases its waiter, not a
-  replayable entry.
-- [ ] **Step 5: Implement the carrier.** Bind `link` before the generic `--v0` command. Use the CLI's
-  bounded stdin reader for the whole batch. Validate the target identity and membership of the relay in
+  aggregate over the broker's 1 MiB frame limit. Carry `holdMs` in the broker request metadata. Keep
+  the v0 broker health check. Do not apply its 2-second request timer to a relay poll or the wait
+  for a result. The send's 20-second budget includes health, hand-off, and the result. Correlate by
+  relay, link, poll, and message ID. Accept at most one held call and one hold-0 call per link. Apply
+  results before taking submissions. A hold-0 call returns without waiting for a submission. One
+  broker-owned set holds submissions for both calls. Atomically claim or expire each submission so
+  only one call can take it. At 2 seconds without hand-off, return `attempted: false`. After the
+  submission could have left the broker, failure or expiry returns `unknown`.
+
+  Keep the link up during a valid call. Start the 10-second grace period when the last active call
+  ends normally. Cancel each call's hold timer on completion or poll socket close. If a call ends
+  without its normal reply, mark the link down at once and fence the generation even if the other
+  call is still active. A replaced generation cannot take a later submit or settle it with an old
+  result. A closed local submit client releases its waiter, not a replayable entry.
+- [ ] **Step 5: Implement the carrier.** Bind `link` before the generic `--v0` command. Parse
+  `--hold-ms <0|20000>` at the CLI boundary. Use the bounded stdin reader for the whole batch without
+  changing the NDJSON frames. Validate the target identity and membership of the relay in
   `relays` before entering the broker. A version refusal uses the correlated `ready` frame with the
   endpoint's version. Never hold an incompatible poll. The public pin is buffered:
   [the CLI](https://github.com/herdrdev/herdr-core/blob/v0.1.16/crates/herdr-core/src/cli.rs#L488-L502)
   reads all input, and
   [the remote exec](https://github.com/herdrdev/herdr-core/blob/v0.1.16/crates/herdr-core/src/exec.rs#L189-L223)
   returns captured output after exit. Do not add a streaming mode. Resolve the peer at link start and
-  reconnect. Call `Transport.exec` with `['roam', 'agent', '--v0', 'link']`, `timeoutMs: 20000`,
-  `postReserveMs: 2000`, `remoteTimeoutMs: 5000`, and `maxBytes: RELAY_POLL_MAX_BYTES`, defined as
+  reconnect. For both kinds of poll, call `Transport.exec` with
+  `['roam', 'agent', '--v0', 'link', '--hold-ms', String(poll.holdMs)]`, `timeoutMs: 30000`,
+  `postReserveMs: 2000`, `remoteTimeoutMs: 25000`, and `maxBytes: RELAY_POLL_MAX_BYTES`, defined as
   `18 * V0_INTERCOM_BYTES`. `transport.ts:248-254` already pins both core identities, and
-  `argv-client.ts:43-54` reserves the post-check and rounds the remote timeout to seconds. A 1-second
-  hold leaves room for the broker and CLI within the 5-second remote cap and the existing 20-second v0
-  call budget. Validate the entire reply and correlate its IDs before dispatch. Bind each submission's
-  origin machine to the opened peer. A mismatch gets `attempted: false` and `unauthorized`. Start the
-  next call on success without waiting for deliveries. Bound active submissions and result metadata to
-  the same 16 slots. Never replay a failed poll's submissions or results. Mark a failed exec down and
-  start a fresh link ID after the capped backoff. Abort held calls on stop and drain owned work.
-- [ ] **Step 6: Complete the carrier story.** After the first empty poll, start a second call. Wait for
-  `listV0RelayLinks` to show that `lastCallMs` advanced. Submit from the live origin. The held call
-  returns that submission and its matching poll ID. Send its result in the next call and check the
-  origin's outcome.
+  `argv-client.ts:43-54` reserves the post-check and rounds the remote timeout to seconds. The
+  20-second hold leaves room for the endpoint within the 25-second remote timeout. The 30-second call
+  budget covers the exec and identity checks. Leave the 20-second v0 send budget unchanged. Validate
+  the entire reply and correlate its IDs before dispatch. Bind each submission's origin machine to
+  the opened peer. A mismatch gets `attempted: false` and `unauthorized`.
+
+  Start the next held poll on success without waiting for deliveries. Send results only in hold-0
+  calls. When a result is ready, start a hold-0 call without waiting for the held poll. If a hold-0
+  call is already in flight, send accumulated results as soon as it returns. Use the same validation
+  and dispatch path for submissions from either reply. Apply the same 16-slot limit to active
+  submissions and result metadata. Never replay a failed poll's submissions or results. If either
+  call fails, mark the link down, abort the other call, and start a fresh link ID after the capped
+  backoff. Abort both kinds of call on stop and drain owned work.
+- [ ] **Step 6: Complete the carrier story.** After the first empty poll, start another held poll.
+  Wait for `listV0RelayLinks` to show that `lastCallMs` advanced. Submit from the live origin. Check
+  that the held poll returns that submission and its matching poll ID. Start a fresh held poll and
+  wait for `lastCallMs` to advance again. Send the result in a concurrent `--hold-ms 0` call with a
+  distinct poll ID. Check the echoed poll ID and the origin's outcome before the held poll returns.
+  Collect the held reply and prove cleanup.
 - [ ] **Step 7: Verify and commit.** After one typecheck and build, the two files pass. Kill mutants
   that accept a changed poll ID, accept a 17th submission, or offer an expired submission to the next
   poll. Commit as `feat(roam): add held intercom relay polls`.
 - [ ] **Step 8: Dispatch the carrier green.** Dispatch `H-relay-poll` on the implementation commit.
-  Require an empty reply at the hold, a real submission in a held reply, a result in the next call, and
-  clean teardown. The wave does not build on the carrier until this passes.
+  Require an empty reply at the 20-second hold, a real submission in a held reply, a result sent to
+  the origin in a hold-0 call before the concurrent held poll returns, and clean teardown. The wave
+  does not build on the carrier until this passes.
 
 ### Task 3: Build the live soak tool
 
@@ -381,7 +428,8 @@ expect(checkRelaySoak(survivingHelperOrUnstableRss).ok).toBe(false);
   `npm test -- --maxWorkers=1 packages/roam/src/__tests__/relay-soak.test.ts`. Expect missing soak entry
   points or failing criteria comparisons, not missing live machines.
 - [ ] **Step 3: Build the operator tool.** `dial` reads the pinned `sendTo` peer from the local root and
-  drives the production poll loop against the staged endpoint. Substitute an independent
+  drives the production loop against the staged endpoint for both held polls and hold-0 result calls.
+  Leave the v0 send budget and the soak pass criteria unchanged. Substitute an independent
   receipt-recording sink for final session delivery. `submit` uses the real private broker and a live,
   admitted fixture origin. Schedule one synthetic submission every 5 seconds on each of a laptop-to-box
   link and two box-to-box links for 8 hours. Use `--burst` once for 100 concurrent extra submissions
@@ -487,8 +535,9 @@ expect(unknownAfterDirectWrite).toMatchObject({ attempted: true, outcome: { kind
 
 - [ ] **Step 1: Write the routing and status reds.** Use a pinned local session, a healthy direct route
   with an available relay, and a target with no direct route. On both ends query doctor for a version
-  mismatch and a missing prerequisite. Test expiry from private status, and use sentinel text to prove
-  log rotation and omission of the body.
+  mismatch and a missing prerequisite. From private status, check that doctor shows a held call as up
+  after 10 seconds in progress, then shows down 10 seconds after the last normal call ends. Use
+  sentinel text to prove log rotation and omission of the body.
 
 ```ts
 expect(local.details.path).toBe('local');
@@ -513,7 +562,8 @@ expect(activeAndRotatedLogs).not.toContain(sentinelText);
 - [ ] **Step 3: Start the service and route sends.** Bind `relay` with `runV0Service` and require that
   the local machine be in `relays`. Reuse `localHerdrConnection` to pin the core and a distinct
   root-scoped process lock, following `relocate/runtime.ts:172-222`. Start one poll loop per `linkTo`
-  peer. Advertise self and connected `sendTo` peers from an owned `hc machine ls --json` observation.
+  peer. On stop, let that loop abort its held and hold-0 calls. Advertise self and connected `sendTo`
+  peers from an owned `hc machine ls --json` observation.
   Actual delivery still pins destination identity. Use the configured local alias or the selected core's
   display name for `hello.relay.alias`; prefer a local configured alias for a known peer. Preserve the
   v0 local and direct paths. Enter the relay path only for a version 2 session with a valid local home
@@ -535,8 +585,10 @@ expect(activeAndRotatedLogs).not.toContain(sentinelText);
   that direction and peer. Count a `socket_delivered` result once on either side. Use
   `intercom-link: <alias> <state>; state age <ms>; last call age <ms or never>; last error <code or none>; messages carried <n>`
   as a `Diagnostic.reason` row. On mismatch use `version-mismatch (local <version>, peer <version>)` for
-  last error. Doctor reads only. Report stale state as down and name a missing config, service, broker,
-  or route without touching it. Use `route-missing` for an absent configured route. `R19` reads
+  last error. Doctor reads only. For inbound rows, follow Task 2's liveness rule. A snapshot of an
+  active call expires by its call deadline. If no call is active, use 10 seconds from the last normal
+  end, not the last start. Report stale state as down. Name a missing config, service, broker, or
+  route without touching it. Use `route-missing` for an absent configured route. `R19` reads
   `value.diagnostics` from doctor JSON; pre-existing diagnostics may make the command exit nonzero.
   Document the operator-installed `spider-roam-relay-v0.service` systemd user unit and
   `com.spider.roam.relay-v0` launchd agent. Use the packaged CLI, canonical roots, explicit core
@@ -567,10 +619,10 @@ expect(activeAndRotatedLogs).not.toContain(sentinelText);
 
 - [ ] **Step 1: Write the failover reds.** Return link views in reverse order. Then withdraw reach while
   both links continue polling. Cover a refusal before hand-off, a target refusal after attempted
-  delivery, and a dropped result after hand-off. Extend the fixture with an owned fourth core and
-  directed routes from `relay-2.invalid` to both session machines. Set its disabled `intercom` block's
-  `machineAlias` to `relay-2.invalid`. Keep `R19`'s initial single-relay legs, with relay 2 stopped.
-  Start the backup once the primary is up again. Add legs for first choice, stop and switch, and open
+  delivery, and a result lost when a hold-0 call fails after hand-off. Extend the fixture with an owned
+  fourth core and directed routes from `relay-2.invalid` to both session machines. Set its disabled
+  `intercom` block's `machineAlias` to `relay-2.invalid`. Keep `R19`'s initial single-relay legs,
+  with relay 2 stopped. Start the backup once the primary is up again. Add legs for first choice, stop and switch, and open
   but unable to reach `target.invalid`. Remove the remaining relay-to-target edge on the owned core with
   `hc machine rm`; wait for its next reach to omit the target while its sender link stays up. Restore
   the edge for Task 7.
@@ -593,9 +645,9 @@ expect(noReach.content[0].text.split('\n')[0]).toBe('target.invalid is not reach
 - [ ] **Step 3: Walk the configured order.** Take a fresh view for each send or reply. Skip down,
   unreachable, and busy links with reasons. Use one overall v0 deadline across choices. After hand-off,
   move on only after an explicit `attempted: false` for an availability refusal. Trust or stale-home
-  refusals remain final. A lost result returns `unknown` with the same ID and no second offer. Reach
-  changes apply on the next poll. When a preferred relay recovers, new messages use it again. Keep the
-  one-relay cases in `R19` before adding the backup.
+  refusals remain final. A lost result returns `unknown` with the same ID and no second offer. Apply
+  reach changes on the next call that carries them. When a preferred relay recovers, new messages
+  use it again. Keep the one-relay cases in `R19` before adding the backup.
 - [ ] **Step 4: Verify and commit.** Run the route file again after one typecheck and build. Kill
   mutants that use arrival order, fail over after `attempted: true`, or offer a message again after an
   `unknown`. Commit as `feat(roam): fail over between ordered relays`.
@@ -636,8 +688,9 @@ expect(noReach.content[0].text.split('\n')[0]).toBe('target.invalid is not reach
   observing broker results and inboxes. Cover a reply on an available direct route and a relay-local
   reply to a hub with no inbound route. Prove an unsolicited send to the same hub still refuses. Extend
   `R19` after both routes are restored and relay 1 is back up. Start the ask without waiting for the
-  tool to settle. Observe the recipient transcript and the delivery count on the first link. Stop relay
-  1, verify the ask has not settled, and trigger a scripted reply through relay 2.
+  tool to settle. Observe the recipient transcript and the delivery count on the origin's first link
+  after the hold-0 result arrives. Stop relay 1, verify the ask has not settled, and trigger a scripted
+  reply through relay 2.
 
 ```ts
 expect(askSettledBeforeReply).toBe(false);
@@ -662,7 +715,8 @@ expect(newInboundMessagesFromRejectedReplies).toEqual([]);
 - [ ] **Step 3: Separate delivery from reply waiting.** Register the local ask waiter before submitting.
   Bind it to the live asker, its address and epochs, ask ID, target selector and machine, and one
   deadline no later than 540000 ms. Deliver the question once. Return `socket_delivered` after the
-  recipient broker accepts it, freeing the poll slot. If delivery is proved refused, close the waiter.
+  recipient broker accepts it. Send that result on Task 2's hold-0 path to free the poll slot. If
+  delivery is proved refused, close the waiter.
   If the acknowledgement is lost after hand-off, do not resend; allow a matching reply until the
   original deadline, otherwise keep the `unknown` outcome. On confirmed delivery without a reply, return
   `no_reply` at the deadline. Close the waiter on abort or disconnection of the local asker, not on poll

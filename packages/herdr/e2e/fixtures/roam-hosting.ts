@@ -12,6 +12,7 @@ import { mapWorkspace } from '@spider/db-core/roam/repo-map';
 import { inspectIdLock } from '../../src/sessions/id-lock.js';
 import { createSessionLeases } from '../../src/sessions/lease.js';
 import { fixtureProcessDomain } from '../../../host/src/herdr/fixture-process-domain.js';
+import type { HcRecord } from '../harness/hc.js';
 import { readObserved, type ObservedEvent } from '../harness/pi.js';
 import { identityAlive, identityOf } from '../harness/resources.js';
 import { spawnOwned, type OwnedProcess } from '../harness/processes.js';
@@ -60,6 +61,17 @@ export function enterHostingEnvironment(env: Readonly<Record<string, string>>): 
     for (const key of Object.keys(process.env)) if (!Object.hasOwn(previous, key)) delete process.env[key];
     for (const [key, value] of Object.entries(previous)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
   };
+}
+
+/** Count attempts across the whole recording, including launches that exit before they can own a lock. */
+export function countHostedLaunches(records: readonly Pick<HcRecord, 'argv'>[], sessionId: string, file: string): number {
+  return records.filter(({ argv }) => {
+    const end = argv.indexOf('--');
+    if (argv[0] !== 'run' || end < 0) return false;
+    const options = argv.slice(0, end), command = argv.slice(end + 1);
+    return options.some((arg, index) => arg === '--label' && options[index + 1] === `spider.session=${sessionId}`) ||
+      command.some((arg, index) => arg === '--session' && command[index + 1] === file);
+  }).length;
 }
 
 export interface HostedOwner { pid: number; terminal: string; sessionId: string; file: string; cwd: string }

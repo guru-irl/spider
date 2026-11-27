@@ -299,7 +299,7 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
       if (!approved) throw new HerdrError('consent-required', 'Provisioning consent must be recorded before installation');
       try {
         return (await bracket({ kind: 'enrolled', peer: state.peer }, state, DEFAULT_LIMITS.launchMs, signal =>
-          client.run(state.peer.alias, [state.peer.node, '--input-type=module-typescript', '-e', PROVISION_REMOTE_SCRIPT, requestFile],
+          client.run(state.peer.alias, [state.peer.node, '--input-type=module', '-e', PROVISION_REMOTE_SCRIPT, requestFile],
             { 'spider.operation': operationId, 'spider.machine': state.peer.machineId }, { signal }))).value;
       } catch (error) {
         const allowed = new Set(['core-changed', 'core-unavailable', 'machine-not-found', 'machine-ambiguous', 'machine-not-enrolled',
@@ -343,7 +343,7 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
           catch { throw new HerdrError('invalid-provision-request', 'Invalid provisioning request'); }
           try {
             if (stdin.length > 2 * 1024 * 1024) throw new HerdrError('invalid-provision-request', 'Provisioning request is too large');
-            return await client.exec(state.peer.alias, [state.peer.node, '--input-type=module-typescript', '-e', PROVISION_REMOTE_SCRIPT],
+            return await client.exec(state.peer.alias, [state.peer.node, '--input-type=module', '-e', PROVISION_REMOTE_SCRIPT],
               { timeoutMs: remainingMs, maxBytes: request.action === 'agent-private-modes' ? 2 * 1024 * 1024 : 64 * 1024, stdin, signal });
           } finally { stdin.fill(0); }
         });

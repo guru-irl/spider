@@ -60,9 +60,16 @@ function irLegacyPath(value: string): boolean {
   return /(?:^|[\\/])(?:pi-)?intercom(?:[\\/]|\.(?:[cm]?[jt]sx?)$)/i.test(value) || /^(?:npm:)?(?:@[^/]+\/)?pi-intercom(?:@|$)/i.test(value);
 }
 // Pi's package manager runs outside the roaming process and cannot install missing packages.
-const irResolveScript = `import{pathToFileURL as u}from'node:url';import{readFileSync as r}from'node:fs';
+const irResolveScript = `import{pathToFileURL as u}from'node:url';import{readFileSync as r,realpathSync as real}from'node:fs';import{dirname,join}from'node:path';
 const[sdk,migration,shim,cwd,agent,roots,bundle]=process.argv.slice(1),raw=r(0,'utf8'),value=JSON.parse(raw);
-const p=await import(u(sdk).href),m=await import(u(migration).href),s=await import(u(shim).href);
+let p;
+try {
+ const core=join(dirname(real(sdk)),'core');
+ const manager=await import(u(join(core,'package-manager.js')).href),settings=await import(u(join(core,'settings-manager.js')).href);
+ if(typeof manager.DefaultPackageManager!=='function'||typeof settings.SettingsManager?.inMemory!=='function')throw new Error('incompatible Pi resolver');
+ p={DefaultPackageManager:manager.DefaultPackageManager,SettingsManager:settings.SettingsManager};
+} catch { p=await import(u(sdk).href); }
+const m=await import(u(migration).href),s=await import(u(shim).href);
 const q=new p.DefaultPackageManager({cwd,agentDir:agent,settingsManager:p.SettingsManager.inMemory(value)}),v=await q.resolve(async()=> 'error');
 process.stdout.write(JSON.stringify({extensions:v.extensions,legacy:JSON.stringify(value)!==JSON.stringify(JSON.parse(m.migrateIntercomSettings(raw,JSON.parse(roots),agent))),shim:s.extensionShim(bundle)}));`;
 

@@ -93,7 +93,26 @@ async function relayDelivery(suite: Suite): Promise<void> {
   }
 }
 
+async function relayPoll(suite: Suite): Promise<void> {
+  const fixture = await relayFixture(suite);
+  try {
+    const relay = { machineId: '00000000-0000-4000-8000-000000000001', alias: 'relay-1.invalid' };
+    const hello = { type: 'hello', version: 1, relay, toMachineId: fixture.sender.machineId, linkId: 'carrier-link', pollId: 'empty' };
+    const reach = { type: 'reach', peers: [relay] };
+    const started = performance.now();
+    const first = await suite.cores!.hc(['exec', '--on', 'dest.invalid', '--timeout', '25', '--stdin', '--',
+      '/usr/bin/env', `PI_CODING_AGENT_DIR=${fixture.sender.agent}`, process.execPath, suite.packed.roamCli,
+      '--global-root', fixture.sender.root, 'roam', 'agent', '--v0', 'link', '--hold-ms', '20000'],
+      'local', { input: `${JSON.stringify(hello)}\n${JSON.stringify(reach)}\n` });
+    await suite.evidence('H-relay-poll-empty.json', { callMs: Math.round(performance.now() - started), first });
+    expect(first.json, first.stdout || first.stderr).toEqual({ type: 'ready', version: 1, ok: true,
+      machineId: fixture.sender.machineId, linkId: hello.linkId, pollId: 'empty' });
+    expect(first.exitCode, first.stderr).toBe(0);
+  } finally { await fixture.close(); }
+}
+
 export const scenarios: readonly ScenarioDefinition[] = [
   { id: storyId('R19'), title: 'intercom sends through an owned relay', tiers: ['headless'], run: relayDelivery },
+  { id: storyId('H-relay-poll'), title: 'buffered exec carries a held intercom relay poll', tiers: ['headless'], run: relayPoll },
 ];
 registerScenarios(scenarios);

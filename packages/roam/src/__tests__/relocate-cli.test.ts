@@ -217,6 +217,7 @@ describe("v0 controls", () => {
     expect(await runV0Control({ kind: "relocate", session: "session-abc", machine: "box-a.invalid" }, config, catalog, f.services, f.io)).toBe(0);
     expect(f.out.join("")).toContain(command);
     expect(f.out.join("")).toMatch(/detached.*main/i);
+    expect(f.out.join("")).toContain("Processes started outside Spider in this folder keep running.\n");
   });
   it("relocate from a box is one actionable refusal", async () => {
     const f = fixture(); expect(await runV0Control({ kind: "relocate", session: "first", machine: macSelector }, { ...config, role: "box", machineId: box }, catalog, f.services, f.io, { json: true })).toBe(1);

@@ -38,6 +38,7 @@ export async function runV0Control(control: V0PublicControl, config: RoamConfig,
       else io.out(`Session is at ${result.value.home.machineId}; terminal ${result.value.terminal}.\n`);
       const branch = result.value.branchRecovery;
       if (branch) io.out(`Git HEAD is detached. The saved branch ${branch.savedBranch} was left unchanged. In the destination checkout, run ${branch.command} to save the imported commit on a branch.\n`);
+      io.out("Processes started outside Spider in this folder keep running.\n");
     }
     else {
       io.out(`Home assigned to ${result.value.machineId}.\n`);

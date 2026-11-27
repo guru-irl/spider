@@ -729,9 +729,40 @@ export function createAdmissionPorts(options: ParticipantLockOptions = {}): Admi
           });
           for (const key of keys ?? []) attempt(() => addStore(global.withRetry(() => openRoamStoreReadOnly(global, key))));
         }
+        let unfinishedFreeze = false;
+        let freezeRecovery: { moveId: string; epoch: number } | undefined;
+        // A freeze may be the only surviving evidence after the global store is lost.
+        // Inspect it independently so another failed read cannot hide a known participant.
+        attempt(() => {
+          const journal = openDbReadOnlyAt(join(paths.globalRoot, "roam", "journal.db"));
+          if (!journal) return;
+          try {
+            const entry = journal.withRetry(() => journal.prepare("SELECT type FROM sqlite_master WHERE name = ? COLLATE NOCASE").get("freeze_journal")) as { type: string } | undefined;
+            if (entry) {
+              if (entry.type !== "table") throw new Error("Invalid freeze journal");
+              const columns = journal.withRetry(() => journal.prepare("PRAGMA table_info(freeze_journal)").all()) as { name: string; type: string }[];
+              if (!["session_id", "state"].every(name => columns.some(column => column.name.toLowerCase() === name && column.type.trim().toUpperCase() === "TEXT"))) {
+                throw new Error("Invalid freeze journal");
+              }
+              unfinishedFreeze = Boolean(journal.withRetry(() => journal.prepare(
+                "SELECT 1 FROM freeze_journal WHERE session_id COLLATE BINARY = ? AND (state IS NULL OR state COLLATE BINARY NOT IN ('complete', 'aborted')) LIMIT 1",
+              ).get(id)));
+              if (unfinishedFreeze) cache().known.add(id);
+              if (unfinishedFreeze && ["move_id", "epoch"].every(name => columns.some(column => column.name.toLowerCase() === name))) {
+                const rows = journal.withRetry(() => journal.prepare(
+                  "SELECT move_id,epoch,state FROM freeze_journal WHERE session_id COLLATE BINARY = ? AND (state IS NULL OR state COLLATE BINARY NOT IN ('complete', 'aborted')) LIMIT 2",
+                ).all(id)) as { move_id: unknown; epoch: unknown; state: unknown }[];
+                const row = rows[0];
+                if (rows.length === 1 && typeof row.move_id === "string" && row.move_id.length > 0 &&
+                    Number.isSafeInteger(row.epoch) && (row.epoch as number) > 0 && ["freezing", "frozen", "aborting"].includes(String(row.state)))
+                  freezeRecovery = { moveId: row.move_id, epoch: row.epoch as number };
+              }
+            }
+          } finally { journal.close(); }
+        });
         if (failed) throw failure ?? new Error("Session ownership read failed");
         const home: Home | null = homeRow?.machine_id ? { sessionId: id, machineId: homeRow.machine_id, epoch: homeRow.epoch, moveId: homeRow.move_id, updatedAt: homeRow.updated_at } : null;
-        const participating = Boolean(homeRow || states.length);
+        const participating = Boolean(homeRow || states.length || unfinishedFreeze);
         if (!participating) {
           discoveryAllowed = [...opened.values()].every(db => {
             if (!hasTable(db, 'roam_meta')) return false;
@@ -741,8 +772,7 @@ export function createAdmissionPorts(options: ParticipantLockOptions = {}): Admi
           discoveryFiles = [...new Set([join(paths.globalRoot, 'spider.db'),
             ...(context?.cwd ? [join(paths.projectRoot(context.cwd), 'project.db')] : []), ...opened.keys()])];
         }
-        let captureSafe = true, unfinishedFreeze = false;
-        let freezeRecovery: { moveId: string; epoch: number } | undefined;
+        let captureSafe = true;
         machineIds = [];
         if (participating) {
           if (global && hasTable(global, "roam_cursors") && global.withRetry(() =>
@@ -767,31 +797,6 @@ export function createAdmissionPorts(options: ParticipantLockOptions = {}): Admi
               ? global.withRetry(() => global.prepare("SELECT machine_id FROM roam_meta WHERE id = 1").get()) as { machine_id: string } | undefined
               : undefined;
             if (meta?.machine_id) machineIds.push(meta.machine_id); else captureSafe = false;
-          }
-          const journal = openDbReadOnlyAt(join(paths.globalRoot, "roam", "journal.db"));
-          if (journal) {
-            try {
-              const entry = journal.withRetry(() => journal.prepare("SELECT type FROM sqlite_master WHERE name = ? COLLATE NOCASE").get("freeze_journal")) as { type: string } | undefined;
-              if (entry) {
-                if (entry.type !== "table") throw new Error("Invalid freeze journal");
-                const columns = journal.withRetry(() => journal.prepare("PRAGMA table_info(freeze_journal)").all()) as { name: string; type: string }[];
-                if (!["session_id", "state"].every(name => columns.some(column => column.name.toLowerCase() === name && column.type.trim().toUpperCase() === "TEXT"))) {
-                  throw new Error("Invalid freeze journal");
-                }
-                unfinishedFreeze = Boolean(journal.withRetry(() => journal.prepare(
-                  "SELECT 1 FROM freeze_journal WHERE session_id COLLATE BINARY = ? AND (state IS NULL OR state COLLATE BINARY NOT IN ('complete', 'aborted')) LIMIT 1",
-                ).get(id)));
-                if (unfinishedFreeze && ["move_id", "epoch"].every(name => columns.some(column => column.name.toLowerCase() === name))) {
-                  const rows = journal.withRetry(() => journal.prepare(
-                    "SELECT move_id,epoch,state FROM freeze_journal WHERE session_id COLLATE BINARY = ? AND (state IS NULL OR state COLLATE BINARY NOT IN ('complete', 'aborted')) LIMIT 2",
-                  ).all(id)) as { move_id: unknown; epoch: unknown; state: unknown }[];
-                  const row = rows[0];
-                  if (rows.length === 1 && typeof row.move_id === "string" && row.move_id.length > 0 &&
-                      Number.isSafeInteger(row.epoch) && (row.epoch as number) > 0 && ["freezing", "frozen", "aborting"].includes(String(row.state)))
-                    freezeRecovery = { moveId: row.move_id, epoch: row.epoch as number };
-                }
-              }
-            } finally { journal.close(); }
           }
         }
         return { home, states, origin: origins.size === 1 ? [...origins][0] : null, participating, captureSafe, unfinishedFreeze,

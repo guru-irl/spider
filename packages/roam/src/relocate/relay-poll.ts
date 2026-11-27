@@ -12,14 +12,12 @@ import { readV0Routes } from "./intercom-routes";
 export async function runV0LinkOnce(root: string, input: Buffer, holdMs: RelayPoll["holdMs"], signal?: AbortSignal): Promise<Buffer> {
   const poll = decodeRelayPoll(input, holdMs);
   const { hello } = poll;
-  let machineId = hello.toMachineId;
   const refuse = (code: Extract<RelayReady, { ok: false }>["code"]) =>
-    encodeRelayPollReply({ ready: relayReady(hello, code, machineId), submissions: [] });
+    encodeRelayPollReply({ ready: relayReady(hello, code), submissions: [] });
   let routes: ReturnType<typeof readV0Routes>;
   try {
     const config = readLocalIdentity(root);
-    machineId = config.machineId;
-    if (hello.toMachineId !== machineId) return refuse("unauthorized");
+    if (hello.toMachineId !== config.machineId) return refuse("unauthorized");
     routes = readV0Routes(root, config);
   } catch { return refuse("invalid-config"); }
   if (!routes.relays.includes(hello.relay.machineId)) return refuse("unauthorized");

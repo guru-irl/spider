@@ -244,6 +244,22 @@ describe("v0 local runtime",()=>{
   expect(f.signalled).toEqual([]);
   expect(await local.owner(id)).toEqual({kind:"live",pid:42,terminal:"core:t"});
  });
+ it("reports one malformed placement and still restarts the healthy session", async () => {
+  const f = runtimeFixture(), local = createLocalRuntime(f.options,f.io);
+  writeLocal(f.options.globalDb,"relocate-managed",id,f.placement);
+  const report = vi.fn(), stop = vi.fn(local.stop);
+  const loop = createHomeSupervisor({...local,stop,machineId:box,clock:f.options.clock,report}, () => {});
+  await loop.tick();
+  expect(f.launches).toHaveLength(1);
+  const broken = "old-placement" as SessionId;
+  writeLocal(f.options.globalDb,"relocate-managed",broken,{sessionId:broken,file:"/old/s.jsonl"});
+  // The home of the healthy session still authorizes a restart. The malformed
+  // other placement must neither put that session in the stop path nor start it.
+  await loop.tick();
+  expect(f.launches.map(request => request.home.sessionId)).toEqual([id,id]);
+  expect(stop).not.toHaveBeenCalled();
+  expect(report).toHaveBeenCalledExactlyOnceWith(broken,expect.objectContaining({code:"destination-copy-missing",nextStep:expect.stringContaining("Restore")}));
+ });
  it("activation waits for an in-flight supervisor stop before updating membership",async()=>{
   const f=runtimeFixture(),worktree=createReplica("worktree",box);fixtures.push(worktree);
   const placement={...f.placement,repoKey:"fixture-repo",workspaceId:"fixture-workspace",stores:["global",worktree.storeKey]} as SessionPlacement;

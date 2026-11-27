@@ -463,13 +463,30 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
   }
   async function entries(): Promise<readonly SupervisorEntry[]> {
     const homes=await options.homes.list(), byId=new Map(homes.map(home=>[home.sessionId,home]));
-    const placements=new Map(localEntries<unknown>(options.globalDb,"relocate-managed").map(row=>[row.key as SessionId,parsePlacement(row.value)]));
+    const placements = new Map<SessionId, SessionPlacement | null>();
+    for (const {key,value} of localEntries<unknown>(options.globalDb,"relocate-managed")) {
+      const id = key as SessionId;
+      let placement: SessionPlacement | null = null;
+      if (!placements.has(id)) {
+        try {
+          const parsed = parsePlacement(value);
+          if (parsed.sessionId === id && parsed.machineId === options.config.machineId) placement = parsed;
+        } catch { /* An invalid placement does not make the home list unavailable. */ }
+      }
+      placements.set(id,placement);
+    }
     const ids=new Set([...placements.keys(),...homes.filter(home=>home.machineId===options.config.machineId || home.state === "moving" && home.destination===options.config.machineId).map(home=>home.sessionId)]);
     const result: SupervisorEntry[]=[];
     for(const sessionId of ids) {
-      let placement=placements.get(sessionId)??null;
-      if(!placement) { const found=await locate(options.config.machineId,sessionId);if(found.ok)placement=found.value; }
-      result.push({sessionId,home:byId.get(sessionId)??null,placement});
+      const home = byId.get(sessionId) ?? null;
+      const saved = placements.get(sessionId);
+      if (saved === null) {
+        result.push({sessionId,home,placement:null,placementRefusal:{code:"destination-copy-missing",
+          message:"The saved placement for this session is invalid.",nextStep:"Restore this session's local placement before trying again."}});
+        continue;
+      }
+      const found = saved ? null : await locate(options.config.machineId,sessionId);
+      result.push({sessionId,home,placement:saved ?? (found?.ok ? found.value : null)});
     }
     return result;
   }

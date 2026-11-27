@@ -45,7 +45,8 @@ export function createHomeSupervisor(ports: HomeSupervisorPorts, warn: (line: st
     for (const entry of entries) {
       managed.add(entry.sessionId);
       seen.add(entry.sessionId);
-      const { home, placement, sessionId } = entry;
+      const { home, placement, sessionId, placementRefusal } = entry;
+      if (placementRefusal) { report(sessionId,placementRefusal); continue; }
       if (!home || home.machineId !== ports.machineId || home.state !== "running") {
         await stopSession(sessionId);
         continue;

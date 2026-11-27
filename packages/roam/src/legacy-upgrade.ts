@@ -535,7 +535,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
       const observed = await probeProcess(identity.pid);
       if (observed.kind === "unknown") { unknown.push(`${label} owner unavailable`); continue; }
       if (observed.kind === "absent" || observed.startIdentity !== identity.startTime) continue;
-      const lease = await createSessionLeases(stateRoot).get(state.intent.file, boot);
+      const lease = await createSessionLeases(stateRoot).get(state.intent.file);
       if (!lock || lock.bootId !== boot || lock.identity.pid !== identity.pid || lock.identity.startIdentity !== identity.startTime ||
           !lease || lease.bootId !== boot || lease.pid !== identity.pid || lease.startIdentity !== identity.startTime) {
         unknown.push(`${label} lock or lease unavailable`); continue;

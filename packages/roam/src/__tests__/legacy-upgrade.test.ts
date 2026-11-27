@@ -76,6 +76,22 @@ it.each(["move-session", "move-abort-cleanup", "exact-session-launch"] as const)
   },
 );
 
+it("doctor blocks an uncommitted legacy home action even after the move receipt is terminal", async () => {
+  const f = fixture();
+  f.journal.begin({ id: "home-action-1", kind: "move", machineId: hub, expectedEpoch: 1, args: {} });
+  f.journal.record("home-action-1", "done", { code: 1, reason: "move-preflight-refused" });
+  const db = openDb(join(f.root, "spider.db"));
+  try {
+    db.prepare("INSERT INTO roam_home_actions(move_id,session_id,expected_epoch,args_digest) VALUES (?,?,1,?)")
+      .run("home-action-1", "session-home", "a".repeat(64));
+  } finally { db.close(); }
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-blocked.*home-action-1/) }),
+  ]));
+});
+
 it("doctor blocks an unresolved legacy freeze roster even without a pending move", async () => {
   const f = fixture(), key = "worktree:fixture-repo:fixture-workspace";
   replica(f.root, key);

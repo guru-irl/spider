@@ -17,10 +17,10 @@ import { inspectAdoptedOwner } from "./launcher";
 import { isMachineId } from "./machine-id";
 import { parseSourceCleanup } from "./move";
 import { readLocalIdentity } from "./runtime";
-import { parseCheckpoint, parseHome, parsePlan } from "./relocate/journal";
+import { parseCheckpoint, parseHome, parsePlacement, parsePlan } from "./relocate/journal";
 import { listStoreKeys } from "./store-inventory";
 import { artifactId } from "./staging";
-import type { RelocatePlan } from "./relocate/types";
+import type { RelocatePlan, SessionPlacement } from "./relocate/types";
 
 export type LegacyUpgradeInventory =
   | { status: "legacy-upgrade-ready"; findings: readonly [] }
@@ -125,6 +125,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
     const journalKinds = new Map<string, string>();
     const activeFreezes = new Set<string>(), completedFreezes = new Set<string>(), requiredFreezeStores = new Set<string>();
     const v0Maps = new Set<string>();
+    const v0Owners = new Map<string, { placement: SessionPlacement; epoch: number }>();
     const v0: Array<{ origin: "checkpoint" | "incoming"; plan: RelocatePlan; expectedKey?: string }> = [];
     const configFile = join(root, "roam", "config.json"), identityFile = join(root, "roam", "machine.json");
     const configured = present(configFile), config = configured ? readLocalIdentity(root) : null;
@@ -263,6 +264,17 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
       if (!meta || !isMachineId(meta.machine_id) || config && meta.machine_id !== config.machineId || !(meta.store_key === null || meta.store_key === "global")) throw new Error("Global store identity mismatch");
       if (!configured && global.prepare("SELECT 1 FROM session_homes UNION ALL SELECT 1 FROM roam_locations UNION ALL SELECT 1 FROM roam_repo_maps UNION ALL SELECT 1 FROM roam_workspace_maps LIMIT 1").get())
         unknown.push("roaming identity unavailable");
+      for (const row of localEntries<unknown>(global, "relocate-managed")) {
+        const placement = parsePlacement(row.value);
+        if (row.key !== placement.sessionId) throw new Error("Invalid v0 managed placement");
+        if (!config || placement.machineId !== config.machineId) continue;
+        const home = global.prepare("SELECT session_id,machine_id,epoch,move_id,updated_at,state,destination FROM session_homes WHERE session_id=?").get(row.key) as
+          { session_id: string; machine_id: string; epoch: number; move_id: string | null; updated_at: number; state: string | null; destination: string | null } | undefined;
+        if (!home || home.state === null) continue;
+        const parsed = parseHome({ sessionId: home.session_id, machineId: home.machine_id, epoch: home.epoch, moveId: home.move_id,
+          updatedAt: home.updated_at, state: home.state, destination: home.destination });
+        if (parsed.state === "running" && parsed.machineId === config.machineId) v0Owners.set(row.key, { placement, epoch: parsed.epoch });
+      }
       const homeActions = global.prepare("SELECT move_id,session_id,expected_epoch,args_digest,cancelled,committed_home_json FROM roam_home_actions ORDER BY move_id").all() as
         Array<{ move_id: unknown; session_id: unknown; expected_epoch: unknown; args_digest: unknown; cancelled: unknown; committed_home_json: unknown }>;
       for (const action of homeActions) {
@@ -443,20 +455,27 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
       findings.push(label);
     }
     for (const state of await inspectIntentViews(root)) {
-      if (state.supervision.kind !== "live") continue;
+      if (state.supervision.kind === "launching") continue;
       const label = `live hosting session ${safeId(state.intent.sessionId)}`;
-      const boot = await localBootId(), identity = state.supervision.identity;
+      const lock = await inspectIdLock(stateRoot, state.intent.sessionId);
+      if (state.supervision.kind === "idle" && !lock) continue;
+      const identity = state.supervision.kind === "live" ? state.supervision.identity
+        : { bootId: lock!.bootId, pid: lock!.identity.pid, startTime: lock!.identity.startIdentity };
+      const boot = await localBootId();
       if (!boot) { unknown.push(`${label} boot identity unavailable`); continue; }
       if (boot !== identity.bootId) continue;
       const observed = await probeProcess(identity.pid);
       if (observed.kind === "unknown") { unknown.push(`${label} owner unavailable`); continue; }
       if (observed.kind === "absent" || observed.startIdentity !== identity.startTime) continue;
-      const lock = await inspectIdLock(stateRoot, state.intent.sessionId);
       const lease = await createSessionLeases(stateRoot).get(state.intent.file, boot);
       if (!lock || lock.bootId !== boot || lock.identity.pid !== identity.pid || lock.identity.startIdentity !== identity.startTime ||
           !lease || lease.bootId !== boot || lease.pid !== identity.pid || lease.startIdentity !== identity.startTime) {
         unknown.push(`${label} lock or lease unavailable`); continue;
       }
+      const managed = v0Owners.get(state.intent.sessionId);
+      if (state.supervision.kind === "idle" && managed && managed.epoch >= state.intent.epoch &&
+          managed.placement.file === state.intent.file && managed.placement.cwd === state.intent.cwd &&
+          (!lock.operationId || journalKinds.get(lock.operationId) !== "exact-session-launch")) continue;
       findings.push(label);
     }
     for (const reservation of await inspectIntentReservations(root)) {

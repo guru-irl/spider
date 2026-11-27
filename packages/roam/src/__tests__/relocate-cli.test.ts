@@ -80,6 +80,25 @@ describe("v0 controls", () => {
       for(const spy of forbidden)expect(spy).not.toHaveBeenCalled();
     } finally {await local.close();await remote.close();source.close();target.close();}
   });
+  it("v0 sync contacts peers through the installed Herdr executable and pinned core",async()=>{
+    const source=createReplica("global",mac);
+    const root=mkdtempSync(join(resolve(".spider/scratch"),"hr-"));roots.push(root);
+    const binary=join(root,"bin","hc"), socket=join(root,"work.sock"), agentDirectory=join(root,"agent");
+    mkdirSync(join(root,"herdr"));
+    writeFileSync(join(root,"herdr","config.json"),JSON.stringify({mode:"core-only",core:{binary,config:join(root,"core.toml")},
+      globalRoot:root,agentDirectory,shellRc:join(root,"shell.rc"),machines:[]}));
+    vi.stubEnv("SPIDER_ROAM_HC",undefined);vi.stubEnv("PI_CODING_AGENT_DIR",undefined);
+    vi.stubEnv("HC_SESSION","work");vi.stubEnv("HC_SOCKET",socket);vi.stubEnv("HC_TERMINAL_ID","foreign:t");
+    const hc=vi.spyOn(hcApi,"invokeCli").mockRejectedValue(new Error("synthetic offline core"));
+    const runtime=createV0Runtime(root,{openCore:()=>({root,config,db:source.db,close(){}})});
+    try {
+      await runtime.sync.sync(box);
+      const request=hc.mock.calls.find(([,argv])=>argv.join(" ")==="server status --json");
+      expect(request?.[0]).toBe(binary);
+      expect(request?.[2]).toMatchObject({HC_SESSION:"work",HC_SOCKET:socket,PI_CODING_AGENT_DIR:agentDirectory});
+      expect(request?.[2].HC_TERMINAL_ID).toBeUndefined();
+    } finally {await runtime.close();source.close();}
+  });
   it("v0 hub and supervisor entries drain on shutdown",async()=>{
     const source=createReplica("global",mac),target=createReplica("global",box);
     const idle={now:()=>1,later:()=>()=>{}};

@@ -17,7 +17,7 @@ import { relocate } from "./relocate";
 import { setHome } from "./set-home";
 import { createRelocateAdapters } from "./adapters";
 import { createV0SyncTransport, createV0ArtifactTransport, guardV0PeerTransport, handleRelocateAgent } from "./remote";
-import { exactHome, localLaunchEnvironment } from "./local";
+import { exactHome, localHerdrConnection } from "./local";
 import { parseCaptured } from "./journal";
 import { resolveVerifiedArtifact } from "./transfer";
 import { createHomeSupervisor } from "./supervisor";
@@ -96,7 +96,7 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
         });
       },
     };
-    const raw=guardV0PeerTransport(overrides.transport ?? createTransport({binary:process.env.SPIDER_ROAM_HC ?? "hc",env:{...localLaunchEnvironment(),SPIDER_GLOBAL_ROOT:root},enrolled:core.config.peers}), machine => {
+    const raw=guardV0PeerTransport(overrides.transport ?? createTransport({...localHerdrConnection(root),enrolled:core.config.peers}), machine => {
       if (forgotten(machine)) throw new Error("V0 peer was forgotten");
       if (config.role === "hub" && !config.enabled) throw new Error("Hub synchronization is disabled");
     });

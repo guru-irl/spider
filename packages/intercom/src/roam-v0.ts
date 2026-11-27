@@ -4,7 +4,7 @@ import { isRemoteSessionInfo } from "./broker/protocol.js";
 
 export const V0_INTERCOM_BYTES: number = 256 * 1024;
 export const V0_INTERCOM_MS = 20_000;
-export const V0_ASK_MAX_MS: number = 10 * 60_000;
+export const V0_ASK_MAX_MS: number = 9 * 60_000;
 export const V0_INTERCOM_FEATURE = "roam-intercom-v0";
 
 export type V0Selector = { by: "id" | "name"; value: string };
@@ -21,7 +21,7 @@ export interface V0Text {
 }
 export type V0Code = "moving" | "offline" | "no-match" | "ambiguous" | "incomplete"
   | "changed" | "unreachable" | "not-configured" | "unauthorized"
-  | "unsupported" | "invalid" | "self";
+  | "unsupported" | "invalid" | "self" | "reply-only";
 export type V0Refused = { kind: "refused"; code: V0Code };
 export type V0Delivery = V0Refused
   | { kind: "socket_delivered"; id: string }
@@ -67,7 +67,7 @@ export interface V0ToolOptions {
 
 const codes: ReadonlySet<string> = new Set<V0Code>([
   "moving", "offline", "no-match", "ambiguous", "incomplete", "changed", "unreachable",
-  "not-configured", "unauthorized", "unsupported", "invalid", "self",
+  "not-configured", "unauthorized", "unsupported", "invalid", "self", "reply-only",
 ]);
 
 function record(value: unknown): value is Record<string, unknown> {

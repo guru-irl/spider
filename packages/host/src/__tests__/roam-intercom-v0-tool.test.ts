@@ -347,6 +347,27 @@ it("reports a remote ask timeout or lost call without resending", async () => {
   }
 });
 
+it("preserves a configured remote ask timeout below the cap", async () => {
+  const previous = process.env.PI_INTERCOM_ASK_TIMEOUT_MS;
+  const configured = V0_ASK_MAX_MS - 1;
+  process.env.PI_INTERCOM_ASK_TIMEOUT_MS = String(configured);
+  let receivedTimeout = 0;
+  const prepare: V0Prepare = async () => ({
+    kind: "remote", label: "b/ben",
+    async send(message) { return { kind: "socket_delivered", id: message.id }; },
+    async ask(message, timeout) { receivedTimeout = timeout; return { kind: "no_reply", id: message.id }; },
+  });
+  const f = await fixture({ homeEpoch: () => 7, prepare });
+  try {
+    const result = await f.tool.execute("ask", { action: "ask", to: "ben", message: "question" }, new AbortController().signal, undefined, f.ctx);
+    expect(result.details).toMatchObject({ delivery: "no_reply" });
+    expect(receivedTimeout).toBe(configured);
+  } finally {
+    await f.cleanup();
+    if (previous === undefined) delete process.env.PI_INTERCOM_ASK_TIMEOUT_MS; else process.env.PI_INTERCOM_ASK_TIMEOUT_MS = previous;
+  }
+});
+
 it("allows only one outstanding remote ask", async () => {
   const questions: V0Text[] = [];
   let finish!: (value: { kind: "no_reply"; id: string }) => void;

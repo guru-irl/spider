@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 // @ts-ignore The same ESM fixture is loaded directly by the owned processes.
 import { instrumentOwnerBundle } from '../../fixtures/roam-owner-observer.mjs';
@@ -152,4 +153,26 @@ it('does not change an owner decision when the evidence directory is unavailable
 it('refuses to instrument unknown or ambiguous packed entries', () => {
   expect(() => instrumentOwnerBundle('export const unknown = 1;')).toThrow();
   expect(() => instrumentOwnerBundle(sampleBundle + sampleBundle)).toThrow();
+});
+
+it('loads only the selected entry and records its unchanged owner outcome', () => {
+  const entry = join(root, 'sample.mjs'), driver = join(root, 'driver.mjs');
+  writeFileSync(entry, sampleBundle);
+  writeFileSync(join(root, 'other.mjs'), 'export const value = 7;\n');
+  writeFileSync(driver, `import { createLocalRuntime } from './sample.mjs';
+import { value } from './other.mjs';
+const io = { inspect: async () => null, terminals: async () => [], writerBlockers: async () => [] };
+console.log(JSON.stringify(await createLocalRuntime({ config: { machineId: 'destination' } }, io).owner('session')), value);
+`);
+  const register = fileURLToPath(new URL('../../fixtures/roam-owner-register.mjs', import.meta.url));
+  const child = spawnSync(process.execPath, ['--import', register, driver], {
+    env: { ...process.env, SPIDER_HERDR_E2E_OWNER_ENTRY: entry }, encoding: 'utf8',
+  });
+  expect(child.status, child.stderr).toBe(0);
+  expect(child.stdout).toBe('{"kind":"free"} 7\n');
+  const rows = readFileSync(join(root, `${child.pid}.jsonl`), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  expect(rows).toEqual(expect.arrayContaining([
+    expect.objectContaining({ event: 'owner-begin', caller: 'owner', machineId: 'destination', sessionId: 'session' }),
+    expect.objectContaining({ event: 'owner-value', phase: 'result', value: { owner: { kind: 'free' } } }),
+  ]));
 });

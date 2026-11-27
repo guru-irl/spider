@@ -126,7 +126,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
     const v0: Array<{ origin: "checkpoint" | "incoming"; plan: RelocatePlan; expectedKey?: string }> = [];
     const configFile = join(root, "roam", "config.json"), identityFile = join(root, "roam", "machine.json");
     const configured = present(configFile), config = configured ? readLocalIdentity(root) : null;
-    if (!configured && present(identityFile)) throw new Error("Missing roaming configuration");
+    if (!configured && present(identityFile)) unknown.push("roaming configuration unavailable");
     const db = snapshot(join(root, "roam", "journal.db"));
     if (db) try {
       const operations = db.prepare("SELECT operation_id,machine_id,kind,result_json FROM roam_operations WHERE kind IN ('move','move-session','move-abort-cleanup','exact-session-launch') ORDER BY operation_id")
@@ -235,7 +235,9 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
     if (!global && config) throw new Error("Missing global store");
     if (global) try {
       const meta = global.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id?: unknown; store_key?: unknown } | undefined;
-      if (!meta || config && meta.machine_id !== config.machineId || !(meta.store_key === null || meta.store_key === "global")) throw new Error("Global store identity mismatch");
+      if (!meta || !isMachineId(meta.machine_id) || config && meta.machine_id !== config.machineId || !(meta.store_key === null || meta.store_key === "global")) throw new Error("Global store identity mismatch");
+      if (!configured && global.prepare("SELECT 1 FROM session_homes UNION ALL SELECT 1 FROM roam_locations UNION ALL SELECT 1 FROM roam_repo_maps UNION ALL SELECT 1 FROM roam_workspace_maps LIMIT 1").get())
+        unknown.push("roaming identity unavailable");
       const homeActions = global.prepare("SELECT move_id,session_id,expected_epoch,args_digest FROM roam_home_actions WHERE committed_home_json IS NULL AND cancelled=0 ORDER BY move_id").all() as
         Array<{ move_id: unknown; session_id: unknown; expected_epoch: unknown; args_digest: unknown }>;
       for (const action of homeActions) {
@@ -386,6 +388,8 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
       }
       findings.push(label);
     }
+    if (!configured && (db || present(join(root, "roam", "intents")) || present(join(root, "roam", "stores")) || findings.length || unknown.length))
+      unknown.unshift("roaming identity unavailable");
     if ([...watched].some(([file, stamp]) => sourceStamp(file) !== stamp) || trees.some((tree, index) => treeStamp(tree) !== initialTrees[index]))
       unknown.unshift("local evidence changed during inspection");
     return unknown.length ? { status: "legacy-upgrade-unverified", findings: [...unknown, ...findings] }

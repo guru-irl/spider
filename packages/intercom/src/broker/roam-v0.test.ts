@@ -9,6 +9,7 @@ import { getAgentDirPath, getBrokerSocketPath, getIntercomDirPath } from "./path
 import { requestV0Broker } from "./roam-v0-client.js";
 import { createMessageReader, writeMessage } from "./framing.js";
 import { IntercomClient } from "./client.js";
+import type { RemoteSessionInfo } from "../types.js";
 import {
   parseV0AgentReply,
   parseV0AgentRequest,
@@ -24,7 +25,7 @@ const endpoint = {
   homeEpoch: 3,
   endpointEpoch: "connection-1",
 };
-const origin = {
+const origin: RemoteSessionInfo = {
   remote: true,
   id: "sender",
   address: { sessionId: "sender", scopeId: "scope-1" },

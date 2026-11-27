@@ -955,6 +955,22 @@ it("finishes an installed checkout after a mixed reset to the previous head", as
   expect(recovery?.result.workingApplied).toBe(true);
 }, 5000);
 
+it("restores an installed checkout when only HEAD was reset", async () => {
+  const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
+  git(f.destination, "update-ref", "--no-deref", "HEAD", f.previous.head);
+  expect(git(f.destination, "write-tree")).toBe(snapshot.indexTree);
+  expect(tree(f.destination, f.root)).toBe(snapshot.workingTree);
+
+  const prepared = await prepareWorkspace(snapshot, f.destination, f.ports);
+
+  expect(prepared.previous).toEqual(f.previous);
+  expect(git(f.destination, "rev-parse", "HEAD")).toBe(snapshot.head);
+  expect(git(f.destination, "write-tree")).toBe(snapshot.indexTree);
+  expect(tree(f.destination, f.root)).toBe(snapshot.workingTree);
+  const recovery = f.ports.journal.read(snapshot.moveId).find(row => row.action === "workspace-settings-recovery-complete");
+  expect(recovery?.result.workingApplied).toBe(true);
+}, 5000);
+
 it("reinstalls when effective sparse settings change after installation", async () => {
   const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
   git(f.destination, "config", "--local", "extensions.worktreeConfig", "false");

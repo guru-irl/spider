@@ -2,11 +2,11 @@ import { afterEach, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { PROVISION_REMOTE_SCRIPT } from "../provision-remote-script";
+import { getProvisionRemoteScript } from "../provision-remote-script";
 import { DatabaseSync } from "node:sqlite";
 
 it("keeps the provisioning launch within Linux's single-argument limit", () => {
-  expect(Buffer.byteLength(PROVISION_REMOTE_SCRIPT) + 1).toBeLessThanOrEqual(128 * 1024);
+  expect(Buffer.byteLength(getProvisionRemoteScript()) + 1).toBeLessThanOrEqual(128 * 1024);
 });
 
 // Disabled 2026-11-25: flaky in CI (compiler child exited with null status).
@@ -37,7 +37,7 @@ function fixture() {
   const run = (socket: string | null, operationId = request.operationId, inherited: NodeJS.ProcessEnv = {}, extra: Record<string, unknown> = {}) => {
     const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, HC_SESSION: "fixture", XDG_STATE_HOME: stateHome, XDG_CONFIG_HOME: configHome, ...inherited };
     if (socket === null) delete env.HC_SOCKET; else env.HC_SOCKET = socket;
-    const result = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", PROVISION_REMOTE_SCRIPT], {
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", getProvisionRemoteScript()], {
       env, input: JSON.stringify({ ...request, operationId, ...extra }), encoding: "utf8", timeout: 5000,
     });
     expect(result.status, result.stderr).toBe(0);

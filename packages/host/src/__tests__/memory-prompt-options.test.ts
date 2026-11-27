@@ -1,3 +1,4 @@
+import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
@@ -9,8 +10,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   fauxAssistantMessage, fauxProvider, fauxToolCall, getCurrentSystemPrompt,
-  getCurrentTools, InMemoryCredentialStore, InMemoryModelsStore, Type,
-  type FauxResponseFactory,
+  getCurrentTools, InMemoryCredentialStore, InMemoryModelsStore, type FauxResponseFactory,
 } from "@earendil-works/pi-ai";
 import { bindSession, openDbAt, openGlobal, setGlobalDbPathForTests, unbindSession, type Db } from "@spider/db-core";
 import { addMemory } from "@spider/memory";

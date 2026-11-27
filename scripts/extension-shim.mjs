@@ -79,10 +79,13 @@ export default async function spider(pi: unknown): Promise<unknown> {
     mod = await fallbackImport(bundle, nativeSetupError);
   }
   const AssistantMessageComponent = piHost.AssistantMessageComponent;
+  const ToolExecutionComponent = piHost.ToolExecutionComponent;
   const Markdown = piTui.Markdown;
+  const Spacer = piTui.Spacer;
   const copy = piHost.copyToClipboard;
-  const copyButtons = typeof AssistantMessageComponent === "function" && typeof Markdown === "function" && typeof copy === "function"
-    ? { host: { AssistantMessageComponent, Markdown }, copy } : undefined;
+  const copyButtons = typeof AssistantMessageComponent === "function" && typeof ToolExecutionComponent === "function"
+    && typeof Markdown === "function" && typeof Spacer === "function" && typeof copy === "function"
+    ? { host: { AssistantMessageComponent, ToolExecutionComponent, Markdown, Spacer }, copy } : undefined;
   const piVersion = typeof piHost.VERSION === "string" ? piHost.VERSION : undefined;
   return mod.default(pi, { ...(copyButtons ? { copyButtons } : {}), ...(piVersion === undefined ? {} : { piVersion }) });
 }

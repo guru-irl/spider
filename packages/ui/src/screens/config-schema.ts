@@ -17,7 +17,7 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 		{ key: "compaction.summaryModel", label: "Summary model", type: "model-ref", default: null, description: "Optional provider/model for parent summaries. Null leaves pi in charge. Changes apply on the next compaction." },
 		{ key: "compaction.summaryThinking", label: "Summary thinking", type: "enum", default: "high", enum: [], description: "Reasoning level for managed parent summaries. Children retain their own thinking." },
 		{ key: "compaction.fileListCap", label: "File paths per list", type: "number", integer: true, default: 500, min: 0, max: Number.MAX_SAFE_INTEGER, description: "Maximum read and modified paths independently, newest first. Zero disables the file-list cap." },
-		{ key: "compaction.minSummaryOutputTokens", label: "Summary output floor", type: "number", integer: true, default: 64000, min: 0, max: Math.floor(Number.MAX_SAFE_INTEGER * 0.8), description: "Output request floor for parent summaries, capped by the model maximum. Does not change pi's thresholds." },
+		{ key: "compaction.minSummaryOutputTokens", label: "Summary output floor", type: "number", integer: true, default: 64000, min: 0, max: Math.floor(Number.MAX_SAFE_INTEGER * 0.8), description: "Output request floor for managed parent summaries on pi 1.2, capped by the model maximum. Has no effect on pi 1.5 and later. Does not change pi's thresholds." },
 	]},
 	{ id: "auxiliary", label: "Auxiliary model", fields: [
 		{ key: "auxiliary.background_review.provider", label: "Provider", type: "string", default: "", description: "Optional background review provider override; default github-copilot." },

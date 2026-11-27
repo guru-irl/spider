@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AssistantMessageComponent } from "@earendil-works/pi-coding-agent";
-import { Markdown, stripTerminalSequences, visibleWidth, type Component, type MarkdownTheme, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { ToolExecutionComponent, AssistantMessageComponent } from "@earendil-works/pi-coding-agent";
+import { Spacer, Markdown, stripTerminalSequences, visibleWidth, type Component, type MarkdownTheme, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 
 const identity = (text: string) => text;
@@ -14,7 +14,7 @@ const message: AssistantMessage = {
   usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
   stopReason: "stop", timestamp: 0,
 };
-const host = { AssistantMessageComponent, Markdown };
+const host = { AssistantMessageComponent, ToolExecutionComponent, Markdown, Spacer };
 const proto = AssistantMessageComponent.prototype;
 const original = proto.updateContent;
 const patch = Symbol.for("spider.copy-buttons.updateContent");
@@ -88,6 +88,23 @@ describe("copy button reload", () => {
     expect(base).toHaveBeenCalledTimes(2);
     expect(other).toHaveBeenCalledTimes(2);
     expect(proto.updateContent).toBe(other);
+  });
+
+  it("uses the reloaded block copy code without rebuilding an existing message", async () => {
+    const first = await freshWithPlainText("before reload");
+    const firstCopied: string[] = [];
+    first.installCopyButtons(host, options(firstCopied));
+    const response: AssistantMessage = { ...message, content: [{ type: "text", text: "> Quoted **text**\n\nReply" }] };
+    const assistant = new AssistantMessageComponent(response, false, theme, undefined, 0);
+    await copyText(assistant);
+    expect(firstCopied).toEqual(["before reload"]);
+
+    const next = await freshWithPlainText("after reload");
+    const nextCopied: string[] = [];
+    next.installCopyButtons(host, options(nextCopied));
+    await copyText(assistant);
+    expect(firstCopied).toEqual(["before reload"]);
+    expect(nextCopied).toEqual(["after reload"]);
   });
 
   it.each(["none", "legacy", "delegating"])("uses fresh code for messages rebuilt before session start with a %s patch", async shape => {
@@ -191,5 +208,24 @@ describe("copy button reload", () => {
     expect(copied).toEqual(["upgraded module", "reloaded upgrade"]);
     expect(base).toHaveBeenCalledTimes(2);
     expect(other).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves messages untouched when an older shim omits Spacer and ToolExecutionComponent", async () => {
+    const { registerCopyButtons } = await import("./index.js");
+    const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
+    const pi = { on: (name: string, handler: (event: unknown, ctx: unknown) => void) => handlers.set(name, handler) };
+    const legacyHost = { AssistantMessageComponent, Markdown } as unknown as typeof host;
+    registerCopyButtons(pi as never, legacyHost, () => ({}), async () => {});
+    const expected = new Markdown("**Bold**", 0, 0, theme).render(90);
+    const rendered = (assistant: AssistantMessageComponent) => {
+      const children = (assistant as unknown as { contentContainer: { children: Component[] } }).contentContainer.children;
+      return children.find((child): child is Markdown => child instanceof Markdown)?.render(90);
+    };
+    expect(rendered(new AssistantMessageComponent(message, false, theme, undefined, 0))).toEqual(expected);
+    handlers.get("session_start")?.({}, { mode: "tui", hasUI: true, cwd: "/project", ui: {
+      setWidget: (_key: string, make: (tui: unknown) => unknown) => make({ mode: "fullscreen", requestRender: () => {} }),
+      notify: vi.fn(),
+    } });
+    expect(rendered(new AssistantMessageComponent(message, false, theme, undefined, 0))).toEqual(expected);
   });
 });

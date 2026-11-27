@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AssistantMessageComponent, UserMessageComponent, initTheme } from "@earendil-works/pi-coding-agent";
-import { Markdown, stripTerminalSequences, visibleWidth, type Component, type MarkdownTheme, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { ToolExecutionComponent, AssistantMessageComponent, UserMessageComponent, initTheme } from "@earendil-works/pi-coding-agent";
+import { Spacer, Markdown, stripTerminalSequences, visibleWidth, type Component, type MarkdownTheme, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { installCopyButtons, registerCopyButtons } from "./index.js";
+import { disableCopyButtons, installCopyButtons, registerCopyButtons } from "./index.js";
 
 const identity = (text: string) => text;
 const theme: MarkdownTheme = {
@@ -19,7 +19,7 @@ const message = (text: string): AssistantMessage => ({
 function fixture(fullscreen = true) {
   const copied: string[] = [];
   const render = vi.fn();
-  installCopyButtons({ AssistantMessageComponent, Markdown }, {
+  installCopyButtons({ AssistantMessageComponent, ToolExecutionComponent, Markdown, Spacer }, {
     isFullscreen: () => fullscreen,
     copy: async text => { copied.push(text); },
     requestRender: render,
@@ -78,6 +78,43 @@ describe("copy buttons", () => {
     }
   });
 
+  it("copies each occurrence when different source blocks render identically", async () => {
+    const { assistant, copied } = fixture();
+    const input = "```js\n\tx()\n```\n\nFirst\n\n```js\n   x()\n```\n\nSecond\n\n> Same quote\n\nThird\n\n> Same quote\n\nEnd";
+    assistant.updateContent(message(input), false);
+    const md = markdown(assistant);
+    hover(md);
+    const lines = render(md);
+    const rows = lines.flatMap((line, row) => line.includes("⧉ md") ? [row] : []);
+    expect(rows.map(row => lines[row - 1].slice(1, -1).trim())).toEqual([
+      "```", "```", "│ Same quote", "│ Same quote", "End",
+    ]);
+    for (const row of rows) click(md, row, "⧉ md");
+    await Promise.resolve();
+    expect(copied).toEqual([
+      "```js\n\tx()\n```", "```js\n   x()\n```", "> Same quote", "> Same quote", input,
+    ]);
+  });
+
+  it("keeps the cached suffix copyable when a block is inserted before it", async () => {
+    const { assistant, copied } = fixture();
+    const suffix = "```js\nsuffix()\n```\n\nTail";
+    assistant.updateContent(message(suffix), false);
+    hover(markdown(assistant));
+    expect(render(markdown(assistant)).filter(line => line.includes("⧉ md"))).toHaveLength(2);
+
+    const prefix = "> New **prefix**";
+    const updated = `${prefix}\n\n${suffix}`;
+    assistant.updateContent(message(updated), false);
+    const md = markdown(assistant);
+    hover(md);
+    const rows = render(md).flatMap((line, row) => line.includes("⧉ md") ? [row] : []);
+    expect(rows).toHaveLength(3);
+    for (const row of rows) click(md, row, "⧉ md");
+    await Promise.resolve();
+    expect(copied).toEqual([prefix, "```js\nsuffix()\n```", updated]);
+  });
+
   it("copies source tabs rather than pi's display-normalized spaces", async () => {
     const { assistant, copied } = fixture();
     const input = "```ts\n\treturn 1;\n```\n\n> **hello**\tworld\n\nEnd";
@@ -118,6 +155,47 @@ describe("copy buttons", () => {
     expect(copied.at(-1)).toBe("original()");
   });
 
+  it("gives a source block its own copy row after a transformer inserts display-only code", async () => {
+    const { copied } = fixture();
+    const input = "```js\noriginal()\n```\n\nEnd";
+    const displayOnly = "```js\ndisplayOnly()\n```";
+    const assistant = new AssistantMessageComponent(undefined, false, theme, undefined, 0, [text => `${displayOnly}\n\n${text}`]);
+    assistant.updateContent(message(input), false);
+    const md = markdown(assistant);
+    hover(md);
+    const lines = render(md);
+    const rows = lines.flatMap((line, row) => line.includes("⧉ md") ? [row] : []);
+    expect(rows).toHaveLength(2);
+    expect(lines[rows[0] - 2]).toContain("original()");
+    click(md, rows[0], "⧉ md"); await Promise.resolve();
+    expect(copied).toEqual(["```js\noriginal()\n```"]);
+  });
+
+  it("keeps the latest source when an already-bound reply updates while disabled", async () => {
+    const { assistant } = fixture();
+    assistant.updateContent(message("Before"), false);
+    const first = markdown(assistant);
+    hover(first);
+    expect(render(first).join("\n")).toContain("⧉ md");
+
+    const host = { AssistantMessageComponent, ToolExecutionComponent, Markdown, Spacer };
+    disableCopyButtons(host);
+    assistant.updateContent(message("**After**"), false);
+    const updated = markdown(assistant);
+    expect(render(updated).join("\n")).not.toContain("⧉ md");
+
+    const copied: string[] = [];
+    installCopyButtons(host, { isFullscreen: () => true, copy: async text => { copied.push(text); }, requestRender: () => {}, onError: () => {} });
+    // Pi 1.2 creates an unbound instance, so rebuild after enabling on that host.
+    if (updated !== first) assistant.updateContent(message("**After**"), false);
+    const md = markdown(assistant);
+    hover(md);
+    const row = render(md).findIndex(line => line.includes("⧉ md"));
+    expect(row).toBeGreaterThanOrEqual(0);
+    click(md, row, "⧉ md"); await Promise.resolve();
+    expect(copied).toEqual(["**After**"]);
+  });
+
   it("keeps the selected format when a click has Alt or Ctrl modifiers", async () => {
     const { assistant, copied } = fixture();
     assistant.updateContent(message("**Bold**"), false);
@@ -134,7 +212,7 @@ describe("copy buttons", () => {
 
   it("reports a synchronous clipboard failure without showing confirmation", () => {
     const errors: unknown[] = [];
-    installCopyButtons({ AssistantMessageComponent, Markdown }, {
+    installCopyButtons({ AssistantMessageComponent, ToolExecutionComponent, Markdown, Spacer }, {
       isFullscreen: () => true,
       copy: () => { throw new Error("clipboard unavailable"); },
       requestRender: () => {}, onError: error => errors.push(error),
@@ -206,10 +284,11 @@ describe("copy buttons", () => {
     hover(md);
     const lines = render(md);
     const rows = lines.map((line, row) => line.includes("⧉ text") ? row : -1).filter(row => row >= 0);
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(1);
+    expect(lines[rows[0]].match(/⧉ md/g)).toHaveLength(2);
     click(md, rows[0], "⧉ md"); await Promise.resolve();
     expect(copied.at(-1)).toBe("```js\nx()\n```");
-    click(md, rows[1], "⧉ md"); await Promise.resolve();
+    click(md, rows[0], "⧉ md"); await Promise.resolve();
     expect(copied.at(-1)).toBe(input);
   });
 
@@ -221,7 +300,7 @@ describe("copy buttons", () => {
       setWidget: (_key: string, make: (tui: unknown) => unknown) => make({ mode: "fullscreen", requestRender: () => {} }),
       notify: vi.fn(),
     } };
-    registerCopyButtons(pi as never, { AssistantMessageComponent, Markdown }, () => ({ "copyButtons.enabled": true }), async text => { copied.push(text); });
+    registerCopyButtons(pi as never, { AssistantMessageComponent, ToolExecutionComponent, Markdown, Spacer }, () => ({ "copyButtons.enabled": true }), async text => { copied.push(text); });
     events.get("session_start")?.({}, context);
     const assistant = new AssistantMessageComponent(undefined, false, theme, undefined, 0);
     assistant.updateContent(message("Hello"), false);
@@ -242,7 +321,7 @@ describe("copy buttons", () => {
     const previous = markdown(existing.assistant);
     hover(previous);
     expect(render(previous).join("\n")).toContain("⧉ text");
-    registerCopyButtons(pi as never, { AssistantMessageComponent, Markdown }, () => ({ "copyButtons.enabled": false }), async () => {});
+    registerCopyButtons(pi as never, { AssistantMessageComponent, ToolExecutionComponent, Markdown, Spacer }, () => ({ "copyButtons.enabled": false }), async () => {});
     events.get("session_start")?.({}, context);
     expect(setWidget).not.toHaveBeenCalled();
     expect(render(previous).join("\n")).not.toContain("⧉ text");
@@ -252,7 +331,7 @@ describe("copy buttons", () => {
     events.get("session_start")?.({}, context);
     expect(setWidget).not.toHaveBeenCalled();
     vi.stubEnv("PI_SUBAGENT_CHILD", "1");
-    registerCopyButtons(pi as never, { AssistantMessageComponent, Markdown }, () => ({ "copyButtons.enabled": true }), async () => {});
+    registerCopyButtons(pi as never, { AssistantMessageComponent, ToolExecutionComponent, Markdown, Spacer }, () => ({ "copyButtons.enabled": true }), async () => {});
     events.get("session_start")?.({}, context);
     expect(setWidget).not.toHaveBeenCalled();
     vi.unstubAllEnvs();
@@ -262,7 +341,7 @@ describe("copy buttons", () => {
     const events = new Map<string, (event: unknown, ctx: unknown) => void>();
     const pi = { on: (name: string, handler: (event: unknown, ctx: unknown) => void) => events.set(name, handler) };
     const setWidget = vi.fn();
-    registerCopyButtons(pi as never, { AssistantMessageComponent, Markdown }, () => ({ "copyButtons.enabled": true }), async () => {});
+    registerCopyButtons(pi as never, { AssistantMessageComponent, ToolExecutionComponent, Markdown, Spacer }, () => ({ "copyButtons.enabled": true }), async () => {});
     events.get("session_start")?.({}, { mode: "rpc", hasUI: true, cwd: "/project", ui: { setWidget, notify: vi.fn() } });
     expect(setWidget).not.toHaveBeenCalled();
   });
@@ -272,7 +351,7 @@ describe("copy buttons", () => {
     const pi = { on: (name: string, handler: (event: unknown, ctx: unknown) => void) => events.set(name, handler) };
     const copied: string[] = [];
     let style: "text" | "nerd" = "text";
-    registerCopyButtons(pi as never, { AssistantMessageComponent, Markdown }, () => ({ "ui.icons": style }), async text => { copied.push(text); });
+    registerCopyButtons(pi as never, { AssistantMessageComponent, ToolExecutionComponent, Markdown, Spacer }, () => ({ "ui.icons": style }), async text => { copied.push(text); });
     const context = { hasUI: true, mode: "tui", cwd: "/project", ui: {
       setWidget: (_key: string, make: (tui: unknown) => unknown) => make({ mode: "fullscreen", requestRender: () => {} }), notify: vi.fn(),
     } };

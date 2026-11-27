@@ -1,7 +1,7 @@
 import { test, expect, vi } from 'vitest';
 import { writeFileSync, utimesSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { setup, summaryCalls, pi, user, assistant } from './harness.js';
+import { setup, summaryCalls, pi, user, assistant, summaryOutputLimit } from './harness.js';
 
 function childHistory(f: any) {
   const sm = pi.SessionManager.inMemory(f.ctx.cwd);
@@ -24,7 +24,7 @@ test('null summary model leaves pi in charge, while settings are read on each at
   f.event.preparation.settings.reserveTokens = 0;
   const result = await f.run();
   expect(f.requests[0].options.reasoning).toBe('max');
-  expect(f.requests[0].options.maxTokens).toBe(1600);
+  expect(f.requests[0].options.maxTokens).toBe(summaryOutputLimit(1600));
   expect(result.compaction.details.readFiles).toEqual(['a.ts']);
   expect(result.compaction.details.modifiedFiles).toEqual(['edited.ts']);
   expect(summaryCalls[0].customInstructions).toBe('Preserve the boundary conditions');
@@ -43,7 +43,7 @@ test('zero file cap disables limits without dropping measurements or user text',
   expect(summaryCalls[0].customInstructions).toBe('  User text\r\n');
   expect(r.details.readFiles).toHaveLength(65); expect(r.details.summarySectionTokens['File Lists']).toBeGreaterThan(0);
   expect(r.details.summaryTotalTokens).toBe(r.summary.length / 4); expect(f.notices).toEqual([]);
-  expect(f.requests[0].options.maxTokens).toBe(800);
+  expect(f.requests[0].options.maxTokens).toBe(summaryOutputLimit(800));
 });
 
 // Break: invalid JSON shape/percent enables a threshold, caching ignores mtime or overrides do not win.
@@ -198,7 +198,7 @@ test('invalid raw summary model is a no-op and invalid raw cap uses defaults', a
   f.event.preparation.fileOps.read = new Set(Array.from({ length: 510 }, (_, i) => `raw-${String(i).padStart(3, '0')}.ts`));
   const r = (await f.run()).compaction;
   expect(r.details.readFiles).toHaveLength(500); expect(r.details.readFiles[499]).toBe('raw-499.ts');
-  expect(f.requests[0].options.maxTokens).toBe(800);
+  expect(f.requests[0].options.maxTokens).toBe(summaryOutputLimit(800));
 });
 
 // Break: legacy discovery runs before the managed-summary opt-in gate.

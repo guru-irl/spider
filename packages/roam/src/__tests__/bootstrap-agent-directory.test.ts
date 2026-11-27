@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import * as bootstrap from "../bootstrap-script";
-import { PROVISION_REMOTE_SCRIPT } from "../provision-remote-script";
+import { getProvisionRemoteScript } from "../provision-remote-script";
 import { selectedSettingsDigests } from "../selected-files";
 
 const settingsSource = (bootstrap as { BOOTSTRAP_SETTINGS_SCRIPT?: string }).BOOTSTRAP_SETTINGS_SCRIPT;
@@ -39,7 +39,7 @@ registerHooks({ resolve(specifier, context, next) {
 } });\n`);
   const settings = kind === "settings preview";
   const input = settings ? { home: f.home, agentDir, paths: [["defaultThinkingLevel"]], maximum: 1024 * 1024 } : {};
-  const child = spawnSync(process.execPath, ["--import", hook, "--input-type=module-typescript", "-e", settings ? settingsSource! : PROVISION_REMOTE_SCRIPT], {
+  const child = spawnSync(process.execPath, ["--import", hook, settings ? "--input-type=module-typescript" : "--input-type=module", "-e", settings ? settingsSource! : getProvisionRemoteScript()], {
     input: JSON.stringify(input), cwd: f.home, env: { ...process.env, HOME: f.home }, encoding: "utf8", timeout: 3000,
   });
   expect(child.status, child.stderr).toBe(0);
@@ -179,7 +179,7 @@ for(const key of ['openSync','readFileSync']){const original=fs[key];fs[key]=fun
     const request = { action: "verify", operationId: "metadata-only", machineId, home: f.home, agentDir, globalRoot, npmPrefix: prefix,
       unitDir: join(f.home, ".config/systemd/user"), cli: join(prefix, "lib/package/dist/roam/cli.mjs"), pi: join(prefix, "bin/pi"),
       providers: [], files: [], maximum: 1024 * 1024, chunkBytes: 1024 };
-    const child = spawnSync(process.execPath, ["--import", hook, "--input-type=module-typescript", "-e", PROVISION_REMOTE_SCRIPT], {
+    const child = spawnSync(process.execPath, ["--import", hook, "--input-type=module", "-e", getProvisionRemoteScript()], {
       input: JSON.stringify(request), cwd: f.home, env: { ...process.env, HOME: f.home }, encoding: "utf8", timeout: 3000,
     });
     expect(child.status).toBe(0); return JSON.parse(child.stdout);

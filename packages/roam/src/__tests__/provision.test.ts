@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { PROVISION_REMOTE_SCRIPT } from "../provision-remote-script";
+import { getProvisionRemoteScript } from "../provision-remote-script";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { claimMachineIdentity } from "@spider/db-core/roam/machine";
@@ -665,7 +665,7 @@ console.log(JSON.stringify({id:'probe',type:'response',command:'get_state',succe
   f.ports.verifyPeer = async () => {
     const request = { action: "verify", operationId: "probe-op", machineId: bootstrapPeer.machineId, home, agentDir: agent, globalRoot, npmPrefix: prefix, unitDir,
       cli: join(prefix, "lib/spider/dist/roam/cli.mjs"), pi, providers: [], files: [], maximum: DEFAULT_LIMITS.agentBytes, chunkBytes: DEFAULT_LIMITS.chunkBytes };
-    const child = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", PROVISION_REMOTE_SCRIPT], { input: JSON.stringify(request), encoding: "utf8", timeout: 10_000,
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", getProvisionRemoteScript()], { input: JSON.stringify(request), encoding: "utf8", timeout: 10_000,
       env: { ...process.env, HOME: home, SPIDER_GLOBAL_ROOT: globalRoot } });
     if (child.status !== 0) throw new Error(`verification failed: ${child.stderr}`);
     const reply = JSON.parse(child.stdout); if (reply.error) throw new Error(reply.error);

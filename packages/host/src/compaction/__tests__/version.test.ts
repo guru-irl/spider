@@ -8,8 +8,8 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
 // Break: a verified upgrade still warns, or an unverified upgrade silently suppresses the parity gate.
 test.each([
-  ['0.87.0', false], ['0.87.1', false], ['1.2.0', false],
-  ['0.88.0', true], ['1.2.1', true], ['1.3.0', true],
+  ['0.87.0', false], ['0.87.1', false], ['1.2.0', false], ['1.5.2', false],
+  ['0.88.0', true], ['1.2.1', true], ['1.3.0', true], ['1.5.1', true], ['1.5.3', true],
 ] as const)('pi %s warns only when unverified (%s) and registers only the child draft path', (version, warning) => {
   tested.version = version;
   vi.stubEnv('PI_SUBAGENT_CHILD', '1');

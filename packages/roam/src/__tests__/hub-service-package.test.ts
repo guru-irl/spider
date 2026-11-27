@@ -71,6 +71,33 @@ it.each(["file", "directory", "preserved main"])("the packaged supervisor runs t
   });
 });
 
+it("imports the bundled supervisor without Node type stripping support", () => {
+  const entry = pathToFileURL(join(packageRoot, "dist/roam/supervisor.mjs")).href;
+  const script = `
+    import * as module from "node:module";
+    const exports = Object.keys(module).filter(name => name !== "stripTypeScriptTypes");
+    const withoutStrip = Object.fromEntries(exports.map(name => [name, module[name]]));
+    const getBuiltin = process.getBuiltinModule.bind(process);
+    process.getBuiltinModule = id => id === "node:module" ? withoutStrip : getBuiltin(id);
+    const shim = "data:text/javascript," + encodeURIComponent("export { " + exports.join(", ") + " } from 'node:module';");
+    module.registerHooks({ resolve(specifier, context, nextResolve) {
+      if ((specifier === "node:module" || specifier === "module") && context.parentURL !== shim)
+        return nextResolve(shim, context);
+      return nextResolve(specifier, context);
+    }});
+    const supervisor = await import(${JSON.stringify(entry)});
+    const out = [], err = [];
+    const code = await supervisor.main(["--help"], { out: text => out.push(text), err: text => err.push(text) });
+    console.log(JSON.stringify({ code, out, err }));
+  `;
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", script], { encoding: "utf8", timeout: 2000 });
+  expect({ status: result.status, stdout: result.stdout, stderr: result.stderr }).toEqual({
+    status: 0,
+    stdout: JSON.stringify({ code: 0, out: ["Usage: spider-roam-supervisor [--help]\nHosts sessions only for an enrolled box with initialized capture and hub-issued intent.\n"], err: [] }) + "\n",
+    stderr: "",
+  });
+});
+
 it("executing the bundled CLI library never starts a remote runtime", () => {
   const result = spawnSync(process.execPath, [join(packageRoot, "dist/roam/cli-main.mjs"), "roam", "hub", "--help"],
     { cwd: join(packageRoot, "dist"), encoding: "utf8", timeout: 2000 });

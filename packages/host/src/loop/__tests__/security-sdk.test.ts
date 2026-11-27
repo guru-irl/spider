@@ -1,3 +1,4 @@
+import { Type } from "typebox";
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -7,7 +8,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   fauxAssistantMessage, fauxProvider, fauxToolCall, InMemoryCredentialStore,
-  InMemoryModelsStore, Type, type JsonObject,
+  InMemoryModelsStore, type JsonObject,
 } from "@earendil-works/pi-ai";
 import { registerLoopSchedule, type SessionScheduler } from "../index";
 import { fakeTime } from "./harness";

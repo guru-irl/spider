@@ -11,9 +11,10 @@ import machineIdSource from "./machine-id.ts?raw";
 import intercomReadinessSource from "./intercom-readiness.ts?raw";
 import { DEFAULT_INTERCOM_LIMITS, DEFAULT_LIMITS } from "./contracts";
 import { MAX_PERMISSION_TIGHTENINGS } from "./provision-permissions";
+import { MISSING_NODE_TYPE_STRIPPING_MESSAGE } from "./provision-contracts";
 
-// The destination executes the same file and auth checks as the local installer. Node's
-// native TypeScript stripping needs no package install before the release exists.
+// The destination executes the same file and auth checks as the local installer.
+// Strip types before transfer so the destination needs no compiler or package install.
 const authConsent = authSource.indexOf("export function hasProvisionConsent");
 const authParse = authSource.indexOf("function parseAuth", authConsent);
 const authPreview = authSource.indexOf("export function previewPiAuthBytes", authParse);
@@ -988,10 +989,25 @@ catch (error) {
 }
 `;
 
+export class UnsupportedProvisioningNodeError extends Error {
+  readonly code = "node-type-stripping-unavailable";
+  constructor() {
+    super(MISSING_NODE_TYPE_STRIPPING_MESSAGE);
+    this.name = "UnsupportedProvisioningNodeError";
+  }
+}
+
 // Linux limits each exec argument to 128 KiB, even when ARG_MAX is larger.
 // Keep stdin available for the request and argv[1] for release request files.
-const provisionPayload = gzipSync(provisionSource).toString("base64");
-export const PROVISION_REMOTE_SCRIPT: string = `import { gunzipSync } from "node:zlib";
-import { stripTypeScriptTypes } from "node:module";
+let provisionScript: string | undefined;
+export function getProvisionRemoteScript(): string {
+  if (provisionScript === undefined) {
+    const { stripTypeScriptTypes } = process.getBuiltinModule("node:module");
+    if (typeof stripTypeScriptTypes !== "function") throw new UnsupportedProvisioningNodeError();
+    const provisionPayload = gzipSync(stripTypeScriptTypes(provisionSource)).toString("base64");
+    provisionScript = `import { gunzipSync } from "node:zlib";
 const source = gunzipSync(Buffer.from(${JSON.stringify(provisionPayload)}, "base64")).toString("utf8");
-await import("data:text/javascript;base64," + Buffer.from(stripTypeScriptTypes(source)).toString("base64"));`;
+await import("data:text/javascript;base64," + Buffer.from(source).toString("base64"));`;
+  }
+  return provisionScript;
+}

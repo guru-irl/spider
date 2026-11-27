@@ -1,6 +1,6 @@
 /**
  * Opt-in per-model compaction. Child drafts mirror pi's unexported recovery
- * cut correction and file helpers, verified against pi 0.87 and 1.2.0.
+ * cut correction and file helpers, verified against pi 0.87, 1.2.0 and 1.5.2.
  * Marked-hook checkpoint recovery is spider-specific. Re-run fuzz on upgrades.
  */
 import { readFileSync, statSync } from "node:fs";
@@ -354,8 +354,8 @@ export function registerCompaction(pi: ExtensionAPI, deps: CompactionDeps): void
   }
 
   if (isChild) {
-    if (!VERSION.startsWith("0.87.") && VERSION !== "1.2.0") {
-      warnSkip(`mirrored pi 0.87/1.2.0 internals; running ${VERSION}, re-run the fuzz`);
+    if (!VERSION.startsWith("0.87.") && VERSION !== "1.2.0" && VERSION !== "1.5.2") {
+      warnSkip(`mirrored pi 0.87/1.2.0/1.5.2 internals; running ${VERSION}, re-run the fuzz`);
     }
     pi.on("turn_end", async (event, ctx) => {
       if (

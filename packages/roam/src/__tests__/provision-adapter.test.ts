@@ -3,18 +3,23 @@ import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { gunzipSync } from "node:zlib";
 import { build } from "vite";
 import type { Journal, Peer, Transport } from "../contracts";
 import { DEFAULT_LIMITS } from "../contracts";
 import { BOOTSTRAP_SCRIPT } from "../bootstrap-script";
+import { main as roamMain } from "../cli";
 import { copyPiAuth } from "../auth";
 import { beginRelease, beginShortWrite, endShortWrite } from "../release-receipt";
+import { installBoxEnrollment } from "../enrollment";
+import { selectedSocket } from "../../../herdr/src/client/parse";
 import { releaseRequestDigest } from "../release-request";
 import { inspectDestinationSettings, selectedSettingsDigests } from "../selected-files";
 // @ts-expect-error The release shim is an executable JavaScript build helper.
 import { extensionShim } from "../../../../scripts/extension-shim.mjs";
 import { startTestBroker, stopTestBroker } from "@spider/intercom/test-support";
 import * as adapterModule from "../provision-adapter";
+import { UnsupportedProvisioningNodeError } from "../provision-remote-script";
 
 const roots: string[] = [];
 type Factory = (input: unknown) => {
@@ -31,7 +36,7 @@ type Factory = (input: unknown) => {
   systemd: { writeUnit(name: string, contents: string): Promise<void>; systemctl(argv: readonly string[]): Promise<void> };
 };
 const create = (adapterModule as { createHcProvisionAdapter?: Factory }).createHcProvisionAdapter;
-const remoteProgram = (adapterModule as { PROVISION_REMOTE_SCRIPT?: string }).PROVISION_REMOTE_SCRIPT;
+const remoteProgram = adapterModule.getProvisionRemoteScript();
 
 function fixture(short = false) {
   const scratch = join(process.cwd(), ".spider", "scratch"); mkdirSync(scratch, { recursive: true });
@@ -47,7 +52,7 @@ function fixture(short = false) {
   const destination = { home, agentDir, npmPrefix, supervisor: join(releaseRoot, "dist", "roam", "supervisor.mjs") };
   const calls = join(root, "systemctl-calls"), writes: { path: string; bytes: Buffer }[] = [], requests: { action: string; argv: string[] }[] = [], launches: string[] = [];
   const launchIO: { stdout: string; stderr: string }[] = [];
-  const launchState = { loseReply: false, dropBefore: 0, terminalOnly: false, prelude: "" }, terminalFile = join(root, "release-terminals.json"), coreLists = join(root, "core-lists");
+  const launchState = { loseReply: false, dropBefore: 0, terminalOnly: false, emptyCore: false, prelude: "" }, terminalFile = join(root, "release-terminals.json"), coreLists = join(root, "core-lists");
   const fakeCore = `#!${process.execPath}\nimport fs from 'node:fs';
 const args = process.argv.slice(2);
 if (args[0] === 'server') console.log(JSON.stringify({core:{id:'fixture-core'},pid:4321,version:'0.1.16'}));
@@ -73,7 +78,17 @@ else {
   }));
   console.log(JSON.stringify({terminals}));
 }\n`;
-  writeFileSync(join(bin, "hc"), fakeCore, { mode: 0o700 });
+  const fakeCoreScript = join(bin, "hc-terminal.mjs");
+  writeFileSync(fakeCoreScript, fakeCore, { mode: 0o700 });
+  const shellQuote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
+  const fakeCoreLauncher = `#!/bin/sh
+if [ "$1" = server ]; then
+  printf '%s\\n' '{"core":{"id":"fixture-core"},"pid":4321,"version":"0.1.16"}'
+else
+  exec ${shellQuote(process.execPath)} ${shellQuote(fakeCoreScript)} "$@"
+fi
+`;
+  writeFileSync(join(bin, "hc"), fakeCoreLauncher, { mode: 0o700 });
   writeFileSync(join(bin, "systemctl"), `#!${process.execPath}\nimport fs from 'node:fs'; fs.appendFileSync(${JSON.stringify(calls)},JSON.stringify(process.argv.slice(2))+'\\n');\n`, { mode: 0o700 });
   const transport: Transport = {
     async resolve(value) { return value; }, async bootstrapProbe() { throw new Error("unexpected probe"); },
@@ -83,11 +98,23 @@ else {
       writes.push({ path, bytes: Buffer.from(bytes) }); mkdirSync(dirname(path), { recursive: true, mode: 0o700 }); writeFileSync(path, bytes);
     },
   };
+  // These scenarios require an absent terminal, not a separately running fake core.
+  const emptyCorePrelude = `import paCp from 'node:child_process'; import paFs from 'node:fs'; import {syncBuiltinESMExports as paSync} from 'node:module';
+{ const original = paCp.spawnSync; paCp.spawnSync = function(file, args, options) {
+  const isFake = file === ${JSON.stringify(peer.core)} && paFs.readFileSync(file, 'utf8') === ${JSON.stringify(fakeCoreLauncher)};
+  if (isFake && args[0] === 'server') return {status:0, stdout:JSON.stringify({core:{id:'fixture-core'},pid:4321,version:'0.1.16'}), stderr:''};
+  if (isFake && args[0] === 'ls' && !paFs.existsSync(${JSON.stringify(terminalFile)})) {
+    paFs.appendFileSync(${JSON.stringify(coreLists)}, JSON.stringify(args)+'\\n');
+    return {status:0, stdout:'{"terminals":[]}', stderr:''};
+  }
+  return original.apply(this, arguments);
+}; paSync(); }
+`;
   const remote = {
     transport,
     async claimIdentity() { throw new Error("unexpected identity bootstrap"); },
     async executeProvision(_peer: Peer, request: Record<string, unknown>) {
-      const argv = ["--input-type=module-typescript", "-e", launchState.prelude + remoteProgram!];
+      const argv = ["--input-type=module", "-e", (launchState.emptyCore ? emptyCorePrelude : "") + launchState.prelude + remoteProgram!];
       requests.push({ action: String(request.action), argv });
       const child = spawnSync(process.execPath, argv, { input: JSON.stringify({ ...request, core: peer.core, coreId: "fixture-core" }), encoding: "utf8",
         timeout: request.action === "verify" ? 4900 : 4000,
@@ -107,7 +134,7 @@ else {
         writeFileSync(terminalFile, JSON.stringify({ terminals: [{ state: "live", labels: { "spider.operation": "op-1", "spider.machine": peer.machineId } }] }));
         throw Object.assign(new Error("reply lost"), { code: "cli-timeout" });
       }
-      const child = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", remoteProgram!, requestFile], {
+      const child = spawnSync(process.execPath, ["--input-type=module", "-e", (launchState.emptyCore ? emptyCorePrelude : "") + remoteProgram!, requestFile], {
         encoding: "utf8", timeout: 4000, env: { ...process.env, HOME: home, PATH: bin, SPIDER_GLOBAL_ROOT: globalRoot },
       });
       launchIO.push({ stdout: child.stdout, stderr: child.stderr });
@@ -690,7 +717,7 @@ it.each(["SIGTERM", "SIGHUP", "SIGINT"] as const)("stops npm and its grandchild 
   writeFileSync(join(f.bin, "npm"), `#!${process.execPath}\nimport fs from 'node:fs'; import { spawn } from 'node:child_process';\nfs.writeFileSync(${JSON.stringify(pids)}, process.pid + '\\n');\nspawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], {stdio:'ignore'});\nprocess.on('SIGTERM', () => {}); setInterval(() => {}, 1000);\n`, { mode: 0o700 });
   let npmPid = 0, ids: number[] = [], result: { code: number | null; signal: NodeJS.Signals | null } | undefined, survivors: number[] = [];
   f.remote.launchRelease = async (_peer, _operationId, requestFile) => {
-    const child = spawn(process.execPath, ["--input-type=module-typescript", "-e", remoteProgram!, requestFile], {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", remoteProgram!, requestFile], {
       stdio: "ignore", env: { ...process.env, HOME: f.home, PATH: f.bin, SPIDER_GLOBAL_ROOT: f.globalRoot },
     });
     const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve => child.once("exit", (code, signal) => resolve({ code, signal })));
@@ -770,7 +797,7 @@ it("remote enrollment refuses malformed matching configuration without replacing
 
 it("reconciles a lost release-launch reply and never runs a duplicate installation", async () => {
   expect(create).toBeTypeOf("function"); expect(remoteProgram).toBeTypeOf("string");
-  const f = fixture(), adapter = create!(f.options), log = releaseNpm(f); f.launchState.loseReply = true;
+  const f = fixture(), adapter = create!(f.options), log = releaseNpm(f); f.launchState.loseReply = true; f.launchState.emptyCore = true;
   const installed = await adapter.installRelease(f.peer, f.input);
   expect(installed).toEqual({ pi: f.peer.pi, cli: f.peer.cli, supervisor: f.destination.supervisor });
   const calls = readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line) as { args: string[]; root: string });
@@ -803,7 +830,7 @@ it("reconciles a lost release-launch reply and never runs a duplicate installati
 
 it("relaunches the same operation only after receipt and terminal evidence are both absent", async () => {
   expect(create).toBeTypeOf("function"); expect(remoteProgram).toBeTypeOf("string");
-  const f = fixture(), adapter = create!(f.options), log = releaseNpm(f); f.launchState.dropBefore = 1;
+  const f = fixture(), adapter = create!(f.options), log = releaseNpm(f); f.launchState.dropBefore = 1; f.launchState.emptyCore = true;
   expect(await adapter.installRelease(f.peer, f.input)).toEqual({ pi: f.peer.pi, cli: f.peer.cli, supervisor: f.destination.supervisor });
   expect(f.launches).toHaveLength(2);
   expect(f.launches[0]).toBe(f.launches[1]);
@@ -937,6 +964,7 @@ it("blocks another operation while a prior background release is unresolved", as
 
 it("abandons an old prepared release only after its deadline and an absent terminal observation", async () => {
   const f = fixture(), first = create!(f.options), second = create!({ ...f.options, operationId: "op-2" });
+  f.launchState.emptyCore = true;
   const delayedLaunch = f.remote.launchRelease.bind(f.remote);
   f.remote.launchRelease = async () => { throw Object.assign(new Error("refused"), { code: "core-changed" }); };
   await expect(first.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "core-changed" });
@@ -955,6 +983,7 @@ it("abandons an old prepared release only after its deadline and an absent termi
 
 it("retains an expired prepared release when a labelled terminal or its core evidence is uncertain", async () => {
   const f = fixture(), first = create!(f.options), second = create!({ ...f.options, operationId: "op-2" });
+  f.launchState.emptyCore = true;
   f.remote.launchRelease = async () => { throw Object.assign(new Error("refused"), { code: "core-changed" }); };
   await expect(first.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "core-changed" });
   const stage = join(f.globalRoot, "roam", "provision", "op-1"), requestFile = join(stage, "release-request");
@@ -1032,6 +1061,16 @@ it("the destination refuses a direct attempt to overwrite the core unit", async 
     unit: "herdr-core.service", contents: "replacement" })).rejects.toMatchObject({ code: "invalid-unit" });
   expect(readFileSync(core, "utf8")).toBe("original core unit");
 }, 5000);
+
+it("ships JavaScript that needs no remote type stripping", () => {
+  const encoded = remoteProgram!.match(/gunzipSync\(Buffer\.from\("([A-Za-z0-9+/=]+)", "base64"\)\)/)?.[1];
+  expect(encoded).toBeDefined();
+  const source = gunzipSync(Buffer.from(encoded!, "base64"));
+  const check = spawnSync(process.execPath, ["--check", "--input-type=module"], { input: source, encoding: "utf8" });
+  expect(check.stderr).toBe("");
+  expect(check.status).toBe(0);
+  expect(remoteProgram).not.toContain("stripTypeScriptTypes");
+});
 
 it("keeps the single remote program argument below Linux's conservative limit", () => {
   expect(Buffer.byteLength(remoteProgram!)).toBeLessThan(120 * 1024);
@@ -1117,6 +1156,21 @@ it("rejects private credentials whose provider was changed after local validatio
   await expect(adapter.installCredentialFiles(f.peer, [{ path: "models.json", bytes, mode: 0o600 }], ["demo"]))
     .rejects.toMatchObject({ code: "provider-consent-required" });
   expect(existsSync(join(f.agentDir, "models.json"))).toBe(false);
+}, 5000);
+
+it.each(["size", "sha256"] as const)("rejects a selected file with a changed chunk %s", async field => {
+  const f = fixture(); f.options.limits.chunkBytes = 1024;
+  const adapter = create!(f.options), remote = f.remote.executeProvision.bind(f.remote);
+  f.remote.executeProvision = (peer, request) => {
+    if (request.action !== "install-files") return remote(peer, request);
+    const file = request.file as { path: string; mode: number; chunks: { name: string; size: number; sha256: string }[] };
+    const chunk = file.chunks[0];
+    const changed = field === "size" ? { ...chunk, size: chunk.size + 1 } : { ...chunk, sha256: "0".repeat(64) };
+    return remote(peer, { ...request, file: { ...file, chunks: [changed] } });
+  };
+  await expect(adapter.installFiles(f.peer, [{ path: "keybindings.json", bytes: Buffer.from('{"key":"value"}'), mode: 0o600 }]))
+    .rejects.toMatchObject({ code: "chunk-mismatch" });
+  expect(existsSync(join(f.agentDir, "keybindings.json"))).toBe(false);
 }, 5000);
 
 it("rejects a file assembled from mixed public and private chunks", async () => {
@@ -1297,6 +1351,25 @@ it.each(["invalid-limits", "invalid-staging-name", "invalid-release-request", "u
   f.remote.executeProvision = async () => { throw Object.assign(new Error("untrusted detail"), { code }); };
   await expect(create!(f.options).switchover(f.peer, "op-1")).rejects.toMatchObject({ code });
 }, 5000);
+
+it("reports the missing Node type-stripping feature to adapter callers", async () => {
+  const f = fixture();
+  f.remote.executeProvision = async () => { throw new UnsupportedProvisioningNodeError(); };
+  await expect(create!(f.options).switchover(f.peer, "op-1")).rejects.toMatchObject({
+    code: "provision-failed",
+    message: "Node's stripTypeScriptTypes feature is unavailable; provisioning needs a Node version that provides it.",
+  });
+});
+
+it("does not expose a spoofed missing-feature error", async () => {
+  const f = fixture();
+  f.remote.executeProvision = async () => {
+    throw Object.assign(new Error("fixture-secret"), { name: "UnsupportedProvisioningNodeError" });
+  };
+  await expect(create!(f.options).switchover(f.peer, "op-1")).rejects.toMatchObject({
+    code: "provision-failed", message: "Provisioning switchover failed (provision-failed)",
+  });
+});
 
 it("does not expose credential-like remote error codes or messages", async () => {
   expect(create).toBeTypeOf("function"); expect(remoteProgram).toBeTypeOf("string");
@@ -1491,7 +1564,8 @@ server.listen(${JSON.stringify(socket)},()=>{fs.chmodSync(${JSON.stringify(socke
 function readyIntercomDeclarations(f: ReturnType<typeof fixture>): void {
   readyExecutables(f);
   const sdk = join(f.npmPrefix, "lib", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "index.js");
-  unlinkSync(sdk); symlinkSync(join(process.cwd(), "node_modules", "@earendil-works", "pi-coding-agent", "dist", "index.js"), sdk);
+  // Intercom checks need Pi's real package resolver, not the unrelated extension-loader probe.
+  symlinkSync(join(process.cwd(), "node_modules", "@earendil-works", "pi-coding-agent", "dist", "core"), join(dirname(sdk), "core"));
   const scripts = join(f.releaseRoot, "scripts"), extensions = join(f.agentDir, "extensions");
   mkdirSync(scripts, { mode: 0o700 }); mkdirSync(extensions, { mode: 0o700 });
   copyFileSync(join(process.cwd(), "scripts", "extension-shim.mjs"), join(scripts, "extension-shim.mjs"));
@@ -1550,15 +1624,18 @@ it.each([
 
 it("starts the real Spider broker on a fresh box and then proves broker health", async () => {
   const f = fixture(true); readyIntercomDeclarations(f);
-  await create!(f.options).enroll(f.peer, "00000000-0000-4000-8000-000000000001", "herdr-core.service");
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: f.home };
+  installBoxEnrollment(f.globalRoot, f.peer.machineId, "00000000-0000-4000-8000-000000000001", "herdr-core.service", { corePin: {
+    binary: f.peer.core, coreId: "fixture-core", socket: selectedSocket(env), sessionNamespace: env.HC_SESSION || "default",
+    stateHome: env.XDG_STATE_HOME || join(f.home, ".local/state"), configHome: env.XDG_CONFIG_HOME || join(f.home, ".config"),
+  } });
   writeFileSync(join(f.globalRoot, "roam", "active-release.json"), JSON.stringify(f.releaseRoot), { mode: 0o600 });
   vi.stubEnv("HOME", f.home); vi.stubEnv("SPIDER_GLOBAL_ROOT", f.globalRoot); vi.stubEnv("PI_CODING_AGENT_DIR", f.agentDir);
   const out: string[] = [], err: string[] = [];
-  const { main } = await import("../cli");
   let pid: number | undefined;
   try {
     expect(existsSync(join(f.agentDir, "intercom", "broker.sock"))).toBe(false);
-    expect(await main(["--global-root", f.globalRoot, "roam", "intercom", "start-broker"], { out: text => out.push(text), err: text => err.push(text) })).toBe(0);
+    expect(await roamMain(["--global-root", f.globalRoot, "roam", "intercom", "start-broker"], { out: text => out.push(text), err: text => err.push(text) })).toBe(0);
     const reply = JSON.parse(out.join(""));
     expect(reply).toMatchObject({ version: 1, kind: "intercom-broker-start", ok: true, machineId: f.peer.machineId,
       doctor: { enabled: false, diagnostics: expect.any(Array), consumers: expect.any(Array) } });
@@ -1567,7 +1644,7 @@ it("starts the real Spider broker on a fresh box and then proves broker health",
     expect(Number.isSafeInteger(pid) && pid! > 1).toBe(true);
     expect(await create!(f.options).verifyPeer()).toMatchObject({ intercomUnique: true, legacyDrained: true, federation: true });
     out.length = 0;
-    expect(await main(["--global-root", f.globalRoot, "roam", "intercom", "start-broker"], { out: text => out.push(text), err: text => err.push(text) })).toBe(0);
+    expect(await roamMain(["--global-root", f.globalRoot, "roam", "intercom", "start-broker"], { out: text => out.push(text), err: text => err.push(text) })).toBe(0);
     expect(JSON.parse(out.join(""))).toMatchObject({ ok: true, machineId: f.peer.machineId, doctor: { diagnostics: expect.any(Array) } });
     expect(Number(readFileSync(join(f.agentDir, "intercom", "broker.pid"), "utf8"))).toBe(pid);
   } finally { if (pid) try { process.kill(pid, "SIGTERM"); } catch { /* Fixture process already exited. */ } vi.unstubAllEnvs(); }

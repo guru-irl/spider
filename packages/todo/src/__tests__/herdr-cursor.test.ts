@@ -35,7 +35,7 @@ function piFixture(mode: "regular" | "fullscreen") {
   const pi = Object.create(InteractiveMode.prototype) as {
     showExtensionCustom: (...args: any[]) => Promise<unknown>;
   };
-  Object.assign(pi, { editor, editorContainer, ui: tui, keybindings: {}, disposeActiveSelector() {} });
+  Object.assign(pi, { editor, editorContainer, ui: tui, keybindings: {}, extensionOverlays: new Map(), disposeActiveSelector() {} });
   const command = makeTodosCommand({ getDb: () => db!.db, getSessionId: () => "current" });
   tui.start();
   return {

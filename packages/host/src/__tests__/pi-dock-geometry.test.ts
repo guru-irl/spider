@@ -16,6 +16,16 @@ const rootShape = (f: Fixture) => f.root as unknown as { gap: number; align: str
 const dockShape = (f: Fixture) => f.dock as unknown as { gap: number; align: string; layoutType: string; entries: Entry[]; children: Component[] };
 
 describe("pi dock geometry", () => {
+  it.each(["regular", "fullscreen"] as const)("measures the %s dock on pi 1.5.2", mode => {
+    const host = fixture(mode);
+    host.geometry.dispose();
+    const adapter = installPiDockGeometry(host.tui, "1.5.2");
+    try {
+      host.renderBaseFrame();
+      expect(adapter.read()).toMatchObject({ kind: "ready", width: 120, safeHeight: 30, frameRows: 40 });
+    } finally { adapter.dispose(); }
+  });
+
   it("publishes same-frame fullscreen dock growth before rendering the detail", () => {
     const fullscreen = fixture("fullscreen");
     expect(fullscreen.geometry.read()).toMatchObject({ kind: "ready", width: 120, safeHeight: 30, frameRows: 40, origin: "terminal" });

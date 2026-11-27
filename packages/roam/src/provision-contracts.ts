@@ -4,6 +4,8 @@ import type { SelectedFile, SelectedFileMetadata, SettingsDestinationPreview, Se
 import type { IntercomReadiness } from "./intercom-readiness";
 import type { RevocationGate } from "./cause-codes";
 
+export const MISSING_NODE_TYPE_STRIPPING_MESSAGE = "Node's stripTypeScriptTypes feature is unavailable; provisioning needs a Node version that provides it.";
+
 export type FileLimit = number | "unlimited" | null;
 export interface FileStatus { present: boolean; readable: boolean; modeSafe: boolean }
 export interface ExecutableStatus extends FileStatus { executable: boolean }

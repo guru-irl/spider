@@ -43,13 +43,20 @@ import { inspectIntercomReadiness, intercomReadinessDiagnostics, validIntercomRe
 import { readPrivateBytes } from "./selected-files";
 
 function missing(error: unknown): boolean { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
-type SupervisorAutostart = "enabled" | "disabled" | "unknown";
+type SupervisorAutostart = "enabled" | "disabled" | "missing" | "unknown";
 export async function inspectSupervisorAutostart(): Promise<SupervisorAutostart> {
   const v0 = "spider-roam-supervisor-v0.service", legacy = "spider-roam-supervisor.service";
   const configHome = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
-  const unit = existsSync(join(configHome,"systemd","user",v0)) ? v0
-    : existsSync(join(homedir(),".config","systemd","user",legacy)) ? legacy : null;
-  if (!unit) return "unknown";
+  const present = (file: string): boolean => {
+    try { lstatSync(file); return true; }
+    catch (error) { if (missing(error)) return false; throw error; }
+  };
+  let unit: string | null;
+  try {
+    unit = present(join(configHome, "systemd", "user", v0)) ? v0
+      : present(join(homedir(), ".config", "systemd", "user", legacy)) ? legacy : null;
+  } catch { return "unknown"; }
+  if (!unit) return "missing";
   return new Promise(resolve => {
     execFile("systemctl", ["--user", "is-enabled", unit], { timeout: 5000, maxBuffer: 4096 }, (error, stdout) => {
       const state = stdout.trim();
@@ -539,6 +546,7 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
       let autostart: SupervisorAutostart = "unknown";
       try { autostart = await (input.supervisorAutostart ?? inspectSupervisorAutostart)(); } catch { /* An unavailable observation is not proof. */ }
       if (autostart === "disabled") inventory.push({ severity: "warning", reason: "supervisor-autostart-disabled: Supervisor autostart is disabled. Run spider roam enable locally on this box.", repairCommand: "spider roam enable" });
+      else if (autostart === "missing") inventory.push({ severity: "warning", reason: "supervisor-not-installed: No roaming supervisor is installed. Run spider roam enable locally on this box.", repairCommand: "spider roam enable" });
       else if (autostart === "unknown") inventory.push({ severity: "warning", reason: "supervisor-autostart-unavailable: Supervisor autostart cannot be verified. Check the supervisor unit and systemd user service.", repairCommand: null });
     }
     inventory.push(...corePinDiagnostics(inspectSupervisorCorePin(root, process.env), config.machineId));

@@ -490,7 +490,7 @@ describe("the opt-in soak drivers", () => {
     expect(resultPoll.results).toMatchObject([{ messageId: "sink-message", attempted: true, outcome: { kind: "socket_delivered", id: "sink-message" } }]);
     expect(records.filter(event => event.type === "handoff")).toMatchObject([{ id: "sink-message" }]);
     expect(records.filter(event => event.type === "receipt")).toMatchObject([{ id: "sink-message" }]);
-    expect(records.filter(event => event.type === "poll-start").map(event => event.holdMs)).toEqual(expect.arrayContaining([0, 20_000]));
+    expect(records.flatMap(event => event.type === "poll-start" ? [event.holdMs] : [])).toEqual(expect.arrayContaining([0, 20_000]));
     expect(JSON.stringify(records)).not.toContain("relay-soak");
   });
 

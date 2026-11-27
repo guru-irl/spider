@@ -257,6 +257,28 @@ it.each(["checkpoint", "incoming"] as const)("does not classify a %s-owned v0 wo
   ]));
 });
 
+it("doctor blocks live legacy hosting even after its launch reservation is settled", async () => {
+  const f = fixture(), stateRoot = join(f.root, "herdr"), file = join(f.root, "live-session.jsonl");
+  writeFileSync(file, "fixture transcript\n", { mode: 0o600 });
+  const boot = await localBootId(), startIdentity = processStartIdentity(process.pid);
+  expect(boot).toBeTruthy(); expect(startIdentity).toBeTruthy();
+  const owner = { pid: process.pid, startIdentity: startIdentity! };
+  const probe = async () => ({ kind: "live" as const, startIdentity: owner.startIdentity });
+  await claimIdLock(stateRoot, "session-live", owner, probe, { bootId: async () => boot });
+  const leases = createSessionLeases(stateRoot);
+  await leases.claim(file, owner, { leases, presence: createProcessPresence(stateRoot), processes: async () => [], probe },
+    { mode: "cutover", bootId: boot });
+  await createIntentStore(f.root).update("session-live", null, {
+    intent: { sessionId: "session-live", epoch: 1, desired: "running", suspended: null, file, cwd: f.root, moveId: null },
+    failures: [], supervision: { kind: "live", identity: { bootId: boot!, pid: process.pid, startTime: startIdentity! }, stableSince: 1 },
+  });
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-blocked.*session-live/) }),
+  ]));
+});
+
 it("doctor blocks an adopted launch that still has an unreconciled reservation", async () => {
   const f = fixture(), stateRoot = join(f.root, "herdr"), file = join(f.root, "session.jsonl");
   writeFileSync(file, "fixture transcript\n", { mode: 0o600 });

@@ -7,6 +7,7 @@ import { isIntercomIntakeAction, isIntercomIntakeFence } from "./protocol.js";
 import { RECEIPT_ACK_FEATURE, RECEIPT_EVIDENCE_FEATURE, compatibleReceipt, FEDERATION_FEATURE, FREEZE_BLOCKERS_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, addressKey, sessionAddress, type SessionAddress, type RemoteSessionInfo, type FederationDispatchResult, type FederationBrokerMessage, type SessionEndpoint, type LocalSessionInfo } from "../protocol.js";
 import { isRemoteSessionInfo, isSessionAddress, isSessionEndpoint, isFederationDispatchResult, isMessageControl, isConsumptionReceipt } from "./protocol.js";
 import net from "net";
+import { performance } from "node:perf_hooks";
 import { constants, closeSync, fstatSync, lstatSync, openSync, realpathSync, chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync } from "fs";
 import { isAbsolute, join, resolve } from "path";
 import { createHash, randomUUID, timingSafeEqual } from "crypto";
@@ -288,7 +289,7 @@ class IntercomBroker {
   private helperToken: string | null = null;
   private helperNegotiated = new Set<net.Socket>();
   private v0Requests = new Set<net.Socket>();
-  private relayLinks = createRelayLinks({ now: Date.now, later(ms, fn) {
+  private relayLinks = createRelayLinks({ now: () => performance.now(), wallNow: Date.now, later(ms, fn) {
     const timer = setTimeout(fn, ms);
     timer.unref();
     return () => clearTimeout(timer);

@@ -238,8 +238,8 @@ npm test -- --config packages/herdr/e2e/vitest.config.ts --maxWorkers=1 packages
   `lastCallMs: number | null`, `lastError: string | null`, and `messagesCarried: number`.
   `lastCallMs` advances when a valid call starts. Track liveness from call completion separately.
 - Produces: `createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkView) => void): RelayLinks`
-  in `relay-links.ts`. `RelayClock` has `now(): number` and
-  `later(ms: number, fn: () => void): () => void`, matching the roam `Clock`. `RelayLinks` exposes
+  in `relay-links.ts`. `RelayClock` has monotonic `now(): number`, `later(ms: number, fn: () => void):
+  () => void`, and `wallNow(): number` for displayed timestamps. `RelayLinks` exposes
   `poll(poll: RelayPoll, signal?: AbortSignal): Promise<RelayPollReply>`,
   `submit(relayId: string, submit: RelaySubmit, signal?: AbortSignal): Promise<RelayResult>`,
   `list(): readonly RelayLinkView[]`, and `close(): void`.

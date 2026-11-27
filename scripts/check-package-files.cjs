@@ -1,5 +1,6 @@
 // Verify npm's file list; assert-bundle.mjs separately verifies the tarball bytes.
 const fs = require('node:fs');
+const roamEntries = require('./roam-entries.json');
 let input = '';
 process.stdin.on('data', chunk => { input += chunk; }).on('end', () => {
   const [pack] = JSON.parse(input);
@@ -7,8 +8,8 @@ process.stdin.on('data', chunk => { input += chunk; }).on('end', () => {
   const skillDirs = ['packages/superpowers/skills', 'packages/pstack/skills', 'packages/intercom/skills'];
   const skills = skillDirs.flatMap(dir => fs.readdirSync(dir, { recursive: true })
     .filter(file => file === 'SKILL.md' || file.endsWith('/SKILL.md')).map(file => `${dir}/${file}`));
-  const required = ['dist/extension.js', 'dist/extension.js.ready', 'dist/intercom/broker.mjs', 'dist/dashboard/index.html', 'dist/roam/cli.mjs', 'dist/roam/cli-main.mjs',
-    'dist/roam/intercom-helper.mjs', 'dist/roam/supervisor.mjs', 'packages/herdr/assets/shared/presentations.js',
+  const required = ['dist/extension.js', 'dist/extension.js.ready', 'dist/intercom/broker.mjs', 'dist/dashboard/index.html',
+    ...Object.keys(roamEntries).map(mode => `dist/roam/${mode}.mjs`), 'packages/herdr/assets/shared/presentations.js',
     'packages/herdr/assets/look/native-navigation-0.1.16.json', 'packages/herdr/assets/look/native-panel-0.1.16.json', 'packages/herdr/assets/look/native-picker-0.1.16.json',
     'packages/herdr/assets/look/pane-navigation-b.json', 'packages/herdr/assets/look/pane-panel-b.json', 'packages/herdr/assets/look/pane-picker-b.json', 'packages/herdr/assets/shared/pane-service-state.js',
     'scripts/link.mjs', 'scripts/dev-link.mjs', 'scripts/link-roam.mjs', 'scripts/extension-shim.mjs', 'scripts/package-extension.ts', 'scripts/pi-agent-dir.mjs',

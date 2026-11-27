@@ -8,20 +8,26 @@ import { fileURLToPath } from 'node:url';
 
 const policyPath = fileURLToPath(new URL('./test-resources.json', import.meta.url));
 const timingPath = fileURLToPath(new URL('./test-durations.json', import.meta.url));
+const roamEntriesPath = fileURLToPath(new URL('./roam-entries.json', import.meta.url));
 const policyContent = () => {
-  try { return readFileSync(policyPath); }
-  catch { return Buffer.from('<unreadable resource policy>'); }
+  try { return JSON.stringify([readFileSync(policyPath, 'utf8'), readFileSync(roamEntriesPath, 'utf8')]); }
+  catch { return '<unreadable resource policy>'; }
 };
 const policyBytes = policyContent();
 let policy, policyFailure;
 try {
-  policy = JSON.parse(policyBytes.toString());
+  const [resources, roaming] = JSON.parse(policyBytes);
+  policy = JSON.parse(resources);
+  const roamEntries = JSON.parse(roaming);
+  if (!roamEntries || typeof roamEntries !== 'object' || Array.isArray(roamEntries)) throw new Error('invalid roaming entry manifest');
+  const roamSources = Object.values(roamEntries);
   if (policy.version !== 1 || !Array.isArray(policy.rules)) throw new Error('unsupported policy schema');
-  const arrays = [policy.bundles.entries, policy.bundles.consumers,
+  const arrays = [policy.bundles.entries, policy.bundles.consumers, roamSources,
     ...['chrome', 'acceptance', 'stories'].map(name => policy.optional[name]),
     ...policy.rules.flatMap(rule => [rule.inputs, rule.tests, rule.related])];
   if (arrays.some(value => !Array.isArray(value) || value.some(pattern => typeof pattern !== 'string'))
     || policy.rules.some(rule => typeof rule.reason !== 'string')) throw new Error('invalid policy rules');
+  policy.bundles.entries.push(...roamSources);
 } catch {
   policyFailure = 'invalid or missing resource policy';
   policy = { rules: [], bundles: { entries: [], consumers: [] }, optional: { chrome: [], acceptance: [], stories: [] } };
@@ -219,7 +225,7 @@ export async function selectTests({ root = process.cwd(), base, head = 'HEAD', r
   }
   if (result.mode === 'full') result.deferred = [];
   result.selectionAudit = result.changedPaths.some(file => [
-    'scripts/select-tests.mjs', 'scripts/test-resources.json',
+    'scripts/select-tests.mjs', 'scripts/test-resources.json', 'scripts/roam-entries.json',
     'scripts/run-selected-tests.mjs', 'scripts/check-test-selection.mjs',
     'scripts/measure-test-selection.mjs', 'scripts/replay-test-selection.mjs', '.github/workflows/ci.yml',
   ].includes(file));

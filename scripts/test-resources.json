@@ -32,6 +32,7 @@
       "inputs": [
         "scripts/select-tests*",
         "scripts/test-resources.json",
+        "scripts/roam-entries.json",
         "scripts/run-selected-tests.mjs",
         "scripts/replay-test-selection.mjs",
         "scripts/vitest-*",
@@ -261,10 +262,6 @@
   "bundles": {
     "entries": [
       "packages/host/src/extension.ts",
-      "packages/roam/src/cli-entry.ts",
-      "packages/host/src/roam/cli-main.ts",
-      "packages/roam/src/intercom-helper.ts",
-      "packages/roam/src/supervisor-main.ts",
       "packages/herdr/src/bin/cli.ts",
       "packages/host/src/herdr/bin/pane-endpoint-main.ts",
       "packages/herdr/src/bin/feed-reader.ts",
@@ -379,6 +376,7 @@
       "packages/intercom/src/broker/helper-socket.test.ts",
       "packages/intercom/src/broker/receipt-queue.test.ts",
       "packages/intercom/src/broker/receipt-replay.test.ts",
+      "packages/intercom/src/broker/relay-links.test.ts",
       "packages/intercom/src/broker/roam-v0.test.ts",
       "packages/intercom/src/broker/spawn.test.ts",
       "packages/intercom/src/broker/versions.test.ts",
@@ -408,6 +406,7 @@
       "packages/roam/src/__tests__/provision-prefix-modes.test.ts",
       "packages/roam/src/__tests__/provision-private-modes.test.ts",
       "packages/roam/src/__tests__/provision.test.ts",
+      "packages/roam/src/__tests__/relay-soak.test.ts",
       "packages/roam/src/__tests__/session-control.test.ts",
       "packages/subagents/src/__tests__/durable-child.test.ts",
       "packages/subagents/src/__tests__/fork-launch-real.test.ts",

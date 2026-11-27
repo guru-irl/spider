@@ -167,17 +167,19 @@ function strictRoamBundle(): { root: string; directory: string } {
   }
   return { root, directory };
 }
+const assertStrictRoamBundle = (root: string) =>
+  (assertRoamBundle as (root: string, options: { requireHelper: boolean }) => void)(root, { requireHelper: true });
 
 it("strict roaming bundle accepts exactly the five current entries", () => {
   const { root } = strictRoamBundle();
-  expect(() => assertRoamBundle(root, { requireHelper: true })).not.toThrow();
+  expect(() => assertStrictRoamBundle(root)).not.toThrow();
 }, 5000);
 
 it("strict roaming bundle rejects an unknown sixth entry", () => {
   const { root, directory } = strictRoamBundle();
-  expect(() => assertRoamBundle(root, { requireHelper: true })).not.toThrow();
+  expect(() => assertStrictRoamBundle(root)).not.toThrow();
   writeFileSync(join(directory, "unexpected.mjs"), "#!/usr/bin/env node\nexport {};\n");
-  expect(() => assertRoamBundle(root, { requireHelper: true })).toThrow(/unexpected runtime chunk/i);
+  expect(() => assertStrictRoamBundle(root)).toThrow(/unexpected runtime chunk/i);
 }, 5000);
 
 it.each([
@@ -188,7 +190,7 @@ it.each([
 ])("strict roaming bundle rejects %s in relay-soak.mjs", (_name, statement, error) => {
   const { root, directory } = strictRoamBundle();
   writeFileSync(join(directory, "relay-soak.mjs"), `#!/usr/bin/env node\n${statement}\n`);
-  expect(() => assertRoamBundle(root, { requireHelper: true })).toThrow(error);
+  expect(() => assertStrictRoamBundle(root)).toThrow(error);
 }, 5000);
 
 it("the legacy roaming bundle still works only when the helper is optional", () => {
@@ -196,7 +198,7 @@ it("the legacy roaming bundle still works only when the helper is optional", () 
   mkdirSync(directory, { recursive: true });
   for (const entry of ["cli.mjs", "supervisor.mjs"]) writeFileSync(join(directory, entry), "#!/usr/bin/env node\nexport {};\n");
   expect(() => assertRoamBundle(root)).not.toThrow();
-  expect(() => assertRoamBundle(root, { requireHelper: true })).toThrow(/roaming entries/i);
+  expect(() => assertStrictRoamBundle(root)).toThrow(/roaming entries/i);
 }, 5000);
 
 it.each([

@@ -537,7 +537,7 @@ it("reports a pending handoff with an unverifiable owner as unverified", async (
   } finally { spy.mockRestore(); }
 });
 
-it("doctor blocks live legacy hosting even after its launch reservation is settled", async () => {
+it.each(["live", "idle"] as const)("doctor blocks live legacy hosting when its intent view is %s", async supervision => {
   const f = fixture(), stateRoot = join(f.root, "herdr"), file = join(f.root, "live-session.jsonl");
   writeFileSync(file, "fixture transcript\n", { mode: 0o600 });
   const boot = await localBootId(), startIdentity = processStartIdentity(process.pid);
@@ -550,12 +550,50 @@ it("doctor blocks live legacy hosting even after its launch reservation is settl
     { mode: "cutover", bootId: boot });
   await createIntentStore(f.root).update("session-live", null, {
     intent: { sessionId: "session-live", epoch: 1, desired: "running", suspended: null, file, cwd: f.root, moveId: null },
-    failures: [], supervision: { kind: "live", identity: { bootId: boot!, pid: process.pid, startTime: startIdentity! }, stableSince: 1 },
+    failures: [], supervision: supervision === "live"
+      ? { kind: "live", identity: { bootId: boot!, pid: process.pid, startTime: startIdentity! }, stableSince: 1 }
+      : { kind: "idle", nextAttemptAt: null },
   });
   const io = { out: vi.fn(), err: vi.fn() };
   expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
   expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
     expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-blocked.*session-live/) }),
+  ]));
+});
+
+it.each(["matching", "wrong-file", "stale-epoch", "legacy-launch"] as const)("checks %s v0 ownership against an idle legacy intent", async evidence => {
+  const f = fixture(), stateRoot = join(f.root, "herdr"), file = join(f.root, "session-v0.jsonl"), cwd = join(f.root, "checkout"), id = "session-v0-owner";
+  writeFileSync(file, "fixture transcript\n", { mode: 0o600 });
+  const boot = await localBootId(), startIdentity = processStartIdentity(process.pid);
+  expect(boot).toBeTruthy(); expect(startIdentity).toBeTruthy();
+  const owner = { pid: process.pid, startIdentity: startIdentity! };
+  const probe = async () => ({ kind: "live" as const, startIdentity: owner.startIdentity });
+  if (evidence === "legacy-launch") {
+    const launcher = { pid: 98765, startIdentity: "fixture-launcher" };
+    const probeBoth = async (pid: number) => ({ kind: "live" as const, startIdentity: pid === launcher.pid ? launcher.startIdentity : owner.startIdentity });
+    const lock = await claimIdLock(stateRoot, id, launcher, probeBoth, { bootId: async () => boot });
+    const handoff = await lock.prepareHandoff("old-launch", file, "old-core");
+    await claimIdLock(stateRoot, id, owner, probeBoth, { bootId: async () => boot, handoff });
+    f.journal.begin({ id: "old-launch", kind: "exact-session-launch", machineId: hub, expectedEpoch: 1, args: { sessionId: id } });
+    f.journal.record("old-launch", "done", { code: 0, reason: "ready" });
+  } else await claimIdLock(stateRoot, id, owner, probe, { bootId: async () => boot });
+  const leases = createSessionLeases(stateRoot);
+  await leases.claim(file, owner, { leases, presence: createProcessPresence(stateRoot), processes: async () => [], probe },
+    { mode: "cutover", bootId: boot });
+  await createIntentStore(f.root).update(id, null, {
+    intent: { sessionId: id, epoch: evidence === "stale-epoch" ? 2 : 1, moveId: null, desired: "running", file, cwd, suspended: null },
+    failures: [], supervision: { kind: "idle", nextAttemptAt: null },
+  });
+  const global = openDb(join(f.root, "spider.db"));
+  try {
+    global.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state,destination) VALUES (?,?,1,NULL,1,'running',NULL)").run(id, hub);
+    writeLocal(global, "relocate-managed", id, { sessionId: id, machineId: hub, historyMachine: hub, repoKey: "fixture-repo", workspaceId: "workspace-1", repository: cwd, cwd, file: evidence === "wrong-file" ? join(f.root, "other.jsonl") : file, stores: ["global", "worktree:fixture-repo:workspace-1"] });
+  } finally { global.close(); }
+  const io = { out: vi.fn(), err: vi.fn() };
+  await main(["roam", "doctor", "--json"], io);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    evidence === "matching" ? expect.objectContaining({ severity: "info", reason: expect.stringMatching(/^legacy-upgrade-ready/) })
+      : expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-blocked.*session-v0-owner/) }),
   ]));
 });
 

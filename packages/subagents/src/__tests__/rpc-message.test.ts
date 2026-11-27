@@ -25,6 +25,32 @@ function fixture(mode: "rpc" | "print" = "rpc", intercom = false) {
   return { db, globalDb, store, id, routed, pi, root, dbPath: join(root, "project.db") };
 }
 describe("steerable child message routing", () => {
+  it("includes the resolved name in a delivered result without changing agent text", async () => {
+    const f = fixture();
+    registerChild("owner", f.id, { kill() {}, detach() {}, wait: async () => ({ exitCode: 0 }),
+      steer: async () => ({ accepted: true, delivered: true, delivery: "delivered" }) });
+    const result = await makeMessageHandler()({ to: f.id.slice(0, 8), message: "Check the manifest" }, { ...f, sessionId: "owner" });
+    expect(result.details).toMatchObject({ runId: f.id, runName: "task", delivery: "delivered" });
+    expect(result.content).toBe(`Message to child ${f.id}: delivered.`);
+  });
+
+  it("falls back to the agent when a resolved run has no name", async () => {
+    const f = fixture();
+    f.db.prepare("UPDATE runs SET name = NULL, status = 'done' WHERE id = ?").run(f.id);
+    const result = await makeMessageHandler()({ to: f.id, message: "Check the manifest" }, { ...f, sessionId: "owner" });
+    expect(result.details).toMatchObject({ runId: f.id, runName: "worker", delivery: "refused" });
+    expect(result.content).toContain(f.id);
+  });
+
+  it("labels a route with no launch record without exposing its ID as a name", async () => {
+    const f = fixture();
+    const id = "beb58fc6-193f-4247-bb38-c59612f6985d";
+    f.globalDb.prepare("INSERT INTO run_routes VALUES (?,?,?)").run(id, "owner", join(f.root, "missing.db"));
+    const result = await makeMessageHandler()({ to: id, message: "Check the manifest" }, { ...f, sessionId: "owner" });
+    expect(result.details).toMatchObject({ runId: id, runName: "subagent", delivery: "refused" });
+    expect(result.content).toContain(id);
+  });
+
   // Mapping any accepted reply to unconfirmed would hide explicit extension consumption.
   it("reports consumed input as not delivered rather than accepted-unconfirmed", async () => {
     const f = fixture();
@@ -134,7 +160,7 @@ describe("steerable child message routing", () => {
     const result = await makeMessageHandler()({ to: f.id, message: "correction" }, { ...f, sessionId: "peer" });
     expect(result.isError).toBe(false);
     expect(f.routed.map(r => r.to)).toEqual(["task-child-unique"]);
-    expect(result.details).toMatchObject({ delivery: "broker-accepted", delivered: false, recipientAcknowledged: false });
+    expect(result.details).toMatchObject({ delivery: "broker-accepted", delivered: false, recipientAcknowledged: false, runId: f.id, runName: "task" });
   });
   it("routes a run from another worktree through its owner's persisted capability", async () => {
     const f = fixture("rpc", true);
@@ -214,6 +240,8 @@ describe("steerable child message routing", () => {
     const writes: string[] = [];
     registerChild("owner", f.id, { kill() {}, detach() {}, wait: async () => ({ exitCode: 0 }), steer: async (message: string) => { writes.push(message); return { accepted: true }; } } as any);
     const result = await makeMessageHandler()({ to: f.id, message: "correction" }, { ...f, sessionId: "owner" });
-    expect(result.isError).toBe(true); expect(writes).toHaveLength(0); expect(f.routed).toHaveLength(0);
+    expect(result.isError).toBe(true);
+    expect(result.details).toMatchObject({ runId: f.id, runName: "task", delivery: "refused" });
+    expect(writes).toHaveLength(0); expect(f.routed).toHaveLength(0);
   });
 });

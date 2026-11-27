@@ -40,6 +40,12 @@ describe("message renderer", () => {
     else expect(out).not.toContain("Start a fresh run.");
   });
 
+  it("uses a resolved name instead of the typed ID", () => {
+    const details = { verb: "send" as const, to: "5f3b8190", targetName: "tia-3", body: "Check the manifest", delivered: true };
+    expect(renderMessageResult(details, { theme: id, width: 80 }))
+      .toEqual([" ✓ → tia-3 · delivered", " ⎿ Check the manifest"]);
+  });
+
   it("delivered message shows target + body within width — no repeated header", () => {
     const lines = renderMessageResult({ verb: "send", to: "peer", body: "hello there", delivered: true }, { theme: id, width: 50 });
     const text = lines.join("\n");

@@ -20,7 +20,7 @@ export function renderMessageResult(details: MessageDetails, ctx: RenderCtx): st
   const trim = resultTrimmer(expanded);
   const pending = details.delivery === "child-accepted" || details.delivery === "accepted but not confirmed" || details.delivery === "no reply yet, delivery unknown" || details.delivery === "queued" || (details.delivery === "broker-accepted" && details.recipientAcknowledged !== true);
   const icon = statusIcon(theme, pending ? "warn" : details.delivered ? "ok" : "fail");
-  const target = details.to ?? details.from ?? "—";
+  const target = details.targetName ?? details.to ?? details.from ?? "—";
   const status = details.delivery === "delivered" ? `delivered${details.transformed ? ", transformed" : ""}`
     : details.delivery === "child-accepted" ? "accepted but not confirmed"
     : details.delivery === "accepted but not confirmed" || details.delivery === "no reply yet, delivery unknown" || details.delivery === "refused" ? details.delivery

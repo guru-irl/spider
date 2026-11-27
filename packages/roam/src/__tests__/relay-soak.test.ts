@@ -1,4 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { decodeRelayPoll, encodeRelayPollReply, type RelayPoll, type RelaySubmit, type RelayResult } from "@spider/intercom/relay-protocol";
 import type { Clock, Peer, RoamConfig } from "../contracts";
 import type { V0Routes } from "../relocate/intercom-routes";
@@ -327,6 +329,15 @@ function recordManifest(evidence: Evidence) {
   return { manifest: { startMs: evidence.startMs, endMs: evidence.endMs, rssAllowanceBytes: evidence.rssAllowanceBytes,
     links, faults: evidence.faults, processes: evidence.processes }, files };
 }
+
+describe("the packaged soak entry", () => {
+  it("builds an opt-in relay-soak.mjs without emptying the other roam outputs", async () => {
+    const configModule = await import(pathToFileURL(resolve("vite.roam.config.mjs")).href);
+    const config = configModule.default({ command: "build", mode: "relay-soak" });
+    expect(config.build).toMatchObject({ ssr: "packages/roam/src/relocate/relay-soak.ts", outDir: "dist/roam", emptyOutDir: false,
+      rollupOptions: { output: { entryFileNames: "relay-soak.mjs" } } });
+  });
+});
 
 describe("offline evidence assembly", () => {
   it("assembles the emitted records into a complete passing evidence file", () => {

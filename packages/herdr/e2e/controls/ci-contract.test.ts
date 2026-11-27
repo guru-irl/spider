@@ -120,7 +120,9 @@ describe('headless story matrix', () => {
   it('defaults to relocation and keeps R12 available only by explicit selection', () => {
     const defaults = select('');
     expect(defaults.status, defaults.stderr).toBe(0);
-    expect(JSON.parse(defaults.stdout).include.map((row: { story: string }) => row.story)).toEqual(['R18', 'R10', 'R11']);
+    const matrix = JSON.parse(defaults.stdout) as { include: { story: string; timeout: number }[] };
+    expect(matrix.include.map(row => row.story)).toEqual(['R18', 'R10', 'R11']);
+    expect(matrix.include).toContainEqual({ story: 'R18', timeout: 3 });
     const requested = select('R12');
     expect(requested.status, requested.stderr).toBe(0);
     expect(JSON.parse(requested.stdout).include).toEqual([{ story: 'R12', timeout: 2 }]);

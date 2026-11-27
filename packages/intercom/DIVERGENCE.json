@@ -26,6 +26,18 @@
       "upstreamHash": "4f97b280ff3e4abc5f622db5e039b57ecda2aba4b93425b20a1aea3f4fec2943"
     },
     {
+      "path": "broker/relay-links.ts",
+      "task": "3.6a",
+      "reason": "Keep roaming intercom relay polls, link state, and submission outcomes in the local broker.",
+      "upstreamHash": null
+    },
+    {
+      "path": "broker/roam-relay-client.ts",
+      "task": "3.6a",
+      "reason": "Carry roaming intercom relay calls over the owner-checked private broker socket.",
+      "upstreamHash": null
+    },
+    {
       "path": "broker/roam-v0-client.ts",
       "task": "3.6a",
       "reason": "Call a private Unix broker once for roaming lookup, delivery, or an ask.",
@@ -84,6 +96,12 @@
       "path": "protocol.ts",
       "task": "4.3c",
       "reason": "Export host contracts, named pair failures, notice messages and the shared first-home attestation validator; carry named topology-transition refusals through authorized helpers. Declare the opt-in move-fence feature and additive intake handshake.",
+      "upstreamHash": null
+    },
+    {
+      "path": "relay-protocol.ts",
+      "task": "3.6a",
+      "reason": "Validate bounded and correlated roaming intercom relay frames.",
       "upstreamHash": null
     },
     {

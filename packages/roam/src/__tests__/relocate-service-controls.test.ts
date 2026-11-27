@@ -1,14 +1,19 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
 import { migrate, openDb } from "@spider/db-core";
+import { claimIdLock, localBootId } from "@spider/herdr/sessions/id-lock";
+import { createSessionLeases } from "@spider/herdr/sessions/lease";
+import { createProcessPresence } from "@spider/herdr/sessions/presence";
+import { processStartIdentity } from "@spider/herdr/jobs/handoff";
 import { installHubService, hubServiceFile } from "../launchd";
 import { renderSupervisorUnit } from "../systemd";
 import { configureV0Service } from "../production-controls";
 import { openJournal } from "../journal";
 import { installLocalV0Supervisor } from "../relocate/service-install";
 import { main } from "../cli";
+import { createIntentStore } from "../intent";
 
 const roots: string[] = [];
 afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -48,6 +53,45 @@ it("a missing global database is unverified and refuses enable without creating 
   expect(existsSync(global)).toBe(false);
   expect(readFileSync(config)).toEqual(before);
   expect(f.calls).toEqual([]);
+});
+
+it.each(["hub", "box"] as const)("enable refuses an adopted pending launch without changing %s evidence or services", async role => {
+  const f = fixture(role), stateRoot = join(f.root, "herdr"), file = join(f.root, "session.jsonl"), journalFile = join(f.root, "roam", "journal.db");
+  writeFileSync(file, "fixture transcript\n", { mode: 0o600 });
+  await createIntentStore(f.root).update("session-adopted", null, {
+    intent: { sessionId: "session-adopted", epoch: 1, desired: "running", suspended: null, file, cwd: f.root, moveId: null },
+    failures: [], supervision: { kind: "launching", operationId: "launch-adopted", phase: "invoking" },
+  });
+  const journal = openJournal(journalFile);
+  journal.begin({ id: "launch-adopted", kind: "exact-session-launch", machineId: f.machineId, expectedEpoch: 1, args: { sessionId: "session-adopted" } });
+  journal.record("launch-adopted", "done", { code: 0, reason: "ready" });
+  const boot = await localBootId(), startIdentity = processStartIdentity(process.pid);
+  expect(boot).toBeTruthy(); expect(startIdentity).toBeTruthy();
+  const launcher = { pid: 98765, startIdentity: "fixture-launcher" }, adopted = { pid: process.pid, startIdentity: startIdentity! };
+  const probe = async (pid: number) => pid === launcher.pid ? { kind: "live" as const, startIdentity: launcher.startIdentity }
+    : { kind: "live" as const, startIdentity: adopted.startIdentity };
+  const lock = await claimIdLock(stateRoot, "session-adopted", launcher, probe, { bootId: async () => boot });
+  const handoff = await lock.prepareHandoff("launch-adopted", file, "fixture-core");
+  await claimIdLock(stateRoot, "session-adopted", adopted, probe, { bootId: async () => boot, handoff });
+  const leases = createSessionLeases(stateRoot);
+  await leases.claim(file, adopted, { leases, presence: createProcessPresence(stateRoot), processes: async () => [], probe },
+    { mode: "cutover", bootId: boot });
+  const legacy = role === "hub" ? hubServiceFile(f.root, f.launchd.plistDir) : join(f.systemd.unitDir, "spider-roam-supervisor.service");
+  mkdirSync(role === "hub" ? f.launchd.plistDir : f.systemd.unitDir, { recursive: true });
+  writeFileSync(legacy, "existing legacy unit\n", { mode: 0o600 });
+  const tree = (directory: string): Array<[string, string]> => readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)).flatMap(entry => {
+    const path = join(directory, entry.name);
+    return entry.isDirectory() ? tree(path) : [[path, readFileSync(path).toString("base64")] as [string, string]];
+  });
+  const files = [join(f.root, "spider.db"), journalFile, join(f.root, "roam", "config.json"), join(f.root, "roam", "machine.json"), legacy];
+  const before = [...files.map(path => [path, readFileSync(path).toString("base64")] as [string, string]), ...tree(stateRoot), ...tree(join(f.root, "roam", "intents"))];
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "enable", "--json"], io, { v0: { lifecycle: f.options } })).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0])).toMatchObject({ code: 1, reason: "legacy-upgrade-blocked" });
+  expect([...files.map(path => [path, readFileSync(path).toString("base64")] as [string, string]), ...tree(stateRoot), ...tree(join(f.root, "roam", "intents"))]).toEqual(before);
+  expect(f.calls).toEqual([]);
+  expect(f.enabled()).toBe(false);
+  expect(existsSync(role === "hub" ? hubServiceFile(f.root, f.launchd.plistDir, "v0") : join(f.systemd.unitDir, "spider-roam-supervisor-v0.service"))).toBe(false);
 });
 
 it.each(["hub", "box"] as const)("enable refuses pending legacy work before changing a %s service", async role => {

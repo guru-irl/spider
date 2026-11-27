@@ -3,6 +3,7 @@ import { basename, dirname, posix } from "node:path";
 import type { JsonObject } from "@spider/db-core/roam/types";
 import type { Outcome, Peer } from "./contracts";
 import type { AgentDirectoryProbe, ProvisionPorts, ProvisionRequest, ProvisionResult } from "./provision-contracts";
+import { MISSING_NODE_TYPE_STRIPPING_MESSAGE } from "./provision-contracts";
 import { AuthError, copyPiAuth, hasProvisionConsent, previewPiAuthBytes } from "./auth";
 import { inventory } from "./inventory";
 import { isMachineId } from "./machine-id";
@@ -64,6 +65,9 @@ function safeReason(error: unknown): string {
     return files.length ? `${error.code} (${files.join(", ")})` : error.code;
   }
   const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+  if (code === "provision-failed" && error instanceof Error && error.message === MISSING_NODE_TYPE_STRIPPING_MESSAGE) {
+    return `provision-failed (${MISSING_NODE_TYPE_STRIPPING_MESSAGE})`;
+  }
   const details = error && typeof error === "object" && "details" in error ? error.details : undefined;
   if (code === "release-in-progress" && details && typeof details === "object" && "blockingOperationId" in details &&
       typeof details.blockingOperationId === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(details.blockingOperationId)) {

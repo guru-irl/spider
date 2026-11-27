@@ -11,6 +11,7 @@ import machineIdSource from "./machine-id.ts?raw";
 import intercomReadinessSource from "./intercom-readiness.ts?raw";
 import { DEFAULT_INTERCOM_LIMITS, DEFAULT_LIMITS } from "./contracts";
 import { MAX_PERMISSION_TIGHTENINGS } from "./provision-permissions";
+import { MISSING_NODE_TYPE_STRIPPING_MESSAGE } from "./provision-contracts";
 
 // The destination executes the same file and auth checks as the local installer.
 // Strip types before transfer so the destination needs no compiler or package install.
@@ -991,7 +992,7 @@ catch (error) {
 export class UnsupportedProvisioningNodeError extends Error {
   readonly code = "node-type-stripping-unavailable";
   constructor() {
-    super("Node's stripTypeScriptTypes feature is unavailable; provisioning needs a Node version that provides it.");
+    super(MISSING_NODE_TYPE_STRIPPING_MESSAGE);
     this.name = "UnsupportedProvisioningNodeError";
   }
 }

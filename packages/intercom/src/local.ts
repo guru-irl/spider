@@ -2854,8 +2854,8 @@ Usage:
                 };
               }
             }
-            if (v0Target && (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
-                !v0Source?.address || v0?.homeEpoch(v0Source.address.sessionId) !== v0Source.v0HomeEpoch)) {
+            if (v0Source && (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
+                !v0Source.address || v0?.homeEpoch(v0Source.address.sessionId) !== v0Source.v0HomeEpoch)) {
               return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
             }
             const result = await connectedClient.send(sendTo, {
@@ -3052,8 +3052,8 @@ Usage:
                 details: { error: true },
               };
             }
-            if (v0Target && (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
-                !v0Source?.address || v0?.homeEpoch(v0Source.address.sessionId) !== v0Source.v0HomeEpoch)) {
+            if (v0Source && (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
+                !v0Source.address || v0?.homeEpoch(v0Source.address.sessionId) !== v0Source.v0HomeEpoch)) {
               return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
             }
             questionId = randomUUID();

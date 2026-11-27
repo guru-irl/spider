@@ -852,6 +852,49 @@ it.each(["send", "ask"] as const)("does not fall back after the unhomed %s sessi
   } finally { finish?.({ kind: "legacy" }); abort.abort(); await pending; observer.off("message", onMessage); await f.cleanup(); }
 });
 
+it("does not send an unhomed local fallback after its session changes during confirmation", async () => {
+  const inbox: unknown[] = [];
+  const onMessage = (...args: unknown[]) => inbox.push(args);
+  observer.on("message", onMessage);
+  let finish!: (value: boolean) => void, confirmationOpened = false;
+  const confirm = () => new Promise<boolean>(resolve => { finish = resolve; confirmationOpened = true; });
+  const f = await fixture({ homeEpoch: () => undefined, prepare: async () => ({ kind: "legacy" }) }, { confirm });
+  try {
+    const pending = f.tool.execute("send", { action: "send", to: "observer", message: "old session" }, new AbortController().signal, undefined, f.ctx);
+    await vi.waitFor(() => expect(confirmationOpened).toBe(true));
+    f.switchSession("replacement-session");
+    finish(true);
+    const result = await pending;
+    expect(result.details).toMatchObject({ error: true, code: "changed" });
+    expect(inbox).toEqual([]);
+  } finally { finish?.(false); observer.off("message", onMessage); await f.cleanup(); }
+});
+
+it("does not ask through an unhomed fallback after the session changes during lookup", async () => {
+  const inbox: unknown[] = [];
+  const onMessage = (...args: unknown[]) => inbox.push(args);
+  observer.on("message", onMessage);
+  const f = await fixture({ homeEpoch: () => undefined, prepare: async () => ({ kind: "legacy" }) });
+  const originalList = IntercomClient.prototype.listSessions;
+  let calls = 0, lookupBlocked = false, finish!: () => void;
+  const list = vi.spyOn(IntercomClient.prototype, "listSessions").mockImplementation(async function (this: IntercomClient, options) {
+    if (this.sessionId === "sender-session" && ++calls === 2) await new Promise<void>(resolve => { lookupBlocked = true; finish = resolve; });
+    return originalList.call(this, options);
+  });
+  const abort = new AbortController();
+  let settled: any;
+  const pending = f.tool.execute("ask", { action: "ask", to: "observer", message: "old session" }, abort.signal, undefined, f.ctx)
+    .then((result: any) => { settled = result; return result; });
+  try {
+    await vi.waitFor(() => expect(lookupBlocked).toBe(true));
+    f.switchSession("replacement-session");
+    finish();
+    await vi.waitFor(() => expect(Boolean(settled) || inbox.length > 0).toBe(true));
+    expect(inbox).toEqual([]);
+    expect(settled.details).toMatchObject({ error: true, code: "changed" });
+  } finally { finish?.(); abort.abort(); await pending; list.mockRestore(); observer.off("message", onMessage); await f.cleanup(); }
+});
+
 it("does not retarget a local roaming ask after the recipient reconnects", async () => {
   const inbox: unknown[] = [];
   const prepare: V0Prepare = async ({ locals }) => {

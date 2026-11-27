@@ -178,6 +178,33 @@ function headerDifferences(shadow, prior, overlappingOnly) {
   });
 }
 
+// Match pi's mergeCompat ordering when comparing effective compatibility.
+const NESTED_COMPAT = ["openRouterRouting", "vercelGatewayRouting", "chatTemplateKwargs", "chatTemplateArgs"];
+function mergeCompat(base, override) {
+  if (!override) return base;
+  const merged = { ...base, ...override };
+  for (const key of NESTED_COMPAT) {
+    const a = base?.[key], b = override[key];
+    if ((typeof a === "object" && a !== null) || (typeof b === "object" && b !== null)) merged[key] = { ...a, ...b };
+  }
+  return merged;
+}
+
+function providerCompatDifferences(shadow, builtin, provider, prior) {
+  if (!provider || typeof provider !== "object") return [];
+  const before = mergeCompat(mergeCompat(provider, shadow), prior);
+  const after = mergeCompat(mergeCompat(builtin, provider), prior);
+  const changed = [];
+  for (const [key, value] of Object.entries(provider)) {
+    if (NESTED_COMPAT.includes(key) && value && typeof value === "object") {
+      for (const child of Object.keys(value)) {
+        if (!isDeepStrictEqual(before?.[key]?.[child], after?.[key]?.[child])) changed.push(`${key}.${child}`);
+      }
+    } else if (!isDeepStrictEqual(before?.[key], after?.[key])) changed.push(key);
+  }
+  return changed;
+}
+
 async function main() {
   const { models: builtin, snapshot } = await resolveBuiltinIds();
   const { token, available } = loadAuth();
@@ -211,6 +238,16 @@ async function main() {
           conflicts.push({ key, names });
         }
       }
+      if (equalsBuiltin && key === "headers" && gh.headers) {
+        const before = { ...gh.headers, ...prior.headers, ...value };
+        const after = { ...builtin.get(entry.id).headers, ...gh.headers, ...prior.headers };
+        const names = Object.keys(gh.headers).filter((name) => !isDeepStrictEqual(before[name], after[name]));
+        if (names.length) conflicts.push({ key, names, provider: true });
+      }
+      if (equalsBuiltin && key === "compat" && gh.compat) {
+        const names = providerCompatDifferences(value, builtin.get(entry.id).compat, gh.compat, prior.compat);
+        if (names.length) conflicts.push({ key, names, provider: true });
+      }
       if (equalsBuiltin) continue;
       if (INHERITED_FIELDS.has(key)) inherited.push(key);
       else if (!OVERRIDE_FIELDS.has(key)) unsupported.push(key);
@@ -230,7 +267,7 @@ async function main() {
     for (const m of migrations) {
       if (m.unsupported.length) console.error(`[sync-copilot-models] ${m.id}: unsupported fields ${m.unsupported.join(", ")}`);
       for (const conflict of m.conflicts) {
-        console.error(`[sync-copilot-models] ${m.id}: conflicting field ${conflict.key}${conflict.names?.length ? ` (${conflict.names.join(", ")})` : ""}`);
+        console.error(`[sync-copilot-models] ${m.id}: conflicting field ${conflict.key}${conflict.names?.length ? ` (${conflict.provider ? "provider keys: " : ""}${conflict.names.join(", ")})` : ""}`);
       }
     }
     fail("cannot migrate conflicting or unsupported fields; no changes were written.");

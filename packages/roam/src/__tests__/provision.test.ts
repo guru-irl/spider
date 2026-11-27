@@ -492,8 +492,10 @@ it("names an explicit agent-directory mismatch before consent or effects", async
 it("refuses a supervisor executable outside the pinned installation prefix", async () => {
   expect(provision).toBeTypeOf("function");
   const f = fixture(); f.ports.destination.supervisor = "/home/fixture/not-the-install-prefix/supervisor.mjs";
+  f.journal.begin(f.request("bad-unit-dir").operation);
+  f.journal.record("bad-unit-dir", "unrelated", { exists: true });
   expect(await provision!(f.request("bad-supervisor-path"), f.ports)).toMatchObject({ code: 1, reason: "invalid-provision-destination" });
-  expect(f.events).toEqual([]); expect(f.journal.read("bad-unit-dir")).toEqual([]);
+  expect(f.events).toEqual([]); expect(f.journal.read("bad-supervisor-path")).toEqual([]);
 }, 5000);
 
 it("fails closed when the target agent directory cannot be verified", async () => {

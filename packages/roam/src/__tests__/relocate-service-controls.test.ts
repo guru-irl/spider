@@ -11,7 +11,7 @@ import { processStartIdentity } from "@spider/herdr/jobs/handoff";
 import { installHubService, hubServiceFile } from "../launchd";
 import { renderSupervisorUnit } from "../systemd";
 import { configureV0Service } from "../production-controls";
-import { openJournal } from "../journal";
+import { openFreezeJournal, openJournal } from "../journal";
 import { installLocalV0Supervisor } from "../relocate/service-install";
 import { main } from "../cli";
 import { createIntentStore } from "../intent";
@@ -115,6 +115,35 @@ it.each(["hub", "box"] as const)("enable refuses an adopted pending launch witho
   expect(f.calls).toEqual([]);
   expect(f.enabled()).toBe(false);
   expect(existsSync(role === "hub" ? hubServiceFile(f.root, f.launchd.plistDir, "v0") : join(f.systemd.unitDir, "spider-roam-supervisor-v0.service"))).toBe(false);
+});
+
+it.each(["hub", "box"] as const)("%s enable refuses each freeze-only and map-only blocker without changing evidence", async role => {
+  for (const kind of ["freeze", "map"] as const) {
+    const f = fixture(role), journalFile = join(f.root, "roam", "journal.db"), globalFile = join(f.root, "spider.db");
+    openJournal(journalFile);
+    if (kind === "freeze") {
+      const freeze = openFreezeJournal(journalFile);
+      freeze.beginFreeze("session-freeze-only", "freeze-only", 1);
+      freeze.bindFreezeRoster("session-freeze-only", "freeze-only", 1, ["global"]);
+    } else {
+      const directory = join(f.root, "repository"); mkdirSync(directory);
+      const global = openDb(globalFile);
+      try { writeLocal(global, "mapping-intent", JSON.stringify(["repo", "fixture-repo"]), { kind: "repo", identity: "fixture-repo",
+        target_path: directory, store_key: "repo:fixture-repo", command_json: null, attempt_id: "attempt-only" }); } finally { global.close(); }
+    }
+    const files = [globalFile, journalFile, join(f.root, "roam", "config.json")], before = files.map(file => readFileSync(file));
+    const io = { out: vi.fn(), err: vi.fn() };
+    expect(await main(["roam", "doctor", "--json"], io, { v0: { lifecycle: f.options } })).toBe(1);
+    expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ severity: "block", reason: expect.stringMatching(kind === "freeze" ? /legacy-upgrade-blocked.*freeze-only/ : /legacy-upgrade-blocked.*repo:fixture-repo/) }),
+    ]));
+    expect(await main(["roam", "enable", "--json"], io, { v0: { lifecycle: f.options } })).toBe(1);
+    expect(JSON.parse(io.out.mock.calls.at(-1)![0])).toMatchObject({ reason: "legacy-upgrade-blocked" });
+    expect(files.map(file => readFileSync(file))).toEqual(before);
+    expect(f.calls).toEqual([]);
+    expect(f.enabled()).toBe(false);
+    expect(existsSync(role === "hub" ? hubServiceFile(f.root, f.launchd.plistDir, "v0") : join(f.systemd.unitDir, "spider-roam-supervisor-v0.service"))).toBe(false);
+  }
 });
 
 it.each(["hub", "box"] as const)("enable refuses pending legacy work before changing a %s service", async role => {

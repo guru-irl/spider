@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFileSync, spawn } from "node:child_process";
+import * as childProcess from "node:child_process";
 import { once } from "node:events";
+import * as handoff from "@spider/herdr/jobs/handoff";
 import * as hcApi from "@spider/herdr/client/hc";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -16,8 +18,12 @@ import { captureLocalSession, installLocalSession, resolveVerifiedArtifact } fro
 import { handleRelocateAgent } from "../relocate/remote";
 import { createRelocateAdapters } from "../relocate/adapters";
 import type { RelocateAdapterOptions, RelocateId, RelocatePlan, RunningHome } from "../relocate/types";
-import { createLocalIO, createLocalRuntime, stopLocalSession, type LocalIO } from "../relocate/local";
+import { createLocalIO, createLocalRuntime, probeLocalProcess, stopLocalSession, type LocalIO } from "../relocate/local";
 import type { SessionId } from "../relocate/types";
+vi.mock("node:child_process", async importOriginal => {
+ const original = await importOriginal<typeof import("node:child_process")>();
+ return {...original, execFileSync: vi.fn(original.execFileSync)};
+});
 const id="33333333-3333-4333-8333-333333333333" as SessionId;
 function stopFixture() {
  let now=0, exits=false, probes=0;
@@ -201,6 +207,18 @@ describe("v0 real transfer",()=>{
   for(const manifest of [captured.value.transcriptArtifact,captured.value.bundleArtifact])await receiveArtifactLocally(manifest,f.options,f.destination);
   expect(await installLocalSession(f.plan,captured.value,f.home,f.destination,undefined,async()=>({kind:"free"}))).toMatchObject({ok:false,refusal:{code:"destination-dirty"}});
   expect(f.git(f.checkout,"rev-parse","HEAD")).toBe(before.head);expect(f.git(f.checkout,"write-tree")).toBe(before.index);expect(readFileSync(join(f.checkout,"file.txt"))).toEqual(before.file);expect(readFileSync(f.plan.destinationPlacement.file)).toEqual(before.transcript);expect(readFileSync(join(f.checkout,"new.txt"),"utf8")).toBe("keep\n");
+ });
+});
+describe("local process probe", () => {
+ it.each([
+  {name: "exited", next: null, expected: {kind: "absent"}},
+  {name: "reused its PID", next: "replacement", expected: {kind: "absent"}},
+  {name: "remained unreadable", next: "original", expected: {kind: "unknown"}},
+ ])("classifies a process that $name after a failed command read", async ({next, expected}) => {
+  vi.spyOn(handoff, "processStartIdentity").mockReturnValueOnce("original").mockReturnValueOnce(next);
+  vi.mocked(childProcess.execFileSync).mockImplementationOnce(() => { throw new Error("ps failed"); });
+
+  expect(await probeLocalProcess(44)).toEqual(expected);
  });
 });
 describe("v0 transfer stop boundary",()=>{

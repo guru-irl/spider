@@ -2760,6 +2760,10 @@ Usage:
               }
               v0Source = from;
               const plan = await v0.prepare({ to, from, locals, signal: _signal });
+              if (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
+                  v0.homeEpoch(from.address!.sessionId) !== sourceEpoch) {
+                return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
+              }
               if (plan.kind === "refused") {
                 return { content: [{ type: "text", text: V0_REFUSAL_TEXT[plan.code] }], details: { error: true, code: plan.code } };
               }
@@ -2944,6 +2948,10 @@ Usage:
               }
               v0Source = from;
               const plan = await v0.prepare({ to, from, locals, signal: _signal });
+              if (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
+                  v0.homeEpoch(from.address!.sessionId) !== sourceEpoch) {
+                return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
+              }
               if (plan.kind === "refused") {
                 return { content: [{ type: "text", text: V0_REFUSAL_TEXT[plan.code] }], details: { error: true, code: plan.code } };
               }

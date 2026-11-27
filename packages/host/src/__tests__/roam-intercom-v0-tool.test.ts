@@ -831,6 +831,27 @@ it.each(["send", "ask"] as const)("refuses a roaming %s when its source registra
   } finally { abort.abort(); await pending; list.mockRestore(); observer.off("message", onMessage); await f.cleanup(); }
 });
 
+it.each(["send", "ask"] as const)("does not fall back after the unhomed %s session changes", async action => {
+  const inbox: unknown[] = [];
+  const onMessage = (...args: unknown[]) => inbox.push(args);
+  observer.on("message", onMessage);
+  let finish!: (plan: { kind: "legacy" }) => void, preparing = false;
+  const prepare: V0Prepare = async () => new Promise(resolve => { preparing = true; finish = resolve; });
+  const f = await fixture({ homeEpoch: () => undefined, prepare });
+  const abort = new AbortController();
+  let settled: any;
+  const pending = f.tool.execute(action, { action, to: "observer", message: "old session" }, abort.signal, undefined, f.ctx)
+    .then((result: any) => { settled = result; return result; });
+  try {
+    await vi.waitFor(() => expect(preparing).toBe(true));
+    f.switchSession("replacement-session");
+    finish({ kind: "legacy" });
+    await vi.waitFor(() => expect(Boolean(settled) || inbox.length > 0).toBe(true));
+    expect(inbox).toEqual([]);
+    expect(settled.details).toMatchObject({ error: true, code: "changed" });
+  } finally { finish?.({ kind: "legacy" }); abort.abort(); await pending; observer.off("message", onMessage); await f.cleanup(); }
+});
+
 it("does not retarget a local roaming ask after the recipient reconnects", async () => {
   const inbox: unknown[] = [];
   const prepare: V0Prepare = async ({ locals }) => {

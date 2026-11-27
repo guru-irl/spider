@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { openDbAt } from "@spider/db-core";
+import { testTmpDir } from "@spider/intercom/test-support";
 import { parseV0AgentReply, parseV0BrokerReply, V0_ASK_MAX_MS, V0_INTERCOM_BYTES, V0_INTERCOM_MS, type V0AgentRequest, type V0BrokerOp, type V0Endpoint, type V0Reply, type V0Text } from "@spider/intercom/roam-v0";
 import type { LocalSessionInfo, RemoteSessionInfo } from "@spider/intercom/types";
 import { DEFAULT_LIMITS, type CallOptions, type Peer, type Transport } from "../contracts";
@@ -15,7 +16,7 @@ const OTHER = "33333333-3333-4333-8333-333333333333";
 const roots: string[] = [];
 
 function machineFixture(machineId: string): { root: string; agentDir: string } {
-  const root = mkdtempSync(join(resolve(".spider/scratch"), "ic2-"));
+  const root = mkdtempSync(join(testTmpDir(), "ic2-"));
   roots.push(root);
   const agentDir = join(root, "agent");
   mkdirSync(join(root, "roam"), { mode: 0o700 });

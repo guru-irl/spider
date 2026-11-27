@@ -1,5 +1,7 @@
 import { parseV0Control, runV0Control, readV0Confirmation } from "./relocate/cli";
 import { createV0Intercom } from "./relocate/intercom";
+import { runV0LinkOnce } from "./relocate/relay-poll";
+import { RELAY_HOLD_MS, RELAY_POLL_MAX_BYTES } from "@spider/intercom/relay-protocol";
 import { parseV0AgentReply, parseV0AgentRequest, V0_INTERCOM_BYTES, type V0AgentReply } from "@spider/intercom/roam-v0";
 import { readPeerRevocation } from "./revocation";
 import { skippedProjectDbNotice, v0SessionCatalog } from "./relocate/session-catalog";
@@ -168,6 +170,15 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       io.out(output);
       return 0;
     } catch { io.err("Invalid or unavailable private intercom request.\n"); return 2; }
+  }
+  if (argv[0] === "roam" && argv[1] === "agent" && argv[2] === "--v0" && argv[3] === "link") {
+    try {
+      const holdMs = argv[5] === "0" ? 0 : argv[5] === String(RELAY_HOLD_MS) ? RELAY_HOLD_MS : null;
+      if (argv.length !== 6 || argv[4] !== "--hold-ms" || holdMs === null) throw new Error("Invalid private link arguments");
+      const input = await readArtifactInput(RELAY_POLL_MAX_BYTES, options?.stdin);
+      io.out((await runV0LinkOnce(root, input, holdMs)).toString("utf8"));
+      return 0;
+    } catch { io.err("Invalid or unavailable private relay poll.\n"); return 2; }
   }
   if (argv[0] === "roam" && argv[1] === "agent" && argv[2] === "--v0") {
     if (argv.length !== 3) { io.out(`${JSON.stringify({ ok: false, refusal: { code: "invalid-arguments", message: "Invalid private v0 request.", nextStep: "Use the private v0 agent protocol." } })}\n`); return 2; }

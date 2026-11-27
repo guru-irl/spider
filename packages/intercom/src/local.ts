@@ -38,7 +38,7 @@ import { sameCwd } from "./cwd.js";
 import { formatContextUsage } from "./format-context.js";
 import { openProjectPane, resolveTargetInCwd, waitForProjectSession, type ProjectPaneLaunch } from "./project-agent.js";
 
-export const V0_MAC_REPLY_ONLY_MESSAGE: string = "Sessions on the Mac accept messages from other machines only as replies to their own asks.";
+export const V0_MAC_REPLY_ONLY_MESSAGE: string = "Sessions on the Mac accept messages from other machines only as replies to their own asks. To answer an ask, use reply.";
 const V0_TRANSCRIPT_SAVE_FAILURE = "\nThe transcript entry could not be saved.";
 const V0_TEXT_TOO_LARGE = `Remote intercom text is too large. Use at most ${V0_TEXT_BYTES / 1024} KiB after JSON encoding.`;
 function v0TextLimitError() {
@@ -2510,11 +2510,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     description: `Send a message to another pi session ${v0 ? "on this machine or a configured roaming peer" : "running on this machine"}.
 Use this to communicate findings, request help, or coordinate work with other sessions.
 ${v0 ? `
-For roaming v0, list is local only. Use a peer/name or full session ID for a remote target.
-Remote sends, asks, and replies are text only and are not queued. Use reply for an incoming ask.
+For roaming v0, list is local only. Use a bare name, peer/name, or full session ID for a remote target.
+Use peer/name if the name is ambiguous. Remote sends, asks, and replies are text only and are not queued.
 ${V0_MAC_REPLY_ONLY_MESSAGE}
-A remote ask uses the configured timeout up to the v0 cap. If the result is no_reply or unknown,
-check the recipient before sending again; neither proves delivery.
+A remote ask uses the configured timeout, up to ${V0_ASK_MAX_MS / 60_000} minutes.
+If the result is no_reply or unknown, check the recipient before sending again.
 ` : ""}
 Target a session by name, full session ID, or the short id shown in parentheses
 by "list" (a leading prefix of the ID is enough). Prefer the short id when two
@@ -2541,7 +2541,7 @@ Usage:
         description: "Action: 'list', 'list-cwd', 'send', 'ask', 'reply', 'pending', 'status', or 'cancel'",
       }),
       to: Type.Optional(Type.String({
-        description: `Target session: name, full session ID, or the short id shown in parentheses by 'list' (a leading ID prefix resolves). For send/ask with cwd, omit to target the sole live session in that cwd or the newly opened project-pane session. For 'reply', disambiguates the pending ask.${v0 ? " For roaming v0, use a configured peer/name or a full session ID; list shows local sessions only." : ""}`,
+        description: `Target session: name, full session ID, or the short id shown in parentheses by 'list' (a leading ID prefix resolves). For send/ask with cwd, omit to target the sole live session in that cwd or the newly opened project-pane session. For 'reply', disambiguates the pending ask.${v0 ? " For roaming v0, use a bare name, configured peer/name, or full session ID; list shows local sessions only." : ""}`,
       })),
       message: Type.Optional(Type.String({
         description: "Message to send (for 'send', 'ask', or 'reply' action)",

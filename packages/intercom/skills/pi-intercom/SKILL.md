@@ -255,7 +255,7 @@ prove whether the message was delivered. `unknown` means delivery could not be
 confirmed. For either outcome, do not retry automatically. Check the recipient
 before sending again.
 
-Remote asks use the configured ask timeout, capped by `V0_ASK_MAX_MS`. Only one
+Remote asks use the configured ask timeout, up to 9 minutes. Only one
 ask can be pending per session. A late reply returns `The asker is no longer waiting.`
 
 ## Key Differences
@@ -266,7 +266,7 @@ ask can be pending per session. A late reply returns `The asker is no longer wai
 | `ask` | Blocks until reply, subject to the configured timeout | You need an answer to continue |
 | `reply` | Responds to the active or pending inbound ask | You were asked something and need to answer naturally |
 | `pending` | Lists unresolved inbound asks | You need to see who is waiting before replying |
-| `list` | Returns all sessions with live status | You need to discover targets or choose an idle peer |
+| `list` | Returns sessions with live status. Local only with roaming v0. | You need to discover targets or choose an idle peer |
 | `status` | Returns your connection state | Troubleshooting |
 
 ## Visible Peer Sessions
@@ -283,7 +283,7 @@ Ask the user before opening another visible surface manually.
 ### `ask` Limitations
 
 - **Connected targets only**: `ask` requires a live target. `list` shows local sessions. A v0 remote target is never queued.
-- **Configurable timeout**: Set `PI_INTERCOM_ASK_TIMEOUT_MS` to a positive millisecond value. Remote asks are capped by `V0_ASK_MAX_MS`.
+- **Configurable timeout**: Set `PI_INTERCOM_ASK_TIMEOUT_MS` to a positive millisecond value. Remote asks wait at most 9 minutes.
 - **One at a time**: Cannot have multiple pending asks from the same session
 - **Cannot self-target**: A session cannot ask itself, including through disconnected-mailbox remapping
 
@@ -378,7 +378,7 @@ For local sessions, replies to recently disconnected explicitly named senders ca
 ```typescript
 // The result reports when no reply arrives before the timeout
 // Set PI_INTERCOM_ASK_TIMEOUT_MS to a positive millisecond value
-// Remote asks are capped by V0_ASK_MAX_MS
+// Remote asks wait at most 9 minutes
 // For longer tasks, use send + follow-up ask pattern
 ```
 

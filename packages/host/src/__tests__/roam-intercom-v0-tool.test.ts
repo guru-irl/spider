@@ -188,7 +188,7 @@ it.each(["send", "ask"] as const)("explains why a box cannot initiate %s to a Ma
   await withConfiguredBoxHost(async execute => {
     const result = await execute(action, hubSessionId, "reply-only fixture");
     expect(result.content[0]).toEqual({ type: "text",
-      text: "Sessions on the Mac accept messages from other machines only as replies to their own asks." });
+      text: "Sessions on the Mac accept messages from other machines only as replies to their own asks. To answer an ask, use reply." });
     expect(result.details).toMatchObject({ error: true, code: "reply-only" });
   });
 });
@@ -434,6 +434,9 @@ it("advertises configured roaming targets and their text-only limits in the tool
     expect(tool.description).toContain("configured roaming peer");
     expect(tool.description).toContain("text only");
     expect(tool.description).toContain("list is local only");
+    expect(tool.description).toContain("bare name");
+    expect(tool.description).toContain("9 minutes");
+    expect(tool.parameters.properties.to.description).toContain("bare name");
     expect(tool.promptSnippet).toContain("roaming");
   } finally { await f.cleanup(); }
   const local = await fixture();

@@ -338,6 +338,18 @@ describe("Copilot model sync catalog", () => {
     expect(readdirSync(join(fixture, ".pi/agent"))).toEqual(["models.json"]);
   });
 
+  // Extra existing headers do not conflict when every shadow header is preserved.
+  it("keeps existing headers when they already cover the shadow values", () => {
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a" }];\n');
+    const existing = { headers: { "X-A": "same", "X-B": "extra" } };
+    const before = { providers: { "github-copilot": { models: [{ id: "model-a", headers: { "X-A": "same" } }],
+      modelOverrides: { "model-a": existing } } } };
+    const result = run([], before);
+    expect(result.status, result.stderr).toBe(0);
+    expect(saved().providers["github-copilot"].modelOverrides["model-a"]).toEqual(existing);
+    expect(saved().providers["github-copilot"].models).toEqual([]);
+  });
+
   // Provider headers outrank built-in headers after the shadow is removed.
   it("refuses equal shadow headers that conflict with provider headers", () => {
     writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a", headers: { "X-Mode": "fixture-builtin" } }];\n');

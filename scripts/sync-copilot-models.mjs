@@ -209,10 +209,9 @@ function previewOverride(override) {
 function headerDifferences(shadow, prior, overlappingOnly) {
   if (!shadow || typeof shadow !== "object" || Array.isArray(shadow) ||
       !prior || typeof prior !== "object" || Array.isArray(prior)) return null;
-  const keys = new Set([...Object.keys(shadow), ...Object.keys(prior)]);
-  return [...keys].filter((key) => {
-    if (overlappingOnly && (!Object.hasOwn(shadow, key) || !Object.hasOwn(prior, key))) return false;
-    return !Object.hasOwn(shadow, key) || !Object.hasOwn(prior, key) || !isDeepStrictEqual(shadow[key], prior[key]);
+  return Object.keys(shadow).filter((key) => {
+    if (!Object.hasOwn(prior, key)) return !overlappingOnly;
+    return !isDeepStrictEqual(shadow[key], prior[key]);
   });
 }
 

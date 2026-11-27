@@ -28,7 +28,7 @@ Spider bundles the superpowers workflow skills and 33 skills adapted from [pstac
 
 ## Requirements
 
-- Use Node 26 to install spider and run pi, so native modules use the same ABI. Development pins `26.4.0`, and all CI workflows use `26.x`. The package declares `>=22.19.0`, but CI does not test lower versions.
+- Use Node 26 to install spider and run pi, so native modules use the same ABI. Development pins `26.4.0`, and all CI workflows use `26.4.0`. The package declares `>=22.19.0`, but CI does not test lower versions.
 - Use pi `1.2.0` or later, including `@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`. Development and tests use `1.2.0`. Older hosts are not supported.
 - Spider uses `better-sqlite3`, a Node addon, and `sqlite-vec`, a platform library. Build the addon for pi's Node ABI.
 - If no native prebuild is available, `better-sqlite3` needs Python and a C or C++ toolchain for `node-gyp`.

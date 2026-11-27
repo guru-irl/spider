@@ -3,26 +3,15 @@ name: CI
 on:
   workflow_call:
   workflow_dispatch:
-    inputs:
-      force_full:
-        description: Run all tests, Chrome, packed acceptance, and headless stories before merge
-        type: boolean
-        required: true
-        default: true
-  pull_request:
-    branches: [main]
   push:
     branches: [main]
 
-# A newer push to the same PR cancels the older run; main is never cancelled so
-# the required check on the merge commit always completes.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ci-main' || format('ci-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
 permissions:
   contents: read
-  actions: read
 
 env:
   # CI never uses onnxruntime's CUDA provider; skip its NuGet download.
@@ -32,50 +21,19 @@ jobs:
   checks:
     # Branch protection matches these exact middle-dot characters.
     name: typecheck · test · build
-    needs: [verify, pr-test, test, herdr-acceptance, chrome, stories]
+    needs: [compile, test, herdr-acceptance, chrome, stories]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Require every applicable job to pass
+      - name: Require full CI jobs to pass
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          EVENT: ${{ github.event_name }}
         run: |
-          if [ "$EVENT" = pull_request ]; then
-            jq -e '.verify.result == "success" and .["pr-test"].result == "success" and .test.result == "skipped" and .chrome.result == "skipped" and .["herdr-acceptance"].result == "skipped" and .stories.result == "skipped"' <<< "$NEEDS_JSON"
-          else
-            jq -e '.["pr-test"].result == "skipped" and .verify.result == "success" and .test.result == "success" and .chrome.result == "success" and .["herdr-acceptance"].result == "success" and .stories.result == "success"' <<< "$NEEDS_JSON"
-          fi
+          jq -e 'length == 5 and all(.[]; .result == "success")' <<< "$NEEDS_JSON"
 
-      - name: Download PR selections
-        if: github.event_name == 'pull_request'
-        uses: actions/download-artifact@v4
-        with:
-          pattern: test-selection-*
-          path: .spider/scratch/selections
-          merge-multiple: true
-
-      - name: Require identical PR selections
-        if: github.event_name == 'pull_request'
-        run: |
-          node --input-type=module -e '
-            import { readFileSync } from "node:fs";
-            import { createHash } from "node:crypto";
-            const read = n => {
-              const manifest = JSON.parse(readFileSync(`.spider/scratch/selections/selection-${n}.json`, "utf8"));
-              const { selectionHash, selectionMs, ...payload } = manifest;
-              if (manifest.testedSha !== process.env.GITHUB_SHA) throw new Error("PR selection used a different checkout");
-              if (selectionHash !== createHash("sha256").update(JSON.stringify(payload)).digest("hex")) throw new Error("PR manifest checksum does not match");
-              return manifest;
-            };
-            const a = read(1), b = read(2);
-            if (a.selectionHash !== b.selectionHash) throw new Error("PR shards selected different manifests");
-            console.log(`Both shards used ${a.selectionHash}`);
-          '
-
-  verify:
-    name: typecheck and build
+  compile:
+    name: compile
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -84,7 +42,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
-          node-version: '26.x'
+          node-version: '26.4.0'
           cache: npm
 
       - name: Prepare isolated scratch
@@ -106,7 +64,6 @@ jobs:
         run: npm run typecheck
 
       - name: Herdr acceptance typecheck
-        if: github.event_name != 'pull_request'
         run: TMPDIR="$PWD/.spider/scratch/tmp" npm run typecheck:herdr:e2e
 
       - name: Verify bundle shape
@@ -129,97 +86,19 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
-
-  pr-test:
-    if: github.event_name == 'pull_request' && !inputs.force_full
-    name: PR tests ${{ matrix.shard }}/2
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    outputs:
-      acceptance: ${{ steps.selection.outputs.acceptance }}
-      chrome: ${{ steps.selection.outputs.chrome }}
-      audit: ${{ steps.selection.outputs.audit }}
-      mode: ${{ steps.selection.outputs.mode }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '26.x'
-          cache: npm
-
-      - name: Prepare isolated scratch
-        run: mkdir -p "$PWD/.spider/scratch/tmp" "$PWD/.spider/scratch/test-results"
-
-      - name: Install SQLite CLI
-        run: command -v sqlite3 || { sudo apt-get update && sudo apt-get install -y sqlite3; }
-
-      - name: Install
-        run: npm ci
-
-      # Tests keep hc sockets inside their own state homes, as on macOS. With
-      # XDG_RUNTIME_DIR empty, hc falls back to /run/user/<uid> when it exists,
-      # so remove the runner's copy for the rest of the job.
-      - name: Remove runner runtime directory
-        run: |
-          rundir="/run/user/$(id -u)"
-          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
-          sudo rm -rf "$rundir"
-          test ! -e "$rundir"
-          echo "XDG_RUNTIME_DIR=" >> "$GITHUB_ENV"
-
-      - name: Select affected tests
-        id: selection
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          node scripts/select-tests.mjs --base "$BASE_SHA" --head "$(git rev-parse HEAD)" --budget-ms 65000 --output ".spider/scratch/test-results/selection-${{ matrix.shard }}.json"
-          node scripts/test-shard-budget.mjs --manifest ".spider/scratch/test-results/selection-${{ matrix.shard }}.json" --limit-ms 65000 > ".spider/scratch/test-results/budget-${{ matrix.shard }}.json"
-
-      - name: Test selected shard
-        id: tests
-        run: |
-          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR TMPDIR="$PWD/.spider/scratch/tmp" node scripts/run-selected-tests.mjs --manifest ".spider/scratch/test-results/selection-${{ matrix.shard }}.json" --shard ${{ matrix.shard }}/2 --report .spider/scratch/test-results/shard-${{ matrix.shard }}.json
-
-      - name: Save proposed selection and budget
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-selection-${{ matrix.shard }}
-          path: |
-            .spider/scratch/test-results/selection-${{ matrix.shard }}.json
-            .spider/scratch/test-results/budget-${{ matrix.shard }}.json
-          include-hidden-files: true
-          if-no-files-found: error
-
-      - name: Shard timing report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results-${{ matrix.shard }}
-          path: .spider/scratch/test-results/shard-${{ matrix.shard }}.json
-          include-hidden-files: true
-          if-no-files-found: warn
-
   test:
-    if: inputs.force_full || github.event_name != 'pull_request'
-    name: test shard ${{ matrix.shard }}/12
+    name: test shard ${{ matrix.shard }}/6
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        shard: [1, 2, 3, 4, 5, 6]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '26.x'
+          node-version: '26.4.0'
           cache: npm
 
       - name: Prepare isolated scratch
@@ -245,7 +124,7 @@ jobs:
       - name: Test shard
         run: |
           echo '::notice::Real hc tests require SPIDER_HERDR_E2E=1 and hc; app tests require the separately approved app opt-in. Both are disabled in CI.'
-          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR TMPDIR="$PWD/.spider/scratch/tmp" npx vitest run --shard=${{ matrix.shard }}/12 --maxWorkers=2 --reporter=default --reporter=json --outputFile=.spider/scratch/test-results/shard-${{ matrix.shard }}.json
+          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR TMPDIR="$PWD/.spider/scratch/tmp" npx vitest run --shard=${{ matrix.shard }}/6 --maxWorkers=2 --reporter=default --reporter=json --outputFile=.spider/scratch/test-results/shard-${{ matrix.shard }}.json
 
       - name: Shard timing report
         if: always()
@@ -257,11 +136,9 @@ jobs:
           if-no-files-found: warn
 
   stories:
-    if: inputs.force_full || github.event_name != 'pull_request'
     uses: ./.github/workflows/herdr-stories.yml
 
   herdr-acceptance:
-    if: inputs.force_full || github.event_name != 'pull_request'
     name: herdr acceptance
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -269,7 +146,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '26.x'
+          node-version: '26.4.0'
           cache: npm
 
       - name: Prepare isolated scratch
@@ -311,7 +188,6 @@ jobs:
           if-no-files-found: ignore
 
   chrome:
-    if: inputs.force_full || github.event_name != 'pull_request'
     # The three states-gallery tests take most of the browser time, so each runs in
     # its own job and the other tests share one. Keep the widths in step with
     # visual-acceptance.e2e.ts; playwright-config.test.ts checks that they match.
@@ -334,7 +210,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '26.x'
+          node-version: '26.4.0'
           cache: npm
 
       - name: Install
@@ -360,3 +236,30 @@ jobs:
             playwright-results/
             playwright-report/
           if-no-files-found: ignore
+
+  audit:
+    name: selection audit
+    needs: [test]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.4.0'
+      - name: Download full CI test reports
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-results-*
+          path: .spider/scratch/test-results
+          merge-multiple: true
+      - name: Look for selection misses
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/selection/audit.mjs .spider/scratch/test-results

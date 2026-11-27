@@ -12,6 +12,10 @@ permissions:
 jobs:
   verify:
     uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
 
   release:
     name: publish release
@@ -27,7 +31,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '26.x'
+          node-version: '26.4.0'
           cache: npm
 
       - name: Verify tag matches package.json version

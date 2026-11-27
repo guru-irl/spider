@@ -107,7 +107,7 @@ The tarball also includes the Herdr runtimes and their required assets and notic
 Source maps and the development dashboard states page must not appear in the tarball.
 The README web marks in `docs/assets/` are documentation assets and do not ship in the package.
 
-All verification jobs use Node `26.x` on Linux. The declared `>=22.19.0` engine floor is not a tested version range.
+All verification jobs use Node `26.4.0` on Linux. The declared `>=22.19.0` engine floor is not a tested version range.
 Real Herdr core, remote, and native-window stories remain opt-in and do not run in CI.
 
 The required branch-protection check is exactly `typecheck · test · build`, with U+00B7 middle dots and no workflow-name prefix.

@@ -86,11 +86,12 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
     try { proc = read(join(rawDir, name)); }
     catch { stats.malformedSnapshots++; continue; }
     if (!outcomes.has(proc.test)) continue;
-    const entry = groups.get(proc.test) ?? { reads: new Set(), unresolved: new Set(), workerPids: new Set() };
+    const entry = groups.get(proc.test) ?? { reads: new Set(), unresolved: new Set(), ranBundle: false, workerPids: new Set() };
     groups.set(proc.test, entry);
     if (proc.worker) entry.workerPids.add(proc.pid);
     for (const script of proc.scripts) {
       if (script.kind === 'bundle' || script.kind === 'fixture') {
+        entry.ranBundle = true;
         if (script.sha256 && !maps.has(script.sha256) && !fixtures.has(script.sha256)) {
           const archive = join(rawDir, 'fixture-maps', `${script.sha256}.json`);
           const fixture = existsSync(archive) ? read(archive) : null;
@@ -123,7 +124,7 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
     if (!entry) continue;
     const ms = report.endTime - report.startTime;
     if (!Number.isFinite(ms) || ms < 0) throw new Error(`Invalid Vitest duration for ${file}`);
-    records[file] = { reads: [...entry.reads].sort(), unresolved: [...entry.unresolved].sort(), workerPids: [...entry.workerPids], ms, result };
+    records[file] = { reads: [...entry.reads].sort(), unresolved: [...entry.unresolved].sort(), ranBundle: entry.ranBundle, workerPids: [...entry.workerPids], ms, result };
   }
   return { reportedFiles, failedFiles, records, stats };
 }

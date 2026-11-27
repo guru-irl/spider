@@ -10,6 +10,8 @@ export interface SelectionMap {
     reads: number[];
     /** Bundle paths for which no source map was found. */
     unresolved: string[];
+    /** Whether the test ran a mapped or unmapped bundle. Absent in older version 1 maps. */
+    ranBundle?: boolean;
     ms: number;
     /** Failed or skipped tests are always selected because their records may be partial. */
     result: 'passed' | 'failed' | 'skipped';

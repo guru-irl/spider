@@ -1,0 +1,159 @@
+name: PR
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: pr-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  # CI never uses onnxruntime's CUDA provider; skip its NuGet download.
+  ONNXRUNTIME_NODE_INSTALL: skip
+
+jobs:
+  compile:
+    name: compile
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.4.0'
+          cache: npm
+
+      - name: Prepare isolated scratch
+        run: mkdir -p "$PWD/.spider/scratch/tmp" "$PWD/.spider/scratch/packaging"
+
+      - name: Check lockfile registry and Herdr workspace
+        run: |
+          node scripts/check-lockfile-registry.mjs
+          npm ls --package-lock-only @spider/herdr
+
+      # npm ci runs prepare, which builds and checks the bundle.
+      - name: Install
+        run: npm ci
+
+      - name: Check generated roaming SQL
+        run: npm run check:roam-sql
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Verify bundle shape
+        run: node scripts/assert-bundle.mjs
+
+      - name: Verify package contents
+        run: |
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          export npm_config_foreground_scripts=false npm_config_pack_destination="$PWD/.spider/scratch/packaging"
+          npm pack --json --ignore-scripts | node -e "require('./scripts/check-package-files.cjs')"
+          TARBALL=$(node -e "process.stdout.write(JSON.parse(require('node:fs').readFileSync('.spider/scratch/packaging/pack.json', 'utf8'))[0].filename)")
+          node scripts/assert-bundle.mjs --package ".spider/scratch/packaging/$TARBALL" --commit "$(git rev-parse --short HEAD)"
+
+  tests:
+    name: tests ${{ matrix.group }}/4
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.4.0'
+          cache: npm
+
+      - name: Prepare isolated scratch
+        run: mkdir -p "$PWD/.spider/scratch/tmp" "$PWD/.spider/scratch/test-results"
+
+      - name: Install SQLite CLI
+        run: command -v sqlite3 || { sudo apt-get update && sudo apt-get install -y sqlite3; }
+
+      - name: Install
+        run: npm ci
+
+      # Tests keep hc sockets inside their own state homes, as on macOS. With
+      # XDG_RUNTIME_DIR empty, hc falls back to /run/user/<uid> when it exists,
+      # so remove the runner's copy for the rest of the job.
+      - name: Remove runner runtime directory
+        run: |
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+          test ! -e "$rundir"
+          echo "XDG_RUNTIME_DIR=" >> "$GITHUB_ENV"
+
+      - name: Select affected tests
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/selection/select.mjs "$BASE_SHA" .spider/scratch/test-results/test-selection.json
+
+      - name: Save test selection
+        if: matrix.group == 1
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-selection
+          path: .spider/scratch/test-results/test-selection.json
+          include-hidden-files: true
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+
+      - name: Test selected group
+        run: |
+          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR TMPDIR="$PWD/.spider/scratch/tmp" \
+            node scripts/selection/run.mjs .spider/scratch/test-results/test-selection.json ${{ matrix.group }} \
+            .spider/scratch/test-results/group-${{ matrix.group }}.json .spider/scratch/test-results/hash-${{ matrix.group }}.json
+
+      - name: Attest the completed selection
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-selection-hash-${{ matrix.group }}
+          path: .spider/scratch/test-results/hash-${{ matrix.group }}.json
+          include-hidden-files: true
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+
+  checks:
+    name: typecheck · test · build
+    needs: [compile, tests]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.4.0'
+      - name: Download PR selection and runner attestations
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-selection*
+          path: .spider/scratch/selections
+          merge-multiple: true
+      - name: Require identical PR selections
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/selection/aggregate.mjs .spider/scratch/selections "$HEAD_SHA"

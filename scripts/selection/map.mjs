@@ -26,6 +26,9 @@ export function shardProblems({ reportedFiles, records, stats }) {
     if (!Array.isArray(record.unresolved) || record.unresolved.some(path => typeof path !== 'string' || !path)) {
       problems.push(`Invalid unresolved bundle list for ${file}`);
     }
+    if (typeof record.ranBundle !== 'boolean' || (record.unresolved?.length && !record.ranBundle)) {
+      problems.push(`Invalid bundle-use flag for ${file}`);
+    }
   }
   return problems;
 }
@@ -65,8 +68,8 @@ export function buildSelectionMap({ shards, expectedFiles, commit, runId, create
   if (!problems.length) {
     const index = new Map(files.map((file, i) => [file, i]));
     const tests = Object.fromEntries([...records.keys()].sort().map(file => {
-      const { reads, unresolved, ms, result } = records.get(file);
-      return [file, { reads: [...new Set(reads)].map(path => index.get(path)).sort((a, b) => a - b), unresolved, ms, result }];
+      const { reads, unresolved, ranBundle, ms, result } = records.get(file);
+      return [file, { reads: [...new Set(reads)].map(path => index.get(path)).sort((a, b) => a - b), unresolved, ranBundle, ms, result }];
     }));
     map = { version: 1, commit, runId, createdAt, files, tests };
   }

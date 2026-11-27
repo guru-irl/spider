@@ -4,50 +4,43 @@
     {
       "id": "toolchain",
       "inputs": [
-        "package.json",
-        "package-lock.json",
-        "packages/*/package.json",
-        ".npmrc",
-        ".nvmrc",
-        ".node-version",
-        ".tool-versions",
-        "tsconfig*.json",
+        "**/package.json",
+        "**/package-lock.json",
+        "**/.npmrc",
+        "**/.nvmrc",
+        "**/.node-version",
+        "**/.tool-versions",
         "**/tsconfig*.json",
-        "vite*.config.*",
-        "vitest*.ts",
-        "vitest*.mjs",
-        ".github/**",
-        "**/vite*.config.*",
         "**/vitest*.config.*",
         "**/vitest.setup.*",
         "**/vitest.herdr-global-setup.*"
       ],
       "tests": [],
       "related": [],
-      "reason": "Resolution, setup and workflow changes can affect every test.",
+      "reason": "Dependencies, test configuration and runtime versions affect every test.",
       "full": true
     },
     {
       "id": "test-policy",
       "inputs": [
-        "scripts/select-tests*",
+        "scripts/selection/**",
         "scripts/test-resources.json",
-        "scripts/run-selected-tests.mjs",
-        "scripts/replay-test-selection.mjs",
-        "scripts/vitest-*",
+        "scripts/vitest-sequencer.ts",
         "scripts/test-shards.ts",
-        "scripts/list-test-shards.mjs",
-        "scripts/test-shard-budget.mjs",
         "scripts/test-durations.json",
         "scripts/update-test-durations.mjs",
-        "scripts/test-bundle.ts",
-        "scripts/check-test-selection.mjs",
-        "scripts/measure-test-selection.mjs"
+        ".github/workflows/**"
       ],
-      "tests": [],
+      "tests": [
+        "packages/host/src/__tests__/selection.test.ts",
+        "packages/host/src/__tests__/ci-workflows.test.ts",
+        "packages/host/src/__tests__/readme.test.ts",
+        "packages/host/src/__tests__/intercom-upstream-inventory.test.ts",
+        "packages/host/src/__tests__/test-shards.test.ts",
+        "packages/host/src/__tests__/licence-notices.test.ts"
+      ],
       "related": [],
-      "reason": "Selection and partition policy must not omit its own regressions.",
-      "full": true
+      "reason": "Selection, workflow and partition changes need their contract guards."
     },
     {
       "id": "build-install",
@@ -59,24 +52,14 @@
         "scripts/check-package*",
         "scripts/package-extension.ts",
         "scripts/extension-shim.mjs",
-        "scripts/generate-roam-sql.mjs"
+        "scripts/generate-roam-sql.mjs",
+        "**/vite.config.*",
+        "**/vite.*.config.*",
+        "scripts/selection/build-maps.*"
       ],
       "tests": [],
       "related": [],
-      "reason": "Build and package boundaries affect filesystem and subprocess consumers.",
-      "full": true
-    },
-    {
-      "id": "shared-environment",
-      "inputs": [
-        "packages/db-core/src/testutil.ts",
-        "packages/db-core/src/__tests__/global-config.testutil.ts",
-        "packages/herdr/src/__tests__/testutil.ts"
-      ],
-      "tests": [],
-      "related": [],
-      "reason": "Shared state and globally injected fixtures have suite-wide reach.",
-      "full": true
+      "reason": "Build configuration changes affect generated bundles."
     },
     {
       "id": "herdr-assets",
@@ -120,8 +103,9 @@
       "id": "documentation",
       "inputs": [
         "docs/**",
-        "README.md",
-        "packages/*/README.md",
+        "**/*.md",
+        "**/*.mdx",
+        "**/*.markdown",
         "assets/**"
       ],
       "tests": [
@@ -129,8 +113,7 @@
         "packages/host/src/__tests__/readme.test.ts",
         "packages/host/src/__tests__/config-reader-guard.test.ts",
         "packages/herdr/src/__tests__/herdr-documentation.test.ts",
-        "packages/db-core/src/__tests__/roam-capture.test.ts",
-        "packages/$package/src/**/*.test.ts"
+        "packages/db-core/src/__tests__/roam-capture.test.ts"
       ],
       "related": [],
       "reason": "Example, README, configuration and roaming guards read document text."
@@ -216,8 +199,7 @@
       ],
       "tests": [
         "packages/host/src/__tests__/test-shards.test.ts",
-        "packages/host/src/__tests__/intercom-upstream-inventory.test.ts",
-        "packages/host/src/__tests__/select-tests.test.ts"
+        "packages/host/src/__tests__/intercom-upstream-inventory.test.ts"
       ],
       "related": [],
       "reason": "Full-inventory guards must see additions and changes to test files."
@@ -427,44 +409,5 @@
       "packages/ui/src/__tests__/runtime-boundary.test.ts"
     ],
     "reason": "Vite entry graphs provide source-to-output edges; listed runtime tests and helper importers consume those outputs."
-  },
-  "optional": {
-    "chrome": [
-      "packages/host/src/usage/**",
-      "scripts/usage-dashboard*",
-      "vite.dashboard.config.mjs",
-      "docs/dev-ui-testing.md",
-      "playwright.config.*",
-      "packages/db-core/src/**",
-      "packages/models/src/**",
-      "packages/host/src/extension.ts",
-      "packages/roam/**",
-      "packages/intercom/**",
-      "packages/host/src/roam/**"
-    ],
-    "acceptance": [
-      "packages/herdr/**",
-      "packages/host/src/herdr/**",
-      "packages/host/src/extension.ts",
-      "packages/host/src/herdr*.ts",
-      "packages/roam/**",
-      "packages/intercom/**",
-      "packages/subagents/src/**",
-      "packages/db-core/src/**",
-      "scripts/herdr*",
-      "scripts/test-bundle.ts",
-      "packages/*/src/**",
-      "docs/guide/herdr.md"
-    ],
-    "stories": [
-      "**",
-      ".*",
-      ".*/**",
-      "!docs/**",
-      "!README.md",
-      "!packages/*/README.md",
-      "!packages/*/skills/**",
-      "docs/guide/herdr.md"
-    ]
   }
 }

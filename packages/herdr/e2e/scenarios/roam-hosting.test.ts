@@ -46,7 +46,8 @@ async function restartAndRestore(suite: Suite): Promise<void> {
     const before = await Promise.all([digestFile(fixture.coreUnit), digestFile(fixture.unrelatedUnit)]);
     const sentinel = await fixture.sentinel();
     const provision = await fixture.provision();
-    expect(provision).toMatchObject({ code: 0, value: { hostingReady: expect.any(Boolean) } });
+    // The fresh fixture has no running intercom broker during provisioning.
+    expect(provision).toMatchObject({ code: 0, reason: 'installed-hosting-disabled', value: { hostingReady: false } });
     expect(await fixture.participating()).toBe(false);
     await access(fixture.supervisor, constants.X_OK);
     expect(await digestFile(fixture.supervisor)).toBe(suite.packed.digests['dist/roam/supervisor.mjs']);

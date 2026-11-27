@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createReplica } from "@spider/db-core/testutil";
+import { recordLocation } from "@spider/db-core/roam/catalog";
 import { DEFAULT_LIMITS, disabledIntercom, type Transport } from "../contracts";
 import { openJournal } from "../journal";
 import { transferArtifact, handleArtifactRequest } from "../artifacts";
@@ -15,7 +16,7 @@ import { captureLocalSession, installLocalSession, resolveVerifiedArtifact } fro
 import { handleRelocateAgent } from "../relocate/remote";
 import { createRelocateAdapters } from "../relocate/adapters";
 import type { RelocateAdapterOptions, RelocateId, RelocatePlan, RunningHome } from "../relocate/types";
-import { stopLocalSession, type LocalIO } from "../relocate/local";
+import { createLocalIO, createLocalRuntime, stopLocalSession, type LocalIO } from "../relocate/local";
 import type { SessionId } from "../relocate/types";
 const id="33333333-3333-4333-8333-333333333333" as SessionId;
 function stopFixture() {
@@ -142,14 +143,16 @@ describe("v0 real transfer",()=>{
   expect(await installLocalSession(f.plan,captured.value,f.home,f.destination,undefined,async()=>({kind:"free"}))).toEqual(installed);
   expect(readFileSync(f.plan.destinationPlacement.file,"utf8")).toBe(expected);
  });
- it.each([true, false])("checks ownership before first install (checkout exists: %s)", async exists => {
+ it.each([true, false])("checks ownership after catalog-only replication (checkout exists: %s)", async exists => {
   const f=transferFixture();
+  recordLocation(f.destination.globalDb,{sessionId:id,stores:["worktree:fixture-repo:fixture-workspace"],home:f.plan.source});
   vi.spyOn(hcApi,"invokeCli").mockResolvedValue({terminals:[]});
   const captured=await captureLocalSession(f.plan,f.options,async()=>({kind:"free"}));
   if(!captured.ok)throw new Error(JSON.stringify(captured));
   for(const manifest of [captured.value.transcriptArtifact,captured.value.bundleArtifact])await receiveArtifactLocally(manifest,f.options,f.destination);
   if (!exists) {
-   expect(await installLocalSession(f.plan,captured.value,f.home,f.destination)).toMatchObject({ok:true});
+   const installed=await installLocalSession(f.plan,captured.value,f.home,f.destination);
+   expect(installed.ok,installed.ok ? undefined : installed.refusal.message).toBe(true);
    return;
   }
   f.git(f.plan.destinationPlacement.repository,"worktree","add","--detach",f.checkout);
@@ -168,6 +171,27 @@ describe("v0 real transfer",()=>{
    if(child.connected)child.send("exit");
    await exited;
   }
+ });
+ it("does not install when a local transcript is catalogued without its checkout", async () => {
+  const f=transferFixture();
+  vi.spyOn(hcApi,"invokeCli").mockResolvedValue({terminals:[]});
+  const file=f.plan.destinationPlacement.file;
+  writeFileSync(file,"unverified local transcript\n");
+  recordLocation(f.destination.globalDb,{sessionId:id,stores:["worktree:fixture-repo:fixture-workspace"],home:f.plan.source,file});
+  const captured=await captureLocalSession(f.plan,f.options,async()=>({kind:"free"}));
+  if(!captured.ok)throw new Error(JSON.stringify(captured));
+  for(const manifest of [captured.value.transcriptArtifact,captured.value.bundleArtifact])await receiveArtifactLocally(manifest,f.options,f.destination);
+  expect(await installLocalSession(f.plan,captured.value,f.home,f.destination)).toMatchObject({ok:false,refusal:{code:"install-failed",message:expect.stringContaining("occupied or uncertain")}});
+  expect(readFileSync(file,"utf8")).toBe("unverified local transcript\n");
+ });
+ it("does not prove a moving source stopped from only its catalog row", async () => {
+  const f=transferFixture();
+  vi.spyOn(hcApi,"invokeCli").mockResolvedValue({terminals:[]});
+  recordLocation(f.destination.globalDb,{sessionId:id,stores:["worktree:fixture-repo:fixture-workspace"],home:f.plan.source});
+  const moving={...f.home,state:"moving" as const,epoch:4,destination:hub,moveId:f.plan.moveId};
+  f.destination.homes.read=async()=>moving;
+  await expect(createLocalIO(f.destination).writerBlockers(id,undefined,true)).rejects.toThrow("The session has no verifiable checkout");
+  expect(await createLocalRuntime(f.destination).stop(id,moving)).toMatchObject({ok:false,refusal:{code:"stop-timeout"}});
  });
  it("dirty unrelated destination is unchanged",async()=>{
   const f=transferFixture();f.git(f.plan.destinationPlacement.repository,"worktree","add","--detach",f.checkout);

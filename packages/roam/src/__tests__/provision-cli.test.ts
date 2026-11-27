@@ -15,7 +15,7 @@ import { openJournal } from "../journal";
 import { confirmProvision, pinProvisionRelease, stageProvisionRelease } from "../provision-cli";
 import { healthyInventory, inventoryEnvelope } from "./bootstrap-fixture";
 import { BOOTSTRAP_AGENT_DIRECTORY_SCRIPT, BOOTSTRAP_IDENTITY_SCRIPT, BOOTSTRAP_SCRIPT, BOOTSTRAP_SETTINGS_SCRIPT } from "../bootstrap-script";
-import { PROVISION_REMOTE_SCRIPT } from "../provision-remote-script";
+import { getProvisionRemoteScript } from "../provision-remote-script";
 import * as bytesClient from "../../../herdr/src/client/bytes";
 import * as coreClient from "../../../herdr/src/client/hc";
 import * as liveness from "../../../herdr/src/client/liveness";
@@ -396,7 +396,7 @@ it("reports shared-parent preview permissions before mutation through the CLI", 
         roaming: { rootExists: true, rootSafe: true, identityExists: true, machineId: f.request.machineId },
         spider: { installed: true, version: "0.1.0", nativeModuleReady: false }, core: { ...healthyInventory().core, unit: "fixture.service" } })));
       if (argv.includes(BOOTSTRAP_IDENTITY_SCRIPT)) return Buffer.from(JSON.stringify({ version: 1, kind: "identity", coreId: "remote-core", machineId: f.request.machineId }));
-      expect(argv).toContain(PROVISION_REMOTE_SCRIPT);
+      expect(argv).toContain(getProvisionRemoteScript());
       const request = JSON.parse(options.stdin!.toString("utf8")) as Record<string, string>;
       mutations.push(request.action);
       if (request.action === "enrollment") return Buffer.from(JSON.stringify({ version: 1, kind: "provision", value: "enrolled" }));
@@ -412,7 +412,7 @@ it("reports shared-parent preview permissions before mutation through the CLI", 
       for (const key of ["home", "globalRoot", "agentDir", "npmPrefix", "unitDir", "node", "pi", "cli", "core", "supervisor"]) {
         if (typeof request[key] === "string") request[key] = request[key].replace(/^\/home\/fixture(?=\/|$)/, home);
       }
-      const child = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", PROVISION_REMOTE_SCRIPT], {
+      const child = spawnSync(process.execPath, ["--input-type=module", "-e", getProvisionRemoteScript()], {
         input: JSON.stringify(request), encoding: "utf8", env: { ...process.env, HOME: home, NODE_NO_WARNINGS: "1" }, timeout: 4000,
       });
       expect(child.status).toBe(0); expect(child.stderr).toBe("");

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { createConnection, createServer } from "node:net";
 import { spawnSync } from "node:child_process";
 import { BOOTSTRAP_SETTINGS_SCRIPT } from "../bootstrap-script";
-import { PROVISION_REMOTE_SCRIPT } from "../provision-remote-script";
+import { getProvisionRemoteScript } from "../provision-remote-script";
 import { createHcProvisionAdapter } from "../provision-adapter";
 import { inspectAgentPrivateModes } from "../selected-files";
 import { DEFAULT_LIMITS, type Peer } from "../contracts";
@@ -19,8 +19,8 @@ function fixture() {
     pi: join(npmPrefix, "bin/pi"), cli: join(npmPrefix, "dist/cli.mjs"), core: join(home, "core"), agentDir };
   writeFileSync(join(globalRoot, "roam/machine.json"), JSON.stringify({ version: 1, machineId: peer.machineId, label: "box-1.invalid" }), { mode: 0o600 });
   let prelude = "";
-  function run(script: string, request: unknown) {
-    const child = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", prelude + script], {
+  function run(script: string, request: unknown, typescript = false) {
+    const child = spawnSync(process.execPath, [typescript ? "--input-type=module-typescript" : "--input-type=module", "-e", prelude + script], {
       input: JSON.stringify(request), encoding: "utf8", env: { ...process.env, HOME: home }, timeout: 4000,
     });
     expect(child.status, child.stderr).toBe(0);
@@ -30,14 +30,14 @@ function fixture() {
   const adapter = createHcProvisionAdapter({ peer, operationId: "op-1", destination, unitDir, limits: DEFAULT_LIMITS, piProviders: [], transport: {
     transport: { async resolve(p: Peer) { return p; } } as never,
     async executeProvision(_peer: Peer, request: Record<string, unknown>) {
-      const reply = run(PROVISION_REMOTE_SCRIPT, request);
+      const reply = run(getProvisionRemoteScript(), request);
       if (reply.error) throw Object.assign(new Error("refused"), { code: reply.error, details: reply.details });
       return reply.value;
     },
   } as never });
   return { root, home, agentDir, globalRoot, peer, run, adapter,
     setPrelude(value: string) { prelude = value; },
-    preview() { return run(BOOTSTRAP_SETTINGS_SCRIPT, { home, agentDir, maximum: 1024, paths: [] }); } };
+    preview() { return run(BOOTSTRAP_SETTINGS_SCRIPT, { home, agentDir, maximum: 1024, paths: [] }, true); } };
 }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 

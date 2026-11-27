@@ -398,6 +398,7 @@
       "packages/roam/src/__tests__/intercom-move-port.test.ts",
       "packages/roam/src/__tests__/intercom-offline-readiness.test.ts",
       "packages/roam/src/__tests__/intercom-package.test.ts",
+      "packages/roam/src/__tests__/intercom-resolver.test.ts",
       "packages/roam/src/__tests__/intercom-tool-delivery.test.ts",
       "packages/roam/src/__tests__/intercom-upgrade-hardening.test.ts",
       "packages/roam/src/__tests__/provision-adapter.test.ts",

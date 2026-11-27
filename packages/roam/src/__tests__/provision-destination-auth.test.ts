@@ -10,7 +10,7 @@ import * as hubModule from "../production-hub";
 import * as provisionModule from "../provision";
 import * as selectedModule from "../selected-files";
 import { healthyInventory } from "./bootstrap-fixture";
-import { PROVISION_REMOTE_SCRIPT } from "../provision-remote-script";
+import { getProvisionRemoteScript } from "../provision-remote-script";
 
 const originalRead = selectedModule.readPrivateBytes;
 const fixtures: ReturnType<typeof createReplica>[] = [];
@@ -109,7 +109,7 @@ for(const key of ['openSync','readFileSync']){const original=fs[key];fs[key]=fun
         if (["enrollment", "clear-secrets", "unit-write", "systemctl"].includes(String(request.action))) return true;
         if (request.action !== "verify") throw new Error(`unexpected-effect:${request.action}`);
         const mapped = Object.fromEntries(Object.entries(request).map(([key, value]) => [key, typeof value === "string" && value.startsWith("/home/fixture") ? home + value.slice("/home/fixture".length) : value]));
-        const child = spawnSync(process.execPath, ["--import", hook, "--input-type=module-typescript", "-e", PROVISION_REMOTE_SCRIPT], {
+        const child = spawnSync(process.execPath, ["--import", hook, "--input-type=module", "-e", getProvisionRemoteScript()], {
           input: JSON.stringify(mapped), cwd: home, env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: agent }, encoding: "utf8", timeout: 3000,
         });
         expect(child.status, child.stderr).toBe(0);

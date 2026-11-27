@@ -8,10 +8,9 @@ import type { SelectedFile } from "./selected-files";
 import { assertCredentialSelectedFile, assertPublicSelectedFile } from "./selected-files";
 import type { ProvisionTransport } from "./transport";
 import type { InstalledRelease, ReleaseReason } from "./release-receipt";
-import { PROVISION_REMOTE_SCRIPT } from "./provision-remote-script";
 import { destinationPermissionPath, isPermissionTighteningCount, permissionTreeRoot, isAgentModeFailure, isInstallModeFailure, isAgentModeRepairs, agentModeRefusal } from "./provision-permissions";
 
-export { PROVISION_REMOTE_SCRIPT };
+export { getProvisionRemoteScript } from "./provision-remote-script";
 interface Chunk { name: string; size: number; sha256: string }
 export interface AdapterOptions {
   peer: Peer; operationId: string; destination: ProvisionDestination; unitDir: string;

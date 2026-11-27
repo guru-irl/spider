@@ -35,7 +35,7 @@ type Factory = (input: unknown) => {
   systemd: { writeUnit(name: string, contents: string): Promise<void>; systemctl(argv: readonly string[]): Promise<void> };
 };
 const create = (adapterModule as { createHcProvisionAdapter?: Factory }).createHcProvisionAdapter;
-const remoteProgram = (adapterModule as { PROVISION_REMOTE_SCRIPT?: string }).PROVISION_REMOTE_SCRIPT;
+const remoteProgram = adapterModule.getProvisionRemoteScript();
 
 function fixture(short = false) {
   const scratch = join(process.cwd(), ".spider", "scratch"); mkdirSync(scratch, { recursive: true });

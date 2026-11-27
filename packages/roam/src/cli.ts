@@ -38,7 +38,7 @@ export { startProductionHub } from "./production-hub";
 import { createTransport } from "./transport";
 import { isPeerFailureReason, peerFailureReason, peerPreflightIssue, recoveryRefusalCode } from "./peer-errors";
 import { remoteDoctor } from "./remote-observations";
-import { disableRoaming, enableRoaming } from "./production-controls";
+import { configureV0Service, type V0ServiceOptions } from "./production-controls";
 import { runForeground, runLocalPairCleanup, runLocalPairOperation, createLocalPairRegistry, hasPairConsent, type LocalPairCleanup, type LocalPairOperation, type LocalPairPorts } from "./intercom-local-ops";
 import { parseHelperFence, requestHelperFence } from "./intercom-helper";
 import { pairScopedRecipe, inspectPairUnit, reconcilePairUnits, stoppedPairUnitNeedsRepair } from "./intercom-pair-resources";
@@ -66,7 +66,6 @@ const HELP = `Usage: spider <command>
   spider roam stores prune [--confirm]
   spider roam repo map <repo-key> <path>
   spider roam memory tag <store-key> <uuid> <machine|all>
-  spider move <session> <machine>
   spider roam relocate <session> <machine>
   spider roam set-home <session> <machine> --force
 
@@ -138,7 +137,7 @@ function setupPendingCause(error: unknown): { code: string } {
   return { code: enrollmentCauseCode(error) };
 }
 
-export async function main(argv: readonly string[], io: CommandIO, options?: { bundleUrl?: URL; stdin?: Buffer; pairPorts?: LocalPairPorts; fencePort?: typeof requestHelperFence; intercomOptions?: IntercomCliOptions; intercomDoctor?: Parameters<typeof runLocalDoctor>[0]["intercomDoctor"]; runDisabledForget?: RunDisabledForget; moveFactory?: import("./move-runtime-contracts").MoveRuntimeFactory; placementFactory?: import("./contracts").PlacementFactory; v0?: { hub?(root: string): Promise<{ stop(): Promise<void> }>; services?: V0ControlServices; catalog?: readonly { id: string; name: string | null }[]; confirmation?(prompt: string): Promise<string | null>; agent?(input: unknown, root: string): Promise<V0Result<unknown>> } }): Promise<number> {
+export async function main(argv: readonly string[], io: CommandIO, options?: { bundleUrl?: URL; stdin?: Buffer; pairPorts?: LocalPairPorts; fencePort?: typeof requestHelperFence; intercomOptions?: IntercomCliOptions; intercomDoctor?: Parameters<typeof runLocalDoctor>[0]["intercomDoctor"]; runDisabledForget?: RunDisabledForget; moveFactory?: import("./move-runtime-contracts").MoveRuntimeFactory; placementFactory?: import("./contracts").PlacementFactory; v0?: { hub?(root: string): Promise<{ stop(): Promise<void> }>; services?: V0ControlServices; catalog?: readonly { id: string; name: string | null }[]; confirmation?(prompt: string): Promise<string | null>; agent?(input: unknown, root: string): Promise<V0Result<unknown>>; lifecycle?: Partial<V0ServiceOptions> } }): Promise<number> {
   let root = process.env.SPIDER_GLOBAL_ROOT || join(homedir(), ".pi", "agent", "spider");
   const privateRoot = argv[0] === "--global-root";
   if (privateRoot) {
@@ -185,7 +184,22 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       return await runV0Control(control, config, catalog, options?.v0?.services ?? requestV0Services(root), { ...io, confirmation }, { json });
     } catch { return refusal("home-unavailable", "The v0 home service could not be opened.", "Start the v0 hub on the Mac, then retry this command.", 1); }
   }
-  const publicInput = argv[0] === "move" || argv[0] === "roam" && !["agent", "artifact", "observe", "intercom", "hub"].includes(argv[1]);
+  if (argv[0] === "move" || argv[0] === "roam" && argv[1] === "move") {
+    const message = "The legacy move command was replaced by spider roam relocate. Run spider roam relocate <session> <machine>.";
+    if (argv.at(-1) === "--json") io.out(`${JSON.stringify({ code: 1, reason: "move-replaced", message })}\n`);
+    else io.err(`${message}\n`);
+    return 1;
+  }
+  if (argv[0] === "roam" && (argv[1] === "enable" || argv[1] === "disable")) {
+    const json = argv.at(-1) === "--json";
+    if (argv.length !== (json ? 3 : 2)) return emitOutcome(io, outcome(2, "invalid-arguments"), json, `Use spider roam ${argv[1]} [--json].\n`);
+    const result = await configureV0Service(root, argv[1] === "enable", {
+      resolveCli: () => roamingCliEntry(options?.bundleUrl ?? new URL(import.meta.url)), ...options?.v0?.lifecycle,
+    });
+    return emitOutcome(io, { ...outcome(result.code, result.reason, result.information ? { information: result.information } : null),
+      ...(result.repairCommand ? { repairCommand: result.repairCommand } : {}) }, json, `${result.message.split("\n").map(clean).join("\n")}\n`);
+  }
+  const publicInput = argv[0] === "roam" && !["agent", "artifact", "observe", "intercom", "hub"].includes(argv[1]);
   const jsonOutput = publicInput && argv.at(-1) === "--json";
   if (publicInput) {
     let control = parsePublicControl(argv);
@@ -233,16 +247,13 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
         } catch { return emitOutcome(io, outcome(3, "disabled-forget-unavailable"), jsonOutput); }
       }
     }
-    if (["move", "recover", "cancel", "forget", "claim"].includes(control.kind)) {
+    if (["recover", "cancel", "forget", "claim"].includes(control.kind)) {
       try {
         const { kind, ...args } = control;
         const request = { op: kind, ...args } as import("./move-control").MoveControlRequest;
-        if (kind === "move" && !jsonOutput) io.out("Keep the Mac awake until the move finishes.\n");
         const reply = await requestHubControl(join(root, "roam", "hub.sock"), request);
         const result = { ...reply, operationId: reply.operationId ?? "", home: reply.home ?? null, epoch: reply.epoch ?? null, repairCommand: reply.repairCommand ?? null };
-        let alias: string | undefined;
-        if (kind === "move") try { alias = readLocalIdentity(root).peers.find(peer => peer.machineId === result.home?.machineId)?.alias; } catch { /* The typed outcome remains authoritative. */ }
-        return emitOutcome(io, result, jsonOutput, jsonOutput ? undefined : controlText(safeControlOutcome(result), alias));
+        return emitOutcome(io, result, jsonOutput);
       } catch { return emitOutcome(io, { ...outcome(1, "move-control-unavailable"), repairCommand: 'spider roam enable' }, jsonOutput); }
     }
     if (jsonOutput) argv = argv.slice(0, -1);
@@ -497,13 +508,6 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
     try {
       if (readLocalIdentity(root).role === "box") { io.err("Run this command on the Mac hub.\n"); return 1; }
     } catch { /* The selected command reports its own unavailable or invalid state. */ }
-  }
-  if (argv[0] === "roam" && (argv[1] === "enable" || argv[1] === "disable")) {
-    const result = argv[1] === "enable" ? await enableRoaming(root, () => roamingCliEntry(options?.bundleUrl ?? new URL(import.meta.url)), options?.bundleUrl) : await disableRoaming(root);
-    return emitOutcome(io, { ...outcome(result.code, result.reason, result.issues || result.information ? { issues: result.issues, information: result.information } : null),
-      ...(result.causeCode ? { causeCode: result.causeCode } : {}),
-      ...(result.operationId ? { operationId: result.operationId } : {}),
-      ...(result.repairCommand ? { repairCommand: result.repairCommand } : {}) }, jsonOutput, `${result.message.split("\n").map(clean).join("\n")}\n`);
   }
   if (argv[0] === "roam" && argv[1] === "stores" && argv[2] === "prune") {
     try {

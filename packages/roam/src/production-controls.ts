@@ -9,9 +9,9 @@ import { parseDoctorReport, remoteDoctor } from "./remote-observations";
 import { INTERCOM_UNIQUENESS_DESCRIPTION } from "./intercom-readiness";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { waitReady } from "./hub-readiness";
 import { assertTestConfigPath, openDbReadOnly } from "@spider/db-core";
 import { storeScope } from "@spider/db-core/roam/codec";
@@ -30,6 +30,8 @@ import { openLocalCore, readLocalIdentity } from "./runtime";
 import { listStoreKeys, parseUngathered } from "./store-inventory";
 import { createStorePort } from "./stores";
 import { createTransport, createProvisionTransport } from "./transport";
+import { renderSupervisorUnit } from "./systemd";
+import { installLocalV0Supervisor, localSupervisorInstallPorts, removeLocalSupervisor, type SupervisorInstallPorts } from "./relocate/service-install";
 
 export interface ControlResult { code: 0 | 1 | 2 | 3; reason: string; message: string; causeCode?: string; operationId?: string; repairCommand?: string; issues?: readonly { reason: string; repairCommand: string; detail?: string; causeCode?: string }[];
   information?: readonly { machine: string; reason: string }[] }
@@ -92,6 +94,91 @@ async function locked<T>(root: string, config: RoamConfig, work: () => Promise<T
   return withProcessLock(join(root, "roam"), key, work,
     { identity: { pid: process.pid, startIdentity: self.startIdentity }, probe, timeoutMs });
 }
+export interface V0ServiceOptions {
+  resolveCli(): string;
+  launchd?: LaunchdPorts;
+  systemd?: SupervisorInstallPorts;
+}
+
+/** Public lifecycle: v0 is selected by role, never by the previous service or a stored mode. */
+export async function configureV0Service(root: string, enabled: boolean, options: V0ServiceOptions): Promise<ControlResult> {
+  const action = enabled ? "enable" : "disable", repairCommand = `spider roam ${action}`;
+  const removed: string[] = [];
+  let changed = false;
+  const information = () => removed.map(reason => ({ machine: "local", reason }));
+  try {
+    const initial = readLocalIdentity(root);
+    return await locked(root, initial, async () => {
+      let config = readLocalIdentity(root);
+      if (config.machineId !== initial.machineId || config.role !== initial.role) throw new Error("Roaming configuration changed during the operation.");
+      const setEnabled = async (next: boolean) => {
+        if (config.enabled === next) return;
+        changed = true;
+        await writeEnabled(root, config, next);
+        config = readLocalIdentity(root);
+      };
+      // Check every install input before removing a legacy service.
+      const cli = enabled ? realpathSync(options.resolveCli()) : null;
+      const pi = enabled ? resolveParticipantPi() : null;
+      if (enabled && (!pi || !cli || !statSync(cli).isFile())) throw new Error("Install pi and the Spider CLI first.");
+      if (config.role === "hub") {
+        if (enabled) hubCoreSelection(process.env);
+        const ports = options.launchd ?? servicePorts();
+        if (enabled && cli && pi) {
+          prepareV0MemoryCapture(root);
+          if (hubServiceExists(root, ports.plistDir)) {
+            changed = true;
+            await removeHubService({ globalRoot: root }, ports);
+            removed.push("Removed the legacy roaming hub launchd service.");
+          }
+          changed = true;
+          await installHubService({ node: process.execPath, cli, globalRoot: root, pi, mode: "v0" }, ports);
+          await setEnabled(true);
+        } else {
+          await setEnabled(false);
+          changed = true;
+          await removeHubService({ globalRoot: root, mode: "v0" }, ports);
+        }
+      } else {
+        const ports = options.systemd ?? localSupervisorInstallPorts();
+        const supervisor = cli === null ? "/supervisor.mjs" : realpathSync(join(dirname(cli), "supervisor.mjs"));
+        if (enabled && !statSync(supervisor).isFile()) throw new Error("Install the Spider supervisor first.");
+        const unit = renderSupervisorUnit({ node: process.execPath, supervisor, coreUnit: config.coreUnit, globalRoot: root,
+          agentDir: process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"), pi: pi ?? undefined, mode: "v0" });
+        const rootLine = unit.split("\n").find(line => line.startsWith('Environment="SPIDER_GLOBAL_ROOT='))!;
+        if (enabled) {
+          prepareV0MemoryCapture(root);
+          changed = true;
+          const legacy = await removeLocalSupervisor(ports, rootLine, false);
+          if (legacy) removed.push(`Removed the legacy roaming supervisor ${legacy}.`);
+          await installLocalV0Supervisor(ports, rootLine, unit);
+          await setEnabled(true);
+        } else {
+          await setEnabled(false);
+          changed = true;
+          if (await removeLocalSupervisor(ports, rootLine, true)) await ports.run(["--user", "daemon-reload"]);
+        }
+      }
+      const service = config.role === "hub" ? "hub" : "supervisor";
+      return { code: 0, reason: enabled ? "roaming-enabled" : "roaming-disabled", information: information(),
+        message: [...removed, `Roaming v0 ${service} ${enabled ? "enabled" : "disabled"}.`].join("\n") };
+    });
+  } catch (error) {
+    return { code: changed ? 3 : 1, reason: `${action}-${changed ? "pending" : "unavailable"}`, repairCommand,
+      information: information(), message: [...removed, clean(error instanceof Error ? error.message : "Cannot change the roaming service."), `Resolve the error, then retry ${repairCommand}.`].join("\n") };
+  }
+}
+
+function prepareV0MemoryCapture(root: string): void {
+  const core = openLocalCore(root);
+  try {
+    const stores = createStorePort(core.config, core.db, { allowUnassignedGlobal: true });
+    try {
+      for (const key of listStoreKeys(core.db)) if (storeScope(key) !== "worktree") enableMemoryCapture(stores.openStore(key).db, key);
+    } finally { stores.close(); }
+  } finally { core.close(); }
+}
+
 async function agent(transport: Transport, peer: Peer, config: RoamConfig, kind: Extract<CauseStep, "stores" | "recheck-store" | "enable-capture">, args: JsonObject): Promise<JsonObject> {
   const operation: Operation = { id: randomUUID(), machineId: peer.machineId, expectedEpoch: null, kind, args };
   const handle = await transport.resolve(peer);

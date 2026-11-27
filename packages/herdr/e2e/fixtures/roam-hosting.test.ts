@@ -1,5 +1,25 @@
 import { expect, it } from 'vitest';
-import { observedHostedOwner, parseV0SupervisorUnit } from './roam-hosting.js';
+import { countHostedLaunches, observedHostedOwner, parseV0SupervisorUnit } from './roam-hosting.js';
+
+it('counts every launch attempt for the session by label or exact file', () => {
+  const file = '/fixture/project/session.jsonl';
+  const launch = (label: string, sessionFile: string, namespace = 'l') => ({
+    at: 1, pid: 101, ppid: 100, namespace, socket: '/fixture/hc.sock', cwd: '/fixture/project', terminal: null,
+    argv: ['run', '--json', '--label', label, '--', '/fixture/pi', '--session', sessionFile],
+  });
+  const first = launch('spider.session=session-1', file);
+  const restored = launch('spider.session=session-1', file);
+  const other = launch('spider.session=other', '/fixture/other.jsonl');
+  const nonLaunch = { ...first, argv: ['get', '--json', 'terminal'] };
+  const argumentAfterSeparator = { ...other, argv: ['run', '--', '/fixture/pi', '--label', 'spider.session=session-1'] };
+  const baseline = [first, other, nonLaunch, argumentAfterSeparator, restored];
+
+  expect(countHostedLaunches([], 'session-1', file)).toBe(0);
+  expect(countHostedLaunches([first], 'session-1', file)).toBe(1);
+  expect(countHostedLaunches(baseline, 'session-1', file)).toBe(2);
+  expect(countHostedLaunches([...baseline, launch('spider.session=session-1', '/fixture/wrong.jsonl')], 'session-1', file)).toBe(3);
+  expect(countHostedLaunches([...baseline, launch('spider.session=other', file, 'd')], 'session-1', file)).toBe(3);
+});
 
 it('counts each observed owner of the session even when its file is wrong', () => {
   const first = { at: 1, pid: 101, type: 'session_start', sessionId: 'session', sessionFile: '/fixture/first.jsonl',

@@ -152,9 +152,10 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
     const processValues = [...entry.processes.values()];
     const processes = processValues.length + entry.threads.size + missingLaunches;
     const knownCpuMs = Math.round(processValues.reduce((sum, proc) => sum + (proc.cpuMs ?? 0), 0) * 1000) / 1000;
+    const missingCpu = missingLaunches + processValues.filter(proc => proc.cpuMs === null).length;
     const unknownCpu = missingLaunches + processValues.filter(proc => proc.cpuMs === null || !proc.ended).length;
     records[file] = { reads: [...entry.reads].sort(), unresolved: [...entry.unresolved].sort(), workerPids: [...entry.workerPids],
-      ms, result, processes, cpuMs: unknownCpu ? null : knownCpuMs, knownCpuMs, unknownCpu };
+      ms, result, processes, cpuMs: unknownCpu ? null : knownCpuMs, knownCpuMs, unknownCpu, missingCpu };
   }
   return { reportedFiles, failedFiles, records, stats };
 }

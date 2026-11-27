@@ -19,6 +19,8 @@ export interface SelectionMap {
     knownCpuMs: number;
     /** Processes without a completed CPU measurement. */
     unknownCpu: number;
+    /** Subset of unknownCpu without any CPU checkpoint. */
+    missingCpu: number;
     /** Failed or skipped tests are always selected because their records may be partial. */
     result: 'passed' | 'failed' | 'skipped';
   }>;

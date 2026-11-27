@@ -26,9 +26,10 @@ export function shardProblems({ reportedFiles, records, stats }) {
     if (!Array.isArray(record.unresolved) || record.unresolved.some(path => typeof path !== 'string' || !path)) {
       problems.push(`Invalid unresolved bundle list for ${file}`);
     }
-    const { processes, cpuMs, knownCpuMs, unknownCpu } = record;
+    const { processes, cpuMs, knownCpuMs, unknownCpu, missingCpu } = record;
     if (!Number.isSafeInteger(processes) || processes < 1 || !Number.isSafeInteger(unknownCpu) ||
-        unknownCpu < 0 || unknownCpu > processes || !Number.isFinite(knownCpuMs) || knownCpuMs < 0 ||
+        unknownCpu < 0 || unknownCpu > processes || !Number.isSafeInteger(missingCpu) || missingCpu < 0 ||
+        missingCpu > unknownCpu || !Number.isFinite(knownCpuMs) || knownCpuMs < 0 ||
         (unknownCpu ? cpuMs !== null : cpuMs !== knownCpuMs)) {
       problems.push(`Invalid process or CPU measurement for ${file}`);
     }
@@ -71,9 +72,9 @@ export function buildSelectionMap({ shards, expectedFiles, commit, runId, create
   if (!problems.length) {
     const index = new Map(files.map((file, i) => [file, i]));
     const tests = Object.fromEntries([...records.keys()].sort().map(file => {
-      const { reads, unresolved, ms, result, processes, cpuMs, knownCpuMs, unknownCpu } = records.get(file);
+      const { reads, unresolved, ms, result, processes, cpuMs, knownCpuMs, unknownCpu, missingCpu } = records.get(file);
       return [file, { reads: [...new Set(reads)].map(path => index.get(path)).sort((a, b) => a - b),
-        unresolved, ms, result, processes, cpuMs, knownCpuMs, unknownCpu }];
+        unresolved, ms, result, processes, cpuMs, knownCpuMs, unknownCpu, missingCpu }];
     }));
     map = { version: 1, commit, runId, createdAt, files, tests };
   }

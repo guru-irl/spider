@@ -19,6 +19,7 @@ import { inspectDestinationSettings, selectedSettingsDigests } from "../selected
 import { extensionShim } from "../../../../scripts/extension-shim.mjs";
 import { startTestBroker, stopTestBroker } from "@spider/intercom/test-support";
 import * as adapterModule from "../provision-adapter";
+import { UnsupportedProvisioningNodeError } from "../provision-remote-script";
 
 const roots: string[] = [];
 type Factory = (input: unknown) => {
@@ -1350,6 +1351,25 @@ it.each(["invalid-limits", "invalid-staging-name", "invalid-release-request", "u
   f.remote.executeProvision = async () => { throw Object.assign(new Error("untrusted detail"), { code }); };
   await expect(create!(f.options).switchover(f.peer, "op-1")).rejects.toMatchObject({ code });
 }, 5000);
+
+it("reports the missing Node type-stripping feature to adapter callers", async () => {
+  const f = fixture();
+  f.remote.executeProvision = async () => { throw new UnsupportedProvisioningNodeError(); };
+  await expect(create!(f.options).switchover(f.peer, "op-1")).rejects.toMatchObject({
+    code: "provision-failed",
+    message: "Node's stripTypeScriptTypes feature is unavailable; provisioning needs a Node version that provides it.",
+  });
+});
+
+it("does not expose a spoofed missing-feature error", async () => {
+  const f = fixture();
+  f.remote.executeProvision = async () => {
+    throw Object.assign(new Error("fixture-secret"), { name: "UnsupportedProvisioningNodeError" });
+  };
+  await expect(create!(f.options).switchover(f.peer, "op-1")).rejects.toMatchObject({
+    code: "provision-failed", message: "Provisioning switchover failed (provision-failed)",
+  });
+});
 
 it("does not expose credential-like remote error codes or messages", async () => {
   expect(create).toBeTypeOf("function"); expect(remoteProgram).toBeTypeOf("string");

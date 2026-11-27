@@ -15,7 +15,7 @@ import { openJournal } from "../journal";
 import { confirmProvision, pinProvisionRelease, stageProvisionRelease } from "../provision-cli";
 import { healthyInventory, inventoryEnvelope } from "./bootstrap-fixture";
 import { BOOTSTRAP_AGENT_DIRECTORY_SCRIPT, BOOTSTRAP_IDENTITY_SCRIPT, BOOTSTRAP_SCRIPT, BOOTSTRAP_SETTINGS_SCRIPT } from "../bootstrap-script";
-import { getProvisionRemoteScript } from "../provision-remote-script";
+import { getProvisionRemoteScript, UnsupportedProvisioningNodeError } from "../provision-remote-script";
 import * as bytesClient from "../../../herdr/src/client/bytes";
 import * as coreClient from "../../../herdr/src/client/hc";
 import * as liveness from "../../../herdr/src/client/liveness";
@@ -116,6 +116,33 @@ it.each(["auth", "build"])("missing %s refuses before transport", async missing 
   expect(errors).toContain(missing === "auth" ? "copilot-auth-unavailable" : "installed-build-unavailable");
   expect(remote).not.toHaveBeenCalled();
 }, 5000);
+
+it.each(["missing feature", "private error"] as const)("reports %s safely through the provisioning CLI", async kind => {
+  const f = fixture(), agent = join(f.root, "agent"); mkdirSync(agent, { mode: 0o700 });
+  writeFileSync(join(f.root, "roam", "machine.json"), JSON.stringify({ machineId: HUB }), { mode: 0o600 });
+  writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify({ enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB,
+    peers: [{ machineId: f.request.machineId, alias: f.request.target, node: "/home/fixture/node", pi: "/home/fixture/.local/bin/pi", cli: "/home/fixture/cli", core: "/home/fixture/hc", globalRoot: "/home/fixture/.pi/agent/spider" }], coreUnit: "fixture.service" }), { mode: 0o600 });
+  vi.stubEnv("PI_CODING_AGENT_DIR", agent); vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root);
+  vi.spyOn(hubModule, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
+  const remote = {
+    transport: { async resolve(peer: unknown) { return peer; }, async bootstrapProbe() { return healthyInventory(); } },
+    async probeAgentDirectory() { return { status: "default", core: { local: "local-core", remote: "remote-core" } }; },
+    async previewSettings() { return { fingerprint: "a".repeat(64), changedKeys: [] }; },
+    async claimIdentity() { return { machineId: f.request.machineId, coreId: "remote-core" }; },
+    async executeProvision() {
+      if (kind === "missing feature") throw new UnsupportedProvisioningNodeError();
+      throw new Error("private path /home/secret/credentials");
+    },
+  };
+  vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue(remote as never);
+  let errors = "";
+  const code = await main(["roam", "provision", f.request.target, "--release", f.release, "--no-settings", "--yes", "--use-destination-auth", "--operation-id", "node-feature"],
+    { out() {}, err(text) { errors += text; } });
+  expect(code).toBe(3);
+  expect(errors).toBe(kind === "missing feature"
+    ? "provision-failed (Node's stripTypeScriptTypes feature is unavailable; provisioning needs a Node version that provides it.)\n"
+    : "provision-failed\n");
+});
 
 it("previews and records the fixed selection and exact selected Copilot auth bytes", async () => {
   const f = fixture(), agent = join(f.root, "agent"); mkdirSync(agent, { mode: 0o700 });

@@ -1,5 +1,5 @@
 import { join, dirname, relative, isAbsolute } from "node:path";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { claimIdLock, localBootId } from "@spider/herdr/sessions/id-lock";
 import { canonicalSessionFile, withProcessLock } from "@spider/herdr/sessions/registry";
 import { createSessionLeases } from "@spider/herdr/sessions/lease";
@@ -108,20 +108,21 @@ async function initialImportSnapshot(snapshot:CapturedSession["workspace"],bundl
   const manifest=await stageArtifact(file,"workspace",options.limits,{root:stagingRoot(options),artifactId:`${snapshot.bundle.artifactId}-initial`});
   return {snapshot:{...snapshot,stage:"pre",refs:newRefs,bundle:{kind:"ready",artifactId:manifest.id,byteLength:manifest.byteLength}},file};
 }
-export async function installLocalSession(plan:RelocatePlan,captured:CapturedSession,home:RunningHome,options:RelocateAdapterOptions,withBothLocks?:<T>(id:string,run:()=>Promise<T>)=>Promise<T>,owner:()=>Promise<SessionOwner>=()=>createLocalRuntime(options).owner(home.sessionId)):Promise<V0Result<InstalledSession>> {
+export async function installLocalSession(plan:RelocatePlan,captured:CapturedSession,home:RunningHome,options:RelocateAdapterOptions,withBothLocks?:<T>(id:string,run:()=>Promise<T>)=>Promise<T>,owner?:()=>Promise<SessionOwner>):Promise<V0Result<InstalledSession>> {
   try {
     beginLocalMove(plan,options);parseCaptured(captured);
     const placement=parsePlacement(plan.destinationPlacement),current=await options.homes.read(home.sessionId);
     if(home.sessionId!==plan.source.sessionId || home.machineId!==options.config.machineId || home.machineId!==placement.machineId || home.epoch!==plan.source.epoch+2 || home.moveId!==plan.moveId || !(exactHome(current,home) || current?.state==="moving" && current.moveId===plan.moveId && current.machineId===plan.source.machineId && current.destination===home.machineId && current.epoch===plan.source.epoch+1))return refusal("home-conflict","The home does not authorize this destination install.");
-    if((await owner()).kind!=="free")return refusal("install-failed","The destination ID lock is occupied or uncertain.");
+    const cwdParts=captured.workspace.relativeCwd.split(/[\\/]/).filter(Boolean);
+    let checkout=placement.cwd;for(const _part of cwdParts)checkout=dirname(checkout);
+    if(join(checkout,captured.workspace.relativeCwd)!==placement.cwd)return refusal("install-failed","The destination cwd does not match the mapped checkout.");
+    const observed=await (owner ? owner() : createLocalRuntime(options).owner(home.sessionId,existsSync(checkout) ? plan.destinationPlacement : undefined));
+    if(observed.kind!=="free")return refusal("install-failed","The destination ID lock is occupied or uncertain.");
     const transcript=await resolveVerifiedArtifact(captured.transcriptArtifact,options.config.hubMachineId,options);
     const bundle=await resolveVerifiedArtifact(captured.bundleArtifact,options.config.hubMachineId,options);
     const repo=options.globalDb.prepare("SELECT path,worktree_command_json FROM roam_repo_maps WHERE repo_key=?").get(placement.repoKey) as {path:string;worktree_command_json:string|null}|undefined;
     if(!repo || repo.path!==placement.repository)return refusal("repo-unmapped","The destination repository mapping changed.","Run spider roam repo map on the destination, then retry.");
     if(repo.worktree_command_json!==null)return refusal("unsupported-workspace","Configured worktree commands are not supported by v0.");
-    const cwdParts=captured.workspace.relativeCwd.split(/[\\/]/).filter(Boolean);
-    let checkout=placement.cwd;for(const _part of cwdParts)checkout=dirname(checkout);
-    if(join(checkout,captured.workspace.relativeCwd)!==placement.cwd)return refusal("install-failed","The destination cwd does not match the mapped checkout.");
     privateDirectory(dirname(checkout));
     const initial=await initialImportSnapshot(captured.workspace,bundle,options);
     const imports={...options.workspaceImport,journal:options.journal,worktreeCommand:null,

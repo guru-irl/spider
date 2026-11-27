@@ -1,5 +1,7 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { execFileSync } from "node:child_process";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
+import * as hcApi from "@spider/herdr/client/hc";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -24,7 +26,7 @@ function stopFixture() {
  return {io,signals,events,clock:{now:()=>now,later:()=>()=>{}},owner,get probes(){return probes;}};
 }
 const fixtures: {close():void}[]=[];
-afterEach(()=>{for(const f of fixtures.splice(0).reverse())f.close();});
+afterEach(()=>{vi.restoreAllMocks();for(const f of fixtures.splice(0).reverse())f.close();});
 const hub="11111111-1111-4111-8111-111111111111",box="22222222-2222-4222-8222-222222222222";
 function transferFixture(linked=false) {
  const global=createReplica("global",hub),target=createReplica("global",box);fixtures.push(global,target);
@@ -138,6 +140,32 @@ describe("v0 real transfer",()=>{
   expect(readFileSync(f.plan.destinationPlacement.file,"utf8")).toBe(expected);
   expect(await installLocalSession(f.plan,captured.value,f.home,f.destination,undefined,async()=>({kind:"free"}))).toEqual(installed);
   expect(readFileSync(f.plan.destinationPlacement.file,"utf8")).toBe(expected);
+ });
+ it.each([true, false])("checks ownership before first install (checkout exists: %s)", async exists => {
+  const f=transferFixture();
+  vi.spyOn(hcApi,"invokeCli").mockResolvedValue({terminals:[]});
+  const captured=await captureLocalSession(f.plan,f.options,async()=>({kind:"free"}));
+  if(!captured.ok)throw new Error(JSON.stringify(captured));
+  for(const manifest of [captured.value.transcriptArtifact,captured.value.bundleArtifact])await receiveArtifactLocally(manifest,f.options,f.destination);
+  if (!exists) {
+   expect(await installLocalSession(f.plan,captured.value,f.home,f.destination)).toMatchObject({ok:true});
+   return;
+  }
+  f.git(f.plan.destinationPlacement.repository,"worktree","add","--detach",f.checkout);
+  mkdirSync(f.plan.destinationPlacement.cwd);
+  const child=spawn(process.execPath,["-e",`process.title = "pi";
+    process.once("message", () => process.exit(0)); process.send("ready");`],
+    {cwd:f.plan.destinationPlacement.cwd,stdio:["ignore","ignore","ignore","ipc"]});
+  const exited=once(child,"exit");
+  try {
+   expect((await Promise.race([once(child,"message"),exited]))[0]).toBe("ready");
+   expect(await installLocalSession(f.plan,captured.value,f.home,f.destination)).toMatchObject({ok:false,refusal:{code:"install-failed",message:expect.stringContaining("occupied or uncertain")}});
+   expect(child.exitCode).toBeNull();
+   expect(readFileSync(join(f.checkout,"file.txt"),"utf8")).toBe("base\n");
+  } finally {
+   if(child.connected)child.send("exit");
+   await exited;
+  }
  });
  it("dirty unrelated destination is unchanged",async()=>{
   const f=transferFixture();f.git(f.plan.destinationPlacement.repository,"worktree","add","--detach",f.checkout);

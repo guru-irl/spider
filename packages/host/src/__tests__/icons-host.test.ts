@@ -36,16 +36,16 @@ describe("host icon rendering", () => {
     equalWidths(text, nerd);
   });
 
-  it("uses failure, task, and output markers in a run result", () => {
+  it("uses configured failure and task markers in a run result", () => {
     const result = { details: { run: { name: "scribe", agent: "worker", status: "failed", task: "read", result: "done" } } };
     const render = (iconStyle: "text" | "nerd") => renderSpiderResult(result, {}, theme, { args: { action: "run" }, iconStyle }).render(100);
     const text = render("text"), nerd = render("nerd");
-    expect(text.join("\n")).toContain("❌ scribe");
-    expect(nerd.join("\n")).toContain("\u{F0156}  scribe");
+    expect(text.join("\n")).toContain("❌ failed · scribe");
+    expect(nerd.join("\n")).toContain("\u{F0156}  failed · scribe");
     expect(text.join("\n")).toContain("↳ read");
     expect(nerd.join("\n")).toContain("\u{F060D} read");
-    expect(text.join("\n")).toContain("⤴ done");
-    expect(nerd.join("\n")).toContain("\u{F005C} done");
+    expect(text).toContain("   done");
+    expect(nerd).toContain("   done");
     equalWidths(text, nerd);
   });
 
@@ -96,15 +96,15 @@ describe("host icon rendering", () => {
     const done = { details: { status: "cancelled", name: "scribe", output: "result" } };
     const text = renderSubagentDone(done, {}, theme, "text").render(100);
     const nerd = renderSubagentDone(done, {}, theme, "nerd").render(100);
-    expect(text.join("\n")).toContain("⚠\uFE0F scribe");
-    expect(nerd.join("\n")).toContain("\u{F002A}  scribe");
+    expect(text.join("\n")).toContain("⚠\uFE0F cancelled");
+    expect(nerd.join("\n")).toContain("\u{F002A}  cancelled");
     expect(nerd.join("\n")).toContain("\u{F0BCA}  spider");
     equalWidths(text, nerd);
     const report = { data: { status: "failed", errors: [], memoryStaged: 0, skillsStaged: 0, todosAdded: 0 } };
     const a = renderOrganismEntry(report, {}, theme, "text").render(100);
     const b = renderOrganismEntry(report, {}, theme, "nerd").render(100);
-    expect(a.join("\n")).toContain("⚠\uFE0F organism");
-    expect(b.join("\n")).toContain("\u{F002A}  organism");
+    expect(a.join("\n")).toContain("❌ failed");
+    expect(b.join("\n")).toContain("\u{F0156}  failed");
     equalWidths(a, b);
     const escalation = { details: { runId: "run-one", severity: "warning", summary: "attention" } };
     expect(renderEscalationMessage(escalation, {}, theme, "nerd").render(100).join("\n")).toContain("\u{F002A}");

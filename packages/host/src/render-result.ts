@@ -4,7 +4,7 @@
 // as the title, so renderResult renders only the BODY (no header of its own — that
 // would double the "spider"). `options.expanded` reflects the in-chat Ctrl+O toggle;
 // `context.args` are the call params; `result.details` is the structured payload.
-import { truncateToWidth, visibleWidth, Box } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi, Box } from "@earendil-works/pi-tui";
 import { icon, type Component, type IconStyle } from "@spider/ui";
 import { cachedLines, formatRunUsage, renderErrorResult, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, sectionRule, fitResultLines, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
 import {
@@ -21,7 +21,6 @@ import { UI_CONFIG_SCHEMA, modelThinkingDisplay } from "./ui-thinking";
 import { toToolResult } from "./result";
 import { makeRunCostFormatter } from "./run-credits";
 import { restoreExecDetails } from "./exec-session-storage";
-const SG: Record<string, string> = { queued: "○", running: "◆", paused: "■", done: "✓", failed: icon("text", "failure"), cancelled: icon("text", "warning") };
 
 interface T { fg(tok: string, s: string): string; bold(s: string): string; italic(s: string): string; bg(tok: string, s: string): string; iconStyle?: IconStyle; }
 function mkTheme(theme: any, iconStyle?: IconStyle): T {
@@ -96,28 +95,41 @@ function plainBody(text: string, expanded = false): Component {
 
 interface RunLike { token_count?: number; cost?: number; usageCosts?: RunUsageCosts; costText?: string; compactionCount?: number; id?: string; name?: string; agent?: string; model?: string | null; thinking?: string | null; status?: string; task?: string; result?: string | null }
 
-/** One run block, ONE header line: `◆ name · type · model · status` + expandable instructions. */
-function runBlock(t: T, r: RunLike, width: number, expanded: boolean, formatRunCost: RunCostFormatter): string[] {
+/** Wrap the text after a row marker, with continuations in column 3. */
+function cardRow(prefix: string, text: string, width: number, expanded: boolean): string[] {
+  if (!expanded) return [clip(prefix + text, width)];
+  const [first, ...rest] = wrapTextWithAnsi(text, Math.max(1, width - visibleWidth(prefix)));
+  return [prefix + first, ...rest.map(line => `   ${line}`)].map(line => clip(line, width));
+}
+
+function runBlock(t: T, r: RunLike, width: number, expanded: boolean, formatRunCost: RunCostFormatter, includeSubject: boolean): string[] {
   const status = r.status ?? "running";
-  const glyph = t.fg("toolTitle", status === "failed" ? icon(t.iconStyle, "failure") : status === "cancelled" ? icon(t.iconStyle, "warning") : SG[status] ?? "•");
-  const name = t.bold(r.name ?? r.agent ?? "agent");
-  const sep = t.fg("dim", "·");
-  const thinkSeg = r.thinking ? ` ${sep} ${t.fg("muted", r.thinking)}` : "";
-  const head = `  ${glyph} ${name} ${sep} ${t.italic(t.fg("toolTitle", r.agent ?? "worker"))} ${sep} ${t.fg("muted", shortModel(r.model))}${thinkSeg} ${sep} ${t.fg("muted", status)}`;
-  const lines = [expanded ? head : clip(head, width)];
-  if (["done", "failed", "cancelled"].includes(status) && ((r.token_count ?? 0) > 0 || (r.compactionCount ?? 0) > 0)) lines.push(t.fg("dim", `    ${formatRunUsage(r.token_count ?? 0, r.cost, r.compactionCount, r.costText ?? (r.usageCosts ? formatRunCost(r.usageCosts) : undefined))}`));
+  const glyph = status === "failed" ? t.fg("error", icon(t.iconStyle, "failure"))
+    : status === "cancelled" ? t.fg("warning", icon(t.iconStyle, "warning"))
+    : status === "done" ? t.fg("success", "✓")
+    : status === "running" ? t.fg("accent", "●") : t.fg("muted", "○");
+  const agent = r.agent ?? "worker";
+  const segments = [status];
+  if (includeSubject) segments.push(t.bold(r.name ?? agent), t.italic(t.fg("toolTitle", agent)));
+  segments.push(t.fg("muted", shortModel(r.model)));
+  if (r.thinking) segments.push(t.fg("muted", r.thinking));
+  if (["done", "failed", "cancelled"].includes(status) && ((r.token_count ?? 0) > 0 || (r.compactionCount ?? 0) > 0)) {
+    segments.push(t.fg("dim", formatRunUsage(r.token_count ?? 0, r.cost, r.compactionCount, r.costText ?? (r.usageCosts ? formatRunCost(r.usageCosts) : undefined))));
+  }
+  const lines = cardRow(` ${glyph} `, segments.join(` ${t.fg("dim", "·")} `), width, expanded);
   const task = (r.task ?? "").trim();
   if (task) {
-    const body = expanded ? task.split("\n") : [clip(task, width - 7)];
-    for (let i = 0; i < body.length; i++) lines.push(`    ${t.fg("muted", (i === 0 ? `${icon(t.iconStyle, "task")} ` : "  ") + body[i])}`);
+    const [first, ...rest] = task.split("\n");
+    lines.push(...cardRow(`   ${t.fg("muted", icon(t.iconStyle, "task"))} `, t.fg("muted", first), width, expanded));
+    if (expanded) for (const line of rest) lines.push(...cardRow("   ", t.fg("muted", line), width, true));
   }
-  // Subagent output: collapsed to the first 2 lines by default, full on ctrl+o (expanded).
   const out = (r.result ?? "").trim();
   if (out) {
     const outLines = out.split("\n");
     const shown = expanded ? outLines : outLines.slice(0, 2);
-    for (let i = 0; i < shown.length; i++) lines.push(`    ${t.fg("dim", (i === 0 ? `${icon(t.iconStyle, "result")} ` : "  ") + (expanded ? shown[i] : clip(shown[i], width - 7)))}`);
-    if (!expanded && outLines.length > 2) lines.push(`    ${t.fg("dim", `  … (+${outLines.length - 2} more lines)`)}`);
+    for (const line of shown) lines.push(...cardRow("   ", t.fg("dim", line), width, expanded));
+    const remaining = outLines.length - shown.length;
+    if (remaining > 0) lines.push(clip(`   ${t.fg("dim", `… ${remaining} more line${remaining === 1 ? "" : "s"}`)}`, width));
   }
   return lines;
 }
@@ -127,22 +139,23 @@ function thinkingNoticeLines(t: T, details: any, width: number, expanded: boolea
   const diagnostics: any[] = Array.isArray(details?.thinkingDiagnostics) ? details.thinkingDiagnostics : [];
   return [...new Set(diagnostics.filter(info => info?.effective === "off" || info?.requested !== info?.effective)
     .map(info => info?.notice).filter((notice): notice is string => typeof notice === "string"))]
-    .map(notice => t.fg("muted", expanded ? `  ${notice}` : clip(`  ${notice}`, width)));
+    .flatMap(notice => cardRow(" ", t.fg("muted", notice), width, expanded));
 }
 
-function renderRun(t: T, details: any, expanded: boolean, formatRunCost: RunCostFormatter = makeRunCostFormatter(() => undefined)): Component {
+function renderRun(t: T, details: any, expanded: boolean, formatRunCost: RunCostFormatter = makeRunCostFormatter(() => undefined), includeSubject = true): Component {
   const runs: RunLike[] = Array.isArray(details?.runs) ? details.runs : details?.run ? [details.run] : [];
   return {
     render(width: number): string[] {
-      if (runs.length === 0) return fitResultLines(["", t.fg("muted", "   (no runs)"), ...thinkingNoticeLines(t, details, width, expanded)], width, expanded);
-      const lines: string[] = [];
-      const multi = runs.length > 1;
-      for (const r of runs) { lines.push(...runBlock(t, r, width, expanded, formatRunCost)); if (multi) lines.push(""); }
+      const lines = runs.length ? [] : [t.fg("muted", " (no runs)")];
+      for (const [i, run] of runs.entries()) {
+        if (i > 0) lines.push("");
+        lines.push(...runBlock(t, run, width, expanded, formatRunCost, includeSubject));
+      }
       lines.push(...thinkingNoticeLines(t, details, width, expanded));
       const anyTask = runs.some((r) => (r.task ?? "").trim());
       const anyOut = runs.some((r) => (r.result ?? "").trim().split("\n").length > 2);
-      if (!expanded && (anyTask || anyOut)) lines.push(t.fg("dim", `  ctrl+o to expand${anyOut ? " output" : " instructions"}`));
-      return fitResultLines(["", ...lines.map((l) => (l === "" ? l : " " + l))], width, expanded);
+      if (!expanded && (anyTask || anyOut)) lines.push(t.fg("dim", ` ctrl+o to expand${anyOut ? " output" : " instructions"}`));
+      return fitResultLines(lines, width, expanded);
     },
     invalidate() {},
   };
@@ -788,7 +801,7 @@ export function renderSpiderCall(args: any, theme: any, context: any): Component
         : Array.isArray(args?.pipeline) ? args.pipeline.length : 1;
       suffix = mode === "single"
         ? verb("run")
-        : `${verb(mode)} ${t.fg("toolTitle", `· ${n} started`)}`;
+        : `${verb("run")} ${t.fg("toolTitle", `· ${mode} · ${n} started`)}`;
     } else if ((action === "exec" || action === "exec_file" || action === "batch") && typeof args?.on === "string") {
       // The command goes below the title; remote calls also name their destination.
       suffix = `${verb(action)} ${t.fg("toolTitle", `on ${args.on}`)}`;
@@ -831,25 +844,27 @@ export function renderSubagentDone(message: any, options: NotificationOptions, t
   const d = message?.details ?? {};
   // C-LOW: a malformed completion event without status is not proof of `done`.
   const status = String(d.status ?? "unknown");
-  const background = status === "failed" || status === "cancelled"
-    ? "toolErrorBg"
-    : status === "done"
-      ? "toolSuccessBg"
-      : "toolPendingBg";
-  const bgFn = (text: string) => (typeof theme?.bg === "function" ? theme.bg(background, text) : text);
+  const background = status === "failed" ? "toolErrorBg" : status === "done" ? "toolSuccessBg" : "toolPendingBg";
   const expanded = options?.expanded === true;
-  // Feed the same shape a real `spider run` produces: a title (renderCall) + a single run block
-  // (renderResult) carrying the child's name/agent/model/status and its output as the result.
-  const args = { action: "run" };
-  const result = { details: { run: { name: d.name, agent: d.agent, model: d.model, thinking: d.thinking, status, result: d.output, token_count: d.tokenCount, cost: d.cost, costText: d.costText, compactionCount: d.compactionCount } } };
-  const box = new Box(options.outputPad ?? 1, 1, bgFn);
-  box.addChild(renderSpiderCall(args, theme, { cardBackground: background, iconStyle }) as any);
-  if (d.chain?.outcome === "complete" || d.chain?.outcome === "stopped") {
-    const headline = d.chain.outcome === "complete" ? "chain complete"
-      : `chain stopped at step ${d.chain.step} of ${d.chain.total}: ${d.chain.cause}`;
-    box.addChild({ render: (width: number) => restoreCardBackground([clip(mkTheme(theme).fg("toolTitle", headline), width)], theme, background), invalidate() {} });
-  }
-  box.addChild(renderSpiderResult(result, { expanded }, theme, { args, cardBackground: background, iconStyle }) as any);
+  const t = mkTheme(theme, iconStyle);
+  const run: RunLike = { name: d.name, agent: d.agent, model: d.model, thinking: d.thinking, status, result: d.output, token_count: d.tokenCount, cost: d.cost, costText: d.costText, compactionCount: d.compactionCount };
+  const detail = renderRun(t, { run }, expanded, undefined, false);
+  const box = new Box(options.outputPad ?? 1, 1, text => t.bg(background, text));
+  box.addChild(renderSpiderCall({ action: "run" }, theme, {
+    cardBackground: background, iconStyle, titleDetails: [d.name ?? d.agent ?? "subagent", d.agent ?? "worker"],
+  }) as any);
+  box.addChild({
+    render: (width: number) => {
+      const lines = detail.render(width);
+      if (d.chain?.outcome === "complete" || d.chain?.outcome === "stopped") {
+        const headline = d.chain.outcome === "complete" ? "chain complete"
+          : `chain stopped at step ${d.chain.step} of ${d.chain.total}: ${d.chain.cause}`;
+        lines.push(...cardRow(` ${t.fg("dim", icon(iconStyle, "gutter"))} `, t.fg("toolTitle", headline), width, expanded));
+      }
+      return restoreCardBackground(lines, theme, background);
+    },
+    invalidate: () => detail.invalidate?.(),
+  });
   return cachedLines(width => box.render(width), () => box.invalidate());
 }
 

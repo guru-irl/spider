@@ -419,9 +419,8 @@ describe('runner boundary and report', () => {
       sha256: '58d6861176dc6fe905b58880d5bff07a9959be613a98e5d66b4583b04b6cfa45',
       binarySha256: '8c4c0930974e2b31978cbbb14b892cd29d5ace917f4c04ce6dfdd5573e1fe193',
     });
-    // R04 to R08, R13 and R14 are flaky in CI and stay out of the default
-    // set until fixed; they still run when requested by ID.
-    expect(config.stories).toEqual(['R03', 'R10', 'R11', 'R12']);
+    // R04 is an explicit restart check; R12 remains available by ID.
+    expect(config.stories).toEqual(['R18', 'R10', 'R11']);
     expect(new Set(config.stories).size).toBe(config.stories.length);
     expect(config.stories.every(id => profileIds.headless.includes(id))).toBe(true);
     // @ts-ignore Vite provides import.meta.glob during test transformation.
@@ -469,10 +468,14 @@ describe('runner boundary and report', () => {
   it('discovers the packaged hosting stories and reports missing or inapplicable results honestly', async () => {
     // @ts-ignore Vite provides import.meta.glob during test transformation.
     const definitions = await discoverScenarios(import.meta.glob('./*.test.ts'));
-    const ids = ['R03', 'R04', 'R05'];
+    const ids = ['R04'];
+    expect(definitions.filter((definition: { id: string }) => ['R03', 'R04', 'R05'].includes(definition.id))
+      .map((definition: { id: string }) => definition.id)).toEqual(ids);
     const selected = selectScenarios(definitions, parseOptions(['--tier', 'headless', '--story', ids.join(',')], {}));
     expect(selected.map((definition: { id: string }) => definition.id)).toEqual(ids);
     expect(selected.every((definition: { tiers: string[] }) => definition.tiers.join(',') === 'headless')).toBe(true);
+    expect(storyWorkers({ tier: 'headless', ids: ['R04'], workers: 4 })).toBe(1);
+    for (const retired of ['R03', 'R05']) expect(() => parseOptions(['--tier', 'headless', '--story', retired], {})).toThrow(/unknown story/);
     for (const id of ids) {
       expect(profileIds.headless).toContain(id);
       expect(profileIds.ci).not.toContain(id);
@@ -488,7 +491,7 @@ describe('runner boundary and report', () => {
     expect(parseOptions(['--tier', 'headless', '--story', 'R02'], {}).ids).toEqual(['R02']);
     expect(profileIds.headless).toContain('R10'); expect(profileIds.headless).toContain('R02'); expect(profileIds.app).not.toContain('R02');
     expect(profileIds.ci).not.toContain('R10'); expect(profileIds.ci).not.toContain('R02');
-    expect(parseOptions(['--tier', 'headless', '--task', 'roam'], {}).ids).toEqual(['R02', 'R03', 'R04', 'R05', 'R06', 'R07', 'R08', 'R10', 'R11', 'R12', 'R13', 'R14', 'R18']);
+    expect(parseOptions(['--tier', 'headless', '--task', 'roam'], {}).ids).toEqual(['R02', 'R04', 'R06', 'R07', 'R08', 'R10', 'R11', 'R12', 'R13', 'R14', 'R18']);
     expect(() => parseOptions(['--tier', 'app', '--task', 'roam'], { SPIDER_HERDR_APP_TESTS: '1', SPIDER_HERDR_TEST_DISPLAY_UUID: 'fixture' })).toThrow(/no stories/);
     expect(() => parseOptions(['--tier', 'ci', '--task', 'roam'], {})).toThrow(/no stories/);
     const matrix = buildMatrix('ci', profileIds.ci, []);
@@ -630,7 +633,7 @@ describe('runner boundary and report', () => {
       { id: 'S54', tier: 'ci', result: 'blocked', evidence: 'S54.json', reason: 'native-input' },
       { id: 'S55', tier: 'ci', result: 'failed', evidence: 'S55.json', reason: 'cleanup failed' },
     ]);
-    expect(matrix).toHaveLength(78);
+    expect(matrix).toHaveLength(76);
     expect(matrix.find((x: { id: string }) => x.id === 'R14').result).toBe('not exercised');
     expect(matrix.find((x: { id: string }) => x.id === 'R18').result).toBe('not exercised');
     expect(matrix.find((x: { id: string }) => x.id === 'S01').result).toBe('not exercised');

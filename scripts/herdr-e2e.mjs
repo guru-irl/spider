@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const storyIds = Array.from({ length: 56 }, (_, i) => `S${String(i + 1).padStart(2, '0')}`);
-export const roamStoryIds = ['R02', 'R03', 'R04', 'R05', 'R06', 'R07', 'R08', 'R10', 'R11', 'R12', 'R13', 'R14', 'R14local', 'R18'];
+export const roamStoryIds = ['R02', 'R04', 'R06', 'R07', 'R08', 'R10', 'R11', 'R12', 'R13', 'R14', 'R14local', 'R18'];
 export const paneStoryIds = ['B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08'];
 const allStoryIds = [...storyIds, ...roamStoryIds, ...paneStoryIds];
 const validStoryId = id => typeof id === 'string' && (allStoryIds.includes(id) || id === 'B00' || /^H-[a-z0-9-]+$/.test(id));
@@ -167,7 +167,7 @@ export function storyWorkerEnvironment(fenced, caller, tier) {
 }
 export function storyWorkers(options) {
   if (options.ids?.some(id => paneStoryIds.includes(id))) return 1;
-  if (options.ids?.some(id => ['R03', 'R04', 'R05', 'R06', 'R07', 'R08', 'R10', 'R11', 'R12', 'R13', 'R18'].includes(id))) return 1;
+  if (options.ids?.some(id => ['R04', 'R06', 'R07', 'R08', 'R10', 'R11', 'R12', 'R13', 'R18'].includes(id))) return 1;
   if (options.ids?.length === 1 && ['R14', 'R14local'].includes(options.ids[0])) return 1;
   return options.tier === 'app' ? 1 : 2;
 }

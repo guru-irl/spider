@@ -14,17 +14,17 @@ The runner builds once, packs once, and supplies `SPIDER_HERDR_E2E_PACKED_ROOT` 
 
 ## Run a headless story on GitHub Actions
 
-The `Herdr headless stories` workflow runs on pull requests and accepts a `stories` input for manual runs. Once the workflow is on the default branch, use the Actions page or run:
+The `Herdr headless stories` workflow accepts a `stories` input for manual runs. It is not part of the normal pull request checks. Once the workflow is on the default branch, use the Actions page or run:
 
 ```sh
-gh workflow run herdr-stories.yml --ref <branch> -f stories=R03
+gh workflow run herdr-stories.yml --ref <branch> -f stories=R04
 ```
 
-Separate multiple story IDs with commas. Leave `stories` empty to run the default set in `controls/ci-stories.json`. A preparation job installs dependencies and builds once, verifies the pinned Linux core, and shares the build with one job per selected story. The jobs run in parallel and report independently. The harness requires an owned `hc` executable rather than a symbolic link. On failure, download the `herdr-headless-failures-<story>` artifact and extract `e2.tar.gz`.
+Separate multiple story IDs with commas. Leave `stories` empty to run R18, R10, and R11. R04 explicitly checks v0 hosting across a core restart. R12 remains selectable by ID but is outside the default set because of a known late-reply race. A preparation job installs dependencies and builds once, verifies the pinned Linux core, and shares the build with one job per selected story. The jobs run in parallel and report independently. The harness requires an owned `hc` executable rather than a symbolic link. On failure, download the `herdr-headless-failures-<story>` artifact and extract `e2.tar.gz`.
 
-The preparation job has a five-minute limit. Initial measured limits use a successful job time plus 40 seconds, rounded up to a minute. Unmeasured jobs retain the five-minute limit. Later near-limit runs require investigation, not an automatic limit increase. The job limits are in `controls/ci-stories.json`. R05's story step retains its one-minute limit.
+The preparation job has a five-minute limit. Initial measured limits use a successful job time plus 40 seconds, rounded up to a minute. Unmeasured jobs retain the five-minute limit. Later near-limit runs require investigation, not an automatic limit increase. The job limits are in `controls/ci-stories.json`.
 
-The workflow sets an absolute runner deadline twenty seconds before the job limit, measured from the first job step. When the story step starts, the workflow caps that deadline at twenty seconds before the step limit. R05 therefore gets at most forty seconds from its story step, without extending the original job deadline. On expiry, the runner writes `deadline.json` before terminating unfinished command groups. Final cleanup and reconciliation share at most ten seconds, leaving ten seconds for failure archive and upload. An exhausted cleanup budget writes `cleanup-deadline.json` and reports cleanup as unproved. The independent watchdog retains responsibility for unfinished cleanup. The optional `deadline-seconds` dispatch input can shorten the runner deadline, never extend it.
+The workflow sets an absolute runner deadline twenty seconds before the job limit, measured from the first job step. When the story step starts, the workflow caps that deadline at twenty seconds before the step limit. On expiry, the runner writes `deadline.json` before terminating unfinished command groups. Final cleanup and reconciliation share at most ten seconds, leaving ten seconds for failure archive and upload. An exhausted cleanup budget writes `cleanup-deadline.json` and reports cleanup as unproved. The independent watchdog retains responsibility for unfinished cleanup. The optional `deadline-seconds` dispatch input can shorten the runner deadline, never extend it.
 
 The workflow exercises the packed extension and real, isolated local cores without a display. It does not certify the native app, native windows, SSH, or real remote machines. R02 covers app placement with a fixture owner and is outside the default set. R14local needs separately supplied local fixtures.
 

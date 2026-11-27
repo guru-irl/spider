@@ -3,7 +3,8 @@ import net from "node:net";
 import { once } from "node:events";
 import type { ChildProcess } from "node:child_process";
 import { startTestBroker, stopTestBroker, testBrokerEnv } from "../test-support.js";
-import { getBrokerSocketPath } from "./paths.js";
+import { getAgentDirPath, getBrokerSocketPath } from "./paths.js";
+import { requestV0Broker } from "./roam-v0-client.js";
 import { createMessageReader, writeMessage } from "./framing.js";
 import { IntercomClient } from "./client.js";
 import {
@@ -223,6 +224,15 @@ describe("private roaming broker", () => {
     expect(await sender.send("ben", { text: "ordinary send" })).toMatchObject({ delivered: true, delivery: "socket_delivered" });
     await replacement.listSessions();
     expect(inbox).toHaveLength(1);
+  });
+
+  it("negotiates and sends one lookup over the configured private broker", async () => {
+    await register("stable-b", "b", "ben", "scope-1", 3);
+    expect(await requestV0Broker(getAgentDirPath(), { kind: "lookup", scopeId: "scope-1", selector: { by: "name", value: "ben" } }))
+      .toEqual({ kind: "matches", targets: [{
+        address: { sessionId: "b", scopeId: "scope-1" }, name: "ben", homeEpoch: 3,
+        endpointEpoch: expect.any(String),
+      }] });
   });
 
   it("advertises roaming over its private Unix socket", async () => {

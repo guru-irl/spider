@@ -1,0 +1,113 @@
+import net from "node:net";
+import { lstatSync, realpathSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
+import {
+  parseV0BrokerReply, parseV0BrokerRequest, V0_ASK_MAX_MS, V0_INTERCOM_FEATURE,
+  type V0BrokerOp, type V0Reply,
+} from "../roam-v0.js";
+import { createMessageReader, writeMessage } from "./framing.js";
+import { INTERCOM_PROTOCOL_NAME, INTERCOM_PROTOCOL_VERSION } from "./paths.js";
+
+interface PrivateBroker {
+  path: string;
+  directoryDev: number;
+  directoryIno: number;
+  socketDev: number;
+  socketIno: number;
+}
+
+function privateBroker(agentDir: string): PrivateBroker | null {
+  if (!isAbsolute(agentDir) || resolve(agentDir) !== agentDir || realpathSync(agentDir) !== agentDir) return null;
+  const agent = lstatSync(agentDir);
+  const directoryPath = join(agentDir, "intercom");
+  const directory = lstatSync(directoryPath);
+  const socketPath = join(directoryPath, "broker.sock");
+  const socket = lstatSync(socketPath);
+  const owned = (uid: number) => typeof process.getuid !== "function" || uid === process.getuid();
+  if (!agent.isDirectory() || agent.isSymbolicLink() || !owned(agent.uid) ||
+      !directory.isDirectory() || directory.isSymbolicLink() || realpathSync(directoryPath) !== directoryPath ||
+      !owned(directory.uid) || (directory.mode & 0o7777) !== 0o700 ||
+      !socket.isSocket() || socket.isSymbolicLink() || !owned(socket.uid) || (socket.mode & 0o7777) !== 0o600) return null;
+  return { path: socketPath, directoryDev: directory.dev, directoryIno: directory.ino, socketDev: socket.dev, socketIno: socket.ino };
+}
+
+/** Never starts a broker or retries an operation whose delivery might have happened. */
+export async function requestV0Broker(agentDir: string, op: V0BrokerOp, signal?: AbortSignal): Promise<V0Reply> {
+  const requestId = randomUUID();
+  const request = { type: "roam_v0" as const, requestId, ...op };
+  if (!parseV0BrokerRequest(request)) return { kind: "refused", code: "invalid" };
+  if (signal?.aborted) return { kind: "refused", code: "unreachable" };
+  let broker: PrivateBroker | null;
+  try { broker = privateBroker(agentDir); } catch { return { kind: "refused", code: "unreachable" }; }
+  if (!broker) return { kind: "refused", code: "unauthorized" };
+
+  const startedAt = Date.now();
+  return new Promise<V0Reply>(resolveResult => {
+    const socket = net.connect(broker.path);
+    const healthId = randomUUID();
+    let sent = false;
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const failure = (): V0Reply => sent && op.kind !== "lookup"
+      ? { kind: "unknown", id: op.message.id }
+      : { kind: "refused", code: "unreachable" };
+    const finish = (result: V0Reply) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      socket.destroy();
+      resolveResult(result);
+    };
+    const onAbort = () => finish(failure());
+    timer = setTimeout(() => finish(failure()), 2000);
+    timer.unref?.();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    socket.on("error", () => finish(failure()));
+    socket.on("close", () => finish(failure()));
+    socket.on("connect", () => {
+      try {
+        const current = privateBroker(agentDir);
+        if (!current || current.directoryDev !== broker.directoryDev || current.directoryIno !== broker.directoryIno ||
+            current.socketDev !== broker.socketDev || current.socketIno !== broker.socketIno) {
+          finish({ kind: "refused", code: "unauthorized" }); return;
+        }
+        writeMessage(socket, { type: "health", requestId: healthId });
+      } catch { finish(failure()); }
+    });
+    socket.on("data", createMessageReader(value => {
+      if (!sent) {
+        const health = value as Record<string, unknown> | null;
+        if (!health || health.type !== "health_ok" || health.requestId !== healthId ||
+            health.protocol !== INTERCOM_PROTOCOL_NAME || health.version !== INTERCOM_PROTOCOL_VERSION ||
+            health.implementation !== "spider" || !Array.isArray(health.features) || !health.features.includes(V0_INTERCOM_FEATURE)) {
+          finish({ kind: "refused", code: "unsupported" }); return;
+        }
+        if (op.kind === "ask") {
+          const remaining = Math.min(op.timeoutMs, V0_ASK_MAX_MS) - (Date.now() - startedAt);
+          if (remaining <= 0) { finish({ kind: "no_reply", id: op.message.id }); return; }
+          clearTimeout(timer);
+          timer = setTimeout(() => finish({ kind: "no_reply", id: op.message.id }), remaining);
+          timer.unref?.();
+        }
+        sent = true;
+        try { writeMessage(socket, request); } catch { finish(failure()); }
+        return;
+      }
+      const response = parseV0BrokerReply(value);
+      if (!response || response.requestId !== requestId) { finish(failure()); return; }
+      const { type: _type, requestId: _requestId, ...result } = response;
+      if (result.kind === "refused") { finish(result); return; }
+      if (op.kind === "lookup") {
+        finish(result.kind === "matches" ? result : failure()); return;
+      }
+      if (result.kind === "matches" || result.id !== op.message.id ||
+          op.kind === "deliver" && result.kind !== "socket_delivered" && result.kind !== "unknown" ||
+          op.kind === "ask" && result.kind !== "replied" && result.kind !== "no_reply" && result.kind !== "unknown") {
+        finish(failure()); return;
+      }
+      finish(result);
+    }, () => finish(failure())));
+  });
+}

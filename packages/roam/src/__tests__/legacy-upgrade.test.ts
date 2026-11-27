@@ -592,7 +592,7 @@ it.each(["live", "idle"] as const)("doctor blocks live legacy hosting when its i
   ]));
 });
 
-it.each(["matching", "wrong-file", "stale-epoch", "legacy-launch"] as const)("checks %s v0 ownership against an idle legacy intent", async evidence => {
+it.each(["matching", "wrong-file", "stale-epoch", "legacy-launch", "legacy-home-id"] as const)("checks %s v0 ownership against an idle legacy intent", async evidence => {
   const f = fixture(), stateRoot = join(f.root, "herdr"), file = join(f.root, "session-v0.jsonl"), cwd = join(f.root, "checkout"), id = "session-v0-owner";
   writeFileSync(file, "fixture transcript\n", { mode: 0o600 });
   const boot = await localBootId(), startIdentity = processStartIdentity(process.pid);
@@ -617,13 +617,15 @@ it.each(["matching", "wrong-file", "stale-epoch", "legacy-launch"] as const)("ch
   });
   const global = openDb(join(f.root, "spider.db"));
   try {
-    global.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state,destination) VALUES (?,?,1,NULL,1,'running',NULL)").run(id, hub);
+    global.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state,destination) VALUES (?,?,1,?,1,'running',NULL)")
+      .run(id, hub, evidence === "legacy-home-id" ? "old-legacy-move" : null);
     writeLocal(global, "relocate-managed", id, { sessionId: id, machineId: hub, historyMachine: hub, repoKey: "fixture-repo", workspaceId: "workspace-1", repository: cwd, cwd, file: evidence === "wrong-file" ? join(f.root, "other.jsonl") : file, stores: ["global", "worktree:fixture-repo:workspace-1"] });
   } finally { global.close(); }
   const io = { out: vi.fn(), err: vi.fn() };
   await main(["roam", "doctor", "--json"], io);
   expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
     evidence === "matching" ? expect.objectContaining({ severity: "info", reason: expect.stringMatching(/^legacy-upgrade-ready/) })
+      : evidence === "legacy-home-id" ? expect.objectContaining({ severity: "block", reason: expect.stringMatching(/^legacy-upgrade-unverified/) })
       : expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-blocked.*session-v0-owner/) }),
   ]));
 });

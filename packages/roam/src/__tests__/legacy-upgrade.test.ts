@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { migrate, openDb } from "@spider/db-core";
+import { writeLocal } from "@spider/db-core/roam/local-state";
 import { claimIdLock, localBootId } from "@spider/herdr/sessions/id-lock";
 import { createSessionLeases } from "@spider/herdr/sessions/lease";
 import { createProcessPresence } from "@spider/herdr/sessions/presence";
@@ -67,6 +68,22 @@ it("doctor blocks an unresolved legacy freeze roster even without a pending move
   const report = JSON.parse(io.out.mock.calls.at(-1)![0]);
   expect(report.value.diagnostics).toEqual(expect.arrayContaining([
     expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-blocked.*session-freeze.*freeze-move-1/) }),
+  ]));
+});
+
+it("doctor blocks an interrupted repository map by its store key", async () => {
+  const f = fixture(), directory = join(f.root, "repository");
+  mkdirSync(directory);
+  const db = openDb(join(f.root, "spider.db"));
+  try {
+    writeLocal(db, "mapping-intent", JSON.stringify(["repo", "fixture-repo"]), { kind: "repo", identity: "fixture-repo",
+      target_path: directory, store_key: "repo:fixture-repo", command_json: null, attempt_id: "attempt-1" });
+  } finally { db.close(); }
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  const report = JSON.parse(io.out.mock.calls.at(-1)![0]);
+  expect(report.value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-blocked.*repo:fixture-repo/) }),
   ]));
 });
 

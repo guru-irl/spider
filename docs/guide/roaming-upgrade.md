@@ -24,6 +24,10 @@ This procedure does not authorize a rollout or a repair.
    work and repeat the inventory immediately before switching services. Do not
    treat an inventory that changes during inspection as clearance.
 
+An unavailable global database, journal, or store needed by unfinished work
+prevents clearance. A missing or corrupt project store that no unfinished
+record names remains a warning; investigate it separately.
+
 If doctor cannot read the local identity, JSON reports `enabled: null`. This
 means **unknown**, not disabled. `spider roam status` reports unavailable in
 that case. An `enabled` flag alone does not prove that a service is running.

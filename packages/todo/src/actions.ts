@@ -20,6 +20,7 @@ export interface TodoDeps {
 
 export interface ActionResult {
   display?: Component | string;
+  text?: string;
   details: unknown;
   isError?: boolean;
 }
@@ -83,9 +84,11 @@ export function makeTodo(deps?: TodoDeps) {
         const row = db.prepare("SELECT name FROM sessions WHERE id = ?").get(target) as { name: string | null } | undefined;
         const name = row?.name ?? undefined;
         const label = name ? `${target} (${name})` : target;
+        const result = { ...t, session: target, ...(name !== undefined ? { name } : {}) };
         return {
           display: op === "remove" ? `Removed #${t.seq} ${t.text} from session ${label}` : `Toggled #${t.seq} ${t.text} to ${t.done ? "done" : "open"} in session ${label}`,
-          details: { ...t, session: target, ...(name !== undefined ? { name } : {}) },
+          text: JSON.stringify(result, null, 2),
+          details: { ...result, current: target === sessionId },
         };
       }
       case "clear": {

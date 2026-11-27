@@ -1,3 +1,4 @@
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { ThemeAdapter } from "../agents/types.js";
 import type { StatsSummary } from "./stats-collect.js";
 import { renderTable } from "../components/table.js";
@@ -5,30 +6,38 @@ import { sectionRule, fitResultLines, resultTrimmer } from "../renderers/types.j
 
 /** Pure: token-savings + row-counts + per-model table as a body-only stats view (NO 🕸 header —
  *  the spider tool shell already shows `🕸 spider · control`; see docs/output-ui-guidelines.md). */
-export function renderStats(s: StatsSummary, theme: ThemeAdapter, width: number, expanded = false): string[] {
+export function renderStats(s: StatsSummary, theme: ThemeAdapter, width: number, expanded = false, transcript = false): string[] {
   const trim = resultTrimmer(expanded);
   const body: string[] = [];
-  body.push(sectionRule(theme, "token savings", width));
+  const indent = transcript ? " " : "";
+  const contentWidth = Math.max(1, width - indent.length);
+  const rowCounts = Object.entries(s.rowCounts);
+  const manyGroups = rowCounts.length > 0 || s.models.length > 0;
+  if (!transcript || manyGroups) body.push(indent + sectionRule(theme, "token savings", contentWidth));
   body.push(trim(
-    `${theme.fg("muted", "indexed chunks")} ${theme.fg("text", String(s.tokenSavings.indexedChunks))}  ` +
+    `${indent}${theme.fg("muted", "indexed chunks")} ${theme.fg("text", String(s.tokenSavings.indexedChunks))}  ` +
     `${theme.fg("muted", "est tokens saved")} ${theme.fg("success", String(s.tokenSavings.estTokensSaved))}`,
     width, ""));
-  body.push(sectionRule(theme, "rows", width));
-  for (const [k, v] of Object.entries(s.rowCounts)) {
-    body.push(trim(`${theme.fg("muted", k)} ${theme.fg("text", String(v))}`, width, ""));
+  if (!transcript || rowCounts.length) body.push(indent + sectionRule(theme, "rows", contentWidth));
+  for (const [k, v] of rowCounts) {
+    body.push(trim(`${indent}${theme.fg("muted", k)} ${theme.fg("text", String(v))}`, width, ""));
   }
   if (s.models.length) {
-    body.push(sectionRule(theme, "models", width));
-    body.push(...renderTable(theme, {
-      columns: [
-        { header: "model" }, { header: "calls", align: "right" }, { header: "ok%", align: "right" },
-        { header: "avgms", align: "right" }, { header: "tok", align: "right" },
-      ],
-      rows: s.models.map((m) => [m.model, String(m.calls), `${Math.round(m.okRate * 100)}`, String(m.avgMs), String(m.tokens)]),
-      width,
-    }, expanded));
+    body.push(indent + sectionRule(theme, "models", contentWidth));
+    const columns = [
+      { header: "model" }, { header: "calls", align: "right" as const }, { header: "ok%", align: "right" as const },
+      { header: "avgms", align: "right" as const }, { header: "tok", align: "right" as const },
+    ];
+    let rows = s.models.map((m) => [m.model, String(m.calls), `${Math.round(m.okRate * 100)}`, String(m.avgMs), String(m.tokens)]);
+    if (transcript) {
+      const metricsWidth = columns.slice(1).reduce((sum, column, index) =>
+        sum + Math.max(visibleWidth(column.header), ...rows.map(row => visibleWidth(row[index + 1]))), 0);
+      const modelWidth = Math.max(1, contentWidth - metricsWidth - (columns.length - 1));
+      rows = rows.map(([model, ...metrics]) => [truncateToWidth(model, modelWidth, "…"), ...metrics]);
+    }
+    body.push(...renderTable(theme, { columns, rows, width: contentWidth }, expanded && !transcript).map(row => indent + row));
   }
-  return fitResultLines(body, width, expanded);
+  return fitResultLines(body, width, expanded, transcript ? 3 : undefined);
 }
 
 /** Component wrapper (cached by width) for mounting via ctx.ui.custom. */

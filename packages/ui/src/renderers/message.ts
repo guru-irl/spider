@@ -13,14 +13,14 @@ function arrow(verb: MessageDetails["verb"], theme: RenderCtx["theme"]): string 
 }
 
 /** RESULT body (no header — the spider call line already shows `🕸 spider · message`).
- *  Leading blank + 1-space indent + `⎿` gutter, consistent with renderRun. */
+ *  The status starts directly under the title. */
 export function renderMessageResult(details: MessageDetails, ctx: RenderCtx): string[] {
   const { theme, width } = ctx;
   const expanded = ctx.expanded === true;
   const trim = resultTrimmer(expanded);
   const pending = details.delivery === "child-accepted" || details.delivery === "accepted but not confirmed" || details.delivery === "no reply yet, delivery unknown" || details.delivery === "queued" || (details.delivery === "broker-accepted" && details.recipientAcknowledged !== true);
   const icon = statusIcon(theme, pending ? "warn" : details.delivered ? "ok" : "fail");
-  const target = details.to ?? details.from ?? "—";
+  const target = details.targetName ?? details.to ?? details.from ?? "—";
   const status = details.delivery === "delivered" ? `delivered${details.transformed ? ", transformed" : ""}`
     : details.delivery === "child-accepted" ? "accepted but not confirmed"
     : details.delivery === "accepted but not confirmed" || details.delivery === "no reply yet, delivery unknown" || details.delivery === "refused" ? details.delivery
@@ -30,7 +30,7 @@ export function renderMessageResult(details: MessageDetails, ctx: RenderCtx): st
     : details.delivery === "unavailable" ? "recipient unavailable"
     : details.delivered ? "delivered" : "not delivered";
   const head = ` ${icon} ${theme.fg("muted", `${arrow(details.verb, theme)} ${target}`)} ${theme.fg("dim", "·")} ${theme.fg("muted", status)}`;
-  const out = ["", trim(head, width, "")];
+  const out = [trim(head, width, "")];
   const body = expanded ? details.body ?? "" : (details.body ?? "").replace(/\s+/g, " ").trim();
   if (body) out.push(trim(` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("toolOutput", body)}`, width, ""));
   if (details.error) {
@@ -38,13 +38,13 @@ export function renderMessageResult(details: MessageDetails, ctx: RenderCtx): st
       const lines = details.error.split("\n");
       const shown = expanded ? lines : lines.slice(0, 1);
       const rows = fitResultLines(shown.map((line, i) =>
-        ` ${theme.fg("dim", "│ ")}${theme.fg(i === 0 ? "error" : "toolOutput", line)}`), width, true);
+        ` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg(i === 0 ? "error" : "toolOutput", line)}`), width, true, 3);
       out.push(...(expanded ? rows : rows.slice(0, 4)));
     }
     else {
       const lines = expanded ? details.error.split("\n") : wrapTextWithAnsi(details.error.replace(/\s+/g, " ").trim(), Math.max(1, width - 3)).slice(0, 4);
-      for (const line of lines) out.push(trim(` ${theme.fg("dim", "│ ")}${theme.fg("toolOutput", line)}`, width, ""));
+      for (const line of lines) out.push(trim(` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("toolOutput", line)}`, width, ""));
     }
   }
-  return fitResultLines(out, width, expanded);
+  return fitResultLines(out, width, expanded, 3);
 }

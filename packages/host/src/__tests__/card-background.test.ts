@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Box, visibleWidth } from "@earendil-works/pi-tui";
+import { Box, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { renderCommandOutput, renderEscalationMessage, renderOrganismEntry, renderSpiderCall, renderSpiderResult, renderSubagentDone } from "../render-result";
 
 const BG = "48;5;160";
@@ -108,35 +108,63 @@ describe("card background through the right edge", () => {
       expect(rows.some((row) => row.includes("…"))).toBe(true);
       checkCard(rows, 30, backgrounds[token]);
     }
-    const failed = renderCommandOutput({ details: { args: { action: "unknown" }, result: { isError: true, details: { error: "failure\x1b[0m " + "details ".repeat(20) } } } }, {}, distinct).render(30).slice(1);
-    checkCard(failed, 30, backgrounds.toolSuccessBg);
-    const notice = renderEscalationMessage({ details: { runId: "id", severity: "warning", name: "n".repeat(100), summary: "short" } }, {}, distinct).render(30).slice(1);
-    checkCard(notice, 30, backgrounds.toolErrorBg);
-    const done = renderSubagentDone({ details: { status: "failed", name: "worker", output: "failure ".repeat(20) } }, {}, distinct).render(30).slice(1);
+    const failed = renderCommandOutput({ details: { args: { action: "unknown" }, result: { isError: true, details: { error: "failure\x1b[0m " + "details ".repeat(20) } } } }, {}, distinct).render(30);
+    checkCard(failed, 30, backgrounds.toolErrorBg);
+    for (const [severity, marker, token] of [
+      ["blocked", "❌ blocked", "toolErrorBg"],
+      ["question", "❓ question", "toolPendingBg"],
+      ["warning", "⚠️ warning", "toolPendingBg"],
+      ["unexpected", "⚠️ warning", "toolPendingBg"],
+    ]) {
+      const message = { details: { runId: "beb58fc6-193f-4247-bb38-c59612f6985d", severity, name: "tia-3", agent: "worker", summary: "short" } };
+      const rows = renderEscalationMessage(message, {}, distinct).render(80);
+      checkCard(rows, 80, backgrounds[token]);
+      const plain = rows.map(row => stripTerminalSequences(row).trimEnd());
+      expect(plain[1]).toBe(" 🕸️ spider · escalation · tia-3 · worker");
+      expect(plain[2]).toBe(`  ${marker} · short`);
+      expect(plain.join("\n")).not.toContain("beb58fc6");
+    }
+    const pending = renderCommandOutput({ details: { args: { action: "message", to: "peer" }, result: { details: { delivered: false, queued: true, delivery: "queued" } } } }, {}, distinct).render(60);
+    checkCard(pending, 60, backgrounds.toolPendingBg);
+    const done = renderSubagentDone({ details: { status: "failed", name: "worker", output: "failure ".repeat(20) } }, {}, distinct).render(30);
     checkCard(done, 30, backgrounds.toolErrorBg);
+  });
+
+  it.each([0, 3])("uses Pi's notification padding of %i", (outputPad) => {
+    const options = { outputPad };
+    const renderers = [
+      renderCommandOutput({ details: { args: { action: "control", command: "doctor" }, result: { ok: true } } }, options, theme),
+      renderSubagentDone({ details: { status: "done", name: "worker" } }, options, theme),
+      renderOrganismEntry(undefined, options, theme),
+      renderEscalationMessage({ details: { runId: "example-run", severity: "warning", summary: "Review the changes" } }, options, theme),
+    ];
+    for (const component of renderers) {
+      const rows = component.render(60);
+      checkCard(rows, 60);
+      const firstText = rows.map(stripTerminalSequences).find(line => line.trim())!;
+      expect(firstText.match(/^ */)?.[0].length).toBe(outputPad);
+    }
   });
 
   it.each([30, 47, 80])("wraps notice bodies fully in both modes at width %i", (width) => {
     const summary = "The deployment needs a careful decision before the next step can safely proceed.\nPlease confirm the target and record the reason for the change.";
     for (const expanded of [false, true]) {
-      const rows = renderEscalationMessage({ details: { runId: "identifier-" + "x".repeat(100), severity: "warning", name: "worker-" + "n".repeat(100), summary } }, { expanded }, theme).render(width).slice(1);
+      const rows = renderEscalationMessage({ details: { runId: "identifier-" + "x".repeat(100), severity: "warning", name: "worker-" + "n".repeat(100), summary } }, { expanded }, theme).render(width);
       checkCard(rows, width);
-      const text = rows.map((row) => row.replace(/\x1b\[[0-9;]*m/g, "").trim());
-      const header = text.findIndex((line) => line.startsWith("⚠"));
-      const footer = text.findIndex((line) => line.startsWith("run "));
-      expect(text[header + 1]).toBe("");
-      expect(text[footer - 1]).toBe("");
-      expect(text.slice(header + 2, footer - 1).join(" ").replace(/\s+/g, " ").trim()).toBe(summary.replace(/\s+/g, " "));
-      expect(text.slice(footer + 1).every((line) => line === "")).toBe(true);
+      const text = rows.map((row) => stripTerminalSequences(row).trim());
+      expect(text[2]).toMatch(/^⚠️ warning · /u);
+      const body = text.slice(2, -1).join(" ").replace(/^⚠️ warning · /u, "");
+      expect(body.replace(/\s+/gu, " ").trim()).toBe(summary.replace(/\s+/gu, " "));
+      expect(text.join("\n")).not.toContain("identifier-");
     }
   });
 
   it.each([30, 47, 80])("retains wide characters in a long notice word at width %i", (width) => {
     const summary = "界🙂".repeat(80);
-    const rows = renderEscalationMessage({ details: { runId: "id", severity: "question", name: "worker", summary } }, {}, theme).render(width).slice(1);
+    const rows = renderEscalationMessage({ details: { runId: "id", severity: "question", name: "worker", summary } }, {}, theme).render(width);
     checkCard(rows, width);
     const visible = rows.map((row) => row.replace(/\x1b\[[0-9;]*m/g, "").trim());
-    const body = visible.filter((line) => line.includes("界") || line.includes("🙂")).join("");
+    const body = visible.slice(2, -1).join("").replace(/^❓ question · /u, "");
     expect(body).toBe(summary);
   });
 
@@ -144,7 +172,7 @@ describe("card background through the right edge", () => {
     const run = toolBox("run", {}, { run: { status: "done", name: "worker", task: "long ".repeat(80), result: "output ".repeat(80) } }).render(width);
     const search = toolBox("search", {}, [{ title: "title ".repeat(80), kind: "content", snippet: "snippet ".repeat(80) }]).render(width);
     const report = { status: "partial", memoryStaged: 0, skillsStaged: 0, todosAdded: 0, errors: [{ phase: "store", message: "error ".repeat(80) }], modelCalls: 0, reason: "done", startedAt: 0, finishedAt: 1 };
-    const organism = renderOrganismEntry({ data: report }, {}, theme).render(width).slice(1);
+    const organism = renderOrganismEntry({ data: report }, {}, theme).render(width);
     for (const rows of [run, search, organism]) {
       expect(rows.some((row) => row.includes("…"))).toBe(true);
       checkCard(rows, width);
@@ -153,9 +181,9 @@ describe("card background through the right edge", () => {
 
   it.each([30, 47, 80])("paints clipped message and notice cards at width %i", (width) => {
     const message = toolBox("message", { to: "peer", message: "word ".repeat(80) }, { delivered: true }).render(width);
-    const done = renderSubagentDone({ details: { status: "done", name: "worker", output: "word ".repeat(80) } }, {}, theme).render(width).slice(1);
-    const notice = renderEscalationMessage({ details: { runId: "identifier", severity: "warning", name: "n".repeat(100), summary: "short" } }, {}, theme).render(width).slice(1);
-    const command = renderCommandOutput({ details: { args: { action: "message", to: "peer", message: "word ".repeat(80) }, result: { details: { delivered: true } } } }, {}, theme).render(width).slice(1);
+    const done = renderSubagentDone({ details: { status: "done", name: "worker", output: "word ".repeat(80) } }, {}, theme).render(width);
+    const notice = renderEscalationMessage({ details: { runId: "identifier", severity: "warning", name: "n".repeat(100), summary: "short" } }, {}, theme).render(width);
+    const command = renderCommandOutput({ details: { args: { action: "message", to: "peer", message: "word ".repeat(80) }, result: { details: { delivered: true } } } }, {}, theme).render(width);
     for (const rows of [message, done, notice, command]) checkCard(rows, width);
   });
 });

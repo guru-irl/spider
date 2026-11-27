@@ -2,7 +2,7 @@
 // @spider/ui renderers (not the raw text fallback). Uses an identity theme.
 import { describe, it, expect } from "vitest";
 import { Box, visibleWidth } from "@earendil-works/pi-tui";
-import { renderSpiderResult } from "../render-result";
+import { renderSpiderCall, renderSpiderResult } from "../render-result";
 
 const theme = {
   fg: (_t: string, s: string) => s,
@@ -17,6 +17,28 @@ function lines(action: string, details: unknown, args: Record<string, unknown> =
 }
 
 describe("render-result exec/index wiring (Phase 8)", () => {
+  it.each([false, true])("shares column 1 between the command and result (expanded=%s)", expanded => {
+    const commands = Array.from({ length: 8 }, (_, i) => `echo line ${i + 1}`);
+    const args = { action: "exec", code: commands.join("\n") };
+    const call = renderSpiderCall(args, theme, { expanded }).render(80);
+    const result = renderSpiderResult({ details: { stdout: "ready", exitCode: 0 } }, { expanded }, theme, { args }).render(80);
+    const callRows = expanded ? commands.map(command => ` ⎿ ${command}`) : [" ⎿ echo line 1", " ⎿ echo line 2", " ⎿ … +6 more lines"];
+    expect([...call, ...result]).toEqual(["🕸️ spider · exec", ...callRows, "", " ✓ exit 0 · 1 lines", " ⎿ ready"]);
+  });
+
+  it("puts the result directly below a call with no command details", () => {
+    const args = { action: "batch", commands: [] };
+    const call = renderSpiderCall(args, theme, {}).render(80);
+    const result = renderSpiderResult({ details: [] }, {}, theme, { args }).render(80);
+    expect([...call, ...result]).toEqual(["🕸️ spider · batch", " ● no commands · 0 lines"]);
+  });
+
+  it("uses the L-shaped gutter for memory content", () => {
+    const rows = lines("control", { usage: 8, entries: [{ category: "convention", uuid: "entry-id", content: "Check the manifest" }] }, { command: "memory", sub: "status" });
+    expect(rows).toContain(" ⎿ Check the manifest");
+    expect(rows.join("\n")).not.toContain("│");
+  });
+
   it("preserves the themed tool-shell background across expanded row padding", () => {
     const colored = {
       ...theme,
@@ -32,35 +54,35 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     expect(rows.some((row) => row.includes("\x1b[48;5;160m") && row.includes("short"))).toBe(true);
   });
 
-  it("keeps collapsed truncation markers for run, fallback, and memory forget", () => {
+  it("keeps collapsed truncation markers for run, fallback, and memory content", () => {
     const x = "x".repeat(200);
     const render = (result: unknown, args: Record<string, unknown>) =>
       renderSpiderResult(result, { expanded: false }, theme, { args }).render(80);
     const run = render({ details: { run: { status: "done", task: x, result: x } } }, { action: "run" });
     const fallback = render({ content: [{ type: "text", text: x }] }, { action: "unknown" });
-    const forget = render({ details: { ok: true, removed: { status: "archived" }, uuid: x } },
-      { action: "control", command: "memory", sub: "forget" });
+    const memory = render({ details: { entries: [{ category: "insight", content: x }] } },
+      { action: "control", command: "memory", sub: "status" });
     const visible = (row: string) => row.replace(/\x1b\[[0-9;]*m/g, "");
-    for (const [name, rows] of [["run", run], ["fallback", fallback], ["forget", forget]] as const) {
+    for (const [name, rows] of [["run", run], ["fallback", fallback], ["memory", memory]] as const) {
       expect(rows.every((row) => visibleWidth(row) <= 80), name).toBe(true);
       expect(rows.some((row) => visible(row).endsWith("…")), name).toBe(true);
     }
     expect(run.filter((row) => visible(row).endsWith("…"))).toHaveLength(2);
     expect(run.filter((row) => visible(row).endsWith("…")).map((row) => visible(row))).toEqual([
-      "     ↳ " + "x".repeat(72) + "…",
-      "     ⤴ " + "x".repeat(72) + "…",
+      "   ↳ " + "x".repeat(74) + "…",
+      "   ⤴ " + "x".repeat(74) + "…",
     ]);
-    expect(fallback.map(visible)).toEqual(["x".repeat(79) + "…"]);
-    expect(visible(forget.at(-1) ?? "")).toBe(" " + "x".repeat(78) + "…");
+    expect(fallback.map(visible)).toEqual([" " + "x".repeat(78) + "…"]);
+    expect(visible(memory.at(-1) ?? "")).toBe(" ⎿ " + "x".repeat(76) + "…");
   });
 
   it.each([
-    ["models set", { ok: true, role: "worker", ref: "x".repeat(200) }, { command: "models" }, "● set worker → "],
-    ["models cleared", { ok: true, cleared: true, role: "x".repeat(200) }, { command: "models" }, "● clear "],
-    ["models shadow", { ok: true, role: "worker", ref: "ok", shadowedBy: { ref: "x".repeat(200), file: "local" } }, { command: "models" }, "This worktree overrides it with "],
-    ["config set", { ok: true, key: "option", value: "x".repeat(200) }, { command: "config" }, "● set option → "],
-    ["config errors", { config: {}, errors: ["x".repeat(200)] }, { command: "config" }, "x"],
-    ["memory status header", { entries: [{ category: "insight", uuid: "x".repeat(200) }] }, { command: "memory", sub: "status" }, " ◆ [insight] "],
+    ["models set", { ok: true, role: "worker", ref: "x".repeat(200) }, { command: "models" }, " ✓ set worker → "],
+    ["models cleared", { ok: true, cleared: true, role: "x".repeat(200) }, { command: "models" }, " ✓ clear "],
+    ["models shadow", { ok: true, role: "worker", ref: "ok", shadowedBy: { ref: "x".repeat(200), file: "local" } }, { command: "models" }, " ⎿ This worktree overrides it with "],
+    ["config set", { ok: true, key: "option", value: "x".repeat(200) }, { command: "config" }, " ✓ set option → "],
+    ["config errors", { config: {}, errors: ["x".repeat(200)] }, { command: "config" }, " ⎿ x"],
+    ["memory status content", { entries: [{ category: "insight", content: "x".repeat(200) }] }, { command: "memory", sub: "status" }, " ⎿ x"],
   ] as const)("collapsed %s ends at width 80 with an ellipsis", (_name, details, args, prefix) => {
     const rows = renderSpiderResult({ details }, { expanded: false }, theme,
       { args: { action: "control", ...args } }).render(80);
@@ -74,7 +96,7 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     const raw = `\x1b[31m${"x".repeat(200)}\x1b[0m`;
     const rows = renderSpiderResult({ content: [{ type: "text", text: raw }] },
       { expanded: false }, theme, { args: { action: "unknown" } }).render(80);
-    expect(rows.map((row) => row.replace(/\x1b\[[0-9;]*m/g, ""))).toEqual(["x".repeat(79) + "…"]);
+    expect(rows.map((row) => row.replace(/\x1b\[[0-9;]*m/g, ""))).toEqual([" " + "x".repeat(78) + "…"]);
     expect(rows.join("")).not.toContain("\x1b[31m");
   });
 
@@ -85,7 +107,7 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     const full = render(true);
     const short = render(false);
     expect(full.every((row) => visibleWidth(row) <= 80)).toBe(true);
-    expect(full.join("")).toContain(value);
+    expect(full.map(row => row.trim()).join("")).toContain(value);
     expect(short.every((row) => visibleWidth(row) <= 80)).toBe(true);
     expect(short.at(-1)).toContain("…");
   });
@@ -227,31 +249,30 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     const dimTheme = { ...theme, fg: (token: string, text: string) => token === "dim" ? `\x1b[2m${text}\x1b[22m` : text };
     const rows = renderSpiderResult({ details: [{ kind: "content", title: "item", snippet: "x".repeat(180) }] },
       { expanded: true }, dimTheme, { args: { action: "search" } }).render(30);
-    const snippet = rows.filter((row) => /^ {5,7}(?:\x1b\[2m)?(?:↳ |x)/.test(row));
+    const snippet = rows.filter(row => /^ (?:⎿ |  x)/u.test(row.replace(/\x1b\[[0-9;]*m/g, "")));
     expect(snippet.length).toBeGreaterThan(1);
     expect(snippet.every((row) => row.includes("\x1b[2m"))).toBe(true);
-    expect(snippet.slice(1).every((row) => row.replace(/\x1b\[[0-9;]*m/g, "").startsWith("       x"))).toBe(true);
+    expect(snippet.slice(1).every((row) => row.replace(/\x1b\[[0-9;]*m/g, "").startsWith("   x"))).toBe(true);
   });
 
   it.each([
     ["recall", { action: "recall" }],
     ["pending", { action: "control", command: "memory", sub: "pending" }],
-  ] as const)("expanded %s hangs continuation under a short category label", (_name, args) => {
+  ] as const)("expanded %s hangs continuation at column 3 after a category label", (_name, args) => {
     const payload = "x".repeat(180);
     const rows = renderSpiderResult({ details: [{ category: "insight", content: payload, uuid: "record-1" }] },
       { expanded: true }, theme, { args }).render(30);
-    const marker = "[insight] ";
-    const start = rows.findIndex((row) => row.startsWith(marker));
+    const start = rows.findIndex(row => /^ (?:○ )?\[insight\](?: |$)/u.test(row));
     expect(start).toBeGreaterThanOrEqual(0);
-    expect(rows[start]).toMatch(/^\[insight\] x/);
-    expect(rows[start + 1]).toMatch(/^ {10}x/);
-    expect(rows.slice(start).every((row) => visibleWidth(row) <= 30)).toBe(true);
+    expect(rows[start + 1]).toMatch(/^ {3}x/u);
+    expect((rows.join("").match(/x+/gu) ?? []).join("")).toBe(payload);
+    expect(rows.every(row => visibleWidth(row) <= 30)).toBe(true);
   });
 
-  it("expanded run output keeps the output gutter before the payload", () => {
+  it("expanded run output marks the payload at column 3", () => {
     const rendered = renderSpiderResult({ details: { run: { status: "done", result: "payload" } } },
       { expanded: true }, theme, { args: { action: "run" } }).render(80);
-    expect(rendered.some((line) => line.includes("⤴ payload"))).toBe(true);
+    expect(rendered).toContain("   ⤴ payload");
   });
 
   it("collapsed exec still shows one shortened preview row", () => {
@@ -278,6 +299,13 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     expect(err).toBeGreaterThan(label);
   });
 
+  it("labels stderr-only output as a detail without drawing a section rule", () => {
+    const rows = lines("exec", { stdout: "", stderr: "Only an error", exitCode: 1 }, { code: "run" });
+    expect(rows).toContain(" ⎿ stderr:");
+    expect(rows).toContain(" ⎿ Only an error");
+    expect(rows.join("\n")).not.toContain("──");
+  });
+
   it("leaves collapsed stderr hidden as on main", () => {
     const rows = renderSpiderResult({ details: { stdout: "", stderr: "private error", exitCode: 1 } },
       { expanded: false }, theme, { args: { action: "exec", code: "run" } }).render(80);
@@ -291,7 +319,7 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     const rows = renderSpiderResult({ details: { stdout: "stderr", stderr: "stderr", exitCode: 1 } },
       { expanded: true }, styled, { args: { action: "exec", code: "run" } }).render(80);
     expect(rows.filter((row) => row.includes("stderr"))).toEqual([
-      " ⎿ stderr", " \x1b[2m── stderr ──\x1b[22m", " ⎿ stderr",
+      " ⎿ stderr", " ⎿ \x1b[2mstderr:\x1b[22m", " ⎿ stderr",
     ]);
   });
 
@@ -300,8 +328,8 @@ describe("render-result exec/index wiring (Phase 8)", () => {
       { stdout: "out-1", stderr: "err-1", exitCode: 0 },
       { stdout: "out-2", stderr: "err-2", exitCode: 0 },
       { stdout: "out-3", stderr: "", exitCode: 0 },
-    ]).filter((row) => /(?:out-|err-|── stderr ──)/.test(row));
-    expect(rows).toEqual([" ⎿ out-1", " ── stderr ──", " ⎿ err-1", " ⎿ out-2", " ── stderr ──", " ⎿ err-2", " ⎿ out-3"]);
+    ]).filter((row) => /(?:out-|err-|stderr:)/.test(row));
+    expect(rows).toEqual([" ⎿ out-1", " ⎿ stderr:", " ⎿ err-1", " ⎿ out-2", " ⎿ stderr:", " ⎿ err-2", " ⎿ out-3"]);
   });
 
   it("discloses when the last exec line is a partial UTF-8 tail", () => {

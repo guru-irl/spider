@@ -89,7 +89,7 @@ describe("control memory admin: status / consolidate / forget", () => {
     const after: any = await tool.execute("after", { action: "control", command: "memory", sub: "status", cwd: dir }, {});
     expect(after.details.entries.map((entry: { uuid: string }) => entry.uuid)).toEqual(expect.arrayContaining([auto.details.uuid, user.details.uuid]));
   });
-  it("status reports active entries with uuids and usage", async () => {
+  it("status reports active entries and usage, with UUIDs only in agent results", async () => {
     const dir = join(scratch, "status-repo"); mkdirSync(dir, { recursive: true });
     const tool = makeTool();
     await tool.execute("r1", { action: "remember", justification: "Reusable by future agents here; durable after this task; repo-specific scope.", category: "tool-quirk", content: "widget alpha", cwd: dir }, {});
@@ -102,7 +102,8 @@ describe("control memory admin: status / consolidate / forget", () => {
     expect(details.usage).toBeGreaterThan(0);
     const text = rendered(res, "status");
     expect(text).toContain("widget alpha");
-    expect(text).toContain(details.entries[0].uuid);
+    expect(text).not.toContain(details.entries[0].uuid.slice(0, 8));
+    expect(res.content[0].text).toContain(details.entries[0].uuid);
     expect(text).not.toMatch(/\{|"entries"|"usage"/);
   });
 
@@ -135,7 +136,8 @@ describe("control memory admin: status / consolidate / forget", () => {
     expect((forgetRes.details as { ok?: boolean }).ok).toBe(true);
     const text = rendered(forgetRes, "forget");
     expect(text).toMatch(/archived/i);
-    expect(text).toContain(uuid);
+    expect(text).not.toContain(uuid.slice(0, 8));
+    expect(forgetRes.content[0].text).toContain(uuid);
     expect(text).not.toMatch(/\{|"ok"|"removed"/);
 
     const status = await tool.execute("s2", { action: "control", command: "memory", sub: "status", cwd: dir }, {});

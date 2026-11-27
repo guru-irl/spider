@@ -13,11 +13,15 @@ export interface ModelDefaultOrigins {
   global: Record<string, string>;
 }
 
-export function renderModels(entries: ModelEntry[], defaults: Record<string, string>, theme: ThemeAdapter, width: number, origins?: ModelDefaultOrigins, expanded = false, thinking?: ModelThinkingDisplay): string[] {
+export function renderModels(entries: ModelEntry[], defaults: Record<string, string>, theme: ThemeAdapter, width: number, origins?: ModelDefaultOrigins, expanded = false, thinking?: ModelThinkingDisplay, transcript = false): string[] {
   const trim = resultTrimmer(expanded);
   const body: string[] = [];
-  for (const group of catalogRows(entries, defaults, thinking)) {
-    body.push(sectionRule(theme, group.tier, width));
+  const groups = catalogRows(entries, defaults, thinking);
+  const roles = origins ? Object.entries(defaults) : [];
+  const manyGroups = groups.length + Number(roles.length > 0) > 1;
+  const indent = transcript ? " " : "";
+  for (const group of groups) {
+    if (!transcript || manyGroups) body.push(indent + sectionRule(theme, group.tier, width - indent.length));
     for (const row of group.rows) {
       const glyph = row.available ? theme.fg("accent", "●") : theme.fg("muted", "○");
       const badges: string[] = [];
@@ -25,20 +29,21 @@ export function renderModels(entries: ModelEntry[], defaults: Record<string, str
       if (row.vision) badges.push(theme.fg("dim", "V"));
       const badge = badges.length ? ` ${badges.join("")}` : "";
       const dflt = row.isDefaultFor.length ? theme.fg("success", ` ${icon(theme.iconStyle, "modelDefault")} ${row.isDefaultFor.join(",")}`) : "";
-      body.push(trim(`${glyph} ${theme.fg("text", row.ref)}${badge}${dflt}`, width, ""));
-      if (row.thinkingLevels.length) body.push(trim(theme.fg("dim", `  thinking: ${row.thinkingLevels.join(", ")}`), width, ""));
+      body.push(trim(`${indent}${glyph} ${theme.fg("text", row.ref)}${badge}${dflt}`, width, ""));
+      if (row.thinkingLevels.length) body.push(trim(theme.fg("dim", `${indent}  thinking: ${row.thinkingLevels.join(", ")}`), width, ""));
     }
   }
-  if (origins && Object.keys(defaults).length) {
-    body.push(sectionRule(theme, "Role defaults", width));
-    for (const [role, ref] of Object.entries(defaults)) {
+  if (origins && roles.length) {
+    if (!transcript || manyGroups) body.push(indent + sectionRule(theme, "Role defaults", width - indent.length));
+    for (const [role, ref] of roles) {
       const source = origins.sources[role] ?? "global";
       const shadow = source === "local" && origins.global[role] !== undefined
         ? `; shadows global ${origins.global[role]}` : "";
-      body.push(trim(`${role}: ${ref} (${source}${shadow})`, width, ""));
+      body.push(trim(`${indent}${role}: ${ref} (${source}${shadow})`, width, ""));
     }
   }
-  return fitResultLines(body, width, expanded);
+  if (transcript && !body.length) body.push(" (no models)");
+  return fitResultLines(body, width, expanded, transcript ? 3 : undefined);
 }
 
 /** Component wrapper (cached by width) for mounting via ctx.ui.custom. */

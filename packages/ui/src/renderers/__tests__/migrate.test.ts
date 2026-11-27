@@ -49,7 +49,8 @@ describe("renderMigrateResult", () => {
     
     // Should report ambiguous rows
     expect(lines.join("\n")).toMatch(/ambiguous|conflict/i);
-    expect(lines.join("\n")).toMatch(/mem-123/);
+    expect(lines.join("\n")).toContain("memory: duplicate UUID across worktrees");
+    expect(lines.join("\n")).not.toContain("mem-123");
   });
   
   it("dry-run output indicates no changes made (mutation: make dry-run show 'applied' → must fail)", () => {

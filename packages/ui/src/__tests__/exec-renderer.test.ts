@@ -6,12 +6,13 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 const id: ThemeAdapter = { fg: (_t, s) => s, bg: (_t, s) => s, bold: (s) => s, glyph: "🕸" };
 
 describe("exec renderer", () => {
-  it("call-header variant shows a command block and +N more when over the cap", () => {
-    const cmds = Array.from({ length: 14 }, (_, i) => `cmd${i}`);
-    const lines = renderExecCall({ kind: "batch", commands: cmds }, { theme: id, width: 40 });
-    expect(lines.join("\n")).toContain("cmd0");
-    expect(lines.join("\n")).toMatch(/more/);
-    for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(40);
+  it.each([false, true])("puts the command in column 1, with a two-line collapsed preview (expanded=%s)", expanded => {
+    const commands = Array.from({ length: 8 }, (_, i) => `echo line ${i + 1}`);
+    const lines = renderExecCall({ kind: "batch", commands }, { theme: id, width: 40, expanded });
+    expect(lines[0]).toBe("🕸️ spider · batch");
+    expect(lines.slice(1)).toEqual(expanded ? commands.map(command => ` ⎿ ${command}`)
+      : [" ⎿ echo line 1", " ⎿ echo line 2", " ⎿ … +6 more lines"]);
+    expect(lines.every(line => visibleWidth(line) <= 40)).toBe(true);
   });
   it("result body carries ✓/exit/lines and the indexed note — but NOT a repeated 🕸 spider header", () => {
     const lines = renderExecResult({
@@ -35,17 +36,16 @@ describe("exec renderer", () => {
     expect(text).toMatch(/more/);
   });
 
-  it("collapsed shows output only; ctrl+o reveals the whole command", () => {
-    const d = { kind: "exec" as const, commands: ["cd /x\nnpm test\necho done"], ok: true, exitCode: 0, outLines: 1, preview: ["ok"] };
-    const collapsed = renderExecResult(d, { theme: id, width: 60, expanded: false }).join("\n");
-    // The call header owns the command now; repeating it collapsed duplicated it line for line.
-    expect(collapsed).not.toContain("cd /x");
-    expect(collapsed).not.toContain("echo done");
-    expect(collapsed).toContain("ok");
-    const expanded = renderExecResult(d, { theme: id, width: 60, expanded: true }).join("\n");
-    expect(expanded).toContain("cd /x");
-    expect(expanded).toContain("npm test");
-    expect(expanded).toContain("echo done");
+  it("shows the entire expanded command on the call, never duplicating it in the result", () => {
+    const details = { kind: "exec" as const, commands: ["cd /x\nnpm test\necho done"], ok: true, exitCode: 0, outLines: 1, preview: ["ok"] };
+    for (const expanded of [false, true]) {
+      const output = renderExecResult(details, { theme: id, width: 60, expanded }).join("\n");
+      expect(output).toContain("ok");
+      expect(output).not.toContain("cd /x");
+      expect(output).not.toContain("echo done");
+    }
+    const call = renderExecCall(details, { theme: id, width: 60, expanded: true });
+    expect(call.slice(1)).toEqual([" ⎿ cd /x", " ⎿ npm test", " ⎿ echo done"]);
   });
 
   it("a detached result never renders exit 0 / ✓ — it shows detached/exit unknown plus the log and receipt paths", () => {

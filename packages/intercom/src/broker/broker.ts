@@ -1,5 +1,5 @@
 import { createFederation } from "./federation.js";
-import { parseV0BrokerRequest, V0_INTERCOM_FEATURE, type V0Endpoint } from "../roam-v0.js";
+import { parseV0BrokerReply, parseV0BrokerRequest, V0_ASK_MAX_MS, V0_INTERCOM_FEATURE, type V0Delivery, type V0Endpoint } from "../roam-v0.js";
 import { MOVE_FENCE_FEATURE, type IntercomIntakeAction, type IntercomIntakeFence } from "../protocol.js";
 import { isIntercomIntakeAction, isIntercomIntakeFence } from "./protocol.js";
 import { RECEIPT_ACK_FEATURE, RECEIPT_EVIDENCE_FEATURE, compatibleReceipt, FEDERATION_FEATURE, FREEZE_BLOCKERS_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, addressKey, sessionAddress, type SessionAddress, type RemoteSessionInfo, type FederationDispatchResult, type FederationBrokerMessage, type SessionEndpoint, type LocalSessionInfo } from "../protocol.js";
@@ -107,6 +107,16 @@ interface AskEdge {
   scopeId?: string;
   createdAt: number;
 }
+
+type V0AskRoute = {
+  targetKey: string;
+  targetAddress: SessionAddress;
+  endpointEpoch: string;
+  askerId: string;
+} & (
+  | { state: "waiting"; socket: net.Socket; targetSocket: net.Socket; requestId: string; timer: NodeJS.Timeout }
+  | { state: "closed"; closedAt: number }
+);
 
 interface PendingAskRecord {
   askId: string;
@@ -256,6 +266,7 @@ class IntercomBroker {
   private helperToken: string | null = null;
   private helperNegotiated = new Set<net.Socket>();
   private v0Requests = new Set<net.Socket>();
+  private v0Asks = new Map<string, V0AskRoute>();
   private helpers = new Set<net.Socket>();
   private helperPending = new Map<string, { socket: net.Socket; requestId: string; timer: NodeJS.Timeout }>();
   private remoteRoutes = new Map<string, { createdAt: number; from: SessionAddress; to: RemoteSessionInfo }>();
@@ -356,6 +367,10 @@ class IntercomBroker {
       this.unregisteredConnections.delete(socket);
     };
     armRegistrationTimeout();
+    const holdV0Connection = () => {
+      if (registrationTimeout) clearTimeout(registrationTimeout);
+      registrationTimeout = null;
+    };
     const connection: ConnectionState = {
       socket,
       tokens: RATE_LIMIT_CAPACITY,
@@ -375,7 +390,7 @@ class IntercomBroker {
         } else {
           armRegistrationTimeout();
         }
-      });
+      }, holdV0Connection);
     }, (error) => {
       socket.destroy(error);
     });
@@ -387,6 +402,11 @@ class IntercomBroker {
       this.connections.delete(socket);
       this.helperNegotiated.delete(socket);
       this.v0Requests.delete(socket);
+      for (const [id, ask] of this.v0Asks) {
+        if (ask.state !== "waiting") continue;
+        if (ask.socket === socket) this.finishV0Ask(id);
+        else if (ask.targetSocket === socket) this.finishV0Ask(id, { kind: "no_reply", id });
+      }
       this.helpers.delete(socket);
       for (const [id, pending] of this.noticePending) {
         if (pending.bridge !== socket && pending.receiver !== socket) continue;
@@ -422,6 +442,57 @@ class IntercomBroker {
     socket.on("error", (error) => {
       console.error("Socket error:", error);
     });
+  }
+
+  private pruneV0Asks(): void {
+    const now = Date.now();
+    for (const [id, ask] of this.v0Asks) {
+      if (ask.state === "closed" && (now - ask.closedAt > MESSAGE_RECEIPT_ROUTE_RETENTION_MS || this.v0Asks.size > MAX_DELIVERY_RECORDS)) this.v0Asks.delete(id);
+    }
+  }
+
+  private finishV0Ask(id: string, result?: V0Delivery): void {
+    const ask = this.v0Asks.get(id);
+    if (!ask || ask.state !== "waiting") return;
+    clearTimeout(ask.timer);
+    this.v0Asks.set(id, { state: "closed", targetKey: ask.targetKey, targetAddress: ask.targetAddress,
+      endpointEpoch: ask.endpointEpoch, askerId: ask.askerId, closedAt: Date.now() });
+    if (result && !ask.socket.destroyed && ask.socket.writable) {
+      try { writeMessage(ask.socket, { type: "roam_v0_result", requestId: ask.requestId, ...result }); } catch { /* The requester is gone. */ }
+    }
+  }
+
+  private handleV0Reply(socket: net.Socket, from: ConnectedSession, to: string, message: Message): boolean {
+    if (!message.replyTo) return false;
+    this.pruneV0Asks();
+    const ask = this.v0Asks.get(message.replyTo);
+    if (!ask) return false;
+    const fail = (reason: string, code = "E_REPLY_TARGET") => this.writeDeliveryFailure(socket, message.id, reason, code);
+    if (ask.targetKey !== from.key || addressKey(ask.targetAddress) !== addressKey(sessionAddress(from.info, from.scopeId ?? null)) || to !== ask.askerId) {
+      fail("Reply target does not match the pending ask"); return true;
+    }
+    if (ask.state === "closed" || ask.socket.destroyed || !ask.socket.writable) {
+      if (ask.state === "waiting") this.finishV0Ask(message.replyTo);
+      fail("The asker is no longer waiting."); return true;
+    }
+    if (from.socket !== ask.targetSocket || from.info.endpointEpoch !== ask.endpointEpoch) {
+      fail("Reply target does not match the pending ask"); return true;
+    }
+    const response = { type: "roam_v0_result", requestId: ask.requestId, kind: "replied", id: message.replyTo,
+      replyId: message.id, text: message.content.text };
+    if (message.content.attachments !== undefined || message.expectsReply || message.supersedes || message.retryOf || message.provenance ||
+        !parseV0BrokerReply(response)) {
+      fail("Invalid remote reply", "E_INVALID_MESSAGE"); return true;
+    }
+    try {
+      writeMessage(ask.socket, response);
+      this.finishV0Ask(message.replyTo);
+      this.writeDeliverySuccess(socket, message.id, "socket_delivered");
+    } catch {
+      this.finishV0Ask(message.replyTo);
+      fail("The asker is no longer waiting.");
+    }
+    return true;
   }
 
   private unknownBridgeResult(): FederationDispatchResult {
@@ -664,6 +735,7 @@ class IntercomBroker {
     msg: unknown,
     currentKey: string | null,
     setKey: (key: string | null) => void,
+    holdV0Connection: () => void,
   ): void {
     if (typeof msg !== "object" || msg === null || !("type" in msg) || typeof msg.type !== "string") {
       throw new Error("Invalid client message");
@@ -696,7 +768,6 @@ class IntercomBroker {
         writeMessage(socket, { type: "roam_v0_result", requestId: request.requestId, kind: "matches", targets });
         return;
       }
-      if (request.kind !== "deliver") throw new Error("roam-v0-operation-unsupported");
       const respond = (result: Record<string, unknown>) => writeMessage(socket, { type: "roam_v0_result", requestId: request.requestId, ...result });
       if (request.from.address.scopeId !== request.target.address.scopeId) {
         respond({ kind: "refused", code: "unauthorized" }); return;
@@ -713,14 +784,28 @@ class IntercomBroker {
       if (target.socket.destroyed || target.socket.writableEnded || !target.socket.writable) {
         respond({ kind: "refused", code: "offline" }); return;
       }
+      if (request.kind === "ask") {
+        this.pruneV0Asks();
+        if (this.v0Asks.has(request.message.id) || this.askEdges.has(request.message.id)) {
+          respond({ kind: "refused", code: "invalid" }); return;
+        }
+        const timeoutMs = Math.min(request.timeoutMs, V0_ASK_MAX_MS);
+        const timer = setTimeout(() => this.finishV0Ask(request.message.id, { kind: "no_reply", id: request.message.id }), timeoutMs);
+        timer.unref();
+        this.v0Asks.set(request.message.id, { state: "waiting", socket, targetSocket: target.socket, requestId: request.requestId, timer,
+          targetKey: target.key, targetAddress: request.target.address, endpointEpoch: request.target.endpointEpoch, askerId: request.from.id });
+        holdV0Connection();
+      }
       try {
         writeMessage(target.socket, { type: "message", from: request.from, message: {
           id: request.message.id, timestamp: request.message.timestamp, content: { text: request.message.text },
+          ...(request.kind === "ask" ? { expectsReply: true, remainingMs: Math.min(request.timeoutMs, V0_ASK_MAX_MS) } : {}),
           brokerReceivedAt: Date.now(), brokerDeliveredAt: Date.now(),
         } });
-        respond({ kind: "socket_delivered", id: request.message.id });
+        if (request.kind === "deliver") respond({ kind: "socket_delivered", id: request.message.id });
       } catch {
-        respond({ kind: "unknown", id: request.message.id });
+        if (request.kind === "ask") this.finishV0Ask(request.message.id, { kind: "unknown", id: request.message.id });
+        else respond({ kind: "unknown", id: request.message.id });
       }
       return;
     }
@@ -1028,6 +1113,7 @@ class IntercomBroker {
           break;
         }
 
+        if (message.replyTo && this.handleV0Reply(socket, fromSession, clientMessage.to, message)) break;
         const brokerReceivedAt = Date.now();
         this.pruneAskEdges();
         this.pruneMessageReceiptRoutes(brokerReceivedAt);

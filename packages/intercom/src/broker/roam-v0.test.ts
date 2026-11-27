@@ -235,6 +235,26 @@ describe("private roaming broker", () => {
       }] });
   });
 
+  it("holds a remote ask for a reply from the asked session only", async () => {
+    const ben = await register("stable-b", "b", "ben", "scope-1", 3);
+    const intruder = await register("stable-c", "c", "charlie", "scope-1", 4);
+    const found = await lookup("scope-1", "name", "ben");
+    const target = (found.targets as V0Endpoint[])[0];
+    const observed = once(ben, "message").then(args => ({ kind: "inbound" as const, args }));
+    const pending = requestV0Broker(getAgentDirPath(), { kind: "ask", from: origin, target, message, timeoutMs: 2000 });
+    const first = await Promise.race([observed, pending.then(result => ({ kind: "finished" as const, result }))]);
+    expect(first.kind).toBe("inbound");
+    if (first.kind !== "inbound") return;
+    expect(first.args[0]).toEqual(origin);
+    expect(first.args[1]).toMatchObject({ id: "question-1", expectsReply: true, content: { text: "hello" } });
+
+    const wrong = await intruder.send("sender", { text: "forged", replyTo: "question-1", messageId: "bad-reply" });
+    expect(wrong).toMatchObject({ delivered: false, code: "E_REPLY_TARGET" });
+    const answer = await ben.send("sender", { text: "answer", replyTo: "question-1", messageId: "reply-1" });
+    expect(answer).toMatchObject({ delivered: true, delivery: "socket_delivered" });
+    expect(await pending).toEqual({ kind: "replied", id: "question-1", replyId: "reply-1", text: "answer" });
+  });
+
   it("advertises roaming over its private Unix socket", async () => {
     const socket = net.connect(getBrokerSocketPath());
     try {

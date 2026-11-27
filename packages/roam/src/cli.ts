@@ -184,8 +184,12 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
     } catch { return refusal("home-unavailable", "The v0 home service could not be opened.", "Start the v0 hub on the Mac, then retry this command.", 1); }
   }
   if (argv[0] === "move" || argv[0] === "roam" && argv[1] === "move") {
+    const json = argv.at(-1) === "--json";
+    if (parsePublicControl(argv[0] === "roam" ? argv.slice(1) : argv)?.kind !== "move") {
+      return emitOutcome(io, outcome(2, "invalid-arguments"), json, "Invalid arguments. Use spider roam relocate <session> <machine>.\n");
+    }
     const message = "The legacy move command was replaced by spider roam relocate. Run spider roam relocate <session> <machine>.";
-    if (argv.at(-1) === "--json") io.out(`${JSON.stringify({ code: 1, reason: "move-replaced", message })}\n`);
+    if (json) io.out(`${JSON.stringify({ code: 1, reason: "move-replaced", message })}\n`);
     else io.err(`${message}\n`);
     return 1;
   }

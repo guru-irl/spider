@@ -99,7 +99,7 @@ it("future commands refuse without attempting work", async () => {
   for (const args of [["roam", "sync"], ["move", "session-1", "box-1.invalid"]]) {
     const output = capture();
     expect(await main(args, output.io)).toBe(1);
-    expect(output.err.join("")).toMatch(/unavailable/i);
+    expect(output.err.join("")).toMatch(args[0] === "move" ? /was replaced by spider roam relocate/i : /unavailable/i);
   }
 }, 5000);
 

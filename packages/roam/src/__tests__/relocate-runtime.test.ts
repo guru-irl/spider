@@ -55,6 +55,16 @@ describe("v0 local runtime",()=>{
   vi.spyOn(hcApi,"invokeCli").mockImplementation(async(_binary,argv)=>argv[0]==="ls"?{terminals:[{address:"core:t",state:"live"}]}:detail);
   await expect(createLocalIO(f.options).terminals(id)).rejects.toThrow();
  });
+ it("accepts native signal exits and ignores remote terminal summaries",async()=>{
+  const f=runtimeFixture();
+  vi.spyOn(hcApi,"invokeCli").mockResolvedValue({terminals:[{address:"t7",state:"finished",reason:"exited",signal:15},{address:"peer/t1",state:"live"}]});
+  expect(await createLocalIO(f.options).terminals(id)).toEqual([{terminal:"t7",state:"finished",pid:null}]);
+ });
+ it.each([0,-1,1.5])("rejects an invalid native exit signal %s",async signal=>{
+  const f=runtimeFixture();
+  vi.spyOn(hcApi,"invokeCli").mockResolvedValue({terminals:[{address:"t7",state:"finished",reason:"exited",signal}]});
+  await expect(createLocalIO(f.options).terminals(id)).rejects.toThrow();
+ });
  it("detached exact-file launch uses the destination environment",async()=>{
   const f=runtimeFixture(),pi=join(f.options.root,"pi");writeFileSync(pi,"#!/bin/sh\n",{mode:0o700});
   vi.stubEnv("SPIDER_ROAM_PI",pi);vi.stubEnv("HC_TERMINAL_ID","inherited");vi.stubEnv("HC_SESSION","foreign");vi.stubEnv("HC_SOCKET","/foreign.sock");vi.stubEnv("SPIDER_HERDR_LEASE_TOKEN","fake-lease");vi.stubEnv("SPIDER_HERDR_HANDOFF_FILE","/foreign-handoff");vi.stubEnv("SPIDER_GLOBAL_ROOT","/foreign-root");vi.stubEnv("AUTH_TOKEN","synthetic-secret");

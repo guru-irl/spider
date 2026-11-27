@@ -86,10 +86,13 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
     async terminals(id) {
       const reply = await invokeCli(binary,["ls","--all","--json","--label",`spider.session=${id}`],env,options.limits.replyBytes,undefined,{timeoutMs:options.limits.controlMs});
       if (!reply || typeof reply !== "object" || !("terminals" in reply) || !Array.isArray(reply.terminals)) throw new Error("Terminal list unavailable");
-      return Promise.all(reply.terminals.map(async (value: unknown) => {
+      return (await Promise.all(reply.terminals.map(async (value: unknown) => {
         if (!value || typeof value !== "object") throw new Error("Invalid terminal");
         const row = value as Record<string,unknown>;
-        if (typeof row.address !== "string" || !row.address || !["live","finished"].includes(row.state as string) || row.state === "finished" && (row.reason !== "exited" || !Number.isSafeInteger(row.exit_code))) throw new Error("Unknown terminal state");
+        // Native peer addresses are qualified; their processes are not local.
+        if (typeof row.address === "string" && row.address.includes("/")) return null;
+        const signaled = Number.isSafeInteger(row.signal) && (row.signal as number) > 0;
+        if (typeof row.address !== "string" || !row.address || !["live","finished"].includes(row.state as string) || row.state === "finished" && (row.reason !== "exited" || !(Number.isSafeInteger(row.exit_code) || signaled))) throw new Error("Unknown terminal state");
         let pid: unknown = row.pid ?? row.process_id ?? null;
         if (row.state === "live" && pid === null) {
           const detail = await invokeCli(binary,["get",row.address,"--json"],env,options.limits.replyBytes,undefined,{timeoutMs:options.limits.controlMs});
@@ -98,7 +101,7 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
         }
         if (pid !== null && (!Number.isSafeInteger(pid) || (pid as number) <= 0)) throw new Error("Unknown terminal process");
         return {terminal:row.address,state:row.state as "live"|"finished",pid:pid as number|null};
-      }));
+      }))).filter(terminal => terminal !== null);
     },
     async launch({home,placement}) {
       if (!pi) throw new Error("Pi executable unavailable");

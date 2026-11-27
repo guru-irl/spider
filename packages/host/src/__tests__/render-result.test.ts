@@ -358,7 +358,7 @@ describe("run status rows", () => {
 
 describe("exec: command shown on the call, output on the result", () => {
   const ith = { fg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => s };
-  const call = (args: any) => renderSpiderCall(args, ith, {}).render(200).join("\n");
+  const call = (args: any, expanded = false) => renderSpiderCall(args, ith, { expanded }).render(200).join("\n");
   const body = (args: any, details: any, expanded: boolean) =>
     renderSpiderResult(mkResult(details), { expanded } as any, theme, mkCtx(args)).render(200).join("\n");
 
@@ -380,15 +380,15 @@ describe("exec: command shown on the call, output on the result", () => {
   });
 
   it("ctrl+o expands the full command (all lines)", () => {
-    const out = body({ action: "exec", code: "cd /x\nnpm test\necho done" }, { stdout: "ok\n", exitCode: 0 }, true);
+    const out = call({ action: "exec", code: "cd /x\nnpm test\necho done" }, true);
     expect(out).toContain("cd /x");
     expect(out).toContain("npm test");
     expect(out).toContain("echo done");
   });
 
   it("exec_file path and batch labels appear when expanded", () => {
-    expect(body({ action: "exec_file", path: "packages/x/y.ts", code: "x" }, { stdout: "", exitCode: 0 }, true)).toContain("packages/x/y.ts");
-    const b = body({ action: "batch", commands: [{ label: "one", code: "echo one" }, { label: "two", code: "echo two" }] }, [{ stdout: "", exitCode: 0 }], true);
+    expect(call({ action: "exec_file", path: "packages/x/y.ts", code: "x" }, true)).toContain("packages/x/y.ts");
+    const b = call({ action: "batch", commands: [{ label: "one", code: "echo one" }, { label: "two", code: "echo two" }] }, true);
     expect(b).toContain("one");
     expect(b).toContain("two");
   });
@@ -686,7 +686,7 @@ describe("renderSpiderCall shows the command while it runs", () => {
   it.each(["exec", "exec_file", "batch"])("%s names the destination in the styled call title", (action) => {
     const args = { action, on: "Alpha.Build.invalid", code: "echo hello", path: "input.txt", commands: [{ code: "echo hello" }] };
     const title = renderSpiderCall(args, titleTheme, {}).render(200)[0];
-    expect(title).toContain(`«⟨toolTitle|${action}⟩» ⟨toolTitle|on Alpha.Build.invalid⟩`);
+    expect(title).toContain(`«⟨toolTitle|${action}⟩» ⟨toolTitle|· on Alpha.Build.invalid⟩`);
   });
 
   it.each(["exec", "exec_file", "batch"])("local %s keeps its existing title", (action) => {
@@ -698,7 +698,7 @@ describe("renderSpiderCall shows the command while it runs", () => {
     const local = renderSpiderCall({ action: "exec", command: "doctor" }, titleTheme, {}).render(200)[0];
     const remote = renderSpiderCall({ action: "exec", command: "doctor", on: "Alpha.Build.invalid" }, titleTheme, {}).render(200)[0];
     expect(local).toContain("«⟨toolTitle|exec⟩» ⟨toolTitle|· doctor⟩");
-    expect(remote).toContain("«⟨toolTitle|exec⟩» ⟨toolTitle|on Alpha.Build.invalid⟩");
+    expect(remote).toContain("«⟨toolTitle|exec⟩» ⟨toolTitle|· on Alpha.Build.invalid⟩");
   });
 
   it("does not add the destination to unrelated actions", () => {
@@ -710,7 +710,7 @@ describe("renderSpiderCall shows the command while it runs", () => {
     const args = { action: "exec", on: "Alpha.Build.invalid", code: "echo hello" };
     const msg = { details: { args, result: { details: { stdout: "hello", stderr: "", exitCode: 0 } } } };
     const output = renderCommandOutput(msg, { expanded: false }, {}).render(120).join("\n");
-    expect(output).toContain("spider · exec on Alpha.Build.invalid");
+    expect(output).toContain("spider · exec · on Alpha.Build.invalid");
     expect(output.match(/Alpha\.Build\.invalid/g)).toHaveLength(1);
     expect(output).toContain("hello");
   });

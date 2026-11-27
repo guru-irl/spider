@@ -2,7 +2,7 @@
 // @spider/ui renderers (not the raw text fallback). Uses an identity theme.
 import { describe, it, expect } from "vitest";
 import { Box, visibleWidth } from "@earendil-works/pi-tui";
-import { renderSpiderResult } from "../render-result";
+import { renderSpiderCall, renderSpiderResult } from "../render-result";
 
 const theme = {
   fg: (_t: string, s: string) => s,
@@ -17,6 +17,28 @@ function lines(action: string, details: unknown, args: Record<string, unknown> =
 }
 
 describe("render-result exec/index wiring (Phase 8)", () => {
+  it.each([false, true])("shares column 1 between the command and result (expanded=%s)", expanded => {
+    const commands = Array.from({ length: 8 }, (_, i) => `echo line ${i + 1}`);
+    const args = { action: "exec", code: commands.join("\n") };
+    const call = renderSpiderCall(args, theme, { expanded }).render(80);
+    const result = renderSpiderResult({ details: { stdout: "ready", exitCode: 0 } }, { expanded }, theme, { args }).render(80);
+    const callRows = expanded ? commands.map(command => ` ⎿ ${command}`) : [" ⎿ echo line 1", " ⎿ echo line 2", " ⎿ … +6 more lines"];
+    expect([...call, ...result]).toEqual(["🕸️ spider · exec", ...callRows, "", " ✓ exit 0 · 1 lines", " ⎿ ready"]);
+  });
+
+  it("puts the result directly below a call with no command details", () => {
+    const args = { action: "batch", commands: [] };
+    const call = renderSpiderCall(args, theme, {}).render(80);
+    const result = renderSpiderResult({ details: [] }, {}, theme, { args }).render(80);
+    expect([...call, ...result]).toEqual(["🕸️ spider · batch", " ● no commands · 0 lines"]);
+  });
+
+  it("uses the L-shaped gutter for memory content", () => {
+    const rows = lines("control", { usage: 8, entries: [{ category: "convention", uuid: "entry-id", content: "Check the manifest" }] }, { command: "memory", sub: "status" });
+    expect(rows).toContain(" ⎿ Check the manifest");
+    expect(rows.join("\n")).not.toContain("│");
+  });
+
   it("preserves the themed tool-shell background across expanded row padding", () => {
     const colored = {
       ...theme,
@@ -47,8 +69,8 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     }
     expect(run.filter((row) => visible(row).endsWith("…"))).toHaveLength(2);
     expect(run.filter((row) => visible(row).endsWith("…")).map((row) => visible(row))).toEqual([
-      "     ↳ " + "x".repeat(72) + "…",
-      "     ⤴ " + "x".repeat(72) + "…",
+      "   ↳ " + "x".repeat(74) + "…",
+      "   " + "x".repeat(76) + "…",
     ]);
     expect(fallback.map(visible)).toEqual(["x".repeat(79) + "…"]);
     expect(visible(forget.at(-1) ?? "")).toBe(" " + "x".repeat(78) + "…");
@@ -248,10 +270,10 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     expect(rows.slice(start).every((row) => visibleWidth(row) <= 30)).toBe(true);
   });
 
-  it("expanded run output keeps the output gutter before the payload", () => {
+  it("expanded run output hangs the payload at column 3", () => {
     const rendered = renderSpiderResult({ details: { run: { status: "done", result: "payload" } } },
       { expanded: true }, theme, { args: { action: "run" } }).render(80);
-    expect(rendered.some((line) => line.includes("⤴ payload"))).toBe(true);
+    expect(rendered).toContain("   payload");
   });
 
   it("collapsed exec still shows one shortened preview row", () => {

@@ -24,7 +24,7 @@ describe("message renderer", () => {
     const out = renderMessageResult({ verb: "send", to: "peer", body: "ping", delivered: false, delivery, error: "Peer is offline.\nRetry later." }, { theme: colored, width: 120 }).join("\n");
     if (delivery === "queued") expect(out).toContain("queued · not delivered");
     if (delivery === "broker-accepted") expect(out).toContain("acknowledgement unconfirmed");
-    expect(out).toContain("│ Peer is offline.");
+    expect(out).toContain(" ⎿ Peer is offline.");
     expect(out).not.toContain("\x1b[31mPeer is offline.");
     expect(out).toContain("Retry later.");
   });
@@ -34,7 +34,8 @@ describe("message renderer", () => {
     const out = renderMessageResult({ verb: "send", to: "peer", body: "", delivered: false, delivery: "unavailable", error: "One-shot child cannot receive messages.\nStart a fresh run." }, { theme: colored, width: 120, expanded }).join("\n");
     expect(out.match(/❌/g)).toHaveLength(1);
     expect(out).toContain("recipient unavailable");
-    expect(out).toContain("\x1b[31mOne-shot child cannot receive messages.");
+    expect(out).toContain(" ⎿ \x1b[31mOne-shot child cannot receive messages.");
+    expect(out).not.toContain("│");
     if (expanded) expect(out).toContain("Start a fresh run.");
     else expect(out).not.toContain("Start a fresh run.");
   });

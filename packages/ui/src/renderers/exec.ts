@@ -3,7 +3,7 @@ import { icon as uiIcon } from "../icons.js";
 import { fitResultLines, resultTrimmer, statusIcon } from "./types.js";
 import type { ExecDetails, RenderCtx } from "./types.js";
 
-const CALL_CAP = 10;
+const CALL_CAP = 2;
 
 function formatSize(bytes: number): string {
   return bytes < 1024 ? `${bytes}B` : bytes < 1024 * 1024
@@ -29,45 +29,31 @@ function outputRows(details: ExecDetails, ctx: RenderCtx, collapsed: string[]): 
   return rows;
 }
 
-/** CALL-header variant (glyph + label). The spider host renders its own call title via
- *  renderSpiderCall, so this is used only where a standalone header is wanted. */
+/** Render the command preview below the call title. The host can supply a styled title with a destination. */
 export function renderExecCall(
   details: Pick<ExecDetails, "kind" | "commands">,
-  ctx: RenderCtx,
+  { theme, width, expanded = false }: RenderCtx,
+  title?: string,
 ): string[] {
-  const { theme, width } = ctx;
-  const head = truncateToWidth(
-    theme.fg("accent", `${uiIcon(theme.iconStyle, "spider")} `) + theme.fg("toolTitle", theme.bold("spider ")) + theme.fg("muted", details.kind),
-    width, "",
-  );
-  const cmds = details.commands ?? [];
-  const shown = cmds.slice(0, CALL_CAP);
-  const body = shown.map((c) =>
-    truncateToWidth(theme.fg("dim", "│ ") + theme.fg("toolOutput", c), width, ""),
-  );
-  const extra = cmds.length - shown.length;
-  if (extra > 0) body.push(truncateToWidth(theme.fg("dim", `│ … +${extra} more`), width, ""));
-  return [head, ...body];
+  const verb = theme.fg("toolTitle", details.kind);
+  const head = title ?? `${theme.fg("toolTitle", uiIcon(theme.iconStyle, "spider"))} ${theme.fg("toolTitle", theme.bold("spider"))} ${theme.fg("toolTitle", "·")} ${theme.italic?.(verb) ?? verb}`;
+  const all = (details.commands ?? []).flatMap(command => command.split(/\r?\n/u));
+  const preview = all.filter(command => command.trim());
+  const shown = expanded && preview.length ? all : preview.slice(0, CALL_CAP);
+  const gutter = ` ${theme.fg("dim", uiIcon(theme.iconStyle, "gutter"))} `;
+  const body = shown.map(command => gutter + theme.fg("toolOutput", command));
+  const extra = preview.length - shown.length;
+  if (extra > 0) body.push(gutter + theme.fg("dim", `… +${extra} more line${extra === 1 ? "" : "s"}`));
+  return [truncateToWidth(head, width, "…"), ...fitResultLines(body, width, expanded)];
 }
 
-/** RESULT body (no header — the spider call line already shows `🕸 spider · <kind>` AND the
- *  command). The result carries the OUTPUT. The command is repeated here only when expanded
- *  (ctrl+o), where the full script is worth seeing; showing it collapsed would duplicate the
- *  call header line for line. Then a status line and the output, `renderRun`-style (leading
- *  blank, 1-space indent, `⎿` gutter). */
+/** Render the exit status and output. The call owns the command in both modes. */
 export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[] {
   const { theme, width } = ctx;
   const expanded = ctx.expanded === true;
   const trim = resultTrimmer(expanded);
-  const out: string[] = [""];
+  const out: string[] = [];
   const timeoutLabel = (label: string) => details.timedOut ? `timed out · ${label}` : label;
-
-  // Command block — EXPANDED ONLY. The call header already shows the first lines while the
-  // command runs; on ctrl+o we show the whole script, which the header deliberately clips.
-  if (expanded) {
-    const cmdLines = (details.commands ?? []).flatMap((c) => String(c).split("\n"));
-    for (const c of cmdLines) out.push(trim(` ${theme.fg("text", c)}`, width, "…"));
-  }
 
   // While running we do not know the exit code, so claiming "✓ exit 0" would be a lie that
   // looks like success. Show a running marker and every line streamed so far — the whole

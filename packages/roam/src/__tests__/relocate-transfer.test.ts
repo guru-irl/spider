@@ -230,6 +230,55 @@ describe("local process probe", () => {
  });
 });
 describe("v0 transfer stop boundary",()=>{
+ it("accepts pi exiting between its ownership check and signal", async () => {
+  const f = stopFixture();
+  const moving = {sessionId: id, machineId: hub, epoch: 2, state: "moving" as const, destination: box, moveId: "v0-test" as RelocateId, updatedAt: 1};
+  let exited = false;
+  const probe = f.io.probe;
+  f.io.probe = async pid => {
+   if (exited) { f.events.push("root-absent"); return {kind: "absent"}; }
+   return probe(pid);
+  };
+  f.io.inspect = async () => exited ? null : f.owner;
+  f.io.terminals = async () => exited ? [] : [{terminal: "t", state: "live", pid: 42, owned: true}];
+  f.io.signal = async pid => {
+   f.signals.push(pid);
+   exited = true;
+   throw Object.assign(new Error("process exited"), {code: "ESRCH"});
+  };
+  f.io.groupBlockers = async () => { f.events.push("group-check"); return []; };
+
+  expect(await stopLocalSession(id, moving, f.io, f.clock, 30)).toEqual({ok: true, value: undefined});
+  expect(f.signals).toEqual([42]);
+  expect(f.events).toEqual(["shutdown", "root-absent", "group-check", "lock-free"]);
+ });
+ it("does not ignore a denied pi signal", async () => {
+  const f = stopFixture();
+  f.io.signal = async pid => {
+   f.signals.push(pid);
+   throw Object.assign(new Error("permission denied"), {code: "EPERM"});
+  };
+
+  expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toMatchObject({ok: false, refusal: {code: "stop-timeout"}});
+  expect(f.signals).toEqual([42]);
+  expect(f.events).not.toContain("lock-free");
+ });
+ it("does not report success when pi remains live after ESRCH", async () => {
+  const f = stopFixture();
+  f.io.inspect = async () => f.owner;
+  f.io.probe = async () => ({kind: "live", startIdentity: "pi-42", pi: true});
+  f.io.signal = async pid => {
+   f.signals.push(pid);
+   throw Object.assign(new Error("process exited"), {code: "ESRCH"});
+  };
+
+  expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toMatchObject({
+   ok: false, refusal: {code: "session-busy", message: expect.stringContaining("PID 42")},
+  });
+  expect(f.signals).toEqual([42]);
+  expect(f.events).not.toContain("lock-free");
+  expect(f.clock.now()).toBe(30);
+ });
  it("refuses before signalling when any descendant is unreadable", async () => {
   const f = stopFixture();
   const first = {pid: 43, startIdentity: "tool-43", command: "bash"};

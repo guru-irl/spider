@@ -263,7 +263,8 @@ export async function stopLocalSession(sessionId: SessionId, moving: MovingHome 
       const shutdown = observed && moving && await io.shutdown({id:`${moving.moveId}-shutdown`,machineId:moving.machineId,expectedEpoch:moving.epoch,kind:"session-shutdown",args:{sessionId,moveId:moving.moveId,v0:true}});
       if (!shutdown && (await io.probe(pid)).kind !== "absent") {
         if (!await stillOwned()) return busy([processName(root)]);
-        await io.signal(pid);
+        try { await io.signal(pid); }
+        catch (error) { if ((error as NodeJS.ErrnoException | null)?.code !== "ESRCH") throw error; }
       }
       for (;;) {
         const held = await io.inspect(sessionId);

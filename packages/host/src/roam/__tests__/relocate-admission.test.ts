@@ -20,7 +20,11 @@ const id = "session-v0" as SessionId;
 const local = "11111111-1111-4111-8111-111111111111";
 const home: RunningHome = { sessionId: id, machineId: local, epoch: 3, state: "running", destination: null, moveId: null, updatedAt: 1 };
 const gates: AdmissionGate[] = [];
-afterEach(async () => { for (const gate of gates.splice(0)) await gate.close(); vi.unstubAllEnvs(); });
+const originalGlobalRoot = paths.globalRoot;
+afterEach(async () => {
+  for (const gate of gates.splice(0)) await gate.close();
+  paths.globalRoot = originalGlobalRoot; setGlobalDbPathForTests(null); vi.unstubAllEnvs();
+});
 function fixture(initial: LocalHomeAdmission) {
   vi.stubEnv("PI_SUBAGENT_CHILD", "0");
   let current = initial;
@@ -115,6 +119,36 @@ it("a managed marker fences a restored null-state home on a fresh admission", as
     expect(session.host.sent).toEqual([]);
     expect(session.ports.load).not.toHaveBeenCalled();
     expect(session.ports.lock).not.toHaveBeenCalled();
+  } finally { db.close(); f.close(); }
+});
+
+it("a foreign replica cannot offer a local managed home without a fence", async () => {
+  const foreign = "22222222-2222-4222-8222-222222222222";
+  const f = createReplica("global", foreign), dbPath = join(f.root, "spider.db"), db = openDb(dbPath);
+  migrate(db, "global", { machineId: foreign, globalRoot: f.root });
+  try {
+    mkdirSync(join(f.root, "roam"), { mode: 0o700 });
+    const config = { enabled: false, role: "hub", machineId: local, hubMachineId: local, peers: [], discoveryRoots: [], coreUnit: "core", syncMs: 10_000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
+    writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify(config), { mode: 0o600 });
+    writeFileSync(join(f.root, "roam", "machine.json"), JSON.stringify({ machineId: local }), { mode: 0o600 });
+    db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state) VALUES(?,?,3,NULL,1,'running')").run(id, local);
+    writeLocal(db, "relocate-managed", id, { synthetic: true });
+    const before = db.prepare("SELECT * FROM session_homes WHERE session_id=?").get(id);
+    const file = join(f.root, "session.jsonl");
+    writeFileSync(file, JSON.stringify({ type: "session", version: 3, id, cwd: f.root }) + "\n", { mode: 0o600 });
+    paths.globalRoot = f.root; setGlobalDbPathForTests(dbPath);
+    vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root); vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+    const ports = createAdmissionPorts();
+    const lock = vi.spyOn(ports, "lock").mockResolvedValue(async () => {});
+    vi.spyOn(ports, "v0Ready").mockResolvedValue(undefined);
+    const host = createHostSessionFixture({ cwd: f.root, sessionId: id, sessionFile: file, hasUI: false });
+    const gate = registerAdmission(host.pi as unknown as ExtensionAPI, ports); gates.push(gate);
+    for (const handler of host.hooks.get("session_start") ?? []) await handler({}, host.ctx);
+
+    expect(gate.inspect().kind).toBe("blocked");
+    expect(lock).not.toHaveBeenCalled();
+    expect(await loadRelocateAdmission(id, f.root)).toEqual({ kind: "unavailable" });
+    expect(db.prepare("SELECT * FROM session_homes WHERE session_id=?").get(id)).toEqual(before);
   } finally { db.close(); f.close(); }
 });
 

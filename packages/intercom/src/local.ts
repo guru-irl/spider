@@ -2749,7 +2749,7 @@ Usage:
                     return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
                   }
                   const sent = { id: randomUUID(), timestamp: Date.now(), text: message };
-                  const result = await plan.send(sent, _signal);
+                  const result = await plan.send(sent, _signal).catch(() => ({ kind: "unknown" as const, id: sent.id }));
                   if (result.kind === "refused") {
                     return { content: [{ type: "text", text: V0_REFUSAL_TEXT[result.code] }], details: { error: true, code: result.code } };
                   }
@@ -2926,6 +2926,7 @@ Usage:
                   v0AskInFlight = token;
                   let result: V0Delivery;
                   try { result = await plan.ask(question, Math.min(askTimeoutMs, V0_ASK_MAX_MS), _signal); }
+                  catch { result = { kind: "unknown", id: question.id }; }
                   finally { if (v0AskInFlight === token) v0AskInFlight = null; }
                   if (result.kind === "refused") {
                     return { content: [{ type: "text", text: V0_REFUSAL_TEXT[result.code] }], details: { error: true, code: result.code } };

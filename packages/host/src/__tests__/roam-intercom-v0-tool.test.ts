@@ -372,6 +372,25 @@ it("reports a receiver's moving refusal without claiming a send", async () => {
   } finally { await f.cleanup(); }
 });
 
+it("reports a dropped remote send or ask as unknown without retrying", async () => {
+  const attempted: V0Text[] = [];
+  const prepare: V0Prepare = async () => ({
+    kind: "remote", label: "b/ben",
+    async send(message) { attempted.push(message); throw new Error("connection dropped"); },
+    async ask(message) { attempted.push(message); throw new Error("connection dropped"); },
+  });
+  const f = await fixture({ homeEpoch: () => 7, prepare });
+  try {
+    for (const action of ["send", "ask"] as const) {
+      const result = await f.tool.execute(action, { action, to: "ben", message: "hello" }, new AbortController().signal, undefined, f.ctx);
+      const message = attempted[attempted.length - 1];
+      expect(result.content[0].text).toBe(`Delivery could not be confirmed (ID ${message.id}). Check the recipient before sending again.`);
+      expect(result.details).toMatchObject({ delivery: "unknown", messageId: message.id, delivered: false });
+    }
+    expect(attempted).toHaveLength(2);
+  } finally { await f.cleanup(); }
+});
+
 it("reports uncertainty without a legacy send", async () => {
   const sent: V0Text[] = [], legacyInbox: unknown[] = [];
   const onMessage = (...args: unknown[]) => legacyInbox.push(args);

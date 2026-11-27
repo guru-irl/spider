@@ -35,6 +35,21 @@ function fixture(role: "hub" | "box") {
     enabled: () => JSON.parse(readFileSync(configFile, "utf8")).enabled };
 }
 
+it("a missing global database is unverified and refuses enable without creating a replacement", async () => {
+  const f = fixture("hub"), global = join(f.root, "spider.db"), config = join(f.root, "roam", "config.json");
+  rmSync(global);
+  const before = readFileSync(config), io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io, { v0: { lifecycle: f.options } })).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/^legacy-upgrade-unverified/) }),
+  ]));
+  expect(await main(["roam", "enable", "--json"], io, { v0: { lifecycle: f.options } })).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0])).toMatchObject({ code: 1, reason: "legacy-upgrade-unverified" });
+  expect(existsSync(global)).toBe(false);
+  expect(readFileSync(config)).toEqual(before);
+  expect(f.calls).toEqual([]);
+});
+
 it.each(["hub", "box"] as const)("enable refuses pending legacy work before changing a %s service", async role => {
   const f = fixture(role), journalFile = join(f.root, "roam", "journal.db");
   const journal = openJournal(journalFile);

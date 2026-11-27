@@ -217,6 +217,15 @@ it("keeps unhomed sends local without falling back to a legacy mailbox for a rem
   }
 });
 
+it("limits a box's no-match message to the routes checked", async () => {
+  await withConfiguredBoxHost(async execute => {
+    const result = await execute("send", "possible-mac-alias", "no matching route");
+    expect(result.content[0]).toEqual({ type: "text",
+      text: "No live session matches that name or ID in the routes checked." });
+    expect(result.details).toMatchObject({ error: true, code: "no-match" });
+  });
+});
+
 it("wires an injected roaming factory for an admitted running home", async () => {
   const admissionModule = await import("../roam/admission.js");
   const runtimeModule = await import("@spider/roam/runtime");
@@ -1245,7 +1254,7 @@ it("reports routing refusals without sending to a local mailbox", async () => {
     const cases: Array<[V0Code, string]> = [
       ["moving", "Session is moving. Retry after it settles."],
       ["offline", "Session is not connected. No message was queued."],
-      ["no-match", "No live session matches that name or ID."],
+      ["no-match", "No live session matches that name or ID in the routes checked."],
       ["not-configured", "No route is configured to that session."],
     ];
     for (const [next, text] of cases) {

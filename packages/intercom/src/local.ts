@@ -43,7 +43,7 @@ const V0_TRANSCRIPT_SAVE_FAILURE = "\nThe transcript entry could not be saved.";
 const V0_REFUSAL_TEXT: Record<V0Code, string> = {
   moving: "Session is moving. Retry after it settles.",
   offline: "Session is not connected. No message was queued.",
-  "no-match": "No live session matches that name or ID.",
+  "no-match": "No live session matches that name or ID in the routes checked.",
   ambiguous: "More than one live session matches. Use machine/name or a full session ID.",
   incomplete: "Lookup was incomplete. Use machine/name or a full session ID.",
   changed: "The session or connection changed. Resolve the recipient again.",

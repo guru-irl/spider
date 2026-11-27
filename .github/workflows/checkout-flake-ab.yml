@@ -1,0 +1,91 @@
+name: Checkout flake comparison
+
+on:
+  push:
+    branches: [ci/flake-hunt]
+
+permissions:
+  contents: read
+
+env:
+  ONNXRUNTIME_NODE_INSTALL: skip
+  BASE_SHA: 3caa007a466c4ea3ee7dd87fff8db7ff8b7b52fc
+  PR_SHA: 1216db85efe3263b747992a53f08cd98bdd6964f
+
+jobs:
+  compare:
+    if: contains(github.event.head_commit.message, '[checkout comparison]')
+    name: Checkout flake ${{ matrix.order }} first
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        order: [main, pr]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+      - name: Prepare the same environment as PR CI
+        run: |
+          command -v sqlite3 || { sudo apt-get update && sudo apt-get install -y sqlite3; }
+          git fetch origin "$BASE_SHA" "$PR_SHA"
+          test "$(git rev-parse "$PR_SHA^1")" = "$BASE_SHA"
+          git diff --stat "$BASE_SHA" "$PR_SHA"
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+          test ! -e "$rundir"
+          mkdir -p .spider/scratch/{tmp,comparison}
+      - name: Run recorded PR shard 2 with three workers on each revision
+        env:
+          FIRST: ${{ matrix.order }}
+          PR_SELECTION: >-
+            {"version":1,"mode":"scoped","baseSha":"3caa007a466c4ea3ee7dd87fff8db7ff8b7b52fc","requestedBase":"3caa007a466c4ea3ee7dd87fff8db7ff8b7b52fc","testedSha":"1216db85efe3263b747992a53f08cd98bdd6964f","changedPaths":["packages/host/src/roam/__tests__/roam-box-moves.test.ts","packages/host/src/roam/__tests__/roam-move-checkout.test.ts","packages/roam/src/__tests__/move-ports.test.ts","packages/roam/src/__tests__/move.test.ts","packages/roam/src/__tests__/workspace-import.test.ts"],"timingHash":"b0826ac385957f60cd565ed636cc98a3d5b1daabf5141a01cab60499a902279e","policyHash":"d61265bde3cc9dd2a81273d4585573e631e09b19cff61af4cc652d487ef2b1d5","selectorHash":"978635188e49adb5ba97e77f6b20af34fb13615001124625fba473da580ec1da","inventoryHash":"2c2867efa5a896f40a486be80f88b430b5838d70528a4fd0afd08657e5a93e67","fallback":null,"deferred":[{"file":"packages/roam/src/__tests__/move-ports.test.ts","durationMs":96025,"rule":"exceeds the PR test budget; covered by the full run before merge","reasons":["changed test","import graph"]},{"file":"packages/roam/src/__tests__/move.test.ts","durationMs":75971,"rule":"exceeds the PR test budget; covered by the full run before merge","reasons":["changed test","import graph"]}],"selectionAudit":false,"optional":{"chrome":true,"acceptance":true,"stories":true},"budget":{"candidateMode":"scoped","limitMs":65000,"machines":2,"workerCount":3,"importMs":700,"fileCount":6,"aggregateMs":67134,"predictedMaxMs":41720,"shards":[{"shard":1,"predictedMs":41720,"workersMs":[41720,0,0],"files":["packages/roam/src/__tests__/workspace-import.test.ts"]},{"shard":2,"predictedMs":25999,"workersMs":[25999,1741,1874],"files":["packages/host/src/roam/__tests__/roam-box-moves.test.ts","packages/host/src/__tests__/test-shards.test.ts","packages/host/src/__tests__/select-tests.test.ts","packages/host/src/roam/__tests__/roam-move-checkout.test.ts","packages/host/src/__tests__/intercom-upstream-inventory.test.ts"]}]},"files":["packages/host/src/__tests__/intercom-upstream-inventory.test.ts","packages/host/src/__tests__/select-tests.test.ts","packages/host/src/__tests__/test-shards.test.ts","packages/host/src/roam/__tests__/roam-box-moves.test.ts","packages/host/src/roam/__tests__/roam-move-checkout.test.ts","packages/roam/src/__tests__/workspace-import.test.ts"],"reasons":{"packages/host/src/__tests__/intercom-upstream-inventory.test.ts":["test-inventory: Full-inventory guards must see additions and changes to test files."],"packages/host/src/__tests__/select-tests.test.ts":["test-inventory: Full-inventory guards must see additions and changes to test files."],"packages/host/src/__tests__/test-shards.test.ts":["test-inventory: Full-inventory guards must see additions and changes to test files."],"packages/host/src/roam/__tests__/roam-box-moves.test.ts":["changed test","import graph"],"packages/host/src/roam/__tests__/roam-move-checkout.test.ts":["changed test","import graph"],"packages/roam/src/__tests__/workspace-import.test.ts":["changed test","import graph"]},"selectionHash":"a644586df8962d5260f26167454e5d5948a9cff83d354f160b17b21e77d1e809","selectionMs":13870}
+        run: |
+          unset PI_SUBAGENT_CHILD PI_SUBAGENT_RUN_ID PI_SPIDER_DB_PATH PI_SPIDER_SESSION_ID
+          unset SPIDER_HERDR_E2E SPIDER_HERDR_APP_TESTS SPIDER_HERDR_APP_E2E XDG_RUNTIME_DIR
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          output="$PWD/.spider/scratch/comparison"
+          second=pr
+          if [ "$FIRST" = pr ]; then second=main; fi
+          infra=0
+          for variant in "$FIRST" "$second"; do
+            sha=$BASE_SHA
+            if [ "$variant" = pr ]; then sha=$PR_SHA; fi
+            git switch --detach "$sha"
+            npm ci
+            export sha
+            node --input-type=module -e '
+              import {writeFileSync} from "node:fs";
+              import {createHash} from "node:crypto";
+              const manifest = JSON.parse(process.env.PR_SELECTION);
+              const {selectionHash, selectionMs, ...body} = manifest;
+              const digest = data => createHash("sha256").update(JSON.stringify(data)).digest("hex");
+              if (digest(body) !== selectionHash) throw new Error("Recorded PR manifest checksum does not match");
+              body.testedSha = process.env.sha;
+              writeFileSync(process.argv[1], JSON.stringify({...body, selectionHash: digest(body), selectionMs}));
+            ' "$output/$variant-selection.json"
+            printf 'trial\texit\n' > "$output/$variant.tsv"
+            for trial in {1..5}; do
+              rc=0
+              node scripts/run-selected-tests.mjs --manifest "$output/$variant-selection.json" --shard 2/2 --report "$output/$variant-$trial.json" > "$output/$variant-$trial.log" 2>&1 || rc=$?
+              printf '%s\t%s\n' "$trial" "$rc" | tee -a "$output/$variant.tsv"
+              if [ ! -s "$output/$variant-$trial.json" ]; then
+                tail -80 "$output/$variant-$trial.log"
+                infra=1
+              fi
+            done
+          done
+          exit "$infra"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: checkout-ab-${{ matrix.order }}-first
+          path: .spider/scratch/comparison
+          include-hidden-files: true
+          if-no-files-found: error

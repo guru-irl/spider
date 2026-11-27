@@ -969,6 +969,26 @@ it("reinstalls when effective sparse settings change after installation", async 
   expect(recovery?.result.workingApplied).toBe(true);
 }, 5000);
 
+it("refuses a settings change during installed-checkout verification", async () => {
+  const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
+  const config = join(f.destination, ".git", "config.worktree"), run = f.ports.run;
+  let treesWritten = 0;
+  f.ports.run = async (cwd, argv, options) => {
+    const result = await run(cwd, argv, options);
+    if (argv[0] === "git" && argv[1] === "write-tree" &&
+        options?.env?.GIT_INDEX_FILE?.includes(".workspace-inspect-")) {
+      treesWritten++;
+      if (treesWritten === 2) chmodSync(config, 0o644);
+    }
+    return result;
+  };
+
+  await expect(prepareWorkspace(snapshot, f.destination, f.ports)).rejects.toThrow("workspace-recovery-diverged: settings changed");
+  expect(treesWritten).toBe(2);
+  expect(statSync(config).mode & 0o777).toBe(0o644);
+  expect(f.ports.journal.read(snapshot.moveId).some(row => row.action === "workspace-prepared")).toBe(false);
+}, 5000);
+
 it.each(["config", "tracked", "hidden"] as const)("refuses a %s edit during interrupted settings recovery", async edit => {
   const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
   const file = edit === "config" ? join(f.destination, ".git", "config.worktree")

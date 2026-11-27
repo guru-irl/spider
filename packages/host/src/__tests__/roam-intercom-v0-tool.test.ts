@@ -177,6 +177,7 @@ it.each([
       expect(found).toBeDefined();
       return found!;
     });
+    if (registered.remote) throw new Error("Host registration must be local");
     expect(registered.v0HomeEpoch).toBeUndefined();
     expect(factory.create).toHaveBeenCalledTimes(scenario.create ? 1 : 0);
     expect(legacyAdapter).toHaveBeenCalledTimes(scenario.skipLegacy ? 0 : 1);

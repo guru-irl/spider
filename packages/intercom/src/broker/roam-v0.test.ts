@@ -513,6 +513,50 @@ describe("private roaming broker", () => {
     expect(inbox[0][1]).toMatchObject({ id: "local-mail", content: { text: "queued locally" } });
   });
 
+  it("keeps an accepted ask open when other unregistered sockets connect", async () => {
+    const ben = await register("stable-b", "b", "ben", "scope-1", 3);
+    const target = ((await lookup("scope-1", "name", "ben")).targets as V0Endpoint[])[0];
+    const controller = new AbortController();
+    const inbound = once(ben, "message");
+    const pending = requestV0Broker(getAgentDirPath(), { kind: "ask", from: origin, target, message: { ...message, id: "pressure-question" }, timeoutMs: 2000 }, controller.signal);
+    const sockets: net.Socket[] = [];
+    try {
+      await inbound;
+      for (let i = 0; i < 32; i++) {
+        const socket = net.connect(getBrokerSocketPath());
+        socket.on("error", () => {});
+        sockets.push(socket);
+        await once(socket, "connect");
+      }
+      const barrier = sockets[sockets.length - 1];
+      const health = new Promise<unknown>((resolve, reject) => barrier.on("data", createMessageReader(resolve, reject)));
+      writeMessage(barrier, { type: "health", requestId: "pressure-health" });
+      expect(await health).toMatchObject({ type: "health_ok", requestId: "pressure-health" });
+      expect(await ben.send("sender", { text: "answer", replyTo: "pressure-question", messageId: "pressure-reply" })).toMatchObject({ delivered: true });
+      expect(await pending).toEqual({ kind: "replied", id: "pressure-question", replyId: "pressure-reply", text: "answer" });
+    } finally { controller.abort(); await pending; for (const socket of sockets) socket.destroy(); }
+  });
+
+  it("refuses excess asks before dispatch rather than evicting accepted asks", async () => {
+    const ben = await register("stable-b", "b", "ben", "scope-1", 3);
+    const target = ((await lookup("scope-1", "name", "ben")).targets as V0Endpoint[])[0];
+    const controller = new AbortController();
+    const pending: Promise<unknown>[] = [];
+    try {
+      for (let i = 0; i < 32; i++) {
+        const inbound = once(ben, "message");
+        pending.push(requestV0Broker(getAgentDirPath(), { kind: "ask", from: origin, target, message: { ...message, id: `capacity-${i}` }, timeoutMs: 2000 }, controller.signal));
+        await inbound;
+      }
+      const inbox: unknown[] = [];
+      ben.on("message", (...args) => inbox.push(args));
+      expect(await requestV0Broker(getAgentDirPath(), { kind: "ask", from: origin, target, message: { ...message, id: "capacity-overflow" }, timeoutMs: 2000 }, controller.signal))
+        .toEqual({ kind: "refused", code: "unreachable" });
+      await ben.listSessions();
+      expect(inbox).toEqual([]);
+    } finally { controller.abort(); await Promise.all(pending); }
+  });
+
   it("advertises roaming over its private Unix socket", async () => {
     const socket = net.connect(getBrokerSocketPath());
     try {

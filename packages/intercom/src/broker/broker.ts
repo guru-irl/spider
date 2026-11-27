@@ -367,10 +367,7 @@ class IntercomBroker {
       this.unregisteredConnections.delete(socket);
     };
     armRegistrationTimeout();
-    const holdV0Connection = () => {
-      if (registrationTimeout) clearTimeout(registrationTimeout);
-      registrationTimeout = null;
-    };
+    const holdV0Connection = () => clearRegistrationTimeout();
     const connection: ConnectionState = {
       socket,
       tokens: RATE_LIMIT_CAPACITY,
@@ -794,6 +791,9 @@ class IntercomBroker {
         this.pruneV0Asks();
         if (this.v0Asks.has(request.message.id) || this.askEdges.has(request.message.id)) {
           respond({ kind: "refused", code: "invalid" }); return;
+        }
+        if ([...this.v0Asks.values()].filter(ask => ask.state === "waiting").length >= MAX_UNREGISTERED_CONNECTIONS) {
+          respond({ kind: "refused", code: "unreachable" }); return;
         }
         const timeoutMs = Math.min(request.timeoutMs, V0_ASK_MAX_MS);
         const timer = setTimeout(() => this.finishV0Ask(request.message.id, { kind: "no_reply", id: request.message.id }), timeoutMs);

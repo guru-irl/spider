@@ -239,6 +239,64 @@ describe("roaming v0 intercom", () => {
     expect(f.inbox.map(item => item.message)).toEqual([message]);
   });
 
+  it("refuses a prepared send when the receiving home has started moving", async () => {
+    const f = paired(), plan = await remotePlan(f.intercom);
+    const db = openDbAt(join(f.receiver.root, "spider.db"), "global");
+    try {
+      db.prepare("UPDATE session_homes SET state='moving',destination=?,move_id=?,epoch=3 WHERE session_id='ben'")
+        .run(MAC, "v0-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    } finally { db.close(); }
+    expect(await plan.send(message)).toEqual({ kind: "refused", code: "moving" });
+    expect(f.inbox).toEqual([]);
+    expect(f.calls.map(call => call.request.kind)).toEqual(["lookup", "deliver"]);
+  });
+
+  it.each(["drop", "truncated", "wrong-id", "wrong-machine"] as const)(
+    "returns unknown without resending after %s of a delivery reply", async fault => {
+      const f = paired(), plan = await remotePlan(f.intercom);
+      f.state.fault = fault;
+      expect(await plan.send(message)).toEqual({ kind: "unknown", id: message.id });
+      expect(f.inbox.map(item => item.message)).toEqual([message]);
+      expect(f.calls.filter(call => call.request.kind === "deliver")).toHaveLength(1);
+    },
+  );
+
+  it("rejects an oversized encoded message before remote dispatch", async () => {
+    const f = paired(), plan = await remotePlan(f.intercom);
+    expect(await plan.send({ ...message, text: "x".repeat(256 * 1024) })).toEqual({ kind: "refused", code: "invalid" });
+    expect(f.inbox).toEqual([]);
+    expect(f.calls.map(call => call.request.kind)).toEqual(["lookup"]);
+  });
+
+  it("checks the destination UUID, source grant, and scope before broker dispatch", async () => {
+    const { root } = boxFixture();
+    vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+    const broker = vi.fn(async (): Promise<V0Reply> => ({ kind: "matches", targets: [ben] }));
+    const { handle } = createV0Intercom(root, { broker });
+    expect(await handle({ ...findBen, toMachineId: OTHER })).toMatchObject({ kind: "refused", code: "unauthorized" });
+    expect(await handle({ ...findBen, from: { ...findBen.from, machineId: OTHER } })).toMatchObject({ kind: "refused", code: "unauthorized" });
+    const delivery = { version: 1, requestId: "request-1", toMachineId: BOX, from: findBen.from, kind: "deliver",
+      target: { ...ben, address: { ...ben.address, scopeId: "scope-2" } }, message };
+    expect(await handle(delivery)).toMatchObject({ kind: "refused", code: "unauthorized" });
+    configure(root, [], []);
+    expect(await handle(findBen)).toMatchObject({ kind: "refused", code: "unauthorized" });
+    expect(broker).not.toHaveBeenCalled();
+  });
+
+  it("prefers a local alias, but gives an exact persistent ID precedence over that alias", async () => {
+    const f = paired();
+    const local: LocalSessionInfo = { ...alice, id: "local-endpoint", name: "helper",
+      address: { sessionId: "local-session", scopeId: "scope-1" }, endpointEpoch: "local-connection", v0HomeEpoch: undefined };
+    expect(await f.intercom.prepare({ to: "helper", from: alice, locals: [alice, local] })).toEqual({
+      kind: "local", target: { id: "local-endpoint", endpointEpoch: "local-connection" },
+    });
+    expect(f.calls).toEqual([]);
+    const collision = { ...local, name: "ben" };
+    const plan = await remotePlan(f.intercom, "ben", [alice, collision]);
+    expect(await plan.send(message)).toEqual({ kind: "socket_delivered", id: message.id });
+    expect(f.inbox).toHaveLength(1);
+  });
+
   it("keeps an unhomed caller local and refuses an explicit remote target", async () => {
     const { root } = boxFixture();
     vi.stubEnv("PI_CODING_AGENT_DIR", undefined);

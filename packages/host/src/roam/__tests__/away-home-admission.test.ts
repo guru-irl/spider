@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { openDb, migrate, paths, setGlobalDbPathForTests, type Db } from "@spider/db-core";
 import { scratchDbPath } from "@spider/db-core/testutil";
@@ -221,6 +222,109 @@ it("a fresh admission keeps a frozen legacy worktree closed without a global DB"
     expect(existsSync(f.file)).toBe(false);
     expect(worktree.prepare("SELECT * FROM roam_sessions WHERE session_id=?").get(sid)).toEqual(before);
   } finally { await session.gate.close(); worktree.close(); }
+});
+
+it("a fresh process refuses foreign and frozen legacy copies", async () => {
+  const foreign = fixture(), frozen = fixture(), journalOnly = fixture();
+  foreign.db().prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES(?,?,3,?,1)").run(sid, box, "legacy-move");
+  const activeStore = legacyWorktree(foreign, "active", 3);
+  frozen.removeDb();
+  const frozenStore = legacyWorktree(frozen, "frozen", 1);
+  journalOnly.removeDb();
+  mkdirSync(join(journalOnly.root, "worktree"));
+  const journal = openDb(join(journalOnly.root, "roam", "journal.db"));
+  journal.exec("CREATE TABLE freeze_journal(session_id TEXT, move_id TEXT, epoch INTEGER, state TEXT)");
+  journal.prepare("INSERT INTO freeze_journal VALUES(?,?,?,?)").run(sid, "legacy-move", 1, "frozen");
+  const before = [foreign.db().prepare("SELECT * FROM session_homes WHERE session_id=?").get(sid),
+    frozenStore.prepare("SELECT * FROM roam_sessions WHERE session_id=?").get(sid),
+    journal.prepare("SELECT * FROM freeze_journal").all()];
+  const roots = [foreign.root, frozen.root, journalOnly.root];
+  for (const root of roots) {
+    const cwd = join(root, "worktree");
+    writeFileSync(join(root, "session.jsonl"), JSON.stringify({ type: "session", version: 3, id: sid, cwd }) + "\n", { mode: 0o600 });
+  }
+  // Node's test-only loader runs the real TypeScript modules in a separate process.
+  const script = String.raw`
+    import { registerHooks } from 'node:module';
+    import { existsSync, readFileSync } from 'node:fs';
+    import { join, resolve } from 'node:path';
+    import { fileURLToPath, pathToFileURL } from 'node:url';
+    import ts from 'typescript';
+    registerHooks({
+      resolve(specifier, context, next) {
+        if (context.parentURL?.startsWith('file:') && (specifier.startsWith('./') || specifier.startsWith('../'))) {
+          const [base, query] = specifier.split('?');
+          const url = new URL(base, context.parentURL);
+          if (base.endsWith('.js') && !existsSync(fileURLToPath(url))) {
+            const tsFile = new URL(base.slice(0, -3) + '.ts', context.parentURL);
+            if (existsSync(fileURLToPath(tsFile))) return next(tsFile.href + (query ? '?' + query : ''), context);
+          }
+          if (!/\.[a-z0-9]+$/i.test(base)) {
+            const tsFile = new URL(base + '.ts', context.parentURL);
+            if (existsSync(fileURLToPath(tsFile))) return next(tsFile.href + (query ? '?' + query : ''), context);
+          }
+        }
+        return next(specifier, context);
+      },
+      load(url, context, next) {
+        if (url.endsWith('?raw')) return { format: 'module', shortCircuit: true,
+          source: 'export default ' + JSON.stringify(readFileSync(fileURLToPath(url.slice(0, -4)), 'utf8')) + ';' };
+        if (url.endsWith('.ts')) return { format: 'module', shortCircuit: true,
+          source: ts.transpileModule(readFileSync(fileURLToPath(url), 'utf8'),
+            { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText };
+        return next(url, context);
+      },
+    });
+    const { roots, sessionId } = JSON.parse(readFileSync(0, 'utf8'));
+    const { paths, setGlobalDbPathForTests } = await import('@spider/db-core');
+    const { createAdmissionPorts, registerAdmission, protectAdmissionApi } = await import(
+      pathToFileURL(resolve('packages/host/src/roam/admission.ts')).href);
+    const results = [];
+    for (const root of roots) {
+      paths.globalRoot = root; setGlobalDbPathForTests(join(root, 'spider.db'));
+      process.env.SPIDER_GLOBAL_ROOT = root; process.env.GIT_CEILING_DIRECTORIES = root;
+      const cwd = join(root, 'worktree'), file = join(root, 'session.jsonl');
+      const hooks = new Map(), writes = [];
+      const pi = { on(name, fn) { hooks.set(name, fn); }, sendMessage(value) { writes.push(value); } };
+      const ctx = { cwd, mode: 'tui', hasUI: false, ui: { notify() {} }, abort() {},
+        sessionManager: { getSessionId: () => sessionId, getSessionFile: () => file } };
+      const ports = createAdmissionPorts(), initialKnown = ports.knownParticipant(sessionId);
+      let locks = 0;
+      const lock = ports.lock;
+      ports.lock = (...args) => { locks++; return lock(...args); };
+      const gate = registerAdmission(pi, ports);
+      await hooks.get('session_start')({}, ctx);
+      const input = await hooks.get('input')({ text: 'work' }, ctx);
+      const edit = await hooks.get('tool_call')({ toolName: 'edit' }, ctx);
+      const shell = await hooks.get('user_bash')({ command: 'echo unsafe' }, ctx);
+      let producerBlocked = false;
+      try { protectAdmissionApi(pi, gate).sendMessage({ customType: 'test', content: 'no write', display: true }); }
+      catch { producerBlocked = true; }
+      results.push({ initialKnown, kind: gate.inspect().kind, input: input?.action, edit: edit?.block,
+        shell: shell?.result?.exitCode, producerBlocked, writes: writes.length, locks });
+      await gate.close();
+    }
+    process.stdout.write(JSON.stringify({ pid: process.pid, results }));
+  `;
+  try {
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+      cwd: resolve("."), input: JSON.stringify({ roots, sessionId: sid }), encoding: "utf8",
+      env: { ...process.env, VITEST: "true", NODE_NO_WARNINGS: "1", PI_SUBAGENT_CHILD: "0",
+        SPIDER_GLOBAL_ROOT: roots[0], SPIDER_TEST_FIXTURE_CHECKOUT: resolve(".") },
+    });
+    expect(child.error).toBeUndefined();
+    expect(child.status, child.stderr).toBe(0);
+    const observed = JSON.parse(child.stdout) as { pid: number; results: unknown[] };
+    expect(observed.pid).not.toBe(process.pid);
+    const refusal = { initialKnown: false, input: "handled", edit: true, shell: 1, producerBlocked: true, writes: 0, locks: 0 };
+    expect(observed.results).toEqual([
+      { ...refusal, kind: "blocked" }, { ...refusal, kind: "control-only" }, { ...refusal, kind: "control-only" },
+    ]);
+    expect(foreign.db().prepare("SELECT * FROM session_homes WHERE session_id=?").get(sid)).toEqual(before[0]);
+    expect(frozenStore.prepare("SELECT * FROM roam_sessions WHERE session_id=?").get(sid)).toEqual(before[1]);
+    expect(journal.prepare("SELECT * FROM freeze_journal").all()).toEqual(before[2]);
+    expect(existsSync(frozen.file)).toBe(false); expect(existsSync(journalOnly.file)).toBe(false);
+  } finally { activeStore.close(); frozenStore.close(); journal.close(); }
 });
 
 it("a verified legacy freeze keeps its ownership-only control path", async () => {

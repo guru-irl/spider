@@ -186,6 +186,37 @@ it.each(["send", "ask"] as const)("explains why a box cannot initiate %s to a Ma
   });
 });
 
+it("keeps unhomed sends local without falling back to a legacy mailbox for a remote ID", async () => {
+  const mailbox = new IntercomClient();
+  const registration = { name: "old-local-mailbox", cwd: process.cwd(), model: "fixture", pid: process.pid, startedAt: 1, lastActivity: 1 };
+  const inbox: string[] = [], local: string[] = [];
+  const readLocal = (_from: unknown, message: { content: { text: string } }) => local.push(message.content.text);
+  observer.on("message", readLocal);
+  try {
+    await mailbox.connect(registration, hubSessionId);
+    await mailbox.disconnect();
+    await withConfiguredBoxHost(async execute => {
+      const sent = await execute("send", "observer", "unhomed local fixture");
+      expect(sent.details).toMatchObject({ delivered: true, delivery: "socket_delivered" });
+      await vi.waitFor(() => expect(local).toEqual(["unhomed local fixture"]));
+      const qualified = await execute("send", "missing-peer/observer", "do not dispatch");
+      expect(qualified.details).toMatchObject({ error: true, code: "not-configured" });
+      const remote = await execute("send", hubSessionId, "do not queue");
+      expect(remote.details).toMatchObject({ error: true, code: "reply-only" });
+    }, false);
+    expect(await observer.send(hubSessionId, { text: "mailbox control", messageId: "mailbox-control" }))
+      .toMatchObject({ delivered: true, delivery: "queued" });
+    mailbox.on("message", (_from, message) => inbox.push(message.content.text));
+    await mailbox.connect(registration, hubSessionId);
+    await mailbox.listSessions();
+    expect(inbox).toEqual(["mailbox control"]);
+    expect(local).toEqual(["unhomed local fixture"]);
+  } finally {
+    observer.off("message", readLocal);
+    await mailbox.disconnect();
+  }
+});
+
 it("wires an injected roaming factory for an admitted running home", async () => {
   const admissionModule = await import("../roam/admission.js");
   const runtimeModule = await import("@spider/roam/runtime");

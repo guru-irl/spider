@@ -2781,7 +2781,11 @@ Usage:
                 }
                 if (_signal?.aborted) return { content: [{ type: "text", text: "Cancelled" }], details: { error: true } };
                 const sent = { id: randomUUID(), timestamp: Date.now(), text: message };
-                const result = await plan.send(sent, _signal).catch(() => ({ kind: "unknown" as const, id: sent.id }));
+                let result = await plan.send(sent, _signal).catch(() => ({ kind: "unknown" as const, id: sent.id }));
+                if (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
+                    v0.homeEpoch(from.address!.sessionId) !== from.v0HomeEpoch) {
+                  result = { kind: "unknown", id: sent.id };
+                }
                 if (result.kind === "refused") {
                   return { content: [{ type: "text", text: V0_REFUSAL_TEXT[result.code] }], details: { error: true, code: result.code } };
                 }
@@ -2980,7 +2984,8 @@ Usage:
                   _signal?.removeEventListener("abort", onAbort);
                   if (v0AskInFlight?.token === token) v0AskInFlight = null;
                 }
-                if (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected()) {
+                if (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
+                    v0.homeEpoch(from.address!.sessionId) !== from.v0HomeEpoch) {
                   result = { kind: "unknown", id: question.id };
                 }
                 if (result.kind === "refused") {

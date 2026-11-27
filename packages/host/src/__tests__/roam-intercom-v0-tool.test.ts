@@ -14,7 +14,7 @@ import { registerIntercomOnce } from "../../../intercom/src/single-instance.js";
 import { startTestBroker, stopTestBroker, testBrokerEnv, testTmpDir } from "../../../intercom/src/test-support.js";
 import { createHostSessionFixture } from "./fixtures/pi-events.js";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { V0_ASK_MAX_MS, type V0Code, type V0Prepare, type V0Text, type V0ToolOptions } from "../../../intercom/src/roam-v0.js";
+import { V0_ASK_MAX_MS, type V0Code, type V0Delivery, type V0Prepare, type V0Text, type V0ToolOptions } from "../../../intercom/src/roam-v0.js";
 
 let broker: ChildProcessWithoutNullStreams;
 let observer: IntercomClient;
@@ -599,6 +599,45 @@ it("does not send when confirmation finishes in a different session", async () =
     expect(result.details).toMatchObject({ error: true });
     expect(sent).toEqual([]);
   } finally { finish?.(false); await f.cleanup(); }
+});
+
+it("does not record a completed remote send in a replacement session", async () => {
+  let finish!: (result: { kind: "socket_delivered"; id: string }) => void, sent: V0Text | undefined;
+  const prepare: V0Prepare = async () => ({
+    kind: "remote", label: "b/ben",
+    async send(message) { sent = message; return new Promise(resolve => { finish = resolve; }); },
+    async ask(message) { return { kind: "no_reply", id: message.id }; },
+  });
+  const f = await fixture({ homeEpoch: () => 7, prepare });
+  try {
+    const pending = f.tool.execute("send", { action: "send", to: "ben", message: "old session" }, new AbortController().signal, undefined, f.ctx);
+    await vi.waitFor(() => expect(sent).toBeDefined());
+    f.switchSession("replacement-session");
+    await f.emit("turn_start");
+    finish({ kind: "socket_delivered", id: sent!.id });
+    const result = await pending;
+    expect(result.details).toMatchObject({ delivery: "unknown", messageId: sent!.id, outcomeKnown: false });
+    expect(f.entries.some(entry => entry.type === "intercom_sent")).toBe(false);
+  } finally { if (sent) finish?.({ kind: "socket_delivered", id: sent.id }); await f.cleanup(); }
+});
+
+it.each(["send", "ask"] as const)("does not record a remote %s after source admission changes in flight", async action => {
+  let finish!: (result: V0Delivery) => void, sent: V0Text | undefined, epoch = 7;
+  const prepare: V0Prepare = async () => ({
+    kind: "remote", label: "b/ben",
+    async send(message) { sent = message; return new Promise(resolve => { finish = resolve; }); },
+    async ask(message) { sent = message; return new Promise(resolve => { finish = resolve; }); },
+  });
+  const f = await fixture({ homeEpoch: () => epoch, prepare });
+  try {
+    const pending = f.tool.execute(action, { action, to: "ben", message: "old home" }, new AbortController().signal, undefined, f.ctx);
+    await vi.waitFor(() => expect(sent).toBeDefined());
+    epoch = 8;
+    finish(action === "send" ? { kind: "socket_delivered", id: sent!.id } : { kind: "replied", id: sent!.id, replyId: "reply", text: "answer" });
+    const result = await pending;
+    expect(result.details).toMatchObject({ delivery: "unknown", messageId: sent!.id, outcomeKnown: false });
+    expect(f.entries.some(entry => entry.type === "intercom_sent" || entry.type === "intercom_received")).toBe(false);
+  } finally { if (sent) finish?.({ kind: "unknown", id: sent.id }); await f.cleanup(); }
 });
 
 it("does not send after the source home epoch changes during confirmation", async () => {

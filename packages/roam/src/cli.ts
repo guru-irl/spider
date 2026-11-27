@@ -641,6 +641,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
   }
   if (argv[0] === "roam" && argv[1] === "status") {
     try {
+      if (existsSync(join(root, "roam", "config.json"))) readLocalIdentity(root);
       const status = runLocalStatus({ root });
       if (jsonOutput) io.out(`${JSON.stringify(status.enabled ? { ...status, code: 0, reason: "status-complete", operationId: "", home: null, epoch: null, repairCommand: null } : status)}\n`);
       else {

@@ -630,8 +630,9 @@ describe('runner boundary and report', () => {
       { id: 'S54', tier: 'ci', result: 'blocked', evidence: 'S54.json', reason: 'native-input' },
       { id: 'S55', tier: 'ci', result: 'failed', evidence: 'S55.json', reason: 'cleanup failed' },
     ]);
-    expect(matrix).toHaveLength(77);
+    expect(matrix).toHaveLength(78);
     expect(matrix.find((x: { id: string }) => x.id === 'R14').result).toBe('not exercised');
+    expect(matrix.find((x: { id: string }) => x.id === 'R18').result).toBe('not exercised');
     expect(matrix.find((x: { id: string }) => x.id === 'S01').result).toBe('not exercised');
     expect(matrix.find((x: { id: string }) => x.id === 'S56').result).toBe('failed');
     expect(complete(matrix, ['S52'])).toBe(true);

@@ -84,6 +84,24 @@ it("reports real cached status and leaves stores, sidecars, journal and config u
   } finally { project.close(); global.close(); }
 }, 5000);
 
+it("shows the last local supervisor refusal without treating it as a current failure", async () => {
+  const root=fixture();configure(root);
+  const db=openDb(join(root,"spider.db"));
+  try {
+    migrate(db,"global",{machineId:HUB,globalRoot:root});
+    writeLocal(db,"relocate-supervisor-refusal","session\u001b-a",{
+      code:"session-busy",message:"Pause\nremaining work.",nextStep:"Close pi, then rerun relocate.",
+    });
+  } finally {db.close();}
+  const out:string[]=[], io={out:(text:string)=>out.push(text),err:()=>{}};
+  const reason="Last supervisor refusal for session?-a (session-busy): Pause?remaining work. Close pi, then rerun relocate.";
+  expect(await main(["roam","status","--json"],io)).toBe(0);
+  expect(JSON.parse(out.join("")).diagnostics).toContainEqual(expect.objectContaining({severity:"warning",reason}));
+  out.length=0;
+  expect(await main(["roam","status"],io)).toBe(0);
+  expect(out.join("")).toContain(reason);
+});
+
 it("includes verified unmapped replicas in doctor and status without touching their files", async () => {
   const root = fixture(), directory = join(root, "roam", "stores"), replicaKey = "repo:fixture-repo";
   configure(root);

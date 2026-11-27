@@ -1,4 +1,6 @@
 import { readMoveSetupDiagnostics } from "./setup-diagnostics";
+import { localEntries } from "@spider/db-core/roam/local-state";
+import type { V0Refusal } from "./relocate/types";
 import { parsePrivateTransferDiagnostic, type PrivateTransferDiagnostic } from "./private-transfer-diagnostics";
 import { corePinDiagnostics } from "./core-pin-diagnostics";
 import { hubStartupDiagnostics, inspectHubService, type HubServiceObservation } from "./hub-service-diagnostics";
@@ -751,6 +753,16 @@ export function runLocalStatus(input: { root: string; now?: number }): RoamStatu
     const status = readStatus(local.config, { globalDb, stores: usable, journalDb: journal ?? null, now, observations,
       inventoryComplete: local.inventory.length === 0, journalAvailable });
     status.diagnostics.push(...local.inventory);
+    if (globalDb) try {
+      const safe = (value: string) => value.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 256);
+      for (const {key,value} of localEntries<Partial<V0Refusal> | null>(globalDb, "relocate-supervisor-refusal")) {
+        if (typeof value?.code !== "string" || typeof value.message !== "string" || typeof value.nextStep !== "string") continue;
+        status.diagnostics.push({ severity: "warning", repairCommand: null,
+          reason: `Last supervisor refusal for ${safe(key)} (${safe(value.code)}): ${safe(value.message)} ${safe(value.nextStep)}` });
+      }
+    } catch {
+      status.diagnostics.push({ severity: "warning", repairCommand: "spider roam doctor", reason: "Cannot read the last supervisor refusals." });
+    }
     return status;
   } finally { journal?.close(); local.close(); }
 }

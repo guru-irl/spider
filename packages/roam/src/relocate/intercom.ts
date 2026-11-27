@@ -239,10 +239,11 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
       ? qualifiedHome : null;
     if (configured.config.role === "box" && (exactHome?.machineId === configured.config.hubMachineId ||
         macQualifiedHome?.machineId === configured.config.hubMachineId)) return refused("reply-only");
-    if (!senderHome) {
+    if (from.v0HomeEpoch === undefined) {
       return selector.kind === "qualified" || exactHome && exactHome.machineId !== configured.config.machineId
         ? refused("not-configured") : { kind: "legacy" };
     }
+    if (!senderHome) return refused("changed");
     const source = endpointOf(from);
     if (!source || !locals.some(local => local.id === from.id && endpointOf(local) !== null && sameEndpoint(endpointOf(local)!, source)))
       return refused("changed");

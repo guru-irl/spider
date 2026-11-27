@@ -678,13 +678,32 @@ describe("roaming v0 intercom", () => {
     expect(contacted).toEqual([BOX]);
   });
 
-  it("refuses stopped homes and managed callers without the admission epoch", async () => {
+  it("keeps unhomed callers on the local path and refuses explicit remotes", async () => {
+    const f = paired();
+    const unhomed = { ...alice, v0HomeEpoch: undefined };
+    const target: LocalSessionInfo = { ...alice, id: "local-target", name: "ben",
+      address: { sessionId: "local-target", scopeId: "scope-1" }, v0HomeEpoch: undefined };
+    for (const from of [unhomed, { ...unhomed, id: "no-home", address: { sessionId: "no-home", scopeId: "scope-1" } }]) {
+      const locals = [from, target];
+      expect(await f.intercom.prepare({ to: "local-target", from, locals })).toEqual({ kind: "legacy" });
+      expect(await f.intercom.prepare({ to: "box/ben", from, locals })).toEqual({ kind: "refused", code: "not-configured" });
+      expect(await f.intercom.prepare({ to: "ben", from, locals })).toEqual({ kind: "refused", code: "not-configured" });
+    }
+    const stale = { ...alice, id: "no-home", address: { sessionId: "no-home", scopeId: "scope-1" } };
+    expect(await f.intercom.prepare({ to: "local-target", from: stale, locals: [stale, target] }))
+      .toEqual({ kind: "refused", code: "changed" });
+    expect(await f.intercom.prepare({ to: "box/ben", from: stale, locals: [stale, target] }))
+      .toEqual({ kind: "refused", code: "changed" });
+    expect(f.calls).toEqual([]);
+  });
+
+  it("refuses stopped homes and remote callers without the admission epoch", async () => {
     const f = paired();
     const db = openDbAt(join(f.sender.root, "spider.db"), "global");
     try { db.prepare("UPDATE session_homes SET state='stopped' WHERE session_id='ben'").run(); } finally { db.close(); }
     expect(await f.intercom.prepare({ to: "ben", from: alice, locals: [alice] })).toEqual({ kind: "refused", code: "offline" });
     const stale = { ...alice, v0HomeEpoch: undefined };
-    expect(await f.intercom.prepare({ to: "box/ben", from: stale, locals: [stale] })).toEqual({ kind: "refused", code: "changed" });
+    expect(await f.intercom.prepare({ to: "box/ben", from: stale, locals: [stale] })).toEqual({ kind: "refused", code: "not-configured" });
     expect(f.calls).toEqual([]);
   });
 

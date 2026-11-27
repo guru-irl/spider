@@ -133,9 +133,10 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
         if (typeof row.address !== "string" || !row.address || !["live","finished"].includes(row.state as string) || row.state === "finished" && (row.reason !== "exited" || !(Number.isSafeInteger(row.exit_code) || signaled))) throw new Error("Unknown terminal state");
         let pid: unknown = row.pid ?? row.process_id ?? null;
         let labels: unknown = row.labels;
-        if (row.state === "live" && pid === null) {
+        if (row.state === "live" && (pid === null || labels == null)) {
           const detail = await invokeCli(binary,["get",row.address,"--json"],env,options.limits.replyBytes,undefined,{timeoutMs:options.limits.controlMs});
           if (!detail || typeof detail !== "object" || !("address" in detail) || detail.address !== row.address || !("state" in detail) || detail.state !== "live" || !("pid" in detail)) throw new Error("Terminal identity changed");
+          if (pid !== null && detail.pid !== pid) throw new Error("Terminal process changed");
           pid = detail.pid;
           if ("labels" in detail) labels = detail.labels;
         }
@@ -144,7 +145,8 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
         if (row.state === "live" && labels && typeof labels === "object") {
           const tags = labels as Record<string,unknown>;
           if (tags["spider.kind"] === "session" && tags["spider.session"] === id && tags["spider.machine"] === options.config.machineId &&
-              typeof tags["spider.roam.epoch"] === "string" && /^[1-9]\d*$/.test(tags["spider.roam.epoch"])) terminal.owned = true;
+              typeof tags["spider.roam.epoch"] === "string" && /^[1-9]\d*$/.test(tags["spider.roam.epoch"]) &&
+              !("spider.roam.operation" in tags)) terminal.owned = true;
         }
         return terminal;
       }))).filter(terminal => terminal !== null);
@@ -169,49 +171,65 @@ const terminalName = (t: LocalTerminal): string => t.pid === null ? `terminal ${
 export async function stopLocalSession(sessionId: SessionId, moving: MovingHome | null, io: LocalIO, clock: Clock, timeoutMs: number): Promise<V0Result<void>> {
   try {
     const deadline = clock.now() + timeoutMs;
-    const observed = await io.inspect(sessionId);
-    if (observed) {
-      const {pid,startIdentity} = observed.identity;
-      const root = {pid,startIdentity,command:"pi"};
-      const p = await io.probe(pid);
-      if (p.kind === "unknown" || p.kind === "live" && (p.startIdentity !== startIdentity || !p.pi)) return busy([processName(root)]);
-      if (p.kind === "live") {
-        if (!(await io.terminals(sessionId)).some(t=>t.state === "live" && t.owned && t.pid === pid)) return busy([processName(root)]);
-        const {descendants:children,groups} = await io.tree(pid);
-        const current = await io.inspect(sessionId), rechecked = await io.probe(pid);
-        if (!sameOwner(current,observed) || rechecked.kind !== "live" || !rechecked.pi || rechecked.startIdentity !== startIdentity) return busy([processName(root)]);
-        for (const child of children) {
-          const member = await io.probe(child.pid);
-          if (member.kind === "unknown") return busy([processName(child)]);
-          if (member.kind === "live" && member.startIdentity === child.startIdentity) await io.signal(child.pid);
+    let observed = await io.inspect(sessionId);
+    if (observed && (await io.probe(observed.identity.pid)).kind === "absent") {
+      await io.claimFree(sessionId);
+      observed = await io.inspect(sessionId);
+    }
+    const liveTerminals = async () => (await io.terminals(sessionId)).filter(t=>t.state === "live");
+    const live = await liveTerminals();
+    const lockPid = observed?.identity.pid;
+    const terminal = lockPid !== undefined
+      ? live.find(t=>t.owned && t.pid === lockPid)
+      : live.length === 1 && live[0].owned ? live[0] : undefined;
+    if (observed && !terminal) return busy([`PID ${observed.identity.pid} (pi)`]);
+    if (terminal && terminal.pid !== null) {
+      const {pid,terminal:address} = terminal, p = await io.probe(pid);
+      if (p.kind !== "live" || !p.pi || observed && p.startIdentity !== observed.identity.startIdentity) return busy([terminalName(terminal)]);
+      const root = {pid,startIdentity:p.startIdentity,command:"pi"};
+      const expectedLock = (held: IdLockObservation | null): boolean => observed ? sameOwner(held,observed)
+        : !held || held.identity.pid === pid && held.identity.startIdentity === root.startIdentity && held.pendingOperationId === null;
+      // A blocked v0 admission can release its lock and leave pi in the
+      // terminal. In that case both labels and the process must still match.
+      async function stillOwned(): Promise<boolean> {
+        if (!observed) {
+          const matches = await liveTerminals();
+          if (matches.length !== 1 || !matches[0].owned || matches[0].terminal !== address || matches[0].pid !== pid) return false;
         }
-        const shutdown = moving && await io.shutdown({id:`${moving.moveId}-shutdown`,machineId:moving.machineId,expectedEpoch:moving.epoch,kind:"session-shutdown",args:{sessionId,moveId:moving.moveId,v0:true}});
-        if (!shutdown) {
-          const owner = await io.probe(pid);
-          if (owner.kind !== "absent") {
-            if (!sameOwner(await io.inspect(sessionId),observed) || owner.kind !== "live" || !owner.pi || owner.startIdentity !== startIdentity) return busy([processName(root)]);
-            await io.signal(pid);
-          }
+        if (!expectedLock(await io.inspect(sessionId))) return false;
+        const state = await io.probe(pid);
+        return state.kind === "live" && state.pi && state.startIdentity === root.startIdentity;
+      }
+      const {descendants:children,groups} = await io.tree(pid);
+      if (!await stillOwned()) return busy([processName(root)]);
+      for (const child of children) {
+        const member = await io.probe(child.pid);
+        if (member.kind === "unknown") return busy([processName(child)]);
+        if (member.kind === "live" && member.startIdentity === child.startIdentity) await io.signal(child.pid);
+      }
+      const shutdown = observed && moving && await io.shutdown({id:`${moving.moveId}-shutdown`,machineId:moving.machineId,expectedEpoch:moving.epoch,kind:"session-shutdown",args:{sessionId,moveId:moving.moveId,v0:true}});
+      if (!shutdown && (await io.probe(pid)).kind !== "absent") {
+        if (!await stillOwned()) return busy([processName(root)]);
+        await io.signal(pid);
+      }
+      for (;;) {
+        const held = await io.inspect(sessionId);
+        if (held && !expectedLock(held)) return busy([`PID ${held.identity.pid} (pi)`]);
+        const alive: string[] = [];
+        for (const member of [root,...children]) {
+          const state = await io.probe(member.pid);
+          if (state.kind === "unknown" || state.kind === "live" && state.startIdentity === member.startIdentity) alive.push(processName(member));
         }
-        for (;;) {
-          const held = await io.inspect(sessionId);
-          if (held && !sameOwner(held,observed)) return busy([`PID ${held.identity.pid} (pi)`]);
-          const alive: string[] = [];
-          for (const member of [root,...children]) {
-            const state = await io.probe(member.pid);
-            if (state.kind === "unknown" || state.kind === "live" && state.startIdentity === member.startIdentity) alive.push(processName(member));
-          }
-          if (!alive.length || clock.now() >= deadline) alive.push(...await io.groupBlockers(groups));
-          if (!alive.length) break;
-          if (clock.now() >= deadline) return busy(alive);
-          await io.pause(Math.min(100,Math.max(1,deadline-clock.now())));
-        }
+        if (!alive.length || clock.now() >= deadline) alive.push(...await io.groupBlockers(groups));
+        if (!alive.length) break;
+        if (clock.now() >= deadline) return busy(alive);
+        await io.pause(Math.min(100,Math.max(1,deadline-clock.now())));
       }
     }
     // claimIdLock handles dead owners and stale records; never unlink a lock.
     await io.claimFree(sessionId);
-    const live = (await io.terminals(sessionId)).filter(t=>t.state === "live");
-    if (live.length) return busy(live.map(terminalName));
+    const remaining = await liveTerminals();
+    if (remaining.length) return busy(remaining.map(terminalName));
     const blockers = await io.writerBlockers(sessionId,undefined,moving !== null);
     if (blockers.length) return busy(blockers);
     const held = await io.inspect(sessionId);

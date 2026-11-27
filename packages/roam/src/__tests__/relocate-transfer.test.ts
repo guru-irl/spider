@@ -150,6 +150,27 @@ describe("v0 transfer stop boundary",()=>{
   expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toMatchObject({ok: false, refusal: {code: "session-busy", message: expect.stringContaining("PID 42 (pi)")}});
   expect(f.signals).toEqual([]);
  });
+ it("stops a blocked Spider launch that never acquired the ID lock", async () => {
+  const f = stopFixture();
+  let live = true;
+  f.io.inspect = async () => null;
+  f.io.terminals = async () => live ? [{terminal:"t",state:"live",pid:42,owned:true}] : [];
+  f.io.probe = async () => live ? {kind:"live",startIdentity:"pi-42",pi:true} : {kind:"absent"};
+  f.io.signal = async pid => { f.signals.push(pid); live = false; };
+  const moving = {sessionId:id,machineId:hub,epoch:2,state:"moving" as const,destination:box,moveId:"v0-blocked" as RelocateId,updatedAt:1};
+  expect(await stopLocalSession(id,moving,f.io,f.clock,30)).toEqual({ok:true,value:undefined});
+  expect(f.signals).toEqual([42]);
+ });
+ it.each(["reused pid", "other lock", "unowned terminal"])("does not signal a lockless launch when it finds %s", async fault => {
+  const f = stopFixture();
+  let checked = false;
+  f.io.inspect = async () => checked && fault === "other lock" ? {...f.owner,identity:{pid:99,startIdentity:"other"}} : null;
+  f.io.terminals = async () => [{terminal:"t",state:"live",pid:42,owned: fault === "unowned terminal" ? undefined : true}];
+  f.io.probe = async () => ({kind:"live",startIdentity:checked && fault === "reused pid" ? "other" : "pi-42",pi:true});
+  f.io.tree = async () => { checked = true; return {descendants:[],groups:[]}; };
+  expect(await stopLocalSession(id,null,f.io,f.clock,30)).toMatchObject({ok:false,refusal:{code:"session-busy"}});
+  expect(f.signals).toEqual([]);
+ });
  it("shutdown fallback waits for the ID lock",async()=>{
   const f=stopFixture();let capture=false;
   const done=stopLocalSession(id,null,f.io,f.clock,30).then(r=>{if(r.ok){capture=true;f.events.push("capture");}return r;});

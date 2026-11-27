@@ -158,6 +158,20 @@ describe("v0 local runtime",()=>{
   });
   expect(await createLocalIO(f.options).terminals(id)).toEqual([{terminal:"core:t",state:"live",pid:42}]);
  });
+ it("verifies Spider ownership from terminal details even if the summary supplies a pid", async () => {
+  const f = runtimeFixture();
+  vi.spyOn(hcApi,"invokeCli").mockImplementation(async (_binary,argv) => argv[0] === "ls"
+   ? {terminals:[{address:"core:t",state:"live",pid:42}]}
+   : {address:"core:t",state:"live",pid:42,labels:{"spider.kind":"session","spider.session":id,"spider.machine":box,"spider.roam.epoch":"3"}});
+  expect(await createLocalIO(f.options).terminals(id)).toEqual([{terminal:"core:t",state:"live",pid:42,owned:true}]);
+ });
+ it("does not mark a legacy launch as owned by v0", async () => {
+  const f = runtimeFixture();
+  vi.spyOn(hcApi,"invokeCli").mockImplementation(async (_binary,argv) => argv[0] === "ls"
+   ? {terminals:[{address:"core:t",state:"live",pid:42}]}
+   : {address:"core:t",state:"live",pid:42,labels:{"spider.kind":"session","spider.session":id,"spider.machine":box,"spider.roam.epoch":"3","spider.roam.operation":"legacy"}});
+  expect(await createLocalIO(f.options).terminals(id)).toEqual([{terminal:"core:t",state:"live",pid:42}]);
+ });
  it.each([{address:"other:t",state:"live",pid:42},{address:"core:t",state:"live",pid:-1},{address:"core:t",state:"finished",pid:42}])("refuses changed live terminal details %j",async detail=>{
   const f=runtimeFixture();
   vi.spyOn(hcApi,"invokeCli").mockImplementation(async(_binary,argv)=>argv[0]==="ls"?{terminals:[{address:"core:t",state:"live"}]}:detail);

@@ -25,12 +25,23 @@ function hub(db: Db, machine: MachineId, id: string): void {
   if (!isMachineId(machine) || meta.machine_id !== machine) throw new Error("Only the hub may change homes");
   if (!id || id.length > 1024 || /[\u0000-\u001f]/.test(id)) throw new Error("Invalid session identity");
 }
-export function assignInitialHome(db: Db, sessionId: string, originMachine: MachineId, hubMachine: MachineId): Home | "conflict" {
+function validateInitialHome(db: Db, sessionId: string, originMachine: MachineId, hubMachine: MachineId): void {
   hub(db, hubMachine, sessionId);
   if (!isMachineId(originMachine)) throw new Error("Invalid origin machine");
+}
+function insertInitialHome(db: Db, sessionId: string, originMachine: MachineId): void {
+  db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES (?,?,1,NULL,?) ON CONFLICT(session_id) DO NOTHING")
+    .run(sessionId, originMachine, Date.now());
+}
+/** Discovery never needs to interpret an existing home, including a v0 home. */
+export function assignInitialHomeIfAbsent(db: Db, sessionId: string, originMachine: MachineId, hubMachine: MachineId): void {
+  validateInitialHome(db, sessionId, originMachine, hubMachine);
+  insertInitialHome(db, sessionId, originMachine);
+}
+export function assignInitialHome(db: Db, sessionId: string, originMachine: MachineId, hubMachine: MachineId): Home | "conflict" {
+  validateInitialHome(db, sessionId, originMachine, hubMachine);
   return db.raw.transaction(() => {
-    db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES (?,?,1,NULL,?) ON CONFLICT(session_id) DO NOTHING")
-      .run(sessionId, originMachine, Date.now());
+    insertInitialHome(db, sessionId, originMachine);
     const home = sessionHome(db, sessionId);
     if (home === "unknown") throw new Error("Home lookup failed");
     return home ?? "conflict";

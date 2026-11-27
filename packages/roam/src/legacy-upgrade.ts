@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import type { Db } from "@spider/db-core";
 import { storeScope } from "@spider/db-core/roam/codec";
 import { FENCE_MACHINE, FENCE_STREAM, FENCE_TARGET } from "@spider/db-core/roam/apply";
 import { localEntries, readLocal } from "@spider/db-core/roam/local-state";
-import { mappingRedirect, openRoamPathReadOnly, openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
+import { mappingRedirect, openRoamPathReadOnly, openRoamStoreReadOnly, roamStorePath } from "@spider/db-core/roam/reads";
 import { processStartIdentity } from "@spider/herdr/jobs/handoff";
 import { inspectIdLock, listPendingIdLocks, localBootId } from "@spider/herdr/sessions/id-lock";
 import { createSessionLeases, type ProcessProbe } from "@spider/herdr/sessions/lease";
@@ -323,6 +324,40 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
         if (ownedByV0) v0Maps.add(map.store_key);
         else findings.push(`map store ${safeId(map.store_key)}`);
       }
+      const inspectFrozen = (store: Db, key: string): void => {
+        const identity = store.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id?: unknown; store_key?: unknown } | undefined;
+        if (!identity || identity.machine_id !== meta.machine_id || !(identity.store_key === key || identity.store_key === null)) throw new Error("Store identity mismatch");
+        const rows = store.prepare("SELECT session_id,epoch,move_id,freeze_seq FROM roam_sessions WHERE state='frozen'").all() as
+          Array<{ session_id: unknown; epoch: unknown; move_id: unknown; freeze_seq: unknown }>;
+        for (const row of rows) {
+          if (typeof row.session_id !== "string" || !row.session_id || !Number.isSafeInteger(row.epoch) ||
+              !(row.move_id === null || typeof row.move_id === "string") || !(row.freeze_seq === null || Number.isSafeInteger(row.freeze_seq))) throw new Error("Invalid frozen membership");
+          const label = `frozen session ${safeId(row.session_id)} store ${safeId(key)}`;
+          if (row.move_id && activeFreezes.has(JSON.stringify([row.session_id, row.move_id]))) { findings.push(label); continue; }
+          if (row.move_id !== null || row.freeze_seq !== null) {
+            if (row.move_id === null || row.freeze_seq === null || !completedFreezes.has(JSON.stringify([row.session_id, row.move_id]))) {
+              unknown.push(`${label} freeze record unavailable`); continue;
+            }
+          }
+          const home = global.prepare("SELECT session_id,machine_id,epoch,move_id,updated_at,state,destination FROM session_homes WHERE session_id=?").get(row.session_id) as
+            { session_id: string; machine_id: string; epoch: number; move_id: string | null; updated_at: number; state: string | null; destination: string | null } | undefined;
+          if ((!home || home.state === null) && config && v0.some(evidence => {
+            const plan = evidence.plan;
+            if (evidence.origin !== "incoming" || evidence.expectedKey !== key || plan.source.sessionId !== row.session_id ||
+                plan.destinationPlacement.machineId !== config.machineId || ![plan.source.epoch, plan.source.epoch + 1].includes(row.epoch as number)) return false;
+            const pointer = readLocal<unknown>(global, "relocate-incoming", key);
+            return !!pointer && typeof pointer === "object" && !Array.isArray(pointer) && (pointer as Record<string, unknown>).moveId === plan.moveId;
+          })) continue;
+          if (home && home.state !== null) {
+            const parsed = parseHome({ sessionId: home.session_id, machineId: home.machine_id, epoch: home.epoch, moveId: home.move_id,
+              updatedAt: home.updated_at, state: home.state, destination: home.destination });
+            if (parsed.moveId !== null && (!parsed.moveId.startsWith("v0-") || !isMachineId(parsed.moveId.slice(3)))) throw new Error("Invalid v0 home move");
+            if (parsed.state !== "moving" || v0.some(evidence => evidence.plan.moveId === parsed.moveId && evidence.plan.source.sessionId === row.session_id)) continue;
+          }
+          unknown.push(`${label} freeze record unavailable`);
+        }
+      };
+      const inspectedWorktrees = new Set<string>();
       let storeProblem = false;
       const storeOptions = { globalPath: join(root, "spider.db"), open: snapshot,
         onProblem: () => { storeProblem = true; }, onIncomplete: () => { storeProblem = true; } };
@@ -368,44 +403,33 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
                   : global.prepare("SELECT 1 FROM roam_repo_maps WHERE repo_key=?").get(key.slice(5)));
                 if (!published && !v0Maps.has(key)) findings.push(`map fence store ${safeId(key)}`);
               }
+              if (key.startsWith("worktree:")) { inspectFrozen(replica, key); inspectedWorktrees.add(file); }
             } finally { replica.close(); }
           }
         }
         if (!key.startsWith("worktree:")) continue;
+        const file = roamStorePath(global, key, storeOptions);
+        if (inspectedWorktrees.has(file) || !present(file)) continue;
         const store = openRoamStoreReadOnly(global, key, storeOptions);
         if (!store) { unknown.push(`store ${safeId(key)} unavailable`); continue; }
+        try { inspectFrozen(store, key); inspectedWorktrees.add(file); } finally { store.close(); }
+      }
+      const projects = global.prepare("SELECT project_key,db_path FROM projects ORDER BY project_key").all() as Array<{ project_key: unknown; db_path: unknown }>;
+      for (const project of projects) {
+        if (typeof project.project_key !== "string" || typeof project.db_path !== "string" || !isAbsolute(project.db_path) || resolve(project.db_path) !== project.db_path)
+          throw new Error("Invalid project registration");
+        if (inspectedWorktrees.has(project.db_path)) continue;
+        const store = openRoamPathReadOnly(project.db_path, snapshot);
+        if (!store) { unknown.push(`project ${safeId(project.project_key)} store unavailable`); continue; }
         try {
           const identity = store.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id?: unknown; store_key?: unknown } | undefined;
-          if (!identity || identity.machine_id !== meta.machine_id || !(identity.store_key === key || identity.store_key === null)) throw new Error("Store identity mismatch");
-          const rows = store.prepare("SELECT session_id,epoch,move_id,freeze_seq FROM roam_sessions WHERE state='frozen'").all() as
-            Array<{ session_id: unknown; epoch: unknown; move_id: unknown; freeze_seq: unknown }>;
-          for (const row of rows) {
-            if (typeof row.session_id !== "string" || !row.session_id || !Number.isSafeInteger(row.epoch) ||
-                !(row.move_id === null || typeof row.move_id === "string") || !(row.freeze_seq === null || Number.isSafeInteger(row.freeze_seq))) throw new Error("Invalid frozen membership");
-            const label = `frozen session ${safeId(row.session_id)} store ${safeId(key)}`;
-            if (row.move_id && activeFreezes.has(JSON.stringify([row.session_id, row.move_id]))) { findings.push(label); continue; }
-            if (row.move_id !== null || row.freeze_seq !== null) {
-              if (row.move_id === null || row.freeze_seq === null || !completedFreezes.has(JSON.stringify([row.session_id, row.move_id]))) {
-                unknown.push(`${label} freeze record unavailable`); continue;
-              }
-            }
-            const home = global.prepare("SELECT session_id,machine_id,epoch,move_id,updated_at,state,destination FROM session_homes WHERE session_id=?").get(row.session_id) as
-              { session_id: string; machine_id: string; epoch: number; move_id: string | null; updated_at: number; state: string | null; destination: string | null } | undefined;
-            if ((!home || home.state === null) && config && v0.some(evidence => {
-              const plan = evidence.plan;
-              if (evidence.origin !== "incoming" || evidence.expectedKey !== key || plan.source.sessionId !== row.session_id ||
-                  plan.destinationPlacement.machineId !== config.machineId || ![plan.source.epoch, plan.source.epoch + 1].includes(row.epoch as number)) return false;
-              const pointer = readLocal<unknown>(global, "relocate-incoming", key);
-              return !!pointer && typeof pointer === "object" && !Array.isArray(pointer) && (pointer as Record<string, unknown>).moveId === plan.moveId;
-            })) continue;
-            if (home && home.state !== null) {
-              const parsed = parseHome({ sessionId: home.session_id, machineId: home.machine_id, epoch: home.epoch, moveId: home.move_id,
-                updatedAt: home.updated_at, state: home.state, destination: home.destination });
-              if (parsed.moveId !== null && (!parsed.moveId.startsWith("v0-") || !isMachineId(parsed.moveId.slice(3)))) throw new Error("Invalid v0 home move");
-              if (parsed.state !== "moving" || v0.some(evidence => evidence.plan.moveId === parsed.moveId && evidence.plan.source.sessionId === row.session_id)) continue;
-            }
-            unknown.push(`${label} freeze record unavailable`);
-          }
+          if (!identity || identity.machine_id !== meta.machine_id || Number(store.pragma("user_version")) !== 14) throw new Error("Project store identity mismatch");
+          if (typeof identity.store_key === "string" && storeScope(identity.store_key) === "worktree") inspectFrozen(store, identity.store_key);
+          else if (identity.store_key === null) {
+            const frozen = store.prepare("SELECT session_id FROM roam_sessions WHERE state='frozen'").all() as Array<{ session_id: unknown }>;
+            for (const row of frozen) unknown.push(`frozen session ${typeof row.session_id === "string" ? safeId(row.session_id) : "unknown"} project ${safeId(project.project_key)} store identity unavailable`);
+          } else throw new Error("Invalid project store key");
+          inspectedWorktrees.add(project.db_path);
         } finally { store.close(); }
       }
       if (storeProblem) unknown.push("registered store or replica unavailable");

@@ -11,7 +11,12 @@ type Hold = RelayPoll["holdMs"];
 type ReadyCode = Extract<RelayReady, { ok: false }>["code"];
 type WaitFailure = "unreachable" | "relay-stopping";
 
-export interface RelayClock { now(): number; later(ms: number, fn: () => void): () => void }
+export interface RelayClock {
+  /** Monotonic milliseconds, used only for elapsed-time comparisons. */
+  now(): number;
+  wallNow(): number;
+  later(ms: number, fn: () => void): () => void;
+}
 export interface RelayLinks {
   /** The broker supplies a writer so a call stays active until its socket reply finishes. */
   poll(poll: RelayPoll, signal?: AbortSignal, writeReply?: (reply: RelayPollReply) => Promise<void>): Promise<RelayPollReply>;
@@ -54,7 +59,7 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
     link.grace?.cancel();
     link.grace = null;
   }
-  function down(link: Link, error: string, sinceMs = clock.now(), failure: WaitFailure = "unreachable"): void {
+  function down(link: Link, error: string, sinceMs = clock.wallNow(), failure: WaitFailure = "unreachable"): void {
     if (link.view.state === "down") return;
     link.view = { ...link.view, state: "down", sinceMs, lastError: error };
     clearGrace(link);
@@ -63,12 +68,16 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
     link.pending.clear();
     observe?.(link.view);
   }
+  function expireGrace(link: Link, untilMs: number): void {
+    const lagMs = Math.floor(Math.max(0, clock.now() - untilMs));
+    down(link, "poll-expired", clock.wallNow() - lagMs);
+  }
   function refresh(link: Link): void {
-    if (link.grace && clock.now() >= link.grace.untilMs) down(link, "poll-expired", link.grace.untilMs);
+    if (link.grace && clock.now() >= link.grace.untilMs) expireGrace(link, link.grace.untilMs);
   }
   function startGrace(link: Link): void {
     const untilMs = clock.now() + LIVENESS_GRACE_MS;
-    link.grace = { untilMs, cancel: clock.later(LIVENESS_GRACE_MS, () => down(link, "poll-expired", untilMs)) };
+    link.grace = { untilMs, cancel: clock.later(LIVENESS_GRACE_MS, () => expireGrace(link, untilMs)) };
   }
   function expire(pending: Pending, now: number): boolean {
     const until = pending.stage.kind === "waiting" ? pending.stage.untilMs : pending.deadlineMs;
@@ -102,7 +111,7 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
     const relayId = hello.relay.machineId;
     let known = relays.get(relayId);
     if (known) refresh(known.current);
-    const now = clock.now();
+    const now = clock.now(), wallNow = clock.wallNow();
     if (!known || known.current.view.linkId !== hello.linkId) {
       // A new generation cannot have a result to send yet. Also fence IDs of
       // old calls that could still arrive within their transport budget.
@@ -114,7 +123,7 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
         down(known.current, "link-replaced");
       } else if (relays.size >= RELAY_MAX_LINKS) return refuse("relay-busy");
       const link: Link = {
-        view: { relay: hello.relay, reach: reach.peers, linkId: hello.linkId, state: "up", sinceMs: now,
+        view: { relay: hello.relay, reach: reach.peers, linkId: hello.linkId, state: "up", sinceMs: wallNow,
           lastCallMs: null, lastError: null, messagesCarried: known?.current.view.messagesCarried ?? 0 },
         toMachineId: hello.toMachineId, calls: new Map(), pending: new Map(), grace: null,
       };
@@ -162,7 +171,7 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
         }
         link.pending.delete(result.messageId);
       }
-      link.view = { ...link.view, relay: hello.relay, reach: reach.peers, lastCallMs: now,
+      link.view = { ...link.view, relay: hello.relay, reach: reach.peers, lastCallMs: wallNow,
         messagesCarried: link.view.messagesCarried + carried };
       observe?.(link.view);
       if (link.calls.get(holdMs) !== call) return;
@@ -175,7 +184,7 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
         const submissions = claim(link);
         if (submissions.length > 0) reply(submissions);
       };
-      cancelHold = clock.later(Math.max(0, holdUntilMs - clock.now()), () => reply([]));
+      cancelHold = clock.later(Math.max(0, Math.ceil(holdUntilMs - clock.now())), () => reply([]));
     });
   }
 
@@ -214,7 +223,7 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
         },
         arm(until) {
           cancelTimer();
-          cancelTimer = clock.later(Math.max(0, until - clock.now()), () => pending.fail("unreachable"));
+          cancelTimer = clock.later(Math.max(0, Math.ceil(until - clock.now())), () => pending.fail("unreachable"));
         },
       };
       link.pending.set(id, pending);
@@ -232,7 +241,7 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
     },
     close() {
       closed = true;
-      for (const { current } of relays.values()) down(current, "relay-stopping", clock.now(), "relay-stopping");
+      for (const { current } of relays.values()) down(current, "relay-stopping", clock.wallNow(), "relay-stopping");
     },
   };
 }

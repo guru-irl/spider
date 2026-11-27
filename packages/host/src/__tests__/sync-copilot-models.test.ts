@@ -18,8 +18,8 @@ beforeEach(() => {
   mkdirSync(agent, { recursive: true });
   modelsPath = join(agent, "models.json");
   writeFileSync(join(fixture, "builtins.mjs"), 'export const GITHUB_COPILOT_MODELS = [{ id: "fixture-builtin" }];\n');
-  // Replace only home discovery, HTTP catalog retrieval and global catalog search.
-  // All additive filtering and models.json reads/writes run in the real script.
+  // Isolate home, credentials, catalog discovery, and the HTTP request.
+  // The script still reads and writes the fixture's real models.json.
   writeFileSync(join(fixture, "boundary.mjs"), `
 import os from 'node:os';
 import https from 'node:https';
@@ -30,6 +30,7 @@ import { EventEmitter } from 'node:events';
 const originalRead = fs.readFileSync;
 const originalExists = fs.existsSync;
 const originalCreateRequire = module.createRequire;
+if (process.env.FIXTURE_FAIL_BACKUP === '1') fs.copyFileSync = () => { throw new Error('fixture backup failed'); };
 fs.existsSync = (path) => String(path) === process.env.FIXTURE_HOME + '/.pi/agent/auth.json' || originalExists(path);
 fs.readFileSync = (path, ...args) => {
   if (String(path).endsWith('/auth.json')) {
@@ -69,17 +70,17 @@ module.syncBuiltinESMExports();
 `);
 });
 
-function invoke(write = true, nativeHome = false) {
-  return spawnSync(process.execPath, ["--import", join(fixture, "boundary.mjs"), join(root, "scripts/sync-copilot-models.mjs"), ...(write ? ["--write"] : [])], {
+function invoke(write = true, nativeHome = false, failBackup = false, script = join(root, "scripts/sync-copilot-models.mjs")) {
+  return spawnSync(process.execPath, ["--import", join(fixture, "boundary.mjs"), script, ...(write ? ["--write"] : [])], {
     cwd: fixture, encoding: "utf8",
     env: { ...process.env, HOME: fixture, USERPROFILE: fixture, FIXTURE_HOME: fixture, PI_CODING_AGENT_DIR: undefined,
-      FIXTURE_NATIVE_HOME: nativeHome ? "1" : "0", SPIDER_PIAI_MODELS: join(fixture, "builtins.mjs") },
+      FIXTURE_NATIVE_HOME: nativeHome ? "1" : "0", FIXTURE_FAIL_BACKUP: failBackup ? "1" : "0", SPIDER_PIAI_MODELS: join(fixture, "builtins.mjs") },
   });
 }
-function run(models: object[], config: object, write = true, nativeHome = false) {
+function run(models: object[], config: object, write = true, nativeHome = false, failBackup = false) {
   writeFileSync(join(fixture, "catalog.json"), JSON.stringify({ data: models }));
   writeFileSync(modelsPath, JSON.stringify(config));
-  return invoke(write, nativeHome);
+  return invoke(write, nativeHome, failBackup);
 }
 const model = (id: string, vendor: string) => ({
   id, vendor, model_picker_enabled: true,
@@ -128,7 +129,8 @@ describe("Copilot model sync catalog", () => {
   it("backs up and migrates only deliberate differences, preserving existing overrides", () => {
     writeFileSync(join(fixture, "builtins.mjs"), `export const GITHUB_COPILOT_MODELS = {
       "model-a": { id: "model-a", promptCache: { short: 60 }, thinkingLevelMap: { xhigh: "high" }, compat: { forceAdaptiveThinking: false } },
-      "model-b": { id: "model-b", promptCache: { long: 10, short: 5 }, compat: { forceAdaptiveThinking: true } }
+      "model-b": { id: "model-b", promptCache: { long: 10, short: 5 }, compat: { forceAdaptiveThinking: true } },
+      "model-e": { id: "model-e", compat: { forceAdaptiveThinking: false } }
     };\n`);
     const before = { providers: {
       "github-copilot": {
@@ -136,6 +138,7 @@ describe("Copilot model sync catalog", () => {
         models: [
           { id: "model-a", name: "old", api: "example", baseUrl: "example", headers: { a: "b" }, input: ["text"], contextWindow: 123, maxTokens: 45, reasoning: true, cost: { input: 5 }, compactAtPercent: 30, promptCache: { short: 300 }, thinkingLevelMap: { minimal: "low", xhigh: "max" }, compat: { forceAdaptiveThinking: true } },
           { id: "model-b", promptCache: { short: 5, long: 10 }, compat: { forceAdaptiveThinking: true } },
+          { id: "model-e", compat: { forceAdaptiveThinking: true } },
           { id: "model-c", contextWindow: 100 },
         ],
         modelOverrides: { "model-a": { compactAtPercent: 70, name: "custom", compat: { custom: true } }, "model-d": { name: "keep" } },
@@ -151,6 +154,7 @@ describe("Copilot model sync catalog", () => {
     expect(after.providers["github-copilot"].modelOverrides).toEqual({
       "model-a": { compactAtPercent: 70, name: "custom", compat: { custom: true }, promptCache: { short: 300 }, thinkingLevelMap: { minimal: "low", xhigh: "max" } },
       "model-b": {},
+      "model-e": { compat: { forceAdaptiveThinking: true } },
       "model-d": { name: "keep" },
     });
     const backups = readdirSync(join(fixture, ".pi/agent")).filter(name => /^models\.json\.bak-\d+$/.test(name));
@@ -165,6 +169,50 @@ describe("Copilot model sync catalog", () => {
     expect(readFileSync(modelsPath, "utf8")).toBe(once);
     expect(statSync(modelsPath).mtimeMs).toBe(mtime);
     expect(readdirSync(join(fixture, ".pi/agent")).filter(name => name.startsWith("models.json.bak-"))).toEqual(backups);
+  });
+
+  it("adds new models in the same write as a migration", () => {
+    writeFileSync(join(fixture, "builtins.mjs"), 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a" }];\n');
+    const before = { providers: { "github-copilot": { models: [{ id: "model-a", compactAtPercent: 30 }] } } };
+    const result = run([model("model-b", "Example")], before);
+    expect(result.status, result.stderr).toBe(0);
+    expect(saved().providers["github-copilot"].models.map((entry: { id: string }) => entry.id)).toEqual(["model-b"]);
+    expect(saved().providers["github-copilot"].modelOverrides).toEqual({ "model-a": { compactAtPercent: 30 } });
+    const backup = readdirSync(join(fixture, ".pi/agent")).find(name => name.startsWith("models.json.bak-"));
+    expect(backup).toBeDefined();
+    expect(readFileSync(join(fixture, ".pi/agent", backup!), "utf8")).toBe(JSON.stringify(before));
+  });
+
+  // A failed backup must abort before either a migration or an addition is written.
+  it("does not write any changes if the backup fails", () => {
+    writeFileSync(join(fixture, "builtins.mjs"), 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a" }];\n');
+    const before = { providers: { "github-copilot": { models: [{ id: "model-a", compactAtPercent: 30 }] } } };
+    const result = run([model("model-b", "Example")], before, true, false, true);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("fixture backup failed");
+    expect(readFileSync(modelsPath, "utf8")).toBe(JSON.stringify(before));
+    expect(readdirSync(join(fixture, ".pi/agent"))).toEqual(["models.json"]);
+  });
+
+  // Even an ID in the stale snapshot is not proof that the real catalog has it.
+  it("does not migrate a snapshot-listed entry when the real catalog is unavailable", () => {
+    writeFileSync(join(fixture, "builtins.mjs"), 'export const GITHUB_COPILOT_MODELS = {};\n');
+    const source = readFileSync(join(root, "scripts/sync-copilot-models.mjs"), "utf8");
+    const synthetic = source.replace(/const BUILTIN_SNAPSHOT = new Set\(\[[\s\S]*?\]\);/, 'const BUILTIN_SNAPSHOT = new Set(["model-a"]);');
+    expect(synthetic).not.toBe(source);
+    const scripts = join(fixture, "scripts");
+    mkdirSync(scripts);
+    writeFileSync(join(scripts, "sync-copilot-models.mjs"), synthetic);
+    writeFileSync(join(scripts, "pi-agent-dir.mjs"), readFileSync(join(root, "scripts/pi-agent-dir.mjs"), "utf8"));
+    writeFileSync(join(fixture, "catalog.json"), JSON.stringify({ data: [] }));
+    const before = { providers: { "github-copilot": { models: [{ id: "model-a", compactAtPercent: 30 }] } } };
+    writeFileSync(modelsPath, JSON.stringify(before));
+    const result = invoke(true, false, false, join(scripts, "sync-copilot-models.mjs"));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toMatch(/snapshot.*migration skipped/i);
+    expect(result.stdout).toMatch(/0 to migrate/);
+    expect(readFileSync(modelsPath, "utf8")).toBe(JSON.stringify(before));
+    expect(readdirSync(join(fixture, ".pi/agent"))).toEqual(["models.json"]);
   });
 
   // A dated snapshot cannot identify safe migrations, but additions still work.

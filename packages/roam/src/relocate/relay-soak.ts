@@ -39,7 +39,7 @@ interface SoakRun { role: "dial" | "submit"; startMs: number; endMs: number; rss
 interface SoakSubmission { id: string; atMs: number; deadlineMs: number; kind: "cadence" | "burst"; scheduledMs?: number; burstId?: string }
 interface SoakEvent { id: string; atMs: number }
 interface SoakOutcomeEvent extends SoakEvent { kind: SoakOutcome }
-interface SoakStateEvent { atMs: number; state: SoakState }
+interface SoakStateEvent { atMs: number; sinceMs: number; state: SoakState }
 interface SoakCall { pollId: string; holdMs: 0 | 20000; startMs: number; endMs: number | null; process: BirthIdentity }
 interface SoakRss { atMs: number; bytes: number; process: BirthIdentity }
 interface Census { atMs: number; complete: boolean; identities: readonly BirthIdentity[] }
@@ -50,7 +50,9 @@ export interface RelaySoakLinkEvidence {
   runs: readonly SoakRun[]; clock: SoakClock;
   submissions: readonly SoakSubmission[]; handoffs: readonly SoakEvent[];
   outcomes: readonly SoakOutcomeEvent[]; receipts: readonly SoakEvent[];
-  states: readonly SoakStateEvent[]; calls: readonly SoakCall[]; rss: readonly SoakRss[];
+  /** Timestamps are on the peer for states and the relay for relayStates. */
+  states: readonly SoakStateEvent[]; relayStates: readonly SoakStateEvent[];
+  calls: readonly SoakCall[]; rss: readonly SoakRss[];
 }
 export interface RelaySoakFault {
   kind: SoakFaultKind; clock: "relay" | "peer"; linkIds: readonly string[]; startMs: number; clearMs: number;
@@ -74,6 +76,8 @@ const entries = (value: unknown, check: (entry: unknown) => boolean): boolean =>
 const identity = (value: unknown): boolean => object(value) && time(value.pid) && value.pid > 0 && text(value.birthId) && text(value.bootId);
 const observed = (value: unknown): boolean => identity(value) && object(value) && text(value.machineId) && time(value.observedMs);
 const event = (value: unknown): boolean => object(value) && text(value.id) && time(value.atMs);
+const stateSample = (value: unknown): boolean => object(value) && time(value.atMs) && time(value.sinceMs) &&
+  value.sinceMs <= value.atMs && states.includes(value.state as SoakState);
 const census = (value: unknown): boolean => object(value) && time(value.atMs) && typeof value.complete === "boolean" && entries(value.identities, identity);
 
 /** Validate external evidence once before the checker uses its typed records. */
@@ -90,7 +94,7 @@ function isEvidence(value: unknown): value is RelaySoakEvidence {
         (submit.kind === "cadence" && time(submit.scheduledMs) || submit.kind === "burst" && text(submit.burstId))) &&
       entries(link.handoffs, event) && entries(link.receipts, event) &&
       entries(link.outcomes, result => event(result) && object(result) && outcomes.includes(result.kind as SoakOutcome)) &&
-      entries(link.states, state => object(state) && time(state.atMs) && states.includes(state.state as SoakState)) &&
+      entries(link.states, stateSample) && entries(link.relayStates, stateSample) &&
       entries(link.calls, call => object(call) && text(call.pollId) && (call.holdMs === 0 || call.holdMs === 20_000) && time(call.startMs) &&
         (call.endMs === null || time(call.endMs)) && identity(call.process)) &&
       entries(link.rss, sample => object(sample) && time(sample.atMs) && time(sample.bytes) && sample.bytes > 0 && identity(sample.process));
@@ -129,6 +133,10 @@ function lastStateAt(sorted: readonly SoakStateEvent[], atMs: number): SoakState
     if (sorted[middle].atMs <= atMs) low = middle + 1;
     else high = middle;
   }
+  // A later peer sample can date an already-observed transition before the
+  // submission. Unavailable only tells us when the observation itself failed.
+  const next = sorted[low];
+  if (next && next.state !== "unavailable" && next.sinceMs <= atMs) return next.state;
   return low ? sorted[low - 1].state : undefined;
 }
 
@@ -143,9 +151,14 @@ function keyed<T extends { id: string }>(events: readonly T[]): Map<string, T[]>
 }
 
 function birthKey(item: BirthIdentity): string { return JSON.stringify([item.pid, item.birthId, item.bootId]); }
+type SoakSide = RelaySoakFault["clock"];
+function timeInClock(atMs: number, from: SoakSide, to: SoakSide, clock: SoakClock): { earliest: number; latest: number } {
+  if (from === to) return { earliest: atMs, latest: atMs };
+  return from === "relay" ? { earliest: atMs - clock.maxOffsetMs, latest: atMs - clock.minOffsetMs }
+    : { earliest: atMs + clock.minOffsetMs, latest: atMs + clock.maxOffsetMs };
+}
 function faultTime(fault: RelaySoakFault, clock: SoakClock, atMs: number): { earliest: number; latest: number } {
-  return fault.clock === "peer" ? { earliest: atMs, latest: atMs }
-    : { earliest: atMs - clock.maxOffsetMs, latest: atMs - clock.minOffsetMs };
+  return timeInClock(atMs, fault.clock, "peer", clock);
 }
 
 /** Check the operator's complete evidence. No live machines are contacted. */
@@ -199,13 +212,24 @@ export function checkRelaySoak(evidence: RelaySoakEvidence): { ok: boolean; viol
           call.endMs === null && !linkFaults.some(fault => fault.kind === "relay-kill" && fault.clock === "relay" && fault.process &&
             birthKey(fault.process) === birthKey(call.process) && call.startMs <= fault.startMs)) fail("timeline");
     }
+    const transitions = [
+      ...samples.map(sample => ({ ...sample, side: "peer" as const })),
+      ...link.relayStates.map(sample => ({ ...sample, side: "relay" as const })),
+    ];
     for (const fault of linkFaults) {
       const start = faultTime(fault, clock, fault.startMs), clear = faultTime(fault, clock, fault.clearMs);
-      if (start.earliest < startMs || clear.latest > endMs || lastStateAt(samples, start.earliest) !== "up") fail("faults");
-      const dropped = samples.find(sample => sample.state !== "up" && sample.atMs >= start.latest && sample.atMs <= start.earliest + 30_000);
-      if (!dropped) fail("stall-detection");
-      if (!dropped || !samples.some(sample => sample.state === "up" && sample.atMs > dropped.atMs &&
-          sample.atMs >= clear.latest && sample.atMs <= clear.earliest + 60_000)) fail("recovery");
+      if (start.earliest < startMs || clear.latest > endMs || lastStateAt(samples, start.earliest - 1) !== "up") fail("faults");
+      // Compare on the fault's clock so same-machine events don't pay for
+      // cross-machine clock uncertainty.
+      const timed = transitions.map(sample => ({ state: sample.state, ...timeInClock(sample.sinceMs, sample.side, fault.clock, clock) }));
+      let droppedBy = Infinity;
+      for (const transition of timed) {
+        if (transition.state !== "up" && transition.earliest >= fault.startMs && transition.latest <= fault.startMs + 30_000)
+          droppedBy = Math.min(droppedBy, transition.latest);
+      }
+      if (droppedBy === Infinity) fail("stall-detection");
+      if (!timed.some(transition => transition.state === "up" && transition.earliest > droppedBy &&
+          transition.earliest >= fault.clearMs && transition.latest <= fault.clearMs + 60_000)) fail("recovery");
       if (fault.kind === "endpoint-kill") {
         const endpoint = fault.endpoint;
         if (fault.linkIds.length !== 1 || !endpoint || endpoint.machineId !== link.peerId || endpoint.observedMs > fault.startMs ||
@@ -340,7 +364,7 @@ export async function runRelaySoakDial(options: RelaySoakDialOptions): Promise<v
   };
   try {
     await runRelayPollLoop({ relay, peer, transport: observedTransport, clock, signal, reach: () => [relay],
-      observe: view => emit({ type: "relay-state", linkId: link.id, atMs: clock.now(), state: view.state }),
+      observe: view => emit({ type: "relay-state", linkId: link.id, atMs: clock.now(), sinceMs: view.sinceMs, state: view.state }),
       async forward(submit) {
         const id = submit.message.id;
         emit({ type: "handoff", linkId: link.id, id, atMs: clock.now() });
@@ -423,18 +447,25 @@ export async function runRelaySoakSubmit(options: RelaySoakSubmitOptions): Promi
     }
   };
   const sampleStates = async () => {
-    let next = clock.now();
+    let next = clock.now(), unavailableSinceMs: number | undefined;
     while (!signal.aborted) {
       if (!await waitUntil(clock, Math.min(next, endMs), signal)) break;
-      let state: SoakState = "unavailable";
+      let view: RelayLinkView | undefined;
       try {
         const views = await options.list(signal);
         const matches = views.filter(view => view.relay.machineId === link.relayId);
-        if (matches.length === 1) state = matches[0].state;
+        if (matches.length === 1) view = matches[0];
       } catch { /* Missing broker evidence stays unavailable. */ }
-      emit({ type: "state", linkId: link.id, atMs: clock.now(), state });
-      if (clock.now() >= endMs) break;
-      next = Math.max(next + CADENCE_MS, clock.now());
+      const atMs = clock.now();
+      if (view) {
+        unavailableSinceMs = undefined;
+        emit({ type: "state", linkId: link.id, atMs, sinceMs: view.sinceMs, state: view.state });
+      } else {
+        unavailableSinceMs ??= atMs;
+        emit({ type: "state", linkId: link.id, atMs, sinceMs: unavailableSinceMs, state: "unavailable" });
+      }
+      if (atMs >= endMs) break;
+      next = Math.max(next + CADENCE_MS, atMs);
     }
   };
   await Promise.all([schedule(), sampleStates()]);
@@ -467,7 +498,7 @@ function decodeRecord(line: string, linkId: string): RelaySoakRecord {
     run: ["role", "startMs", "endMs", "rssAllowanceBytes", "machineId", "process"],
     submission: ["id", "atMs", "deadlineMs", "kind", value.kind === "cadence" ? "scheduledMs" : "burstId"],
     handoff: ["id", "atMs"], receipt: ["id", "atMs"], outcome: ["id", "atMs", "kind"],
-    state: ["atMs", "state"], "relay-state": ["atMs", "state"], rss: ["atMs", "bytes", "process"],
+    state: ["atMs", "sinceMs", "state"], "relay-state": ["atMs", "sinceMs", "state"], rss: ["atMs", "bytes", "process"],
     "poll-start": ["atMs", "pollId", "wireLinkId", "holdMs", "process"],
     "poll-end": ["atMs", "pollId", "wireLinkId", "holdMs", "process"],
     "submission-error": ["atMs", "id"],
@@ -483,7 +514,8 @@ export function assembleRelaySoak(manifest: RelaySoakManifest, readRecords: (pat
   const links: RelaySoakLinkEvidence[] = manifest.links.map(input => {
     if (!object(input) || !text(input.id) || !entries(input.recordFiles, text)) throw invalidRecord();
     const runs: SoakRun[] = [], submissions: SoakSubmission[] = [], handoffs: SoakEvent[] = [], receipts: SoakEvent[] = [];
-    const outcomes: SoakOutcomeEvent[] = [], stateEvents: SoakStateEvent[] = [], rss: SoakRss[] = [], calls: SoakCall[] = [];
+    const outcomes: SoakOutcomeEvent[] = [], stateEvents: SoakStateEvent[] = [], relayStates: SoakStateEvent[] = [];
+    const rss: SoakRss[] = [], calls: SoakCall[] = [];
     const open = new Map<string, Extract<RelaySoakRecord, { type: "poll-start" | "poll-end" }>>();
     const seen = new Set<string>();
     for (const path of input.recordFiles as string[]) {
@@ -500,7 +532,7 @@ export function assembleRelaySoak(manifest: RelaySoakManifest, readRecords: (pat
           case "outcome": outcomes.push(record); break;
           case "state": stateEvents.push(record); break;
           case "rss": rss.push(record); break;
-          case "relay-state": if (!time(record.atMs) || !states.includes(record.state)) throw invalidRecord(); break;
+          case "relay-state": relayStates.push(record); break;
           case "submission-error": throw invalidRecord();
           case "poll-start":
             if (!text(record.pollId) || !text(record.wireLinkId) || !time(record.atMs) || !identity(record.process) ||
@@ -519,7 +551,7 @@ export function assembleRelaySoak(manifest: RelaySoakManifest, readRecords: (pat
     }
     for (const record of open.values()) calls.push({ pollId: record.pollId, holdMs: record.holdMs, startMs: record.atMs, endMs: null, process: record.process });
     return { id: input.id, topology: input.topology as SoakTopology, relayId: input.relayId as string, peerId: input.peerId as string,
-      clock: input.clock as SoakClock, runs, submissions, handoffs, outcomes, receipts, states: stateEvents, rss, calls };
+      clock: input.clock as SoakClock, runs, submissions, handoffs, outcomes, receipts, states: stateEvents, relayStates, rss, calls };
   });
   const evidence: RelaySoakEvidence = { startMs: manifest.startMs, endMs: manifest.endMs, rssAllowanceBytes: manifest.rssAllowanceBytes,
     links, faults: manifest.faults, processes: manifest.processes };

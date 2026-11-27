@@ -243,12 +243,24 @@ start exactly one extra burst and retain its separate records.
 node "$ENTRY" submit "$RUN" "$LINK" --burst >> "$RECORDS/burst.ndjson" 2>> "$RECORDS/burst.err"
 ```
 
-After the affected link is up, inject and record each fault: `relay-kill`,
-`herdr-restart-relay`, `herdr-restart-peer`, `route-cut`, `laptop-sleep`, and
-`endpoint-kill`. Keep the route cut active for at least 60 seconds. Record the
+After the affected link is up, inject and record each fault. Record the
 fault's `kind`, affected `linkIds`, `clock` (`relay` or `peer`), `startMs`,
 and `clearMs` on that clock. Each fault must affect links that share that
 clock's machine.
+
+- Keep `route-cut` active for at least 60 seconds.
+- For `relay-kill`, `herdr-restart-relay`, `herdr-restart-peer`, and
+  `laptop-sleep`, wait at least 40 seconds before clearing the fault. Confirm
+  that either side recorded a state other than `up` on each affected link.
+  A held call plus its grace period can take 30 seconds to expire, and the
+  next peer sample can arrive later.
+- For `endpoint-kill`, kill the matched held endpoint once. Don't delay the
+  next endpoint. The dial can log a transition even if the outage ends
+  before the next peer sample.
+
+Keep both `state` and `relay-state` records. The checker uses their
+`sinceMs` transition times, not when the tool observed them. If a transition
+and the fault share a clock, their difference needs no offset adjustment.
 
 For a relay kill or a Herdr restart, add `process` with the affected
 `machineId`, `pid`, `birthId`, `bootId`, and `observedMs`. Observe that process

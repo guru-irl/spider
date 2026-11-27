@@ -11,10 +11,11 @@ import { createHomeStore } from "../relocate/home";
 import { createRelocateAdapters } from "../relocate/adapters";
 import { inspectLocalSource } from "../relocate/local";
 import { createV0Runtime } from "../relocate/runtime";
+import { relocate } from "../relocate/relocate";
 import { readAwayHomeFence } from "../relocate/away-home";
 import { inspectIdLock } from "@spider/herdr/sessions/id-lock";
 import * as hcApi from "@spider/herdr/client/hc";
-import type { MovingHome, RelocateAdapterOptions, RelocateId, RelocatePlan, RunningHome, SessionId } from "../relocate/types";
+import type { MovingHome, RelocateAdapterOptions, RelocateId, RelocatePlan, RelocatePorts, RunningHome, SessionId } from "../relocate/types";
 
 const mac = "11111111-1111-4111-8111-111111111111", box = "22222222-2222-4222-8222-222222222222";
 const sid = "ordinary-session" as SessionId;
@@ -138,6 +139,28 @@ describe("ordinary Mac source", () => {
       await exited;
       await runtime.close();
     }
+  });
+  it("recovers an ordinary Mac source by relocating to the Mac after local publication fails", async () => {
+    const f = fixture(), { plan: p } = await plan(f), original = f.adapters.ports;
+    const ports: RelocatePorts = { ...original, newMoveId: () => p.moveId,
+      check: async () => ({ ok:true,value:p }),
+      publishHome: async (home,machine) => home.state === "moving"
+        ? { ok:false,refusal:{code:"sync-failed",message:"Injected local read failure.",nextStep:"Restore database access."} }
+        : original.publishHome(home,machine),
+      // Do not launch a real pi. The home, journal, placement, and membership are real.
+      start: async (home,placement) => {
+        expect(await f.homes.read(sid)).toEqual(home);
+        expect(await original.locate(mac, sid)).toEqual({ok:true,value:placement});
+        return {ok:true as const,value:{terminal:"fixture:pi"}};
+      },
+      confirm: async () => ({ok:true as const,value:{terminal:"fixture:pi"}}),
+    };
+    expect(await relocate({sessionId:sid,destinationMachine:box},ports)).toMatchObject({ok:false,step:"mark-moving",
+      home:{machineId:mac,state:"running",epoch:3,moveId:p.moveId}});
+    expect(await original.locate(mac,sid)).toMatchObject({ok:false,refusal:{code:"home-conflict"}});
+    const resumed = await relocate({sessionId:sid,destinationMachine:mac},ports);
+    expect(resumed).toMatchObject({ok:true,value:{disposition:"undone",home:{machineId:mac,state:"running",epoch:3},terminal:"fixture:pi"}});
+    expect(await original.locate(mac,sid)).toEqual({ok:true,value:p.sourcePlacement});
   });
   it("captures the ordinary session after moving and stop, and converges on retry", async () => {
     const f = fixture(), { plan: p, moving } = await plan(f);

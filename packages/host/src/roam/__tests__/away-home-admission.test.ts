@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { openDb, migrate, paths, setGlobalDbPathForTests, type Db } from "@spider/db-core";
@@ -189,6 +189,58 @@ it.each(["away fence", "foreign legacy home", "journal-only freeze"] as const)(
       await session.gate.close();
       expect(await inspectIdLock(session.lockRoot, sid)).toBeNull();
     } finally { await session.gate.close(); worktree?.close(); journal?.close(); }
+  },
+);
+
+it.each([
+  ["corrupt bytes", false], ["corrupt bytes", true],
+  ["missing state column", false], ["missing state column", true],
+  ["BLOB session column", false], ["BLOB session column", true],
+] as const)("an unreadable %s journal blocks ordinary work (global DB: %s)", async (damage, hasGlobalDb) => {
+  const f = fixture();
+  if (!hasGlobalDb) f.removeDb();
+  const file = join(f.root, "roam", "journal.db");
+  if (damage === "corrupt bytes") {
+    writeFileSync(file, "corrupt fixture journal", { mode: 0o600 });
+  } else {
+    const journal = openDb(file);
+    try {
+      if (damage === "missing state column") {
+        journal.exec("CREATE TABLE freeze_journal(session_id TEXT, move_id TEXT, epoch INTEGER)");
+        journal.prepare("INSERT INTO freeze_journal VALUES(?,?,?)").run(sid, "legacy-move", 1);
+      } else {
+        journal.exec("CREATE TABLE freeze_journal(session_id BLOB, move_id TEXT, epoch INTEGER, state TEXT)");
+        journal.prepare("INSERT INTO freeze_journal VALUES(?,?,?,?)").run(Buffer.from(sid), "legacy-move", 1, "frozen");
+      }
+    } finally { journal.close(); }
+  }
+  const before = readFileSync(file), session = productionSession(f);
+  try {
+    expect(session.ports.knownParticipant(sid)).toBe(false);
+    await session.emit("session_start");
+    await expectOrdinaryWorkRefused(session);
+    expect(session.gate.inspect().blockers[0]?.detail).toContain("journal.db");
+    expect(session.gate.inspect().blockers[0]?.detail).toContain("/spider roam doctor");
+    expect(readFileSync(file)).toEqual(before);
+    if (!hasGlobalDb) expect(existsSync(f.file)).toBe(false);
+  } finally { await session.gate.close(); }
+});
+
+it.skipIf(process.platform === "win32").each([false, true])(
+  "a dangling journal blocks ordinary work (global DB: %s)", async hasGlobalDb => {
+    const f = fixture();
+    if (!hasGlobalDb) f.removeDb();
+    const file = join(f.root, "roam", "journal.db");
+    symlinkSync("absent-journal.db", file);
+    const session = productionSession(f);
+    try {
+      await session.emit("session_start");
+      await expectOrdinaryWorkRefused(session);
+      expect(session.gate.inspect().blockers[0]?.detail).toContain("journal.db");
+      expect(session.gate.inspect().blockers[0]?.detail).toContain("/spider roam doctor");
+      expect(readlinkSync(file)).toBe("absent-journal.db");
+      if (!hasGlobalDb) expect(existsSync(f.file)).toBe(false);
+    } finally { await session.gate.close(); }
   },
 );
 

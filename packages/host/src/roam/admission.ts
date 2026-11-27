@@ -65,6 +65,9 @@ export interface AdmissionPorts {
 const VERIFY = "Cannot verify this session's home. Retry or run /spider roam doctor for details.";
 const ID_LOCK = "Cannot lock this session on this machine. Close any other copy of this session, then reopen it. If none is open, run /spider roam doctor.";
 const FROZEN = "This session is frozen for a move. Run /spider roam doctor for details.";
+class JournalUnavailableError extends Error {
+  constructor() { super("Cannot read or validate roam/journal.db. Run /spider roam doctor for details."); }
+}
 const homeMessage = (machine: string) => `This session is at ${machine}. Run /spider roam doctor for details.`;
 const admissionFailure = (error: unknown) => error instanceof Error && ["participant-config-unavailable", "participant-not-box", "participant-capture-uninitialized"].includes(error.message)
   ? `${error.message}. Run /spider roam doctor for details.` : VERIFY;
@@ -251,7 +254,8 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
           state = await ports.load(id);
         } catch (error) {
           if (ticket !== generation) return;
-          if (handoffRequired || observed.has(id) || ports.knownParticipant(id)) publishResult("blocked", null, initialAdmissionFailure("load", error, id));
+          if (error instanceof JournalUnavailableError) publishResult("blocked", null, error.message);
+          else if (handoffRequired || observed.has(id) || ports.knownParticipant(id)) publishResult("blocked", null, initialAdmissionFailure("load", error, id));
           else { if (!late) ports.warnOnce(id, VERIFY); publishResult("ordinary", null, late ? initialAdmissionFailure("load", error, id) : undefined); }
           return;
         }
@@ -733,33 +737,44 @@ export function createAdmissionPorts(options: ParticipantLockOptions = {}): Admi
         let freezeRecovery: { moveId: string; epoch: number } | undefined;
         // A freeze may be the only surviving evidence after the global store is lost.
         // Inspect it independently so another failed read cannot hide a known participant.
+        let journalFailed = false;
         attempt(() => {
-          const journal = openDbReadOnlyAt(join(paths.globalRoot, "roam", "journal.db"));
-          if (!journal) return;
           try {
-            const entry = journal.withRetry(() => journal.prepare("SELECT type FROM sqlite_master WHERE name = ? COLLATE NOCASE").get("freeze_journal")) as { type: string } | undefined;
-            if (entry) {
-              if (entry.type !== "table") throw new Error("Invalid freeze journal");
-              const columns = journal.withRetry(() => journal.prepare("PRAGMA table_info(freeze_journal)").all()) as { name: string; type: string }[];
-              if (!["session_id", "state"].every(name => columns.some(column => column.name.toLowerCase() === name && column.type.trim().toUpperCase() === "TEXT"))) {
-                throw new Error("Invalid freeze journal");
-              }
-              unfinishedFreeze = Boolean(journal.withRetry(() => journal.prepare(
-                "SELECT 1 FROM freeze_journal WHERE session_id COLLATE BINARY = ? AND (state IS NULL OR state COLLATE BINARY NOT IN ('complete', 'aborted')) LIMIT 1",
-              ).get(id)));
-              if (unfinishedFreeze) cache().known.add(id);
-              if (unfinishedFreeze && ["move_id", "epoch"].every(name => columns.some(column => column.name.toLowerCase() === name))) {
-                const rows = journal.withRetry(() => journal.prepare(
-                  "SELECT move_id,epoch,state FROM freeze_journal WHERE session_id COLLATE BINARY = ? AND (state IS NULL OR state COLLATE BINARY NOT IN ('complete', 'aborted')) LIMIT 2",
-                ).all(id)) as { move_id: unknown; epoch: unknown; state: unknown }[];
-                const row = rows[0];
-                if (rows.length === 1 && typeof row.move_id === "string" && row.move_id.length > 0 &&
-                    Number.isSafeInteger(row.epoch) && (row.epoch as number) > 0 && ["freezing", "frozen", "aborting"].includes(String(row.state)))
-                  freezeRecovery = { moveId: row.move_id, epoch: row.epoch as number };
-              }
+            const file = join(paths.globalRoot, "roam", "journal.db");
+            try { lstatSync(file); }
+            catch (error) {
+              if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+              throw error;
             }
-          } finally { journal.close(); }
+            const journal = openDbReadOnlyAt(file);
+            if (!journal) throw new Error("Journal disappeared");
+            try {
+              const entry = journal.withRetry(() => journal.prepare("SELECT type FROM sqlite_master WHERE name = ? COLLATE NOCASE").get("freeze_journal")) as { type: string } | undefined;
+              if (entry) {
+                if (entry.type !== "table") throw new Error("Invalid freeze journal");
+                const columns = journal.withRetry(() => journal.prepare("PRAGMA table_info(freeze_journal)").all()) as { name: string; type: string }[];
+                if (!["session_id", "state"].every(name => columns.some(column => column.name.toLowerCase() === name && column.type.trim().toUpperCase() === "TEXT"))) {
+                  throw new Error("Invalid freeze journal");
+                }
+                unfinishedFreeze = Boolean(journal.withRetry(() => journal.prepare(
+                  "SELECT 1 FROM freeze_journal WHERE session_id COLLATE BINARY = ? AND (state IS NULL OR state COLLATE BINARY NOT IN ('complete', 'aborted')) LIMIT 1",
+                ).get(id)));
+                if (unfinishedFreeze) cache().known.add(id);
+                if (unfinishedFreeze && ["move_id", "epoch"].every(name => columns.some(column => column.name.toLowerCase() === name))) {
+                  const rows = journal.withRetry(() => journal.prepare(
+                    "SELECT move_id,epoch,state FROM freeze_journal WHERE session_id COLLATE BINARY = ? AND (state IS NULL OR state COLLATE BINARY NOT IN ('complete', 'aborted')) LIMIT 2",
+                  ).all(id)) as { move_id: unknown; epoch: unknown; state: unknown }[];
+                  const row = rows[0];
+                  if (rows.length === 1 && typeof row.move_id === "string" && row.move_id.length > 0 &&
+                      Number.isSafeInteger(row.epoch) && (row.epoch as number) > 0 && ["freezing", "frozen", "aborting"].includes(String(row.state)))
+                    freezeRecovery = { moveId: row.move_id, epoch: row.epoch as number };
+                }
+              }
+            } finally { journal.close(); }
+          } catch (error) { journalFailed = true; throw error; }
         });
+        // Report journal damage even if another independent read failed first.
+        if (journalFailed) throw new JournalUnavailableError();
         if (failed) throw failure ?? new Error("Session ownership read failed");
         const home: Home | null = homeRow?.machine_id ? { sessionId: id, machineId: homeRow.machine_id, epoch: homeRow.epoch, moveId: homeRow.move_id, updatedAt: homeRow.updated_at } : null;
         const participating = Boolean(homeRow || states.length || unfinishedFreeze);

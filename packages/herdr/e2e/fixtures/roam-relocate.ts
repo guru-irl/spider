@@ -3,6 +3,7 @@
 import { existsSync } from 'node:fs';
 import { copyFile, mkdir, readFile, readlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { expect } from 'vitest';
 import { migrate, openDb } from '@spider/db-core';
 import { mapRepository } from '@spider/db-core/roam/repo-map';
@@ -87,10 +88,12 @@ export async function relocateFixture(suite: Suite): Promise<RelocateFixture> {
   }
 
   const logs = [join(suite.root, 'v0-hub.log'), join(suite.root, 'v0-supervisor.log')];
+  const syncLog = suite.ownPath(join(suite.root, 'v0-sync.jsonl'));
   const services: OwnedProcess[] = [];
   const close = async () => {
     for (const service of services.splice(0).reverse()) await service.stop();
     for (const [i, file] of logs.entries()) if (existsSync(file)) await suite.keepEvidence(file, `v0-service-${i}.log`);
+    if (existsSync(syncLog)) await suite.keepEvidence(syncLog, 'v0-sync.jsonl');
     await suite.keepEvidence(cores.recordLog, 'v0-hc.jsonl');
     await suite.keepEvidence(cores.viaLog, 'v0-via.jsonl');
   };
@@ -103,7 +106,9 @@ export async function relocateFixture(suite: Suite): Promise<RelocateFixture> {
       return existsSync(join(box.root, 'roam', 'journal.db'));
     }, Boolean, deadline(20_000));
     const hubService = spawnOwned(suite.ledger, { label: 'v0-hub', command: process.execPath,
-      args: [suite.packed.roamCli, 'roam', 'hub-v0'], env: hub.env, cwd: suite.root, stdio: { log: logs[0] } });
+      args: ['--import', fileURLToPath(new URL('./roam-sync-register.mjs', import.meta.url)), suite.packed.roamCli, 'roam', 'hub-v0'],
+      env: { ...hub.env, SPIDER_HERDR_E2E_SYNC_ENTRY: join(suite.packed.root, 'dist/roam/cli-main.mjs'), SPIDER_HERDR_E2E_SYNC_LOG: syncLog },
+      cwd: suite.root, stdio: { log: logs[0] } });
     services.push(hubService);
     await waitFor('v0 hub control socket', async () => {
       if (hubService.child.exitCode !== null || hubService.child.signalCode !== null) throw new Error(await readFile(logs[0], 'utf8'));
@@ -209,6 +214,7 @@ export async function relocateFixture(suite: Suite): Promise<RelocateFixture> {
         await suite.evidence(`v0-processes-${call}.json`, { tree, beforeProcesses, afterProcesses });
       }
       expect(result.exitCode, result.stderr + result.stdout).toBe(0);
+      expect(await readFile(syncLog, 'utf8')).toContain('"event":"sync-result"');
       const reply = JSON.parse(result.stdout) as { ok?: boolean; value?: { terminal?: string; placement?: { file?: string; cwd?: string; sessionId?: string } } };
       expect(reply.ok, result.stdout).toBe(true);
       const value = reply.value, placement = value?.placement;

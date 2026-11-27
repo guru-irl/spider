@@ -333,7 +333,12 @@ node "$ENTRY" check "$RECORDS/manifest.json"
 
 Exit 0 and `{"ok":true,"violations":[]}` mean the evidence met the soak
 criteria. Exit 1 reports violations or incomplete evidence. A failed soak blocks
-rollout; fix the carrier and run the live gate again.
+rollout. Fix the carrier and run the live gate again.
+
+If an outcome records `clientDeadlineMs` on the peer clock, the checker uses
+it as the deadline. The default driver logs the submission time and nominal
+20-second deadline instead. In that case, the checker allows up to 25 ms to
+observe completion after the deadline. The client timeout stays at 20 seconds.
 
 ## Legacy enable and broker readiness
 

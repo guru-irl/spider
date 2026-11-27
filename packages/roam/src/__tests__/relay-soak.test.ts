@@ -131,9 +131,20 @@ describe("the live relay soak reliability gate", () => {
       const evidence = copy(), link = evidence.links[0], first = link.outcomes[0];
       if (change === "missing") link.outcomes.shift();
       if (change === "duplicate") link.outcomes.push({ ...first });
-      if (change === "late") first.atMs = link.submissions[0].deadlineMs + 1;
+      if (change === "late") first.atMs = link.submissions[0].deadlineMs + 26;
       expect(checkRelaySoak(evidence).violations, change).toContain("outcome");
     }
+  });
+
+  it("allows up to 25 ms to observe a deadline outcome without a client deadline", () => {
+    const evidence = copy(), link = evidence.links[0], fault = faultOf(evidence, "relay-kill");
+    const submit = link.submissions.find(item => item.atMs === fault.startMs)!;
+    const result = link.outcomes.find(item => item.id === submit.id)!;
+    result.kind = "unknown";
+    result.atMs = submit.deadlineMs + 25;
+    expect(checkRelaySoak(evidence)).toEqual({ ok: true, violations: [] });
+    result.atMs++;
+    expect(checkRelaySoak(evidence).violations).toContain("outcome");
   });
 
   it("allows unknown only when that message was in flight at an affected fault", () => {
@@ -479,6 +490,19 @@ describe("offline evidence assembly", () => {
     const { manifest, files } = recordManifest(baseline);
     const evidence = assembleRelaySoak(manifest, name => files.get(name)!);
     expect(checkRelaySoak(evidence)).toEqual({ ok: true, violations: [] });
+  });
+
+  it("uses the recorded client deadline without adding the fallback tolerance", () => {
+    const evidence = copy(), link = evidence.links[0], result = link.outcomes[0];
+    result.clientDeadlineMs = link.submissions[0].deadlineMs + 5;
+    result.atMs = result.clientDeadlineMs;
+    const check = () => {
+      const { manifest, files } = recordManifest(evidence);
+      return checkRelaySoak(assembleRelaySoak(manifest, name => files.get(name)!));
+    };
+    expect(check()).toEqual({ ok: true, violations: [] });
+    result.atMs++;
+    expect(check().violations).toContain("outcome");
   });
 
   it("keeps relay transitions and accepts them when peer samples miss the entire outage", () => {

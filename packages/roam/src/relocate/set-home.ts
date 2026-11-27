@@ -13,7 +13,7 @@ export function setHomeReplicationRefusal(destination: string, replication: Repl
   };
 }
 
-export const forceWarning = "The old source must not run again. Unsynced conversation can be lost. " +
+export const forceWarning: string = "The old source must not run again. Unsynced conversation can be lost. " +
   "If the old source is a box that may return, close its Pi session and run " +
   "systemctl --user disable --now spider-roam-supervisor.service on that box before it reconnects.";
 

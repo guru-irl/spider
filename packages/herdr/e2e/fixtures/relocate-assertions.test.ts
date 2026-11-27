@@ -14,6 +14,8 @@ describe('relocated placement evidence', () => {
   });
 
   it('rejects reused source paths and paths outside the destination roots in either direction', () => {
+    expect(() => assertRelocatedCopy(source, { ...away, cwd: source.cwd }, '/fixture', '/fixture/box')).toThrow();
+    expect(() => assertRelocatedCopy(source, { ...away, file: source.file }, '/fixture/destination', '/fixture')).toThrow();
     for (const candidate of [
       { ...away, cwd: source.cwd }, { ...away, file: source.file },
       { ...away, cwd: '/fixture/destination-elsewhere/worktree' },

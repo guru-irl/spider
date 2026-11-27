@@ -199,9 +199,11 @@ export function checkRelaySoak(evidence: RelaySoakEvidence): { ok: boolean; viol
     }
     for (const fault of linkFaults) {
       const start = faultTime(fault, clock, fault.startMs), clear = faultTime(fault, clock, fault.clearMs);
-      if (start.earliest < startMs || clear.latest > endMs) fail("faults");
-      if (!samples.some(sample => sample.state !== "up" && sample.atMs >= start.latest && sample.atMs <= start.earliest + 30_000)) fail("stall-detection");
-      if (!samples.some(sample => sample.state === "up" && sample.atMs >= clear.latest && sample.atMs <= clear.earliest + 60_000)) fail("recovery");
+      if (start.earliest < startMs || clear.latest > endMs || lastStateAt(samples, start.earliest) !== "up") fail("faults");
+      const dropped = samples.find(sample => sample.state !== "up" && sample.atMs >= start.latest && sample.atMs <= start.earliest + 30_000);
+      if (!dropped) fail("stall-detection");
+      if (!dropped || !samples.some(sample => sample.state === "up" && sample.atMs > dropped.atMs &&
+          sample.atMs >= clear.latest && sample.atMs <= clear.earliest + 60_000)) fail("recovery");
       if (fault.kind === "endpoint-kill") {
         const endpoint = fault.endpoint;
         if (fault.linkIds.length !== 1 || !endpoint || endpoint.machineId !== link.peerId || endpoint.observedMs > fault.startMs ||

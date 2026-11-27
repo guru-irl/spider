@@ -281,6 +281,46 @@ it("reports a confirmed remote send when its transcript entry cannot be saved", 
   } finally { await f.cleanup(); await peer.disconnect(); }
 });
 
+it.each(["intercom_sent", "intercom_received", "both"] as const)("reports the arrived reply when %s transcript recording fails", async failure => {
+  const peer = new IntercomClient(), inbox: any[] = [], errors: unknown[] = [];
+  peer.on("message", (origin, incoming) => {
+    inbox.push(incoming);
+    if (incoming.expectsReply) void peer.send(origin.id, { text: "confirmed reply", replyTo: incoming.id })
+      .then(result => { if (!result.delivered) errors.push(result); }).catch(error => errors.push(error));
+  });
+  await peer.connect({ name: "ben", address: { sessionId: "remote-peer", scopeId: null }, v0HomeEpoch: 5,
+    cwd: process.cwd(), model: "fixture", pid: process.pid, startedAt: 1, lastActivity: 1 }, "remote-peer");
+  const recipient = (await observer.listSessions()).find(session => session.id === "remote-peer")!;
+  const from: RemoteSessionInfo = { remote: true, id: "sender-session", address: { sessionId: "sender-session", scopeId: null },
+    machineId: "origin-machine", machineAlias: "origin", homeEpoch: 7, activationEpoch: "origin-connection", endpointEpoch: "origin-connection",
+    name: "alice", cwd: "", model: "", startedAt: 0, lastActivity: 0 };
+  const target = { address: { sessionId: "remote-peer", scopeId: null }, name: "ben", homeEpoch: 5, endpointEpoch: recipient.endpointEpoch! };
+  const prepare: V0Prepare = async () => ({
+    kind: "remote", label: "b/ben",
+    async send(message) { return { kind: "socket_delivered", id: message.id }; },
+    async ask(message, timeoutMs, signal) {
+      const result = await requestV0Broker(getAgentDirPath(), { kind: "ask", from, target, message, timeoutMs }, signal);
+      if (result.kind === "matches") throw new Error("unexpected lookup result");
+      return result;
+    },
+  });
+  const f = await fixture({ homeEpoch: () => 7, prepare }, { failAppend: type => failure === "both"
+    ? type === "intercom_sent" || type === "intercom_received" : type === failure });
+  const abort = new AbortController();
+  let settled: any;
+  const pending = f.tool.execute("ask", { action: "ask", to: "ben", message: "broker question" }, abort.signal, undefined, f.ctx)
+    .then((result: any) => { settled = result; return result; });
+  try {
+    await vi.waitFor(() => expect(Boolean(settled) || errors.length > 0).toBe(true));
+    expect(inbox.map(item => item.content.text)).toEqual(["broker question"]);
+    expect(errors).toEqual([]);
+    expect(settled.content[0].text).toBe("**Reply from b/ben:**\nconfirmed reply\nThe transcript entry could not be saved.");
+    expect(settled.details).toMatchObject({ delivery: "replied", messageId: expect.any(String), replyId: expect.any(String) });
+    expect(f.entries.some(entry => entry.type === "intercom_sent")).toBe(failure === "intercom_received");
+    expect(f.entries.some(entry => entry.type === "intercom_received")).toBe(failure === "intercom_sent");
+  } finally { abort.abort(); await pending; await f.cleanup(); await peer.disconnect(); }
+});
+
 it("keeps opt-out sends on the local broker", async () => {
   const received: string[] = [];
   const onMessage = (_from: unknown, message: any) => received.push(message.content.text);

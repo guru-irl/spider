@@ -3003,9 +3003,12 @@ Usage:
                   return { content: [{ type: "text", text: V0_REFUSAL_TEXT[result.code] }], details: { error: true, code: result.code } };
                 }
                 if (result.kind === "replied") {
-                  pi.appendEntry("intercom_sent", { to: plan.label, message: { text: message }, messageId: question.id, timestamp: question.timestamp });
-                  pi.appendEntry("intercom_received", { from: plan.label, message: { text: result.text }, messageId: result.replyId, timestamp: Date.now() });
-                  return { content: [{ type: "text", text: `**Reply from ${plan.label}:**\n${result.text}` }],
+                  let transcriptWarning = "";
+                  try { pi.appendEntry("intercom_sent", { to: plan.label, message: { text: message }, messageId: question.id, timestamp: question.timestamp }); }
+                  catch { transcriptWarning = V0_TRANSCRIPT_SAVE_FAILURE; }
+                  try { pi.appendEntry("intercom_received", { from: plan.label, message: { text: result.text }, messageId: result.replyId, timestamp: Date.now() }); }
+                  catch { transcriptWarning = V0_TRANSCRIPT_SAVE_FAILURE; }
+                  return { content: [{ type: "text", text: `**Reply from ${plan.label}:**\n${result.text}${transcriptWarning}` }],
                     details: { delivery: "replied", messageId: question.id, replyId: result.replyId } };
                 }
                 if (result.kind === "no_reply") {

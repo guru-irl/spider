@@ -265,7 +265,7 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
     if (["core-pin-changed", "core-pin-conflict", "core-pin-in-use"].includes(result.reason)) {
       const retry = result.repairCommand ?? `spider roam provision ${target} --replace-core-pin`;
       io.err("Finish or undo moves and move homes off the box first. Run spider roam disable on the hub and locally on the box.\n");
-      io.err("If an owned legacy supervisor is still active, follow the approved old-release stop procedure in docs/guide/roaming-upgrade.md.\n");
+      io.err("If an owned legacy supervisor is still active, follow the approved old-release stop procedure in docs/guide/roaming-upgrade.md#stop-an-owned-legacy-supervisor.\n");
       io.err(`Then run ${retry} on the hub with the same authentication options.\n`);
       reportDestinationEnable(peer.alias, io.err);
     }

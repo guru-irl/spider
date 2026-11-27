@@ -323,7 +323,7 @@ it.each(["core-pin-changed", "core-pin-in-use"])("explains how to replace a %s p
   const args = ["roam", "provision", f.request.target, "--yes", "--use-destination-auth", "--release", f.release];
   expect(await main(reason === "core-pin-in-use" ? [...args, "--replace-core-pin"] : args,
     { out() {}, err(text) { errors += text; } })).toBe(3);
-  expect(errors).toMatch(/finish or undo.*move.*move homes off.*spider roam disable.*hub.*locally on.*box.*legacy.*old-release.*--replace-core-pin.*same authentication options.*spider roam enable locally on box-1\.invalid/is);
+  expect(errors).toMatch(/finish or undo.*move.*move homes off.*spider roam disable.*hub.*locally on.*box.*legacy.*old-release.*docs\/guide\/roaming-upgrade\.md#stop-an-owned-legacy-supervisor.*--replace-core-pin.*same authentication options.*spider roam enable locally on box-1\.invalid/is);
 });
 
 it("retains the source snapshot while provisioning is pending", async () => {

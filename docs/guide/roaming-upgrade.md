@@ -38,6 +38,25 @@ release and evidence, and do not run the affected copies. It does not mean
 moving data to a clean root, clearing flags, rewriting rows, or skipping a
 fence. Do not use `spider roam disable` as a cleanup tool.
 
+## Stop an owned legacy supervisor
+
+On the box, inspect the legacy unit with `systemctl --user cat spider-roam-supervisor.service`.
+Before stopping it, verify that its definition contains both
+`Description=Spider roaming supervisor` and
+`Environment="SPIDER_GLOBAL_ROOT=<this root>"`, with the actual roaming root
+in place of `<this root>`. Verify that it has exactly one `ExecStart=` line,
+that the line ends in `supervisor.mjs"`, and that it has no `--v0` argument.
+If the definition does not match, do not stop it as an owned unit.
+
+After verifying ownership, stop it on the box:
+
+```sh
+systemctl --user stop spider-roam-supervisor.service
+```
+
+This leaves the unit enabled, so it returns at the next login until
+`spider roam enable` run locally on the destination removes it.
+
 ## Settle old work only after approval
 
 Review the reported session, operation, and store IDs and obtain approval for

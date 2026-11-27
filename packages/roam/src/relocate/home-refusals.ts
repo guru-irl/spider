@@ -1,6 +1,22 @@
 import type { AwayHomeFence } from "./away-home";
 import type { SessionId, V0Refusal } from "./types";
 
+export class MacSourceNotStopped extends Error {
+  constructor(readonly refusal: V0Refusal) { super(refusal.message); }
+}
+
+export class MacSessionOccupied extends Error {
+  constructor(cause: unknown) { super("The Mac session ID is not known to be free", { cause }); }
+
+  refusal(retry: string): V0Refusal {
+    return {
+      code: "stop-timeout",
+      message: `${this.message}.`,
+      nextStep: `Close the session on the Mac, then retry ${retry}. If it is already closed, run spider roam doctor on the Mac.`,
+    };
+  }
+}
+
 export class AwayHomeRecoveryRequired extends Error {
   constructor(readonly fence: AwayHomeFence, readonly pendingRelocation: boolean) {
     super("The home database predates or conflicts with the away-home fence");

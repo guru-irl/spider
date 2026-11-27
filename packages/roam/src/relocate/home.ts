@@ -5,7 +5,7 @@ import { isRoamUuid } from "@spider/db-core/roam/codec";
 import { validUnicode } from "@spider/db-core/roam/hlc";
 import type { MachineId } from "@spider/db-core/roam/types";
 import { publishAwayHomeFence, readAwayHomeFence, withAwayHomeFenceLock, type AwayHomeFence } from "./away-home";
-import { AwayHomeRecoveryRequired } from "./home-refusals";
+import { AwayHomeRecoveryRequired, MacSessionOccupied, MacSourceNotStopped } from "./home-refusals";
 import type { HomeStore, HomeStoreOptions, RelocateHome, RelocateId, RunningHome, SessionId, V0Refusal, V0Result } from "./types";
 
 type MacSourceCheck = (sessionId: SessionId) => Promise<V0Result<void>>;
@@ -65,14 +65,6 @@ function same(a: RelocateHome | null, b: RelocateHome): boolean {
 
 function matchesFence(home: RelocateHome, fence: AwayHomeFence): boolean {
   return home.state === "running" && home.machineId === fence.machineId && home.epoch === fence.epoch && home.moveId === fence.moveId;
-}
-
-export class MacSourceNotStopped extends Error {
-  constructor(readonly refusal: V0Refusal) { super(refusal.message); }
-}
-
-export class MacSessionOccupied extends Error {
-  constructor(cause: unknown) { super("The Mac session ID is not known to be free", { cause }); }
 }
 
 async function reserveMacSession(root: string, sessionId: SessionId) {

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RelocateCheckpoint, RelocateId } from "../relocate/types";
 import { relocate } from "../relocate/relocate";
+import { MacSessionOccupied } from "../relocate/home-refusals";
 import { assertSafeHistories, deferred, destination, ports, refusal, request, running, sessionId, source, state, third } from "./relocate-fakes";
 
 const readyClock = { now: Date.now, later(ms: number, fn: () => void) { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
@@ -226,6 +227,22 @@ describe("relocate", () => {
     expect(s.effects).not.toContain("install-destination"); expect(s.effects).not.toContain("start-destination");
     expect(s.processes).toEqual(new Set([source]));
     expect(s.homesWritten).toHaveLength(2);
+  });
+
+  it("tells the user to close a blocked Mac pi before retrying commit", async () => {
+    const s = state(), p = ports(s);
+    s.failAfter = "save-install-destination";
+    expect(await relocate(request, p)).toMatchObject({ ok: false, step: "install-destination" });
+    const pending = structuredClone(s.home), swap = p.homes.compareAndSwap;
+    p.homes.compareAndSwap = async () => { throw new MacSessionOccupied(new Error("ID lock occupied")); };
+    expect(await relocate(request, p)).toMatchObject({ ok: false, step: "commit-home", home: pending, refusal: {
+      code: "stop-timeout",
+      message: expect.stringMatching(/Mac session ID.*free/i),
+      nextStep: expect.stringMatching(/Close the session on the Mac, then retry spider roam relocate session-1 destination/i),
+    } });
+    expect(s.processes.size).toBe(0);
+    p.homes.compareAndSwap = swap;
+    expect(await relocate(request, p)).toMatchObject({ ok: true, value: { disposition: "relocated" } });
   });
 
   it.each(["mark-moving", "commit-home"])("CAS conflict has no losing effects: %s", async boundary => {

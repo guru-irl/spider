@@ -1,5 +1,5 @@
 import { parseV0Control, runV0Control, readV0Confirmation } from "./relocate/cli";
-import { v0SessionCatalog } from "./relocate/session-catalog";
+import { skippedProjectDbNotice, v0SessionCatalog } from "./relocate/session-catalog";
 import { requestV0Services, runV0Service } from "./relocate/service";
 import { startV0Hub, runV0Agent } from "./relocate/runtime";
 import type { V0ControlServices, V0Result } from "./relocate/types";
@@ -173,17 +173,22 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       if (json) io.out(`${JSON.stringify(result)}\n`); else io.err(`${message}\n${nextStep}\n`); return exit;
     };
     if (!control) return refusal("invalid-arguments", "Invalid v0 command arguments.", "Use roam relocate <session> <machine> or roam set-home <session> <machine> --force.", 2);
-    try {
-      const config = readLocalIdentity(root);
-      let catalog = options?.v0?.catalog ?? [];
-      if (!options?.v0?.catalog && config.role === "hub" && (config.enabled || control.kind === "set-home")) {
+    let config: ReturnType<typeof readLocalIdentity>;
+    try { config = readLocalIdentity(root); }
+    catch { return refusal("home-unavailable", "The local roaming configuration could not be read.", "Run spider roam doctor to check the local configuration, then retry.", 1); }
+    let catalog = options?.v0?.catalog ?? [];
+    if (!options?.v0?.catalog && config.role === "hub" && (config.enabled || control.kind === "set-home")) {
+      try {
         const core = openLocalCore(root);
-        try { catalog = v0SessionCatalog(core.db); }
-        finally { core.close(); }
-      }
-      const confirmation = options?.v0?.confirmation ?? readV0Confirmation;
-      return await runV0Control(control, config, catalog, options?.v0?.services ?? requestV0Services(root), { ...io, confirmation }, { json });
-    } catch { return refusal("home-unavailable", "The v0 home service could not be opened.", "Start the v0 hub on the Mac, then retry this command.", 1); }
+        try {
+          const { sessions, skippedProjectDbs } = v0SessionCatalog(core.db);
+          catalog = sessions;
+          if (skippedProjectDbs > 0) io.err(`${skippedProjectDbNotice(skippedProjectDbs)}\n`);
+        } finally { core.close(); }
+      } catch { return refusal("home-unavailable", "The local session catalog could not be read safely.", "Run spider roam doctor to check the local databases, then retry.", 1); }
+    }
+    const confirmation = options?.v0?.confirmation ?? readV0Confirmation;
+    return runV0Control(control, config, catalog, options?.v0?.services ?? requestV0Services(root), { ...io, confirmation }, { json });
   }
   const publicInput = argv[0] === "move" || argv[0] === "roam" && !["agent", "artifact", "observe", "intercom", "hub"].includes(argv[1]);
   const jsonOutput = publicInput && argv.at(-1) === "--json";

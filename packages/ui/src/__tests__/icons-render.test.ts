@@ -83,8 +83,8 @@ describe("icon styles in rendered rows", () => {
     const call = { kind: "exec" as const, commands: ["echo"] };
     const text = renderExecCall(call, { theme: theme("text"), width: 80 });
     const nerd = renderExecCall(call, { theme: theme("nerd"), width: 80 });
-    expect(text[0]).toMatch(/^\u{1F578}\u{FE0F} spider exec/u);
-    expect(nerd[0]).toMatch(/^\u{F0BCA}  spider exec/u);
+    expect(text[0]).toMatch(/^\u{1F578}\u{FE0F} spider · exec/u);
+    expect(nerd[0]).toMatch(/^\u{F0BCA}  spider · exec/u);
     expect(nerd.map(visibleWidth)).toEqual(text.map(visibleWidth));
     expect(formatAgentLine(theme("nerd"), agent, 100, 0, "◆")).toContain("◆ \u{F167A}  scribe");
   });

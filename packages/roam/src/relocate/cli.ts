@@ -33,7 +33,8 @@ export async function runV0Control(control: V0PublicControl, config: RoamConfig,
     if (options.json) io.out(`${JSON.stringify(result)}\n`);
     else if (!result.ok) io.err(`${result.refusal.message}\n${result.refusal.nextStep}\n`);
     else if ("home" in result.value) {
-      io.out(`Session is at ${result.value.home.machineId}; terminal ${result.value.terminal}.\n`);
+      if (result.value.localPid) io.out(`Session is already running on the Mac (pi PID ${result.value.localPid}). Use the terminal where you started it.\n`);
+      else io.out(`Session is at ${result.value.home.machineId}; terminal ${result.value.terminal}.\n`);
       const branch = result.value.branchRecovery;
       if (branch) io.out(`Git HEAD is detached. The saved branch ${branch.savedBranch} was left unchanged. In the destination checkout, run ${branch.command} to save the imported commit on a branch.\n`);
     }

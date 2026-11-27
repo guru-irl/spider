@@ -104,6 +104,18 @@ describe("relocate", () => {
     expect(s.snapshots.size).toBe(0); expect(s.pushed.size).toBe(0);
   });
 
+  it("keeps a user-started local pi without trying to launch it again", async () => {
+    const s = state(), p = ports(s);
+    p.unlabelledLocalRunner = async () => 1234;
+    s.refuse = { effect: "start-source", code: "start-pending" };
+    expect(await relocate({ sessionId, destinationMachine: source }, p)).toMatchObject({
+      ok: true, value: { disposition: "already-home", terminal: "pid:1234", localPid: 1234 },
+    });
+    expect(s.attempts).not.toContain("start-source");
+    expect(s.processes).toEqual(new Set([source]));
+    expect(s.homesWritten).toEqual([]);
+  });
+
   it("completed same-home call never writes its finished journal", async () => {
     const s = state(); expect((await relocate(request, ports(s))).ok).toBe(true);
     const home = structuredClone(s.home); const journal = structuredClone(s.journal);

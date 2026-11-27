@@ -194,6 +194,9 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts, r
           step = "commit-home";
           value(await ports.publishHome(resumed, resumed.machineId));
           value(await ports.activate(resumed, placement));
+          const localPid = await ports.unlabelledLocalRunner?.(resumed);
+          if (localPid) return { ok: true, value: { moveId, home: resumed, placement,
+            terminal: `pid:${localPid}`, localPid, disposition: "already-home" } };
         }
         step = "start-destination";
         value(await ports.start(resumed, placement));

@@ -14,12 +14,12 @@ import { relocate } from "./relocate";
 import { setHome } from "./set-home";
 import { createRelocateAdapters } from "./adapters";
 import { createV0SyncTransport, createV0ArtifactTransport, guardV0PeerTransport, handleRelocateAgent } from "./remote";
-import { localLaunchEnvironment } from "./local";
+import { exactHome, localLaunchEnvironment } from "./local";
 import { parseCaptured } from "./journal";
 import { resolveVerifiedArtifact } from "./transfer";
 import { createHomeSupervisor } from "./supervisor";
 import { serveV0Control } from "./service";
-import type { RelocateAdapterOptions, RelocateAdapters, HomeStore, V0ControlServices, V0Result } from "./types";
+import type { RelocateAdapterOptions, RelocateAdapters, HomeStore, RunningHome, V0ControlServices, V0Result } from "./types";
 
 export interface V0RuntimeOverrides {
   openCore?: (root: string) => LocalCore;
@@ -115,6 +115,11 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
     const adapters=createRelocateAdapters(options);
     const relocatePorts = {
       ...adapters.ports,
+      async unlabelledLocalRunner(home: RunningHome) {
+        if (home.machineId !== config.machineId) return null;
+        const owner = await adapters.supervisor.owner(home.sessionId);
+        return owner.kind === "live" && owner.terminal === null && exactHome(await homes.read(home.sessionId), home) ? owner.pid : null;
+      },
       initialEpoch(sessionId: string) {
         const legacy = core.db.prepare("SELECT epoch FROM session_homes WHERE session_id=? AND state IS NULL").get(sessionId) as { epoch: number } | undefined;
         return legacy?.epoch ?? 1;

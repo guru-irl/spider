@@ -105,6 +105,8 @@ export interface RelocateSuccess {
   disposition: "relocated" | "already-home" | "undone";
   // lane 3: adapters-I3
   branchRecovery?: { savedBranch: string; command: string };
+  // lane 3: move-10
+  localPid?: number;
 }
 export type RelocateOutcome =
   | { ok: true; value: RelocateSuccess }
@@ -138,6 +140,8 @@ export interface RelocatePorts extends SessionMachinePorts {
   initialSource(sessionId: SessionId): Promise<V0Result<MachineId>>;
   // lane 3: home-C2
   initialEpoch?(sessionId: SessionId): number;
+  // lane 3: move-10
+  unlabelledLocalRunner?(home: RunningHome): Promise<number | null>;
   check(request: RelocateRequest, source: SettledHome, moveId: RelocateId): Promise<V0Result<RelocatePlan>>;
   stopSource(plan: RelocatePlan, moving: MovingHome): Promise<V0Result<void>>;
   pullSource(plan: RelocatePlan): Promise<V0Result<CapturedSession>>;

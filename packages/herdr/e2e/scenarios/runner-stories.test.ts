@@ -32,12 +32,6 @@ function record(id: string, result: string, reason: string | undefined, startedA
 describe(`Herdr ${options.tier} stories`, () => {
   if (!selected.length) it('requires at least one discovered story', () => { throw new Error('no stories selected'); });
   for (const story of selected) {
-    if (story.id === 'R04') {
-      // Disabled 2026-11-25: flaky in CI (owner did not adopt its ID lock).
-      it.skip(`${story.id} ${story.title}`, () => {});
-      record(story.id, 'not exercised', 'disabled: flaky in CI', Date.now(), undefined, undefined);
-      markStoryWorkComplete(root!, story.id); continue;
-    }
     if (story.id === 'R05') {
       // Disabled 2026-11-25: flaky in CI (runner deadline).
       it.skip(`${story.id} ${story.title}`, () => {});

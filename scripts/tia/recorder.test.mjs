@@ -160,6 +160,48 @@ test('short signal exits persist execution without changing exit status', { skip
   }
 });
 
+test('a synchronous self-signal still kills an otherwise idle child', { skip: process.platform === 'win32' }, t => {
+  const { root, raw } = fixture(t);
+  const child = join(root, 'packages/example/src/idle-signal.cjs');
+  writeFileSync(child, `function ran() { process.kill(process.pid, Number(process.argv[2])); } ran();`);
+  const result = runNode([child, '15'], { env: recorderEnv(root, raw), timeout: 5000 });
+  assert.deepEqual([result.status, result.signal], [null, 'SIGTERM']);
+  assert.ok(records(raw).some(p => p.scripts.some(s => s.url.endsWith('idle-signal.cjs') && s.offsets.length)));
+});
+
+test('a native signal can kill a Node process blocked inside Atomics.wait', { skip: process.platform === 'win32' }, t => {
+  const { root, raw } = fixture(t);
+  const child = join(root, 'packages/example/src/blocked.cjs');
+  writeFileSync(child, `process.stdout.write('ready'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0);`);
+  const result = runNode(['--input-type=module', '-e', `
+    import { spawn } from 'node:child_process';
+    import { once } from 'node:events';
+    import assert from 'node:assert/strict';
+    const child = spawn(process.execPath, [${JSON.stringify(child)}]);
+    const exited = once(child, 'close');
+    await once(child.stdout, 'data');
+    child.kill('SIGTERM');
+    const cleanup = setTimeout(() => child.kill('SIGKILL'), 500);
+    assert.deepEqual(await exited, [null, 'SIGTERM']);
+    clearTimeout(cleanup);
+  `], { env: recorderEnv(root, raw), timeout: 5000 });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('an intentionally tiny Worker keeps recoverable OOM behavior', t => {
+  const { root, raw } = fixture(t);
+  const result = runNode(['--input-type=module', '-e', `
+    import { Worker } from 'node:worker_threads';
+    import assert from 'node:assert/strict';
+    const child = new Worker('const retained=[];while(true)retained.push(Array(50_000).fill(1));', {
+      eval: true, execArgv: [], resourceLimits: { maxOldGenerationSizeMb: 32, maxYoungGenerationSizeMb: 4 },
+    });
+    const code = await new Promise(resolve => child.on('error', error => resolve(error.code)));
+    assert.equal(code, 'ERR_WORKER_OUT_OF_MEMORY');
+  `], { env: recorderEnv(root, raw), timeout: 5000 });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('a terminated worker reports its own execution with an explicit replacement environment', t => {
   const { root, raw } = fixture(t);
   const child = join(root, 'dist/thread.mjs');

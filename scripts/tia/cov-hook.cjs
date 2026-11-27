@@ -4,7 +4,9 @@
 const threads = require('node:worker_threads');
 const threadContextKey = 'spider.tia.recorder';
 const threadContext = threads.isMainThread ? null : threads.getEnvironmentData(threadContextKey);
-const dir = threadContext?.dir ?? process.env.SPIDER_TIA_DIR;
+const workerPreload = `--require=${__filename}`;
+const dir = threads.isMainThread ? process.env.SPIDER_TIA_DIR
+  : process.execArgv.at(-1) === workerPreload ? threadContext?.dir : null;
 if (dir) {
   const { appendFileSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } = require('node:fs');
   const { dirname, join, relative, resolve, isAbsolute, sep } = require('node:path');
@@ -21,8 +23,7 @@ if (dir) {
   const ppid = process.ppid;
   const started = Date.now() - Math.round(process.uptime() * 1000);
   const preload = `--require=${JSON.stringify(__filename)}`;
-  const workerPreload = `--require=${__filename}`;
-  if (threadContext && process.execArgv.at(-1) === workerPreload) process.execArgv.pop();
+  if (threadContext) process.execArgv.pop();
   const savedOptions = 'SPIDER_TIA_SAVED_NODE_OPTIONS';
   const launchOptions = process.env.NODE_OPTIONS ?? '';
   if (launchOptions === preload || launchOptions.endsWith(` ${preload}`)) {
@@ -134,6 +135,10 @@ if (dir) {
     const BaseWorker = threads.Worker;
     threads.Worker = new Proxy(BaseWorker, {
       construct(target, [entry, options], newTarget) {
+        const limit = options?.resourceLimits?.maxOldGenerationSizeMb;
+        // An inspector session prevents Node from recovering a worker-local
+        // OOM in deliberately heap-starved fixtures. Leave them unrecorded.
+        if (limit > 0 && limit <= 64) return Reflect.construct(target, [entry, options], newTarget);
         const execArgv = [...(options?.execArgv ?? process.execArgv), workerPreload];
         const worker = Reflect.construct(target, [entry, { ...options, execArgv }], newTarget);
         const name = channelName(worker.threadId);
@@ -187,6 +192,7 @@ if (dir) {
         catch (error) { note(method, error); }
       });
 
+      let bundleCheckpoint = false;
       session.on('Debugger.scriptParsed', ({ params: { url, scriptId, hash, sourceMapURL } }) => {
         try {
           const file = scriptPath(url);
@@ -214,6 +220,10 @@ if (dir) {
             }
           }
           if (!disk) return;
+          if (!bundleCheckpoint && (disk.kind === 'bundle' || disk.kind === 'fixture')) {
+            bundleCheckpoint = true;
+            setImmediate(flush).unref();
+          }
           const entry = { url, ...disk, exact: hash === disk.sha256, loaded: false, wrapperOffset: -1, offsets: new Set(), positions: new Map() };
           scripts.set(scriptId, entry);
           if (!entry.exact) post('Debugger.getScriptSource', { scriptId }, ({ scriptSource }) => {
@@ -271,21 +281,19 @@ if (dir) {
       process.on('exit', () => flush(true));
       if (threads.isMainThread && process.platform !== 'win32') {
         const kill = process.kill;
-        for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-          const listener = () => {
-            const reRaise = process.listenerCount(signal) === 1;
-            flush(reRaise);
-            if (reRaise) {
-              process.removeListener(signal, listener);
-              kill.call(process, process.pid, signal);
-            }
-          };
-          process.prependListener(signal, listener);
-        }
+        const emit = process.emit;
+        const codes = require('node:os').constants.signals;
+        const signals = new Set(['SIGINT', 'SIGTERM', 'SIGHUP']);
+        const fatal = new Set([...signals, 'SIGKILL'].flatMap(name => [name, codes[name]]));
+        // Installing a JS signal listener replaces the native default. A
+        // blocked program would then survive TERM/HUP until JS can run. Flush
+        // existing handler dispatches and self-signals without adding listeners.
+        process.emit = function (name) {
+          if (signals.has(name)) flush();
+          return Reflect.apply(emit, this, arguments);
+        };
         process.kill = function (pid, signal) {
-          // Self-SIGKILL is used by crash fixtures. External SIGKILL cannot
-          // run any JS; the preceding periodic checkpoint is all we have.
-          if (pid === process.pid && (signal === 'SIGKILL' || signal === 9)) flush(true);
+          if (pid === process.pid && fatal.has(signal ?? 'SIGTERM')) flush();
           return Reflect.apply(kill, this, arguments);
         };
       }

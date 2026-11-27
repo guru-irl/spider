@@ -24,6 +24,7 @@ import { homedir, userInfo } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { roamingCliEntry } from "./package-layout";
 import { inspectLocalConsumers, isPendingLaunchDiagnostic, localHubServiceDiagnostics, localPendingMoveDiagnostics, localPendingLaunchDiagnostics, localStoreInventoryDiagnostics, localHostingWarningDiagnostics, localMoveSetupDiagnostics, localPublicationDiagnostics, localPrivateTransferDiagnostics, runLocalDoctor, runLocalStatus } from "./local-diagnostics";
+import { inspectLegacyUpgrade, legacyUpgradeDiagnostic } from "./legacy-upgrade";
 import { requestHubControl } from "./control-socket";
 import { parseRoamJson, storeScope } from "@spider/db-core/roam/codec";
 import { mapRepository } from "@spider/db-core/roam/repo-map";
@@ -673,12 +674,12 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
         try { config = readLocalIdentity(root); }
         catch { if (existsSync(join(root, "roam", "config.json"))) throw new Error("roaming-config-unavailable"); }
         if (!config || !config.enabled) {
-          let rows: Awaited<ReturnType<typeof peerEnabledDiagnostics>> = [];
+          let rows: Awaited<ReturnType<typeof peerEnabledDiagnostics>> = [legacyUpgradeDiagnostic(await inspectLegacyUpgrade(root))];
           if (config?.role === "hub" && config.peers.length) {
             try {
               const herdr = loadHerdrConfig(root), transport = createTransport({ binary: herdr.core.binary, env: process.env, enrolled: config.peers });
-              rows = await peerEnabledDiagnostics(config, transport);
-            } catch { rows = config.peers.map(peer => ({ reason: `peer-enabled-unavailable:${peer.machineId}`, severity: "warning" as const, repairCommand: "spider roam doctor" })); }
+              rows.push(...await peerEnabledDiagnostics(config, transport));
+            } catch { rows.push(...config.peers.map(peer => ({ reason: `peer-enabled-unavailable:${peer.machineId}`, severity: "warning" as const, repairCommand: "spider roam doctor" }))); }
           }
           if (config) {
             rows.push(...localStoreInventoryDiagnostics(root));

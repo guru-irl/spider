@@ -1,4 +1,5 @@
 import { readMoveSetupDiagnostics } from "./setup-diagnostics";
+import { inspectLegacyUpgrade, legacyUpgradeDiagnostic } from "./legacy-upgrade";
 import { localEntries } from "@spider/db-core/roam/local-state";
 import type { V0Refusal } from "./relocate/types";
 import { parsePrivateTransferDiagnostic, type PrivateTransferDiagnostic } from "./private-transfer-diagnostics";
@@ -525,6 +526,7 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
   const config = existsSync(configFile) ? loadConfig(configFile) : disabledConfig();
   const required = localCaptureRequired(config), severity = required ? "block" : "warning";
   const inventory: Diagnostic[] = [], storeDiagnostics: Diagnostic[] = [], peerFailures: Diagnostic[] = [], consumers: LoadedConsumer[] = [];
+  inventory.push(legacyUpgradeDiagnostic(await inspectLegacyUpgrade(root)));
   if (config.enabled && config.role === "hub") {
     const directory = input.hubLaunchd?.plistDir;
     const service = await (input.hubService ? input.hubService() : inspectHubService(root, undefined, directory));

@@ -1,7 +1,7 @@
 import { lstatSync, realpathSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { storeScope } from "@spider/db-core/roam/codec";
-import { localEntries } from "@spider/db-core/roam/local-state";
+import { localEntries, readLocal } from "@spider/db-core/roam/local-state";
 import { processStartIdentity } from "@spider/herdr/jobs/handoff";
 import { listPendingIdLocks, localBootId } from "@spider/herdr/sessions/id-lock";
 import { createSessionLeases, type ProcessProbe } from "@spider/herdr/sessions/lease";
@@ -11,6 +11,8 @@ import { inspectIntentReservations } from "./intent";
 import { inspectAdoptedOwner } from "./launcher";
 import { isMachineId } from "./machine-id";
 import { readLocalIdentity } from "./runtime";
+import { parseCheckpoint, parsePlan } from "./relocate/journal";
+import type { RelocatePlan } from "./relocate/types";
 
 export type LegacyUpgradeInventory =
   | { status: "legacy-upgrade-ready"; findings: readonly [] }
@@ -32,6 +34,15 @@ async function pendingHandoffs(root: string) {
   }
   return [];
 }
+function placementContainsCheckout(checkout: string, cwd: string): boolean {
+  const child = relative(checkout, cwd);
+  if (isAbsolute(child) || child === ".." || child.startsWith(`..${sep}`)) return false;
+  if (!child) return true;
+  for (let current = cwd; current !== checkout; current = dirname(current)) {
+    if (present(join(current, ".git"))) return false;
+  }
+  return present(join(checkout, ".git"));
+}
 async function probeProcess(pid: number): Promise<ProcessProbe> {
   try {
     const identity = processStartIdentity(pid);
@@ -44,6 +55,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
   try {
     const findings: string[] = [], unknown: string[] = [];
     const journalKinds = new Map<string, string>();
+    const v0: Array<{ origin: "checkpoint" | "incoming"; plan: RelocatePlan; expectedKey?: string }> = [];
     const configFile = join(root, "roam", "config.json"), identityFile = join(root, "roam", "machine.json");
     const configured = present(configFile), config = configured ? readLocalIdentity(root) : null;
     if (!configured && present(identityFile)) throw new Error("Missing roaming configuration");
@@ -81,6 +93,19 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
           const cleanup = (result.value as Record<string, unknown>).sourceCleanup;
           if (cleanup && typeof cleanup === "object" && !Array.isArray(cleanup) && (cleanup as Record<string, unknown>).status === "pending") findings.push(`source cleanup operation ${id}`);
         }
+      }
+      const v0Actions = db.prepare("SELECT o.operation_id,a.action,a.result_json FROM roam_operations o JOIN roam_operation_actions a ON a.operation_id=o.operation_id WHERE o.kind='relocate-v0' AND o.result_json IS NULL AND a.action IN ('relocate-checkpoint','relocate-incoming') ORDER BY a.seq").all() as
+        Array<{ operation_id: string; action: "relocate-checkpoint" | "relocate-incoming"; result_json: string }>;
+      for (const action of v0Actions) {
+        const result: unknown = JSON.parse(action.result_json);
+        if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Invalid v0 evidence");
+        const data = result as Record<string, unknown>;
+        const plan = action.action === "relocate-checkpoint" ? parseCheckpoint(data.checkpoint).plan : parsePlan(data.plan);
+        if (plan.moveId !== action.operation_id) throw new Error("Mismatched v0 evidence");
+        if (action.action === "relocate-incoming") {
+          if (data.expectedKey !== `worktree:${plan.destinationPlacement.repoKey}:${plan.destinationPlacement.workspaceId}`) throw new Error("Mismatched incoming key");
+          v0.push({ origin: "incoming", plan, expectedKey: data.expectedKey });
+        } else v0.push({ origin: "checkpoint", plan });
       }
       const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('freeze_journal','freeze_store_rosters')").all() as { name: string }[]).map(row => row.name));
       if (tables.has("freeze_journal") !== tables.has("freeze_store_rosters")) throw new Error("Incomplete freeze journal");
@@ -132,7 +157,20 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
               map.store_key !== `worktree:${identity[0]}:${identity[1]}` || map.command_json !== null) throw new Error("Invalid workspace mapping");
         } else throw new Error("Invalid mapping kind");
         storeScope(map.store_key);
-        findings.push(`map store ${safeId(map.store_key)}`);
+        const ownedByV0 = map.kind === "workspace" && config && v0.some(evidence => {
+          const { plan } = evidence, placement = evidence.origin === "checkpoint" ? plan.sourcePlacement : plan.destinationPlacement;
+          if (placement.machineId !== config.machineId || map.store_key !== `worktree:${placement.repoKey}:${placement.workspaceId}` ||
+              !placementContainsCheckout(map.target_path as string, placement.cwd)) return false;
+          if (evidence.origin === "incoming") {
+            const pointer = readLocal<unknown>(global, "relocate-incoming", evidence.expectedKey!);
+            return !!pointer && typeof pointer === "object" && !Array.isArray(pointer) && (pointer as Record<string, unknown>).moveId === plan.moveId;
+          }
+          const home = global.prepare("SELECT machine_id,epoch,move_id,state,destination FROM session_homes WHERE session_id=?").get(plan.source.sessionId) as
+            { machine_id: string; epoch: number; move_id: string | null; state: string | null; destination: string | null } | undefined;
+          return !!home && home.state === "moving" && home.machine_id === plan.source.machineId && home.destination === plan.destinationPlacement.machineId &&
+            home.epoch === plan.source.epoch + 1 && home.move_id === plan.moveId;
+        });
+        if (!ownedByV0) findings.push(`map store ${safeId(map.store_key)}`);
       }
     } finally { global.close(); }
     const stateRoot = join(root, "herdr"), pending = await pendingHandoffs(stateRoot);

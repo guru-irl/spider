@@ -339,6 +339,13 @@ it.each(["checkpoint", "incoming"] as const)("does not classify a %s-owned v0 wo
   expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
     expect.objectContaining({ severity: "info", reason: expect.stringMatching(/^legacy-upgrade-ready/) }),
   ]));
+  const store = openDb(replica(f.root, key));
+  try { store.prepare("INSERT INTO roam_sessions(session_id,epoch,state) VALUES (?,1,'frozen')").run("session-v0"); }
+  finally { store.close(); }
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(0);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "info", reason: expect.stringMatching(/^legacy-upgrade-ready/) }),
+  ]));
   const changed = openDb(join(f.root, "spider.db"));
   try { writeLocal(changed, "mapping-intent", JSON.stringify(["workspace", identity]), { kind: "workspace", identity,
     target_path: other, store_key: key, command_json: null, attempt_id: "attempt-not-v0" }); } finally { changed.close(); }

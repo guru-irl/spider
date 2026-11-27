@@ -15,7 +15,8 @@ import { ComposeOverlay, type ComposeResult } from "./ui/compose.js";
 import { InlineMessageComponent } from "./ui/inline-message.js";
 import { getAskTimeoutMs, loadConfig, type IntercomConfig } from "./config.js";
 import { EXTENSION_BUS_FEATURE } from "./types.js";
-import type { Attachment, BrokerMessage, Message, MessageControl, MessageReceipt, MessageReceiptStatus, SessionInfo, SessionRegistration } from "./types.js";
+import type { Attachment, BrokerMessage, LocalSessionInfo, Message, MessageControl, MessageReceipt, MessageReceiptStatus, SessionInfo, SessionRegistration } from "./types.js";
+import type { V0ToolOptions } from "./roam-v0.js";
 import {
   INTERCOM_EXTENSION_REGISTER_EVENT,
   INTERCOM_EXTENSION_REGISTRY_READY_EVENT,
@@ -588,7 +589,7 @@ function getNamePollMs(): number {
 }
 export type IntercomBrokerPort = (connect: () => Promise<void>) => Promise<void>;
 export interface IntercomRegistration { hasPendingInboundAsks(): boolean }
-export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: IntercomBrokerPort = connect => connect(), iconStyle: () => IconStyle = () => "text"): IntercomRegistration {
+export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: IntercomBrokerPort = connect => connect(), iconStyle: () => IconStyle = () => "text", v0?: V0ToolOptions): IntercomRegistration {
   let client: IntercomClient | null = null;
   const config: IntercomConfig = loadConfig();
   const askTimeoutMs = getAskTimeoutMs();
@@ -970,10 +971,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
 
     const identity = buildPresenceIdentity(pi, currentIntercomSessionId ?? currentSessionId);
     const tmuxPane = currentTmuxPane();
+    const v0HomeEpoch = v0?.homeEpoch(currentSessionId);
     return {
       ...identity,
       activationEpoch,
       ...(hostContext?.endpoint ? { homeEpoch: hostContext.endpoint.homeEpoch } : {}),
+      ...(v0HomeEpoch !== undefined ? { v0HomeEpoch } : {}),
       address: { sessionId: currentSessionId, scopeId: getIntercomScopeId() ?? null },
       cwd: liveContext.cwd,
       model: currentModel,
@@ -2700,6 +2703,31 @@ Usage:
             }
             const confirmSend = !replyTo && config.confirmSend && ctx.hasUI;
             const attachmentText = attachments?.length ? formatAttachments(attachments) : "";
+            if (v0 && to && currentSessionId && v0.homeEpoch(currentSessionId) !== undefined) {
+              const generation = runtimeGeneration;
+              const sessions = await connectedClient.listSessions();
+              const locals = sessions.filter((session): session is LocalSessionInfo => !session.remote);
+              const from = locals.find(session => session.id === connectedClient.sessionId && session.address?.sessionId === currentSessionId);
+              if (from) {
+                const plan = await v0.prepare({ to, from, locals, signal: _signal });
+                if (plan.kind === "remote") {
+                  if (confirmSend && !(await ctx.ui.confirm("Send message", `Send to "${plan.label}":\n\n${message}${attachmentText}`))) {
+                    return { content: [{ type: "text", text: "Message cancelled by user" }], details: {} };
+                  }
+                  if (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected()) {
+                    return { content: [{ type: "text", text: "Session changed. Resolve the recipient again." }], details: { error: true } };
+                  }
+                  const sent = { id: randomUUID(), timestamp: Date.now(), text: message };
+                  const result = await plan.send(sent, _signal);
+                  if (result.kind !== "socket_delivered") {
+                    return { content: [{ type: "text", text: "Message was not delivered." }], details: { error: true } };
+                  }
+                  pi.appendEntry("intercom_sent", { to: plan.label, message: { text: message }, messageId: result.id, timestamp: Date.now() });
+                  return { content: [{ type: "text", text: `Sent to ${plan.label} (broker accepted the message).` }],
+                    details: { delivered: true, delivery: "socket_delivered", messageId: result.id } };
+                }
+              }
+            }
             if (confirmSend && cwd && openProjectPaneIfMissing) {
               const confirmed = await ctx.ui.confirm(
                 "Send message",

@@ -290,6 +290,25 @@ describe("v0 transfer stop boundary",()=>{
   expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toEqual({ok: true, value: undefined});
   expect(f.signals).toEqual([43, 42]);
  });
+ it("does not signal a descendant that becomes unreadable after preflight", async () => {
+  const f = stopFixture();
+  const first = {pid: 43, startIdentity: "first-43", command: "wrapper"};
+  const child = {pid: 44, startIdentity: "child-44", command: "tool"};
+  let firstSignalled = false;
+  f.io.tree = async () => ({descendants: [first, child], groups: []});
+  const probe = f.io.probe;
+  f.io.probe = async pid => {
+   if (pid === first.pid) return {kind: "live", startIdentity: first.startIdentity, pi: false};
+   if (pid === child.pid) return firstSignalled ? {kind: "unknown"} : {kind: "live", startIdentity: child.startIdentity, pi: false};
+   return probe(pid);
+  };
+  f.io.signal = async pid => { f.signals.push(pid); if (pid === first.pid) firstSignalled = true; };
+
+  expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toMatchObject({
+   ok: false, refusal: {code: "session-busy", message: expect.stringContaining("PID 44")},
+  });
+  expect(f.signals).toEqual([43]);
+ });
  it("ignores a descendant that is already absent", async () => {
   const f = stopFixture();
   const child = {pid: 43, startIdentity: "child-43", command: "tool"};
@@ -409,6 +428,7 @@ describe("v0 transfer stop boundary",()=>{
   expect(capture).toBe(false);
   expect(await done).toEqual({ok:true,value:undefined});
   expect(f.signals).toEqual([42]);
+  expect(f.events).toContain("lock-free");
   expect(f.events.indexOf("capture")).toBeGreaterThan(f.events.indexOf("lock-free"));
   expect(f.events.filter(e=>e==="wait")).toHaveLength(2);
  });

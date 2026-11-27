@@ -387,6 +387,35 @@ describe("the live relay soak reliability gate", () => {
     expect(checkRelaySoak(evidence).violations).toContain("rss");
   });
 
+  it.each(["relay-kill", "laptop-sleep"] as const)("accepts an RSS pause for %s but keeps the whole-run baseline", kind => {
+    const evidence = copy(), link = evidence.links[0], fault = faultOf(evidence, kind);
+    link.rss = link.rss.filter(sample => sample.atMs < fault.startMs || sample.atMs >= fault.clearMs);
+    const resumed = link.rss.find(sample => sample.atMs >= fault.clearMs)!;
+    if (kind === "relay-kill") {
+      const killed = link.runs[0].process;
+      fault.process = { ...killed, machineId: link.relayId, observedMs: fault.startMs };
+      const replacement = { ...killed, birthId: "replacement" };
+      link.runs.push({ ...link.runs[0], process: replacement });
+      // A reused PID is a new birth, and samples after restart belong to it.
+      for (const sample of link.rss) if (sample.atMs >= resumed.atMs) sample.process = replacement;
+    }
+    expect(checkRelaySoak(evidence)).toEqual({ ok: true, violations: [] });
+
+    const bytes = resumed.bytes;
+    resumed.bytes = bytes + ALLOWANCE + 1;
+    expect(checkRelaySoak(evidence).violations).toContain("rss");
+    resumed.bytes = bytes;
+    link.rss = link.rss.filter(sample => sample.atMs < fault.startMs - 60_000 || sample.atMs >= fault.startMs);
+    expect(checkRelaySoak(evidence).violations).toContain("rss");
+  });
+
+  it("does not waive a relay-kill gap without RSS from a replacement birth", () => {
+    const evidence = copy(), link = evidence.links[0], fault = faultOf(evidence, "relay-kill");
+    fault.process = { ...link.runs[0].process, machineId: link.relayId, observedMs: fault.startMs };
+    link.rss = link.rss.filter(sample => sample.atMs < fault.startMs || sample.atMs >= fault.clearMs);
+    expect(checkRelaySoak(evidence).violations).toContain("rss");
+  });
+
   it("rejects RSS growth beyond the run allowance and missing samples", () => {
     const growth = copy();
     growth.links[0].rss[10].bytes += ALLOWANCE + 1;

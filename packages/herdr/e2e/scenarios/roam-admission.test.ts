@@ -28,7 +28,7 @@ async function copiedFile(suite: Suite): Promise<void> {
   const sessionId = randomUUID() as SessionId, moveId = `v0-${randomUUID()}` as RelocateId;
   for (const agent of [hubAgent, boxAgent]) await mkdir(join(agent, 'sessions'), { recursive: true, mode: 0o700 });
   for (const name of ['settings.json', 'models.json']) await copyFile(join(hubAgent, name), join(boxAgent, name));
-  suite.ledger.update(ledger => { ledger.intercomDirectories.push(join(boxAgent, 'intercom')); });
+  suite.ledger.update(ledger => { (ledger.intercomDirectories ??= []).push(join(boxAgent, 'intercom')); });
   for (const [root, machineId] of [[hub, HUB], [box, BOX]] as const) {
     await mkdir(join(root, 'roam'), { recursive: true, mode: 0o700 });
     await writeFile(join(root, 'roam', 'machine.json'), JSON.stringify({ machineId }), { mode: 0o600 });

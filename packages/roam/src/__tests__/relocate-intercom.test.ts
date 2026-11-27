@@ -49,6 +49,11 @@ function peer(machineId: string, name: string, fixture: { root: string; agentDir
 function configure(root: string, sendTo: readonly Peer[], acceptFrom: readonly { machineId: string; alias: string }[]) {
   writeFileSync(join(root, "roam", "intercom-v0.json"), JSON.stringify({ version: 1, sendTo, acceptFrom }), { mode: 0o600 });
 }
+function addHome(root: string, sessionId: string, machineId: string, epoch = 1) {
+  const db = openDbAt(join(root, "spider.db"), "global");
+  try { db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,updated_at,state) VALUES (?,?,?,1,'running')").run(sessionId, machineId, epoch); }
+  finally { db.close(); }
+}
 
 const alice: LocalSessionInfo = {
   id: "stable-alice", address: { sessionId: "alice", scopeId: "scope-1" }, name: "alice",
@@ -360,6 +365,94 @@ describe("roaming v0 intercom", () => {
     expect(hasV0IntercomConfig(box.root)).toBe(true);
     expect(await intercom.prepare({ to: "alice", from, locals: [from] })).toEqual({ kind: "refused", code: "not-configured" });
     expect(transport).not.toHaveBeenCalled();
+  });
+
+  it("allows the configured box-to-box direction and refuses the reverse without contacting the Mac", async () => {
+    const a = boxFixture(), b = machineFixture(OTHER);
+    vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+    for (const root of [a.root, b.root]) addHome(root, "carl", OTHER);
+    configure(a.root, [peer(OTHER, "b", b)], [{ machineId: MAC, alias: "mac" }]);
+    configure(b.root, [], [{ machineId: BOX, alias: "a" }]);
+    const carl: V0Endpoint = { address: { sessionId: "carl", scopeId: "scope-1" }, name: "carl", homeEpoch: 1, endpointEpoch: "carl-connection" };
+    const from: LocalSessionInfo = { ...alice, id: "stable-ben", name: "ben", address: ben.address,
+      endpointEpoch: ben.endpointEpoch, v0HomeEpoch: ben.homeEpoch };
+    const inbox: { from: RemoteSessionInfo; message: V0Text }[] = [], contacted: string[] = [];
+    const bBroker = async (_dir: string, op: V0BrokerOp): Promise<V0Reply> => {
+      if (op.kind === "lookup") return { kind: "matches", targets: [carl] };
+      if (op.kind !== "deliver") throw new Error("unexpected ask");
+      inbox.push({ from: op.from, message: op.message });
+      return { kind: "socket_delivered", id: op.message.id };
+    };
+    const receiver = createV0Intercom(b.root, { broker: bBroker });
+    const transport = (): Pick<Transport, "resolve" | "exec"> => ({
+      resolve: async target => target,
+      async exec(target, _argv, options) {
+        contacted.push(target.machineId);
+        if (target.machineId === MAC) throw new Error("Mac transport is forbidden");
+        return Buffer.from(JSON.stringify(await receiver.handle(JSON.parse(options.stdin!.toString("utf8")))));
+      },
+    });
+    const localBroker = async (): Promise<V0Reply> => ({ kind: "matches", targets: [ben] });
+    const plan = await createV0Intercom(a.root, { broker: localBroker, transport }).prepare({ to: "b/carl", from, locals: [from] });
+    expect(plan.kind).toBe("remote");
+    if (plan.kind !== "remote") throw new Error("expected a remote plan");
+    expect(await plan.send(message)).toEqual({ kind: "socket_delivered", id: message.id });
+    expect(contacted).toEqual([OTHER, OTHER]);
+    expect(inbox).toEqual([{ from: { remote: true, id: "ben", address: ben.address, machineId: BOX, machineAlias: "a",
+      homeEpoch: 2, activationEpoch: "ben-connection", endpointEpoch: "ben-connection", name: "ben", cwd: "", model: "", startedAt: 0, lastActivity: 0 }, message }]);
+    const fromB: LocalSessionInfo = { ...from, id: "stable-carl", name: "carl", address: carl.address,
+      endpointEpoch: carl.endpointEpoch, v0HomeEpoch: carl.homeEpoch };
+    const forbidden = vi.fn((): Pick<Transport, "resolve" | "exec"> => { throw new Error("no reverse route"); });
+    expect(await createV0Intercom(b.root, { transport: forbidden }).prepare({ to: "ben", from: fromB, locals: [fromB] }))
+      .toEqual({ kind: "refused", code: "not-configured" });
+    expect(forbidden).not.toHaveBeenCalled();
+  });
+
+  it("requires a complete bare-name lookup and refuses duplicate names", async () => {
+    const sender = machineFixture(MAC), a = boxFixture(), b = machineFixture(OTHER);
+    vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+    for (const root of [sender.root, a.root, b.root]) addHome(root, "carl", OTHER);
+    configure(sender.root, [peer(BOX, "a", a), peer(OTHER, "b", b)], []);
+    const endpoints: Record<string, V0Endpoint> = {
+      [BOX]: { ...ben, name: "shared" },
+      [OTHER]: { address: { sessionId: "carl", scopeId: "scope-1" }, name: "shared", homeEpoch: 1, endpointEpoch: "carl-connection" },
+    };
+    const handlers = new Map([a, b].map((fixture, index) => {
+      const machine = index === 0 ? BOX : OTHER;
+      return [machine, createV0Intercom(fixture.root, { broker: async (_dir, op) => {
+        if (op.kind !== "lookup") throw new Error("no delivery expected");
+        return { kind: "matches", targets: [endpoints[machine]] };
+      } })] as const;
+    }));
+    let disconnected = false;
+    const contacted: string[] = [];
+    const transport = (): Pick<Transport, "resolve" | "exec"> => ({
+      resolve: async target => { contacted.push(target.machineId); if (disconnected && target.machineId === OTHER) throw new Error("offline"); return target; },
+      async exec(target, _argv, options) {
+        return Buffer.from(JSON.stringify(await handlers.get(target.machineId)!.handle(JSON.parse(options.stdin!.toString("utf8")))));
+      },
+    });
+    const localBroker = async (): Promise<V0Reply> => ({ kind: "matches", targets: [aliceEndpoint] });
+    const intercom = createV0Intercom(sender.root, { broker: localBroker, transport });
+    expect(await intercom.prepare({ to: "shared", from: alice, locals: [alice] })).toEqual({ kind: "refused", code: "ambiguous" });
+    expect(contacted.sort()).toEqual([BOX, OTHER].sort());
+    contacted.length = 0;
+    disconnected = true;
+    expect(await intercom.prepare({ to: "shared", from: alice, locals: [alice] })).toEqual({ kind: "refused", code: "incomplete" });
+    expect(contacted.sort()).toEqual([BOX, OTHER].sort());
+    contacted.length = 0;
+    expect((await intercom.prepare({ to: "a/shared", from: alice, locals: [alice] })).kind).toBe("remote");
+    expect(contacted).toEqual([BOX]);
+  });
+
+  it("refuses stopped homes and managed callers without the admission epoch", async () => {
+    const f = paired();
+    const db = openDbAt(join(f.sender.root, "spider.db"), "global");
+    try { db.prepare("UPDATE session_homes SET state='stopped' WHERE session_id='ben'").run(); } finally { db.close(); }
+    expect(await f.intercom.prepare({ to: "ben", from: alice, locals: [alice] })).toEqual({ kind: "refused", code: "offline" });
+    const stale = { ...alice, v0HomeEpoch: undefined };
+    expect(await f.intercom.prepare({ to: "box/ben", from: stale, locals: [stale] })).toEqual({ kind: "refused", code: "changed" });
+    expect(f.calls).toEqual([]);
   });
 
   it("keeps an unhomed caller local and refuses an explicit remote target", async () => {

@@ -9,6 +9,7 @@ import type { Diagnostic } from "./contracts";
 import { openDiagnosticSnapshot } from "./diagnostic-snapshot";
 import { inspectIntentReservations } from "./intent";
 import { inspectAdoptedOwner } from "./launcher";
+import { isMachineId } from "./machine-id";
 import { readLocalIdentity } from "./runtime";
 
 export type LegacyUpgradeInventory =
@@ -47,12 +48,38 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
     if (!configured && present(identityFile)) throw new Error("Missing roaming configuration");
     const db = openDiagnosticSnapshot(join(root, "roam", "journal.db"));
     if (db) try {
-      const moves = db.prepare("SELECT operation_id FROM roam_operations WHERE kind='move' AND result_json IS NULL ORDER BY operation_id")
-        .all() as { operation_id: unknown }[];
-      findings.push(...moves.map(({ operation_id }) => {
-        if (typeof operation_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(operation_id)) throw new Error("Invalid move ID");
-        return `move ${operation_id}`;
-      }));
+      const operations = db.prepare("SELECT operation_id,machine_id,kind,result_json FROM roam_operations WHERE kind IN ('move','move-session','move-abort-cleanup','exact-session-launch') ORDER BY operation_id")
+        .all() as Array<{ operation_id: unknown; machine_id: unknown; kind: string; result_json: unknown }>;
+      for (const operation of operations) {
+        const id = operation.operation_id;
+        if (typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id) || !isMachineId(operation.machine_id) ||
+            !(operation.result_json === null || typeof operation.result_json === "string")) throw new Error("Invalid operation record");
+        let result: Record<string, unknown> | null = null;
+        if (typeof operation.result_json === "string") {
+          const parsed: unknown = JSON.parse(operation.result_json);
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid operation result");
+          result = parsed as Record<string, unknown>;
+        }
+        if (operation.kind === "move-session") {
+          if (result !== null) throw new Error("Invalid move reservation result");
+          let reserved: string | null = null;
+          const actions = db.prepare("SELECT action,result_json FROM roam_operation_actions WHERE operation_id=? ORDER BY seq").all(id) as Array<{ action: string; result_json: string }>;
+          for (const action of actions) {
+            const value: unknown = JSON.parse(action.result_json);
+            if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid move reservation");
+            const record = value as Record<string, unknown>;
+            if (action.action === "reserved" && reserved === null && typeof record.moveId === "string" &&
+                /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(record.moveId) && isMachineId(record.destinationMachine)) reserved = record.moveId;
+            else if (action.action === "released" && reserved !== null && record.moveId === reserved) reserved = null;
+            else throw new Error("Invalid move reservation history");
+          }
+          if (reserved !== null) findings.push(`move reservation ${id} operation ${reserved}`);
+        } else if (result === null) findings.push(`${operation.kind} operation ${id}`);
+        else if (operation.kind === "move" && result.value && typeof result.value === "object" && !Array.isArray(result.value)) {
+          const cleanup = (result.value as Record<string, unknown>).sourceCleanup;
+          if (cleanup && typeof cleanup === "object" && !Array.isArray(cleanup) && (cleanup as Record<string, unknown>).status === "pending") findings.push(`source cleanup operation ${id}`);
+        }
+      }
       const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('freeze_journal','freeze_store_rosters')").all() as { name: string }[]).map(row => row.name));
       if (tables.has("freeze_journal") !== tables.has("freeze_store_rosters")) throw new Error("Incomplete freeze journal");
       if (tables.has("freeze_journal")) {

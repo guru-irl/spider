@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 // scripts/sync-copilot-models.mjs
-// Additively surface GitHub Copilot models that pi-ai does NOT ship built-in into
-// ~/.pi/agent/models.json, so pi can route to the latest copilot models (Amendment A8).
-// Dry-run by default; pass --write to apply. Idempotent + additive: never edits
-// modelOverrides or existing entries; skips ids pi-ai already provides (avoids clobbering built-ins).
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+// Add available GitHub Copilot models that pi-ai does not ship, and migrate
+// entries that shadow real built-ins to narrow modelOverrides. Existing override
+// fields win. A dated snapshot permits additions but never migration. Dry-run by
+// default; --write backs up models.json before migration and is idempotent.
+import { readFileSync, writeFileSync, existsSync, copyFileSync, constants } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { execSync } from "node:child_process";
 import https from "node:https";
+import { isDeepStrictEqual } from "node:util";
 import { piAgentDir } from "./pi-agent-dir.mjs";
 
 const HOME = homedir();
@@ -87,16 +88,19 @@ async function resolveBuiltinIds() {
     try {
       if (!file || !existsSync(file)) continue;
       const mod = await import(pathToFileURL(file).href);
-      const arr = mod.GITHUB_COPILOT_MODELS || mod.default || mod.models;
-      if (Array.isArray(arr) && arr.length) {
-        const ids = new Set(arr.map((m) => m.id).filter(Boolean));
-        console.log("[sync-copilot-models] built-in catalog: " + file + " (" + ids.size + " ids)");
-        return ids;
+      const catalog = mod.GITHUB_COPILOT_MODELS || mod.default || mod.models;
+      const entries = Array.isArray(catalog)
+        ? catalog.map((model) => [model?.id, model])
+        : catalog && typeof catalog === "object" ? Object.entries(catalog) : [];
+      if (entries.length && entries.every(([id, model]) => typeof id === "string" && id && model && typeof model === "object")) {
+        const models = new Map(entries);
+        console.log("[sync-copilot-models] built-in catalog: " + file + " (" + models.size + " ids)");
+        return { models, snapshot: false };
       }
     } catch {}
   }
-  console.warn("[sync-copilot-models] built-in catalog: using dated SNAPSHOT (" + BUILTIN_SNAPSHOT.size + " ids); refresh if pi-ai updated.");
-  return new Set(BUILTIN_SNAPSHOT);
+  console.warn("[sync-copilot-models] built-in catalog: using dated SNAPSHOT (" + BUILTIN_SNAPSHOT.size + " ids); migration skipped because the real catalog could not be read.");
+  return { models: new Map([...BUILTIN_SNAPSHOT].map((id) => [id, undefined])), snapshot: true };
 }
 
 function familyApi(vendor) {
@@ -129,7 +133,7 @@ async function main() {
   const { token, available } = loadAuth();
   if (available.size === 0) console.warn("[sync-copilot-models] WARNING: availableModelIds empty in auth.json — nothing will be considered usable.");
   const all = await fetchModels(token);
-  const builtin = await resolveBuiltinIds();
+  const { models: builtin, snapshot } = await resolveBuiltinIds();
   const mj = existsSync(MODELS_PATH) ? readJson(MODELS_PATH) : { providers: {} };
   mj.providers ||= {};
   mj.providers["github-copilot"] ||= {};
@@ -139,14 +143,31 @@ async function main() {
   const candidates = all.filter((m) => m.capabilities?.type === "chat" && m.model_picker_enabled && available.has(m.id));
   const missing = candidates.filter((m) => !builtin.has(m.id) && !existing.has(m.id));
 
+  const migrations = snapshot ? [] : gh.models.filter((entry) => builtin.has(entry.id)).map((entry) => {
+    const differences = {};
+    for (const key of ["compactAtPercent", "promptCache", "thinkingLevelMap", "compat"]) {
+      if (Object.hasOwn(entry, key) && !isDeepStrictEqual(entry[key], builtin.get(entry.id)[key])) differences[key] = entry[key];
+    }
+    const hasOverride = Object.hasOwn(gh.modelOverrides || {}, entry.id);
+    return { id: entry.id, override: { ...differences, ...gh.modelOverrides?.[entry.id] }, hasOverride };
+  });
+
   console.log(`[sync-copilot-models] usable picker chat models: ${candidates.length}; built-in: ${builtin.size}; already in models.json: ${existing.size}`);
-  if (missing.length === 0) { console.log("[sync-copilot-models] models.json is up to date (0 to add)."); return; }
-  console.log(`[sync-copilot-models] ${missing.length} model(s) to add:`);
+  console.log(`[sync-copilot-models] ${missing.length} to add; ${migrations.length} to migrate.`);
+  if (!missing.length && !migrations.length) return;
   const synthed = missing.map(synth);
   for (const e of synthed) console.log(`  + ${e.id.padEnd(28)} api=${e.api} ctx=${e.contextWindow} out=${e.maxTokens} reasoning=${e.reasoning} vision=${e.input.includes("image")}`);
+  for (const m of migrations) console.log(`  ~ ${m.id} -> ${JSON.stringify(m.override)}${m.hasOverride ? " (existing override keys kept)" : ""}`);
   if (!WRITE) { console.log("[sync-copilot-models] dry-run (no changes). Re-run with --write to apply."); return; }
+  if (migrations.length) {
+    const backup = MODELS_PATH + ".bak-" + Date.now();
+    copyFileSync(MODELS_PATH, backup, constants.COPYFILE_EXCL);
+    console.log(`[sync-copilot-models] backup: ${backup}`);
+    gh.models = gh.models.filter((entry) => !builtin.has(entry.id));
+    for (const m of migrations) gh.modelOverrides = { ...gh.modelOverrides, [m.id]: m.override };
+  }
   gh.models.push(...synthed);
   writeFileSync(MODELS_PATH, JSON.stringify(mj, null, 2) + "\n", "utf8");
-  console.log(`[sync-copilot-models] wrote ${synthed.length} entr${synthed.length === 1 ? "y" : "ies"} to ${MODELS_PATH}`);
+  console.log(`[sync-copilot-models] wrote ${synthed.length} addition(s) and ${migrations.length} migration(s) to ${MODELS_PATH}`);
 }
 main().catch((e) => fail(e.message || String(e)));

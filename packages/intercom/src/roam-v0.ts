@@ -3,6 +3,7 @@ import type { LocalSessionInfo, RemoteSessionInfo } from "./types.js";
 import { isRemoteSessionInfo } from "./broker/protocol.js";
 
 export const V0_INTERCOM_BYTES: number = 256 * 1024;
+export const V0_TEXT_BYTES = V0_INTERCOM_BYTES - 8 * 1024;
 export const V0_INTERCOM_MS = 20_000;
 export const V0_ASK_MAX_MS: number = 9 * 60_000;
 export const V0_INTERCOM_FEATURE = "roam-intercom-v0";
@@ -65,6 +66,8 @@ export interface V0ToolOptions {
   prepare: V0Prepare;
 }
 
+const MAX_PEER_ALIAS_CHARS = 255;
+
 const codes: ReadonlySet<string> = new Set<V0Code>([
   "moving", "offline", "no-match", "ambiguous", "incomplete", "changed", "unreachable",
   "not-configured", "unauthorized", "unsupported", "invalid", "self", "reply-only", "invalid-config", "home-unreadable",
@@ -118,23 +121,37 @@ function selector(value: unknown): value is V0Selector {
     && (value.by === "id" || value.by === "name") && identifier(value.value);
 }
 
+export function v0TextFits(value: unknown): value is string {
+  return typeof value === "string" && Buffer.byteLength(JSON.stringify(value), "utf8") - 2 <= V0_TEXT_BYTES;
+}
+
 function text(value: unknown): value is V0Text {
   return record(value) && fields(value, ["id", "timestamp", "text"])
     && identifier(value.id) && Number.isSafeInteger(value.timestamp) && Number(value.timestamp) >= 0
-    && typeof value.text === "string";
+    && v0TextFits(value.text);
+}
+
+export function v0BrokerOrigin(from: V0AgentRequest["from"], machineAlias: string): RemoteSessionInfo {
+  return {
+    remote: true, id: from.address.sessionId, address: from.address,
+    machineId: from.machineId, machineAlias, homeEpoch: from.homeEpoch,
+    activationEpoch: from.endpointEpoch, endpointEpoch: from.endpointEpoch,
+    ...(from.name === null ? {} : { name: from.name }),
+    cwd: "", model: "", startedAt: 0, lastActivity: 0,
+  };
 }
 
 function remote(value: unknown): value is RemoteSessionInfo {
   return isRemoteSessionInfo(value) && address(value.address) && identifier(value.id)
-    && identifier(value.machineId) && identifier(value.machineAlias, 255)
+    && identifier(value.machineId) && identifier(value.machineAlias, MAX_PEER_ALIAS_CHARS)
     && identifier(value.activationEpoch) && epoch(value.homeEpoch)
     && (value.name === undefined || identifier(value.name));
 }
 
-function withinLimit(value: unknown): boolean {
+function withinLimit(value: unknown, extraBytes = 0): boolean {
   try {
     const encoded = JSON.stringify(value);
-    return typeof encoded === "string" && Buffer.byteLength(encoded, "utf8") <= V0_INTERCOM_BYTES;
+    return typeof encoded === "string" && Buffer.byteLength(encoded, "utf8") + extraBytes <= V0_INTERCOM_BYTES;
   } catch {
     return false;
   }
@@ -152,7 +169,7 @@ function reply(value: Record<string, unknown>, prefix: readonly string[]): boole
       return fields(value, [...prefix, "kind", "id"]) && identifier(value.id);
     case "replied":
       return fields(value, [...prefix, "kind", "id", "replyId", "text"])
-        && identifier(value.id) && identifier(value.replyId) && typeof value.text === "string";
+        && identifier(value.id) && identifier(value.replyId) && v0TextFits(value.text);
     default:
       return false;
   }
@@ -182,7 +199,14 @@ export function parseV0AgentRequest(value: unknown): V0AgentRequest | null {
   if (value.kind === "lookup" && fields(value, [...prefix, "selector"]) && selector(value.selector)) return value as V0AgentRequest;
   if ((value.kind === "deliver" || value.kind === "ask")
       && fields(value, [...prefix, "target", "message", ...(value.kind === "ask" ? ["timeoutMs"] : [])])
-      && endpoint(value.target) && text(value.message) && (value.kind !== "ask" || epoch(value.timeoutMs))) return value as V0AgentRequest;
+      && endpoint(value.target) && text(value.message) && (value.kind !== "ask" || epoch(value.timeoutMs))) {
+    const request = value as Exclude<V0AgentRequest, { kind: "lookup" }>;
+    const { version, toMachineId, requestId, from, ...operation } = request;
+    const projected = { type: "roam_v0", requestId: "0".repeat(36), from: v0BrokerOrigin(from, ""), ...operation };
+    // The receiving machine supplies the alias. JSON can escape each code
+    // unit as six bytes, so reserve that space before the first hop.
+    if (withinLimit(projected, 6 * MAX_PEER_ALIAS_CHARS)) return request;
+  }
   return null;
 }
 

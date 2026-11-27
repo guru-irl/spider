@@ -16,7 +16,7 @@ import { InlineMessageComponent } from "./ui/inline-message.js";
 import { getAskTimeoutMs, loadConfig, type IntercomConfig } from "./config.js";
 import { EXTENSION_BUS_FEATURE } from "./types.js";
 import type { Attachment, BrokerMessage, LocalSessionInfo, Message, MessageControl, MessageReceipt, MessageReceiptStatus, SessionInfo, SessionRegistration } from "./types.js";
-import { V0_ASK_MAX_MS, type V0Code, type V0Delivery, type V0ToolOptions } from "./roam-v0.js";
+import { v0TextFits, V0_ASK_MAX_MS, V0_TEXT_BYTES, type V0Code, type V0Delivery, type V0ToolOptions } from "./roam-v0.js";
 import {
   INTERCOM_EXTENSION_REGISTER_EVENT,
   INTERCOM_EXTENSION_REGISTRY_READY_EVENT,
@@ -40,6 +40,10 @@ import { openProjectPane, resolveTargetInCwd, waitForProjectSession, type Projec
 
 export const V0_MAC_REPLY_ONLY_MESSAGE: string = "Sessions on the Mac accept messages from other machines only as replies to their own asks.";
 const V0_TRANSCRIPT_SAVE_FAILURE = "\nThe transcript entry could not be saved.";
+const V0_TEXT_TOO_LARGE = `Remote intercom text is too large. Use at most ${V0_TEXT_BYTES / 1024} KiB after JSON encoding.`;
+function v0TextLimitError() {
+  return { content: [{ type: "text" as const, text: V0_TEXT_TOO_LARGE }], details: { error: true, code: "invalid" } };
+}
 const V0_REFUSAL_TEXT: Record<V0Code, string> = {
   moving: "Session is moving. Retry after it settles.",
   offline: "Session is not connected. No message was queued.",
@@ -2780,6 +2784,7 @@ Usage:
                   return { content: [{ type: "text", text: "Remote intercom supports text only; cwd, attachments, reply, retry, and pane options are unavailable." }],
                     details: { error: true, code: "unsupported" } };
                 }
+                if (!v0TextFits(message)) return v0TextLimitError();
                 if (confirmSend && !(await ctx.ui.confirm("Send message", `Send to "${plan.label}":\n\n${message}${attachmentText}`))) {
                   return { content: [{ type: "text", text: "Message cancelled by user" }], details: {} };
                 }
@@ -2973,6 +2978,7 @@ Usage:
                   return { content: [{ type: "text", text: "Remote intercom supports text only; cwd, attachments, reply, retry, and pane options are unavailable." }],
                     details: { error: true, code: "unsupported" } };
                 }
+                if (!v0TextFits(message)) return v0TextLimitError();
                 if (config.confirmSend && ctx.hasUI && !(await ctx.ui.confirm("Send message", `Send to "${plan.label}":\n\n${message}`))) {
                   return { content: [{ type: "text", text: "Message cancelled by user" }], details: {} };
                 }

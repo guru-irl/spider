@@ -6,10 +6,10 @@ import type { MachineId } from "@spider/db-core/roam/types";
 import { HerdrError } from "@spider/herdr/client/parse";
 import { requestV0Broker } from "@spider/intercom/broker/roam-v0-client";
 import {
-  parseV0AgentReply, parseV0AgentRequest, v0ExplicitName, V0_ASK_MAX_MS, V0_INTERCOM_BYTES, V0_INTERCOM_MS,
+  parseV0AgentReply, parseV0AgentRequest, v0BrokerOrigin, v0ExplicitName, V0_ASK_MAX_MS, V0_INTERCOM_BYTES, V0_INTERCOM_MS,
   type V0AgentReply, type V0AgentRequest, type V0Code, type V0Endpoint, type V0Prepare, type V0Refused, type V0Reply, type V0Text,
 } from "@spider/intercom/roam-v0";
-import type { LocalSessionInfo, RemoteSessionInfo } from "@spider/intercom/types";
+import type { LocalSessionInfo } from "@spider/intercom/types";
 import { readPeer } from "../config";
 import { DEFAULT_LIMITS, type Peer, type RoamConfig, type Transport } from "../contracts";
 import { loadHerdrConfig } from "../host-config";
@@ -111,15 +111,6 @@ function pinLocal(from: LocalSessionInfo, target: LocalSessionInfo) {
   if (target.id === from.id || from.address && target.address?.sessionId === from.address.sessionId) return refused("self");
   if (!target.endpointEpoch) return refused("changed");
   return { kind: "local" as const, target: { id: target.id, endpointEpoch: target.endpointEpoch } };
-}
-function origin(request: V0AgentRequest, source: AcceptedPeer): RemoteSessionInfo {
-  return {
-    remote: true, id: request.from.address.sessionId, address: request.from.address,
-    machineId: request.from.machineId, machineAlias: source.alias, homeEpoch: request.from.homeEpoch,
-    activationEpoch: request.from.endpointEpoch, endpointEpoch: request.from.endpointEpoch,
-    ...(request.from.name === null ? {} : { name: request.from.name }),
-    cwd: "", model: "", startedAt: 0, lastActivity: 0,
-  };
 }
 function matching(endpoint: V0Endpoint, request: Extract<V0AgentRequest, { kind: "lookup" }>): boolean {
   return endpoint.address.scopeId === request.from.address.scopeId &&
@@ -427,11 +418,11 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
           { kind: "lookup", scopeId: request.from.address.scopeId, selector: request.selector }, signal));
       } else if (request.kind === "deliver") {
         result = await bounded(deliveryDeadline, undefined, signal => broker(configured.agentDir,
-          { kind: "deliver", from: origin(request, source), target: request.target, message: request.message }, signal));
+          { kind: "deliver", from: v0BrokerOrigin(request.from, source.alias), target: request.target, message: request.message }, signal));
       } else {
         const remaining = Math.floor(askDeadline! - performance.now());
         if (remaining <= 0 || performance.now() >= deliveryDeadline) return envelope(refused("unreachable"));
-        result = await broker(configured.agentDir, { kind: "ask", from: origin(request, source), target: request.target,
+        result = await broker(configured.agentDir, { kind: "ask", from: v0BrokerOrigin(request.from, source.alias), target: request.target,
           message: request.message, timeoutMs: Math.min(remaining, V0_ASK_MAX_MS) });
       }
     } catch {

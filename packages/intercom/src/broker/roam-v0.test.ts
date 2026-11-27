@@ -97,6 +97,29 @@ describe("roaming intercom envelopes", () => {
     expect(parseV0BrokerRequest({ ...brokerAsk, from: { ...origin, address: { ...origin.address, sessionId: "someone-else" } } })).toBeNull();
   });
 
+  it("shares a text budget across both request and reply envelopes, including escapes", () => {
+    const response = { kind: "replied", id: "question-1", replyId: "reply-1" };
+    for (const text of ["🦊".repeat(63 * 1024), "\\".repeat(125 * 1024)]) {
+      expect(parseV0BrokerRequest({ ...brokerAsk, message: { ...message, text } })).toBeNull();
+      expect(parseV0AgentRequest({ ...agentAsk, message: { ...message, text } })).toBeNull();
+      expect(parseV0BrokerReply({ type: "roam_v0_result", requestId: "request-1", ...response, text })).toBeNull();
+      expect(parseV0AgentReply({ version: 1, requestId: "request-1", machineId: "machine-2", ...response, text })).toBeNull();
+    }
+    const text = "a".repeat(248 * 1024);
+    expect(parseV0BrokerRequest({ ...brokerAsk, message: { ...message, text } })).not.toBeNull();
+    expect(parseV0AgentRequest({ ...agentAsk, message: { ...message, text } })).not.toBeNull();
+  });
+
+  it("rejects a near-cap question before its extra broker metadata would make it invalid", () => {
+    const scopeId = "例".repeat(1024);
+    const frame = { ...agentAsk, from: { ...agentAsk.from, address: { sessionId: "送".repeat(256), scopeId },
+      endpointEpoch: "端".repeat(256), name: "名".repeat(256) }, target: { ...agentAsk.target,
+      address: { sessionId: "受".repeat(256), scopeId }, endpointEpoch: "先".repeat(256), name: "名".repeat(256) },
+      message: { ...message, text: "a".repeat(244 * 1024) } };
+    expect(Buffer.byteLength(JSON.stringify(frame))).toBeLessThan(256 * 1024);
+    expect(parseV0AgentRequest(frame)).toBeNull();
+  });
+
   it("bounds encoded requests and replies, including multibyte text", () => {
     expect(parseV0BrokerRequest({ ...brokerAsk, message: { ...message, text: "🦊".repeat(70_000) } })).toBeNull();
     expect(parseV0AgentReply({ version: 1, requestId: "request-1", machineId: "machine-2", kind: "replied", id: "question-1", replyId: "reply-1", text: "x".repeat(262_144) })).toBeNull();
@@ -432,7 +455,10 @@ describe("private roaming broker", () => {
     expect(await requestV0Broker(getAgentDirPath(), op)).toEqual({ kind: "refused", code: "invalid" });
     expect(await ben.send("sender", { text: "bad", attachments: [{ type: "snippet", name: "file", content: "data" }], replyTo: "unique-question", messageId: "attachment-reply" }))
       .toMatchObject({ delivered: false, code: "E_INVALID_MESSAGE" });
-    expect(await ben.send("sender", { text: "x".repeat(262_144), replyTo: "unique-question", messageId: "oversized-reply" }))
+    const replyId = "oversized-reply";
+    const shell = { type: "roam_v0_result", requestId: "a".repeat(36), kind: "replied", id: "unique-question", replyId, text: "" };
+    const nearCap = "x".repeat(256 * 1024 - Buffer.byteLength(JSON.stringify(shell)));
+    expect(await ben.send("sender", { text: nearCap, replyTo: "unique-question", messageId: replyId }))
       .toMatchObject({ delivered: false, code: "E_INVALID_MESSAGE" });
     expect(await ben.send("sender", { text: "ok", replyTo: "unique-question", messageId: "valid-reply" })).toMatchObject({ delivered: true });
     expect(await pending).toEqual({ kind: "replied", id: "unique-question", replyId: "valid-reply", text: "ok" });

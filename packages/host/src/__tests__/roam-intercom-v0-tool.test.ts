@@ -1162,6 +1162,22 @@ it("refuses remote-only unsupported options without dispatching", async () => {
   } finally { await f.cleanup(); }
 });
 
+it.each(["send", "ask"] as const)("refuses oversized remote %s text before dispatch", async action => {
+  const messages: V0Text[] = [];
+  const prepare: V0Prepare = async () => ({ kind: "remote", label: "b/ben",
+    async send(message) { messages.push(message); return { kind: "socket_delivered", id: message.id }; },
+    async ask(message) { messages.push(message); return { kind: "no_reply", id: message.id }; },
+  });
+  const f = await fixture({ homeEpoch: () => 7, prepare });
+  try {
+    const text = "🦊".repeat(63 * 1024);
+    const result = await f.tool.execute(action, { action, to: "ben", message: text }, new AbortController().signal, undefined, f.ctx);
+    expect(result.details).toMatchObject({ error: true, code: "invalid" });
+    expect(result.content[0].text).toContain("too large");
+    expect(messages).toEqual([]);
+  } finally { await f.cleanup(); }
+});
+
 it("refuses unsupported remote ask options without dispatching", async () => {
   const questions: V0Text[] = [];
   const prepare: V0Prepare = async () => ({

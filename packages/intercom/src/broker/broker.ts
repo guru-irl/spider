@@ -1,5 +1,5 @@
 import { createFederation } from "./federation.js";
-import { parseV0BrokerReply, parseV0BrokerRequest, v0ExplicitName, V0_ASK_MAX_MS, V0_INTERCOM_FEATURE, type V0Delivery, type V0Endpoint } from "../roam-v0.js";
+import { parseV0BrokerReply, parseV0BrokerRequest, v0ExplicitName, v0TextFits, V0_ASK_MAX_MS, V0_INTERCOM_FEATURE, type V0Delivery, type V0Endpoint } from "../roam-v0.js";
 import { MOVE_FENCE_FEATURE, type IntercomIntakeAction, type IntercomIntakeFence } from "../protocol.js";
 import { isIntercomIntakeAction, isIntercomIntakeFence } from "./protocol.js";
 import { RECEIPT_ACK_FEATURE, RECEIPT_EVIDENCE_FEATURE, compatibleReceipt, FEDERATION_FEATURE, FREEZE_BLOCKERS_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, addressKey, sessionAddress, type SessionAddress, type RemoteSessionInfo, type FederationDispatchResult, type FederationBrokerMessage, type SessionEndpoint, type LocalSessionInfo } from "../protocol.js";
@@ -487,7 +487,7 @@ class IntercomBroker {
       replyId: message.id, text: message.content.text };
     if (message.content.attachments !== undefined || message.expectsReply || message.supersedes || message.retryOf || message.provenance ||
         !parseV0BrokerReply(response)) {
-      fail("Invalid remote reply", "E_INVALID_MESSAGE"); return true;
+      fail(v0TextFits(response.text) ? "Invalid remote reply" : "Remote reply text is too large.", "E_INVALID_MESSAGE"); return true;
     }
     try {
       writeMessage(ask.socket, response);

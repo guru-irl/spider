@@ -933,12 +933,12 @@ describe("roaming v0 intercom", () => {
     expect(await createV0Intercom(root, { broker }).handle(findBen)).toMatchObject({ kind: "refused", code: "unreachable" });
   });
 
-  it("returns unknown if an accepted ask reply cannot fit in the agent envelope", async () => {
+  it("rejects oversized broker replies even if a broker returns one", async () => {
     const { root } = boxFixture();
     vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
     const prefix = { type: "roam_v0_result", requestId: "ask-size", kind: "replied", id: message.id, replyId: "reply-1", text: "" };
     const text = "x".repeat(V0_INTERCOM_BYTES - Buffer.byteLength(JSON.stringify(prefix)));
-    expect(parseV0BrokerReply({ ...prefix, text })).not.toBeNull();
+    expect(parseV0BrokerReply({ ...prefix, text })).toBeNull();
     let questions = 0;
     const broker = async (_dir: string, op: V0BrokerOp): Promise<V0Reply> => {
       if (op.kind !== "ask") throw new Error("expected ask");

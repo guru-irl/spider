@@ -475,6 +475,35 @@ it("refuses unsupported remote reply options and leaves the ask pending", async 
   } finally { abort.abort(); await pending; await f.cleanup(); }
 });
 
+it("does not answer a remote ask after the replier's home epoch changes", async () => {
+  let epoch = 7;
+  const f = await fixture({ homeEpoch: () => epoch, prepare: async () => ({ kind: "legacy" }) });
+  const from: RemoteSessionInfo = {
+    remote: true, id: "peer-session", address: { sessionId: "peer-session", scopeId: null },
+    machineId: "peer-machine", machineAlias: "peer", homeEpoch: 3,
+    activationEpoch: "peer-connection", endpointEpoch: "peer-connection", name: "ben",
+    cwd: "", model: "", startedAt: 0, lastActivity: 0,
+  };
+  const abort = new AbortController();
+  let pending: ReturnType<typeof requestV0Broker> | undefined;
+  try {
+    const own = (await observer.listSessions()).find(session => session.id === "sender-session")!;
+    pending = requestV0Broker(getAgentDirPath(), {
+      kind: "ask", from,
+      target: { address: { sessionId: "sender-session", scopeId: null }, name: "alice", homeEpoch: 7, endpointEpoch: own.endpointEpoch! },
+      message: { id: "reply-epoch-question", timestamp: 123, text: "hello" }, timeoutMs: 2000,
+    }, abort.signal);
+    await vi.waitFor(() => expect(f.inbound.some(message => message.customType === "intercom_message")).toBe(true));
+    epoch = 8;
+    const stale = await f.tool.execute("reply", { action: "reply", replyTo: "reply-epoch-question", message: "stale answer" }, new AbortController().signal, undefined, f.ctx);
+    expect(stale.details).toMatchObject({ error: true, code: "changed" });
+    epoch = 7;
+    const reply = await f.tool.execute("reply", { action: "reply", replyTo: "reply-epoch-question", message: "current answer" }, new AbortController().signal, undefined, f.ctx);
+    expect(reply.details).toMatchObject({ delivered: true, replyTo: "reply-epoch-question" });
+    expect(await pending).toMatchObject({ kind: "replied", id: "reply-epoch-question", text: "current answer" });
+  } finally { abort.abort(); await pending; await f.cleanup(); }
+});
+
 it("replies to a peer ask without consulting legacy home routing", async () => {
   const f = await fixture({ homeEpoch: () => 7, prepare: async () => ({ kind: "legacy" }) }, { homeUnavailable: true });
   const from: RemoteSessionInfo = {

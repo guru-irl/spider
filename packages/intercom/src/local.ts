@@ -3148,7 +3148,15 @@ Usage:
                 details: { error: true },
               };
             }
-            if (!v0 || !target.from.remote) await resolveSessionTarget(connectedClient, target.from.id);
+            if (v0 && target.from.remote) {
+              const generation = runtimeGeneration, ownSessionId = currentSessionId;
+              const sessions = await connectedClient.listSessions();
+              const from = sessions.find((session): session is LocalSessionInfo => !session.remote && session.id === connectedClient.sessionId && session.address?.sessionId === ownSessionId);
+              if (!ownSessionId || !from || from.v0HomeEpoch === undefined || v0.homeEpoch(ownSessionId) !== from.v0HomeEpoch ||
+                  !getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected()) {
+                return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
+              }
+            } else await resolveSessionTarget(connectedClient, target.from.id);
             const result = await connectedClient.send(target.from.id, {
               text: message,
               attachments,

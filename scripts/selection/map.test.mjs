@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { buildSelectionMap, shardProblems } from './map.mjs';
 
@@ -9,11 +12,12 @@ const b = 'packages/b/src/b.test.ts';
 const c = 'packages/c/src/c.test.ts';
 const shared = 'packages/shared/src/shared.ts';
 const own = 'packages/b/src/b.ts';
-const record = (reads, result = 'passed', ms = 10) => ({ reads, result, ms });
+const record = (reads, result = 'passed', ms = 10, unresolved = []) => ({ reads, result, ms, unresolved });
 const shard = (records, extra = {}) => ({
   reportedFiles: Object.keys(records),
   records: Object.fromEntries(Object.entries(records).map(([file, value], i) => [file, { workerPids: [123 + i], ...value }])),
-  stats: { hookErrors: 0, malformedSnapshots: 0 }, ...extra,
+  stats: { hookErrors: 0, malformedSnapshots: 0, unresolvedBundles: 0,
+    unresolvedGroups: { checkout: 0, temporary: 0, other: 0 } }, ...extra,
 });
 const build = (shards, expectedFiles = shards.flatMap(shard => shard.reportedFiles)) =>
   buildSelectionMap({ shards, expectedFiles, ...metadata });
@@ -34,10 +38,60 @@ test('indexes deduplicated source paths across shards in stable order', () => {
 test('keeps failure and skip results with their reported durations', () => {
   const { map } = build([shard({ [a]: record([], 'passed', 15), [b]: record([], 'failed', 47), [c]: record([], 'skipped', 0) })]);
   assert.deepEqual(map.tests, {
-    [a]: { reads: [], ms: 15, result: 'passed' },
-    [b]: { reads: [], ms: 47, result: 'failed' },
-    [c]: { reads: [], ms: 0, result: 'skipped' },
+    [a]: { reads: [], unresolved: [], ms: 15, result: 'passed' },
+    [b]: { reads: [], unresolved: [], ms: 47, result: 'failed' },
+    [c]: { reads: [], unresolved: [], ms: 0, result: 'skipped' },
   });
+});
+
+test('publishes the unresolved bundles of the tests that ran them', () => {
+  const unresolved = ['<tmp>/fixture/dist/out.mjs', 'packages/a/dist/bundle.js'];
+  const { map } = build([shard({ [a]: record([shared], 'passed', 10, unresolved), [b]: record([]) })]);
+  assert.deepEqual(map.tests[a].unresolved, unresolved);
+  assert.deepEqual(map.tests[b].unresolved, []);
+});
+
+test('aggregates unresolved observation groups across shards', () => {
+  const first = shard({ [a]: record([]) }, { stats: { hookErrors: 0, malformedSnapshots: 0,
+    unresolvedBundles: 5, unresolvedGroups: { checkout: 2, temporary: 3, other: 0 } } });
+  const second = shard({ [b]: record([]) }, { stats: { hookErrors: 0, malformedSnapshots: 0,
+    unresolvedBundles: 5, unresolvedGroups: { checkout: 1, temporary: 0, other: 4 } } });
+  assert.deepEqual(build([first, second]).unresolvedGroups, { checkout: 3, temporary: 3, other: 4 });
+});
+
+test('writes unresolved observation counts to the job summary', t => {
+  const scratch = resolve('.spider/scratch/selection');
+  mkdirSync(scratch, { recursive: true });
+  const dir = mkdtempSync(join(scratch, 'map-summary-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const recordFile = join(dir, 'shard.json');
+  const inventory = join(dir, 'inventory.json');
+  const summary = join(dir, 'summary.md');
+  const data = shard({ [a]: record([], 'passed', 10, ['dist/example.js']) },
+    { stats: { hookErrors: 0, malformedSnapshots: 0, unresolvedBundles: 3,
+      unresolvedGroups: { checkout: 1, temporary: 2, other: 0 } } });
+  writeFileSync(recordFile, JSON.stringify(data));
+  writeFileSync(inventory, JSON.stringify([a]));
+  const result = spawnSync(process.execPath, ['scripts/selection/map.mjs', join(dir, 'map.json'), inventory, recordFile], {
+    env: { ...process.env, GITHUB_SHA: metadata.commit, GITHUB_RUN_ID: metadata.runId, GITHUB_STEP_SUMMARY: summary }, encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(readFileSync(summary, 'utf8'), /1 checkout, 2 temporary, 0 other/);
+});
+
+test('rejects shard counts that omit unresolved observations', () => {
+  const bad = shard({ [a]: record([]) }, { stats: { hookErrors: 0, malformedSnapshots: 0, unresolvedBundles: 2,
+    unresolvedGroups: { checkout: 0, temporary: 1, other: 0 } } });
+  const result = build([bad]);
+  assert.equal(result.map, null);
+  assert.match(result.problems.join('\n'), /unresolved.*count/i);
+});
+
+test('rejects a record with no unresolved list', () => {
+  const { unresolved, ...incomplete } = record([shared]);
+  const result = build([shard({ [a]: incomplete })]);
+  assert.equal(result.map, null);
+  assert.match(result.problems.join('\n'), /unresolved.*a\.test\.ts/i);
 });
 
 test('rejects a Vitest result without a record for the file', () => {
@@ -59,14 +113,14 @@ test('rejects two test files sharing a Vitest fork', () => {
 });
 
 test('rejects a shard that logged a hook error', () => {
-  const error = shard({ [a]: record([shared]) }, { stats: { hookErrors: 2, malformedSnapshots: 0 } });
+  const error = shard({ [a]: record([shared]) }, { stats: { hookErrors: 2, malformedSnapshots: 0, unresolvedBundles: 0, unresolvedGroups: { checkout: 0, temporary: 0, other: 0 } } });
   const result = build([error]);
   assert.equal(result.map, null);
   assert.equal(result.hookErrors, 2);
 });
 
 test('rejects a shard with an unreadable snapshot', () => {
-  const error = shard({ [a]: record([shared]) }, { stats: { hookErrors: 0, malformedSnapshots: 1 } });
+  const error = shard({ [a]: record([shared]) }, { stats: { hookErrors: 0, malformedSnapshots: 1, unresolvedBundles: 0, unresolvedGroups: { checkout: 0, temporary: 0, other: 0 } } });
   assert.match(shardProblems(error).join('\n'), /malformed snapshot/i);
   assert.equal(build([error]).map, null);
 });

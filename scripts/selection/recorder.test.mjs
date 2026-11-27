@@ -42,11 +42,12 @@ function fixtureRecords(t, { snapshots = [], results = [], hookErrors = '' } = {
     startTime: 50, endTime: 75, status: 'passed', ...row, name: join(root, row.name),
   })) }));
   for (const [i, snapshot] of snapshots.entries()) {
-    const scripts = snapshot.paths.map(path => ({ kind: 'source', url: resolve(root, path) }));
+    const scripts = snapshot.scripts?.map(script => ({ ...script, url: resolve(root, script.url) }))
+      ?? snapshot.paths.map(path => ({ kind: 'source', url: resolve(root, path) }));
     writeFileSync(join(raw, `${i + 1}-abc.json`), JSON.stringify({ ...snapshot, scripts }));
   }
   if (hookErrors) writeFileSync(join(raw, 'hook-errors.ndjson'), hookErrors);
-  return reduce({ root, rawDir: raw, mapsDir: maps, reportFile });
+  return reduce({ root, tmpRoot: join(root, '.spider/scratch/tmp'), rawDir: raw, mapsDir: maps, reportFile });
 }
 
 test('unions direct reads from a fork, child process, and worker thread for the owning test', t => {
@@ -60,8 +61,77 @@ test('unions direct reads from a fork, child process, and worker thread for the 
       { test: other, worker: true, pid: 5, paths: ['src/other.ts'] },
     ],
   });
-  assert.deepEqual(records[id], { reads: ['src/child.ts', 'src/main.ts', 'src/thread.ts'], workerPids: [3], ms: 25, result: 'passed' });
+  assert.deepEqual(records[id], { reads: ['src/child.ts', 'src/main.ts', 'src/thread.ts'], unresolved: [], workerPids: [3], ms: 25, result: 'passed' });
   assert.deepEqual(records[other].reads, ['src/other.ts']);
+});
+
+test('keeps unmapped checkout bundles once per test even when multiple processes run them', t => {
+  const script = { kind: 'bundle', url: 'packages/example/dist/bundle.js', sha256: 'unmatched' };
+  const { records, stats } = fixtureRecords(t, {
+    results: [{ name: id }],
+    snapshots: [{ test: id, worker: true, pid: 3, scripts: [script] }, { test: id, pid: 4, scripts: [script] }],
+  });
+  assert.deepEqual(records[id].unresolved, ['packages/example/dist/bundle.js']);
+  assert.equal(stats.unresolvedBundles, 2);
+});
+
+test('normalizes temporary bundles relative to the temporary root even inside the checkout', t => {
+  const { records } = fixtureRecords(t, {
+    results: [{ name: id }],
+    snapshots: [{ test: id, worker: true, pid: 3, scripts: [
+      { kind: 'bundle', url: '.spider/scratch/tmp/probe-abc/dist/fixture.mjs', sha256: 'unmatched' },
+    ] }],
+  });
+  assert.deepEqual(records[id].unresolved, ['<tmp>/probe-abc/dist/fixture.mjs']);
+});
+
+test('normalizes generated worktree and package scratch bundles as temporary paths', t => {
+  const { records, stats } = fixtureRecords(t, {
+    results: [{ name: id }],
+    snapshots: [{ test: id, worker: true, pid: 3, scripts: [
+      { kind: 'bundle', url: '.spider/scratch/h/42/dist/cli.mjs', sha256: 'unmatched-1' },
+      { kind: 'bundle', url: 'packages/example/.spider/scratch/process-1/dist/cli.mjs', sha256: 'unmatched-2' },
+    ] }],
+  });
+  assert.deepEqual(records[id].unresolved, ['<tmp>/h/42/dist/cli.mjs', '<tmp>/process-1/dist/cli.mjs']);
+  assert.deepEqual(stats.unresolvedGroups, { checkout: 0, temporary: 2, other: 0 });
+});
+
+test('decodes file URLs and does not mistake a temporary-root prefix for the root', t => {
+  const { root, raw, maps, workspace } = fixture(t);
+  writeFileSync(join(root, 'dist/reference.mjs'), 'export {};');
+  writeFileSync(join(maps, 'reference.mjs.map'), JSON.stringify({ version: 3, sources: [], names: [], mappings: '' }));
+  const reportFile = join(workspace, 'vitest.json');
+  writeFileSync(reportFile, JSON.stringify({ testResults: [{ name: join(root, id), status: 'passed', startTime: 0, endTime: 1 }] }));
+  const url = new URL('file://' + join(root, 'tmp-other/a b.mjs'));
+  writeFileSync(join(raw, '1-abc.json'), JSON.stringify({ test: id, worker: true, pid: 3,
+    scripts: [{ kind: 'bundle', url: url.href, sha256: 'unmatched' }] }));
+  const { records } = reduce({ root, tmpRoot: join(root, 'tmp'), rawDir: raw, mapsDir: maps, reportFile });
+  assert.deepEqual(records[id].unresolved, ['tmp-other/a b.mjs']);
+});
+
+test('counts unresolved observations by checkout, temporary, and other paths', t => {
+  const { stats } = fixtureRecords(t, {
+    results: [{ name: id }],
+    snapshots: [{ test: id, worker: true, pid: 3, scripts: [
+      { kind: 'bundle', url: 'dist/app.mjs', sha256: 'unmatched-1' },
+      { kind: 'bundle', url: '.spider/scratch/tmp/fixture/dist/app.mjs', sha256: 'unmatched-2' },
+      { kind: 'bundle', url: '/outside/dist/app.mjs', sha256: 'unmatched-3' },
+    ] }],
+  });
+  assert.deepEqual(stats.unresolvedGroups, { checkout: 1, temporary: 1, other: 1 });
+});
+
+test('does not mark a bundle unresolved when its hash matches an archived map', t => {
+  const hash = createHash('sha256').update('export {};').digest('hex');
+  const { records, stats } = fixtureRecords(t, {
+    results: [{ name: id }],
+    snapshots: [{ test: id, worker: true, pid: 3, scripts: [
+      { kind: 'bundle', url: 'dist/reference.mjs', sha256: hash },
+    ] }],
+  });
+  assert.deepEqual(records[id].unresolved, []);
+  assert.equal(stats.unresolvedBundles, 0);
 });
 
 test('keeps only repository source paths', t => {

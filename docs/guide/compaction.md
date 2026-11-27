@@ -11,7 +11,7 @@ Set these with the flat dotted keys described in [spider configuration](configur
 | `compaction.summaryModel` | `null` | The model that writes parent summaries, as `provider/model`. Null leaves summaries to pi. |
 | `compaction.summaryThinking` | `"high"` | The thinking level for managed parent summaries: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. |
 | `compaction.fileListCap` | `500` | The maximum number of paths in the read list, and separately in the modified list. `0` disables the file-list cap. |
-| `compaction.minSummaryOutputTokens` | `64000` | The minimum output to request for a parent summary. The model's maximum output still limits it. `0` disables the floor. |
+| `compaction.minSummaryOutputTokens` | `64000` | On pi 1.2, the minimum output to request for a managed parent summary, capped by the model maximum. `0` disables the floor. This setting has no effect on pi 1.5 and later. |
 
 The numeric settings accept non-negative safe integers. The output floor must also fit the reserve derived from it, `ceil(value / 0.8)`. Spider reads all settings when a compaction attempt starts, so an edit applies to the next compaction without a restart. These settings do not change pi's compaction reserves, thresholds or retained boundary.
 
@@ -47,7 +47,7 @@ In a parent session, if usage has crossed the configured threshold at `agent_end
 
 When a summary model is configured, it handles manual `/compact`, threshold compaction and overflow compaction through `session_before_compact`. It makes one summary call that covers the history and any split-turn prefix. It keeps pi's prepared boundary, previous summary and retry settings. The only custom instructions passed to the model are the user's `/compact` text, unchanged, or undefined if the user gave none. Spider adds no summary instructions or section limits. It never truncates the model's text, and it never re-prompts because of the text's size. In pi 1.2.0, the serializer leaves thinking blocks out of the summary input and limits each tool result there to 2000 characters.
 
-The request reserve is the larger of two values: pi's preparation reserve and `ceil(compaction.minSummaryOutputTokens / 0.8)`. Pi derives the output request limit from that reserve and caps it at the model maximum. Reasoning tokens share the request budget, so the floor does not guarantee a text length.
+The request reserve is the larger of two values: pi's preparation reserve and `ceil(compaction.minSummaryOutputTokens / 0.8)`. On pi 1.2, pi derives the output request limit from that reserve and caps it at the model maximum. On pi 1.5 and later, pi ignores the reserve for the output limit and requests the model maximum, subject to the context limit. Reasoning tokens share the request budget, so the floor does not guarantee a text length.
 
 The file lists start with the paths last touched in the current window, including nested tool calls and split-turn messages. After those come the paths in the latest checkpoint's stored order. Duplicate paths appear once, and the read-only list leaves out modified paths. The cap applies to the stored details and to the appended `<read-files>` and `<modified-files>` blocks. Spider can draw on previous ordinary pi checkpoints and on checkpoints marked `spider-compaction` or the legacy `per-model-compaction`. When no stored lists are available, spider falls back to the aggregate preparation sets, sorted.
 
@@ -61,7 +61,7 @@ The organism (spider's background learning process) drains its work before compa
 
 In a child process (`PI_SUBAGENT_CHILD=1`), configured thresholds trigger draft compaction at completed `turn_end` boundaries that have tool results. Children use their own model, thinking level and pi reserves, not the parent summary settings. They never call `ctx.compact()` and never compact at `agent_end`.
 
-In a child, compaction keeps recent context, merges the previous summary and appends one compaction draft. It skips pending context edits, spans too small to summarize and existing draft compactions. Each diagnostic reason is reported once. After a failed summary, the child waits for `keepRecentTokens` of token growth before it retries. If the token count is unknown, the back-off stays active. A failure does not change the history. Spider's copy of pi's cut-point and file-operation logic is verified against pi 1.2.0, the minimum version spider supports. On any other unverified version, spider warns that the differential fuzz tests must be rerun.
+In a child, compaction keeps recent context, merges the previous summary and appends one compaction draft. It skips pending context edits, spans too small to summarize and existing draft compactions. Each diagnostic reason is reported once. After a failed summary, the child waits for `keepRecentTokens` of token growth before it retries. If the token count is unknown, the back-off stays active. A failure does not change the history. Spider's copy of pi's cut-point and file-operation logic is verified against pi 1.2.0 and 1.5.2. On any other unverified version, spider warns that the differential fuzz tests must be rerun.
 
 ## Migrate from the standalone plugin
 

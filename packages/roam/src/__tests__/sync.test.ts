@@ -341,6 +341,7 @@ it("restart after source deletion reconciles the committed import", async () => 
 it.each(["pending", "split", "accept"] as const)("a pull resumes without lost or repeated changes when mapping publishes at %s", async point => {
   const f = fixture(); f.seed();
   expect((await service(f).sync()).every(row => row.code === 0)).toBe(true);
+  expect(f.calls).toEqual([]);
   f.seed(BOX, "session-b", "second");
   const remote = f.remotes.get(BOX)!, key = remote.worktree.storeKey;
   const checkout = join(f.global.root, "mapped-pull"); mkdirSync(checkout, { mode: 0o700 });

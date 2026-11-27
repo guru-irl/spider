@@ -4,6 +4,8 @@ import { HerdrError } from "@spider/herdr/client/parse";
 import type { AuthPorts, AuthStage } from "./auth";
 import type { Limits, Peer } from "./contracts";
 import type { ProvisionDestination, ProvisionPorts, ProvisionVerification } from "./provision-contracts";
+import { MISSING_NODE_TYPE_STRIPPING_MESSAGE } from "./provision-contracts";
+import { UnsupportedProvisioningNodeError } from "./provision-remote-script";
 import type { SelectedFile } from "./selected-files";
 import { assertCredentialSelectedFile, assertPublicSelectedFile } from "./selected-files";
 import type { ProvisionTransport } from "./transport";
@@ -20,6 +22,7 @@ export type HcProvisionAdapter = ProvisionPorts["transfer"] & { systemd: Provisi
   permissionTightening: ProvisionPorts["permissionTightening"] };
 const digest = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 function failure(error: unknown, action: string, destination: ProvisionDestination): HerdrError {
+  if (error instanceof UnsupportedProvisioningNodeError) return new HerdrError("provision-failed", MISSING_NODE_TYPE_STRIPPING_MESSAGE);
   const safe = new Set(["core-changed","invalid-config", "core-pin-required", "core-pin-invalid", "core-pin-conflict", "core-pin-changed", "core-pin-in-use", "core-pin-busy",  "core-unavailable", "machine-not-found", "machine-ambiguous", "machine-mismatch", "machine-not-enrolled",
     "peer-invalidated", "unresolved-peer", "cli-timeout", "cli-aborted", "cli-exit", "stdin-error", "missing-hc", "spawn-error", "reply-too-large",
     "enrollment-conflict", "unsafe-enrollment", "enrollment-identity-mismatch", "enrollment-publication-pending", "invalid-enrollment",

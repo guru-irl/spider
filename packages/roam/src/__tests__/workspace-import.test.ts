@@ -857,9 +857,340 @@ it("retries a journaled configuration already installed before interruption", as
   };
   await expect(prepareWorkspace(snapshot, f.destination, f.ports)).rejects.toThrow("simulated preparation interruption");
   f.ports.journal.record = record;
+  f.ports.journal.record(snapshot.moveId, "move-transfer-diagnostic", { phase: "participant-import" });
+  f.ports.journal.record(snapshot.moveId, "move-import-intent", { root: f.destination });
+  const run = f.ports.run;
+  f.ports.run = async (cwd, argv, options) => {
+    if (argv[0] === "git" && (argv[1] === "fetch" || argv[1] === "bundle")) throw new Error("import source offline");
+    return run(cwd, argv, options);
+  };
   const prepared = await prepareWorkspace(snapshot, f.destination, f.ports);
   expect(prepared.previous).toEqual(f.previous);
   expect(readFileSync(join(f.destination, ".git", "config.worktree"), "utf8")).toBe(snapshot.worktreeConfig);
+  expect(git(f.destination, "ls-files", "-t", "--", "skip/item.txt")).toBe("S skip/item.txt");
+}, 5000);
+
+it("resumes an installed new checkout without reimporting its bundle", async () => {
+  const f = fixture(), snapshot = sparseSnapshot(f), destination = join(f.root, "created-worktree");
+  const { prepareWorkspace } = await import("../workspace-import");
+  const record = f.ports.journal.record.bind(f.ports.journal);
+  f.ports.journal.record = (id, action, result) => {
+    record(id, action, result);
+    if (action === "workspace-config-installed") throw new Error("simulated preparation interruption");
+  };
+  await expect(prepareWorkspace(snapshot, destination, f.ports)).rejects.toThrow("simulated preparation interruption");
+  f.ports.journal.record = record;
+  const run = f.ports.run;
+  f.ports.run = async (cwd, argv, options) => {
+    if (argv[0] === "git" && (argv[1] === "fetch" || argv[1] === "bundle")) throw new Error("import source offline");
+    return run(cwd, argv, options);
+  };
+  const prepared = await prepareWorkspace(snapshot, destination, f.ports);
+  expect(prepared.previous).toBeNull();
+  expect(git(destination, "ls-files", "-t", "--", "skip/item.txt")).toBe("S skip/item.txt");
+}, 5000);
+
+async function interruptedInstalledFixture(f = fixture(), snapshot = sparseSnapshot(f)) {
+  const { prepareWorkspace } = await import("../workspace-import");
+  const record = f.ports.journal.record.bind(f.ports.journal);
+  f.ports.journal.record = (id, action, result) => {
+    record(id, action, result);
+    if (action === "workspace-config-installed") throw new Error("simulated preparation interruption");
+  };
+  await expect(prepareWorkspace(snapshot, f.destination, f.ports)).rejects.toThrow("simulated preparation interruption");
+  f.ports.journal.record = record;
+  return { f, snapshot, prepareWorkspace };
+}
+
+it("reimports after an installed checkout is reset to its previous state", async () => {
+  const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
+  git(f.destination, "reset", "--hard", f.previous.head);
+  rmSync(join(f.destination, "untracked.bin"), { force: true });
+  expect(git(f.destination, "rev-parse", "HEAD")).toBe(f.previous.head);
+  expect(git(f.destination, "write-tree")).toBe(f.previous.indexTree);
+  expect(tree(f.destination, f.root)).toBe(f.previous.workingTree);
+  const fetches = f.calls.filter(args => args[0] === "git" && args[1] === "fetch").length;
+  let inspectionsBeforeRollback = 0;
+  const run = f.ports.run;
+  f.ports.run = async (cwd, argv, options) => {
+    if (argv[0] === "git" && argv.includes("core.trustctime=true") &&
+        !f.ports.journal.read(snapshot.moveId).some(row => row.action === "workspace-settings-recovery-start")) {
+      inspectionsBeforeRollback++;
+    }
+    return run(cwd, argv, options);
+  };
+
+  const prepared = await prepareWorkspace(snapshot, f.destination, f.ports);
+
+  expect(inspectionsBeforeRollback).toBe(0);
+  expect(prepared.previous).toEqual(f.previous);
+  expect(git(f.destination, "rev-parse", "HEAD")).toBe(snapshot.head);
+  expect(git(f.destination, "write-tree")).toBe(snapshot.indexTree);
+  expect(tree(f.destination, f.root)).toBe(snapshot.workingTree);
+  expect(f.calls.filter(args => args[0] === "git" && args[1] === "fetch")).toHaveLength(fetches + 1);
+  const recovery = f.ports.journal.read(snapshot.moveId).find(row => row.action === "workspace-settings-recovery-complete");
+  expect(recovery?.result.workingApplied).toBe(false);
+}, 5000);
+
+it("finishes an installed checkout after a mixed reset to the previous head", async () => {
+  const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
+  git(f.destination, "reset", "--mixed", f.previous.head);
+  expect(git(f.destination, "rev-parse", "HEAD")).toBe(f.previous.head);
+  expect(git(f.destination, "write-tree")).toBe(f.previous.indexTree);
+  expect(readFileSync(join(f.destination, "tracked.txt"), "utf8")).toBe("unpushed\n");
+  expect(readFileSync(join(f.destination, "binary.bin"))).toEqual(Buffer.from([255, 9, 0]));
+  expect(readFileSync(join(f.destination, "untracked.bin"))).toEqual(Buffer.from([42, 0, 99]));
+  expect(existsSync(join(f.destination, "skip", "item.txt"))).toBe(false);
+  const fetches = f.calls.filter(args => args[0] === "git" && args[1] === "fetch").length;
+
+  const prepared = await prepareWorkspace(snapshot, f.destination, f.ports);
+
+  expect(prepared.previous).toEqual(f.previous);
+  expect(git(f.destination, "rev-parse", "HEAD")).toBe(snapshot.head);
+  expect(git(f.destination, "write-tree")).toBe(snapshot.indexTree);
+  expect(tree(f.destination, f.root)).toBe(snapshot.workingTree);
+  expect(f.calls.filter(args => args[0] === "git" && args[1] === "fetch")).toHaveLength(fetches + 1);
+  const recovery = f.ports.journal.read(snapshot.moveId).find(row => row.action === "workspace-settings-recovery-complete");
+  expect(recovery?.result.workingApplied).toBe(true);
+}, 5000);
+
+it("restores an installed checkout when only HEAD was reset", async () => {
+  const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
+  git(f.destination, "update-ref", "--no-deref", "HEAD", f.previous.head);
+  expect(git(f.destination, "write-tree")).toBe(snapshot.indexTree);
+  expect(tree(f.destination, f.root)).toBe(snapshot.workingTree);
+
+  const prepared = await prepareWorkspace(snapshot, f.destination, f.ports);
+
+  expect(prepared.previous).toEqual(f.previous);
+  expect(git(f.destination, "rev-parse", "HEAD")).toBe(snapshot.head);
+  expect(git(f.destination, "write-tree")).toBe(snapshot.indexTree);
+  expect(tree(f.destination, f.root)).toBe(snapshot.workingTree);
+  const recovery = f.ports.journal.read(snapshot.moveId).find(row => row.action === "workspace-settings-recovery-complete");
+  expect(recovery?.result.workingApplied).toBe(true);
+}, 5000);
+
+it("restores an installed checkout when only the index was reset", async () => {
+  const f = fixture();
+  git(f.destination, "fetch", "--quiet", f.snapshot.root, f.snapshot.head);
+  git(f.destination, "update-ref", "--no-deref", "HEAD", f.snapshot.head);
+  const previous = { ...f.previous, head: f.snapshot.head };
+  f.setPrevious(previous);
+  const target = { ...f.snapshot, worktreeConfig: "[core]\n\tsparseCheckout = false\n" };
+  const { snapshot, prepareWorkspace } = await interruptedInstalledFixture(f, target);
+  git(f.destination, "read-tree", previous.indexTree);
+  expect(git(f.destination, "rev-parse", "HEAD")).toBe(snapshot.head);
+  expect(git(f.destination, "write-tree")).toBe(previous.indexTree);
+  expect(tree(f.destination, f.root)).toBe(snapshot.workingTree);
+
+  const prepared = await prepareWorkspace(snapshot, f.destination, f.ports);
+
+  expect(prepared.previous).toEqual(previous);
+  expect(git(f.destination, "rev-parse", "HEAD")).toBe(snapshot.head);
+  expect(git(f.destination, "write-tree")).toBe(snapshot.indexTree);
+  expect(tree(f.destination, f.root)).toBe(snapshot.workingTree);
+  const recovery = f.ports.journal.read(snapshot.moveId).find(row => row.action === "workspace-settings-recovery-complete");
+  expect(recovery?.result.workingApplied).toBe(true);
+}, 5000);
+
+it("restores an installed checkout when a hidden sparse path loses its skip bit", async () => {
+  const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
+  git(f.destination, "update-index", "--no-skip-worktree", "--", "skip/item.txt");
+  expect(git(f.destination, "rev-parse", "HEAD")).toBe(snapshot.head);
+  expect(git(f.destination, "write-tree")).toBe(snapshot.indexTree);
+  expect(git(f.destination, "ls-files", "-t", "--", "skip/item.txt")).toBe("H skip/item.txt");
+  expect(existsSync(join(f.destination, "skip", "item.txt"))).toBe(false);
+
+  const prepared = await prepareWorkspace(snapshot, f.destination, f.ports);
+
+  expect(prepared.previous).toEqual(f.previous);
+  expect(git(f.destination, "ls-files", "-t", "--", "skip/item.txt")).toBe("S skip/item.txt");
+  expect(tree(f.destination, f.root)).toBe(snapshot.workingTree);
+  const recovery = f.ports.journal.read(snapshot.moveId).find(row => row.action === "workspace-settings-recovery-complete");
+  expect(recovery?.result.workingApplied).toBe(true);
+}, 5000);
+
+it("restores an installed non-sparse checkout when a skip bit was set", async () => {
+  const f = fixture(), target = { ...f.snapshot, worktreeConfig: "[core]\n\tsparseCheckout = false\n" };
+  const { snapshot, prepareWorkspace } = await interruptedInstalledFixture(f, target);
+  git(f.destination, "update-index", "--skip-worktree", "--", "tracked.txt");
+  expect(git(f.destination, "ls-files", "-t", "--", "tracked.txt")).toBe("S tracked.txt");
+  expect(git(f.destination, "rev-parse", "HEAD")).toBe(snapshot.head);
+  expect(git(f.destination, "write-tree")).toBe(snapshot.indexTree);
+
+  const prepared = await prepareWorkspace(snapshot, f.destination, f.ports);
+
+  expect(prepared.previous).toEqual(f.previous);
+  expect(git(f.destination, "ls-files", "-t", "--", "tracked.txt")).toBe("H tracked.txt");
+  const recovery = f.ports.journal.read(snapshot.moveId).find(row => row.action === "workspace-settings-recovery-complete");
+  expect(recovery?.result.workingApplied).toBe(true);
+}, 5000);
+
+it.each(["non-cone", "defaulted-cone", "non-sparse"] as const)("resumes a verified %s checkout without fetching", async kind => {
+  const f = fixture(), base = kind === "non-sparse" ? f.snapshot : sparseSnapshot(f);
+  const snapshot = kind === "non-sparse" ? { ...base, worktreeConfig: "[core]\n\tsparseCheckout = false\n" }
+    : kind === "defaulted-cone" ? { ...base, worktreeConfig: "[core]\n\tsparseCheckout = true\n", sparse: { enabled: true, cone: null } }
+    : { ...base, worktreeConfig: "[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = false\n", sparse: { enabled: true, cone: false } };
+  const { prepareWorkspace } = await interruptedInstalledFixture(f, snapshot);
+  const run = f.ports.run;
+  f.ports.run = async (cwd, argv, options) => {
+    if (argv[0] === "git" && (argv[1] === "fetch" || argv[1] === "bundle")) throw new Error("import source offline");
+    return run(cwd, argv, options);
+  };
+
+  const prepared = await prepareWorkspace(snapshot, f.destination, f.ports);
+
+  expect(prepared.previous).toEqual(f.previous);
+  expect(prepared.adjustments).toEqual(kind === "defaulted-cone" ? ["sparse-cone-defaulted-to-false"] : []);
+  expect(git(f.destination, "rev-parse", "HEAD")).toBe(snapshot.head);
+  expect(git(f.destination, "write-tree")).toBe(snapshot.indexTree);
+  expect(tree(f.destination, f.root)).toBe(snapshot.workingTree);
+  expect(f.ports.journal.read(snapshot.moveId).some(row => row.action === "workspace-settings-recovery-complete")).toBe(false);
+}, 5000);
+
+it("reinstalls when effective sparse settings change after installation", async () => {
+  const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
+  git(f.destination, "config", "--local", "extensions.worktreeConfig", "false");
+  expect(git(f.destination, "config", "--bool", "--get", "--default=false", "core.sparseCheckout")).toBe("false");
+
+  const prepared = await prepareWorkspace(snapshot, f.destination, f.ports);
+
+  expect(prepared.previous).toEqual(f.previous);
+  expect(git(f.destination, "config", "--bool", "--get", "core.sparseCheckout")).toBe("true");
+  expect(git(f.destination, "ls-files", "-t", "--", "skip/item.txt")).toBe("S skip/item.txt");
+  const recovery = f.ports.journal.read(snapshot.moveId).find(row => row.action === "workspace-settings-recovery-complete");
+  expect(recovery?.result.workingApplied).toBe(true);
+}, 5000);
+
+it("refuses a file edit during installed-checkout verification", async () => {
+  const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
+  const file = join(f.destination, "tracked.txt"), run = f.ports.run;
+  let edited = false;
+  f.ports.run = async (cwd, argv, options) => {
+    const result = await run(cwd, argv, options);
+    if (!edited && argv[0] === "git" && argv[1] === "write-tree" &&
+        options?.env?.GIT_INDEX_FILE?.includes(".workspace-recovery-inspect-")) {
+      writeFileSync(file, "late user edit\n");
+      edited = true;
+    }
+    return result;
+  };
+
+  await expect(prepareWorkspace(snapshot, f.destination, f.ports)).rejects.toThrow(/workspace-preparation-diverged/i);
+  expect(edited).toBe(true);
+  expect(readFileSync(file, "utf8")).toBe("late user edit\n");
+  expect(f.ports.journal.read(snapshot.moveId).some(row => row.action === "workspace-prepared")).toBe(false);
+}, 5000);
+
+it("refuses a settings change during installed-checkout verification", async () => {
+  const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
+  const config = join(f.destination, ".git", "config.worktree"), run = f.ports.run;
+  let treesWritten = 0;
+  f.ports.run = async (cwd, argv, options) => {
+    const result = await run(cwd, argv, options);
+    if (argv[0] === "git" && argv[1] === "write-tree" &&
+        options?.env?.GIT_INDEX_FILE?.includes(".workspace-inspect-")) {
+      treesWritten++;
+      if (treesWritten === 2) chmodSync(config, 0o644);
+    }
+    return result;
+  };
+
+  await expect(prepareWorkspace(snapshot, f.destination, f.ports)).rejects.toThrow("workspace-recovery-diverged: settings changed");
+  expect(treesWritten).toBe(2);
+  expect(statSync(config).mode & 0o777).toBe(0o644);
+  expect(f.ports.journal.read(snapshot.moveId).some(row => row.action === "workspace-prepared")).toBe(false);
+}, 5000);
+
+it.each(["config", "tracked", "hidden"] as const)("refuses a %s edit during interrupted settings recovery", async edit => {
+  const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
+  const file = edit === "config" ? join(f.destination, ".git", "config.worktree")
+    : edit === "tracked" ? join(f.destination, "tracked.txt") : join(f.destination, "skip", "item.txt");
+  mkdirSync(dirname(file), { recursive: true });
+  const edited = edit === "config" ? "[core]\n\tsparseCheckout = false\n" : "user edit\n";
+  writeFileSync(file, edited);
+  await expect(prepareWorkspace(snapshot, f.destination, f.ports)).rejects.toThrow(/workspace-recovery-diverged/i);
+  expect(readFileSync(file, "utf8")).toBe(edited);
+}, 5000);
+
+it("finishes an installed configuration after the preparation record reply is interrupted", async () => {
+  const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
+  const run = f.ports.run;
+  f.ports.run = async (cwd, argv, options) => {
+    if (argv[0] === "git" && argv[1] === "fetch") throw new Error("origin offline");
+    return run(cwd, argv, options);
+  };
+  const record = f.ports.journal.record.bind(f.ports.journal);
+  f.ports.journal.record = (id, action, result) => {
+    record(id, action, result);
+    if (action === "workspace-prepared") throw new Error("simulated journal reply interruption");
+  };
+  await expect(prepareWorkspace(snapshot, f.destination, f.ports)).rejects.toThrow("simulated journal reply interruption");
+  f.ports.journal.record = record;
+  const prepared = await prepareWorkspace(snapshot, f.destination, f.ports);
+  expect(prepared.previous).toEqual(f.previous);
+  expect(f.ports.journal.read(snapshot.moveId).filter(row => row.action === "workspace-prepared")).toHaveLength(1);
+  expect(git(f.destination, "ls-files", "-t", "--", "skip/item.txt")).toBe("S skip/item.txt");
+}, 5000);
+
+it("aborts a resumed installed configuration back to the original checkout", async () => {
+  const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
+  const { abortWorkspace } = await import("../workspace-import");
+  const prepared = await prepareWorkspace(snapshot, f.destination, f.ports);
+  await abortWorkspace(prepared, f.ports);
+  expect(git(f.destination, "rev-parse", "HEAD")).toBe(f.previous.head);
+  expect(git(f.destination, "write-tree")).toBe(f.previous.indexTree);
+  expect(tree(f.destination, f.root)).toBe(f.previous.workingTree);
+  expect(readFileSync(join(f.destination, "tracked.txt"), "utf8")).toBe("shared\n");
+}, 5000);
+
+it("retries an installed final-stage configuration without reimporting its bundle", async () => {
+  const f = fixture("sparse-prepared"), artifact = join(f.root, "sparse-full.bundle");
+  copyFileSync(templateSparseFullArtifact, artifact); chmodSync(artifact, 0o600);
+  f.setArtifact(artifact, "sparse-final-bundle");
+  const snapshot = { ...templateSparseFull, root: f.snapshot.root };
+  const { prepareWorkspace, abortWorkspace } = await import("../workspace-import");
+  const record = f.ports.journal.record.bind(f.ports.journal);
+  f.ports.journal.record = (id, action, result) => {
+    record(id, action, result);
+    if (action === "workspace-config-installed") throw new Error("simulated preparation interruption");
+  };
+  await expect(prepareWorkspace(snapshot, f.destination, f.ports)).rejects.toThrow("simulated preparation interruption");
+  f.ports.journal.record = record;
+  const run = f.ports.run;
+  f.ports.run = async (cwd, argv, options) => {
+    if (argv[0] === "git" && argv[1] === "bundle") throw new Error("bundle unavailable");
+    return run(cwd, argv, options);
+  };
+  const prepared = await prepareWorkspace(snapshot, f.destination, f.ports);
+  expect(prepared.previous).toEqual(f.previous);
+  expect(readFileSync(join(f.destination, "skip", "item.txt"), "utf8")).toBe("excluded\n");
+  await abortWorkspace(prepared, f.ports);
+  expect(tree(f.destination, f.root)).toBe(f.previous.workingTree);
+}, 5000);
+
+it("startup recovery rolls installed settings back without completing preparation", async () => {
+  const { f, snapshot } = await interruptedInstalledFixture();
+  const { recoverInterruptedWorkspace } = await import("../workspace-import");
+  await recoverInterruptedWorkspace(snapshot, f.destination, f.destination, f.ports);
+  expect(existsSync(join(f.destination, ".git", "config.worktree"))).toBe(false);
+  expect(existsSync(join(f.destination, ".git", "info", "sparse-checkout"))).toBe(false);
+  expect(f.ports.journal.read(snapshot.moveId).some(row => row.action === "workspace-prepared")).toBe(false);
+}, 5000);
+
+it("resumes a rollback started after installation instead of completing it forward", async () => {
+  const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
+  const { recoverInterruptedWorkspace } = await import("../workspace-import");
+  const record = f.ports.journal.record.bind(f.ports.journal);
+  f.ports.journal.record = (id, action, result) => {
+    record(id, action, result);
+    if (action === "workspace-settings-recovery-start") throw new Error("simulated recovery interruption");
+  };
+  await expect(recoverInterruptedWorkspace(snapshot, f.destination, f.destination, f.ports)).rejects.toThrow("simulated recovery interruption");
+  f.ports.journal.record = record;
+  const prepared = await prepareWorkspace(snapshot, f.destination, f.ports);
+  expect(prepared.previous).toEqual(f.previous);
+  expect(f.ports.journal.read(snapshot.moveId).some(row => row.action === "workspace-settings-recovery-complete")).toBe(true);
   expect(git(f.destination, "ls-files", "-t", "--", "skip/item.txt")).toBe("S skip/item.txt");
 }, 5000);
 

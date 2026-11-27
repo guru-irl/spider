@@ -12,7 +12,7 @@ import { barrierWatermarks } from "./barriers";
 import type { Clock, Journal, Operation, Outcome, Peer, RoamConfig, StorePort, SyncService, Transport } from "./contracts";
 import { appendMirror, type MirrorSource } from "./mirrors";
 import { isRevoked, syncHandshake, type SyncHandshake } from "./revocation";
-import { assignInitialHome, markInitialConflict } from "./homes";
+import { assignInitialHomeIfAbsent, markInitialConflict } from "./homes";
 import { readOnlyOperation, releaseJournalArtifact, type ArtifactJournal } from "./journal";
 import { agentFailureCode, isPeerConnectivityError, isPeerFailureReason, isSyncConnectivityFailure, peerFailureReason, RecoveryArtifactError, RecoveryResponseError } from "./peer-errors";
 import { loadPeerState, receiptMatches, savePeerState, sizedBytes, type PeerState, type PendingBatch } from "./peer-state";
@@ -297,7 +297,7 @@ export function createSync(ports: SyncPorts): SyncAdapter {
           const row = globalDb.prepare("SELECT stores_json FROM roam_locations WHERE session_id=?").get(id) as { stores_json: string } | undefined;
           return !row || (JSON.parse(row.stores_json) as string[]).includes(store.key);
         });
-        if (!missing) assignInitialHome(globalDb, id, [...origins][0], config.hubMachineId);
+        if (!missing) assignInitialHomeIfAbsent(globalDb, id, [...origins][0], config.hubMachineId);
         else try {
           if (!globalDb.prepare("SELECT 1 FROM session_homes WHERE session_id=?").get(id))
             withheld = parseFirstHomeWithheld({ machineId: missing.machineId, storeKind: missing.store.scope });

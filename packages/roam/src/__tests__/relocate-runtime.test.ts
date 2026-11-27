@@ -43,7 +43,7 @@ function runtimeFixture() {
  return {options,io,home,placement,launches,signalled,setHome:(v:typeof current)=>current=v,setLock:(v:typeof lock)=>lock=v,setProbe:(v:typeof probe)=>probe=v,setTerminals:(v:typeof terminals)=>terminals=v};
 }
 const readyClock = {now:Date.now,later(ms:number,fn:()=>void){const timer=setTimeout(fn,ms);return ()=>clearTimeout(timer);}};
-function supervisorRace(f: ReturnType<typeof runtimeFixture>) {
+function supervisorRace(f: ReturnType<typeof runtimeFixture>, mismatch?: "session" | "checkout" | "epoch") {
  f.options.config.machineId = destination;
  const s = state(), p = ports(s);
  f.io.launch = async launch => { f.launches.push(launch); return {terminal:"core:t"}; };
@@ -51,9 +51,10 @@ function supervisorRace(f: ReturnType<typeof runtimeFixture>) {
   if (argv[0] === "ls") return {terminals:f.launches.length ? [{address:"core:t",state:"live",pid:42}] : []};
   const launch = f.launches.at(-1);
   if (argv[0] !== "get" || !launch) throw new Error("unexpected terminal request");
-  return {address:"core:t",state:"live",pid:42,cwd:launch.placement.cwd,
+  return {address:"core:t",state:"live",pid:42,cwd:mismatch === "checkout" ? "/other/sub" : launch.placement.cwd,
    argv:["/usr/bin/env","/bin/pi","--session",launch.placement.file],
-   labels:{"spider.kind":"session","spider.session":launch.home.sessionId,"spider.machine":launch.home.machineId,"spider.roam.epoch":String(launch.home.epoch)}};
+   labels:{"spider.kind":"session","spider.session":mismatch === "session" ? "another-session" : launch.home.sessionId,
+    "spider.machine":launch.home.machineId,"spider.roam.epoch":String(mismatch === "epoch" ? launch.home.epoch-1 : launch.home.epoch)}};
  });
  f.io.terminals = createLocalIO(f.options).terminals;
  const local = createLocalRuntime(f.options,f.io);
@@ -507,6 +508,24 @@ describe("v0 local runtime",()=>{
    expect(result).toBeUndefined();
    await vi.advanceTimersByTimeAsync(1);
    const start = race.hubStart();
+   if (!start || start.ok) throw new Error("the hub start did not refuse");
+   expect(await pending).toMatchObject({ok:false,step:"start-destination",refusal:start.refusal});
+   expect(f.launches).toHaveLength(1);
+  } finally { vi.useRealTimers(); }
+ });
+ it.each(["session", "checkout", "epoch"] as const)("keeps the pending refusal for an owner from a different %s", async mismatch => {
+  vi.useFakeTimers();
+  try {
+   const f = runtimeFixture(), race = supervisorRace(f,mismatch);
+   const pending = relocate(request,race.p,{clock:readyClock,timeoutMs:1_000});
+   let result: Awaited<typeof pending> | undefined;
+   void pending.then(value=>{result=value;});
+   await race.started;
+   claimFixtureLock(f);
+   await vi.advanceTimersByTimeAsync(999);
+   expect(result).toBeUndefined();
+   await vi.advanceTimersByTimeAsync(1);
+   const start=race.hubStart();
    if (!start || start.ok) throw new Error("the hub start did not refuse");
    expect(await pending).toMatchObject({ok:false,step:"start-destination",refusal:start.refusal});
    expect(f.launches).toHaveLength(1);

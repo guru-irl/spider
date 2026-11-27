@@ -223,8 +223,20 @@ describe("v0 controls", () => {
       expect(f.prompts[0]).toContain("systemctl --user disable --now spider-roam-supervisor.service");
       expect(f.prompts[0]).toMatch(/before.*reconnect/i);
     }
-    const f = fixture(phrase); expect(await runV0Control({ kind: "set-home", session: "session-abc", machine: "box-a.invalid", force: true, confirmation: null }, { ...config, enabled: false }, catalog, f.services, f.io, { json: true })).toBe(0);
+    const f = fixture(phrase); expect(await runV0Control({ kind: "set-home", session: "session-abc", machine: "box-a.invalid", force: true, confirmation: null }, config, catalog, f.services, f.io, { json: true })).toBe(0);
     expect(f.services.setHome).toHaveBeenCalledWith({ sessionId: "session-abc", destinationMachine: box, force: true, confirmation: phrase });
+  });
+  it("refuses a disabled remote assignment before confirm but allows recovery to the Mac", async () => {
+    const disabled = { ...config, enabled: false }, remote = fixture();
+    const request = { kind: "set-home", session: "session-abc", machine: "box-a.invalid", force: true, confirmation: null } as const;
+    expect(await runV0Control(request, disabled, catalog, remote.services, remote.io, { json: true })).toBe(1);
+    expect(remote.io.confirmation).not.toHaveBeenCalled();
+    expect(remote.services.setHome).not.toHaveBeenCalled();
+    expect(JSON.parse(remote.out.join(""))).toMatchObject({ ok: false, refusal: { code: "replication-disabled", nextStep: expect.stringContaining("spider roam enable") } });
+
+    const phrase = `reassign session-abc to ${mac}; source will not run`, local = fixture(phrase);
+    expect(await runV0Control({ ...request, machine: macSelector }, disabled, catalog, local.services, local.io)).toBe(0);
+    expect(local.services.setHome).toHaveBeenCalledWith({ sessionId: "session-abc", destinationMachine: mac, force: true, confirmation: phrase });
   });
   it.each(["healthy", "stale", "unsafe"] as const)("looks up a fresh session with %s project registrations", async scenario => {
     const f = fixture();

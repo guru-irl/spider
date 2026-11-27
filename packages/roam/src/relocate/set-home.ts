@@ -1,6 +1,17 @@
+import type { RoamConfig } from "../contracts";
 import { AwayHomeRecoveryRequired } from "./away-home";
 import { MacSessionOccupied } from "./home";
-import type { RunningHome, SetHomePorts, SetHomeRequest, V0RefusalCode, V0Result } from "./types";
+import type { RunningHome, SetHomePorts, SetHomeRequest, V0Refusal, V0RefusalCode, V0Result } from "./types";
+
+type ReplicationAvailability = Pick<RoamConfig, "enabled" | "machineId">;
+
+export function setHomeReplicationRefusal(destination: string, replication: ReplicationAvailability): V0Refusal | null {
+  return replication.enabled || destination === replication.machineId ? null : {
+    code: "replication-disabled",
+    message: "The reassigned home cannot reach the box while replication is disabled.",
+    nextStep: "Run spider roam enable on the Mac, then retry set-home --force.",
+  };
+}
 
 export const forceWarning = "The old source must not run again. Unsynced conversation can be lost. " +
   "If the old source is a box that may return, close its Pi session and run " +
@@ -10,12 +21,14 @@ function refuse(code: V0RefusalCode, message: string, nextStep: string): V0Resul
   return {ok:false,refusal:{code,message,nextStep}};
 }
 
-export async function setHome(request: SetHomeRequest, ports: SetHomePorts): Promise<V0Result<RunningHome>> {
+export async function setHome(request: SetHomeRequest, ports: SetHomePorts, replication?: ReplicationAvailability): Promise<V0Result<RunningHome>> {
   const {sessionId,destinationMachine} = request;
   const phrase = `reassign ${sessionId} to ${destinationMachine}; source will not run`;
   if (!request.force || request.confirmation !== phrase) {
     return refuse("confirmation-required", forceWarning, `Type exactly: ${phrase}`);
   }
+  const cannotReplicate = replication && setHomeReplicationRefusal(destinationMachine, replication);
+  if (cannotReplicate) return { ok: false, refusal: cannotReplicate };
   const retry = `Run spider roam relocate ${sessionId} ${destinationMachine} to resume the destination copy.`;
   try {
     return await ports.withSession(sessionId, async () => {

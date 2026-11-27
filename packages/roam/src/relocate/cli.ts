@@ -2,7 +2,7 @@ import { createInterface } from "node:readline/promises";
 import type { Readable, Writable } from "node:stream";
 import type { RoamConfig } from "../contracts";
 import { resolveControlMachine, resolveControlSession } from "../commands";
-import { forceWarning } from "./set-home";
+import { forceWarning, setHomeReplicationRefusal } from "./set-home";
 import type { RelocateSuccess, RunningHome, SessionId, V0CommandIO, V0ControlServices, V0PublicControl, V0Refusal, V0Result } from "./types";
 
 export async function readV0Confirmation(prompt: string, streams: {
@@ -51,6 +51,8 @@ export async function runV0Control(control: V0PublicControl, config: RoamConfig,
   const sessionId = resolved.sessionId as SessionId;
   try {
     if (control.kind === "relocate") return emit(await services.relocate({ sessionId, destinationMachine }));
+    const cannotReplicate = setHomeReplicationRefusal(destinationMachine, config);
+    if (cannotReplicate) return refuse(cannotReplicate);
     const phrase = `reassign ${sessionId} to ${destinationMachine}; source will not run`;
     const confirmation = control.confirmation ?? await io.confirmation(`${forceWarning}\nType exactly: ${phrase}\n> `);
     if (confirmation !== phrase) return refuse({ code: "confirmation-required", message: "Home reassignment requires the exact typed confirmation.", nextStep: "Retry set-home --force interactively and type the requested phrase exactly." });

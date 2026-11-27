@@ -1,4 +1,5 @@
 import { createFederation } from "./federation.js";
+import { V0_INTERCOM_FEATURE } from "../roam-v0.js";
 import { MOVE_FENCE_FEATURE, type IntercomIntakeAction, type IntercomIntakeFence } from "../protocol.js";
 import { isIntercomIntakeAction, isIntercomIntakeFence } from "./protocol.js";
 import { RECEIPT_ACK_FEATURE, RECEIPT_EVIDENCE_FEATURE, compatibleReceipt, FEDERATION_FEATURE, FREEZE_BLOCKERS_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, addressKey, sessionAddress, type SessionAddress, type RemoteSessionInfo, type FederationDispatchResult, type FederationBrokerMessage, type SessionEndpoint, type LocalSessionInfo } from "../protocol.js";
@@ -683,7 +684,7 @@ class IntercomBroker {
         requestId: clientMessage.requestId,
         protocol: INTERCOM_PROTOCOL_NAME,
         version: INTERCOM_PROTOCOL_VERSION,
-        ...(typeof LISTEN_TARGET === "string" ? { implementation: "spider", features: [HELPER_EXCHANGE_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, FEDERATION_FEATURE] } : {}),
+        ...(typeof LISTEN_TARGET === "string" ? { implementation: "spider", features: [HELPER_EXCHANGE_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, FEDERATION_FEATURE, V0_INTERCOM_FEATURE] } : {}),
       });
       return;
     }

@@ -1,9 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import net from "node:net";
+import type { ChildProcess } from "node:child_process";
+import { startTestBroker, stopTestBroker, testBrokerEnv } from "../test-support.js";
+import { getBrokerSocketPath } from "./paths.js";
+import { createMessageReader, writeMessage } from "./framing.js";
 import {
   parseV0AgentReply,
   parseV0AgentRequest,
   parseV0BrokerReply,
   parseV0BrokerRequest,
+  V0_INTERCOM_FEATURE,
 } from "../roam-v0.js";
 
 const endpoint = {
@@ -72,5 +78,39 @@ describe("roaming intercom envelopes", () => {
   it("bounds encoded requests and replies, including multibyte text", () => {
     expect(parseV0BrokerRequest({ ...brokerAsk, message: { ...message, text: "🦊".repeat(70_000) } })).toBeNull();
     expect(parseV0AgentReply({ version: 1, requestId: "request-1", machineId: "machine-2", kind: "replied", id: "question-1", replyId: "reply-1", text: "x".repeat(262_144) })).toBeNull();
+  });
+});
+
+describe("private roaming broker", () => {
+  let broker: ChildProcess;
+
+  beforeAll(async () => {
+    broker = startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], {
+      env: testBrokerEnv(), stdio: ["ignore", "pipe", "pipe"],
+    }, "suite");
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("fixture broker startup timed out")), 4000);
+      broker.once("exit", code => { clearTimeout(timer); reject(new Error(`fixture broker exit ${code}`)); });
+      broker.stdout!.on("data", chunk => {
+        if (String(chunk).includes("Intercom broker started")) { clearTimeout(timer); resolve(); }
+      });
+    });
+  }, 5000);
+
+  afterAll(async () => { if (broker) await stopTestBroker(broker); }, 5000);
+
+  it("advertises roaming over its private Unix socket", async () => {
+    const socket = net.connect(getBrokerSocketPath());
+    try {
+      const response = new Promise<unknown>((resolve, reject) => {
+        socket.on("error", reject);
+        socket.on("data", createMessageReader(resolve, reject));
+      });
+      writeMessage(socket, { type: "health", requestId: "health-1" });
+      expect(await response).toMatchObject({
+        type: "health_ok", requestId: "health-1", implementation: "spider",
+        features: expect.arrayContaining([V0_INTERCOM_FEATURE]),
+      });
+    } finally { socket.destroy(); }
   });
 });

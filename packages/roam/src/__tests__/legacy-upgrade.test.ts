@@ -128,6 +128,8 @@ it("reports lost roaming identity as unverified even when a pending move is visi
   expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
   expect(JSON.parse(io.out.mock.calls.at(-1)![0])).toMatchObject({ reason: "legacy-upgrade-unverified", value: { enabled: null,
     diagnostics: [expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-unverified.*known-move/) })] } });
+  expect(await main(["roam", "status", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0])).toMatchObject({ reason: "status-unavailable", code: 1 });
 });
 
 it("reports an inventory as unverified when its journal changes between snapshots", async () => {

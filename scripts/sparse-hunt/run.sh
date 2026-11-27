@@ -19,7 +19,7 @@ for ((i=1; i<=repetitions; i++)); do
   stem="$out/$profile-$i"
   echo "::group::$profile repetition $i"
   code=0
-  node node_modules/vitest/vitest.mjs run --maxWorkers=2 --reporter=default --reporter=json \
+  SPARSE_HUNT_RECORD="$PWD/$stem.ndjson" node node_modules/vitest/vitest.mjs run --maxWorkers=2 --reporter=default --reporter=json \
     --outputFile="$stem.json" "${tests[@]}" 2>&1 | tee "$stem.log" || code=$?
   echo "$code" > "$stem.status"
   echo '::endgroup::'

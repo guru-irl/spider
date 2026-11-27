@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { scratchDbPath } from "@spider/db-core/testutil";
 import { DEFAULT_LIMITS, type WorkspaceImportPorts } from "../contracts";
@@ -94,6 +94,8 @@ it.each([{ version: "2.54.0.vfs.0.4", ignoreCase: false }, { version: "2.56.1", 
   expect(copiedBlobs).toBe(0);
   } finally {
     next("finished");
-    console.log("SPARSE_HUNT " + JSON.stringify({ version, phases, commands, scanMs }));
+    if (process.env.SPARSE_HUNT_RECORD) {
+      appendFileSync(process.env.SPARSE_HUNT_RECORD, JSON.stringify({ version, phases, commands, scanMs }) + "\n");
+    }
   }
 }, 5000);

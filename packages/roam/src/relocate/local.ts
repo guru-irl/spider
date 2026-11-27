@@ -240,11 +240,13 @@ export async function stopLocalSession(sessionId: SessionId, moving: MovingHome 
       }
       const {descendants:children,groups} = await io.tree(pid);
       if (!await stillOwned()) return busy([processName(root)]);
+      const liveChildren: number[] = [];
       for (const child of children) {
         const member = await io.probe(child.pid);
         if (member.kind === "unknown") return busy([processName(child)]);
-        if (member.kind === "live" && member.startIdentity === child.startIdentity) await io.signal(child.pid);
+        if (member.kind === "live" && member.startIdentity === child.startIdentity) liveChildren.push(child.pid);
       }
+      for (const child of liveChildren) await io.signal(child);
       const shutdown = observed && moving && await io.shutdown({id:`${moving.moveId}-shutdown`,machineId:moving.machineId,expectedEpoch:moving.epoch,kind:"session-shutdown",args:{sessionId,moveId:moving.moveId,v0:true}});
       if (!shutdown && (await io.probe(pid)).kind !== "absent") {
         if (!await stillOwned()) return busy([processName(root)]);

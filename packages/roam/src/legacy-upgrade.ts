@@ -43,6 +43,7 @@ async function probeProcess(pid: number): Promise<ProcessProbe> {
 export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeInventory> {
   try {
     const findings: string[] = [], unknown: string[] = [];
+    const journalKinds = new Map<string, string>();
     const configFile = join(root, "roam", "config.json"), identityFile = join(root, "roam", "machine.json");
     const configured = present(configFile), config = configured ? readLocalIdentity(root) : null;
     if (!configured && present(identityFile)) throw new Error("Missing roaming configuration");
@@ -54,6 +55,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
         const id = operation.operation_id;
         if (typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id) || !isMachineId(operation.machine_id) ||
             !(operation.result_json === null || typeof operation.result_json === "string")) throw new Error("Invalid operation record");
+        journalKinds.set(id, operation.kind);
         let result: Record<string, unknown> | null = null;
         if (typeof operation.result_json === "string") {
           const parsed: unknown = JSON.parse(operation.result_json);
@@ -106,6 +108,16 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
     if (global) try {
       const meta = global.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id?: unknown; store_key?: unknown } | undefined;
       if (!meta || config && meta.machine_id !== config.machineId || !(meta.store_key === null || meta.store_key === "global")) throw new Error("Global store identity mismatch");
+      const homeActions = global.prepare("SELECT move_id,session_id,expected_epoch,args_digest FROM roam_home_actions WHERE committed_home_json IS NULL AND cancelled=0 ORDER BY move_id").all() as
+        Array<{ move_id: unknown; session_id: unknown; expected_epoch: unknown; args_digest: unknown }>;
+      for (const action of homeActions) {
+        if (typeof action.move_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(action.move_id) ||
+            typeof action.session_id !== "string" || !action.session_id || !Number.isSafeInteger(action.expected_epoch) ||
+            typeof action.args_digest !== "string" || !/^[0-9a-f]{64}$/.test(action.args_digest)) throw new Error("Invalid legacy home action");
+        const label = `home action session ${safeId(action.session_id)} operation ${action.move_id}`;
+        if (journalKinds.get(action.move_id) !== "move") unknown.push(`${label} journal missing`);
+        else findings.push(label);
+      }
       for (const row of localEntries<unknown>(global, "mapping-intent")) {
         if (!row.value || typeof row.value !== "object" || Array.isArray(row.value)) throw new Error("Invalid mapping intent");
         const map = row.value as Record<string, unknown>;

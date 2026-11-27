@@ -17,6 +17,8 @@ export interface LocalSessionInfo {
   remote?: false;
   activationEpoch?: string;
   homeEpoch?: number | null;
+  /** Admission epoch for roaming v0, separate from legacy federation. */
+  v0HomeEpoch?: number;
   address?: SessionAddress;
   id: string;
   /** Broker-owned lifetime of this live endpoint. */

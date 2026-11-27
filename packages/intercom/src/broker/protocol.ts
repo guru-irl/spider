@@ -281,6 +281,7 @@ export function isSessionInfo(value: unknown): value is SessionInfo {
   if (value.endpointEpoch !== undefined && typeof value.endpointEpoch !== "string") {
     return false;
   }
+  if (value.v0HomeEpoch !== undefined && (!Number.isSafeInteger(value.v0HomeEpoch) || Number(value.v0HomeEpoch) < 1)) return false;
 
   if (value.name !== undefined && typeof value.name !== "string") {
     return false;
@@ -332,6 +333,7 @@ export function isSessionRegistration(value: unknown): value is SessionRegistrat
   }
 
   if (value.homeEpoch !== undefined && value.homeEpoch !== null && (!Number.isSafeInteger(value.homeEpoch) || Number(value.homeEpoch) < 1)) return false;
+  if (value.v0HomeEpoch !== undefined && (!Number.isSafeInteger(value.v0HomeEpoch) || Number(value.v0HomeEpoch) < 1 || !isSessionAddress(value.address))) return false;
   if (value.activationEpoch !== undefined && (typeof value.activationEpoch !== "string" || !value.activationEpoch)) return false;
   if (value.name !== undefined && typeof value.name !== "string") {
     return false;

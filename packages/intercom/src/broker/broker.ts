@@ -1,5 +1,5 @@
 import { createFederation } from "./federation.js";
-import { V0_INTERCOM_FEATURE } from "../roam-v0.js";
+import { parseV0BrokerRequest, V0_INTERCOM_FEATURE, type V0Endpoint } from "../roam-v0.js";
 import { MOVE_FENCE_FEATURE, type IntercomIntakeAction, type IntercomIntakeFence } from "../protocol.js";
 import { isIntercomIntakeAction, isIntercomIntakeFence } from "./protocol.js";
 import { RECEIPT_ACK_FEATURE, RECEIPT_EVIDENCE_FEATURE, compatibleReceipt, FEDERATION_FEATURE, FREEZE_BLOCKERS_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, addressKey, sessionAddress, type SessionAddress, type RemoteSessionInfo, type FederationDispatchResult, type FederationBrokerMessage, type SessionEndpoint, type LocalSessionInfo } from "../protocol.js";
@@ -255,6 +255,7 @@ class IntercomBroker {
   private noticePending = new Map<string, { bridge: net.Socket; receiver: net.Socket; timer: NodeJS.Timeout }>();
   private helperToken: string | null = null;
   private helperNegotiated = new Set<net.Socket>();
+  private v0Requests = new Set<net.Socket>();
   private helpers = new Set<net.Socket>();
   private helperPending = new Map<string, { socket: net.Socket; requestId: string; timer: NodeJS.Timeout }>();
   private remoteRoutes = new Map<string, { createdAt: number; from: SessionAddress; to: RemoteSessionInfo }>();
@@ -385,6 +386,7 @@ class IntercomBroker {
       clearRegistrationTimeout();
       this.connections.delete(socket);
       this.helperNegotiated.delete(socket);
+      this.v0Requests.delete(socket);
       this.helpers.delete(socket);
       for (const [id, pending] of this.noticePending) {
         if (pending.bridge !== socket && pending.receiver !== socket) continue;
@@ -671,6 +673,30 @@ class IntercomBroker {
     const requiresEndpointAuth = typeof LISTEN_TARGET !== "string";
     const hasEndpointAuth = clientMessage.stateId === BROKER_STATE_ID;
 
+    if (this.v0Requests.has(socket)) throw new Error("roam-v0-one-request-only");
+    if (clientMessage.type === "roam_v0") {
+      if (typeof LISTEN_TARGET !== "string" || currentKey !== null || !this.helperNegotiated.has(socket)) throw new Error("roam-v0-private-socket-required");
+      this.v0Requests.add(socket);
+      const request = parseV0BrokerRequest(msg);
+      if (!request) {
+        if (typeof clientMessage.requestId !== "string" || !clientMessage.requestId) throw new Error("invalid-roam-v0-request");
+        writeMessage(socket, { type: "roam_v0_result", requestId: clientMessage.requestId, kind: "refused", code: "invalid" });
+        return;
+      }
+      if (request.kind !== "lookup") throw new Error("roam-v0-operation-unsupported");
+      const targets: V0Endpoint[] = [];
+      for (const session of this.sessions.values()) {
+        if (session.info.v0HomeEpoch === undefined || !session.info.address || session.socket.destroyed || !session.socket.writable ||
+            (session.scopeId ?? null) !== request.scopeId) continue;
+        const name = session.info.runtimeFallbackAlias ? null : session.info.name ?? null;
+        if (request.selector.by === "id" ? session.info.address.sessionId !== request.selector.value
+          : !name || name.toLowerCase() !== request.selector.value.toLowerCase()) continue;
+        targets.push({ address: session.info.address, name, homeEpoch: session.info.v0HomeEpoch, endpointEpoch: session.info.endpointEpoch! });
+      }
+      writeMessage(socket, { type: "roam_v0_result", requestId: request.requestId, kind: "matches", targets });
+      return;
+    }
+
     if (clientMessage.type === "health") {
       if (typeof clientMessage.requestId !== "string") {
         throw new Error("Invalid health message");
@@ -805,6 +831,7 @@ class IntercomBroker {
           endpointEpoch: randomUUID(),
           ...(session.activationEpoch ? { activationEpoch: session.activationEpoch } : {}),
           ...(session.homeEpoch !== undefined ? { homeEpoch: session.homeEpoch } : {}),
+          ...(session.v0HomeEpoch !== undefined ? { v0HomeEpoch: session.v0HomeEpoch } : {}),
           ...(session.address ? { address: session.address } : {}),
           ...(session.name !== undefined ? { name: session.name } : {}),
           ...(session.runtimeFallbackAlias !== undefined ? { runtimeFallbackAlias: session.runtimeFallbackAlias } : {}),
@@ -828,7 +855,7 @@ class IntercomBroker {
           extensions,
           receiptAck: Array.isArray(clientMessage.features) && clientMessage.features.includes(RECEIPT_ACK_FEATURE),
           receiptEvidence: Array.isArray(clientMessage.features) && clientMessage.features.includes(RECEIPT_EVIDENCE_FEATURE),
-          federation: Array.isArray(clientMessage.features) && clientMessage.features.includes(FEDERATION_FEATURE),
+          federation: session.v0HomeEpoch === undefined && Array.isArray(clientMessage.features) && clientMessage.features.includes(FEDERATION_FEATURE),
         };
         this.sessions.set(key, connectedSession);
         this.disconnectedSessions.delete(key);

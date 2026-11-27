@@ -1,9 +1,10 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import net from "node:net";
 import type { ChildProcess } from "node:child_process";
 import { startTestBroker, stopTestBroker, testBrokerEnv } from "../test-support.js";
 import { getBrokerSocketPath } from "./paths.js";
 import { createMessageReader, writeMessage } from "./framing.js";
+import { IntercomClient } from "./client.js";
 import {
   parseV0AgentReply,
   parseV0AgentRequest,
@@ -83,6 +84,51 @@ describe("roaming intercom envelopes", () => {
 
 describe("private roaming broker", () => {
   let broker: ChildProcess;
+  const clients: IntercomClient[] = [];
+
+  async function register(stableId: string, persistentId: string, name: string, scopeId: string, v0HomeEpoch?: number, runtimeFallbackAlias = false) {
+    const client = new IntercomClient();
+    clients.push(client);
+    const prior = process.env.PI_INTERCOM_SCOPE_ID;
+    process.env.PI_INTERCOM_SCOPE_ID = scopeId;
+    try {
+      await client.connect({
+        address: { sessionId: persistentId, scopeId }, name, cwd: "/fixture", model: "fixture",
+        pid: process.pid, startedAt: 1, lastActivity: 1, runtimeFallbackAlias,
+        ...(v0HomeEpoch === undefined ? {} : { v0HomeEpoch }),
+      }, stableId);
+    } finally {
+      if (prior === undefined) delete process.env.PI_INTERCOM_SCOPE_ID;
+      else process.env.PI_INTERCOM_SCOPE_ID = prior;
+    }
+    return client;
+  }
+
+  async function request(op: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const socket = net.connect(getBrokerSocketPath());
+    try {
+      return await new Promise((resolve, reject) => {
+        let settled = false;
+        socket.on("error", error => { if (!settled) reject(error); });
+        socket.on("close", () => { if (!settled) reject(new Error("broker closed before roaming result")); });
+        socket.on("data", createMessageReader(value => {
+          const frame = value as Record<string, unknown>;
+          if (frame.type === "health_ok") {
+            writeMessage(socket, { type: "roam_v0", requestId: "fixture-request", ...op });
+          } else if (frame.type === "roam_v0_result") {
+            settled = true;
+            const { type, requestId, ...result } = frame;
+            resolve(result);
+          }
+        }, reject));
+        writeMessage(socket, { type: "health", requestId: "fixture-health" });
+      });
+    } finally { socket.destroy(); }
+  }
+
+  function lookup(scopeId: string, by: "id" | "name", value: string) {
+    return request({ kind: "lookup", scopeId, selector: { by, value } });
+  }
 
   beforeAll(async () => {
     broker = startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], {
@@ -97,7 +143,30 @@ describe("private roaming broker", () => {
     });
   }, 5000);
 
+  afterEach(async () => { for (const client of clients.splice(0)) await client.disconnect(); });
   afterAll(async () => { if (broker) await stopTestBroker(broker); }, 5000);
+
+  it("looks up persistent IDs and explicit names only in the requested scope", async () => {
+    await register("stable-b", "b", "ben", "scope-1", 3);
+    await register("stable-c", "c", "ben", "scope-2", 4);
+    await register("stable-d", "d", "unmanaged", "scope-1");
+    await register("stable-e", "e", "fallback", "scope-1", 5, true);
+
+    const result = await lookup("scope-1", "name", "BEN");
+    expect(result).toEqual({ kind: "matches", targets: [{
+      address: { sessionId: "b", scopeId: "scope-1" }, name: "ben", homeEpoch: 3,
+      endpointEpoch: expect.any(String),
+    }] });
+    expect(await lookup("scope-1", "id", "b")).toEqual(result);
+    expect(await lookup("scope-1", "id", "stable-b")).toEqual({ kind: "matches", targets: [] });
+    expect(await lookup("scope-1", "name", "unmanaged")).toEqual({ kind: "matches", targets: [] });
+    expect(await lookup("scope-1", "name", "fallback")).toEqual({ kind: "matches", targets: [] });
+    expect(await lookup("scope-2", "name", "ben")).toEqual({ kind: "matches", targets: [{
+      address: { sessionId: "c", scopeId: "scope-2" }, name: "ben", homeEpoch: 4,
+      endpointEpoch: expect.any(String),
+    }] });
+    expect(await lookup("scope-3", "name", "ben")).toEqual({ kind: "matches", targets: [] });
+  });
 
   it("advertises roaming over its private Unix socket", async () => {
     const socket = net.connect(getBrokerSocketPath());

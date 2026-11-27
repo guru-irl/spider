@@ -25,15 +25,20 @@ import { createLocalExactHc, resolveParticipantPi } from "../launcher";
 import { requestSessionControl } from "../session-socket";
 import type { MovingHome, RelocateAdapterOptions, RelocateHome, RunningHome, SessionId, SessionOwner, SessionPlacement, SessionMachinePorts, SupervisorEntry, V0Result, RelocatePlan } from "./types";
 import { refusal } from "./remote";
+import { insideDirectory, isPiTitle, localDescendants, locklessPiInCheckout, type SessionProcess } from "./local-process";
+import { localWriterBlockers } from "./local-writers";
 
+type LocalTerminal = { terminal: string; state: "live" | "finished"; pid: number | null; owned?: true };
 export interface LocalIO {
   inspect(sessionId: string): Promise<IdLockObservation | null>;
   probe(pid: number): Promise<{kind:"absent"}|{kind:"unknown"}|{kind:"live";startIdentity:string;pi:boolean}>;
   claimFree(sessionId: string): Promise<void>;
+  descendants(pid: number): Promise<readonly SessionProcess[]>;
+  writerBlockers(sessionId: SessionId, placement?: SessionPlacement, requireCheckout?: boolean): Promise<readonly string[]>;
   signal(pid: number): Promise<void>;
   shutdown(operation: Operation): Promise<boolean>;
   pause(ms: number): Promise<void>;
-  terminals(sessionId: string): Promise<readonly {terminal:string;state:"live"|"finished";pid:number|null}[]>;
+  terminals(sessionId: string): Promise<readonly LocalTerminal[]>;
   launch(request: {home:RunningHome;placement:SessionPlacement}): Promise<{terminal:string}>;
 }
 export function exactHome(a: RelocateHome | null, b: RelocateHome): boolean {
@@ -47,8 +52,7 @@ export async function probeLocalProcess(pid: number): ReturnType<LocalIO["probe"
     const startIdentity = processStartIdentity(pid);
     if (startIdentity === null) return {kind:"absent"};
     const comm = execFileSync("ps",["-p",String(pid),"-o","comm="],{encoding:"utf8",timeout:1000}).trim();
-    const pi = comm === "pi" || /(?:^|[/\\])pi(?:\.exe)?$/.test(comm);
-    return {kind:"live",startIdentity,pi};
+    return {kind:"live",startIdentity,pi:isPiTitle(comm)};
   } catch { return {kind:"unknown"}; }
 }
 /** HC selection is local. No inherited terminal, remote target, or lease survives. */
@@ -74,6 +78,28 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
   });
   return {
     inspect:id=>inspectIdLock(lockRoot,id),probe:probeLocalProcess,
+    descendants:localDescendants,
+    async writerBlockers(id, placement, requireCheckout) {
+      const saved = placement ? undefined : readLocal<unknown>(options.globalDb,"relocate-managed",id);
+      const known = placement ?? (saved === undefined ? undefined : parsePlacement(saved));
+      const row = known ? undefined : options.globalDb.prepare("SELECT cwd,stores_json FROM roam_locations WHERE session_id=?").get(id) as {cwd:string|null;stores_json:string} | undefined;
+      const cwd = known?.cwd ?? row?.cwd;
+      if (!cwd && options.config.role === "hub") {
+        const source = await discoverOrdinarySource(id,options);
+        if (source.ok) return [...await locklessPiInCheckout(source.value.root), ...await localWriterBlockers(id,source.value.root,source.value.placement.stores,options)];
+        if (requireCheckout) throw new Error("The ordinary checkout could not be verified");
+      }
+      if (!cwd) {
+        if (requireCheckout || known || row) throw new Error("The session has no verifiable checkout");
+        return []; // No local copy yet, such as before its first install.
+      }
+      const root = (await options.git.run(cwd,["git","rev-parse","--show-toplevel"])).toString().trim();
+      if (!isAbsolute(root)) throw new Error("The session checkout could not be verified");
+      const checkout = await realpath(root);
+      if (!insideDirectory(checkout,await realpath(cwd))) throw new Error("The working directory is outside the checkout");
+      const stores = known?.stores ?? (row ? parseLocationStores(JSON.parse(row.stores_json)) : []);
+      return [...await locklessPiInCheckout(checkout), ...await localWriterBlockers(id,checkout,stores,options)];
+    },
     async claimFree(id) {
       const startIdentity = processStartIdentity(process.pid);
       if (!startIdentity) throw new Error("Local process identity unavailable");
@@ -94,13 +120,21 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
         const signaled = Number.isSafeInteger(row.signal) && (row.signal as number) > 0;
         if (typeof row.address !== "string" || !row.address || !["live","finished"].includes(row.state as string) || row.state === "finished" && (row.reason !== "exited" || !(Number.isSafeInteger(row.exit_code) || signaled))) throw new Error("Unknown terminal state");
         let pid: unknown = row.pid ?? row.process_id ?? null;
+        let labels: unknown = row.labels;
         if (row.state === "live" && pid === null) {
           const detail = await invokeCli(binary,["get",row.address,"--json"],env,options.limits.replyBytes,undefined,{timeoutMs:options.limits.controlMs});
           if (!detail || typeof detail !== "object" || !("address" in detail) || detail.address !== row.address || !("state" in detail) || detail.state !== "live" || !("pid" in detail)) throw new Error("Terminal identity changed");
           pid = detail.pid;
+          if ("labels" in detail) labels = detail.labels;
         }
         if (pid !== null && (!Number.isSafeInteger(pid) || (pid as number) <= 0)) throw new Error("Unknown terminal process");
-        return {terminal:row.address,state:row.state as "live"|"finished",pid:pid as number|null};
+        const terminal: LocalTerminal = {terminal:row.address,state:row.state as "live"|"finished",pid:pid as number|null};
+        if (row.state === "live" && labels && typeof labels === "object") {
+          const tags = labels as Record<string,unknown>;
+          if (tags["spider.kind"] === "session" && tags["spider.session"] === id && tags["spider.machine"] === options.config.machineId &&
+              typeof tags["spider.roam.epoch"] === "string" && /^[1-9]\d*$/.test(tags["spider.roam.epoch"])) terminal.owned = true;
+        }
+        return terminal;
       }))).filter(terminal => terminal !== null);
     },
     async launch({home,placement}) {
@@ -113,36 +147,65 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
   };
 }
 
-/** Stop acknowledges only a free ID lock, never a terminal address or signal. */
+function busy<T>(blockers: readonly string[]): V0Result<T> {
+  const list = [...new Set(blockers)], shown = list.slice(0,12);
+  return refusal("session-busy",`Local session processes or jobs are still present: ${shown.join(", ")}${list.length > shown.length ? `, and ${list.length-shown.length} more` : ""}.`,"Close these, then rerun relocate.");
+}
+const processName = (p: SessionProcess): string => `PID ${p.pid} (${p.command.replace(/[\u0000-\u001f\u007f]/g,"?").slice(0,96)})`;
+const terminalName = (t: LocalTerminal): string => t.pid === null ? `terminal ${t.terminal} (PID unavailable)` : `PID ${t.pid} (pi)`;
+
+/** A free lock alone cannot clear an ordinary pi or a detached Spider job. */
 export async function stopLocalSession(sessionId: SessionId, moving: MovingHome | null, io: LocalIO, clock: Clock, timeoutMs: number): Promise<V0Result<void>> {
   try {
     const deadline = clock.now() + timeoutMs;
     const observed = await io.inspect(sessionId);
     if (observed) {
-      const p = await io.probe(observed.identity.pid);
-      if (p.kind === "unknown" || p.kind === "live" && (p.startIdentity !== observed.identity.startIdentity || !p.pi)) return refusal("stop-timeout","The session lock owner cannot be verified.");
-      let shutdown = false;
-      if (moving && p.kind === "live") shutdown = await io.shutdown({id:`${moving.moveId}-shutdown`,machineId:moving.machineId,expectedEpoch:moving.epoch,kind:"session-shutdown",args:{sessionId,moveId:moving.moveId,v0:true}});
-      else if (!moving && p.kind === "live") shutdown = await io.shutdown({id:`v0-stop-${sessionId}`,machineId:"",expectedEpoch:1,kind:"session-shutdown",args:{sessionId,moveId:`v0-stop-${sessionId}`,v0:true}});
-      if (p.kind === "live" && !shutdown) {
-        const current = await io.inspect(sessionId), rechecked = await io.probe(observed.identity.pid);
-        if (!sameOwner(current,observed) || rechecked.kind !== "live" || !rechecked.pi || rechecked.startIdentity !== observed.identity.startIdentity) return refusal("stop-timeout","The session lock owner changed; no signal was sent.");
-        await io.signal(observed.identity.pid);
-      }
-      for (;;) {
-        const current = await io.inspect(sessionId), owner = await io.probe(observed.identity.pid);
-        if (owner.kind === "unknown" || current && !sameOwner(current,observed)) return refusal("stop-timeout","The session lock owner is uncertain.");
-        if (owner.kind === "absent") break;
-        if (clock.now() >= deadline) return refusal("stop-timeout","The session did not exit before the stop deadline.");
-        await io.pause(Math.min(100,Math.max(1,deadline-clock.now())));
+      const {pid,startIdentity} = observed.identity;
+      const root = {pid,startIdentity,command:"pi"};
+      const p = await io.probe(pid);
+      if (p.kind === "unknown" || p.kind === "live" && (p.startIdentity !== startIdentity || !p.pi)) return busy([processName(root)]);
+      if (p.kind === "live") {
+        if (!(await io.terminals(sessionId)).some(t=>t.state === "live" && t.owned && t.pid === pid)) return busy([processName(root)]);
+        const children = await io.descendants(pid);
+        const current = await io.inspect(sessionId), rechecked = await io.probe(pid);
+        if (!sameOwner(current,observed) || rechecked.kind !== "live" || !rechecked.pi || rechecked.startIdentity !== startIdentity) return busy([processName(root)]);
+        for (const child of children) {
+          const member = await io.probe(child.pid);
+          if (member.kind === "unknown") return busy([processName(child)]);
+          if (member.kind === "live" && member.startIdentity === child.startIdentity) await io.signal(child.pid);
+        }
+        const shutdown = moving && await io.shutdown({id:`${moving.moveId}-shutdown`,machineId:moving.machineId,expectedEpoch:moving.epoch,kind:"session-shutdown",args:{sessionId,moveId:moving.moveId,v0:true}});
+        if (!shutdown) {
+          const owner = await io.probe(pid);
+          if (owner.kind !== "absent") {
+            if (!sameOwner(await io.inspect(sessionId),observed) || owner.kind !== "live" || !owner.pi || owner.startIdentity !== startIdentity) return busy([processName(root)]);
+            await io.signal(pid);
+          }
+        }
+        for (;;) {
+          const held = await io.inspect(sessionId);
+          if (held && !sameOwner(held,observed)) return busy([`PID ${held.identity.pid} (pi)`]);
+          const alive: string[] = [];
+          for (const member of [root,...children]) {
+            const state = await io.probe(member.pid);
+            if (state.kind === "unknown" || state.kind === "live" && state.startIdentity === member.startIdentity) alive.push(processName(member));
+          }
+          if (!alive.length) break;
+          if (clock.now() >= deadline) return busy(alive);
+          await io.pause(Math.min(100,Math.max(1,deadline-clock.now())));
+        }
       }
     }
     // claimIdLock handles dead owners and stale records; never unlink a lock.
     await io.claimFree(sessionId);
-    if (await io.inspect(sessionId)) return refusal("stop-timeout","The session lock is not free.");
-    if ((await io.terminals(sessionId)).some(t=>t.state === "live")) return refusal("stop-timeout","A session terminal is still live.");
+    const live = (await io.terminals(sessionId)).filter(t=>t.state === "live");
+    if (live.length) return busy(live.map(terminalName));
+    const blockers = await io.writerBlockers(sessionId,undefined,moving !== null);
+    if (blockers.length) return busy(blockers);
+    const held = await io.inspect(sessionId);
+    if (held) return busy([`PID ${held.identity.pid} (pi)`]);
     return {ok:true,value:undefined};
-  } catch { return refusal("stop-timeout","The session could not be stopped safely."); }
+  } catch { return refusal("stop-timeout","The local session or its jobs could not be checked safely.","Close the local pi session and its jobs, then rerun relocate."); }
 }
 export const digestIdentity = (value: string): string => createHash("sha256").update(value).digest("hex");
 function repoMap(options: RelocateAdapterOptions, key: string): {path:string;worktree_command_json:string|null} | undefined {
@@ -244,22 +307,30 @@ export async function captureOrdinarySource(plan: RelocatePlan, options: Relocat
   recordLocation(options.globalDb, { sessionId: plan.source.sessionId, stores: plan.sourcePlacement.stores, home: { sessionId: plan.source.sessionId, machineId: plan.source.machineId, epoch: plan.source.epoch, moveId: null, updatedAt: plan.source.updatedAt }, file: plan.sourcePlacement.file, cwd: plan.sourcePlacement.cwd });
 }
 export interface LocalRuntime extends SessionMachinePorts {
-  owner(id: SessionId): Promise<SessionOwner>;
+  owner(id: SessionId, placement?: SessionPlacement): Promise<SessionOwner>;
   stop(id: SessionId, moving?: MovingHome | null): Promise<V0Result<void>>;
   entries(): Promise<readonly SupervisorEntry[]>;
 }
 export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO = createLocalIO(options)): LocalRuntime {
-  async function owner(id: SessionId): Promise<SessionOwner> {
+  async function inspectOwner(id: SessionId, placement?: SessionPlacement): Promise<{owner:SessionOwner;blockers?:readonly string[]}> {
     try {
       const lock = await io.inspect(id), terminals = await io.terminals(id), live = terminals.filter(t=>t.state === "live");
-      if (!lock) return live.length ? {kind:"unknown"} : {kind:"free"};
-      const p = await io.probe(lock.identity.pid);
-      if (p.kind === "absent") { await io.claimFree(id); return live.length ? {kind:"unknown"} : {kind:"free"}; }
-      if (p.kind !== "live" || !p.pi || p.startIdentity !== lock.identity.startIdentity || !sameOwner(await io.inspect(id),lock)) return {kind:"unknown"};
-      const terminal = live.find(t=>t.pid === lock.identity.pid);
-      return {kind:"live",pid:lock.identity.pid,terminal:terminal?.terminal ?? null};
-    } catch { return {kind:"unknown"}; }
+      if (lock) {
+        const p = await io.probe(lock.identity.pid);
+        if (p.kind !== "absent") {
+          if (p.kind !== "live" || !p.pi || p.startIdentity !== lock.identity.startIdentity || !sameOwner(await io.inspect(id),lock)) return {owner:{kind:"unknown"}};
+          const terminal = live.find(t=>t.pid === lock.identity.pid);
+          return {owner:{kind:"live",pid:lock.identity.pid,terminal:terminal?.terminal ?? null}};
+        }
+        await io.claimFree(id);
+      }
+      if (live.length) return {owner:{kind:"unknown"}};
+      const blockers = await io.writerBlockers(id,placement);
+      if (blockers.length) return {owner:{kind:"unknown"},blockers};
+      return {owner:await io.inspect(id) ? {kind:"unknown"} : {kind:"free"}};
+    } catch { return {owner:{kind:"unknown"}}; }
   }
+  async function owner(id: SessionId, placement?: SessionPlacement): Promise<SessionOwner> { return (await inspectOwner(id,placement)).owner; }
   async function runnable(home: RunningHome, placement: SessionPlacement): Promise<boolean> {
     return home.machineId === options.config.machineId && home.sessionId === placement.sessionId && placement.machineId === options.config.machineId && exactHome(await options.homes.read(home.sessionId),home);
   }
@@ -273,7 +344,8 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
   async function start(home: RunningHome,placement: SessionPlacement): Promise<V0Result<{terminal:string}>> {
     try { return await withProcessLock(join(options.root,"herdr"),`v0-spawn:${home.sessionId}`,async()=>{
       if (!await runnable(home,placement)) return refusal("start-pending","The local running home does not authorize launch.");
-      const current = await owner(home.sessionId);
+      const {owner:current,blockers} = await inspectOwner(home.sessionId,placement);
+      if (blockers) return busy(blockers);
       if (current.kind === "live") return current.terminal ? {ok:true,value:{terminal:current.terminal}} : refusal("start-pending","The running pi terminal cannot be located.");
       if (current.kind !== "free") return refusal("start-pending","A session owner or pending terminal is still present.");
       // Reread immediately before the only spawn call.

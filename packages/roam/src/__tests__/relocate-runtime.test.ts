@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, delimiter } from "node:path";
 import * as hcApi from "@spider/herdr/client/hc";
 import type { CoreIdentity } from "@spider/herdr/contracts";
@@ -28,11 +30,81 @@ function runtimeFixture() {
  let now = 0;
  const journal = openJournal(join(db.root,"journal.db"));
  const run: RelocateAdapterOptions["git"]["run"] = async()=>{throw new Error("unexpected git");};
- const io: LocalIO = {inspect:async()=>lock,probe:async()=>probe,claimFree:async()=>{},signal:async pid=>{signalled.push(pid);},shutdown:async()=>false,pause:async()=>{now+=10;},terminals:async()=>terminals,launch:async request=>{launches.push(request);return {terminal:"core:t"};}};
+ const io: LocalIO = {inspect:async()=>lock,probe:async()=>probe,claimFree:async()=>{},signal:async pid=>{signalled.push(pid);},shutdown:async()=>false,pause:async()=>{now+=10;},terminals:async()=>terminals,descendants:async()=>[],writerBlockers:async()=>[],launch:async request=>{launches.push(request);return {terminal:"core:t"};}};
  const options: RelocateAdapterOptions = {root:db.root,globalDb:db.db,homes:{read:async()=>current,list:async()=>current?[current]:[],initialize:async()=>home,compareAndSwap:async()=>({kind:"conflict",home:current})},journal,config:{enabled:false,role:"box",machineId:box,hubMachineId:hub,peers:[],discoveryRoots:[],coreUnit:"core",syncMs:10000,limits:{...DEFAULT_LIMITS,readyMs:30},intercom:disabledIntercom()},sync:{start(){},stop(){},sync:async()=>[],barriers:async()=>true},transport:{resolve:async p=>p,bootstrapProbe:async()=>{throw new Error("unused");},exec:async()=>{throw new Error("unexpected remote");},run:async()=>({terminal:"t"}),read:async()=>Buffer.alloc(0),write:async()=>{}},clock:{now:()=>now,later:(_ms,_fn)=>()=>{}},git:{run,journal,limits:DEFAULT_LIMITS,scratch:join(db.root,"git"),worktreeCommand:null},workspaceImport:{run,journal,limits:DEFAULT_LIMITS,scratch:join(db.root,"git"),worktreeCommand:null,resolveCommonRepository:async()=>null,lastExportedSnapshot:async()=>null,verifiedArtifactPath:async()=>null},limits:{...DEFAULT_LIMITS,readyMs:30}};
  return {options,io,home,placement,launches,signalled,setHome:(v:typeof current)=>current=v,setLock:(v:typeof lock)=>lock=v,setProbe:(v:typeof probe)=>probe=v,setTerminals:(v:typeof terminals)=>terminals=v};
 }
+function localCheckout(f: ReturnType<typeof runtimeFixture>) {
+ const file = join(f.options.root, "ordinary.jsonl");
+ const placement = {...f.placement, file, cwd: f.options.root};
+ const moving = {...f.home, state: "moving" as const, destination: hub, moveId: f.home.moveId!};
+ f.options.homes.read = async () => moving;
+ f.options.git.run = async (_cwd, argv) => {
+  if (argv.join(" ") === "git rev-parse --show-toplevel") return Buffer.from(f.options.root);
+  throw new Error("unexpected git");
+ };
+ recordLocation(f.options.globalDb, {sessionId: id, stores: placement.stores, home: moving, file, cwd: placement.cwd});
+ writeFileSync(file, JSON.stringify({type: "session", version: 3, id, cwd: placement.cwd, timestamp: "2000-01-01T00:00:00.000Z"}) + "\n");
+ vi.spyOn(hcApi, "invokeCli").mockImplementation(async (_binary, argv) => {
+  if (argv[0] !== "ls") throw new Error("unexpected hc call");
+  return {terminals: []};
+ });
+ return {file, placement, moving};
+}
 describe("v0 local runtime",()=>{
+ it.each(["open", "idle"])("refuses to acknowledge stop for a lockless unlabelled pi with an %s transcript", async mode => {
+  const f = runtimeFixture();
+  const {file, placement, moving} = localCheckout(f);
+  const child = spawn(process.execPath, ["-e", `
+    const fs = require("node:fs");
+    const [file, mode] = process.argv.slice(1);
+    process.title = "pi";
+    const fd = fs.openSync(file, "a");
+    if (mode === "idle") fs.closeSync(fd);
+    const exit = () => { if (mode === "open") fs.closeSync(fd); process.exit(0); };
+    process.once("message", exit);
+    process.once("disconnect", exit);
+    process.send("ready");
+  `, file, mode], {cwd: placement.cwd, stdio: ["ignore", "ignore", "ignore", "ipc"]});
+  const exited = once(child, "exit");
+  try {
+   const [ready] = await Promise.race([once(child, "message"), exited]);
+   expect(ready).toBe("ready");
+   const local = createLocalRuntime(f.options);
+   const stopped = await local.stop(id, moving);
+   expect(child.exitCode).toBeNull();
+   expect(stopped).toMatchObject({ok: false, refusal: {code: "session-busy",
+    message: expect.stringContaining(`PID ${child.pid} (pi)`), nextStep: "Close these, then rerun relocate."}});
+   expect(await local.owner(id)).toEqual({kind: "unknown"});
+   f.options.homes.read = async () => f.home;
+   expect(await local.start(f.home, placement)).toMatchObject({ok: false, refusal: {code: "session-busy"}});
+  } finally {
+   if (child.connected) child.send("exit");
+   await exited;
+  }
+ });
+ it("does not report a session stopped while its subagent run is active", async () => {
+  const f = runtimeFixture(), {moving, file} = localCheckout(f);
+  const runs = createReplica("worktree", box); fixtures.push(runs);
+  f.options.globalDb.prepare("INSERT INTO roam_workspace_maps (repo_key,workspace_id,path) VALUES ('fixture-repo','fixture-workspace',?)").run(f.options.root);
+  writeLocal(f.options.globalDb, "mapping-redirect", runs.storeKey, runs.db.raw.name);
+  recordLocation(f.options.globalDb, {sessionId: id, stores: ["global", runs.storeKey], home: moving, file, cwd: f.options.root});
+  runs.db.prepare("INSERT INTO runs (id,session_id,agent,status,pid) VALUES ('run-a',?,'worker','running',4242)").run(id);
+  const local = createLocalRuntime(f.options);
+  expect(await local.stop(id, moving)).toMatchObject({ok: false, refusal: {code: "session-busy", message: expect.stringContaining("PID 4242 (pi)"), nextStep: "Close these, then rerun relocate."}});
+  runs.db.prepare("UPDATE runs SET status='done' WHERE id='run-a'").run();
+  expect(await local.stop(id, moving)).toEqual({ok: true, value: undefined});
+ });
+ it("does not report a session stopped while a background exec may still be live", async () => {
+  const f = runtimeFixture(), {moving} = localCheckout(f);
+  const dir = join(f.options.root, ".spider", "scratch", "bg", "job-a");
+  mkdirSync(dir, {recursive: true});
+  writeFileSync(join(dir, "job.json"), JSON.stringify({schema: 1, id: "job-a", cwd: f.options.root, ownerSessionId: id, argv: ["node", "fixture.cjs"]}));
+  const local = createLocalRuntime(f.options);
+  expect(await local.stop(id, moving)).toMatchObject({ok: false, refusal: {code: "session-busy", message: expect.stringContaining("job-a")}});
+  writeFileSync(join(dir, "exit.json"), JSON.stringify({schema: 1, state: "exited", exitCode: 0, signal: null}));
+  expect(await local.stop(id, moving)).toEqual({ok: true, value: undefined});
+ });
  it("resumed pi does not inherit worker or offline execution context",()=>{
   const env=localLaunchEnvironment({PATH:"/local/bin",PI_SUBAGENT_CHILD:"1",PI_SPIDER_SESSION:"old",PI_OFFLINE:"1",SPIDER_GLOBAL_ROOT:"/old",SPIDER_SUBAGENT_ID:"old",NODE_OPTIONS:"--inspect",HC_TERMINAL_ID:"remote",AUTH_TOKEN:"local-auth"});
   expect(env.PI_SUBAGENT_CHILD).toBe("0");

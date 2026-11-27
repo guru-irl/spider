@@ -3,9 +3,11 @@ name: PR
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [ci/pr-selection-try]
 
 concurrency:
-  group: pr-${{ github.ref }}
+  group: pr-try-${{ github.sha }}
   cancel-in-progress: true
 
 permissions:
@@ -24,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -71,7 +73,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -101,7 +103,7 @@ jobs:
 
       - name: Select affected tests
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || '5363c4cfee8c73bf56d374b8c67798a4218a819a' }}
           GH_TOKEN: ${{ github.token }}
         run: node scripts/selection/select.mjs "$BASE_SHA" .spider/scratch/test-results/test-selection.json
 
@@ -141,7 +143,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -155,5 +157,5 @@ jobs:
       - name: Require identical PR selections
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: node scripts/selection/aggregate.mjs .spider/scratch/selections "$HEAD_SHA"

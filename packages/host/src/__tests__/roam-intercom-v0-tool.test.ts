@@ -666,6 +666,32 @@ it("refuses unsupported remote ask options without dispatching", async () => {
   } finally { await f.cleanup(); }
 });
 
+it("delivers pinned local roaming sends and asks to the live endpoint", async () => {
+  const received: any[] = [], errors: unknown[] = [];
+  const onMessage = (from: any, incoming: any) => {
+    received.push(incoming);
+    if (incoming.expectsReply) void observer.send(from.id, { text: "local answer", replyTo: incoming.id }).catch(error => errors.push(error));
+  };
+  observer.on("message", onMessage);
+  const prepare: V0Prepare = async ({ locals }) => {
+    const target = locals.find(session => session.id === "observer")!;
+    return { kind: "local", target: { id: target.id, endpointEpoch: target.endpointEpoch! } };
+  };
+  const f = await fixture({ homeEpoch: () => 7, prepare });
+  const abort = new AbortController();
+  let pending: Promise<any> | undefined, settled: any;
+  try {
+    const send = await f.tool.execute("send", { action: "send", to: "observer", message: "local update" }, new AbortController().signal, undefined, f.ctx);
+    expect(send.details).toMatchObject({ delivered: true, delivery: "socket_delivered" });
+    pending = f.tool.execute("ask", { action: "ask", to: "observer", message: "local question" }, abort.signal, undefined, f.ctx)
+      .then((result: any) => { settled = result; return result; });
+    await vi.waitFor(() => expect(Boolean(settled) || errors.length > 0).toBe(true));
+    expect(settled.content[0].text).toContain("local answer");
+    expect(received.map(message => message.content.text)).toEqual(["local update", "local question"]);
+    expect(errors).toEqual([]);
+  } finally { abort.abort(); await pending; observer.off("message", onMessage); await f.cleanup(); }
+});
+
 it("does not retarget a local roaming send after the recipient reconnects", async () => {
   const inbox: unknown[] = [];
   const prepare: V0Prepare = async ({ locals }) => {

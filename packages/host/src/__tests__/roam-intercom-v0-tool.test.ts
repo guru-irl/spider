@@ -134,6 +134,25 @@ it("refuses remote-only unsupported options without dispatching", async () => {
   } finally { await f.cleanup(); }
 });
 
+it("does not retarget a local roaming send after the recipient reconnects", async () => {
+  const inbox: unknown[] = [];
+  const prepare: V0Prepare = async ({ locals }) => {
+    const target = locals.find(session => session.id === "observer")!;
+    const exactTarget = { id: target.id, endpointEpoch: target.endpointEpoch! };
+    await observer.disconnect();
+    observer = new IntercomClient();
+    observer.on("message", (...args: unknown[]) => inbox.push(args));
+    await observer.connect({ name: "observer", cwd: process.cwd(), model: "fixture", pid: process.pid, startedAt: 1, lastActivity: 1 }, "observer");
+    return { kind: "local", target: exactTarget };
+  };
+  const f = await fixture({ homeEpoch: () => 7, prepare });
+  try {
+    const result = await f.tool.execute("send", { action: "send", to: "observer", message: "old endpoint only" }, new AbortController().signal, undefined, f.ctx);
+    expect(result.details).toMatchObject({ delivered: false });
+    expect(inbox).toEqual([]);
+  } finally { await f.cleanup(); }
+});
+
 it("reports routing refusals without sending to a local mailbox", async () => {
   const legacyInbox: unknown[] = [];
   const onMessage = (...args: unknown[]) => legacyInbox.push(args);

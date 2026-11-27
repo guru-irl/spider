@@ -2719,8 +2719,9 @@ Usage:
             }
             const confirmSend = !replyTo && config.confirmSend && ctx.hasUI;
             const attachmentText = attachments?.length ? formatAttachments(attachments) : "";
+            const generation = runtimeGeneration;
+            let v0Target: { id: string; endpointEpoch: string } | undefined;
             if (v0 && to && currentSessionId && v0.homeEpoch(currentSessionId) !== undefined) {
-              const generation = runtimeGeneration;
               const sessions = await connectedClient.listSessions();
               const locals = sessions.filter((session): session is LocalSessionInfo => !session.remote);
               const from = locals.find(session => session.id === connectedClient.sessionId && session.address?.sessionId === currentSessionId);
@@ -2729,6 +2730,7 @@ Usage:
                 if (plan.kind === "refused") {
                   return { content: [{ type: "text", text: V0_REFUSAL_TEXT[plan.code] }], details: { error: true, code: plan.code } };
                 }
+                if (plan.kind === "local") v0Target = plan.target;
                 if (plan.kind === "remote") {
                   if (cwd !== undefined || attachments !== undefined || replyTo || supersedes || retryOf || messageId ||
                       openProjectPaneIfMissing !== undefined || focus !== undefined) {
@@ -2769,8 +2771,12 @@ Usage:
               }
             }
             const target: DeliveryTarget = cwd
-              ? await resolveCwdDeliveryTarget(connectedClient, { to, cwd, openProjectPaneIfMissing, focus, signal: _signal })
+              ? await resolveCwdDeliveryTarget(connectedClient, { to, cwd, openProjectPaneIfMissing: v0Target ? false : openProjectPaneIfMissing, focus, signal: _signal })
+              : v0Target ? { id: v0Target.id, label: to! }
               : { id: await resolveSessionTarget(connectedClient, to!) ?? to!, label: to! };
+            if (v0Target && target.id !== v0Target.id) {
+              return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
+            }
             const sendTo = target.id;
             const targetDisplay = target.projectPane ? target.label : to ?? target.label;
             if (sendTo === connectedClient.sessionId) {
@@ -2801,12 +2807,16 @@ Usage:
                 };
               }
             }
+            if (v0Target && (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected())) {
+              return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
+            }
             const result = await connectedClient.send(sendTo, {
               text: message,
               attachments,
               replyTo: effectiveReplyTo,
               supersedes,
               retryOf,
+              ...(v0Target ? { exactTarget: v0Target } : {}),
             });
             if (!result.delivered) {
               const errorText = result.reason ?? "Session may not exist or has disconnected.";

@@ -101,6 +101,36 @@ describe("held relay polls", () => {
     await Promise.all([first, ...waiting]);
   });
 
+  it.each(["abort", "deadline"])("keeps handed slots occupied after the sender's %s", async endedBy => {
+    const links = fixture();
+    const oldIds = Array.from({ length: 16 }, (_, i) => `old-${i}`);
+    const newIds = Array.from({ length: 16 }, (_, i) => `new-${i}`);
+    const aborts = oldIds.map(() => new AbortController());
+    try {
+      await links.poll(poll("announce", 0));
+      const old = oldIds.map((id, i) => links.submit(relay.machineId, submission(id), aborts[i].signal, 5000));
+      expect((await links.poll(poll("take-old", 0))).submissions.map(s => s.message.id)).toEqual(oldIds);
+      if (endedBy === "abort") aborts.forEach(abort => abort.abort());
+      else await vi.advanceTimersByTimeAsync(5000);
+      expect((await Promise.all(old)).map(result => result.outcome)).toEqual(oldIds.map(id => ({ kind: "unknown", id })));
+
+      const blocked = newIds.map(id => links.submit(relay.machineId, submission(id)));
+      await vi.advanceTimersByTimeAsync(2000);
+      expect((await Promise.all(blocked)).map(result => [result.attempted, result.outcome])).toEqual(
+        newIds.map(() => [false, { kind: "refused", code: "relay-busy" }]),
+      );
+      expect((await links.poll(poll("still-full", 0))).submissions).toEqual([]);
+      expect(links.list()[0]).toMatchObject({ state: "up", linkId: "link-1" });
+
+      const settled = await links.poll(poll("finish-old", 0, oldIds.map(delivered)));
+      expect(settled.ready.ok).toBe(true);
+      const resumed = newIds.map(id => links.submit(relay.machineId, submission(id)));
+      expect((await links.poll(poll("take-new", 0))).submissions.map(s => s.message.id)).toEqual(newIds);
+      await links.poll(poll("finish-new", 0, newIds.map(delivered)));
+      expect(await Promise.all(resumed)).toEqual(newIds.map(delivered));
+    } finally { links.close(); }
+  });
+
   it("does not hand off an expired submission", async () => {
     const links = fixture();
     await links.poll(poll("announce", 0));

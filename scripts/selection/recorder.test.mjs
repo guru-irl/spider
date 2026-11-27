@@ -79,9 +79,9 @@ test('counts distinct processes and worker threads once and does not double-coun
     ],
     snapshots: [
       { test: id, worker: true, pid: 3, processId: 'parent', threadId: 0, cpuMs: 100, paths: [] },
-      { test: id, pid: 3, processId: 'parent', threadId: 0, cpuMs: 130, paths: [] },
-      { test: id, pid: 3, processId: 'parent', threadId: 1, cpuMs: 120, paths: [] },
-      { test: id, pid: 4, processId: 'child-process', launchId: 'child', threadId: 0, cpuMs: 50, paths: [] },
+      { test: id, pid: 3, processId: 'parent', threadId: 0, cpuMs: 130, ended: true, paths: [] },
+      { test: id, pid: 3, processId: 'parent', threadId: 1, cpuMs: 120, ended: true, paths: [] },
+      { test: id, pid: 4, processId: 'child-process', launchId: 'child', threadId: 0, cpuMs: 50, ended: true, paths: [] },
     ],
   });
   assert.equal(records[id].processes, 3);
@@ -90,11 +90,25 @@ test('counts distinct processes and worker threads once and does not double-coun
   assert.equal(records[id].unknownCpu, 0);
 });
 
+test('marks CPU incomplete when a process was killed after a checkpoint', t => {
+  const { records } = fixtureRecords(t, {
+    results: [{ name: id }],
+    snapshots: [
+      { test: id, worker: true, pid: 3, processId: 'parent', threadId: 0, cpuMs: 100, ended: true, paths: [] },
+      { test: id, pid: 4, processId: 'child', threadId: 0, cpuMs: 25, ended: false, paths: [] },
+    ],
+  });
+  assert.equal(records[id].processes, 2);
+  assert.equal(records[id].cpuMs, null);
+  assert.equal(records[id].knownCpuMs, 125);
+  assert.equal(records[id].unknownCpu, 1);
+});
+
 test('counts a Node child that never reports CPU and preserves the measured lower bound', t => {
   const { records } = fixtureRecords(t, {
     results: [{ name: id }],
     launches: [{ test: id, kind: 'process', launchId: 'killed-before-hook' }],
-    snapshots: [{ test: id, worker: true, pid: 3, processId: 'parent', threadId: 0, cpuMs: 100, paths: [] }],
+    snapshots: [{ test: id, worker: true, pid: 3, processId: 'parent', threadId: 0, cpuMs: 100, ended: true, paths: [] }],
   });
   assert.equal(records[id].processes, 2);
   assert.equal(records[id].cpuMs, null);
@@ -258,6 +272,38 @@ test('counts a child killed before its preload and records CPU from the parent',
   assert.equal(entry.cpuMs, null);
   assert.ok(entry.knownCpuMs > 0);
   assert.equal(entry.unknownCpu, 1);
+});
+
+test('measures a real child, grandchild and worker without counting shared process CPU twice', t => {
+  const { root, raw, maps, workspace } = fixture(t);
+  writeFileSync(join(root, 'dist/reference.mjs'), 'export {};');
+  writeFileSync(join(maps, 'reference.mjs.map'), JSON.stringify({ version: 3, sources: [], names: [], mappings: '' }));
+  const parent = join(root, 'packages/example/src/tree.cjs');
+  writeFileSync(parent, `
+    const { spawnSync } = require('node:child_process');
+    const { Worker } = require('node:worker_threads');
+    const level = Number(process.argv[2] || 0);
+    if (level < 2) {
+      const result = spawnSync(process.execPath, [__filename, String(level + 1)]);
+      if (result.status !== 0) throw new Error(result.stderr.toString());
+    }
+    if (level === 0) {
+      const worker = new Worker('let n=0; for(let i=0;i<1000000;i++) n+=i;', { eval: true });
+      worker.on('error', error => { throw error; });
+    }
+  `);
+  const result = runNode([parent], { env: recorderEnv(root, raw) });
+  assert.equal(result.status, 0, result.stderr);
+  const report = join(workspace, 'vitest.json');
+  writeFileSync(report, JSON.stringify({ testResults: [{ name: join(root, id), status: 'passed', startTime: 0, endTime: 1 }] }));
+  const entry = reduce({ root, rawDir: raw, mapsDir: maps, reportFile: report }).records[id];
+  assert.equal(entry.processes, 4);
+  assert.equal(entry.unknownCpu, 0);
+  assert.ok(entry.cpuMs > 0);
+  const snapshots = records(raw);
+  const expected = [...new Set(snapshots.map(p => p.processId))].reduce((sum, processId) =>
+    sum + Math.max(...snapshots.filter(p => p.processId === processId).map(p => p.cpuMs)), 0);
+  assert.ok(Math.abs(entry.cpuMs - expected) < 0.0011);
 });
 
 test('child code sees its original Node options and inherits only the outer test identity', t => {

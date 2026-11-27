@@ -40,6 +40,19 @@ function fixture(role: "hub" | "box") {
     enabled: () => JSON.parse(readFileSync(configFile, "utf8")).enabled };
 }
 
+it("an identity mismatch is unverified and refuses enable without touching the service", async () => {
+  const f = fixture("hub"), identity = join(f.root, "roam", "machine.json"), config = join(f.root, "roam", "config.json"), global = join(f.root, "spider.db");
+  writeFileSync(identity, JSON.stringify({ machineId: f.box }), { mode: 0o600 });
+  const files = [identity, config, global], before = files.map(file => readFileSync(file)), io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io, { v0: { lifecycle: f.options } })).toBe(1);
+  expect.soft(JSON.parse(io.out.mock.calls.at(-1)![0])).toMatchObject({ reason: "legacy-upgrade-unverified", value: { enabled: null,
+    diagnostics: [expect.objectContaining({ severity: "block", reason: expect.stringMatching(/^legacy-upgrade-unverified/) })] } });
+  expect(await main(["roam", "enable", "--json"], io, { v0: { lifecycle: f.options } })).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0])).toMatchObject({ code: 1, reason: "legacy-upgrade-unverified" });
+  expect(files.map(file => readFileSync(file))).toEqual(before);
+  expect(f.calls).toEqual([]);
+});
+
 it("a missing global database is unverified and refuses enable without creating a replacement", async () => {
   const f = fixture("hub"), global = join(f.root, "spider.db"), config = join(f.root, "roam", "config.json");
   rmSync(global);

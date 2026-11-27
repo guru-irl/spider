@@ -848,11 +848,13 @@ it("stale intercom generation cannot commit the home", async () => {
 }, 5000);
 
 it.each(["uncertain", "live"] as const)("source stop proof %s retains pending cleanup and the new home", async kind => {
-  const f = fixture(); f.ports.retire = async () => kind === "live" ? { kind, identity } : { kind };
+  const gitAtStart = gitCalls;
+  const f = fixture(false, HUB, BOX, "synthetic"); f.ports.retire = async () => kind === "live" ? { kind, identity } : { kind };
   expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 0, reason: "moved", value: { sourceCleanup: { status: 'pending', blockers: ['move-source-stop-pending'] } } });
   expect(sessionHome(f.global.db, SESSION)).toMatchObject({ machineId: BOX, epoch: 2 });
   expect(f.registryRemovals).toEqual([]);
   expect(f.held).toBe(false);
+  expect(gitCalls - gitAtStart, "stop proof fixture must not run Git").toBe(0);
 }, 5000);
 
 it("unproved terminal removal remains pending cleanup without rollback", async () => {

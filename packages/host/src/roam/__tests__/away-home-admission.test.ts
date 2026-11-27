@@ -11,6 +11,7 @@ import { createSessionLeases } from "@spider/herdr/sessions/lease";
 import { writeLocal } from "@spider/db-core/roam/local-state";
 import { DEFAULT_LIMITS, disabledIntercom } from "@spider/roam/contracts";
 import { createHomeStore } from "@spider/roam/relocate/home";
+import * as awayHome from "@spider/roam/relocate/away-home";
 import { relocate } from "@spider/roam/relocate/relocate";
 import { setHome } from "@spider/roam/relocate/set-home";
 import type { RelocateId, RelocatePorts, RunningHome, SessionId, SetHomePorts, V0Result } from "@spider/roam/relocate/types";
@@ -185,6 +186,25 @@ it("only the authoritative Mac clears an away fence for a newer local running ho
   expect(await store.read(sid)).toEqual(returned);
 });
 
+it("a newer away fence survives a compare-and-clear race", async () => {
+  const f = fixture(), { store, moving, away } = await prepareMove(f);
+  await store.compareAndSwap(moving, away);
+  const returned: RunningHome = { ...away, machineId: hub, epoch: 4 };
+  await store.compareAndSwap(away, returned);
+  const replacement = { machineId: box, epoch: 5, moveId: "v0-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" as RelocateId };
+  const clear = awayHome.clearAwayHomeFence;
+  const race = vi.spyOn(awayHome, "clearAwayHomeFence").mockImplementation(async (root, id, expected) => {
+    await awayHome.withAwayHomeFenceLock(root, id, () => awayHome.publishAwayHomeFence(root, id, replacement));
+    return clear(root, id, expected);
+  });
+  try {
+    expect(await loadRelocateAdmission(sid, f.root)).toEqual({ kind: "unavailable", awayMachine: box });
+    expect(race).toHaveBeenCalledOnce();
+    expect(f.fenceContents()).toMatchObject(replacement);
+    expect(await store.read(sid)).toEqual(returned);
+  } finally { race.mockRestore(); }
+});
+
 it.each(["pre-v0", "migrated"] as const)("a fresh admission refuses a foreign %s legacy home", async version => {
   const f = fixture();
   if (version === "pre-v0") {
@@ -324,6 +344,10 @@ it("a fresh process refuses foreign and frozen legacy copies", async () => {
     expect(frozenStore.prepare("SELECT * FROM roam_sessions WHERE session_id=?").get(sid)).toEqual(before[1]);
     expect(journal.prepare("SELECT * FROM freeze_journal").all()).toEqual(before[2]);
     expect(existsSync(frozen.file)).toBe(false); expect(existsSync(journalOnly.file)).toBe(false);
+    for (const root of roots) {
+      expect(await inspectIdLock(join(root, "herdr"), sid)).toBeNull();
+      expect(await createSessionLeases(join(root, "herdr")).get(join(root, "session.jsonl"))).toBeNull();
+    }
   } finally { activeStore.close(); frozenStore.close(); journal.close(); }
 });
 

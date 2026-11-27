@@ -53,6 +53,15 @@ it("an identity mismatch is unverified and refuses enable without touching the s
   expect(f.calls).toEqual([]);
 });
 
+it("status does not report disabled when the local machine identity is unknown", async () => {
+  const f = fixture("hub");
+  writeFileSync(join(f.root, "roam", "machine.json"), JSON.stringify({ machineId: f.box }), { mode: 0o600 });
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "status", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0])).toMatchObject({ reason: "status-unavailable", code: 1 });
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0])).not.toHaveProperty("enabled", false);
+});
+
 it("a missing global database is unverified and refuses enable without creating a replacement", async () => {
   const f = fixture("hub"), global = join(f.root, "spider.db"), config = join(f.root, "roam", "config.json");
   rmSync(global);

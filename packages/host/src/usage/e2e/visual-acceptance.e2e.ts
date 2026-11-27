@@ -131,6 +131,7 @@ for (const width of widths) test(`states gallery every component and state ${wid
   // About 32 s locally; shared CI runners need longer, so the test gets three times the default budget.
   test.slow();
   await page.setViewportSize({ width, height: 1000 }); const errors = expectNoBrowserErrors(page); await installFixtureRoutes(page);
+  page.on("console", message => { if (message.text().startsWith("FRAMEPROBE ")) console.log(message.text()); });
   await page.goto("/states.html"); await expect(page.locator("#states-root")).toHaveAttribute("data-settled", "true");
   for (const example of fixtureStateCases()) await expect(page.locator(".state-example>h2").filter({ hasText: new RegExp(`^${example.name}$`) })).toHaveCount(1);
   for (const state of ["Overview loading", "Session loading", "Calibration loading", "Overview tables", "Session tables", "Calibration tables", "Pace popover", "Pinned run"]) await expect.soft(page.locator(".state-example>h2").filter({ hasText: state })).toHaveCount(1, { timeout: 1000 });
@@ -168,6 +169,19 @@ for (const width of widths) test(`states gallery every component and state ${wid
   const examples = page.locator(".state-example");
   for (let i = 0; i < await examples.count(); i++) {
     const example = examples.nth(i), name = (await example.locator("h2").first().textContent())!.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+    if (name === "session-default") await example.evaluate(el => {
+      let frames = 0, changes = 0, last = "";
+      const sample = () => {
+        const r = el.getBoundingClientRect();
+        const box = JSON.stringify({ x: r.x, y: r.y, width: r.width, height: r.height, innerWidth, clientWidth: document.documentElement.clientWidth, scrollY });
+        frames++;
+        if (box !== last) { changes++; console.log("FRAMEPROBE box", frames, box); last = box; }
+        if (frames === 1) console.log("FRAMEPROBE animations", JSON.stringify(el.getAnimations({ subtree: true }).filter(a => a.playState === "running").map(a => ({ type: a.constructor.name, currentTime: a.currentTime })).slice(0, 20)));
+        if (frames < 180) requestAnimationFrame(sample); else console.log("FRAMEPROBE complete", frames, changes);
+      };
+      requestAnimationFrame(sample);
+      setTimeout(() => console.log("FRAMEPROBE timer", frames, changes), 3000);
+    });
     const directory = resolve(info.project.outputDir, "acceptance"); const path = resolve(directory, `state-${name}-${width}.png`); await example.screenshot({ path }); await info.attach(`state-${name}-${width}`, { path, contentType: "image/png" });
   }
   expect(errors()).toEqual([]);

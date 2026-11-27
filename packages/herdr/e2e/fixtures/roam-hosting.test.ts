@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { participantBootSettings, parseV0SupervisorUnit } from './roam-hosting.js';
+import { observedHostedOwner, participantBootSettings, parseV0SupervisorUnit } from './roam-hosting.js';
 
 it('installs the participant boot extension exactly once across repeated fixtures', () => {
   const original = { packages: ['/fixture/release', '/fixture/provider'], theme: 'fixture' };
@@ -9,6 +9,18 @@ it('installs the participant boot extension exactly once across repeated fixture
   expect(participantBootSettings(first, '/fixture/release', '/fixture/boot.mjs')).toEqual(first);
   expect(() => participantBootSettings({ packages: [] }, '/fixture/release', '/fixture/boot.mjs')).toThrow(/packed extension/);
   expect(() => participantBootSettings({ packages: ['/fixture/release', '/fixture/release'] }, '/fixture/release', '/fixture/boot.mjs')).toThrow(/packed extension/);
+});
+
+it('counts each observed owner of the session even when its file is wrong', () => {
+  const first = { at: 1, pid: 101, type: 'session_start', sessionId: 'session', sessionFile: '/fixture/first.jsonl',
+    cwd: '/fixture/project', hcTerminal: 'terminal-a' };
+  const otherFile = { ...first, pid: 102, sessionFile: '/fixture/other.jsonl', hcTerminal: 'terminal-b' };
+  expect([first, otherFile].map(event => observedHostedOwner(event, 'session'))).toEqual([
+    { pid: 101, sessionId: 'session', file: '/fixture/first.jsonl', cwd: '/fixture/project', terminal: 'terminal-a' },
+    { pid: 102, sessionId: 'session', file: '/fixture/other.jsonl', cwd: '/fixture/project', terminal: 'terminal-b' },
+  ]);
+  expect(observedHostedOwner({ ...first, sessionId: 'other' }, 'session')).toBeNull();
+  expect(() => observedHostedOwner({ ...first, hcTerminal: null }, 'session')).toThrow(/incomplete/);
 });
 
 it('takes the command and environment from the installed v0 unit and refuses a different entry', () => {

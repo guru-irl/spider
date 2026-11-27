@@ -112,6 +112,28 @@ it("does not send when confirmation finishes in a different session", async () =
   } finally { finish?.(false); await f.cleanup(); }
 });
 
+it("refuses remote-only unsupported options without dispatching", async () => {
+  const sent: V0Text[] = [];
+  const prepare: V0Prepare = async () => ({
+    kind: "remote", label: "b/ben",
+    async send(message) { sent.push(message); return { kind: "socket_delivered", id: message.id }; },
+    async ask(message) { sent.push(message); return { kind: "no_reply", id: message.id }; },
+  });
+  const f = await fixture({ homeEpoch: () => 7, prepare });
+  try {
+    const unsupported = [
+      { cwd: "/fixture" }, { attachments: [{ type: "snippet", name: "x", content: "x" }] },
+      { replyTo: "question" }, { supersedes: "old" }, { retryOf: "old" },
+      { openProjectPaneIfMissing: true }, { focus: true },
+    ];
+    for (const flags of unsupported) {
+      const result = await f.tool.execute("send", { action: "send", to: "ben", message: "private text", ...flags }, new AbortController().signal, undefined, f.ctx);
+      expect(result.details).toMatchObject({ error: true });
+      expect(sent).toEqual([]);
+    }
+  } finally { await f.cleanup(); }
+});
+
 it("reports uncertainty without a legacy send", async () => {
   const sent: V0Text[] = [], legacyInbox: unknown[] = [];
   const onMessage = (...args: unknown[]) => legacyInbox.push(args);

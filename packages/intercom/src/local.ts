@@ -2711,6 +2711,11 @@ Usage:
               if (from) {
                 const plan = await v0.prepare({ to, from, locals, signal: _signal });
                 if (plan.kind === "remote") {
+                  if (cwd !== undefined || attachments !== undefined || replyTo || supersedes || retryOf || messageId ||
+                      openProjectPaneIfMissing !== undefined || focus !== undefined) {
+                    return { content: [{ type: "text", text: "Remote intercom supports text only; cwd, attachments, reply, retry, and pane options are unavailable." }],
+                      details: { error: true, code: "unsupported" } };
+                  }
                   if (confirmSend && !(await ctx.ui.confirm("Send message", `Send to "${plan.label}":\n\n${message}${attachmentText}`))) {
                     return { content: [{ type: "text", text: "Message cancelled by user" }], details: {} };
                   }

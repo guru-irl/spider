@@ -2719,6 +2719,10 @@ Usage:
                   }
                   const sent = { id: randomUUID(), timestamp: Date.now(), text: message };
                   const result = await plan.send(sent, _signal);
+                  if (result.kind === "unknown") {
+                    return { content: [{ type: "text", text: `Delivery could not be confirmed (ID ${result.id}). Check the recipient before sending again.` }],
+                      details: { delivered: false, delivery: "unknown", messageId: result.id, outcomeKnown: false, retryable: false } };
+                  }
                   if (result.kind !== "socket_delivered") {
                     return { content: [{ type: "text", text: "Message was not delivered." }], details: { error: true } };
                   }

@@ -82,3 +82,22 @@ it("sends by name and reports socket dispatch, not consumption", async () => {
     expect(f.entries).toContainEqual(expect.objectContaining({ type: "intercom_sent", data: expect.objectContaining({ messageId: result.details.messageId }) }));
   } finally { await f.cleanup(); }
 });
+
+it("reports uncertainty without a legacy send", async () => {
+  const sent: V0Text[] = [], legacyInbox: unknown[] = [];
+  const onMessage = (...args: unknown[]) => legacyInbox.push(args);
+  observer.on("message", onMessage);
+  const prepare: V0Prepare = async () => ({
+    kind: "remote", label: "b/ben",
+    async send(message) { sent.push(message); return { kind: "unknown", id: message.id }; },
+    async ask(message) { return { kind: "no_reply", id: message.id }; },
+  });
+  const f = await fixture({ homeEpoch: () => 7, prepare });
+  try {
+    const result = await f.tool.execute("send", { action: "send", to: "observer", message: "uncertain" }, new AbortController().signal, undefined, f.ctx);
+    expect(sent).toHaveLength(1);
+    expect(result.content[0].text).toBe(`Delivery could not be confirmed (ID ${sent[0].id}). Check the recipient before sending again.`);
+    expect(result.details).toMatchObject({ delivery: "unknown", messageId: sent[0].id, delivered: false });
+    expect(legacyInbox).toEqual([]);
+  } finally { observer.off("message", onMessage); await f.cleanup(); }
+});

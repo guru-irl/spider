@@ -693,7 +693,10 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
           }
           const code = rows.some(row => row.severity === "block") ? 1 : 0;
           if (jsonOutput) io.out(`${JSON.stringify({ ...outcome(code, code ? "doctor-blocked" : "roaming-disabled"), value: { enabled: false, diagnostics: rows, consumers: [] } })}\n`);
-          else { io.out(`${MOVE_REFUSAL_MESSAGES["roaming-disabled"]}\n`); for (const row of rows) io.out(`${clean(row.reason)}\n`); }
+          else {
+            io.out(`${MOVE_REFUSAL_MESSAGES["roaming-disabled"]}\n`);
+            for (const row of rows) if (config || !row.reason.startsWith("legacy-upgrade-ready:")) io.out(`${clean(row.reason)}\n`);
+          }
           return code;
         }
       }

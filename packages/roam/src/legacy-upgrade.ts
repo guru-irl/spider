@@ -249,10 +249,12 @@ async function readLegacyEvidence(root: string): Promise<{ inventory: LegacyUpgr
         } else v0.push({ origin: "checkpoint", plan });
       }
       const tables = new Set(readRows<{ name: string }>(db, "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('freeze_journal','freeze_store_rosters') ORDER BY name").map(row => row.name));
-      if (tables.has("freeze_journal") !== tables.has("freeze_store_rosters")) throw new Error("Incomplete freeze journal");
+      const hasRosters = tables.has("freeze_store_rosters");
       if (tables.has("freeze_journal")) {
         const freezes = readRows<{ session_id: unknown; move_id: unknown; epoch: unknown; state: unknown }>(db, "SELECT session_id,move_id,epoch,state FROM freeze_journal ORDER BY session_id,move_id");
-        const rosters = readRows<{ session_id: unknown; move_id: unknown; stores_json: unknown }>(db, "SELECT session_id,move_id,stores_json FROM freeze_store_rosters ORDER BY session_id,move_id");
+        const rosters = hasRosters ? readRows<{ session_id: unknown; move_id: unknown; stores_json: unknown }>(db,
+          "SELECT session_id,move_id,stores_json FROM freeze_store_rosters ORDER BY session_id,move_id") : [];
+        if (!hasRosters && !freezes.length) unknown.push("freeze roster table unavailable");
         for (const roster of rosters) {
           if (!freezes.some(row => row.session_id === roster.session_id && row.move_id === roster.move_id) || typeof roster.stores_json !== "string") throw new Error("Orphan freeze roster");
           const stores: unknown = JSON.parse(roster.stores_json);
@@ -267,13 +269,18 @@ async function readLegacyEvidence(root: string): Promise<{ inventory: LegacyUpgr
           if (typeof row.session_id !== "string" || !row.session_id || /[\u0000-\u001f\u007f]/.test(row.session_id) ||
               typeof row.move_id !== "string" || !row.move_id || /[\u0000-\u001f\u007f]/.test(row.move_id) ||
               !Number.isSafeInteger(row.epoch) || Number(row.epoch) < 1 || !["freezing", "frozen", "aborting", "aborted", "complete"].includes(String(row.state))) throw new Error("Invalid freeze record");
+          const label = `freeze session ${safeId(row.session_id)} operation ${safeId(row.move_id)}`;
+          if (!hasRosters) unknown.push(`${label} roster table unavailable`);
           if (row.state === "complete") { completedFreezes.add(JSON.stringify([row.session_id, row.move_id])); continue; }
           if (row.state === "aborted") continue;
-          if (row.state !== "freezing" && !rosters.some(roster => roster.session_id === row.session_id && roster.move_id === row.move_id)) throw new Error("Missing freeze roster");
           activeFreezes.add(JSON.stringify([row.session_id, row.move_id]));
-          findings.push(`freeze session ${safeId(row.session_id)} operation ${safeId(row.move_id)}`);
+          if (hasRosters) {
+            if (row.state !== "freezing" && !rosters.some(roster => roster.session_id === row.session_id && roster.move_id === row.move_id))
+              unknown.push(`${label} roster unavailable`);
+            else findings.push(label);
+          }
         }
-      }
+      } else if (hasRosters) unknown.push("freeze journal table unavailable");
     } finally { db.close(); }
     const global = snapshot(join(root, "spider.db"));
     record(!!global);

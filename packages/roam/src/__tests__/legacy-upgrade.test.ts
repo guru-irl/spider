@@ -371,6 +371,21 @@ it("doctor blocks an unresolved legacy freeze roster even without a pending move
   ]));
 });
 
+it("names the unfinished freeze when the freeze roster table is missing", async () => {
+  const { root } = fixture(), file = join(root, "roam", "journal.db");
+  const freeze = openFreezeJournal(file);
+  freeze.beginFreeze("session-missing-roster", "move-missing-roster", 1);
+  freeze.bindFreezeRoster("session-missing-roster", "move-missing-roster", 1, ["global"]);
+  freeze.advanceFreeze("session-missing-roster", "move-missing-roster", 1, "frozen");
+  const db = openDb(file);
+  try { db.exec("DROP TABLE freeze_store_rosters"); } finally { db.close(); }
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/^legacy-upgrade-unverified:.*session-missing-roster.*move-missing-roster.*roster table unavailable/) }),
+  ]));
+});
+
 it("reports a lost store named by an unfinished freeze roster as unverified", async () => {
   const f = fixture(), key = "worktree:fixture-repo:lost-store";
   const freeze = openFreezeJournal(join(f.root, "roam", "journal.db"));

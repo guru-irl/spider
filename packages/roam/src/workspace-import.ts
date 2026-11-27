@@ -1309,14 +1309,13 @@ async function recoverInterruptedWorkspaceLocked(snapshot: WorkspaceSnapshot, de
     ports.journal.record(snapshot.moveId, "workspace-settings-transition-complete", { root: destination, transitionId: t.transitionId });
     return;
   }
-  if (finishInstalled && snapshotDigest(snapshot) === t.digest && !replay.recoveryFrom && !replay.installPending &&
+  if (finishInstalled && workingApplied && snapshotDigest(snapshot) === t.digest && !replay.recoveryFrom && !replay.installPending &&
       replay.installCompleted === installSteps(t).length) {
     const rows = ports.journal.read(snapshot.moveId);
     // Move diagnostics may follow installation without changing this checkout.
     const installed = rows.filter(row => row.action.startsWith("workspace-") && row.result.root === destination).at(-1);
     if (installed?.action === "workspace-config-installed" && installed.result.digest === t.digest &&
         !rows.some(row => row.action === "workspace-aborted" && row.result.root === destination)) {
-      if (!workingApplied || !sameSettings(state, t.target)) throw new Error("workspace-recovery-diverged: checkout changed");
       const started = startedRecord(t.snapshot, destination, ports);
       if (!started || t.snapshot.bundle.kind !== "ready") throw new Error("workspace-journal-invalid");
       const prepared: PreparedWorkspace = { root: destination, snapshot: t.snapshot, previous: started.previous,

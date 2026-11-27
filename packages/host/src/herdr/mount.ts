@@ -213,6 +213,11 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
     if (ctx.hasUI && ctx.ui?.notify) ctx.ui.notify(plain, 'warning');
     else process.stderr.write(plain + '\n');
   };
+  const reportConsoleDiagnostic = (error: unknown, cleanup = false) => {
+    if (options.reportError) options.reportError(error);
+    if (context?.hasUI) notifyError(context, error);
+    else if (!options.reportError) process.stderr.write((cleanup && error instanceof HerdrError && error.code === 'console-cleanup-exhausted' ? error.message : herdrErrorNotice(error)) + '\n');
+  };
   const report = (error: unknown) => {
     options.reportError?.(error);
     const ctx = context;
@@ -636,7 +641,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
   }, jobIdsForToolResult,
     monitorOptions: () => ({ hc, ...(app ? { app } : {}), clock: Date.now, journalRoot: journalRoot(), outputCollector: need(output).outputCollector, reportError: report, recordCleanupError: error => options.reportError?.(error),
       onMachineAvailable: listener => need(client).onMachineAvailable(listener),
-      reportConsoleError: error => { if (options.reportError) options.reportError(error); else process.stderr.write(herdrErrorNotice(error) + '\n'); },
+      reportConsoleError: error => reportConsoleDiagnostic(error),
       ...(panes ? { panes: { reserve: (...args) => need(panes).reserveRemote(...args), abandon: slot => need(panes).abandon(slot), observe: async job => { throw new HerdrError('explicit-observer-only', `Job ${job.id} must be opened through openJob`); } } } : {}),
     }),
   };
@@ -753,7 +758,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
 
   const agentConsoles = registerAgentConsoleLifecycle(registrationPi, { hc, currentOwner: () => owner, reportError: report,
     onMachineAvailable: listener => need(client).onMachineAvailable(listener),
-    reportCleanupError: error => { if (options.reportError) options.reportError(error); else process.stderr.write((error instanceof HerdrError && error.code === 'console-cleanup-exhausted' ? error.message : herdrErrorNotice(error)) + '\n'); },
+    reportCleanupError: error => reportConsoleDiagnostic(error, true),
     beforeReap: async console => {
       const labels = console.labels, runId = labels[HERDR_LABELS.run], sessionId = labels[HERDR_LABELS.session];
       if (!runId || !sessionId) return true;

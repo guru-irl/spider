@@ -75,7 +75,7 @@ it.each([['tui', true], ['rpc', false]] as const)('routes console diagnostics in
     const warning = vi.spyOn(f.ctx.ui, 'notify');
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const error = new HerdrError('unavailable', 'Destination unavailable', undefined, { key: 'machine:remote.invalid', machine: 'remote.invalid' });
-    const reportConsole = captured.jobs!.monitorOptions().reportConsoleError!;
+    const reportConsole = captured.jobs!.monitorOptions(mount.owner()!, f.ctx as never).reportConsoleError!;
     reportConsole(error); reportConsole(error); captured.ports!.reportCleanupError!(error);
     if (hasUI) {
       expect(stderr).not.toHaveBeenCalled();

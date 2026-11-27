@@ -15,7 +15,8 @@ export function setHomeReplicationRefusal(destination: string, replication: Repl
 
 export const forceWarning: string = "The old source must not run again. Unsynced conversation can be lost. " +
   "If the old source is a box that may return, close its Pi session and run " +
-  "systemctl --user disable --now spider-roam-supervisor.service on that box before it reconnects.";
+  "systemctl --user disable --now spider-roam-supervisor-v0.service on that box before it reconnects. " +
+  "If the legacy unit is still installed, also run systemctl --user disable --now spider-roam-supervisor.service.";
 
 function refuse(code: V0RefusalCode, message: string, nextStep: string): V0Result<RunningHome> {
   return {ok:false,refusal:{code,message,nextStep}};

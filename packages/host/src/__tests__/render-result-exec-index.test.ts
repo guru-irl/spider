@@ -299,6 +299,13 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     expect(err).toBeGreaterThan(label);
   });
 
+  it("labels stderr-only output as a detail without drawing a section rule", () => {
+    const rows = lines("exec", { stdout: "", stderr: "Only an error", exitCode: 1 }, { code: "run" });
+    expect(rows).toContain(" ⎿ stderr:");
+    expect(rows).toContain(" ⎿ Only an error");
+    expect(rows.join("\n")).not.toContain("──");
+  });
+
   it("leaves collapsed stderr hidden as on main", () => {
     const rows = renderSpiderResult({ details: { stdout: "", stderr: "private error", exitCode: 1 } },
       { expanded: false }, theme, { args: { action: "exec", code: "run" } }).render(80);
@@ -312,7 +319,7 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     const rows = renderSpiderResult({ details: { stdout: "stderr", stderr: "stderr", exitCode: 1 } },
       { expanded: true }, styled, { args: { action: "exec", code: "run" } }).render(80);
     expect(rows.filter((row) => row.includes("stderr"))).toEqual([
-      " ⎿ stderr", " \x1b[2m── stderr ──\x1b[22m", " ⎿ stderr",
+      " ⎿ stderr", " ⎿ \x1b[2mstderr:\x1b[22m", " ⎿ stderr",
     ]);
   });
 
@@ -321,8 +328,8 @@ describe("render-result exec/index wiring (Phase 8)", () => {
       { stdout: "out-1", stderr: "err-1", exitCode: 0 },
       { stdout: "out-2", stderr: "err-2", exitCode: 0 },
       { stdout: "out-3", stderr: "", exitCode: 0 },
-    ]).filter((row) => /(?:out-|err-|── stderr ──)/.test(row));
-    expect(rows).toEqual([" ⎿ out-1", " ── stderr ──", " ⎿ err-1", " ⎿ out-2", " ── stderr ──", " ⎿ err-2", " ⎿ out-3"]);
+    ]).filter((row) => /(?:out-|err-|stderr:)/.test(row));
+    expect(rows).toEqual([" ⎿ out-1", " ⎿ stderr:", " ⎿ err-1", " ⎿ out-2", " ⎿ stderr:", " ⎿ err-2", " ⎿ out-3"]);
   });
 
   it("discloses when the last exec line is a partial UTF-8 tail", () => {

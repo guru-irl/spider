@@ -16,10 +16,11 @@ function outputRows(details: ExecDetails, ctx: RenderCtx, collapsed: string[]): 
   if (!full) return collapsed.map((p) => truncateToWidth(` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("toolOutput", p)}`, width, ""));
   const rows: string[] = [];
   if (full.hidden) rows.push(` ${theme.fg("muted", `${uiIcon(theme.iconStyle, "gutter")} … ${full.hidden} earlier output line${full.hidden === 1 ? "" : "s"} hidden`)}`);
+  const gutter = ` ${theme.fg("dim", uiIcon(theme.iconStyle, "gutter"))} `;
   let stream: "stdout" | "stderr" | undefined;
   for (const entry of full.rows) {
-    if (entry.stream === "stderr" && stream !== "stderr") rows.push(` ${theme.fg("muted", "── stderr ──")}`);
-    rows.push(` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("toolOutput", entry.text)}`);
+    if (entry.stream === "stderr" && stream !== "stderr") rows.push(gutter + theme.fg("muted", "stderr:"));
+    rows.push(gutter + theme.fg("toolOutput", entry.text));
     stream = entry.stream;
   }
   if (full.partial) {

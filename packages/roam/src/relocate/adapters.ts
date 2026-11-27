@@ -14,7 +14,11 @@ import { captureLocalSession, installLocalSession, stagingRoot } from "./transfe
 import { legacyRecordedHomeRefusal } from "./home";
 import type { RelocateAdapterOptions, RelocateAdapters, RelocateId, RelocatePorts, SessionId, SessionPlacement, SettledHome, V0Result, RelocatePlan, CapturedSession, RunningHome, InstalledSession } from "./types";
 
-export function createRelocateAdapters(options: RelocateAdapterOptions): RelocateAdapters {
+export interface ExactRelocatePorts extends RelocatePorts {
+  confirm(home: RunningHome, placement: SessionPlacement, exact?: true): Promise<V0Result<{terminal:string}>>;
+}
+
+export function createRelocateAdapters(options: RelocateAdapterOptions): RelocateAdapters & {ports:ExactRelocatePorts} {
   const local=createLocalRuntime(options),journal=createRelocateJournal(options.journal,options.config.hubMachineId);
   const artifactTransport=createV0ArtifactTransport(options.transport,options.config.machineId);
   const hub=options.config.machineId===options.config.hubMachineId && options.config.role==="hub";
@@ -124,9 +128,14 @@ export function createRelocateAdapters(options: RelocateAdapterOptions): Relocat
       if(home.machineId===options.config.machineId)return local.start(home,placement);
       try{const reply=await rpc(home.machineId,{version:1,kind:"start",home,placement});if(!reply.ok)return reply;text(reply.value.terminal);return {ok:true,value:{terminal:reply.value.terminal}};}catch{return refusal("start-pending","The destination launch reply is pending.");}
     },
-    async confirm(home:RunningHome,placement:SessionPlacement):Promise<V0Result<{terminal:string}>> {
-      if(home.machineId===options.config.machineId)return local.confirm(home,placement);
-      try{const reply=await rpc(home.machineId,{version:1,kind:"confirm",home,placement});if(!reply.ok)return reply;text(reply.value.terminal);return {ok:true,value:{terminal:reply.value.terminal}};}catch{return refusal("start-pending","The destination ID-lock owner is not confirmed.");}
+    async confirm(home:RunningHome,placement:SessionPlacement,exact?:true):Promise<V0Result<{terminal:string}>> {
+      if(home.machineId===options.config.machineId)return local.confirm(home,placement,exact);
+      try {
+        const reply=await rpc(home.machineId,{version:1,kind:"confirm",home,placement,...(exact ? {exact:true} : {})});
+        if(!reply.ok) return exact && reply.refusal.code==="invalid-arguments" ? refusal("start-pending","The destination cannot confirm the exact launch.") : reply;
+        if(exact && reply.value.exact!==true)return refusal("start-pending","The destination cannot confirm the exact launch.");
+        text(reply.value.terminal);return {ok:true,value:{terminal:reply.value.terminal}};
+      } catch {return refusal("start-pending","The destination ID-lock owner is not confirmed.");}
     },
   };
   async function ownerAt(machineId:string,id:SessionId):Promise<boolean> {
@@ -136,7 +145,7 @@ export function createRelocateAdapters(options: RelocateAdapterOptions): Relocat
   const shared={homes:options.homes,newMoveId:()=>`v0-${randomUUID()}` as RelocateId,withSession:async<T>(id:SessionId,run:()=>Promise<T>):Promise<T>=>{
     if(!hub)throw new Error("Only the hub may mutate a v0 home");return withProcessLock(join(options.root,"roam","v0-locks"),id,run,{timeoutMs:options.limits.controlMs});
   },...machines};
-  const ports:RelocatePorts={...shared,journal,initialSource,check,
+  const ports:ExactRelocatePorts={...shared,journal,initialSource,check,
     async stopSource(plan,moving){
       if(plan.source.machineId===options.config.machineId){
         const stopped=await local.stop(plan.source.sessionId,moving,true);if(!stopped.ok)return stopped;

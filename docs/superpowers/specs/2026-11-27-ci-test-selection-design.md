@@ -1,13 +1,14 @@
 # Complete PR test runs from recorded selection
 
-Date: 2026-11-27. Status: draft for the user's approval.
+Date: 2026-11-27. Status: approved by the user on 2026-11-27, with the test speedup added to this version.
 
 ## Decisions this builds on
 
 - Every PR gets a complete answer, the same one the full suite would give, on at most five runners.
-- The 3-minute target comes in a second step that makes each test process cheaper. This spec ships
-  selection first (user, 2026-11-27).
-- Every push to main runs the full suite. That run also records the selection map and detects misses.
+- This version ships selection and the test speedup together. The speedup makes each test process
+  cheaper, so selections fit the 3-minute target (user, 2026-11-27).
+- Chrome, stories and Herdr acceptance get PR selection in the next version (user, 2026-11-27).
+- Every push to main runs the full suite. That run detects misses.
 - `typecheck and build` gets a clear name, and no check shows a raw `${{ matrix.* }}` row.
 
 ## Today
@@ -144,7 +145,7 @@ known Vitest flakes are fixed or disabled before PRs switch:
 
 ## Expected timings
 
-From the replay over 64 recent PR heads on four runners:
+From the replay over 64 recent PR heads on four runners, before the speedup:
 
 | PRs finishing within | Count |
 |---|---|
@@ -154,13 +155,63 @@ From the replay over 64 recent PR heads on four runners:
 
 - The median is about 5 minutes (315 s).
 - The 7 PRs that change the toolchain run everything and take about 14 minutes.
-- The process-cost work comes next and shrinks all of these.
+- The test speedup below shrinks all of these.
+
+## Test speedup
+
+### Target
+
+A runner spends about 60 s on setup. That leaves 120 s of a 3-minute run for tests, and three workers on
+one runner run about 1.35× slower than one. So four runners fit about **1,067 s** of single-file test
+time, and no single file may take more than **89 s**. Today:
+- the median selection over the 64 replayed heads is about **2,268 s**, 2.1× too much;
+- **16 files** take more than 89 s;
+- 6 to 9 of the 64 heads fit 180 s.
+
+This version is done when the median replayed head fits 180 s, 32 or more of 64, and no file takes more
+than 89 s.
+
+### Where the time goes
+
+From recording run 46058147065:
+- the suite starts **49,339** Node processes;
+- the **135** files that each start 50 or more use **74%** of the suite's CPU, 5,701 of 7,746 s;
+- `herdr-setup-production-install.test.ts` alone starts 3,468 processes, at about 100 ms of CPU each.
+
+Most of the time goes to starting processes, not to test logic.
+
+### Levers, in order
+
+1. **Scoreboard.** The selection map records each test file's process count and CPU time, and the
+   `selection map` summary lists the 30 most expensive files. This ranks the work, and it shows
+   regressions on every main push.
+2. **`NODE_COMPILE_CACHE`** for every test process on CI. Measure the change in CPU per process on the
+   top files before adopting it.
+3. **Cheaper fakes in the top files:**
+   - fake binaries written as Node scripts become POSIX `sh` scripts when they only print or record;
+   - subprocess fakes become in-process ports when the test checks logic rather than the process
+     boundary.
+
+   At least one real-process case stays for each boundary outcome, as agreed for `herdr-setup-releases`.
+4. **Shared read-only fixtures:** expensive fixture parts that tests only read are built once per file.
+5. **Split the files over 89 s** by scenario, so the packer can spread them across runners.
+
+### How the work runs
+
+- Order the files by CPU times how often the 64 replayed heads select them. `herdr-setup-releases` goes
+  first, because it already blocks PR B.
+- Use small PRs, one file group each. They are test-only unless product code is slow for real users too.
+- Each PR shows the file's processes and case times before and after, from CI hunts with the 99th
+  percentile. Never raise a timeout, add retries or skip a test to make a number.
+- After each wave, rerun the 64-head replay with the newest map, and record the fit count and median
+  here. If the levers stop short of the target, report the gap with numbers before considering more
+  runners or a different target.
 
 ## Not in this version
 
-Chrome, stories and Herdr acceptance stay main-only, as today. Nine of the 29 real failures in the replay
-window came from them, and main catches them until a second version adds their own selection within the
-five-runner limit. #307 set the default headless stories (R18, R10 and R11) on main.
+Chrome, stories and Herdr acceptance stay main-only. They get PR selection in the next version (user,
+2026-11-27). Nine of the 29 real failures in the replay window came from them, and main catches them
+until then. #307 set the default headless stories (R18, R10 and R11) on main.
 
 ## Rollout
 
@@ -170,6 +221,8 @@ five-runner limit. #307 set the default headless stories (R18, R10 and R11) on m
    - `pr.yml` with recorded selection, the new names and the audit;
    - flake fixes go in first, as separate PRs;
    - tell spiderman before PR B merges.
+3. **Speedup PRs** start now, in parallel with PR A and PR B. The scoreboard goes into PR A before it
+   merges.
 
 ## Testing
 

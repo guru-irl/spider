@@ -396,6 +396,23 @@ describe("Copilot model sync catalog", () => {
     expect(readFileSync(join(fixture, ".pi/agent", backup!), "utf8")).toBe(JSON.stringify(before));
   });
 
+  // Duplicate IDs are ambiguous even when neither entry shadows a built-in.
+  it.each(["model-a", "model-c"])("refuses duplicate ID %s and names both positions", (id) => {
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a" }];\n');
+    const before = { providers: { "github-copilot": { models: [
+      { id, compactAtPercent: 30 }, { id: "model-b" }, { id, promptCache: { short: 60 } },
+    ] } } };
+    for (const write of [false, true]) {
+      const result = run([model("model-new", "Example")], before, write);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(id);
+      expect(result.stderr).toContain("models[0]");
+      expect(result.stderr).toContain("models[2]");
+      expect(readFileSync(modelsPath, "utf8")).toBe(JSON.stringify(before));
+      expect(readdirSync(join(fixture, ".pi/agent"))).toEqual(["models.json"]);
+    }
+  });
+
   // JSON accepted by pi but not JSON.parse must not be rewritten or echoed.
   it.each([
     ["comments", '// fixture-private-sentinel\n{"providers":{}}'],

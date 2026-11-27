@@ -103,6 +103,205 @@ ID. With no verified match and an unavailable peer, lookup returns
 `incomplete`. A live local alias takes precedence over a remote name, while
 a full persistent ID takes precedence over an alias.
 
+## Run a relay soak
+
+The opt-in `dist/roam/relay-soak.mjs` measures the held-poll carrier. It sends
+only synthetic `relay-soak` messages and records a sink receipt instead of
+writing to a session. The tool does not install services, change routes, claim
+machines, or inject faults. Building it or checking synthetic evidence does
+not prove that a live soak passed.
+
+### Stage the run
+
+1. Assign one laptop-to-box link and two box-to-box links. Install the same
+   build and provision the required Herdr routes and keys. Use version 2
+   `roam/intercom-v0.json` files. Each relay needs the peer in `sendTo` and
+   `linkTo`; each peer needs the relay in `relays`. Keep legacy intercom
+   federation disabled.
+2. Start a dedicated, admitted origin session on each submitting peer. Keep
+   each origin live for the run. The tool submits through the existing private
+   broker and refuses a stale origin pin.
+3. Choose a future `startMs`, in Unix milliseconds, shared by all three links.
+   Set `endMs` to `startMs + 28800000`. Synchronize the clocks and choose a
+   memory growth allowance in bytes before starting. Use the same start and
+   allowance in every run file.
+4. On every machine, take a complete census of the existing test helpers before
+   the run. Record each PID, process birth identity, and boot identity. Keep
+   the observations in a private run directory.
+
+On each peer, obtain the exact origin pin from its live broker. Use `-` for a
+null scope. `ENTRY` is the absolute path to the packaged executable and `ROOT`
+is the local global root.
+
+```sh
+node --input-type=module - "$ENTRY" "$ROOT" "$SESSION_ID" "$SCOPE_ID" <<'NODE'
+import { pathToFileURL } from "node:url";
+const [, , entry, root, sessionId, scope] = process.argv;
+const { lookupRelaySoakOrigin } = await import(pathToFileURL(entry).href);
+console.log(JSON.stringify(await lookupRelaySoakOrigin(root, sessionId, scope === "-" ? null : scope)));
+NODE
+```
+
+Create a run file on each side of each link. The following is a synthetic
+example of the required shape, not an admitted pin. Replace the IDs, pins,
+start time, allowance, and local `root` with the staged values. Use the same
+link fields on both sides; only `root` differs. Do not add fields to the file.
+
+```json
+{
+  "root": "/absolute/path/to/global-root",
+  "startMs": 1700000000000,
+  "rssAllowanceBytes": 10000000,
+  "links": [{
+    "id": "laptop-box",
+    "topology": "laptop-to-box",
+    "relayId": "11111111-1111-4111-8111-111111111111",
+    "peerId": "22222222-2222-4222-8222-222222222222",
+    "from": {
+      "machineId": "22222222-2222-4222-8222-222222222222",
+      "address": { "sessionId": "soak-origin", "scopeId": "soak-scope" },
+      "name": "soak-origin",
+      "homeEpoch": 1,
+      "endpointEpoch": "fixture-epoch"
+    },
+    "target": {
+      "machineId": "11111111-1111-4111-8111-111111111111",
+      "selector": { "by": "id", "value": "soak-target" },
+      "homeEpoch": 1
+    }
+  }]
+}
+```
+
+For the other links, use distinct link IDs and `"topology": "box-to-box"`.
+The target is a synthetic pin for the receipt sink, not a live recipient.
+
+### Sample clocks
+
+For each link, measure the relay clock minus the peer clock over the existing
+route. Take samples before the start, throughout the run at least every five
+minutes, and after the end. Each sample has relay `sentMs` and `receivedMs`
+and peer `remoteMs`, all in Unix milliseconds. The following command records
+one sample from the relay. Set `HC_BIN`, `PEER_ALIAS`, and `PEER_NODE` to the
+pinned route and executable.
+
+```sh
+node --input-type=module <<'NODE'
+import { execFileSync } from "node:child_process";
+const sentMs = Date.now();
+const reply = execFileSync(process.env.HC_BIN, ["exec", "--on", process.env.PEER_ALIAS,
+  "--timeout", "25", "--", process.env.PEER_NODE, "-p", "Date.now()"], { encoding: "utf8" });
+const receivedMs = Date.now();
+const remoteMs = Number(reply.trim());
+if (!Number.isSafeInteger(remoteMs)) throw new Error("Invalid peer clock sample");
+console.log(JSON.stringify({ sentMs, remoteMs, receivedMs }));
+NODE
+```
+
+Choose a justified `maxDriftMs` for the whole run. Set `minOffsetMs` to the
+minimum of `sentMs - remoteMs - maxDriftMs`, and `maxOffsetMs` to the maximum
+of `receivedMs - remoteMs + maxDriftMs`. The manifest's `clock.fromMs` must
+cover the start and `clock.toMs` must reach at least `endMs + 20000`. Keep all
+samples; the checker rejects gaps over ten minutes and charges uncertainty
+against the timing limits. Do not invent a bound when the clocks or samples are
+unavailable.
+
+### Start and mark the run
+
+Start the dial on the relay before `startMs`, early enough to capture an RSS
+sample before the start after accounting for the clock bound. Start the submit
+process on the peer before `startMs`. Use private files and retain every
+NDJSON record. `RUN` is the local run-file path and `LINK` is its link ID.
+
+```sh
+# On the relay
+node "$ENTRY" dial "$RUN" "$LINK" >> "$RECORDS/dial.ndjson" 2>> "$RECORDS/dial.err" &
+
+# On the peer
+node "$ENTRY" submit "$RUN" "$LINK" >> "$RECORDS/submit.ndjson" 2>> "$RECORDS/submit.err" &
+```
+
+Repeat for all three links. The submit process records one attempt every five
+seconds for eight hours, including refusals. Once during the run, on one peer,
+start exactly one extra burst and retain its separate records.
+
+```sh
+node "$ENTRY" submit "$RUN" "$LINK" --burst >> "$RECORDS/burst.ndjson" 2>> "$RECORDS/burst.err"
+```
+
+After the affected link is up, inject and record each fault: `relay-kill`,
+`herdr-restart-relay`, `herdr-restart-peer`, `route-cut`, `laptop-sleep`, and
+`endpoint-kill`. Keep the route cut active for at least 60 seconds. Record the
+fault's `kind`, affected `linkIds`, `clock` (`relay` or `peer`), `startMs`,
+and `clearMs` on that clock. Each fault must affect links that share that
+clock's machine.
+
+For a relay kill or a Herdr restart, add `process` with the affected
+`machineId`, `pid`, `birthId`, `bootId`, and `observedMs`. Observe that process
+on its own machine within five seconds before the fault. For an endpoint kill,
+add the same fields as `endpoint` plus the `pollId` from a still-open held
+`poll-start` record. Identify the actual peer endpoint and its birth identity
+before killing it. If more than one endpoint could match, do not guess.
+
+On Linux, `birthId` is `linux:` followed by field 22 of `/proc/<pid>/stat`,
+and `bootId` is `/proc/sys/kernel/random/boot_id`. On macOS, `birthId` is
+`posix:` followed by `LC_ALL=C TZ=UTC ps -p <pid> -o lstart=` with surrounding
+whitespace removed, and `bootId` is `sysctl -n kern.bootsessionuuid`. Record
+birth identities while the processes are live, not after PID reuse.
+
+### Stop and check
+
+Wait for the submit processes and their pending outcomes to finish. Keep each
+dial running until its RSS records cover `endMs` plus the maximum relay clock
+offset. Then stop the dial processes, wait for their held calls and helper
+processes to exit, and take a complete after census on every machine. Take
+both censuses far enough outside the run to account for the clock bounds.
+
+Collect the NDJSON files and build a manifest. `recordFiles` paths are relative
+to the manifest. The template below shows one link; include the other two,
+all fault records, all clock samples, and one census per participating
+machine. Empty arrays are not evidence and cause the check to fail.
+
+```json
+{
+  "startMs": 1700000000000,
+  "endMs": 1700028800000,
+  "rssAllowanceBytes": 10000000,
+  "links": [{
+    "id": "laptop-box",
+    "topology": "laptop-to-box",
+    "relayId": "11111111-1111-4111-8111-111111111111",
+    "peerId": "22222222-2222-4222-8222-222222222222",
+    "clock": {
+      "fromMs": 1700000000000,
+      "toMs": 1700028820000,
+      "minOffsetMs": -100,
+      "maxOffsetMs": 100,
+      "maxDriftMs": 0,
+      "samples": []
+    },
+    "recordFiles": ["laptop-box-dial.ndjson", "laptop-box-submit.ndjson"]
+  }],
+  "faults": [],
+  "processes": []
+}
+```
+
+Each census is `{ "machineId": "...", "before": { "atMs": 0,
+"complete": true, "identities": [] }, "after": { "atMs": 0,
+"complete": true, "identities": [] } }`. Replace the timestamps and list
+all observed `{ "pid": 1, "birthId": "...", "bootId": "..." }` identities.
+Mark a census complete only when it covers all test-owned helpers. Add the
+burst file and every restarted dial's records to the relevant link.
+
+```sh
+node "$ENTRY" check "$RECORDS/manifest.json"
+```
+
+Exit 0 and `{"ok":true,"violations":[]}` mean the evidence met the soak
+criteria. Exit 1 reports violations or incomplete evidence. A failed soak blocks
+rollout; fix the carrier and run the live gate again.
+
 ## Legacy enable and broker readiness
 
 `production-controls.ts` completes read-only peer preflight before starting

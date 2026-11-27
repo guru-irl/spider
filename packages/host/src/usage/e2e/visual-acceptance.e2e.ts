@@ -1,6 +1,7 @@
 import { test, expect, type Page, type TestInfo } from "@playwright/test";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { inkRows } from "./ink-rows.js";
+import { shouldCaptureState } from "./state-capture-policy.js";
 import { resolve } from "node:path";
 import { installFixtureRoutes, expectNoBrowserErrors } from "./fixtures.js";
 import { fixtureStateCases, overviewFixture, sessionFixture, calibrationFixture, envelope } from "../__tests__/fixtures/redesign-contract.js";
@@ -168,6 +169,9 @@ for (const width of widths) test(`states gallery every component and state ${wid
   const examples = page.locator(".state-example");
   for (let i = 0; i < await examples.count(); i++) {
     const example = examples.nth(i), name = (await example.locator("h2").first().textContent())!.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+    // Chrome's element capture of session-default at 1440 has hung in CI;
+    // the full-page capture above still covers it. Re-enable once fixed.
+    if (!shouldCaptureState(width, name)) continue;
     const directory = resolve(info.project.outputDir, "acceptance"); const path = resolve(directory, `state-${name}-${width}.png`); await example.screenshot({ path }); await info.attach(`state-${name}-${width}`, { path, contentType: "image/png" });
   }
   expect(errors()).toEqual([]);

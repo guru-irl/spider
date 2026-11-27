@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFileSync, spawn } from "node:child_process";
+import * as childProcess from "node:child_process";
 import { once } from "node:events";
+import * as handoff from "@spider/herdr/jobs/handoff";
 import * as hcApi from "@spider/herdr/client/hc";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -16,8 +18,12 @@ import { captureLocalSession, installLocalSession, resolveVerifiedArtifact } fro
 import { handleRelocateAgent } from "../relocate/remote";
 import { createRelocateAdapters } from "../relocate/adapters";
 import type { RelocateAdapterOptions, RelocateId, RelocatePlan, RunningHome } from "../relocate/types";
-import { createLocalIO, createLocalRuntime, stopLocalSession, type LocalIO } from "../relocate/local";
+import { createLocalIO, createLocalRuntime, probeLocalProcess, stopLocalSession, type LocalIO } from "../relocate/local";
 import type { SessionId } from "../relocate/types";
+vi.mock("node:child_process", async importOriginal => {
+ const original = await importOriginal<typeof import("node:child_process")>();
+ return {...original, execFileSync: vi.fn(original.execFileSync)};
+});
 const id="33333333-3333-4333-8333-333333333333" as SessionId;
 function stopFixture() {
  let now=0, exits=false, probes=0;
@@ -203,7 +209,221 @@ describe("v0 real transfer",()=>{
   expect(f.git(f.checkout,"rev-parse","HEAD")).toBe(before.head);expect(f.git(f.checkout,"write-tree")).toBe(before.index);expect(readFileSync(join(f.checkout,"file.txt"))).toEqual(before.file);expect(readFileSync(f.plan.destinationPlacement.file)).toEqual(before.transcript);expect(readFileSync(join(f.checkout,"new.txt"),"utf8")).toBe("keep\n");
  });
 });
+describe("local process probe", () => {
+ it.each([
+  {name: "exited", next: null, expected: {kind: "absent"}},
+  {name: "reused its PID", next: "replacement", expected: {kind: "absent"}},
+  {name: "remained unreadable", next: "original", expected: {kind: "unknown"}},
+ ])("classifies a process that $name after a failed command read", async ({next, expected}) => {
+  vi.spyOn(handoff, "processStartIdentity").mockReturnValueOnce("original").mockReturnValueOnce(next);
+  vi.mocked(childProcess.execFileSync).mockImplementationOnce(() => { throw new Error("ps failed"); });
+
+  expect(await probeLocalProcess(44)).toEqual(expected);
+ });
+ it("keeps an unreadable identity unknown after a failed command read", async () => {
+  vi.spyOn(handoff, "processStartIdentity")
+   .mockReturnValueOnce("original")
+   .mockImplementationOnce(() => { throw new Error("identity unavailable"); });
+  vi.mocked(childProcess.execFileSync).mockImplementationOnce(() => { throw new Error("ps failed"); });
+
+  expect(await probeLocalProcess(44)).toEqual({kind: "unknown"});
+ });
+});
 describe("v0 transfer stop boundary",()=>{
+ it("accepts pi exiting between its ownership check and signal", async () => {
+  const f = stopFixture();
+  const moving = {sessionId: id, machineId: hub, epoch: 2, state: "moving" as const, destination: box, moveId: "v0-test" as RelocateId, updatedAt: 1};
+  let exited = false;
+  const probe = f.io.probe;
+  f.io.probe = async pid => {
+   if (exited) { f.events.push("root-absent"); return {kind: "absent"}; }
+   return probe(pid);
+  };
+  f.io.inspect = async () => exited ? null : f.owner;
+  f.io.terminals = async () => exited ? [] : [{terminal: "t", state: "live", pid: 42, owned: true}];
+  f.io.signal = async pid => {
+   f.signals.push(pid);
+   exited = true;
+   throw Object.assign(new Error("process exited"), {code: "ESRCH"});
+  };
+  f.io.groupBlockers = async () => { f.events.push("group-check"); return []; };
+
+  expect(await stopLocalSession(id, moving, f.io, f.clock, 30)).toEqual({ok: true, value: undefined});
+  expect(f.signals).toEqual([42]);
+  expect(f.events).toEqual(["shutdown", "root-absent", "group-check", "lock-free"]);
+ });
+ it("does not ignore a denied pi signal", async () => {
+  const f = stopFixture();
+  f.io.signal = async pid => {
+   f.signals.push(pid);
+   throw Object.assign(new Error("permission denied"), {code: "EPERM"});
+  };
+
+  expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toMatchObject({ok: false, refusal: {code: "stop-timeout"}});
+  expect(f.signals).toEqual([42]);
+  expect(f.events).not.toContain("lock-free");
+ });
+ it("does not report success when pi remains live after ESRCH", async () => {
+  const f = stopFixture();
+  f.io.inspect = async () => f.owner;
+  f.io.probe = async () => ({kind: "live", startIdentity: "pi-42", pi: true});
+  f.io.signal = async pid => {
+   f.signals.push(pid);
+   throw Object.assign(new Error("process exited"), {code: "ESRCH"});
+  };
+
+  expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toMatchObject({
+   ok: false, refusal: {code: "session-busy", message: expect.stringContaining("PID 42")},
+  });
+  expect(f.signals).toEqual([42]);
+  expect(f.events).not.toContain("lock-free");
+  expect(f.clock.now()).toBe(30);
+ });
+ it("refuses before signalling when any descendant is unreadable", async () => {
+  const f = stopFixture();
+  const first = {pid: 43, startIdentity: "tool-43", command: "bash"};
+  const unreadable = {pid: 44, startIdentity: "tool-44", command: "worker"};
+  f.io.tree = async () => ({descendants: [first, unreadable], groups: []});
+  const probe = f.io.probe;
+  f.io.probe = async pid => pid === first.pid
+   ? {kind: "live", startIdentity: first.startIdentity, pi: false}
+   : pid === unreadable.pid ? {kind: "unknown"} : probe(pid);
+  const moving = {sessionId: id, machineId: hub, epoch: 2, state: "moving" as const, destination: box, moveId: "v0-test" as RelocateId, updatedAt: 1};
+
+  expect(await stopLocalSession(id, moving, f.io, f.clock, 30)).toMatchObject({
+   ok: false, refusal: {code: "session-busy", message: expect.stringContaining("PID 44")},
+  });
+  expect(f.signals).toEqual([]);
+  expect(f.events).toEqual([]);
+ });
+ it("stops when signalling a descendant makes its child exit", async () => {
+  const f = stopFixture();
+  const parent = {pid: 43, startIdentity: "parent-43", command: "wrapper"};
+  const child = {pid: 44, startIdentity: "child-44", command: "tool"};
+  let parentLive = true, childLive = true, childWasProbed = false;
+  f.io.tree = async () => ({descendants: [parent, child], groups: []});
+  const probe = f.io.probe;
+  f.io.probe = async pid => {
+   if (pid === parent.pid) return parentLive ? {kind: "live", startIdentity: parent.startIdentity, pi: false} : {kind: "absent"};
+   if (pid === child.pid) {
+    if (!childLive) return childWasProbed ? {kind: "absent"} : {kind: "unknown"};
+    childWasProbed = true;
+    return {kind: "live", startIdentity: child.startIdentity, pi: false};
+   }
+   return probe(pid);
+  };
+  f.io.signal = async pid => {
+   if (pid === child.pid && !childLive) throw Object.assign(new Error("process exited"), {code: "ESRCH"});
+   f.signals.push(pid);
+   if (pid === parent.pid) parentLive = childLive = false;
+  };
+  const moving = {sessionId: id, machineId: hub, epoch: 2, state: "moving" as const, destination: box, moveId: "v0-test" as RelocateId, updatedAt: 1};
+
+  expect(await stopLocalSession(id, moving, f.io, f.clock, 30)).toEqual({ok: true, value: undefined});
+  expect(f.signals).toEqual([43, 42]);
+  expect(f.events).toContain("shutdown");
+ });
+ it("does not signal a descendant PID reused during shutdown", async () => {
+  const f = stopFixture();
+  const first = {pid: 43, startIdentity: "first-43", command: "wrapper"};
+  const child = {pid: 44, startIdentity: "child-44", command: "tool"};
+  let firstLive = true, childIdentity = child.startIdentity;
+  f.io.tree = async () => ({descendants: [first, child], groups: []});
+  const probe = f.io.probe;
+  f.io.probe = async pid => {
+   if (pid === first.pid) return firstLive ? {kind: "live", startIdentity: first.startIdentity, pi: false} : {kind: "absent"};
+   if (pid === child.pid) return {kind: "live", startIdentity: childIdentity, pi: false};
+   return probe(pid);
+  };
+  f.io.signal = async pid => {
+   f.signals.push(pid);
+   if (pid === first.pid) { firstLive = false; childIdentity = "replacement-44"; }
+  };
+
+  expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toEqual({ok: true, value: undefined});
+  expect(f.signals).toEqual([43, 42]);
+ });
+ it("does not signal a descendant that becomes unreadable after preflight", async () => {
+  const f = stopFixture();
+  const first = {pid: 43, startIdentity: "first-43", command: "wrapper"};
+  const child = {pid: 44, startIdentity: "child-44", command: "tool"};
+  let firstSignalled = false;
+  f.io.tree = async () => ({descendants: [first, child], groups: []});
+  const probe = f.io.probe;
+  f.io.probe = async pid => {
+   if (pid === first.pid) return {kind: "live", startIdentity: first.startIdentity, pi: false};
+   if (pid === child.pid) return firstSignalled ? {kind: "unknown"} : {kind: "live", startIdentity: child.startIdentity, pi: false};
+   return probe(pid);
+  };
+  f.io.signal = async pid => { f.signals.push(pid); if (pid === first.pid) firstSignalled = true; };
+
+  expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toMatchObject({
+   ok: false, refusal: {code: "session-busy", message: expect.stringContaining("PID 44")},
+  });
+  expect(f.signals).toEqual([43]);
+ });
+ it("ignores a descendant that is already absent", async () => {
+  const f = stopFixture();
+  const child = {pid: 43, startIdentity: "child-43", command: "tool"};
+  f.io.tree = async () => ({descendants: [child], groups: []});
+  const probe = f.io.probe;
+  f.io.probe = async pid => pid === child.pid ? {kind: "absent"} : probe(pid);
+
+  expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toEqual({ok: true, value: undefined});
+  expect(f.signals).toEqual([42]);
+ });
+ it("accepts a descendant exiting between its final check and signal", async () => {
+  const f = stopFixture();
+  const child = {pid: 43, startIdentity: "child-43", command: "tool"};
+  let childLive = true;
+  f.io.tree = async () => ({descendants: [child], groups: []});
+  const probe = f.io.probe;
+  f.io.probe = async pid => pid === child.pid
+   ? childLive ? {kind: "live", startIdentity: child.startIdentity, pi: false} : {kind: "absent"}
+   : probe(pid);
+  f.io.signal = async pid => {
+   if (pid === child.pid) {
+    childLive = false;
+    throw Object.assign(new Error("process exited"), {code: "ESRCH"});
+   }
+   f.signals.push(pid);
+  };
+
+  expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toEqual({ok: true, value: undefined});
+  expect(f.signals).toEqual([42]);
+ });
+ it("does not ignore a denied descendant signal", async () => {
+  const f = stopFixture();
+  const child = {pid: 43, startIdentity: "child-43", command: "tool"};
+  f.io.tree = async () => ({descendants: [child], groups: []});
+  const probe = f.io.probe;
+  f.io.probe = async pid => pid === child.pid ? {kind: "live", startIdentity: child.startIdentity, pi: false} : probe(pid);
+  f.io.signal = async pid => {
+   if (pid === child.pid) throw Object.assign(new Error("permission denied"), {code: "EPERM"});
+   f.signals.push(pid);
+  };
+
+  expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toMatchObject({ok: false, refusal: {code: "stop-timeout"}});
+  expect(f.signals).toEqual([]);
+ });
+ it("counts an unreadable descendant as alive until the deadline", async () => {
+  const f = stopFixture();
+  const child = {pid: 43, startIdentity: "child-43", command: "tool"};
+  let signalled = false;
+  f.io.tree = async () => ({descendants: [child], groups: []});
+  const probe = f.io.probe;
+  f.io.probe = async pid => pid === child.pid
+   ? signalled ? {kind: "unknown"} : {kind: "live", startIdentity: child.startIdentity, pi: false}
+   : probe(pid);
+  f.io.signal = async pid => { f.signals.push(pid); if (pid === child.pid) signalled = true; };
+
+  expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toMatchObject({
+   ok: false, refusal: {code: "session-busy", message: expect.stringContaining("PID 43")},
+  });
+  expect(f.signals).toEqual([43, 42]);
+  expect(f.events).not.toContain("lock-free");
+  expect(f.clock.now()).toBe(30);
+ });
  it("waits for verified tool descendants even after the locked pi exits", async () => {
   const f = stopFixture();
   const child = {pid: 43, startIdentity: "tool-43", command: "bash"};
@@ -255,12 +475,24 @@ describe("v0 transfer stop boundary",()=>{
   expect(await stopLocalSession(id,null,f.io,f.clock,30)).toMatchObject({ok:false,refusal:{code:"session-busy"}});
   expect(f.signals).toEqual([]);
  });
+ it("waits for the ID lock after a successful moving-home shutdown", async () => {
+  const f = stopFixture();
+  const moving = {sessionId: id, machineId: hub, epoch: 2, state: "moving" as const, destination: box, moveId: "v0-test" as RelocateId, updatedAt: 1};
+  let shutdownId: string | undefined;
+  f.io.shutdown = async operation => { shutdownId = operation.id; f.events.push("shutdown"); return true; };
+
+  expect(await stopLocalSession(id, moving, f.io, f.clock, 30)).toEqual({ok: true, value: undefined});
+  expect(shutdownId).toBe("v0-test-shutdown");
+  expect(f.signals).toEqual([]);
+  expect(f.events).toEqual(["shutdown", "wait", "wait", "lock-free"]);
+ });
  it("shutdown fallback waits for the ID lock",async()=>{
   const f=stopFixture();let capture=false;
   const done=stopLocalSession(id,null,f.io,f.clock,30).then(r=>{if(r.ok){capture=true;f.events.push("capture");}return r;});
   expect(capture).toBe(false);
   expect(await done).toEqual({ok:true,value:undefined});
   expect(f.signals).toEqual([42]);
+  expect(f.events).toContain("lock-free");
   expect(f.events.indexOf("capture")).toBeGreaterThan(f.events.indexOf("lock-free"));
   expect(f.events.filter(e=>e==="wait")).toHaveLength(2);
  });

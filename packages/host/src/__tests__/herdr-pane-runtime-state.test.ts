@@ -399,13 +399,23 @@ test('production facts skip ended history and read live presentations with bound
   const { runtime } = await fixture(); const live = Array.from({ length: 8 }, (_, i) => presentation(`live-${i}`));
   await runtime.store.update(s => ({ ...s, presentations: [...live, presentation('ended', 'ended')] }));
   let active = 0, maximum = 0; const releases: (() => void)[] = [], read: string[] = [];
+  let firstReadStarted!: () => void;
+  const firstRead = new Promise<void>(resolve => { firstReadStarted = resolve; });
   boundary.facts.mockImplementation(async target => {
-    read.push(target.terminalId); active++; maximum = Math.max(maximum, active);
+    read.push(target.terminalId); active++; maximum = Math.max(maximum, active); firstReadStarted();
     await new Promise<void>(resolve => releases.push(resolve)); active--;
     return facts(live.find(p => p.target.terminalId === target.terminalId)!);
   });
+  let inventoryStarted!: () => void, releaseInventory!: () => void;
+  const inventoryReady = new Promise<void>(resolve => { inventoryStarted = resolve; });
+  const inventoryGate = new Promise<void>(resolve => { releaseInventory = resolve; });
+  const remote = boundary.remote.getMockImplementation()!;
+  boundary.remote.mockImplementation(async (...args) => { inventoryStarted(); await inventoryGate; return remote(...args); });
   const service = runtime.createService(), running = service.reconcile();
-  await vi.waitFor(() => expect(read.length).toBeGreaterThan(0));
+  await inventoryReady;
+  expect(read).toEqual([]);
+  releaseInventory();
+  await firstRead;
   const firstBatch = read.length;
   while (read.length < 8 || active) {
     releases.splice(0).forEach(release => release());

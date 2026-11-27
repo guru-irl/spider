@@ -3,6 +3,12 @@ name: CI
 on:
   workflow_call:
   workflow_dispatch:
+    inputs:
+      force_full:
+        description: Run all tests, Chrome, packed acceptance, and headless stories before merge
+        type: boolean
+        required: true
+        default: true
   push:
     branches: [main]
 

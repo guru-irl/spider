@@ -69,10 +69,17 @@ main shard weights for the full fallback.
 `ci.yml` runs the full root suite in six shards with two fork workers each.
 It also runs Chrome, packed Herdr acceptance, and the default headless stories.
 A new push to `main` cancels a superseded run. A manual dispatch or reusable
-call still runs full CI, but a manual run is not needed before routine merges.
-The non-required `selection audit` compares main failures with the merged PR's
-selection. On a miss, the audit fails and shows the changed files, failed tests,
-and their records. Chrome, acceptance, and stories are not part of PR selection.
+call still runs full CI. To satisfy merge tooling that requires a full run on
+the PR head, dispatch CI on that branch:
+
+```bash
+gh workflow run ci.yml --ref <head-branch> -f force_full=true
+```
+
+Wait for `typecheck · test · build` on that exact head. The non-required
+`selection audit` compares main failures with the merged PR's selection. On a
+miss, the audit fails and shows the changed files, failed tests, and their
+records. Chrome, acceptance, and stories are not part of PR selection.
 
 To refresh the main shard weights, download `test-results-*` from a completed
 full run:

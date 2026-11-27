@@ -280,6 +280,12 @@ describe('CI acceptance contract', () => {
   it('keeps full pushes, dispatches and reusable calls on the same path', () => {
     const ci = workflow('ci');
     expect(Object.keys(ci.on).sort()).toEqual(['push', 'workflow_call', 'workflow_dispatch']);
+    expect(ci.on.workflow_dispatch).toEqual({ inputs: { force_full: {
+      description: 'Run all tests, Chrome, packed acceptance, and headless stories before merge',
+      type: 'boolean',
+      required: true,
+      default: true,
+    } } });
     expect(ci.on.push).toEqual({ branches: ['main'] });
     expect(ci.jobs.chrome!.strategy!.matrix.include).toHaveLength(4);
     expect(ci.jobs.stories).toEqual({ uses: './.github/workflows/herdr-stories.yml' });

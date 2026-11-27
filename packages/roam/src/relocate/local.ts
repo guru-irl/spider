@@ -58,12 +58,17 @@ function sameOwner(a: IdLockObservation | null, b: IdLockObservation): boolean {
   return !!a && a.identity.pid === b.identity.pid && a.identity.startIdentity === b.identity.startIdentity && a.bootId === b.bootId && a.pendingOperationId === b.pendingOperationId;
 }
 export async function probeLocalProcess(pid: number): ReturnType<LocalIO["probe"]> {
+  let startIdentity: string | null;
+  try { startIdentity = processStartIdentity(pid); }
+  catch { return {kind:"unknown"}; }
+  if (startIdentity === null) return {kind:"absent"};
   try {
-    const startIdentity = processStartIdentity(pid);
-    if (startIdentity === null) return {kind:"absent"};
     const comm = execFileSync("ps",["-p",String(pid),"-o","comm="],{encoding:"utf8",timeout:1000}).trim();
     return {kind:"live",startIdentity,pi:isPiTitle(comm)};
-  } catch { return {kind:"unknown"}; }
+  } catch {
+    try { return processStartIdentity(pid) === startIdentity ? {kind:"unknown"} : {kind:"absent"}; }
+    catch { return {kind:"unknown"}; }
+  }
 }
 /** HC selection is local. No inherited terminal, remote target, or lease survives. */
 export function localLaunchEnvironment(env: Readonly<NodeJS.ProcessEnv> = process.env): NodeJS.ProcessEnv {

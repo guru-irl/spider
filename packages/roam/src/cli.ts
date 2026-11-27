@@ -1,4 +1,6 @@
 import { parseV0Control, runV0Control, readV0Confirmation } from "./relocate/cli";
+import { createV0Intercom } from "./relocate/intercom";
+import { parseV0AgentReply, parseV0AgentRequest, V0_INTERCOM_BYTES, type V0AgentReply } from "@spider/intercom/roam-v0";
 import { readPeerRevocation } from "./revocation";
 import { skippedProjectDbNotice, v0SessionCatalog } from "./relocate/session-catalog";
 import { requestV0Services, runV0Service } from "./relocate/service";
@@ -137,7 +139,7 @@ function setupPendingCause(error: unknown): { code: string } {
   return { code: enrollmentCauseCode(error) };
 }
 
-export async function main(argv: readonly string[], io: CommandIO, options?: { bundleUrl?: URL; stdin?: Buffer; pairPorts?: LocalPairPorts; fencePort?: typeof requestHelperFence; intercomOptions?: IntercomCliOptions; intercomDoctor?: Parameters<typeof runLocalDoctor>[0]["intercomDoctor"]; runDisabledForget?: RunDisabledForget; moveFactory?: import("./move-runtime-contracts").MoveRuntimeFactory; placementFactory?: import("./contracts").PlacementFactory; v0?: { hub?(root: string): Promise<{ stop(): Promise<void> }>; services?: V0ControlServices; catalog?: readonly { id: string; name: string | null }[]; confirmation?(prompt: string): Promise<string | null>; agent?(input: unknown, root: string): Promise<V0Result<unknown>>; lifecycle?: Partial<V0ServiceOptions> } }): Promise<number> {
+export async function main(argv: readonly string[], io: CommandIO, options?: { bundleUrl?: URL; stdin?: Buffer; pairPorts?: LocalPairPorts; fencePort?: typeof requestHelperFence; intercomOptions?: IntercomCliOptions; intercomDoctor?: Parameters<typeof runLocalDoctor>[0]["intercomDoctor"]; runDisabledForget?: RunDisabledForget; moveFactory?: import("./move-runtime-contracts").MoveRuntimeFactory; placementFactory?: import("./contracts").PlacementFactory; v0?: { hub?(root: string): Promise<{ stop(): Promise<void> }>; services?: V0ControlServices; catalog?: readonly { id: string; name: string | null }[]; confirmation?(prompt: string): Promise<string | null>; agent?(input: unknown, root: string): Promise<V0Result<unknown>>; intercom?(input: unknown, root: string): Promise<V0AgentReply | null>; lifecycle?: Partial<V0ServiceOptions> } }): Promise<number> {
   let root = process.env.SPIDER_GLOBAL_ROOT || join(homedir(), ".pi", "agent", "spider");
   const privateRoot = argv[0] === "--global-root";
   if (privateRoot) {
@@ -150,6 +152,21 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       argv.length === 2 && argv[0] === "roam" && ["--help", "-h", "help"].includes(argv[1])) {
     io.out(HELP);
     return 0;
+  }
+  if (argv[0] === "roam" && argv[1] === "agent" && argv[2] === "--v0" && argv[3] === "intercom") {
+    try {
+      if (argv.length !== 4) throw new Error("Invalid private intercom arguments");
+      const input: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await readArtifactInput(V0_INTERCOM_BYTES, options?.stdin)));
+      const request = parseV0AgentRequest(input);
+      if (!request) throw new Error("Invalid private intercom request");
+      const reply = await (options?.v0?.intercom ?? ((raw, targetRoot) => createV0Intercom(targetRoot).handle(raw)))(request, root);
+      const parsed = parseV0AgentReply(reply);
+      if (!parsed || parsed.requestId !== request.requestId) throw new Error("Invalid private intercom reply");
+      const output = `${JSON.stringify(parsed)}\n`;
+      if (Buffer.byteLength(output) > V0_INTERCOM_BYTES) throw new Error("Private intercom reply too large");
+      io.out(output);
+      return 0;
+    } catch { io.err("Invalid or unavailable private intercom request.\n"); return 2; }
   }
   if (argv[0] === "roam" && argv[1] === "agent" && argv[2] === "--v0") {
     if (argv.length !== 3) { io.out(`${JSON.stringify({ ok: false, refusal: { code: "invalid-arguments", message: "Invalid private v0 request.", nextStep: "Use the private v0 agent protocol." } })}\n`); return 2; }

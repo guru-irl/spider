@@ -140,7 +140,7 @@ describe("relocate", () => {
     if (mode === "missing-install") cp.completed = [...cp.completed, "install-destination"];
     const home = structuredClone(s.home); const journal = structuredClone(s.journal); const before = s.effects.length;
     expect(await relocate(request, ports(s))).toMatchObject({
-      ok: false, refusal: { code: "journal-unavailable", nextStep: expect.stringMatching(/set-home.*--force.*lost/i) },
+      ok: false, refusal: { code: "journal-unavailable", nextStep: expect.stringMatching(/set-home session-1 source --force.*lost/i) },
     });
     expect(s.home).toEqual(home); expect(s.journal).toEqual(journal);
     expect(s.effects.slice(before)).toEqual([]); expect(s.ids).toBe(1);

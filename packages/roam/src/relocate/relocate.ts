@@ -211,7 +211,7 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts, r
         try { pending = await ports.journal.load(moveId); } catch { pending = null; }
         if (!matchesMoving(pending, home)) {
           refuse("journal-unavailable", "The relocation checkpoint is missing or unreadable.",
-            `Use spider roam set-home ${request.sessionId} ${request.destinationMachine} --force only with a local backup; unsynced work can be lost.`);
+            `Use spider roam set-home ${request.sessionId} ${home.machineId} --force only with a local backup; unsynced work can be lost.`);
         }
         checkpoint = pending;
       } else if (checkedFirst) {

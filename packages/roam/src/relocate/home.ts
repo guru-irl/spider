@@ -5,7 +5,13 @@ import { isRoamUuid } from "@spider/db-core/roam/codec";
 import { validUnicode } from "@spider/db-core/roam/hlc";
 import type { MachineId } from "@spider/db-core/roam/types";
 import { AwayHomeRecoveryRequired, publishAwayHomeFence, readAwayHomeFence, withAwayHomeFenceLock, type AwayHomeFence } from "./away-home";
-import type { HomeStore, HomeStoreOptions, RelocateHome, RelocateId, RunningHome, SessionId } from "./types";
+import type { HomeStore, HomeStoreOptions, RelocateHome, RelocateId, RunningHome, SessionId, V0Refusal } from "./types";
+
+export const legacyRecordedHomeRefusal: V0Refusal = {
+  code: "home-conflict",
+  message: "V0 cannot adopt a legacy home with a recorded move or claim.",
+  nextStep: "Keep the existing home and run spider roam doctor on the Mac.",
+};
 
 type HomeRow = Record<string, unknown>;
 const COLUMNS = "session_id, machine_id, epoch, move_id, updated_at, state, destination";
@@ -100,7 +106,7 @@ export function createHomeStore(options: HomeStoreOptions): HomeStore {
             if (managed.state !== "running") throw new Error("Home is already managed and not running");
             return managed;
           }
-          if (old.move_id !== null) throw new Error("Unfinished legacy home move cannot be adopted");
+          if (old.move_id !== null) throw new Error(`${legacyRecordedHomeRefusal.message} ${legacyRecordedHomeRefusal.nextStep}`);
           epoch(old.epoch);
           db.prepare("UPDATE session_homes SET state='running', destination=NULL, updated_at=? WHERE session_id=?").run(Date.now(),id);
         } else {

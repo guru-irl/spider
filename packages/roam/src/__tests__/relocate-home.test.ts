@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createReplica } from "@spider/db-core/testutil";
 import type { MachineId } from "@spider/db-core/roam/types";
 import { createHomeStore } from "../relocate/home";
+import { assignInitialHome, casHome } from "../homes";
 import type { MovingHome, RelocateId, RunningHome, SessionId } from "../relocate/types";
 
 const HUB = "11111111-1111-4111-8111-111111111111" as MachineId;
@@ -70,6 +71,17 @@ describe("v0 hub home store", () => {
     db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES ('unfinished', ?, 8, 'old-move', 12)").run(BOX);
     await expect(homes.initialize("unfinished" as SessionId,BOX)).rejects.toThrow(/legacy.*move/i);
     expect(db.prepare("SELECT state,epoch,move_id FROM session_homes WHERE session_id='unfinished'").get()).toEqual({state:null,epoch:8,move_id:"old-move"});
+  });
+
+  it("names the supported next step for a completed legacy move", async () => {
+    const { db, homes } = fixture();
+    const original = assignInitialHome(db, SESSION, HUB, HUB);
+    if (original === "conflict") throw new Error("fixture has no legacy home");
+    const completed = casHome(db, original, BOX, "completed-move", HUB);
+    await expect(homes.initialize(SESSION, BOX)).rejects.toThrow(/recorded move or claim.*spider roam doctor/i);
+    expect(await homes.read(SESSION)).toBeNull();
+    expect(db.prepare("SELECT epoch,move_id,state FROM session_homes").get())
+      .toEqual({ epoch: completed.epoch, move_id: completed.moveId, state: null });
   });
 
   it("an unassigned global key does not gate home mutation", async () => {

@@ -60,7 +60,7 @@ function fixture() {
   return { root, file, fence, fenceContents, createDb, removeDb, openRestoredDb, store, forcePorts, db: () => db! };
 }
 
-function productionSession(f: ReturnType<typeof fixture>, sessionId: SessionId = sid) {
+function productionSession(f: ReturnType<typeof fixture>, sessionId: SessionId = sid, hasUI = false) {
   const cwd = join(f.root, "worktree"), file = join(f.root, `${sessionId}.jsonl`), lockRoot = join(f.root, "herdr");
   mkdirSync(cwd, { recursive: true });
   writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: sessionId, cwd }) + "\n", { mode: 0o600 });
@@ -70,7 +70,7 @@ function productionSession(f: ReturnType<typeof fixture>, sessionId: SessionId =
   const ports = createAdmissionPorts();
   const lock = vi.spyOn(ports, "lock"), pin = vi.spyOn(ports, "lockSessionId");
   const abort = vi.fn();
-  const host = createHostSessionFixture({ cwd, sessionId, sessionFile: file, hasUI: false, abort });
+  const host = createHostSessionFixture({ cwd, sessionId, sessionFile: file, hasUI, abort });
   const gate = registerAdmission(host.pi as unknown as ExtensionAPI, ports);
   async function emit(name: string, event = {}) {
     let result: unknown;
@@ -106,8 +106,14 @@ async function expectOrdinaryWorkRefused(session: ReturnType<typeof productionSe
   expect(() => api.sendMessage({ customType: "test", content: "no write", display: true })).toThrow();
   api.sendUserMessage("no write"); api.appendEntry("test", { synthetic: true });
   expect(session.host.sent).toEqual([]); expect(append).not.toHaveBeenCalled(); expect(sendUser).not.toHaveBeenCalled();
-  expect(session.lock).not.toHaveBeenCalled(); expect(session.pin).not.toHaveBeenCalled();
-  expect(await inspectIdLock(session.lockRoot, sid)).toBeNull();
+  expect(session.lock).not.toHaveBeenCalled();
+  if (session.host.ctx.hasUI) {
+    expect(session.pin).toHaveBeenCalledOnce();
+    expect(await inspectIdLock(session.lockRoot, sid)).not.toBeNull();
+  } else {
+    expect(session.pin).not.toHaveBeenCalled();
+    expect(await inspectIdLock(session.lockRoot, sid)).toBeNull();
+  }
   expect(await createSessionLeases(session.lockRoot).get(session.file)).toBeNull();
 }
 
@@ -156,6 +162,33 @@ it.each(["no global DB", "same-Mac missing row", "same-Mac null state", "same-Ma
       if (restored) expect(restored.prepare("SELECT * FROM session_homes WHERE session_id=?").get(sid)).toEqual(row);
       else expect(existsSync(f.file)).toBe(false);
     } finally { await session.gate.close(); }
+  },
+);
+
+it.each(["away fence", "foreign legacy home", "journal-only freeze"] as const)(
+  "interactive first-open refuses %s without acquiring a session lease", async state => {
+    const f = fixture();
+    let worktree: Db | undefined, journal: Db | undefined;
+    if (state === "away fence") {
+      const { store, moving, away } = await prepareMove(f);
+      await store.compareAndSwap(moving, away);
+      f.removeDb();
+    } else if (state === "foreign legacy home") {
+      f.db().prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES(?,?,3,?,1)").run(sid, box, "legacy-move");
+      worktree = legacyWorktree(f, "active", 3);
+    } else {
+      f.removeDb();
+      journal = openDb(join(f.root, "roam", "journal.db"));
+      journal.exec("CREATE TABLE freeze_journal(session_id TEXT, move_id TEXT, epoch INTEGER, state TEXT)");
+      journal.prepare("INSERT INTO freeze_journal VALUES(?,?,?,?)").run(sid, "legacy-move", 1, "frozen");
+    }
+    const session = productionSession(f, sid, true);
+    try {
+      await session.emit("session_start");
+      await expectOrdinaryWorkRefused(session, state === "journal-only freeze" ? "control-only" : "blocked");
+      await session.gate.close();
+      expect(await inspectIdLock(session.lockRoot, sid)).toBeNull();
+    } finally { await session.gate.close(); worktree?.close(); journal?.close(); }
   },
 );
 

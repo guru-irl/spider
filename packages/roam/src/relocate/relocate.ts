@@ -64,6 +64,9 @@ const failureCodes: Record<RelocateStep, V0RefusalCode> = {
   "start-destination": "start-pending", confirm: "start-pending",
 };
 
+export interface PendingConfirmationPort {
+  confirmPending(home: RunningHome, placement: SessionPlacement): Promise<V0Result<{terminal:string}>>;
+}
 interface Readiness { clock: Clock; timeoutMs: number }
 
 function waitForConfirmation<T>(attempt: () => Promise<V0Result<T>>, readiness: Readiness, pending: V0Refusal): Promise<V0Result<T>> {
@@ -95,7 +98,7 @@ function waitForConfirmation<T>(attempt: () => Promise<V0Result<T>>, readiness: 
 }
 
 /** Hub-only orchestration. All durable state and exclusion belong to the ports. */
-export async function relocate(request: RelocateRequest, ports: RelocatePorts, readiness?: Readiness): Promise<RelocateOutcome> {
+export async function relocate(request: RelocateRequest, ports: RelocatePorts & Partial<PendingConfirmationPort>, readiness?: Readiness): Promise<RelocateOutcome> {
   let home: RelocateHome | null = null;
   let moveId: RelocateId | null = null;
   let step: RelocateStep = "check";
@@ -117,13 +120,25 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts, r
     try { await ports.journal.save(checkpoint); }
     catch { refuse("journal-unavailable", "The relocation checkpoint could not be saved."); }
   };
-  const confirm = async (home: RunningHome, placement: SessionPlacement) => {
-    const attempt = () => ports.confirm(home, placement);
-    return value(await (readiness ? waitForConfirmation(attempt, readiness, {
-      code: "start-pending",
+  const confirm = async (home: RunningHome, placement: SessionPlacement, startPending?: V0Refusal) => {
+    const exact = ports.confirmPending?.bind(ports);
+    if (startPending && !exact) throw new PortRefusal(startPending);
+    const attempt = startPending && exact ? () => exact(home, placement) : () => ports.confirm(home, placement);
+    const pending = startPending ?? {
+      code: "start-pending" as const,
       message: `The home is committed to ${home.machineId}, but pi has not confirmed startup.`,
       nextStep: `Retry spider roam relocate ${request.sessionId} ${request.destinationMachine} to check startup.`,
-    }) : attempt()));
+    };
+    const result = await (readiness ? waitForConfirmation(attempt, readiness, pending) : attempt());
+    if (startPending && !readiness && !result.ok && result.refusal.code === "start-pending") throw new PortRefusal(startPending);
+    return value(result);
+  };
+  const start = async (home: RunningHome, placement: SessionPlacement) => {
+    const result = await ports.start(home, placement);
+    if (result.ok) return { terminal: result.value.terminal, confirmed: null };
+    if (result.refusal.code !== "start-pending") throw new PortRefusal(result.refusal);
+    const confirmed = await confirm(home, placement, result.refusal);
+    return { terminal: confirmed.terminal, confirmed };
   };
   const check = async (source: SettledHome): Promise<RelocateCheckpoint> => {
     moveId = ports.newMoveId();
@@ -171,9 +186,9 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts, r
           value(await ports.publishHome(home, home.machineId));
           value(await ports.activate(home, placement));
           step = "start-destination";
-          value(await ports.start(home, placement));
+          const started = await start(home, placement);
           step = "confirm";
-          const confirmed = await confirm(home, placement);
+          const confirmed = started.confirmed ?? await confirm(home, placement);
           const result = { moveId, home, placement, terminal: confirmed.terminal, disposition,
             ...(disposition === "relocated" ? branchAdvice(home, pending.installed, pending.captured) : {}) };
           await save({ ...pending, completed: disposition === "relocated" ? steps : pending.completed,
@@ -200,9 +215,9 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts, r
             terminal: `pid:${localPid}`, localPid, disposition: "already-home" } };
         }
         step = "start-destination";
-        value(await ports.start(resumed, placement));
+        const started = await start(resumed, placement);
         step = "confirm";
-        const confirmed = await confirm(resumed, placement);
+        const confirmed = started.confirmed ?? await confirm(resumed, placement);
         return { ok: true, value: { moveId, home: resumed, placement, terminal: confirmed.terminal, disposition: "already-home" } };
       }
       let checkpoint: RelocateCheckpoint;
@@ -249,9 +264,9 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts, r
         await cas(home, restored);
         value(await ports.publishHome(restored, restored.machineId));
         step = "start-destination";
-        value(await ports.start(restored, plan.sourcePlacement));
+        const started = await start(restored, plan.sourcePlacement);
         step = "confirm";
-        const confirmed = await confirm(restored, plan.sourcePlacement);
+        const confirmed = started.confirmed ?? await confirm(restored, plan.sourcePlacement);
         const result = { moveId, home: restored, placement: plan.sourcePlacement,
           terminal: confirmed.terminal, disposition: "undone" as const };
         await save({ ...checkpoint, terminal: confirmed.terminal, result });
@@ -293,10 +308,10 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts, r
       value(await ports.publishHome(committed, committed.machineId));
       await complete(step);
       step = "start-destination";
-      const started = value(await ports.start(committed, installed.placement));
+      const started = await start(committed, installed.placement);
       await complete(step, { terminal: started.terminal });
       step = "confirm";
-      const confirmed = await confirm(committed, installed.placement);
+      const confirmed = started.confirmed ?? await confirm(committed, installed.placement);
       const result = { moveId, home: committed, placement: installed.placement,
         terminal: confirmed.terminal, disposition: "relocated" as const, ...branchAdvice(committed, installed, captured) };
       await complete(step, { terminal: confirmed.terminal, result });

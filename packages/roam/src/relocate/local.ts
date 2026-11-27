@@ -30,7 +30,8 @@ import { insideDirectory, isPiTitle, localProcessTree, localGroupBlockers, lockl
 import { localWriterBlockers } from "./local-writers";
 import { piLaunchArgv, toolPath } from "./launch-environment";
 
-type LocalTerminal = { terminal: string; state: "live" | "finished"; pid: number | null; owned?: true };
+type LocalLaunch = { sessionId: string; machineId: string; epoch: number; cwd: string; file: string };
+type LocalTerminal = { terminal: string; state: "live" | "finished"; pid: number | null; owned?: true; launch?: LocalLaunch };
 function finishedTerminal(terminal: string, row: Record<string,unknown>): LocalTerminal {
   const signaled = Number.isSafeInteger(row.signal) && (row.signal as number) > 0;
   if (row.reason === "exited" && !Number.isSafeInteger(row.exit_code) && !signaled) throw new Error("Invalid terminal exit");
@@ -48,7 +49,7 @@ export interface LocalIO {
   signal(pid: number): Promise<void>;
   shutdown(operation: Operation): Promise<boolean>;
   pause(ms: number): Promise<void>;
-  terminals(sessionId: string, admittedPid?: number): Promise<readonly LocalTerminal[]>;
+  terminals(sessionId: string, admittedPid?: number, includeLaunch?: boolean): Promise<readonly LocalTerminal[]>;
   launch(request: {home:RunningHome;placement:SessionPlacement}): Promise<{terminal:string}>;
 }
 export function exactHome(a: RelocateHome | null, b: RelocateHome): boolean {
@@ -135,7 +136,7 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
     async signal(pid) { process.kill(pid,"SIGTERM"); },
     async shutdown(operation) { try { return (await requestSessionControl(join(options.root,"roam","s"),operation,{timeoutMs:options.limits.controlMs})).code === 0; } catch { return false; } },
     pause:ms=>delay(ms),
-    async terminals(id,admittedPid) {
+    async terminals(id,admittedPid,includeLaunch) {
       async function list(args: readonly string[], pidFilter?: number): Promise<LocalTerminal[]> {
         const reply = await invokeCli(binary,args,env,options.limits.replyBytes,undefined,{timeoutMs:options.limits.controlMs});
         if (!reply || typeof reply !== "object" || !("terminals" in reply) || !Array.isArray(reply.terminals)) throw new Error("Terminal list unavailable");
@@ -148,16 +149,15 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
           if (row.state === "finished") return pidFilter === undefined ? finishedTerminal(row.address,row) : null;
           let pid: unknown = row.pid ?? row.process_id ?? null;
           if (pidFilter !== undefined && pid !== null && pid !== pidFilter) return null;
-          let labels: unknown = row.labels;
-          if (pid === null || labels == null) {
-            const detail = await invokeCli(binary,["get",row.address,"--json"],env,options.limits.replyBytes,undefined,{timeoutMs:options.limits.controlMs});
-            const current = object(detail);
-            if (current.address !== row.address) throw new Error("Terminal identity changed");
-            if (current.state === "finished" && "reason" in current) return pidFilter === undefined ? finishedTerminal(row.address,current) : null;
-            if (current.state !== "live" || !("pid" in current)) throw new Error("Terminal identity changed");
-            if (pid !== null && current.pid !== pid) throw new Error("Terminal process changed");
-            pid = current.pid;
-            if ("labels" in current) labels = current.labels;
+          let labels: unknown = row.labels, detail: Record<string,unknown> | undefined;
+          if (pid === null || labels == null || includeLaunch) {
+            detail = object(await invokeCli(binary,["get",row.address,"--json"],env,options.limits.replyBytes,undefined,{timeoutMs:options.limits.controlMs}));
+            if (detail.address !== row.address) throw new Error("Terminal identity changed");
+            if (detail.state === "finished" && "reason" in detail) return pidFilter === undefined ? finishedTerminal(row.address,detail) : null;
+            if (detail.state !== "live" || !("pid" in detail)) throw new Error("Terminal identity changed");
+            if (pid !== null && detail.pid !== pid) throw new Error("Terminal process changed");
+            pid = detail.pid;
+            if ("labels" in detail || includeLaunch) labels = detail.labels;
           }
           if (pid !== null && (!Number.isSafeInteger(pid) || (pid as number) <= 0)) throw new Error("Unknown terminal process");
           if (pidFilter !== undefined && pid !== pidFilter) return null;
@@ -167,6 +167,13 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
             if (tags["spider.kind"] === "session" && tags["spider.session"] === id && tags["spider.machine"] === options.config.machineId &&
                 typeof tags["spider.roam.epoch"] === "string" && /^[1-9]\d*$/.test(tags["spider.roam.epoch"]) &&
                 !("spider.roam.operation" in tags)) terminal.owned = true;
+            if (includeLaunch && detail && tags["spider.kind"] === "session" && typeof tags["spider.session"] === "string" &&
+                typeof tags["spider.machine"] === "string" && typeof tags["spider.roam.epoch"] === "string" &&
+                /^[1-9]\d*$/.test(tags["spider.roam.epoch"]) && Number.isSafeInteger(Number(tags["spider.roam.epoch"])) &&
+                !("spider.roam.operation" in tags) && typeof detail.cwd === "string" && isAbsolute(detail.cwd) &&
+                Array.isArray(detail.argv) && detail.argv.at(-2) === "--session" && typeof detail.argv.at(-1) === "string" && isAbsolute(detail.argv.at(-1))) {
+              terminal.launch = {sessionId:tags["spider.session"],machineId:tags["spider.machine"],epoch:Number(tags["spider.roam.epoch"]),cwd:detail.cwd,file:detail.argv.at(-1)};
+            }
           }
           return terminal;
         }))).filter(terminal => terminal !== null);
@@ -416,6 +423,7 @@ export async function captureOrdinarySource(plan: RelocatePlan, options: Relocat
   recordLocation(options.globalDb, { sessionId: plan.source.sessionId, stores: plan.sourcePlacement.stores, home: { sessionId: plan.source.sessionId, machineId: plan.source.machineId, epoch: plan.source.epoch, moveId: null, updatedAt: plan.source.updatedAt }, file: plan.sourcePlacement.file, cwd: plan.sourcePlacement.cwd });
 }
 export interface LocalRuntime extends SessionMachinePorts {
+  confirm(home: RunningHome, placement: SessionPlacement, exact?: true): Promise<V0Result<{terminal:string}>>;
   owner(id: SessionId, placement?: SessionPlacement): Promise<SessionOwner>;
   stop(id: SessionId, moving?: MovingHome | null, beforeOrdinaryCapture?: boolean): Promise<V0Result<void>>;
   entries(): Promise<readonly SupervisorEntry[]>;
@@ -446,11 +454,23 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
   async function runnable(home: RunningHome, placement: SessionPlacement): Promise<boolean> {
     return home.machineId === options.config.machineId && home.sessionId === placement.sessionId && placement.machineId === options.config.machineId && exactHome(await options.homes.read(home.sessionId),home);
   }
-  async function confirm(home: RunningHome,placement: SessionPlacement): Promise<V0Result<{terminal:string}>> {
+  async function confirm(home: RunningHome,placement: SessionPlacement,exact?: true): Promise<V0Result<{terminal:string}>> {
     try {
       if (!await runnable(home,placement)) return refusal("start-pending","The local running home changed.");
-      const current = await owner(home.sessionId);
-      return current.kind === "live" && current.terminal ? {ok:true,value:{terminal:current.terminal}} : refusal("start-pending","Pi has not claimed this session's ID lock.");
+      if (!exact) {
+        const current = await owner(home.sessionId);
+        return current.kind === "live" && current.terminal ? {ok:true,value:{terminal:current.terminal}} : refusal("start-pending","Pi has not claimed this session's ID lock.");
+      }
+      const lock = await io.inspect(home.sessionId), current = await owner(home.sessionId);
+      if (!lock || current.kind !== "live" || !current.terminal || current.pid !== lock.identity.pid) return refusal("start-pending","Pi has not claimed this session's ID lock.");
+      const terminal = (await io.terminals(home.sessionId,undefined,true)).find(t=>t.state === "live" && t.pid === current.pid && t.terminal === current.terminal);
+      const launch = terminal?.launch;
+      if (!launch || launch.sessionId !== home.sessionId || launch.machineId !== home.machineId || launch.epoch !== home.epoch ||
+          launch.cwd !== placement.cwd || launch.file !== placement.file) return refusal("start-pending","The session owner's launch does not match the running home.");
+      const probe = await io.probe(lock.identity.pid);
+      if (probe.kind !== "live" || !probe.pi || probe.startIdentity !== lock.identity.startIdentity ||
+          !sameOwner(await io.inspect(home.sessionId),lock) || !await runnable(home,placement)) return refusal("start-pending","The session owner changed before confirmation.");
+      return {ok:true,value:{terminal:current.terminal}};
     } catch { return refusal("start-pending","The session owner cannot be confirmed."); }
   }
   async function start(home: RunningHome,placement: SessionPlacement): Promise<V0Result<{terminal:string}>> {

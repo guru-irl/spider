@@ -62,6 +62,8 @@ export interface FakeState {
   homesWritten: RelocateHome[];
   ids: number;
   locked: boolean;
+  moveSource: MachineId;
+  moveDestination: MachineId;
   stopAcknowledged: boolean;
   failAfter: string | null;
   failBefore: string | null;
@@ -77,7 +79,7 @@ export function state(): FakeState {
   const result: FakeState = { home: running(), journal: new Map(), replicaHomes: new Map([[source, running()]]), captures: new Map(), pushed: new Set(),
     installed: new Map(), snapshots: new Set(), segments: new Set(), seeds: new Set(),
     backups: new Set([source]), processes: new Set([source]), effects: [], attempts: [], safetyViolations: [], homesWritten: [],
-    ids: 0, locked: false, stopAcknowledged: false, failAfter: null, failBefore: null,
+    ids: 0, locked: false, moveSource: source, moveDestination: destination, stopAcknowledged: false, failAfter: null, failBefore: null,
     refuse: null, stopBarrier: null, casWinner: null };
   histories.push(result);
   return result;
@@ -89,7 +91,7 @@ export function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 // Every new ports object sees only durable state, never another invocation's locals.
-export function ports(s: FakeState): RelocatePorts {
+export function ports(s: FakeState): RelocatePorts & {confirmPending: RelocatePorts["confirm"]} {
   const before = (effect: string) => {
     s.attempts.push(effect);
     expect(s.locked).toBe(true);
@@ -101,8 +103,8 @@ export function ports(s: FakeState): RelocatePorts {
     // thrown assertion could otherwise masquerade as the fault being injected.
     if (s.processes.size > 1) s.safetyViolations.push(`${name}: two running copies`);
     if (s.stopAcknowledged && s.home?.state === "moving" && s.processes.size !== 0) s.safetyViolations.push(`${name}: running while moving after stop`);
-    if (s.home?.machineId === destination && s.home.state === "running" && s.processes.has(source)) s.safetyViolations.push(`${name}: source runs after commit`);
-    if (!s.stopAcknowledged && s.processes.has(destination)) s.safetyViolations.push(`${name}: destination runs before source stop`);
+    if (s.home?.machineId === s.moveDestination && s.home.state === "running" && s.processes.has(s.moveSource)) s.safetyViolations.push(`${name}: source runs after commit`);
+    if (!s.stopAcknowledged && s.processes.has(s.moveDestination)) s.safetyViolations.push(`${name}: destination runs before source stop`);
     if (s.failAfter === name) { s.failAfter = null; throw new Error("reply unavailable"); }
   };
   const perform = async <T>(name: string, run: () => T | Promise<T>): Promise<V0Result<T>> => {
@@ -112,7 +114,7 @@ export function ports(s: FakeState): RelocatePorts {
     effect(name);
     return ok(value);
   };
-  return {
+  const result: RelocatePorts & {confirmPending: RelocatePorts["confirm"]} = {
     withSession: async (_id, run) => {
       expect(_id).toBe(sessionId);
       expect(s.locked).toBe(false);
@@ -147,6 +149,7 @@ export function ports(s: FakeState): RelocatePorts {
     initialSource: async () => perform("initial-source", () => { s.seeds.add(sessionId); return source; }),
     check: async (_req, home, moveId) => perform("check", () => {
       s.seeds.add(sessionId);
+      s.moveSource = home.machineId; s.moveDestination = _req.destinationMachine; s.stopAcknowledged = false;
       return { moveId, source: structuredClone(home), sourcePlacement: placement(home.machineId),
         destinationPlacement: placement(_req.destinationMachine), destinationPrerequisites: [], startedAt: 200 };
     }),
@@ -193,5 +196,7 @@ export function ports(s: FakeState): RelocatePorts {
       expect(s.home).toEqual(home); expect(s.processes.has(p.machineId)).toBe(true);
       return { terminal: `terminal-${p.machineId}` };
     }),
+    confirmPending: (home, p) => result.confirm(home, p),
   };
+  return result;
 }

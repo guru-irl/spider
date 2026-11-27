@@ -111,6 +111,56 @@ describe("relocate", () => {
     expect(s.segments.size).toBe(1); expect(s.processes).toEqual(new Set([destination]));
   });
 
+  it.each(["retry", "already-home", "undo"] as const)("confirms a pending start on %s without another start", async mode => {
+    const s = state(), p = ports(s);
+    if (mode === "retry") {
+      s.failAfter = "start-destination";
+      expect(await relocate(request,p)).toMatchObject({ok:false,step:"start-destination"});
+    }
+    if (mode === "undo") {
+      s.failAfter = "save-install-destination";
+      expect(await relocate(request,p)).toMatchObject({ok:false,step:"install-destination"});
+    }
+    const before = s.effects.length, start = p.start;
+    p.start = async (...args) => {
+      const started = await start(...args);
+      return started.ok ? {ok:false,refusal:refusal("start-pending")} : started;
+    };
+    const target = mode === "retry" ? destination : source;
+    const disposition = mode === "retry" ? "relocated" : mode === "undo" ? "undone" : "already-home";
+    expect(await relocate({sessionId,destinationMachine:target},p)).toMatchObject({ok:true,value:{disposition,home:{machineId:target}}});
+    expect(s.effects.slice(before).filter(effect=>effect===`start-${target}`)).toHaveLength(1);
+    expect(s.processes).toEqual(new Set([target]));
+  });
+
+  it("confirms a pending start when relocating back", async () => {
+    const s = state(), p = ports(s);
+    expect(await relocate(request,p)).toMatchObject({ok:true,value:{home:{machineId:destination,epoch:3}}});
+    const before = s.effects.length, start = p.start;
+    p.start = async (...args) => {
+      const started = await start(...args);
+      return started.ok ? {ok:false,refusal:refusal("start-pending")} : started;
+    };
+    expect(await relocate({sessionId,destinationMachine:source},p)).toMatchObject({ok:true,value:{disposition:"relocated",home:{machineId:source,epoch:5}}});
+    expect(s.effects.slice(before).filter(effect=>effect==="start-source")).toHaveLength(1);
+    expect(s.processes).toEqual(new Set([source]));
+    expect(s.snapshots.size).toBe(2); expect(s.segments.size).toBe(2);
+  });
+
+  it("retries a pending start only when exact confirmation is available", async () => {
+    const s = state(), p = ports(s), start = p.start;
+    p.start = async (...args) => {
+      const started = await start(...args);
+      return started.ok ? {ok:false,refusal:refusal("start-pending")} : started;
+    };
+    const {confirmPending: _confirmPending, ...withoutExact} = p;
+    expect(await relocate(request,withoutExact,{clock:readyClock,timeoutMs:1_000})).toMatchObject({ok:false,step:"start-destination",refusal:{code:"start-pending"}});
+    expect(s.effects).not.toContain("confirm-destination");
+    expect(await relocate(request,p,{clock:readyClock,timeoutMs:1_000})).toMatchObject({ok:true,value:{disposition:"relocated"}});
+    expect(s.processes).toEqual(new Set([destination]));
+    expect(s.snapshots.size).toBe(1);
+  });
+
   it("already running here creates no move", async () => {
     const s = state(); const home = structuredClone(s.home);
     expect(await relocate({ sessionId, destinationMachine: source }, ports(s))).toMatchObject({

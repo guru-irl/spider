@@ -568,16 +568,24 @@ function toFetchDetails(_args: any, details: any): IndexDetails {
 }
 
 /** Map the intercom message args+result → MessageDetails for renderMessageResult. */
-function toMessageDetails(args: any, details: any): MessageDetails {
+function toMessageDetails(args: any, details: any, diagnostic = details?.error): MessageDetails {
   const kind = String(args?.kind ?? "");
   const verb: MessageDetails["verb"] = kind === "ask" ? "ask" : kind === "reply" ? "reply" : kind === "broadcast" ? "broadcast" : "send";
   const delivery = ["child-accepted", "broker-accepted", "queued", "unavailable", "delivered", "accepted but not confirmed", "no reply yet, delivery unknown", "refused"].includes(details?.delivery)
     ? details.delivery : typeof details?.error === "string" && !details?.queued ? "unavailable" : undefined;
+  const targetName = details?.runName ?? details?.sessionName;
+  let error = typeof diagnostic === "string" ? diagnostic : undefined;
+  const runId = details?.runId;
+  if (error && typeof runId === "string" && runId && typeof targetName === "string") {
+    error = error.replaceAll(`Subagent ${runId}`, () => targetName)
+      .replaceAll(`child ${runId}`, () => targetName)
+      .replaceAll(runId, () => targetName)
+      .replace(/^This run is owned by session [^;]+;/u, "This run is owned by another session;");
+  }
   return {
-    verb, to: args?.to ? String(args.to) : undefined, kind: kind || undefined,
+    verb, to: args?.to ? String(args.to) : undefined, from: details?.from, targetName, kind: kind || undefined,
     body: String(args?.message ?? ""), delivered: details?.delivered === true,
-    delivery, transformed: details?.transformed === true, recipientAcknowledged: details?.recipientAcknowledged,
-    error: typeof details?.error === "string" ? details.error : undefined,
+    delivery, transformed: details?.transformed === true, recipientAcknowledged: details?.recipientAcknowledged, error,
   };
 }
 
@@ -636,7 +644,7 @@ function renderSpiderResultBody(
       || "Call failed (no error message)";
     const th = adaptTheme(t);
     if (action === "message" && ["queued", "broker-accepted", "unavailable", "refused"].includes(details?.delivery)) {
-      const d = { ...toMessageDetails(context?.args, details), error: message };
+      const d = toMessageDetails(context?.args, details, message);
       return { render: (width: number) => renderMessageResult(d, { theme: th, width, expanded }), invalidate() {} };
     }
     const displayMessage = action === "todo"

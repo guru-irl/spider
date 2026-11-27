@@ -173,7 +173,7 @@ export interface RunView { runId: string; name: string; role?: string; status: s
 export interface RunResultDetails { runs: RunView[]; pipeline: { from: string; to: string; phase?: string }[]; }
 export interface MessageDetails {
   verb: "send" | "ask" | "reply" | "broadcast";
-  to?: string; from?: string; kind?: string; body: string; delivered: boolean;
+  to?: string; from?: string; targetName?: string; kind?: string; body: string; delivered: boolean;
   delivery?: "child-accepted" | "broker-accepted" | "queued" | "unavailable" | "delivered" | "accepted but not confirmed" | "no reply yet, delivery unknown" | "refused";
   transformed?: boolean;
   recipientAcknowledged?: boolean;

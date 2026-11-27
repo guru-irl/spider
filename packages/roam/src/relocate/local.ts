@@ -101,7 +101,7 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
     async writerBlockers(id, placement, requireCheckout) {
       const saved = placement ? undefined : readLocal<unknown>(options.globalDb,"relocate-managed",id);
       const known = placement ?? (saved === undefined ? undefined : parsePlacement(saved));
-      const row = known ? undefined : options.globalDb.prepare("SELECT cwd,stores_json FROM roam_locations WHERE session_id=?").get(id) as {cwd:string|null;stores_json:string} | undefined;
+      const row = known ? undefined : options.globalDb.prepare("SELECT file,cwd,stores_json FROM roam_locations WHERE session_id=?").get(id) as {file:string|null;cwd:string|null;stores_json:string} | undefined;
       const cwd = known?.cwd ?? row?.cwd;
       if (!cwd && options.config.role === "hub") {
         const source = await discoverOrdinarySource(id,options);
@@ -109,8 +109,10 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
         if (requireCheckout) throw new Error("The ordinary checkout could not be verified");
       }
       if (!cwd) {
-        if (requireCheckout || known || row) throw new Error("The session has no verifiable checkout");
-        return []; // No local copy yet, such as before its first install.
+        if (requireCheckout || known || row && (row.file !== null || row.cwd !== null)) throw new Error("The session has no verifiable checkout");
+        // Replication can catalog rows before the first local checkout exists.
+        if (row) parseLocationStores(JSON.parse(row.stores_json),{allowEmpty:true});
+        return [];
       }
       const root = (await options.git.run(cwd,["git","rev-parse","--show-toplevel"])).toString().trim();
       if (!isAbsolute(root)) throw new Error("The session checkout could not be verified");

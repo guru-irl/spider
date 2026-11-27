@@ -139,6 +139,8 @@ async function relayPoll(suite: Suite): Promise<void> {
     const firstStart = await startedAfter(-1, emptyCall);
     const empty = await emptyCall.reply;
     expect(empty.submissions).toEqual([]);
+    expect(empty.callMs).toBeGreaterThanOrEqual(20_000);
+    expect(empty.callMs).toBeLessThan(30_000);
 
     const origin = await requestV0Broker(sender.agent, { kind: 'lookup', scopeId: null, selector: { by: 'id', value: sender.id } });
     if (origin.kind !== 'matches' || origin.targets.length !== 1) throw new Error('sender is not a live v0 endpoint');
@@ -151,6 +153,7 @@ async function relayPoll(suite: Suite): Promise<void> {
     calls.push(sent);
     const handoff = await take.reply;
     expect(handoff.submissions).toEqual([submission]);
+    expect(handoff.callMs).toBeLessThan(20_000);
 
     const overlap = open('overlap', 20_000);
     const overlapStart = await startedAfter(handoffStart, overlap);

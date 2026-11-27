@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { storeScope } from "@spider/db-core/roam/codec";
+import { FENCE_MACHINE, FENCE_STREAM, FENCE_TARGET } from "@spider/db-core/roam/apply";
 import { localEntries, readLocal } from "@spider/db-core/roam/local-state";
-import { openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
+import { mappingRedirect, openRoamPathReadOnly, openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
 import { processStartIdentity } from "@spider/herdr/jobs/handoff";
 import { listPendingIdLocks, localBootId } from "@spider/herdr/sessions/id-lock";
 import { createSessionLeases, type ProcessProbe } from "@spider/herdr/sessions/lease";
@@ -58,6 +60,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
     const findings: string[] = [], unknown: string[] = [];
     const journalKinds = new Map<string, string>();
     const activeFreezes = new Set<string>();
+    const v0Maps = new Set<string>();
     const v0: Array<{ origin: "checkpoint" | "incoming"; plan: RelocatePlan; expectedKey?: string }> = [];
     const configFile = join(root, "roam", "config.json"), identityFile = join(root, "roam", "machine.json");
     const configured = present(configFile), config = configured ? readLocalIdentity(root) : null;
@@ -174,12 +177,38 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
           return !!home && home.state === "moving" && home.machine_id === plan.source.machineId && home.destination === plan.destinationPlacement.machineId &&
             home.epoch === plan.source.epoch + 1 && home.move_id === plan.moveId;
         });
-        if (!ownedByV0) findings.push(`map store ${safeId(map.store_key)}`);
+        if (ownedByV0) v0Maps.add(map.store_key);
+        else findings.push(`map store ${safeId(map.store_key)}`);
       }
       let storeProblem = false;
       const storeOptions = { globalPath: join(root, "spider.db"), open: openDiagnosticSnapshot,
         onProblem: () => { storeProblem = true; }, onIncomplete: () => { storeProblem = true; } };
       for (const key of listStoreKeys(global, storeOptions)) {
+        if (key !== "global") {
+          const file = join(root, "roam", "stores", `${createHash("sha256").update(key).digest("hex")}.db`);
+          if (present(file)) {
+            const replica = openRoamPathReadOnly(file, openDiagnosticSnapshot);
+            if (!replica) throw new Error("Missing replica");
+            try {
+              const identity = replica.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id?: unknown; store_key?: unknown } | undefined;
+              if (!identity || identity.machine_id !== meta.machine_id || identity.store_key !== key) throw new Error("Replica identity mismatch");
+              const fence = replica.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine=? AND peer_stream=?").get(FENCE_MACHINE, FENCE_STREAM);
+              const hint = readLocal<unknown>(replica, FENCE_TARGET, key);
+              if (hint !== undefined) {
+                if (!hint || typeof hint !== "object" || Array.isArray(hint)) throw new Error("Invalid replica fence target");
+                const target = hint as Record<string, unknown>;
+                if (typeof target.file !== "string" || !isAbsolute(target.file) || typeof target.device !== "string" ||
+                    typeof target.inode !== "string" || typeof target.clearOnCancel !== "boolean") throw new Error("Invalid replica fence target");
+              }
+              if (fence || hint !== undefined) {
+                const at = key.lastIndexOf(":"), published = mappingRedirect(global, key) !== null || (key.startsWith("worktree:")
+                  ? global.prepare("SELECT 1 FROM roam_workspace_maps WHERE repo_key=? AND workspace_id=?").get(key.slice(9, at), key.slice(at + 1))
+                  : global.prepare("SELECT 1 FROM roam_repo_maps WHERE repo_key=?").get(key.slice(5)));
+                if (!published && !v0Maps.has(key)) findings.push(`map fence store ${safeId(key)}`);
+              }
+            } finally { replica.close(); }
+          }
+        }
         if (!key.startsWith("worktree:")) continue;
         const store = openRoamStoreReadOnly(global, key, storeOptions);
         if (!store) { unknown.push(`store ${safeId(key)} unavailable`); continue; }

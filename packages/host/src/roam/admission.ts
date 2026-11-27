@@ -741,13 +741,15 @@ export function createAdmissionPorts(options: ParticipantLockOptions = {}): Admi
         attempt(() => {
           try {
             const file = join(paths.globalRoot, "roam", "journal.db");
-            try { lstatSync(file); }
-            catch (error) {
-              if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-              throw error;
-            }
             const journal = openDbReadOnlyAt(file);
-            if (!journal) throw new Error("Journal disappeared");
+            if (!journal) {
+              try { lstatSync(file); }
+              catch (error) {
+                if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+                throw error;
+              }
+              throw new Error("Journal cannot be opened");
+            }
             try {
               const entry = journal.withRetry(() => journal.prepare("SELECT type FROM sqlite_master WHERE name = ? COLLATE NOCASE").get("freeze_journal")) as { type: string } | undefined;
               if (entry) {

@@ -79,7 +79,7 @@ export async function incomingPlan(key:StoreKey,options:RelocateAdapterOptions):
   const plan=parsePlan(row.result.plan);
   if(plan.moveId!==p.moveId || plan.destinationPlacement.machineId!==options.config.machineId || key!==`worktree:${plan.destinationPlacement.repoKey}:${plan.destinationPlacement.workspaceId}`)throw new Error("Incoming key does not match move");
   const home=await options.homes.read(plan.source.sessionId);
-  if(home && !(home.state==="moving" && home.moveId===plan.moveId && home.machineId===plan.source.machineId && home.destination===options.config.machineId && home.epoch===plan.source.epoch+1) && !(home.state!=="moving" && home.machineId===plan.source.machineId && home.epoch<=plan.source.epoch))throw new Error("Incoming home changed");
+  if(home && !(home.epoch<plan.source.epoch) && !(home.state==="moving" && home.moveId===plan.moveId && home.machineId===plan.source.machineId && home.destination===options.config.machineId && home.epoch===plan.source.epoch+1) && !(home.state!=="moving" && home.machineId===plan.source.machineId && home.epoch<=plan.source.epoch))throw new Error("Incoming home changed");
   return plan;
 }
 export async function handleRelocateAgent(input:unknown,options:RelocateAdapterOptions):Promise<V0Result<unknown>> {
@@ -119,7 +119,7 @@ export async function handleRelocateAgent(input:unknown,options:RelocateAdapterO
         const plan=r.plan,d=plan.destinationPlacement,key=`worktree:${d.repoKey}:${d.workspaceId}` as StoreKey;
         if(d.machineId!==options.config.machineId || !mappedKey(`repo:${d.repoKey}`,options))return refusal("repo-unmapped","The incoming repository is not locally mapped.","Run spider roam repo map on the destination, then retry.");
         const home=await options.homes.read(plan.source.sessionId);
-        if(home && !(home.state==="moving" && home.moveId===plan.moveId && home.machineId===plan.source.machineId && home.destination===d.machineId && home.epoch===plan.source.epoch+1) && !(home.state!=="moving" && home.machineId===plan.source.machineId && home.epoch<=plan.source.epoch))return refusal("home-conflict","The destination has a newer or different home.");
+        if(home && !(home.epoch<plan.source.epoch) && !(home.state==="moving" && home.moveId===plan.moveId && home.machineId===plan.source.machineId && home.destination===d.machineId && home.epoch===plan.source.epoch+1) && !(home.state!=="moving" && home.machineId===plan.source.machineId && home.epoch<=plan.source.epoch))return refusal("home-conflict","The destination has a newer or different home.");
         beginLocalMove(plan,options);
         const previous=options.journal.read(plan.moveId).find(row=>row.action==="relocate-incoming");
         if(!previous)options.journal.record(plan.moveId,"relocate-incoming",json({plan,expectedKey:key}));

@@ -49,6 +49,22 @@ function adapterFixture() {
  return {options,global,repo,worktree,root,file};
 }
 describe("relocate adapters", () => {
+  it("authorizes a revisit past a stale moving replica but rejects newer homes",async()=>{
+    const f=adapterFixture(),source=await inspectLocalSource(id,f.options);if(!source.ok)throw new Error("source missing");
+    const target=createReplica("global",box);fixtures.push(target);
+    target.db.prepare("INSERT INTO roam_repo_maps(repo_key,path,worktree_command_json) VALUES ('fixture-repo',?,NULL)").run(f.root);
+    f.options={...f.options,root:target.root,globalDb:target.db,journal:openJournal(join(target.root,"journal.db")),config:{...f.options.config,machineId:box,role:"box"}};
+    const plan={...checkpoint().plan,source:{...checkpoint().plan.source,epoch:9},sourcePlacement:source.value.placement,destinationPlacement:{...source.value.placement,machineId:box}};
+    const stale={...plan.source,machineId:box,epoch:8,state:"moving" as const,destination:hub,moveId:"v0-prior" as RelocateId};
+    f.options.homes.read=async()=>stale;
+    expect(await handleRelocateAgent({version:1,kind:"authorize",plan},f.options)).toEqual({ok:true,value:{version:1}});
+    expect(await f.options.homes.read(id)).toEqual(stale);
+    expect(await handleRelocateAgent({version:1,kind:"data",operation:{id:"stale-home-inventory",machineId:box,expectedEpoch:null,kind:"inventory",args:{storeKey:"worktree:fixture-repo:fixture-workspace"}}},f.options)).toMatchObject({ok:true});
+    f.options.homes.read=async()=>({...stale,epoch:9});
+    expect(await handleRelocateAgent({version:1,kind:"authorize",plan},f.options)).toMatchObject({ok:false,refusal:{code:"home-conflict"}});
+    f.options.homes.read=async()=>({...stale,epoch:11});
+    expect(await handleRelocateAgent({version:1,kind:"authorize",plan},f.options)).toMatchObject({ok:false,refusal:{code:"home-conflict"}});
+  });
   it("source readiness precedes home initialization",async()=>{
     const f=adapterFixture();
     expect(await inspectLocalSource(id,f.options)).toMatchObject({ok:true,value:{epoch:1,state:"active",placement:{cwd:join(f.root,"sub"),repository:f.root},root:f.root,relativeCwd:"sub"}});

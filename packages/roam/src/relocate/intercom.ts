@@ -321,21 +321,24 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
       return { peer, request, result: await callPeer(configured, peer, request, deadline, deadline, signal) };
     }));
     const candidates: { peer: Peer; endpoint: V0Endpoint }[] = [];
+    const fanOut = selector.kind === "bare" && !exactHome;
+    let incomplete = false;
     for (const { peer, request, result } of lookups) {
-      if (result.kind === "refused") {
-        return selector.kind === "bare" && !exactHome && (result.code === "unreachable" || result.code === "unsupported")
-          ? refused("incomplete") : result;
+      if (result.kind === "matches") {
+        const bad = result.targets.map(endpoint => !matching(endpoint, request) ? "unauthorized" as const
+          : homeCode(byId(endpoint.address.sessionId), peer.machineId, endpoint.homeEpoch)).find(code => code !== null);
+        if (!bad) {
+          for (const endpoint of result.targets) candidates.push({ peer, endpoint });
+          continue;
+        }
+        if (!fanOut) return refused(bad);
+      } else if (!fanOut) {
+        return result.kind === "refused" ? result : refused("incomplete");
       }
-      if (result.kind !== "matches") return refused("incomplete");
-      for (const endpoint of result.targets) {
-        if (!matching(endpoint, request)) return refused("unauthorized");
-        const code = homeCode(byId(endpoint.address.sessionId), peer.machineId, endpoint.homeEpoch);
-        if (code) return refused(code);
-        candidates.push({ peer, endpoint });
-      }
+      incomplete = true;
     }
     if (candidates.length > 1) return refused("ambiguous");
-    if (!candidates.length) return refused(exactHome ? "offline" : "no-match");
+    if (!candidates.length) return refused(incomplete ? "incomplete" : exactHome ? "offline" : "no-match");
     const { peer, endpoint } = candidates[0];
     if (endpoint.address.sessionId === source.address.sessionId) return refused("self");
     const pinnedPeer = { ...peer }, pinnedTarget = { ...endpoint, address: { ...endpoint.address } };

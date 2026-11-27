@@ -885,7 +885,7 @@ describe("roaming v0 intercom", () => {
     expect(forbidden).not.toHaveBeenCalled();
   });
 
-  it("requires a complete bare-name lookup and refuses duplicate names", async () => {
+  it.each(["unreachable", "unauthorized"] as const)("keeps a bare-name match when a second peer returns %s", async failure => {
     const sender = machineFixture(MAC), a = boxFixture(), b = machineFixture(OTHER);
     vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
     for (const root of [sender.root, a.root, b.root]) addHome(root, "carl", OTHER);
@@ -898,7 +898,7 @@ describe("roaming v0 intercom", () => {
       const machine = index === 0 ? BOX : OTHER;
       return [machine, createV0Intercom(fixture.root, { broker: async (_dir, op) => {
         if (op.kind !== "lookup") throw new Error("no delivery expected");
-        return { kind: "matches", targets: [endpoints[machine]] };
+        return { kind: "matches", targets: op.selector.value === "shared" ? [endpoints[machine]] : [] };
       } })] as const;
     }));
     let disconnected = false;
@@ -914,9 +914,12 @@ describe("roaming v0 intercom", () => {
     expect(await intercom.prepare({ to: "shared", from: alice, locals: [alice] })).toEqual({ kind: "refused", code: "ambiguous" });
     expect(contacted.sort()).toEqual([BOX, OTHER].sort());
     contacted.length = 0;
-    disconnected = true;
-    expect(await intercom.prepare({ to: "shared", from: alice, locals: [alice] })).toEqual({ kind: "refused", code: "incomplete" });
+    if (failure === "unreachable") disconnected = true;
+    else configure(b.root, [], []);
+    expect(await intercom.prepare({ to: "shared", from: alice, locals: [alice] })).toMatchObject({ kind: "remote", label: "a/shared" });
     expect(contacted.sort()).toEqual([BOX, OTHER].sort());
+    expect(await intercom.prepare({ to: "unmatched", from: alice, locals: [alice] })).toEqual({ kind: "refused", code: "incomplete" });
+    expect(await intercom.prepare({ to: "b/shared", from: alice, locals: [alice] })).toEqual({ kind: "refused", code: failure });
     contacted.length = 0;
     expect((await intercom.prepare({ to: "a/shared", from: alice, locals: [alice] })).kind).toBe("remote");
     expect(contacted).toEqual([BOX]);

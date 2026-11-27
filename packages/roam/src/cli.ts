@@ -2,7 +2,7 @@ import { parseV0Control, runV0Control, readV0Confirmation } from "./relocate/cli
 import { createV0Intercom } from "./relocate/intercom";
 import { runV0LinkOnce } from "./relocate/relay-poll";
 import { RELAY_HOLD_MS, RELAY_POLL_MAX_BYTES } from "@spider/intercom/relay-protocol";
-import { parseV0AgentReply, parseV0AgentRequest, V0_INTERCOM_BYTES, type V0AgentReply } from "@spider/intercom/roam-v0";
+import { parseV0AgentReply, parseV0AgentRequest, parseV0RelayAgentRequest, V0_INTERCOM_BYTES, type V0AgentReply } from "@spider/intercom/roam-v0";
 import { readPeerRevocation } from "./revocation";
 import { skippedProjectDbNotice, v0SessionCatalog } from "./relocate/session-catalog";
 import { requestV0Services, runV0Service } from "./relocate/service";
@@ -160,11 +160,12 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
     try {
       if (argv.length !== 4) throw new Error("Invalid private intercom arguments");
       const input: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await readArtifactInput(V0_INTERCOM_BYTES, options?.stdin)));
-      const request = parseV0AgentRequest(input);
+      const request = parseV0AgentRequest(input) ?? parseV0RelayAgentRequest(input);
       if (!request) throw new Error("Invalid private intercom request");
+      const requestId = request.version === 2 ? request.request.requestId : request.requestId;
       const reply = await (options?.v0?.intercom ?? ((raw, targetRoot) => createV0Intercom(targetRoot).handle(raw)))(request, root);
       const parsed = parseV0AgentReply(reply);
-      if (!parsed || parsed.requestId !== request.requestId) throw new Error("Invalid private intercom reply");
+      if (!parsed || parsed.requestId !== requestId) throw new Error("Invalid private intercom reply");
       const output = `${JSON.stringify(parsed)}\n`;
       if (Buffer.byteLength(output) > V0_INTERCOM_BYTES) throw new Error("Private intercom reply too large");
       io.out(output);

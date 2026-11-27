@@ -44,6 +44,11 @@ export type V0AgentRequest = {
   | { kind: "deliver"; target: V0Endpoint; message: V0Text }
   | { kind: "ask"; target: V0Endpoint; message: V0Text; timeoutMs: number }
 );
+export type V0RelayAgentRequest = {
+  version: 2;
+  relayId: string;
+  request: Extract<V0AgentRequest, { kind: "lookup" | "deliver" }>;
+};
 export type V0AgentReply = { version: 1; requestId: string; machineId: string } & V0Reply;
 export type V0BrokerRequest = { type: "roam_v0"; requestId: string } & V0BrokerOp;
 export type V0BrokerReply = { type: "roam_v0_result"; requestId: string } & V0Reply;
@@ -208,6 +213,13 @@ export function parseV0AgentRequest(value: unknown): V0AgentRequest | null {
     if (withinLimit(projected, 6 * MAX_PEER_ALIAS_CHARS)) return request;
   }
   return null;
+}
+
+export function parseV0RelayAgentRequest(value: unknown): V0RelayAgentRequest | null {
+  if (!record(value) || value.version !== 2 || !fields(value, ["version", "relayId", "request"]) ||
+      !identifier(value.relayId) || !withinLimit(value)) return null;
+  const request = parseV0AgentRequest(value.request);
+  return request && request.kind !== "ask" ? { version: 2, relayId: value.relayId, request } : null;
 }
 
 export function parseV0AgentReply(value: unknown): V0AgentReply | null {

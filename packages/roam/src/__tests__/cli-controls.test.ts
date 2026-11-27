@@ -28,6 +28,7 @@ import * as hosting from "../production-supervisor";
 import * as hubRuntime from "../hub";
 import * as intercomRuntime from "../intercom-runtime";
 import * as localDiagnostics from "../local-diagnostics";
+import * as upgradeInventory from "../legacy-upgrade";
 import * as appModule from "@spider/herdr/client/app";
 import * as hcModule from "@spider/herdr/client/hc";
 import { createClientFixture } from "../../../herdr/src/__tests__/testutil";
@@ -656,6 +657,15 @@ it("disabled local doctor prints status and upgrade readiness without inspecting
   expect(f.out.join("")).toBe("Roaming is disabled.\nlegacy-upgrade-ready: No unfinished legacy work was found. See the roaming upgrade guide in the spider repository at docs/guide/roaming-upgrade.md.\n");
   expect(f.err).toEqual([]);
   expect(doctor).not.toHaveBeenCalled();
+}, 5000);
+
+it("fresh disabled doctor performs one upgrade inventory when identity is absent", async () => {
+  const f = await fixture(HUB, undefined, false);
+  unlinkSync(join(f.root, "roam", "config.json")); unlinkSync(join(f.root, "roam", "machine.json"));
+  const inspect = vi.spyOn(upgradeInventory, "inspectLegacyUpgrade");
+  expect(await f.invoke(["roam", "doctor"])).toBe(0);
+  expect(f.out.join("")).toBe("Roaming is disabled.\n");
+  expect(inspect).toHaveBeenCalledExactlyOnceWith(f.root);
 }, 5000);
 
 it("disabled local doctor adds only real peer flag mismatches", async () => {

@@ -99,6 +99,16 @@ same one. The steps:
   - Herdr acceptance, the Chrome parts and stories;
   - the aggregate.
 
+### Node version
+
+- Every workflow asks for Node `26.x`, which now resolves to 26.13.1. Roam admits only the Node versions
+  it was tested on, 22.23.4 and 26.4.0 (`packages/roam/src/inventory.ts`, `provision.ts`). Any story that
+  inventories the runner's own Node fails on that check.
+- Pin `node-version: '26.4.0'` in every workflow, so CI tests exactly the version roam admits.
+- Add a guard test that reads the workflows' Node versions and roam's tested list, and fails when a
+  workflow uses a version the list doesn't admit. Moving to a newer Node then becomes one deliberate
+  change to both, together with a roam release.
+
 ### Flakes
 
 PRs will now run up to the whole suite, so flaky tests will hit PRs more often. Before PRs switch, the

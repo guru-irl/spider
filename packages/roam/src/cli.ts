@@ -440,8 +440,8 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
         const earlyWarnings = warnings?.filter(row => row.count < 3) ?? [];
         value = { ...observation, ...(warnings ? { warnings: warnings.filter(row => row.count === 3) } : {}),
           ...(earlyWarnings.length ? { earlyWarnings } : {}) };
-      } else value = await runLocalDoctor({ root, bundleUrl: options?.bundleUrl, inspectIntercomDoctor: true, intercomDoctor: options?.intercomDoctor,
-        hubLaunchd: options?.v0?.lifecycle?.launchd });
+      } else value = await runLocalDoctor({ root, bundleUrl: options?.bundleUrl, inspectUpgrade: true, inspectIntercomDoctor: true,
+        intercomDoctor: options?.intercomDoctor, hubLaunchd: options?.v0?.lifecycle?.launchd });
       io.out(`${JSON.stringify({ version: 1, machineId: config.machineId, kind: argv[2], value })}\n`);
       return 0;
     } catch (error) { io.err(error instanceof ReadinessParseError ? `${error.reason}\n` : "Cannot inspect local roaming state. No data was changed.\n"); return 1; }
@@ -711,7 +711,8 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
         }
       }
       let report: Awaited<ReturnType<typeof runLocalDoctor>>;
-      if (argv.length === 2) report = await runLocalDoctor({ root, bundleUrl: options?.bundleUrl, inspectIntercomDoctor: true, intercomDoctor: options?.intercomDoctor, hubLaunchd: options?.v0?.lifecycle?.launchd });
+      if (argv.length === 2) report = await runLocalDoctor({ root, bundleUrl: options?.bundleUrl, inspectUpgrade: true, inspectIntercomDoctor: true,
+        intercomDoctor: options?.intercomDoctor, hubLaunchd: options?.v0?.lifecycle?.launchd });
       else {
         let config: ReturnType<typeof readLocalIdentity>;
         try { config = readLocalIdentity(root); }

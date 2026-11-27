@@ -2,16 +2,16 @@
 name: pi-intercom
 description: |
   Streamline session-to-session coordination with pi-intercom. Send messages,
-  delegate tasks, and coordinate work across multiple pi sessions on the same
-  machine. Use for planner-worker workflows, cross-session context sharing,
-  and real-time collaboration between sessions.
+  delegate tasks, and coordinate work across pi sessions on one machine or
+  configured roaming peers. Use for planner-worker workflows, cross-session
+  context sharing, and real-time collaboration between sessions.
 ---
 
 # Pi Intercom Skill
 
-Use this skill when you need to coordinate work across multiple pi sessions
-running on the same machine. Pi-intercom enables direct 1:1 messaging between
-sessions for delegation, context sharing, and collaborative workflows.
+Use this skill to coordinate work across pi sessions. Intercom sends direct
+messages between sessions on one machine. With roaming v0 configured, it can
+also reach named sessions on trusted peers.
 
 When you are supervising `pi-subagents`, delegated child agents can escalate to
 you via `contact_supervisor` if `pi-subagents` supplied child bridge metadata.
@@ -24,6 +24,7 @@ This skill covers how to handle those orchestrator-side escalations.
 - **Clarification loops**: Worker asks questions, planner answers, work continues
 - **Multi-session workflows**: Coordinate between specialized sessions (frontend/backend, research/implementation)
 - **Cross-codebase peer messages**: Message an explicit live peer in another project, or open a visible Herdr project pane when a long-lived conversation is needed
+- **Roaming peers**: Send text to a named live session on a configured machine
 
 ## Core Patterns
 
@@ -108,7 +109,7 @@ workers.forEach(w =>
 
 ### Pattern 5: Send with Attachments
 
-Share code snippets, files, or context:
+Share code snippets, files, or context with a local session:
 
 ```typescript
 intercom({
@@ -189,8 +190,8 @@ This works because `reply` resolves the correct sender and message ID automatica
 
 | Type | What it means | How to respond |
 |------|---------------|----------------|
-| `need_decision` | Subagent is blocked and waiting for your answer. Uses the shared ask timeout: 10 minutes by default, configurable with `PI_INTERCOM_ASK_TIMEOUT_MS`. | Reply promptly with a clear decision. If you need more context, ask follow-up questions via `reply`. |
-| `interview_request` | Subagent needs multiple structured answers in one blocking exchange. Uses the shared ask timeout: 10 minutes by default, configurable with `PI_INTERCOM_ASK_TIMEOUT_MS`. | Reply with plain JSON or a fenced `json` block using the provided `{ "responses": [...] }` shape. |
+| `need_decision` | Subagent is blocked and waiting for your answer. The shared ask timeout is configurable with `PI_INTERCOM_ASK_TIMEOUT_MS`. | Reply promptly with a clear decision. If you need more context, ask follow-up questions via `reply`. |
+| `interview_request` | Subagent needs multiple structured answers in one blocking exchange. The shared ask timeout is configurable with `PI_INTERCOM_ASK_TIMEOUT_MS`. | Reply with plain JSON or a fenced `json` block using the provided `{ "responses": [...] }` shape. |
 | `progress_update` | Subagent is sharing meaningful progress or a plan-changing discovery. Not blocking. | Read and acknowledge. No reply required unless you want to redirect. |
 
 **When a subagent asks:**
@@ -227,12 +228,42 @@ it as a `contact_supervisor` escalation. A subagent may use regular `intercom` f
 peer coordination, including peers in other directories, but owner decisions and
 new visible project panes should go through the supervisor.
 
+## Cross-machine v0
+
+When roaming v0 intercom is configured, address a live remote session by name,
+qualified name, or full session ID:
+
+```typescript
+intercom({ action: "send", to: "box/worker", message: "Please check the logs." })
+```
+
+A full session ID takes precedence. Otherwise, intercom prefers a unique live
+local match before looking on configured peers. If a name is ambiguous, use a
+machine-qualified name or a session ID. `list` does not list remote sessions in
+v0, and a missing remote target is not queued in a mailbox. A remote send or ask
+requires a running home for the sender and recipient. Unhomed sessions can send only locally.
+
+Remote sends, asks, and replies are text only. Remote sends and asks do not
+accept attachments, `cwd`, `replyTo`, retry metadata, or pane options. To answer
+an incoming remote ask, use `action: "reply"`. A Mac session accepts messages
+from other machines only as replies to its own asks. A reply does not
+need another confirmation.
+
+A `socket_delivered` result means the receiving broker accepted the message,
+not that the recipient read it. `no_reply` means no reply arrived; it does not
+prove whether the message was delivered. `unknown` means delivery could not be
+confirmed. For either outcome, do not retry automatically. Check the recipient
+before sending again.
+
+Remote asks use the configured ask timeout, capped by `V0_ASK_MAX_MS`. Only one
+ask can be pending per session. A late reply returns `The asker is no longer waiting.`
+
 ## Key Differences
 
 | Action | Behavior | Use When |
 |--------|----------|----------|
-| `send` | Fire-and-forget; infers the sole pending ask as its reply | You don't need a response |
-| `ask` | Blocks until reply (10 min default, configurable with `PI_INTERCOM_ASK_TIMEOUT_MS`) | You need an answer to continue |
+| `send` | Sends without waiting for a reply. A local send infers the sole pending ask as its reply. | You don't need a response |
+| `ask` | Blocks until reply, subject to the configured timeout | You need an answer to continue |
 | `reply` | Responds to the active or pending inbound ask | You were asked something and need to answer naturally |
 | `pending` | Lists unresolved inbound asks | You need to see who is waiting before replying |
 | `list` | Returns all sessions with live status | You need to discover targets or choose an idle peer |
@@ -251,8 +282,8 @@ Ask the user before opening another visible surface manually.
 
 ### `ask` Limitations
 
-- **Connected targets only**: `ask` fails immediately when the target is not in the live intercom roster. Use `list` before asking when liveness is uncertain; use `send` for non-blocking mailbox delivery.
-- **Configurable timeout**: If no reply arrives before the shared ask timeout, the ask fails. The default is 10 minutes; set `PI_INTERCOM_ASK_TIMEOUT_MS` to a positive millisecond value to change it.
+- **Connected targets only**: `ask` requires a live target. `list` shows local sessions. A v0 remote target is never queued.
+- **Configurable timeout**: Set `PI_INTERCOM_ASK_TIMEOUT_MS` to a positive millisecond value. Remote asks are capped by `V0_ASK_MAX_MS`.
 - **One at a time**: Cannot have multiple pending asks from the same session
 - **Cannot self-target**: A session cannot ask itself, including through disconnected-mailbox remapping
 
@@ -266,9 +297,9 @@ if (result.isError && result.content[0].text.includes("Already waiting")) {
 
 ### `send` Behavior
 
-- **No timeout**: Message is delivered or fails immediately
-- **Sole pending ask inference**: If the destination has exactly one pending inbound ask, `send` attaches its `replyTo` and reports `Reply sent to <target> (inferred from pending ask)`
-- **Ambiguity stays unthreaded**: Zero or multiple matching asks leave the send as an ordinary message
+- **Local delivery**: A local send returns without waiting for a reply. A remote send waits for the broker or a transport outcome.
+- **Local pending ask inference**: If the local destination has exactly one pending inbound ask, `send` attaches its `replyTo` and reports `Reply sent to <target> (inferred from pending ask)`
+- **Local ambiguity stays unthreaded**: Zero or multiple matching asks leave the send as an ordinary message
 - **Confirmation dialogs**: If `confirmSend: true` in config, interactive sessions confirm ordinary and inferred sends
 - **Explicit replies skip confirmation**: A caller-supplied `replyTo` skips the dialog
 
@@ -341,13 +372,13 @@ if (!result.delivered) {
   await intercom({ action: "list" });
 }
 ```
-Replies to recently disconnected explicitly named senders can be queued by the broker and delivered if that sender reconnects with the same name and directory. Runtime-only `subagent-chat-...` aliases are not reconnect identities. New `send` calls may target a known live or recently disconnected session; blocking `ask` calls require a live target.
+For local sessions, replies to recently disconnected explicitly named senders can be queued and delivered if the sender reconnects with the same name and directory. Runtime-only `subagent-chat-...` aliases are not reconnect identities. Local `send` calls may target a known live or recently disconnected session. Blocking `ask` calls require a live target. V0 remote messages are never queued.
 
 **Ask timeout**
 ```typescript
-// The ask will reject with a timeout error
-// Default: 10 minutes
-// Override: set PI_INTERCOM_ASK_TIMEOUT_MS to a positive millisecond value
+// The result reports when no reply arrives before the timeout
+// Set PI_INTERCOM_ASK_TIMEOUT_MS to a positive millisecond value
+// Remote asks are capped by V0_ASK_MAX_MS
 // For longer tasks, use send + follow-up ask pattern
 ```
 
@@ -357,7 +388,7 @@ Replies to recently disconnected explicitly named senders can be queued by the b
 
 1. Check intercom is enabled: `intercom({ action: "status" })`
 2. Verify the target session has loaded pi-intercom
-3. Ensure both sessions are on the same machine (intercom is same-machine only)
+3. For local sessions, check that both use the same broker. For v0 remote sessions, check that roaming and the directed peer route are configured.
 
 ### Message not delivered
 
@@ -441,7 +472,7 @@ intercom({
 });
 
 // 2. Worker sends progress via send (no timeout)
-intercom({ action: "send", to: "planner", message: "Milestone 1: Login form complete (10min)" });
+intercom({ action: "send", to: "planner", message: "Milestone 1: Login form complete." });
 
 // 3. Worker asks for specific decision when needed
 const decision = await intercom({

@@ -15,7 +15,8 @@ import { ComposeOverlay, type ComposeResult } from "./ui/compose.js";
 import { InlineMessageComponent } from "./ui/inline-message.js";
 import { getAskTimeoutMs, loadConfig, type IntercomConfig } from "./config.js";
 import { EXTENSION_BUS_FEATURE } from "./types.js";
-import type { Attachment, BrokerMessage, Message, MessageControl, MessageReceipt, MessageReceiptStatus, SessionInfo, SessionRegistration } from "./types.js";
+import type { Attachment, BrokerMessage, LocalSessionInfo, Message, MessageControl, MessageReceipt, MessageReceiptStatus, SessionInfo, SessionRegistration } from "./types.js";
+import { V0_ASK_MAX_MS, type V0Code, type V0Delivery, type V0ToolOptions } from "./roam-v0.js";
 import {
   INTERCOM_EXTENSION_REGISTER_EVENT,
   INTERCOM_EXTENSION_REGISTRY_READY_EVENT,
@@ -36,6 +37,23 @@ import { resolve as resolvePath } from "node:path";
 import { sameCwd } from "./cwd.js";
 import { formatContextUsage } from "./format-context.js";
 import { openProjectPane, resolveTargetInCwd, waitForProjectSession, type ProjectPaneLaunch } from "./project-agent.js";
+
+export const V0_MAC_REPLY_ONLY_MESSAGE: string = "Sessions on the Mac accept messages from other machines only as replies to their own asks.";
+const V0_TRANSCRIPT_SAVE_FAILURE = "\nThe transcript entry could not be saved.";
+const V0_REFUSAL_TEXT: Record<V0Code, string> = {
+  moving: "Session is moving. Retry after it settles.",
+  offline: "Session is not connected. No message was queued.",
+  "no-match": "No live session matches that name or ID.",
+  ambiguous: "More than one live session matches. Use machine/name or a full session ID.",
+  incomplete: "Lookup was incomplete. Use machine/name or a full session ID.",
+  changed: "The session or connection changed. Resolve the recipient again.",
+  unreachable: "The route is unavailable. Try again when it is up.",
+  "not-configured": "No route is configured to that session.",
+  unauthorized: "The receiving machine refused this message.",
+  unsupported: "This roaming intercom operation is not supported.",
+  invalid: "The roaming intercom request is invalid.",
+  self: "Cannot message the current session.",
+};
 
 const INTERCOM_TOOL_NAME = "intercom";
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
@@ -588,7 +606,7 @@ function getNamePollMs(): number {
 }
 export type IntercomBrokerPort = (connect: () => Promise<void>) => Promise<void>;
 export interface IntercomRegistration { hasPendingInboundAsks(): boolean }
-export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: IntercomBrokerPort = connect => connect(), iconStyle: () => IconStyle = () => "text"): IntercomRegistration {
+export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: IntercomBrokerPort = connect => connect(), iconStyle: () => IconStyle = () => "text", v0?: V0ToolOptions): IntercomRegistration {
   let client: IntercomClient | null = null;
   const config: IntercomConfig = loadConfig();
   const askTimeoutMs = getAskTimeoutMs();
@@ -745,6 +763,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     const receipt = latestOutboundReceipts.get(messageId);
     return receipt ? receipt.status : fallback;
   }
+  let v0AskInFlight: { token: symbol; abort: AbortController } | null = null;
   let replyWaiter: {
     from: SessionAddress;
     remote: boolean;
@@ -970,10 +989,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
 
     const identity = buildPresenceIdentity(pi, currentIntercomSessionId ?? currentSessionId);
     const tmuxPane = currentTmuxPane();
+    const v0HomeEpoch = v0?.homeEpoch(currentSessionId);
     return {
       ...identity,
       activationEpoch,
       ...(hostContext?.endpoint ? { homeEpoch: hostContext.endpoint.homeEpoch } : {}),
+      ...(v0HomeEpoch !== undefined ? { v0HomeEpoch } : {}),
       address: { sessionId: currentSessionId, scopeId: getIntercomScopeId() ?? null },
       cwd: liveContext.cwd,
       model: currentModel,
@@ -1300,12 +1321,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     const deliveredEntry = { ...entry, message: injectedMessage, replyCommand, intercom: { sessionId: currentSessionId, activationEpoch } };
     replyTracker.queueTurnContext({ from: entry.from, message: injectedMessage, receivedAt: Date.now() });
     const senderDisplay = entry.from.remote ? qualifiedName(entry.from) : entry.from.name || entry.from.id.slice(0, 8);
+    const senderCwd = entry.from.remote && !entry.from.cwd ? "" : ` (${entry.from.cwd})`;
     const replyInstruction = replyCommand ? `\n\nTo reply, use the intercom tool: ${replyCommand}` : "";
     const deliveryMetadata = formatInboundDeliveryMetadata(injectedMessage);
     pi.sendMessage(
       {
         customType: "intercom_message",
-        content: `**From ${senderDisplay}** (${entry.from.cwd})${replyInstruction}\n\n_${deliveryMetadata}_\n\n${entry.bodyText}`,
+        content: `**From ${senderDisplay}**${senderCwd}${replyInstruction}\n\n_${deliveryMetadata}_\n\n${entry.bodyText}`,
         display: true,
         details: deliveredEntry,
       },
@@ -1791,6 +1813,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     clearStartupConnectTimer();
     clearNamePollTimer();
     rejectReplyWaiter(new Error("Session replaced"));
+    v0AskInFlight?.abort.abort();
+    v0AskInFlight = null;
     replyTracker.reset();
     if (previousClient) {
       client = null;
@@ -2084,6 +2108,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     clearDisconnectWarning();
     restoreIntercomSessionId();
     rejectReplyWaiter(new Error(event.reason === "reload" ? "session-reloaded" : "Session shutting down"));
+    v0AskInFlight?.abort.abort();
+    v0AskInFlight = null;
     replyTracker.reset();
     agentRunning = false;
     activeTools.clear();
@@ -2167,7 +2193,17 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
   pi.registerMessageRenderer("intercom_message", (message, options, theme) => {
     const details = message.details as { from: SessionInfo; message: Message; replyCommand?: string; bodyText?: string } | undefined;
     if (!details) return undefined;
-    return new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText, !options.expanded);
+    const component = new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText, !options.expanded);
+    if (!details.from.remote || details.from.cwd) return component;
+    const sender = qualifiedName(details.from);
+    return {
+      invalidate: () => component.invalidate(),
+      render(width: number) {
+        const lines = component.render(width);
+        if (lines[0]) lines[0] = lines[0].replace(`${sender} ()`, `${sender}   `).replace(`${sender} (`, `${sender}  `);
+        return lines;
+      },
+    };
   });
 
   pi.on("tool_result", (event) => {
@@ -2327,7 +2363,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
           }
         }
 
-        if (replyWaiter) {
+        if (replyWaiter || v0AskInFlight) {
           return {
             content: [{ type: "text", text: "Already waiting for a reply" }],
             details: { error: true },
@@ -2464,9 +2500,15 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
   pi.registerTool(defineTool({
     name: "intercom",
     label: "Intercom",
-    description: `Send a message to another pi session running on this machine.
+    description: `Send a message to another pi session ${v0 ? "on this machine or a configured roaming peer" : "running on this machine"}.
 Use this to communicate findings, request help, or coordinate work with other sessions.
-
+${v0 ? `
+For roaming v0, list is local only. Use a peer/name or full session ID for a remote target.
+Remote sends, asks, and replies are text only and are not queued. Use reply for an incoming ask.
+${V0_MAC_REPLY_ONLY_MESSAGE}
+A remote ask uses the configured timeout up to the v0 cap. If the result is no_reply or unknown,
+check the recipient before sending again; neither proves delivery.
+` : ""}
 Target a session by name, full session ID, or the short id shown in parentheses
 by "list" (a leading prefix of the ID is enough). Prefer the short id when two
 sessions share a name. Re-list before reusing a session ID; skip if it resolves to self.
@@ -2482,8 +2524,9 @@ Usage:
   intercom({ action: "reply", message: "..." })                      → Reply to the active/single pending ask
   intercom({ action: "pending" })                                      → List unresolved inbound asks
   intercom({ action: "status" })                  → Show connection status`,
-    promptSnippet:
-      "Use to coordinate with other local pi sessions: list peers, send updates, ask for help, or check intercom connectivity.",
+    promptSnippet: v0
+      ? "Use to coordinate with local pi sessions or named roaming peers: send updates, ask for help, or check intercom connectivity."
+      : "Use to coordinate with other local pi sessions: list peers, send updates, ask for help, or check intercom connectivity.",
 
     parameters: Type.Object({
       action: Type.Enum(["list", "list-cwd", "send", "ask", "reply", "pending", "status", "cancel"] as const, {
@@ -2491,7 +2534,7 @@ Usage:
         description: "Action: 'list', 'list-cwd', 'send', 'ask', 'reply', 'pending', 'status', or 'cancel'",
       }),
       to: Type.Optional(Type.String({
-        description: "Target session: name, full session ID, or the short id shown in parentheses by 'list' (a leading ID prefix resolves). For send/ask with cwd, omit to target the sole live session in that cwd or the newly opened project-pane session. For 'reply', disambiguates the pending ask.",
+        description: `Target session: name, full session ID, or the short id shown in parentheses by 'list' (a leading ID prefix resolves). For send/ask with cwd, omit to target the sole live session in that cwd or the newly opened project-pane session. For 'reply', disambiguates the pending ask.${v0 ? " For roaming v0, use a configured peer/name or a full session ID; list shows local sessions only." : ""}`,
       })),
       message: Type.Optional(Type.String({
         description: "Message to send (for 'send', 'ask', or 'reply' action)",
@@ -2536,7 +2579,8 @@ Usage:
         }
         try {
           const sessionId = statusClient.sessionId;
-          const sessions = await statusClient.listSessions();
+          const listed = await statusClient.listSessions();
+          const sessions = v0 ? listed.filter(session => !session.remote) : listed;
           return {
             content: [{ type: "text", text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${sessionId}\nActive sessions: ${sessions.length}` }],
             details: { connected: true, sessionId, activeSessions: sessions.length },
@@ -2568,12 +2612,15 @@ Usage:
       const messageId = params.messageId?.trim() || undefined;
       const supersedes = params.supersedes?.trim() || undefined;
       const retryOf = params.retryOf?.trim() || undefined;
+      const unsupportedV0Options = cwd !== undefined || attachments !== undefined || params.replyTo !== undefined || params.supersedes !== undefined ||
+        params.retryOf !== undefined || params.messageId !== undefined || openProjectPaneIfMissing !== undefined || focus !== undefined;
 
       switch (action) {
         case "list": {
           try {
             const mySessionId = connectedClient.sessionId;
-            const sessions = await connectedClient.listSessions();
+            const listed = await connectedClient.listSessions();
+            const sessions = v0 ? listed.filter(session => !session.remote) : listed;
             const currentSession = sessions.find(s => s.id === mySessionId);
             const otherSessions = sessions.filter(s => s.id !== mySessionId);
 
@@ -2605,7 +2652,8 @@ Usage:
         case "list-cwd": {
           try {
             const mySessionId = connectedClient.sessionId;
-            const sessions = await connectedClient.listSessions();
+            const listed = await connectedClient.listSessions();
+            const sessions = v0 ? listed.filter(session => !session.remote) : listed;
             const currentSession = sessions.find(s => s.id === mySessionId);
 
             if (!currentSession) {
@@ -2700,6 +2748,66 @@ Usage:
             }
             const confirmSend = !replyTo && config.confirmSend && ctx.hasUI;
             const attachmentText = attachments?.length ? formatAttachments(attachments) : "";
+            const generation = runtimeGeneration;
+            let v0Target: { id: string; endpointEpoch: string } | undefined;
+            let v0Source: LocalSessionInfo | undefined;
+            if (v0 && to && currentSessionId) {
+              const sourceEpoch = v0.homeEpoch(currentSessionId);
+              const sessions = await connectedClient.listSessions();
+              const locals = sessions.filter((session): session is LocalSessionInfo => !session.remote);
+              const from = locals.find(session => session.id === connectedClient.sessionId && session.address?.sessionId === currentSessionId);
+              if (!from || from.v0HomeEpoch !== sourceEpoch || v0.homeEpoch(currentSessionId) !== sourceEpoch) {
+                return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
+              }
+              v0Source = from;
+              const plan = await v0.prepare({ to, from, locals, signal: _signal });
+              if (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
+                  v0.homeEpoch(from.address!.sessionId) !== sourceEpoch) {
+                return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
+              }
+              if (plan.kind === "refused") {
+                return { content: [{ type: "text", text: V0_REFUSAL_TEXT[plan.code] }], details: { error: true, code: plan.code } };
+              }
+              if (plan.kind === "local") v0Target = plan.target;
+              if (plan.kind === "remote") {
+                if (from.v0HomeEpoch === undefined) {
+                  return { content: [{ type: "text", text: V0_REFUSAL_TEXT["not-configured"] }], details: { error: true, code: "not-configured" } };
+                }
+                if (unsupportedV0Options) {
+                  return { content: [{ type: "text", text: "Remote intercom supports text only; cwd, attachments, reply, retry, and pane options are unavailable." }],
+                    details: { error: true, code: "unsupported" } };
+                }
+                if (confirmSend && !(await ctx.ui.confirm("Send message", `Send to "${plan.label}":\n\n${message}${attachmentText}`))) {
+                  return { content: [{ type: "text", text: "Message cancelled by user" }], details: {} };
+                }
+                if (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
+                    from.v0HomeEpoch === undefined || v0.homeEpoch(from.address!.sessionId) !== from.v0HomeEpoch) {
+                  return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
+                }
+                if (_signal?.aborted) return { content: [{ type: "text", text: "Cancelled" }], details: { error: true } };
+                const sent = { id: randomUUID(), timestamp: Date.now(), text: message };
+                let result = await plan.send(sent, _signal).catch(() => ({ kind: "unknown" as const, id: sent.id }));
+                if (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
+                    v0.homeEpoch(from.address!.sessionId) !== from.v0HomeEpoch) {
+                  result = { kind: "unknown", id: sent.id };
+                }
+                if (result.kind === "refused") {
+                  return { content: [{ type: "text", text: V0_REFUSAL_TEXT[result.code] }], details: { error: true, code: result.code } };
+                }
+                if (result.kind === "unknown") {
+                  return { content: [{ type: "text", text: `Delivery could not be confirmed (ID ${result.id}). Check the recipient before sending again.` }],
+                    details: { delivered: false, delivery: "unknown", messageId: result.id, outcomeKnown: false, retryable: false } };
+                }
+                if (result.kind !== "socket_delivered") {
+                  return { content: [{ type: "text", text: "Message was not delivered." }], details: { error: true } };
+                }
+                let transcriptWarning = "";
+                try { pi.appendEntry("intercom_sent", { to: plan.label, message: { text: message }, messageId: result.id, timestamp: Date.now() }); }
+                catch { transcriptWarning = V0_TRANSCRIPT_SAVE_FAILURE; }
+                return { content: [{ type: "text", text: `Sent to ${plan.label} (broker accepted the message).${transcriptWarning}` }],
+                  details: { delivered: true, delivery: "socket_delivered", messageId: result.id } };
+              }
+            }
             if (confirmSend && cwd && openProjectPaneIfMissing) {
               const confirmed = await ctx.ui.confirm(
                 "Send message",
@@ -2713,8 +2821,12 @@ Usage:
               }
             }
             const target: DeliveryTarget = cwd
-              ? await resolveCwdDeliveryTarget(connectedClient, { to, cwd, openProjectPaneIfMissing, focus, signal: _signal })
+              ? await resolveCwdDeliveryTarget(connectedClient, { to, cwd, openProjectPaneIfMissing: v0Target ? false : openProjectPaneIfMissing, focus, signal: _signal })
+              : v0Target ? { id: v0Target.id, label: to! }
               : { id: await resolveSessionTarget(connectedClient, to!) ?? to!, label: to! };
+            if (v0Target && target.id !== v0Target.id) {
+              return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
+            }
             const sendTo = target.id;
             const targetDisplay = target.projectPane ? target.label : to ?? target.label;
             if (sendTo === connectedClient.sessionId) {
@@ -2745,12 +2857,17 @@ Usage:
                 };
               }
             }
+            if (v0Source && (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
+                !v0Source.address || v0?.homeEpoch(v0Source.address.sessionId) !== v0Source.v0HomeEpoch)) {
+              return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
+            }
             const result = await connectedClient.send(sendTo, {
               text: message,
               attachments,
               replyTo: effectiveReplyTo,
               supersedes,
               retryOf,
+              ...(v0Target ? { exactTarget: v0Target } : {}),
             });
             if (!result.delivered) {
               const errorText = result.reason ?? "Session may not exist or has disconnected.";
@@ -2797,7 +2914,7 @@ Usage:
             };
           }
 
-          if (replyWaiter) {
+          if (replyWaiter || v0AskInFlight) {
             return {
               content: [{ type: "text", text: "Already waiting for a reply" }],
               details: { error: true },
@@ -2813,6 +2930,9 @@ Usage:
           let replyPromise: Promise<Message> | null = null;
           let deliveryState = "created";
           let questionId: string | null = null;
+          const generation = runtimeGeneration;
+          let v0Target: { id: string; endpointEpoch: string } | undefined;
+          let v0Source: LocalSessionInfo | undefined;
 
           try {
             if (openProjectPaneIfMissing && !cwd) {
@@ -2821,11 +2941,95 @@ Usage:
                 details: { error: true },
               };
             }
+            if (v0 && to && currentSessionId) {
+              const sourceEpoch = v0.homeEpoch(currentSessionId);
+              const sessions = await connectedClient.listSessions();
+              const locals = sessions.filter((session): session is LocalSessionInfo => !session.remote);
+              const from = locals.find(session => session.id === connectedClient.sessionId && session.address?.sessionId === currentSessionId);
+              if (!from || from.v0HomeEpoch !== sourceEpoch || v0.homeEpoch(currentSessionId) !== sourceEpoch) {
+                return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
+              }
+              v0Source = from;
+              const plan = await v0.prepare({ to, from, locals, signal: _signal });
+              if (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
+                  v0.homeEpoch(from.address!.sessionId) !== sourceEpoch) {
+                return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
+              }
+              if (plan.kind === "refused") {
+                return { content: [{ type: "text", text: V0_REFUSAL_TEXT[plan.code] }], details: { error: true, code: plan.code } };
+              }
+              if (plan.kind === "local") {
+                v0Target = plan.target;
+                const selected = locals.find(session => session.id === plan.target.id && session.endpointEpoch === plan.target.endpointEpoch);
+                if (selected) resolvedAddresses.set(selected.id, { address: sessionAddress(selected, getIntercomScopeId() ?? null), remote: false, activationEpoch: selected.activationEpoch });
+              }
+              if (plan.kind === "remote") {
+                if (from.v0HomeEpoch === undefined) {
+                  return { content: [{ type: "text", text: V0_REFUSAL_TEXT["not-configured"] }], details: { error: true, code: "not-configured" } };
+                }
+                if (unsupportedV0Options) {
+                  return { content: [{ type: "text", text: "Remote intercom supports text only; cwd, attachments, reply, retry, and pane options are unavailable." }],
+                    details: { error: true, code: "unsupported" } };
+                }
+                if (config.confirmSend && ctx.hasUI && !(await ctx.ui.confirm("Send message", `Send to "${plan.label}":\n\n${message}`))) {
+                  return { content: [{ type: "text", text: "Message cancelled by user" }], details: {} };
+                }
+                if (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
+                    from.v0HomeEpoch === undefined || v0.homeEpoch(from.address!.sessionId) !== from.v0HomeEpoch) {
+                  return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
+                }
+                if (replyWaiter || v0AskInFlight) {
+                  return { content: [{ type: "text", text: "Already waiting for a reply" }], details: { error: true } };
+                }
+                if (_signal?.aborted) return { content: [{ type: "text", text: "Cancelled" }], details: { error: true } };
+                questionId = randomUUID();
+                const question = { id: questionId, timestamp: Date.now(), text: message };
+                const token = Symbol("v0-ask"), abort = new AbortController();
+                const onAbort = () => abort.abort();
+                _signal?.addEventListener("abort", onAbort, { once: true });
+                v0AskInFlight = { token, abort };
+                let result: V0Delivery;
+                try { result = await plan.ask(question, Math.min(askTimeoutMs, V0_ASK_MAX_MS), abort.signal); }
+                catch { result = { kind: "unknown", id: question.id }; }
+                finally {
+                  _signal?.removeEventListener("abort", onAbort);
+                  if (v0AskInFlight?.token === token) v0AskInFlight = null;
+                }
+                if (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
+                    v0.homeEpoch(from.address!.sessionId) !== from.v0HomeEpoch) {
+                  result = { kind: "unknown", id: question.id };
+                }
+                if (result.kind === "refused") {
+                  return { content: [{ type: "text", text: V0_REFUSAL_TEXT[result.code] }], details: { error: true, code: result.code } };
+                }
+                if (result.kind === "replied") {
+                  let transcriptWarning = "";
+                  try { pi.appendEntry("intercom_sent", { to: plan.label, message: { text: message }, messageId: question.id, timestamp: question.timestamp }); }
+                  catch { transcriptWarning = V0_TRANSCRIPT_SAVE_FAILURE; }
+                  try { pi.appendEntry("intercom_received", { from: plan.label, message: { text: result.text }, messageId: result.replyId, timestamp: Date.now() }); }
+                  catch { transcriptWarning = V0_TRANSCRIPT_SAVE_FAILURE; }
+                  return { content: [{ type: "text", text: `**Reply from ${plan.label}:**\n${result.text}${transcriptWarning}` }],
+                    details: { delivery: "replied", messageId: question.id, replyId: result.replyId } };
+                }
+                if (result.kind === "no_reply") {
+                  return { content: [{ type: "text", text: `No reply was received (ID ${result.id}).` }],
+                    details: { error: true, delivery: "no_reply", messageId: result.id } };
+                }
+                if (result.kind === "unknown") {
+                  return { content: [{ type: "text", text: `Delivery could not be confirmed (ID ${result.id}). Check the recipient before sending again.` }],
+                    details: { error: true, delivered: false, delivery: "unknown", messageId: result.id, outcomeKnown: false, retryable: false } };
+                }
+                return { content: [{ type: "text", text: "No reply was received." }], details: { error: true } };
+              }
+            }
             let target: DeliveryTarget;
             if (cwd) {
-              target = await resolveCwdDeliveryTarget(connectedClient, { to, cwd, openProjectPaneIfMissing, focus, signal: _signal });
+              target = await resolveCwdDeliveryTarget(connectedClient, { to, cwd, openProjectPaneIfMissing: v0Target ? false : openProjectPaneIfMissing, focus, signal: _signal });
+              if (v0Target && target.id !== v0Target.id) {
+                return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
+              }
             } else {
-              const resolved = await resolveSessionTarget(connectedClient, to!);
+              const resolved = v0Target?.id ?? await resolveSessionTarget(connectedClient, to!);
               if (!resolved) {
                 return {
                   content: [{ type: "text", text: `Session "${to}" is not currently connected. Blocking asks are not queued; use send for a non-blocking mailbox delivery or retry after the session reconnects.` }],
@@ -2848,11 +3052,15 @@ Usage:
                 details: { error: true },
               };
             }
-            if (replyWaiter) {
+            if (replyWaiter || v0AskInFlight) {
               return {
                 content: [{ type: "text", text: "Already waiting for a reply" }],
                 details: { error: true },
               };
+            }
+            if (v0Source && (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
+                !v0Source.address || v0?.homeEpoch(v0Source.address.sessionId) !== v0Source.v0HomeEpoch)) {
+              return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
             }
             questionId = randomUUID();
             replyPromise = waitForReply(sendTo, questionId, _signal, () => connectedClient.cancelAsk(questionId!), () => latestDeliveryState(questionId, deliveryState));
@@ -2865,6 +3073,7 @@ Usage:
               expectsReply: true,
               supersedes,
               retryOf,
+              ...(v0Target ? { exactTarget: v0Target } : {}),
             });
 
             deliveryState = sendResult.delivery;
@@ -2934,22 +3143,46 @@ Usage:
 
           try {
             const target = replyTracker.resolveReplyTarget({ to, replyTo });
+            if (v0 && target.from.remote && (cwd !== undefined || attachments !== undefined || params.supersedes !== undefined ||
+                params.retryOf !== undefined || params.messageId !== undefined || openProjectPaneIfMissing !== undefined || focus !== undefined)) {
+              return { content: [{ type: "text", text: "Remote intercom replies support text only; cwd, attachments, retry, and pane options are unavailable." }],
+                details: { error: true, code: "unsupported" } };
+            }
             if (target.from.id === connectedClient.sessionId) {
               return {
                 content: [{ type: "text", text: "Cannot message the current session" }],
                 details: { error: true },
               };
             }
-            await resolveSessionTarget(connectedClient, target.from.id);
+            const generation = runtimeGeneration;
+            let replySource: { sessionId: string; epoch: number } | undefined;
+            if (v0 && target.from.remote) {
+              const ownSessionId = currentSessionId;
+              const sessions = await connectedClient.listSessions();
+              const from = sessions.find((session): session is LocalSessionInfo => !session.remote && session.id === connectedClient.sessionId && session.address?.sessionId === ownSessionId);
+              if (!ownSessionId || !from || from.v0HomeEpoch === undefined || v0.homeEpoch(ownSessionId) !== from.v0HomeEpoch ||
+                  !getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected()) {
+                return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
+              }
+              replySource = { sessionId: ownSessionId, epoch: from.v0HomeEpoch };
+            } else await resolveSessionTarget(connectedClient, target.from.id);
             const result = await connectedClient.send(target.from.id, {
               text: message,
               attachments,
               replyTo: target.message.id,
             });
+            if (replySource && (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
+                v0?.homeEpoch(replySource.sessionId) !== replySource.epoch)) {
+              return { content: [{ type: "text", text: `Delivery could not be confirmed (ID ${result.id}). Check the recipient before sending again.` }],
+                details: { error: true, delivered: false, delivery: "unknown", messageId: result.id, outcomeKnown: false, retryable: false } };
+            }
             if (!result.delivered) {
               const errorText = result.reason ?? "Session may not exist or has disconnected.";
-              if (result.reason === "Session not found") {
+              if (result.reason === "Session not found" || result.reason === "The asker is no longer waiting.") {
                 dismissIncomingAsk(target.message.id);
+              }
+              if (result.reason === "The asker is no longer waiting.") {
+                return { content: [{ type: "text", text: result.reason }], details: deliveryDetails(result) };
               }
               return {
                 content: [{ type: "text", text: `Reply to "${target.from.name || target.from.id}" was not delivered: ${errorText}` }],
@@ -2957,14 +3190,20 @@ Usage:
               };
             }
             dismissIncomingAsk(target.message.id);
-            pi.appendEntry("intercom_sent", {
-              to: target.from.name || target.from.id,
-              message: { text: message, attachments, replyTo: target.message.id },
-              messageId: result.id,
-              timestamp: Date.now(),
-            });
+            let transcriptWarning = "";
+            try {
+              pi.appendEntry("intercom_sent", {
+                to: target.from.name || target.from.id,
+                message: { text: message, attachments, replyTo: target.message.id },
+                messageId: result.id,
+                timestamp: Date.now(),
+              });
+            } catch (error) {
+              if (!replySource) throw error;
+              transcriptWarning = V0_TRANSCRIPT_SAVE_FAILURE;
+            }
             return {
-              content: [{ type: "text", text: `Reply sent to ${target.from.name || target.from.id}` }],
+              content: [{ type: "text", text: `Reply sent to ${target.from.name || target.from.id}${transcriptWarning}` }],
               details: { ...deliveryDetails(result), replyTo: target.message.id },
             };
           } catch (error) {

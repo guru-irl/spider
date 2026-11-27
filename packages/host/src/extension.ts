@@ -97,6 +97,7 @@ import { modelReviewer } from "./memory-reviewer";
 import { createAdmissionPorts, protectAdmissionApi, registerAdmission } from "./roam/admission.js";
 import { ordinaryWorkAllowed as isOrdinaryWorkAllowed } from "./roam/activation.js";
 import { createHostIntercomPorts, registerRoamIntercom } from "./roam/intercom.js";
+import type { V0Prepare } from "../../intercom/src/roam-v0.js";
 
 export { registerGlobalAction as registerAction };
 
@@ -895,7 +896,9 @@ async function dispatchWithDoctorSnapshot(
   }
 }
 
-export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBroker?: IntercomBrokerPort; bootId?: () => Promise<string>; copyButtons?: { host: CopyButtonsHost; copy: (text: string) => Promise<void> }; piVersion?: string } = {}): void {
+type V0IntercomFactory = { hasConfig(root: string): boolean; create(root: string): { prepare: V0Prepare } };
+
+export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBroker?: IntercomBrokerPort; bootId?: () => Promise<string>; copyButtons?: { host: CopyButtonsHost; copy: (text: string) => Promise<void> }; piVersion?: string; v0Intercom?: V0IntercomFactory } = {}): void {
   // Admission must be the first session_start registration, before any producer opens a writer.
   const admissionPorts = createAdmissionPorts(ports.bootId ? { bootId: ports.bootId } : {});
   let activationContext: ExtensionContext | undefined;
@@ -932,8 +935,13 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
       const values = configValues(cwd);
       return { "copyButtons.enabled": values.config["copyButtons.enabled"], "ui.icons": values.config["ui.icons"] };
     }, ports.copyButtons.copy);
-  let moveEnabled = false;
-  try { moveEnabled = readLocalIdentity(paths.globalRoot).enabled; } catch { /* Missing or unreadable configuration leaves the command unregistered. */ }
+  let moveEnabled = false, legacyIntercomEnabled = true, hasRoamIdentity = false;
+  try {
+    const config = readLocalIdentity(paths.globalRoot);
+    moveEnabled = config.enabled;
+    legacyIntercomEnabled = config.intercom.enabled;
+    hasRoamIdentity = true;
+  } catch { /* Missing or unreadable configuration leaves the command unregistered. */ }
   if (moveEnabled) registerMoveCommand(activity.pi, async request => {
     const reply = await requestHubControl(path.join(paths.globalRoot, "roam", "hub.sock"), { op: "move", session: request.sessionId, machine: request.destinationMachine });
     return { ...reply, operationId: reply.operationId ?? "", home: reply.home ?? null, epoch: reply.epoch ?? null, repairCommand: reply.repairCommand ?? null,
@@ -941,8 +949,19 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   });
   let intercom: ReturnType<typeof registerIntercomOnce> | undefined;
   try {
-    registerRoamIntercom(activity.pi, createHostIntercomPorts(admission));
-    intercom = registerIntercomOnce(activity.pi, ports.intercomBroker, () => iconStyle());
+    const v0Factory = ports.v0Intercom;
+    const v0Configured = Boolean(v0Factory && hasRoamIdentity && !legacyIntercomEnabled && v0Factory.hasConfig(paths.globalRoot));
+    const v0 = v0Configured && moveEnabled ? {
+      prepare: v0Factory!.create(paths.globalRoot).prepare,
+      homeEpoch(sessionId: string): number | undefined {
+        if (process.env.PI_SUBAGENT_CHILD === "1") return undefined;
+        const current = admission.inspect(), home = current.home;
+        return current.kind === "ordinary" && home?.sessionId === sessionId && "state" in home && home.state === "running" &&
+          Number.isSafeInteger(home.epoch) && home.epoch > 0 ? home.epoch : undefined;
+      },
+    } : undefined;
+    if (!v0Configured) registerRoamIntercom(activity.pi, createHostIntercomPorts(admission));
+    intercom = registerIntercomOnce(activity.pi, ports.intercomBroker, () => iconStyle(), v0);
   } catch {
     hostPi.on("session_start", (_event, ctx) => {
       const message = "Intercom is unavailable in this session. Spider's other features still work.";

@@ -387,7 +387,8 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
     } catch {
       result = request.kind === "lookup" ? refused("unreachable") : { kind: "unknown", id: request.message.id };
     }
-    if (result.kind === "refused" && result.code === "reply-only") result = refused("unreachable");
+    if (result.kind === "refused" && result.code === "reply-only") result = request.kind === "lookup"
+      ? refused("unreachable") : { kind: "unknown", id: request.message.id };
     if (request.kind === "lookup" && result.kind === "matches") {
       if (result.targets.some(endpoint => !matching(endpoint, request))) return envelope(refused("unauthorized"));
       try {
@@ -402,7 +403,8 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
       } catch { return envelope(refused("unreachable")); }
     }
     const answer = envelope(result);
-    return parseV0AgentReply(answer) ? answer : envelope(refused("incomplete"));
+    return parseV0AgentReply(answer) ? answer : envelope(request.kind === "lookup"
+      ? refused("incomplete") : { kind: "unknown", id: request.message.id });
   }
   return { prepare, handle };
 }

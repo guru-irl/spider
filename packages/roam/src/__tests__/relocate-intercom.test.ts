@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { openDbAt } from "@spider/db-core";
-import { parseV0AgentReply, V0_ASK_MAX_MS, V0_INTERCOM_MS, type V0AgentRequest, type V0BrokerOp, type V0Endpoint, type V0Reply, type V0Text } from "@spider/intercom/roam-v0";
+import { parseV0AgentReply, parseV0BrokerReply, V0_ASK_MAX_MS, V0_INTERCOM_BYTES, V0_INTERCOM_MS, type V0AgentRequest, type V0BrokerOp, type V0Endpoint, type V0Reply, type V0Text } from "@spider/intercom/roam-v0";
 import type { LocalSessionInfo, RemoteSessionInfo } from "@spider/intercom/types";
 import { DEFAULT_LIMITS, type CallOptions, type Peer, type Transport } from "../contracts";
 import { main } from "../cli";
@@ -519,6 +519,36 @@ describe("roaming v0 intercom", () => {
     vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
     const broker = async (): Promise<V0Reply> => ({ kind: "refused", code: "reply-only" });
     expect(await createV0Intercom(root, { broker }).handle(findBen)).toMatchObject({ kind: "refused", code: "unreachable" });
+  });
+
+  it("returns unknown if an accepted ask reply cannot fit in the agent envelope", async () => {
+    const { root } = boxFixture();
+    vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+    const prefix = { type: "roam_v0_result", requestId: "ask-size", kind: "replied", id: message.id, replyId: "reply-1", text: "" };
+    const text = "x".repeat(V0_INTERCOM_BYTES - Buffer.byteLength(JSON.stringify(prefix)));
+    expect(parseV0BrokerReply({ ...prefix, text })).not.toBeNull();
+    let questions = 0;
+    const broker = async (_dir: string, op: V0BrokerOp): Promise<V0Reply> => {
+      if (op.kind !== "ask") throw new Error("expected ask");
+      questions++;
+      return { kind: "replied", id: op.message.id, replyId: "reply-1", text };
+    };
+    const request = { version: 1, requestId: "ask-size", toMachineId: BOX, from: findBen.from,
+      kind: "ask", target: ben, message, timeoutMs: 1000 };
+    expect(await createV0Intercom(root, { broker }).handle(request)).toEqual({
+      version: 1, requestId: "ask-size", machineId: BOX, kind: "unknown", id: message.id,
+    });
+    expect(questions).toBe(1);
+  });
+
+  it("returns unknown for an invalid broker code after delivery started", async () => {
+    const { root } = boxFixture();
+    vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+    const broker = async (): Promise<V0Reply> => ({ kind: "refused", code: "reply-only" });
+    const request = { version: 1, requestId: "delivery-1", toMachineId: BOX, from: findBen.from, kind: "deliver", target: ben, message };
+    expect(await createV0Intercom(root, { broker }).handle(request)).toEqual({
+      version: 1, requestId: "delivery-1", machineId: BOX, kind: "unknown", id: message.id,
+    });
   });
 
   it("keeps an unhomed caller local and refuses an explicit remote target", async () => {

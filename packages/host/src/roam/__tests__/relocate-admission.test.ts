@@ -7,6 +7,8 @@ import { createReplica } from "@spider/db-core/testutil";
 import { writeLocal } from "@spider/db-core/roam/local-state";
 import { DEFAULT_LIMITS, disabledIntercom } from "@spider/roam/contracts";
 import { createHomeStore } from "@spider/roam/relocate/home";
+import { inspectIdLock } from "@spider/herdr/sessions/id-lock";
+import { createSessionLeases } from "@spider/herdr/sessions/lease";
 import { writeFileSync, mkdirSync, unlinkSync, existsSync } from "node:fs";
 import * as admissionLookup from "../relocate-admission";
 import { join } from "node:path";
@@ -150,6 +152,48 @@ it("a foreign replica cannot offer a local managed home without a fence", async 
     expect(await loadRelocateAdmission(id, f.root)).toEqual({ kind: "unavailable" });
     expect(db.prepare("SELECT * FROM session_homes WHERE session_id=?").get(id)).toEqual(before);
   } finally { db.close(); f.close(); }
+});
+
+it("a journal-only legacy freeze fences a fresh admission with no global DB", async () => {
+  const f = createReplica("global", local), dbPath = join(f.root, "spider.db");
+  const cwd = join(f.root, "worktree"), file = join(f.root, "session.jsonl"), journalPath = join(f.root, "roam", "journal.db");
+  mkdirSync(cwd); mkdirSync(join(f.root, "roam"), { mode: 0o700 });
+  writeFileSync(file, JSON.stringify({ type: "session", version: 3, id, cwd }) + "\n", { mode: 0o600 });
+  const journal = openDb(journalPath);
+  journal.exec("CREATE TABLE freeze_journal(session_id TEXT, move_id TEXT, epoch INTEGER, state TEXT)");
+  journal.prepare("INSERT INTO freeze_journal VALUES(?,?,?,?)").run(id, "legacy-move", 3, "frozen");
+  const before = journal.prepare("SELECT * FROM freeze_journal").all();
+  journal.close();
+  paths.globalRoot = f.root; setGlobalDbPathForTests(dbPath);
+  vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root); vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  vi.stubEnv("GIT_CEILING_DIRECTORIES", f.root);
+  const ports = createAdmissionPorts();
+  const lock = vi.spyOn(ports, "lock");
+  const host = createHostSessionFixture({ cwd, sessionId: id, sessionFile: file, hasUI: false });
+  const gate = registerAdmission(host.pi as unknown as ExtensionAPI, ports);
+  async function emit(name: string, event = {}) {
+    let result: unknown;
+    for (const handler of host.hooks.get(name) ?? []) result = await handler(event, host.ctx);
+    return result;
+  }
+  try {
+    expect(ports.knownParticipant(id)).toBe(false);
+    await emit("session_start");
+    expect(gate.inspect().kind).toBe("control-only");
+    expect(await emit("input")).toEqual({ action: "handled" });
+    expect(await emit("tool_call", { toolName: "edit" })).toMatchObject({ block: true });
+    expect(await emit("user_bash", { command: "echo unsafe" })).toMatchObject({ result: { exitCode: 1 } });
+    const api = protectAdmissionApi(host.pi as unknown as ExtensionAPI, gate);
+    expect(() => api.sendMessage({ customType: "test", content: "no write", display: true })).toThrow();
+    expect(host.sent).toEqual([]);
+    expect(lock).not.toHaveBeenCalled();
+    expect(await inspectIdLock(join(f.root, "herdr"), id)).toBeNull();
+    expect(await createSessionLeases(join(f.root, "herdr")).get(file)).toBeNull();
+    expect(existsSync(dbPath)).toBe(false);
+    const after = openDb(journalPath, { fileMustExist: true });
+    try { expect(after.prepare("SELECT * FROM freeze_journal").all()).toEqual(before); }
+    finally { after.close(); }
+  } finally { await gate.close(); f.close(); }
 });
 
 it("production admission ports use the v0 lookup seam",async()=>{

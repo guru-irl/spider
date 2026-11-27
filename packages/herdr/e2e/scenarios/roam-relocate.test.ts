@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { expect } from 'vitest';
 import { relocateFixture } from '../fixtures/roam-relocate.js';
 import { verifyRelocatedTranscript } from '../fixtures/relocate-transcript.js';
-import { assertRelocatedCopy, waitForReplicatedHome } from '../fixtures/relocate-assertions.js';
+import { assertDistinctInodes, assertRelocatedCopy, waitForReplicatedHome } from '../fixtures/relocate-assertions.js';
 import { deadline } from '../harness/wait.js';
 import { text } from '../fixtures/child-scripts.js';
 import { registerScenarios, storyId, type ScenarioDefinition } from '../harness/scenario.js';
@@ -28,7 +29,8 @@ async function roundTrip(suite: Suite): Promise<void> {
     expect(fixture.home(box)).toMatchObject(awayHome);
     const away = await fixture.owner(box, outward.terminal, id, outward);
     expect(away).toMatchObject({ sessionId: id, file: outward.file, cwd: outward.cwd });
-    assertRelocatedCopy(source, away, box.repository, box.agent);
+    assertRelocatedCopy(source, away, join(box.root, 'roam', 'checkouts', 'v0'), box.agent);
+    assertDistinctInodes(source, away);
     expect(await fixture.gitState(away.cwd)).toEqual(git);
     const arrived = await readFile(away.file);
     await suite.evidence('R18-away.jsonl', arrived);
@@ -47,6 +49,7 @@ async function roundTrip(suite: Suite): Promise<void> {
     const returned = await fixture.owner(hub, returning.terminal, id, returning);
     expect(returned).toMatchObject({ sessionId: id, file: returning.file, cwd: returning.cwd });
     assertRelocatedCopy(away, returned, hub.repository, hub.agent);
+    assertDistinctInodes(away, returned);
     expect(returned.file).toBe(original.file);
     expect(returned.cwd).toBe(original.cwd);
     expect(await fixture.gitState(returned.cwd)).toEqual(git);

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import { statSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { expect } from 'vitest';
 import { waitFor, type Deadline } from '../harness/wait.js';
@@ -18,6 +19,14 @@ export function assertRelocatedCopy(source: Placement, destination: Placement, r
   expect(resolve(destination.file)).not.toBe(resolve(source.file));
   expect(within(repository, destination.cwd)).toBe(true);
   expect(within(agent, destination.file)).toBe(true);
+}
+
+/** Different paths can still refer to the same checkout or hard-linked transcript. */
+export function assertDistinctInodes(source: Placement, destination: Placement): void {
+  for (const key of ['cwd', 'file'] as const) {
+    const before = statSync(source[key], { bigint: true }), after = statSync(destination[key], { bigint: true });
+    expect({ device: after.dev, inode: after.ino }).not.toEqual({ device: before.dev, inode: before.ino });
+  }
 }
 
 interface RunRecord { namespace: string; argv: string[] }

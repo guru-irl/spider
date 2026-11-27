@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { assertNativeLaunch, assertRelocatedCopy, waitForReplicatedHome } from './relocate-assertions.js';
+import { assertDistinctInodes, assertNativeLaunch, assertRelocatedCopy, waitForReplicatedHome } from './relocate-assertions.js';
 import { deadline } from '../harness/wait.js';
 
 const source = { cwd: '/fixture/source', file: '/fixture/hub/sessions/a.jsonl' };
@@ -26,6 +28,30 @@ describe('relocated placement evidence', () => {
       { ...source, cwd: '/fixture/other' }, { ...source, file: '/fixture/other/a.jsonl' }]) {
       expect(() => assertRelocatedCopy(away, candidate, '/fixture/source', '/fixture/hub')).toThrow();
     }
+  });
+});
+
+describe('relocation inode evidence', () => {
+  it('accepts distinct files and directories but rejects aliases on either leg', () => {
+    const parent = join(process.cwd(), '.spider/scratch');
+    mkdirSync(parent, { recursive: true });
+    const root = mkdtempSync(join(parent, 'relocate-inode-'));
+    try {
+      const a = { cwd: join(root, 'a'), file: join(root, 'a', 'session') };
+      const b = { cwd: join(root, 'b'), file: join(root, 'b', 'session') };
+      mkdirSync(a.cwd); mkdirSync(b.cwd);
+      writeFileSync(a.file, 'same content'); writeFileSync(b.file, 'same content');
+      expect(() => assertDistinctInodes(a, b)).not.toThrow();
+      expect(() => assertDistinctInodes(b, a)).not.toThrow();
+      const hardlink = join(root, 'hardlink');
+      linkSync(a.file, hardlink);
+      expect(() => assertDistinctInodes(a, { ...b, file: hardlink })).toThrow();
+      expect(() => assertDistinctInodes({ ...b, file: hardlink }, a)).toThrow();
+      const alias = join(root, 'alias');
+      symlinkSync(a.cwd, alias);
+      expect(() => assertDistinctInodes(a, { ...b, cwd: alias })).toThrow();
+      expect(() => assertDistinctInodes({ ...b, cwd: alias }, a)).toThrow();
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
 

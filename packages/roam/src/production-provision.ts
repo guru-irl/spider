@@ -48,16 +48,22 @@ export function createProductionProvisionPorts(input: ProductionProvisionOptions
     transfer: adapter, verifyPeer: adapter.verifyPeer, permissionTightening: adapter.permissionTightening,
     withPeerLock: lock,
     async assertCorePinReplaceIdle(peer) {
-      const core = openLocalCore(input.root);
+      const unavailable = () => Object.assign(new Error("Cannot inspect hub configuration or global store; run spider roam doctor on the hub"), { code: "core-pin-check-unavailable" });
+      let core: ReturnType<typeof openLocalCore>;
+      try { core = openLocalCore(input.root); } catch { throw unavailable(); }
       try {
         const inUse = () => Object.assign(new Error("Finish or undo moves and move homes off this box before replacing its core pin"), { code: "core-pin-in-use" });
         if (core.config.enabled) throw inUse();
-        const columns = (core.db.prepare("PRAGMA table_info(session_homes)").all() as { name: string }[]).map(row => row.name).sort().join(",");
-        const local = "SELECT 1 FROM session_homes WHERE machine_id = ?";
-        if (columns === "epoch,machine_id,move_id,session_id,updated_at") {
-          if (core.db.prepare(local + " LIMIT 1").get(peer.machineId)) throw inUse();
-        } else if (columns !== "destination,epoch,machine_id,move_id,session_id,state,updated_at" ||
-            core.db.prepare(local + " OR (state = 'moving' AND destination = ?) LIMIT 1").get(peer.machineId, peer.machineId)) throw inUse();
+        let busy: unknown;
+        try {
+          const columns = (core.db.prepare("PRAGMA table_info(session_homes)").all() as { name: string }[]).map(row => row.name).sort().join(",");
+          const local = "SELECT 1 FROM session_homes WHERE machine_id = ?";
+          if (columns === "epoch,machine_id,move_id,session_id,updated_at") busy = core.db.prepare(local + " LIMIT 1").get(peer.machineId);
+          else if (columns === "destination,epoch,machine_id,move_id,session_id,state,updated_at")
+            busy = core.db.prepare(local + " OR (state = 'moving' AND destination = ?) LIMIT 1").get(peer.machineId, peer.machineId);
+          else throw unavailable();
+        } catch { throw unavailable(); }
+        if (busy) throw inUse();
       } finally { core.close(); }
     },
     bootstrap: { async probeAgentDirectory(peer, home) {

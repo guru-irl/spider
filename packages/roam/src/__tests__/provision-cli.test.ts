@@ -326,6 +326,23 @@ it.each(["core-pin-changed", "core-pin-in-use"])("explains how to replace a %s p
   expect(errors).toMatch(/finish or undo.*move.*move homes off.*spider roam disable.*hub.*locally on.*box.*legacy.*old-release.*docs\/guide\/roaming-upgrade\.md#stop-an-owned-legacy-supervisor.*--replace-core-pin.*same authentication options.*spider roam enable locally on box-1\.invalid/is);
 });
 
+it("directs an unreadable hub pin check to doctor", async () => {
+  const f = fixture(), agent = join(f.root, "agent"); mkdirSync(agent, { mode: 0o700 });
+  writeFileSync(join(f.root, "roam", "machine.json"), JSON.stringify({ machineId: HUB }), { mode: 0o600 });
+  writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify({ enabled: false, role: "hub", machineId: HUB, hubMachineId: HUB,
+    peers: [{ machineId: f.request.machineId, alias: f.request.target, node: "/home/fixture/bin/node", pi: "/home/fixture/.local/bin/pi", cli: "/home/fixture/cli", core: "/home/fixture/hc", globalRoot: "/home/fixture/.pi/agent/spider" }], coreUnit: "fixture.service" }), { mode: 0o600 });
+  vi.stubEnv("PI_CODING_AGENT_DIR", agent); vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root);
+  vi.spyOn(hubModule, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
+  vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: {} } as never);
+  vi.spyOn(provisionModule, "provision").mockImplementation(async request => ({ code: 3, reason: "core-pin-check-unavailable",
+    operationId: request.operation.id, home: null, epoch: null, value: null, repairCommand: null }));
+  let errors = "";
+  expect(await main(["roam", "provision", f.request.target, "--yes", "--use-destination-auth", "--release", f.release, "--replace-core-pin"],
+    { out() {}, err(text) { errors += text; } })).toBe(3);
+  expect(errors).toMatch(/hub.*store.*spider roam doctor/is);
+  expect(errors).not.toContain("core-pin-in-use");
+});
+
 it("retains the source snapshot while provisioning is pending", async () => {
   const f = fixture(), agent = join(f.root, "agent"); mkdirSync(agent, { mode: 0o700 });
   writeFileSync(join(agent, "auth.json"), JSON.stringify({ "github-copilot": { type: "oauth", access: "fixture" } }), { mode: 0o600 });

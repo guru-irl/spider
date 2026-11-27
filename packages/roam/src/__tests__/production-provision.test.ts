@@ -78,19 +78,29 @@ it.each([
   ["home still assigned to the box", "stopped", true, true],
   ["moving to a different box", "moving", false, false],
   ["no homes in the pre-v0 layout", null, false, false],
-] as const)("checks authoritative homes before replacement: %s", async (_name, state, local, refused) => {
-  const { root, machineId, ports } = fixture();
-  const db = openDb(join(root, "spider.db"));
-  try {
-    db.exec("PRAGMA user_version=14; CREATE TABLE roam_meta (id INTEGER, machine_id TEXT); CREATE TABLE session_homes (session_id TEXT PRIMARY KEY, machine_id TEXT NOT NULL, epoch INTEGER NOT NULL, move_id TEXT, updated_at INTEGER NOT NULL)");
-    db.prepare("INSERT INTO roam_meta VALUES (1, ?)").run(machineId);
-    if (state !== null) {
-      db.exec("ALTER TABLE session_homes ADD COLUMN state TEXT; ALTER TABLE session_homes ADD COLUMN destination TEXT");
-      db.prepare("INSERT INTO session_homes VALUES('fixture-session', ?, 1, 'fixture-move', 1, ?, ?)")
-        .run(local ? bootstrapPeer.machineId : machineId, state, state === "moving" ? (refused ? bootstrapPeer.machineId : "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb") : null);
-    }
-  } finally { db.close(); }
+  ["enabled hub with no homes", null, false, true, true, false],
+  ["unreadable hub store", null, false, true, false, true],
+] as const)("checks authoritative homes before replacement: %s", async (_name, state, local, refused, enabled = false, corrupt = false) => {
+  const { root, roam, machineId, ports } = fixture();
+  if (enabled) {
+    const config = JSON.parse(readFileSync(join(roam, "config.json"), "utf8"));
+    writeFileSync(join(roam, "config.json"), JSON.stringify({ ...config, enabled: true }), { mode: 0o600 });
+  }
+  if (corrupt) writeFileSync(join(root, "spider.db"), "not a database", { mode: 0o600 });
+  else {
+    const db = openDb(join(root, "spider.db"));
+    try {
+      db.exec("PRAGMA user_version=14; CREATE TABLE roam_meta (id INTEGER, machine_id TEXT); CREATE TABLE session_homes (session_id TEXT PRIMARY KEY, machine_id TEXT NOT NULL, epoch INTEGER NOT NULL, move_id TEXT, updated_at INTEGER NOT NULL)");
+      db.prepare("INSERT INTO roam_meta VALUES (1, ?)").run(machineId);
+      if (state !== null) {
+        db.exec("ALTER TABLE session_homes ADD COLUMN state TEXT; ALTER TABLE session_homes ADD COLUMN destination TEXT");
+        db.prepare("INSERT INTO session_homes VALUES('fixture-session', ?, 1, 'fixture-move', 1, ?, ?)")
+          .run(local ? bootstrapPeer.machineId : machineId, state, state === "moving" ? (refused ? bootstrapPeer.machineId : "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb") : null);
+      }
+    } finally { db.close(); }
+  }
   const check = ports.assertCorePinReplaceIdle(bootstrapPeer);
-  if (refused) await expect(check).rejects.toMatchObject({ code: "core-pin-in-use" });
+  if (corrupt) await expect(check).rejects.toMatchObject({ code: "core-pin-check-unavailable", message: expect.stringMatching(/hub.*store.*spider roam doctor/i) });
+  else if (refused) await expect(check).rejects.toMatchObject({ code: "core-pin-in-use" });
   else await expect(check).resolves.toBeUndefined();
 });

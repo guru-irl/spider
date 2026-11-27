@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import net from "node:net";
 import { once } from "node:events";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { startTestBroker, stopTestBroker, testBrokerEnv, testTmpDir } from "../test-support.js";
@@ -63,6 +63,21 @@ describe("roaming intercom envelopes", () => {
     expect(parseV0AgentReply(agentReply)).toEqual(agentReply);
     expect(parseV0BrokerReply({ type: "roam_v0_result", requestId: "request-1", kind: "no_reply", id: "question-1" }))
       .toEqual({ type: "roam_v0_result", requestId: "request-1", kind: "no_reply", id: "question-1" });
+  });
+
+  it("accepts lookup and ordinary delivery envelopes", () => {
+    const lookupRequest = { type: "roam_v0", requestId: "lookup-1", kind: "lookup", scopeId: null, selector: { by: "id", value: "recipient" } };
+    const delivery = { type: "roam_v0", requestId: "delivery-1", kind: "deliver", from: origin, target: endpoint, message };
+    const agentLookup = { version: 1, requestId: "lookup-1", toMachineId: "machine-2", from: { ...endpoint, machineId: "machine-1" }, kind: "lookup", selector: { by: "name", value: "ben" } };
+    const agentDelivery = { version: 1, requestId: "delivery-1", toMachineId: "machine-2", from: { ...endpoint, machineId: "machine-1" }, kind: "deliver", target: endpoint, message };
+    expect(parseV0BrokerRequest(lookupRequest)).toEqual(lookupRequest);
+    expect(parseV0BrokerRequest(delivery)).toEqual(delivery);
+    expect(parseV0AgentRequest(agentLookup)).toEqual(agentLookup);
+    expect(parseV0AgentRequest(agentDelivery)).toEqual(agentDelivery);
+    const matches = { type: "roam_v0_result", requestId: "lookup-1", kind: "matches", targets: [endpoint] };
+    expect(parseV0BrokerReply(matches)).toEqual(matches);
+    const refusal = { version: 1, requestId: "delivery-1", machineId: "machine-2", kind: "refused", code: "moving" };
+    expect(parseV0AgentReply(refusal)).toEqual(refusal);
   });
 
   it("rejects extra fields and local-only handles in a remote sender", () => {
@@ -222,6 +237,7 @@ describe("private roaming broker", () => {
     expect(await request({ kind: "deliver", from: scopeTwo, target, message })).toEqual({ kind: "refused", code: "unauthorized" });
     expect(await request({ kind: "deliver", from: origin, target: { ...target, address: { ...target.address, scopeId: "scope-2" } }, message })).toEqual({ kind: "refused", code: "unauthorized" });
     expect(await request({ kind: "deliver", from: { ...origin, pid: 123 }, target, message })).toEqual({ kind: "refused", code: "invalid" });
+    expect(await request({ kind: "deliver", from: origin, target: { ...target, homeEpoch: target.homeEpoch + 1 }, message })).toEqual({ kind: "refused", code: "changed" });
     await ben.listSessions();
     expect(inbox).toEqual([]);
 
@@ -394,6 +410,16 @@ describe("private roaming broker", () => {
       chmodSync(directory, 0o700);
       chmodSync(socket, 0o600);
     }
+  });
+
+  it("refuses a symlinked agent directory", async () => {
+    const dir = mkdtempSync(join(testTmpDir(), "link-"));
+    try {
+      const alias = join(dir, "agent");
+      symlinkSync(getAgentDirPath(), alias);
+      expect(await requestV0Broker(alias, { kind: "lookup", scopeId: "scope-1", selector: { by: "name", value: "ben" } }))
+        .toEqual({ kind: "refused", code: "unauthorized" });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   it("does not trust an uncorrelated delivery result", async () => {

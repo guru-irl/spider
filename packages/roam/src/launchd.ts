@@ -99,7 +99,7 @@ function selectionEnvironment(selection: CoreSelection, serviceHome: string): st
   if (!configured && standard && selection.session === standard.session && selection.socket === standard.socket) return "";
   return `<key>HC_SESSION</key><string>${xml(selection.session)}</string><key>HC_SOCKET</key><string>${xml(selection.socket)}</string>`;
 }
-function definition(node: string, cli: string, root: string, out: string, err: string, pi: string, label: string, selection: CoreSelection, serviceHome: string): string {
+function definition(node: string, cli: string, root: string, out: string, err: string, pi: string, label: string, selection: CoreSelection, serviceHome: string, hc?: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -108,7 +108,7 @@ function definition(node: string, cli: string, root: string, out: string, err: s
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><true/>
 <key>WorkingDirectory</key><string>${xml(root)}</string>
-<key>EnvironmentVariables</key><dict><key>SPIDER_GLOBAL_ROOT</key><string>${xml(root)}</string><key>SPIDER_ROAM_PI</key><string>${xml(pi)}</string>${selectionEnvironment(selection, serviceHome)}</dict>
+<key>EnvironmentVariables</key><dict><key>SPIDER_GLOBAL_ROOT</key><string>${xml(root)}</string><key>SPIDER_ROAM_PI</key><string>${xml(pi)}</string>${selectionEnvironment(selection, serviceHome)}${hc ? `<key>SPIDER_ROAM_HC</key><string>${xml(hc)}</string>` : ""}</dict>
 <key>StandardOutPath</key><string>${xml(out)}</string>
 <key>StandardErrorPath</key><string>${xml(err)}</string>
 <key>Umask</key><integer>63</integer>
@@ -157,8 +157,11 @@ function writeDefinition(file: string, contents: string, root: string, label: st
 }
 
 /** Install only into the supplied service directory and scoped global root. */
-export async function installHubService(input: { node: string; cli: string; globalRoot: string; pi?: string; env?: Readonly<NodeJS.ProcessEnv>; mode?: "v0" }, ports: LaunchdPorts): Promise<void> {
-  const selection = hubCoreSelection(input.env ?? process.env), serviceHome = absolute(ports.serviceHome ?? serviceManagerHome());
+export async function installHubService(input: { node: string; cli: string; globalRoot: string; pi?: string; hc?: string; env?: Readonly<NodeJS.ProcessEnv>; mode?: "v0" }, ports: LaunchdPorts): Promise<void> {
+  const env = input.env ?? process.env;
+  const selection = hubCoreSelection(env), serviceHome = absolute(ports.serviceHome ?? serviceManagerHome());
+  const configuredHc = input.mode === "v0" ? input.hc ?? env.SPIDER_ROAM_HC : undefined;
+  const hc = configuredHc ? executable(configuredHc, true) : undefined;
   const node = executable(input.node, true), cli = executable(input.cli, false);
   const root = absolute(input.globalRoot), directory = absolute(ports.plistDir), label = hubServiceLabel(root, input.mode);
   const file = hubServiceFile(root, directory, input.mode), logDirectory = join(root, "roam", "logs");
@@ -175,7 +178,7 @@ export async function installHubService(input: { node: string; cli: string; glob
   if (!pi) throw new Error("participant-pi-unavailable");
   const participant = executable(pi, true);
   if (input.mode !== "v0" && label !== LABEL) await removeDefinition(join(directory, `${LABEL}.plist`), root, LABEL, ports, true);
-  writeDefinition(file, definition(node, cli, root, out, err, participant, label, selection, serviceHome), root, label, previous);
+  writeDefinition(file, definition(node, cli, root, out, err, participant, label, selection, serviceHome, hc), root, label, previous);
   const domain = `gui/${uid}`;
   try { await ports.launchctl(["bootout", domain, file]); }
   catch (error) { if ((error as { code?: unknown } | null)?.code !== "service-not-loaded") throw error; }

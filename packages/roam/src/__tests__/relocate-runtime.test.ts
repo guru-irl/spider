@@ -133,6 +133,22 @@ describe("v0 local runtime",()=>{
   expect(env.NODE_OPTIONS).toBeUndefined();expect(env.HC_TERMINAL_ID).toBeUndefined();
   expect(env.AUTH_TOKEN).toBe("local-auth");expect(env.PI_CODING_AGENT_DIR).toBeTruthy();
  });
+ it("uses the configured hc binary and keeps the service's pinned core", async () => {
+  const f = runtimeFixture(), root = f.options.root, binary = join(root,"bin","hc");
+  mkdirSync(join(root,"herdr"));
+  writeFileSync(join(root,"herdr","config.json"), JSON.stringify({mode:"core-only",core:{binary,config:join(root,"core.toml")},
+   globalRoot:root,agentDirectory:join(root,"agent"),shellRc:join(root,"shell.rc"),machines:[]}));
+  vi.stubEnv("SPIDER_ROAM_HC",undefined);
+  vi.stubEnv("PI_CODING_AGENT_DIR",undefined);
+  vi.stubEnv("HC_SESSION","work");
+  vi.stubEnv("HC_SOCKET",join(root,"work.sock"));
+  vi.stubEnv("HC_TERMINAL_ID","foreign:terminal");
+  const calls = vi.spyOn(hcApi,"invokeCli").mockResolvedValue({terminals:[]});
+  await createLocalIO(f.options).terminals(id);
+  expect(calls.mock.calls[0][0]).toBe(binary);
+  expect(calls.mock.calls[0][2]).toMatchObject({HC_SESSION:"work",HC_SOCKET:join(root,"work.sock"),PI_CODING_AGENT_DIR:join(root,"agent")});
+  expect(calls.mock.calls[0][2].HC_TERMINAL_ID).toBeUndefined();
+ });
  it("resolves live process identity from terminal details when summaries omit pid",async()=>{
   const f=runtimeFixture();
   vi.spyOn(hcApi,"invokeCli").mockImplementation(async(_binary,argv)=>{

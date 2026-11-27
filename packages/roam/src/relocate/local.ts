@@ -19,7 +19,8 @@ import { processStartIdentity } from "@spider/herdr/jobs/handoff";
 import { safeLaunchEnvironment, type PiSpawnRequest } from "@spider/herdr/sessions/launcher";
 import type { SessionId as HerdrSessionId } from "@spider/herdr/contracts";
 import { invokeCli, observeCoreIdentity } from "@spider/herdr/client/hc";
-import { selectedSocket } from "@spider/herdr/client/parse";
+import { hubCoreSelection } from "../launchd";
+import { loadHerdrConfig } from "../host-config";
 import type { Operation, Clock } from "../contracts";
 import { createLocalExactHc, resolveParticipantPi } from "../launcher";
 import { requestSessionControl } from "../session-socket";
@@ -58,19 +59,28 @@ export async function probeLocalProcess(pid: number): ReturnType<LocalIO["probe"
 }
 /** HC selection is local. No inherited terminal, remote target, or lease survives. */
 export function localLaunchEnvironment(env: Readonly<NodeJS.ProcessEnv> = process.env): NodeJS.ProcessEnv {
+  const core = hubCoreSelection(env);
   const clean = safeLaunchEnvironment(env);
   for (const key of Object.keys(clean)) if (/^(HC_|PI_|SPIDER_)/.test(key) || key === "NODE_OPTIONS") delete clean[key];
   clean.PI_SUBAGENT_CHILD = "0";
-  clean.HC_SESSION = "default";
-  clean.HC_SOCKET = selectedSocket(clean);
+  clean.HC_SESSION = core.session;
+  clean.HC_SOCKET = core.socket;
   clean.PI_CODING_AGENT_DIR = env.PI_CODING_AGENT_DIR ?? join(homedir(),".pi","agent");
   clean.PATH = [dirname(process.execPath),env.PATH ?? ""].filter(Boolean).join(delimiter);
   return clean;
 }
+export function localHerdrConnection(root: string, base: Readonly<NodeJS.ProcessEnv> = process.env): {binary:string;env:NodeJS.ProcessEnv} {
+  let config;
+  try { config = loadHerdrConfig(root); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  const binary = base.SPIDER_ROAM_HC || config?.core.binary || "hc";
+  if (base.SPIDER_ROAM_HC && !isAbsolute(binary)) throw new Error("The configured hc executable must have an absolute path");
+  const env = {...localLaunchEnvironment({...base,PI_CODING_AGENT_DIR:base.PI_CODING_AGENT_DIR || config?.agentDirectory}),SPIDER_GLOBAL_ROOT:root};
+  return {binary,env};
+}
 export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
   const lockRoot = join(options.root,"herdr");
-  const env = {...localLaunchEnvironment(),SPIDER_GLOBAL_ROOT:options.root};
-  const binary = process.env.SPIDER_ROAM_HC ?? "hc";
+  const {binary,env} = localHerdrConnection(options.root);
   const pi = resolveParticipantPi(process.env);
   const hc = createLocalExactHc({
     coreId: async signal => (await observeCoreIdentity(binary,env,{signal})).coreId,

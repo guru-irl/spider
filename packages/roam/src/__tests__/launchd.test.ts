@@ -62,6 +62,18 @@ it("v0 mode installs a distinct hub-v0 service without changing legacy definitio
   expect(existsSync(v0File)).toBe(false); expect(readFileSync(legacyFile, "utf8")).toBe(legacy);
 });
 
+it("v0 launchd pins an explicit hc binary and retains the selected core", async () => {
+  const f = fixture(), hc = join(f.root, "hc in a separate folder"), socket = join(f.root,"work.sock");
+  writeFileSync(hc,"#!/bin/sh\n", {mode:0o700});
+  const input = {...f, hc, mode:"v0" as const, env:{HOME:f.root,HC_SESSION:"work",HC_SOCKET:socket,HC_TERMINAL_ID:"old"}};
+  await installHubService(input,f.ports);
+  const {xml} = plist(launchd.hubServiceFile(f.globalRoot,f.plistDir,"v0"));
+  expect(xml).toContain(`<key>SPIDER_ROAM_HC</key><string>${hc}</string>`);
+  expect(xml).toContain("<key>HC_SESSION</key><string>work</string>");
+  expect(xml).toContain(`<key>HC_SOCKET</key><string>${socket}</string>`);
+  expect(xml).not.toContain("HC_TERMINAL_ID");
+});
+
 it("different roots install independent labels and remove only their own plist", async () => {
   const f = fixture(), secondRoot = join(f.root, "other-global");
   mkdirSync(f.globalRoot); mkdirSync(secondRoot);

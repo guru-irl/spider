@@ -179,7 +179,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
         catch { if (ticket === generation) { sessionId = id; publishResult("blocked", null, VERIFY); } return; }
         if (ticket !== generation) return;
         sessionId = id; sessionFile = file; epoch = null; participating = false; ownershipVerified = false; discoverable = false; captureVersion = null;
-        const pinId = !handoffRequired && ctx?.mode === "tui" && process.env.PI_SUBAGENT_CHILD !== "1" ? ports.lockSessionId : undefined;
+        const pinId = !handoffRequired && ctx?.mode === "tui" && ctx.hasUI && process.env.PI_SUBAGENT_CHILD !== "1" ? ports.lockSessionId : undefined;
         if (!id) { publishResult(handoffRequired || pinId ? "blocked" : "ordinary", null, handoffRequired ? VERIFY : pinId ? ID_LOCK : undefined); return; }
         if (pinId && !pinned && !held) {
           try {

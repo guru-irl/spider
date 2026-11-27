@@ -32,7 +32,7 @@ afterEach(async () => {
   }
 });
 
-function fixture(options: { configured?: boolean; noTranscript?: boolean; mode?: "tui" | "print" | "rpc"; child?: boolean } = {}) {
+function fixture(options: { configured?: boolean; noTranscript?: boolean; mode?: "tui" | "print" | "rpc"; child?: boolean; hasUI?: boolean } = {}) {
   const root = mkdtempSync(join(dirname(scratchDbPath("interactive-lock")), "interactive-lock-"));
   roots.push(root);
   const lockRoot = join(root, "herdr"), dbPath = join(root, "spider.db");
@@ -53,7 +53,7 @@ function fixture(options: { configured?: boolean; noTranscript?: boolean; mode?:
   const file = join(root, "session.jsonl");
   if (!options.noTranscript) writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: sessionId, cwd: root }) + "\n", { mode: 0o600 });
   const ports = createAdmissionPorts({ identity, probe, bootId, env: {} });
-  const host = createHostSessionFixture({ cwd: root, sessionId, sessionFile: options.noTranscript ? null : file });
+  const host = createHostSessionFixture({ cwd: root, sessionId, sessionFile: options.noTranscript ? null : file, hasUI: options.hasUI });
   host.ctx.mode = options.mode ?? "tui";
   const gate = registerAdmission(host.pi as unknown as ExtensionAPI, ports);
   gates.push(gate);
@@ -119,8 +119,8 @@ it("failed late roaming readiness releases the file lease but keeps the ordinary
   await expect(f.contend()).rejects.toThrow(/owner/i);
 });
 
-it.each(["print", "rpc", "child"] as const)("does not add an ordinary ID lock for %s", async kind => {
-  const f = fixture(kind === "child" ? { child: true } : { mode: kind });
+it.each(["print", "rpc", "child", "headless tui"] as const)("does not add an ordinary ID lock for %s", async kind => {
+  const f = fixture(kind === "child" ? { child: true } : kind === "headless tui" ? { mode: "tui", hasUI: false } : { mode: kind });
   await f.emit("session_start");
   expect(f.gate.inspect().kind).toBe("ordinary");
   expect(await f.lock()).toBeNull();

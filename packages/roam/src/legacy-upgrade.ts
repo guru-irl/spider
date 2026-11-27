@@ -6,12 +6,12 @@ import { FENCE_MACHINE, FENCE_STREAM, FENCE_TARGET } from "@spider/db-core/roam/
 import { localEntries, readLocal } from "@spider/db-core/roam/local-state";
 import { mappingRedirect, openRoamPathReadOnly, openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
 import { processStartIdentity } from "@spider/herdr/jobs/handoff";
-import { listPendingIdLocks, localBootId } from "@spider/herdr/sessions/id-lock";
+import { inspectIdLock, listPendingIdLocks, localBootId } from "@spider/herdr/sessions/id-lock";
 import { createSessionLeases, type ProcessProbe } from "@spider/herdr/sessions/lease";
 import type { Diagnostic, WorkspaceSnapshot } from "./contracts";
 import { openDiagnosticSnapshot } from "./diagnostic-snapshot";
 import { snapshotPrivateRefs } from "./git-bundle";
-import { inspectIntentReservations } from "./intent";
+import { inspectIntentReservations, inspectIntentViews } from "./intent";
 import { inspectAdoptedOwner } from "./launcher";
 import { isMachineId } from "./machine-id";
 import { readLocalIdentity } from "./runtime";
@@ -300,6 +300,23 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
     } finally { global.close(); }
     const stateRoot = join(root, "herdr"), pending = await pendingHandoffs(stateRoot);
     for (const handoff of pending) findings.push(`handoff session ${safeId(handoff.sessionId)} operation ${safeId(handoff.operationId)}`);
+    for (const state of await inspectIntentViews(root)) {
+      if (state.supervision.kind !== "live") continue;
+      const label = `live hosting session ${safeId(state.intent.sessionId)}`;
+      const boot = await localBootId(), identity = state.supervision.identity;
+      if (!boot) { unknown.push(`${label} boot identity unavailable`); continue; }
+      if (boot !== identity.bootId) continue;
+      const observed = await probeProcess(identity.pid);
+      if (observed.kind === "unknown") { unknown.push(`${label} owner unavailable`); continue; }
+      if (observed.kind === "absent" || observed.startIdentity !== identity.startTime) continue;
+      const lock = await inspectIdLock(stateRoot, state.intent.sessionId);
+      const lease = await createSessionLeases(stateRoot).get(state.intent.file, boot);
+      if (!lock || lock.bootId !== boot || lock.identity.pid !== identity.pid || lock.identity.startIdentity !== identity.startTime ||
+          !lease || lease.bootId !== boot || lease.pid !== identity.pid || lease.startIdentity !== identity.startTime) {
+        unknown.push(`${label} lock or lease unavailable`); continue;
+      }
+      findings.push(label);
+    }
     for (const reservation of await inspectIntentReservations(root)) {
       const label = `launch session ${safeId(reservation.sessionId)} operation ${safeId(reservation.operationId)}`;
       if (reservation.phase === "invoking") {

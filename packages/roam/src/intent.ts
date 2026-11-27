@@ -80,7 +80,7 @@ async function readIntentJson(path: string, repairMode: boolean): Promise<{ reco
 }
 
 /** Read local hosting views without repairing modes or acquiring locks. */
-async function inspectIntentViews(globalRoot: string): Promise<IntentState[]> {
+export async function inspectIntentViews(globalRoot: string): Promise<IntentState[]> {
   if (!isAbsolute(globalRoot)) throw new Error("Hosting state root must be absolute");
   const root = resolve(globalRoot), roam = join(root, "roam"), base = join(roam, "intents");
   assertTestConfigPath(base);

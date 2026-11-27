@@ -158,6 +158,47 @@ it("does not leak secret-bearing values in config diagnostics", () => {
   try { loadConfig(file); } catch (error) { expect(String(error)).not.toContain(secret); }
 }, 5000);
 
+function strictRoamBundle(): { root: string; directory: string } {
+  const root = fixture(), directory = join(root, "dist/roam");
+  mkdirSync(directory, { recursive: true });
+  for (const entry of ["cli-main.mjs", "cli.mjs", "intercom-helper.mjs", "relay-soak.mjs", "supervisor.mjs"]) {
+    const body = entry === "cli.mjs" ? 'import("./intercom-helper.mjs"); import("./cli-main.mjs");' : "export {};";
+    writeFileSync(join(directory, entry), `#!/usr/bin/env node\n${body}\n`);
+  }
+  return { root, directory };
+}
+
+it("strict roaming bundle accepts exactly the five current entries", () => {
+  const { root } = strictRoamBundle();
+  expect(() => assertRoamBundle(root, { requireHelper: true })).not.toThrow();
+}, 5000);
+
+it("strict roaming bundle rejects an unknown sixth entry", () => {
+  const { root, directory } = strictRoamBundle();
+  expect(() => assertRoamBundle(root, { requireHelper: true })).not.toThrow();
+  writeFileSync(join(directory, "unexpected.mjs"), "#!/usr/bin/env node\nexport {};\n");
+  expect(() => assertRoamBundle(root, { requireHelper: true })).toThrow(/unexpected runtime chunk/i);
+}, 5000);
+
+it.each([
+  ["pi imports", 'import "@earendil-works/pi-tui";', /pi import/i],
+  ["remote runtime mains", 'console.error("A runtime request file is required");', /remote runtime main/i],
+  ["pane endpoint mains", "runPaneEndpointCli(process.argv.slice(2));", /pane endpoint main/i],
+  ["nonliteral imports", 'const name = "example"; import(name);', /nonliteral import/i],
+])("strict roaming bundle rejects %s in relay-soak.mjs", (_name, statement, error) => {
+  const { root, directory } = strictRoamBundle();
+  writeFileSync(join(directory, "relay-soak.mjs"), `#!/usr/bin/env node\n${statement}\n`);
+  expect(() => assertRoamBundle(root, { requireHelper: true })).toThrow(error);
+}, 5000);
+
+it("the legacy roaming bundle still works only when the helper is optional", () => {
+  const root = fixture(), directory = join(root, "dist/roam");
+  mkdirSync(directory, { recursive: true });
+  for (const entry of ["cli.mjs", "supervisor.mjs"]) writeFileSync(join(directory, entry), "#!/usr/bin/env node\nexport {};\n");
+  expect(() => assertRoamBundle(root)).not.toThrow();
+  expect(() => assertRoamBundle(root, { requireHelper: true })).toThrow(/roaming entries/i);
+}, 5000);
+
 it.each([
   ["side effect", "cli.mjs", 'import /* marker */ "@earendil-works/pi-tui";'],
   ["re-export", "supervisor.mjs", 'export { x } from "@earendil-works/pi-coding-agent";'],

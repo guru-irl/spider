@@ -2909,6 +2909,9 @@ Usage:
                   questionId = randomUUID();
                   const question = { id: questionId, timestamp: Date.now(), text: message };
                   const result = await plan.ask(question, Math.min(askTimeoutMs, V0_ASK_MAX_MS), _signal);
+                  if (result.kind === "refused") {
+                    return { content: [{ type: "text", text: V0_REFUSAL_TEXT[result.code] }], details: { error: true, code: result.code } };
+                  }
                   if (result.kind === "replied") {
                     pi.appendEntry("intercom_sent", { to: plan.label, message: { text: message }, messageId: question.id, timestamp: question.timestamp });
                     pi.appendEntry("intercom_received", { from: plan.label, message: { text: result.text }, messageId: result.replyId, timestamp: Date.now() });

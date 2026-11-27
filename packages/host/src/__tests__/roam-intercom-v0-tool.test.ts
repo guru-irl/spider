@@ -281,6 +281,21 @@ it("reports a remote ask's route refusal without a local fallback", async () => 
   } finally { await f.cleanup(); }
 });
 
+it("reports a receiver's refusal of a remote ask", async () => {
+  const prepare: V0Prepare = async () => ({
+    kind: "remote", label: "b/ben",
+    async send(message) { return { kind: "socket_delivered", id: message.id }; },
+    async ask() { return { kind: "refused", code: "offline" }; },
+  });
+  const f = await fixture({ homeEpoch: () => 7, prepare });
+  try {
+    const result = await f.tool.execute("ask", { action: "ask", to: "ben", message: "hello" }, new AbortController().signal, undefined, f.ctx);
+    expect(result.content[0].text).toBe("Session is not connected. No message was queued.");
+    expect(result.details).toMatchObject({ error: true, code: "offline" });
+    expect(f.entries.some(entry => entry.type === "intercom_sent")).toBe(false);
+  } finally { await f.cleanup(); }
+});
+
 it("reports a receiver's moving refusal without claiming a send", async () => {
   const prepare: V0Prepare = async () => ({
     kind: "remote", label: "b/ben",

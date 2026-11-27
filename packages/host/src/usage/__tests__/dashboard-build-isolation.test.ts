@@ -25,6 +25,8 @@ it("two independent builds preserve each other", async () => {
   expect(bytes.reduce((n, b) => n + b.length, readFileSync(join(dashboard, "index.html")).length)).toBeLessThanOrEqual(512 * 1024);
   const copy = join(root, "synthetic-checkout"); mkdirSync(join(copy, "scripts"), { recursive: true }); mkdirSync(join(copy, "packages/host/src"), { recursive: true });
   cpSync(resolve("vite.config.mjs"), join(copy, "vite.config.mjs")); cpSync(resolve("scripts/build-id.mjs"), join(copy, "scripts/build-id.mjs"));
+  mkdirSync(join(copy, "scripts/tia"));
+  cpSync(resolve("scripts/tia/build-maps.mjs"), join(copy, "scripts/tia/build-maps.mjs"));
   writeFileSync(join(copy, "package.json"), '{"type":"module","version":"0.0.0"}');
   const source = join(copy, "packages/host/src/extension.ts"); writeFileSync(source, fixtureHerdrBoundary + 'export default function fixture() { return "first"; }');
   const watcher = await build({ configFile: join(copy, "vite.config.mjs"), root: copy, logLevel: "silent", build: { outDir, watch: {} } }) as import("vite").Rolldown.RolldownWatcher;

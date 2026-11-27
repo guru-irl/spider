@@ -136,3 +136,104 @@ test('reducer maps a deleted packed copy by hash and keeps bundle-only loads out
   assert.equal(entry.result, 'passed');
   assert.equal(entry.processCount, 1);
 });
+
+function recorderEnv(root, raw) {
+  return { ...process.env, SPIDER_TIA_DIR: raw, SPIDER_TIA_ROOT: root,
+    SPIDER_TIA_TEST: id, NODE_OPTIONS: `--require=${JSON.stringify(hook)}` };
+}
+
+test('short signal exits persist execution without changing exit status', { skip: process.platform === 'win32' }, t => {
+  const { root, raw } = fixture(t);
+  const child = join(root, 'packages/example/src/signals.cjs');
+  writeFileSync(child, `
+    const signal = process.argv[2];
+    if (process.argv[3] === 'own') process.on(signal, () => process.exit(23));
+    function ran() { process.kill(process.pid, signal); }
+    setImmediate(ran);
+    setInterval(() => {}, 30_000);
+  `);
+  for (const [signal, own] of [['SIGTERM', false], ['SIGTERM', true], ['SIGKILL', false]]) {
+    const result = runNode([child, signal, own ? 'own' : ''], { env: recorderEnv(root, raw), timeout: 5000 });
+    assert.deepEqual([result.status, result.signal], own ? [23, null] : [null, signal]);
+    const snapshot = records(raw).find(p => p.argv[2] === signal && p.argv[3] === (own ? 'own' : ''));
+    assert.ok(snapshot?.scripts.some(s => s.url.endsWith('signals.cjs') && s.offsets.length));
+  }
+});
+
+test('a terminated worker reports its own execution with an explicit replacement environment', t => {
+  const { root, raw } = fixture(t);
+  const child = join(root, 'dist/thread.mjs');
+  const parent = join(root, 'packages/example/src/thread-parent.mjs');
+  writeFileSync(child, `
+    import { parentPort } from 'node:worker_threads';
+    function ran() { parentPort.postMessage([process.env.KEPT, process.env.NODE_OPTIONS, process.execArgv]); }
+    ran();
+    setInterval(() => {}, 30_000);
+  `);
+  writeFileSync(parent, `
+    import { Worker } from 'node:worker_threads';
+    import { once } from 'node:events';
+    import assert from 'node:assert/strict';
+    const worker = new Worker(process.argv[2], { env: { KEPT: 'yes' }, execArgv: [] });
+    assert.deepEqual(await once(worker, 'message'), [['yes', undefined, []]]);
+    assert.equal(await worker.terminate(), 1);
+  `);
+  const result = runNode([parent, child], { env: recorderEnv(root, raw), timeout: 5000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(records(raw).some(p => p.test === id && p.scripts.some(s => s.url.endsWith('thread.mjs') && s.offsets.length)));
+});
+
+
+test('maps a rebuilt fixture after it is copied and its build directory is removed', t => {
+  const { root, raw, maps, workspace } = fixture(t);
+  const runtime = join(workspace, 'renamed.mjs');
+  const main = join(root, 'packages/example/src/fixture-main.mjs');
+  const output = 'function ran() {}\nran();\n';
+  const payload = { version: 3, sources: ['../packages/example/src/fixture-source.ts'], names: [], mappings: 'AAEA;AAAA' };
+  writeFileSync(runtime, output);
+  writeFileSync(join(root, 'dist/reference.mjs'), 'export {};');
+  writeFileSync(join(maps, 'reference.mjs.map'), JSON.stringify(payload));
+  writeFileSync(main, `await import(${JSON.stringify(runtime)});`);
+  const helper = fileURLToPath(new URL('./build-maps.mjs', import.meta.url));
+  const result = runNode(['--input-type=module', '-e', `
+    const { registerFixtureMap } = await import(${JSON.stringify(helper)});
+    registerFixtureMap(${JSON.stringify(join(root, 'dist/original.mjs'))}, ${JSON.stringify(output)}, ${JSON.stringify(payload)});
+    await import(${JSON.stringify(main)});
+  `], { env: recorderEnv(root, raw) });
+  assert.equal(result.status, 0, result.stderr);
+  rmSync(runtime);
+  const reduced = join(workspace, 'records.json');
+  const reduction = runNode([reducer, raw, maps, join(workspace, 'no-report.json'), reduced], { cwd: root });
+  assert.equal(reduction.status, 0, reduction.stderr);
+  const entry = JSON.parse(readFileSync(reduced)).records[id];
+  assert.deepEqual(entry.bundleExecuted, ['packages/example/src/fixture-source.ts']);
+  assert.deepEqual(entry.functionLines, { 'packages/example/src/fixture-source.ts': [3] });
+});
+
+
+test('remaps the Vitest VM wrapper while keeping top-level work separate', t => {
+  const { root, raw, maps, workspace } = fixture(t);
+  const file = join(root, 'packages/example/src/probe.ts');
+  const main = join(root, 'packages/example/src/transform-main.mjs');
+  const compiled = 'const before = 1;\nfunction ran() {}\nran();\nfunction never() {}\n';
+  const original = 'const before: number = 1;\n\n\nfunction ran() {}\nran();\nfunction never() {}\n';
+  const map = { version: 3, sources: ['probe.ts'], names: [], mappings: 'AAAA;AAGA;AACA;AACA' };
+  writeFileSync(file, original);
+  writeFileSync(join(root, 'dist/reference.mjs'), 'export {};');
+  writeFileSync(join(maps, 'reference.mjs.map'), JSON.stringify(map));
+  const url = `data:application/json;base64,${Buffer.from(JSON.stringify(map)).toString('base64')}`;
+  const wrap = "'use strict';async (__vite_ssr_exports__,__vite_ssr_import_meta__)=>{{";
+  writeFileSync(main, `
+    import { runInThisContext } from 'node:vm';
+    await runInThisContext(${JSON.stringify(wrap + compiled + '//# sourceMappingURL=' + url + '\n}}')},
+      { filename: ${JSON.stringify(file)}, columnOffset: ${-wrap.length} })({});
+  `);
+  const result = runNode([main], { env: recorderEnv(root, raw) });
+  assert.equal(result.status, 0, result.stderr);
+  const reduced = join(workspace, 'records.json');
+  const reduction = runNode([reducer, raw, maps, join(workspace, 'no-report.json'), reduced], { cwd: root });
+  assert.equal(reduction.status, 0, reduction.stderr);
+  const entry = JSON.parse(readFileSync(reduced)).records[id];
+  assert.deepEqual(entry.functionLines, { 'packages/example/src/probe.ts': [4] });
+  assert.deepEqual(entry.functionPositions['packages/example/src/probe.ts'], [[4, 0]]);
+});

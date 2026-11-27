@@ -662,7 +662,7 @@ it("the packaged hub synchronizes a captured home to the enrolled peer without a
     if (child.exitCode === null && child.signalCode === null) { child.kill("SIGTERM"); await exit(child); }
     await new Promise<void>(done => server.close(() => done()));
   }
-}, 5000);
+}, process.env.SPIDER_TIA === '1' ? 10_000 : 5000);
 
 it("the packaged hub preserves pending readiness and suspension when those observations are unavailable", async () => {
   const f = fixture(), alias = "-box-1.invalid", calls = join(f.root, "hc-calls");

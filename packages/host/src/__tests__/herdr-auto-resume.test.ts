@@ -1,3 +1,4 @@
+import { archiveFixtureMaps, fixtureMaps } from '../../../../scripts/tia/build-maps.mjs';
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, it, vi } from 'vitest';
@@ -32,9 +33,9 @@ function fixtureBundle(kind: 'shutdown' | 'runner'): Promise<Buffer> {
     const fixtureRoot = await mkdtemp(join(await realpath(tmpdir()), 'auto-fixtures-'));
     try {
       if (kind === 'shutdown') {
-        await build({ configFile: false, logLevel: 'silent', resolve: { alias: { '@spider/db-core': fileURLToPath(new URL('../../../db-core/src/command-env.ts', import.meta.url)) } }, build: { ssr: fileURLToPath(new URL('../../../herdr/src/__tests__/fixtures/resume-shutdown-process.ts', import.meta.url)), outDir: fixtureRoot, emptyOutDir: false, rollupOptions: { output: { entryFileNames: 'fixture.mjs' } } } });
+        await build({ configFile: false, plugins: archiveFixtureMaps(), logLevel: 'silent', resolve: { alias: { '@spider/db-core': fileURLToPath(new URL('../../../db-core/src/command-env.ts', import.meta.url)) } }, build: { sourcemap: fixtureMaps ? 'hidden' : false, ssr: fileURLToPath(new URL('../../../herdr/src/__tests__/fixtures/resume-shutdown-process.ts', import.meta.url)), outDir: fixtureRoot, emptyOutDir: false, rollupOptions: { output: { entryFileNames: 'fixture.mjs' } } } });
       } else {
-        await build({ configFile: false, logLevel: 'silent', define: { 'import.meta.spiderHerdrRuntimeEntry': 'false', 'import.meta.spiderPaneEndpointEntry': 'false' }, ssr: { noExternal: [/^@spider\//] }, build: { ssr: fileURLToPath(new URL('./fixtures/auto-resume-runner.ts', import.meta.url)), outDir: fixtureRoot, emptyOutDir: false, rollupOptions: { output: { entryFileNames: 'fixture.mjs' } } } });
+        await build({ configFile: false, plugins: archiveFixtureMaps(), logLevel: 'silent', define: { 'import.meta.spiderHerdrRuntimeEntry': 'false', 'import.meta.spiderPaneEndpointEntry': 'false' }, ssr: { noExternal: [/^@spider\//] }, build: { sourcemap: fixtureMaps ? 'hidden' : false, ssr: fileURLToPath(new URL('./fixtures/auto-resume-runner.ts', import.meta.url)), outDir: fixtureRoot, emptyOutDir: false, rollupOptions: { output: { entryFileNames: 'fixture.mjs' } } } });
       }
       return await readFile(join(fixtureRoot, 'fixture.mjs'));
     } finally { await rm(fixtureRoot, { recursive: true, force: true }); }

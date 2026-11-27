@@ -140,7 +140,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     merged.terminal['cmd-a'] = 'custom.select'; await writeFile(path, JSON.stringify(merged));
     expect(await runHerdrCli(['setup', '--merge-native-keys', '--config', f.request.configPath], ports), errors.join('')).toBe(0);
     expect(JSON.parse(await readFile(path, 'utf8')).terminal['cmd-a']).toBe('custom.select');
-  });
+  }, process.env.SPIDER_TIA === '1' ? 60_000 : 30_000);
 
   test(`${version} offers only supported native keys missing from the stock map`, async () => {
     const f = await fastRelease(version), out: string[] = [], errors: string[] = [];

@@ -31,6 +31,29 @@ function lineAt(starts, offset) {
   return low;
 }
 
+function bundleMap(root, compiled, payload, starts) {
+  const base = pathToFileURL(dirname(compiled) + sep);
+  const sourceRoot = payload.sourceRoot ? new URL(payload.sourceRoot.replace(/\/?$/, '/'), base) : base;
+  const sources = payload.sources.map(source => {
+    const url = new URL(source, sourceRoot);
+    return url.protocol === 'file:' ? repoPath(root, fileURLToPath(url)) : null;
+  });
+  const map = new SourceMap({ ...payload, sourceRoot: '', sources: sources.map(source => source ?? '') });
+  return {
+    sources: sorted(new Set(sources.filter(Boolean))),
+    at(offset) {
+      const line = lineAt(starts, offset);
+      return this.atPosition(line + 1, offset - starts[line]);
+    },
+    atPosition(line, col) {
+      const entry = map.findEntry(line - 1, col);
+      if (entry.generatedLine === line - 1 && entry.originalSource) {
+        return [entry.originalSource, entry.originalLine + 1, entry.originalColumn];
+      }
+    },
+  };
+}
+
 function bundleMaps(root, mapsDir) {
   const byHash = new Map();
   for (const entry of readdirSync(mapsDir, { recursive: true, withFileTypes: true })) {
@@ -38,24 +61,7 @@ function bundleMaps(root, mapsDir) {
     const archivePath = join(entry.parentPath, entry.name);
     const compiled = join(root, 'dist', relative(mapsDir, archivePath).slice(0, -4));
     const bytes = readFileSync(compiled);
-    const payload = read(archivePath);
-    const base = pathToFileURL(dirname(compiled) + sep);
-    const sourceRoot = payload.sourceRoot ? new URL(payload.sourceRoot.replace(/\/?$/, '/'), base) : base;
-    const sources = payload.sources.map(source => {
-      const url = new URL(source, sourceRoot);
-      return url.protocol === 'file:' ? repoPath(root, fileURLToPath(url)) : null;
-    });
-    // Use real source coordinates but store repo paths without a machine prefix.
-    const map = new SourceMap({ ...payload, sourceRoot: '', sources: sources.map(source => source ?? '') });
-    const starts = lineStarts(bytes.toString('utf8'));
-    byHash.set(sha256(bytes), {
-      sources: sorted(new Set(sources.filter(Boolean))),
-      at(offset) {
-        const line = lineAt(starts, offset);
-        const entry = map.findEntry(line, offset - starts[line]);
-        if (entry.generatedLine === line && entry.originalSource) return [entry.originalSource, entry.originalLine + 1];
-      },
-    });
+    byHash.set(sha256(bytes), bundleMap(root, compiled, read(archivePath), lineStarts(bytes.toString('utf8'))));
   }
   if (!byHash.size) throw new Error('no bundle maps found');
   return byHash;
@@ -63,11 +69,12 @@ function bundleMaps(root, mapsDir) {
 
 export function reduce({ root = process.cwd(), rawDir, mapsDir, reportFile }) {
   const maps = bundleMaps(root, mapsDir);
+  const fixtures = new Map();
   const report = existsSync(reportFile) ? read(reportFile) : null;
   const outcomes = new Map(report?.testResults?.map(result => [repoPath(root, result.name), result]) ?? []);
   const groups = new Map();
   const stats = { mappedBundles: maps.size, hookErrors: {}, rawBytes: 0, processes: 0, finalProcesses: 0, unattributedProcesses: 0,
-    malformedSnapshots: 0, unresolvedBundles: 0, transformedBundles: 0, unmappedOffsets: 0,
+    malformedSnapshots: 0, unresolvedBundles: 0, transformedBundles: 0, unmappedOffsets: 0, transformedSourcePositions: 0, unmappedSourceOffsets: 0,
     resultReportMissing: !report, reportedFiles: outcomes.size };
   const errors = join(rawDir, 'hook-errors.ndjson');
   if (existsSync(errors)) {
@@ -91,8 +98,9 @@ export function reduce({ root = process.cwd(), rawDir, mapsDir, reportFile }) {
     if (!proc.test) { stats.unattributedProcesses++; continue; }
     const entry = groups.get(proc.test) ?? {
       loaded: new Set(), executed: new Set(), bundleLoaded: new Set(), bundleExecuted: new Set(), childBundleExecuted: new Set(),
-      functionLines: new Map(), unresolvedBundles: new Set(), transformedBundles: new Set(),
-      processCount: 0, finalCount: 0, cpuMs: 0, workerPids: [], workerWallMs: 0,
+      fixtureBundleExecuted: new Set(), shippedBundleExecuted: new Set(),
+      functionPositions: new Map(), unplacedExecution: new Set(), unresolvedBundles: new Set(), transformedBundles: new Set(),
+      processCount: 0, finalCount: 0, threadCount: 0, finalThreadCount: 0, cpuMs: 0, workerPids: [], workerWallMs: 0,
       earliest: Infinity, latest: 0,
     };
     groups.set(proc.test, entry);
@@ -102,17 +110,27 @@ export function reduce({ root = process.cwd(), rawDir, mapsDir, reportFile }) {
       entry.workerPids.push(proc.pid);
       entry.workerWallMs = Math.max(entry.workerWallMs, proc.wallMs);
     }
-    entry.processCount++;
-    if (proc.ended) entry.finalCount++;
+    if (!proc.threadId) {
+      entry.processCount++;
+      if (proc.ended) entry.finalCount++;
+    } else {
+      entry.threadCount++;
+      if (proc.ended) entry.finalThreadCount++;
+    }
     entry.cpuMs += (proc.cpuUsage.user + proc.cpuUsage.system) / 1000;
-    const addLine = (source, line) => {
-      const lines = entry.functionLines.get(source) ?? new Set();
-      lines.add(line);
-      entry.functionLines.set(source, lines);
+    const addPosition = (source, line, col) => {
+      const positions = entry.functionPositions.get(source) ?? new Map();
+      positions.set(`${line}:${col}`, [line, col]);
+      entry.functionPositions.set(source, positions);
     };
     for (const script of proc.scripts) {
-      if (script.kind === 'bundle') {
-        const bundle = maps.get(script.sha256);
+      if (script.kind === 'bundle' || script.kind === 'fixture') {
+        if (script.sha256 && !maps.has(script.sha256) && !fixtures.has(script.sha256)) {
+          const archive = join(rawDir, 'fixture-maps', `${script.sha256}.json`);
+          const fixture = existsSync(archive) ? read(archive) : null;
+          fixtures.set(script.sha256, fixture ? bundleMap(root, fixture.compiled, fixture.map, fixture.starts) : null);
+        }
+        const bundle = maps.get(script.sha256) ?? fixtures.get(script.sha256);
         if (!bundle) {
           stats.unresolvedBundles++;
           entry.unresolvedBundles.add(basename(scriptPath(script.url)));
@@ -122,19 +140,21 @@ export function reduce({ root = process.cwd(), rawDir, mapsDir, reportFile }) {
           entry.loaded.add(source);
           entry.bundleLoaded.add(source);
         }
-        if (!script.exact) {
+        if (!script.exact && !script.positions?.length && script.offsets.length) {
           stats.transformedBundles++;
           entry.transformedBundles.add(basename(scriptPath(script.url)));
-          continue;
         }
-        for (const offset of script.offsets) {
-          const mapped = bundle.at(offset);
+        const positions = script.exact ? script.offsets.map(offset => bundle.at(offset))
+          : (script.positions ?? []).map(pos => bundle.atPosition(...pos));
+        if (!script.exact) stats.unmappedOffsets += script.offsets.length - positions.length;
+        for (const mapped of positions) {
           if (!mapped) { stats.unmappedOffsets++; continue; }
-          const [source, line] = mapped;
+          const [source, line, col] = mapped;
           entry.executed.add(source);
           entry.bundleExecuted.add(source);
+          (maps.has(script.sha256) ? entry.shippedBundleExecuted : entry.fixtureBundleExecuted).add(source);
           if (!proc.worker) entry.childBundleExecuted.add(source);
-          addLine(source, line);
+          addPosition(source, line, col);
         }
         continue;
       }
@@ -149,24 +169,43 @@ export function reduce({ root = process.cwd(), rawDir, mapsDir, reportFile }) {
           fileLines.set(source, bytes && sha256(bytes) === script.sha256 ? lineStarts(bytes.toString('utf8')) : null);
         }
         const starts = fileLines.get(source);
-        if (starts) for (const offset of script.offsets) addLine(source, lineAt(starts, offset) + 1);
+        if (starts) {
+          for (const offset of script.offsets) {
+            const line = lineAt(starts, offset);
+            addPosition(source, line + 1, offset - starts[line]);
+          }
+        } else entry.unplacedExecution.add(source);
+      } else if (!script.exact && script.offsets.length) {
+        for (const position of script.positions ?? []) addPosition(source, ...position);
+        stats.transformedSourcePositions += script.positions?.length ?? 0;
+        const missed = script.offsets.length - (script.positions?.length ?? 0);
+        stats.unmappedSourceOffsets += missed;
+        // Generated export getters and mock wrappers introduce unmapped
+        // offsets alongside real functions. A file with no mapped evidence
+        // at all is an explicit function-identity gap.
+        if (!script.positions?.length) entry.unplacedExecution.add(source);
       }
     }
   }
   const records = {};
   for (const [file, entry] of [...groups].sort(([a], [b]) => a.localeCompare(b))) {
     const result = outcomes.get(file);
+    const functionPositions = Object.fromEntries(sorted(entry.functionPositions.keys()).map(source =>
+      [source, [...entry.functionPositions.get(source).values()].sort(([al, ac], [bl, bc]) => al - bl || ac - bc)]));
     records[file] = {
       executed: sorted(entry.executed), loaded: sorted(entry.loaded), bundleExecuted: sorted(entry.bundleExecuted),
+      fixtureBundleExecuted: sorted(entry.fixtureBundleExecuted), shippedBundleExecuted: sorted(entry.shippedBundleExecuted),
       bundleLoaded: sorted(entry.bundleLoaded), childBundleExecuted: sorted(entry.childBundleExecuted),
       unresolvedBundles: sorted(entry.unresolvedBundles), transformedBundles: sorted(entry.transformedBundles),
-      functionLines: Object.fromEntries(sorted(entry.functionLines.keys()).map(source => [source, [...entry.functionLines.get(source)].sort((a, b) => a - b)])),
-      processCount: entry.processCount, finalCount: entry.finalCount, cpuMs: Math.round(entry.cpuMs),
+      functionPositions, unplacedExecution: sorted(entry.unplacedExecution),
+      functionLines: Object.fromEntries(Object.entries(functionPositions).map(([source, pos]) => [source, [...new Set(pos.map(([line]) => line))]])),
+      processCount: entry.processCount, finalCount: entry.finalCount,
+      threadCount: entry.threadCount, finalThreadCount: entry.finalThreadCount, cpuMs: Math.round(entry.cpuMs),
       workerPids: entry.workerPids, wallMs: entry.workerWallMs || entry.latest - entry.earliest,
       vitestMs: result ? result.endTime - result.startTime : null, result: result?.status ?? 'unknown',
     };
   }
-  return { version: 1, stats, failureDetails, reportedFiles: [...outcomes.keys()].filter(Boolean).sort(), records };
+  return { version: 1, stats: { ...stats, mappedFixtures: [...fixtures.values()].filter(Boolean).length }, failureDetails, reportedFiles: [...outcomes.keys()].filter(Boolean).sort(), records };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

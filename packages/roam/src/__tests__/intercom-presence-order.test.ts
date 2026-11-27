@@ -213,3 +213,49 @@ it("publishes initial sessions and later withdrawals in both directions", async 
     vi.useRealTimers();
   }
 });
+
+it("clears cached presence after a handshake with an empty roster", async () => {
+  vi.useFakeTimers();
+  const root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "presence-order-"));
+  const clock: Clock = { now: () => Date.now(), later: (ms, fn) => { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
+  const source = openIntercomStore({ file: join(root, "source", "queue.db"), machineId: A, clock });
+  const inbox = openIntercomStore({ file: join(root, "inbox", "queue.db"), machineId: B, clock });
+  const old: RemoteSessionInfo = { remote: true, id: coordinator.sessionId, address: coordinator, machineId: A, machineAlias: "coordinator.invalid",
+    homeEpoch: 1, activationEpoch: "old", endpointEpoch: "old", cwd: "/fixture", model: "fixture", startedAt: 1, lastActivity: 1 };
+  inbox.updateEdgeState(A, "edge-1", state => ({ ...state, status: "live", lastSuccess: clock.now(), roster: [old] }));
+  const home = (address: typeof coordinator) => ({ sessionId: address.sessionId, machineId: address.sessionId === coordinator.sessionId ? A : B,
+    epoch: 1, moveId: null, updatedAt: 1 });
+  const federation = createFederation({ agentDir: "/fixture/agent", locals: () => [helper], now: clock.now });
+  const receiver = createIntercomBridge({ machineId: B, machineAlias: "helper.invalid", edges: [{ peer: peer(A), edgeEpoch: "edge-1", initiator: false }],
+    store: inbox, clock, transport: {} as Transport, localPresence: () => [], authoritativeHome: home,
+    publishPresence: entries => federation.publishPresence(entries) });
+  const handshake = deferred();
+  const transport = {
+    resolve: async (target: Peer) => target,
+    exec: async (_target: Peer, _args: readonly string[], options: { stdinForTimeout(ms: number): Buffer; signal: AbortSignal }) => {
+      const request = JSON.parse(options.stdinForTimeout(30_000).toString());
+      const value = await receiver.exchange(request, options.signal);
+      if (request.exchange.generation.channel === "poll" && request.holdMs === 0) handshake.resolve();
+      return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-exchange", ok: true, value }));
+    },
+  } as unknown as Transport;
+  const sender = createIntercomBridge({ machineId: A, machineAlias: "coordinator.invalid", edges: [{ peer: peer(B), edgeEpoch: "edge-1", initiator: true }],
+    store: source, clock, transport, localPresence: () => [], authoritativeHome: home });
+  const detach = federation.registerBridge({ feature: FEDERATION_FEATURE, agentDir: "/fixture/agent", machineId: B, machineAlias: "helper.invalid" }, receiver);
+  try {
+    await receiver.start();
+    expect(federation.resolve(coordinator.sessionId, null, [])).toMatchObject({ activationEpoch: "old" });
+    await sender.start();
+    await handshake.promise;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(federation.resolve(coordinator.sessionId, null, [])).toBeNull();
+  } finally {
+    await sender.stop();
+    await receiver.stop();
+    detach();
+    source.close();
+    inbox.close();
+    rmSync(root, { recursive: true, force: true });
+    vi.useRealTimers();
+  }
+});

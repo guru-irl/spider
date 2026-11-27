@@ -341,11 +341,11 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     try { encodeExchange(result); } catch { return bad("exchange-too-large"); }
     return result;
   };
-  const observe = (edge: EdgeRuntime, presence: RemoteSessionInfo[]): void => {
-    const peer = edge.config.peer.machineId, now = ports.clock.now(), before = state(edge);
+  const observe = (edge: EdgeRuntime, presence: RemoteSessionInfo[] | null): void => {
+    const peer = edge.config.peer.machineId, now = ports.clock.now(), before = state(edge), roster = presence ?? before.roster;
     ports.store.updateEdgeState(peer, edge.config.edgeEpoch, old => ({ ...old, status: "live", outageSince: null, reason: null,
-      lastSuccess: now, failures: 0, roster: presence.map(entry => ({ ...entry })) }));
-    if (before.status !== "live" || JSON.stringify(before.roster) !== JSON.stringify(presence)) wakeRelays(edge, [...before.roster, ...presence]);
+      lastSuccess: now, failures: 0, roster: roster.map(entry => ({ ...entry })) }));
+    if (before.status !== "live" || JSON.stringify(before.roster) !== JSON.stringify(roster)) wakeRelays(edge, [...before.roster, ...roster]);
     edge.retryCancel?.(); edge.retryCancel = null;
     for (const waiter of [...edge.admissionWaiters]) waiter.finish(true);
     publish(); armLiveness(edge);
@@ -353,11 +353,11 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     // also resume retained work; that push's reply cannot carry payload frames.
     if ((before.status === "down" || before.status === "recovering") && ports.store.hasPending(peer)) bridge.wake(peer);
   };
-  const apply = (edge: EdgeRuntime, incoming: AuthenticatedIntercomExchange, missingOrigins: readonly IntercomWireMissingOriginFrame[] = []): { acks: IntercomWireAck[]; receiptAcks: IntercomReceiptFrame[]; refusals: IntercomWireRefusal[] } => {
+  const apply = (edge: EdgeRuntime, incoming: AuthenticatedIntercomExchange, acceptPresence: boolean, missingOrigins: readonly IntercomWireMissingOriginFrame[] = []): { acks: IntercomWireAck[]; receiptAcks: IntercomReceiptFrame[]; refusals: IntercomWireRefusal[] } => {
     const peer = edge.config.peer.machineId, acks: IntercomWireAck[] = [], receiptAcks: IntercomReceiptFrame[] = [], refusals: IntercomWireRefusal[] = [];
     if (incoming.presence.some(entry => entry.machineId === ports.machineId || !(ports.authorizePresence?.(peer, entry) ?? entry.machineId === peer))) return bad("invalid-presence");
     ports.store.openHop(peer, edge.config.edgeEpoch);
-    const presence = acceptedPresence(edge, incoming.presence);
+    const presence = acceptPresence ? acceptedPresence(edge, incoming.presence) : null;
     for (const ack of incoming.acknowledgements) {
       ports.store.acknowledge({ peer, edgeEpoch: edge.config.edgeEpoch, ...ack }); edge.pollSent.delete(ack.identity.id); edge.reportedRefusals.delete(ack.identity.id);
     }
@@ -721,8 +721,10 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
         });
         if (stopped || active.abort.signal.aborted || edge.outgoing.get(channel) !== active || state(edge).outbound[channel] !== generation.generation) return false;
         edge.versionReady = true;
-        const applied = apply(edge, response.exchange, response.missingOrigins);
-        if (handshaking && ports.store.hasPending(peer)) edge.pushDirty = true;
+        // Poll responses and push requests each have one ordered writer for presence.
+        const applied = apply(edge, response.exchange, channel === "poll", response.missingOrigins);
+        // The peer learns our initial roster from a push, not the handshake poll.
+        if (handshaking && (channel === "poll" || ports.store.hasPending(peer))) edge.pushDirty = true;
         for (const ack of input.acknowledgements) edge.acknowledgements.delete(ackKey(ack));
         for (const ack of input.receiptAcknowledgements ?? []) edge.receiptAcknowledgements.delete(receiptKey(ack));
         for (const refusal of input.refusals ?? []) edge.refusals.delete(refusalKey(refusal));
@@ -1025,7 +1027,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       edge.incoming.set(channel, active); edge.incomingAll.add(active);
       try {
         sweep();
-        const applied = apply(edge, incoming, input.missingOrigins);
+        const applied = apply(edge, incoming, channel === "push", input.missingOrigins);
         const hopBudgetMs = channel === "poll" ? 45_000 : 20_000;
         const makeReply = () => build(edge, incoming.generation,
           [...new Map([...edge.acknowledgements.values(), ...applied.acks].map(ack => [ackKey(ack), ack])).values()],

@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { readFileSync, appendFileSync, writeFileSync, chmodSync, existsSync, mkdirSync, readdirSync, symlinkSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, appendFileSync, writeFileSync, chmodSync, existsSync, mkdirSync, readdirSync, symlinkSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { replicaPath } from "@spider/db-core/roam/catalog";
 import { mapWorkspace } from "@spider/db-core/roam/repo-map";
@@ -340,10 +340,20 @@ it("restart after source deletion reconciles the committed import", async () => 
 }, 5000);
 it.each(["pending", "split", "accept"] as const)("a pull resumes without lost or repeated changes when mapping publishes at %s", async point => {
   const f = fixture(); f.seed();
-  expect((await service(f).sync()).every(row => row.code === 0)).toBe(true);
-  expect(f.calls).toEqual([]);
-  f.seed(BOX, "session-b", "second");
   const remote = f.remotes.get(BOX)!, key = remote.worktree.storeKey;
+  // Prepare an already-replicated cursor without exercising artifact transport in setup.
+  const copy = async (from: typeof f.stores, to: typeof f.stores, store: Parameters<typeof f.stores.export>[0], id: string) => {
+    const batch = await from.export(store, 0, f.config.limits.targetBatchBytes, id);
+    try { await to.accept(store, batch); } finally { unlinkSync(batch.file); }
+  };
+  await copy(remote.stores, f.stores, key, "initial-pull");
+  expect(f.stores.cursor(key, BOX, remote.stores.head(key).stream)).toBe(2);
+  expect(assignInitialHome(f.global.db, "session-a", BOX, HUB)).toMatchObject({ machineId: BOX, epoch: 1 });
+  await copy(f.stores, remote.stores, "global", "initial-home");
+  await copy(f.stores, remote.stores, key, "initial-return");
+  expect(f.calls).toEqual([]);
+  expect((await service(f).sync()).every(row => row.code === 0)).toBe(true);
+  f.seed(BOX, "session-b", "second");
   const checkout = join(f.global.root, "mapped-pull"); mkdirSync(checkout, { mode: 0o700 });
   const map = () => mapWorkspace(f.global.db, { repoKey: "fixture-repo", workspaceId: "workspace-0", path: checkout });
   let changed = false;
@@ -363,10 +373,15 @@ it.each(["pending", "split", "accept"] as const)("a pull resumes without lost or
       if (operation.kind === "split" && armed && !changed) { changed = true; await map(); }
     });
   }
-  await service(f).sync();
-  if (point === "pending") await map();
+  const interrupted = await service(f).sync();
+  expect(changed).toBe(true);
+  if (point === "pending") {
+    expect(interrupted.some(row => row.code === 3)).toBe(true);
+    await map();
+  }
   expect((await service(f).sync()).every(row => row.code === 0)).toBe(true);
   const db = f.stores.openStore(key).db;
+  expect(db.raw.name).toBe(join(checkout, ".spider", "project.db"));
   expect(db.prepare("SELECT uuid,text FROM todos ORDER BY uuid").all()).toEqual([
     { uuid: "todo-session-a", text: "portable" }, { uuid: "todo-session-b", text: "second" },
   ]);

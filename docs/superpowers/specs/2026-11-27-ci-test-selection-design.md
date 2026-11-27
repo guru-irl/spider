@@ -70,6 +70,7 @@ same one. The steps:
    | Selection code and policy | the selector's tests, plus the guard tests |
    | Files that bundle readers read | the tests in the existing consumer rules that read, hash or pack bundles |
    | Any file in a package whose bundle a test ran without a source map | that test; the map lists such bundles per test |
+   | A test whose recorded result is failed or skipped | always selected, because its record may be partial |
 
 3. **No budget.** Nothing is deferred to main.
 

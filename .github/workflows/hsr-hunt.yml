@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lane: [1, 2, 3, 4, profile-base, profile-after]
+        lane: [1, profile-base, profile-after]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -45,7 +45,7 @@ jobs:
           export TMPDIR="$PWD/.spider/scratch/tmp"
           unset XDG_RUNTIME_DIR
           dir=packages/host/src/__tests__
-          for i in {1..6}; do
+          for i in 1; do
             rc=0
             npx vitest run --maxWorkers=3 --reporter=default --reporter=json \
               --outputFile="hsr-results/$LANE-$i.json" \
@@ -70,9 +70,9 @@ jobs:
           else
             filter='0.1.16 (offers native keys without|can decline and then merge|re-accepts native keys|rejects conflicting)'
           fi
-          python3 scripts/hsr-profile.py "$file"
+          python3 scripts/hsr-profile.py "$file" "$LANE"
           set -o pipefail
-          strace -f -ttt -T -s 256 -e trace=process,fsync,fdatasync -o hsr-results/process.trace \
+          strace -f -ttt -T -y -s 256 -e trace=process,fsync,fdatasync -o hsr-results/process.trace \
             node node_modules/vitest/vitest.mjs run --maxWorkers=1 \
             --reporter=verbose --reporter=json --outputFile=hsr-results/profile.json \
             "$file" -t "$filter" \

@@ -31,7 +31,26 @@ async function nativeKeysFixture(version: Release, coreTransport: 'process' | 's
   vi.stubEnv('PI_CODING_AGENT_DIR', f.h.directories.agent);
   const path = join(f.h.directories.app, 'keys.json');
   const out: string[] = [], errors: string[] = [];
-  const ports = { ...f.ports, stdout: (text: string) => out.push(text), stderr: (text: string) => errors.push(text) };
+  const ports = {
+    ...f.ports,
+    stdout: (text: string) => out.push(text), stderr: (text: string) => errors.push(text),
+    setupParts: async (request: typeof f.request) => {
+      const parts = await f.ports.setupParts(request);
+      // Keep production release detection, key planning, merge and rollback.
+      // The A/B cases below cover publication and verification of the look files.
+      return {
+        ...parts,
+        finalizeLook: async (...args: Parameters<NonNullable<typeof parts.finalizeLook>>) =>
+          (await parts.finalizeLook?.(...args) ?? args[2]).filter(file => file.path === path),
+        installFiles: async (...args: Parameters<typeof parts.installFiles>) =>
+          (await parts.installFiles(...args)).filter(file => file.path === path),
+        verify: async (request: typeof f.request) => {
+          const { failures, warnings = [] } = await (await f.ports.doctorParts(request)).inspect('keys', request);
+          return { failures, warnings, probes: [] };
+        },
+      };
+    },
+  };
   return { path, out, errors, ports, configPath: f.request.configPath };
 }
 

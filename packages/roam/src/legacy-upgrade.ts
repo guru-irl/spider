@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstatSync, realpathSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { storeScope } from "@spider/db-core/roam/codec";
 import { FENCE_MACHINE, FENCE_STREAM, FENCE_TARGET } from "@spider/db-core/roam/apply";
@@ -39,6 +39,32 @@ async function pendingHandoffs(root: string) {
         process.platform !== "win32" && (stat.mode & 0o022) !== 0) throw new Error("Unsafe Herdr directory");
   }
   return [];
+}
+function sourceStamp(file: string): string {
+  try {
+    const stat = lstatSync(file, { bigint: true });
+    const stamp = [stat.dev, stat.ino, stat.mode, stat.uid, stat.nlink, stat.size, stat.mtimeNs, stat.ctimeNs].join(":");
+    if (!stat.isFile() || !file.endsWith("-shm")) return stamp;
+    const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const opened = fstatSync(fd, { bigint: true });
+      if (opened.dev !== stat.dev || opened.ino !== stat.ino) throw new Error("Changed inventory source");
+      const bytes = Buffer.alloc(96), length = readSync(fd, bytes, 0, bytes.length, 0);
+      return `${stamp}:${createHash("sha256").update(bytes.subarray(0, length)).digest("hex")}`;
+    } finally { closeSync(fd); }
+  } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing"; throw error; }
+}
+function treeStamp(root: string): string {
+  const entries: string[] = [];
+  const visit = (file: string): void => {
+    if (entries.length >= 100_000) throw new Error("Inventory directory too large");
+    entries.push(`${file}:${sourceStamp(file)}`);
+    let stat;
+    try { stat = lstatSync(file); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+    if (stat.isDirectory() && !stat.isSymbolicLink()) for (const name of readdirSync(file).sort()) visit(join(file, name));
+  };
+  visit(root);
+  return createHash("sha256").update(entries.join("\n")).digest("hex");
 }
 function placementContainsCheckout(checkout: string, cwd: string): boolean {
   const child = relative(checkout, cwd);
@@ -86,6 +112,14 @@ async function probeProcess(pid: number): Promise<ProcessProbe> {
 export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeInventory> {
   try {
     const findings: string[] = [], unknown: string[] = [];
+    const watched = new Map<string, string>();
+    const watch = (file: string) => { if (!watched.has(file)) watched.set(file, sourceStamp(file)); };
+    const watchDb = (file: string) => { watch(file); watch(`${file}-wal`); watch(`${file}-shm`); };
+    const snapshot = (file: string) => { watchDb(file); return openDiagnosticSnapshot(file); };
+    const trees = [join(root, "roam", "intents"), join(root, "roam", "stores"), join(root, "herdr", "id-locks"), join(root, "herdr", "leases")];
+    const initialTrees = trees.map(treeStamp);
+    watch(join(root, "roam", "config.json")); watch(join(root, "roam", "machine.json"));
+    watchDb(join(root, "roam", "journal.db")); watchDb(join(root, "spider.db"));
     const journalKinds = new Map<string, string>();
     const activeFreezes = new Set<string>();
     const v0Maps = new Set<string>();
@@ -93,7 +127,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
     const configFile = join(root, "roam", "config.json"), identityFile = join(root, "roam", "machine.json");
     const configured = present(configFile), config = configured ? readLocalIdentity(root) : null;
     if (!configured && present(identityFile)) throw new Error("Missing roaming configuration");
-    const db = openDiagnosticSnapshot(join(root, "roam", "journal.db"));
+    const db = snapshot(join(root, "roam", "journal.db"));
     if (db) try {
       const operations = db.prepare("SELECT operation_id,machine_id,kind,result_json FROM roam_operations WHERE kind IN ('move','move-session','move-abort-cleanup','exact-session-launch') ORDER BY operation_id")
         .all() as Array<{ operation_id: unknown; machine_id: unknown; kind: string; result_json: unknown }>;
@@ -197,7 +231,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
         }
       }
     } finally { db.close(); }
-    const global = openDiagnosticSnapshot(join(root, "spider.db"));
+    const global = snapshot(join(root, "spider.db"));
     if (!global && config) throw new Error("Missing global store");
     if (global) try {
       const meta = global.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id?: unknown; store_key?: unknown } | undefined;
@@ -243,13 +277,13 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
         else findings.push(`map store ${safeId(map.store_key)}`);
       }
       let storeProblem = false;
-      const storeOptions = { globalPath: join(root, "spider.db"), open: openDiagnosticSnapshot,
+      const storeOptions = { globalPath: join(root, "spider.db"), open: snapshot,
         onProblem: () => { storeProblem = true; }, onIncomplete: () => { storeProblem = true; } };
       for (const key of listStoreKeys(global, storeOptions)) {
         if (key !== "global") {
           const file = join(root, "roam", "stores", `${createHash("sha256").update(key).digest("hex")}.db`);
           if (present(file)) {
-            const replica = openRoamPathReadOnly(file, openDiagnosticSnapshot);
+            const replica = openRoamPathReadOnly(file, snapshot);
             if (!replica) throw new Error("Missing replica");
             try {
               const identity = replica.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id?: unknown; store_key?: unknown } | undefined;
@@ -335,6 +369,8 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
       }
       findings.push(label);
     }
+    if ([...watched].some(([file, stamp]) => sourceStamp(file) !== stamp) || trees.some((tree, index) => treeStamp(tree) !== initialTrees[index]))
+      unknown.unshift("local evidence changed during inspection");
     return unknown.length ? { status: "legacy-upgrade-unverified", findings: [...unknown, ...findings] }
       : findings.length ? { status: "legacy-upgrade-blocked", findings } : { status: "legacy-upgrade-ready", findings: [] };
   } catch {

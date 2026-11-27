@@ -12,7 +12,7 @@ const b = 'packages/b/src/b.test.ts';
 const c = 'packages/c/src/c.test.ts';
 const shared = 'packages/shared/src/shared.ts';
 const own = 'packages/b/src/b.ts';
-const record = (reads, result = 'passed', ms = 10, unresolved = []) => ({ reads, result, ms, unresolved });
+const record = (reads, result = 'passed', ms = 10, unresolved = [], ranBundle = unresolved.length > 0) => ({ reads, result, ms, unresolved, ranBundle });
 const shard = (records, extra = {}) => ({
   reportedFiles: Object.keys(records),
   records: Object.fromEntries(Object.entries(records).map(([file, value], i) => [file, { workerPids: [123 + i], ...value }])),
@@ -38,9 +38,9 @@ test('indexes deduplicated source paths across shards in stable order', () => {
 test('keeps failure and skip results with their reported durations', () => {
   const { map } = build([shard({ [a]: record([], 'passed', 15), [b]: record([], 'failed', 47), [c]: record([], 'skipped', 0) })]);
   assert.deepEqual(map.tests, {
-    [a]: { reads: [], unresolved: [], ms: 15, result: 'passed' },
-    [b]: { reads: [], unresolved: [], ms: 47, result: 'failed' },
-    [c]: { reads: [], unresolved: [], ms: 0, result: 'skipped' },
+    [a]: { reads: [], unresolved: [], ranBundle: false, ms: 15, result: 'passed' },
+    [b]: { reads: [], unresolved: [], ranBundle: false, ms: 47, result: 'failed' },
+    [c]: { reads: [], unresolved: [], ranBundle: false, ms: 0, result: 'skipped' },
   });
 });
 
@@ -49,6 +49,12 @@ test('publishes the unresolved bundles of the tests that ran them', () => {
   const { map } = build([shard({ [a]: record([shared], 'passed', 10, unresolved), [b]: record([]) })]);
   assert.deepEqual(map.tests[a].unresolved, unresolved);
   assert.deepEqual(map.tests[b].unresolved, []);
+});
+
+test('distinguishes an executor with a mapped bundle from a direct source reader', () => {
+  const { map } = build([shard({ [a]: record([shared], 'passed', 10, [], true), [b]: record([shared]) })]);
+  assert.equal(map.tests[a].ranBundle, true);
+  assert.equal(map.tests[b].ranBundle, false);
 });
 
 test('aggregates unresolved observation groups across shards', () => {

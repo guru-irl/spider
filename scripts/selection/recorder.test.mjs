@@ -61,7 +61,7 @@ test('unions direct reads from a fork, child process, and worker thread for the 
       { test: other, worker: true, pid: 5, paths: ['src/other.ts'] },
     ],
   });
-  assert.deepEqual(records[id], { reads: ['src/child.ts', 'src/main.ts', 'src/thread.ts'], unresolved: [], workerPids: [3], ms: 25, result: 'passed' });
+  assert.deepEqual(records[id], { reads: ['src/child.ts', 'src/main.ts', 'src/thread.ts'], unresolved: [], ranBundle: false, workerPids: [3], ms: 25, result: 'passed' });
   assert.deepEqual(records[other].reads, ['src/other.ts']);
 });
 
@@ -132,6 +132,7 @@ test('does not mark a bundle unresolved when its hash matches an archived map', 
   });
   assert.deepEqual(records[id].unresolved, []);
   assert.equal(stats.unresolvedBundles, 0);
+  assert.equal(records[id].ranBundle, true);
 });
 
 test('keeps only repository source paths', t => {

@@ -26,16 +26,14 @@ it('keeps native stories in full CI instead of extra PR workflows', () => {
   expect(workflow.on).toHaveProperty('workflow_dispatch');
   const ci = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
   expect(ci.jobs.stories.uses).toBe('./.github/workflows/herdr-stories.yml');
-  const applies = (event: string, full = false) => Function('github', 'inputs', `return (${ci.jobs.stories.if});`)({ event_name: event }, { force_full: full });
-  expect(applies('pull_request')).toBe(false);
-  expect(applies('push')).toBe(true);
-  expect(applies('workflow_dispatch', true)).toBe(true);
+  expect(ci.jobs.stories.if).toBeUndefined();
+  expect(ci.on).not.toHaveProperty('pull_request');
   expect(ci.jobs.checks.needs).toContain('stories');
   const prWorkflows = readdirSync('.github/workflows').filter(name => name.endsWith('.yml')).filter(name => {
     const events = parse(readFileSync(`.github/workflows/${name}`, 'utf8')).on;
     return 'pull_request' in events || 'pull_request_target' in events;
   });
-  expect(prWorkflows).toEqual(['ci.yml']);
+  expect(prWorkflows).toEqual(['pr.yml']);
 });
 const upstream = ['broker/client-liveness.test.ts', 'broker/client.test.ts', 'broker/extension.test.ts',
   'broker/framing.test.ts', 'broker/paths.test.ts', 'broker/runtime-claim.test.ts', 'broker/spawn.test.ts',
@@ -57,16 +55,13 @@ it('all fifteen upstream tests are present and selected by the CI Vitest configu
   const workflow = readFileSync(resolve(root, '.github/workflows/ci.yml'), 'utf8');
   const jobs = parse(workflow).jobs;
   const full = jobs.test;
-  expect(full.if).toContain("github.event_name != 'pull_request'");
+  expect(full.if).toBeUndefined();
   const command = full.steps.find((step: { name?: string }) => step.name === 'Test shard').run;
   const args = command.split('npx vitest run ')[1].replace(/\$\{\{[^}]+\}\}/g, 'shard').trim().split(/\s+/);
   // Main still discovers all upstream files, not a PR selection or test-name filter.
   expect(args.every((arg: string) => /^--(?:shard|maxWorkers|reporter|outputFile)=/.test(arg))).toBe(true);
-  const pr = jobs['pr-test'];
-  expect(pr.strategy.matrix.shard).toEqual([1, 2]);
-  expect(pr.steps.some((step: { run?: string }) => step.run?.includes('node scripts/select-tests.mjs'))).toBe(true);
-  expect(pr.steps.some((step: { run?: string }) => step.run?.includes('node scripts/run-selected-tests.mjs'))).toBe(true);
-  expect(jobs.checks.name).toBe('typecheck · test · build');
-  expect(jobs.checks.needs).toContain('pr-test');
-  expect(jobs).not.toHaveProperty('required');
+  const pr = parse(readFileSync(resolve(root, '.github/workflows/pr.yml'), 'utf8')).jobs;
+  expect(pr.tests.strategy.matrix.group).toEqual([1, 2, 3, 4]);
+  expect(pr.checks.name).toBe('typecheck · test · build');
+  expect(pr.checks.needs).toContain('tests');
 }, 5000);

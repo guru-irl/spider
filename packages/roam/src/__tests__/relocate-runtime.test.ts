@@ -10,7 +10,7 @@ import { createReplica } from "@spider/db-core/testutil";
 import { recordLocation } from "@spider/db-core/roam/catalog";
 import * as seedApi from "@spider/db-core/roam/seed";
 import { writeLocal } from "@spider/db-core/roam/local-state";
-import type { RelocateAdapterOptions, RunningHome, SessionId, SessionPlacement } from "../relocate/types";
+import type { RelocateAdapterOptions, RelocateHome, RunningHome, SessionId, SessionPlacement } from "../relocate/types";
 import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import { openJournal } from "../journal";
 import { createLocalRuntime, createLocalIO, localLaunchEnvironment, seedLocalPlacement, type LocalIO } from "../relocate/local";
@@ -23,7 +23,7 @@ function runtimeFixture() {
  const db = createReplica("global", box);fixtures.push(db);
  const home: RunningHome = {sessionId:id,machineId:box,epoch:3,state:"running",destination:null,moveId:"v0-run" as RunningHome["moveId"],updatedAt:1};
  const placement: SessionPlacement = {sessionId:id,machineId:box,repoKey:"repo",workspaceId:"workspace",repository:"/mapped",cwd:"/mapped/sub",file:"/sessions/exact.jsonl",stores:["global"],historyMachine:hub};
- let current: typeof home | null = home;
+ let current: RelocateHome | null = home;
  let lock: Awaited<ReturnType<LocalIO["inspect"]>> = null;
  let probe: Awaited<ReturnType<LocalIO["probe"]>> = {kind:"absent"};
  let terminals: Awaited<ReturnType<LocalIO["terminals"]>> = [];
@@ -251,6 +251,22 @@ describe("v0 local runtime",()=>{
   expect(f.signalled).toEqual([]);
   expect(await local.owner(id)).toEqual({kind:"live",pid:42,terminal:"core:t"});
  });
+ it.each(["moved to the Mac", "stopped", "missing"] as const)("stops the returning box pi with a malformed placement when its home is %s", async state => {
+  const f = runtimeFixture(), local = createLocalRuntime(f.options,f.io);
+  writeLocal(f.options.globalDb,"relocate-managed",id,{sessionId:id,file:"/old/s.jsonl"});
+  f.setLock({identity:{pid:42,startIdentity:"pi-42"},bootId:"boot",pendingOperationId:null,pendingFile:null,pendingCoreId:null,operationId:null});
+  f.setProbe({kind:"live",startIdentity:"pi-42",pi:true});
+  f.setTerminals([{terminal:"core:t",state:"live",pid:42,owned:true}]);
+  const signal = f.io.signal;
+  f.io.signal = async pid => { await signal(pid); f.setLock(null); f.setProbe({kind:"absent"}); f.setTerminals([]); };
+  const loop = createHomeSupervisor({...local,machineId:box,clock:f.options.clock,report() {}}, () => {});
+  await loop.tick();
+  expect(f.signalled).toEqual([]);
+  f.setHome(state === "missing" ? null : state === "stopped" ? {...f.home,state:"stopped",epoch:4} : {...f.home,machineId:hub,epoch:4});
+  await loop.tick();
+  expect(f.signalled).toEqual([42]);
+  expect(f.launches).toEqual([]);
+ });
  it("reports one malformed placement and still restarts the healthy session", async () => {
   const f = runtimeFixture(), local = createLocalRuntime(f.options,f.io);
   writeLocal(f.options.globalDb,"relocate-managed",id,f.placement);
@@ -260,6 +276,7 @@ describe("v0 local runtime",()=>{
   expect(f.launches).toHaveLength(1);
   const broken = "old-placement" as SessionId;
   writeLocal(f.options.globalDb,"relocate-managed",broken,{sessionId:broken,file:"/old/s.jsonl"});
+  f.options.homes.list = async () => [f.home,{...f.home,sessionId:broken}];
   // The home of the healthy session still authorizes a restart. The malformed
   // other placement must neither put that session in the stop path nor start it.
   await loop.tick();

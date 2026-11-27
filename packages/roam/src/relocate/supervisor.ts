@@ -46,11 +46,11 @@ export function createHomeSupervisor(ports: HomeSupervisorPorts, warn: (line: st
       managed.add(entry.sessionId);
       seen.add(entry.sessionId);
       const { home, placement, sessionId, placementRefusal } = entry;
-      if (placementRefusal) { report(sessionId,placementRefusal); continue; }
       if (!home || home.machineId !== ports.machineId || home.state !== "running") {
         await stopSession(sessionId);
         continue;
       }
+      if (placementRefusal) { report(sessionId,placementRefusal); continue; }
       try {
         if (!placement) { report(sessionId, { code: "destination-copy-missing", message: "The local session copy is missing.", nextStep: "Restore a local copy before starting this session." }); continue; }
         const owner = await ports.owner(sessionId);

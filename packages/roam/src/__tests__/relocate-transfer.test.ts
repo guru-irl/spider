@@ -13,6 +13,7 @@ import { openStaging } from "../staging";
 import type { ArtifactManifest } from "../contracts";
 import { captureLocalSession, installLocalSession, resolveVerifiedArtifact } from "../relocate/transfer";
 import { handleRelocateAgent } from "../relocate/remote";
+import { createRelocateAdapters } from "../relocate/adapters";
 import type { RelocateAdapterOptions, RelocateId, RelocatePlan, RunningHome } from "../relocate/types";
 import { stopLocalSession, type LocalIO } from "../relocate/local";
 import type { SessionId } from "../relocate/types";
@@ -159,7 +160,8 @@ describe("v0 real transfer",()=>{
   const exited=once(child,"exit");
   try {
    expect((await Promise.race([once(child,"message"),exited]))[0]).toBe("ready");
-   expect(await installLocalSession(f.plan,captured.value,f.home,f.destination)).toMatchObject({ok:false,refusal:{code:"install-failed",message:expect.stringContaining("occupied or uncertain")}});
+   const adapters=createRelocateAdapters(f.destination);
+   expect(await adapters.ports.installDestination(f.plan,captured.value,f.home)).toMatchObject({ok:false,refusal:{code:"install-failed",message:expect.stringContaining("occupied or uncertain")}});
    expect(child.exitCode).toBeNull();
    expect(readFileSync(join(f.checkout,"file.txt"),"utf8")).toBe("base\n");
   } finally {

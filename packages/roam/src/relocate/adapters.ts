@@ -171,7 +171,7 @@ export function createRelocateAdapters(options: RelocateAdapterOptions): Relocat
       }catch{return refusal("transfer-failed","The destination rows and artifacts could not be pushed.");}
     },
     async installDestination(plan,captured,home):Promise<V0Result<InstalledSession>>{
-      if(home.machineId===options.config.machineId)return installLocalSession(plan,captured,home,options,undefined,()=>local.owner(home.sessionId));
+      if(home.machineId===options.config.machineId)return installLocalSession(plan,captured,home,options);
       try{const result=await rpc(home.machineId,{version:1,kind:"install",plan,captured,home});if(!result.ok)return result;const installed=object(result.value.installed);parsePlacement(installed.placement);object(installed.session);return {ok:true,value:installed as unknown as InstalledSession};}catch{return refusal("install-failed","The destination install acknowledgement is unavailable.");}
     },
   };

@@ -167,7 +167,7 @@ export function storyWorkerEnvironment(fenced, caller, tier) {
 }
 export function storyWorkers(options) {
   if (options.ids?.some(id => paneStoryIds.includes(id))) return 1;
-  if (options.ids?.some(id => ['R03', 'R04', 'R05', 'R06', 'R07', 'R08', 'R10', 'R11', 'R12', 'R13', 'R18', 'R19'].includes(id))) return 1;
+  if (options.ids?.some(id => ['R03', 'R04', 'R05', 'R06', 'R07', 'R08', 'R10', 'R11', 'R12', 'R13', 'R18', 'R19', 'H-relay-poll'].includes(id))) return 1;
   if (options.ids?.length === 1 && ['R14', 'R14local'].includes(options.ids[0])) return 1;
   return options.tier === 'app' ? 1 : 2;
 }

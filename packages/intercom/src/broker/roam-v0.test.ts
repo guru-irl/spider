@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import net from "node:net";
 import { once } from "node:events";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -175,6 +175,30 @@ describe("private roaming broker", () => {
     return request({ kind: "lookup", scopeId, selector: { by, value } });
   }
 
+  function rawConnection(allowHalfOpen = false) {
+    const socket = net.connect({ path: getBrokerSocketPath(), allowHalfOpen });
+    const frames: Record<string, unknown>[] = [];
+    socket.on("error", () => {});
+    socket.on("data", createMessageReader(frame => frames.push(frame as Record<string, unknown>), error => socket.destroy(error)));
+    const send = (frame: Record<string, unknown>) => writeMessage(socket, frame);
+    const take = (type: string) => vi.waitFor(() => {
+      const index = frames.findIndex(frame => frame.type === type);
+      if (index < 0) throw new Error(`Did not receive ${type}`);
+      return frames.splice(index, 1)[0];
+    });
+    return {
+      socket, send, take,
+      async negotiate() { send({ type: "health", requestId: "raw-health" }); await take("health_ok"); },
+      async register(id: string, persistentId: string) {
+        send({ type: "register", sessionId: id, scopeId: "scope-1", session: {
+          address: { sessionId: persistentId, scopeId: "scope-1" }, name: "raw session", pid: process.pid,
+          cwd: "/fixture", model: "fixture", startedAt: 1, lastActivity: 1, v0HomeEpoch: 3,
+        } });
+        await take("registered");
+      },
+    };
+  }
+
   async function fakeBroker(features: string[], onRequest: (socket: net.Socket, frame: Record<string, unknown>) => void, healthDelayMs = 0) {
     const dir = mkdtempSync(join(testTmpDir(), "f-"));
     mkdirSync(join(dir, "intercom"), { mode: 0o700 });
@@ -345,9 +369,67 @@ describe("private roaming broker", () => {
 
     const wrong = await intruder.send("sender", { text: "forged", replyTo: "question-1", messageId: "bad-reply" });
     expect(wrong).toMatchObject({ delivered: false, code: "E_REPLY_TARGET" });
+    expect(await ben.send("someone-else", { text: "mismatched to", replyTo: "question-1", messageId: "wrong-to-reply" }))
+      .toMatchObject({ delivered: false, code: "E_REPLY_TARGET" });
     const answer = await ben.send("sender", { text: "answer", replyTo: "question-1", messageId: "reply-1" });
     expect(answer).toMatchObject({ delivered: true, delivery: "socket_delivered" });
     expect(await pending).toEqual({ kind: "replied", id: "question-1", replyId: "reply-1", text: "answer" });
+  });
+
+  it("binds the reply to the recipient's original socket and epoch", async () => {
+    const original = rawConnection(true);
+    const abort = new AbortController();
+    let pending: ReturnType<typeof requestV0Broker> | undefined;
+    try {
+      await original.register("stable-b", "b");
+      const target = ((await lookup("scope-1", "id", "b")).targets as V0Endpoint[])[0];
+      const question = { ...message, id: "socket-bound-question" };
+      pending = requestV0Broker(getAgentDirPath(), { kind: "ask", from: origin, target, message: question, timeoutMs: 2000 }, abort.signal);
+      expect(await original.take("message")).toMatchObject({ message: { id: question.id } });
+      const replacement = await register("stable-b", "b", "raw session", "scope-1", 3);
+      await vi.waitFor(() => expect(original.socket.readableEnded).toBe(true));
+      expect(original.socket.writable).toBe(true); // The replaced socket has not closed.
+      expect(await lookup("scope-1", "id", "b")).toMatchObject({ targets: [{ endpointEpoch: expect.not.stringMatching(target.endpointEpoch) }] });
+      expect(await replacement.send("sender", { text: "replacement", replyTo: question.id, messageId: "replacement-reply" }))
+        .toMatchObject({ delivered: false, code: "E_REPLY_TARGET", reason: "Reply target does not match the pending ask" });
+      original.socket.destroy();
+      expect(await pending).toEqual({ kind: "no_reply", id: question.id });
+    } finally { abort.abort(); original.socket.destroy(); await pending; }
+  });
+
+  it("caps a raw ask at nine minutes inside the broker", async () => {
+    const ben = await register("stable-b", "b", "ben", "scope-1", 3);
+    const target = ((await lookup("scope-1", "id", "b")).targets as V0Endpoint[])[0];
+    const raw = rawConnection();
+    try {
+      await raw.negotiate();
+      const inbound = once(ben, "message");
+      const question = { ...message, id: "raw-capped-ask" };
+      raw.send({ ...brokerAsk, target, message: question, timeoutMs: 600_000 });
+      expect((await inbound)[1]).toMatchObject({ id: question.id, remainingMs: 540_000 });
+      expect(await ben.send("sender", { text: "answered", replyTo: question.id, messageId: "raw-capped-reply" }))
+        .toMatchObject({ delivered: true });
+      expect(await raw.take("roam_v0_result")).toMatchObject({ kind: "replied", id: question.id, text: "answered" });
+    } finally { raw.socket.destroy(); }
+  });
+
+  it.each(["reply", "timeout"] as const)("closes the private ask socket after a %s result", async outcome => {
+    const ben = await register("stable-b", "b", "ben", "scope-1", 3);
+    const target = ((await lookup("scope-1", "id", "b")).targets as V0Endpoint[])[0];
+    const raw = rawConnection();
+    try {
+      await raw.negotiate();
+      const inbound = once(ben, "message");
+      const question = { ...message, id: `close-after-${outcome}` };
+      raw.send({ ...brokerAsk, target, message: question, timeoutMs: outcome === "reply" ? 2000 : 100 });
+      expect((await inbound)[1]).toMatchObject({ id: question.id });
+      if (outcome === "reply") {
+        expect(await ben.send("sender", { text: "answered", replyTo: question.id, messageId: "raw-close-reply" }))
+          .toMatchObject({ delivered: true });
+      }
+      expect(await raw.take("roam_v0_result")).toMatchObject({ kind: outcome === "reply" ? "replied" : "no_reply", id: question.id });
+      await vi.waitFor(() => expect(raw.socket.destroyed).toBe(true));
+    } finally { raw.socket.destroy(); }
   });
 
   it("returns no reply on timeout and refuses a late reply", async () => {
@@ -659,7 +741,7 @@ describe("private roaming broker", () => {
     } finally { controller.abort(); await pending; for (const socket of sockets) socket.destroy(); }
   });
 
-  it("refuses excess asks before dispatch rather than evicting accepted asks", async () => {
+  it("refuses excess asks without evicting them and accepts another after a reply", async () => {
     const ben = await register("stable-b", "b", "ben", "scope-1", 3);
     const target = ((await lookup("scope-1", "name", "ben")).targets as V0Endpoint[])[0];
     const controller = new AbortController();
@@ -676,6 +758,12 @@ describe("private roaming broker", () => {
         .toEqual({ kind: "refused", code: "unreachable" });
       await ben.listSessions();
       expect(inbox).toEqual([]);
+      expect(await ben.send("sender", { text: "answer", replyTo: "capacity-0", messageId: "capacity-reply" })).toMatchObject({ delivered: true });
+      expect(await pending[0]).toMatchObject({ kind: "replied", id: "capacity-0" });
+      const next = once(ben, "message");
+      pending.push(requestV0Broker(getAgentDirPath(), { kind: "ask", from: origin, target,
+        message: { ...message, id: "capacity-reused" }, timeoutMs: 2000 }, controller.signal));
+      expect((await next)[1]).toMatchObject({ id: "capacity-reused" });
     } finally { controller.abort(); await Promise.all(pending); }
   });
 
@@ -714,6 +802,45 @@ describe("private roaming broker", () => {
       expect(await charlie.send("collision-alice", { text: "local answer", replyTo: question.id, messageId: "local-collision-reply" })).toMatchObject({ delivered: true });
       expect((await localReply)[1]).toMatchObject({ id: "local-collision-reply", content: { text: "local answer" } });
     } finally { controller.abort(); await pending; }
+  });
+
+  it("refuses a roaming ask that would reuse an already pending local ask ID", async () => {
+    const ben = await register("stable-b", "b", "ben", "scope-1", 3);
+    const alice = await register("stable-a", "a", "alice", "scope-1");
+    const target = ((await lookup("scope-1", "id", "b")).targets as V0Endpoint[])[0];
+    const id = "local-first-collision";
+    const inbound = once(ben, "message");
+    expect(await alice.send("ben", { text: "local question", expectsReply: true, messageId: id })).toMatchObject({ delivered: true });
+    expect((await inbound)[1]).toMatchObject({ id });
+    const duplicates: unknown[] = [];
+    ben.on("message", (...args) => duplicates.push(args));
+    expect(await request({ kind: "ask", from: origin, target, message: { ...message, id }, timeoutMs: 100 }))
+      .toEqual({ kind: "refused", code: "invalid" });
+    await ben.listSessions();
+    expect(duplicates).toEqual([]);
+    const reply = once(alice, "message");
+    expect(await ben.send("alice", { text: "local answer", replyTo: id, messageId: "local-first-reply" })).toMatchObject({ delivered: true });
+    expect((await reply)[1]).toMatchObject({ content: { text: "local answer" }, replyTo: id });
+  });
+
+  it.each(["unnegotiated", "registered", "reused"] as const)("closes a %s roaming request socket before dispatch", async invalid => {
+    const ben = await register("stable-b", "b", "ben", "scope-1", 3);
+    const target = ((await lookup("scope-1", "id", "b")).targets as V0Endpoint[])[0];
+    const inbox: unknown[] = [];
+    ben.on("message", received => inbox.push(received));
+    const raw = rawConnection();
+    try {
+      if (invalid !== "unnegotiated") await raw.negotiate();
+      if (invalid === "registered") await raw.register("stable-a", "a");
+      if (invalid === "reused") {
+        raw.send({ type: "roam_v0", requestId: "first", kind: "lookup", scopeId: "scope-1", selector: { by: "id", value: "b" } });
+        expect(await raw.take("roam_v0_result")).toMatchObject({ requestId: "first", kind: "matches" });
+      }
+      raw.send({ type: "roam_v0", requestId: "invalid-socket", kind: "deliver", from: origin, target, message });
+      await vi.waitFor(() => expect(raw.socket.destroyed).toBe(true));
+      await ben.listSessions();
+      expect(inbox).toEqual([]);
+    } finally { raw.socket.destroy(); }
   });
 
   it("does not echo an oversized invalid request ID in a broker refusal", async () => {

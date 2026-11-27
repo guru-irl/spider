@@ -457,6 +457,7 @@ class IntercomBroker {
     if (result && !ask.socket.destroyed && ask.socket.writable) {
       try { writeMessage(ask.socket, { type: "roam_v0_result", requestId: ask.requestId, ...result }); } catch { /* The requester is gone. */ }
     }
+    if (!ask.socket.destroyed) ask.socket.destroySoon();
   }
 
   private handleV0Reply(socket: net.Socket, from: ConnectedSession, to: string, message: Message): boolean {

@@ -1026,11 +1026,11 @@ it("restores an installed non-sparse checkout when a skip bit was set", async ()
   expect(recovery?.result.workingApplied).toBe(true);
 }, 5000);
 
-it.each(["non-cone", "non-sparse"] as const)("resumes a verified %s checkout without fetching", async kind => {
-  const f = fixture(), base = kind === "non-cone" ? sparseSnapshot(f) : f.snapshot;
-  const snapshot = kind === "non-cone" ? { ...base,
-    worktreeConfig: "[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = false\n", sparse: { enabled: true, cone: false } }
-    : { ...base, worktreeConfig: "[core]\n\tsparseCheckout = false\n" };
+it.each(["non-cone", "defaulted-cone", "non-sparse"] as const)("resumes a verified %s checkout without fetching", async kind => {
+  const f = fixture(), base = kind === "non-sparse" ? f.snapshot : sparseSnapshot(f);
+  const snapshot = kind === "non-sparse" ? { ...base, worktreeConfig: "[core]\n\tsparseCheckout = false\n" }
+    : kind === "defaulted-cone" ? { ...base, worktreeConfig: "[core]\n\tsparseCheckout = true\n", sparse: { enabled: true, cone: null } }
+    : { ...base, worktreeConfig: "[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = false\n", sparse: { enabled: true, cone: false } };
   const { prepareWorkspace } = await interruptedInstalledFixture(f, snapshot);
   const run = f.ports.run;
   f.ports.run = async (cwd, argv, options) => {
@@ -1041,6 +1041,7 @@ it.each(["non-cone", "non-sparse"] as const)("resumes a verified %s checkout wit
   const prepared = await prepareWorkspace(snapshot, f.destination, f.ports);
 
   expect(prepared.previous).toEqual(f.previous);
+  expect(prepared.adjustments).toEqual(kind === "defaulted-cone" ? ["sparse-cone-defaulted-to-false"] : []);
   expect(git(f.destination, "rev-parse", "HEAD")).toBe(snapshot.head);
   expect(git(f.destination, "write-tree")).toBe(snapshot.indexTree);
   expect(tree(f.destination, f.root)).toBe(snapshot.workingTree);

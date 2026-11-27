@@ -85,7 +85,7 @@ async function withHomes<T>(root: string, config: RoamConfig, read: (homes: Retu
   if (!db) throw new Error("Home store unavailable");
   try {
     const meta = db.prepare("SELECT machine_id, store_key FROM roam_meta WHERE id=1").get() as { machine_id?: unknown; store_key?: unknown } | undefined;
-    if (meta?.machine_id !== config.machineId || meta.store_key !== "global") throw new Error("Home store identity mismatch");
+    if (meta?.machine_id !== config.machineId || meta.store_key !== "global" && meta.store_key !== null) throw new Error("Home store identity mismatch");
     return await read(createHomeStore({ db, localMachineId: config.machineId, hubMachineId: config.hubMachineId }));
   } finally { db.close(); }
 }
@@ -225,8 +225,11 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
     const byId = (id: string) => all.find(home => home.sessionId === id) ?? null;
     const senderHome = byId(from.address?.sessionId ?? from.id);
     const exactHome = byId(to);
-    if (exactHome && configured.config.role === "box" && exactHome.machineId === configured.config.hubMachineId)
-      return refused("reply-only");
+    const macQualifiedHome = selector.kind === "qualified" && configured.acceptFrom.some(peer =>
+      peer.machineId === configured.config.hubMachineId && peer.alias.toLowerCase() === selector.machine.toLowerCase())
+      ? byId(selector.value) : null;
+    if (configured.config.role === "box" && (exactHome?.machineId === configured.config.hubMachineId ||
+        macQualifiedHome?.machineId === configured.config.hubMachineId)) return refused("reply-only");
     if (!senderHome) {
       return selector.kind === "qualified" || exactHome && exactHome.machineId !== configured.config.machineId
         ? refused("not-configured") : { kind: "legacy" };

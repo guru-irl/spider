@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { openDbAt } from "@spider/db-core";
 import { parseV0AgentReply, type V0AgentRequest, type V0BrokerOp, type V0Endpoint, type V0Reply, type V0Text } from "@spider/intercom/roam-v0";
-import type { LocalSessionInfo } from "@spider/intercom/types";
+import type { LocalSessionInfo, RemoteSessionInfo } from "@spider/intercom/types";
 import type { CallOptions, Peer, Transport } from "../contracts";
 import { main } from "../cli";
 import { createV0Intercom } from "../relocate/intercom";
@@ -65,6 +65,58 @@ const findBen: V0AgentRequest = {
   from: { machineId: MAC, address: { sessionId: "alice", scopeId: "scope-1" }, name: "alice", homeEpoch: 1, endpointEpoch: "alice-connection" },
   selector: { by: "name", value: "ben" },
 };
+
+function paired() {
+  const sender = machineFixture(MAC), receiver = boxFixture();
+  vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+  configure(sender.root, [peer(BOX, "box", receiver)], []);
+  const inbox: { from: RemoteSessionInfo; message: V0Text }[] = [];
+  const calls: { machineId: string; request: V0AgentRequest; options: CallOptions }[] = [];
+  const state: { fault: "none" | "drop" | "truncated" | "wrong-id" | "wrong-machine"; live: V0Endpoint[]; source: V0Endpoint } = {
+    fault: "none", live: [ben], source: aliceEndpoint,
+  };
+  const remoteBroker = async (_dir: string, op: V0BrokerOp): Promise<V0Reply> => {
+    if (op.kind === "lookup") return { kind: "matches", targets: state.live.filter(endpoint =>
+      endpoint.address.scopeId === op.scopeId && (op.selector.by === "id" ? endpoint.address.sessionId === op.selector.value
+        : endpoint.name?.toLowerCase() === op.selector.value.toLowerCase())) };
+    if (!state.live.some(endpoint => endpoint.endpointEpoch === op.target.endpointEpoch)) return { kind: "refused", code: "changed" };
+    if (op.kind === "ask") return { kind: "no_reply", id: op.message.id };
+    inbox.push({ from: op.from, message: op.message });
+    return { kind: "socket_delivered", id: op.message.id };
+  };
+  const localBroker = async (_dir: string, op: V0BrokerOp): Promise<V0Reply> => {
+    if (op.kind !== "lookup") throw new Error("unexpected local operation");
+    return { kind: "matches", targets: state.source.address.sessionId === op.selector.value ? [state.source] : [] };
+  };
+  const remote = createV0Intercom(receiver.root, { broker: remoteBroker });
+  const transport = (): Pick<Transport, "resolve" | "exec"> => ({
+    resolve: async target => target,
+    async exec(target, argv, options) {
+      expect(argv).toEqual(["roam", "agent", "--v0", "intercom"]);
+      const bytes = options.stdin ?? options.stdinForTimeout?.(options.timeoutMs - 2000);
+      if (!bytes) throw new Error("missing request");
+      const request = JSON.parse(bytes.toString("utf8")) as V0AgentRequest;
+      calls.push({ machineId: target.machineId, request, options });
+      const reply = await remote.handle(request);
+      if (request.kind !== "lookup") {
+        if (state.fault === "drop") throw new Error("lost reply");
+        if (state.fault === "truncated") return Buffer.from('{"version":1');
+        if (state.fault === "wrong-id") return Buffer.from(JSON.stringify({ ...reply, requestId: "wrong" }));
+        if (state.fault === "wrong-machine") return Buffer.from(JSON.stringify({ ...reply, machineId: OTHER }));
+      }
+      return Buffer.from(JSON.stringify(reply));
+    },
+  });
+  const intercom = createV0Intercom(sender.root, { broker: localBroker, transport });
+  return { sender, receiver, inbox, calls, state, intercom };
+}
+
+async function remotePlan(intercom: ReturnType<typeof createV0Intercom>, to = "box/ben", locals = [alice]) {
+  const plan = await intercom.prepare({ to, from: alice, locals });
+  expect(plan.kind).toBe("remote");
+  if (plan.kind !== "remote") throw new Error("expected a remote plan");
+  return plan;
+}
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -171,8 +223,20 @@ describe("roaming v0 intercom", () => {
     const transport = vi.fn((): Pick<Transport, "resolve" | "exec"> => { throw new Error("must not create a route"); });
     const { prepare } = createV0Intercom(root, { transport });
     expect(await prepare({ to: "alice", from, locals: [from] })).toEqual({ kind: "refused", code: "reply-only" });
+    expect(await prepare({ to: "mac/alice", from, locals: [from] })).toEqual({ kind: "refused", code: "reply-only" });
     expect(await prepare({ to: "carl", from, locals: [from] })).toEqual({ kind: "refused", code: "not-configured" });
     expect(transport).not.toHaveBeenCalled();
+  });
+
+  it("uses a global store with an unassigned store key when its machine identity matches", async () => {
+    const f = paired();
+    for (const root of [f.sender.root, f.receiver.root]) {
+      const db = openDbAt(join(root, "spider.db"), "global");
+      try { db.prepare("UPDATE roam_meta SET store_key=NULL WHERE id=1").run(); } finally { db.close(); }
+    }
+    const plan = await remotePlan(f.intercom);
+    expect(await plan.send(message)).toEqual({ kind: "socket_delivered", id: message.id });
+    expect(f.inbox.map(item => item.message)).toEqual([message]);
   });
 
   it("keeps an unhomed caller local and refuses an explicit remote target", async () => {

@@ -279,6 +279,23 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
       let storeProblem = false;
       const storeOptions = { globalPath: join(root, "spider.db"), open: snapshot,
         onProblem: () => { storeProblem = true; }, onIncomplete: () => { storeProblem = true; } };
+      const replicaDir = join(root, "roam", "stores");
+      if (present(replicaDir)) {
+        const stat = lstatSync(replicaDir);
+        if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(replicaDir) !== replicaDir) throw new Error("Unsafe replica directory");
+        for (const name of readdirSync(replicaDir).filter(name => /^[a-f0-9]{64}\.db$/.test(name))) {
+          const replica = openRoamPathReadOnly(join(replicaDir, name), snapshot);
+          if (!replica) { unknown.push("replica unavailable"); continue; }
+          try {
+            const identity = replica.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id?: unknown; store_key?: unknown } | undefined;
+            const key = typeof identity?.store_key === "string" ? identity.store_key : "unknown";
+            let valid = false;
+            try { storeScope(key); valid = true; } catch { /* The recorded identifier is not trustworthy. */ }
+            if (!valid || Number(replica.pragma("user_version")) !== 14 || identity?.machine_id !== meta.machine_id ||
+                name !== `${createHash("sha256").update(key).digest("hex")}.db`) unknown.push(`replica store ${safeId(key)} identity mismatch`);
+          } finally { replica.close(); }
+        }
+      }
       for (const key of listStoreKeys(global, storeOptions)) {
         if (key !== "global") {
           const file = join(root, "roam", "stores", `${createHash("sha256").update(key).digest("hex")}.db`);

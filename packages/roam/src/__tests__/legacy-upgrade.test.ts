@@ -257,6 +257,28 @@ it.each(["checkpoint", "incoming"] as const)("does not classify a %s-owned v0 wo
   ]));
 });
 
+it("reports a pending handoff with an unverifiable owner as unverified", async () => {
+  const f = fixture(), stateRoot = join(f.root, "herdr"), file = join(f.root, "session.jsonl"), pid = 98765;
+  writeFileSync(file, "fixture transcript\n", { mode: 0o600 });
+  const boot = await localBootId(); expect(boot).toBeTruthy();
+  const identity = { pid, startIdentity: "fixture-owner" };
+  const lock = await claimIdLock(stateRoot, "session-unknown", identity,
+    async () => ({ kind: "live" as const, startIdentity: identity.startIdentity }), { bootId: async () => boot });
+  await lock.prepareHandoff("launch-unknown", file, "fixture-core");
+  const realKill = process.kill;
+  const spy = vi.spyOn(process, "kill").mockImplementation((target, signal) => {
+    if (target === pid) throw Object.assign(new Error("unavailable"), { code: "EPERM" });
+    return realKill.call(process, target, signal);
+  });
+  try {
+    const io = { out: vi.fn(), err: vi.fn() };
+    expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+    expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-unverified.*session-unknown.*launch-unknown/) }),
+    ]));
+  } finally { spy.mockRestore(); }
+});
+
 it("doctor blocks live legacy hosting even after its launch reservation is settled", async () => {
   const f = fixture(), stateRoot = join(f.root, "herdr"), file = join(f.root, "live-session.jsonl");
   writeFileSync(file, "fixture transcript\n", { mode: 0o600 });

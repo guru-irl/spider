@@ -51,6 +51,28 @@ function replica(root: string, key: string) {
   return file;
 }
 
+it("reports an invalid home-action cancellation state as unverified", async () => {
+  const f = fixture(), global = openDb(join(f.root, "spider.db"));
+  try { global.prepare("INSERT INTO roam_home_actions(move_id,session_id,expected_epoch,args_digest,cancelled) VALUES (?,?,1,?,2)")
+    .run("corrupt-action", "session-corrupt", "a".repeat(64)); } finally { global.close(); }
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-unverified.*corrupt-action/) }),
+  ]));
+});
+
+it("reports a move reservation whose operation record is missing as unverified", async () => {
+  const f = fixture();
+  f.journal.begin({ id: "missing-slot", kind: "move-session", machineId: hub, expectedEpoch: null, args: { sessionId: "missing-session" } });
+  f.journal.record("missing-slot", "reserved", { moveId: "missing-move", destinationMachine: box });
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-unverified.*missing-slot.*missing-move/) }),
+  ]));
+});
+
 it("reports a lost home-action journal record as unverified without changing evidence", async () => {
   const f = fixture(), globalFile = join(f.root, "spider.db"), journalFile = join(f.root, "roam", "journal.db");
   const global = openDb(globalFile);

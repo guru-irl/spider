@@ -255,6 +255,72 @@ describe("private roaming broker", () => {
     expect(await pending).toEqual({ kind: "replied", id: "question-1", replyId: "reply-1", text: "answer" });
   });
 
+  it("returns no reply on timeout and refuses a late reply", async () => {
+    const ben = await register("stable-b", "b", "ben", "scope-1", 3);
+    const target = ((await lookup("scope-1", "name", "ben")).targets as V0Endpoint[])[0];
+    const inbound = once(ben, "message");
+    const question = { ...message, id: "timeout-question" };
+    const pending = requestV0Broker(getAgentDirPath(), { kind: "ask", from: origin, target, message: question, timeoutMs: 120 });
+    await inbound;
+    expect(await pending).toEqual({ kind: "no_reply", id: "timeout-question" });
+    const late = await ben.send("sender", { text: "late", replyTo: "timeout-question", messageId: "late-reply" });
+    expect(late).toMatchObject({ delivered: false, reason: "The asker is no longer waiting." });
+  });
+
+  it("reports an aborted call as unknown and refuses its late reply", async () => {
+    const ben = await register("stable-b", "b", "ben", "scope-1", 3);
+    const target = ((await lookup("scope-1", "name", "ben")).targets as V0Endpoint[])[0];
+    const inbound = once(ben, "message");
+    const controller = new AbortController();
+    const pending = requestV0Broker(getAgentDirPath(), { kind: "ask", from: origin, target, message: { ...message, id: "aborted-question" }, timeoutMs: 2000 }, controller.signal);
+    await inbound;
+    controller.abort();
+    expect(await pending).toEqual({ kind: "unknown", id: "aborted-question" });
+    const late = await ben.send("sender", { text: "late", replyTo: "aborted-question", messageId: "aborted-reply" });
+    expect(late).toMatchObject({ delivered: false, reason: "The asker is no longer waiting." });
+  });
+
+  it("ends the ask when the recipient disconnects", async () => {
+    const ben = await register("stable-b", "b", "ben", "scope-1", 3);
+    const target = ((await lookup("scope-1", "name", "ben")).targets as V0Endpoint[])[0];
+    const inbound = once(ben, "message");
+    const pending = requestV0Broker(getAgentDirPath(), { kind: "ask", from: origin, target, message: { ...message, id: "closed-question" }, timeoutMs: 2000 });
+    await inbound;
+    await ben.disconnect();
+    expect(await pending).toEqual({ kind: "no_reply", id: "closed-question" });
+    const replacement = await register("stable-b", "b", "ben", "scope-1", 3);
+    const late = await replacement.send("sender", { text: "late", replyTo: "closed-question", messageId: "closed-reply" });
+    expect(late).toMatchObject({ delivered: false, reason: "The asker is no longer waiting." });
+  });
+
+  it("holds the negotiated connection beyond the ordinary registration deadline", async () => {
+    const ben = await register("stable-b", "b", "ben", "scope-1", 3);
+    const target = ((await lookup("scope-1", "name", "ben")).targets as V0Endpoint[])[0];
+    const inbound = once(ben, "message");
+    const pending = requestV0Broker(getAgentDirPath(), { kind: "ask", from: origin, target, message: { ...message, id: "long-question" }, timeoutMs: 2000 });
+    await inbound;
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    expect(await ben.send("sender", { text: "still waiting", replyTo: "long-question", messageId: "long-reply" })).toMatchObject({ delivered: true });
+    expect(await pending).toEqual({ kind: "replied", id: "long-question", replyId: "long-reply", text: "still waiting" });
+  });
+
+  it("refuses duplicate asks and non-text replies without ending the first ask", async () => {
+    const ben = await register("stable-b", "b", "ben", "scope-1", 3);
+    const target = ((await lookup("scope-1", "name", "ben")).targets as V0Endpoint[])[0];
+    const inbound = once(ben, "message");
+    const question = { ...message, id: "unique-question" };
+    const op = { kind: "ask" as const, from: origin, target, message: question, timeoutMs: 2000 };
+    const pending = requestV0Broker(getAgentDirPath(), op);
+    await inbound;
+    expect(await requestV0Broker(getAgentDirPath(), op)).toEqual({ kind: "refused", code: "invalid" });
+    expect(await ben.send("sender", { text: "bad", attachments: [{ type: "snippet", name: "file", content: "data" }], replyTo: "unique-question", messageId: "attachment-reply" }))
+      .toMatchObject({ delivered: false, code: "E_INVALID_MESSAGE" });
+    expect(await ben.send("sender", { text: "x".repeat(262_144), replyTo: "unique-question", messageId: "oversized-reply" }))
+      .toMatchObject({ delivered: false, code: "E_INVALID_MESSAGE" });
+    expect(await ben.send("sender", { text: "ok", replyTo: "unique-question", messageId: "valid-reply" })).toMatchObject({ delivered: true });
+    expect(await pending).toEqual({ kind: "replied", id: "unique-question", replyId: "valid-reply", text: "ok" });
+  });
+
   it("advertises roaming over its private Unix socket", async () => {
     const socket = net.connect(getBrokerSocketPath());
     try {

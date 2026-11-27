@@ -107,6 +107,26 @@ it("doctor blocks an unresolved legacy freeze roster even without a pending move
   ]));
 });
 
+it("doctor reports frozen worktree membership with a missing freeze record as unverified", async () => {
+  const f = fixture(), checkout = join(f.root, "worktree"), projectDir = join(checkout, ".spider"), key = "worktree:fixture-repo:workspace-1";
+  mkdirSync(projectDir, { recursive: true });
+  const project = openDb(join(projectDir, "project.db"));
+  try {
+    migrate(project, "worktree", { machineId: hub, globalRoot: f.root });
+    project.prepare("UPDATE roam_meta SET machine_id=?,store_key=? WHERE id=1").run(hub, key);
+    project.prepare("INSERT INTO roam_sessions(session_id,epoch,state,move_id,freeze_seq) VALUES (?,1,'frozen',?,0)")
+      .run("session-frozen", "lost-move-1");
+  } finally { project.close(); }
+  const global = openDb(join(f.root, "spider.db"));
+  try { global.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES (?,?,?)").run("fixture-repo", "workspace-1", checkout); }
+  finally { global.close(); }
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-unverified.*session-frozen.*worktree:fixture-repo:workspace-1/) }),
+  ]));
+});
+
 it("doctor blocks an interrupted repository map by its store key", async () => {
   const f = fixture(), directory = join(f.root, "repository");
   mkdirSync(directory);

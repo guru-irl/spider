@@ -32,6 +32,7 @@ it.each(['argument', 'effective', 'default'] as const)('prints a shell-safe setu
     await commands.get('herdr-setup')!.handler(selection === 'argument' ? file : '', { cwd, ui: { notify() {} } });
     expect(messages).toEqual([expect.objectContaining({ customType: 'spider.command', content: expect.stringContaining('plain shell') })]);
     const text = (messages[0] as { content: string }).content;
+    expect(messages[0]).toMatchObject({ display: true, details: { args: { command: 'herdr-setup' }, result: { text } } });
     for (const action of ['setup', 'doctor']) {
       const command = text.split('\n').find(line => line.includes(` ${action} --config `))!.split('Run: ')[1];
       const argv = execFileSync('/bin/sh', ['-c', `set -- ${command}; printf '%s\\0' "$@"`], { encoding: 'utf8' }).split('\0').slice(0, -1);

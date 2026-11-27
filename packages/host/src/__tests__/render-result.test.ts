@@ -720,6 +720,31 @@ describe("renderSubagentDone transcript renderer (ctrl+o)", () => {
 
 describe("renderCommandOutput (slash-command transcript message)", () => {
   const th = { fg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => `«${s}»`, bg: (tok: string, s: string) => `[${tok}]${s}` };
+  it.each([
+    ["string", "First line\nSecond line"],
+    ["text blocks", [{ type: "text", text: "First line" }, { type: "text", text: "Second line" }]],
+  ])("renders %s content without details instead of an empty object", (_kind, content) => {
+    const output = renderCommandOutput({ customType: "spider.command", content }, { expanded: true }, {}).render(80).join("\n");
+    expect(output).toContain("spider · command");
+    expect(output).toContain("First line");
+    expect(output).toContain("Second line");
+    expect(output).not.toContain("{}");
+  });
+
+  it.each([
+    ["content-only", { content: "First line\nA long line of words that must wrap across the available width\nThird line\nFourth line\nFifth line\nSixth line\nFinal line" }, "command"],
+    ["named command", { content: "First line\nA long line of words that must wrap across the available width\nThird line\nFourth line\nFifth line\nSixth line\nFinal line", details: { args: { command: "herdr-setup" }, result: { text: "First line\nA long line of words that must wrap across the available width\nThird line\nFourth line\nFifth line\nSixth line\nFinal line" } } }, "herdr-setup"],
+  ])("collapses and expands %s output with hanging wrapped rows", (_kind, message, title) => {
+    const collapsed = renderCommandOutput(message, { expanded: false }, {}).render(30).map(line => line.trimEnd());
+    const expanded = renderCommandOutput(message, { expanded: true }, {}).render(30).map(line => line.trimEnd());
+    expect(expanded.join("\n")).toContain(`spider · ${title}`);
+    expect(collapsed.join("\n")).toContain("more");
+    expect(collapsed.join("\n")).not.toContain("Final line");
+    expect(expanded.join("\n")).toContain("Final line");
+    expect(expanded.some(line => /^ {4}\S/.test(line))).toBe(true); // box padding + column 3
+    expect(expanded.every(line => line.length <= 30)).toBe(true);
+  });
+
   it("renders themed through the tool renderers (doctor): spider header + tool shell + checks, no raw JSON", () => {
     const msg = { customType: "spider.command", content: "spider doctor", details: { args: { action: "control", command: "doctor" }, result: { ok: true, lines: ["## spider doctor", "- better-sqlite3: loaded (wal)"] } } };
     const out = (renderCommandOutput(msg, { expanded: false }, th).render(120) as string[]).join("\n");

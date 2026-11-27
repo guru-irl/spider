@@ -2737,10 +2737,15 @@ Usage:
             const attachmentText = attachments?.length ? formatAttachments(attachments) : "";
             const generation = runtimeGeneration;
             let v0Target: { id: string; endpointEpoch: string } | undefined;
+            let v0Source: LocalSessionInfo | undefined;
             if (v0 && to && currentSessionId && v0.homeEpoch(currentSessionId) !== undefined) {
               const sessions = await connectedClient.listSessions();
               const locals = sessions.filter((session): session is LocalSessionInfo => !session.remote);
               const from = locals.find(session => session.id === connectedClient.sessionId && session.address?.sessionId === currentSessionId);
+              if (!from || from.v0HomeEpoch !== v0.homeEpoch(currentSessionId)) {
+                return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
+              }
+              v0Source = from;
               if (from) {
                 const plan = await v0.prepare({ to, from, locals, signal: _signal });
                 if (plan.kind === "refused") {
@@ -2826,7 +2831,8 @@ Usage:
                 };
               }
             }
-            if (v0Target && (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected())) {
+            if (v0Target && (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
+                !v0Source?.address || v0Source.v0HomeEpoch === undefined || v0?.homeEpoch(v0Source.address.sessionId) !== v0Source.v0HomeEpoch)) {
               return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
             }
             const result = await connectedClient.send(sendTo, {
@@ -2900,6 +2906,7 @@ Usage:
           let questionId: string | null = null;
           const generation = runtimeGeneration;
           let v0Target: { id: string; endpointEpoch: string } | undefined;
+          let v0Source: LocalSessionInfo | undefined;
 
           try {
             if (openProjectPaneIfMissing && !cwd) {
@@ -2912,6 +2919,10 @@ Usage:
               const sessions = await connectedClient.listSessions();
               const locals = sessions.filter((session): session is LocalSessionInfo => !session.remote);
               const from = locals.find(session => session.id === connectedClient.sessionId && session.address?.sessionId === currentSessionId);
+              if (!from || from.v0HomeEpoch !== v0.homeEpoch(currentSessionId)) {
+                return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
+              }
+              v0Source = from;
               if (from) {
                 const plan = await v0.prepare({ to, from, locals, signal: _signal });
                 if (plan.kind === "refused") {
@@ -3002,7 +3013,8 @@ Usage:
                 details: { error: true },
               };
             }
-            if (v0Target && (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected())) {
+            if (v0Target && (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
+                !v0Source?.address || v0Source.v0HomeEpoch === undefined || v0?.homeEpoch(v0Source.address.sessionId) !== v0Source.v0HomeEpoch)) {
               return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
             }
             questionId = randomUUID();

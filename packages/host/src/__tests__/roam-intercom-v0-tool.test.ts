@@ -474,6 +474,24 @@ it("does not retarget a local roaming send after the recipient reconnects", asyn
   } finally { await f.cleanup(); }
 });
 
+it("refuses a local roaming send when the source admission epoch changed", async () => {
+  const inbox: unknown[] = [];
+  const onMessage = (...args: unknown[]) => inbox.push(args);
+  observer.on("message", onMessage);
+  let epoch = 7;
+  const prepare: V0Prepare = async ({ locals }) => {
+    const target = locals.find(session => session.id === "observer")!;
+    return { kind: "local", target: { id: target.id, endpointEpoch: target.endpointEpoch! } };
+  };
+  const f = await fixture({ homeEpoch: () => epoch, prepare });
+  try {
+    epoch = 8;
+    const result = await f.tool.execute("send", { action: "send", to: "observer", message: "stale source" }, new AbortController().signal, undefined, f.ctx);
+    expect(result.details).toMatchObject({ error: true, code: "changed" });
+    expect(inbox).toEqual([]);
+  } finally { observer.off("message", onMessage); await f.cleanup(); }
+});
+
 it("does not retarget a local roaming ask after the recipient reconnects", async () => {
   const inbox: unknown[] = [];
   const prepare: V0Prepare = async ({ locals }) => {

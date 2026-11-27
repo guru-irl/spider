@@ -447,6 +447,16 @@ it("refuses explicit pin replacement while the hub still assigns sessions to the
   expect(f.events).not.toContain("enrollment");
 });
 
+it("preserves an unreadable hub pin-check refusal", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  const ports = { ...f.ports, async assertCorePinReplaceIdle() {
+    throw Object.assign(new Error("hub store cannot be read; run spider roam doctor"), { code: "core-pin-check-unavailable" });
+  } };
+  expect(await provision!({ ...f.request("unreadable-pin-check"), replaceCorePin: true }, ports))
+    .toMatchObject({ code: 3, reason: "core-pin-check-unavailable" });
+  expect(f.events).not.toContain("enrollment");
+});
+
 it("names the earlier operation that blocks provisioning", async () => {
   const f = fixture(); f.write(f.source, "settings.json", "{}");
   f.ports.transfer.cleanupSecrets = async () => { throw Object.assign(new Error("blocked"), {

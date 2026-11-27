@@ -269,6 +269,7 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
       io.err(`Then run ${retry} on the hub with the same authentication options.\n`);
       reportDestinationEnable(peer.alias, io.err);
     }
+    if (result.reason === "core-pin-check-unavailable") io.err("Cannot inspect the hub configuration or global store. Run spider roam doctor on the hub before retrying.\n");
     if (result.reason === "destination-permissions-unsafe" && result.repairCommand) {
       io.err(`Unsafe permissions on ${safe(peer.alias)}. On the box, run ${result.repairCommand}.\n`);
     }

@@ -672,7 +672,15 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       if (argv.length === 2) {
         let config: ReturnType<typeof readLocalIdentity> | undefined;
         try { config = readLocalIdentity(root); }
-        catch { if (existsSync(join(root, "roam", "config.json"))) throw new Error("roaming-config-unavailable"); }
+        catch {
+          const inventory = await inspectLegacyUpgrade(root);
+          if (inventory.status !== "legacy-upgrade-ready") {
+            const diagnostic = legacyUpgradeDiagnostic(inventory);
+            if (jsonOutput) io.out(`${JSON.stringify({ ...outcome(1, inventory.status), value: { enabled: null, diagnostics: [diagnostic], consumers: [] } })}\n`);
+            else io.out(`${clean(diagnostic.reason)}\n`);
+            return 1;
+          }
+        }
         if (!config || !config.enabled) {
           let rows: Awaited<ReturnType<typeof peerEnabledDiagnostics>> = [legacyUpgradeDiagnostic(await inspectLegacyUpgrade(root))];
           if (config?.role === "hub" && config.peers.length) {

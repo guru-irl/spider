@@ -549,8 +549,10 @@ cancels pending setup retries and waits for the current attempt to drain.
 
 Provisioning installs and verifies the release on the box, including
 `supervisor.mjs`. It does not create, change, reload, or toggle the roaming
-supervisor. It leaves the running core and its terminals unchanged. With a
-disabled hub, provisioning keeps box participation disabled. `installed`,
+supervisor. It leaves the running core and its terminals unchanged.
+Reprovisioning a box set up by an older release leaves its legacy unit running
+the previous release; `spider roam enable` run locally on the destination
+replaces it. With a disabled hub, provisioning keeps box participation disabled. `installed`,
 `hostingReady`, and the `enabled` participation flag do not report service
 status.
 
@@ -577,6 +579,9 @@ Enrollment verifies the executable, socket, namespace, and XDG directories with
 match the enrolled core. Terminal-specific hc variables are removed for this check.
 
 ### Replace an enrolled core pin
+
+Do not enable roaming or start a relocate on the hub or the box while a core
+pin is being replaced.
 
 1. Finish or undo moves involving the box. Move every home off the box with
    `spider roam relocate <session> mac` or relocate it to another ready box.

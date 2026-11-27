@@ -43,7 +43,9 @@ owned by the user. Startup trusts the enrolled executable, identity, socket,
 namespace, and XDG directories in private `roam/core.json`, not the unit name.
 
 Provisioning installs and verifies the release without changing the roaming
-service. `installed`, `hostingReady`, and the `enabled` participation flag
+service. Reprovisioning a box set up by an older release leaves its legacy
+unit running the previous release; `spider roam enable` run locally on the
+destination replaces it. `installed`, `hostingReady`, and the `enabled` participation flag
 are not service status. Run `spider roam enable` locally on the destination
 when it is ready. Follow the [legacy upgrade procedure](roaming-upgrade.md)
 before replacing an old service.

@@ -11,12 +11,21 @@ export function shardProblems({ reportedFiles, records, stats }) {
   if (!reportedFiles.length) problems.push('Vitest reported no test files');
   if (stats.hookErrors) problems.push(`${stats.hookErrors} recorder hook errors`);
   if (stats.malformedSnapshots) problems.push(`${stats.malformedSnapshots} malformed snapshots`);
+  const groups = ['checkout', 'temporary', 'other'].map(group => stats.unresolvedGroups?.[group]);
+  if (!Number.isSafeInteger(stats.unresolvedBundles) || stats.unresolvedBundles < 0 ||
+      groups.some(count => !Number.isSafeInteger(count) || count < 0) ||
+      groups.reduce((sum, count) => sum + count, 0) !== stats.unresolvedBundles) {
+    problems.push('Invalid unresolved bundle observation counts');
+  }
   const reported = new Set(reportedFiles);
   for (const file of reported) {
     if (!Object.hasOwn(records, file)) problems.push(`Missing record for ${file}`);
   }
-  for (const file of Object.keys(records)) {
+  for (const [file, record] of Object.entries(records)) {
     if (!reported.has(file)) problems.push(`Record without a Vitest result: ${file}`);
+    if (!Array.isArray(record.unresolved) || record.unresolved.some(path => typeof path !== 'string' || !path)) {
+      problems.push(`Invalid unresolved bundle list for ${file}`);
+    }
   }
   return problems;
 }
@@ -29,9 +38,11 @@ export function buildSelectionMap({ shards, expectedFiles, commit, runId, create
   const failed = new Set();
   const problems = [];
   let hookErrors = 0;
+  const unresolvedGroups = { checkout: 0, temporary: 0, other: 0 };
   for (const shard of shards) {
     problems.push(...shardProblems(shard));
     hookErrors += shard.stats.hookErrors;
+    for (const group of Object.keys(unresolvedGroups)) unresolvedGroups[group] += shard.stats.unresolvedGroups?.[group] ?? 0;
     for (const file of shard.reportedFiles) {
       if (reported.has(file)) problems.push(`Reported by multiple shards: ${file}`);
       if (!inventory.has(file)) problems.push(`Not in Vitest inventory: ${file}`);
@@ -54,13 +65,13 @@ export function buildSelectionMap({ shards, expectedFiles, commit, runId, create
   if (!problems.length) {
     const index = new Map(files.map((file, i) => [file, i]));
     const tests = Object.fromEntries([...records.keys()].sort().map(file => {
-      const { reads, ms, result } = records.get(file);
-      return [file, { reads: [...new Set(reads)].map(path => index.get(path)).sort((a, b) => a - b), ms, result }];
+      const { reads, unresolved, ms, result } = records.get(file);
+      return [file, { reads: [...new Set(reads)].map(path => index.get(path)).sort((a, b) => a - b), unresolved, ms, result }];
     }));
     map = { version: 1, commit, runId, createdAt, files, tests };
   }
   return { map, problems, recordedFiles: records.size, reportedFiles: reported.size,
-    sourceFiles: files.length, hookErrors, failedFiles: [...failed].sort() };
+    sourceFiles: files.length, hookErrors, unresolvedGroups, failedFiles: [...failed].sort() };
 }
 
 function publish(output, inventoryFile, shardFiles) {
@@ -75,7 +86,7 @@ function publish(output, inventoryFile, shardFiles) {
   };
   const expectedFiles = tryRead(inventoryFile) ?? [];
   const shards = shardFiles.map(tryRead).filter(Boolean);
-  const { map, problems, recordedFiles, reportedFiles, sourceFiles, hookErrors, failedFiles } =
+  const { map, problems, recordedFiles, reportedFiles, sourceFiles, hookErrors, unresolvedGroups, failedFiles } =
     buildSelectionMap({ shards, expectedFiles, commit, runId, createdAt: new Date().toISOString() });
   problems.unshift(...readProblems);
   const json = problems.length ? null : JSON.stringify(map) + '\n';
@@ -85,6 +96,7 @@ function publish(output, inventoryFile, shardFiles) {
     `- Source files: ${sourceFiles}`,
     `- Map size: ${json ? `${Buffer.byteLength(json)} bytes` : 'not published'}`,
     `- Hook errors: ${hookErrors}`,
+    `- Unresolved bundle observations: ${unresolvedGroups.checkout} checkout, ${unresolvedGroups.temporary} temporary, ${unresolvedGroups.other} other`,
     `- Failed test files: ${failedFiles.length}`, '',
     ...failedFiles.map(file => `- \`${file}\``), '',
     ...problems.map(problem => `- ${problem}`), '',

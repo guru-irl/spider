@@ -2,10 +2,30 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const read = file => JSON.parse(readFileSync(file, 'utf8'));
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
+
+function inside(root, file) {
+  const name = relative(root, file);
+  return name && !isAbsolute(name) && name !== '..' && !name.startsWith(`..${sep}`) ? name.split(sep).join('/') : null;
+}
+
+function unresolvedPath(root, tmpRoot, url) {
+  const file = url.startsWith('file:') ? fileURLToPath(url) : url.split(/[?#]/, 1)[0];
+  const temporary = inside(tmpRoot, file);
+  if (temporary) return { group: 'temporary', path: `<tmp>/${temporary}` };
+  const checkout = inside(root, file);
+  if (checkout) {
+    const parts = checkout.split('/');
+    const scratch = parts.findIndex((part, i) => part === '.spider' && parts[i + 1] === 'scratch');
+    if (scratch !== -1) return { group: 'temporary', path: `<tmp>/${parts.slice(scratch + 2).join('/')}` };
+    return { group: 'checkout', path: checkout };
+  }
+  return { group: 'other', path: file.split(sep).join('/') };
+}
 
 function repoPath(root, file) {
   const name = relative(root, file);
@@ -44,7 +64,7 @@ function fileResult(report) {
     ? 'skipped' : 'passed';
 }
 
-export function reduce({ root = process.cwd(), rawDir, mapsDir, reportFile }) {
+export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsDir, reportFile }) {
   const maps = bundleMaps(root, mapsDir);
   const fixtures = new Map();
   const outcomes = new Map();
@@ -59,13 +79,14 @@ export function reduce({ root = process.cwd(), rawDir, mapsDir, reportFile }) {
     hookErrors: existsSync(errors) ? readFileSync(errors, 'utf8').trim().split('\n').filter(Boolean).length : 0,
     malformedSnapshots: 0,
     unresolvedBundles: 0,
+    unresolvedGroups: { checkout: 0, temporary: 0, other: 0 },
   };
   for (const name of readdirSync(rawDir).filter(name => /^\d+-[a-f0-9-]+\.json$/.test(name))) {
     let proc;
     try { proc = read(join(rawDir, name)); }
     catch { stats.malformedSnapshots++; continue; }
     if (!outcomes.has(proc.test)) continue;
-    const entry = groups.get(proc.test) ?? { reads: new Set(), workerPids: new Set() };
+    const entry = groups.get(proc.test) ?? { reads: new Set(), unresolved: new Set(), workerPids: new Set() };
     groups.set(proc.test, entry);
     if (proc.worker) entry.workerPids.add(proc.pid);
     for (const script of proc.scripts) {
@@ -78,7 +99,12 @@ export function reduce({ root = process.cwd(), rawDir, mapsDir, reportFile }) {
         const sources = maps.get(script.sha256) ?? fixtures.get(script.sha256);
         if (sources) {
           for (const source of sources) entry.reads.add(source);
-        } else stats.unresolvedBundles++;
+        } else {
+          const unresolved = unresolvedPath(root, tmpRoot, script.url);
+          entry.unresolved.add(unresolved.path);
+          stats.unresolvedBundles++;
+          stats.unresolvedGroups[unresolved.group]++;
+        }
       } else {
         const file = script.url.startsWith('file:') ? fileURLToPath(script.url) : script.url.split(/[?#]/, 1)[0];
         const source = repoPath(root, file);
@@ -97,7 +123,7 @@ export function reduce({ root = process.cwd(), rawDir, mapsDir, reportFile }) {
     if (!entry) continue;
     const ms = report.endTime - report.startTime;
     if (!Number.isFinite(ms) || ms < 0) throw new Error(`Invalid Vitest duration for ${file}`);
-    records[file] = { reads: [...entry.reads].sort(), workerPids: [...entry.workerPids], ms, result };
+    records[file] = { reads: [...entry.reads].sort(), unresolved: [...entry.unresolved].sort(), workerPids: [...entry.workerPids], ms, result };
   }
   return { reportedFiles, failedFiles, records, stats };
 }

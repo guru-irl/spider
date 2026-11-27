@@ -171,10 +171,8 @@ export async function handleRelocateAgent(input:unknown,options:RelocateAdapterO
     }
   }catch{return refusal("invalid-arguments","The private v0 operation could not be completed safely.");}
 }
-export function guardV0PeerTransport(transport: Transport, isRevoked: (machineId: string) => boolean): Transport {
-  function check(peer: Peer) {
-    if (isRevoked(peer.machineId)) throw new Error("V0 peer was forgotten");
-  }
+export function guardV0PeerTransport(transport: Transport, authorize: (machineId: string) => void): Transport {
+  const check = (peer: Peer) => authorize(peer.machineId);
   return {
     ...transport,
     async resolve(peer, options) { check(peer); return transport.resolve(peer, options); },

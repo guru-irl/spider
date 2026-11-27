@@ -5,7 +5,7 @@ import { createReplica } from "@spider/db-core/testutil";
 import { DEFAULT_LIMITS, disabledIntercom, type Clock, type RoamConfig, type Transport } from "../contracts";
 import { openJournal } from "../journal";
 import { revokeMachine } from "../revocation";
-import { createV0Runtime } from "../relocate/runtime";
+import { createV0Runtime, startV0Hub } from "../relocate/runtime";
 import type { SessionId } from "../relocate/types";
 
 const mac = "11111111-1111-4111-8111-111111111111";
@@ -21,8 +21,8 @@ function fixture() {
     peers: [box, other].map((machineId, i) => ({ machineId, alias: `box-${i}.invalid`, node: "/node", pi: "/pi", cli: "/spider", core: "/core", globalRoot: "/root" })),
     discoveryRoots: [], coreUnit: "core", syncMs: 10_000, limits: DEFAULT_LIMITS, intercom: disabledIntercom(),
   };
-  const scheduled = new Set<() => void>();
-  const clock: Clock = { now: () => 100, later(_ms, fn) { scheduled.add(fn); return () => { scheduled.delete(fn); }; } };
+  const scheduled = new Map<() => void, number>();
+  const clock: Clock = { now: () => 100, later(ms, fn) { scheduled.set(fn, ms); return () => { scheduled.delete(fn); }; } };
   const resolved: string[] = [], requests: string[] = [];
   let duringResolve = () => {};
   const unused = async () => { throw new Error("Transport method is unused"); };
@@ -39,10 +39,12 @@ function fixture() {
     const db = openDb(journalFile, { fileMustExist: true, checkpointOnClose: false });
     try { revokeMachine(db, box); } finally { db.close(); }
   }
-  const start = () => createV0Runtime(replica.root, {
-    openCore: () => ({ root: replica.root, config, db: replica.db, close() {} }), transport, clock,
-  });
-  return { forget, start, resolved, requests, scheduled, replica, onResolve(fn: () => void) { duringResolve = fn; } };
+  const overrides = {
+    openCore: () => ({ root: replica.root, config: { ...config }, db: replica.db, close() {} }), transport, clock,
+    readConfig: () => ({ ...config }),
+  };
+  const start = () => createV0Runtime(replica.root, overrides);
+  return { forget, start, resolved, requests, scheduled, replica, config, overrides, onResolve(fn: () => void) { duringResolve = fn; } };
 }
 
 it("schedules synchronization only for enrolled peers that were not forgotten", async () => {
@@ -50,12 +52,34 @@ it("schedules synchronization only for enrolled peers that were not forgotten", 
   const runtime = f.start();
   try {
     runtime.sync.start();
-    const ticks = [...f.scheduled];
+    const ticks = [...f.scheduled.keys()];
     for (const tick of ticks) { f.scheduled.delete(tick); tick(); }
     await runtime.sync.drain();
     expect(ticks).toHaveLength(1);
     expect(f.requests).toEqual([other]);
   } finally { await runtime.close(); f.replica.close(); }
+});
+
+it("scheduled replication follows configuration changes without a hub restart", async () => {
+  const f = fixture();
+  f.config.enabled = false;
+  const hub = await startV0Hub(f.replica.root, f.overrides);
+  const tick = (predicate: (delay: number) => boolean) => {
+    for (const [fn, delay] of [...f.scheduled]) if (predicate(delay)) { f.scheduled.delete(fn); fn(); }
+  };
+  try {
+    expect(f.requests).toEqual([]);
+    f.config.enabled = true;
+    tick(ms => ms > 0); tick(ms => ms === 0);
+    await new Promise<void>(done => setImmediate(done));
+    expect(f.requests).toEqual(expect.arrayContaining([box, other]));
+    const previous = f.requests.length;
+    f.config.enabled = false;
+    tick(ms => ms > 0); tick(ms => ms === 0);
+    await new Promise<void>(done => setImmediate(done));
+    expect(f.requests).toHaveLength(previous);
+    expect([...f.scheduled.values()]).toEqual([1_000]);
+  } finally { await hub.stop(); f.replica.close(); }
 });
 
 it("does not send peer RPCs if the peer is forgotten during discovery", async () => {

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { migrate, openDb } from "@spider/db-core";
 import { writeLocal } from "@spider/db-core/roam/local-state";
+import { fenceReplicaForMapping } from "@spider/db-core/roam/apply";
 import { claimIdLock, localBootId } from "@spider/herdr/sessions/id-lock";
 import { createSessionLeases } from "@spider/herdr/sessions/lease";
 import { createProcessPresence } from "@spider/herdr/sessions/presence";
@@ -168,6 +169,17 @@ it("does not block frozen membership governed by a settled v0 home", async () =>
   expect(await main(["roam", "doctor", "--json"], io)).toBe(0);
   expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
     expect.objectContaining({ severity: "info", reason: expect.stringMatching(/^legacy-upgrade-ready/) }),
+  ]));
+});
+
+it("doctor blocks an unpublished replica mapping fence with no map intent", async () => {
+  const f = fixture(), key = "worktree:fixture-repo:fenced-workspace", file = replica(f.root, key);
+  const store = openDb(file);
+  try { fenceReplicaForMapping(store, key); } finally { store.close(); }
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-blocked.*worktree:fixture-repo:fenced-workspace/) }),
   ]));
 });
 

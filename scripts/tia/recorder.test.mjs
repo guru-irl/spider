@@ -45,8 +45,8 @@ test('all launch APIs preserve attribution with a replacement environment', t =>
     const opts = Object.freeze({ env: Object.freeze({ LOCAL: 'kept', NODE_OPTIONS: '--no-warnings' }) });
     (async () => {
       const esm = await import('node:child_process');
-      for (const child of [esm.spawn(node, [leaf], opts), cp.fork(leaf, opts)]) {
-        if ((await once(child, 'exit'))[0] !== 0) process.exitCode = 7;
+      for (const start of [() => esm.spawn(node, [leaf], opts), () => cp.fork(leaf, opts)]) {
+        if ((await once(start(), 'exit'))[0] !== 0) process.exitCode = 7;
       }
       if (cp.spawnSync(node, [leaf], opts).status !== 0) process.exitCode = 8;
       cp.execFileSync(node, [leaf], opts);
@@ -71,6 +71,32 @@ test('all launch APIs preserve attribution with a replacement environment', t =>
     assert.deepEqual(script.offsets, [0]); // `ran`, not the unnamed CJS script root at the same offset.
     assert.match(script.sha256, /^[0-9a-f]{64}$/);
   }
+});
+
+test('child code sees its original Node options and inherits only the outer test identity', t => {
+  const { root, raw } = fixture(t);
+  const child = join(root, 'packages/example/src/clean-child.cjs');
+  const parent = join(root, 'packages/example/src/clean-parent.cjs');
+  writeFileSync(child, `
+    const assert = require('node:assert/strict');
+    assert.equal(process.env.SPIDER_TIA, undefined);
+    if (process.argv[2] === 'unset') assert.equal(Object.hasOwn(process.env, 'NODE_OPTIONS'), false);
+    else assert.equal(process.env.NODE_OPTIONS, process.argv[2]);
+  `);
+  writeFileSync(parent, `
+    const { execFileSync } = require('node:child_process');
+    const leaf = process.argv[2];
+    for (const opts of [undefined, '', '--no-warnings']) {
+      const env = { SPIDER_TIA: '1', ...(opts === undefined ? {} : { NODE_OPTIONS: opts }) };
+      execFileSync(process.execPath, [leaf, opts ?? 'unset'], { env });
+    }
+  `);
+  const result = runNode([parent, child], { env: { ...process.env, SPIDER_TIA: '1', SPIDER_TIA_DIR: raw,
+    SPIDER_TIA_ROOT: root, SPIDER_TIA_TEST: id, NODE_OPTIONS: `--require=${JSON.stringify(hook)}` } });
+  assert.equal(result.status, 0, result.stderr);
+  const children = records(raw).filter(process => process.argv[1] === child);
+  assert.equal(children.length, 3);
+  assert.ok(children.every(process => process.test === id && !process.worker && process.ended));
 });
 
 test('reducer maps a deleted packed copy by hash and keeps bundle-only loads out of the lower bound', t => {

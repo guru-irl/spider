@@ -19,6 +19,16 @@ if (dir && require('node:worker_threads').isMainThread) {
   const ppid = process.ppid;
   const started = Date.now() - Math.round(process.uptime() * 1000);
   const preload = `--require=${JSON.stringify(__filename)}`;
+  const savedOptions = 'SPIDER_TIA_SAVED_NODE_OPTIONS';
+  const launchOptions = process.env.NODE_OPTIONS ?? '';
+  if (launchOptions === preload || launchOptions.endsWith(` ${preload}`)) {
+    // Node has already loaded the hook. Do not expose our flag to code that
+    // must see the sanitized env supplied by its caller.
+    const original = process.env[savedOptions] ?? launchOptions.slice(0, -preload.length).trimEnd();
+    if (original || Object.hasOwn(process.env, savedOptions)) process.env.NODE_OPTIONS = original;
+    else delete process.env.NODE_OPTIONS;
+  }
+  delete process.env[savedOptions];
   const scripts = new Map();
   const fileCache = new Map();
   let test = process.env.SPIDER_TIA_TEST || null;
@@ -35,13 +45,20 @@ if (dir && require('node:worker_threads').isMainThread) {
     const options = args[index];
     if (options != null && typeof options !== 'function' && (typeof options !== 'object' || Array.isArray(options))) return args;
     const env = { ...(options?.env ?? process.env) };
-    const nodeOptions = String(env.NODE_OPTIONS || '');
-    if (!nodeOptions.includes(preload)) env.NODE_OPTIONS = `${nodeOptions} ${preload}`.trim();
+    const nodeOptions = String(env.NODE_OPTIONS ?? '');
+    if (!nodeOptions.includes(preload)) {
+      if (env.NODE_OPTIONS === undefined) delete env[savedOptions];
+      else env[savedOptions] = nodeOptions;
+      env.NODE_OPTIONS = `${nodeOptions} ${preload}`.trim();
+    }
     env.SPIDER_TIA_DIR = dir;
     env.SPIDER_TIA_ROOT = root;
     env.SPIDER_TIA_BUNDLE_KEYS = keysEnv;
-    if (test) env.SPIDER_TIA_TEST = test;
-    else delete env.SPIDER_TIA_TEST;
+    if (test) {
+      env.SPIDER_TIA_TEST = test;
+      // A test that starts Vitest is still one outer test's execution.
+      delete env.SPIDER_TIA;
+    } else delete env.SPIDER_TIA_TEST;
     const updated = { ...options, env };
     if (typeof options === 'function') args.splice(index, 0, updated);
     else args[index] = updated;

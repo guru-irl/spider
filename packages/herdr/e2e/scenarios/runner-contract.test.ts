@@ -488,7 +488,7 @@ describe('runner boundary and report', () => {
     expect(parseOptions(['--tier', 'headless', '--story', 'R02'], {}).ids).toEqual(['R02']);
     expect(profileIds.headless).toContain('R10'); expect(profileIds.headless).toContain('R02'); expect(profileIds.app).not.toContain('R02');
     expect(profileIds.ci).not.toContain('R10'); expect(profileIds.ci).not.toContain('R02');
-    expect(parseOptions(['--tier', 'headless', '--task', 'roam'], {}).ids).toEqual(['R02', 'R03', 'R04', 'R05', 'R06', 'R07', 'R08', 'R10', 'R11', 'R12', 'R13', 'R14']);
+    expect(parseOptions(['--tier', 'headless', '--task', 'roam'], {}).ids).toEqual(['R02', 'R03', 'R04', 'R05', 'R06', 'R07', 'R08', 'R10', 'R11', 'R12', 'R13', 'R14', 'R18']);
     expect(() => parseOptions(['--tier', 'app', '--task', 'roam'], { SPIDER_HERDR_APP_TESTS: '1', SPIDER_HERDR_TEST_DISPLAY_UUID: 'fixture' })).toThrow(/no stories/);
     expect(() => parseOptions(['--tier', 'ci', '--task', 'roam'], {})).toThrow(/no stories/);
     const matrix = buildMatrix('ci', profileIds.ci, []);
@@ -508,10 +508,11 @@ describe('runner boundary and report', () => {
   it('discovers move and admission stories as serial headless work with explicit results', async () => {
     // @ts-ignore Vite provides import.meta.glob during test transformation.
     const definitions = await discoverScenarios(import.meta.glob('./*.test.ts'));
-    const ids = ['R06', 'R07', 'R08', 'R10'];
+    const ids = ['R06', 'R07', 'R08', 'R10', 'R18'];
     const selected = selectScenarios(definitions, parseOptions(['--tier', 'headless', '--story', ids.join(',')], {}));
     expect(selected.map((definition: { id: string }) => definition.id)).toEqual(ids);
     expect(selected.find((definition: { id: string }) => definition.id === 'R10').title).toBe('copied v0 away home refuses ordinary work');
+    expect(selected.find((definition: { id: string }) => definition.id === 'R18').title).toBe('ordinary session relocates to a fixture machine and back');
     for (const id of ids) {
       expect(profileIds.headless).toContain(id);
       expect(profileIds.ci).not.toContain(id);

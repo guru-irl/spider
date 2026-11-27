@@ -49,6 +49,10 @@ function fixture(confirmation: string | null = null) {
 }
 describe("v0 controls", () => {
   it("production runtime confirms a supervisor-first pending start", async () => {
+    vi.stubEnv("HC_SOCKET",undefined);vi.stubEnv("HC_SESSION",undefined);vi.stubEnv("HC_TERMINAL_SOCKET",undefined);
+    vi.stubEnv("XDG_RUNTIME_DIR",resolve(".spider/outside-fixture-runtime"));
+    const herdrRoot=mkdtempSync(join(resolve(".spider/scratch"),"v0hc-"));roots.push(herdrRoot);
+    vi.stubEnv("HC_SOCKET",join(herdrRoot,"hc.sock"));vi.stubEnv("HC_SESSION","production-race");
     const source=createReplica("global",mac), sid="production-race" as SessionId;
     const child=spawn(process.execPath,["-e",`process.title="pi";process.once("message",()=>process.exit(0));process.send("ready");`],{stdio:["ignore","ignore","ignore","ipc"]});
     const exited=once(child,"exit");

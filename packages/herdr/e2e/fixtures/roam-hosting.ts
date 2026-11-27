@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { appendFile, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, appendFile, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { expect } from 'vitest';
@@ -13,6 +13,7 @@ import { mapWorkspace } from '@spider/db-core/roam/repo-map';
 import { inspectIdLock } from '../../src/sessions/id-lock.js';
 import { createSessionLeases } from '../../src/sessions/lease.js';
 import { fixtureProcessDomain } from '../../../host/src/herdr/fixture-process-domain.js';
+import { checkoutRoot } from '../harness/environment.js';
 import type { HcRecord, HcResult } from '../harness/hc.js';
 import { readObserved, type ObservedEvent } from '../harness/pi.js';
 import { identityAlive, identityOf } from '../harness/resources.js';
@@ -105,7 +106,10 @@ async function stageOfflineNpm(suite: Suite, bin: string, root: string, prefix: 
 if [ "$#" -eq 1 ] && [ "$1" = --version ]; then printf '%s\\n' 1.2.0; exit 0; fi
 exec ${shellQuote(suite.pi.launcher)} "$@"
 `;
-  const offlineSdk = join(suite.packed.root, 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'index.js');
+  const dependencies = join(checkoutRoot(), 'node_modules');
+  const offlineSdk = join(dependencies, '@earendil-works', 'pi-coding-agent', 'dist', 'index.js');
+  const natives = ['better-sqlite3', 'sqlite-vec'];
+  await Promise.all([offlineSdk, ...natives.map(name => join(dependencies, name))].map(file => access(file)));
   const releasePrefix = join(prefix, 'spider-releases', digest);
   const archive = join(root, 'roam', 'provision', `${INSTALL}-install`, 'release-release.tgz');
   await writeFile(join(bin, 'npm'), `#!${process.execPath}
@@ -126,8 +130,8 @@ if (args === ${JSON.stringify(JSON.stringify(['install', '--global', '--prefix',
   const installed = join(modules, '@guru-irl/spider');
   mkdirSync(installed, { recursive: true, mode: 0o700 });
   execFileSync('/usr/bin/tar', ['-xzf', ${JSON.stringify(archive)}, '--strip-components=1', '-C', installed]);
-  for (const name of ['better-sqlite3', 'sqlite-vec']) {
-    cpSync(join(${JSON.stringify(join(suite.packed.root, 'node_modules'))}, name), join(modules, name), { recursive: true, dereference: true });
+  for (const name of ${JSON.stringify(natives)}) {
+    cpSync(join(${JSON.stringify(dependencies)}, name), join(modules, name), { recursive: true, dereference: true });
   }
 } else throw new Error('unexpected offline npm command');
 `, { mode: 0o700 });

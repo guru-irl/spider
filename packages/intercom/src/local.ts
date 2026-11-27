@@ -2907,6 +2907,15 @@ Usage:
                     return { content: [{ type: "text", text: `**Reply from ${plan.label}:**\n${result.text}` }],
                       details: { delivery: "replied", messageId: question.id, replyId: result.replyId } };
                   }
+                  if (result.kind === "no_reply") {
+                    pi.appendEntry("intercom_sent", { to: plan.label, message: { text: message }, messageId: question.id, timestamp: question.timestamp });
+                    return { content: [{ type: "text", text: `No reply was received (ID ${result.id}).` }],
+                      details: { error: true, delivery: "no_reply", messageId: result.id } };
+                  }
+                  if (result.kind === "unknown") {
+                    return { content: [{ type: "text", text: `Delivery could not be confirmed (ID ${result.id}). Check the recipient before sending again.` }],
+                      details: { error: true, delivered: false, delivery: "unknown", messageId: result.id, outcomeKnown: false, retryable: false } };
+                  }
                   return { content: [{ type: "text", text: "No reply was received." }], details: { error: true } };
                 }
               }

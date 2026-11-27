@@ -110,6 +110,35 @@ it("returns the reply to a named remote ask", async () => {
   } finally { await f.cleanup(); }
 });
 
+it("reports a remote ask timeout or lost call without resending", async () => {
+  const oldTimeout = process.env.PI_INTERCOM_ASK_TIMEOUT_MS;
+  process.env.PI_INTERCOM_ASK_TIMEOUT_MS = "600001";
+  const questions: V0Text[] = [], budgets: number[] = [];
+  let outcome: "no_reply" | "unknown" = "no_reply";
+  const prepare: V0Prepare = async () => ({
+    kind: "remote", label: "b/ben",
+    async send(message) { return { kind: "socket_delivered", id: message.id }; },
+    async ask(message, timeoutMs) { questions.push(message); budgets.push(timeoutMs); return { kind: outcome, id: message.id }; },
+  });
+  const f = await fixture({ homeEpoch: () => 7, prepare });
+  try {
+    const args = { action: "ask", to: "ben", message: "question" };
+    const timedOut = await f.tool.execute("ask-1", args, new AbortController().signal, undefined, f.ctx);
+    expect(timedOut.content[0].text).toBe(`No reply was received (ID ${questions[0].id}).`);
+    expect(timedOut.details).toMatchObject({ error: true, delivery: "no_reply", messageId: questions[0].id });
+    outcome = "unknown";
+    const unknown = await f.tool.execute("ask-2", args, new AbortController().signal, undefined, f.ctx);
+    expect(unknown.content[0].text).toBe(`Delivery could not be confirmed (ID ${questions[1].id}). Check the recipient before sending again.`);
+    expect(unknown.details).toMatchObject({ error: true, delivery: "unknown", messageId: questions[1].id });
+    expect(questions).toHaveLength(2);
+    expect(budgets).toEqual([600000, 600000]);
+  } finally {
+    await f.cleanup();
+    if (oldTimeout === undefined) delete process.env.PI_INTERCOM_ASK_TIMEOUT_MS;
+    else process.env.PI_INTERCOM_ASK_TIMEOUT_MS = oldTimeout;
+  }
+});
+
 it("does not send when confirmation finishes in a different session", async () => {
   const sent: V0Text[] = [];
   let finish!: (value: boolean) => void;

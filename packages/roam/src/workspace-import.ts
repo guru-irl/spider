@@ -149,9 +149,12 @@ async function inspectTrees(root: string, ports: WorkspaceImportPorts): Promise<
   });
 }
 
-function assertTrees(actual: Trees, expected: WorkspaceSnapshot, prefix: string): void {
-  const differences = [actual.head !== expected.head && "HEAD", actual.indexTree !== expected.indexTree && "index",
+function treeDifferences(actual: Trees, expected: WorkspaceSnapshot) {
+  return [actual.head !== expected.head && "HEAD", actual.indexTree !== expected.indexTree && "index",
     actual.workingTree !== expected.workingTree && "working tree"].filter(Boolean);
+}
+function assertTrees(actual: Trees, expected: WorkspaceSnapshot, prefix: string): void {
+  const differences = treeDifferences(actual, expected);
   if (differences.length) throw new Error(`${prefix}: ${differences.join(", ")} differs`);
 }
 
@@ -688,11 +691,14 @@ async function mappedSettings(root: string, ports: WorkspaceImportPorts): Promis
     effectiveSparse: { enabled: enabled ?? false, cone } };
 }
 
-function assertMappedSettings(actual: MappedSettings, expected: SettingValues & { sparse?: WorkspaceSnapshot["sparse"] }, reason = "workspace-config-diverged"): void {
-  const differences = [actual.config.value !== expected.worktreeConfig && "worktreeConfig",
+function mappedSettingDifferences(actual: MappedSettings, expected: SettingValues & { sparse?: WorkspaceSnapshot["sparse"] }) {
+  return [actual.config.value !== expected.worktreeConfig && "worktreeConfig",
     actual.sparse.value !== expected.sparsePatterns && "sparsePatterns",
     expected.sparse && actual.effectiveSparse.enabled !== expected.sparse.enabled && "sparse.enabled",
     expected.sparse && actual.effectiveSparse.cone !== expected.sparse.cone && "sparse.cone"].filter(Boolean);
+}
+function assertMappedSettings(actual: MappedSettings, expected: SettingValues & { sparse?: WorkspaceSnapshot["sparse"] }, reason = "workspace-config-diverged"): void {
+  const differences = mappedSettingDifferences(actual, expected);
   if (differences.length) throw new Error(`${reason}: ${differences.join(", ")}`);
 }
 
@@ -1318,18 +1324,20 @@ async function recoverInterruptedWorkspaceLocked(snapshot: WorkspaceSnapshot, de
         !rows.some(row => row.action === "workspace-aborted" && row.result.root === destination)) {
       const started = startedRecord(t.snapshot, destination, ports);
       if (!started || t.snapshot.bundle.kind !== "ready") throw new Error("workspace-journal-invalid");
-      const prepared: PreparedWorkspace = { root: destination, snapshot: t.snapshot, previous: started.previous,
-        moveId: snapshot.moveId, adjustments: [] };
-      await verifyWorkspace(prepared, ports);
       if (installed.result.sparseEnabled !== t.snapshot.sparse.enabled || t.snapshot.sparse.enabled &&
           installed.result.sparseCone !== (t.snapshot.sparse.cone ?? false)) throw new Error("workspace-journal-invalid");
-      if (!sameSettings(readRecoveryState(paths), t.target)) throw new Error("workspace-recovery-diverged: settings changed");
-      ports.journal.record(snapshot.moveId, "workspace-prepared", {
-        root: destination, stage: t.stage, digest: t.digest, snapshotJson: t.snapshotJson,
-        previousJson: started.previous === null ? null : JSON.stringify(started.previous), artifactId: t.snapshot.bundle.artifactId,
-      });
-      ports.journal.record(snapshot.moveId, "workspace-settings-transition-complete", { root: destination, transitionId: t.transitionId });
-      return;
+      const settings = await mappedSettings(destination, ports);
+      const expected = expectedInstalled(t.snapshot, destination, ports);
+      if (!mappedSettingDifferences(settings, expected).length &&
+          !treeDifferences(await inspectTrees(destination, ports), t.snapshot).length) {
+        if (!sameSettings(readRecoveryState(paths), t.target)) throw new Error("workspace-recovery-diverged: settings changed");
+        ports.journal.record(snapshot.moveId, "workspace-prepared", {
+          root: destination, stage: t.stage, digest: t.digest, snapshotJson: t.snapshotJson,
+          previousJson: started.previous === null ? null : JSON.stringify(started.previous), artifactId: t.snapshot.bundle.artifactId,
+        });
+        ports.journal.record(snapshot.moveId, "workspace-settings-transition-complete", { root: destination, transitionId: t.transitionId });
+        return;
+      }
     }
   }
   if (!replay.recoveryFrom) {

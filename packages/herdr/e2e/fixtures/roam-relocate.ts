@@ -18,6 +18,7 @@ import type { Side } from '../harness/hc.js';
 import type { Suite } from '../harness/suite.js';
 import { deadline, waitFor } from '../harness/wait.js';
 import { mark } from './child-scripts.js';
+import { assertNativeLaunch } from './relocate-assertions.js';
 
 const HUB = '00000000-0000-4000-8000-000000000001';
 const BOX = '00000000-0000-4000-8000-000000000002';
@@ -30,7 +31,7 @@ interface GitState { head: string; status: string; staged: string; working: stri
 export interface RelocateFixture {
   hub: Machine; box: Machine; original: RelocateOwner;
   home(machine?: Machine): HomeRow | null;
-  owner(machine: Machine, terminal: string, sessionId: string): Promise<RelocateOwner>;
+  owner(machine: Machine, terminal: string, sessionId: string, placement?: { file: string; cwd: string }): Promise<RelocateOwner>;
   relocate(sessionId: string, target: string): Promise<{ terminal: string; file: string; cwd: string }>;
   turn(machine: Machine, owner: RelocateOwner, marker: string, answer: string): Promise<void>;
   gitState(cwd: string): Promise<GitState>;
@@ -160,7 +161,7 @@ export async function relocateFixture(suite: Suite): Promise<RelocateFixture> {
       finally { db.close(); }
     };
     let ownerCalls = 0, currentOwner = original;
-    const owner: RelocateFixture['owner'] = async (machine, expectedTerminal, id) => {
+    const owner: RelocateFixture['owner'] = async (machine, expectedTerminal, id, placement) => {
       const stop = ++ownerCalls;
       const locks = await Promise.all([hub, box].map(host => inspectIdLock(join(host.root, 'herdr'), id)));
       await suite.evidence(`v0-locks-${stop}.json`, locks);
@@ -184,6 +185,12 @@ export async function relocateFixture(suite: Suite): Promise<RelocateFixture> {
       const native = await suite.hc(['get', expectedTerminal, '--json'], machine.side);
       expect(native.exitCode, native.stderr + native.stdout).toBe(0);
       expect(native.json).toMatchObject({ address: expectedTerminal, state: 'live', pid: lock.identity.pid });
+      if (placement) {
+        const current = home();
+        if (!current) throw new Error('relocated home is missing');
+        assertNativeLaunch(native.json, await cores.records(), placement,
+          machine === hub ? cores.local.namespace : cores.dest.namespace, id, machine.id, current.epoch);
+      }
       const lease = await createSessionLeases(join(machine.root, 'herdr')).get(observedFile);
       expect(lease).toMatchObject({ pid: lock.identity.pid, startIdentity: lock.identity.startIdentity });
       const all = await readObserved(suite.pi.observerDir);
@@ -217,7 +224,10 @@ export async function relocateFixture(suite: Suite): Promise<RelocateFixture> {
       expect(reply.ok, result.stdout).toBe(true);
       const value = reply.value, placement = value?.placement;
       if (!value?.terminal || !placement?.file || !placement.cwd || placement.sessionId !== id) throw new Error('relocate reply has no exact session placement');
-      return { terminal: value.terminal, file: suite.ownPath(placement.file), cwd: suite.ownPath(placement.cwd) };
+      if (suite.ownPath(placement.file) !== placement.file || suite.ownPath(placement.cwd) !== placement.cwd) {
+        throw new Error('relocate reply placement is not canonical');
+      }
+      return { terminal: value.terminal, file: placement.file, cwd: placement.cwd };
     };
     const gitState: RelocateFixture['gitState'] = async cwd => ({ head: await git(cwd, ['rev-parse', 'HEAD']),
       status: await git(cwd, ['status', '--porcelain=v1', '-uall']), staged: await git(cwd, ['show', ':tracked.txt']),

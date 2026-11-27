@@ -25,7 +25,7 @@ async function roundTrip(suite: Suite): Promise<void> {
     const awayHome = { session_id: id, machine_id: box.id, epoch: 3, state: 'running', destination: null };
     expect(fixture.home()).toMatchObject(awayHome);
     expect(fixture.home(box)).toMatchObject(awayHome);
-    const away = await fixture.owner(box, outward.terminal, id);
+    const away = await fixture.owner(box, outward.terminal, id, outward);
     expect(away).toMatchObject({ sessionId: id, file: outward.file, cwd: outward.cwd });
     assertRelocatedCopy(source, away, box.repository, box.agent);
     expect(await fixture.gitState(away.cwd)).toEqual(git);
@@ -40,7 +40,7 @@ async function roundTrip(suite: Suite): Promise<void> {
 
     const returning = await fixture.relocate(id, 'mac');
     expect(fixture.home()).toMatchObject({ session_id: id, machine_id: hub.id, epoch: 5, state: 'running', destination: null });
-    const returned = await fixture.owner(hub, returning.terminal, id);
+    const returned = await fixture.owner(hub, returning.terminal, id, returning);
     expect(returned).toMatchObject({ sessionId: id, file: returning.file, cwd: returning.cwd });
     assertRelocatedCopy(away, returned, hub.repository, hub.agent);
     expect(returned.file).toBe(original.file);

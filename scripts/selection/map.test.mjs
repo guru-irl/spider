@@ -9,9 +9,11 @@ const b = 'packages/b/src/b.test.ts';
 const c = 'packages/c/src/c.test.ts';
 const shared = 'packages/shared/src/shared.ts';
 const own = 'packages/b/src/b.ts';
-const record = (reads, result = 'passed', ms = 10) => ({ reads, result, ms, workerPids: [123] });
+const record = (reads, result = 'passed', ms = 10) => ({ reads, result, ms });
 const shard = (records, extra = {}) => ({
-  reportedFiles: Object.keys(records), records, stats: { hookErrors: 0, malformedSnapshots: 0 }, ...extra,
+  reportedFiles: Object.keys(records),
+  records: Object.fromEntries(Object.entries(records).map(([file, value], i) => [file, { workerPids: [123 + i], ...value }])),
+  stats: { hookErrors: 0, malformedSnapshots: 0 }, ...extra,
 });
 const build = (shards, expectedFiles = shards.flatMap(shard => shard.reportedFiles)) =>
   buildSelectionMap({ shards, expectedFiles, ...metadata });
@@ -48,6 +50,12 @@ test('rejects a file that has only a child snapshot, not its Vitest fork', () =>
   const childOnly = shard({ [a]: { ...record([shared]), workerPids: [] } });
   assert.match(shardProblems(childOnly).join('\n'), /fork.*a\.test\.ts/i);
   assert.equal(build([childOnly]).map, null);
+});
+
+test('rejects two test files sharing a Vitest fork', () => {
+  const sharedFork = shard({ [a]: record([]), [b]: { ...record([]), workerPids: [123] } });
+  assert.match(shardProblems(sharedFork).join('\n'), /fork.*ran both/i);
+  assert.equal(build([sharedFork]).map, null);
 });
 
 test('rejects a shard that logged a hook error', () => {

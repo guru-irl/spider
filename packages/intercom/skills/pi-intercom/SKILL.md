@@ -471,7 +471,7 @@ intercom({
 });
 
 // 2. Worker sends progress via send (no timeout)
-intercom({ action: "send", to: "planner", message: "Milestone 1: Login form complete (10min)" });
+intercom({ action: "send", to: "planner", message: "Milestone 1: Login form complete." });
 
 // 3. Worker asks for specific decision when needed
 const decision = await intercom({

@@ -101,6 +101,17 @@ function invoke(write = true, nativeHome = false, failBackup = false, script = j
       FIXTURE_FAIL_RENAME: undefined, FIXTURE_FAIL_WRITE: undefined, SPIDER_PIAI_MODELS: undefined, ...extraEnv },
   });
 }
+function copySyncScript(source: string, thinkingSource = readFileSync(join(root, "packages/db-core/src/thinking.ts"), "utf8")) {
+  const scripts = join(fixture, "scripts");
+  const core = join(fixture, "packages/db-core/src");
+  mkdirSync(scripts, { recursive: true });
+  mkdirSync(core, { recursive: true });
+  writeFileSync(join(fixture, "package.json"), JSON.stringify({ type: "module" }));
+  writeFileSync(join(scripts, "sync-copilot-models.mjs"), source);
+  writeFileSync(join(scripts, "pi-agent-dir.mjs"), readFileSync(join(root, "scripts/pi-agent-dir.mjs"), "utf8"));
+  writeFileSync(join(core, "thinking.ts"), thinkingSource);
+  return join(scripts, "sync-copilot-models.mjs");
+}
 function run(models: object[], config: object, write = true, nativeHome = false, failBackup = false) {
   writeFileSync(join(fixture, "catalog.json"), JSON.stringify({ data: models }));
   writeFileSync(modelsPath, JSON.stringify(config));
@@ -204,6 +215,21 @@ describe("Copilot model sync catalog", () => {
     expect(result.stdout).toMatch(/existing override/i);
     expect(readFileSync(modelsPath, "utf8")).toBe(JSON.stringify(before));
     expect(readdirSync(join(fixture, ".pi/agent"))).toEqual(["models.json"]);
+  });
+
+  it("previews a thinking level added to the shared definition", () => {
+    const thinkingSource = readFileSync(join(root, "packages/db-core/src/thinking.ts"), "utf8");
+    const extended = thinkingSource.replace('"xhigh", "max"] as const', '"xhigh", "max", "fixturelevel"] as const');
+    expect(extended).not.toBe(thinkingSource);
+    const script = copySyncScript(readFileSync(join(root, "scripts/sync-copilot-models.mjs"), "utf8"), extended);
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a" }];\n');
+    writeFileSync(join(fixture, "catalog.json"), JSON.stringify({ data: [] }));
+    writeFileSync(modelsPath, JSON.stringify({ providers: { "github-copilot": {
+      models: [{ id: "model-a", thinkingLevelMap: { fixturelevel: "fixturelevel" } }],
+    } } }));
+    const result = invoke(false, false, false, script);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('"thinkingLevelMap":{"fixturelevel":"fixturelevel"}');
   });
 
   // A field supported by another pi release is unsafe if the active pi lacks it.
@@ -563,14 +589,11 @@ describe("Copilot model sync catalog", () => {
     const source = readFileSync(join(root, "scripts/sync-copilot-models.mjs"), "utf8");
     const synthetic = source.replace(/const BUILTIN_SNAPSHOT = new Set\(\[[\s\S]*?\]\);/, 'const BUILTIN_SNAPSHOT = new Set(["model-a"]);');
     expect(synthetic).not.toBe(source);
-    const scripts = join(fixture, "scripts");
-    mkdirSync(scripts);
-    writeFileSync(join(scripts, "sync-copilot-models.mjs"), synthetic);
-    writeFileSync(join(scripts, "pi-agent-dir.mjs"), readFileSync(join(root, "scripts/pi-agent-dir.mjs"), "utf8"));
+    const script = copySyncScript(synthetic);
     writeFileSync(join(fixture, "catalog.json"), JSON.stringify({ data: [] }));
     const before = { providers: { "github-copilot": { models: [{ id: "model-a", compactAtPercent: 30 }] } } };
     writeFileSync(modelsPath, JSON.stringify(before));
-    const result = invoke(true, false, false, join(scripts, "sync-copilot-models.mjs"));
+    const result = invoke(true, false, false, script);
     expect(result.status, result.stderr).toBe(0);
     expect(result.stderr).toMatch(/snapshot.*migration skipped/i);
     expect(result.stdout).toMatch(/0 to migrate/);

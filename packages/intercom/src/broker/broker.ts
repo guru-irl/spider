@@ -683,17 +683,45 @@ class IntercomBroker {
         writeMessage(socket, { type: "roam_v0_result", requestId: clientMessage.requestId, kind: "refused", code: "invalid" });
         return;
       }
-      if (request.kind !== "lookup") throw new Error("roam-v0-operation-unsupported");
-      const targets: V0Endpoint[] = [];
-      for (const session of this.sessions.values()) {
-        if (session.info.v0HomeEpoch === undefined || !session.info.address || session.socket.destroyed || !session.socket.writable ||
-            (session.scopeId ?? null) !== request.scopeId) continue;
-        const name = session.info.runtimeFallbackAlias ? null : session.info.name ?? null;
-        if (request.selector.by === "id" ? session.info.address.sessionId !== request.selector.value
-          : !name || name.toLowerCase() !== request.selector.value.toLowerCase()) continue;
-        targets.push({ address: session.info.address, name, homeEpoch: session.info.v0HomeEpoch, endpointEpoch: session.info.endpointEpoch! });
+      if (request.kind === "lookup") {
+        const targets: V0Endpoint[] = [];
+        for (const session of this.sessions.values()) {
+          if (session.info.v0HomeEpoch === undefined || !session.info.address || session.socket.destroyed || !session.socket.writable ||
+              (session.scopeId ?? null) !== request.scopeId) continue;
+          const name = session.info.runtimeFallbackAlias ? null : session.info.name ?? null;
+          if (request.selector.by === "id" ? session.info.address.sessionId !== request.selector.value
+            : !name || name.toLowerCase() !== request.selector.value.toLowerCase()) continue;
+          targets.push({ address: session.info.address, name, homeEpoch: session.info.v0HomeEpoch, endpointEpoch: session.info.endpointEpoch! });
+        }
+        writeMessage(socket, { type: "roam_v0_result", requestId: request.requestId, kind: "matches", targets });
+        return;
       }
-      writeMessage(socket, { type: "roam_v0_result", requestId: request.requestId, kind: "matches", targets });
+      if (request.kind !== "deliver") throw new Error("roam-v0-operation-unsupported");
+      const respond = (result: Record<string, unknown>) => writeMessage(socket, { type: "roam_v0_result", requestId: request.requestId, ...result });
+      if (request.from.address.scopeId !== request.target.address.scopeId) {
+        respond({ kind: "refused", code: "unauthorized" }); return;
+      }
+      const candidates = [...this.sessions.values()].filter(session => session.info.address &&
+        addressKey(session.info.address) === addressKey(request.target.address));
+      if (!candidates.length || candidates.every(session => session.socket.destroyed || session.socket.writableEnded || !session.socket.writable)) {
+        respond({ kind: "refused", code: "offline" }); return;
+      }
+      const target = candidates.find(session => session.info.endpointEpoch === request.target.endpointEpoch &&
+        session.info.v0HomeEpoch === request.target.homeEpoch &&
+        (session.info.runtimeFallbackAlias ? null : session.info.name ?? null) === request.target.name);
+      if (!target) { respond({ kind: "refused", code: "changed" }); return; }
+      if (target.socket.destroyed || target.socket.writableEnded || !target.socket.writable) {
+        respond({ kind: "refused", code: "offline" }); return;
+      }
+      try {
+        writeMessage(target.socket, { type: "message", from: request.from, message: {
+          id: request.message.id, timestamp: request.message.timestamp, content: { text: request.message.text },
+          brokerReceivedAt: Date.now(), brokerDeliveredAt: Date.now(),
+        } });
+        respond({ kind: "socket_delivered", id: request.message.id });
+      } catch {
+        respond({ kind: "unknown", id: request.message.id });
+      }
       return;
     }
 

@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import net from "node:net";
+import { once } from "node:events";
 import type { ChildProcess } from "node:child_process";
 import { startTestBroker, stopTestBroker, testBrokerEnv } from "../test-support.js";
 import { getBrokerSocketPath } from "./paths.js";
@@ -11,6 +12,7 @@ import {
   parseV0BrokerReply,
   parseV0BrokerRequest,
   V0_INTERCOM_FEATURE,
+  type V0Endpoint,
 } from "../roam-v0.js";
 
 const endpoint = {
@@ -166,6 +168,40 @@ describe("private roaming broker", () => {
       endpointEpoch: expect.any(String),
     }] });
     expect(await lookup("scope-3", "name", "ben")).toEqual({ kind: "matches", targets: [] });
+  });
+
+  it("dispatches one ordinary text message to the pinned live endpoint", async () => {
+    const ben = await register("stable-b", "b", "ben", "scope-1", 3);
+    const found = await lookup("scope-1", "name", "ben");
+    const target = (found.targets as V0Endpoint[])[0];
+    const observed = once(ben, "message");
+    expect(await request({ kind: "deliver", from: origin, target, message })).toEqual({ kind: "socket_delivered", id: "question-1" });
+    const [from, received] = await observed;
+    expect(from).toEqual(origin);
+    expect(received).toMatchObject({ id: "question-1", timestamp: 123, content: { text: "hello" } });
+  });
+
+  it("refuses cross-scope, forged, offline, and reconnected deliveries without retargeting", async () => {
+    const ben = await register("stable-b", "b", "ben", "scope-1", 3);
+    const found = await lookup("scope-1", "name", "ben");
+    const target = (found.targets as V0Endpoint[])[0];
+    const inbox: unknown[] = [];
+    ben.on("message", (...args) => inbox.push(args));
+    const scopeTwo = { ...origin, address: { ...origin.address, scopeId: "scope-2" } };
+    expect(await request({ kind: "deliver", from: scopeTwo, target, message })).toEqual({ kind: "refused", code: "unauthorized" });
+    expect(await request({ kind: "deliver", from: origin, target: { ...target, address: { ...target.address, scopeId: "scope-2" } }, message })).toEqual({ kind: "refused", code: "unauthorized" });
+    expect(await request({ kind: "deliver", from: { ...origin, pid: 123 }, target, message })).toEqual({ kind: "refused", code: "invalid" });
+    await ben.listSessions();
+    expect(inbox).toEqual([]);
+
+    await ben.disconnect();
+    expect(await request({ kind: "deliver", from: origin, target, message })).toEqual({ kind: "refused", code: "offline" });
+    const replacement = await register("stable-b", "b", "ben", "scope-1", 3);
+    const replacementInbox: unknown[] = [];
+    replacement.on("message", (...args) => replacementInbox.push(args));
+    expect(await request({ kind: "deliver", from: origin, target, message })).toEqual({ kind: "refused", code: "changed" });
+    await replacement.listSessions();
+    expect(replacementInbox).toEqual([]);
   });
 
   it("advertises roaming over its private Unix socket", async () => {

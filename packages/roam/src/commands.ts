@@ -189,8 +189,10 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
         /^preflight-failed:[^:]+:intercom-revocation-unconfirmed$/.test(reason ?? "") && /^Pair [A-Za-z0-9][A-Za-z0-9._-]{0,127} has an unconfirmed revocation\.$/.test(issue.detail));
       const legacyLaunchWarning = ["roaming-enabled", "enable-unavailable", "enable-pending"].includes(result.reason) && issue.severity === "warning" &&
         /^(?:exact-launch:[A-Za-z0-9-]+(?::[A-Za-z0-9._-]+)?|legacy-launch-check-unavailable(?::[A-Za-z0-9-]+)?)$/.test(reason ?? "");
+      const legacyMoveWarning = ["roaming-disabled", "disable-unavailable", "disable-pending"].includes(result.reason) && issue.severity === "warning" &&
+        /^(?:legacy-move-pending:[A-Za-z0-9._-]+|legacy-move-check-unavailable)$/.test(reason ?? "");
       return reason && repairCommand ? [{ reason, repairCommand, ...(cause ? { causeCode: cause } : {}),
-        ...(legacyLaunchWarning ? { severity: "warning" } : {}),
+        ...(legacyLaunchWarning || legacyMoveWarning ? { severity: "warning" } : {}),
         ...(pairDetail || issue.detail === "Start Herdr or check hc on this machine." ? { detail: issue.detail } : {}) }] : [];
     });
   }

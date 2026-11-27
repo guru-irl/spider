@@ -161,6 +161,13 @@ export async function configureV0Service(root: string, enabled: boolean, options
       const pi = enabled ? resolveParticipantPi() : null;
       if (enabled && (!pi || !cli || !statSync(cli).isFile())) throw new Error("Install pi and the Spider CLI first.");
       if (enabled) issues = await pendingLegacyLaunchWarnings(root, config);
+      else if (config.role === "hub") {
+        const pending = readPendingMoves(join(root, "roam", "journal.db"));
+        issues = pending?.map(({ operationId }) => ({ severity: "warning", reason: `legacy-move-pending:${operationId}`,
+          detail: `Legacy move ${operationId} is still recorded as pending.`, repairCommand: `spider roam cancel ${operationId}` })) ?? [
+          { severity: "warning", reason: "legacy-move-check-unavailable", detail: "Could not check for pending legacy moves.", repairCommand: "spider roam doctor" },
+        ];
+      }
       if (config.role === "hub") {
         if (enabled) hubCoreSelection(process.env);
         const ports = options.launchd ?? servicePorts();

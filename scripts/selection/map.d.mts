@@ -8,6 +8,8 @@ export interface SelectionMap {
   tests: Record<string, {
     /** Indices into files. */
     reads: number[];
+    /** Bundle paths for which no source map was found. */
+    unresolved: string[];
     ms: number;
     result: 'passed' | 'failed' | 'skipped';
   }>;

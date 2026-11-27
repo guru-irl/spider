@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync, realpathSync } from "node:fs";
+import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Db } from "@spider/db-core";
 import { storeScope } from "@spider/db-core/roam/codec";
@@ -12,7 +12,7 @@ import { createSessionLeases, type ProcessProbe } from "@spider/herdr/sessions/l
 import type { Diagnostic, WorkspaceSnapshot } from "./contracts";
 import { openDiagnosticSnapshot } from "./diagnostic-snapshot";
 import { snapshotPrivateRefs } from "./git-bundle";
-import { inspectIntentReservations, inspectIntentViews } from "./intent";
+import { inspectIntentViews } from "./intent";
 import { inspectAdoptedOwner } from "./launcher";
 import { isMachineId } from "./machine-id";
 import { parseSourceCleanup } from "./move";
@@ -41,32 +41,6 @@ async function pendingHandoffs(root: string) {
         process.platform !== "win32" && (stat.mode & 0o022) !== 0) throw new Error("Unsafe Herdr directory");
   }
   return [];
-}
-function sourceStamp(file: string): string {
-  try {
-    const stat = lstatSync(file, { bigint: true });
-    const stamp = [stat.dev, stat.ino, stat.mode, stat.uid, stat.nlink, stat.size, stat.mtimeNs, stat.ctimeNs].join(":");
-    if (!stat.isFile() || !file.endsWith("-shm")) return stamp;
-    const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    try {
-      const opened = fstatSync(fd, { bigint: true });
-      if (opened.dev !== stat.dev || opened.ino !== stat.ino) throw new Error("Changed inventory source");
-      const bytes = Buffer.alloc(96), length = readSync(fd, bytes, 0, bytes.length, 0);
-      return `${stamp}:${createHash("sha256").update(bytes.subarray(0, length)).digest("hex")}`;
-    } finally { closeSync(fd); }
-  } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing"; throw error; }
-}
-function treeStamp(root: string): string {
-  const entries: string[] = [];
-  const visit = (file: string): void => {
-    if (entries.length >= 100_000) throw new Error("Inventory directory too large");
-    entries.push(`${file}:${sourceStamp(file)}`);
-    let stat;
-    try { stat = lstatSync(file); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
-    if (stat.isDirectory() && !stat.isSymbolicLink()) for (const name of readdirSync(file).sort()) visit(join(file, name));
-  };
-  visit(root);
-  return createHash("sha256").update(entries.join("\n")).digest("hex");
 }
 function v0Home(value: unknown) {
   const parsed = parseHome(value);
@@ -115,18 +89,17 @@ async function probeProcess(pid: number): Promise<ProcessProbe> {
   } catch { return { kind: "unknown" }; }
 }
 
-/** Inspect local evidence without opening the source journal for writing. */
-export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeInventory> {
+async function readLegacyEvidence(root: string): Promise<{ inventory: LegacyUpgradeInventory; digest: string }> {
+  const digest = createHash("sha256"), findings: string[] = [], unknown: string[] = [];
+  // Record only the ordered projections used by this inventory, not file or WAL metadata.
+  const record = <T>(value: T): T => {
+    digest.update(JSON.stringify(value) ?? "undefined").update("\n");
+    return value;
+  };
+  const readRows = <T>(db: Db, sql: string, ...args: unknown[]) => record(db.prepare(sql).all(...args) as T[]);
+  const readRow = <T>(db: Db, sql: string, ...args: unknown[]) => record(db.prepare(sql).get(...args) as T | undefined);
   try {
-    const findings: string[] = [], unknown: string[] = [];
-    const watched = new Map<string, string>();
-    const watch = (file: string) => { if (!watched.has(file)) watched.set(file, sourceStamp(file)); };
-    const watchDb = (file: string) => { watch(file); watch(`${file}-wal`); watch(`${file}-shm`); };
-    const snapshot = (file: string) => { watchDb(file); return openDiagnosticSnapshot(file); };
-    const trees = [join(root, "roam", "intents"), join(root, "roam", "stores"), join(root, "herdr", "id-locks"), join(root, "herdr", "leases")];
-    const initialTrees = trees.map(treeStamp);
-    watch(join(root, "roam", "config.json")); watch(join(root, "roam", "machine.json"));
-    watchDb(join(root, "roam", "journal.db")); watchDb(join(root, "spider.db"));
+    const snapshot = openDiagnosticSnapshot;
     const journalKinds = new Map<string, string>();
     const activeFreezes = new Set<string>(), completedFreezes = new Set<string>(), requiredStores = new Set<string>();
     const v0Maps = new Set<string>();
@@ -134,11 +107,13 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
     const v0: Array<{ origin: "checkpoint" | "incoming"; plan: RelocatePlan; expectedKey?: string }> = [];
     const configFile = join(root, "roam", "config.json"), identityFile = join(root, "roam", "machine.json");
     const configured = present(configFile), config = configured ? readLocalIdentity(root) : null;
+    record(config?.machineId);
     if (!configured && present(identityFile)) unknown.push("roaming configuration unavailable");
     const db = snapshot(join(root, "roam", "journal.db"));
+    record(!!db);
     if (db) try {
-      const operations = db.prepare("SELECT operation_id,machine_id,kind,result_json FROM roam_operations WHERE kind IN ('move','move-session','move-abort-cleanup','exact-session-launch') ORDER BY operation_id")
-        .all() as Array<{ operation_id: unknown; machine_id: unknown; kind: string; result_json: unknown }>;
+      const operations = readRows<{ operation_id: unknown; machine_id: unknown; kind: string; result_json: unknown }>(db,
+        "SELECT operation_id,machine_id,kind,result_json FROM roam_operations WHERE kind IN ('move','move-session','move-abort-cleanup','exact-session-launch') ORDER BY operation_id");
       for (const operation of operations) {
         const id = operation.operation_id;
         if (typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id) || !isMachineId(operation.machine_id) ||
@@ -153,7 +128,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
         if (operation.kind === "move-session") {
           if (result !== null) throw new Error("Invalid move reservation result");
           let reserved: string | null = null;
-          const actions = db.prepare("SELECT action,result_json FROM roam_operation_actions WHERE operation_id=? ORDER BY seq").all(id) as Array<{ action: string; result_json: string }>;
+          const actions = readRows<{ action: string; result_json: string }>(db, "SELECT action,result_json FROM roam_operation_actions WHERE operation_id=? ORDER BY seq", id);
           for (const action of actions) {
             const value: unknown = JSON.parse(action.result_json);
             if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid move reservation");
@@ -165,7 +140,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
           }
           if (reserved !== null) {
             const label = `move reservation ${id} operation ${reserved}`;
-            const linked = db.prepare("SELECT kind FROM roam_operations WHERE operation_id=?").get(reserved) as { kind?: unknown } | undefined;
+            const linked = readRow<{ kind: unknown }>(db, "SELECT kind FROM roam_operations WHERE operation_id=?", reserved);
             if (linked?.kind !== "move") unknown.push(`${label} journal missing`);
             else findings.push(label);
           }
@@ -173,7 +148,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
           findings.push(`${operation.kind} operation ${id}`);
           if (operation.kind === "move-abort-cleanup") {
             try {
-              const action = db.prepare("SELECT result_json FROM roam_operation_actions WHERE operation_id=? AND action='abort-cleanup-request' ORDER BY seq LIMIT 1").get(id) as { result_json: string } | undefined;
+              const action = readRow<{ result_json: string }>(db, "SELECT result_json FROM roam_operation_actions WHERE operation_id=? AND action='abort-cleanup-request' ORDER BY seq LIMIT 1", id);
               if (!action) throw new Error("Missing abort cleanup request");
               const request: unknown = JSON.parse(action.result_json);
               if (!request || typeof request !== "object" || Array.isArray(request)) throw new Error("Invalid abort cleanup request");
@@ -186,7 +161,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
             } catch { unknown.push(`abort cleanup operation ${id} request unavailable`); }
           }
           if (operation.kind === "move") {
-            const checks = db.prepare("SELECT action,result_json FROM roam_operation_actions WHERE operation_id=? AND action IN ('move-action-complete','move-state') ORDER BY seq").all(id) as Array<{ action: string; result_json: string }>;
+            const checks = readRows<{ action: string; result_json: string }>(db, "SELECT action,result_json FROM roam_operation_actions WHERE operation_id=? AND action IN ('move-action-complete','move-state') ORDER BY seq", id);
             for (const check of checks) {
               const data: unknown = JSON.parse(check.result_json);
               if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Invalid move evidence");
@@ -196,13 +171,13 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
               if (!value || typeof value !== "object" || Array.isArray(value) || !Array.isArray((value as Record<string, unknown>).storeKeys)) throw new Error("Invalid move store evidence");
               for (const key of (value as { storeKeys: unknown[] }).storeKeys) { storeScope(key); requiredStores.add(key as string); }
             }
-            const pending = db.prepare("SELECT seq,result_json FROM roam_operation_actions WHERE operation_id=? AND action='move-source-cleanup-pending' ORDER BY seq DESC LIMIT 1").get(id) as { seq: number; result_json: string } | undefined;
+            const pending = readRow<{ seq: number; result_json: string }>(db, "SELECT seq,result_json FROM roam_operation_actions WHERE operation_id=? AND action='move-source-cleanup-pending' ORDER BY seq DESC LIMIT 1", id);
             if (pending) try {
               const data: unknown = JSON.parse(pending.result_json);
               if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Invalid source cleanup");
               const record = data as Record<string, unknown>, cleanup = parseSourceCleanup(record.sourceCleanup);
               if (typeof record.sessionId !== "string" || !record.sessionId || !isMachineId(record.sourceMachine) || cleanup.status !== "pending") throw new Error("Invalid source cleanup");
-              const later = db.prepare("SELECT result_json FROM roam_operation_actions WHERE operation_id=? AND action='move-action-complete' AND seq>? ORDER BY seq").all(id, pending.seq) as { result_json: string }[];
+              const later = readRows<{ result_json: string }>(db, "SELECT result_json FROM roam_operation_actions WHERE operation_id=? AND action='move-action-complete' AND seq>? ORDER BY seq", id, pending.seq);
               if (!later.some(row => (JSON.parse(row.result_json) as { action?: unknown }).action === "cleanup"))
                 findings.push(`source cleanup session ${safeId(record.sessionId)} operation ${id}`);
             } catch { unknown.push(`source cleanup operation ${id} unavailable`); }
@@ -222,8 +197,8 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
       }
       const preparations = new Map<string, { id: string; root: string; digest: string; key: string }>();
       const transitions = new Map<string, { id: string; root: string; digest: string; key: string }>();
-      const workspaceActions = db.prepare("SELECT o.operation_id,a.action,a.result_json FROM roam_operations o JOIN roam_operation_actions a ON a.operation_id=o.operation_id WHERE o.kind<>'relocate-v0' AND a.action IN ('workspace-prepare-start','workspace-prepared','workspace-settings-transition','workspace-settings-transition-complete','workspace-settings-recovery-complete') ORDER BY a.seq").all() as
-        Array<{ operation_id: string; action: string; result_json: string }>;
+      const workspaceActions = readRows<{ operation_id: string; action: string; result_json: string }>(db,
+        "SELECT o.operation_id,a.action,a.result_json FROM roam_operations o JOIN roam_operation_actions a ON a.operation_id=o.operation_id WHERE o.kind<>'relocate-v0' AND a.action IN ('workspace-prepare-start','workspace-prepared','workspace-settings-transition','workspace-settings-transition-complete','workspace-settings-recovery-complete') ORDER BY a.seq");
       for (const action of workspaceActions) {
         const result: unknown = JSON.parse(action.result_json);
         if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Invalid workspace action");
@@ -267,11 +242,11 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
           v0.push({ origin: "incoming", plan, expectedKey: data.expectedKey });
         } else v0.push({ origin: "checkpoint", plan });
       }
-      const tables = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('freeze_journal','freeze_store_rosters')").all() as { name: string }[]).map(row => row.name));
+      const tables = new Set(readRows<{ name: string }>(db, "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('freeze_journal','freeze_store_rosters') ORDER BY name").map(row => row.name));
       if (tables.has("freeze_journal") !== tables.has("freeze_store_rosters")) throw new Error("Incomplete freeze journal");
       if (tables.has("freeze_journal")) {
-        const freezes = db.prepare("SELECT session_id,move_id,epoch,state FROM freeze_journal").all() as Array<{ session_id: unknown; move_id: unknown; epoch: unknown; state: unknown }>;
-        const rosters = db.prepare("SELECT session_id,move_id,stores_json FROM freeze_store_rosters").all() as Array<{ session_id: unknown; move_id: unknown; stores_json: unknown }>;
+        const freezes = readRows<{ session_id: unknown; move_id: unknown; epoch: unknown; state: unknown }>(db, "SELECT session_id,move_id,epoch,state FROM freeze_journal ORDER BY session_id,move_id");
+        const rosters = readRows<{ session_id: unknown; move_id: unknown; stores_json: unknown }>(db, "SELECT session_id,move_id,stores_json FROM freeze_store_rosters ORDER BY session_id,move_id");
         for (const roster of rosters) {
           if (!freezes.some(row => row.session_id === roster.session_id && row.move_id === roster.move_id) || typeof roster.stores_json !== "string") throw new Error("Orphan freeze roster");
           const stores: unknown = JSON.parse(roster.stores_json);
@@ -295,10 +270,13 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
       }
     } finally { db.close(); }
     const global = snapshot(join(root, "spider.db"));
+    record(!!global);
     if (!global && config) throw new Error("Missing global store");
-    let globalOpen = !!global;
     if (global) try {
-      const meta = global.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id?: unknown; store_key?: unknown } | undefined;
+      type StoreIdentity = { machine_id: unknown; store_key: unknown };
+      type HomeRow = { session_id: string; machine_id: string; epoch: number; move_id: string | null; updated_at: number; state: string | null; destination: string | null };
+      const homeFor = (sessionId: string) => global.prepare("SELECT session_id,machine_id,epoch,move_id,updated_at,state,destination FROM session_homes WHERE session_id=?").get(sessionId) as HomeRow | undefined;
+      const meta = readRow<StoreIdentity>(global, "SELECT machine_id,store_key FROM roam_meta WHERE id=1");
       if (!meta || !isMachineId(meta.machine_id) || config && meta.machine_id !== config.machineId || !(meta.store_key === null || meta.store_key === "global")) throw new Error("Global store identity mismatch");
       if (!configured && global.prepare("SELECT 1 FROM session_homes UNION ALL SELECT 1 FROM roam_locations UNION ALL SELECT 1 FROM roam_repo_maps UNION ALL SELECT 1 FROM roam_workspace_maps LIMIT 1").get())
         unknown.push("roaming identity unavailable");
@@ -306,15 +284,14 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
         const placement = parsePlacement(row.value);
         if (row.key !== placement.sessionId) throw new Error("Invalid v0 managed placement");
         if (!config || placement.machineId !== config.machineId) continue;
-        const home = global.prepare("SELECT session_id,machine_id,epoch,move_id,updated_at,state,destination FROM session_homes WHERE session_id=?").get(row.key) as
-          { session_id: string; machine_id: string; epoch: number; move_id: string | null; updated_at: number; state: string | null; destination: string | null } | undefined;
+        const home = homeFor(row.key);
         if (!home || home.state === null) continue;
         const parsed = v0Home({ sessionId: home.session_id, machineId: home.machine_id, epoch: home.epoch, moveId: home.move_id,
           updatedAt: home.updated_at, state: home.state, destination: home.destination });
         if (parsed.state === "running" && parsed.machineId === config.machineId) v0Owners.set(row.key, { placement, epoch: parsed.epoch });
       }
-      const homeActions = global.prepare("SELECT move_id,session_id,expected_epoch,args_digest,cancelled,committed_home_json FROM roam_home_actions ORDER BY move_id").all() as
-        Array<{ move_id: unknown; session_id: unknown; expected_epoch: unknown; args_digest: unknown; cancelled: unknown; committed_home_json: unknown }>;
+      const homeActions = readRows<{ move_id: unknown; session_id: unknown; expected_epoch: unknown; args_digest: unknown; cancelled: unknown; committed_home_json: unknown }>(global,
+        "SELECT move_id,session_id,expected_epoch,args_digest,cancelled,committed_home_json FROM roam_home_actions ORDER BY move_id");
       for (const action of homeActions) {
         if (typeof action.move_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(action.move_id) ||
             typeof action.session_id !== "string" || !action.session_id) throw new Error("Invalid legacy home action");
@@ -339,7 +316,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
         if (journalKinds.get(action.move_id) !== "move") unknown.push(`${label} journal missing`);
         else findings.push(label);
       }
-      for (const row of localEntries<unknown>(global, "mapping-intent")) {
+      for (const row of record(localEntries<unknown>(global, "mapping-intent"))) {
         if (!row.value || typeof row.value !== "object" || Array.isArray(row.value)) throw new Error("Invalid mapping intent");
         const map = row.value as Record<string, unknown>;
         if (typeof map.identity !== "string" || !map.identity || typeof map.store_key !== "string" ||
@@ -358,10 +335,9 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
           if (placement.machineId !== config.machineId || map.store_key !== `worktree:${placement.repoKey}:${placement.workspaceId}` ||
               !placementContainsCheckout(map.target_path as string, placement.cwd)) return false;
           if (evidence.origin === "incoming") {
-            const pointer = readLocal<unknown>(global, "relocate-incoming", evidence.expectedKey!);
+            const pointer = record(readLocal<unknown>(global, "relocate-incoming", evidence.expectedKey!));
             if (!pointer || typeof pointer !== "object" || Array.isArray(pointer) || (pointer as Record<string, unknown>).moveId !== plan.moveId) return false;
-            const home = global.prepare("SELECT session_id,machine_id,epoch,move_id,updated_at,state,destination FROM session_homes WHERE session_id=?").get(plan.source.sessionId) as
-              { session_id: string; machine_id: string; epoch: number; move_id: string | null; updated_at: number; state: string | null; destination: string | null } | undefined;
+            const home = record(homeFor(plan.source.sessionId));
             if (!home || home.state === null && home.destination === null) return true;
             const parsed = v0Home({ sessionId: home.session_id, machineId: home.machine_id, epoch: home.epoch, moveId: home.move_id,
               updatedAt: home.updated_at, state: home.state, destination: home.destination });
@@ -369,12 +345,11 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
               parsed.machineId === plan.source.machineId && parsed.destination === config.machineId && parsed.epoch === plan.source.epoch + 1 ||
               parsed.state !== "moving" && parsed.machineId === plan.source.machineId && parsed.epoch <= plan.source.epoch;
           }
-          const home = global.prepare("SELECT machine_id,epoch,move_id,state,destination FROM session_homes WHERE session_id=?").get(plan.source.sessionId) as
-            { machine_id: string; epoch: number; move_id: string | null; state: string | null; destination: string | null } | undefined;
+          const home = record(homeFor(plan.source.sessionId));
           return !!home && home.state === "moving" && home.machine_id === plan.source.machineId && home.destination === plan.destinationPlacement.machineId &&
             home.epoch === plan.source.epoch + 1 && home.move_id === plan.moveId;
         });
-        if (ownedByV0) v0Maps.add(map.store_key);
+        if (record(!!ownedByV0)) v0Maps.add(map.store_key);
         else findings.push(`map store ${safeId(map.store_key)}`);
       }
       type FrozenRow = { session_id: string; epoch: number; move_id: string | null; freeze_seq: number | null };
@@ -382,7 +357,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
       const inspectFrozen = (store: Db, key: string): void => {
         const identity = store.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id?: unknown; store_key?: unknown } | undefined;
         if (!identity || identity.machine_id !== meta.machine_id || !(identity.store_key === key || identity.store_key === null)) throw new Error("Store identity mismatch");
-        const rows = store.prepare("SELECT session_id,epoch,move_id,freeze_seq FROM roam_sessions WHERE state='frozen'").all() as
+        const rows = store.prepare("SELECT session_id,epoch,move_id,freeze_seq FROM roam_sessions WHERE state='frozen' ORDER BY session_id").all() as
           Array<{ session_id: unknown; epoch: unknown; move_id: unknown; freeze_seq: unknown }>;
         for (const row of rows) {
           if (typeof row.session_id !== "string" || !row.session_id || !Number.isSafeInteger(row.epoch) ||
@@ -402,8 +377,8 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
           : global.prepare("SELECT 1 FROM roam_repo_maps WHERE repo_key=?").get(redirect.key.slice(5));
         if (!mapped || requiredStores.has(redirect.key) && !present(redirect.value)) unknown.push(`map redirect store ${safeId(redirect.key)} unavailable`);
       }
-      const projects = global.prepare("SELECT project_key,db_path,git_common_dir FROM projects ORDER BY project_key").all() as
-        Array<{ project_key: string; db_path: string; git_common_dir: string | null }>;
+      const projects = readRows<{ project_key: string; db_path: string; git_common_dir: string | null }>(global,
+        "SELECT project_key,db_path,git_common_dir FROM projects ORDER BY project_key");
       for (const project of projects) if (typeof project.project_key !== "string" || typeof project.db_path !== "string" ||
           !isAbsolute(project.db_path) || resolve(project.db_path) !== project.db_path ||
           !(project.git_common_dir === null || typeof project.git_common_dir === "string" && isAbsolute(project.git_common_dir) && resolve(project.git_common_dir) === project.git_common_dir))
@@ -411,28 +386,28 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
       const prefix = "spider-local:mapping-redirect:";
       const catalog: RoamCatalog = {
         globalPath: join(root, "spider.db"), machine: meta.machine_id, projects,
-        repos: global.prepare("SELECT repo_key,path FROM roam_repo_maps").all() as RoamCatalog["repos"],
-        worktrees: global.prepare("SELECT repo_key,workspace_id,path FROM roam_workspace_maps").all() as RoamCatalog["worktrees"],
-        redirects: global.prepare("SELECT peer_stream FROM roam_cursors WHERE peer_machine='' AND substr(peer_stream,1,?)=?")
-          .all(prefix.length, prefix) as RoamCatalog["redirects"],
+        repos: readRows<RoamCatalog["repos"][number]>(global, "SELECT repo_key,path FROM roam_repo_maps ORDER BY repo_key"),
+        worktrees: readRows<RoamCatalog["worktrees"][number]>(global, "SELECT repo_key,workspace_id,path FROM roam_workspace_maps ORDER BY repo_key,workspace_id"),
+        redirects: readRows<RoamCatalog["redirects"][number]>(global, "SELECT peer_stream FROM roam_cursors WHERE peer_machine='' AND substr(peer_stream,1,?)=? ORDER BY peer_stream", prefix.length, prefix),
       };
-      global.close(); globalOpen = false;
       const replicaDir = join(root, "roam", "stores");
+      let replicaNames: string[] = [];
       if (present(replicaDir)) {
         const stat = lstatSync(replicaDir);
         if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(replicaDir) !== replicaDir) throw new Error("Unsafe replica directory");
-        for (const name of readdirSync(replicaDir).filter(name => /^[a-f0-9]{64}\.db$/.test(name))) {
-          const replica = openRoamPathReadOnly(join(replicaDir, name), snapshot);
-          if (!replica) { unknown.push("replica unavailable"); continue; }
-          try {
-            const identity = replica.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id?: unknown; store_key?: unknown } | undefined;
-            const key = typeof identity?.store_key === "string" ? identity.store_key : "unknown";
-            let valid = false;
-            try { storeScope(key); valid = true; } catch { /* The recorded identifier is not trustworthy. */ }
-            if (!valid || Number(replica.pragma("user_version")) !== 14 || identity?.machine_id !== meta.machine_id ||
-                name !== `${createHash("sha256").update(key).digest("hex")}.db`) unknown.push(`replica store ${safeId(key)} identity mismatch`);
-          } finally { replica.close(); }
-        }
+        replicaNames = readdirSync(replicaDir).filter(name => /^[a-f0-9]{64}\.db$/.test(name)).sort();
+      }
+      for (const name of record(replicaNames)) {
+        const replica = openRoamPathReadOnly(join(replicaDir, name), snapshot);
+        if (!replica) { unknown.push("replica unavailable"); continue; }
+        try {
+          const identity = readRow<StoreIdentity>(replica, "SELECT machine_id,store_key FROM roam_meta WHERE id=1");
+          const key = typeof identity?.store_key === "string" ? identity.store_key : "unknown";
+          let valid = false;
+          try { storeScope(key); valid = true; } catch { /* The recorded identifier is not trustworthy. */ }
+          if (!valid || Number(replica.pragma("user_version")) !== 14 || identity?.machine_id !== meta.machine_id ||
+              name !== `${createHash("sha256").update(key).digest("hex")}.db`) unknown.push(`replica store ${safeId(key)} identity mismatch`);
+        } finally { replica.close(); }
       }
       const keys = listStoreKeys(catalog, storeOptions);
       for (const key of requiredStores) if (!keys.includes(key as (typeof keys)[number])) unknown.push(`required store ${safeId(key)} unavailable`);
@@ -447,10 +422,10 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
             const replica = openRoamPathReadOnly(file, snapshot);
             if (!replica) throw new Error("Missing replica");
             try {
-              const identity = replica.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id?: unknown; store_key?: unknown } | undefined;
+              const identity = readRow<StoreIdentity>(replica, "SELECT machine_id,store_key FROM roam_meta WHERE id=1");
               if (!identity || identity.machine_id !== meta.machine_id || identity.store_key !== key) throw new Error("Replica identity mismatch");
-              const fence = replica.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine=? AND peer_stream=?").get(FENCE_MACHINE, FENCE_STREAM);
-              const hint = readLocal<unknown>(replica, FENCE_TARGET, key);
+              const fence = readRow(replica, "SELECT 1 FROM roam_cursors WHERE peer_machine=? AND peer_stream=?", FENCE_MACHINE, FENCE_STREAM);
+              const hint = record(readLocal<unknown>(replica, FENCE_TARGET, key));
               if (hint !== undefined) {
                 if (!hint || typeof hint !== "object" || Array.isArray(hint)) throw new Error("Invalid replica fence target");
                 const target = hint as Record<string, unknown>;
@@ -490,82 +465,78 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
             inspectingFrozen = true; inspectFrozen(store, identity.store_key);
           } else if (identity.store_key === null) {
             inspectingFrozen = true;
-            const frozen = store.prepare("SELECT session_id FROM roam_sessions WHERE state='frozen'").all() as Array<{ session_id: unknown }>;
+            const frozen = store.prepare("SELECT session_id FROM roam_sessions WHERE state='frozen' ORDER BY session_id").all() as Array<{ session_id: unknown }>;
             for (const row of frozen) unknown.push(`frozen session ${typeof row.session_id === "string" ? safeId(row.session_id) : "unknown"} project ${safeId(project.project_key)} store identity unavailable`);
           }
           inspectedWorktrees.add(project.db_path);
         } catch { if (inspectingFrozen) unknown.push(`project ${safeId(project.project_key)} frozen evidence unavailable`); }
         finally { store?.close(); }
       }
-      if (frozenRows.length) {
-        const homes = snapshot(join(root, "spider.db"));
-        if (!homes) throw new Error("Global store disappeared");
-        try {
-          for (const { key, row } of frozenRows) {
-            const label = `frozen session ${safeId(row.session_id)} store ${safeId(key)}`;
-            if (row.move_id && activeFreezes.has(JSON.stringify([row.session_id, row.move_id]))) { findings.push(label); continue; }
-            if (row.move_id !== null || row.freeze_seq !== null) {
-              if (row.move_id === null || row.freeze_seq === null || !completedFreezes.has(JSON.stringify([row.session_id, row.move_id]))) {
-                unknown.push(`${label} freeze record unavailable`); continue;
-              }
-            }
-            const home = homes.prepare("SELECT session_id,machine_id,epoch,move_id,updated_at,state,destination FROM session_homes WHERE session_id=?").get(row.session_id) as
-              { session_id: string; machine_id: string; epoch: number; move_id: string | null; updated_at: number; state: string | null; destination: string | null } | undefined;
-            if ((!home || home.state === null) && config && v0.some(evidence => {
-              const plan = evidence.plan;
-              if (evidence.origin !== "incoming" || evidence.expectedKey !== key || plan.source.sessionId !== row.session_id ||
-                  plan.destinationPlacement.machineId !== config.machineId || ![plan.source.epoch, plan.source.epoch + 1].includes(row.epoch)) return false;
-              const pointer = readLocal<unknown>(homes, "relocate-incoming", key);
-              return !!pointer && typeof pointer === "object" && !Array.isArray(pointer) && (pointer as Record<string, unknown>).moveId === plan.moveId;
-            })) continue;
-            if (home && home.state !== null) {
-              const parsed = v0Home({ sessionId: home.session_id, machineId: home.machine_id, epoch: home.epoch, moveId: home.move_id,
-                updatedAt: home.updated_at, state: home.state, destination: home.destination });
-              if (parsed.state !== "moving" || v0.some(evidence => evidence.plan.moveId === parsed.moveId && evidence.plan.source.sessionId === row.session_id)) continue;
-            }
-            unknown.push(`${label} freeze record unavailable`);
+      for (const { key, row } of record(frozenRows)) {
+        const label = `frozen session ${safeId(row.session_id)} store ${safeId(key)}`;
+        if (row.move_id && activeFreezes.has(JSON.stringify([row.session_id, row.move_id]))) { findings.push(label); continue; }
+        if (row.move_id !== null || row.freeze_seq !== null) {
+          if (row.move_id === null || row.freeze_seq === null || !completedFreezes.has(JSON.stringify([row.session_id, row.move_id]))) {
+            unknown.push(`${label} freeze record unavailable`); continue;
           }
-        } finally { homes.close(); }
+        }
+        const home = record(homeFor(row.session_id));
+        if ((!home || home.state === null) && config && v0.some(evidence => {
+          const plan = evidence.plan;
+          if (evidence.origin !== "incoming" || evidence.expectedKey !== key || plan.source.sessionId !== row.session_id ||
+              plan.destinationPlacement.machineId !== config.machineId || ![plan.source.epoch, plan.source.epoch + 1].includes(row.epoch)) return false;
+          const pointer = record(readLocal<unknown>(global, "relocate-incoming", key));
+          return !!pointer && typeof pointer === "object" && !Array.isArray(pointer) && (pointer as Record<string, unknown>).moveId === plan.moveId;
+        })) continue;
+        if (home && home.state !== null) {
+          const parsed = v0Home({ sessionId: home.session_id, machineId: home.machine_id, epoch: home.epoch, moveId: home.move_id,
+            updatedAt: home.updated_at, state: home.state, destination: home.destination });
+          if (parsed.state !== "moving" || v0.some(evidence => evidence.plan.moveId === parsed.moveId && evidence.plan.source.sessionId === row.session_id)) continue;
+        }
+        unknown.push(`${label} freeze record unavailable`);
       }
-    } finally { if (globalOpen) global.close(); }
-    const stateRoot = join(root, "herdr"), pending = await pendingHandoffs(stateRoot);
+    } finally { global.close(); }
+    const stateRoot = join(root, "herdr"), pending = record(await pendingHandoffs(stateRoot));
     for (const handoff of pending) {
       const label = `handoff session ${safeId(handoff.sessionId)} operation ${safeId(handoff.operationId)}`;
-      const lock = await inspectIdLock(stateRoot, handoff.sessionId), boot = await localBootId();
+      const lock = record(await inspectIdLock(stateRoot, handoff.sessionId)), boot = await localBootId();
       if (!lock || lock.pendingOperationId !== handoff.operationId || !boot) { unknown.push(`${label} owner unavailable`); continue; }
-      if (lock.bootId === boot && (await probeProcess(lock.identity.pid)).kind === "unknown") { unknown.push(`${label} owner unavailable`); continue; }
+      if (lock.bootId === boot && record(await probeProcess(lock.identity.pid)).kind === "unknown") { unknown.push(`${label} owner unavailable`); continue; }
       findings.push(label);
     }
-    for (const state of await inspectIntentViews(root)) {
+    const intentViews = record(await inspectIntentViews(root));
+    for (const state of intentViews) {
       if (state.supervision.kind === "launching") continue;
       const label = `live hosting session ${safeId(state.intent.sessionId)}`;
-      const lock = await inspectIdLock(stateRoot, state.intent.sessionId);
+      const lock = record(await inspectIdLock(stateRoot, state.intent.sessionId));
       if (state.supervision.kind === "idle" && !lock) continue;
       const identity = state.supervision.kind === "live" ? state.supervision.identity
         : { bootId: lock!.bootId, pid: lock!.identity.pid, startTime: lock!.identity.startIdentity };
       const boot = await localBootId();
       if (!boot) { unknown.push(`${label} boot identity unavailable`); continue; }
       if (boot !== identity.bootId) continue;
-      const observed = await probeProcess(identity.pid);
+      const observed = record(await probeProcess(identity.pid));
       if (observed.kind === "unknown") { unknown.push(`${label} owner unavailable`); continue; }
       if (observed.kind === "absent" || observed.startIdentity !== identity.startTime) continue;
       const lease = await createSessionLeases(stateRoot).get(state.intent.file);
+      record(lease && [lease.bootId, lease.pid, lease.startIdentity]);
       if (!lock || lock.bootId !== boot || lock.identity.pid !== identity.pid || lock.identity.startIdentity !== identity.startTime ||
           !lease || lease.bootId !== boot || lease.pid !== identity.pid || lease.startIdentity !== identity.startTime) {
         unknown.push(`${label} lock or lease unavailable`); continue;
       }
-      const managed = v0Owners.get(state.intent.sessionId);
+      const managed = record(v0Owners.get(state.intent.sessionId));
       if (state.supervision.kind === "idle" && managed && managed.epoch >= state.intent.epoch &&
           managed.placement.file === state.intent.file && managed.placement.cwd === state.intent.cwd &&
           (!lock.operationId || journalKinds.get(lock.operationId) !== "exact-session-launch")) continue;
       findings.push(label);
     }
-    for (const reservation of await inspectIntentReservations(root)) {
-      const label = `launch session ${safeId(reservation.sessionId)} operation ${safeId(reservation.operationId)}`;
-      if (reservation.phase === "invoking") {
-        const owner = await inspectAdoptedOwner({ root: stateRoot, sessionId: reservation.sessionId, operationId: reservation.operationId,
-          file: reservation.file, leases: createSessionLeases(stateRoot), bootId: localBootId, probe: probeProcess });
-        if (owner.kind === "unavailable" || owner.kind === "missing" && !pending.some(row => row.sessionId === reservation.sessionId && row.operationId === reservation.operationId)) {
+    for (const { intent, supervision } of intentViews) {
+      if (supervision.kind !== "launching") continue;
+      const label = `launch session ${safeId(intent.sessionId)} operation ${safeId(supervision.operationId)}`;
+      if (supervision.phase === "invoking") {
+        const owner = record(await inspectAdoptedOwner({ root: stateRoot, sessionId: intent.sessionId, operationId: supervision.operationId,
+          file: intent.file, leases: createSessionLeases(stateRoot), bootId: localBootId, probe: probeProcess }));
+        if (owner.kind === "unavailable" || owner.kind === "missing" && !pending.some(row => row.sessionId === intent.sessionId && row.operationId === supervision.operationId)) {
           unknown.push(`${label} owner unavailable`);
           continue;
         }
@@ -574,13 +545,19 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
     }
     if (!configured && (db || present(join(root, "roam", "intents")) || present(join(root, "roam", "stores")) || findings.length || unknown.length))
       unknown.unshift("roaming identity unavailable");
-    if ([...watched].some(([file, stamp]) => sourceStamp(file) !== stamp) || trees.some((tree, index) => treeStamp(tree) !== initialTrees[index]))
-      unknown.unshift("local evidence changed during inspection");
-    return unknown.length ? { status: "legacy-upgrade-unverified", findings: [...unknown, ...findings] }
-      : findings.length ? { status: "legacy-upgrade-blocked", findings } : { status: "legacy-upgrade-ready", findings: [] };
-  } catch {
-    return { status: "legacy-upgrade-unverified", findings: ["local evidence unavailable"] };
-  }
+  } catch { unknown.unshift("local evidence unavailable"); }
+  const inventory: LegacyUpgradeInventory = unknown.length ? { status: "legacy-upgrade-unverified", findings: [...unknown, ...findings] }
+    : findings.length ? { status: "legacy-upgrade-blocked", findings } : { status: "legacy-upgrade-ready", findings: [] };
+  record(inventory);
+  return { inventory, digest: digest.digest("hex") };
+}
+
+/** Inspect local evidence using private snapshots, without opening source databases with SQLite. */
+export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeInventory> {
+  const first = await readLegacyEvidence(root), second = await readLegacyEvidence(root);
+  if (first.digest === second.digest) return second.inventory;
+  const findings = [...new Set([...first.inventory.findings, ...second.inventory.findings])];
+  return { status: "legacy-upgrade-unverified", findings: ["local evidence changed during inspection", ...findings] };
 }
 
 export function legacyUpgradeDiagnostic(inventory: LegacyUpgradeInventory): Diagnostic {

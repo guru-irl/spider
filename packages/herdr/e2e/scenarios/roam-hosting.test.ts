@@ -91,15 +91,43 @@ async function coreOnly(suite: Suite): Promise<void> {
 
 async function restartAndRestore(suite: Suite): Promise<void> {
   await writeScript(suite.pi.scriptPath, { story: suite.story, scripts: {
+    probe: parentTurns(tool('hosting-probe', { action: 'todo', op: 'list' })),
+    spawn: parentTurns(runChild('hosting-child', 'core-only-child', 'child')),
+    child: [text('core-only child finished')],
     schedule: parentTurns(tool('schedule-trigger', { action: 'schedule', name: 'fixture-wakeup', delaySeconds: 60, prompt: `${mark('trigger')} deliver the scheduled check` })),
     list: parentTurns(tool('list-triggers', { action: 'loop' })),
     trigger: [text('scheduled check delivered')],
   } });
   const fixture = await hostingFixture(suite), before = await digestFile(fixture.coreUnit);
   try {
-    const first = await start(fixture);
     await fixture.provisionUnit();
+    expect(fixture.supervisorUnit).toMatch(/spider-roam-supervisor-v0\.service$/);
+    const unit = await readFile(fixture.supervisorUnit, 'utf8');
+    expect(unit).toMatch(/^ExecStart=.*supervisor\.mjs.*--v0$/m);
+    expect(unit).not.toMatch(/^(After|Requires|PartOf)=/m);
+    await fixture.start();
+    const first = await fixture.waitOwner();
     expect((await suite.hc(['get', first.terminal, '--json'])).json).toMatchObject({ state: 'live' });
+    const startup = await event(fixture, first, 'session_start', row => row.sessionId === fixture.sessionId);
+    expect(startup).toMatchObject({ mode: 'tui', stdinTTY: true, sessionFile: fixture.file, cwd: fixture.cwd, hcTerminal: first.terminal });
+    const probe = await runTool(fixture, first, 'probe', 'hosting-probe');
+    expect(probe.toolName).toBe('spider');
+    const config = JSON.parse(await readFile(join(fixture.root, 'herdr', 'config.json'), 'utf8'));
+    expect(config.mode).toBe('core-only');
+    expect(config).not.toHaveProperty('app');
+    const feedPath = join(fixture.root, 'herdr', 'sessions', fixture.sessionId, 'session.json');
+    const feed = await waitFor('core-only session feed', async () => {
+      try { return JSON.parse(await readFile(feedPath, 'utf8')); } catch { return null; }
+    }, value => value?.lifecycle === 'live', deadline(30_000));
+    expect(feed.sessionId).toBe(fixture.sessionId);
+    const childCall = await runTool(fixture, first, 'spawn', 'hosting-child');
+    const childFeed = await waitFor('core-only child status', async () => {
+      try { return JSON.parse(await readFile(feedPath, 'utf8')); } catch { return null; }
+    }, value => value?.runs?.rows?.some((row: { name: string; status: string }) => row.name === 'core-only-child' && row.status === 'done'), deadline(60_000));
+    const children = childFeed.runs.rows.filter((row: { name: string }) => row.name === 'core-only-child');
+    expect(children).toHaveLength(1);
+    expect(children[0].ownerSessionId).toBe(fixture.sessionId);
+    await event(fixture, first, 'agent_settled', row => Number(row.at) >= Number(childCall.at));
     await runTool(fixture, first, 'schedule', 'schedule-trigger');
     await event(fixture, first, 'agent_settled', () => true);
     suite.cores!.local.env.PATH = '/usr/bin:/bin';

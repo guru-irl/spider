@@ -154,6 +154,27 @@ it("does not dispatch a remote ask when confirmation is refused", async () => {
   } finally { await f.cleanup(); }
 });
 
+it("does not dispatch a remote ask after a session change during confirmation", async () => {
+  const questions: V0Text[] = [];
+  let finish!: (value: boolean) => void, confirmationOpened = false;
+  const confirm = () => new Promise<boolean>(resolve => { finish = resolve; confirmationOpened = true; });
+  const prepare: V0Prepare = async () => ({
+    kind: "remote", label: "b/ben",
+    async send(message) { return { kind: "socket_delivered", id: message.id }; },
+    async ask(message) { questions.push(message); return { kind: "no_reply", id: message.id }; },
+  });
+  const f = await fixture({ homeEpoch: () => 7, prepare }, { confirm });
+  try {
+    const pending = f.tool.execute("ask", { action: "ask", to: "ben", message: "private text" }, new AbortController().signal, undefined, f.ctx);
+    await vi.waitFor(() => expect(confirmationOpened).toBe(true));
+    f.switchSession("different-session");
+    finish(true);
+    const result = await pending;
+    expect(result.details).toMatchObject({ error: true, code: "changed" });
+    expect(questions).toEqual([]);
+  } finally { finish?.(false); await f.cleanup(); }
+});
+
 it("does not send when confirmation finishes in a different session", async () => {
   const sent: V0Text[] = [];
   let finish!: (value: boolean) => void;

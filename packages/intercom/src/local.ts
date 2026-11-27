@@ -2893,6 +2893,7 @@ Usage:
               };
             }
             if (v0 && to && currentSessionId && v0.homeEpoch(currentSessionId) !== undefined) {
+              const generation = runtimeGeneration;
               const sessions = await connectedClient.listSessions();
               const locals = sessions.filter((session): session is LocalSessionInfo => !session.remote);
               const from = locals.find(session => session.id === connectedClient.sessionId && session.address?.sessionId === currentSessionId);
@@ -2908,6 +2909,10 @@ Usage:
                   }
                   if (config.confirmSend && ctx.hasUI && !(await ctx.ui.confirm("Send message", `Send to "${plan.label}":\n\n${message}`))) {
                     return { content: [{ type: "text", text: "Message cancelled by user" }], details: {} };
+                  }
+                  if (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
+                      from.v0HomeEpoch === undefined || v0.homeEpoch(from.address!.sessionId) !== from.v0HomeEpoch) {
+                    return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
                   }
                   questionId = randomUUID();
                   const question = { id: questionId, timestamp: Date.now(), text: message };

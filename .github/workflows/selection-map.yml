@@ -2,7 +2,7 @@ name: selection map
 
 on:
   push:
-    branches: [main]
+    branches: [main, ci/selection-map-try]
   workflow_dispatch:
 
 concurrency:

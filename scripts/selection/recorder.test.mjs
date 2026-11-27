@@ -33,7 +33,7 @@ function records(raw) {
   return readdirSync(raw).filter(name => name.endsWith('.json')).map(name => JSON.parse(readFileSync(join(raw, name))));
 }
 
-function fixtureRecords(t, { snapshots = [], results = [], hookErrors = '' } = {}) {
+function fixtureRecords(t, { snapshots = [], results = [], hookErrors = '', launches = [] } = {}) {
   const { root, raw, maps, workspace } = fixture(t);
   writeFileSync(join(root, 'dist/reference.mjs'), 'export {};');
   writeFileSync(join(maps, 'reference.mjs.map'), JSON.stringify({ version: 3, sources: [], names: [], mappings: '' }));
@@ -47,6 +47,7 @@ function fixtureRecords(t, { snapshots = [], results = [], hookErrors = '' } = {
     writeFileSync(join(raw, `${i + 1}-abc.json`), JSON.stringify({ ...snapshot, scripts }));
   }
   if (hookErrors) writeFileSync(join(raw, 'hook-errors.ndjson'), hookErrors);
+  if (launches.length) writeFileSync(join(raw, 'launches.ndjson'), launches.map(row => JSON.stringify(row)).join('\n') + '\n');
   return reduce({ root, tmpRoot: join(root, '.spider/scratch/tmp'), rawDir: raw, mapsDir: maps, reportFile });
 }
 
@@ -61,8 +62,44 @@ test('unions direct reads from a fork, child process, and worker thread for the 
       { test: other, worker: true, pid: 5, paths: ['src/other.ts'] },
     ],
   });
-  assert.deepEqual(records[id], { reads: ['src/child.ts', 'src/main.ts', 'src/thread.ts'], unresolved: [], workerPids: [3], ms: 25, result: 'passed' });
+  assert.deepEqual(records[id].reads, ['src/child.ts', 'src/main.ts', 'src/thread.ts']);
+  assert.deepEqual(records[id].workerPids, [3]);
+  assert.equal(records[id].ms, 25);
+  assert.equal(records[id].result, 'passed');
   assert.deepEqual(records[other].reads, ['src/other.ts']);
+});
+
+test('counts distinct processes and worker threads once and does not double-count process CPU', t => {
+  const { records } = fixtureRecords(t, {
+    results: [{ name: id }],
+    launches: [
+      { test: id, kind: 'process', launchId: 'child' },
+      { test: id, kind: 'thread', processId: 'parent', threadId: 1 },
+      { test: id, kind: 'thread', processId: 'parent', threadId: 1 },
+    ],
+    snapshots: [
+      { test: id, worker: true, pid: 3, processId: 'parent', threadId: 0, cpuMs: 100, paths: [] },
+      { test: id, pid: 3, processId: 'parent', threadId: 0, cpuMs: 130, paths: [] },
+      { test: id, pid: 3, processId: 'parent', threadId: 1, cpuMs: 120, paths: [] },
+      { test: id, pid: 4, processId: 'child-process', launchId: 'child', threadId: 0, cpuMs: 50, paths: [] },
+    ],
+  });
+  assert.equal(records[id].processes, 3);
+  assert.equal(records[id].cpuMs, 180);
+  assert.equal(records[id].knownCpuMs, 180);
+  assert.equal(records[id].unknownCpu, 0);
+});
+
+test('counts a Node child that never reports CPU and preserves the measured lower bound', t => {
+  const { records } = fixtureRecords(t, {
+    results: [{ name: id }],
+    launches: [{ test: id, kind: 'process', launchId: 'killed-before-hook' }],
+    snapshots: [{ test: id, worker: true, pid: 3, processId: 'parent', threadId: 0, cpuMs: 100, paths: [] }],
+  });
+  assert.equal(records[id].processes, 2);
+  assert.equal(records[id].cpuMs, null);
+  assert.equal(records[id].knownCpuMs, 100);
+  assert.equal(records[id].unknownCpu, 1);
 });
 
 test('keeps unmapped checkout bundles once per test even when multiple processes run them', t => {
@@ -200,6 +237,27 @@ test('all launch APIs preserve attribution with a replacement environment', t =>
     const script = process.scripts.find(entry => entry.url.endsWith('/child.cjs'));
     assert.equal(script.kind, 'source');
   }
+});
+
+test('counts a child killed before its preload and records CPU from the parent', { skip: process.platform === 'win32' }, t => {
+  const { root, raw, maps, workspace } = fixture(t);
+  writeFileSync(join(root, 'dist/reference.mjs'), 'export {};');
+  writeFileSync(join(maps, 'reference.mjs.map'), JSON.stringify({ version: 3, sources: [], names: [], mappings: '' }));
+  const parent = join(root, 'packages/example/src/killed-child.cjs');
+  writeFileSync(parent, `
+    const { spawn } = require('node:child_process');
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
+    child.kill('SIGKILL');
+  `);
+  const result = runNode([parent], { env: recorderEnv(root, raw) });
+  assert.equal(result.status, 0, result.stderr);
+  const report = join(workspace, 'vitest.json');
+  writeFileSync(report, JSON.stringify({ testResults: [{ name: join(root, id), status: 'passed', startTime: 0, endTime: 1 }] }));
+  const entry = reduce({ root, rawDir: raw, mapsDir: maps, reportFile: report }).records[id];
+  assert.equal(entry.processes, 2);
+  assert.equal(entry.cpuMs, null);
+  assert.ok(entry.knownCpuMs > 0);
+  assert.equal(entry.unknownCpu, 1);
 });
 
 test('child code sees its original Node options and inherits only the outer test identity', t => {

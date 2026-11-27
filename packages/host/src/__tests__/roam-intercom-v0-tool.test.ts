@@ -132,6 +132,69 @@ it("wires an injected roaming factory for an admitted running home", async () =>
   }
 });
 
+it.each([
+  { name: "unhomed", home: "none", kind: "ordinary", enabled: true, legacy: false, configured: true, child: false, create: true, skipLegacy: true },
+  { name: "blocked", home: "running", kind: "blocked", enabled: true, legacy: false, configured: true, child: false, create: true, skipLegacy: true },
+  { name: "non-running home", home: "moving", kind: "ordinary", enabled: true, legacy: false, configured: true, child: false, create: true, skipLegacy: true },
+  { name: "home for another session", home: "other", kind: "ordinary", enabled: true, legacy: false, configured: true, child: false, create: true, skipLegacy: true },
+  { name: "child session", home: "running", kind: "ordinary", enabled: true, legacy: false, configured: true, child: true, create: true, skipLegacy: true },
+  { name: "roaming disabled", home: "running", kind: "ordinary", enabled: false, legacy: false, configured: true, child: false, create: false, skipLegacy: true },
+  { name: "no v0 file", home: "running", kind: "ordinary", enabled: true, legacy: false, configured: false, child: false, create: false, skipLegacy: false },
+  { name: "legacy federation enabled", home: "running", kind: "ordinary", enabled: true, legacy: true, configured: true, child: false, create: false, skipLegacy: false },
+])("does not advertise v0 for $name", async scenario => {
+  const admissionModule = await import("../roam/admission.js");
+  const runtimeModule = await import("@spider/roam/runtime");
+  const hostIntercom = await import("../roam/intercom.js");
+  const { default: spiderExtension } = await import("../extension.js");
+  const root = mkdtempSync(join(testTmpDir(), "host-gate-"));
+  const previousCeiling = process.env.GIT_CEILING_DIRECTORIES, previousChild = process.env.PI_SUBAGENT_CHILD;
+  process.env.GIT_CEILING_DIRECTORIES = testTmpDir();
+  process.env.PI_SUBAGENT_CHILD = scenario.child ? "1" : "0";
+  const manager = SessionManager.create(root, join(root, "sessions"));
+  manager.appendMessage({ role: "user", content: "fixture", timestamp: 0 });
+  const sessionId = manager.getSessionId();
+  const home = scenario.home === "none" ? null : { sessionId: scenario.home === "other" ? "another-session" : sessionId,
+    machineId: "local-machine", epoch: 7, state: scenario.home === "moving" ? "moving" : "running", destination: null, moveId: null, updatedAt: 1 };
+  const admission = { kind: scenario.kind, home, blockers: [] };
+  const gate = { inspect: () => admission, refreshInitialHome: async () => admission, whenSettled: async () => admission,
+    close: async () => {}, freeze: async () => {}, unfreeze: async () => {} };
+  vi.spyOn(admissionModule, "createAdmissionPorts").mockReturnValue({ setContext() {}, lock: async () => async () => {} } as never);
+  vi.spyOn(admissionModule, "registerAdmission").mockReturnValue(gate as never);
+  vi.spyOn(runtimeModule, "readLocalIdentity").mockReturnValue({ enabled: scenario.enabled, intercom: { enabled: scenario.legacy } } as never);
+  const legacyAdapter = vi.spyOn(hostIntercom, "registerRoamIntercom");
+  const prepare = vi.fn<V0Prepare>(async () => { throw new Error("inactive v0 routing ran"); });
+  const factory = { hasConfig: vi.fn(() => scenario.configured), create: vi.fn(() => ({ prepare })) };
+  const host = createHostSessionFixture({ cwd: root, sessionId, sessionName: "host-gate", sessionManager: manager });
+  if (scenario.child) host.ctx.mode = "rpc";
+  try {
+    spiderExtension(host.pi as never, { v0Intercom: factory, piVersion: "1.2.0" } as never);
+    for (const handler of host.hooks.get("session_start") ?? []) {
+      await handler({}, host.ctx);
+      if ((host.pi as any).getAllTools().some((item: any) => item.name === "intercom")) break;
+    }
+    const registered = await vi.waitFor(async () => {
+      const found = (await observer.listSessions()).find(session => session.id === sessionId);
+      expect(found).toBeDefined();
+      return found!;
+    });
+    expect(registered.v0HomeEpoch).toBeUndefined();
+    expect(factory.create).toHaveBeenCalledTimes(scenario.create ? 1 : 0);
+    expect(legacyAdapter).toHaveBeenCalledTimes(scenario.skipLegacy ? 0 : 1);
+    if (scenario.kind === "ordinary" && scenario.home !== "moving") {
+      const tool = (host.pi as any).getAllTools().find((item: any) => item.name === "intercom");
+      const result = await tool.execute("host-local-send", { action: "send", to: "observer", message: "local only" }, new AbortController().signal, undefined, host.ctx);
+      expect(result.details).toMatchObject({ delivered: true, delivery: "socket_delivered" });
+    }
+    expect(prepare).not.toHaveBeenCalled();
+  } finally {
+    for (const handler of host.hooks.get("session_shutdown") ?? []) await handler({ reason: "quit" }, host.ctx);
+    vi.restoreAllMocks();
+    if (previousCeiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES; else process.env.GIT_CEILING_DIRECTORIES = previousCeiling;
+    if (previousChild === undefined) delete process.env.PI_SUBAGENT_CHILD; else process.env.PI_SUBAGENT_CHILD = previousChild;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 it("sends by name and reports socket dispatch, not consumption", async () => {
   const sent: V0Text[] = [];
   const prepare: V0Prepare = async () => ({

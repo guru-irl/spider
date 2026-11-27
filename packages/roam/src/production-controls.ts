@@ -4,6 +4,7 @@ import { causeCode, safeCauseCode, type CauseStep } from "./cause-codes";
 import { agentFailureCode, AgentResponseError, peerPreflightIssue } from "./peer-errors";
 import { setEnrolledPeerEnabled } from "./peer-enabled";
 import { openJournal } from "./journal";
+import { revokeMachine } from "./revocation";
 import { readPendingMoves } from "./pending-moves";
 import { parseDoctorReport, remoteDoctor } from "./remote-observations";
 import { INTERCOM_UNIQUENESS_DESCRIPTION } from "./intercom-readiness";
@@ -13,7 +14,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { waitReady } from "./hub-readiness";
-import { assertTestConfigPath, openDbReadOnly } from "@spider/db-core";
+import { assertTestConfigPath, openDb, openDbReadOnly } from "@spider/db-core";
 import { storeScope } from "@spider/db-core/roam/codec";
 import { enableMemoryCapture } from "@spider/db-core/roam/seed";
 import type { JsonObject, StoreKey } from "@spider/db-core/roam/types";
@@ -166,6 +167,26 @@ export async function configureV0Service(root: string, enabled: boolean, options
   } catch (error) {
     return { code: changed ? 3 : 1, reason: `${action}-${changed ? "pending" : "unavailable"}`, repairCommand,
       information: information(), message: [...removed, clean(error instanceof Error ? error.message : "Cannot change the roaming service."), `Resolve the error, then retry ${repairCommand}.`].join("\n") };
+  }
+}
+
+export async function forgetV0Peer(root: string, machineId: string): Promise<ControlResult> {
+  try {
+    const initial = readLocalIdentity(root);
+    if (initial.role !== "hub") return { code: 1, reason: "mac-hub-required", message: "Run spider roam forget on the Mac." };
+    return await locked(root, initial, async () => {
+      const config = readLocalIdentity(root);
+      if (config.role !== "hub" || config.machineId !== initial.machineId) throw new Error("Roaming configuration changed.");
+      const peer = config.peers.find(peer => peer.machineId === machineId);
+      if (!peer) return { code: 1, reason: "machine-not-enrolled", message: "Choose an enrolled box and retry spider roam forget." };
+      const file = join(root, "roam", "journal.db");
+      openJournal(file);
+      const db = openDb(file, { fileMustExist: true, checkpointOnClose: false });
+      try { revokeMachine(db, machineId); } finally { db.close(); }
+      return { code: 0, reason: "machine-forgotten", message: `Forgot ${clean(peer.alias)}. Its session homes were not changed. If you have a Mac copy, use spider roam set-home <session> mac --force to recover it.` };
+    });
+  } catch {
+    return { code: 3, reason: "forget-pending", message: "Could not confirm the box was forgotten. Check spider roam doctor and retry forget." };
   }
 }
 

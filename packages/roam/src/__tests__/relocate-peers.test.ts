@@ -1,10 +1,12 @@
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { openDb } from "@spider/db-core";
 import { createReplica } from "@spider/db-core/testutil";
 import { DEFAULT_LIMITS, disabledIntercom, type Clock, type RoamConfig, type Transport } from "../contracts";
 import { openJournal } from "../journal";
-import { revokeMachine } from "../revocation";
+import { isRevoked, revokeMachine } from "../revocation";
+import { main } from "../cli";
 import { createV0Runtime, startV0Hub } from "../relocate/runtime";
 import type { SessionId } from "../relocate/types";
 
@@ -44,7 +46,7 @@ function fixture() {
     readConfig: () => ({ ...config }),
   };
   const start = () => createV0Runtime(replica.root, overrides);
-  return { forget, start, resolved, requests, scheduled, replica, config, overrides, onResolve(fn: () => void) { duringResolve = fn; } };
+  return { forget, start, resolved, requests, scheduled, replica, config, overrides, journalFile, onResolve(fn: () => void) { duringResolve = fn; } };
 }
 
 it("schedules synchronization only for enrolled peers that were not forgotten", async () => {
@@ -91,6 +93,26 @@ it("does not send peer RPCs if the peer is forgotten during discovery", async ()
     expect(f.resolved).toContain(box);
     expect(f.requests).toEqual([other]);
   } finally { await runtime.close(); f.replica.close(); }
+});
+
+it.each([true, false])("forget records a revocation without a legacy hub (enabled=%s)", async enabled => {
+  const f = fixture();
+  f.config.enabled = enabled;
+  writeFileSync(join(f.replica.root, "roam", "machine.json"), JSON.stringify({ machineId: mac }), { mode: 0o600 });
+  writeFileSync(join(f.replica.root, "roam", "config.json"), JSON.stringify(f.config), { mode: 0o600 });
+  vi.stubEnv("SPIDER_GLOBAL_ROOT", f.replica.root);
+  const runtime = f.start();
+  try {
+    const before = await runtime.homes.initialize(sessionId, box);
+    const out = vi.fn(), err = vi.fn();
+    expect(await main(["roam", "forget", "box-0.invalid", "--confirm", "destroyed box-0.invalid", "--json"], { out, err })).toBe(0);
+    expect(JSON.parse(out.mock.calls.flat().join(""))).toMatchObject({ code: 0, reason: "machine-forgotten" });
+    const db = openDb(f.journalFile, { fileMustExist: true, checkpointOnClose: false });
+    try { expect(isRevoked(db, box)).toBe(true); } finally { db.close(); }
+    expect(await runtime.homes.read(sessionId)).toEqual(before);
+    expect(await runtime.services.relocate({ sessionId, destinationMachine: box })).toMatchObject({ ok: false, refusal: { code: "machine-revoked" } });
+    expect(f.requests).toEqual([]);
+  } finally { await runtime.close(); f.replica.close(); vi.unstubAllEnvs(); }
 });
 
 it("rejects relocate and forced set-home to a forgotten peer without contacting it", async () => {

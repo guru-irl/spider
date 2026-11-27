@@ -10,6 +10,7 @@ import * as diagnostics from "../diagnostics";
 import * as launchd from "../launchd";
 import { peerEnabledDiagnostics, setEnrolledPeerEnabled } from "../peer-enabled";
 import { openJournal } from "../journal";
+import { isRevoked } from "../revocation";
 import { afterEach, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -323,7 +324,7 @@ it("help explains recovery, JSON, non-interactive consent and the forget warning
   expect(await f.invoke(["--help"])).toBe(0);
   const help = f.out.join("");
   for (const word of ["recover", "cancel", "forget", "claim", "--json", "--yes --consent copilot-auth"]) expect(help).toContain(word);
-  expect(help).toMatch(/shell access/i); expect(help).toMatch(/two copies can run/i); expect(help).toMatch(/last mirror/i);
+  expect(help).toMatch(/shell access/i); expect(help).toMatch(/two copies can run/i); expect(help).toMatch(/last copied transcript/i);
   expect(help).toMatch(/disabled.*not.*(hosting|enable)/i);
 }, 5000);
 
@@ -491,12 +492,13 @@ it("sync JSON retains the real per-peer typed outcomes and receipts", async () =
   expect(JSON.parse(f.out.join(""))).toMatchObject({ reason: "Synchronization needs attention", value: { outcomes: rows } });
 }, 5000);
 
-it("enabled forget JSON includes the recovered homes and presentation status", async () => {
+it("the private legacy forget reply retains its recovered homes and presentation status", async () => {
   const home = { sessionId: "s-1", machineId: HUB, epoch: 4, moveId: null, updatedAt: 123 };
   const f = await fixture(HUB, { code: 0, reason: "destroyed-machine-recovered", operationId: "forget-a", home: null, epoch: null, repairCommand: null,
     value: { presentation: "pending", homes: [home] } });
-  expect(await f.invoke(["roam", "forget", BOX, "--confirm", `destroyed ${BOX}`, "--json"])).toBe(0);
-  expect(JSON.parse(f.out.join(""))).toMatchObject({ reason: "destroyed-machine-recovered", operationId: "forget-a", value: { presentation: "pending", homes: [home] } });
+  const reply = await requestHubControl(join(f.root, "roam", "hub.sock"), { op: "forget", machine: BOX, confirmation: `destroyed ${BOX}` });
+  expect(safeControlOutcome({ ...reply, operationId: reply.operationId ?? "", home: reply.home ?? null, epoch: reply.epoch ?? null,
+    repairCommand: reply.repairCommand ?? null })).toMatchObject({ code: 0, reason: "destroyed-machine-recovered", operationId: "forget-a", value: { presentation: "pending", homes: [home] } });
 }, 5000);
 
 it("sync prints the bounded agent cause without exposing an unrecognized code", async () => {
@@ -702,7 +704,7 @@ it.each([["roam", "forget", "box-1.invalid"], ["roam", "forget", "box-1.invalid"
   const f = await fixture(HUB, undefined, true), file = join(f.root, "roam/config.json"), config = JSON.parse(readFileSync(file, "utf8"));
   config.peers[0].alias = "box-1.invalid"; writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
   expect(await f.invoke(args)).toBe(2);
-  expect(f.err.join("")).toMatch(/two copies can run/i); expect(f.err.join("")).toMatch(/last mirror/i);
+  expect(f.err.join("")).toMatch(/two copies can run/i); expect(f.err.join("")).toMatch(/last copied transcript/i);
   expect(f.calls).toEqual([]);
 }, 5000);
 
@@ -710,7 +712,9 @@ it("normalizes an explicitly confirmed box alias to the enrolled UUID before for
   const f = await fixture(), file = join(f.root, "roam/config.json"), config = JSON.parse(readFileSync(file, "utf8"));
   config.peers[0].alias = "box-1.invalid"; writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
   expect(await f.invoke(["roam", "forget", "box-1.invalid", "--confirm", "destroyed box-1.invalid"])).toBe(0);
-  expect(f.calls).toContainEqual({ op: "forget", machine: "box-1.invalid", confirmation: `destroyed ${BOX}` });
+  expect(f.calls).toEqual([]);
+  const journal = openDb(join(f.root, "roam", "journal.db"), { fileMustExist: true });
+  try { expect(isRevoked(journal, BOX)).toBe(true); } finally { journal.close(); }
 }, 5000);
 
 it("disabled forget invokes only the confirmed typed port and returns its real pending presentation", async () => {

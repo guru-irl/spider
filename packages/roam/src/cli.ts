@@ -10,7 +10,6 @@ import { peerEnabledDiagnostics } from "./peer-enabled";
 import { readMoveBindingDiagnostics } from "./move-diagnostics";
 import { isMoveSetupDiagnostic } from "./setup-diagnostics";
 import { controlRefusal, controlText, sourceCleanupStatusText, parsePublicControl, resolveControlMachine, safeControlOutcome } from "./commands";
-import { destroyedMachineWarning } from "./forget";
 import type { RunDisabledForget } from "./disabled-forget-contract";
 import { ReadinessParseError } from "@spider/db-core/roam/readiness";
 import { randomUUID } from "node:crypto";
@@ -38,7 +37,7 @@ export { startProductionHub } from "./production-hub";
 import { createTransport } from "./transport";
 import { isPeerFailureReason, peerFailureReason, peerPreflightIssue, recoveryRefusalCode } from "./peer-errors";
 import { remoteDoctor } from "./remote-observations";
-import { configureV0Service, type V0ServiceOptions } from "./production-controls";
+import { configureV0Service, forgetV0Peer, type V0ServiceOptions } from "./production-controls";
 import { runForeground, runLocalPairCleanup, runLocalPairOperation, createLocalPairRegistry, hasPairConsent, type LocalPairCleanup, type LocalPairOperation, type LocalPairPorts } from "./intercom-local-ops";
 import { parseHelperFence, requestHelperFence } from "./intercom-helper";
 import { pairScopedRecipe, inspectPairUnit, reconcilePairUnits, stoppedPairUnitNeedsRepair } from "./intercom-pair-resources";
@@ -75,8 +74,8 @@ Prefer --use-destination-auth --yes for a destination that is already signed in.
 This mode selects no hub agent files, including auth, models, settings, and skills.
 The destination manages those files. Copy-selection and copy-consent flags apply only to the other provision mode.
 Anyone with the user's shell access can invoke it. While disabled, provision does not enable the box or start hosting.
-Before forget, confirm the machine is destroyed. If it is alive, two copies can run until reconnection.
-Conversation after the last mirror and unsent workspace edits will be lost.
+Before forget, confirm the machine is destroyed. If it can still run, stop its supervisor before reassigning any homes, or two copies can run.
+You can recover only the last copied transcript and workspace.
 Exit codes: 0 complete, 1 refused, 2 invalid arguments, 3 durable pending or reconciliation needed.
 `;
 
@@ -203,8 +202,8 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
   const jsonOutput = publicInput && argv.at(-1) === "--json";
   if (publicInput) {
     let control = parsePublicControl(argv);
-    const forgetWarning = (machine: string | null) => machine ? destroyedMachineWarning(machine)
-      : "Confirm the box is destroyed. If it is still alive, two copies can run until reconnection. Conversation after the last mirror and unsent workspace edits will be lost.";
+    const forgetWarning = (machine: string | null) =>
+      `Confirm the box is destroyed. If it can still run, stop its supervisor before reassigning any homes, or two copies can run. You can recover only the last copied transcript and workspace. Pass --confirm "destroyed ${machine ?? "<machine>"}" to proceed.`;
     if (!control) {
       if (argv[0] === "roam" && argv[1] === "forget") {
         let machine: string | null = null;
@@ -233,8 +232,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
         return emitOutcome(io, outcome(2, "destroyed-machine-confirmation-required"), jsonOutput);
       }
       control = { ...control, confirmation: `destroyed ${machine}` };
-      if (!publicConfig.enabled) {
-        if (!options?.runDisabledForget) return emitOutcome(io, outcome(3, "disabled-forget-unavailable"), jsonOutput);
+      if (!publicConfig.enabled && options?.runDisabledForget) {
         try {
           const result = await options.runDisabledForget({ machine, confirmed: true });
           const code = "code" in result ? result.code : 1;
@@ -246,8 +244,10 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
           return code;
         } catch { return emitOutcome(io, outcome(3, "disabled-forget-unavailable"), jsonOutput); }
       }
+      const result = await forgetV0Peer(root, machine);
+      return emitOutcome(io, outcome(result.code, result.reason), jsonOutput, `${result.message}\n`);
     }
-    if (["recover", "cancel", "forget", "claim"].includes(control.kind)) {
+    if (["recover", "cancel", "claim"].includes(control.kind)) {
       try {
         const { kind, ...args } = control;
         const request = { op: kind, ...args } as import("./move-control").MoveControlRequest;

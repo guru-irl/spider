@@ -46,7 +46,7 @@ describe('relocation fixture without diagnostics', () => {
         root, ledger: { update: (fn: (value: object) => void) => fn(ledgerState) }, env: {},
         directories: { SPIDER_GLOBAL_ROOT: global, PI_CODING_AGENT_DIR: agent, HERDR_APP_HOME: join(root, 'app') },
         cores: { local: { env: {}, namespace: 'hub', socket: 'hub.sock' }, dest: { env: {}, namespace: 'box', socket: 'box.sock' },
-          machine: 'fixture', wrapper: 'hc', recordLog: 'hc.log', viaLog: 'via.log' },
+          machine: 'fixture.invalid', wrapper: 'hc', recordLog: 'hc.log', viaLog: 'via.log' },
         packed: { roamCli: 'cli.mjs', roamSupervisor: 'supervisor.mjs' },
         pi: { launcher: 'pi', observerDir: root }, project: async () => state.source, ownPath: (path: string) => path,
         invoke, hc: async (args: readonly string[]) => ({ exitCode: 0, stderr: '', stdout: '', json: args[0] === 'run' ? { address: 't1' } : null }),
@@ -54,7 +54,7 @@ describe('relocation fixture without diagnostics', () => {
       } as unknown as Suite;
       const fixture = await relocateFixture(suite);
       try {
-        await expect(fixture.relocate(state.session, 'fixture')).resolves.toMatchObject({ terminal: 't2' });
+        await expect(fixture.relocate(state.session, 'fixture.invalid')).resolves.toMatchObject({ terminal: 't2' });
         expect(invoke.mock.calls.some(([, args]) => args.includes('relocate'))).toBe(true);
       } finally { await fixture.close(); }
     } finally {

@@ -58,9 +58,9 @@ describe('relocation inode evidence', () => {
 describe('native launch evidence', () => {
   const launch = ['/usr/bin/env', 'PATH=/bin', '/fixture/pi', '--session', away.file];
   const record = { namespace: 'd', argv: ['run', '--json', '--cwd', away.cwd, '--label', 'spider.session=s1',
-    '--label', 'spider.machine=box', '--label', 'spider.roam.epoch=3', '--', ...launch] };
+    '--label', 'spider.machine=box.invalid', '--label', 'spider.roam.epoch=3', '--', ...launch] };
   const check = (native: unknown, records = [record], placement = away) =>
-    assertNativeLaunch(native, records, placement, 'd', 's1', 'box', 3);
+    assertNativeLaunch(native, records, placement, 'd', 's1', 'box.invalid', 3);
 
   it('accepts a native response that exactly matches the recorded launch', () => {
     expect(() => check({ cwd: away.cwd, argv: launch })).not.toThrow();

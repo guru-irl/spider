@@ -32,7 +32,7 @@ describe('relocation fixture service startup', () => {
         root, ledger, env: {},
         directories: { SPIDER_GLOBAL_ROOT: global, PI_CODING_AGENT_DIR: agent, HERDR_APP_HOME: join(root, 'app') },
         cores: { local: { env: {}, namespace: 'hub', socket: 'hub.sock' }, dest: { env: {}, namespace: 'box', socket: 'box.sock' },
-          machine: 'fixture', wrapper: 'hc', recordLog: 'hc.log', viaLog: 'via.log' },
+          machine: 'fixture.invalid', wrapper: 'hc', recordLog: 'hc.log', viaLog: 'via.log' },
         packed: { root: 'package', roamCli: 'cli.mjs', roamSupervisor: 'supervisor.mjs' },
         pi: { launcher: 'pi' }, project: async () => source, ownPath: (path: string) => path,
         invoke: async () => ({ exitCode: 0, stdout: '', stderr: '' }),

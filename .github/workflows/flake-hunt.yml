@@ -1,0 +1,78 @@
+name: Flake hunt
+
+on:
+  push:
+    branches: [ci/flake-hunt]
+
+permissions:
+  contents: read
+
+env:
+  ONNXRUNTIME_NODE_INSTALL: skip
+
+jobs:
+  hunt:
+    name: Hunt ${{ matrix.cohort }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        cohort: [importer, checkout, legacy]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+      - name: Prepare runner like a full CI shard
+        run: |
+          mkdir -p .spider/scratch/{tmp,hunt}
+          sudo apt-get update && sudo apt-get install -y sqlite3
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+          test ! -e "$rundir"
+      - run: npm ci
+      - name: Run six independent trials with two workers
+        env:
+          COHORT: ${{ matrix.cohort }}
+          TMPDIR: ${{ github.workspace }}/.spider/scratch/tmp
+        run: |
+          unset PI_SUBAGENT_CHILD PI_SUBAGENT_RUN_ID PI_SPIDER_DB_PATH PI_SPIDER_SESSION_ID
+          unset SPIDER_HERDR_E2E SPIDER_HERDR_APP_TESTS SPIDER_HERDR_APP_E2E XDG_RUNTIME_DIR
+          roam=packages/roam/src/__tests__
+          host=packages/host/src
+          case "$COHORT" in
+            importer) files=("$roam/workspace-import.test.ts" "$roam/provision-adapter.test.ts");;
+            checkout) files=("$host/roam/__tests__/roam-move-checkout.test.ts" "$host/roam/__tests__/roam-box-moves.test.ts" "$host/__tests__/herdr-pane-runtime-state.test.ts");;
+            legacy) files=("$roam/move.test.ts" "$roam/move-ports.test.ts");;
+            *) exit 2;;
+          esac
+          output="$PWD/.spider/scratch/hunt"
+          printf 'trial\texit\n' > "$output/status.tsv"
+          infra=0
+          for trial in {1..6}; do
+            rc=0
+            npx vitest run "${files[@]}" --maxWorkers=2 --reporter=default --reporter=json --outputFile="$output/$trial.json" > "$output/$trial.log" 2>&1 || rc=$?
+            printf '%s\t%s\n' "$trial" "$rc" | tee -a "$output/status.tsv"
+            if [ ! -s "$output/$trial.json" ]; then
+              tail -80 "$output/$trial.log"
+              infra=1
+              continue
+            fi
+            node -e '
+              const o = require(process.argv[1]);
+              console.log(JSON.stringify({ passed: o.numPassedTests, failed: o.numFailedTests, skipped: o.numPendingTests }));
+              for (const f of o.testResults) for (const c of f.assertionResults)
+                if (c.status === "failed") console.log(f.name, c.fullName, c.failureMessages);
+            ' "$output/$trial.json"
+          done
+          exit "$infra"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hunt-${{ matrix.cohort }}
+          path: .spider/scratch/hunt
+          include-hidden-files: true
+          if-no-files-found: error

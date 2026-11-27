@@ -2,6 +2,7 @@ import { lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { storeScope } from "@spider/db-core/roam/codec";
 import { localEntries, readLocal } from "@spider/db-core/roam/local-state";
+import { openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
 import { processStartIdentity } from "@spider/herdr/jobs/handoff";
 import { listPendingIdLocks, localBootId } from "@spider/herdr/sessions/id-lock";
 import { createSessionLeases, type ProcessProbe } from "@spider/herdr/sessions/lease";
@@ -11,7 +12,8 @@ import { inspectIntentReservations } from "./intent";
 import { inspectAdoptedOwner } from "./launcher";
 import { isMachineId } from "./machine-id";
 import { readLocalIdentity } from "./runtime";
-import { parseCheckpoint, parsePlan } from "./relocate/journal";
+import { parseCheckpoint, parseHome, parsePlan } from "./relocate/journal";
+import { listStoreKeys } from "./store-inventory";
 import type { RelocatePlan } from "./relocate/types";
 
 export type LegacyUpgradeInventory =
@@ -55,6 +57,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
   try {
     const findings: string[] = [], unknown: string[] = [];
     const journalKinds = new Map<string, string>();
+    const activeFreezes = new Set<string>();
     const v0: Array<{ origin: "checkpoint" | "incoming"; plan: RelocatePlan; expectedKey?: string }> = [];
     const configFile = join(root, "roam", "config.json"), identityFile = join(root, "roam", "machine.json");
     const configured = present(configFile), config = configured ? readLocalIdentity(root) : null;
@@ -124,7 +127,8 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
               !Number.isSafeInteger(row.epoch) || Number(row.epoch) < 1 || !["freezing", "frozen", "aborting", "aborted", "complete"].includes(String(row.state))) throw new Error("Invalid freeze record");
           if (row.state === "complete" || row.state === "aborted") continue;
           if (row.state !== "freezing" && !rosters.some(roster => roster.session_id === row.session_id && roster.move_id === row.move_id)) throw new Error("Missing freeze roster");
-          findings.push(`freeze session ${row.session_id.replace(/[^A-Za-z0-9._:-]/g, "?").slice(0, 128)} operation ${row.move_id.replace(/[^A-Za-z0-9._:-]/g, "?").slice(0, 128)}`);
+          activeFreezes.add(JSON.stringify([row.session_id, row.move_id]));
+          findings.push(`freeze session ${safeId(row.session_id)} operation ${safeId(row.move_id)}`);
         }
       }
     } finally { db.close(); }
@@ -172,6 +176,36 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
         });
         if (!ownedByV0) findings.push(`map store ${safeId(map.store_key)}`);
       }
+      let storeProblem = false;
+      const storeOptions = { globalPath: join(root, "spider.db"), open: openDiagnosticSnapshot,
+        onProblem: () => { storeProblem = true; }, onIncomplete: () => { storeProblem = true; } };
+      for (const key of listStoreKeys(global, storeOptions)) {
+        if (!key.startsWith("worktree:")) continue;
+        const store = openRoamStoreReadOnly(global, key, storeOptions);
+        if (!store) { unknown.push(`store ${safeId(key)} unavailable`); continue; }
+        try {
+          const identity = store.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id?: unknown; store_key?: unknown } | undefined;
+          if (!identity || identity.machine_id !== meta.machine_id || !(identity.store_key === key || identity.store_key === null)) throw new Error("Store identity mismatch");
+          const rows = store.prepare("SELECT session_id,epoch,move_id,freeze_seq FROM roam_sessions WHERE state='frozen'").all() as
+            Array<{ session_id: unknown; epoch: unknown; move_id: unknown; freeze_seq: unknown }>;
+          for (const row of rows) {
+            if (typeof row.session_id !== "string" || !row.session_id || !Number.isSafeInteger(row.epoch) ||
+                !(row.move_id === null || typeof row.move_id === "string") || !(row.freeze_seq === null || Number.isSafeInteger(row.freeze_seq))) throw new Error("Invalid frozen membership");
+            const label = `frozen session ${safeId(row.session_id)} store ${safeId(key)}`;
+            if (row.move_id && activeFreezes.has(JSON.stringify([row.session_id, row.move_id]))) { findings.push(label); continue; }
+            const home = global.prepare("SELECT session_id,machine_id,epoch,move_id,updated_at,state,destination FROM session_homes WHERE session_id=?").get(row.session_id) as
+              { session_id: string; machine_id: string; epoch: number; move_id: string | null; updated_at: number; state: string | null; destination: string | null } | undefined;
+            if (home && home.state !== null) {
+              const parsed = parseHome({ sessionId: home.session_id, machineId: home.machine_id, epoch: home.epoch, moveId: home.move_id,
+                updatedAt: home.updated_at, state: home.state, destination: home.destination });
+              if (parsed.moveId !== null && (!parsed.moveId.startsWith("v0-") || !isMachineId(parsed.moveId.slice(3)))) throw new Error("Invalid v0 home move");
+              if (parsed.state !== "moving" || v0.some(evidence => evidence.plan.moveId === parsed.moveId && evidence.plan.source.sessionId === row.session_id)) continue;
+            }
+            unknown.push(`${label} freeze record unavailable`);
+          }
+        } finally { store.close(); }
+      }
+      if (storeProblem) unknown.push("registered store or replica unavailable");
     } finally { global.close(); }
     const stateRoot = join(root, "herdr"), pending = await pendingHandoffs(stateRoot);
     for (const handoff of pending) findings.push(`handoff session ${safeId(handoff.sessionId)} operation ${safeId(handoff.operationId)}`);

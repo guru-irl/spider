@@ -345,6 +345,13 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
             }
             const home = global.prepare("SELECT session_id,machine_id,epoch,move_id,updated_at,state,destination FROM session_homes WHERE session_id=?").get(row.session_id) as
               { session_id: string; machine_id: string; epoch: number; move_id: string | null; updated_at: number; state: string | null; destination: string | null } | undefined;
+            if ((!home || home.state === null) && config && v0.some(evidence => {
+              const plan = evidence.plan;
+              if (evidence.origin !== "incoming" || evidence.expectedKey !== key || plan.source.sessionId !== row.session_id ||
+                  plan.destinationPlacement.machineId !== config.machineId || ![plan.source.epoch, plan.source.epoch + 1].includes(row.epoch as number)) return false;
+              const pointer = readLocal<unknown>(global, "relocate-incoming", key);
+              return !!pointer && typeof pointer === "object" && !Array.isArray(pointer) && (pointer as Record<string, unknown>).moveId === plan.moveId;
+            })) continue;
             if (home && home.state !== null) {
               const parsed = parseHome({ sessionId: home.session_id, machineId: home.machine_id, epoch: home.epoch, moveId: home.move_id,
                 updatedAt: home.updated_at, state: home.state, destination: home.destination });

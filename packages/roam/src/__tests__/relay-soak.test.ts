@@ -37,7 +37,7 @@ function completeEvidence(): Evidence {
       samples: Array.from({ length: 49 }, (_, i) => ({ sentMs: START + i * 10 * MINUTE,
         remoteMs: START + i * 10 * MINUTE, receivedMs: START + i * 10 * MINUTE })),
     },
-    submissions: [], handoffs: [], outcomes: [], receipts: [], states: [], calls: [], rss: [],
+    submissions: [], handoffs: [], outcomes: [], receipts: [], states: [], relayStates: [], calls: [], rss: [],
   }));
   const faults: Fault[] = [
     { kind: "relay-kill", clock: "relay", linkIds: [links[0].id], startMs: START + 60 * MINUTE, clearMs: START + 60 * MINUTE + 40_000,
@@ -60,8 +60,9 @@ function completeEvidence(): Evidence {
       link.outcomes.push({ id, atMs: atMs + 200, kind: "socket_delivered" });
     }
     for (let atMs = START; atMs <= END; atMs += 5000) {
-      const down = faults.some(fault => fault.linkIds.includes(link.id) && atMs >= fault.startMs + 1000 && atMs < fault.clearMs + 1000);
-      link.states.push({ atMs, state: down ? "down" : "up" });
+      const fault = faults.findLast(fault => fault.linkIds.includes(link.id) && atMs >= fault.startMs + 1000);
+      const down = fault !== undefined && atMs < fault.clearMs + 1000;
+      link.states.push({ atMs, state: down ? "down" : "up", sinceMs: fault ? (down ? fault.startMs : fault.clearMs) + 1000 : START });
     }
     for (let atMs = START - 30_000; atMs <= END + 30_000; atMs += 30_000) link.rss.push({ atMs, bytes: 100_000_000, process: { ...link.runs[0].process } });
     link.calls.push({ pollId: `${link.id}-held`, holdMs: 20_000, startMs: START, endMs: START + 1000, process: { ...link.runs[0].process } });
@@ -90,18 +91,25 @@ let baseline: Evidence;
 beforeAll(() => { baseline = completeEvidence(); });
 const copy = (): Evidence => structuredClone(baseline);
 const faultOf = (evidence: Evidence, kind: Fault["kind"]): Fault => evidence.faults.find(fault => fault.kind === kind)!;
-const markDownAt = (link: Link, fault: Fault, delay: number): void => {
+const markDownAt = (link: Link, fault: Fault, delay: number, sampleDelay = delay): void => {
+  const sinceMs = fault.startMs + delay, observedMs = fault.startMs + sampleDelay;
+  const upSince = link.states.findLast(state => state.atMs <= fault.startMs)!.sinceMs;
   for (const state of link.states) {
-    if (state.atMs >= fault.startMs && state.atMs < fault.startMs + delay) state.state = "up";
+    if (state.atMs >= fault.startMs && state.atMs < observedMs) Object.assign(state, { state: "up", sinceMs: upSince });
+    else if (state.atMs >= observedMs && state.atMs < fault.clearMs + 1000) Object.assign(state, { state: "down", sinceMs });
   }
-  link.states.push({ atMs: fault.startMs + delay, state: "down" });
+  link.states.push({ atMs: observedMs, state: "down", sinceMs });
   link.states.sort((a, b) => a.atMs - b.atMs);
 };
-const markUpAt = (link: Link, fault: Fault, delay: number): void => {
+const markUpAt = (link: Link, fault: Fault, delay: number, sampleDelay = delay): void => {
+  const sinceMs = fault.clearMs + delay, observedMs = fault.clearMs + sampleDelay;
+  const downSince = link.states.findLast(state => state.atMs <= fault.clearMs)!.sinceMs;
+  const nextFault = link.states.find(state => state.atMs > observedMs && state.state !== "up")?.atMs ?? Infinity;
   for (const state of link.states) {
-    if (state.atMs >= fault.clearMs && state.atMs < fault.clearMs + delay) state.state = "down";
+    if (state.atMs >= fault.clearMs && state.atMs < observedMs) Object.assign(state, { state: "down", sinceMs: downSince });
+    else if (state.atMs >= observedMs && state.atMs < nextFault) Object.assign(state, { state: "up", sinceMs });
   }
-  link.states.push({ atMs: fault.clearMs + delay, state: "up" });
+  link.states.push({ atMs: observedMs, state: "up", sinceMs });
   link.states.sort((a, b) => a.atMs - b.atMs);
 };
 
@@ -153,11 +161,23 @@ describe("the live relay soak reliability gate", () => {
     expect(checkRelaySoak(late).violations).toContain("stall-detection");
   });
 
+  it("uses transition times when the next samples arrive after both timing bounds", () => {
+    const evidence = copy(), link = evidence.links[0], fault = faultOf(evidence, "relay-kill");
+    markDownAt(link, fault, 29_000, 34_000);
+    markUpAt(link, fault, 59_000, 64_000);
+    expect(checkRelaySoak(evidence)).toEqual({ ok: true, violations: [] });
+  });
+
   it("does not count an up sample before a delayed failure as recovery", () => {
     const evidence = copy(), link = evidence.links[0], fault = faultOf(evidence, "relay-kill");
+    const originalRecovery = fault.clearMs + 1000;
     fault.clearMs = fault.startMs + 1000;
-    for (const sample of link.states) if (sample.atMs >= fault.startMs + 5000 && sample.atMs <= fault.clearMs + 60_000) sample.state = "down";
-    link.states.push({ atMs: fault.startMs + 2000, state: "up" });
+    const down = fault.startMs + 5000, recovered = fault.clearMs + 60_001;
+    for (const sample of link.states) {
+      if (sample.atMs >= down && sample.atMs < recovered) Object.assign(sample, { state: "down", sinceMs: down });
+      else if (sample.state === "up" && sample.sinceMs === originalRecovery) sample.sinceMs = recovered;
+    }
+    link.states.push({ atMs: fault.startMs + 2000, state: "up", sinceMs: fault.startMs + 2000 });
     link.states.sort((a, b) => a.atMs - b.atMs);
     expect(checkRelaySoak(evidence).violations).toContain("recovery");
   });
@@ -402,7 +422,7 @@ function recordManifest(evidence: Evidence) {
       ...link.receipts.map(item => ({ type: "receipt", linkId, ...item })),
       ...link.outcomes.map(item => ({ type: "outcome", linkId, ...item })),
       ...link.states.map(item => ({ type: "state", linkId, ...item })),
-      { type: "relay-state", linkId, atMs: START, state: "connecting" },
+      ...link.relayStates.map(item => ({ type: "relay-state", linkId, ...item })),
       ...link.rss.map(item => ({ type: "rss", linkId, ...item })),
       ...link.calls.flatMap(call => [
         { type: "poll-start", linkId, atMs: call.startMs, holdMs: call.holdMs, pollId: call.pollId, wireLinkId: "wire", process: call.process },
@@ -430,6 +450,24 @@ describe("offline evidence assembly", () => {
     const { manifest, files } = recordManifest(baseline);
     const evidence = assembleRelaySoak(manifest, name => files.get(name)!);
     expect(checkRelaySoak(evidence)).toEqual({ ok: true, violations: [] });
+  });
+
+  it("keeps relay transitions and accepts them when peer samples miss the entire outage", () => {
+    const evidence = copy(), link = evidence.links[0], fault = faultOf(evidence, "relay-kill");
+    link.clock.minOffsetMs = -100;
+    link.clock.maxOffsetMs = 100;
+    for (const event of link.states) {
+      if (event.atMs >= fault.startMs && event.atMs < fault.clearMs + 65_000)
+        Object.assign(event, { state: "up", sinceMs: START });
+    }
+    link.relayStates = [
+      { atMs: fault.startMs + 34_000, sinceMs: fault.startMs + 30_000, state: "down" },
+      { atMs: fault.clearMs + 65_000, sinceMs: fault.clearMs + 60_000, state: "up" },
+    ];
+    const { manifest, files } = recordManifest(evidence);
+    const assembled = assembleRelaySoak(manifest, name => files.get(name)!);
+    expect(assembled.links[0].relayStates).toMatchObject(link.relayStates);
+    expect(checkRelaySoak(assembled)).toEqual({ ok: true, violations: [] });
   });
 
   it("rejects truncated or unrecognized records instead of treating them as evidence", () => {
@@ -597,7 +635,7 @@ describe("the opt-in soak drivers", () => {
       { id: "cadence-0", kind: "socket_delivered" }, { id: "cadence-1", kind: "refused" },
     ]);
     expect(records.filter(event => event.type === "submission-error")).toMatchObject([{ id: "cadence-2" }]);
-    expect(records.some(event => event.type === "state" && event.state === "up")).toBe(true);
+    expect(records).toContainEqual({ type: "state", linkId: fixtureLink.id, state: "up", sinceMs: START, atMs: START + 4000 });
     expect(JSON.stringify(records)).not.toContain("do-not-log-this-error");
   });
 

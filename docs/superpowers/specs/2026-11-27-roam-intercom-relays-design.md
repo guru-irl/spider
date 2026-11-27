@@ -93,7 +93,7 @@ Rules:
 - The linked machine considers the relay up while a valid call is in progress and for 10 seconds
   after the last call ends normally. If any call ends without its normal reply, such as when the
   relay cancels or dies, the linked machine marks the link down at once. On the relay, a failed
-  call marks the link down. The relay reconnects with backoff: 1, 2, 4 and up to 60 seconds between
+  call marks the link down. The relay reconnects with backoff: 1, 2, 4 and up to 30 seconds between
   attempts.
 
 ## Failures

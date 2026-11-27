@@ -68,6 +68,11 @@ function treeStamp(root: string): string {
   visit(root);
   return createHash("sha256").update(entries.join("\n")).digest("hex");
 }
+function v0Home(value: unknown) {
+  const parsed = parseHome(value);
+  if (parsed.moveId !== null && (!parsed.moveId.startsWith("v0-") || !isMachineId(parsed.moveId.slice(3)))) throw new Error("Invalid v0 home move");
+  return parsed;
+}
 function placementContainsCheckout(checkout: string, cwd: string): boolean {
   const child = relative(checkout, cwd);
   if (isAbsolute(child) || child === ".." || child.startsWith(`..${sep}`)) return false;
@@ -232,7 +237,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
         if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Invalid v0 evidence");
         const data = result as Record<string, unknown>;
         const plan = action.action === "relocate-checkpoint" ? parseCheckpoint(data.checkpoint).plan : parsePlan(data.plan);
-        if (plan.moveId !== action.operation_id) throw new Error("Mismatched v0 evidence");
+        if (plan.moveId !== action.operation_id || !isMachineId(plan.moveId.slice(3))) throw new Error("Mismatched v0 evidence");
         if (action.action === "relocate-incoming") {
           if (data.expectedKey !== `worktree:${plan.destinationPlacement.repoKey}:${plan.destinationPlacement.workspaceId}`) throw new Error("Mismatched incoming key");
           v0.push({ origin: "incoming", plan, expectedKey: data.expectedKey });
@@ -279,7 +284,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
         const home = global.prepare("SELECT session_id,machine_id,epoch,move_id,updated_at,state,destination FROM session_homes WHERE session_id=?").get(row.key) as
           { session_id: string; machine_id: string; epoch: number; move_id: string | null; updated_at: number; state: string | null; destination: string | null } | undefined;
         if (!home || home.state === null) continue;
-        const parsed = parseHome({ sessionId: home.session_id, machineId: home.machine_id, epoch: home.epoch, moveId: home.move_id,
+        const parsed = v0Home({ sessionId: home.session_id, machineId: home.machine_id, epoch: home.epoch, moveId: home.move_id,
           updatedAt: home.updated_at, state: home.state, destination: home.destination });
         if (parsed.state === "running" && parsed.machineId === config.machineId) v0Owners.set(row.key, { placement, epoch: parsed.epoch });
       }
@@ -329,9 +334,8 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
             const home = global.prepare("SELECT session_id,machine_id,epoch,move_id,updated_at,state,destination FROM session_homes WHERE session_id=?").get(plan.source.sessionId) as
               { session_id: string; machine_id: string; epoch: number; move_id: string | null; updated_at: number; state: string | null; destination: string | null } | undefined;
             if (!home || home.state === null && home.destination === null) return true;
-            const parsed = parseHome({ sessionId: home.session_id, machineId: home.machine_id, epoch: home.epoch, moveId: home.move_id,
+            const parsed = v0Home({ sessionId: home.session_id, machineId: home.machine_id, epoch: home.epoch, moveId: home.move_id,
               updatedAt: home.updated_at, state: home.state, destination: home.destination });
-            if (parsed.moveId !== null && (!parsed.moveId.startsWith("v0-") || !isMachineId(parsed.moveId.slice(3)))) throw new Error("Invalid v0 home move");
             return parsed.epoch < plan.source.epoch || parsed.state === "moving" && parsed.moveId === plan.moveId &&
               parsed.machineId === plan.source.machineId && parsed.destination === config.machineId && parsed.epoch === plan.source.epoch + 1 ||
               parsed.state !== "moving" && parsed.machineId === plan.source.machineId && parsed.epoch <= plan.source.epoch;
@@ -369,9 +373,8 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
             return !!pointer && typeof pointer === "object" && !Array.isArray(pointer) && (pointer as Record<string, unknown>).moveId === plan.moveId;
           })) continue;
           if (home && home.state !== null) {
-            const parsed = parseHome({ sessionId: home.session_id, machineId: home.machine_id, epoch: home.epoch, moveId: home.move_id,
+            const parsed = v0Home({ sessionId: home.session_id, machineId: home.machine_id, epoch: home.epoch, moveId: home.move_id,
               updatedAt: home.updated_at, state: home.state, destination: home.destination });
-            if (parsed.moveId !== null && (!parsed.moveId.startsWith("v0-") || !isMachineId(parsed.moveId.slice(3)))) throw new Error("Invalid v0 home move");
             if (parsed.state !== "moving" || v0.some(evidence => evidence.plan.moveId === parsed.moveId && evidence.plan.source.sessionId === row.session_id)) continue;
           }
           unknown.push(`${label} freeze record unavailable`);

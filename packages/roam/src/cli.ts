@@ -726,7 +726,9 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
         const herdr = loadHerdrConfig(root);
         report = await remoteDoctor(createTransport({ binary: herdr.core.binary, env: process.env, enrolled: config.peers }), peer, config);
         report = { ...report, consumers: report.enabled ? report.consumers : [], diagnostics: [
-          ...(report.enabled ? report.diagnostics : report.diagnostics.filter(row => row.reason.startsWith("core-pin-") || row.reason.startsWith("store-") || isPendingLaunchDiagnostic(row) || isMoveSetupDiagnostic(row) || row.severity === "info" || row.severity === "warning" && row.code === HOSTING_WARNING_CODE)),
+          ...(report.enabled ? report.diagnostics : report.diagnostics.filter(row => row.reason.startsWith("legacy-upgrade-") ||
+            row.reason.startsWith("core-pin-") || row.reason.startsWith("store-") || isPendingLaunchDiagnostic(row) ||
+            isMoveSetupDiagnostic(row) || row.severity === "info" || row.severity === "warning" && row.code === HOSTING_WARNING_CODE)),
           ...(report.enabled !== config.enabled ? [{ reason: `peer-enabled-mismatch:${peer.machineId}`, severity: "warning" as const,
             repairCommand: config.enabled ? "spider roam enable" : "spider roam disable" }] : []),
         ] };

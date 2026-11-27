@@ -133,6 +133,20 @@ describe("relocate", () => {
     expect(s.processes).toEqual(new Set([target]));
   });
 
+  it("confirms a pending start when relocating back", async () => {
+    const s = state(), p = ports(s);
+    expect(await relocate(request,p)).toMatchObject({ok:true,value:{home:{machineId:destination,epoch:3}}});
+    const before = s.effects.length, start = p.start;
+    p.start = async (...args) => {
+      const started = await start(...args);
+      return started.ok ? {ok:false,refusal:refusal("start-pending")} : started;
+    };
+    expect(await relocate({sessionId,destinationMachine:source},p)).toMatchObject({ok:true,value:{disposition:"relocated",home:{machineId:source,epoch:5}}});
+    expect(s.effects.slice(before).filter(effect=>effect==="start-source")).toHaveLength(1);
+    expect(s.processes).toEqual(new Set([source]));
+    expect(s.snapshots.size).toBe(2); expect(s.segments.size).toBe(2);
+  });
+
   it("retries a pending start only when exact confirmation is available", async () => {
     const s = state(), p = ports(s), start = p.start;
     p.start = async (...args) => {

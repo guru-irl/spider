@@ -17,10 +17,13 @@ import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import { openJournal } from "../journal";
 import { createLocalRuntime, createLocalIO, localLaunchEnvironment, seedLocalPlacement, type LocalIO } from "../relocate/local";
 import { createHomeSupervisor } from "../relocate/supervisor";
+import { relocate } from "../relocate/relocate";
+import { assertSafeHistories, destination, ports, request, state } from "./relocate-fakes";
 const hub = "11111111-1111-4111-8111-111111111111", box = "22222222-2222-4222-8222-222222222222";
 const id = "33333333-3333-4333-8333-333333333333" as SessionId;
 const fixtures: {close():void}[] = [];
 afterEach(()=>{ vi.restoreAllMocks(); vi.unstubAllEnvs(); for(const f of fixtures.splice(0)) f.close(); });
+afterEach(assertSafeHistories);
 function runtimeFixture() {
  const db = createReplica("global", box);fixtures.push(db);
  const home: RunningHome = {sessionId:id,machineId:box,epoch:3,state:"running",destination:null,moveId:"v0-run" as RunningHome["moveId"],updatedAt:1};
@@ -37,6 +40,43 @@ function runtimeFixture() {
  const io: LocalIO = {inspect:async()=>lock,probe:async()=>probe,claimFree:async()=>{},signal:async pid=>{signalled.push(pid);},shutdown:async()=>false,pause:async()=>{now+=10;},terminals:async()=>terminals,tree:async()=>({descendants:[],groups:[]}),groupBlockers:async()=>[],writerBlockers:async()=>[],launch:async request=>{launches.push(request);return {terminal:"core:t"};}};
  const options: RelocateAdapterOptions = {root:db.root,globalDb:db.db,homes:{read:async()=>current,list:async()=>current?[current]:[],initialize:async()=>home,compareAndSwap:async()=>({kind:"conflict",home:current})},journal,config:{enabled:false,role:"box",machineId:box,hubMachineId:hub,peers:[],discoveryRoots:[],coreUnit:"core",syncMs:10000,limits:{...DEFAULT_LIMITS,readyMs:30},intercom:disabledIntercom()},sync:{start(){},stop(){},sync:async()=>[],barriers:async()=>true},transport:{resolve:async p=>p,bootstrapProbe:async()=>{throw new Error("unused");},exec:async()=>{throw new Error("unexpected remote");},run:async()=>({terminal:"t"}),read:async()=>Buffer.alloc(0),write:async()=>{}},clock:{now:()=>now,later:(_ms,_fn)=>()=>{}},git:{run,journal,limits:DEFAULT_LIMITS,scratch:join(db.root,"git"),worktreeCommand:null},workspaceImport:{run,journal,limits:DEFAULT_LIMITS,scratch:join(db.root,"git"),worktreeCommand:null,resolveCommonRepository:async()=>null,lastExportedSnapshot:async()=>null,verifiedArtifactPath:async()=>null},limits:{...DEFAULT_LIMITS,readyMs:30}};
  return {options,io,home,placement,launches,signalled,setHome:(v:typeof current)=>current=v,setLock:(v:typeof lock)=>lock=v,setProbe:(v:typeof probe)=>probe=v,setTerminals:(v:typeof terminals)=>terminals=v};
+}
+const readyClock = {now:Date.now,later(ms:number,fn:()=>void){const timer=setTimeout(fn,ms);return ()=>clearTimeout(timer);}};
+function supervisorRace(f: ReturnType<typeof runtimeFixture>) {
+ f.options.config.machineId = destination;
+ const s = state(), p = ports(s);
+ f.io.launch = async launch => { f.launches.push(launch); return {terminal:"core:t"}; };
+ vi.spyOn(hcApi,"invokeCli").mockImplementation(async (_binary,argv) => {
+  if (argv[0] === "ls") return {terminals:f.launches.length ? [{address:"core:t",state:"live",pid:42}] : []};
+  const launch = f.launches.at(-1);
+  if (argv[0] !== "get" || !launch) throw new Error("unexpected terminal request");
+  return {address:"core:t",state:"live",pid:42,cwd:launch.placement.cwd,
+   argv:["/usr/bin/env","/bin/pi","--session",launch.placement.file],
+   labels:{"spider.kind":"session","spider.session":launch.home.sessionId,"spider.machine":launch.home.machineId,"spider.roam.epoch":String(launch.home.epoch)}};
+ });
+ f.io.terminals = createLocalIO(f.options).terminals;
+ const local = createLocalRuntime(f.options,f.io);
+ let hubStart: Awaited<ReturnType<typeof local.start>> | undefined, signal!:()=>void;
+ const started = new Promise<void>(resolve => {signal=resolve;});
+ p.start = async (home, placement) => {
+  f.setHome(home);
+  const supervisor = createHomeSupervisor({
+   machineId:destination, clock:f.options.clock,
+   entries:async()=>[{sessionId:home.sessionId,home,placement}],
+   owner:local.owner, stop:async()=>{throw new Error("unexpected stop");},
+   activate:async()=>({ok:true,value:undefined}), start:local.start, report() {},
+  }, () => {});
+  await supervisor.tick();
+  hubStart = await local.start(home, placement);
+  signal();
+  return hubStart;
+ };
+ p.confirm = local.confirm;
+ return {p,started,hubStart:()=>hubStart};
+}
+function claimFixtureLock(f: ReturnType<typeof runtimeFixture>) {
+ f.setLock({identity:{pid:42,startIdentity:"pi-42"},bootId:"boot",pendingOperationId:null,pendingFile:null,pendingCoreId:null,operationId:null});
+ f.setProbe({kind:"live",startIdentity:"pi-42",pi:true});
 }
 function localCheckout(f: ReturnType<typeof runtimeFixture>) {
  const file = join(f.options.root, "ordinary.jsonl");
@@ -424,10 +464,76 @@ describe("v0 local runtime",()=>{
   expect(await local.start(f.home,f.placement)).toMatchObject({ok:false,refusal:{code:"start-pending"}});
   expect(await local.start(f.home,f.placement)).toMatchObject({ok:false,refusal:{code:"start-pending"}});
   expect(await local.owner(id)).toEqual({kind:"unknown"});expect(f.launches).toHaveLength(1);
-  f.setLock({identity:{pid:42,startIdentity:"pi-42"},bootId:"boot",pendingOperationId:null,pendingFile:null,pendingCoreId:null,operationId:null});f.setProbe({kind:"live",startIdentity:"pi-42",pi:true});f.setTerminals([{terminal:"core:t",state:"live",pid:42}]);
+  f.setLock({identity:{pid:42,startIdentity:"pi-42"},bootId:"boot",pendingOperationId:null,pendingFile:null,pendingCoreId:null,operationId:null});f.setProbe({kind:"live",startIdentity:"pi-42",pi:true});
+  const terminal = {terminal:"core:t",state:"live" as const,pid:42,owned:true as const,
+   launch:{sessionId:f.home.sessionId,machineId:f.home.machineId,epoch:f.home.epoch,cwd:f.placement.cwd,file:f.placement.file}};
+  f.setTerminals([terminal]);
   expect(await local.start(f.home,f.placement)).toEqual({ok:true,value:{terminal:"core:t"}});
   expect(await local.confirm(f.home,f.placement)).toEqual({ok:true,value:{terminal:"core:t"}});
   expect(f.launches).toHaveLength(1);
+ });
+ it("confirms a supervisor-first launch without starting a second pi", async () => {
+  const f = runtimeFixture(), race = supervisorRace(f), start = race.p.start;
+  race.p.start = async (...args) => { const result=await start(...args); claimFixtureLock(f); return result; };
+  const outcome = await relocate(request,race.p,{clock:readyClock,timeoutMs:1_000});
+  expect(race.hubStart()).toMatchObject({ok:false,refusal:{code:"start-pending"}});
+  expect(f.launches).toHaveLength(1);
+  expect(outcome).toMatchObject({ok:true,value:{terminal:"core:t",disposition:"relocated"}});
+ });
+ it("waits for the supervisor's pi to claim its ID lock", async () => {
+  vi.useFakeTimers();
+  try {
+   const f = runtimeFixture(), race = supervisorRace(f);
+   const pending = relocate(request,race.p,{clock:readyClock,timeoutMs:1_000});
+   let result: Awaited<typeof pending> | undefined;
+   void pending.then(value=>{result=value;});
+   await race.started;
+   await vi.advanceTimersByTimeAsync(249);
+   expect(result).toBeUndefined();
+   claimFixtureLock(f);
+   await vi.advanceTimersByTimeAsync(1);
+   expect(await pending).toMatchObject({ok:true,value:{terminal:"core:t",disposition:"relocated"}});
+   expect(f.launches).toHaveLength(1);
+  } finally { vi.useRealTimers(); }
+ });
+ it("returns the original pending refusal at the bound when no owner appears", async () => {
+  vi.useFakeTimers();
+  try {
+   const f = runtimeFixture(), race = supervisorRace(f);
+   const pending = relocate(request,race.p,{clock:readyClock,timeoutMs:1_000});
+   let result: Awaited<typeof pending> | undefined;
+   void pending.then(value=>{result=value;});
+   await race.started;
+   await vi.advanceTimersByTimeAsync(999);
+   expect(result).toBeUndefined();
+   await vi.advanceTimersByTimeAsync(1);
+   const start = race.hubStart();
+   if (!start || start.ok) throw new Error("the hub start did not refuse");
+   expect(await pending).toMatchObject({ok:false,step:"start-destination",refusal:start.refusal});
+   expect(f.launches).toHaveLength(1);
+  } finally { vi.useRealTimers(); }
+ });
+ it.each(["session", "checkout", "epoch"] as const)("does not confirm a terminal from a different %s", async mismatch => {
+  const f = runtimeFixture();
+  f.setLock({identity:{pid:42,startIdentity:"pi-42"},bootId:"boot",pendingOperationId:null,pendingFile:null,pendingCoreId:null,operationId:null});
+  f.setProbe({kind:"live",startIdentity:"pi-42",pi:true});
+  const labels = {"spider.kind":"session","spider.session":mismatch === "session" ? "another-session" : id,
+   "spider.machine":box,"spider.roam.epoch":mismatch === "epoch" ? "2" : "3"};
+  vi.spyOn(hcApi,"invokeCli").mockImplementation(async (_binary,argv) => argv[0] === "ls"
+   ? {terminals:[{address:"core:t",state:"live",pid:42}]}
+   : {address:"core:t",state:"live",pid:42,labels,cwd:mismatch === "checkout" ? "/other/sub" : f.placement.cwd,
+      argv:["pi","--session",f.placement.file]});
+  const local = createLocalRuntime(f.options,{...f.io,terminals:createLocalIO(f.options).terminals});
+  expect(await local.confirm(f.home,f.placement)).toMatchObject({ok:false,refusal:{code:"start-pending"}});
+ });
+ it("does not confirm an owner whose terminal launch details are unavailable", async () => {
+  const f = runtimeFixture();
+  claimFixtureLock(f);
+  vi.spyOn(hcApi,"invokeCli").mockImplementation(async (_binary,argv) => argv[0] === "ls"
+   ? {terminals:[{address:"core:t",state:"live",pid:42}]}
+   : {address:"core:t",state:"live",pid:42,labels:{"spider.kind":"session","spider.session":id,"spider.machine":box,"spider.roam.epoch":"3"}});
+  const local = createLocalRuntime(f.options,{...f.io,terminals:createLocalIO(f.options).terminals});
+  expect(await local.confirm(f.home,f.placement)).toMatchObject({ok:false,refusal:{code:"start-pending"}});
  });
  it("confirm requires a live pi with the matching ID lock",async()=>{
   const f=runtimeFixture(),local=createLocalRuntime(f.options,f.io);

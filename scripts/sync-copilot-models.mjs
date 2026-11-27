@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // scripts/sync-copilot-models.mjs
-// Add available GitHub Copilot models that pi-ai does not ship, and migrate
-// entries that shadow real built-ins to narrow modelOverrides. Existing override
-// fields win. A dated snapshot permits additions but never migration. Dry-run by
-// default; --write backs up models.json before migration and is idempotent.
+// Add Copilot models absent from the active pi catalog and migrate shadowing
+// entries to modelOverrides without silently dropping differing fields. Existing
+// override keys are preserved; conflicts and unsupported fields stop migration.
+// A dated snapshot permits additions but never migration. Dry-run by default;
+// --write backs up models.json before migration and is idempotent.
 import { readFileSync, writeFileSync, existsSync, copyFileSync, constants, accessSync, realpathSync, statSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -39,6 +40,13 @@ const BUILTIN_SNAPSHOT = new Set([
   "gpt-5.3-codex", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.5",
 ]);
 const WRITE = process.argv.includes("--write");
+const INHERITED_FIELDS = new Set(["api", "contextWindow", "maxTokens"]);
+// Pi applies these in applyModelOverride and rawModelHeaders. Spider reads
+// compactAtPercent from modelOverrides itself.
+const OVERRIDE_FIELDS = new Set([
+  "name", "reasoning", "thinkingLevelMap", "input", "inputLimits", "cost", "promptCache",
+  "samplingParams", "samplingParamsByThinkingLevel", "headers", "compat", "compactAtPercent",
+]);
 
 function fail(msg) { console.error("[sync-copilot-models] " + msg); process.exit(1); }
 function readJson(p) { return JSON.parse(readFileSync(p, "utf8")); }
@@ -146,6 +154,30 @@ function synth(m) {
   return entry;
 }
 
+function previewOverride(override) {
+  const preview = {};
+  const levels = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+  for (const [key, value] of Object.entries(override)) {
+    if (key === "compactAtPercent" && typeof value === "number") preview[key] = value;
+    else if (key === "reasoning" && typeof value === "boolean") preview[key] = value;
+    else if (key === "input" && Array.isArray(value) && value.every((v) => v === "text" || v === "image")) preview[key] = value;
+    else if (key === "thinkingLevelMap" && value && typeof value === "object" && !Array.isArray(value) &&
+      Object.entries(value).every(([k, v]) => levels.has(k) && (v === null || levels.has(v)))) preview[key] = value;
+    else preview[key] = "[redacted]";
+  }
+  return JSON.stringify(preview);
+}
+
+function headerDifferences(shadow, prior, overlappingOnly) {
+  if (!shadow || typeof shadow !== "object" || Array.isArray(shadow) ||
+      !prior || typeof prior !== "object" || Array.isArray(prior)) return null;
+  const keys = new Set([...Object.keys(shadow), ...Object.keys(prior)]);
+  return [...keys].filter((key) => {
+    if (overlappingOnly && (!Object.hasOwn(shadow, key) || !Object.hasOwn(prior, key))) return false;
+    return !Object.hasOwn(shadow, key) || !Object.hasOwn(prior, key) || !isDeepStrictEqual(shadow[key], prior[key]);
+  });
+}
+
 async function main() {
   const { models: builtin, snapshot } = await resolveBuiltinIds();
   const { token, available } = loadAuth();
@@ -162,19 +194,53 @@ async function main() {
 
   const migrations = snapshot ? [] : gh.models.filter((entry) => builtin.has(entry.id)).map((entry) => {
     const differences = {};
-    for (const key of ["compactAtPercent", "promptCache", "thinkingLevelMap", "compat"]) {
-      if (Object.hasOwn(entry, key) && !isDeepStrictEqual(entry[key], builtin.get(entry.id)[key])) differences[key] = entry[key];
-    }
+    const inherited = [];
+    const unsupported = [];
+    const conflicts = [];
     const hasOverride = Object.hasOwn(gh.modelOverrides || {}, entry.id);
-    return { id: entry.id, override: { ...differences, ...gh.modelOverrides?.[entry.id] }, hasOverride };
+    const prior = hasOverride ? gh.modelOverrides[entry.id] : {};
+    if (!prior || typeof prior !== "object" || Array.isArray(prior)) unsupported.push("modelOverrides");
+    else for (const [key, value] of Object.entries(entry)) {
+      if (key === "id") continue;
+      const equalsBuiltin = isDeepStrictEqual(value, builtin.get(entry.id)[key]);
+      if (key === "headers" && Object.hasOwn(prior, key)) {
+        // Model entry headers take precedence before migration, even if they
+        // equal the built-in. Detect conflicting header names in that case too.
+        const names = headerDifferences(value, prior[key], equalsBuiltin);
+        if (names === null ? !isDeepStrictEqual(value, prior[key]) : names.length > 0) {
+          conflicts.push({ key, names });
+        }
+      }
+      if (equalsBuiltin) continue;
+      if (INHERITED_FIELDS.has(key)) inherited.push(key);
+      else if (!OVERRIDE_FIELDS.has(key)) unsupported.push(key);
+      else if (!Object.hasOwn(prior, key)) differences[key] = value;
+      else if (key !== "headers" && !isDeepStrictEqual(value, prior[key])) conflicts.push({ key });
+    }
+    return { id: entry.id, override: { ...differences, ...prior }, hasOverride, inherited, unsupported, conflicts };
   });
 
+  for (const m of migrations) {
+    if (m.inherited.length) {
+      const existingLimits = m.inherited.filter((key) => Object.hasOwn(m.override, key));
+      console.log(`  ~ ${m.id}: shadow fields inherit from pi: ${m.inherited.join(", ")}${existingLimits.length ? `; existing overrides remain: ${existingLimits.join(", ")}` : ""}`);
+    }
+  }
+  if (migrations.some((m) => m.unsupported.length || m.conflicts.length)) {
+    for (const m of migrations) {
+      if (m.unsupported.length) console.error(`[sync-copilot-models] ${m.id}: unsupported fields ${m.unsupported.join(", ")}`);
+      for (const conflict of m.conflicts) {
+        console.error(`[sync-copilot-models] ${m.id}: conflicting field ${conflict.key}${conflict.names?.length ? ` (${conflict.names.join(", ")})` : ""}`);
+      }
+    }
+    fail("cannot migrate conflicting or unsupported fields; no changes were written.");
+  }
   console.log(`[sync-copilot-models] usable picker chat models: ${candidates.length}; built-in: ${builtin.size}; already in models.json: ${existing.size}`);
   console.log(`[sync-copilot-models] ${missing.length} to add; ${migrations.length} to migrate.`);
   if (!missing.length && !migrations.length) return;
   const synthed = missing.map(synth);
   for (const e of synthed) console.log(`  + ${e.id.padEnd(28)} api=${e.api} ctx=${e.contextWindow} out=${e.maxTokens} reasoning=${e.reasoning} vision=${e.input.includes("image")}`);
-  for (const m of migrations) console.log(`  ~ ${m.id} -> ${JSON.stringify(m.override)}${m.hasOverride ? " (existing override keys kept)" : ""}`);
+  for (const m of migrations) console.log(`  ~ ${m.id} -> ${previewOverride(m.override)}${m.hasOverride ? " (existing override keys kept)" : ""}`);
   if (!WRITE) { console.log("[sync-copilot-models] dry-run (no changes). Re-run with --write to apply."); return; }
   if (migrations.length) {
     const backup = MODELS_PATH + ".bak-" + Date.now();

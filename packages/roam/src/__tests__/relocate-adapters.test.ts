@@ -52,7 +52,7 @@ function adapterFixture() {
 describe("relocate adapters", () => {
   it.each([false,true])("requires an exact confirmation acknowledgment from the peer (ack=%s)", async acknowledged => {
     const f=adapterFixture(), placement=checkpoint().plan.destinationPlacement;
-    const home={...checkpoint().plan.source,machineId:box,epoch:3,moveId:"v0-journal" as RelocateId};
+    const home={...checkpoint().plan.source,state:"running" as const,machineId:box,epoch:3,moveId:"v0-journal" as RelocateId};
     const peer:Peer={machineId:box,alias:"peer",node:"node",pi:"pi",cli:"cli",core:"core",globalRoot:"/remote"};
     f.options.config={...f.options.config,peers:[peer]};
     let received:unknown;

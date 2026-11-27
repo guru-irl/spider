@@ -179,6 +179,22 @@ it("disabled doctor reports the unfinished legacy move and source cleanup by ope
   ]));
 });
 
+it.each([
+  { name: "pending", cleanup: { status: "pending", reason: "move-cleanup-pending", blockers: ["move-cleanup-pending"] }, status: "legacy-upgrade-blocked" },
+  { name: "missing", cleanup: undefined, status: "legacy-upgrade-unverified" },
+  { name: "malformed pending", cleanup: { status: "pending" }, status: "legacy-upgrade-unverified" },
+  { name: "invalid state", cleanup: { status: "unknown" }, status: "legacy-upgrade-unverified" },
+])("checks a terminal move's $name source-cleanup receipt", async ({ cleanup, status }) => {
+  const f = fixture(), id = "terminal-cleanup";
+  f.journal.begin({ id, kind: "move", machineId: hub, expectedEpoch: 1, args: { sessionId: "terminal-session" } });
+  f.journal.record(id, "done", { code: 0, reason: "moved", value: { home: { sessionId: "terminal-session" }, ...(cleanup ? { sourceCleanup: cleanup } : {}) } });
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(new RegExp(`${status}.*source cleanup.*${id}`)) }),
+  ]));
+});
+
 it.each(["move-session", "move-abort-cleanup", "exact-session-launch"] as const)(
   "doctor blocks an unfinished %s journal record as the only pending operation", async kind => {
     const f = fixture(), id = `${kind}-fixture`;

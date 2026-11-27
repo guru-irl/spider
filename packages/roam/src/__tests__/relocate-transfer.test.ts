@@ -237,6 +237,31 @@ describe("v0 transfer stop boundary",()=>{
   });
   expect(f.signals).toEqual([]);
  });
+ it("stops when signalling a descendant makes its child exit", async () => {
+  const f = stopFixture();
+  const parent = {pid: 43, startIdentity: "parent-43", command: "wrapper"};
+  const child = {pid: 44, startIdentity: "child-44", command: "tool"};
+  let parentLive = true, childLive = true, childWasProbed = false;
+  f.io.tree = async () => ({descendants: [parent, child], groups: []});
+  const probe = f.io.probe;
+  f.io.probe = async pid => {
+   if (pid === parent.pid) return parentLive ? {kind: "live", startIdentity: parent.startIdentity, pi: false} : {kind: "absent"};
+   if (pid === child.pid) {
+    if (!childLive) return childWasProbed ? {kind: "absent"} : {kind: "unknown"};
+    childWasProbed = true;
+    return {kind: "live", startIdentity: child.startIdentity, pi: false};
+   }
+   return probe(pid);
+  };
+  f.io.signal = async pid => {
+   if (pid === child.pid && !childLive) throw Object.assign(new Error("process exited"), {code: "ESRCH"});
+   f.signals.push(pid);
+   if (pid === parent.pid) parentLive = childLive = false;
+  };
+
+  expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toEqual({ok: true, value: undefined});
+  expect(f.signals).toEqual([43, 42]);
+ });
  it("waits for verified tool descendants even after the locked pi exits", async () => {
   const f = stopFixture();
   const child = {pid: 43, startIdentity: "tool-43", command: "bash"};

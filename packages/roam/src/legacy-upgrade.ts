@@ -178,9 +178,17 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
                 findings.push(`source cleanup session ${safeId(record.sessionId)} operation ${id}`);
             } catch { unknown.push(`source cleanup operation ${id} unavailable`); }
           }
-        } else if (operation.kind === "move" && result.value && typeof result.value === "object" && !Array.isArray(result.value)) {
-          const cleanup = (result.value as Record<string, unknown>).sourceCleanup;
-          if (cleanup && typeof cleanup === "object" && !Array.isArray(cleanup) && (cleanup as Record<string, unknown>).status === "pending") findings.push(`source cleanup operation ${id}`);
+        } else if (operation.kind === "move") {
+          if (result.code === 0) {
+            let label = `source cleanup operation ${id}`;
+            try {
+              if (!result.value || typeof result.value !== "object" || Array.isArray(result.value)) throw new Error("Missing move result");
+              const value = result.value as Record<string, unknown>, home = value.home;
+              if (home && typeof home === "object" && !Array.isArray(home) && typeof (home as Record<string, unknown>).sessionId === "string")
+                label = `source cleanup session ${safeId((home as Record<string, unknown>).sessionId as string)} operation ${id}`;
+              if (parseSourceCleanup(value.sourceCleanup).status === "pending") findings.push(label);
+            } catch { unknown.push(`${label} unavailable`); }
+          } else if (result.code !== 1 && result.code !== 2) unknown.push(`move operation ${id} terminal result invalid`);
         }
       }
       const preparations = new Map<string, { id: string; root: string; digest: string; key: string }>();

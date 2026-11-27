@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { existsSync } from 'node:fs';
-import { copyFile, mkdir, readFile, readlink, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readlink, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect } from 'vitest';
@@ -19,6 +19,7 @@ import type { Side } from '../harness/hc.js';
 import type { Suite } from '../harness/suite.js';
 import { deadline, waitFor } from '../harness/wait.js';
 import { mark } from './child-scripts.js';
+import { ownerNodeScript } from './roam-owner-node.js';
 
 const HUB = '00000000-0000-4000-8000-000000000001';
 const BOX = '00000000-0000-4000-8000-000000000002';
@@ -68,7 +69,13 @@ export async function relocateFixture(suite: Suite): Promise<RelocateFixture> {
   for (const name of ['settings.json', 'models.json']) await copyFile(join(hubAgent, name), join(boxAgent, name));
   await copyFile(join(hubRoot, 'config.json'), join(boxRoot, 'config.json'));
   suite.ledger.update(ledger => { (ledger.intercomDirectories ??= []).push(join(boxAgent, 'intercom')); });
-  const peer = { machineId: BOX, alias: cores.machine, node: process.execPath, pi: suite.pi.launcher,
+  const ownerDirectory = suite.ownPath(join(suite.root, 'v0-owner-trace'));
+  await mkdir(ownerDirectory, { mode: 0o700 });
+  const ownerRegister = fileURLToPath(new URL('./roam-owner-register.mjs', import.meta.url));
+  const ownerNode = suite.ownPath(join(suite.root, 'bin', 'v0-owner-node'));
+  await writeFile(ownerNode, ownerNodeScript(process.execPath, ownerRegister,
+    join(suite.packed.root, 'dist/roam/cli-main.mjs'), ownerDirectory), { mode: 0o700 });
+  const peer = { machineId: BOX, alias: cores.machine, node: ownerNode, pi: suite.pi.launcher,
     cli: suite.packed.roamCli, core: cores.wrapper, globalRoot: boxRoot, agentDir: boxAgent };
   for (const [machine, cwd] of [[hub, source], [box, destination]] as const) {
     await mkdir(join(machine.root, 'roam'), { recursive: true, mode: 0o700 });
@@ -94,12 +101,17 @@ export async function relocateFixture(suite: Suite): Promise<RelocateFixture> {
     for (const service of services.splice(0).reverse()) await service.stop();
     for (const [i, file] of logs.entries()) if (existsSync(file)) await suite.keepEvidence(file, `v0-service-${i}.log`);
     if (existsSync(syncLog)) await suite.keepEvidence(syncLog, 'v0-sync.jsonl');
+    for (const name of await readdir(ownerDirectory)) {
+      if (/^\d+\.jsonl$/.test(name)) await suite.keepEvidence(join(ownerDirectory, name), `v0-destination-owner-${name}`);
+    }
     await suite.keepEvidence(cores.recordLog, 'v0-hc.jsonl');
     await suite.keepEvidence(cores.viaLog, 'v0-via.jsonl');
   };
   try {
     const supervisor = spawnOwned(suite.ledger, { label: 'v0-supervisor', command: process.execPath,
-      args: [suite.packed.roamSupervisor, '--v0'], env: box.env, cwd: suite.root, stdio: { log: logs[1] } });
+      args: ['--import', ownerRegister, suite.packed.roamSupervisor, '--v0'],
+      env: { ...box.env, SPIDER_HERDR_E2E_OWNER_ENTRY: suite.packed.roamSupervisor, SPIDER_HERDR_E2E_OWNER_DIR: ownerDirectory },
+      cwd: suite.root, stdio: { log: logs[1] } });
     services.push(supervisor);
     await waitFor('v0 supervisor opens its journal', async () => {
       if (supervisor.child.exitCode !== null || supervisor.child.signalCode !== null) throw new Error(await readFile(logs[1], 'utf8'));
@@ -214,6 +226,17 @@ export async function relocateFixture(suite: Suite): Promise<RelocateFixture> {
         await suite.evidence(`v0-processes-${call}.json`, { tree, beforeProcesses, afterProcesses });
       }
       expect(result.exitCode, result.stderr + result.stdout).toBe(0);
+      if (target === cores.machine) {
+        const names = (await readdir(ownerDirectory)).filter(name => /^\d+\.jsonl$/.test(name));
+        const lines = (await Promise.all(names.map(name => readFile(join(ownerDirectory, name), 'utf8')))).flatMap(text => text.split('\n'));
+        const starts = lines.flatMap(line => {
+          try { const event = JSON.parse(line) as { event?: string; caller?: string; sessionId?: string; machineId?: string };
+            return event.event === 'owner-begin' && event.caller === 'start' && event.sessionId === id && event.machineId === box.id ? [event] : [];
+          } catch { return []; }
+        });
+        await suite.evidence(`v0-destination-start-${call}.json`, starts);
+        expect(starts.length).toBeGreaterThan(0);
+      }
       expect(await readFile(syncLog, 'utf8')).toContain('"event":"sync-result"');
       const reply = JSON.parse(result.stdout) as { ok?: boolean; value?: { terminal?: string; placement?: { file?: string; cwd?: string; sessionId?: string } } };
       expect(reply.ok, result.stdout).toBe(true);

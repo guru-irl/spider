@@ -183,16 +183,35 @@ it('runs the remote node entry with the observer and preserves its arguments', (
   mkdirSync(quoted);
   const entry = join(quoted, 'sample.mjs'), driver = join(quoted, 'driver.mjs'), wrapper = join(root, 'node-wrapper');
   writeFileSync(entry, sampleBundle);
-  writeFileSync(driver, `import { createLocalRuntime } from './sample.mjs';
+  writeFileSync(driver, `import { readFileSync } from 'node:fs';
+import { createLocalRuntime } from './sample.mjs';
 const io = { inspect: async () => null, terminals: async () => [], writerBlockers: async () => [] };
-console.log(JSON.stringify(await createLocalRuntime({ config: { machineId: 'destination' } }, io).owner('session')), process.argv[2]);
+console.log(JSON.stringify(await createLocalRuntime({ config: { machineId: 'destination' } }, io).owner('session')), process.argv[2], readFileSync(0, 'utf8'));
 `);
   const register = fileURLToPath(new URL('../../fixtures/roam-owner-register.mjs', import.meta.url));
   writeFileSync(wrapper, ownerNodeScript(process.execPath, register, entry, quoted), { mode: 0o700 });
-  const child = spawnSync(wrapper, [driver, 'unchanged argument'], { env: process.env, encoding: 'utf8' });
+  const child = spawnSync(wrapper, [driver, 'unchanged argument'], { env: process.env, input: 'request body', encoding: 'utf8' });
   expect(child.status, child.stderr).toBe(0);
-  expect(child.stdout).toBe('{"kind":"free"} unchanged argument\n');
+  expect(child.stdout).toBe('{"kind":"free"} unchanged argument request body\n');
   const rows = readFileSync(join(quoted, `${child.pid}.jsonl`), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  expect(rows).toEqual(expect.arrayContaining([
+    expect.objectContaining({ event: 'owner-begin', caller: 'owner', sessionId: 'session' }),
+  ]));
+});
+
+it('observes an entry loaded as the main module', () => {
+  const entry = join(root, 'main.mjs');
+  writeFileSync(entry, sampleBundle + `
+const io = { inspect: async () => null, terminals: async () => [], writerBlockers: async () => [] };
+console.log(JSON.stringify(await createLocalRuntime({ config: { machineId: 'destination' } }, io).owner('session')));
+`);
+  const register = fileURLToPath(new URL('../../fixtures/roam-owner-register.mjs', import.meta.url));
+  const child = spawnSync(process.execPath, ['--import', register, entry], {
+    env: { ...process.env, SPIDER_HERDR_E2E_OWNER_ENTRY: entry }, encoding: 'utf8',
+  });
+  expect(child.status, child.stderr).toBe(0);
+  expect(child.stdout).toBe('{"kind":"free"}\n');
+  const rows = readFileSync(join(root, `${child.pid}.jsonl`), 'utf8').trim().split('\n').map(line => JSON.parse(line));
   expect(rows).toEqual(expect.arrayContaining([
     expect.objectContaining({ event: 'owner-begin', caller: 'owner', sessionId: 'session' }),
   ]));

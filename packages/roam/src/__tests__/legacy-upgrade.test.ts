@@ -204,6 +204,18 @@ it("doctor blocks an unresolved legacy freeze roster even without a pending move
   ]));
 });
 
+it("reports a lost store named by an unfinished freeze roster as unverified", async () => {
+  const f = fixture(), key = "worktree:fixture-repo:lost-store";
+  const freeze = openFreezeJournal(join(f.root, "roam", "journal.db"));
+  freeze.beginFreeze("session-lost-store", "freeze-lost-store", 1);
+  freeze.bindFreezeRoster("session-lost-store", "freeze-lost-store", 1, ["global", key]);
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-unverified.*worktree:fixture-repo:lost-store/) }),
+  ]));
+});
+
 it("doctor reports frozen worktree membership with a missing freeze record as unverified", async () => {
   const f = fixture(), checkout = join(f.root, "worktree"), projectDir = join(checkout, ".spider"), key = "worktree:fixture-repo:workspace-1";
   mkdirSync(projectDir, { recursive: true });

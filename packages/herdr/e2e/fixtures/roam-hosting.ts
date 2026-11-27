@@ -418,11 +418,13 @@ export async function v0HostingFixture(suite: Suite): Promise<V0HostingFixture> 
     finally { current.close(); }
   };
   const close = async () => {
-    try {
-      if (supervisor) await supervisor.stop();
-      if (hasFile(supervisorLog)) await suite.keepEvidence(supervisorLog, 'v0-supervisor.log');
-      await suite.keepEvidence(cores.recordLog, 'v0-hc.jsonl');
-    } finally { restoreEnv(); }
+    try { if (supervisor) await supervisor.stop(); }
+    finally {
+      try {
+        if (hasFile(supervisorLog)) await suite.keepEvidence(supervisorLog, 'v0-supervisor.log');
+        await suite.keepEvidence(cores.recordLog, 'v0-hc.jsonl');
+      } finally { restoreEnv(); }
+    }
   };
   return { suite, root, cwd, sessionId, file, machineId: BOX, epoch, coreUnit, supervisorUnit, systemctlLog,
     provisionUnit, start, close, restartCore, waitOwner, owners, events, home };

@@ -99,8 +99,9 @@ async function restartAndRestore(suite: Suite): Promise<void> {
     list: parentTurns(tool('list-triggers', { action: 'loop' })),
     trigger: [text('scheduled check delivered')],
   } });
-  const fixture = await v0HostingFixture(suite), before = await digestFile(fixture.coreUnit);
+  const fixture = await v0HostingFixture(suite);
   try {
+    const before = await digestFile(fixture.coreUnit);
     await fixture.provisionUnit();
     expect(fixture.supervisorUnit).toMatch(/spider-roam-supervisor-v0\.service$/);
     const unit = await readFile(fixture.supervisorUnit, 'utf8');

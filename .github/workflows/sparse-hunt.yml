@@ -1,0 +1,53 @@
+name: Sparse inspection hunt
+
+on:
+  push:
+    branches: [ci/sparse-hunt]
+
+permissions:
+  contents: read
+
+jobs:
+  hunt:
+    name: Hunt (${{ matrix.profile }})
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [shard, exact-launch, mixed]
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+      - name: Prepare isolated scratch
+        run: mkdir -p .spider/scratch/tmp .spider/scratch/sparse-hunt
+      - name: Install SQLite CLI
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - run: npm ci
+      - name: Match the main shard runtime environment
+        run: |
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+          test ! -e "$rundir"
+          echo 'XDG_RUNTIME_DIR=' >> "$GITHUB_ENV"
+      - name: Run test repetitions
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          git --version
+          node --version
+          nproc
+          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR TMPDIR="$PWD/.spider/scratch/tmp" bash scripts/sparse-hunt/run.sh "$PROFILE"
+      - name: Upload timing data and test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sparse-hunt-${{ matrix.profile }}
+          path: .spider/scratch/sparse-hunt/
+          include-hidden-files: true

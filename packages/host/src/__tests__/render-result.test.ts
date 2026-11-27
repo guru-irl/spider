@@ -305,19 +305,25 @@ describe("renderSpiderResult dispatcher", () => {
 
 const marker = { fg: (t: string, s: string) => `⟨${t}|${s}⟩`, bold: (s: string) => s, italic: (s: string) => s };
 
-describe("run block colors (#36)", () => {
-  it("does not status-color the glyph, type, or status word", () => {
-    const details = { runs: [{ name: "todo-hunt", agent: "worker", model: "openai/gpt-5", status: "running", task: "" }] };
-    const out = renderSpiderResult({ details }, { expanded: false }, marker, { args: { action: "run" } }).render(120).join("\n");
-    expect(out).not.toMatch(/⟨(success|error|warning|accent)\|/);
-    expect(out).toContain("⟨toolTitle|");
+describe("run status rows", () => {
+  it("marks running work with the accent glyph in column 1", () => {
+    const details = { run: { name: "todo-hunt", agent: "worker", model: "openai/gpt-5", status: "running" } };
+    const lines = renderSpiderResult({ details }, { expanded: false }, marker, mkCtx({ action: "run" })).render(120);
+    expect(lines[0]).toMatch(/^ ⟨accent\|●⟩ running /u);
   });
 
-  it("run result body starts with a blank gap line and is indented one space further", () => {
-    const details = { runs: [{ name: "a", agent: "worker", model: "x", status: "running", task: "" }] };
-    const lines = renderSpiderResult({ details }, { expanded: false }, marker, { args: { action: "run" } }).render(120);
-    expect(lines[0]).toBe("");                    // gap line under the title
-    expect(lines[1].startsWith("   ")).toBe(true); // 3-space indent (runBlock's 2 + the global 1)
+  it("shows one named status row per run, with a blank line between runs", () => {
+    const details = { runs: [
+      { name: "tia-2", agent: "worker", model: "github-copilot/gpt-6.2-sol", status: "failed", thinking: "high", token_count: 13616326, costText: "0.0 credits", task: "Check the manifest\nRead the build logs" },
+      { name: "audit", agent: "reviewer", model: "github-copilot/claude-opus-5.5", status: "running" },
+    ] };
+    const args = { action: "run", tasks: [{ agent: "worker" }, { agent: "reviewer" }] };
+    const lines = renderSpiderResult({ details }, { expanded: true }, theme, mkCtx(args)).render(120);
+    expect(lines).toEqual([
+      " ❌ failed · tia-2 · worker · gpt-6.2-sol · high · 13.6M tokens · 0.0 credits",
+      "   ↳ Check the manifest", "   Read the build logs", "",
+      " ● running · audit · reviewer · opus-5.5",
+    ]);
   });
 });
 
@@ -569,7 +575,7 @@ describe("renderSpiderCall verb italics (UI standard)", () => {
     expect(call({ action: "recall" })).toContain("«recall»");
     expect(call({ action: "search" })).toContain("«search»");
     expect(call({ action: "run" })).toContain("«run»");           // single
-    expect(call({ action: "run", tasks: [{}, {}], async: true })).toContain("«parallel»");
+    expect(call({ action: "run", tasks: [{}, {}], async: true })).toContain("«run» · parallel · 2 started");
     expect(call({ action: "control", command: "memory" })).toContain("«control»");
   });
 });
@@ -591,21 +597,20 @@ describe("run block output truncation (ctrl+o)", () => {
 describe("renderSubagentDone transcript renderer (ctrl+o)", () => {
   const th = { fg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => `«${s}»`, bg: (tok: string, s: string) => `[${tok}]${s}` };
   const msg = { customType: "spider.subagent_done", details: { name: "bravo-worker", agent: "worker", model: "github-copilot/claude-opus-4.8", status: "done", output: "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8" } };
-  it("uses the run-result-style layout (spider header + ⤴ tool output), tool shell, collapsed + ctrl+o", () => {
-    const out = renderSubagentDone(msg, { expanded: false }, th).render(200).join("\n");
-    expect(out).toContain("spider");
-    expect(out).toContain("bravo-worker");       // run name
-    expect(out).toContain("«worker»");             // agent italicised (footer style)
-    expect(out).toContain("opus-4.8");            // shortModel
-    expect(out).toContain("[toolSuccessBg]");     // green tool shell painted
-    expect(out).toContain("⤴");                    // output marker like a real run result
-    expect(out).toContain("l1");
-    expect(out).not.toContain("l8");              // collapsed (CAP=6)
-    expect(out).toContain("ctrl+o to expand output");
+  it("shows a completion title, status, and two hanging output lines", () => {
+    const msg = { details: { name: "tia-2", agent: "worker", model: "github-copilot/gpt-6.2-sol", thinking: "high", status: "failed", tokenCount: 13616326, costText: "0.0 credits", output: "line one\nline two\nline three" } };
+    const rows = renderSubagentDone(msg, {}, theme).render(120).map(line => line.trimEnd());
+    expect(rows).toEqual([
+      "", " 🕸️ spider · run · tia-2 · worker",
+      "  ❌ failed · gpt-6.2-sol · high · 13.6M tokens · 0.0 credits",
+      "    line one", "    line two", "    … 1 more line", "  ctrl+o to expand output", "",
+    ]);
+    const expanded = renderSubagentDone(msg, { expanded: true }, theme).render(120).map(line => line.trimEnd());
+    expect(expanded.slice(3, -1)).toEqual(["    line one", "    line two", "    line three"]);
   });
-  it("paints the error shell on failure", () => {
-    const out = renderSubagentDone({ ...msg, details: { ...msg.details, status: "failed" } }, { expanded: false }, th).render(200).join("\n");
-    expect(out).toContain("[toolErrorBg]");
+  it.each([["done", "toolSuccessBg"], ["failed", "toolErrorBg"], ["cancelled", "toolPendingBg"]])("paints the %s shell", (status, background) => {
+    const out = renderSubagentDone({ ...msg, details: { ...msg.details, status } }, {}, th).render(200).join("\n");
+    expect(out).toContain(`[${background}]`);
   });
   it("does not invent done/success when status evidence is absent (C-LOW)", () => {
     const { status: _status, ...withoutStatus } = msg.details;
@@ -622,7 +627,7 @@ describe("renderSubagentDone transcript renderer (ctrl+o)", () => {
   it.each([
     [{ outcome: "complete", step: 3, total: 3, notStarted: [] }, "chain complete"],
     [{ outcome: "stopped", step: 2, total: 3, notStarted: ["check"], cause: "provider failed" }, "chain stopped at step 2 of 3: provider failed"],
-  ])("renders the chain outcome in the header without expanding the step output", (chain, headline) => {
+  ])("renders the chain outcome without expanding the step output", (chain, headline) => {
     const out = renderSubagentDone({ ...msg, details: { ...msg.details, chain } }, { expanded: false }, th).render(200).join("\n");
     expect(out).toContain(headline);
     expect(out).toContain("bravo-worker");

@@ -80,7 +80,7 @@ export function cardFixtures(): CardFixture[] {
   };
   return [
     tool("exec", { action: "exec", code: commands.join("\n") }, exec, { callDetails: true }),
-    tool("exec file", { action: "exec_file", path: "scripts/check-manifest.sh", on: "build-box" }, exec, { callDetails: true }),
+    tool("exec file", { action: "exec_file", path: "scripts/check-manifest.sh", on: "build.invalid" }, exec, { callDetails: true }),
     tool("batch", { action: "batch", commands: commands.slice(0, 2).map(code => ({ code, language: "shell" })) }, [
       { ...exec, idx: 0 }, { ...exec, idx: 1, stdout: "ready", exitCode: 1 },
     ], { callDetails: true, isError: true }),

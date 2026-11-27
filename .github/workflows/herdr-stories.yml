@@ -167,10 +167,10 @@ jobs:
           test ! -e "$rundir"
 
       - name: Run headless story
-        timeout-minutes: ${{ matrix.story == 'R05' && 1 || matrix.timeout }}
+        timeout-minutes: ${{ matrix.timeout }}
         env:
           STORY: ${{ matrix.story }}
-          STEP_MINUTES: ${{ matrix.story == 'R05' && 1 || matrix.timeout }}
+          STEP_MINUTES: ${{ matrix.timeout }}
         run: |
           set -euo pipefail
           step_deadline=$(( $(date +%s%3N) + (STEP_MINUTES * 60 - 20) * 1000 ))

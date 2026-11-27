@@ -1287,7 +1287,8 @@ export async function recoverInterruptedWorkspace(snapshot: WorkspaceSnapshot, d
     await recoverInterruptedWorkspaceLocked(snapshot, destination, common, ports);
   });
 }
-async function recoverInterruptedWorkspaceLocked(snapshot: WorkspaceSnapshot, destination: string, common: string, ports: WorkspaceImportPorts): Promise<void> {
+async function recoverInterruptedWorkspaceLocked(snapshot: WorkspaceSnapshot, destination: string, common: string, ports: WorkspaceImportPorts,
+  finishInstalled = false): Promise<void> {
   const replay = settingsReplay(snapshot, destination, ports);
   if (!replay) return;
   if (!checkPath(destination, "directory", true)) throw new Error("workspace-preparation-missing");
@@ -1307,6 +1308,30 @@ async function recoverInterruptedWorkspaceLocked(snapshot: WorkspaceSnapshot, de
     if (!sameSettings(state, t.target)) throw new Error("workspace-recovery-diverged: settings changed");
     ports.journal.record(snapshot.moveId, "workspace-settings-transition-complete", { root: destination, transitionId: t.transitionId });
     return;
+  }
+  if (finishInstalled && snapshotDigest(snapshot) === t.digest && !replay.recoveryFrom && !replay.installPending &&
+      replay.installCompleted === installSteps(t).length) {
+    const rows = ports.journal.read(snapshot.moveId);
+    // Move diagnostics may follow installation without changing this checkout.
+    const installed = rows.filter(row => row.action.startsWith("workspace-") && row.result.root === destination).at(-1);
+    if (installed?.action === "workspace-config-installed" && installed.result.digest === t.digest &&
+        !rows.some(row => row.action === "workspace-aborted" && row.result.root === destination)) {
+      if (!workingApplied || !sameSettings(state, t.target)) throw new Error("workspace-recovery-diverged: checkout changed");
+      const started = startedRecord(t.snapshot, destination, ports);
+      if (!started || t.snapshot.bundle.kind !== "ready") throw new Error("workspace-journal-invalid");
+      const prepared: PreparedWorkspace = { root: destination, snapshot: t.snapshot, previous: started.previous,
+        moveId: snapshot.moveId, adjustments: [] };
+      await verifyWorkspace(prepared, ports);
+      if (installed.result.sparseEnabled !== t.snapshot.sparse.enabled || t.snapshot.sparse.enabled &&
+          installed.result.sparseCone !== (t.snapshot.sparse.cone ?? false)) throw new Error("workspace-journal-invalid");
+      if (!sameSettings(readRecoveryState(paths), t.target)) throw new Error("workspace-recovery-diverged: settings changed");
+      ports.journal.record(snapshot.moveId, "workspace-prepared", {
+        root: destination, stage: t.stage, digest: t.digest, snapshotJson: t.snapshotJson,
+        previousJson: started.previous === null ? null : JSON.stringify(started.previous), artifactId: t.snapshot.bundle.artifactId,
+      });
+      ports.journal.record(snapshot.moveId, "workspace-settings-transition-complete", { root: destination, transitionId: t.transitionId });
+      return;
+    }
   }
   if (!replay.recoveryFrom) {
     ports.journal.record(snapshot.moveId, "workspace-settings-recovery-start", { root: destination, transitionId: t.transitionId,
@@ -1391,7 +1416,7 @@ export async function prepareWorkspace(snapshot: WorkspaceSnapshot, destination:
       const mappedCommon = text(await git(ports, destination, ["rev-parse", "--path-format=absolute", "--git-common-dir"]));
       if (realpathSync(mappedCommon) !== realpathSync(repositoryCommon)) throw new Error("workspace-repository-mismatch");
     }
-    await recoverInterruptedWorkspaceLocked(snapshot, destination, repositoryCommon, ports);
+    await recoverInterruptedWorkspaceLocked(snapshot, destination, repositoryCommon, ports, true);
     const actions = ports.journal.read(snapshot.moveId);
     if (actions.some(entry => entry.action === "workspace-aborted" && entry.result.root === destination)) throw new Error("workspace-aborted");
     const recorded = preparedRecord(snapshot.moveId, destination, ports);

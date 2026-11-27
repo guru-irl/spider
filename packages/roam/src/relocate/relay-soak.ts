@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 import { processStartIdentity } from "@spider/herdr/jobs/handoff";
 import { localBootId } from "@spider/herdr/sessions/id-lock";
 import { listV0RelayLinks, submitV0Relay } from "@spider/intercom/broker/roam-relay-client";
-import { V0_INTERCOM_MS } from "@spider/intercom/roam-v0";
+import { requestV0Broker } from "@spider/intercom/broker/roam-v0-client";
+import { V0_INTERCOM_MS, type V0BrokerOp, type V0Reply } from "@spider/intercom/roam-v0";
 import { decodeRelayPoll, isRelayResult, isRelaySubmit, type RelayLinkView, type RelayPeer, type RelayResult, type RelaySubmit } from "@spider/intercom/relay-protocol";
 import type { Clock, Peer, RoamConfig, Transport } from "../contracts";
 import { readLocalIdentity } from "../runtime";
@@ -525,6 +526,27 @@ export function assembleRelaySoak(manifest: RelaySoakManifest, readRecords: (pat
     links, faults: manifest.faults, processes: manifest.processes };
   if (!isEvidence(evidence)) throw invalidRecord();
   return evidence;
+}
+
+export interface RelaySoakOriginDeps {
+  readIdentity(root: string): RoamConfig;
+  readRoutes(root: string, config: RoamConfig): V0Routes;
+  lookup(agentDir: string, op: Extract<V0BrokerOp, { kind: "lookup" }>): Promise<V0Reply>;
+}
+
+/** Obtain the admitted fixture's exact local broker pin without starting a broker. */
+export async function lookupRelaySoakOrigin(root: string, sessionId: string, scopeId: string | null,
+  overrides: Partial<RelaySoakOriginDeps> = {}): Promise<RelaySubmit["from"]> {
+  if (!text(sessionId) || scopeId !== null && !text(scopeId)) throw new Error("Invalid fixture origin");
+  const config = (overrides.readIdentity ?? readLocalIdentity)(root);
+  const routes = (overrides.readRoutes ?? readV0Routes)(root, config);
+  if (routes.version !== 2) throw new Error("Invalid fixture routes");
+  const result = await (overrides.lookup ?? requestV0Broker)(routes.agentDir, { kind: "lookup", scopeId, selector: { by: "id", value: sessionId } });
+  if (result.kind !== "matches" || result.targets.length !== 1 || result.targets[0].address.sessionId !== sessionId ||
+      result.targets[0].address.scopeId !== scopeId || !text(result.targets[0].endpointEpoch) || result.targets[0].homeEpoch <= 0) {
+    throw new Error("Fixture origin is not admitted");
+  }
+  return { machineId: config.machineId, ...result.targets[0] };
 }
 
 export interface RelaySoakIo { out(text: string): void; err(text: string): void }

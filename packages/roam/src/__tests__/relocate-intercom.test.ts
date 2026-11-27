@@ -442,6 +442,53 @@ describe("roaming v0 intercom", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it("stops ask setup when the ask timeout expires before delivery", async () => {
+    const sender = machineFixture(MAC), receiver = boxFixture();
+    vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+    configure(sender.root, [peer(BOX, "box", receiver)], []);
+    const remote = createV0Intercom(receiver.root, { broker: async () => ({ kind: "matches", targets: [ben] }) });
+    const resolve = vi.fn(async (target: Peer) => target);
+    const exec = vi.fn(async (_target: Peer, _argv: readonly string[], options: CallOptions) => {
+      const bytes = options.stdin ?? options.stdinForTimeout?.(options.timeoutMs - 2000);
+      if (!bytes) throw new Error("missing request");
+      return Buffer.from(JSON.stringify(await remote.handle(JSON.parse(bytes.toString("utf8")))));
+    });
+    const localBroker = async (): Promise<V0Reply> => new Promise(resolve => setTimeout(() => resolve({ kind: "matches", targets: [aliceEndpoint] }), 100));
+    const plan = await remotePlan(createV0Intercom(sender.root, { broker: localBroker, transport: () => ({ resolve, exec }) }));
+    vi.useFakeTimers();
+    try {
+      const pending = plan.ask(message, 50);
+      await vi.advanceTimersByTimeAsync(150);
+      expect(await pending).toEqual({ kind: "refused", code: "unreachable" });
+      expect(resolve).toHaveBeenCalledTimes(1); // The earlier name lookup only.
+      expect(exec).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("does not wait beyond the ask timeout for a stuck resolver", async () => {
+    const sender = machineFixture(MAC), receiver = boxFixture();
+    vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+    configure(sender.root, [peer(BOX, "box", receiver)], []);
+    const remote = createV0Intercom(receiver.root, { broker: async () => ({ kind: "matches", targets: [ben] }) });
+    let resolutions = 0;
+    const resolve = vi.fn(async (target: Peer) => {
+      if (++resolutions === 1) return target;
+      return new Promise<Peer>(() => {});
+    });
+    const exec = vi.fn(async (_target: Peer, _argv: readonly string[], options: CallOptions) =>
+      Buffer.from(JSON.stringify(await remote.handle(JSON.parse(options.stdin!.toString("utf8"))))));
+    const localBroker = async (): Promise<V0Reply> => ({ kind: "matches", targets: [aliceEndpoint] });
+    const plan = await remotePlan(createV0Intercom(sender.root, { broker: localBroker, transport: () => ({ resolve, exec }) }));
+    vi.useFakeTimers();
+    try {
+      const pending = plan.ask(message, 50);
+      await vi.advanceTimersByTimeAsync(60);
+      expect(await pending).toEqual({ kind: "refused", code: "unreachable" });
+      expect(resolve).toHaveBeenCalledTimes(2);
+      expect(exec).toHaveBeenCalledTimes(1); // The earlier name lookup only.
+    } finally { vi.useRealTimers(); }
+  });
+
   it("keeps a long ask budget and respects the configured cap", async () => {
     const f = paired(), plan = await remotePlan(f.intercom);
     expect(await plan.ask(message, 60_000)).toEqual({ kind: "no_reply", id: message.id });

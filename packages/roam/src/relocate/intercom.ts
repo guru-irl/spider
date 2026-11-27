@@ -179,7 +179,8 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
         const transport = deps.transport?.(configured.sendTo) ?? createTransport({ ...localHerdrConnection(root), enrolled: configured.sendTo });
         const resolveMs = Math.floor(Math.min(deadline, deliveryDeadline) - performance.now());
         if (resolveMs <= 0) throw new Error("Intercom delivery deadline expired");
-        const target = await transport.resolve(peer, { timeoutMs: resolveMs, signal: callSignal });
+        const target = await bounded(Math.min(deadline, deliveryDeadline), callSignal,
+          resolveSignal => transport.resolve(peer, { timeoutMs: resolveMs, signal: resolveSignal }));
         if (callSignal.aborted || performance.now() >= deliveryDeadline) throw new Error("Intercom delivery deadline expired");
         const remaining = Math.floor(deadline - performance.now());
         if (remaining <= POST_CHECK_MS) throw new Error("Intercom post-check reserve unavailable");
@@ -314,6 +315,7 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
       const started = performance.now(), deliveryDeadline = started + V0_INTERCOM_MS;
       const askMs = kind === "ask" ? Math.min(timeoutMs!, V0_ASK_MAX_MS) : undefined;
       const askDeadline = askMs === undefined ? undefined : started + askMs;
+      const setupDeadline = Math.min(deliveryDeadline, askDeadline ?? deliveryDeadline);
       // DEFAULT_LIMITS.directMs matches Herdr's DIRECT_MAX_MS in client/argv-client.ts.
       const deadline = started + (askMs === undefined ? V0_INTERCOM_MS
         : Math.min(DEFAULT_LIMITS.directMs, askMs + V0_INTERCOM_MS + POST_CHECK_MS));
@@ -335,7 +337,7 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
       if (!currentPeer || !samePeer(currentPeer, pinnedPeer)) return refused("changed");
       if (!locals.some(local => local.id === from.id && endpointOf(local) !== null && sameEndpoint(endpointOf(local)!, source))) return refused("changed");
       try {
-        const active = await bounded(Math.min(deadline, deliveryDeadline), abort, s => broker(current.agentDir,
+        const active = await bounded(Math.min(deadline, setupDeadline), abort, s => broker(current.agentDir,
           { kind: "lookup", scopeId: source.address.scopeId, selector: { by: "id", value: source.address.sessionId } }, s));
         if (active.kind === "refused") return active.code === "reply-only" ? refused("unreachable") : active;
         if (active.kind !== "matches" || active.targets.length !== 1 || !sameEndpoint(active.targets[0], source)) return refused("changed");
@@ -344,7 +346,7 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
         from: sourceWire, target: pinnedTarget, message };
       const request: V0AgentRequest = kind === "deliver" ? { ...common, kind: "deliver" }
         : { ...common, kind: "ask", timeoutMs: askMs! };
-      const result = await callPeer(current, currentPeer, request, deadline, deliveryDeadline, abort, askDeadline);
+      const result = await callPeer(current, currentPeer, request, deadline, setupDeadline, abort, askDeadline);
       return result.kind === "matches" ? { kind: "unknown" as const, id: message.id } : result;
     }
     return { kind: "remote", label,

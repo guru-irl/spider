@@ -136,6 +136,24 @@ test('runs doc guards and tests naming or reading a README', async () => {
     files: [file], records: { [c]: row({ reads: [0] }) } }), b, c, docGuard);
 });
 
+test('a removed README still selects its guards and tests naming it', async () => {
+  const file = 'packages/one/README.md';
+  assertSelected(await fixture({ changes: [changed(file, 'D')], names: { [file]: [b] },
+    files: [file], records: { [c]: row({ reads: [0] }) } }), b, c, docGuard);
+});
+
+test('finds a test naming a README by a path relative to the test', t => {
+  const root = mkdtempSync(join(tmpdir(), 'selection-name-'));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  mkdirSync(dirname(join(root, a)), { recursive: true });
+  writeFileSync(join(root, a), `export const page = new URL('../README.md', import.meta.url);`);
+  execFileSync('git', ['init', '-q'], { cwd: root });
+  execFileSync('git', ['add', '--', a], { cwd: root });
+  execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'Fixture'], { cwd: root });
+  const tempHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+  assert.deepEqual(selector.namedByTests(root, tempHead, 'packages/one/README.md'), [a]);
+});
+
 test('runs tests naming, importing, or running a script', async () => {
   const file = 'scripts/check-thing.mjs';
   assertSelected(await fixture({ changes: [changed(file)], names: { [file]: [a] },

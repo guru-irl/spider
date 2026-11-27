@@ -87,9 +87,9 @@ export function changedBetween(root, base, head) {
 }
 
 export function namedByTests(root, head, file) {
-  const name = basename(file);
-  // README.md on its own does not identify a package README.
-  const needles = file.includes('/') && name === 'README.md' ? [file] : sorted([file, name]);
+  // Include basenames for references assembled from path segments or relative
+  // to a test. Ambiguous names can select extra readers, not omit them.
+  const needles = sorted([file, basename(file)]);
   try {
     return git(root, 'grep', '--threads=1', '-I', '-lz', '-F', ...needles.flatMap(needle => ['-e', needle]), head, '--',
       ':(glob)packages/*/src/**/*.test.ts').split('\0').filter(Boolean).map(match => match.slice(head.length + 1));
@@ -191,20 +191,20 @@ export async function selectTests({ head, inventory, changes, map, fallback = nu
         let buildChanged = false;
         for (const { file, status, rules: matching } of rules) {
           const ids = new Set(matching.map(rule => rule.id));
+          const removed = status === 'D';
           const isDoc = ids.has('documentation'), isTest = rootTest.test(file);
           const isScript = file.startsWith('scripts/'), isHerdrE2e = file.startsWith('packages/herdr/e2e/');
           const isBuild = ids.has('build-install');
           const isPolicy = ids.has('test-policy');
           if (!isDoc && !isTest && (!isPolicy || code.test(file))) for (const test of unresolved) add(test, `unresolved bundle may reach ${file}`);
-          for (const test of readers.get(file) ?? []) add(test, `recorded ${status === 'D' ? 'deleted ' : ''}input: ${file}`);
-          if (status === 'D') continue;
-          if (isTest) add(file, 'changed test');
+          for (const test of readers.get(file) ?? []) add(test, `recorded ${removed ? 'deleted ' : ''}input: ${file}`);
+          if (isTest && !removed) add(file, 'changed test');
           if (isDoc || isScript || isHerdrE2e || isPolicy) {
             for (const test of namedBy(file)) add(test, `names ${file}`);
           }
           if (isBuild) buildChanged = true;
-          const graphInput = !isDoc && !isTest && !isBuild && !isPolicy;
-          if ((graphInput && !readers.has(file)) || isScript || isHerdrE2e) graphSeeds.add(file);
+          const graphInput = !removed && !isDoc && !isTest && !isBuild && !isPolicy;
+          if (!removed && (graphInput && !readers.has(file) || isScript || isHerdrE2e)) graphSeeds.add(file);
           if (graphInput && code.test(file)) bundleSeeds.add(file);
           const owner = file.match(/^packages\/([^/]+)\//)?.[1];
           for (const rule of matching) {

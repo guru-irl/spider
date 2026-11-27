@@ -22,20 +22,33 @@ start a second copy of the session.
 
 ## Roaming v0 intercom
 
-V0 intercom sends text to a live, admitted session on its current home. It
-looks up names at the receiving broker. A successful send means the broker
-accepted the socket write, not that the recipient consumed the message. There
-is no remote mailbox or automatic retry. If delivery is unknown, check the
-recipient before sending again.
+V0 intercom sends text between live sessions with running homes. Both
+machines need up-to-date home records for the sender and recipient. If the Mac
+is asleep and a box has not received a home change, intercom can refuse with
+`changed` until the Mac wakes and syncs.
 
-On each participating machine, put a private `intercom-v0.json` file in the
-`roam` directory under its global root. The file must be owned by the current
-user and have mode `0600`. Enable roaming and disable legacy intercom
-federation in the existing roaming configuration. Each `sendTo` entry needs an
-absolute `agentDir` that matches the target's configured Herdr agent directory.
-The two lists grant intercom permission; they do not install a Herdr route or
-create credentials. A missing or invalid file does not change move or sync
-behavior.
+Intercom looks up names at the receiving broker. A successful send means the
+broker accepted the socket write, not that the recipient read the message.
+There is no remote mailbox or automatic retry. If delivery is unknown, check
+the recipient before sending again.
+
+Enable roaming and disable legacy intercom federation in the existing roaming
+configuration. On each participating machine, put `intercom-v0.json` in the
+`roam` directory under its global root. It must be a regular file owned by the
+current user, with mode `0600`, one link, and a size of at most 64 KiB. Do not
+use a symlink. Each list accepts at most eight entries. Each `sendTo` entry
+needs an absolute `agentDir` that matches the target's configured Herdr agent
+directory.
+
+With legacy federation disabled, the presence of this file turns off the
+legacy intercom adapter, even if the file is invalid. An invalid file refuses
+remote requests but leaves live local messaging available. A missing or
+invalid file does not change move or sync behavior.
+
+The lists grant intercom permission. They do not install a Herdr route or
+create credentials. Each `acceptFrom` entry trusts the listed machine's claims
+about who is sending. The receiving machine checks replicated home records;
+it does not independently authenticate the sending session.
 
 For a Mac-initiated ask to one box, configure the Mac with the already
 provisioned box peer:
@@ -74,18 +87,21 @@ Replace the example IDs and paths with the provisioned values. The Mac can ask
 `box-a/name`, and the recipient can use the normal intercom reply. The reply
 travels on the same Mac-initiated call. A box cannot initiate a send or ask to
 the Mac. Remote asks wait for their own timeout, capped at nine minutes. A
-reply after the call closes is refused. Messages and replies are text only,
-and each encoded request and reply is limited to 256 KiB.
+reply after the call closes is refused. Messages and replies are text only.
+Text is limited to 248 KiB after JSON encoding. Each encoded request and
+result, including metadata, is limited to 256 KiB.
 
 For a separately approved A-to-B route, add B's provisioned peer to A's
 `sendTo` and add A's `{ "machineId": "...", "alias": "box-a" }` to B's
 `acceptFrom`. B does not need an outbound A entry. This directed route does not
 use the Mac as a relay. Do not configure the Mac in a box's `sendTo`.
 
-A bare remote name checks configured peers with running homes. If a peer is
-unavailable or more than one live endpoint matches, use a qualified name or a
-full persistent session ID. A local live alias takes precedence over a remote
-name, while a full persistent ID takes precedence over an alias.
+A bare remote name checks configured peers with running homes. A single
+verified match is enough even if another peer is unavailable. If more than
+one session matches, use a machine-qualified name or a full persistent session
+ID. With no verified match and an unavailable peer, lookup returns
+`incomplete`. A live local alias takes precedence over a remote name, while
+a full persistent ID takes precedence over an alias.
 
 ## Legacy enable and broker readiness
 

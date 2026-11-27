@@ -1,4 +1,5 @@
 import type { Clock } from "../contracts";
+import { AwayHomeRecoveryRequired } from "./home-refusals";
 import type {
   CapturedSession, InstalledSession, MovingHome, RelocateCheckpoint, RelocateHome, RelocateId, RelocateOutcome, RelocateSuccess,
   RelocatePlan, RelocatePorts, RelocateRequest, RelocateStep, RunningHome, SessionPlacement,
@@ -302,6 +303,9 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts, r
       return { ok: true, value: result };
     });
   } catch (error) {
+    if (error instanceof AwayHomeRecoveryRequired) {
+      return { ok: false, step, home, moveId, refusal: error.refusal(request.sessionId) };
+    }
     if (!entered && error instanceof Error && error.name === "HerdrError" && "code" in error && error.code === "lock-occupied") {
       return { ok: false, step, home, moveId, refusal: {
         code: "session-busy", message: "Another operation on this session is still in progress.",

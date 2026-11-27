@@ -8,8 +8,9 @@ import { processStartIdentity } from "@spider/herdr/jobs/handoff";
 import { claimIdLock, inspectIdLock, type IdLockHandle } from "@spider/herdr/sessions/id-lock";
 import { DEFAULT_LIMITS, disabledIntercom } from "@spider/roam/contracts";
 import { createHomeStore } from "@spider/roam/relocate/home";
+import { relocate } from "@spider/roam/relocate/relocate";
 import { setHome } from "@spider/roam/relocate/set-home";
-import type { RelocateId, RunningHome, SessionId, SetHomePorts, V0Result } from "@spider/roam/relocate/types";
+import type { RelocateId, RelocatePorts, RunningHome, SessionId, SetHomePorts, V0Result } from "@spider/roam/relocate/types";
 import { afterEach, expect, it } from "vitest";
 import { createHostSessionFixture } from "../../__tests__/fixtures/pi-events";
 import { registerAdmission } from "../admission";
@@ -55,7 +56,7 @@ async function prepareMove(f: ReturnType<typeof fixture>) {
   const moving = { ...source, state: "moving" as const, destination: box, moveId: move, epoch: 2 };
   await store.compareAndSwap(source, moving);
   const away: RunningHome = { ...moving, state: "running", machineId: box, destination: null, epoch: 3 };
-  return { store, moving, away };
+  return { store, source, moving, away };
 }
 
 it.each(["deleted", "empty", "older", "equal"] as const)("a fresh admission refuses the away backup after a %s global store", async state => {
@@ -86,7 +87,7 @@ it.each(["deleted", "empty", "older", "equal"] as const)("a fresh admission refu
 });
 
 it("a durably published fence still refuses after a fault before the away CAS commits", async () => {
-  const f = fixture(), { store, moving, away } = await prepareMove(f);
+  const f = fixture(), { store, source, moving, away } = await prepareMove(f);
   expect(existsSync(f.fence)).toBe(false);
   let atCas: unknown;
   f.db().raw.function("observe_away_fence", () => { atCas = existsSync(f.fence) ? f.fenceContents() : null; return 1; });
@@ -96,6 +97,30 @@ it("a durably published fence still refuses after a fault before the away CAS co
   expect(atCas).toMatchObject({ machineId: box, epoch: 3, moveId: move });
   expect(await store.read(sid)).toEqual(moving);
   expect(await loadRelocateAdmission(sid, f.root)).toEqual({ kind: "unavailable", awayMachine: box });
+
+  const forcePorts = { ...f.forcePorts(), newMoveId: () => "v0-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" as RelocateId };
+  const sourcePlacement = await forcePorts.locate(hub, sid), destinationPlacement = await forcePorts.locate(box, sid);
+  if (!sourcePlacement.ok || !destinationPlacement.ok) throw new Error("Fixture placement is missing");
+  const unexpected = async () => { throw new Error("Undo must not prepare or transfer a new move"); };
+  const undoPorts: RelocatePorts = { ...forcePorts,
+    initialSource: unexpected, check: unexpected, pullSource: unexpected, pushDestination: unexpected, installDestination: unexpected,
+    stopSource: async () => ({ ok: true, value: undefined }),
+    journal: { save: unexpected, load: async () => ({
+      plan: { moveId: move, source, sourcePlacement: sourcePlacement.value, destinationPlacement: destinationPlacement.value,
+        startedAt: moving.updatedAt, destinationPrerequisites: [] },
+      completed: ["check", "mark-moving"], captured: null, installed: null, terminal: null, result: null,
+    }) },
+  };
+  const forwardOnly = { ok: false, refusal: { code: "home-unavailable", message: expect.stringMatching(/only finish/i),
+    nextStep: expect.stringContaining(`spider roam relocate ${sid} ${box}`) } };
+  const undo = await relocate({ sessionId: sid, destinationMachine: hub }, undoPorts);
+  const force = (destinationMachine: string) => setHome({ sessionId: sid, destinationMachine, force: true,
+    confirmation: `reassign ${sid} to ${destinationMachine}; source will not run` }, forcePorts);
+  expect([undo, await force(hub), await force(box)]).toMatchObject([
+    { ...forwardOnly, step: "commit-home", home: moving }, forwardOnly, forwardOnly,
+  ]);
+  expect(await store.read(sid)).toEqual(moving);
+  expect(f.fenceContents()).toEqual(atCas);
   f.db().exec("DROP TRIGGER fault_before_commit");
   await expect(f.store().compareAndSwap(moving, away)).resolves.toEqual({ kind: "applied", home: away });
   expect(f.fenceContents()).toEqual(atCas);

@@ -1,5 +1,5 @@
 import type { RoamConfig } from "../contracts";
-import { AwayHomeRecoveryRequired } from "./away-home";
+import { AwayHomeRecoveryRequired } from "./home-refusals";
 import { MacSessionOccupied, MacSourceNotStopped } from "./home";
 import type { RunningHome, SetHomePorts, SetHomeRequest, V0Refusal, V0RefusalCode, V0Result } from "./types";
 
@@ -57,9 +57,7 @@ export async function setHome(request: SetHomeRequest, ports: SetHomePorts, repl
         if (error instanceof MacSourceNotStopped) return {ok:false,refusal:error.refusal};
         if (error instanceof MacSessionOccupied) return refuse("stop-timeout", error.message + ".",
           "Close the session on the Mac, then retry set-home --force. If it is already closed, run spider roam doctor on the Mac.");
-        if (error instanceof AwayHomeRecoveryRequired) return refuse("home-unavailable",
-          `The database cannot verify the away home on ${error.fence.machineId}.`,
-          "Restore spider.db or re-sync it from a peer. Then retry set-home --force on the Mac.");
+        if (error instanceof AwayHomeRecoveryRequired) return {ok:false,refusal:error.refusal(sessionId)};
         const messages: Partial<Record<V0RefusalCode,string>> = {
           "home-unavailable":"The hub could not read or update the home.",
           "destination-copy-missing":"The destination copy could not be verified.",

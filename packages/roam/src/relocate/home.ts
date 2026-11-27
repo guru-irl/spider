@@ -4,7 +4,8 @@ import { claimIdLock, localBootId } from "@spider/herdr/sessions/id-lock";
 import { isRoamUuid } from "@spider/db-core/roam/codec";
 import { validUnicode } from "@spider/db-core/roam/hlc";
 import type { MachineId } from "@spider/db-core/roam/types";
-import { AwayHomeRecoveryRequired, publishAwayHomeFence, readAwayHomeFence, withAwayHomeFenceLock, type AwayHomeFence } from "./away-home";
+import { publishAwayHomeFence, readAwayHomeFence, withAwayHomeFenceLock, type AwayHomeFence } from "./away-home";
+import { AwayHomeRecoveryRequired } from "./home-refusals";
 import type { HomeStore, HomeStoreOptions, RelocateHome, RelocateId, RunningHome, SessionId, V0Refusal, V0Result } from "./types";
 
 type MacSourceCheck = (sessionId: SessionId) => Promise<V0Result<void>>;
@@ -150,7 +151,11 @@ export function createHomeStore(options: HomeStoreOptions): HubHomeStore {
         if (!same(current, expected)) return { kind: "conflict", home: current };
         const fence = await readAwayHomeFence(root, sessionId);
         if (fence && expected.epoch <= fence.epoch && !matchesFence(expected, fence) &&
-            !(expected.state === "moving" && matchesFence(next, fence))) throw new AwayHomeRecoveryRequired(fence);
+            !(expected.state === "moving" && matchesFence(next, fence))) {
+          const pendingRelocation = expected.state === "moving" && expected.destination === fence.machineId &&
+            expected.moveId === fence.moveId && expected.epoch + 1 === fence.epoch;
+          throw new AwayHomeRecoveryRequired(fence, pendingRelocation);
+        }
         if (machineId === hubMachineId) return apply();
         if (!moveId) throw new Error("An away home needs a move ID");
         const owner = await reserveMacSession(root, sessionId);

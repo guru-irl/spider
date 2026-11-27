@@ -8,10 +8,6 @@ import type { RelocateId, SessionId } from "./types";
 
 const maxBytes = 4096;
 export interface AwayHomeFence { machineId: MachineId; epoch: number; moveId: RelocateId }
-export class AwayHomeRecoveryRequired extends Error {
-  constructor(readonly fence: AwayHomeFence) { super("The home database predates or conflicts with the away-home fence"); }
-}
-
 function fencePath(root: string, sessionId: SessionId): string {
   const file = join(root, "roam", "away-homes", `${hash(sessionId)}.json`);
   assertTestConfigPath(file);

@@ -50,6 +50,20 @@ function adapterFixture() {
  return {options,global,repo,worktree,root,file};
 }
 describe("relocate adapters", () => {
+  it.each([false,true])("requires an exact confirmation acknowledgment from the peer (ack=%s)", async acknowledged => {
+    const f=adapterFixture(), placement=checkpoint().plan.destinationPlacement;
+    const home={...checkpoint().plan.source,machineId:box,epoch:3,moveId:"v0-journal" as RelocateId};
+    const peer:Peer={machineId:box,alias:"peer",node:"node",pi:"pi",cli:"cli",core:"core",globalRoot:"/remote"};
+    f.options.config={...f.options.config,peers:[peer]};
+    let received:unknown;
+    f.options.transport={...f.options.transport,exec:async(_peer,_argv,input)=>{
+      received=JSON.parse(input.stdin!.toString());
+      return Buffer.from(JSON.stringify({ok:true,value:{version:1,terminal:"core:t",...(acknowledged ? {exact:true} : {})}}));
+    }};
+    const result=await createRelocateAdapters(f.options).ports.confirm(home,placement,true);
+    expect(result).toMatchObject(acknowledged ? {ok:true,value:{terminal:"core:t"}} : {ok:false,refusal:{code:"start-pending"}});
+    expect(received).toMatchObject({version:1,kind:"confirm",exact:true,home,placement});
+  });
   it("authorizes a revisit past a stale moving replica but rejects newer homes",async()=>{
     const f=adapterFixture(),source=await inspectLocalSource(id,f.options);if(!source.ok)throw new Error("source missing");
     const target=createReplica("global",box);fixtures.push(target);

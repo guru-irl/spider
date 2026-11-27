@@ -204,6 +204,21 @@ describe("v0 real transfer",()=>{
  });
 });
 describe("v0 transfer stop boundary",()=>{
+ it("refuses before signalling when any descendant is unreadable", async () => {
+  const f = stopFixture();
+  const first = {pid: 43, startIdentity: "tool-43", command: "bash"};
+  const unreadable = {pid: 44, startIdentity: "tool-44", command: "worker"};
+  f.io.tree = async () => ({descendants: [first, unreadable], groups: []});
+  const probe = f.io.probe;
+  f.io.probe = async pid => pid === first.pid
+   ? {kind: "live", startIdentity: first.startIdentity, pi: false}
+   : pid === unreadable.pid ? {kind: "unknown"} : probe(pid);
+
+  expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toMatchObject({
+   ok: false, refusal: {code: "session-busy", message: expect.stringContaining("PID 44")},
+  });
+  expect(f.signals).toEqual([]);
+ });
  it("waits for verified tool descendants even after the locked pi exits", async () => {
   const f = stopFixture();
   const child = {pid: 43, startIdentity: "tool-43", command: "bash"};

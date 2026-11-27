@@ -19,8 +19,13 @@ function installPi(name: string, catalog: string, version = "1.0.0") {
   const executable = join(piRoot, "dist/bundle/cli.js");
   const catalogPath = join(piRoot, "node_modules/@earendil-works/pi-ai/dist/providers/github-copilot.models.js");
   mkdirSync(join(piRoot, "dist/bundle"), { recursive: true });
+  mkdirSync(join(piRoot, "dist/core"), { recursive: true });
   mkdirSync(join(piRoot, "node_modules/@earendil-works/pi-ai/dist/providers"), { recursive: true });
   writeFileSync(join(piRoot, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", version, type: "module" }));
+  writeFileSync(join(piRoot, "dist/core/model-config.js"), `export const ModelsJsonSchemas = { modelOverride: { properties: {
+    name: {}, reasoning: {}, thinkingLevelMap: {}, input: {}, inputLimits: {}, cost: {}, promptCache: {},
+    contextWindow: {}, maxTokens: {}, samplingParams: {}, samplingParamsByThinkingLevel: {}, headers: {}, compat: {}
+  } } };\n`);
   writeFileSync(executable, "#!/usr/bin/env node\n");
   chmodSync(executable, 0o755);
   writeFileSync(catalogPath, catalog);

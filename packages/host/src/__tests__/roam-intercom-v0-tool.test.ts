@@ -259,7 +259,8 @@ it("keeps a remote ask waiting after the agent reads ordinary stdin EOF", async 
   const { main } = await import("@spider/roam/cli");
   await withConfiguredBoxHost(async (execute, sessionId, host) => {
     const input = new PassThrough();
-    const stdin = vi.spyOn(process, "stdin", "get").mockReturnValue(input as typeof process.stdin);
+    // The agent reads stdin as a stream; the fixture has no TTY methods.
+    const stdin = vi.spyOn(process, "stdin", "get").mockReturnValue(input as unknown as typeof process.stdin);
     const output: string[] = [], errors: string[] = [];
     const frame = JSON.stringify({ version: 1, requestId: "channel-1", kind: "ask", toMachineId: boxMachineId,
       from: { machineId: hubMachineId, address: { sessionId: hubSessionId, scopeId: null }, name: "mac",
@@ -1096,8 +1097,10 @@ it("does not record a completed remote send in a replacement session", async () 
 });
 
 it.each(["send", "ask"] as const)("preserves a confirmed remote %s across local broker disconnect", async action => {
-  const entered = Promise.withResolvers<V0Text>(), outcome = Promise.withResolvers<V0Delivery>();
-  const start = (message: V0Text) => { entered.resolve(message); return outcome.promise; };
+  let capture!: (message: V0Text) => void, finish!: (delivery: V0Delivery) => void;
+  const entered = new Promise<V0Text>(resolve => { capture = resolve; });
+  const outcome = new Promise<V0Delivery>(resolve => { finish = resolve; });
+  const start = (message: V0Text) => { capture(message); return outcome; };
   const prepare: V0Prepare = async () => ({ kind: "remote", label: "b/ben", send: start, ask: start });
   let client: IntercomClient | undefined;
   const connect = IntercomClient.prototype.connect;
@@ -1110,7 +1113,7 @@ it.each(["send", "ask"] as const)("preserves a confirmed remote %s across local 
   try {
     f = await fixture({ homeEpoch: () => 7, prepare });
     pending = f.tool.execute(action, { action, to: "ben", message: "original text" }, new AbortController().signal, undefined, f.ctx);
-    const message = await entered.promise;
+    const message = await entered;
     expect(client?.isConnected()).toBe(true);
     const disconnected = once(client!, "disconnected");
     // The broker closes the previous client's socket on duplicate registration.
@@ -1118,7 +1121,7 @@ it.each(["send", "ask"] as const)("preserves a confirmed remote %s across local 
       startedAt: 1, lastActivity: 1 }, "sender-session");
     await disconnected;
     expect(client?.isConnected()).toBe(false);
-    outcome.resolve(action === "send" ? { kind: "socket_delivered", id: message.id }
+    finish(action === "send" ? { kind: "socket_delivered", id: message.id }
       : { kind: "replied", id: message.id, replyId: "returned-reply", text: "returned answer" });
     const result = await pending;
     const recorded = f.entries.filter(entry => entry.type === "intercom_sent" || entry.type === "intercom_received");
@@ -1134,7 +1137,7 @@ it.each(["send", "ask"] as const)("preserves a confirmed remote %s across local 
       }) }]);
     }
   } finally {
-    outcome.resolve({ kind: "unknown", id: "cleanup" });
+    finish({ kind: "unknown", id: "cleanup" });
     await pending;
     await replacement.disconnect();
     await f?.cleanup();

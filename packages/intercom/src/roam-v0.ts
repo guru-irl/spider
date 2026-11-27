@@ -3,7 +3,7 @@ import type { LocalSessionInfo, RemoteSessionInfo } from "./types.js";
 import { isRemoteSessionInfo } from "./broker/protocol.js";
 
 export const V0_INTERCOM_BYTES: number = 256 * 1024;
-export const V0_TEXT_BYTES = V0_INTERCOM_BYTES - 8 * 1024;
+export const V0_TEXT_BYTES: number = V0_INTERCOM_BYTES - 8 * 1024;
 export const V0_INTERCOM_MS = 20_000;
 export const V0_ASK_MAX_MS: number = 9 * 60_000;
 export const V0_INTERCOM_FEATURE = "roam-intercom-v0";

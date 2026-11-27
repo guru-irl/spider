@@ -495,18 +495,20 @@ describe("private roaming broker", () => {
     const target = ((await lookup("scope-1", "name", "ben")).targets as V0Endpoint[])[0];
     const question = { ...message, id: "timer-gap" };
     const inbound = once(ben, "message");
-    const expired = Promise.withResolvers<{ socket: net.Socket; requestId: unknown; result: Record<string, unknown> }>();
+    type Expired = { socket: net.Socket; requestId: unknown; result: Record<string, unknown> };
+    let confirmExpired!: (frame: Expired) => void, rejectExpired!: (error: unknown) => void;
+    const expired = new Promise<Expired>((resolve, reject) => { confirmExpired = resolve; rejectExpired = reject; });
     const proxy = await fakeBroker([V0_INTERCOM_FEATURE], (socket, frame) => {
       const { type, requestId, ...op } = frame;
       // Hold the real broker's timeout result until the recipient has replied.
-      void request(op).then(result => expired.resolve({ socket, requestId, result }), expired.reject);
+      void request(op).then(result => confirmExpired({ socket, requestId, result }), rejectExpired);
     });
     const abort = new AbortController();
     const pending = requestV0Broker(proxy.dir, { kind: "ask", from: origin, target, message: question, timeoutMs: 900 }, abort.signal);
     try {
       const [, received] = await inbound;
       expect(received.remainingMs).toBeLessThanOrEqual(800);
-      const { socket, requestId, result } = await expired.promise;
+      const { socket, requestId, result } = await expired;
       expect(result).toEqual({ kind: "no_reply", id: question.id });
       expect(await ben.send("sender", { text: "late", replyTo: question.id, messageId: "timer-gap-reply" }))
         .toMatchObject({ delivered: false, reason: "The asker is no longer waiting." });

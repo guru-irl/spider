@@ -669,6 +669,34 @@ it("disabled local doctor adds only real peer flag mismatches", async () => {
   expect(f.out.join("")).not.toContain("adapter-unbound");
 }, 5000);
 
+it.each(["blocked", "unverified"] as const)("remote doctor shows a disabled peer's %s upgrade", async status => {
+  const f = await fixture(HUB, undefined, false), remote = join(f.root, "peer");
+  mkdirSync(join(remote, "roam"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(remote, "roam", "config.json"), JSON.stringify({ enabled: false, role: "box", machineId: BOX,
+    hubMachineId: HUB, coreUnit: "fixture.service" }), { mode: 0o600 });
+  writeFileSync(join(remote, "roam", "machine.json"), JSON.stringify({ machineId: BOX }), { mode: 0o600 });
+  const db = openDb(join(remote, "spider.db"));
+  try { migrate(db, "global", { machineId: BOX, globalRoot: remote }); } finally { db.close(); }
+  const file = join(remote, "roam", "journal.db");
+  if (status === "blocked") openJournal(file).begin({ id: "peer-pending-move", kind: "move", machineId: HUB, expectedEpoch: 1, args: {} });
+  else writeFileSync(file, "corrupt journal fixture", { mode: 0o600 });
+
+  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
+  vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: unknown) { return peer; },
+    async exec(_peer: unknown, argv: readonly string[]) {
+      const output: string[] = [];
+      expect(await main(["--global-root", remote, ...argv], { out: text => output.push(text), err: text => { throw new Error(text); } })).toBe(0);
+      return Buffer.from(output.join(""));
+    },
+  } as never);
+  expect(await f.invoke(["roam", "doctor", BOX, "--json"])).toBe(1);
+  const report = JSON.parse(f.out.join(""));
+  expect(report).toMatchObject({ reason: "doctor-blocked", value: { enabled: false, diagnostics: expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(status === "blocked"
+      ? /^legacy-upgrade-blocked:.*peer-pending-move/ : /^legacy-upgrade-unverified:/) }),
+  ]) } });
+}, 5000);
+
 it("enabled doctor summarizes an absent move-binding inventory once", async () => {
   const f = await fixture(HUB, undefined, false), file = join(f.root, "roam/config.json");
   const config = JSON.parse(readFileSync(file, "utf8")); config.peers = [];

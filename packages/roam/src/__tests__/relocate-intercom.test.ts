@@ -455,6 +455,25 @@ describe("roaming v0 intercom", () => {
     expect(f.calls).toEqual([]);
   });
 
+  it("turns a non-error transport rejection into a typed refusal", async () => {
+    const sender = machineFixture(MAC), receiver = boxFixture();
+    vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+    configure(sender.root, [peer(BOX, "box", receiver)], []);
+    const transport = (): Pick<Transport, "resolve" | "exec"> => ({
+      resolve: async () => { throw null; },
+      exec: async () => { throw new Error("must not dispatch"); },
+    });
+    expect(await createV0Intercom(sender.root, { transport }).prepare({ to: "box/ben", from: alice, locals: [alice] }))
+      .toEqual({ kind: "refused", code: "unreachable" });
+  });
+
+  it("does not propagate reply-only from a broker on a box-bound request", async () => {
+    const { root } = boxFixture();
+    vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+    const broker = async (): Promise<V0Reply> => ({ kind: "refused", code: "reply-only" });
+    expect(await createV0Intercom(root, { broker }).handle(findBen)).toMatchObject({ kind: "refused", code: "unreachable" });
+  });
+
   it("keeps an unhomed caller local and refuses an explicit remote target", async () => {
     const { root } = boxFixture();
     vi.stubEnv("PI_CODING_AGENT_DIR", undefined);

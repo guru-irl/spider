@@ -145,18 +145,21 @@ async function bounded<T>(deadline: number, signal: AbortSignal | undefined, wor
   const controller = new AbortController();
   return new Promise<T>((resolve, reject) => {
     let settled = false;
-    const finish = (error: unknown, value?: T) => {
+    const finish = (result: { ok: true; value: T } | { ok: false; error: unknown }) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener("abort", abort);
-      if (error !== null) reject(error); else resolve(value as T);
+      if (result.ok) resolve(result.value); else reject(result.error);
     };
-    const abort = () => { controller.abort(); finish(new Error("Intercom request aborted")); };
+    const abort = () => { controller.abort(); finish({ ok: false, error: new Error("Intercom request aborted") }); };
     const timer = setTimeout(abort, ms);
     signal?.addEventListener("abort", abort, { once: true });
     if (signal?.aborted) { abort(); return; }
-    Promise.resolve().then(() => work(controller.signal)).then(value => finish(null, value), error => finish(error));
+    Promise.resolve().then(() => {
+      if (controller.signal.aborted) throw new Error("Intercom request aborted");
+      return work(controller.signal);
+    }).then(value => finish({ ok: true, value }), error => finish({ ok: false, error }));
   });
 }
 
@@ -381,6 +384,7 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
     } catch {
       result = request.kind === "lookup" ? refused("unreachable") : { kind: "unknown", id: request.message.id };
     }
+    if (result.kind === "refused" && result.code === "reply-only") result = refused("unreachable");
     if (request.kind === "lookup" && result.kind === "matches") {
       if (result.targets.some(endpoint => !matching(endpoint, request))) return envelope(refused("unauthorized"));
       try {

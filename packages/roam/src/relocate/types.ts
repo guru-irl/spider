@@ -25,7 +25,8 @@ export type RelocateHome = SettledHome | MovingHome;
 export type HomeAdmission =
   | { kind: "unmanaged" }
   | { kind: "managed"; home: RelocateHome | null }
-  | { kind: "unavailable" };
+  // lane 2: home-I5
+  | { kind: "unavailable"; awayMachine?: MachineId };
 
 export type RelocateStep =
   | "check" | "mark-moving" | "stop-source" | "pull-source"

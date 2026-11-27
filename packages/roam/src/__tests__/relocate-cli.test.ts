@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { createConnection } from "node:net";
 import { PassThrough } from "node:stream";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_LIMITS, disabledIntercom, type RoamConfig } from "../contracts";
 import type { RunningHome, SessionId, V0ControlServices } from "../relocate/types";
@@ -222,11 +222,25 @@ describe("v0 controls", () => {
       const f = fixture(value); expect(await runV0Control({ kind: "set-home", session: "session-abc", machine: "box-a.invalid", force: true, confirmation: null }, config, catalog, f.services, f.io, { json: true })).toBe(1);
       expect(f.services.setHome).not.toHaveBeenCalled(); expect(JSON.parse(f.out.join("")).refusal.code).toBe("confirmation-required");
       expect(f.prompts[0]).toContain(phrase); expect(f.prompts[0]).toMatch(/unsynced conversation.*lost/i);
+      expect(f.prompts[0]).toContain("systemctl --user disable --now spider-roam-supervisor.service");
+      expect(f.prompts[0]).toMatch(/before.*reconnect/i);
     }
-    const f = fixture(phrase); expect(await runV0Control({ kind: "set-home", session: "session-abc", machine: "box-a.invalid", force: true, confirmation: null }, { ...config, enabled: false }, catalog, f.services, f.io, { json: true })).toBe(0);
+    const f = fixture(phrase); expect(await runV0Control({ kind: "set-home", session: "session-abc", machine: "box-a.invalid", force: true, confirmation: null }, config, catalog, f.services, f.io, { json: true })).toBe(0);
     expect(f.services.setHome).toHaveBeenCalledWith({ sessionId: "session-abc", destinationMachine: box, force: true, confirmation: phrase });
   });
-  it("relocates a fresh session found only in its registered project database", async () => {
+  it("refuses a disabled remote assignment before confirm but allows recovery to the Mac", async () => {
+    const disabled = { ...config, enabled: false }, remote = fixture();
+    const request = { kind: "set-home", session: "session-abc", machine: "box-a.invalid", force: true, confirmation: null } as const;
+    expect(await runV0Control(request, disabled, catalog, remote.services, remote.io, { json: true })).toBe(1);
+    expect(remote.io.confirmation).not.toHaveBeenCalled();
+    expect(remote.services.setHome).not.toHaveBeenCalled();
+    expect(JSON.parse(remote.out.join(""))).toMatchObject({ ok: false, refusal: { code: "replication-disabled", nextStep: expect.stringContaining("spider roam enable") } });
+
+    const phrase = `reassign session-abc to ${mac}; source will not run`, local = fixture(phrase);
+    expect(await runV0Control({ ...request, machine: macSelector }, disabled, catalog, local.services, local.io)).toBe(0);
+    expect(local.services.setHome).toHaveBeenCalledWith({ sessionId: "session-abc", destinationMachine: mac, force: true, confirmation: phrase });
+  });
+  it.each(["healthy", "stale", "unsafe"] as const)("looks up a fresh session with %s project registrations", async scenario => {
     const f = fixture();
     const root = mkdtempSync(join(resolve(".spider/scratch"), "fresh-cli-")); roots.push(root);
     mkdirSync(join(root, "roam"), { mode: 0o700 });
@@ -240,21 +254,57 @@ describe("v0 controls", () => {
     try {
       // Session startup registers the project before inserting its session row.
       registerProject({ projectKey: projectRoot, realPath: projectRoot, dbPath: projectPath });
+      if (scenario === "stale") {
+        const missing = join(root, "removed-worktree"), unreadable = join(root, "unreadable-worktree");
+        mkdirSync(unreadable);
+        writeFileSync(join(unreadable, "project.db"), "not a SQLite database\n");
+        for (const path of [missing, unreadable]) {
+          registerProject({ projectKey: path, realPath: path, dbPath: join(path, "project.db") });
+        }
+      } else if (scenario === "unsafe") {
+        const unsafe = join(root, "unsafe.db");
+        symlinkSync(projectPath, unsafe);
+        registerProject({ projectKey: unsafe, realPath: root, dbPath: unsafe });
+      }
       project.prepare("INSERT INTO sessions(id,name,started_at) VALUES (?,?,?)").run("session-abc", "fresh", 1);
       expect(global.prepare("SELECT name FROM sqlite_master WHERE name='sessions'").get()).toBeUndefined();
       expect(global.prepare("SELECT session_id FROM roam_locations").all()).toEqual([]);
+      if (scenario === "stale") {
+        global.prepare("INSERT INTO roam_locations(session_id,stores_json) VALUES (?,?)").run("moved-session", '["global"]');
+      }
       expect(project.prepare("SELECT store_key FROM roam_meta WHERE id=1").get()).toEqual({ store_key: null });
       global.prepare("UPDATE roam_meta SET machine_id=? WHERE id=1").run(mac);
       writeFileSync(join(root, "roam", "machine.json"), JSON.stringify({ machineId: mac }), { mode: 0o600 });
       // Publish both WALs before the CLI's independent read-only handles open.
       project.close(); global.close();
       vi.stubEnv("SPIDER_GLOBAL_ROOT", root);
+      if (scenario === "unsafe") {
+        expect(await main(["roam", "relocate", "fresh", "box-a.invalid", "--json"], f.io, { v0: { services: f.services } })).toBe(1);
+        expect(JSON.parse(f.out.join(""))).toMatchObject({ ok: false, refusal: {
+          message: expect.stringContaining("session catalog"), nextStep: expect.stringContaining("spider roam doctor"),
+        } });
+        expect(f.services.relocate).not.toHaveBeenCalled();
+        return;
+      }
       for (const target of ["session-abc", "session-ab", "fresh"]) {
         f.out.length = 0;
+        f.err.length = 0;
         const code = await main(["roam", "relocate", target, "box-a.invalid", "--json"], f.io, { v0: { services: f.services } });
         expect(JSON.parse(f.out.join(""))).toMatchObject({ ok: true, value: { home: { sessionId: "session-abc", machineId: box } } });
         expect(code).toBe(0);
         expect(f.services.relocate).toHaveBeenLastCalledWith({ sessionId: "session-abc", destinationMachine: box });
+        if (scenario === "stale") expect(f.err.join("")).toMatch(/skipped 2 project databases/i);
+        else expect(f.err).toEqual([]);
+      }
+      if (scenario === "stale") {
+        f.out.length = 0;
+        f.err.length = 0;
+        const confirmation = `reassign moved-session to ${mac}; source will not run`;
+        vi.mocked(f.services.setHome).mockResolvedValueOnce({ ok: true, value: { ...home, sessionId: "moved-session" as SessionId, machineId: mac } });
+        const code = await main(["roam", "set-home", "moved-session", "mac", "--force"], f.io, { v0: { services: f.services, confirmation: async () => confirmation } });
+        expect(code).toBe(0);
+        expect(f.services.setHome).toHaveBeenCalledWith({ sessionId: "moved-session", destinationMachine: mac, force: true, confirmation });
+        expect(f.err.join("")).toMatch(/skipped 2 project databases/i);
       }
     } finally { setGlobalDbPathForTests(null); project.close(); global.close(); }
   });

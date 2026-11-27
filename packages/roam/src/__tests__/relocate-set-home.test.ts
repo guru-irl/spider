@@ -79,6 +79,17 @@ describe("forced v0 reassignment", () => {
     for (const call of Object.values(f.source)) expect(call).not.toHaveBeenCalled();
   });
 
+  it("disabled replication refuses an away assignment before looking up the copy or changing the home", async () => {
+    const f = fake();
+    const result = await setHome(REQUEST, f.ports, { enabled: false, machineId: HUB });
+    expect(result).toMatchObject({ok:false,refusal:{code:"replication-disabled",nextStep:expect.stringContaining("spider roam enable")}});
+    expect(f.current()).toEqual(INITIAL);
+    expect(f.ports.locate).not.toHaveBeenCalled();
+    expect(f.homes.compareAndSwap).not.toHaveBeenCalled();
+    expect(f.ports.activate).not.toHaveBeenCalled();
+    expect(f.ports.publishHome).not.toHaveBeenCalled();
+  });
+
   it("forced CAS conflict does not activate", async () => {
     const f=fake(), winner:RunningHome={...INITIAL,epoch:8,machineId:OTHER,updatedAt:99};
     vi.mocked(f.homes.compareAndSwap).mockImplementation(async ()=>{f.winner(winner);f.calls.push("cas");return {kind:"conflict",home:winner};});

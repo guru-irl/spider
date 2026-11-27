@@ -51,6 +51,7 @@ const LOCAL_UNIQUE: Record<Scope, ReadonlyArray<readonly [string, readonly strin
 
 const DUPLICATE = "Duplicate todo sequence for row IDs ";
 const TRIGGER_DRIFT = "Roaming trigger layout drift";
+const PRE_V0_HOME_DRIFT = `${TRIGGER_DRIFT}: roam_session_homes_capture_ai, roam_session_homes_capture_au`;
 
 interface Meta {
   id: number; machine_id: string; stream_id: string; store_key: string | null;
@@ -165,6 +166,13 @@ export function validateRoamLayout(db: Db, scope: Scope, mode?: "inspect"): Layo
         throw new Error(`${problem}; capture could not be disabled`);
       }
     }
+  } else if (scope === "global" && meta.roamable === 1 && meta.capture_enabled === 0 && diagnostic === PRE_V0_HOME_DRIFT) {
+    // An old opener saw the two v0 capture triggers as different SQL. The live
+    // layout now matches exactly. Clear only that diagnostic; enable owns capture.
+    diagnostic = null;
+    needsWrite = true;
+    if (mode !== "inspect" && db.prepare("UPDATE roam_meta SET problem = NULL WHERE id = 1 AND capture_enabled = 0 AND problem = ?")
+      .run(PRE_V0_HOME_DRIFT).changes !== 1) throw new Error("The roaming diagnostic changed before recovery");
   }
   const status = { captureSafe: meta.roamable === 1 && !diagnostic, diagnostic };
   return mode === "inspect" ? { ...status, needsWrite, triggerDrift: [...drift].sort() } : status;

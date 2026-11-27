@@ -3,12 +3,22 @@ import type { Db } from "@spider/db-core";
 import type { Home, MachineId } from "@spider/db-core/roam/types";
 import { isMachineId } from "./machine-id";
 
+interface LegacyHomeRow {
+  machine_id: string; epoch: number; move_id: string | null; updated_at: number;
+  state?: unknown; destination?: unknown;
+}
+function legacyRow(db: Db, sessionId: string): LegacyHomeRow | undefined {
+  // Pre-v0 schema 14 does not have the two management columns yet.
+  const row = db.prepare("SELECT * FROM session_homes WHERE session_id=?").get(sessionId) as LegacyHomeRow | undefined;
+  if (row?.state != null || row?.destination != null) throw new Error("This home is managed by v0. Use spider roam relocate on the Mac.");
+  return row;
+}
+function legacyHome(sessionId: string, row: LegacyHomeRow | undefined): Home | null {
+  return row?.machine_id ? { sessionId, machineId: row.machine_id, epoch: row.epoch, moveId: row.move_id, updatedAt: row.updated_at } : null;
+}
 export function sessionHome(db: Db, sessionId: string): Home | null | "unknown" {
-  try {
-    const row = db.prepare("SELECT machine_id,epoch,move_id,updated_at FROM session_homes WHERE session_id=?").get(sessionId) as
-      { machine_id: string; epoch: number; move_id: string | null; updated_at: number } | undefined;
-    return row?.machine_id ? { sessionId, machineId: row.machine_id, epoch: row.epoch, moveId: row.move_id, updatedAt: row.updated_at } : null;
-  } catch { return "unknown"; }
+  try { return legacyHome(sessionId, legacyRow(db, sessionId)); }
+  catch { return "unknown"; }
 }
 function hub(db: Db, machine: MachineId, id: string): void {
   const meta = db.prepare("SELECT machine_id FROM roam_meta WHERE id=1").get() as { machine_id: string };
@@ -46,11 +56,12 @@ function action(db: Db, expected: Home, nextMachine: MachineId, moveId: string):
 export function casHome(db: Db, expected: Home, nextMachine: MachineId, moveId: string, hubMachine: MachineId): Home {
   hub(db, hubMachine, expected.sessionId);
   return db.raw.transaction(() => {
+    const row = legacyRow(db, expected.sessionId);
     const { prior, digest } = action(db, expected, nextMachine, moveId);
     if (prior?.cancelled) throw new Error("Home action was cancelled");
     if (prior?.committed_home_json) return JSON.parse(prior.committed_home_json) as Home;
-    const current = sessionHome(db, expected.sessionId);
-    if (!current || current === "unknown" || current.epoch !== expected.epoch || current.machineId !== expected.machineId || current.moveId !== expected.moveId)
+    const current = legacyHome(expected.sessionId, row);
+    if (!current || current.epoch !== expected.epoch || current.machineId !== expected.machineId || current.moveId !== expected.moveId)
       throw new Error("Home compare-and-swap epoch does not match");
     return commitHome(db, expected, nextMachine, moveId, digest);
   }).immediate();
@@ -70,8 +81,7 @@ export function resolveInitialConflict(db: Db, expectedMarker: Home, machineId: 
       !Number.isSafeInteger(expectedMarker.updatedAt) || expectedMarker.updatedAt < 0 || !isMachineId(machineId))
     throw new Error("Invalid initial conflict marker");
   return db.raw.transaction(() => {
-    const row = db.prepare("SELECT machine_id,epoch,move_id,updated_at FROM session_homes WHERE session_id=?").get(expectedMarker.sessionId) as
-      { machine_id: string; epoch: number; move_id: string | null; updated_at: number } | undefined;
+    const row = legacyRow(db, expectedMarker.sessionId);
     if (!row || row.machine_id !== "" || row.epoch !== 1 || row.move_id !== null || row.updated_at !== expectedMarker.updatedAt)
       throw new Error("Initial conflict marker changed");
     const digest = createHash("sha256").update(JSON.stringify([expectedMarker, machineId])).digest("hex");
@@ -82,6 +92,7 @@ export function resolveInitialConflict(db: Db, expectedMarker: Home, machineId: 
 export function cancelHomeAction(db: Db, expected: Home, nextMachine: MachineId, moveId: string, hubMachine: MachineId): void {
   hub(db, hubMachine, expected.sessionId);
   db.raw.transaction(() => {
+    legacyRow(db, expected.sessionId);
     const { prior, digest } = action(db, expected, nextMachine, moveId);
     if (prior?.committed_home_json) throw new Error("Committed home action cannot be cancelled");
     db.prepare("INSERT INTO roam_home_actions(move_id,session_id,expected_epoch,args_digest,cancelled) VALUES (?,?,?,?,1) ON CONFLICT(move_id) DO UPDATE SET cancelled=1")

@@ -1,7 +1,17 @@
+import { dirname, join } from "node:path";
+import { processStartIdentity } from "@spider/herdr/jobs/handoff";
+import { claimIdLock, localBootId } from "@spider/herdr/sessions/id-lock";
 import { isRoamUuid } from "@spider/db-core/roam/codec";
 import { validUnicode } from "@spider/db-core/roam/hlc";
 import type { MachineId } from "@spider/db-core/roam/types";
-import type { HomeStore, HomeStoreOptions, RelocateHome, RelocateId, RunningHome, SessionId } from "./types";
+import { AwayHomeRecoveryRequired, publishAwayHomeFence, readAwayHomeFence, withAwayHomeFenceLock, type AwayHomeFence } from "./away-home";
+import type { HomeStore, HomeStoreOptions, RelocateHome, RelocateId, RunningHome, SessionId, V0Refusal } from "./types";
+
+export const legacyRecordedHomeRefusal: V0Refusal = {
+  code: "home-conflict",
+  message: "V0 cannot adopt a legacy home with a recorded move or claim.",
+  nextStep: "Keep the existing home and run spider roam doctor on the Mac.",
+};
 
 type HomeRow = Record<string, unknown>;
 const COLUMNS = "session_id, machine_id, epoch, move_id, updated_at, state, destination";
@@ -47,6 +57,27 @@ function same(a: RelocateHome | null, b: RelocateHome): boolean {
     a.state === b.state && a.destination === b.destination && a.moveId === b.moveId && a.updatedAt === b.updatedAt;
 }
 
+function matchesFence(home: RelocateHome, fence: AwayHomeFence): boolean {
+  return home.state === "running" && home.machineId === fence.machineId && home.epoch === fence.epoch && home.moveId === fence.moveId;
+}
+
+export class MacSessionOccupied extends Error {
+  constructor(cause: unknown) { super("The Mac session ID is not known to be free", { cause }); }
+}
+
+async function reserveMacSession(root: string, sessionId: SessionId) {
+  try {
+    const startIdentity = processStartIdentity(process.pid), boot = await localBootId();
+    if (!startIdentity || !boot) throw new Error("Local process identity unavailable");
+    return await claimIdLock(join(root, "herdr"), sessionId, { pid: process.pid, startIdentity }, async pid => {
+      try {
+        const other = processStartIdentity(pid);
+        return other === null ? { kind: "absent" } : { kind: "live", startIdentity: other };
+      } catch { return { kind: "unknown" }; }
+    }, { bootId: async () => boot, exclusive: true });
+  } catch (error) { throw new MacSessionOccupied(error); }
+}
+
 export function createHomeStore(options: HomeStoreOptions): HomeStore {
   const { db, hubMachineId, localMachineId } = options;
   machineId(hubMachineId); machineId(localMachineId);
@@ -75,7 +106,7 @@ export function createHomeStore(options: HomeStoreOptions): HomeStore {
             if (managed.state !== "running") throw new Error("Home is already managed and not running");
             return managed;
           }
-          if (old.move_id !== null) throw new Error("Unfinished legacy home move cannot be adopted");
+          if (old.move_id !== null) throw new Error(`${legacyRecordedHomeRefusal.message} ${legacyRecordedHomeRefusal.nextStep}`);
           epoch(old.epoch);
           db.prepare("UPDATE session_homes SET state='running', destination=NULL, updated_at=? WHERE session_id=?").run(Date.now(),id);
         } else {
@@ -89,7 +120,7 @@ export function createHomeStore(options: HomeStoreOptions): HomeStore {
       if (!parseHome(row(expected)) || !parseHome(row(next))) throw new Error("CAS requires managed homes");
       if (expected.sessionId !== next.sessionId || expected.epoch === Number.MAX_SAFE_INTEGER || next.epoch !== expected.epoch + 1)
         throw new Error("Home CAS must increment exactly one safe epoch");
-      return db.withRetry(() => db.raw.transaction(() => {
+      const apply = () => db.withRetry(() => db.raw.transaction(() => {
         requireHub();
         const current = parseHome(find(expected.sessionId));
         if (same(current, next)) return {kind:"already-applied" as const,home:current!};
@@ -100,6 +131,26 @@ export function createHomeStore(options: HomeStoreOptions): HomeStore {
         const home = parseHome(find(expected.sessionId));
         return result.changes === 1 ? {kind:"applied" as const,home:home!} : {kind:"conflict" as const,home};
       }).immediate());
+      if (next.state !== "running") return apply();
+      const { sessionId, machineId, epoch, moveId } = next;
+      const root = dirname(db.raw.name);
+      requireHub();
+      return withAwayHomeFenceLock(root, sessionId, async () => {
+        const current = parseHome(find(sessionId));
+        if (same(current, next)) return { kind: "already-applied", home: next };
+        if (!same(current, expected)) return { kind: "conflict", home: current };
+        const fence = await readAwayHomeFence(root, sessionId);
+        if (fence && expected.epoch <= fence.epoch && !matchesFence(expected, fence) &&
+            !(expected.state === "moving" && matchesFence(next, fence))) throw new AwayHomeRecoveryRequired(fence);
+        if (machineId === hubMachineId) return apply();
+        if (!moveId) throw new Error("An away home needs a move ID");
+        const owner = await reserveMacSession(root, sessionId);
+        try {
+          // If the process dies or the CAS loses after publication, the fence stays fail-closed.
+          await publishAwayHomeFence(root, sessionId, { machineId, epoch, moveId });
+          return await apply();
+        } finally { await owner.release(); }
+      });
     },
   };
 }

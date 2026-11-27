@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from "vitest";
 import { createReplica } from "@spider/db-core/testutil";
-import { assignInitialHome, casHome, cancelHomeAction, markInitialConflict } from "../homes";
+import { assignInitialHome, casHome, cancelHomeAction, markInitialConflict, sessionHome } from "../homes";
 const HUB = "00000000-0000-4000-8000-000000000001", BOX = "00000000-0000-4000-8000-000000000002";
 const fixtures: Array<{ close(): void }> = [];
 afterEach(() => { for (const f of fixtures.splice(0)) f.close(); });
@@ -40,6 +40,31 @@ it("equal epoch cannot change owner or move ID", () => {
   expect(() => casHome(db, home, HUB, "move-a", HUB)).toThrow(/argument|conflict/i);
   expect(db.prepare("SELECT machine_id,epoch,move_id FROM session_homes").get()).toEqual({ machine_id: BOX, epoch: 2, move_id: "move-a" });
 }, 5000);
+it.each(["running", "stopped", "moving"] as const)("legacy writers cannot act on a v0 %s home", state => {
+  const { db } = fixture(), sessionId = "session-a";
+  const expected = { sessionId, machineId: HUB, epoch: 7, moveId: "v0-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", updatedAt: 1 };
+  db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state,destination) VALUES(?,?,?,?,?,?,?)")
+    .run(sessionId, HUB, expected.epoch, expected.moveId, expected.updatedAt, state, state === "moving" ? BOX : null);
+  const before = db.prepare("SELECT * FROM session_homes").get();
+  expect(() => casHome(db, expected, BOX, "old-move", HUB)).toThrow(/spider roam relocate/i);
+  expect(() => cancelHomeAction(db, expected, BOX, "old-cancel", HUB)).toThrow(/spider roam relocate/i);
+  expect(sessionHome(db, sessionId)).toBe("unknown");
+  expect(db.prepare("SELECT * FROM session_homes").get()).toEqual(before);
+  expect(db.prepare("SELECT count(*) AS n FROM roam_home_actions").get()).toEqual({ n: 0 });
+  expect(db.prepare("SELECT count(*) AS n FROM roam_changes").get()).toEqual({ n: 1 });
+});
+
+it("a historical legacy receipt cannot replay after the home comes under v0 management", () => {
+  const { db } = fixture();
+  const home = assignInitialHome(db, "session-a", HUB, HUB);
+  if (home === "conflict") throw new Error("unexpected conflict");
+  casHome(db, home, BOX, "old-move", HUB);
+  db.exec("UPDATE session_homes SET state='running', move_id=NULL");
+  expect(() => casHome(db, home, BOX, "old-move", HUB)).toThrow(/spider roam relocate/i);
+  expect(db.prepare("SELECT machine_id,epoch,move_id,state FROM session_homes").get())
+    .toEqual({ machine_id: BOX, epoch: 2, move_id: null, state: "running" });
+});
+
 it("cancelled action cannot commit later", () => {
   const { db } = fixture(); const home = assignInitialHome(db, "session-a", HUB, HUB); if (home === "conflict") throw new Error("unexpected conflict");
   cancelHomeAction(db, home, BOX, "move-a", HUB);

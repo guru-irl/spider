@@ -370,6 +370,32 @@ describe("roaming schema migration", () => {
     } finally { reopened?.close(); }
   }, 5000);
 
+  it.each(["clean", "extra diagnostic", "real drift"] as const)("recovers old home-trigger drift only on a matching global store (%s)", async scenario => {
+    const root = fixtureRoot(), file = join(root, "spider.db"), db = openDb(file);
+    const problem = "Roaming trigger layout drift: roam_session_homes_capture_ai, roam_session_homes_capture_au";
+    const stored = scenario === "extra diagnostic" ? `Keep this unrelated diagnostic; ${problem}` : problem;
+    try {
+      migrate(db, "global", { machineId: MACHINE, globalRoot: root });
+      db.prepare("UPDATE roam_meta SET store_key='global', capture_enabled=0, problem=?").run(stored);
+      if (scenario === "real drift") db.exec("DROP TRIGGER roam_session_homes_capture_au");
+    } finally { db.close(); }
+    const reopened = openDbAt(file, "global");
+    const meta = () => reopened.prepare("SELECT capture_enabled,problem FROM roam_meta").get();
+    const { enableMemoryCapture } = await import("../roam/seed");
+    try {
+      if (scenario === "clean") {
+        expect(meta()).toEqual({ capture_enabled: 0, problem: null });
+        enableMemoryCapture(reopened, "global");
+        reopened.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state) VALUES ('fixture',?,1,NULL,1,'running')").run(MACHINE);
+        const row = reopened.prepare("SELECT entity,json_extract(body_json,'$.state') AS state FROM roam_changes").get();
+        expect(row).toEqual({ entity: "session_homes", state: "running" });
+      } else {
+        expect(meta()).toEqual({ capture_enabled: 0, problem: expect.stringContaining(stored) });
+        expect(() => enableMemoryCapture(reopened, "global")).toThrow(/unsafe/i);
+      }
+    } finally { reopened.close(); }
+  });
+
   it("missing data column refuses open", () => {
     const root = fixtureRoot();
     const db = oldDb(root, "worktree");

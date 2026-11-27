@@ -44,7 +44,7 @@ const WRITE = process.argv.includes("--write");
 const INHERITED_FIELDS = new Set(["api", "contextWindow", "maxTokens"]);
 // Pi applies these in applyModelOverride and rawModelHeaders. Spider reads
 // compactAtPercent from modelOverrides itself.
-const OVERRIDE_FIELDS = new Set([
+const KNOWN_OVERRIDE_FIELDS = new Set([
   "name", "reasoning", "thinkingLevelMap", "input", "inputLimits", "cost", "promptCache",
   "samplingParams", "samplingParamsByThinkingLevel", "headers", "compat", "compactAtPercent",
 ]);
@@ -116,6 +116,20 @@ function resolvePiPackage() {
   fail(hint);
 }
 
+async function resolveOverrideFields(root) {
+  const fields = new Set(["compactAtPercent"]);
+  try {
+    const file = join(root, "dist/core/model-config.js");
+    const config = await import(pathToFileURL(file).href);
+    const properties = config.ModelsJsonSchemas?.modelOverride?.properties;
+    if (!properties || typeof properties !== "object" || Array.isArray(properties)) throw new Error("missing schema");
+    for (const key of KNOWN_OVERRIDE_FIELDS) if (Object.hasOwn(properties, key)) fields.add(key);
+  } catch {
+    console.warn("[sync-copilot-models] override support unavailable for the active pi; differing fields cannot be verified.");
+  }
+  return fields;
+}
+
 async function resolveBuiltinIds() {
   const pi = resolvePiPackage();
   const file = join(pi.root, "node_modules/@earendil-works/pi-ai/dist/providers/github-copilot.models.js");
@@ -129,11 +143,11 @@ async function resolveBuiltinIds() {
     if (entries.length && entries.every(([id, model]) => typeof id === "string" && id && model && typeof model === "object")) {
       const models = new Map(entries);
       console.log("[sync-copilot-models] built-in catalog: " + file + " (" + models.size + " ids)");
-      return { models, snapshot: false };
+      return { models, snapshot: false, overrideFields: await resolveOverrideFields(pi.root) };
     }
   } catch {}
   console.warn("[sync-copilot-models] built-in catalog: using dated SNAPSHOT (" + BUILTIN_SNAPSHOT.size + " ids); migration skipped because the real catalog could not be read.");
-  return { models: new Map([...BUILTIN_SNAPSHOT].map((id) => [id, undefined])), snapshot: true };
+  return { models: new Map([...BUILTIN_SNAPSHOT].map((id) => [id, undefined])), snapshot: true, overrideFields: new Set() };
 }
 
 function familyApi(vendor) {
@@ -230,7 +244,7 @@ function providerCompatDifferences(shadow, builtin, provider, prior) {
 }
 
 async function main() {
-  const { models: builtin, snapshot } = await resolveBuiltinIds();
+  const { models: builtin, snapshot, overrideFields } = await resolveBuiltinIds();
   const mj = readModels();
   mj.providers ||= {};
   mj.providers["github-copilot"] ||= {};
@@ -285,7 +299,7 @@ async function main() {
       }
       if (equalsBuiltin) continue;
       if (INHERITED_FIELDS.has(key)) inherited.push(key);
-      else if (!OVERRIDE_FIELDS.has(key)) unsupported.push(key);
+      else if (!overrideFields.has(key)) unsupported.push(key);
       else if (!Object.hasOwn(prior, key)) differences[key] = value;
       else if (key !== "headers" && !isDeepStrictEqual(value, prior[key])) conflicts.push({ key });
     }

@@ -8,14 +8,16 @@ import { mappingRedirect, openRoamPathReadOnly, openRoamStoreReadOnly } from "@s
 import { processStartIdentity } from "@spider/herdr/jobs/handoff";
 import { listPendingIdLocks, localBootId } from "@spider/herdr/sessions/id-lock";
 import { createSessionLeases, type ProcessProbe } from "@spider/herdr/sessions/lease";
-import type { Diagnostic } from "./contracts";
+import type { Diagnostic, WorkspaceSnapshot } from "./contracts";
 import { openDiagnosticSnapshot } from "./diagnostic-snapshot";
+import { snapshotPrivateRefs } from "./git-bundle";
 import { inspectIntentReservations } from "./intent";
 import { inspectAdoptedOwner } from "./launcher";
 import { isMachineId } from "./machine-id";
 import { readLocalIdentity } from "./runtime";
 import { parseCheckpoint, parseHome, parsePlan } from "./relocate/journal";
 import { listStoreKeys } from "./store-inventory";
+import { artifactId } from "./staging";
 import type { RelocatePlan } from "./relocate/types";
 
 export type LegacyUpgradeInventory =
@@ -46,6 +48,32 @@ function placementContainsCheckout(checkout: string, cwd: string): boolean {
     if (present(join(current, ".git"))) return false;
   }
   return present(join(checkout, ".git"));
+}
+function workspacePreparation(data: Record<string, unknown>, id: string): { root: string; digest: string; stage: string; key: string } {
+  if (typeof data.root !== "string" || !isAbsolute(data.root) || resolve(data.root) !== data.root ||
+      typeof data.snapshotJson !== "string" || typeof data.digest !== "string" || !/^[a-f0-9]{64}$/.test(data.digest) ||
+      !(data.previousJson === null || typeof data.previousJson === "string")) throw new Error("Invalid workspace preparation");
+  const snapshot = JSON.parse(data.snapshotJson) as WorkspaceSnapshot;
+  if (data.previousJson !== null) JSON.parse(data.previousJson);
+  if (!snapshot || snapshot.moveId !== id || !snapshot.repoKey || !snapshot.workspaceId || snapshot.stage !== data.stage ||
+      !snapshot.normalization || !(snapshot.normalization.autocrlf === null || typeof snapshot.normalization.autocrlf === "string") ||
+      !(snapshot.normalization.eol === null || typeof snapshot.normalization.eol === "string") ||
+      !(snapshot.sparsePatterns === null || typeof snapshot.sparsePatterns === "string") ||
+      !(snapshot.worktreeConfig === null || typeof snapshot.worktreeConfig === "string") ||
+      typeof snapshot.relativeCwd !== "string" || isAbsolute(snapshot.relativeCwd) || snapshot.relativeCwd.split(/[\\/]/).includes("..") ||
+      !Array.isArray(snapshot.prerequisites) || snapshot.bundle?.kind !== "ready" || !Number.isSafeInteger(snapshot.bundle.byteLength) || snapshot.bundle.byteLength < 1)
+    throw new Error("Invalid workspace snapshot");
+  artifactId(snapshot.bundle.artifactId); snapshotPrivateRefs(snapshot);
+  const oid = snapshot.objectFormat === "sha1" ? /^[a-f0-9]{40}$/ : snapshot.objectFormat === "sha256" ? /^[a-f0-9]{64}$/ : null;
+  if (!oid || ![snapshot.head, snapshot.indexTree, snapshot.workingTree, ...snapshot.prerequisites].every(value => oid.test(value))) throw new Error("Invalid workspace object");
+  const digest = createHash("sha256").update(JSON.stringify([snapshot.repoKey, snapshot.workspaceId, snapshot.moveId, snapshot.stage,
+    snapshot.head, snapshot.branch, snapshot.objectFormat, snapshot.indexTree, snapshot.workingTree, snapshot.relativeCwd, snapshot.sparsePatterns,
+    snapshot.worktreeConfig, { autocrlf: snapshot.normalization.autocrlf, eol: snapshot.normalization.eol },
+    { enabled: snapshot.sparse.enabled, cone: snapshot.sparse.cone }, snapshot.refs, snapshot.prerequisites,
+    { kind: "ready", artifactId: snapshot.bundle.artifactId, byteLength: snapshot.bundle.byteLength }])).digest("hex");
+  if (digest !== data.digest) throw new Error("Workspace snapshot digest mismatch");
+  const key = `worktree:${snapshot.repoKey}:${snapshot.workspaceId}`; storeScope(key);
+  return { root: data.root, digest, stage: snapshot.stage, key };
 }
 async function probeProcess(pid: number): Promise<ProcessProbe> {
   try {
@@ -100,6 +128,40 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
           if (cleanup && typeof cleanup === "object" && !Array.isArray(cleanup) && (cleanup as Record<string, unknown>).status === "pending") findings.push(`source cleanup operation ${id}`);
         }
       }
+      const preparations = new Map<string, { id: string; root: string; digest: string; key: string }>();
+      const transitions = new Map<string, { id: string; root: string; digest: string; key: string }>();
+      const workspaceActions = db.prepare("SELECT o.operation_id,a.action,a.result_json FROM roam_operations o JOIN roam_operation_actions a ON a.operation_id=o.operation_id WHERE o.kind<>'relocate-v0' AND a.action IN ('workspace-prepare-start','workspace-prepared','workspace-settings-transition','workspace-settings-transition-complete','workspace-settings-recovery-complete') ORDER BY a.seq").all() as
+        Array<{ operation_id: string; action: string; result_json: string }>;
+      for (const action of workspaceActions) {
+        const result: unknown = JSON.parse(action.result_json);
+        if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Invalid workspace action");
+        const data = result as Record<string, unknown>, id = action.operation_id;
+        if (action.action === "workspace-prepare-start" || action.action === "workspace-prepared") {
+          const parsed = workspacePreparation(data, id), key = JSON.stringify([id, parsed.root, parsed.digest, parsed.stage]);
+          if (action.action === "workspace-prepare-start") preparations.set(key, { id, ...parsed });
+          else preparations.delete(key);
+        } else {
+          if (typeof data.root !== "string" || !isAbsolute(data.root) || resolve(data.root) !== data.root ||
+              typeof data.transitionId !== "string" || !data.transitionId) throw new Error("Invalid workspace transition");
+          const transitionKey = JSON.stringify([id, data.root, data.transitionId]);
+          if (action.action === "workspace-settings-transition") {
+            if (typeof data.digest !== "string") throw new Error("Invalid workspace transition digest");
+            const start = [...preparations.values()].find(preparation => preparation.id === id && preparation.root === data.root && preparation.digest === data.digest);
+            if (!start || transitions.has(transitionKey)) throw new Error("Missing workspace preparation");
+            transitions.set(transitionKey, start);
+          } else {
+            const transition = transitions.get(transitionKey);
+            if (!transition) throw new Error("Missing workspace transition");
+            transitions.delete(transitionKey);
+            if (action.action === "workspace-settings-recovery-complete") {
+              if (data.digest !== transition.digest) throw new Error("Workspace recovery mismatch");
+              for (const [key, preparation] of preparations) if (preparation === transition) preparations.delete(key);
+            }
+          }
+        }
+      }
+      for (const preparation of new Set([...preparations.values(), ...transitions.values()]))
+        findings.push(`workspace operation ${safeId(preparation.id)} store ${safeId(preparation.key)}`);
       const v0Actions = db.prepare("SELECT o.operation_id,a.action,a.result_json FROM roam_operations o JOIN roam_operation_actions a ON a.operation_id=o.operation_id WHERE o.kind='relocate-v0' AND o.result_json IS NULL AND a.action IN ('relocate-checkpoint','relocate-incoming') ORDER BY a.seq").all() as
         Array<{ operation_id: string; action: "relocate-checkpoint" | "relocate-incoming"; result_json: string }>;
       for (const action of v0Actions) {

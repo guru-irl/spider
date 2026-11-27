@@ -86,28 +86,6 @@ export function localHerdrConnection(root: string, base: Readonly<NodeJS.Process
   const env = {...localLaunchEnvironment({...base,PI_CODING_AGENT_DIR:base.PI_CODING_AGENT_DIR || config?.agentDirectory}),SPIDER_GLOBAL_ROOT:root};
   return {binary,env};
 }
-async function checkoutWriters(id: SessionId, options: RelocateAdapterOptions, placement?: SessionPlacement, requireCheckout?: boolean): Promise<readonly string[]> {
-  const saved = placement ? undefined : readLocal<unknown>(options.globalDb,"relocate-managed",id);
-  const known = placement ?? (saved === undefined ? undefined : parsePlacement(saved));
-  const row = known ? undefined : options.globalDb.prepare("SELECT cwd,stores_json FROM roam_locations WHERE session_id=?").get(id) as {cwd:string|null;stores_json:string} | undefined;
-  const cwd = known?.cwd ?? row?.cwd;
-  if (!cwd && options.config.role === "hub") {
-    const source = await discoverOrdinarySource(id,options);
-    if (source.ok) return [...await locklessPiInCheckout(source.value.root), ...await localWriterBlockers(id,source.value.root,source.value.placement.stores,options)];
-    if (requireCheckout) throw new Error("The ordinary checkout could not be verified");
-  }
-  if (!cwd) {
-    if (requireCheckout || known || row) throw new Error("The session has no verifiable checkout");
-    return []; // No local copy yet, such as before its first install.
-  }
-  const root = (await options.git.run(cwd,["git","rev-parse","--show-toplevel"])).toString().trim();
-  if (!isAbsolute(root)) throw new Error("The session checkout could not be verified");
-  const checkout = await realpath(root);
-  if (!insideDirectory(checkout,await realpath(cwd))) throw new Error("The working directory is outside the checkout");
-  const stores = known?.stores ?? (row ? parseLocationStores(JSON.parse(row.stores_json)) : []);
-  return [...await locklessPiInCheckout(checkout), ...await localWriterBlockers(id,checkout,stores,options)];
-}
-
 export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
   const lockRoot = join(options.root,"herdr");
   const {binary,env} = localHerdrConnection(options.root);
@@ -120,7 +98,27 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
   return {
     inspect:id=>inspectIdLock(lockRoot,id),probe:probeLocalProcess,
     tree:localProcessTree,groupBlockers:localGroupBlockers,
-    writerBlockers: (id, placement, requireCheckout) => checkoutWriters(id, options, placement, requireCheckout),
+    async writerBlockers(id, placement, requireCheckout) {
+      const saved = placement ? undefined : readLocal<unknown>(options.globalDb,"relocate-managed",id);
+      const known = placement ?? (saved === undefined ? undefined : parsePlacement(saved));
+      const row = known ? undefined : options.globalDb.prepare("SELECT cwd,stores_json FROM roam_locations WHERE session_id=?").get(id) as {cwd:string|null;stores_json:string} | undefined;
+      const cwd = known?.cwd ?? row?.cwd;
+      if (!cwd && options.config.role === "hub") {
+        const source = await discoverOrdinarySource(id,options);
+        if (source.ok) return [...await locklessPiInCheckout(source.value.root), ...await localWriterBlockers(id,source.value.root,source.value.placement.stores,options)];
+        if (requireCheckout) throw new Error("The ordinary checkout could not be verified");
+      }
+      if (!cwd) {
+        if (requireCheckout || known || row) throw new Error("The session has no verifiable checkout");
+        return []; // No local copy yet, such as before its first install.
+      }
+      const root = (await options.git.run(cwd,["git","rev-parse","--show-toplevel"])).toString().trim();
+      if (!isAbsolute(root)) throw new Error("The session checkout could not be verified");
+      const checkout = await realpath(root);
+      if (!insideDirectory(checkout,await realpath(cwd))) throw new Error("The working directory is outside the checkout");
+      const stores = known?.stores ?? (row ? parseLocationStores(JSON.parse(row.stores_json)) : []);
+      return [...await locklessPiInCheckout(checkout), ...await localWriterBlockers(id,checkout,stores,options)];
+    },
     async claimFree(id) {
       const startIdentity = processStartIdentity(process.pid);
       if (!startIdentity) throw new Error("Local process identity unavailable");
@@ -180,10 +178,6 @@ function busy<T>(blockers: readonly string[], retry: StopRetryCommand = "relocat
   const note = scope === "checkout" ? " Close every pi in this checkout, including pi for other sessions." : "";
   return refusal("session-busy",`Local processes or jobs are still present: ${shown.join(", ")}${more}.${note}`,`Close these, then rerun ${retry}.`);
 }
-async function checkWritersStopped(scan: () => Promise<readonly string[]>, retry: StopRetryCommand = "relocate"): Promise<V0Result<void>> {
-  const blockers = await scan();
-  return blockers.length ? busy(blockers, retry, "checkout") : {ok:true,value:undefined};
-}
 function unverifiedStop(retry: StopRetryCommand = "relocate"): V0Result<void> {
   return refusal("stop-timeout","The local session or its jobs could not be checked safely.",`Close the local pi session and its jobs, then rerun ${retry}.`);
 }
@@ -191,7 +185,8 @@ function unverifiedStop(retry: StopRetryCommand = "relocate"): V0Result<void> {
 /** The home store has already reserved this session's Mac ID. Only observe the checkout, never signal its writers. */
 export async function checkMacSourceWriters(id: SessionId, options: RelocateAdapterOptions): Promise<V0Result<void>> {
   try {
-    return await checkWritersStopped(() => checkoutWriters(id, options, undefined, true), "set-home --force");
+    const blockers = await createLocalIO(options).writerBlockers(id, undefined, true);
+    return blockers.length ? busy(blockers, "set-home --force", "checkout") : {ok:true,value:undefined};
   } catch { return unverifiedStop("set-home --force"); }
 }
 const terminalName = (t: LocalTerminal): string => t.pid === null ? `terminal ${t.terminal} (PID unavailable)` : `PID ${t.pid} (pi)`;
@@ -271,8 +266,8 @@ export async function stopLocalSession(sessionId: SessionId, moving: MovingHome 
       if (held) return busy([`PID ${held.identity.pid} (pi)`]);
       await io.pause(Math.min(100,Math.max(1,deadline-clock.now())));
     }
-    const writers = await checkWritersStopped(() => io.writerBlockers(sessionId,undefined,moving !== null));
-    if (!writers.ok) return writers;
+    const blockers = await io.writerBlockers(sessionId,undefined,moving !== null);
+    if (blockers.length) return busy(blockers, "relocate", "checkout");
     const held = await io.inspect(sessionId);
     if (held) return busy([`PID ${held.identity.pid} (pi)`]);
     return {ok:true,value:undefined};

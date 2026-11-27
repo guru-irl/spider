@@ -170,6 +170,6 @@ export async function runRelayPollLoop(options: RelayPollLoopOptions): Promise<v
     }
     if (signal.aborted) break;
     await wait(clock, backoffMs, signal);
-    backoffMs = Math.min(backoffMs * 2, 60_000);
+    backoffMs = Math.min(backoffMs * 2, 30_000);
   }
 }

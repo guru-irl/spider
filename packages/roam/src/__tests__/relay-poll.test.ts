@@ -305,12 +305,12 @@ describe("the relay's paired calls", () => {
     } finally { await driver.close(); }
   });
 
-  it("backs off 1, 2, 4, 8, 16, 32, 60 and stays capped at 60 seconds", async () => {
+  it("backs off exponentially and stays capped at 30 seconds", async () => {
     const driver = carrier(async s => delivered(s.message.id));
-    const starts = [0];
+    const starts = [0], delays = [1000, 2000, 4000, 8000, 16_000, 30_000, 30_000, 30_000];
     try {
       await tick();
-      for (const [i, expected] of [1000, 2000, 4000, 8000, 16_000, 32_000, 60_000, 60_000].entries()) {
+      for (const [i, expected] of delays.entries()) {
         driver.calls[i].reject();
         await tick();
         await vi.advanceTimersByTimeAsync(expected - 1);
@@ -319,7 +319,7 @@ describe("the relay's paired calls", () => {
         expect(driver.calls).toHaveLength(i + 2);
         starts.push(Date.now());
       }
-      expect(starts.slice(1).map((start, i) => start - starts[i])).toEqual([1000, 2000, 4000, 8000, 16_000, 32_000, 60_000, 60_000]);
+      expect(starts.slice(1).map((start, i) => start - starts[i])).toEqual(delays);
     } finally { await driver.close(); }
   });
 });

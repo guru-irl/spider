@@ -146,6 +146,19 @@ it("enable refuses a symlinked systemd user directory without changing its targe
   expect(existsSync(join(target, "spider-roam-supervisor-v0.service"))).toBe(false);
 });
 
+it("enable refuses a symlink in a systemd directory parent", async () => {
+  const f = fixture("box"), io = { out: vi.fn(), err: vi.fn() }, target = join(f.root, "target");
+  vi.stubEnv("HOME", resolve("."));
+  mkdirSync(join(target, "user"), { recursive: true, mode: 0o755 });
+  symlinkSync(target, join(f.root, "redirect"));
+  f.systemd.unitDir = join(f.root, "redirect", "user");
+
+  expect(await main(["roam", "enable"], io, { v0: { lifecycle: f.options } })).not.toBe(0);
+  expect(io.err.mock.calls.flat().join("")).toMatch(/symlink|canonical/i);
+  expect(f.enabled()).toBe(false);
+  expect(existsSync(join(target, "user", "spider-roam-supervisor-v0.service"))).toBe(false);
+});
+
 it("refuses a systemd user directory owned by another user", async () => {
   const f = fixture("box"), uid = process.getuid?.();
   if (uid === undefined) return;

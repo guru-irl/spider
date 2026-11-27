@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { expect } from 'vitest';
 import { relocateFixture } from '../fixtures/roam-relocate.js';
 import { verifyRelocatedTranscript } from '../fixtures/relocate-transcript.js';
+import { assertRelocatedCopy } from '../fixtures/relocate-assertions.js';
 import { text } from '../fixtures/child-scripts.js';
 import { registerScenarios, storyId, type ScenarioDefinition } from '../harness/scenario.js';
 import type { Suite } from '../harness/suite.js';
@@ -26,6 +27,7 @@ async function roundTrip(suite: Suite): Promise<void> {
     expect(fixture.home(box)).toMatchObject(awayHome);
     const away = await fixture.owner(box, outward.terminal, id);
     expect(away).toMatchObject({ sessionId: id, file: outward.file, cwd: outward.cwd });
+    assertRelocatedCopy(source, away, box.repository, box.agent);
     expect(await fixture.gitState(away.cwd)).toEqual(git);
     const arrived = await readFile(away.file);
     await suite.evidence('R18-away.jsonl', arrived);
@@ -40,6 +42,7 @@ async function roundTrip(suite: Suite): Promise<void> {
     expect(fixture.home()).toMatchObject({ session_id: id, machine_id: hub.id, epoch: 5, state: 'running', destination: null });
     const returned = await fixture.owner(hub, returning.terminal, id);
     expect(returned).toMatchObject({ sessionId: id, file: returning.file, cwd: returning.cwd });
+    assertRelocatedCopy(away, returned, hub.repository, hub.agent);
     expect(returned.file).toBe(original.file);
     expect(returned.cwd).toBe(original.cwd);
     expect(await fixture.gitState(returned.cwd)).toEqual(git);

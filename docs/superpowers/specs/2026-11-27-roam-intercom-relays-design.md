@@ -21,8 +21,8 @@ running subagents on another machine, and short-lived machines such as cloud wor
 
 - **Relay**: an always-on machine that accepts messages over a link and delivers them locally or
   by direct call. Relays are listed in one order, the same on every machine.
-- **Link**: a sequence of held one-shot `hc exec` calls from a relay to another machine. Only the
-  relay opens the calls. The linked machine never dials out to use the link.
+- **Link**: a sequence of one-shot `hc exec` calls from a relay to another machine. Only the relay
+  opens the calls. The linked machine never dials out to use the link.
 - **Direct call**: today's one `hc exec` call per message from the sender to the target's machine.
 - **Hub**: unchanged. It still means the machine that writes session homes and runs replication.
   A relay is a separate role.
@@ -34,7 +34,7 @@ For each send or reply, the sender's machine decides in this order:
 1. The target's home is on this machine: deliver locally, as today.
 2. This machine has a direct route to the target's machine: direct call, as today.
 3. Otherwise, take the available links in relay order. Use the first relay that reports it can
-   reach the target's machine. Hand the message over in a held call and wait for the outcome.
+   reach the target's machine. Hand the message over in a poll and wait for the outcome.
 4. No link is up: refuse with "No relay is reachable. Nothing was queued." Links are up but none
    reaches the target: refuse with "`<machine>` is not reachable through any relay right now.
    Nothing was queued."
@@ -54,12 +54,18 @@ reply is an ordinary send back to the asker's home, so it may use a different re
 
 ## Links
 
-A relay service, `roam agent --v0 relay`, runs on each relay machine as a user service. For each
-machine in its `linkTo` list it calls `hc exec --on <machine> --stdin -- <spider> roam agent --v0 link`.
-Standard input contains the current reach list and results for earlier submissions. The endpoint
-passes them to its local broker. It returns submissions as soon as it has any, or returns none
-when its 1-second hold ends. The relay starts the next call at once. It does not wait for outstanding
-deliveries to finish before it calls again.
+A relay service, `roam agent --v0 relay`, runs on each relay machine as a user service. It calls
+`hc exec --on <machine> --stdin` for each machine in `linkTo`. The remote command is
+`<spider> roam agent --v0 link --hold-ms <ms>`. Standard input carries the current reach list and
+any results for earlier submissions. The endpoint passes them to its local broker. A held poll
+returns as soon as it takes submissions, or returns none at its 20-second deadline. The relay
+starts the next held poll at once without waiting for deliveries.
+
+When a delivery settles, the relay sends the result in a separate call with a hold of 0, never in
+a held poll. If a hold-0 call is already in flight, the relay sends the waiting results as soon as
+that call ends, without waiting for the held poll. A hold-0 call returns any waiting submissions at
+once. A link has at most one held call and one hold-0 call in flight. Only one call can take a given
+submission.
 
 Each one-shot call exchanges newline-delimited JSON frames in bounded batches. The relay and
 endpoint correlate each batch by link and poll ID. Neither side reads a reply before the call ends.
@@ -77,22 +83,24 @@ Rules:
 - The endpoint accepts `hello` only from a machine in its `relays` list, with the same protocol
   version. A mismatch refuses the call and shows a doctor row that names both versions. Relays and
   machines are upgraded together. There is no version negotiation.
-- A sender waits at most 2 seconds for a held call to take its submission. If no call takes it,
+- A sender waits at most 2 seconds for a poll to take its submission. If no call takes it,
   the broker removes the submission and may try the next relay. Nothing waits beyond this window
   for a hand-off. At most 16 messages can wait on one link before or after hand-off. At capacity,
   the sender gets "Relay busy. Nothing was queued."
 - A relay that refuses before attempting delivery (no route, busy, shutting down) marks the result
   `attempted: false`. After hand-off, only this result allows the sender to try the next relay.
   After an attempted delivery the outcome is final.
-- The linked machine considers the link down after 30 seconds without a valid call. On the relay,
-  a failed call marks the link down. The relay reconnects a lost link with backoff: 1, 2, 4 and up to
-  60 seconds between attempts. Every call has an exec deadline, so neither side leaves an orphan.
+- The linked machine considers the relay up while a valid call is in progress and for 10 seconds
+  after the last call ends normally. If any call ends without its normal reply, such as when the
+  relay cancels or dies, the linked machine marks the link down at once. On the relay, a failed
+  call marks the link down. The relay reconnects with backoff: 1, 2, 4 and up to 60 seconds between
+  attempts.
 
 ## Failures
 
 | Failure | How it is detected | What the sender sees |
 | --- | --- | --- |
-| Link drops (exec fails, Herdr restarts, route lost) | Failed call on the relay, or 30 seconds without a valid call on the linked machine | Messages already handed over without a result: `unknown` with the message ID ("check the recipient before resending"). Submissions not handed over may use the next relay. |
+| Link drops (exec fails, Herdr restarts, route lost) | Failed call on the relay. The linked machine marks the link down at once if a call ends without a normal reply, or when no call is in progress and 10 seconds have passed since the last normal call ended. | Messages already handed over without a result: `unknown` with the message ID ("check the recipient before resending"). Submissions not handed over may use the next relay. |
 | Relay machine stops or sleeps | Same as a dropped link | Same as a dropped link |
 | Relay cannot reach the target | Relay's reach list, or the direct call's own failure | `attempted: false`: next relay. Otherwise the direct call's outcome, unchanged. |
 | No poll takes the submission | The sender's 2-second hand-off wait ends | `attempted: false`: next relay or refused, nothing queued. |
@@ -130,8 +138,13 @@ Spider checks the configuration and refuses with a doctor row when something is 
 ## Reliability gate
 
 The pinned `hc exec` reads all stdin before starting the remote command. It returns stdout only
-when the command ends. Step 1 must prove that held calls work with this buffered transport: a
-call returns early when it takes a submission, and an empty call returns at the hold deadline.
+when the command ends. Step 1 must prove that a held poll returns early when it takes a submission
+and returns empty at the 20-second deadline. It must also prove that a hold-0 call can return a
+result to the sender before a concurrent held poll returns.
+
+Both kinds of poll use a 25-second remote timeout and a 30-second call timeout. The call budget
+includes the existing 2-second reserve for the post-check. The v0 send budget stays at 20 seconds.
+No other timeout changes.
 
 Soak for 8 hours on real machines: a laptop-to-box link and two box-to-box links, with one message
 every 5 seconds on each. During the soak, kill the relay process, restart Herdr on each side, cut the
@@ -153,7 +166,7 @@ If the gate fails, stop rollout. Fix the held poll or its lifecycle and run the 
 ## Testing
 
 - Unit tests: frame parsing and size limits, the routing decision, relay choice with reach lists, the
-  `attempted` rule, hold and call recency timing with a fake clock, and reconnect backoff.
+  `attempted` rule, hold and liveness timing with a fake clock, and reconnect backoff.
 - Integration tests with in-process polls in place of `hc exec`, plus real brokers in temporary
   roots. Inject a failed call during a hand-off, a stall, an oversized frame, and a duplicate result.
   Cover an ask whose relay dies before the reply.

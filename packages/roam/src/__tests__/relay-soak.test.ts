@@ -145,6 +145,21 @@ describe("the live relay soak reliability gate", () => {
     expect(checkRelaySoak(late).violations).toContain("stall-detection");
   });
 
+  it("does not count an up sample before a delayed failure as recovery", () => {
+    const evidence = copy(), link = evidence.links[0], fault = faultOf(evidence, "relay-kill");
+    fault.clearMs = fault.startMs + 1000;
+    for (const sample of link.states) if (sample.atMs >= fault.startMs + 5000 && sample.atMs <= fault.clearMs + 60_000) sample.state = "down";
+    link.states.push({ atMs: fault.startMs + 2000, state: "up" });
+    link.states.sort((a, b) => a.atMs - b.atMs);
+    expect(checkRelaySoak(evidence).violations).toContain("recovery");
+  });
+
+  it("requires the affected link to be up before each fault", () => {
+    const evidence = copy(), link = evidence.links[0], fault = faultOf(evidence, "relay-kill");
+    for (const sample of link.states) if (sample.atMs >= fault.startMs - 10_000 && sample.atMs <= fault.startMs) sample.state = "down";
+    expect(checkRelaySoak(evidence).violations).toContain("faults");
+  });
+
   it("recovers at 60 seconds but not at 60,001 milliseconds", () => {
     const exact = copy(), fault = faultOf(exact, "relay-kill");
     markUpAt(exact.links[0], fault, 60_000);

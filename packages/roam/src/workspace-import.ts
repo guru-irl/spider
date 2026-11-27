@@ -588,6 +588,17 @@ async function verifyNormalization(snapshot: WorkspaceSnapshot, base: WorkspaceS
   }
 }
 
+/** Git tree IDs do not include the index's skip-worktree bits. */
+async function matchesSparseBits(root: string, snapshot: WorkspaceSnapshot, ports: WorkspaceImportPorts): Promise<boolean> {
+  const entries = nulFields(await git(ports, root, ["ls-files", "-t", "-z"]));
+  for (const entry of entries) if (entry.length < 3 || entry[1] !== 32) throw new Error("workspace-sparse-inspection-failed");
+  const skipped = (entry: Buffer): boolean => entry[0] === 83 || entry[0] === 115;
+  if (!snapshot.sparse.enabled) return entries.every(entry => !skipped(entry));
+  const included = new Set((await sparseTreePaths(root, snapshot.indexTree, snapshot, ports))
+    .filter(entry => entry.included).map(entry => entry.path.toString("hex")));
+  return entries.every(entry => skipped(entry) === !included.has(entry.subarray(2).toString("hex")));
+}
+
 async function restoreSparseBits(root: string, snapshot: WorkspaceSnapshot, ports: WorkspaceImportPorts, index?: string): Promise<void> {
   const entries = nulFields(await git(ports, root, ["ls-files", "-t", "-z"], index));
   const paths: Buffer[] = [], skipped: Buffer[] = [];
@@ -1329,7 +1340,8 @@ async function recoverInterruptedWorkspaceLocked(snapshot: WorkspaceSnapshot, de
       const settings = await mappedSettings(destination, ports);
       const expected = expectedInstalled(t.snapshot, destination, ports);
       if (!mappedSettingDifferences(settings, expected).length &&
-          !treeDifferences(await inspectTrees(destination, ports), t.snapshot).length) {
+          !treeDifferences(await inspectTrees(destination, ports), t.snapshot).length &&
+          await matchesSparseBits(destination, t.snapshot, ports)) {
         if (!sameSettings(readRecoveryState(paths), t.target)) throw new Error("workspace-recovery-diverged: settings changed");
         ports.journal.record(snapshot.moveId, "workspace-prepared", {
           root: destination, stage: t.stage, digest: t.digest, snapshotJson: t.snapshotJson,

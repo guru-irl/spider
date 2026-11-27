@@ -209,7 +209,7 @@ export async function stopLocalSession(sessionId: SessionId, moving: MovingHome 
           if (matches.length !== 1 || !matches[0].owned || matches[0].terminal !== address || matches[0].pid !== pid) return false;
         }
         if (!expectedLock(await io.inspect(sessionId))) return false;
-        const state = await io.probe(pid);
+        const state = await io.probe(root.pid);
         return state.kind === "live" && state.pi && state.startIdentity === root.startIdentity;
       }
       const {descendants:children,groups} = await io.tree(pid);

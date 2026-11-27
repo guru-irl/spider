@@ -1,6 +1,9 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { resolve } from "node:path";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
+import { buildRoamEntries } from "../../../../scripts/build-roam.mjs";
 import { decodeRelayPoll, encodeRelayPollReply, type RelayPoll, type RelaySubmit, type RelayResult } from "@spider/intercom/relay-protocol";
 import type { Clock, Peer, RoamConfig } from "../contracts";
 import type { V0Routes } from "../relocate/intercom-routes";
@@ -677,4 +680,127 @@ describe("the opt-in soak drivers", () => {
     expect(records.filter(event => event.type === "outcome")).toHaveLength(100);
     expect(records.filter(event => event.type === "outcome").every(event => event.kind === "refused")).toBe(true);
   });
+});
+
+describe("packed soak operator commands", () => {
+  let root: string, entry: string, packed: typeof import("../relocate/relay-soak");
+  const runFile = JSON.stringify({ root: "/fixture", startMs: START, rssAllowanceBytes: ALLOWANCE, links: [fixtureLink] });
+
+  beforeAll(async () => {
+    root = mkdtempSync(join(resolve(".spider/scratch"), "soak-package-"));
+    const outDir = join(root, "dist/roam");
+    await buildRoamEntries(outDir);
+    entry = join(outDir, "relay-soak.mjs");
+    packed = await import(/* @vite-ignore */ pathToFileURL(entry).href);
+  }, 30_000);
+  afterEach(() => vi.useRealTimers());
+  afterAll(() => { if (root) rmSync(root, { recursive: true, force: true }); });
+
+  it("dials the pinned peer and returns a hold-0 result through a fake transport", async () => {
+    const controller = new AbortController(), output: string[] = [], errors: string[] = [], polls: RelayPoll[] = [];
+    const config = { machineId: RELAY, intercom: { machineAlias: "relay.invalid" } } as unknown as RoamConfig;
+    const routes: V0Routes = { version: 2, agentDir: "/agent", sendTo: [fixturePeer], acceptFrom: [], relays: [RELAY], linkTo: [PEER] };
+    const submission: RelaySubmit = { type: "submit", kind: "send", from: fixtureLink.from, target: fixtureLink.target,
+      message: { id: "packed-message", timestamp: START, text: "relay-soak" } };
+    let resultSeen!: () => void;
+    const finished = new Promise<void>(resolve => { resultSeen = resolve; });
+    let held = 0;
+    const transport = {
+      async resolve(peer: Peer) { expect(peer).toEqual(fixturePeer); return peer; },
+      async exec(_peer: Peer, argv: readonly string[], options: { stdin?: Buffer; signal?: AbortSignal }) {
+        const poll = decodeRelayPoll(options.stdin!, Number(argv.at(-1)) as 0 | 20000);
+        polls.push(poll);
+        if (poll.holdMs === 20_000 && held++ === 0) return reply(poll, [submission]);
+        if (poll.holdMs === 0) { resultSeen(); return reply(poll); }
+        return new Promise<Buffer>((_resolve, reject) => {
+          if (options.signal?.aborted) reject(new Error("aborted"));
+          else options.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+      },
+    };
+    const io = { out: (line: string) => output.push(line), err: (line: string) => errors.push(line) };
+    const run = packed.relaySoakMain(["dial", "/run.json", fixtureLink.id], io, {
+      readText: () => runFile, readIdentity: () => config, readRoutes: () => routes,
+      createTransport: () => transport, processIdentity: async () => fixtureProcess,
+      clock: { now: () => START, later: () => () => {} }, signal: controller.signal, rssBytes: () => 100_000_000,
+    });
+    await Promise.race([finished, run.then(code => { throw new Error(`dial exited ${code}`); })]);
+    controller.abort();
+    expect(await run).toBe(0);
+    const records = output.map(line => JSON.parse(line));
+    expect(records.filter(record => record.type === "handoff")).toMatchObject([{ id: "packed-message" }]);
+    expect(records.filter(record => record.type === "receipt")).toMatchObject([{ id: "packed-message" }]);
+    expect(polls.find(poll => poll.holdMs === 0)?.results).toMatchObject([
+      { messageId: "packed-message", outcome: { kind: "socket_delivered" } },
+    ]);
+    expect(errors).toEqual([]);
+  });
+
+  it("submits the five-second cadence and burst through a fake broker", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START - 1000);
+    const controller = new AbortController(), output: string[] = [], errors: string[] = [], sent: RelaySubmit[] = [];
+    const config = { machineId: PEER, intercom: { machineAlias: "peer.invalid" } } as unknown as RoamConfig;
+    const routes: V0Routes = { version: 2, agentDir: "/agent", sendTo: [], acceptFrom: [], relays: [RELAY], linkTo: [] };
+    const deps = { readText: () => runFile, readIdentity: () => config, readRoutes: () => routes,
+      processIdentity: async () => fixtureProcess, clock: realClock, signal: controller.signal,
+      submitRelay: async (agentDir: string, relayId: string, submission: RelaySubmit) => {
+        expect([agentDir, relayId]).toEqual(["/agent", RELAY]);
+        sent.push(submission);
+        return { type: "result" as const, messageId: submission.message.id, attempted: false as const,
+          outcome: { kind: "refused" as const, code: "relay-busy" as const } };
+      },
+      listRelays: async () => [{ relay: { machineId: RELAY, alias: "relay.invalid" }, reach: [], linkId: "wire", state: "up" as const,
+        sinceMs: START, lastCallMs: START, lastError: null, messagesCarried: 0 }],
+    };
+    const io = { out: (line: string) => output.push(line), err: (line: string) => errors.push(line) };
+    const cadence = packed.relaySoakMain(["submit", "/run.json", fixtureLink.id], io, deps);
+    await vi.advanceTimersByTimeAsync(12_000);
+    controller.abort();
+    expect(await cadence).toBe(0);
+    let records = output.map(line => JSON.parse(line));
+    expect(records.filter(record => record.type === "submission").map(record => record.scheduledMs)).toEqual([START, START + 5000, START + 10_000]);
+    expect(records.filter(record => record.type === "outcome")).toHaveLength(3);
+
+    output.length = 0;
+    expect(await packed.relaySoakMain(["submit", "/run.json", fixtureLink.id, "--burst"], io,
+      { ...deps, signal: new AbortController().signal })).toBe(0);
+    records = output.map(line => JSON.parse(line));
+    const burst = records.filter(record => record.type === "submission");
+    expect(burst).toHaveLength(100);
+    expect(new Set(burst.map(record => record.id)).size).toBe(100);
+    expect(records.filter(record => record.type === "outcome" && record.kind === "refused")).toHaveLength(100);
+    expect(sent).toHaveLength(103);
+    expect(errors).toEqual([]);
+  });
+
+  it("runs the check command on synthetic evidence and an NDJSON manifest", () => {
+    const evidenceFile = join(root, "evidence.json");
+    writeFileSync(evidenceFile, JSON.stringify(baseline));
+    const execute = (args: string[]) => spawnSync(process.execPath, [entry, ...args], { encoding: "utf8", timeout: 15_000 });
+    const complete = execute(["check", evidenceFile]);
+    expect(complete.error).toBeUndefined();
+    expect(complete.status).toBe(0);
+    expect(JSON.parse(complete.stdout)).toEqual({ ok: true, violations: [] });
+
+    const { manifest, files } = recordManifest(baseline);
+    for (const [name, content] of files) writeFileSync(join(root, name), content);
+    const manifestFile = join(root, "manifest.json");
+    writeFileSync(manifestFile, JSON.stringify(manifest));
+    const assembled = execute(["check", manifestFile]);
+    expect(assembled.status).toBe(0);
+    expect(JSON.parse(assembled.stdout)).toEqual({ ok: true, violations: [] });
+
+    const bad = copy();
+    bad.links[0].receipts.push({ ...bad.links[0].receipts[0] });
+    writeFileSync(evidenceFile, JSON.stringify(bad));
+    const duplicate = execute(["check", evidenceFile]);
+    expect(duplicate.status).toBe(1);
+    expect(JSON.parse(duplicate.stdout).violations).toContain("duplicate-receipt");
+    for (const command of ["dial", "submit"]) {
+      const missing = execute([command, join(root, "missing.json"), fixtureLink.id]);
+      expect(missing.status).toBe(1);
+      expect(missing.stderr).toMatch(/cannot start/i);
+    }
+  }, 30_000);
 });

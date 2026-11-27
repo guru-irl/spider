@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join, resolve } from "node:path";
 import { migrate, openDb } from "@spider/db-core";
 import { writeLocal } from "@spider/db-core/roam/local-state";
+import type { JsonObject } from "@spider/db-core/roam/types";
 import { fenceReplicaForMapping } from "@spider/db-core/roam/apply";
 import { claimIdLock, localBootId } from "@spider/herdr/sessions/id-lock";
 import { createSessionLeases } from "@spider/herdr/sessions/lease";
@@ -202,7 +203,9 @@ it.each([
 ])("checks a terminal move's $name source-cleanup receipt", async ({ cleanup, status }) => {
   const f = fixture(), id = "terminal-cleanup";
   f.journal.begin({ id, kind: "move", machineId: hub, expectedEpoch: 1, args: { sessionId: "terminal-session" } });
-  f.journal.record(id, "done", { code: 0, reason: "moved", value: { home: { sessionId: "terminal-session" }, ...(cleanup ? { sourceCleanup: cleanup } : {}) } });
+  const value: JsonObject = { home: { sessionId: "terminal-session" } };
+  if (cleanup) value.sourceCleanup = cleanup as JsonObject;
+  f.journal.record(id, "done", { code: 0, reason: "moved", value });
   const io = { out: vi.fn(), err: vi.fn() };
   expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
   expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([

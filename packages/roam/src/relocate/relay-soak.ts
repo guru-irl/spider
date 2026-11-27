@@ -20,6 +20,8 @@ const CADENCE_MS = 5000;
 const STATUS_GAP_MS = 10_000;
 const RSS_GAP_MS = 60_000;
 const CLOCK_GAP_MS = 10 * 60_000;
+// The uninstrumented driver timestamps after the client's budget timer has settled.
+const OUTCOME_RECORDING_TOLERANCE_MS = 25;
 
 type SoakTopology = "laptop-to-box" | "box-to-box";
 type SoakFaultKind = "relay-kill" | "herdr-restart-relay" | "herdr-restart-peer" | "route-cut" | "laptop-sleep" | "endpoint-kill";
@@ -38,7 +40,7 @@ interface SoakClock {
 interface SoakRun { role: "dial" | "submit"; startMs: number; endMs: number; rssAllowanceBytes: number; machineId: string; process: BirthIdentity }
 interface SoakSubmission { id: string; atMs: number; deadlineMs: number; kind: "cadence" | "burst"; scheduledMs?: number; burstId?: string }
 interface SoakEvent { id: string; atMs: number }
-interface SoakOutcomeEvent extends SoakEvent { kind: SoakOutcome }
+interface SoakOutcomeEvent extends SoakEvent { kind: SoakOutcome; clientDeadlineMs?: number }
 interface SoakStateEvent { atMs: number; sinceMs: number; state: SoakState }
 interface SoakCall { pollId: string; holdMs: 0 | 20000; startMs: number; endMs: number | null; process: BirthIdentity }
 interface SoakRss { atMs: number; bytes: number; process: BirthIdentity }
@@ -93,7 +95,8 @@ function isEvidence(value: unknown): value is RelaySoakEvidence {
       entries(link.submissions, submit => event(submit) && object(submit) && time(submit.deadlineMs) &&
         (submit.kind === "cadence" && time(submit.scheduledMs) || submit.kind === "burst" && text(submit.burstId))) &&
       entries(link.handoffs, event) && entries(link.receipts, event) &&
-      entries(link.outcomes, result => event(result) && object(result) && outcomes.includes(result.kind as SoakOutcome)) &&
+      entries(link.outcomes, result => event(result) && object(result) && outcomes.includes(result.kind as SoakOutcome) &&
+        (result.clientDeadlineMs === undefined || time(result.clientDeadlineMs))) &&
       entries(link.states, stateSample) && entries(link.relayStates, stateSample) &&
       entries(link.calls, call => object(call) && text(call.pollId) && (call.holdMs === 0 || call.holdMs === 20_000) && time(call.startMs) &&
         (call.endMs === null || time(call.endMs)) && identity(call.process)) &&
@@ -286,7 +289,11 @@ export function checkRelaySoak(evidence: RelaySoakEvidence): { ok: boolean; viol
       const handed = handoffs.get(submit.id) ?? [], received = receipts.get(submit.id) ?? [], settled = results.get(submit.id) ?? [];
       if (received.length > 1) fail("duplicate-receipt");
       if (handed.length > 1) fail("handoff");
-      if (settled.length !== 1 || settled.some(result => result.atMs < submit.atMs || result.atMs > submit.deadlineMs)) fail("outcome");
+      const latestObserved = submit.deadlineMs + OUTCOME_RECORDING_TOLERANCE_MS;
+      if (settled.length !== 1 || settled.some(result => {
+        const deadline = result.clientDeadlineMs ?? latestObserved;
+        return deadline > latestObserved || result.atMs < submit.atMs || result.atMs > deadline;
+      })) fail("outcome");
       const outcome = settled[0];
       if (outcome?.kind === "unknown" && !linkFaults.some(fault => {
         const start = faultTime(fault, clock, fault.startMs);
@@ -524,7 +531,8 @@ function decodeRecord(line: string, linkId: string): RelaySoakRecord {
   const fields: Record<string, readonly string[]> = {
     run: ["role", "startMs", "endMs", "rssAllowanceBytes", "machineId", "process"],
     submission: ["id", "atMs", "deadlineMs", "kind", value.kind === "cadence" ? "scheduledMs" : "burstId"],
-    handoff: ["id", "atMs"], receipt: ["id", "atMs"], outcome: ["id", "atMs", "kind"],
+    handoff: ["id", "atMs"], receipt: ["id", "atMs"],
+    outcome: Object.hasOwn(value, "clientDeadlineMs") ? ["id", "atMs", "kind", "clientDeadlineMs"] : ["id", "atMs", "kind"],
     state: ["atMs", "sinceMs", "state"], "relay-state": ["atMs", "sinceMs", "state"], rss: ["atMs", "bytes", "process"],
     "poll-start": ["atMs", "pollId", "wireLinkId", "holdMs", "process"],
     "poll-end": ["atMs", "pollId", "wireLinkId", "holdMs", "process"],

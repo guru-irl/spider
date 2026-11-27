@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lane: [profile-base, profile-after]
+        lane: [1, 2, profile-after]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -45,6 +45,7 @@ jobs:
           export TMPDIR="$PWD/.spider/scratch/tmp"
           unset XDG_RUNTIME_DIR
           dir=packages/host/src/__tests__
+          bad=0
           for i in 1; do
             rc=0
             npx vitest run --maxWorkers=3 --reporter=default --reporter=json \
@@ -54,7 +55,9 @@ jobs:
               "$dir/herdr-setup-production-rollback.test.ts" \
               2>&1 | tee "hsr-results/$LANE-$i.log" || rc=$?
             printf '%s\n' "$rc" > "hsr-results/$LANE-$i.exit"
+            if [ "$rc" -ne 0 ]; then bad=1; fi
           done
+          exit "$bad"
       - name: Trace native-key setup calls
         if: startsWith(matrix.lane, 'profile-')
         env:

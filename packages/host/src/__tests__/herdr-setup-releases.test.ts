@@ -20,14 +20,26 @@ afterEach(async () => {
   finally { vi.restoreAllMocks(); vi.unstubAllEnvs(); }
 });
 type Release = Parameters<typeof releaseFixture>[0];
-const fastRelease = (version: Release) => releaseFixture(version, { coreTransport: 'socket' });
+
+async function localRelease(version: Release, coreTransport: 'process' | 'socket') {
+  // Release selection does not require a configured remote runtime.
+  const f = await releaseFixture(version, { coreTransport, localOnly: true });
+  const binary = f.request.config.app.binary;
+  const wrapper = await readFile(binary, 'utf8');
+  // These read-only fixture replies are static. Keep the subprocess boundary
+  // without starting another Node runtime for each version or layout query.
+  await writeFile(binary, wrapper.replace('#!/bin/sh\n', `#!/bin/sh
+case "$1" in
+  --version) printf '%s\\n' 'herdr-app ${version}'; exit 0 ;;
+  ls|commands) printf '%s\\n' '{"spaces":[]}'; exit 0 ;;
+esac
+`));
+  return f;
+}
+const fastRelease = (version: Release) => localRelease(version, 'socket');
 
 async function nativeKeysFixture(version: Release, coreTransport: 'process' | 'socket' = 'process') {
-  const f = await releaseFixture(version, { coreTransport });
-  const config = JSON.parse(await readFile(f.request.configPath, 'utf8'));
-  // Native bindings are local. Keep production setup and its app/core commands,
-  // but do not probe and install a remote runtime on each native-key setup.
-  await writeFile(f.request.configPath, JSON.stringify({ ...config, machines: [] }));
+  const f = await localRelease(version, coreTransport);
   vi.stubEnv('PI_CODING_AGENT_DIR', f.h.directories.agent);
   const path = join(f.h.directories.app, 'keys.json');
   const out: string[] = [], errors: string[] = [];
@@ -64,7 +76,7 @@ async function seedUnboundNativeKeys(path: string) {
 
 for (const version of ['0.1.13', '0.1.16'] as const) {
   test(`${version} production setup stages the complete A and B result and doctor checks its release`, async () => {
-    const f = await releaseFixture(version), home = f.h.directories.app;
+    const f = await fastRelease(version), home = f.h.directories.app;
     const records = JSON.parse(await readFile(join(f.root, 'packages/herdr/assets/look/cross-machine-patches.json'), 'utf8')).versions[version];
     const expected = replaySpacesBRecipe(version, loadSpacesAFiles(version), records);
     const stockToast = await readFile(join(home, 'mods/toast/main.js'));

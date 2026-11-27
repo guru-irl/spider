@@ -399,12 +399,12 @@ function writeAll(fd: number, bytes: Buffer): void {
 }
 
 interface HeaderEdit { start: number; end: number; bytes: Buffer }
-function rewriteHeader(layout: HeaderLayout, cwd: string, parent: string | null, headerBytes: number): HeaderEdit[] {
+function rewriteHeader(layout: HeaderLayout, cwd: string, parent: string | null | undefined, headerBytes: number): HeaderEdit[] {
   const edits: HeaderEdit[] = [{ start: layout.cwd.valueStart, end: layout.cwd.valueEnd, bytes: Buffer.from(JSON.stringify(cwd)) }];
-  if (parent !== null) {
+  if (typeof parent === "string") {
     if (layout.parent) edits.push({ start: layout.parent.valueStart, end: layout.parent.valueEnd, bytes: Buffer.from(JSON.stringify(parent)) });
     else edits.push({ start: layout.close, end: layout.close, bytes: Buffer.from(`,\"parentSession\":${JSON.stringify(parent)}`) });
-  } else if (layout.parent) {
+  } else if (parent === null && layout.parent) {
     const { precedingComma, followingComma, keyStart, valueEnd } = layout.parent;
     if (precedingComma !== null) edits.push({ start: precedingComma, end: valueEnd, bytes: Buffer.alloc(0) });
     else if (followingComma !== null) edits.push({ start: keyStart, end: followingComma + 1, bytes: Buffer.alloc(0) });
@@ -473,13 +473,15 @@ export async function stageSession(
     const settings = hash(Buffer.from(JSON.stringify({ destinationCwd, destinationParent, data, ...(input.preserveBody ? { preserveBody: true } : {}) })));
     const identity = markerIdentity(store, source.sessionId, id, settings);
     if (scan.parents.has(identity.id)) invalid("segment marker ID already exists");
-    const edits = rewriteHeader(scan.headerLayout, destinationCwd, destinationParent, scan.headerBytes);
+    const edits = rewriteHeader(scan.headerLayout, destinationCwd, input.preserveBody ? undefined : destinationParent, scan.headerBytes);
     const leaf = input.preserveBody ? source.leaf : identity.id;
     const markerLine = input.preserveBody ? Buffer.alloc(0) : Buffer.from(`${JSON.stringify({ type: "custom", id: identity.id, parentId: source.leaf,
       timestamp: identity.timestamp, customType: "spider-roam-segment", data })}\n`);
     const size = source.size + edits.reduce((total, edit) => total + edit.bytes.length - (edit.end - edit.start), 0) + markerLine.length;
     if (size > limits.sessionBytes) invalid("staged session exceeds size limit");
-    const outputKey = hash(Buffer.from(JSON.stringify([source.sha256, source.leaf])));
+    // An older v0 attempt may have already staged the fork without its parent.
+    const keepParent = input.preserveBody && (scan.headerLayout.parent || destinationParent !== null);
+    const outputKey = hash(Buffer.from(JSON.stringify([source.sha256, source.leaf, ...(keepParent ? ["keep-parent"] : [])])));
     return store.withPreparedFile(id, `${outputKey}.jsonl`, size, output => {
       const directory = dirname(output), temporary = `${output}.part`;
       const existing = existingRegular(output);

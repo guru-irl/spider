@@ -33,8 +33,19 @@ export async function runV0Control(control: V0PublicControl, config: RoamConfig,
   const emit = (result: V0Result<RelocateSuccess | RunningHome>): number => {
     if (options.json) io.out(`${JSON.stringify(result)}\n`);
     else if (!result.ok) io.err(`${result.refusal.message}\n${result.refusal.nextStep}\n`);
-    else if ("home" in result.value) io.out(`Session is at ${result.value.home.machineId}; terminal ${result.value.terminal}.\n`);
-    else io.out(`Home assigned to ${result.value.machineId}.\n`);
+    else if ("home" in result.value) {
+      if (result.value.localPid) io.out(`Session is already running on the Mac (pi PID ${result.value.localPid}). Use the terminal where you started it.\n`);
+      else io.out(`Session is at ${result.value.home.machineId}; terminal ${result.value.terminal}.\n`);
+      const branch = result.value.branchRecovery;
+      if (branch) io.out(`Git HEAD is detached. The saved branch ${branch.savedBranch} was left unchanged. In the destination checkout, run ${branch.command} to save the imported commit on a branch.\n`);
+    }
+    else {
+      io.out(`Home assigned to ${result.value.machineId}.\n`);
+      if (result.value.machineId === config.hubMachineId) {
+        if (!config.enabled) io.out("Run spider roam enable on the Mac first.\n");
+        io.out(`Run spider roam relocate ${result.value.sessionId} mac to start the session.\n`);
+      }
+    }
     return result.ok ? 0 : 1;
   };
   const refuse = (refusal: V0Refusal) => emit({ ok: false, refusal });

@@ -225,10 +225,18 @@ it.each([false, true])("disable names the pending move and cancel repair after f
   const result = await disableRoaming(f.root);
   expect(result).toMatchObject({ code: 1, reason: "move-in-progress:move-a", operationId: "move-a", repairCommand: "spider roam cancel move-a" });
   expect(result.message).toContain("move-a");
+  await f.global.db.raw.backup(join(f.root, "spider.db"));
   vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root);
   const out: string[] = [], err: string[] = [];
-  expect(await main(["roam", "disable", "--json"], { out: text => out.push(text), err: text => err.push(text) })).toBe(1);
-  expect(JSON.parse(out.join(""))).toMatchObject({ reason: "move-in-progress:move-a", operationId: "move-a", repairCommand: "spider roam cancel move-a" });
+  const io = { out: (text: string) => out.push(text), err: (text: string) => err.push(text) };
+  const options = { v0: { lifecycle: { launchd: { plistDir: join(f.root, "LaunchAgents"), serviceHome: f.root, async launchctl() {} } } } };
+  expect(await main(["roam", "disable", "--json"], io, options)).toBe(0);
+  expect(JSON.parse(out.join(""))).toMatchObject({ reason: "roaming-disabled", value: { issues: [
+    { severity: "warning", reason: "legacy-move-pending:move-a", repairCommand: "spider roam cancel move-a" },
+  ] } });
+  expect(await main(["roam", "disable"], io, options)).toBe(0);
+  expect(out.at(-1)).toMatch(/Warning:.*move-a.*spider roam cancel move-a/);
+  expect(err).toEqual([]);
 });
 
 it.each(['darwin', 'linux'] as const)('pending-move disable refuses before %s service-path inspection', async platform => {

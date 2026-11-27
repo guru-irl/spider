@@ -149,9 +149,14 @@ async function productionLaunchFixture(boundary?: "crash" | "stale" | "lost-invo
   } } as never);
   const invokeHub = async (command: "stop" | "enable") => {
     const out: string[] = [], err: string[] = [];
-    const code = await main(["roam", command, ...(command === "stop" ? ["session-1"] : []), "--json"], { out: text => out.push(text), err: text => err.push(text) }, { bundleUrl });
-    expect(err).toEqual([]);
-    return { code, result: JSON.parse(out.join("")) };
+    const lifecycle = { resolveCli: () => release, launchd: { plistDir: join(hub.root, "LaunchAgents"), serviceHome: hub.root, async launchctl() {} } };
+    const pi = process.env.SPIDER_ROAM_PI;
+    if (command === "enable") vi.stubEnv("SPIDER_ROAM_PI", process.execPath);
+    try {
+      const code = await main(["roam", command, ...(command === "stop" ? ["session-1"] : []), "--json"], { out: text => out.push(text), err: text => err.push(text) }, { bundleUrl, v0: { lifecycle } });
+      expect(err).toEqual([]);
+      return { code, result: JSON.parse(out.join("")) };
+    } finally { if (command === "enable") vi.stubEnv("SPIDER_ROAM_PI", pi); }
   };
   return { ...f, leases, release, invokeHub, nativeRun(run: LocalExactHc["run"]) { nativeRun = run; }, coreProbe(probe: () => Promise<string>) { coreProbe = probe; }, get supervisor() { return supervisor; }, get service() { return service; }, recovery, prepared, reservations, spawns: () => spawns,
     allowPreflight() { preflightFails = false; },
@@ -181,7 +186,8 @@ it.each(["same-process", "restart", "lost-stop-reply"] as const)("production pre
       await expect(handleSessionOperation(f.operation, f.ports, options)).rejects.toThrow("lost-stop-reply");
     }
     const beforeEnable = await f.invokeHub("enable");
-    if (state !== "lost-stop-reply") expect(beforeEnable.result.value.issues).toEqual(expect.arrayContaining([expect.objectContaining({ reason: expect.stringContaining("exact-launch") })]));
+    expect(beforeEnable.code).toBe(0);
+    if (state !== "lost-stop-reply") expect(beforeEnable.result.value.issues).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "warning", reason: expect.stringContaining("exact-launch") })]));
     expect(await f.invokeHub("stop")).toMatchObject({ code: 0, result: { reason: "stopped-intent" } });
     expect((await f.intents.get("session-1"))?.value).toMatchObject({ intent: { desired: "stopped" }, supervision: { kind: "idle", nextAttemptAt: null } });
     expect(await f.authority.get("session-1")).toMatchObject({ desired: "stopped" });
@@ -211,7 +217,8 @@ it.each(["crash", "stale", "lost-invoking-reply"] as const)("prepared production
     expect(f.ports.journal.read(launchId).filter(row => row.action === "exact-launch-prepared")).toHaveLength(1);
     expect((await f.intents.get("session-1"))?.value.supervision).toMatchObject({ kind: "launching", operationId: launchId });
     const beforeEnable = await f.invokeHub("enable");
-    expect(beforeEnable.result.value.issues).toEqual(expect.arrayContaining([expect.objectContaining({ reason: expect.stringContaining("exact-launch") })]));
+    expect(beforeEnable.code).toBe(0);
+    expect(beforeEnable.result.value.issues).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "warning", reason: expect.stringContaining("exact-launch") })]));
     expect(await f.invokeHub("stop")).toMatchObject({ code: 0, result: { reason: "stopped-intent" } });
     expect(await inspectIdLock(f.stateRoot, "session-1")).toBeNull();
     expect(await f.leases.get(f.file)).toBeNull();

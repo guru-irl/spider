@@ -10,12 +10,16 @@ import * as diagnostics from "../diagnostics";
 import * as launchd from "../launchd";
 import { peerEnabledDiagnostics, setEnrolledPeerEnabled } from "../peer-enabled";
 import { openJournal } from "../journal";
+import { isRevoked } from "../revocation";
 import { afterEach, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { main } from "../cli";
-import { startHubControl, type HubControlReply, type HubControlRequest } from "../control-socket";
+import { disableRoaming, enableRoaming } from "../production-controls";
+import { roamingCliEntry } from "../package-layout";
+import { controlText, safeControlOutcome } from "../commands";
+import { requestHubControl, startHubControl, type HubControlReply, type HubControlRequest } from "../control-socket";
 import * as productionHub from "../production-hub";
 import * as localRuntime from "../runtime";
 import * as agent from "../agent";
@@ -57,7 +61,20 @@ async function fixture(identity = HUB, reply?: HubControlReply, withSocket = tru
     sockets.push(socket);
   }
   const out: string[] = [], err: string[] = [];
-  return { root, calls, out, err, invoke: (args: string[]) => main(args, { out: text => out.push(text), err: text => err.push(text) }) };
+  const io = { out: (text: string) => out.push(text), err: (text: string) => err.push(text) };
+  const invokeLegacyLifecycle = async (args: string[]) => {
+    // These tests still cover the old policy while its implementation remains
+    // in the tree. The public command now tests the v0 controller separately.
+    const result = await (args[1] === "enable" ? enableRoaming(root, () => roamingCliEntry(new URL(import.meta.url))) : disableRoaming(root));
+    if (args.at(-1) === "--json") io.out(`${JSON.stringify(safeControlOutcome({
+      ...result, operationId: result.operationId ?? "", epoch: null, home: null, repairCommand: result.repairCommand ?? null,
+      value: result.issues || result.information ? { issues: result.issues, information: result.information } : null,
+    }))}\n`);
+    else (result.code === 0 ? io.out : io.err)(`${result.message}\n`);
+    return result.code;
+  };
+  return { root, calls, out, err, invoke: (args: string[]) =>
+    args[0] === "roam" && ["enable", "disable"].includes(args[1]) ? invokeLegacyLifecycle(args) : main(args, io) };
 }
 
 it.each([true, false])("public doctor reports installed core drift when enabled=%s", async enabled => {
@@ -307,7 +324,7 @@ it("help explains recovery, JSON, non-interactive consent and the forget warning
   expect(await f.invoke(["--help"])).toBe(0);
   const help = f.out.join("");
   for (const word of ["recover", "cancel", "forget", "claim", "--json", "--yes --consent copilot-auth"]) expect(help).toContain(word);
-  expect(help).toMatch(/shell access/i); expect(help).toMatch(/two copies can run/i); expect(help).toMatch(/last mirror/i);
+  expect(help).toMatch(/shell access/i); expect(help).toMatch(/two copies can run/i); expect(help).toMatch(/last copied transcript/i);
   expect(help).toMatch(/disabled.*not.*(hosting|enable)/i);
 }, 5000);
 
@@ -374,12 +391,13 @@ it("prints and serializes the exact validated blockers and explanation from a re
   const refusal = { code: 1, reason: "move-preflight-blocked", operationId: "move-a", home: null, epoch: null, repairCommand: null, value: null,
     refusal: { code: "move-preflight-blocked", blockers: ["outbound-ask:a8f3", "receipt:abc"], message: "Unsettled work blocks this move." } };
   const f = await fixture(HUB, refusal as HubControlReply);
-  expect(await f.invoke(["move", "session-a", "box-1.invalid", "--json"])).toBe(1);
-  expect(JSON.parse(f.out.join(""))).toMatchObject({ reason: refusal.reason, operationId: "move-a", refusal: refusal.refusal });
-  f.out.length = 0; f.err.length = 0;
-  expect(await f.invoke(["move", "session-a", "box-1.invalid"])).toBe(1);
-  expect(f.err.join("")).toContain("Unsettled work blocks this move.");
-  expect(f.err.join("")).toContain("outbound-ask:a8f3"); expect(f.err.join("")).toContain("receipt:abc");
+  const reply = await requestHubControl(join(f.root, "roam", "hub.sock"), { op: "move", session: "session-a", machine: "box-1.invalid" });
+  const formatted = safeControlOutcome({ ...reply, operationId: reply.operationId ?? "", home: reply.home ?? null,
+    epoch: reply.epoch ?? null, repairCommand: reply.repairCommand ?? null });
+  expect(formatted).toMatchObject({ code: 1, reason: refusal.reason, operationId: "move-a", refusal: refusal.refusal });
+  expect(controlText(formatted)).toContain("Unsettled work blocks this move.");
+  expect(controlText(formatted)).toContain("outbound-ask:a8f3");
+  expect(controlText(formatted)).toContain("receipt:abc");
 }, 5000);
 
 it("retains safe worktree adjustments and redacted key names without leaking arbitrary warning text", async () => {
@@ -387,10 +405,12 @@ it("retains safe worktree adjustments and redacted key names without leaking arb
     value: { terminal: "terminal-a", intercomAddress: "session-a@box.invalid", warnings: ["tool-auth-unverified", "user.name", "http.<redacted>.extraheader",
       "sparse-cone-defaulted-to-false", "SECRET SENTINEL", "raw:conversation-body"] } };
   const f = await fixture(HUB, reply);
-  expect(await f.invoke(["move", "session-a", "box-1.invalid", "--json"])).toBe(0);
-  const result = JSON.parse(f.out.join(""));
-  expect(result.value.warnings).toEqual(["tool-auth-unverified", "user.name", "http.<redacted>.extraheader", "sparse-cone-defaulted-to-false"]);
-  expect(f.out.join("")).not.toContain("SECRET SENTINEL"); expect(f.out.join("")).not.toContain("raw:conversation-body");
+  const wire = await requestHubControl(join(f.root, "roam", "hub.sock"), { op: "move", session: "session-a", machine: "box-1.invalid" });
+  const result = safeControlOutcome({ ...wire, operationId: wire.operationId ?? "", home: wire.home ?? null,
+    epoch: wire.epoch ?? null, repairCommand: wire.repairCommand ?? null });
+  expect(result.code).toBe(0);
+  expect((result.value as { warnings: unknown }).warnings).toEqual(["tool-auth-unverified", "user.name", "http.<redacted>.extraheader", "sparse-cone-defaulted-to-false"]);
+  expect(JSON.stringify(result)).not.toContain("SECRET SENTINEL"); expect(JSON.stringify(result)).not.toContain("raw:conversation-body");
 }, 5000);
 
 it("private hosting observation invokes the producer with the explicit root", async () => {
@@ -472,12 +492,13 @@ it("sync JSON retains the real per-peer typed outcomes and receipts", async () =
   expect(JSON.parse(f.out.join(""))).toMatchObject({ reason: "Synchronization needs attention", value: { outcomes: rows } });
 }, 5000);
 
-it("enabled forget JSON includes the recovered homes and presentation status", async () => {
+it("the private legacy forget reply retains its recovered homes and presentation status", async () => {
   const home = { sessionId: "s-1", machineId: HUB, epoch: 4, moveId: null, updatedAt: 123 };
   const f = await fixture(HUB, { code: 0, reason: "destroyed-machine-recovered", operationId: "forget-a", home: null, epoch: null, repairCommand: null,
     value: { presentation: "pending", homes: [home] } });
-  expect(await f.invoke(["roam", "forget", BOX, "--confirm", `destroyed ${BOX}`, "--json"])).toBe(0);
-  expect(JSON.parse(f.out.join(""))).toMatchObject({ reason: "destroyed-machine-recovered", operationId: "forget-a", value: { presentation: "pending", homes: [home] } });
+  const reply = await requestHubControl(join(f.root, "roam", "hub.sock"), { op: "forget", machine: BOX, confirmation: `destroyed ${BOX}` });
+  expect(safeControlOutcome({ ...reply, operationId: reply.operationId ?? "", home: reply.home ?? null, epoch: reply.epoch ?? null,
+    repairCommand: reply.repairCommand ?? null })).toMatchObject({ code: 0, reason: "destroyed-machine-recovered", operationId: "forget-a", value: { presentation: "pending", homes: [home] } });
 }, 5000);
 
 it("sync prints the bounded agent cause without exposing an unrecognized code", async () => {
@@ -683,7 +704,7 @@ it.each([["roam", "forget", "box-1.invalid"], ["roam", "forget", "box-1.invalid"
   const f = await fixture(HUB, undefined, true), file = join(f.root, "roam/config.json"), config = JSON.parse(readFileSync(file, "utf8"));
   config.peers[0].alias = "box-1.invalid"; writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
   expect(await f.invoke(args)).toBe(2);
-  expect(f.err.join("")).toMatch(/two copies can run/i); expect(f.err.join("")).toMatch(/last mirror/i);
+  expect(f.err.join("")).toMatch(/two copies can run/i); expect(f.err.join("")).toMatch(/last copied transcript/i);
   expect(f.calls).toEqual([]);
 }, 5000);
 
@@ -691,7 +712,9 @@ it("normalizes an explicitly confirmed box alias to the enrolled UUID before for
   const f = await fixture(), file = join(f.root, "roam/config.json"), config = JSON.parse(readFileSync(file, "utf8"));
   config.peers[0].alias = "box-1.invalid"; writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
   expect(await f.invoke(["roam", "forget", "box-1.invalid", "--confirm", "destroyed box-1.invalid"])).toBe(0);
-  expect(f.calls).toContainEqual({ op: "forget", machine: "box-1.invalid", confirmation: `destroyed ${BOX}` });
+  expect(f.calls).toEqual([]);
+  const journal = openDb(join(f.root, "roam", "journal.db"), { fileMustExist: true });
+  try { expect(isRevoked(journal, BOX)).toBe(true); } finally { journal.close(); }
 }, 5000);
 
 it("disabled forget invokes only the confirmed typed port and returns its real pending presentation", async () => {
@@ -946,8 +969,8 @@ it.each([true, false])("Mac disable propagates to a reachable box and retains an
   expect(JSON.parse(readFileSync(join(f.root, "roam/config.json"), "utf8")).enabled).toBe(false);
   expect(requests).toEqual([expect.objectContaining({ action: "roaming-enabled", machineId: BOX, hubMachineId: HUB, enabled: false })]);
   if (!reachable) expect(f.err.join("")).toContain("unconfirmed");
-  expect(await f.invoke(["move", "session-a", "box"])).toBe(1);
-  expect(f.err.join("")).toContain("roaming-disabled");
+  expect(await f.invoke(["roam", "relocate", "session-a", "box", "--json"])).toBe(1);
+  expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ ok: false, refusal: { code: "replication-disabled" } });
 }, 5000);
 it("enable reports every box precondition before changing capture or flags", async () => {
   const f = await fixture(HUB, { code: 0, reason: "ready", value: { enabled: true } }), file = join(f.root, "roam/config.json");

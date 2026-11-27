@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { DEFAULT_LIMITS, disabledIntercom, type RoamConfig } from "@spider/roam/contracts";
 import * as runtime from "@spider/roam/runtime";
 import * as productionHub from "@spider/roam/production-hub";
+import * as controls from "@spider/roam/production-controls";
 import type { DisabledForgetResult } from "@spider/roam/disabled-forget-contract";
 import * as disabledForget from "../disabled-forget";
 import { main, startProductionHub } from "../cli-main";
@@ -25,17 +26,19 @@ function command() {
 const pending: DisabledForgetResult = {
   ok: true, code: 0, operationId: "forget-box", reason: "destroyed-machine-recovered", presentation: "pending", value: [], results: [],
 };
-it("the installed CLI binds disabled forget to recovery and preserves pending presentation", async () => {
+it("the installed CLI forgets locally when disabled without running legacy recovery", async () => {
   const f = command(), recover = vi.spyOn(disabledForget, "runDisabledForget").mockResolvedValue(pending);
+  const forget = vi.spyOn(controls, "forgetV0Peer").mockResolvedValue({ code: 0, reason: "machine-forgotten", message: "Forgot the box." });
   expect(await main(["roam", "forget", "box.invalid", "--confirm", "destroyed box.invalid", "--json"], f.io)).toBe(0);
-  expect(recover).toHaveBeenCalledExactlyOnceWith({ machine: BOX, confirmed: true });
-  expect(JSON.parse(f.out.join(""))).toEqual(pending);
+  expect(forget).toHaveBeenCalledExactlyOnceWith(expect.any(String), BOX);
+  expect(recover).not.toHaveBeenCalled();
+  expect(JSON.parse(f.out.join(""))).toMatchObject({ code: 0, reason: "machine-forgotten" });
   expect(f.err).toEqual([]);
 });
-it.each(["hub-running", "not-disabled"] as const)("disabled forget preserves the production %s refusal", async reason => {
+it.each(["hub-running", "not-disabled"] as const)("the explicit legacy forget port preserves its %s refusal", async reason => {
   const f = command();
-  vi.spyOn(disabledForget, "runDisabledForget").mockResolvedValue({ ok: false, reason });
-  expect(await main(["roam", "forget", BOX, "--confirm", `destroyed ${BOX}`, "--json"], f.io)).toBe(1);
+  const legacy = vi.spyOn(disabledForget, "runDisabledForget").mockResolvedValue({ ok: false, reason });
+  expect(await main(["roam", "forget", BOX, "--confirm", `destroyed ${BOX}`, "--json"], f.io, { runDisabledForget: legacy })).toBe(1);
   expect(JSON.parse(f.out.join(""))).toEqual({ ok: false, reason });
 });
 it("disabled forget requires confirmation before calling recovery", async () => {

@@ -43,7 +43,9 @@ export type V0RefusalCode =
   | "confirmation-required" | "destination-copy-missing"
   | "stop-timeout" | "sync-failed" | "transfer-failed"
   | "install-failed" | "start-pending" | "journal-unavailable"
-  // lane 1: adapters-C1
+  // lane 3: entry-C1
+  | "machine-revoked"
+  // lane 1: adapters-C1; lane 3: move-9
   | "session-busy";
 
 export interface V0Refusal {
@@ -90,13 +92,22 @@ export interface CapturedSession {
   transcriptArtifact: ArtifactManifest;
   bundleArtifact: ArtifactManifest;
 }
-export interface InstalledSession { placement: SessionPlacement; session: SessionManifest }
+export interface InstalledSession {
+  placement: SessionPlacement;
+  session: SessionManifest;
+  // lane 3: adapters-I3
+  branchDetached?: true;
+}
 export interface RelocateSuccess {
   moveId: RelocateId | null;
   home: RunningHome;
   placement: SessionPlacement;
   terminal: string;
   disposition: "relocated" | "already-home" | "undone";
+  // lane 3: adapters-I3
+  branchRecovery?: { savedBranch: string; command: string };
+  // lane 3: move-10
+  localPid?: number;
 }
 export type RelocateOutcome =
   | { ok: true; value: RelocateSuccess }
@@ -128,6 +139,10 @@ export interface RelocatePorts extends SessionMachinePorts {
   newMoveId(): RelocateId;
   withSession<T>(sessionId: SessionId, run: () => Promise<T>): Promise<T>;
   initialSource(sessionId: SessionId): Promise<V0Result<MachineId>>;
+  // lane 3: home-C2
+  initialEpoch?(sessionId: SessionId): number;
+  // lane 3: move-10
+  unlabelledLocalRunner?(home: RunningHome): Promise<number | null>;
   check(request: RelocateRequest, source: SettledHome, moveId: RelocateId): Promise<V0Result<RelocatePlan>>;
   stopSource(plan: RelocatePlan, moving: MovingHome): Promise<V0Result<void>>;
   pullSource(plan: RelocatePlan): Promise<V0Result<CapturedSession>>;

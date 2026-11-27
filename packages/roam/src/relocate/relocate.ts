@@ -1,7 +1,8 @@
+import type { Clock } from "../contracts";
 import type {
-  MovingHome, RelocateCheckpoint, RelocateHome, RelocateId, RelocateOutcome,
+  CapturedSession, InstalledSession, MovingHome, RelocateCheckpoint, RelocateHome, RelocateId, RelocateOutcome, RelocateSuccess,
   RelocatePlan, RelocatePorts, RelocateRequest, RelocateStep, RunningHome, SessionPlacement,
-  V0Refusal, V0RefusalCode, V0Result,
+  SettledHome, V0Refusal, V0RefusalCode, V0Result,
 } from "./types";
 
 class PortRefusal extends Error {
@@ -18,6 +19,14 @@ function movingHome(plan: RelocatePlan): MovingHome {
 function committedHome(plan: RelocatePlan): RunningHome {
   return { ...plan.source, machineId: plan.destinationPlacement.machineId, state: "running",
     epoch: plan.source.epoch + 2, moveId: plan.moveId, destination: null, updatedAt: plan.startedAt };
+}
+function branchAdvice(home: RunningHome, installed: InstalledSession | null, captured: CapturedSession | null): Pick<RelocateSuccess, "branchRecovery"> {
+  const workspace = captured?.workspace;
+  if (installed?.branchDetached !== true || !workspace?.branch?.startsWith("refs/heads/") ||
+      !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(workspace.head)) return {};
+  const savedBranch = workspace.branch.slice("refs/heads/".length);
+  const branch = `spider-relocated-${home.epoch}-${workspace.head.slice(0, 12)}`;
+  return { branchRecovery: { savedBranch, command: `git switch -c ${branch} ${workspace.head}` } };
 }
 function restoredHome(plan: RelocatePlan): RunningHome {
   return { ...plan.source, state: "running", epoch: plan.source.epoch + 2,
@@ -54,11 +63,42 @@ const failureCodes: Record<RelocateStep, V0RefusalCode> = {
   "start-destination": "start-pending", confirm: "start-pending",
 };
 
+interface Readiness { clock: Clock; timeoutMs: number }
+
+function waitForConfirmation<T>(attempt: () => Promise<V0Result<T>>, readiness: Readiness, pending: V0Refusal): Promise<V0Result<T>> {
+  return new Promise((resolve, reject) => {
+    let expired = false;
+    let cancelPoll: (() => void) | undefined;
+    const cancelDeadline = readiness.clock.later(readiness.timeoutMs, () => {
+      expired = true;
+      cancelPoll?.();
+      resolve({ ok: false, refusal: pending });
+    });
+    const poll = async () => {
+      try {
+        const result = await attempt();
+        if (expired) return;
+        if (!result.ok && result.refusal.code === "start-pending") {
+          cancelPoll = readiness.clock.later(250, () => { void poll(); });
+        } else {
+          cancelDeadline();
+          resolve(result);
+        }
+      } catch (error) {
+        cancelDeadline();
+        reject(error);
+      }
+    };
+    void poll();
+  });
+}
+
 /** Hub-only orchestration. All durable state and exclusion belong to the ports. */
-export async function relocate(request: RelocateRequest, ports: RelocatePorts): Promise<RelocateOutcome> {
+export async function relocate(request: RelocateRequest, ports: RelocatePorts, readiness?: Readiness): Promise<RelocateOutcome> {
   let home: RelocateHome | null = null;
   let moveId: RelocateId | null = null;
   let step: RelocateStep = "check";
+  let entered = false;
   function refuse(code: V0RefusalCode, message: string, nextStep =
     `Retry spider roam relocate ${request.sessionId} ${request.destinationMachine}.`): never {
     throw new PortRefusal({ code, message, nextStep });
@@ -76,12 +116,39 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
     try { await ports.journal.save(checkpoint); }
     catch { refuse("journal-unavailable", "The relocation checkpoint could not be saved."); }
   };
+  const confirm = async (home: RunningHome, placement: SessionPlacement) => {
+    const attempt = () => ports.confirm(home, placement);
+    return value(await (readiness ? waitForConfirmation(attempt, readiness, {
+      code: "start-pending",
+      message: `The home is committed to ${home.machineId}, but pi has not confirmed startup.`,
+      nextStep: `Retry spider roam relocate ${request.sessionId} ${request.destinationMachine} to check startup.`,
+    }) : attempt()));
+  };
+  const check = async (source: SettledHome): Promise<RelocateCheckpoint> => {
+    moveId = ports.newMoveId();
+    const plan = value(await ports.check(request, source, moveId));
+    return { plan, completed: ["check"], captured: null, installed: null, terminal: null, result: null };
+  };
   try {
     return await ports.withSession(request.sessionId, async () => {
+      entered = true;
       home = await ports.homes.read(request.sessionId);
+      let checkedFirst: RelocateCheckpoint | undefined;
+      let initialPlacement: SessionPlacement | undefined;
       if (!home) {
-        const source = value(await ports.initialSource(request.sessionId));
-        home = await ports.homes.initialize(request.sessionId, source);
+        const machineId = value(await ports.initialSource(request.sessionId));
+        const candidate: RunningHome = { sessionId: request.sessionId, machineId,
+          epoch: ports.initialEpoch?.(request.sessionId) ?? 1, state: "running", destination: null, moveId: null, updatedAt: 0 };
+        if (machineId === request.destinationMachine) {
+          initialPlacement = value(await ports.locate(machineId, request.sessionId));
+        } else {
+          checkedFirst = await check(candidate);
+          await save(checkedFirst);
+        }
+        home = await ports.homes.initialize(request.sessionId, machineId);
+        if (!sameHome({ ...home, updatedAt: candidate.updatedAt }, candidate)) {
+          refuse("home-conflict", "The initial session home changed during check.");
+        }
       }
       if (home.state === "running" && home.machineId === request.destinationMachine && home.moveId) {
         let pending: RelocateCheckpoint | null;
@@ -105,8 +172,9 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
           step = "start-destination";
           value(await ports.start(home, placement));
           step = "confirm";
-          const confirmed = value(await ports.confirm(home, placement));
-          const result = { moveId, home, placement, terminal: confirmed.terminal, disposition };
+          const confirmed = await confirm(home, placement);
+          const result = { moveId, home, placement, terminal: confirmed.terminal, disposition,
+            ...(disposition === "relocated" ? branchAdvice(home, pending.installed, pending.captured) : {}) };
           await save({ ...pending, completed: disposition === "relocated" ? steps : pending.completed,
             terminal: confirmed.terminal, result });
           return { ok: true, value: result };
@@ -114,7 +182,7 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
       }
       if (home.state !== "moving" && home.machineId === request.destinationMachine) {
         moveId = home.moveId;
-        const placement = value(await ports.locate(home.machineId, request.sessionId));
+        const placement = initialPlacement ?? value(await ports.locate(home.machineId, request.sessionId));
         const resumed: RunningHome = { ...home, state: "running",
           epoch: home.state === "stopped" ? home.epoch + 1 : home.epoch };
         if (home.state === "stopped") {
@@ -126,11 +194,14 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
           step = "commit-home";
           value(await ports.publishHome(resumed, resumed.machineId));
           value(await ports.activate(resumed, placement));
+          const localPid = await ports.unlabelledLocalRunner?.(resumed);
+          if (localPid) return { ok: true, value: { moveId, home: resumed, placement,
+            terminal: `pid:${localPid}`, localPid, disposition: "already-home" } };
         }
         step = "start-destination";
         value(await ports.start(resumed, placement));
         step = "confirm";
-        const confirmed = value(await ports.confirm(resumed, placement));
+        const confirmed = await confirm(resumed, placement);
         return { ok: true, value: { moveId, home: resumed, placement, terminal: confirmed.terminal, disposition: "already-home" } };
       }
       let checkpoint: RelocateCheckpoint;
@@ -145,13 +216,13 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
         try { pending = await ports.journal.load(moveId); } catch { pending = null; }
         if (!matchesMoving(pending, home)) {
           refuse("journal-unavailable", "The relocation checkpoint is missing or unreadable.",
-            `Use spider roam set-home ${request.sessionId} ${request.destinationMachine} --force only with a local backup; unsynced work can be lost.`);
+            `Use spider roam set-home ${request.sessionId} ${home.machineId} --force only with a local backup; unsynced work can be lost.`);
         }
         checkpoint = pending;
+      } else if (checkedFirst) {
+        checkpoint = checkedFirst;
       } else {
-        moveId = ports.newMoveId();
-        const plan = value(await ports.check(request, home, moveId));
-        checkpoint = { plan, completed: ["check"], captured: null, installed: null, terminal: null, result: null };
+        checkpoint = await check(home);
         await save(checkpoint);
       }
       const plan = checkpoint.plan;
@@ -163,6 +234,11 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
       const moving = movingHome(plan);
       const committed = committedHome(plan);
       if (home.state === "moving" && request.destinationMachine === plan.source.machineId) {
+        if (!done("mark-moving")) {
+          step = "mark-moving";
+          value(await ports.publishHome(moving, moving.machineId));
+          await complete(step);
+        }
         step = "stop-source";
         value(await ports.stopSource(plan, moving));
         const restored: RunningHome = { ...home, state: "running", destination: null,
@@ -174,14 +250,14 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
         step = "start-destination";
         value(await ports.start(restored, plan.sourcePlacement));
         step = "confirm";
-        const confirmed = value(await ports.confirm(restored, plan.sourcePlacement));
+        const confirmed = await confirm(restored, plan.sourcePlacement);
         const result = { moveId, home: restored, placement: plan.sourcePlacement,
           terminal: confirmed.terminal, disposition: "undone" as const };
         await save({ ...checkpoint, terminal: confirmed.terminal, result });
         return { ok: true, value: result };
       }
       step = "mark-moving";
-      if (home.state !== "moving") await cas(plan.source, moving);
+      if (home.state !== "moving") await cas(checkedFirst ? home : plan.source, moving);
       if (!done(step)) {
         try { value(await ports.publishHome(moving, moving.machineId)); }
         catch (error) {
@@ -219,13 +295,19 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
       const started = value(await ports.start(committed, installed.placement));
       await complete(step, { terminal: started.terminal });
       step = "confirm";
-      const confirmed = value(await ports.confirm(committed, installed.placement));
+      const confirmed = await confirm(committed, installed.placement);
       const result = { moveId, home: committed, placement: installed.placement,
-        terminal: confirmed.terminal, disposition: "relocated" as const };
+        terminal: confirmed.terminal, disposition: "relocated" as const, ...branchAdvice(committed, installed, captured) };
       await complete(step, { terminal: confirmed.terminal, result });
       return { ok: true, value: result };
     });
   } catch (error) {
+    if (!entered && error instanceof Error && error.name === "HerdrError" && "code" in error && error.code === "lock-occupied") {
+      return { ok: false, step, home, moveId, refusal: {
+        code: "session-busy", message: "Another operation on this session is still in progress.",
+        nextStep: "Wait for that operation to finish, then retry relocation.",
+      } };
+    }
     return { ok: false, step, home, moveId, refusal: error instanceof PortRefusal ? error.refusal : {
       code: failureCodes[step], message: `Relocation could not finish ${step}.`,
       nextStep: `Retry spider roam relocate ${request.sessionId} ${request.destinationMachine}.`,

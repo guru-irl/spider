@@ -17,6 +17,7 @@ import { main } from "../cli";
 import { disabledIntercom } from "../contracts";
 import { handleAgentOperation } from "../agent";
 import { openJournal } from "../journal";
+import { revokeMachine } from "../revocation";
 import { readLocalIdentity } from "../runtime";
 import { localPendingLaunchDiagnostics, runLocalDoctor } from "../local-diagnostics";
 import * as transportModule from "../transport";
@@ -45,7 +46,10 @@ async function fixture() {
   const handoff = await id.prepareHandoff("launch-1", join(remote, "session.jsonl"), "core-1");
   const journal = openJournal(join(remote, "roam", "journal.db"));
   const ports = { config: readLocalIdentity(remote), root: join(remote, "roam", "staging"), journal, openStore() { return { db }; } };
+  const hubDb = openDb(join(root, "spider.db"));
+  try { migrate(hubDb, "global", { machineId: HUB, globalRoot: root }); } finally { hubDb.close(); }
   vi.stubEnv("HOME", root); vi.stubEnv("SPIDER_GLOBAL_ROOT", root);
+  vi.stubEnv("SPIDER_ROAM_PI", process.execPath);
   vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/home/fixture/hc" } } as never);
   vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: unknown) { return peer; }, async exec(_peer: unknown, argv: string[]) {
     if (argv[1] === "agent") return Buffer.from(JSON.stringify(await handleAgentOperation(JSON.parse(argv[2]), ports as never)));
@@ -53,7 +57,8 @@ async function fixture() {
     return Buffer.from(JSON.stringify({ version: 1, machineId: BOX, kind: "doctor", value: await runLocalDoctor({ root: remote, bundleUrl, currentCore: async () => "core-1", launchRecovery: { bootId: async () => "boot-1", probe: async () => ({ kind: "absent" }) } }) }));
   } } as never);
   const out: string[] = [], err: string[] = [];
-  const invoke = async (args: string[]) => { out.length = 0; err.length = 0; const code = await main(args, { out: text => out.push(text), err: text => err.push(text) }, { bundleUrl }); return { code, value: JSON.parse(out.join("")), err: err.join("") }; };
+  const lifecycle = { resolveCli: () => release, launchd: { plistDir: join(root, "LaunchAgents"), serviceHome: root, async launchctl() {} } };
+  const invoke = async (args: string[]) => { out.length = 0; err.length = 0; const code = await main(args, { out: text => out.push(text), err: text => err.push(text) }, { bundleUrl, v0: { lifecycle } }); return { code, value: JSON.parse(out.join("")), err: err.join("") }; };
   return { root, remote, invoke, db, handoff, owner, journal, ports, bundleUrl };
 }
 
@@ -195,9 +200,20 @@ it("disabled remote doctor and enable agree on the pending launch and its stop r
   expect(doctor.value.value).toMatchObject({ enabled: false, consumers: [] });
   expect(doctor.value.value.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "block", reason: expect.stringMatching(/session-1.*launch-1.*pending/i), repairCommand: "spider roam stop session-1" })]));
   const enable = await f.invoke(["roam", "enable", "--json"]);
-  expect(enable.code).toBe(1);
-  expect(enable.value.value.issues).toEqual(expect.arrayContaining([expect.objectContaining({ reason: expect.stringContaining("exact-launch"), repairCommand: "spider roam stop session-1" })]));
+  expect(enable.code).toBe(0);
+  expect(enable.value.value.issues).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "warning", reason: expect.stringContaining("exact-launch"), repairCommand: "spider roam stop session-1" })]));
   expect(JSON.stringify(enable.value)).not.toContain("spider roam provision");
+});
+
+it("enable skips pending launch observation for a forgotten box", async () => {
+  const f = await fixture(), journalPath = join(f.root, "roam", "journal.db");
+  openJournal(journalPath);
+  const journal = openDb(journalPath, { fileMustExist: true });
+  try { revokeMachine(journal, BOX); } finally { journal.close(); }
+  const enable = await f.invoke(["roam", "enable", "--json"]);
+  expect(enable.code).toBe(0);
+  expect(vi.mocked(transportModule.createTransport)).not.toHaveBeenCalled();
+  expect(enable.value.value.issues).toEqual([]);
 });
 
 it("doctor and enable clear the missing started terminal block after stop settles", async () => {
@@ -242,8 +258,8 @@ it("doctor and enable clear the missing started terminal block after stop settle
 
 it("enable prescribes stop rather than provision for the persisted pending launch", async () => {
   const f = await fixture(), enable = await f.invoke(["roam", "enable", "--json"]);
-  expect(enable.code).toBe(1);
-  expect(enable.value.value.issues).toEqual(expect.arrayContaining([expect.objectContaining({ reason: expect.stringContaining("exact-launch"), repairCommand: "spider roam stop session-1" })]));
+  expect(enable.code).toBe(0);
+  expect(enable.value.value.issues).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "warning", reason: expect.stringContaining("exact-launch"), repairCommand: "spider roam stop session-1" })]));
   expect(JSON.stringify(enable.value)).not.toContain("spider roam provision");
 });
 

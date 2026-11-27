@@ -4,25 +4,27 @@ import { causeCode, safeCauseCode, type CauseStep } from "./cause-codes";
 import { agentFailureCode, AgentResponseError, peerPreflightIssue } from "./peer-errors";
 import { setEnrolledPeerEnabled } from "./peer-enabled";
 import { openJournal } from "./journal";
+import { isRevoked, revokeMachine } from "./revocation";
 import { readPendingMoves } from "./pending-moves";
 import { parseDoctorReport, remoteDoctor } from "./remote-observations";
 import { INTERCOM_UNIQUENESS_DESCRIPTION } from "./intercom-readiness";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { waitReady } from "./hub-readiness";
-import { assertTestConfigPath, openDbReadOnly } from "@spider/db-core";
+import { assertTestConfigPath, openDb, openDbReadOnly } from "@spider/db-core";
 import { storeScope } from "@spider/db-core/roam/codec";
 import { enableMemoryCapture } from "@spider/db-core/roam/seed";
 import type { JsonObject, StoreKey } from "@spider/db-core/roam/types";
 import { withProcessLock, writePrivateJson } from "@spider/herdr/sessions/registry";
-import type { Operation, Peer, RoamConfig, Transport } from "./contracts";
+import { shellQuote } from "@spider/herdr/sessions/launch-environment";
+import type { Diagnostic, Operation, Peer, RoamConfig, Transport } from "./contracts";
 import { requestHubControl } from "./control-socket";
 import { assertCompatibleConsumers } from "./diagnostics";
 import { hubCoreSelection, hubServiceExists, hubServiceFile, installHubService, removeHubService, type LaunchdPorts } from "./launchd";
-import { createLocalDiagnosticPorts, isPendingLaunchDiagnostic } from "./local-diagnostics";
+import { createLocalDiagnosticPorts, isPendingLaunchDiagnostic, localPendingLaunchDiagnostics } from "./local-diagnostics";
 import { homeChangeInProgress, loadHerdrConfig } from "./production-hub";
 import { compatibleConsumerPorts } from "./remote-observations";
 import { recheckWorktree } from "./recheck";
@@ -30,8 +32,12 @@ import { openLocalCore, readLocalIdentity } from "./runtime";
 import { listStoreKeys, parseUngathered } from "./store-inventory";
 import { createStorePort } from "./stores";
 import { createTransport, createProvisionTransport } from "./transport";
+import { renderSupervisorUnit } from "./systemd";
+import { installLocalV0Supervisor, localSupervisorInstallPorts, removeLocalSupervisor, type SupervisorInstallPorts } from "./relocate/service-install";
+import { createHomeStore } from "./relocate/home";
+import { withV0HomeLifecycle } from "./relocate/home-lifecycle";
 
-export interface ControlResult { code: 0 | 1 | 2 | 3; reason: string; message: string; causeCode?: string; operationId?: string; repairCommand?: string; issues?: readonly { reason: string; repairCommand: string; detail?: string; causeCode?: string }[];
+export interface ControlResult { code: 0 | 1 | 2 | 3; reason: string; message: string; causeCode?: string; operationId?: string; repairCommand?: string; nextStep?: string; issues?: readonly { reason: string; repairCommand: string; detail?: string; causeCode?: string; severity?: "warning" }[];
   information?: readonly { machine: string; reason: string }[] }
 const clean = (text: string) => text.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 1000);
 function preflightCheck(reason: string): string {
@@ -92,6 +98,183 @@ async function locked<T>(root: string, config: RoamConfig, work: () => Promise<T
   return withProcessLock(join(root, "roam"), key, work,
     { identity: { pid: process.pid, startIdentity: self.startIdentity }, probe, timeoutMs });
 }
+export interface V0ServiceOptions {
+  resolveCli(): string;
+  launchd?: LaunchdPorts;
+  systemd?: SupervisorInstallPorts;
+}
+
+async function pendingLegacyLaunchWarnings(root: string, config: RoamConfig): Promise<NonNullable<ControlResult["issues"]>> {
+  const warning = (reason: string, detail: string, repairCommand: string) => ({ severity: "warning" as const, reason, detail: clean(detail), repairCommand });
+  const pending = (machine: string, label: string, doctor: string, rows: readonly Diagnostic[]) => rows.filter(isPendingLaunchDiagnostic)
+    .map(row => {
+      const session = /^Session ([A-Za-z0-9._-]{1,96}): exact launch /.exec(row.reason)?.[1];
+      const reason = `exact-launch:${machine}${session ? `:${session}` : ""}`;
+      const repair = row.repairCommand && /^spider roam stop [A-Za-z0-9._-]+$/.test(row.repairCommand) ? row.repairCommand : doctor;
+      return warning(reason, `${label}: ${row.reason}`, repair);
+    });
+  const issues = pending(config.machineId, "Local machine", "spider roam doctor", await localPendingLaunchDiagnostics({ root, machineId: config.machineId }));
+  try {
+    if (config.role !== "hub" || !config.peers.length) return issues;
+    const file = join(root, "roam", "journal.db"), db = existsSync(file) ? openDbReadOnly(file) : null;
+    let peers: readonly Peer[];
+    try {
+      if (!db && existsSync(file)) throw new Error("Cannot read peer revocations");
+      peers = config.peers.filter(peer => !db || !isRevoked(db, peer.machineId));
+    }
+    finally { db?.close(); }
+    if (!peers.length) return issues;
+    const selection = hubCoreSelection(process.env);
+    const env = { ...process.env, HC_SESSION: selection.session, HC_SOCKET: selection.socket };
+    const transport = createTransport({ binary: loadHerdrConfig(root).core.binary, env, enrolled: peers });
+    for (let offset = 0; offset < peers.length; offset += config.limits.peerConcurrency) {
+      const batch = await Promise.all(peers.slice(offset, offset + config.limits.peerConcurrency).map(async peer => {
+        const doctor = `spider roam doctor ${peer.machineId}`;
+        try { return pending(peer.machineId, peer.alias, doctor, (await remoteDoctor(transport, peer, config)).diagnostics); }
+        catch { return [warning(`legacy-launch-check-unavailable:${peer.machineId}`, `Could not check ${peer.alias} for pending legacy launches.`, doctor)]; }
+      }));
+      issues.push(...batch.flat());
+    }
+    return issues;
+  } catch {
+    return [...issues, warning("legacy-launch-check-unavailable", "Could not check peers for pending legacy launches.", "spider roam doctor")];
+  }
+}
+
+async function v0DisableBlocker(root: string, config: RoamConfig): Promise<ControlResult | null> {
+  const file = join(root, "spider.db");
+  try { statSync(file); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT" && !config.enabled) return null; throw error; }
+  const db = openDbReadOnly(file);
+  if (!db) throw new Error("Could not read local session homes. Run spider roam doctor.");
+  try {
+    const meta = db.prepare("SELECT machine_id FROM roam_meta WHERE id=1").get() as { machine_id?: unknown } | undefined;
+    if (meta?.machine_id !== config.machineId) throw new Error("Could not verify the local home database. Run spider roam doctor.");
+    const homes = await createHomeStore({ db, localMachineId: config.machineId, hubMachineId: config.hubMachineId }).list();
+    const moving = homes.find(home => home.state === "moving" &&
+      (home.machineId === config.machineId || home.destination === config.machineId));
+    if (!moving || moving.state !== "moving") return null;
+    const id = /^[A-Za-z0-9._-]+$/.test(moving.sessionId) && !moving.sessionId.startsWith("-") ? moving.sessionId : shellQuote(moving.sessionId);
+    const nextStep = `On the Mac, run spider roam relocate ${id} ${moving.destination} to finish, or spider roam relocate ${id} ${moving.machineId} to undo. If neither works and you have a verified backup, run spider roam set-home ${id} ${moving.machineId} --force.`;
+    return { code: 1, reason: "v0-move-in-progress", operationId: moving.moveId, message: `Session ${moving.sessionId} is still moving. Roaming was not disabled.\n${nextStep}`, nextStep };
+  } finally { db.close(); }
+}
+
+/** Public lifecycle: v0 is selected by role, never by the previous service or a stored mode. */
+export async function configureV0Service(root: string, enabled: boolean, options: V0ServiceOptions): Promise<ControlResult> {
+  const action = enabled ? "enable" : "disable", repairCommand = `spider roam ${action}`;
+  const removed: string[] = [];
+  let issues: ControlResult["issues"], changed = false;
+  const warnings = () => (issues ?? []).map(issue => `Warning: ${issue.detail ?? issue.reason} (${issue.repairCommand})`);
+  const information = () => removed.map(reason => ({ machine: "local", reason }));
+  try {
+    const initial = readLocalIdentity(root);
+    return await locked(root, initial, async () => {
+      let config = readLocalIdentity(root);
+      if (config.machineId !== initial.machineId || config.role !== initial.role) throw new Error("Roaming configuration changed during the operation.");
+      const setEnabled = async (next: boolean) => {
+        if (config.enabled === next) return;
+        changed = true;
+        await writeEnabled(root, config, next);
+        config = readLocalIdentity(root);
+      };
+      // Check every install input before removing a legacy service.
+      const cli = enabled ? realpathSync(options.resolveCli()) : null;
+      const pi = enabled ? resolveParticipantPi() : null;
+      if (enabled && (!pi || !cli || !statSync(cli).isFile())) throw new Error("Install pi and the Spider CLI first.");
+      if (enabled) issues = await pendingLegacyLaunchWarnings(root, config);
+      else if (config.role === "hub") {
+        const pending = readPendingMoves(join(root, "roam", "journal.db"));
+        issues = pending?.map(({ operationId }) => ({ severity: "warning", reason: `legacy-move-pending:${operationId}`,
+          detail: `Legacy move ${operationId} is still recorded as pending.`, repairCommand: `spider roam cancel ${operationId}` })) ?? [
+          { severity: "warning", reason: "legacy-move-check-unavailable", detail: "Could not check for pending legacy moves.", repairCommand: "spider roam doctor" },
+        ];
+      }
+      if (!enabled) {
+        const blocker = await withV0HomeLifecycle(root, config.limits.controlMs, async () => {
+          const refusal = await v0DisableBlocker(root, config);
+          if (refusal) return refusal;
+          await setEnabled(false);
+          return null;
+        });
+        if (blocker) return blocker;
+      }
+      if (config.role === "hub") {
+        if (enabled) hubCoreSelection(process.env);
+        const ports = options.launchd ?? servicePorts();
+        if (enabled && cli && pi) {
+          prepareV0MemoryCapture(root);
+          if (hubServiceExists(root, ports.plistDir)) {
+            changed = true;
+            await removeHubService({ globalRoot: root }, ports);
+            removed.push("Removed the legacy roaming hub launchd service.");
+          }
+          changed = true;
+          await installHubService({ node: process.execPath, cli, globalRoot: root, pi, mode: "v0" }, ports);
+          await setEnabled(true);
+        } else {
+          changed = true;
+          await removeHubService({ globalRoot: root, mode: "v0" }, ports);
+        }
+      } else {
+        const ports = options.systemd ?? localSupervisorInstallPorts();
+        const supervisor = cli === null ? "/supervisor.mjs" : realpathSync(join(dirname(cli), "supervisor.mjs"));
+        if (enabled && !statSync(supervisor).isFile()) throw new Error("Install the Spider supervisor first.");
+        const unit = renderSupervisorUnit({ node: process.execPath, supervisor, coreUnit: config.coreUnit, globalRoot: root,
+          agentDir: process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"), pi: pi ?? undefined, mode: "v0" });
+        const rootLine = unit.split("\n").find(line => line.startsWith('Environment="SPIDER_GLOBAL_ROOT='))!;
+        if (enabled) {
+          prepareV0MemoryCapture(root);
+          changed = true;
+          const legacy = await removeLocalSupervisor(ports, rootLine, false);
+          if (legacy) removed.push(`Removed the legacy roaming supervisor ${legacy}.`);
+          await installLocalV0Supervisor(ports, rootLine, unit);
+          await setEnabled(true);
+        } else {
+          changed = true;
+          if (await removeLocalSupervisor(ports, rootLine, true)) await ports.run(["--user", "daemon-reload"]);
+        }
+      }
+      const service = config.role === "hub" ? "hub" : "supervisor";
+      return { code: 0, reason: enabled ? "roaming-enabled" : "roaming-disabled", information: information(), issues,
+        message: [...removed, `Roaming v0 ${service} ${enabled ? "enabled" : "disabled"}.`, ...warnings()].join("\n") };
+    });
+  } catch (error) {
+    return { code: changed ? 3 : 1, reason: `${action}-${changed ? "pending" : "unavailable"}`, repairCommand,
+      information: information(), issues, message: [...removed, ...warnings(), clean(error instanceof Error ? error.message : "Cannot change the roaming service."), `Resolve the error, then retry ${repairCommand}.`].join("\n") };
+  }
+}
+
+export async function forgetV0Peer(root: string, machineId: string): Promise<ControlResult> {
+  try {
+    const initial = readLocalIdentity(root);
+    if (initial.role !== "hub") return { code: 1, reason: "mac-hub-required", message: "Run spider roam forget on the Mac." };
+    return await locked(root, initial, async () => {
+      const config = readLocalIdentity(root);
+      if (config.role !== "hub" || config.machineId !== initial.machineId) throw new Error("Roaming configuration changed.");
+      const peer = config.peers.find(peer => peer.machineId === machineId);
+      if (!peer) return { code: 1, reason: "machine-not-enrolled", message: "Choose an enrolled box and retry spider roam forget." };
+      const file = join(root, "roam", "journal.db");
+      openJournal(file);
+      const db = openDb(file, { fileMustExist: true, checkpointOnClose: false });
+      try { revokeMachine(db, machineId); } finally { db.close(); }
+      return { code: 0, reason: "machine-forgotten", message: `Forgot ${clean(peer.alias)}. Its session homes were not changed. If you have a Mac copy, use spider roam set-home <session> mac --force to recover it.` };
+    });
+  } catch {
+    return { code: 3, reason: "forget-pending", message: "Could not confirm the box was forgotten. Check spider roam doctor and retry forget." };
+  }
+}
+
+function prepareV0MemoryCapture(root: string): void {
+  const core = openLocalCore(root);
+  try {
+    const stores = createStorePort(core.config, core.db, { allowUnassignedGlobal: true });
+    try {
+      for (const key of listStoreKeys(core.db)) if (storeScope(key) !== "worktree") enableMemoryCapture(stores.openStore(key).db, key);
+    } finally { stores.close(); }
+  } finally { core.close(); }
+}
+
 async function agent(transport: Transport, peer: Peer, config: RoamConfig, kind: Extract<CauseStep, "stores" | "recheck-store" | "enable-capture">, args: JsonObject): Promise<JsonObject> {
   const operation: Operation = { id: randomUUID(), machineId: peer.machineId, expectedEpoch: null, kind, args };
   const handle = await transport.resolve(peer);

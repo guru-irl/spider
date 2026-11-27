@@ -1,7 +1,9 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RelocateCheckpoint, RelocateId } from "../relocate/types";
 import { relocate } from "../relocate/relocate";
-import { assertSafeHistories, deferred, destination, ports, request, running, sessionId, source, state, third } from "./relocate-fakes";
+import { assertSafeHistories, deferred, destination, ports, refusal, request, running, sessionId, source, state, third } from "./relocate-fakes";
+
+const readyClock = { now: Date.now, later(ms: number, fn: () => void) { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
 
 const protocol = (effects: string[]) => effects.filter(e => !e.startsWith("save-"));
 
@@ -56,6 +58,32 @@ describe("relocate", () => {
     expect(s.backups.has(source)).toBe(true);
   });
 
+  it("undo delivers a previously unpublished moving home before asking the source to stop", async () => {
+    const s = state(), p = ports(s);
+    s.failAfter = "cas-moving";
+    expect(await relocate(request, p)).toMatchObject({ ok: false, step: "mark-moving", home: { state: "moving" } });
+    expect(s.replicaHomes.get(source)).toEqual(running());
+    const stop = p.stopSource;
+    p.stopSource = async (plan, moving) => s.replicaHomes.get(source)?.state === "moving"
+      ? stop(plan, moving) : { ok: false, refusal: refusal("home-conflict") };
+    expect(await relocate({ sessionId, destinationMachine: source }, p)).toMatchObject({ ok: true, value: {
+      disposition: "undone", home: { machineId: source, epoch: 3, state: "running" },
+    } });
+    expect(s.effects.indexOf("publish-source-moving")).toBeLessThan(s.effects.indexOf("stop-source"));
+    expect(s.processes).toEqual(new Set([source]));
+    expect(s.snapshots.size).toBe(0);
+  });
+
+  it("reports a busy session lock without changing the home", async () => {
+    const s = state(), p = ports(s);
+    p.withSession = async () => { throw Object.assign(new Error("The operation lock is busy"), { name: "HerdrError", code: "lock-occupied" }); };
+    expect(await relocate(request, p)).toMatchObject({ ok: false, step: "check", refusal: {
+      code: "session-busy", message: expect.stringMatching(/another operation/i), nextStep: expect.stringMatching(/wait.*retry/i),
+    } });
+    expect(s.home).toEqual(running());
+    expect(s.effects).toEqual([]);
+  });
+
   it("third destination refuses during moving", async () => {
     const s = state(); s.failAfter = "save-stop-source";
     expect((await relocate(request, ports(s))).ok).toBe(false);
@@ -90,6 +118,18 @@ describe("relocate", () => {
     expect(s.home).toEqual(home); expect(s.ids).toBe(0);
     expect(s.effects).toEqual(["locate-source", "publish-source-running", "activate-source", "start-source", "confirm-source"]);
     expect(s.snapshots.size).toBe(0); expect(s.pushed.size).toBe(0);
+  });
+
+  it("keeps a user-started local pi without trying to launch it again", async () => {
+    const s = state(), p = ports(s);
+    p.unlabelledLocalRunner = async () => 1234;
+    s.refuse = { effect: "start-source", code: "start-pending" };
+    expect(await relocate({ sessionId, destinationMachine: source }, p)).toMatchObject({
+      ok: true, value: { disposition: "already-home", terminal: "pid:1234", localPid: 1234 },
+    });
+    expect(s.attempts).not.toContain("start-source");
+    expect(s.processes).toEqual(new Set([source]));
+    expect(s.homesWritten).toEqual([]);
   });
 
   it("completed same-home call never writes its finished journal", async () => {
@@ -138,7 +178,7 @@ describe("relocate", () => {
     if (mode === "missing-install") cp.completed = [...cp.completed, "install-destination"];
     const home = structuredClone(s.home); const journal = structuredClone(s.journal); const before = s.effects.length;
     expect(await relocate(request, ports(s))).toMatchObject({
-      ok: false, refusal: { code: "journal-unavailable", nextStep: expect.stringMatching(/set-home.*--force.*lost/i) },
+      ok: false, refusal: { code: "journal-unavailable", nextStep: expect.stringMatching(/set-home session-1 source --force.*lost/i) },
     });
     expect(s.home).toEqual(home); expect(s.journal).toEqual(journal);
     expect(s.effects.slice(before)).toEqual([]); expect(s.ids).toBe(1);
@@ -274,10 +314,94 @@ describe("relocate", () => {
     s.refuse = { effect: "initial-source", code: "session-not-found" };
     expect(await relocate(request, ports(s))).toMatchObject({ ok: false, refusal: { code: "session-not-found" } });
     expect(s.home).toBeNull(); expect(s.effects).toEqual([]);
-    s.refuse = { effect: "check", code: "repo-unmapped" };
-    expect(await relocate(request, ports(s))).toMatchObject({ ok: false, refusal: { code: "repo-unmapped" } });
-    expect(s.home).toEqual(running());
-    expect(s.effects).toEqual(["initial-source", "initialize"]);
+  });
+
+  it("a first move refused at check leaves the source ordinary", async () => {
+    const s = state(); s.home = null;
+    s.refuse = { effect: "check", code: "destination-unreachable" };
+    expect(await relocate(request, ports(s))).toMatchObject({ ok: false, home: null, step: "check", refusal: { code: "destination-unreachable" } });
+    expect(s.home).toBeNull();
+    expect(s.journal.size).toBe(0);
+    expect(s.effects).toEqual(["initial-source"]);
     expect(s.processes).toEqual(new Set([source]));
+  });
+
+  it("a failed first checkpoint leaves the source ordinary", async () => {
+    const s = state(); s.home = null; s.failAfter = "save-check";
+    expect(await relocate(request, ports(s))).toMatchObject({ ok: false, home: null, refusal: { code: "journal-unavailable" } });
+    expect(s.home).toBeNull();
+    expect(s.effects).toEqual(["initial-source", "check", "save-check"]);
+    expect(s.processes).toEqual(new Set([source]));
+  });
+
+  it.each([false, true])("reports a safe git command for a detached destination (retry=%s)", async retry => {
+    const s = state(), p = ports(s);
+    const install = p.installDestination;
+    p.installDestination = async (...args) => {
+      const result = await install(...args);
+      return result.ok ? { ok: true, value: { ...result.value, branchDetached: true } } : result;
+    };
+    if (retry) {
+      s.failAfter = "start-destination";
+      expect(await relocate(request, p)).toMatchObject({ ok: false, step: "start-destination" });
+    }
+    expect(await relocate(request, p)).toMatchObject({ ok: true, value: { branchRecovery: {
+      savedBranch: "main", command: `git switch -c spider-relocated-3-111111111111 ${"1".repeat(40)}`,
+    } } });
+  });
+
+  it("waits for a cold destination to confirm without starting twice", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = state(), p = ports(s);
+      const confirm = p.confirm;
+      let ready = false;
+      p.confirm = async (...args) => ready ? confirm(...args) : { ok: false, refusal: refusal("start-pending") };
+      const moving = relocate(request, p, { clock: readyClock, timeoutMs: 2_000 });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(s.home).toMatchObject({ machineId: destination, state: "running" });
+      ready = true;
+      await vi.advanceTimersByTimeAsync(500);
+      expect(await moving).toMatchObject({ ok: true, value: { terminal: "terminal-destination" } });
+      expect(s.effects.filter(e => e === "start-destination")).toHaveLength(1);
+      expect(s.processes).toEqual(new Set([destination]));
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("returns a committed start-pending result at the deadline even if a probe stalls", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = state(), p = ports(s), stalled = deferred();
+      p.confirm = async () => { await stalled.promise; return { ok: true, value: { terminal: "terminal-destination" } }; };
+      const moving = relocate(request, p, { clock: readyClock, timeoutMs: 1_000 });
+      let result: Awaited<typeof moving> | undefined;
+      void moving.then(value => { result = value; });
+      await vi.advanceTimersByTimeAsync(999);
+      expect(result).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      stalled.resolve();
+      expect(result).toMatchObject({ ok: false, step: "confirm", home: { machineId: destination, state: "running" }, refusal: {
+        code: "start-pending", message: expect.stringContaining("committed"), nextStep: expect.stringContaining("spider roam relocate"),
+      } });
+      expect(s.processes).toEqual(new Set([destination]));
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("first move adopts the legacy epoch only after validating it", async () => {
+    const s = state(); s.home = null;
+    const p = ports(s);
+    p.initialEpoch = () => 7;
+    const check = p.check;
+    p.check = async (req, candidate, moveId) => {
+      expect(candidate.epoch).toBe(7);
+      return check(req, candidate, moveId);
+    };
+    p.homes.initialize = async () => {
+      s.home = { ...running(), epoch: 7, updatedAt: 137 };
+      return s.home;
+    };
+    expect(await relocate(request, p)).toMatchObject({ ok: true, value: { home: { machineId: destination, epoch: 9 } } });
+    expect(s.homesWritten[0]).toMatchObject({ machineId: source, state: "moving", epoch: 8 });
+    expect(s.processes).toEqual(new Set([destination]));
   });
 });

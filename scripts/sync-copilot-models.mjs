@@ -52,6 +52,13 @@ const OVERRIDE_FIELDS = new Set([
 function fail(msg) { console.error("[sync-copilot-models] " + msg); process.exit(1); }
 function readJson(p) { return JSON.parse(readFileSync(p, "utf8")); }
 
+function readModels() {
+  if (!existsSync(MODELS_PATH)) return { providers: {} };
+  const content = readFileSync(MODELS_PATH, "utf8");
+  try { return JSON.parse(content); }
+  catch { fail(`${MODELS_PATH} is not strict JSON; remove comments or migrate by hand. No changes were written.`); }
+}
+
 function loadAuth() {
   if (!existsSync(AUTH_PATH)) fail("auth.json not found at " + AUTH_PATH + " — sign in to GitHub Copilot in pi first.");
   const c = (readJson(AUTH_PATH) || {})["github-copilot"] || {};
@@ -224,10 +231,10 @@ function providerCompatDifferences(shadow, builtin, provider, prior) {
 
 async function main() {
   const { models: builtin, snapshot } = await resolveBuiltinIds();
+  const mj = readModels();
   const { token, available } = loadAuth();
   if (available.size === 0) console.warn("[sync-copilot-models] WARNING: availableModelIds empty in auth.json — nothing will be considered usable.");
   const all = await fetchModels(token);
-  const mj = existsSync(MODELS_PATH) ? readJson(MODELS_PATH) : { providers: {} };
   mj.providers ||= {};
   mj.providers["github-copilot"] ||= {};
   const gh = mj.providers["github-copilot"];

@@ -9,13 +9,16 @@ import { readLocalIdentity } from "../runtime";
 import * as runtimeModule from "../runtime";
 import * as hubModule from "../production-hub";
 import * as localDiagnostics from "../local-diagnostics";
+import * as compatibility from "../diagnostics";
+import { configureV0Service } from "../production-controls";
 import * as intercomRuntime from "../intercom-runtime";
 import * as intercomProduction from "../intercom-production";
 import * as participantSupervisor from "../participant-supervisor";
 import * as launcherModule from "../launcher";
 import * as hcModule from "@spider/herdr/client/hc";
 import * as enrollmentModule from "../enrollment";
-import { claimIdLock, inspectIdLock, inspectReleasedIdLock } from "@spider/herdr/sessions/id-lock";
+import { claimIdLock, inspectIdLock, inspectReleasedIdLock, localBootId } from "@spider/herdr/sessions/id-lock";
+import { processStartIdentity } from "@spider/herdr/jobs/handoff";
 import { createSessionLeases } from "@spider/herdr/sessions/lease";
 import { createProcessPresence } from "@spider/herdr/sessions/presence";
 import { withProcessLock } from "@spider/herdr/sessions/registry";
@@ -643,6 +646,48 @@ it.each([
     expect(wakes).toBe(0);
   } finally { vi.unstubAllEnvs(); }
 }, 5000);
+
+it("resumes a stopped participant on a box with a different live legacy session", async () => {
+  const f = fixture(false), root = f.global.root, authority = createRunningIntentAuthority(f.global.db);
+  const location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
+  await authority.set({ sessionId: "s-1", epoch: 2, desired: "stopped", suspended: null, ...location, moveId: "move-1" }, "stop-1",
+    { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
+  await f.global.db.raw.backup(join(root, "spider.db"));
+
+  const liveId = "other-live-session", liveFile = join(root, "other.jsonl"), stateRoot = join(root, "herdr");
+  writeFileSync(liveFile, JSON.stringify({ type: "session", version: 3, id: liveId, cwd: root }) + "\n", { mode: 0o600 });
+  const bootId = await localBootId(), startIdentity = processStartIdentity(process.pid);
+  expect(bootId).toBeTruthy(); expect(startIdentity).toBeTruthy();
+  const owner = { pid: process.pid, startIdentity: startIdentity! };
+  const probe = async () => ({ kind: "live" as const, startIdentity: owner.startIdentity });
+  await claimIdLock(stateRoot, liveId, owner, probe, { bootId: async () => bootId });
+  const leases = createSessionLeases(stateRoot);
+  await leases.claim(liveFile, owner, { leases, presence: createProcessPresence(stateRoot), processes: async () => [], probe }, { mode: "cutover", bootId });
+  await createIntentStore(root).update(liveId, null, {
+    intent: { sessionId: liveId, epoch: 1, desired: "running", suspended: null, file: liveFile, cwd: root, moveId: null },
+    failures: [], supervision: { kind: "live", identity: { bootId: bootId!, pid: owner.pid, startTime: owner.startIdentity }, stableSince: 1 },
+  });
+
+  // Use the real doctor and compatibility checks. Supply the release and SQLite CLI
+  // observations that a source checkout or an older system SQLite cannot provide.
+  const doctorLocal = compatibility.doctorLocal;
+  vi.spyOn(compatibility, "doctorLocal").mockImplementation((config, ports, consumers) => doctorLocal(config, {
+    ...ports, targetBuild: { sha: "1234567", dirty: false, builtAt: "2026-01-01T00:00:00.000Z", version: "1.0.0" },
+    async sqliteCli() { return "3.53.0"; },
+  }, consumers));
+
+  const resolveCli = vi.fn(() => { throw new Error("must not install"); });
+  expect(await configureV0Service(root, true, { resolveCli })).toMatchObject({
+    code: 1, reason: "legacy-upgrade-blocked", message: expect.stringContaining(liveId),
+  });
+  expect(resolveCli).not.toHaveBeenCalled();
+  let wakes = 0;
+  const result = await handleSessionOperation({ ...f.operation, id: "resume-with-live-peer", kind: "session-resume" }, f.ports,
+    { wake: async () => { wakes++; } });
+  expect(result, JSON.stringify(result.value)).toMatchObject({ code: 0, reason: "resumed-intent" });
+  expect(await authority.get("s-1")).toMatchObject({ desired: "running" });
+  expect(wakes).toBe(1);
+});
 
 it("resume reports a blocking doctor and leaves the stopped intent unchanged", async () => {
   const f = fixture(false), authority = createRunningIntentAuthority(f.global.db), location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };

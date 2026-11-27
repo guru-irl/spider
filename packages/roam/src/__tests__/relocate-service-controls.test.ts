@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
 import { migrate, openDb } from "@spider/db-core";
+import { writeLocal } from "@spider/db-core/roam/local-state";
 import { claimIdLock, localBootId } from "@spider/herdr/sessions/id-lock";
 import { createSessionLeases } from "@spider/herdr/sessions/lease";
 import { createProcessPresence } from "@spider/herdr/sessions/presence";
@@ -133,6 +134,57 @@ it.each(["hub", "box"] as const)("enable refuses pending legacy work before chan
   expect(existsSync(role === "hub" ? hubServiceFile(f.root, f.launchd.plistDir, "v0")
     : join(f.systemd.unitDir, "spider-roam-supervisor-v0.service"))).toBe(false);
 });
+
+it.each(["terminal receipt", "v0 frozen source", "v0 checkpoint map", "v0 incoming map"] as const)(
+  "enable accepts %s without treating it as unfinished legacy work", async kind => {
+    const f = fixture("hub"), key = "worktree:fixture-repo:workspace-1", checkout = join(f.root, "checkout"), other = join(f.root, "other"), id = "v0-33333333-3333-4333-8333-333333333333";
+    mkdirSync(checkout); mkdirSync(other);
+    const journal = openJournal(join(f.root, "roam", "journal.db"));
+    if (kind === "terminal receipt") {
+      journal.begin({ id: "old-settled", kind: "move", machineId: f.hub, expectedEpoch: 1, args: {} });
+      journal.record("old-settled", "done", { code: 0, reason: "moved", value: { sourceCleanup: { status: "done" } } });
+    } else if (kind === "v0 frozen source") {
+      const directory = join(checkout, ".spider"); mkdirSync(directory);
+      const project = openDb(join(directory, "project.db"));
+      try {
+        migrate(project, "worktree", { machineId: f.hub, globalRoot: f.root });
+        project.prepare("UPDATE roam_meta SET machine_id=?,store_key=? WHERE id=1").run(f.hub, key);
+        project.prepare("INSERT INTO roam_sessions(session_id,epoch,state) VALUES (?,1,'frozen')").run("session-v0");
+      } finally { project.close(); }
+      const global = openDb(join(f.root, "spider.db"));
+      try {
+        global.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES (?,?,?)").run("fixture-repo", "workspace-1", checkout);
+        global.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state,destination) VALUES (?,?,2,?,1,'running',NULL)")
+          .run("session-v0", f.box, id);
+      } finally { global.close(); }
+    } else {
+      const sourceLocal = kind === "v0 checkpoint map", sourceMachine = sourceLocal ? f.hub : f.box, destinationMachine = sourceLocal ? f.box : f.hub;
+      const placement = (machineId: string, root: string) => ({ sessionId: "session-v0", machineId, historyMachine: sourceMachine,
+        repoKey: "fixture-repo", workspaceId: "workspace-1", repository: root, cwd: root, file: join(root, "session.jsonl"),
+        stores: ["global", "repo:fixture-repo", key] });
+      const plan = { moveId: id, source: { sessionId: "session-v0", machineId: sourceMachine, epoch: 1, updatedAt: 1,
+        state: "running", destination: null, moveId: null }, sourcePlacement: placement(sourceMachine, sourceLocal ? checkout : other),
+        destinationPlacement: placement(destinationMachine, sourceLocal ? other : checkout), destinationPrerequisites: [], startedAt: 1 };
+      journal.begin({ id, kind: "relocate-v0", machineId: f.hub, expectedEpoch: 1, args: { plan } });
+      if (sourceLocal) journal.record(id, "relocate-checkpoint", { checkpoint: { plan, completed: [], captured: null, installed: null, terminal: null, result: null } });
+      else journal.record(id, "relocate-incoming", { plan, expectedKey: key });
+      const global = openDb(join(f.root, "spider.db")), identity = JSON.stringify(["fixture-repo", "workspace-1"]);
+      try {
+        writeLocal(global, "mapping-intent", JSON.stringify(["workspace", identity]), { kind: "workspace", identity, target_path: checkout,
+          store_key: key, command_json: null, attempt_id: "attempt-v0" });
+        if (sourceLocal) global.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state,destination) VALUES (?,?,2,?,1,'moving',?)")
+          .run("session-v0", sourceMachine, id, destinationMachine);
+        else writeLocal(global, "relocate-incoming", key, { moveId: id });
+      } finally { global.close(); }
+    }
+    const result = await configureV0Service(f.root, true, f.options);
+    expect(result.code, result.message).toBe(0);
+    expect(result.reason).toBe("roaming-enabled");
+    expect(f.enabled()).toBe(true);
+    expect(existsSync(hubServiceFile(f.root, f.launchd.plistDir, "v0"))).toBe(true);
+    expect(f.calls.some(call => call[0] === "bootstrap")).toBe(true);
+  },
+);
 
 it.each(["hub", "box"] as const)("enable pins the local Herdr installation in the %s service", async role => {
   const f=fixture(role), binary=join(f.root,"bin","hc"), socket=join(f.root,"socket"), agentDirectory=join(f.root,"agent");

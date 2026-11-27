@@ -1,3 +1,4 @@
+import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { storeScope } from "@spider/db-core/roam/codec";
 import { localEntries } from "@spider/db-core/roam/local-state";
@@ -8,6 +9,7 @@ import type { Diagnostic } from "./contracts";
 import { openDiagnosticSnapshot } from "./diagnostic-snapshot";
 import { inspectIntentReservations } from "./intent";
 import { inspectAdoptedOwner } from "./launcher";
+import { readLocalIdentity } from "./runtime";
 
 export type LegacyUpgradeInventory =
   | { status: "legacy-upgrade-ready"; findings: readonly [] }
@@ -15,6 +17,20 @@ export type LegacyUpgradeInventory =
   | { status: "legacy-upgrade-unverified"; findings: readonly string[] };
 
 function safeId(id: string): string { return id.replace(/[^A-Za-z0-9._:-]/g, "?").slice(0, 128); }
+function present(file: string): boolean {
+  try { lstatSync(file); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+}
+async function pendingHandoffs(root: string) {
+  if (present(join(root, "id-locks"))) return listPendingIdLocks(root);
+  if (present(root)) {
+    const stat = lstatSync(root);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || realpathSync(root) !== root ||
+        typeof process.getuid === "function" && stat.uid !== process.getuid() ||
+        process.platform !== "win32" && (stat.mode & 0o022) !== 0) throw new Error("Unsafe Herdr directory");
+  }
+  return [];
+}
 async function probeProcess(pid: number): Promise<ProcessProbe> {
   try {
     const identity = processStartIdentity(pid);
@@ -26,6 +42,9 @@ async function probeProcess(pid: number): Promise<ProcessProbe> {
 export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeInventory> {
   try {
     const findings: string[] = [], unknown: string[] = [];
+    const configFile = join(root, "roam", "config.json"), identityFile = join(root, "roam", "machine.json");
+    const configured = present(configFile), config = configured ? readLocalIdentity(root) : null;
+    if (!configured && present(identityFile)) throw new Error("Missing roaming configuration");
     const db = openDiagnosticSnapshot(join(root, "roam", "journal.db"));
     if (db) try {
       const moves = db.prepare("SELECT operation_id FROM roam_operations WHERE kind='move' AND result_json IS NULL ORDER BY operation_id")
@@ -56,7 +75,10 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
       }
     } finally { db.close(); }
     const global = openDiagnosticSnapshot(join(root, "spider.db"));
+    if (!global && config) throw new Error("Missing global store");
     if (global) try {
+      const meta = global.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id?: unknown; store_key?: unknown } | undefined;
+      if (!meta || config && meta.machine_id !== config.machineId || !(meta.store_key === null || meta.store_key === "global")) throw new Error("Global store identity mismatch");
       for (const row of localEntries<unknown>(global, "mapping-intent")) {
         if (!row.value || typeof row.value !== "object" || Array.isArray(row.value)) throw new Error("Invalid mapping intent");
         const map = row.value as Record<string, unknown>;
@@ -74,7 +96,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
         findings.push(`map store ${safeId(map.store_key)}`);
       }
     } finally { global.close(); }
-    const stateRoot = join(root, "herdr"), pending = await listPendingIdLocks(stateRoot);
+    const stateRoot = join(root, "herdr"), pending = await pendingHandoffs(stateRoot);
     for (const handoff of pending) findings.push(`handoff session ${safeId(handoff.sessionId)} operation ${safeId(handoff.operationId)}`);
     for (const reservation of await inspectIntentReservations(root)) {
       const label = `launch session ${safeId(reservation.sessionId)} operation ${safeId(reservation.operationId)}`;

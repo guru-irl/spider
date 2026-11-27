@@ -239,11 +239,13 @@ describe("v0 transfer stop boundary",()=>{
   f.io.probe = async pid => pid === first.pid
    ? {kind: "live", startIdentity: first.startIdentity, pi: false}
    : pid === unreadable.pid ? {kind: "unknown"} : probe(pid);
+  const moving = {sessionId: id, machineId: hub, epoch: 2, state: "moving" as const, destination: box, moveId: "v0-test" as RelocateId, updatedAt: 1};
 
-  expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toMatchObject({
+  expect(await stopLocalSession(id, moving, f.io, f.clock, 30)).toMatchObject({
    ok: false, refusal: {code: "session-busy", message: expect.stringContaining("PID 44")},
   });
   expect(f.signals).toEqual([]);
+  expect(f.events).toEqual([]);
  });
  it("stops when signalling a descendant makes its child exit", async () => {
   const f = stopFixture();
@@ -266,9 +268,11 @@ describe("v0 transfer stop boundary",()=>{
    f.signals.push(pid);
    if (pid === parent.pid) parentLive = childLive = false;
   };
+  const moving = {sessionId: id, machineId: hub, epoch: 2, state: "moving" as const, destination: box, moveId: "v0-test" as RelocateId, updatedAt: 1};
 
-  expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toEqual({ok: true, value: undefined});
+  expect(await stopLocalSession(id, moving, f.io, f.clock, 30)).toEqual({ok: true, value: undefined});
   expect(f.signals).toEqual([43, 42]);
+  expect(f.events).toContain("shutdown");
  });
  it("does not signal a descendant PID reused during shutdown", async () => {
   const f = stopFixture();

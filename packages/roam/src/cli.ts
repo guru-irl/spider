@@ -674,17 +674,15 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       if (argv.length === 2) {
         let config: ReturnType<typeof readLocalIdentity> | undefined;
         try { config = readLocalIdentity(root); }
-        catch {
-          const inventory = await inspectLegacyUpgrade(root);
-          if (inventory.status !== "legacy-upgrade-ready") {
-            const diagnostic = legacyUpgradeDiagnostic(inventory);
+        catch { /* The inventory distinguishes an unconfigured root from unreadable legacy evidence. */ }
+        if (!config || !config.enabled) {
+          const inventory = await inspectLegacyUpgrade(root), diagnostic = legacyUpgradeDiagnostic(inventory);
+          if (!config && inventory.status !== "legacy-upgrade-ready") {
             if (jsonOutput) io.out(`${JSON.stringify({ ...outcome(1, inventory.status), value: { enabled: null, diagnostics: [diagnostic], consumers: [] } })}\n`);
             else io.out(`${clean(diagnostic.reason)}\n`);
             return 1;
           }
-        }
-        if (!config || !config.enabled) {
-          let rows: Awaited<ReturnType<typeof peerEnabledDiagnostics>> = [legacyUpgradeDiagnostic(await inspectLegacyUpgrade(root))];
+          const rows: Awaited<ReturnType<typeof peerEnabledDiagnostics>> = [diagnostic];
           if (config?.role === "hub" && config.peers.length) {
             try {
               const herdr = loadHerdrConfig(root), transport = createTransport({ binary: herdr.core.binary, env: process.env, enrolled: config.peers });

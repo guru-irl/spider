@@ -41,7 +41,9 @@ export type V0RefusalCode =
   | "unsupported-workspace" | "destination-dirty"
   | "confirmation-required" | "destination-copy-missing"
   | "stop-timeout" | "sync-failed" | "transfer-failed"
-  | "install-failed" | "start-pending" | "journal-unavailable";
+  | "install-failed" | "start-pending" | "journal-unavailable"
+  // lane 1: adapters-C1
+  | "session-busy";
 
 export interface V0Refusal {
   code: V0RefusalCode;
@@ -143,7 +145,11 @@ export interface SetHomePorts extends SessionMachinePorts {
   newMoveId(): RelocateId;
   withSession<T>(sessionId: SessionId, run: () => Promise<T>): Promise<T>;
 }
-export interface SupervisorEntry { sessionId: SessionId; home: RelocateHome | null; placement: SessionPlacement | null }
+export interface SupervisorEntry {
+  sessionId: SessionId; home: RelocateHome | null; placement: SessionPlacement | null;
+  // lane 1: entry-I7
+  placementRefusal?: V0Refusal;
+}
 export type SessionOwner = { kind: "free" } | { kind: "live"; pid: number; terminal: string | null } | { kind: "unknown" };
 export interface HomeSupervisorPorts {
   machineId: MachineId;

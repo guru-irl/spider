@@ -19,7 +19,7 @@ function stopFixture() {
  const owner={identity:{pid:42,startIdentity:"pi-42"},bootId:"boot",pendingOperationId:null,pendingFile:null,pendingCoreId:null,operationId:null};
  const signals:number[]=[];
  const events:string[]=[];
- const io:LocalIO={inspect:async()=>exits?null:owner,probe:async()=>{probes++;return exits?{kind:"absent"}:{kind:"live",startIdentity:"pi-42",pi:true};},claimFree:async()=>{events.push("lock-free");},signal:async pid=>{signals.push(pid);events.push("signal");},shutdown:async()=>{events.push("shutdown");return false;},pause:async()=>{events.push("wait");now+=10;if(now>=20)exits=true;},terminals:async()=>[],launch:async()=>({terminal:"t"})};
+ const io:LocalIO={inspect:async()=>exits?null:owner,probe:async()=>{probes++;return exits?{kind:"absent"}:{kind:"live",startIdentity:"pi-42",pi:true};},claimFree:async()=>{events.push("lock-free");},signal:async pid=>{signals.push(pid);events.push("signal");},shutdown:async()=>{events.push("shutdown");return false;},pause:async()=>{events.push("wait");now+=10;if(now>=20)exits=true;},terminals:async()=>exits?[]:[{terminal:"t",state:"live",pid:42,owned:true}],tree:async()=>({descendants:[],groups:[]}),groupBlockers:async()=>[],writerBlockers:async()=>[],launch:async()=>({terminal:"t"})};
  return {io,signals,events,clock:{now:()=>now,later:()=>()=>{}},owner,get probes(){return probes;}};
 }
 const fixtures: {close():void}[]=[];
@@ -120,6 +120,57 @@ describe("v0 real transfer",()=>{
  });
 });
 describe("v0 transfer stop boundary",()=>{
+ it("waits for verified tool descendants even after the locked pi exits", async () => {
+  const f = stopFixture();
+  const child = {pid: 43, startIdentity: "tool-43", command: "bash"};
+  f.io.tree = async () => ({descendants:[child],groups:[]});
+  f.io.terminals = async () => (await f.io.inspect(id)) ? [{state: "live", terminal: "t", pid: 42, owned: true}] : [];
+  const probe = f.io.probe;
+  let ticks = 0;
+  f.io.probe = async pid => pid === child.pid
+   ? ticks < 3 ? {kind: "live", startIdentity: child.startIdentity, pi: false} : {kind: "absent"}
+   : probe(pid);
+  const pause = f.io.pause;
+  f.io.pause = async ms => { ticks++; await pause(ms); };
+  expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toEqual({ok: true, value: undefined});
+  expect(f.signals).toEqual([43, 42]);
+  expect(ticks).toBe(3);
+ });
+ it("does not acknowledge stop while an observed tool process group still has a writer", async () => {
+  const f = stopFixture();
+  f.io.tree = async () => ({descendants: [], groups: [43]});
+  f.io.groupBlockers = async groups => groups.includes(43) ? ["PID 44 (bash)"] : [];
+  const result = await stopLocalSession(id, null, f.io, f.clock, 30);
+  expect(result).toMatchObject({ok: false, refusal: {code: "session-busy", message: expect.stringContaining("PID 44 (bash)"), nextStep: "Close these, then rerun relocate."}});
+  expect(f.signals).toEqual([42]);
+ });
+ it("refuses to signal an ordinary pi even when it owns the session ID lock", async () => {
+  const f = stopFixture();
+  f.io.terminals = async () => [];
+  expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toMatchObject({ok: false, refusal: {code: "session-busy", message: expect.stringContaining("PID 42 (pi)")}});
+  expect(f.signals).toEqual([]);
+ });
+ it("stops a blocked Spider launch that never acquired the ID lock", async () => {
+  const f = stopFixture();
+  let live = true;
+  f.io.inspect = async () => null;
+  f.io.terminals = async () => live ? [{terminal:"t",state:"live",pid:42,owned:true}] : [];
+  f.io.probe = async () => live ? {kind:"live",startIdentity:"pi-42",pi:true} : {kind:"absent"};
+  f.io.signal = async pid => { f.signals.push(pid); live = false; };
+  const moving = {sessionId:id,machineId:hub,epoch:2,state:"moving" as const,destination:box,moveId:"v0-blocked" as RelocateId,updatedAt:1};
+  expect(await stopLocalSession(id,moving,f.io,f.clock,30)).toEqual({ok:true,value:undefined});
+  expect(f.signals).toEqual([42]);
+ });
+ it.each(["reused pid", "other lock", "unowned terminal"])("does not signal a lockless launch when it finds %s", async fault => {
+  const f = stopFixture();
+  let checked = false;
+  f.io.inspect = async () => checked && fault === "other lock" ? {...f.owner,identity:{pid:99,startIdentity:"other"}} : null;
+  f.io.terminals = async () => [{terminal:"t",state:"live",pid:42,owned: fault === "unowned terminal" ? undefined : true}];
+  f.io.probe = async () => ({kind:"live",startIdentity:checked && fault === "reused pid" ? "other" : "pi-42",pi:true});
+  f.io.tree = async () => { checked = true; return {descendants:[],groups:[]}; };
+  expect(await stopLocalSession(id,null,f.io,f.clock,30)).toMatchObject({ok:false,refusal:{code:"session-busy"}});
+  expect(f.signals).toEqual([]);
+ });
  it("shutdown fallback waits for the ID lock",async()=>{
   const f=stopFixture();let capture=false;
   const done=stopLocalSession(id,null,f.io,f.clock,30).then(r=>{if(r.ok){capture=true;f.events.push("capture");}return r;});
@@ -128,6 +179,18 @@ describe("v0 transfer stop boundary",()=>{
   expect(f.signals).toEqual([42]);
   expect(f.events.indexOf("capture")).toBeGreaterThan(f.events.indexOf("lock-free"));
   expect(f.events.filter(e=>e==="wait")).toHaveLength(2);
+ });
+ it.each([true,false])("waits for the stopped terminal to clear within the deadline (clears=%s)",async clears=>{
+  const f = stopFixture();
+  const pause = f.io.pause;
+  let ticks = 0;
+  f.io.pause = async ms => { ticks++; await pause(ms); };
+  f.io.terminals = async () => clears && ticks >= 3 ? [] : [{terminal:"t",state:"live",pid:42,owned:true}];
+  const result = await stopLocalSession(id,null,f.io,f.clock,30);
+  if (clears) expect(result).toEqual({ok:true,value:undefined});
+  else expect(result).toMatchObject({ok:false,refusal:{code:"session-busy",message:expect.stringContaining("PID 42")}});
+  expect(f.signals).toEqual([42]);
+  expect(ticks).toBe(3);
  });
  it("changed lock owner is never signalled",async()=>{
   const f=stopFixture();let reads=0;

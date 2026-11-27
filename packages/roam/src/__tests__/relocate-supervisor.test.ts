@@ -64,6 +64,16 @@ describe("v0 home supervisor", () => {
     vi.mocked(f.ports.entries).mockRejectedValueOnce(new Error("db offline")); await loop.tick();
     expect(f.ports.stop).toHaveBeenCalledWith(id); expect(f.ports.owner).toHaveBeenCalledTimes(1);
   });
+  it("logs an actionable refusal once for repeated supervisor failures", async () => {
+    const f = fixture(); f.setOwner({kind:"unknown"});
+    const output: string[] = [];
+    const loop = createHomeSupervisor(f.ports, line => output.push(line));
+    await loop.tick(); await loop.tick();
+    expect(output).toHaveLength(1);
+    expect(output[0]).toContain("session-a");
+    expect(output[0]).toContain("start-pending");
+    expect(output[0]).toContain("Check the local session owner before trying again.");
+  });
   it("ticks serialize and stop drains", async () => {
     vi.useFakeTimers(); const f = fixture(); let release!: () => void;
     vi.mocked(f.ports.start).mockImplementationOnce(async () => { await new Promise<void>(r => { release = r; }); return { ok: true as const, value: { terminal: "term" } }; });

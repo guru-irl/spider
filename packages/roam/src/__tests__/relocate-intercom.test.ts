@@ -662,7 +662,7 @@ describe("roaming v0 intercom", () => {
       [BOX]: { ...ben, name: "shared" },
       [OTHER]: { address: { sessionId: "carl", scopeId: "scope-1" }, name: "shared", homeEpoch: 1, endpointEpoch: "carl-connection" },
     };
-    const handlers = new Map([a, b].map((fixture, index) => {
+    const handlers = new Map<string, ReturnType<typeof createV0Intercom>>([a, b].map((fixture, index) => {
       const machine = index === 0 ? BOX : OTHER;
       return [machine, createV0Intercom(fixture.root, { broker: async (_dir, op) => {
         if (op.kind !== "lookup") throw new Error("no delivery expected");

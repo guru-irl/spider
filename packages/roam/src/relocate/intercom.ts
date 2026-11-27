@@ -244,9 +244,10 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
         ? refused("not-configured") : { kind: "legacy" };
     }
     if (!senderHome) return refused("changed");
-    const source = endpointOf(from);
-    if (!source || !locals.some(local => local.id === from.id && endpointOf(local) !== null && sameEndpoint(endpointOf(local)!, source)))
+    const candidateSource = endpointOf(from);
+    if (!candidateSource || !locals.some(local => local.id === from.id && endpointOf(local) !== null && sameEndpoint(endpointOf(local)!, candidateSource)))
       return refused("changed");
+    const source: V0Endpoint = candidateSource;
     const senderCode = homeCode(senderHome, configured.config.machineId, source.homeEpoch);
     if (senderCode) return refused(senderCode);
     if (qualifiedPeer && qualifiedHome && qualifiedHome.machineId !== qualifiedPeer.machineId) return refused("no-match");

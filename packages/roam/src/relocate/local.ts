@@ -48,7 +48,7 @@ export interface LocalIO {
   signal(pid: number): Promise<void>;
   shutdown(operation: Operation): Promise<boolean>;
   pause(ms: number): Promise<void>;
-  terminals(sessionId: string): Promise<readonly LocalTerminal[]>;
+  terminals(sessionId: string, admittedPid?: number): Promise<readonly LocalTerminal[]>;
   launch(request: {home:RunningHome;placement:SessionPlacement}): Promise<{terminal:string}>;
 }
 export function exactHome(a: RelocateHome | null, b: RelocateHome): boolean {
@@ -128,38 +128,45 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
     async signal(pid) { process.kill(pid,"SIGTERM"); },
     async shutdown(operation) { try { return (await requestSessionControl(join(options.root,"roam","s"),operation,{timeoutMs:options.limits.controlMs})).code === 0; } catch { return false; } },
     pause:ms=>delay(ms),
-    async terminals(id) {
-      const reply = await invokeCli(binary,["ls","--all","--json","--label",`spider.session=${id}`],env,options.limits.replyBytes,undefined,{timeoutMs:options.limits.controlMs});
-      if (!reply || typeof reply !== "object" || !("terminals" in reply) || !Array.isArray(reply.terminals)) throw new Error("Terminal list unavailable");
-      return (await Promise.all(reply.terminals.map(async (value: unknown) => {
-        if (!value || typeof value !== "object") throw new Error("Invalid terminal");
-        const row = value as Record<string,unknown>;
-        // Native peer addresses are qualified; their processes are not local.
-        if (typeof row.address === "string" && row.address.includes("/")) return null;
-        if (typeof row.address !== "string" || !row.address || row.state !== "live" && row.state !== "finished") throw new Error("Unknown terminal state");
-        if (row.state === "finished") return finishedTerminal(row.address,row);
-        let pid: unknown = row.pid ?? row.process_id ?? null;
-        let labels: unknown = row.labels;
-        if (pid === null || labels == null) {
-          const detail = await invokeCli(binary,["get",row.address,"--json"],env,options.limits.replyBytes,undefined,{timeoutMs:options.limits.controlMs});
-          const current = object(detail);
-          if (current.address !== row.address) throw new Error("Terminal identity changed");
-          if (current.state === "finished" && "reason" in current) return finishedTerminal(row.address,current);
-          if (current.state !== "live" || !("pid" in current)) throw new Error("Terminal identity changed");
-          if (pid !== null && current.pid !== pid) throw new Error("Terminal process changed");
-          pid = current.pid;
-          if ("labels" in current) labels = current.labels;
-        }
-        if (pid !== null && (!Number.isSafeInteger(pid) || (pid as number) <= 0)) throw new Error("Unknown terminal process");
-        const terminal: LocalTerminal = {terminal:row.address,state:"live",pid:pid as number|null};
-        if (labels && typeof labels === "object") {
-          const tags = labels as Record<string,unknown>;
-          if (tags["spider.kind"] === "session" && tags["spider.session"] === id && tags["spider.machine"] === options.config.machineId &&
-              typeof tags["spider.roam.epoch"] === "string" && /^[1-9]\d*$/.test(tags["spider.roam.epoch"]) &&
-              !("spider.roam.operation" in tags)) terminal.owned = true;
-        }
-        return terminal;
-      }))).filter(terminal => terminal !== null);
+    async terminals(id,admittedPid) {
+      async function list(args: readonly string[], pidFilter?: number): Promise<LocalTerminal[]> {
+        const reply = await invokeCli(binary,args,env,options.limits.replyBytes,undefined,{timeoutMs:options.limits.controlMs});
+        if (!reply || typeof reply !== "object" || !("terminals" in reply) || !Array.isArray(reply.terminals)) throw new Error("Terminal list unavailable");
+        return (await Promise.all(reply.terminals.map(async (value: unknown) => {
+          if (!value || typeof value !== "object") throw new Error("Invalid terminal");
+          const row = value as Record<string,unknown>;
+          // Native peer addresses are qualified; their processes are not local.
+          if (typeof row.address === "string" && row.address.includes("/")) return null;
+          if (typeof row.address !== "string" || !row.address || row.state !== "live" && row.state !== "finished") throw new Error("Unknown terminal state");
+          if (row.state === "finished") return pidFilter === undefined ? finishedTerminal(row.address,row) : null;
+          let pid: unknown = row.pid ?? row.process_id ?? null;
+          if (pidFilter !== undefined && pid !== null && pid !== pidFilter) return null;
+          let labels: unknown = row.labels;
+          if (pid === null || labels == null) {
+            const detail = await invokeCli(binary,["get",row.address,"--json"],env,options.limits.replyBytes,undefined,{timeoutMs:options.limits.controlMs});
+            const current = object(detail);
+            if (current.address !== row.address) throw new Error("Terminal identity changed");
+            if (current.state === "finished" && "reason" in current) return pidFilter === undefined ? finishedTerminal(row.address,current) : null;
+            if (current.state !== "live" || !("pid" in current)) throw new Error("Terminal identity changed");
+            if (pid !== null && current.pid !== pid) throw new Error("Terminal process changed");
+            pid = current.pid;
+            if ("labels" in current) labels = current.labels;
+          }
+          if (pid !== null && (!Number.isSafeInteger(pid) || (pid as number) <= 0)) throw new Error("Unknown terminal process");
+          if (pidFilter !== undefined && pid !== pidFilter) return null;
+          const terminal: LocalTerminal = {terminal:row.address,state:"live",pid:pid as number|null};
+          if (labels && typeof labels === "object") {
+            const tags = labels as Record<string,unknown>;
+            if (tags["spider.kind"] === "session" && tags["spider.session"] === id && tags["spider.machine"] === options.config.machineId &&
+                typeof tags["spider.roam.epoch"] === "string" && /^[1-9]\d*$/.test(tags["spider.roam.epoch"]) &&
+                !("spider.roam.operation" in tags)) terminal.owned = true;
+          }
+          return terminal;
+        }))).filter(terminal => terminal !== null);
+      }
+      const tagged = await list(["ls","--all","--json","--label",`spider.session=${id}`]);
+      if (admittedPid === undefined || tagged.some(terminal=>terminal.pid === admittedPid)) return tagged;
+      return [...tagged,...await list(["ls","--json"],admittedPid)];
     },
     async launch({home,placement}) {
       if (!pi) throw new Error("Pi executable unavailable");
@@ -186,12 +193,12 @@ export async function stopLocalSession(sessionId: SessionId, moving: MovingHome 
       await io.claimFree(sessionId);
       observed = await io.inspect(sessionId);
     }
-    const liveTerminals = async () => (await io.terminals(sessionId)).filter(t=>t.state === "live");
-    const live = await liveTerminals();
     const lockPid = observed?.identity.pid;
     // Ordinary pi holds the admission lock without managed launch labels.
     // Labels are still required before admission, when a lock cannot prove ownership.
     const admitted = observed?.pendingOperationId === null;
+    const liveTerminals = async () => (await io.terminals(sessionId,admitted ? lockPid : undefined)).filter(t=>t.state === "live");
+    const live = await liveTerminals();
     const terminal = lockPid !== undefined
       ? live.find(t=>t.pid === lockPid && (admitted || t.owned))
       : live.length === 1 && live[0].owned ? live[0] : undefined;

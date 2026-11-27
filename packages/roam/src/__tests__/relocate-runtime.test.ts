@@ -58,14 +58,54 @@ describe("v0 local runtime",()=>{
   const f = runtimeFixture(), {moving} = localCheckout(f);
   f.setLock({identity:{pid:42,startIdentity:"pi-42"},bootId:"boot",pendingOperationId:null,pendingFile:null,pendingCoreId:null,operationId:null});
   f.setProbe({kind:"live",pi:true,startIdentity:"pi-42"});
-  f.setTerminals([{terminal:"t12",state:"live",pid:42}]);
+  let terminalExited = false;
+  vi.mocked(hcApi.invokeCli).mockImplementation(async (_binary, argv) => {
+   if (argv[0] === "ls") return { terminals: argv.includes("--label") ? [] : [
+    ...terminalExited ? [] : [{address:"t12",state:"live",agent:"pi"}],
+    {address:"t99",state:"live",agent:"pi",pid:99,labels:{}},
+    {address:"peer/t12",state:"live",agent:"pi",pid:42,labels:{}},
+   ] };
+   if (argv[0] === "get" && argv[1] === "t12") return {address:"t12",state:"live",pid:42,labels:{}};
+   throw new Error("unexpected native request");
+  });
   const signal = f.io.signal, pause = f.io.pause;
   f.io.signal = async pid => { await signal(pid); f.setProbe({kind:"absent"}); f.setLock(null); };
-  f.io.pause = async ms => { await pause(ms); f.setTerminals([]); };
-  const local = createLocalRuntime(f.options,f.io);
+  f.io.pause = async ms => { await pause(ms); terminalExited = true; };
+  const local = createLocalRuntime(f.options,{...f.io,terminals:createLocalIO(f.options).terminals});
   expect(await local.stop(id,moving)).toEqual({ok:true,value:undefined});
   expect(f.signalled).toEqual([42]);
+  expect(terminalExited).toBe(true);
   expect(await local.owner(id)).toEqual({kind:"free"});
+ });
+ it("reports an unrelated unlabelled pi in the same checkout without stopping it", async () => {
+  const f = runtimeFixture(), {moving,placement} = localCheckout(f);
+  const child = spawn(process.execPath,["-e",`
+   process.title = "pi";
+   process.once("message", () => process.exit(0));
+   process.send("ready");
+  `],{cwd:placement.cwd,stdio:["ignore","ignore","ignore","ipc"]});
+  const exited = once(child,"exit");
+  try {
+   const [ready] = await Promise.race([once(child,"message"),exited]);
+   expect(ready).toBe("ready");
+   f.setLock({identity:{pid:42,startIdentity:"pi-42"},bootId:"boot",pendingOperationId:null,pendingFile:null,pendingCoreId:null,operationId:null});
+   f.setProbe({kind:"live",pi:true,startIdentity:"pi-42"});
+   let stopped = false;
+   vi.mocked(hcApi.invokeCli).mockImplementation(async (_binary, argv) => {
+    if (argv[0] !== "ls") throw new Error("unexpected native request");
+    return {terminals: argv.includes("--label") || stopped ? [] : [{address:"t12",state:"live",agent:"pi",pid:42,labels:{}}]};
+   });
+   const signal = f.io.signal;
+   f.io.signal = async pid => { await signal(pid); stopped = true; f.setProbe({kind:"absent"}); f.setLock(null); };
+   const native = createLocalIO(f.options);
+   const local = createLocalRuntime(f.options,{...f.io,terminals:native.terminals,writerBlockers:native.writerBlockers});
+   expect(await local.stop(id,moving)).toMatchObject({ok:false,refusal:{code:"session-busy",message:expect.stringContaining(`PID ${child.pid} (pi)`)}});
+   expect(f.signalled).toEqual([42]);
+   expect(child.exitCode).toBeNull();
+  } finally {
+   if (child.connected) child.send("exit");
+   await exited;
+  }
  });
  it.each([{pid:43,pendingOperationId:null},{pid:42,pendingOperationId:"pending-launch"}])(
   "does not stop an unlabelled terminal with a mismatched pid or pending lock (%j)", async ({pid,pendingOperationId}) => {

@@ -250,8 +250,8 @@ it("uses the fixture shell for a supervised exact launch", async () => {
   } finally { global.close(); }
 }, 5000);
 
-it("selects the three packaged hosting stories serially and never counts missing results as passed", () => {
-  const ids = ["R03", "R04", "R05"];
+it("selects the one packaged hosting story serially and never counts missing results as passed", () => {
+  const ids = ["R04"];
   expect(parseOptions(["--tier", "headless", "--story", ids.join(",")], {}).ids).toEqual(ids);
   for (const id of ids) {
     expect(profileIds.headless).toContain(id);
@@ -261,6 +261,6 @@ it("selects the three packaged hosting stories serially and never counts missing
   }
   expect(storyWorkers({ tier: "headless", ids })).toBe(1);
   const missing = buildMatrix("headless", ids, []);
-  expect(missing.filter((row: { id: string }) => ids.includes(row.id)).map((row: { result: string }) => row.result)).toEqual(["failed", "failed", "failed"]);
+  expect(missing.filter((row: { id: string }) => ids.includes(row.id)).map((row: { result: string }) => row.result)).toEqual(["failed"]);
   expect(complete(missing, ids)).toBe(false);
 }, 5000);

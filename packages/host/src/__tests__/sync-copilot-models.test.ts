@@ -396,6 +396,23 @@ describe("Copilot model sync catalog", () => {
     expect(readFileSync(join(fixture, ".pi/agent", backup!), "utf8")).toBe(JSON.stringify(before));
   });
 
+  // JSON accepted by pi but not JSON.parse must not be rewritten or echoed.
+  it.each([
+    ["comments", '// fixture-private-sentinel\n{"providers":{}}'],
+    ["invalid syntax", '{"providers":{}, "marker":"fixture-private-sentinel",}'],
+  ])("refuses models.json with %s and gives safe migration advice", (_kind, source) => {
+    writeFileSync(join(fixture, "catalog.json"), JSON.stringify({ data: [model("model-c", "Example")] }));
+    writeFileSync(modelsPath, source);
+    const result = invoke();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(modelsPath);
+    expect(result.stderr).toMatch(/remove comments/i);
+    expect(result.stderr).toMatch(/migrate.*hand/i);
+    expect(result.stdout + result.stderr).not.toContain("fixture-private-sentinel");
+    expect(readFileSync(modelsPath, "utf8")).toBe(source);
+    expect(readdirSync(join(fixture, ".pi/agent"))).toEqual(["models.json"]);
+  });
+
   // A failed partial write must not truncate the original configuration.
   it("keeps the original and its mode when the replacement write fails", () => {
     writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a" }];\n');

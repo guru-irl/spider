@@ -4,7 +4,7 @@
 // as the title, so renderResult renders only the BODY (no header of its own — that
 // would double the "spider"). `options.expanded` reflects the in-chat Ctrl+O toggle;
 // `context.args` are the call params; `result.details` is the structured payload.
-import { truncateToWidth, visibleWidth, Box } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, stripTerminalSequences, Box } from "@earendil-works/pi-tui";
 import { icon, type Component, type IconStyle } from "@spider/ui";
 import { cachedLines, formatRunUsage, renderErrorResult, renderExecCall, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, statusIcon, fitResultLines, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
 import {
@@ -67,10 +67,12 @@ function restoreCardBackground(lines: string[], theme: any, background: string):
 
 function clip(s: string, w: number): string { return visibleWidth(s) > w ? truncateToWidth(s, w, "…") : s; }
 function shortModel(m?: string | null): string { if (!m) return "—"; return (m.split("/").pop() ?? m).replace(/^claude-/, ""); }
+function nonblankLines(text: string): string[] { return text.split(/\r?\n/u).filter(line => stripTerminalSequences(line).trim()); }
 function textComponent(result: any, expanded = false): Component {
   const blocks: any[] = Array.isArray(result?.content) ? result.content : [];
   const raw = blocks.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text as string).join("\n");
-  const lines = (expanded ? raw : raw.replace(/\x1b\[[0-9;]*m/g, "")).trim().split("\n");
+  const lines = nonblankLines((expanded ? raw : raw.replace(/\x1b\[[0-9;]*m/g, "")).trim());
+  if (lines.length) lines[0] = lines[0].replace(/^(?:[ \t]*\x1b\[[0-9;]*m)*[ \t]*/u, prefix => prefix.replace(/[ \t]/gu, ""));
   return {
     render: (w: number) => fitResultLines(lines.map(line => line.trim() ? ` ${line}` : ""), w, expanded, 3),
     invalidate() {},
@@ -91,30 +93,35 @@ function cardRow(prefix: string, text: string, width: number, expanded: boolean)
 
 function runBlock(t: T, r: RunLike, width: number, expanded: boolean, formatRunCost: RunCostFormatter, includeSubject: boolean): string[] {
   const status = r.status ?? "running";
-  const glyph = status === "failed" ? t.fg("error", icon(t.iconStyle, "failure"))
-    : status === "cancelled" ? t.fg("warning", icon(t.iconStyle, "warning"))
-    : status === "done" ? t.fg("success", "✓")
-    : status === "running" ? t.fg("accent", "●") : t.fg("muted", "○");
+  const glyph = t.fg("toolTitle", status === "failed" ? icon(t.iconStyle, "failure")
+    : status === "cancelled" ? icon(t.iconStyle, "warning")
+    : status === "done" ? "✓" : status === "running" ? "●" : "○");
   const agent = r.agent ?? "worker";
   const segments = [status];
-  if (includeSubject) segments.push(t.bold(r.name ?? agent), t.italic(t.fg("toolTitle", agent)));
+  if (includeSubject) {
+    if (r.name && r.name !== agent) segments.push(t.bold(r.name));
+    segments.push(t.italic(t.fg("toolTitle", agent)));
+  }
   segments.push(t.fg("muted", shortModel(r.model)));
   if (r.thinking) segments.push(t.fg("muted", r.thinking));
   if (["done", "failed", "cancelled"].includes(status) && ((r.token_count ?? 0) > 0 || (r.compactionCount ?? 0) > 0)) {
     segments.push(t.fg("dim", formatRunUsage(r.token_count ?? 0, r.cost, r.compactionCount, r.costText ?? (r.usageCosts ? formatRunCost(r.usageCosts) : undefined))));
   }
   const lines = cardRow(` ${glyph} `, segments.join(` ${t.fg("dim", "·")} `), width, expanded);
-  const task = (r.task ?? "").trim();
-  if (task) {
-    const [first, ...rest] = task.split("\n");
+  const taskLines = nonblankLines((r.task ?? "").trim());
+  if (taskLines.length) {
+    const [first, ...rest] = taskLines;
     lines.push(...cardRow(`   ${t.fg("muted", icon(t.iconStyle, "task"))} `, t.fg("muted", first), width, expanded));
     if (expanded) for (const line of rest) lines.push(...cardRow("   ", t.fg("muted", line), width, true));
   }
   const out = (r.result ?? "").trim();
   if (out) {
-    const outLines = out.split("\n");
+    const outLines = nonblankLines(out);
     const shown = expanded ? outLines : outLines.slice(0, 2);
-    for (const line of shown) lines.push(...cardRow("   ", t.fg("dim", line), width, expanded));
+    for (const [i, line] of shown.entries()) {
+      const marker = i === 0 ? `${t.fg("dim", icon(t.iconStyle, "result"))} ` : "";
+      lines.push(...cardRow(`   ${marker}`, t.fg("dim", line), width, expanded));
+    }
     const remaining = outLines.length - shown.length;
     if (remaining > 0) lines.push(clip(`   ${t.fg("dim", `… ${remaining} more line${remaining === 1 ? "" : "s"}`)}`, width));
   }
@@ -139,8 +146,8 @@ function renderRun(t: T, details: any, expanded: boolean, formatRunCost: RunCost
         lines.push(...runBlock(t, run, width, expanded, formatRunCost, includeSubject));
       }
       lines.push(...thinkingNoticeLines(t, details, width, expanded));
-      const anyTask = runs.some((r) => (r.task ?? "").trim());
-      const anyOut = runs.some((r) => (r.result ?? "").trim().split("\n").length > 2);
+      const anyTask = runs.some((r) => nonblankLines(r.task ?? "").length > 0);
+      const anyOut = runs.some((r) => nonblankLines(r.result ?? "").length > 2);
       if (!expanded && (anyTask || anyOut)) lines.push(t.fg("dim", ` ctrl+o to expand${anyOut ? " output" : " instructions"}`));
       return fitResultLines(lines, width, expanded, 3);
     },
@@ -176,7 +183,7 @@ function renderSearch(t: T, rows: any, expanded: boolean): Component {
         const kind = t.italic(t.fg("toolTitle", String(hit?.kind ?? "")));
         const source = hit?.source ? ` ${sep} ${t.fg("muted", String(hit.source))}` : "";
         lines.push(` ${t.fg("dim", `${i + 1}.`)} ${glyph} ${title} ${sep} ${kind}${source}`);
-        const snippet = String(hit?.snippet ?? "");
+        const snippet = nonblankLines(String(hit?.snippet ?? "")).join("\n");
         if (snippet) lines.push(gutter + t.fg("dim", expanded ? snippet : snippet.replace(/\s+/gu, " ").trim()));
       }
       if (!expanded && list.some(hit => hit?.snippet)) lines.push(t.fg("dim", " ctrl+o to expand"));
@@ -300,7 +307,7 @@ function renderControlMemory(t: T, details: any, expanded: boolean): Component {
       for (const [i, entry] of entries.entries()) {
         if (i > 0) out.push("");
         out.push(` ${t.fg("dim", "◆")} ${t.fg("accent", `[${String(entry?.category ?? "?")}]`)}`);
-        const content = String(entry?.content ?? "");
+        const content = nonblankLines(String(entry?.content ?? "")).join("\n");
         if (content) out.push(detailRow(t, expanded ? content : content.replace(/\s+/gu, " ").trim()));
       }
       return fitResultLines(out, w, expanded, 3);
@@ -577,14 +584,14 @@ function toMessageDetails(args: any, details: any, diagnostic = details?.error):
   }
   return {
     verb, to: args?.to ? String(args.to) : undefined, from: details?.from, targetName, kind: kind || undefined,
-    body: String(args?.message ?? ""), delivered: details?.delivered === true,
+    body: nonblankLines(String(args?.message ?? "")).join("\n"), delivered: details?.delivered === true,
     delivery, transformed: details?.transformed === true, recipientAcknowledged: details?.recipientAcknowledged, error,
   };
 }
 
 /** Convert session metadata into labels; the stored IDs belong to the agent payload. */
 function toTodoDetails(args: any, details: any): TodoChecklistDetails {
-  const item = (x: any) => ({ id: Number(x?.seq ?? x?.id ?? 0), text: String(x?.text ?? ""), done: x?.done === true });
+  const item = (x: any) => ({ id: Number(x?.seq ?? x?.id ?? 0), text: nonblankLines(String(x?.text ?? "")).join("\n"), done: x?.done === true });
   const label = (x: any) => x?.name || (x?.current ? "Current session" : "Unnamed session");
   const rows: any[] = Array.isArray(details) ? details : [];
   switch (args?.op) {
@@ -598,7 +605,7 @@ function toTodoDetails(args: any, details: any): TodoChecklistDetails {
     case "clear":
       return { kind: "cleared", removed: details?.removed ?? 0, kept: details?.kept };
     case "view":
-      return { kind: "list", groups: rows.map(group => ({ label: label(group), items: (group.todos ?? []).map(item) })) };
+      return { kind: "list", groups: rows.map(group => ({ label: label(group), current: group.current, items: (group.todos ?? []).map(item) })) };
     case "sessions":
       return { kind: "sessions", sessions: rows.map(session => ({ label: label(session), done: session.done, total: session.total, current: session.current === true })) };
     default:
@@ -688,9 +695,9 @@ function renderSpiderResultBody(
     }
     case "remember": {
       const body = wrapBespoke(renderRememberResult(details as StageResult, expanded, adaptTheme(t)));
-      return { render: (width: number) => fitResultLines([...body.render(width), ...thinkingNoticeLines(t, details, width, expanded)], width, expanded, 3), invalidate: () => body.invalidate?.() };
+      return { render: (width: number) => fitResultLines([...body.render(width).filter(line => stripTerminalSequences(line).trim()), ...thinkingNoticeLines(t, details, width, expanded)], width, expanded, 3), invalidate: () => body.invalidate?.() };
     }
-    case "recall": return wrapBespoke(renderRecallResult(details as MemoryRecord[], expanded));
+    case "recall": return wrapBespoke(renderRecallResult((details as MemoryRecord[]).map(record => ({ ...record, content: nonblankLines(record.content).join("\n") })), expanded));
     case "todo": {
       const d = toTodoDetails(context?.args, details);
       const th = adaptTheme(t);
@@ -701,7 +708,8 @@ function renderSpiderResultBody(
       const op = String(context?.args?.op ?? "list");
       if (op === "list") return plainBody(renderSkillList(Array.isArray(details) ? details : []), expanded);
       if (op === "distill") return plainBody(renderDistill(String(details?.prompt ?? "")), expanded);
-      return plainBody(renderSkillView((details?.row ?? details ?? undefined) as SkillRow | undefined), expanded);
+      const text = renderSkillView((details?.row ?? details ?? undefined) as SkillRow | undefined);
+      return plainBody(text.split("\n").filter(line => line.trim()).join("\n"), expanded);
     }
     case "notify": {
       if (details?.ok !== true) return textComponent(result, expanded);
@@ -804,7 +812,8 @@ export function renderSpiderCall(args: any, theme: any, context: any): Component
       // The command goes below the title; remote calls also name their destination.
       suffix = `${verb(action)} ${t.fg("toolTitle", `· on ${args.on}`)}`;
     } else if (args?.sub || args?.command) {
-      suffix = `${verb(action)} ${t.fg("toolTitle", `· ${args.sub ?? args.command}`)}`;
+      const subject = action === "control" && args.command === "memory" && args.sub ? `memory · ${args.sub}` : args.sub ?? args.command;
+      suffix = `${verb(action)} ${t.fg("toolTitle", `· ${subject}`)}`;
     }
     if (context?.titleDetails?.length) suffix += t.fg("toolTitle", ` · ${context.titleDetails.join(" · ")}`);
     const line = `${t.fg("toolTitle", icon(t.iconStyle, "spider"))} ${t.fg("toolTitle", t.bold("spider"))} ${t.fg("toolTitle", "·")} ${suffix}`;
@@ -819,6 +828,11 @@ export function renderSpiderCall(args: any, theme: any, context: any): Component
 
 interface NotificationOptions { expanded?: boolean; outputPad?: number }
 
+function runTitleDetails(name: unknown, agent: unknown): string[] {
+  const labels = [...new Set([name, agent].filter((value): value is string => typeof value === "string" && Boolean(value)))];
+  return labels.length ? labels : ["subagent"];
+}
+
 export function renderSubagentDone(message: any, options: NotificationOptions, theme: any, iconStyle?: IconStyle): Component {
   const d = message?.details ?? {};
   // C-LOW: a malformed completion event without status is not proof of `done`.
@@ -830,7 +844,7 @@ export function renderSubagentDone(message: any, options: NotificationOptions, t
   const detail = renderRun(t, { run }, expanded, undefined, false);
   const box = new Box(options.outputPad ?? 1, 1, text => t.bg(background, text));
   box.addChild(renderSpiderCall({ action: "run" }, theme, {
-    cardBackground: background, iconStyle, titleDetails: [d.name ?? d.agent ?? "subagent", d.agent ?? "worker"],
+    cardBackground: background, iconStyle, titleDetails: runTitleDetails(d.name, d.agent),
   }) as any);
   box.addChild({
     render: (width: number) => {
@@ -913,7 +927,7 @@ export function renderEscalationMessage(message: any, options: NotificationOptio
   const th = adaptTheme(mkTheme(theme, iconStyle));
   const box = new Box(options.outputPad ?? 1, 1, text => th.bg(background, text));
   box.addChild(renderSpiderCall({ action: "escalation" }, theme, {
-    iconStyle, cardBackground: background, titleDetails: [d.name ?? d.agent ?? "subagent", d.agent ?? "worker"],
+    iconStyle, cardBackground: background, titleDetails: runTitleDetails(d.name, d.agent),
   }) as any);
   box.addChild({
     render: (w: number) => restoreCardBackground(renderEscalation(escalationDetails, { theme: th, width: w }), theme, background),

@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { renderSpiderResult, renderSpiderCall, renderSubagentDone, renderCommandOutput, renderEscalationMessage } from "../render-result";
 import type { StageResult } from "@spider/memory";
 
@@ -359,6 +360,14 @@ describe("run status rows", () => {
     expect(renderEscalationMessage(msg, {}, theme).render(120).map(line => line.trimEnd()).join("\n")).toContain("spider · escalation · worker\n");
   });
 
+  it("does not render a task or expansion hint for ANSI-only task text", () => {
+    const details = { run: { agent: "worker", status: "running", task: "\x1b[31m  \x1b[0m" } };
+    const text = renderSpiderResult({ details }, {}, theme, mkCtx({ action: "run" })).render(120).join("\n");
+    expect(text).not.toContain("undefined");
+    expect(text).not.toContain("ctrl+o");
+    expect(text).not.toContain("↳");
+  });
+
   it("marks the first output line separately from an expanded task continuation", () => {
     const details = { run: { name: "audit", agent: "worker", status: "done", task: "Check manifest\nRead logs", result: "Build failed\nManifest missing" } };
     const rows = renderSpiderResult({ details }, { expanded: true }, theme, mkCtx({ action: "run" })).render(120);
@@ -623,6 +632,12 @@ describe("exec: command shown on the call, output on the result", () => {
 describe("renderSpiderCall verb italics (UI standard)", () => {
   const ith = { fg: (_t: string, s: string) => s, bold: (s: string) => s, italic: (s: string) => `«${s}»` };
   const call = (args: any) => renderSpiderCall(args, ith, {}).render(200).join("\n");
+  it("identifies the memory subject and operation in control titles", () => {
+    expect(call({ action: "control", command: "memory", sub: "status" })).toContain("«control» · memory · status");
+    expect(call({ action: "control", command: "memory", sub: "pending" })).toContain("«control» · memory · pending");
+    expect(call({ action: "control", command: "doctor" })).toContain("«control» · doctor");
+  });
+
   it("italicises the action verb for every command", () => {
     expect(call({ action: "remember" })).toContain("«remember»");
     expect(call({ action: "recall" })).toContain("«recall»");
@@ -634,6 +649,13 @@ describe("renderSpiderCall verb italics (UI standard)", () => {
 });
 
 describe("plain-text card alignment", () => {
+  it("starts styled fallback text in column 1 while retaining its style", () => {
+    const component = renderSpiderResult(mkResult({}, "\x1b[31m  red\x1b[0m\n  second"), { expanded: true }, theme, mkCtx({ action: "loop" }));
+    const rows = component.render(80);
+    expect(rows.map(stripTerminalSequences)).toEqual([" red", "   second"]);
+    expect(rows[0]).toContain("\x1b[31m");
+  });
+
   it.each(["loop", "schedule", "other"])("starts the first %s row in column 1", action => {
     const component = renderSpiderResult(mkResult({}, "\n  first line\n  second line"), opts, theme, mkCtx({ action }));
     expect(component.render(80)).toEqual([" first line", "   second line"]);

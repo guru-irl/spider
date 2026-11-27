@@ -39,7 +39,7 @@ organism reports.
 5. **Names, not IDs.** Cards show run and session names wherever they exist. Run IDs and other internal
    identifiers go only into the text the agent receives.
 6. **Status is a glyph and a colour together**, as today: `✓` success, `○` open, `✗`/`❌` failure,
-   `⚠` warning, `●` running.
+   `⚠` warning, `●` running. Run rows retain their neutral glyph, type and status colours (#36).
 7. **Background follows the outcome.** Error background only for failures and blocked escalations.
    Warnings, questions and running work use the pending background. Success uses the success background.
 8. **No section rules for a single group.** `sectionRule` labels groups only when a result has more than
@@ -111,7 +111,8 @@ rows.
 ```
 
 - The message action adds the run's name to its result details whenever it resolves a run. The card shows
-  the name, and falls back to the target the agent typed.
+  the name, and falls back to the target the agent typed. A refusal from a remote route lookup with no
+  local run row shows `→ subagent` instead.
 - Peer sessions show the session name when the broker reports it.
 
 ## Scope

@@ -36,7 +36,8 @@ export function renderTodoChecklist(details: TodoChecklistDetails, { theme, widt
         }
       }
       if (!total) rows.push(theme.fg("dim", " (no todos)"));
-      rows.push(theme.fg("muted", ` ${done}/${total} completed`));
+      const singleOther = details.groups.length === 1 && details.groups[0].current === false ? details.groups[0].label : undefined;
+      rows.push(theme.fg("muted", ` ${done}/${total} completed${singleOther ? ` · ${singleOther}` : ""}`));
       return fit(rows);
     }
   }

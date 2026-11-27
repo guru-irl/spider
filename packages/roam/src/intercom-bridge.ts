@@ -357,7 +357,10 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     const peer = edge.config.peer.machineId, acks: IntercomWireAck[] = [], receiptAcks: IntercomReceiptFrame[] = [], refusals: IntercomWireRefusal[] = [];
     if (incoming.presence.some(entry => entry.machineId === ports.machineId || !(ports.authorizePresence?.(peer, entry) ?? entry.machineId === peer))) return bad("invalid-presence");
     ports.store.openHop(peer, edge.config.edgeEpoch);
-    const presence = acceptPresence ? acceptedPresence(edge, incoming.presence) : null;
+    // Frames still need sender claims from a non-authoritative snapshot.
+    const senders = acceptPresence ? null : new Set(incoming.frames.map(frame => addressKey(frame.identity.from)));
+    const entries = senders ? incoming.presence.filter(entry => senders.has(addressKey(entry.address))) : incoming.presence;
+    const accepted = acceptedPresence(edge, entries), presence = acceptPresence ? accepted : null;
     for (const ack of incoming.acknowledgements) {
       ports.store.acknowledge({ peer, edgeEpoch: edge.config.edgeEpoch, ...ack }); edge.pollSent.delete(ack.identity.id); edge.reportedRefusals.delete(ack.identity.id);
     }

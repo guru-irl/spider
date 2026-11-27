@@ -33,8 +33,8 @@ async function fixture(machineId = H) {
     publishPresence: entries => { published = entries; }, onInbound: entry => inbound.push(entry.id) });
   let bridge = createIntercomBridge(ports()); resources.push(async () => { await bridge.stop(); store.close(); }); await bridge.start();
   let generation = 0;
-  const send = (entries: RemoteSessionInfo[] = [presence], frames: IntercomExchange["frames"] = []) => bridge.exchange(withHopRequest({ version: 1, holdMs: 0, deadlineMs: 5000,
-    exchange: withHopExchange({ protocol: 5, senderMachine: B, recipientMachine: machineId, generation: { edgeEpoch: "edge", channel: "push", generation: ++generation },
+  const send = (entries: RemoteSessionInfo[] = [presence], frames: IntercomExchange["frames"] = [], channel: "push" | "poll" = "push") => bridge.exchange(withHopRequest({ version: 1, holdMs: 0, deadlineMs: 5000,
+    exchange: withHopExchange({ protocol: 5, senderMachine: B, recipientMachine: machineId, generation: { edgeEpoch: "edge", channel, generation: ++generation },
       presence: entries, frames, acknowledgements: [], receipts: [], controls: [] }) }));
   const frame = (id: string, sequence: number) => makeMessageFrame({ from: address,
     endpoint: { address: target, machineId, homeEpoch: null, activationEpoch: "recipient" }, sequence, originMachineId: B,
@@ -83,3 +83,24 @@ it("rechecks the synced origin of cached homeless presence after restart", async
   expect(f.published).toEqual([]);
   expect(f.bridge.diagnostics()).toContainEqual(expect.objectContaining({ reason: "intercom-presence-origin-unknown" }));
 }, 5000);
+
+it("admits a known sender from a poll without publishing its roster", async () => {
+  const f = await fixture(); f.origins.set(address.sessionId, B);
+  const other = { ...presence, id: "other-session", address: { sessionId: "other-session", scopeId: "scope" } };
+  f.origins.set(other.id, B);
+  const message = f.frame("first-from-poll", 1);
+  const reply = await f.send([presence, other], [message], "poll");
+  expect(reply.exchange.refusals ?? []).toEqual([]);
+  expect(f.inbound).toEqual(["first-from-poll"]);
+  expect(f.store.retained("inbound", "first-from-poll")).toMatchObject({ state: "queued", payloadRetained: true });
+  expect(f.store.presenceOwner(other.address)).toBeNull();
+  expect(f.published).toEqual([]);
+});
+
+it("refuses an unknown sender in a poll", async () => {
+  const f = await fixture(), message = f.frame("unknown-from-poll", 1);
+  const reply = await f.send([presence], [message], "poll");
+  expect(reply.exchange.refusals).toContainEqual({ identity: message.identity, reason: "sender-unauthorized", hopSequence: message.identity.sequence });
+  expect(f.inbound).toEqual([]);
+  expect(f.store.presenceOwner(address)).toBeNull();
+});

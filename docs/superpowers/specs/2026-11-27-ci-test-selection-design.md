@@ -31,17 +31,20 @@ Date: 2026-11-27. Status: draft for the user's approval.
 
 - A separate `selection map` workflow runs on every push to main, next to the normal full run:
   - it runs the suite in six shards under the recorder from `ci/tia-measure`;
-  - the recorder is a `NODE_OPTIONS` preload that records which functions each test process runs,
+  - the recorder is a `NODE_OPTIONS` preload that records which files each test process loads or runs,
     including child processes, worker threads and Spider bundles, which it maps back to source through
     source maps.
-- The normal 12-shard full run doesn't change, so recorder side effects can't make the miss detector
-  flaky. Public-repo runners cost nothing; the recording takes about 14 minutes and queues behind the
-  full run when runners are busy.
+- The normal full run doesn't change, so recorder side effects can't make the miss detector flaky.
 - The recorded build makes bundles with source maps through an environment switch. Release builds and the
   npm package don't change.
 - A final job reduces the shard records to one file. For each test file, it lists every source file the
   test loaded or ran, directly or through a bundle, and the test's duration. The job uploads it as the
   `selection-map` artifact, kept for 30 days.
+- PR A's try run (46074045412) recorded all 1,330 test files with zero hook errors. The map is 1.08 MB.
+  The six shards' test steps took 518-897 s.
+- One file fails only under the recorder: `herdr-setup-releases.test.ts`. Two of its cases reach their
+  30-second limit. Recording stays a separate workflow until the process-cost work makes that file
+  cheap enough. Then recording can move into main's own shards and use no extra runners.
 
 ### Selecting on PRs
 
@@ -66,6 +69,7 @@ same one. The steps:
    | Build config | every test that ran a bundle |
    | Selection code and policy | the selector's tests, plus the guard tests |
    | Files that bundle readers read | the tests in the existing consumer rules that read, hash or pack bundles |
+   | Any file in a package whose bundle a test ran without a source map | that test; the map lists such bundles per test |
 
 3. **No budget.** Nothing is deferred to main.
 
@@ -78,11 +82,26 @@ same one. The steps:
 ### Miss detector on main
 
 - Every push to main runs the full suite, Herdr acceptance, Chrome and stories, as today.
+- A newer push to main cancels a full run that is still going. A burst of merges then costs one full run,
+  and a failure points at a range of commits that the audit can narrow.
 - A `selection audit` job compares the main run's failing tests with the selection the merged PR ran,
   taken from its `test-selection` artifact.
 - A failure outside that selection, in a test that isn't a known flake, is a miss. The job fails and writes
   the changed files, the failing test and its record to the run summary.
 - The audit isn't a required check. A miss means the selector needs fixing.
+
+### Runner budget
+
+The account runs at most 20 jobs at once (GitHub Free). On the afternoon of 2026-11-27, full runs took
+23 jobs each, from main pushes and five manual pre-merge runs. PR runs waited up to 256 s for a runner,
+and main runs up to 523 s (`queue-wait.py` over runs 46068589504-46074802268). Queueing alone can
+break the 3-minute target, so this design limits it in three ways:
+
+1. **No manual full runs before merge.** Once PR B ships, PRs get the complete answer, so the pre-merge
+   full runs stop. They were the largest load that afternoon.
+2. **Main cancels superseded full runs**, as described above.
+3. **Main uses 6 test shards instead of 12.** A main push holds about 11 runners instead of 23.
+   Main's run is the miss detector, so 12-15 minutes is acceptable there.
 
 ### Workflows and names
 
@@ -97,7 +116,7 @@ same one. The steps:
   The required name doesn't change, so branch protection stays as it is.
 - Main checks:
   - `compile`;
-  - `test shard 1/12` to `12/12`;
+  - `test shard 1/6` to `6/6`;
   - `selection audit`;
   - Herdr acceptance, the Chrome parts and stories;
   - the aggregate.
@@ -115,12 +134,12 @@ same one. The steps:
 
 ### Flakes
 
-PRs will now run up to the whole suite, so flaky tests will hit PRs more often. Before PRs switch, the
-known Vitest flakes get fixed or disabled under the standing rule:
-- the `workspace-import` timeout;
-- `move.test`;
-- `provision-adapter`;
-- `herdr-pane-runtime-state`.
+PRs will now run up to the whole suite, so flaky tests will hit PRs more often. Under the standing rule,
+known Vitest flakes are fixed or disabled before PRs switch:
+- done in #309: the `workspace-import` timeout and `move.test`, plus four old-path cases skipped;
+- `provision-adapter` and `herdr-pane-runtime-state` had no sighting after their fixes;
+- `sparse-inspection` timed out once beside a heavy neighbour. #313 trims its Git work, and it stays
+  tracked until the process-cost work lands.
 
 ## Expected timings
 
@@ -140,12 +159,12 @@ From the replay over 64 recent PR heads on four runners:
 
 Chrome, stories and Herdr acceptance stay main-only, as today. Nine of the 29 real failures in the replay
 window came from them, and main catches them until a second version adds their own selection within the
-five-runner limit. Roaming's draft #307 owns the stories configuration until it merges.
+five-runner limit. #307 set the default headless stories (R18, R10 and R11) on main.
 
 ## Rollout
 
-1. **PR A:** the `selection map` workflow and the recorder. PR behaviour and the main full run don't
-   change. Merge it and wait for the first map.
+1. **PR A** (draft #314): the `selection map` workflow and the recorder. PR behaviour and the main full
+   run don't change. Merge it and wait for the first map.
 2. **PR B:**
    - `pr.yml` with recorded selection, the new names and the audit;
    - flake fixes go in first, as separate PRs;

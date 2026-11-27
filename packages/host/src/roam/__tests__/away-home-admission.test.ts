@@ -1,26 +1,32 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { openDb, migrate, type Db } from "@spider/db-core";
+import { openDb, migrate, paths, setGlobalDbPathForTests, type Db } from "@spider/db-core";
 import { scratchDbPath } from "@spider/db-core/testutil";
 import { processStartIdentity } from "@spider/herdr/jobs/handoff";
 import { claimIdLock, inspectIdLock, type IdLockHandle } from "@spider/herdr/sessions/id-lock";
+import { createSessionLeases } from "@spider/herdr/sessions/lease";
+import { writeLocal } from "@spider/db-core/roam/local-state";
 import { DEFAULT_LIMITS, disabledIntercom } from "@spider/roam/contracts";
 import { createHomeStore } from "@spider/roam/relocate/home";
 import { relocate } from "@spider/roam/relocate/relocate";
 import { setHome } from "@spider/roam/relocate/set-home";
 import type { RelocateId, RelocatePorts, RunningHome, SessionId, SetHomePorts, V0Result } from "@spider/roam/relocate/types";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { createHostSessionFixture } from "../../__tests__/fixtures/pi-events";
-import { registerAdmission } from "../admission";
+import { createAdmissionPorts, protectAdmissionApi, registerAdmission } from "../admission";
 import { loadRelocateAdmission } from "../relocate-admission";
 
 const hub = "11111111-1111-4111-8111-111111111111", box = "22222222-2222-4222-8222-222222222222";
 const sid = "moved-session" as SessionId;
 const move = "v0-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" as RelocateId;
 const cleanups: (() => void)[] = [];
-afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
+const originalGlobalRoot = paths.globalRoot;
+afterEach(() => {
+  paths.globalRoot = originalGlobalRoot; setGlobalDbPathForTests(null); vi.unstubAllEnvs();
+  for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+});
 
 function fixture() {
   const root = mkdtempSync(join(dirname(scratchDbPath("away-home")), "away-home-"));
@@ -40,6 +46,7 @@ function fixture() {
   createDb();
   cleanups.push(() => { db?.close(); rmSync(root, { recursive: true, force: true }); });
   function removeDb() { db?.close(); db = undefined; unlinkSync(file); }
+  function openRestoredDb() { db = openDb(file, { fileMustExist: true }); return db; }
   function fenceContents() { return JSON.parse(readFileSync(fence, "utf8")); }
   function forcePorts(): SetHomePorts {
     const ok = <T>(value: T): V0Result<T> => ({ ok: true, value });
@@ -48,7 +55,46 @@ function fixture() {
       activate: async () => ok(undefined), publishHome: async () => ok(undefined),
       start: async () => { throw new Error("must not start"); }, confirm: async () => { throw new Error("must not confirm"); } };
   }
-  return { root, file, fence, fenceContents, createDb, removeDb, store, forcePorts, db: () => db! };
+  return { root, file, fence, fenceContents, createDb, removeDb, openRestoredDb, store, forcePorts, db: () => db! };
+}
+
+function productionSession(f: ReturnType<typeof fixture>, sessionId: SessionId = sid) {
+  const cwd = join(f.root, "worktree"), file = join(f.root, `${sessionId}.jsonl`), lockRoot = join(f.root, "herdr");
+  mkdirSync(cwd, { recursive: true });
+  writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: sessionId, cwd }) + "\n", { mode: 0o600 });
+  paths.globalRoot = f.root; setGlobalDbPathForTests(f.file);
+  vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root); vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  vi.stubEnv("SPIDER_HERDR_HANDOFF_FILE", undefined); vi.stubEnv("GIT_CEILING_DIRECTORIES", f.root);
+  const ports = createAdmissionPorts();
+  const lock = vi.spyOn(ports, "lock"), pin = vi.spyOn(ports, "lockSessionId");
+  const abort = vi.fn();
+  const host = createHostSessionFixture({ cwd, sessionId, sessionFile: file, hasUI: false, abort });
+  const gate = registerAdmission(host.pi as unknown as ExtensionAPI, ports);
+  async function emit(name: string, event = {}) {
+    let result: unknown;
+    for (const handler of host.hooks.get(name) ?? []) result = await handler(event, host.ctx);
+    return result;
+  }
+  return { file, lockRoot, ports, lock, pin, abort, host, gate, emit };
+}
+
+async function expectOrdinaryWorkRefused(session: ReturnType<typeof productionSession>) {
+  expect(session.gate.inspect().kind).toBe("blocked");
+  expect(await session.emit("input", { text: "work" })).toEqual({ action: "handled" });
+  await session.emit("before_agent_start");
+  expect(session.abort).toHaveBeenCalledOnce();
+  for (const toolName of ["bash", "write", "edit"]) {
+    expect(await session.emit("tool_call", { toolName, input: {} })).toMatchObject({ block: true });
+  }
+  expect(await session.emit("user_bash", { command: "echo unsafe" })).toMatchObject({ result: { exitCode: 1 } });
+  const append = vi.spyOn(session.host.pi, "appendEntry"), sendUser = vi.spyOn(session.host.pi, "sendUserMessage");
+  const api = protectAdmissionApi(session.host.pi as unknown as ExtensionAPI, session.gate);
+  expect(() => api.sendMessage({ customType: "test", content: "no write", display: true })).toThrow();
+  api.sendUserMessage("no write"); api.appendEntry("test", { synthetic: true });
+  expect(session.host.sent).toEqual([]); expect(append).not.toHaveBeenCalled(); expect(sendUser).not.toHaveBeenCalled();
+  expect(session.lock).not.toHaveBeenCalled(); expect(session.pin).not.toHaveBeenCalled();
+  expect(await inspectIdLock(session.lockRoot, sid)).toBeNull();
+  expect(await createSessionLeases(session.lockRoot).get(session.file)).toBeNull();
 }
 
 async function prepareMove(f: ReturnType<typeof fixture>) {
@@ -58,6 +104,73 @@ async function prepareMove(f: ReturnType<typeof fixture>) {
   const away: RunningHome = { ...moving, state: "running", machineId: box, destination: null, epoch: 3 };
   return { store, source, moving, away };
 }
+
+it.each(["no global DB", "same-Mac missing row", "same-Mac null state", "same-Mac old row", "newer peer row"] as const)(
+  "production admission keeps an away fence after restoring %s", async state => {
+    const f = fixture(), backup = join(f.root, "clone.db");
+    if (state === "same-Mac null state") {
+      f.db().prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state) VALUES(?,?,1,NULL,1,NULL)").run(sid, hub);
+    } else if (state === "same-Mac old row") {
+      await f.store().initialize(sid, hub);
+    }
+    if (state.startsWith("same-Mac")) await f.db().raw.backup(backup);
+    if (state === "newer peer row") {
+      const peer = openDb(join(f.root, "peer.db"));
+      try {
+        migrate(peer, "global", { machineId: box, globalRoot: f.root });
+        peer.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state) VALUES(?,?,4,NULL,1,'running')").run(sid, hub);
+        writeLocal(peer, "relocate-managed", sid, { synthetic: true });
+        await peer.raw.backup(backup);
+      } finally { peer.close(); }
+    }
+    const { store, moving, away } = await prepareMove(f);
+    await store.compareAndSwap(moving, away);
+    const fence = readFileSync(f.fence);
+    f.removeDb();
+    let restored: Db | undefined, row: unknown;
+    if (state !== "no global DB") {
+      copyFileSync(backup, f.file);
+      restored = f.openRestoredDb();
+      row = restored.prepare("SELECT * FROM session_homes WHERE session_id=?").get(sid);
+    }
+    const session = productionSession(f);
+    try {
+      expect(session.ports.knownParticipant(sid)).toBe(false);
+      await session.emit("session_start");
+      await expectOrdinaryWorkRefused(session);
+      expect(readFileSync(f.fence)).toEqual(fence);
+      if (restored) expect(restored.prepare("SELECT * FROM session_homes WHERE session_id=?").get(sid)).toEqual(row);
+      else expect(existsSync(f.file)).toBe(false);
+    } finally { await session.gate.close(); }
+  },
+);
+
+it("a genuine unmanaged local session works without creating a global DB", async () => {
+  const f = fixture(); f.removeDb();
+  const session = productionSession(f, "ordinary-session" as SessionId);
+  try {
+    await session.emit("session_start");
+    expect(session.gate.inspect().kind).toBe("ordinary");
+    expect(await session.emit("input", { text: "work" })).toBeUndefined();
+    expect(await session.emit("tool_call", { toolName: "edit" })).toBeUndefined();
+    expect(await session.emit("user_bash", { command: "echo safe" })).toBeUndefined();
+    const api = protectAdmissionApi(session.host.pi as unknown as ExtensionAPI, session.gate);
+    api.sendMessage({ customType: "test", content: "allowed", display: true });
+    expect(session.host.sent).toHaveLength(1);
+    expect(existsSync(f.file)).toBe(false);
+  } finally { await session.gate.close(); }
+});
+
+it("only the authoritative Mac clears an away fence for a newer local running home", async () => {
+  const f = fixture(), { store, moving, away } = await prepareMove(f);
+  await store.compareAndSwap(moving, away);
+  const returned: RunningHome = { ...away, machineId: hub, epoch: 4 };
+  await store.compareAndSwap(away, returned);
+  expect(existsSync(f.fence)).toBe(true);
+  expect(await loadRelocateAdmission(sid, f.root)).toEqual({ kind: "managed", home: returned });
+  expect(existsSync(f.fence)).toBe(false);
+  expect(await store.read(sid)).toEqual(returned);
+});
 
 it.each(["deleted", "empty", "older", "equal"] as const)("a fresh admission refuses the away backup after a %s global store", async state => {
   const f = fixture(), { store, moving, away } = await prepareMove(f);

@@ -870,6 +870,26 @@ it("retries a journaled configuration already installed before interruption", as
   expect(git(f.destination, "ls-files", "-t", "--", "skip/item.txt")).toBe("S skip/item.txt");
 }, 5000);
 
+it("resumes an installed new checkout without reimporting its bundle", async () => {
+  const f = fixture(), snapshot = sparseSnapshot(f), destination = join(f.root, "created-worktree");
+  const { prepareWorkspace } = await import("../workspace-import");
+  const record = f.ports.journal.record.bind(f.ports.journal);
+  f.ports.journal.record = (id, action, result) => {
+    record(id, action, result);
+    if (action === "workspace-config-installed") throw new Error("simulated preparation interruption");
+  };
+  await expect(prepareWorkspace(snapshot, destination, f.ports)).rejects.toThrow("simulated preparation interruption");
+  f.ports.journal.record = record;
+  const run = f.ports.run;
+  f.ports.run = async (cwd, argv, options) => {
+    if (argv[0] === "git" && (argv[1] === "fetch" || argv[1] === "bundle")) throw new Error("import source offline");
+    return run(cwd, argv, options);
+  };
+  const prepared = await prepareWorkspace(snapshot, destination, f.ports);
+  expect(prepared.previous).toBeNull();
+  expect(git(destination, "ls-files", "-t", "--", "skip/item.txt")).toBe("S skip/item.txt");
+}, 5000);
+
 async function interruptedInstalledFixture() {
   const f = fixture(), snapshot = sparseSnapshot(f);
   const { prepareWorkspace } = await import("../workspace-import");

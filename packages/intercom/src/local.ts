@@ -3173,11 +3173,16 @@ Usage:
               }
               replySource = { sessionId: ownSessionId, epoch: from.v0HomeEpoch };
             } else await resolveSessionTarget(connectedClient, target.from.id);
-            const result = await connectedClient.send(target.from.id, {
-              text: message,
-              attachments,
-              replyTo: target.message.id,
-            });
+            let result: Awaited<ReturnType<IntercomClient["send"]>>;
+            try {
+              result = await connectedClient.send(target.from.id, { text: message, attachments, replyTo: target.message.id });
+            } catch (error) {
+              if (!replySource) throw error;
+              return {
+                content: [{ type: "text", text: "The reply may have arrived. Check with the asker before replying again." }],
+                details: { error: true, delivered: false, delivery: "unknown", outcomeKnown: false, retryable: false, replyTo: target.message.id },
+              };
+            }
             if (replySource && (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
                 v0?.homeEpoch(replySource.sessionId) !== replySource.epoch)) {
               return { content: [{ type: "text", text: `Delivery could not be confirmed (ID ${result.id}). Check the recipient before sending again.` }],

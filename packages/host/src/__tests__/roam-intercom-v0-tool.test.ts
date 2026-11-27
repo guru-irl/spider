@@ -766,6 +766,38 @@ it("reports a confirmed peer reply when its transcript entry cannot be saved", a
   } finally { abort.abort(); await pending; await f.cleanup(); }
 });
 
+it("warns a remote replier that an unconfirmed reply may have arrived", async () => {
+  const f = await fixture({ homeEpoch: () => 7, prepare: async () => ({ kind: "legacy" }) });
+  const from: RemoteSessionInfo = {
+    remote: true, id: "peer-session", address: { sessionId: "peer-session", scopeId: null },
+    machineId: "peer-machine", machineAlias: "peer", homeEpoch: 3,
+    activationEpoch: "peer-connection", endpointEpoch: "peer-connection", name: "ben",
+    cwd: "", model: "", startedAt: 0, lastActivity: 0,
+  };
+  const questionId = "reply-ack-lost";
+  const original = IntercomClient.prototype.send;
+  const spy = vi.spyOn(IntercomClient.prototype, "send").mockImplementation(async function (this: IntercomClient, to, options) {
+    const result = await original.call(this, to, options);
+    if (options.replyTo === questionId) throw new Error("Send timeout");
+    return result;
+  });
+  const abort = new AbortController();
+  let pending: ReturnType<typeof requestV0Broker> | undefined;
+  try {
+    const own = (await observer.listSessions()).find(session => session.id === "sender-session")!;
+    pending = requestV0Broker(getAgentDirPath(), {
+      kind: "ask", from,
+      target: { address: { sessionId: "sender-session", scopeId: null }, name: "alice", homeEpoch: 7, endpointEpoch: own.endpointEpoch! },
+      message: { id: questionId, timestamp: 123, text: "hello" }, timeoutMs: 2000,
+    }, abort.signal);
+    await vi.waitFor(() => expect(f.inbound.some(message => message.customType === "intercom_message")).toBe(true));
+    const reply = await f.tool.execute("reply", { action: "reply", replyTo: questionId, message: "received answer" }, new AbortController().signal, undefined, f.ctx);
+    expect(await pending).toMatchObject({ kind: "replied", id: questionId, text: "received answer" });
+    expect(reply.content[0].text).toBe("The reply may have arrived. Check with the asker before replying again.");
+    expect(reply.details).toMatchObject({ error: true, outcomeKnown: false, retryable: false, delivery: "unknown" });
+  } finally { spy.mockRestore(); abort.abort(); await pending; await f.cleanup(); }
+});
+
 it("refuses unsupported remote reply options and leaves the ask pending", async () => {
   const f = await fixture({ homeEpoch: () => 7, prepare: async () => ({ kind: "legacy" }) });
   const from: RemoteSessionInfo = {

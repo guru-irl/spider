@@ -47,7 +47,16 @@ import module from 'node:module';
 import { EventEmitter } from 'node:events';
 const originalRead = fs.readFileSync;
 const originalExists = fs.existsSync;
+const originalWrite = fs.writeFileSync;
 if (process.env.FIXTURE_FAIL_BACKUP === '1') fs.copyFileSync = () => { throw new Error('fixture backup failed'); };
+if (process.env.FIXTURE_FAIL_RENAME === '1') fs.renameSync = () => { throw new Error('fixture rename failed'); };
+if (process.env.FIXTURE_FAIL_WRITE === '1') fs.writeFileSync = (path, data, ...args) => {
+  if (String(path).startsWith(process.env.FIXTURE_HOME + '/.pi/agent/models.json')) {
+    originalWrite(path, 'partial fixture', ...args);
+    throw new Error('fixture write failed');
+  }
+  return originalWrite(path, data, ...args);
+};
 fs.existsSync = (path) => String(path) === process.env.FIXTURE_HOME + '/.pi/agent/auth.json' || originalExists(path);
 fs.readFileSync = (path, ...args) => {
   if (String(path).endsWith('/auth.json')) {
@@ -84,7 +93,7 @@ function invoke(write = true, nativeHome = false, failBackup = false, script = j
     cwd: fixture, encoding: "utf8",
     env: { ...process.env, HOME: fixture, USERPROFILE: fixture, FIXTURE_HOME: fixture, PI_CODING_AGENT_DIR: undefined,
       PATH: fakePath, FIXTURE_NATIVE_HOME: nativeHome ? "1" : "0", FIXTURE_FAIL_BACKUP: failBackup ? "1" : "0",
-      SPIDER_PIAI_MODELS: undefined, ...extraEnv },
+      FIXTURE_FAIL_RENAME: undefined, FIXTURE_FAIL_WRITE: undefined, SPIDER_PIAI_MODELS: undefined, ...extraEnv },
   });
 }
 function run(models: object[], config: object, write = true, nativeHome = false, failBackup = false) {
@@ -385,6 +394,46 @@ describe("Copilot model sync catalog", () => {
     const backup = readdirSync(join(fixture, ".pi/agent")).find(name => name.startsWith("models.json.bak-"));
     expect(backup).toBeDefined();
     expect(readFileSync(join(fixture, ".pi/agent", backup!), "utf8")).toBe(JSON.stringify(before));
+  });
+
+  // A failed partial write must not truncate the original configuration.
+  it("keeps the original and its mode when the replacement write fails", () => {
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a" }];\n');
+    const before = { providers: { "github-copilot": { models: [{ id: "model-a", compactAtPercent: 30 }] } } };
+    writeFileSync(join(fixture, "catalog.json"), JSON.stringify({ data: [] }));
+    writeFileSync(modelsPath, JSON.stringify(before));
+    chmodSync(modelsPath, 0o764);
+    const result = invoke(true, false, false, undefined, { FIXTURE_FAIL_WRITE: "1" });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("fixture write failed");
+    expect(readFileSync(modelsPath, "utf8")).toBe(JSON.stringify(before));
+    expect(statSync(modelsPath).mode & 0o777).toBe(0o764);
+    const files = readdirSync(join(fixture, ".pi/agent"));
+    expect(files.filter(name => name.startsWith("models.json.bak-"))).toHaveLength(1);
+    expect(files.filter(name => name.startsWith("models.json.tmp-"))).toEqual([]);
+  });
+
+  // A failed rename happens after the backup and leaves the original intact.
+  it("keeps the original when rename fails and preserves mode on retry", () => {
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a" }];\n');
+    const before = { providers: { "github-copilot": { models: [{ id: "model-a", compactAtPercent: 30 }] } } };
+    writeFileSync(join(fixture, "catalog.json"), JSON.stringify({ data: [] }));
+    writeFileSync(modelsPath, JSON.stringify(before));
+    chmodSync(modelsPath, 0o764);
+    const result = invoke(true, false, false, undefined, { FIXTURE_FAIL_RENAME: "1" });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("fixture rename failed");
+    expect(readFileSync(modelsPath, "utf8")).toBe(JSON.stringify(before));
+    expect(statSync(modelsPath).mode & 0o777).toBe(0o764);
+    const files = readdirSync(join(fixture, ".pi/agent"));
+    const backups = files.filter(name => name.startsWith("models.json.bak-"));
+    expect(backups).toHaveLength(1);
+    expect(readFileSync(join(fixture, ".pi/agent", backups[0]), "utf8")).toBe(JSON.stringify(before));
+    expect(files.filter(name => name.startsWith("models.json.tmp-"))).toEqual([]);
+    const retry = invoke();
+    expect(retry.status, retry.stderr).toBe(0);
+    expect(saved().providers["github-copilot"].modelOverrides).toEqual({ "model-a": { compactAtPercent: 30 } });
+    expect(statSync(modelsPath).mode & 0o777).toBe(0o764);
   });
 
   // A failed backup must abort before either a migration or an addition is written.

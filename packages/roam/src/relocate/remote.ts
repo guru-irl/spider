@@ -45,7 +45,8 @@ export type RelocateAgentRequest =
   | {version:1;kind:"prerequisite";sessionId:SessionId;candidate:string;allowStopped?:boolean}
   | {version:1;kind:"authorize"|"capture";plan:RelocatePlan}
   | {version:1;kind:"install";plan:RelocatePlan;captured:NonNullable<import("./types").RelocateCheckpoint["captured"]>;home:RunningHome}
-  | {version:1;kind:"activate"|"start"|"confirm";home:RunningHome;placement:SessionPlacement}
+  | {version:1;kind:"activate"|"start";home:RunningHome;placement:SessionPlacement}
+  | {version:1;kind:"confirm";home:RunningHome;placement:SessionPlacement;exact?:true}
   | {version:1;kind:"stop";sessionId:SessionId;moving:MovingHome|null}
   | {version:1;kind:"artifact";sourceMachine:string;input:unknown;bytes:string|null};
 export function parseAgentRequest(input: unknown): RelocateAgentRequest {
@@ -60,7 +61,7 @@ export function parseAgentRequest(input: unknown): RelocateAgentRequest {
     case "prerequisite":text(r.sessionId);if(typeof r.candidate!=="string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(r.candidate))throw new Error("Invalid prerequisite");break;
     case "authorize":case "capture":parsePlan(r.plan);break;
     case "install":parsePlan(r.plan);parseCaptured(r.captured);if(parseHome(r.home).state!=="running")throw new Error("Invalid install home");break;
-    case "activate":case "start":case "confirm":if(parseHome(r.home).state!=="running")throw new Error("Invalid launch home");parsePlacement(r.placement);break;
+    case "activate":case "start":case "confirm":if(parseHome(r.home).state!=="running")throw new Error("Invalid launch home");parsePlacement(r.placement);if(r.kind==="confirm" && r.exact!==undefined && r.exact!==true)throw new Error("Invalid exact confirmation flag");break;
     case "stop":text(r.sessionId);if(r.moving!==null && parseHome(r.moving).state!=="moving")throw new Error("Invalid stop home");break;
     case "artifact":if(!isMachineId(r.sourceMachine))throw new Error("Invalid artifact sender");object(r.input);if(!(r.bytes===null || typeof r.bytes==="string"))throw new Error("Invalid artifact bytes");break;
     default:throw new Error("Unsupported v0 operation");
@@ -169,7 +170,10 @@ export async function handleRelocateAgent(input:unknown,options:RelocateAdapterO
           case "stop":return wrap(await local.stop(r.sessionId,r.moving));
           case "activate":return wrap(await local.activate(r.home,r.placement));
           case "start":return wrap(await local.start(r.home,r.placement));
-          case "confirm":return wrap(await local.confirm(r.home,r.placement));
+          case "confirm":{
+            const result=await local.confirm(r.home,r.placement,r.exact);
+            return result.ok && r.exact ? wrap({ok:true,value:{...result.value,exact:true}}) : wrap(result);
+          }
         }
       }
     }

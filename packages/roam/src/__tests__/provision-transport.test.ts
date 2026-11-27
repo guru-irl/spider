@@ -65,6 +65,28 @@ function fixture(peer: Peer = bootstrapPeer) {
   return { actions, calls, controlCalls, events, state, journal, options, consent };
 }
 
+it.each(["release", "direct"] as const)("reports missing Node type stripping through %s provisioning", async path => {
+  const f = fixture(); f.consent();
+  const port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
+  const getBuiltin = process.getBuiltinModule.bind(process);
+  const withoutStrip = { ...getBuiltin("node:module"), stripTypeScriptTypes: undefined };
+  vi.spyOn(process, "getBuiltinModule").mockImplementation(
+    ((id: string) => id === "node:module" ? withoutStrip : getBuiltin(id)) as typeof process.getBuiltinModule,
+  );
+  const before = f.calls.length;
+  const operation = path === "release"
+    ? port.launchRelease(handle, "op-1", `${bootstrapPeer.globalRoot}/roam/provision/op-1/release-request`)
+    : port.executeProvision(handle, { action: "pair-unit-repair", operationId: "op-1", machineId: bootstrapPeer.machineId,
+      globalRoot: bootstrapPeer.globalRoot, node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi });
+  await expect(operation).rejects.toMatchObject({
+    name: "UnsupportedProvisioningNodeError",
+    code: "node-type-stripping-unavailable",
+    message: "Node's stripTypeScriptTypes feature is unavailable; provisioning needs a Node version that provides it.",
+  });
+  expect(f.calls).toHaveLength(before);
+  expect(f.controlCalls.some(call => call[0] === "run")).toBe(false);
+});
+
 it("accepts only destination-bound private-mode preview plans", async () => {
   const f = fixture(), port = create!(f.options, f.journal), home = "/home/fixture", root = `${home}/.pi/agent`;
   const agentModes = { authPresent: true, repairs: [{ path: `${root}/settings.json`, uid: 1000, before: 0o664, after: 0o600 }] };
@@ -391,7 +413,7 @@ it("launches only a consented release in a labelled outliving background termina
 
 it("reconciles an uncertain launch using a validated core-fenced receipt", async () => {
   const f = fixture(); f.consent(); const port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
-  f.state.runError = new Error("fixture launch response lost");
+  f.state.runError = Object.assign(new Error("fixture launch response lost"), { name: "UnsupportedProvisioningNodeError" });
   const requestFile = `${bootstrapPeer.globalRoot}/roam/provision/op-1/release-request`;
   await expect(port.launchRelease(handle, "op-1", requestFile)).rejects.toMatchObject({ code: "release-launch-uncertain" });
   const value = { pi: bootstrapPeer.pi, cli: bootstrapPeer.cli, supervisor: "/home/fixture/.local/supervisor.mjs" };
@@ -557,11 +579,11 @@ it("preserves cli-timeout for a bounded provisioning write", async () => {
 
 it("redacts untrusted transport error codes and details", async () => {
   const f = fixture(); f.consent(); const port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
-  f.state.provisionError = Object.assign(new Error("fixture-secret"), { code: "fixture-secret", details: { stderr: "fixture-secret" } });
+  f.state.provisionError = Object.assign(new Error("fixture-secret"), { name: "UnsupportedProvisioningNodeError", code: "fixture-secret", details: { stderr: "fixture-secret" } });
   let caught: unknown;
   try { await port.executeProvision(handle, { action: "secret-chunk", operationId: "op-1", machineId: bootstrapPeer.machineId,
     globalRoot: bootstrapPeer.globalRoot, node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi, providers: ["github-copilot"] }); } catch (error) { caught = error; }
-  expect(caught).toBeTruthy();
+  expect(caught).toMatchObject({ code: "provision-transport-failed" });
   expect(String(caught)).not.toContain("fixture-secret");
   expect(JSON.stringify(caught)).not.toContain("fixture-secret");
 }, 5000);

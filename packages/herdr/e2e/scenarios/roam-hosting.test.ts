@@ -173,8 +173,12 @@ async function restartAndRestore(suite: Suite): Promise<void> {
     expect((await fixture.owners()).map(value => value.pid)).toEqual([restored.pid]);
     expect(hasFile(join(fixture.root, 'roam', 'hub.sock'))).toBe(false);
     expect(hasFile(join(fixture.root, 'roam', 'relocate.sock'))).toBe(false);
-    expect(await digestFile(fixture.coreUnit)).toBe(before);
-    await suite.evidence('R04-restart.json', { sessionId: fixture.sessionId, firstTerminal: first.terminal, restoredTerminal: restored.terminal, owners: ownersAfterRestart.length, triggerEntries: deliveries.length });
+    const coreAfter = await digestFile(fixture.coreUnit);
+    expect(coreAfter).toBe(before);
+    await suite.evidence('R04-restart.json', { sessionId: fixture.sessionId, file: fixture.file, cwd: fixture.cwd, home,
+      first: { pid: first.pid, terminal: first.terminal }, restored: { pid: restored.pid, terminal: restored.terminal },
+      lockPid: adopted!.identity.pid, leasePid: lease!.pid, owners: ownersAfterRestart.length,
+      coreUnitUnchanged: coreAfter === before, ambientPiAbsent: ambient.exitCode === 0, triggerEntries: deliveries.length });
   } finally { await fixture.close(); }
 }
 

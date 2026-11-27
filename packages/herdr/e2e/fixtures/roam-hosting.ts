@@ -378,9 +378,15 @@ export async function v0HostingFixture(suite: Suite): Promise<V0HostingFixture> 
       return owners();
     }, values => values.length === 1 && values[0].pid !== previousPid, deadline(60_000), { reconcileMs: 100 });
     const owner = rows[0], lock = await inspectIdLock(herdr, sessionId);
-    if (!lock || lock.identity.pid !== owner.pid || lock.pendingOperationId !== null) throw new Error('session owner did not adopt its ID lock');
+    if (!lock || lock.identity.pid !== owner.pid || lock.pendingOperationId !== null) {
+      await suite.evidence('R04-lock-failure.json', { owner, lock, events: await events(owner.pid) });
+      throw new Error('session owner did not adopt its ID lock');
+    }
     const lease = await leases.get(file);
-    if (!lease || lease.pid !== owner.pid || lease.startIdentity !== lock.identity.startIdentity) throw new Error('session owner did not adopt its file lease');
+    if (!lease || lease.pid !== owner.pid || lease.startIdentity !== lock.identity.startIdentity) {
+      await suite.evidence('R04-lease-failure.json', { owner, lock, lease, events: await events(owner.pid) });
+      throw new Error('session owner did not adopt its file lease');
+    }
     const identity = identityOf(owner.pid);
     suite.ledger.update(ledger => {
       if (!ledger.terminals.some(item => item.side === 'local' && item.address === owner.terminal)) ledger.terminals.push({ side: 'local', address: owner.terminal });

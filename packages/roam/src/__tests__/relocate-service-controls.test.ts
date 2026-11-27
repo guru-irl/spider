@@ -30,6 +30,26 @@ function fixture(role: "hub" | "box") {
     enabled: () => JSON.parse(readFileSync(configFile, "utf8")).enabled };
 }
 
+it.each(["hub", "box"] as const)("enable pins the local Herdr installation in the %s service", async role => {
+  const f=fixture(role), binary=join(f.root,"bin","hc"), socket=join(f.root,"socket"), agentDirectory=join(f.root,"agent");
+  mkdirSync(join(f.root,"herdr"));mkdirSync(join(f.root,"bin"));
+  writeFileSync(binary,"#!/bin/sh\nexit 1\n",{mode:0o700});
+  writeFileSync(join(f.root,"herdr","config.json"),JSON.stringify({mode:"core-only",core:{binary,config:join(f.root,"core.toml")},
+    globalRoot:f.root,agentDirectory,shellRc:join(f.root,"shell.rc"),machines:[]}));
+  vi.stubEnv("SPIDER_ROAM_HC",undefined);vi.stubEnv("PI_CODING_AGENT_DIR",undefined);
+  vi.stubEnv("HC_SESSION","work");vi.stubEnv("HC_SOCKET",socket);
+  vi.stubEnv("PATH",`/fixture/login/bin:${process.env.PATH}`);
+  const result=await configureV0Service(f.root,true,f.options);
+  expect(result.code,result.message).toBe(0);
+  const file=role==="hub"?hubServiceFile(f.root,f.launchd.plistDir,"v0"):join(f.systemd.unitDir,"spider-roam-supervisor-v0.service");
+  const text=readFileSync(file,"utf8");
+  expect(text).toContain(binary);expect(text).toContain(socket);expect(text).toContain("/fixture/login/bin");
+  if(role==="box") {
+    expect(text).toContain('Environment="HC_SESSION=work"');
+    expect(text).toContain(`Environment="PI_CODING_AGENT_DIR=${agentDirectory}"`);
+  }
+});
+
 it("enable removes the scoped legacy hub before starting v0 and disable removes v0", async () => {
   const f = fixture("hub");
   const legacy = hubServiceFile(f.root, f.launchd.plistDir);

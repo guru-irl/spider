@@ -10,9 +10,9 @@ import { parseDoctorReport, remoteDoctor } from "./remote-observations";
 import { INTERCOM_UNIQUENESS_DESCRIPTION } from "./intercom-readiness";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { waitReady } from "./hub-readiness";
 import { assertTestConfigPath, openDb, openDbReadOnly } from "@spider/db-core";
 import { storeScope } from "@spider/db-core/roam/codec";
@@ -36,6 +36,7 @@ import { renderSupervisorUnit } from "./systemd";
 import { installLocalV0Supervisor, localSupervisorInstallPorts, removeLocalSupervisor, type SupervisorInstallPorts } from "./relocate/service-install";
 import { createHomeStore } from "./relocate/home";
 import { withV0HomeLifecycle } from "./relocate/home-lifecycle";
+import { localHerdrConnection } from "./relocate/local";
 
 export interface ControlResult { code: 0 | 1 | 2 | 3; reason: string; message: string; causeCode?: string; operationId?: string; repairCommand?: string; nextStep?: string; issues?: readonly { reason: string; repairCommand: string; detail?: string; causeCode?: string; severity?: "warning" }[];
   information?: readonly { machine: string; reason: string }[] }
@@ -182,6 +183,12 @@ export async function configureV0Service(root: string, enabled: boolean, options
       const cli = enabled ? realpathSync(options.resolveCli()) : null;
       const pi = enabled ? resolveParticipantPi() : null;
       if (enabled && (!pi || !cli || !statSync(cli).isFile())) throw new Error("Install pi and the Spider CLI first.");
+      const connection = enabled ? localHerdrConnection(root) : undefined;
+      const hc = connection && isAbsolute(connection.binary) ? connection.binary : undefined;
+      if (hc) {
+        if (!statSync(hc).isFile()) throw new Error("The configured Herdr executable is not a file.");
+        accessSync(hc, constants.X_OK);
+      }
       if (enabled) issues = await pendingLegacyLaunchWarnings(root, config);
       else if (config.role === "hub") {
         const pending = readPendingMoves(join(root, "roam", "journal.db"));
@@ -210,7 +217,7 @@ export async function configureV0Service(root: string, enabled: boolean, options
             removed.push("Removed the legacy roaming hub launchd service.");
           }
           changed = true;
-          await installHubService({ node: process.execPath, cli, globalRoot: root, pi, mode: "v0" }, ports);
+          await installHubService({ node: process.execPath, cli, globalRoot: root, pi, hc, mode: "v0" }, ports);
           await setEnabled(true);
         } else {
           changed = true;
@@ -220,8 +227,10 @@ export async function configureV0Service(root: string, enabled: boolean, options
         const ports = options.systemd ?? localSupervisorInstallPorts();
         const supervisor = cli === null ? "/supervisor.mjs" : realpathSync(join(dirname(cli), "supervisor.mjs"));
         if (enabled && !statSync(supervisor).isFile()) throw new Error("Install the Spider supervisor first.");
+        const herdr = connection && hc ? { binary: hc, ...hubCoreSelection(connection.env) } : undefined;
         const unit = renderSupervisorUnit({ node: process.execPath, supervisor, coreUnit: config.coreUnit, globalRoot: root,
-          agentDir: process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"), pi: pi ?? undefined, mode: "v0" });
+          agentDir: connection?.env.PI_CODING_AGENT_DIR, pi: pi ?? undefined, mode: "v0", herdr,
+          loginPath: enabled ? process.env.PATH : undefined });
         const rootLine = unit.split("\n").find(line => line.startsWith('Environment="SPIDER_GLOBAL_ROOT='))!;
         if (enabled) {
           prepareV0MemoryCapture(root);

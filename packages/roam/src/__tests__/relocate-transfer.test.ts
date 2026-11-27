@@ -114,6 +114,20 @@ describe("v0 real transfer",()=>{
   expect(f.git(f.checkout,"rev-parse","HEAD")).toBe(captured.value.workspace.head);expect(f.git(f.checkout,"write-tree")).toBe(captured.value.workspace.indexTree);expect(readFileSync(join(f.checkout,"file.txt"),"utf8")).toBe("unstaged\n");expect(readFileSync(join(f.checkout,"untracked.txt"),"utf8")).toBe("untracked\n");
   expect(await installLocalSession(f.plan,captured.value,f.home,f.destination,undefined,async()=>({kind:"free"}))).toEqual(installed);expect(readFileSync(f.plan.destinationPlacement.file)).toEqual(bytes);
  });
+ it("relocating a fork rewrites the cwd and keeps every other transcript byte",async()=>{
+  const f=transferFixture(true);
+  const original=readFileSync(f.file,"utf8").replace('"cwd":',String.raw`"parentSession" : "\u002fprivate\u002fparent.jsonl",  "cwd":`);
+  writeFileSync(f.file,original);
+  const captured=await captureLocalSession(f.plan,f.options,async()=>({kind:"free"}));
+  if(!captured.ok)throw new Error(JSON.stringify(captured));
+  for(const manifest of [captured.value.transcriptArtifact,captured.value.bundleArtifact])await receiveArtifactLocally(manifest,f.options,f.destination);
+  const installed=await installLocalSession(f.plan,captured.value,f.home,f.destination,undefined,async()=>({kind:"free"}));
+  expect(installed).toMatchObject({ok:true});
+  const expected=original.replace(JSON.stringify(f.plan.sourcePlacement.cwd),JSON.stringify(f.plan.destinationPlacement.cwd));
+  expect(readFileSync(f.plan.destinationPlacement.file,"utf8")).toBe(expected);
+  expect(await installLocalSession(f.plan,captured.value,f.home,f.destination,undefined,async()=>({kind:"free"}))).toEqual(installed);
+  expect(readFileSync(f.plan.destinationPlacement.file,"utf8")).toBe(expected);
+ });
  it("dirty unrelated destination is unchanged",async()=>{
   const f=transferFixture();f.git(f.plan.destinationPlacement.repository,"worktree","add","--detach",f.checkout);
   writeFileSync(join(f.checkout,"file.txt"),"unrelated\n");writeFileSync(join(f.checkout,"new.txt"),"keep\n");writeFileSync(f.plan.destinationPlacement.file,"unrelated transcript\n");

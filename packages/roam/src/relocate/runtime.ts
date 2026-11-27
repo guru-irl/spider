@@ -147,8 +147,7 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
         if (!config.enabled) return { ok: false, step: "check", home: null, moveId: null, refusal: {
           code: "replication-disabled", message: "Relocation needs replication enabled.", nextStep: "Run spider roam enable on the Mac, then retry relocation.",
         } };
-        return relocate(request,relocatePorts,{ clock: localClock, timeoutMs: config.limits.readyMs,
-          confirmPending:(home,placement)=>adapters.ports.confirm(home,placement,true) });
+        return relocate(request,relocatePorts,{ clock: localClock, timeoutMs: config.limits.readyMs });
       },
       async setHome(request) {
         if (forgotten(request.destinationMachine)) return revokedDestination;

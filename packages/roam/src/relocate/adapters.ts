@@ -16,6 +16,7 @@ import type { RelocateAdapterOptions, RelocateAdapters, RelocateId, RelocatePort
 
 export interface ExactRelocatePorts extends RelocatePorts {
   confirm(home: RunningHome, placement: SessionPlacement, exact?: true): Promise<V0Result<{terminal:string}>>;
+  confirmPending: RelocatePorts["confirm"];
 }
 
 export function createRelocateAdapters(options: RelocateAdapterOptions): RelocateAdapters & {ports:ExactRelocatePorts} {
@@ -146,6 +147,7 @@ export function createRelocateAdapters(options: RelocateAdapterOptions): Relocat
     if(!hub)throw new Error("Only the hub may mutate a v0 home");return withProcessLock(join(options.root,"roam","v0-locks"),id,run,{timeoutMs:options.limits.controlMs});
   },...machines};
   const ports:ExactRelocatePorts={...shared,journal,initialSource,check,
+    confirmPending:(home,placement)=>machines.confirm(home,placement,true),
     async stopSource(plan,moving){
       if(plan.source.machineId===options.config.machineId){
         const stopped=await local.stop(plan.source.sessionId,moving,true);if(!stopped.ok)return stopped;

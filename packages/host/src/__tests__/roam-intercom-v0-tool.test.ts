@@ -530,7 +530,7 @@ it("returns the reply to a named remote ask", async () => {
 
 it("reports a remote ask timeout or lost call without resending", async () => {
   const oldTimeout = process.env.PI_INTERCOM_ASK_TIMEOUT_MS;
-  process.env.PI_INTERCOM_ASK_TIMEOUT_MS = String(V0_ASK_MAX_MS + 1);
+  process.env.PI_INTERCOM_ASK_TIMEOUT_MS = "540001";
   const questions: V0Text[] = [], budgets: number[] = [];
   let outcome: "no_reply" | "unknown" = "no_reply";
   const prepare: V0Prepare = async () => ({
@@ -550,7 +550,7 @@ it("reports a remote ask timeout or lost call without resending", async () => {
     expect(unknown.content[0].text).toBe(`Delivery could not be confirmed (ID ${questions[1].id}). Check the recipient before sending again.`);
     expect(unknown.details).toMatchObject({ error: true, delivery: "unknown", messageId: questions[1].id });
     expect(questions).toHaveLength(2);
-    expect(budgets).toEqual([V0_ASK_MAX_MS, V0_ASK_MAX_MS]);
+    expect(budgets).toEqual([540_000, 540_000]);
   } finally {
     await f.cleanup();
     if (oldTimeout === undefined) delete process.env.PI_INTERCOM_ASK_TIMEOUT_MS;

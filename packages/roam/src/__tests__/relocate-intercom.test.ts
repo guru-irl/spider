@@ -463,14 +463,18 @@ describe("roaming v0 intercom", () => {
     });
   });
 
-  it("fits the capped ask and its reserves inside Herdr's direct call limit", async () => {
-    const f = paired(), plan = await remotePlan(f.intercom);
-    expect(await plan.ask(message, V0_ASK_MAX_MS)).toEqual({ kind: "no_reply", id: message.id });
-    const call = f.calls.find(item => item.request.kind === "ask");
-    expect(call?.options.postReserveMs).toBe(2000);
-    // The total includes a two-second reply reserve and two-second post-check reserve.
-    expect(call!.options.timeoutMs).toBeLessThanOrEqual(V0_ASK_MAX_MS + 4000);
-    expect(V0_ASK_MAX_MS + 4000).toBeLessThan(DEFAULT_LIMITS.directMs);
+  it("fits the nine-minute ask and its reserves inside Herdr's direct call limit", async () => {
+    const f = paired();
+    vi.useFakeTimers({ toFake: ["performance"] });
+    try {
+      const plan = await remotePlan(f.intercom);
+      expect(await plan.ask(message, 540_001)).toEqual({ kind: "no_reply", id: message.id });
+      expect(f.calls).toMatchObject([
+        { request: { kind: "lookup" }, options: { timeoutMs: 20_000 } },
+        // The total includes a two-second reply reserve and two-second post-check reserve.
+        { request: { kind: "ask", timeoutMs: 540_000 }, options: { timeoutMs: 544_000, postReserveMs: 2000 } },
+      ]);
+    } finally { vi.useRealTimers(); }
   });
 
   it("returns a confirmed no_reply when a capped ask reaches its deadline", async () => {

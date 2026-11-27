@@ -7,7 +7,7 @@ import { basename, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
-  DefaultResourceLoader, ExtensionRunner, ModelRegistry, ModelRuntime,
+  DefaultResourceLoader, ExtensionRunner, ModelRegistry, ModelRuntime, keyText, keyHint,
   SessionManager, SettingsManager, type SessionBeforeCompactEvent,
 } from "@earendil-works/pi-coding-agent";
 import { openGlobal, openProject, openRepo, resolveProject, setGlobalDbPathForTests, type Db } from "@spider/db-core";
@@ -506,7 +506,8 @@ describe("the installed pi contract through the full spider extension", () => {
       bg: (token: string, text: string) => { backgrounds.push(token); return text; },
       bold: (text: string) => text,
     };
-    const card = renderer!(entries[0] as never, { expanded: true }, theme as never);
+    const renderOptions = { expanded: true, keyText, keyHint };
+    const card = renderer!(entries[0] as never, renderOptions, theme as never);
     expect(card).toBeDefined();
     const rendered = card!.render(100).join("\n");
     expect(rendered).toContain("failed");
@@ -782,6 +783,7 @@ it("a skill-only drain emits a UI receipt that counts queued, not staged, skills
   expect(entry).toMatchObject({ data: { skillsQueued: 1, skillsStaged: 0 } });
   const renderer = f.runner.getEntryRenderer("spider.organism")!;
   const theme = { fg: (_t: string, text: string) => text, bg: (_t: string, text: string) => text, bold: (text: string) => text };
-  const text = renderer(entry as never, { expanded: true }, theme as never)!.render(140).join("\n");
+  const renderOptions = { expanded: true, keyText, keyHint };
+  const text = renderer(entry as never, renderOptions, theme as never)!.render(140).join("\n");
   expect(text).toContain("1 skills queued"); expect(text).not.toContain("0 skills staged");
 });

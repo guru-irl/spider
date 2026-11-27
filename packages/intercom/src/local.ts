@@ -3,7 +3,6 @@ import { getIntercomScopeId } from "./config.js";
 import { INTERCOM_HOST_EVENT, INTERCOM_RESOLVE_EVENT, type IntercomHostRequest, type IntercomResolveRequest } from "./host-api.js";
 import { FEDERATION_FEATURE, createIntercomDeliveryObserver, receiptReleasesPayload, sessionAddress, sameAddress, resolveSessionTarget as resolveRosterTarget, qualifiedName, type SessionAddress } from "./protocol.js";
 import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
 import { randomUUID } from "crypto";
 import { existsSync } from "node:fs";
 import { Type } from "typebox";
@@ -2200,7 +2199,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
         "Do not use contact_supervisor for routine completion handoffs; return the final subagent result normally.",
       ],
       parameters: Type.Object({
-        reason: StringEnum(["need_decision", "progress_update", "interview_request"] as const, {
+        reason: Type.Enum(["need_decision", "progress_update", "interview_request"] as const, {
+          type: "string",
           description: "Contact reason: 'need_decision' waits for a reply; 'interview_request' sends structured questions and waits for a reply; 'progress_update' sends a non-blocking update",
         }),
         message: Type.Optional(Type.String({
@@ -2211,7 +2211,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
           description: Type.Optional(Type.String()),
           questions: Type.Array(Type.Object({
             id: Type.String(),
-            type: StringEnum(["single", "multi", "text", "image", "info"] as const, {
+            type: Type.Enum(["single", "multi", "text", "image", "info"] as const, {
+              type: "string",
               description: "Question type: single, multi, text, image, or info",
             }),
             question: Type.String(),
@@ -2485,7 +2486,8 @@ Usage:
       "Use to coordinate with other local pi sessions: list peers, send updates, ask for help, or check intercom connectivity.",
 
     parameters: Type.Object({
-      action: StringEnum(["list", "list-cwd", "send", "ask", "reply", "pending", "status", "cancel"] as const, {
+      action: Type.Enum(["list", "list-cwd", "send", "ask", "reply", "pending", "status", "cancel"] as const, {
+        type: "string",
         description: "Action: 'list', 'list-cwd', 'send', 'ask', 'reply', 'pending', 'status', or 'cancel'",
       }),
       to: Type.Optional(Type.String({
@@ -2495,7 +2497,7 @@ Usage:
         description: "Message to send (for 'send', 'ask', or 'reply' action)",
       })),
       attachments: Type.Optional(Type.Array(Type.Object({
-        type: StringEnum(["file", "snippet", "context"] as const),
+        type: Type.Enum(["file", "snippet", "context"] as const, { type: "string" }),
         name: Type.String(),
         content: Type.String(),
         language: Type.Optional(Type.String()),

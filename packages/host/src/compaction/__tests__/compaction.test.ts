@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
-import { setup, summaryCalls, pi, USAGE, user, assistant, sessionModel } from './harness.js';
+import { setup, summaryCalls, pi, USAGE, user, assistant, sessionModel, summaryOutputLimit } from './harness.js';
 // Break: wrong model/reason dispatch or session thinking leaks into the summary request.
 for (const reason of ['manual', 'threshold', 'overflow']) test(`parent ${reason} uses configured model high in exactly one summary call`, async () => {
   const f = setup(); f.event.reason = reason; f.event.willRetry = reason === 'overflow';
@@ -27,7 +27,7 @@ test('event signal previous summary custom instructions and reserve reach real g
   assert.equal(summaryCalls[0].signal, f.controller.signal); assert.equal(f.requests[0].options.signal, f.controller.signal);
   assert.equal(summaryCalls[0].previousSummary, '## Goal\nPREVIOUS SUMMARY');
   assert.equal(summaryCalls[0].customInstructions, 'Preserve the boundary conditions');
-  assert.equal(summaryCalls[0].reserveTokens, 400000); assert.equal(f.requests[0].options.maxTokens, 128000);
+  assert.equal(summaryCalls[0].reserveTokens, 400000); assert.equal(f.requests[0].options.maxTokens, summaryOutputLimit(128000));
   const prompt = f.requests[0].context.messages.find((m: any) => m.role === 'user').content[0].text;
   assert.ok(prompt.includes('<previous-summary>\n## Goal\nPREVIOUS SUMMARY\n</previous-summary>'));
   assert.ok(prompt.includes('Additional focus: Preserve the boundary conditions'));

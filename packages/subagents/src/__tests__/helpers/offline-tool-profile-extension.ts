@@ -1,5 +1,6 @@
+import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type, createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import { writeFileSync } from "node:fs";
 
 /** Offline fixture: records actual model declarations and attempts excluded nested tools. */

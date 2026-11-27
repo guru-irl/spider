@@ -1,4 +1,6 @@
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { processStartIdentity } from "@spider/herdr/jobs/handoff";
+import { claimIdLock, localBootId } from "@spider/herdr/sessions/id-lock";
 import { isRoamUuid } from "@spider/db-core/roam/codec";
 import { validUnicode } from "@spider/db-core/roam/hlc";
 import type { MachineId } from "@spider/db-core/roam/types";
@@ -51,6 +53,23 @@ function same(a: RelocateHome | null, b: RelocateHome): boolean {
 
 function matchesFence(home: RelocateHome, fence: AwayHomeFence): boolean {
   return home.state === "running" && home.machineId === fence.machineId && home.epoch === fence.epoch && home.moveId === fence.moveId;
+}
+
+export class MacSessionOccupied extends Error {
+  constructor(cause: unknown) { super("The Mac session ID is not known to be free", { cause }); }
+}
+
+async function reserveMacSession(root: string, sessionId: SessionId) {
+  try {
+    const startIdentity = processStartIdentity(process.pid), boot = await localBootId();
+    if (!startIdentity || !boot) throw new Error("Local process identity unavailable");
+    return await claimIdLock(join(root, "herdr"), sessionId, { pid: process.pid, startIdentity }, async pid => {
+      try {
+        const other = processStartIdentity(pid);
+        return other === null ? { kind: "absent" } : { kind: "live", startIdentity: other };
+      } catch { return { kind: "unknown" }; }
+    }, { bootId: async () => boot, exclusive: true });
+  } catch (error) { throw new MacSessionOccupied(error); }
 }
 
 export function createHomeStore(options: HomeStoreOptions): HomeStore {
@@ -117,12 +136,14 @@ export function createHomeStore(options: HomeStoreOptions): HomeStore {
         const fence = await readAwayHomeFence(root, sessionId);
         if (fence && expected.epoch <= fence.epoch && !matchesFence(expected, fence) &&
             !(expected.state === "moving" && matchesFence(next, fence))) throw new AwayHomeRecoveryRequired(fence);
-        if (machineId !== hubMachineId) {
-          if (!moveId) throw new Error("An away home needs a move ID");
+        if (machineId === hubMachineId) return apply();
+        if (!moveId) throw new Error("An away home needs a move ID");
+        const owner = await reserveMacSession(root, sessionId);
+        try {
           // If the process dies or the CAS loses after publication, the fence stays fail-closed.
           await publishAwayHomeFence(root, sessionId, { machineId, epoch, moveId });
-        }
-        return apply();
+          return await apply();
+        } finally { await owner.release(); }
       });
     },
   };

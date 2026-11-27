@@ -220,6 +220,8 @@ describe("v0 controls", () => {
       const f = fixture(value); expect(await runV0Control({ kind: "set-home", session: "session-abc", machine: "box-a.invalid", force: true, confirmation: null }, config, catalog, f.services, f.io, { json: true })).toBe(1);
       expect(f.services.setHome).not.toHaveBeenCalled(); expect(JSON.parse(f.out.join("")).refusal.code).toBe("confirmation-required");
       expect(f.prompts[0]).toContain(phrase); expect(f.prompts[0]).toMatch(/unsynced conversation.*lost/i);
+      expect(f.prompts[0]).toContain("systemctl --user disable --now spider-roam-supervisor.service");
+      expect(f.prompts[0]).toMatch(/before.*reconnect/i);
     }
     const f = fixture(phrase); expect(await runV0Control({ kind: "set-home", session: "session-abc", machine: "box-a.invalid", force: true, confirmation: null }, { ...config, enabled: false }, catalog, f.services, f.io, { json: true })).toBe(0);
     expect(f.services.setHome).toHaveBeenCalledWith({ sessionId: "session-abc", destinationMachine: box, force: true, confirmation: phrase });

@@ -1,5 +1,10 @@
 import { AwayHomeRecoveryRequired } from "./away-home";
+import { MacSessionOccupied } from "./home";
 import type { RunningHome, SetHomePorts, SetHomeRequest, V0RefusalCode, V0Result } from "./types";
+
+export const forceWarning = "The old source must not run again. Unsynced conversation can be lost. " +
+  "If the old source is a box that may return, close its Pi session and run " +
+  "systemctl --user disable --now spider-roam-supervisor.service on that box before it reconnects.";
 
 function refuse(code: V0RefusalCode, message: string, nextStep: string): V0Result<RunningHome> {
   return {ok:false,refusal:{code,message,nextStep}};
@@ -9,7 +14,7 @@ export async function setHome(request: SetHomeRequest, ports: SetHomePorts): Pro
   const {sessionId,destinationMachine} = request;
   const phrase = `reassign ${sessionId} to ${destinationMachine}; source will not run`;
   if (!request.force || request.confirmation !== phrase) {
-    return refuse("confirmation-required", "The old source must never run again; unsynced conversation can be lost.", `Type exactly: ${phrase}`);
+    return refuse("confirmation-required", forceWarning, `Type exactly: ${phrase}`);
   }
   const retry = `Run spider roam relocate ${sessionId} ${destinationMachine} to resume the destination copy.`;
   try {
@@ -35,6 +40,8 @@ export async function setHome(request: SetHomeRequest, ports: SetHomePorts): Pro
         if (!published.ok) return published;
         return {ok:true,value:next};
       } catch (error) {
+        if (error instanceof MacSessionOccupied) return refuse("stop-timeout", error.message + ".",
+          "Close the session on the Mac, then retry set-home --force. If it is already closed, run spider roam doctor on the Mac.");
         if (error instanceof AwayHomeRecoveryRequired) return refuse("home-unavailable",
           `The database cannot verify the away home on ${error.fence.machineId}.`,
           "Restore spider.db or re-sync it from a peer. Then retry set-home --force on the Mac.");

@@ -4,6 +4,8 @@ import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { openDb, migrate, type Db } from "@spider/db-core";
 import { scratchDbPath } from "@spider/db-core/testutil";
+import { processStartIdentity } from "@spider/herdr/jobs/handoff";
+import { claimIdLock, inspectIdLock, type IdLockHandle } from "@spider/herdr/sessions/id-lock";
 import { DEFAULT_LIMITS, disabledIntercom } from "@spider/roam/contracts";
 import { createHomeStore } from "@spider/roam/relocate/home";
 import { setHome } from "@spider/roam/relocate/set-home";
@@ -97,6 +99,36 @@ it("a durably published fence still refuses after a fault before the away CAS co
   f.db().exec("DROP TRIGGER fault_before_commit");
   await expect(f.store().compareAndSwap(moving, away)).resolves.toEqual({ kind: "applied", home: away });
   expect(f.fenceContents()).toEqual(atCas);
+});
+
+it.each(["before force", "during destination lookup"])("refuses forced reassignment if the Mac takes the ID %s", async when => {
+  const f = fixture(), initial = await f.store().initialize(sid, hub);
+  const lockRoot = join(f.root, "herdr");
+  const take = () => claimIdLock(lockRoot, sid, { pid: process.pid, startIdentity: processStartIdentity(process.pid)! }, async () => ({ kind: "unknown" }));
+  const ports = f.forcePorts(), locate = ports.locate;
+  let held: IdLockHandle | undefined;
+  try {
+    if (when === "before force") held = await take();
+    else ports.locate = async (...args) => { held = await take(); return locate(...args); };
+    const request = { sessionId: sid, destinationMachine: box, force: true, confirmation: `reassign ${sid} to ${box}; source will not run` };
+    expect(await setHome(request, ports)).toMatchObject({ ok: false,
+      refusal: { code: "stop-timeout", nextStep: expect.stringMatching(/close.*Mac.*retry/i) } });
+    expect(await f.store().read(sid)).toEqual(initial);
+    expect(existsSync(f.fence)).toBe(false);
+    expect(await held?.isHeldByClaim?.()).toBe(true);
+  } finally { await held?.release(); }
+});
+
+it("force holds the free Mac ID through the away CAS and releases it afterward", async () => {
+  const f = fixture(), lockRoot = join(f.root, "herdr");
+  const lock = join(lockRoot, "id-locks", `${createHash("sha256").update(sid).digest("hex")}.json`);
+  await f.store().initialize(sid, hub);
+  f.db().raw.function("mac_id_reserved", () => existsSync(lock) ? 1 : 0);
+  f.db().exec(`CREATE TRIGGER require_mac_id BEFORE UPDATE ON session_homes WHEN NEW.machine_id='${box}' AND mac_id_reserved()=0
+    BEGIN SELECT RAISE(ABORT, 'Mac ID was not reserved in fixture'); END;`);
+  const request = { sessionId: sid, destinationMachine: box, force: true, confirmation: `reassign ${sid} to ${box}; source will not run` };
+  expect(await setHome(request, f.forcePorts())).toMatchObject({ ok: true, value: { machineId: box, epoch: 2 } });
+  expect(await inspectIdLock(lockRoot, sid)).toBeNull();
 });
 
 it("an unwritable fence refuses forced reassignment before the home changes", async () => {

@@ -12,6 +12,7 @@ import { pathToFileURL } from "node:url";
 import https from "node:https";
 import { isDeepStrictEqual } from "node:util";
 import { piAgentDir } from "./pi-agent-dir.mjs";
+import { isThinkingLevel } from "../packages/db-core/src/thinking.ts";
 
 const AUTH_PATH = join(piAgentDir(), "auth.json");
 const MODELS_PATH = join(piAgentDir(), "models.json");
@@ -194,13 +195,12 @@ function writeModelsAtomically(content) {
 
 function previewOverride(override) {
   const preview = {};
-  const levels = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
   for (const [key, value] of Object.entries(override)) {
     if (key === "compactAtPercent" && typeof value === "number") preview[key] = value;
     else if (key === "reasoning" && typeof value === "boolean") preview[key] = value;
     else if (key === "input" && Array.isArray(value) && value.every((v) => v === "text" || v === "image")) preview[key] = value;
     else if (key === "thinkingLevelMap" && value && typeof value === "object" && !Array.isArray(value) &&
-      Object.entries(value).every(([k, v]) => levels.has(k) && (v === null || levels.has(v)))) preview[key] = value;
+      Object.entries(value).every(([k, v]) => isThinkingLevel(k) && (v === null || isThinkingLevel(v)))) preview[key] = value;
     else preview[key] = "[redacted]";
   }
   return JSON.stringify(preview);

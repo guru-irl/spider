@@ -5,16 +5,18 @@ import { openRoamPathReadOnly } from "@spider/db-core/roam/reads";
 import type { MachineId } from "@spider/db-core/roam/types";
 import { requestV0Broker } from "@spider/intercom/broker/roam-v0-client";
 import {
-  parseV0AgentReply, parseV0AgentRequest, V0_ASK_MAX_MS, V0_INTERCOM_MS,
-  type V0AgentReply, type V0AgentRequest, type V0Code, type V0Endpoint, type V0Prepare, type V0Reply,
+  parseV0AgentReply, parseV0AgentRequest, V0_ASK_MAX_MS, V0_INTERCOM_BYTES, V0_INTERCOM_MS,
+  type V0AgentReply, type V0AgentRequest, type V0Code, type V0Endpoint, type V0Prepare, type V0Refused, type V0Reply, type V0Text,
 } from "@spider/intercom/roam-v0";
-import type { RemoteSessionInfo } from "@spider/intercom/types";
+import type { LocalSessionInfo, RemoteSessionInfo } from "@spider/intercom/types";
 import { readPeer } from "../config";
 import type { Peer, RoamConfig, Transport } from "../contracts";
 import { loadHerdrConfig } from "../host-config";
 import { isMachineId } from "../machine-id";
 import { readLocalIdentity } from "../runtime";
+import { createTransport } from "../transport";
 import { createHomeStore } from "./home";
+import { localHerdrConnection } from "./local";
 import type { RelocateHome, SessionId } from "./types";
 
 export interface V0IntercomDeps {
@@ -95,7 +97,7 @@ function homeCode(home: RelocateHome | null, machineId: string, epoch: number): 
   if (home.machineId !== machineId || home.epoch !== epoch) return "changed";
   return null;
 }
-function refused(code: V0Code): V0Reply { return { kind: "refused", code }; }
+function refused(code: V0Code): V0Refused { return { kind: "refused", code }; }
 function origin(request: V0AgentRequest, source: AcceptedPeer): RemoteSessionInfo {
   return {
     remote: true, id: request.from.address.sessionId, address: request.from.address,
@@ -111,22 +113,231 @@ function matching(endpoint: V0Endpoint, request: Extract<V0AgentRequest, { kind:
       : endpoint.name !== null && endpoint.name.toLowerCase() === request.selector.value.toLowerCase());
 }
 
+function sameEndpoint(a: V0Endpoint, b: V0Endpoint): boolean {
+  return a.address.sessionId === b.address.sessionId && a.address.scopeId === b.address.scopeId &&
+    a.name === b.name && a.homeEpoch === b.homeEpoch && a.endpointEpoch === b.endpointEpoch;
+}
+function endpointOf(session: LocalSessionInfo): V0Endpoint | null {
+  if (!session.address || !session.endpointEpoch || session.v0HomeEpoch === undefined) return null;
+  return { address: { ...session.address }, name: session.runtimeFallbackAlias ? null : session.name ?? null,
+    homeEpoch: session.v0HomeEpoch, endpointEpoch: session.endpointEpoch };
+}
+function samePeer(a: Peer, b: Peer): boolean {
+  return a.machineId === b.machineId && a.alias === b.alias && a.node === b.node && a.pi === b.pi &&
+    a.cli === b.cli && a.core === b.core && a.globalRoot === b.globalRoot && a.agentDir === b.agentDir && a.coreUnit === b.coreUnit;
+}
+function selectedTarget(to: string): { kind: "bare"; value: string } | { kind: "qualified"; machine: string; value: string } | null {
+  if (!to || to.length > 1024 || /[\u0000-\u001f\u007f-\u009f]/.test(to)) return null;
+  const slash = to.indexOf("/");
+  if (slash < 0) return { kind: "bare", value: to };
+  if (to.indexOf("/", slash + 1) >= 0) return null;
+  try {
+    const machine = decodeURIComponent(to.slice(0, slash)), value = decodeURIComponent(to.slice(slash + 1));
+    return alias(machine) && value.length > 0 && value.length <= 256 && value.trim().length > 0 &&
+      !/[\u0000-\u001f\u007f-\u009f]/.test(value) ? { kind: "qualified", machine, value } : null;
+  } catch { return null; }
+}
+
+/** A deadline aborts ignored port signals too, and checks again before any dispatch. */
+async function bounded<T>(deadline: number, signal: AbortSignal | undefined, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const ms = Math.floor(deadline - performance.now());
+  if (ms <= 0 || signal?.aborted) throw new Error("Intercom deadline expired");
+  const controller = new AbortController();
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (error: unknown, value?: T) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      if (error !== null) reject(error); else resolve(value as T);
+    };
+    const abort = () => { controller.abort(); finish(new Error("Intercom request aborted")); };
+    const timer = setTimeout(abort, ms);
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) { abort(); return; }
+    Promise.resolve().then(() => work(controller.signal)).then(value => finish(null, value), error => finish(error));
+  });
+}
+
 export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
   prepare: V0Prepare;
   handle(raw: unknown): Promise<V0AgentReply | null>;
 } {
   const broker = deps.broker ?? requestV0Broker;
-  const prepare: V0Prepare = async ({ to, from }) => {
-    let configured: Settings;
-    try { configured = settings(root); } catch { return { kind: "refused", code: "not-configured" }; }
-    if (!from.address) return { kind: "refused", code: "changed" };
+
+  async function callPeer(configured: Settings, peer: Peer, request: V0AgentRequest, deadline: number,
+    deliveryDeadline: number, signal?: AbortSignal, askDeadline?: number): Promise<V0Reply> {
+    if (!parseV0AgentRequest(request)) return refused("invalid");
+    let invoked = false;
     try {
-      const home = await withHomes(root, configured.config, homes => homes.read(from.address!.sessionId as SessionId));
-      if (!home) return to.includes("/") ? { kind: "refused", code: "not-configured" } : { kind: "legacy" };
-      const code = homeCode(home, configured.config.machineId, from.v0HomeEpoch ?? 0);
-      if (code) return { kind: "refused", code };
-      return { kind: "refused", code: "not-configured" };
-    } catch { return { kind: "refused", code: "unreachable" }; }
+      return await bounded(deadline, signal, async callSignal => {
+        const transport = deps.transport?.(configured.sendTo) ?? createTransport({ ...localHerdrConnection(root), enrolled: configured.sendTo });
+        const resolveMs = Math.floor(Math.min(deadline, deliveryDeadline) - performance.now());
+        if (resolveMs <= 0) throw new Error("Intercom delivery deadline expired");
+        const target = await transport.resolve(peer, { timeoutMs: resolveMs, signal: callSignal });
+        if (callSignal.aborted || performance.now() >= deliveryDeadline) throw new Error("Intercom delivery deadline expired");
+        const remaining = Math.floor(deadline - performance.now());
+        if (remaining <= 2000) throw new Error("Intercom post-check reserve unavailable");
+        const bytes = Buffer.from(JSON.stringify(request));
+        const input = request.kind !== "ask" ? { stdin: bytes } : {
+          stdinForTimeout: (_remoteMs: number) => {
+            if (callSignal.aborted || performance.now() >= deliveryDeadline) throw new Error("Intercom delivery deadline expired");
+            const askMs = Math.floor((askDeadline ?? deadline) - performance.now());
+            if (askMs <= 0) throw new Error("Intercom ask deadline expired");
+            return Buffer.from(JSON.stringify({ ...request, timeoutMs: Math.min(request.timeoutMs, askMs) }));
+          },
+        };
+        invoked = true;
+        const output = await transport.exec(target, ["roam", "agent", "--v0", "intercom"], {
+          timeoutMs: remaining, maxBytes: V0_INTERCOM_BYTES, postReserveMs: 2000, signal: callSignal, ...input,
+        });
+        if (!Buffer.isBuffer(output) || output.length > V0_INTERCOM_BYTES) throw new Error("Invalid intercom reply size");
+        const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(output));
+        const reply = parseV0AgentReply(raw);
+        if (!reply || reply.requestId !== request.requestId || reply.machineId !== peer.machineId ||
+            reply.kind === "refused" && reply.code === "reply-only") throw new Error("Uncorrelated intercom reply");
+        const { version: _version, requestId: _requestId, machineId: _machineId, ...result } = reply;
+        if (result.kind === "refused") return result;
+        if (request.kind === "lookup") {
+          if (result.kind !== "matches") throw new Error("Invalid lookup result");
+          return result;
+        }
+        if (result.kind === "matches" || result.id !== request.message.id ||
+            request.kind === "deliver" && result.kind !== "socket_delivered" && result.kind !== "unknown" ||
+            request.kind === "ask" && result.kind !== "replied" && result.kind !== "no_reply" && result.kind !== "unknown")
+          throw new Error("Invalid delivery result");
+        return result;
+      });
+    } catch {
+      return request.kind !== "lookup" && invoked ? { kind: "unknown", id: request.message.id } : refused("unreachable");
+    }
+  }
+
+  const prepare: V0Prepare = async ({ to, from, locals, signal }) => {
+    const selector = selectedTarget(to);
+    if (!selector) return refused("invalid");
+    let configured: Settings;
+    try { configured = settings(root); } catch { return refused("not-configured"); }
+    let all: readonly RelocateHome[];
+    try { all = await withHomes(root, configured.config, homes => homes.list()); }
+    catch { return refused("unreachable"); }
+    const byId = (id: string) => all.find(home => home.sessionId === id) ?? null;
+    const senderHome = byId(from.address?.sessionId ?? from.id);
+    const exactHome = byId(to);
+    if (exactHome && configured.config.role === "box" && exactHome.machineId === configured.config.hubMachineId)
+      return refused("reply-only");
+    if (!senderHome) {
+      return selector.kind === "qualified" || exactHome && exactHome.machineId !== configured.config.machineId
+        ? refused("not-configured") : { kind: "legacy" };
+    }
+    const source = endpointOf(from);
+    if (!source || !locals.some(local => local.id === from.id && endpointOf(local) !== null && sameEndpoint(endpointOf(local)!, source)))
+      return refused("changed");
+    const senderCode = homeCode(senderHome, configured.config.machineId, source.homeEpoch);
+    if (senderCode) return refused(senderCode);
+
+    const localPlan = (target: LocalSessionInfo) => {
+      if (target.id === from.id || target.address?.sessionId === source.address.sessionId) return refused("self");
+      if (!target.endpointEpoch) return refused("changed");
+      const home = byId(target.address?.sessionId ?? target.id);
+      if (home) {
+        const code = homeCode(home, configured.config.machineId, target.v0HomeEpoch ?? 0);
+        if (code) return refused(code);
+      } else if (target.v0HomeEpoch !== undefined) return refused("changed");
+      return { kind: "local" as const, target: { id: target.id, endpointEpoch: target.endpointEpoch } };
+    };
+
+    if (exactHome) {
+      if (exactHome.sessionId === source.address.sessionId) return refused("self");
+      if (exactHome.state === "moving") return refused("moving");
+      if (exactHome.state === "stopped") return refused("offline");
+      if (exactHome.machineId === configured.config.machineId) {
+        const local = locals.filter(item => item.address?.sessionId === exactHome.sessionId && item.address.scopeId === source.address.scopeId);
+        return local.length > 1 ? refused("ambiguous") : local.length === 1 ? localPlan(local[0]) : refused("offline");
+      }
+    } else if (selector.kind === "bare") {
+      const scoped = locals.filter(item => !item.address || item.address.scopeId === source.address.scopeId);
+      let local = scoped.filter(item => item.id === to || item.address?.sessionId === to);
+      if (!local.length) local = scoped.filter(item => item.name?.toLowerCase() === to.toLowerCase());
+      if (!local.length) local = scoped.filter(item => item.id.startsWith(to));
+      if (local.length) return local.length > 1 ? refused("ambiguous") : localPlan(local[0]);
+    }
+
+    const peers = exactHome ? configured.sendTo.filter(peer => peer.machineId === exactHome.machineId)
+      : selector.kind === "qualified" ? configured.sendTo.filter(peer => peer.alias.toLowerCase() === selector.machine.toLowerCase())
+      : configured.sendTo.filter(peer => all.some(home => home.machineId === peer.machineId && home.state === "running"));
+    if (!peers.length) return exactHome || selector.kind === "qualified" ? refused("not-configured") : refused("no-match");
+    const query = exactHome ? { by: "id" as const, value: exactHome.sessionId }
+      : { by: "name" as const, value: selector.value };
+    const sourceWire = { ...source, machineId: configured.config.machineId };
+    const deadline = performance.now() + V0_INTERCOM_MS;
+    const lookups = await Promise.all(peers.map(async peer => {
+      const request: Extract<V0AgentRequest, { kind: "lookup" }> = {
+        version: 1, requestId: randomUUID(), toMachineId: peer.machineId, from: sourceWire, kind: "lookup", selector: query,
+      };
+      return { peer, request, result: await callPeer(configured, peer, request, deadline, deadline, signal) };
+    }));
+    const candidates: { peer: Peer; endpoint: V0Endpoint }[] = [];
+    for (const { peer, request, result } of lookups) {
+      if (result.kind === "refused") {
+        return selector.kind === "bare" && !exactHome && (result.code === "unreachable" || result.code === "unsupported")
+          ? refused("incomplete") : result;
+      }
+      if (result.kind !== "matches") return refused("incomplete");
+      for (const endpoint of result.targets) {
+        if (!matching(endpoint, request)) return refused("unauthorized");
+        const code = homeCode(byId(endpoint.address.sessionId), peer.machineId, endpoint.homeEpoch);
+        if (code) return refused(code);
+        candidates.push({ peer, endpoint });
+      }
+    }
+    if (candidates.length > 1) return refused("ambiguous");
+    if (!candidates.length) return refused(exactHome ? "offline" : "no-match");
+    const { peer, endpoint } = candidates[0];
+    if (endpoint.address.sessionId === source.address.sessionId) return refused("self");
+    const pinnedPeer = { ...peer }, pinnedTarget = { ...endpoint, address: { ...endpoint.address } };
+    const label = `${encodeURIComponent(peer.alias)}/${encodeURIComponent(endpoint.name ?? endpoint.address.sessionId)}`;
+
+    async function dispatch(kind: "deliver" | "ask", message: V0Text, timeoutMs: number | undefined, abort?: AbortSignal) {
+      if (kind === "ask" && (!Number.isSafeInteger(timeoutMs) || timeoutMs! <= 0)) return refused("invalid");
+      const started = performance.now(), deliveryDeadline = started + V0_INTERCOM_MS;
+      const askMs = kind === "ask" ? Math.min(timeoutMs!, V0_ASK_MAX_MS) : undefined;
+      const askDeadline = askMs === undefined ? undefined : started + askMs;
+      const deadline = started + (askMs === undefined ? V0_INTERCOM_MS : Math.min(V0_ASK_MAX_MS, askMs + 3000));
+      let current: Settings;
+      try { current = settings(root); } catch { return refused("not-configured"); }
+      if (current.config.machineId !== configured.config.machineId || current.agentDir !== configured.agentDir) return refused("changed");
+      try {
+        const code = await withHomes(root, current.config, async homes => {
+          const sourceHome = await homes.read(source.address.sessionId as SessionId);
+          const sourceCode = homeCode(sourceHome, current.config.machineId, source.homeEpoch);
+          if (sourceCode) return sourceCode;
+          const targetHome = await homes.read(pinnedTarget.address.sessionId as SessionId);
+          if (targetHome && current.config.role === "box" && targetHome.machineId === current.config.hubMachineId) return "reply-only";
+          return homeCode(targetHome, pinnedPeer.machineId, pinnedTarget.homeEpoch);
+        });
+        if (code) return refused(code);
+      } catch { return refused("unreachable"); }
+      const currentPeer = current.sendTo.find(item => item.machineId === pinnedPeer.machineId);
+      if (!currentPeer || !samePeer(currentPeer, pinnedPeer)) return refused("changed");
+      if (!locals.some(local => local.id === from.id && endpointOf(local) !== null && sameEndpoint(endpointOf(local)!, source))) return refused("changed");
+      try {
+        const active = await bounded(Math.min(deadline, deliveryDeadline), abort, s => broker(current.agentDir,
+          { kind: "lookup", scopeId: source.address.scopeId, selector: { by: "id", value: source.address.sessionId } }, s));
+        if (active.kind === "refused") return active.code === "reply-only" ? refused("unreachable") : active;
+        if (active.kind !== "matches" || active.targets.length !== 1 || !sameEndpoint(active.targets[0], source)) return refused("changed");
+      } catch { return refused("unreachable"); }
+      const common = { version: 1 as const, requestId: randomUUID(), toMachineId: pinnedPeer.machineId,
+        from: sourceWire, target: pinnedTarget, message };
+      const request: V0AgentRequest = kind === "deliver" ? { ...common, kind: "deliver" }
+        : { ...common, kind: "ask", timeoutMs: askMs! };
+      const result = await callPeer(current, currentPeer, request, deadline, deliveryDeadline, abort, askDeadline);
+      return result.kind === "matches" ? { kind: "unknown" as const, id: message.id } : result;
+    }
+    return { kind: "remote", label,
+      send: (message, abort) => dispatch("deliver", message, undefined, abort),
+      ask: (message, timeoutMs, abort) => dispatch("ask", message, timeoutMs, abort) };
   };
 
   async function handle(raw: unknown): Promise<V0AgentReply | null> {

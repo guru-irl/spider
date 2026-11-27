@@ -2,15 +2,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { openDbAt } from "@spider/db-core";
-import type { V0AgentRequest, V0Endpoint, V0Reply } from "@spider/intercom/roam-v0";
+import { parseV0AgentReply, type V0AgentRequest, type V0BrokerOp, type V0Endpoint, type V0Reply, type V0Text } from "@spider/intercom/roam-v0";
+import type { LocalSessionInfo } from "@spider/intercom/types";
+import type { CallOptions, Peer, Transport } from "../contracts";
 import { main } from "../cli";
 import { createV0Intercom } from "../relocate/intercom";
 
 const MAC = "11111111-1111-4111-8111-111111111111";
 const BOX = "22222222-2222-4222-8222-222222222222";
+const OTHER = "33333333-3333-4333-8333-333333333333";
 const roots: string[] = [];
 
-function boxFixture(): { root: string; agentDir: string } {
+function machineFixture(machineId: string): { root: string; agentDir: string } {
   const root = mkdtempSync(join(resolve(".spider/scratch"), "ic2-"));
   roots.push(root);
   const agentDir = join(root, "agent");
@@ -18,12 +21,12 @@ function boxFixture(): { root: string; agentDir: string } {
   mkdirSync(join(root, "herdr"), { mode: 0o700 });
   mkdirSync(agentDir, { mode: 0o700 });
   writeFileSync(join(root, "roam", "config.json"), JSON.stringify({
-    enabled: true, role: "box", machineId: BOX, hubMachineId: MAC,
+    enabled: true, role: machineId === MAC ? "hub" : "box", machineId, hubMachineId: MAC,
     peers: [], discoveryRoots: [], coreUnit: "core.service",
   }), { mode: 0o600 });
-  writeFileSync(join(root, "roam", "machine.json"), JSON.stringify({ machineId: BOX }), { mode: 0o600 });
+  writeFileSync(join(root, "roam", "machine.json"), JSON.stringify({ machineId }), { mode: 0o600 });
   writeFileSync(join(root, "roam", "intercom-v0.json"), JSON.stringify({
-    version: 1, sendTo: [], acceptFrom: [{ machineId: MAC, alias: "mac" }],
+    version: 1, sendTo: [], acceptFrom: machineId === MAC ? [] : [{ machineId: MAC, alias: "mac" }],
   }), { mode: 0o600 });
   writeFileSync(join(root, "herdr", "config.json"), JSON.stringify({
     mode: "core-only", core: { binary: "/usr/bin/env", config: join(root, "core.toml") },
@@ -31,13 +34,28 @@ function boxFixture(): { root: string; agentDir: string } {
   }), { mode: 0o600 });
   const db = openDbAt(join(root, "spider.db"), "global");
   try {
-    db.prepare("UPDATE roam_meta SET machine_id=?,store_key='global' WHERE id=1").run(BOX);
+    db.prepare("UPDATE roam_meta SET machine_id=?,store_key='global' WHERE id=1").run(machineId);
     const insert = db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,updated_at,state) VALUES (?,?,?,1,'running')");
     insert.run("alice", MAC, 1);
     insert.run("ben", BOX, 2);
   } finally { db.close(); }
   return { root, agentDir };
 }
+function boxFixture() { return machineFixture(BOX); }
+function peer(machineId: string, name: string, fixture: { root: string; agentDir: string }): Peer {
+  return { machineId, alias: name, node: "/node", pi: "/pi", cli: "/spider", core: "/core",
+    globalRoot: fixture.root, agentDir: fixture.agentDir };
+}
+function configure(root: string, sendTo: readonly Peer[], acceptFrom: readonly { machineId: string; alias: string }[]) {
+  writeFileSync(join(root, "roam", "intercom-v0.json"), JSON.stringify({ version: 1, sendTo, acceptFrom }), { mode: 0o600 });
+}
+
+const alice: LocalSessionInfo = {
+  id: "stable-alice", address: { sessionId: "alice", scopeId: "scope-1" }, name: "alice",
+  endpointEpoch: "alice-connection", v0HomeEpoch: 1, cwd: "", model: "", pid: 1, startedAt: 1, lastActivity: 1,
+};
+const aliceEndpoint: V0Endpoint = { address: { sessionId: "alice", scopeId: "scope-1" }, name: "alice", homeEpoch: 1, endpointEpoch: "alice-connection" };
+const message: V0Text = { id: "message-1", timestamp: 123, text: "hello" };
 
 const ben: V0Endpoint = {
   address: { sessionId: "ben", scopeId: "scope-1" }, name: "ben", homeEpoch: 2, endpointEpoch: "ben-connection",
@@ -54,6 +72,11 @@ afterEach(() => {
 });
 
 describe("roaming v0 intercom", () => {
+  it("parses a correlated reply-only refusal", () => {
+    const reply = { version: 1, requestId: "request-1", machineId: BOX, kind: "refused", code: "reply-only" };
+    expect(parseV0AgentReply(reply)).toEqual(reply);
+  });
+
   it("dispatches via the private v0 agent mode", async () => {
     const { root, agentDir } = boxFixture();
     vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
@@ -67,6 +90,89 @@ describe("roaming v0 intercom", () => {
     expect(JSON.parse(out)).toEqual({ version: 1, requestId: "request-1", machineId: BOX, kind: "matches", targets: [ben] });
     expect(err).toBe("");
     expect(broker).toHaveBeenCalledWith(agentDir, { kind: "lookup", scopeId: "scope-1", selector: { by: "name", value: "ben" } }, expect.anything());
+  });
+
+  it("resolves a qualified name without a replication peer or worktree catalog", async () => {
+    const sender = machineFixture(MAC), receiver = boxFixture();
+    vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+    configure(sender.root, [peer(BOX, "box", receiver)], []);
+    const inbox: V0Text[] = [], contacted: string[] = [];
+    const remoteBroker = async (_dir: string, op: V0BrokerOp): Promise<V0Reply> => {
+      if (op.kind === "lookup") return { kind: "matches", targets: [ben] };
+      if (op.kind === "deliver") { inbox.push(op.message); return { kind: "socket_delivered", id: op.message.id }; }
+      throw new Error("unexpected ask");
+    };
+    const localBroker = async (_dir: string, op: V0BrokerOp): Promise<V0Reply> => {
+      if (op.kind !== "lookup") throw new Error("unexpected local operation");
+      return { kind: "matches", targets: [aliceEndpoint] };
+    };
+    const remote = createV0Intercom(receiver.root, { broker: remoteBroker });
+    const transport = (_peers: readonly Peer[]): Pick<Transport, "resolve" | "exec"> => ({
+      resolve: async target => target,
+      async exec(target, argv, options: CallOptions) {
+        expect(argv).toEqual(["roam", "agent", "--v0", "intercom"]);
+        contacted.push(target.machineId);
+        const bytes = options.stdin ?? options.stdinForTimeout?.(options.timeoutMs - 2000);
+        if (!bytes) throw new Error("missing request");
+        return Buffer.from(JSON.stringify(await remote.handle(JSON.parse(bytes.toString("utf8")))));
+      },
+    });
+    const plan = await createV0Intercom(sender.root, { broker: localBroker, transport }).prepare({ to: "box/ben", from: alice, locals: [alice] });
+    expect(plan.kind).toBe("remote");
+    if (plan.kind !== "remote") throw new Error("expected a remote plan");
+    expect(plan.label).toBe("box/ben");
+    expect(await plan.send(message)).toEqual({ kind: "socket_delivered", id: "message-1" });
+    expect(contacted).toEqual([BOX, BOX]);
+    expect(inbox).toEqual([message]);
+  });
+
+  it("keeps a remote ask open until the asked session replies", async () => {
+    const sender = machineFixture(MAC), receiver = boxFixture();
+    vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+    configure(sender.root, [peer(BOX, "box", receiver)], []);
+    let entered!: () => void, answer!: (result: V0Reply) => void;
+    const received = new Promise<void>(resolve => { entered = resolve; });
+    const remoteBroker = async (_dir: string, op: V0BrokerOp): Promise<V0Reply> => {
+      if (op.kind === "lookup") return { kind: "matches", targets: [ben] };
+      if (op.kind !== "ask") throw new Error("unexpected delivery");
+      entered();
+      return new Promise<V0Reply>(resolve => { answer = resolve; });
+    };
+    const localBroker = async (): Promise<V0Reply> => ({ kind: "matches", targets: [aliceEndpoint] });
+    const remote = createV0Intercom(receiver.root, { broker: remoteBroker });
+    const transport = (): Pick<Transport, "resolve" | "exec"> => ({
+      resolve: async target => target,
+      async exec(_target, _argv, options) {
+        const bytes = options.stdin ?? options.stdinForTimeout?.(options.timeoutMs - 2000);
+        if (!bytes) throw new Error("missing request");
+        return Buffer.from(JSON.stringify(await remote.handle(JSON.parse(bytes.toString("utf8")))));
+      },
+    });
+    const plan = await createV0Intercom(sender.root, { broker: localBroker, transport }).prepare({ to: "box/ben", from: alice, locals: [alice] });
+    expect(plan.kind).toBe("remote");
+    if (plan.kind !== "remote") throw new Error("expected a remote plan");
+    let finished = false;
+    const pending = plan.ask(message, 5000).then(result => { finished = true; return result; });
+    await received;
+    expect(finished).toBe(false);
+    answer({ kind: "replied", id: message.id, replyId: "reply-1", text: "ack" });
+    expect(await pending).toEqual({ kind: "replied", id: "message-1", replyId: "reply-1", text: "ack" });
+  });
+
+  it("refuses a box-to-Mac target as reply-only without calling transport", async () => {
+    const { root } = boxFixture();
+    vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+    const db = openDbAt(join(root, "spider.db"), "global");
+    try {
+      db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,updated_at,state) VALUES (?,?,1,1,'running')").run("carl", OTHER);
+    } finally { db.close(); }
+    const from: LocalSessionInfo = { ...alice, id: "stable-ben", name: "ben", address: ben.address,
+      endpointEpoch: ben.endpointEpoch, v0HomeEpoch: ben.homeEpoch };
+    const transport = vi.fn((): Pick<Transport, "resolve" | "exec"> => { throw new Error("must not create a route"); });
+    const { prepare } = createV0Intercom(root, { transport });
+    expect(await prepare({ to: "alice", from, locals: [from] })).toEqual({ kind: "refused", code: "reply-only" });
+    expect(await prepare({ to: "carl", from, locals: [from] })).toEqual({ kind: "refused", code: "not-configured" });
+    expect(transport).not.toHaveBeenCalled();
   });
 
   it("keeps an unhomed caller local and refuses an explicit remote target", async () => {

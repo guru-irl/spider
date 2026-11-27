@@ -108,10 +108,10 @@ it("blocked startup calls no reaper usage trigger feed or organism", async () =>
   const fingerprint = () => files.map(file => existsSync(file) ? createHash("sha256").update(readFileSync(file)).digest("hex") : null);
   const beforeDoctor = fingerprint();
   await commands.get("spider")!.handler("roam doctor", ctx);
-  expect(notices.join("\n")).toMatch(/roam.*disabled/i);
+  expect(notices.join("\n")).toMatch(/legacy-upgrade-unverified.*identity unavailable/i);
   notices.length = 0;
   await commands.get("doctor")!.handler("", ctx);
-  expect(notices.join("\n")).toMatch(/roam.*disabled/i);
+  expect(notices.join("\n")).toMatch(/legacy-upgrade-unverified.*identity unavailable/i);
   expect(sent).toEqual([]);
   expect(fingerprint()).toEqual(beforeDoctor);
   const session = worktree.prepare("SELECT reason FROM sessions WHERE id = ?").get("session-1") as { reason: string };

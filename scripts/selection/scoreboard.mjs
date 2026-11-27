@@ -9,6 +9,7 @@ for (const test of tests) {
   if (!Number.isSafeInteger(test.processes) || test.processes < 1 ||
       !Number.isFinite(test.knownCpuMs) || test.knownCpuMs < 0 ||
       !Number.isSafeInteger(test.unknownCpu) || test.unknownCpu < 0 || test.unknownCpu > test.processes ||
+      !Number.isSafeInteger(test.missingCpu) || test.missingCpu < 0 || test.missingCpu > test.unknownCpu ||
       (test.unknownCpu ? test.cpuMs !== null : test.cpuMs !== test.knownCpuMs) ||
       !Number.isFinite(test.ms) || test.ms < 0) throw new Error(`Invalid scoreboard record: ${test.file}`);
 }
@@ -16,6 +17,7 @@ tests.sort((a, b) => b.knownCpuMs - a.knownCpuMs || a.file.localeCompare(b.file)
 const totalProcesses = tests.reduce((sum, test) => sum + test.processes, 0);
 const totalCpu = tests.reduce((sum, test) => sum + test.knownCpuMs, 0);
 const unknown = tests.reduce((sum, test) => sum + test.unknownCpu, 0);
+const missing = tests.reduce((sum, test) => sum + test.missingCpu, 0);
 const heavy = tests.filter(test => test.processes >= 50);
 const heavyCpu = heavy.reduce((sum, test) => sum + test.knownCpuMs, 0);
 const slow = tests.filter(test => test.ms > 89000).length;
@@ -33,5 +35,6 @@ console.log([
   `- CPU: ${partial(unknown)}${integer(totalCpu)} ms`,
   `- ${integer(heavy.length)} files with 50 or more processes: ${one(totalCpu ? heavyCpu / totalCpu * 100 : 0)}% of observed CPU`,
   `- ${integer(slow)} files with wall time over 89,000 ms`,
-  `- ${integer(unknown)} processes with unknown CPU (missing or unfinished checkpoint)`, '',
+  `- ${integer(unknown)} processes with unknown CPU (missing or unfinished checkpoint)`,
+  `- ${integer(missing)} processes with no CPU sample`, '',
 ].join('\n'));

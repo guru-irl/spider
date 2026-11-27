@@ -23,7 +23,7 @@ function deferred() {
 
 it("keeps a reloaded sender reachable when an older poll arrives after a push", async () => {
   vi.useFakeTimers();
-  const root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "presence-order-"));
+  const root = mkdtempSync(join(paths.globalRoot, "presence-order-"));
   const clock: Clock = { now: () => Date.now(), later: (ms, fn) => { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
   const source = openIntercomStore({ file: join(root, "source", "queue.db"), machineId: A, clock });
   const inbox = openIntercomStore({ file: join(root, "inbox", "queue.db"), machineId: B, clock });
@@ -64,8 +64,10 @@ it("keeps a reloaded sender reachable when an older poll arrives after a push", 
     const target = federation.resolve(coordinator.sessionId, null, []);
     expect(target).toMatchObject({ remote: true, activationEpoch: "after-reload" });
     if (!target?.remote) throw new Error("sender is missing from the roster");
-    expect(await federation.dispatch(helper, target, { id: "late-reply", replyTo: "outage-ask", timestamp: Date.now(), content: { text: "late answer" } }))
-      .toMatchObject({ delivery: "queued", acceptance: { accepted: true, durable: true } });
+    const reply = await federation.dispatch(helper, target, { id: "late-reply", replyTo: "outage-ask", timestamp: Date.now(), content: { text: "late answer" } });
+    expect(reply).toMatchObject({ delivery: "queued", retryable: false, outcomeKnown: true });
+    expect(Object.values(reply)).toContainEqual(expect.objectContaining({ accepted: true, durable: true }));
+    expect(inbox.retained("outbound", "late-reply")).toMatchObject({ state: "queued", payloadRetained: true });
   } finally {
     releaseOldPoll.resolve();
     await sender.stop();
@@ -80,7 +82,7 @@ it("keeps a reloaded sender reachable when an older poll arrives after a push", 
 
 it("keeps a reloaded peer reachable when an older push response arrives after a poll", async () => {
   vi.useFakeTimers();
-  const root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "presence-order-"));
+  const root = mkdtempSync(join(paths.globalRoot, "presence-order-"));
   const clock: Clock = { now: () => Date.now(), later: (ms, fn) => { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
   const source = openIntercomStore({ file: join(root, "source", "queue.db"), machineId: A, clock });
   const inbox = openIntercomStore({ file: join(root, "inbox", "queue.db"), machineId: B, clock });
@@ -128,8 +130,10 @@ it("keeps a reloaded peer reachable when an older push response arrives after a 
     const target = federation.resolve(helper.sessionId, null, []);
     expect(target).toMatchObject({ remote: true, activationEpoch: "after-reload" });
     if (!target?.remote) throw new Error("peer is missing from the roster");
-    expect(await federation.dispatch(coordinator, target, { id: "message-after-reload", timestamp: Date.now(), content: { text: "message" } }))
-      .toMatchObject({ delivery: "queued", acceptance: { accepted: true, durable: true } });
+    const sent = await federation.dispatch(coordinator, target, { id: "message-after-reload", timestamp: Date.now(), content: { text: "message" } });
+    expect(sent).toMatchObject({ delivery: "queued", retryable: false, outcomeKnown: true });
+    expect(Object.values(sent)).toContainEqual(expect.objectContaining({ accepted: true, durable: true }));
+    expect(source.retained("outbound", "message-after-reload")).toMatchObject({ state: "queued", payloadRetained: true });
   } finally {
     releasePoll.resolve();
     releaseOldPush.resolve();
@@ -145,7 +149,7 @@ it("keeps a reloaded peer reachable when an older push response arrives after a 
 
 it("publishes initial sessions and later withdrawals in both directions", async () => {
   vi.useFakeTimers();
-  const root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "presence-order-"));
+  const root = mkdtempSync(join(paths.globalRoot, "presence-order-"));
   const clock: Clock = { now: () => Date.now(), later: (ms, fn) => { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
   const source = openIntercomStore({ file: join(root, "source", "queue.db"), machineId: A, clock });
   const inbox = openIntercomStore({ file: join(root, "inbox", "queue.db"), machineId: B, clock });
@@ -216,7 +220,7 @@ it("publishes initial sessions and later withdrawals in both directions", async 
 
 it("clears cached presence after a handshake with an empty roster", async () => {
   vi.useFakeTimers();
-  const root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "presence-order-"));
+  const root = mkdtempSync(join(paths.globalRoot, "presence-order-"));
   const clock: Clock = { now: () => Date.now(), later: (ms, fn) => { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
   const source = openIntercomStore({ file: join(root, "source", "queue.db"), machineId: A, clock });
   const inbox = openIntercomStore({ file: join(root, "inbox", "queue.db"), machineId: B, clock });

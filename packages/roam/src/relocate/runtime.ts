@@ -6,7 +6,7 @@ import { probeLocal } from "../local-diagnostics";
 import { createStorePort } from "../stores";
 import { openLocalCore, readLocalIdentity, type LocalCore } from "../runtime";
 import { openJournal } from "../journal";
-import { isRevoked } from "../revocation";
+import { forgottenDestinationRefusal, isRevoked } from "../revocation";
 import { createTransport } from "../transport";
 import { createSync } from "../sync";
 import type { Clock, GitPorts, Transport } from "../contracts";
@@ -136,7 +136,7 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
       },
     };
     let closing:Promise<void>|undefined;
-    const revokedDestination = { ok: false, refusal: { code: "machine-revoked", message: "The destination machine was forgotten.", nextStep: "Choose another configured machine or the Mac." } } as const;
+    const revokedDestination = { ok: false, refusal: forgottenDestinationRefusal } as const;
     return {options,adapters,homes,sync,services:{
       async relocate(request) {
         if (forgotten(request.destinationMachine)) return { ...revokedDestination, step: "check", home: null, moveId: null };

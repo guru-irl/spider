@@ -2,6 +2,7 @@ import { createInterface } from "node:readline/promises";
 import type { Readable, Writable } from "node:stream";
 import type { RoamConfig } from "../contracts";
 import { resolveControlMachine, resolveControlSession } from "../commands";
+import { forgottenDestinationRefusal } from "../revocation";
 import { forceWarning, setHomeReplicationRefusal } from "./set-home";
 import type { RelocateSuccess, RunningHome, SessionId, V0CommandIO, V0ControlServices, V0PublicControl, V0Refusal, V0Result } from "./types";
 
@@ -29,7 +30,7 @@ export function parseV0Control(argv: readonly string[]): V0PublicControl | null 
 
 export async function runV0Control(control: V0PublicControl, config: RoamConfig,
   catalog: readonly { id: string; name: string | null }[], services: V0ControlServices,
-  io: V0CommandIO, options: { json?: boolean } = {}): Promise<number> {
+  io: V0CommandIO, options: { json?: boolean; isForgotten?: (machineId: string) => boolean } = {}): Promise<number> {
   const emit = (result: V0Result<RelocateSuccess | RunningHome>): number => {
     if (options.json) io.out(`${JSON.stringify(result)}\n`);
     else if (!result.ok) io.err(`${result.refusal.message}\n${result.refusal.nextStep}\n`);
@@ -62,6 +63,7 @@ export async function runV0Control(control: V0PublicControl, config: RoamConfig,
   if (!destinationMachine) return refuse({ code: "machine-not-found", message: "The destination does not identify exactly one machine.", nextStep: "Use mac or one configured machine ID or alias." });
   const sessionId = resolved.sessionId as SessionId;
   try {
+    if (destinationMachine !== config.machineId && options.isForgotten?.(destinationMachine)) return refuse(forgottenDestinationRefusal);
     if (control.kind === "relocate") return emit(await services.relocate({ sessionId, destinationMachine }));
     const cannotReplicate = setHomeReplicationRefusal(destinationMachine, config);
     if (cannotReplicate) return refuse(cannotReplicate);

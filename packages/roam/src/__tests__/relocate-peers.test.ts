@@ -1,5 +1,5 @@
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { expect, it, vi } from "vitest";
 import { openDb } from "@spider/db-core";
 import { createReplica } from "@spider/db-core/testutil";
@@ -65,7 +65,8 @@ it("schedules synchronization only for enrolled peers that were not forgotten", 
 it("scheduled replication follows configuration changes without a hub restart", async () => {
   const f = fixture();
   f.config.enabled = false;
-  const hub = await startV0Hub(f.replica.root, f.overrides);
+  const root = mkdtempSync(join(resolve(".spider/scratch"), "pv-"));
+  const hub = await startV0Hub(root, f.overrides);
   const tick = (predicate: (delay: number) => boolean) => {
     for (const [fn, delay] of [...f.scheduled]) if (predicate(delay)) { f.scheduled.delete(fn); fn(); }
   };
@@ -81,7 +82,7 @@ it("scheduled replication follows configuration changes without a hub restart", 
     await new Promise<void>(done => setImmediate(done));
     expect(f.requests).toHaveLength(previous);
     expect([...f.scheduled.values()]).toEqual([1_000]);
-  } finally { await hub.stop(); f.replica.close(); }
+  } finally { await hub.stop(); f.replica.close(); rmSync(root,{recursive:true,force:true}); }
 });
 
 it("does not send peer RPCs if the peer is forgotten during discovery", async () => {
@@ -113,6 +114,22 @@ it.each([true, false])("forget records a revocation without a legacy hub (enable
     expect(await runtime.services.relocate({ sessionId, destinationMachine: box })).toMatchObject({ ok: false, refusal: { code: "machine-revoked" } });
     expect(f.requests).toEqual([]);
   } finally { await runtime.close(); f.replica.close(); vi.unstubAllEnvs(); }
+});
+
+it("refuses a forgotten destination at the CLI before asking for confirmation", async () => {
+  const f=fixture();f.forget();
+  writeFileSync(join(f.replica.root,"roam","machine.json"),JSON.stringify({machineId:mac}),{mode:0o600});
+  writeFileSync(join(f.replica.root,"roam","config.json"),JSON.stringify(f.config),{mode:0o600});
+  vi.stubEnv("SPIDER_GLOBAL_ROOT",f.replica.root);
+  const out=vi.fn(), err=vi.fn(), confirmation=vi.fn(async()=>null);
+  const mutate=vi.fn(async()=>{throw new Error("the CLI must not contact the hub");});
+  try {
+    const v0={catalog:[{id:sessionId,name:null}],confirmation,services:{relocate:mutate,setHome:mutate}};
+    const exit=await main(["roam","set-home",sessionId,"box-0.invalid","--force","--json"],{out,err},{v0});
+    expect(exit).toBe(1);
+    expect(JSON.parse(out.mock.calls.flat().join(""))).toMatchObject({ok:false,refusal:{code:"machine-revoked"}});
+    expect(confirmation).not.toHaveBeenCalled();expect(mutate).not.toHaveBeenCalled();
+  } finally {f.replica.close();vi.unstubAllEnvs();}
 });
 
 it("cannot enter moving after hub disable has finished checking the homes", async () => {

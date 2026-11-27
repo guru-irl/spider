@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import type { Db } from "@spider/db-core";
+import { join } from "node:path";
+import { openDbReadOnly, type Db } from "@spider/db-core";
 import type { MachineId } from "@spider/db-core/roam/types";
 import { isMachineId } from "./machine-id";
 
@@ -19,6 +20,14 @@ export function isRevoked(db: Db, machineId: MachineId): boolean {
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='roam_machine_revocations'").get()) return false;
   return !!db.prepare("SELECT 1 FROM roam_machine_revocations WHERE machine_id=?").get(machineId);
 }
+export function readPeerRevocation(root: string, machineId: MachineId): boolean {
+  const db = openDbReadOnly(join(root, "roam", "journal.db"));
+  try { return !!db && isRevoked(db, machineId); } finally { db?.close(); }
+}
+export const forgottenDestinationRefusal = {
+  code: "machine-revoked", message: "The destination machine was forgotten.", nextStep: "Choose another configured machine or the Mac.",
+} as const;
+
 /** No removal or alias-based lookup. This table is outside replication and journal pruning. */
 export function revokeMachine(db: Db, machineId: MachineId): void {
   if (!isMachineId(machineId)) throw new Error("Invalid machine identity");

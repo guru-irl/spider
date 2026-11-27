@@ -13,6 +13,7 @@ import { main } from "../cli";
 import { openFreezeJournal, openJournal } from "../journal";
 import { createIntentStore } from "../intent";
 import { parseDoctorReport } from "../remote-observations";
+import * as snapshots from "../diagnostic-snapshot";
 import { peerEnabledDiagnostics } from "../peer-enabled";
 import { readLocalIdentity } from "../runtime";
 import type { Peer, Transport } from "../contracts";
@@ -49,6 +50,27 @@ function replica(root: string, key: string) {
   } finally { db.close(); }
   return file;
 }
+
+it("reports an inventory as unverified when its journal changes between snapshots", async () => {
+  const f = fixture(), journalFile = join(f.root, "roam", "journal.db"), original = snapshots.openDiagnosticSnapshot;
+  let changed = false;
+  const spy = vi.spyOn(snapshots, "openDiagnosticSnapshot").mockImplementation(file => {
+    const db = original(file);
+    if (file === journalFile && !changed) {
+      changed = true;
+      f.journal.begin({ id: "concurrent-move", kind: "move", machineId: hub, expectedEpoch: 1, args: {} });
+    }
+    return db;
+  });
+  try {
+    const io = { out: vi.fn(), err: vi.fn() };
+    expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+    expect(changed).toBe(true);
+    expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ severity: "block", reason: expect.stringMatching(/^legacy-upgrade-unverified/) }),
+    ]));
+  } finally { spy.mockRestore(); }
+});
 
 it("treats a null remote doctor enabled state as unavailable, not disabled", async () => {
   const f = fixture(), peer: Peer = { machineId: box, alias: "fixture-box", node: "/fixture/node", pi: "/fixture/pi",

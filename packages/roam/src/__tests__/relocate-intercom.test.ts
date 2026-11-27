@@ -527,7 +527,7 @@ describe("roaming v0 intercom", () => {
     vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
     vi.spyOn(homesApi, "createHomeStore").mockImplementation(options => {
       const homes = original(options); let first = true;
-      return { ...homes, async read(id) {
+      return { ...homes, async read(id: Parameters<typeof homes.read>[0]) {
         if (first) { first = false; await new Promise(resolve => setTimeout(resolve, V0_INTERCOM_MS + 1)); }
         return homes.read(id);
       } };
@@ -567,7 +567,7 @@ describe("roaming v0 intercom", () => {
     vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
     vi.spyOn(homesApi, "createHomeStore").mockImplementation(options => {
       const homes = original(options); let first = true;
-      return { ...homes, async read(id) {
+      return { ...homes, async read(id: Parameters<typeof homes.read>[0]) {
         if (first) { first = false; await new Promise(resolve => setTimeout(resolve, 30)); }
         return homes.read(id);
       } };

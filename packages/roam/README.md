@@ -48,7 +48,7 @@ provisioned box peer:
     "alias": "box-a",
     "node": "/path/to/node",
     "pi": "/path/to/pi",
-    "cli": "/path/to/spider/roam/cli.mjs",
+    "cli": "/path/to/spider/dist/roam/cli.mjs",
     "core": "/path/to/hc",
     "globalRoot": "/path/to/box-global-root",
     "agentDir": "/path/to/box-agent-directory"

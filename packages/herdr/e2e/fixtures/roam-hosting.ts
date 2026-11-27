@@ -109,9 +109,9 @@ exec ${shellQuote(suite.pi.launcher)} "$@"
   const releasePrefix = join(prefix, 'spider-releases', digest);
   const archive = join(root, 'roam', 'provision', `${INSTALL}-install`, 'release-release.tgz');
   await writeFile(join(bin, 'npm'), `#!${process.execPath}
-const { cpSync, mkdirSync, writeFileSync } = require('node:fs');
-const { execFileSync } = require('node:child_process');
-const { join } = require('node:path');
+import { cpSync, mkdirSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { join } from 'node:path';
 const args = JSON.stringify(process.argv.slice(2));
 if (args === ${JSON.stringify(JSON.stringify(['install', '--global', '--prefix', prefix, '--no-audit', '--no-fund', '@earendil-works/pi-coding-agent@1.2.0']))}) {
   const prefix = ${JSON.stringify(prefix)}, piDir = join(prefix, 'bin');
@@ -171,16 +171,20 @@ export async function v0HostingFixture(suite: Suite): Promise<V0HostingFixture> 
     PI_CODING_AGENT_DIR: agent, PI_CODING_AGENT_SESSION_DIR: join(agent, 'sessions'), SPIDER_ROAM_PI: pi };
   const forwarded = ['HOME', 'PATH', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'TMPDIR', 'HC_SESSION', 'HC_SOCKET',
     'SPIDER_GLOBAL_ROOT', 'PI_CODING_AGENT_DIR'] as const;
-  await writeFile(node, `#!/bin/sh\n${forwarded.map(key => `export ${key}=${shellQuote(env[key])}`).join('\n')}\nexec ${shellQuote(process.execPath)} "$@"\n`, { mode: 0o700 });
+  // The fixture peer represents a supported release even when GitHub's Node 26.x runner advances.
+  // Only the reported version is fixed; Node runs the real provisioning programs and native modules.
+  const version = 'data:text/javascript,' + encodeURIComponent(`Object.defineProperty(process.versions, 'node', { value: '26.4.0' });`);
+  await writeFile(node, `#!/bin/sh\n${forwarded.map(key => `export ${key}=${shellQuote(env[key])}`).join('\n')}\nexec ${shellQuote(process.execPath)} --import ${shellQuote(version)} "$@"\n`, { mode: 0o700 });
   // Observe only the fixture core. Any attempted service mutation is recorded and refused.
   await writeFile(join(bin, 'systemctl'), `#!${process.execPath}
+import { appendFileSync } from 'node:fs';
 const args = process.argv.slice(2).join(' ');
 if (args === '--user is-system-running') console.log('running');
 else if (args === '--user show-environment') console.log(${JSON.stringify(`PI_CODING_AGENT_DIR=${agent}`)});
 else if (args === '--user show --property=Transient,FragmentPath,MainPID herdr-core.service')
   console.log(${JSON.stringify(`Transient=no\nFragmentPath=${coreUnit}\nMainPID=${box.pid}`)});
 else {
-  require('node:fs').appendFileSync(${JSON.stringify(systemctlLog)}, args + '\\n', { mode: 0o600 });
+  appendFileSync(${JSON.stringify(systemctlLog)}, args + '\\n', { mode: 0o600 });
   process.exitCode = 1;
 }
 `, { mode: 0o700 });

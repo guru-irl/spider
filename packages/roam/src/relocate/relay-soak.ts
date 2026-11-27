@@ -265,10 +265,13 @@ export function checkRelaySoak(evidence: RelaySoakEvidence): { ok: boolean; viol
   if (processes.length !== machines.size || new Set(processes.map(item => item.machineId)).size !== processes.length) fail("cleanup");
   for (const machineId of machines) {
     const process = processes.find(item => item.machineId === machineId);
-    if (!process || !process.before.complete || !process.after.complete || process.before.atMs > startMs || process.after.atMs < endMs) {
+    if (!process || !process.before.complete || !process.after.complete) {
       fail("cleanup");
       continue;
     }
+    if (links.some(link => link.relayId === machineId &&
+          (process.before.atMs - link.clock.minOffsetMs > startMs || process.after.atMs - link.clock.maxOffsetMs < endMs) ||
+        link.peerId === machineId && (process.before.atMs > startMs || process.after.atMs < endMs))) fail("cleanup");
     const before = new Set(process.before.identities.map(birthKey));
     const owned = new Set(links.flatMap(link => link.runs.filter(run => run.machineId === machineId).map(run => birthKey(run.process))));
     if (before.size !== process.before.identities.length || new Set(process.after.identities.map(birthKey)).size !== process.after.identities.length ||

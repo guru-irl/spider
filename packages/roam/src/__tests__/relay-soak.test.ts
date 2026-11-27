@@ -202,6 +202,7 @@ describe("the live relay soak reliability gate", () => {
     for (const call of link.calls) { call.startMs += 1000; if (call.endMs !== null) call.endMs += 1000; }
     const cut = faultOf(evidence, "route-cut");
     cut.startMs += 1000; cut.clearMs += 1000;
+    evidence.processes.find(item => item.machineId === link.relayId)!.after.atMs = END + 2000;
     expect(checkRelaySoak(evidence)).toEqual({ ok: true, violations: [] });
   });
 
@@ -323,6 +324,14 @@ describe("the live relay soak reliability gate", () => {
     const reusedPid = copy();
     reusedPid.processes[0].after.identities[0].birthId = "different-birth";
     expect(checkRelaySoak(reusedPid).violations).toContain("cleanup");
+  });
+
+  it("counts clock uncertainty when proving the relay census happened before and after the run", () => {
+    const evidence = copy(), link = evidence.links[0], census = evidence.processes.find(item => item.machineId === link.relayId)!;
+    link.clock.minOffsetMs = -100; link.clock.maxOffsetMs = 100;
+    census.before.atMs = START - 50;
+    census.after.atMs = END + 50;
+    expect(checkRelaySoak(evidence).violations).toContain("cleanup");
   });
 
   it("rejects a surviving run helper even if it appeared in the before census", () => {

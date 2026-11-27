@@ -243,7 +243,7 @@ it.each(["activation", "composition"])("%s starts a capture-ready box with a wor
   const f = await fixture(true, false, true);
   let mounted: Awaited<ReturnType<typeof f.activate>> | Awaited<ReturnType<typeof f.compose>>;
   try {
-    f.global.db.prepare("INSERT INTO session_homes VALUES(?,?,1,NULL,1)").run(f.sessionId, BOX);
+    f.global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES(?,?,1,NULL,1)").run(f.sessionId, BOX);
     expect(f.location()).toEqual([WORKTREE]);
     mounted = await (path === "activation" ? f.activate() : f.compose());
     expect(mounted).not.toBeNull();
@@ -257,7 +257,7 @@ it("a box cannot freeze without its move-only store and includes it after it arr
   const f = await fixture(true, false, true);
   let activation: Awaited<ReturnType<typeof f.activate>>, mounted: Awaited<ReturnType<typeof f.compose>>;
   try {
-    f.global.db.prepare("INSERT INTO session_homes VALUES(?,?,1,NULL,1)").run(f.sessionId, BOX);
+    f.global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES(?,?,1,NULL,1)").run(f.sessionId, BOX);
     activation = await f.activate(); mounted = await f.compose();
     expect(activation).not.toBeNull();
     const live = f.live(); live.ingestThrough = async () => {};
@@ -348,7 +348,7 @@ it("unactivated source composition completes a catalog roster without reopening 
 it("dormant source composition completes a catalog roster before mounting its control", async () => {
   const f = await fixture(); let mounted: Awaited<ReturnType<typeof f.compose>>;
   try {
-    f.global.db.prepare("INSERT INTO session_homes VALUES(?,?,1,NULL,1)").run(f.sessionId, HUB);
+    f.global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES(?,?,1,NULL,1)").run(f.sessionId, HUB);
     mounted = await f.compose();
     const bindings = mounted.bindings, participant = bindings.participant!;
     expect(participant.stores.map(row => row.key)).toEqual(ROSTER);
@@ -387,7 +387,7 @@ it.each(["activation", "composition"])("%s admits a hub with no repository store
   const f = await fixture(true, false, false, true);
   let mounted: Awaited<ReturnType<typeof f.activate>> | Awaited<ReturnType<typeof f.compose>>;
   try {
-    f.global.db.prepare("INSERT INTO session_homes VALUES(?,?,1,NULL,1)").run(f.sessionId, HUB);
+    f.global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES(?,?,1,NULL,1)").run(f.sessionId, HUB);
     const home = sessionHome(f.global.db, f.sessionId);
     if (!home || home === "unknown") throw new Error("Fixture home unavailable");
     recordLocation(f.global.db, { sessionId: f.sessionId, stores: [WORKTREE], home, file: f.file, cwd: f.cwd });
@@ -427,7 +427,7 @@ it("a restarted hub admits ordinary tools with a cataloged worktree and no repos
   const hooks = new Map<string, (event: never, context: ExtensionContext) => unknown>();
   const pi = { on: (event: string, handler: (event: never, context: ExtensionContext) => unknown) => hooks.set(event, handler) } as unknown as ExtensionAPI;
   let activation: Awaited<ReturnType<typeof f.activate>>;
-  f.global.db.prepare("INSERT INTO session_homes VALUES(?,?,1,NULL,1)").run(f.sessionId, HUB);
+  f.global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES(?,?,1,NULL,1)").run(f.sessionId, HUB);
   seedSession(f.worktree, f.sessionId, 1, WORKTREE, f.config.limits.targetBatchBytes);
   const home = sessionHome(f.global.db, f.sessionId);
   if (!home || home === "unknown") throw new Error("Fixture home unavailable");

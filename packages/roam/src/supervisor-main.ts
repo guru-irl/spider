@@ -4,10 +4,17 @@ import { homedir } from "node:os";
 import { startProductionSupervisor } from "./production-supervisor";
 import { fileURLToPath } from "node:url";
 import { RUNNING_INTENT_SOURCE_UNAVAILABLE } from "./supervisor";
+import { startV0Supervisor } from "./relocate/runtime";
+import { runV0Service } from "./relocate/service";
 
 export { startProductionSupervisor };
 
-export async function main(argv: readonly string[], io: { out(text: string): void; err(text: string): void }): Promise<number> {
+export async function main(argv: readonly string[], io: { out(text: string): void; err(text: string): void }, options?: {startV0?: typeof startV0Supervisor}): Promise<number> {
+  if(argv.length===1 && argv[0]==="--v0") {
+    const root=process.env.SPIDER_GLOBAL_ROOT || join(homedir(),".pi","agent","spider");
+    try{await runV0Service(()=> (options?.startV0 ?? startV0Supervisor)(root));return 0;}
+    catch{io.err("The v0 home supervisor could not start. Check the local roaming configuration.\n");return 1;}
+  }
   if (argv.length === 1 && ["--help", "-h", "help"].includes(argv[0])) {
     io.out("Usage: spider-roam-supervisor [--help]\nHosts sessions only for an enrolled box with initialized capture and hub-issued intent.\n");
     return 0;

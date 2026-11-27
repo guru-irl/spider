@@ -10,7 +10,7 @@ import { paths } from '@spider/db-core';
 import { parseOptions, selectScenarios, buildMatrix, complete, renderMatrix, scenarioExports, runnerEnvironment, discoverScenarios, cleanupEntry, storyRunBudgetMs, profileIds, storyWorkerEnvironment, storyWorkers, command, finishCleanup, markStoryWorkComplete, runStoryWork, storyExecutionDeadline, runnerCleanupDeadline } from '../../../../scripts/herdr-e2e.mjs';
 import { runHc, verifyHcBinaryPin } from '../harness/hc.js';
 import { storyId } from '../harness/scenario.js';
-import { restorationPending, presentationInProgress } from './roam-recovery.test.js';
+import { presentationInProgress } from '../fixtures/roam-presentation.js';
 import { effectJsonLines, moveRecoveryPending } from './roam-move.test.js';
 import { coldCliStartup } from './roam-intercom.test.js';
 
@@ -114,14 +114,14 @@ describe('story cleanup reserve', () => {
     try {
       let release!: () => void;
       const gate = new Promise<void>(resolve => { release = resolve; });
-      const work = runStoryWork(root, 'R17', () => gate);
+      const work = runStoryWork(root, 'R10', () => gate);
       const overall = { at: Date.now() + 10_000, expire() {} };
-      const deadline = storyExecutionDeadline(overall, root, { ids: ['R17'], harness: false });
+      const deadline = storyExecutionDeadline(overall, root, { ids: ['R10'], harness: false });
       expect(deadline.cleanupReady()).toBe(false);
       release(); await work;
       expect(deadline.cleanupReady()).toBe(true);
       await expect(runStoryWork(root, 'R18', async () => { throw new Error('story failed'); })).rejects.toThrow('story failed');
-      expect(storyExecutionDeadline(overall, root, { ids: ['R17', 'R18'], harness: false }).cleanupReady()).toBe(true);
+      expect(storyExecutionDeadline(overall, root, { ids: ['R10', 'R18'], harness: false }).cleanupReady()).toBe(true);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
@@ -148,7 +148,7 @@ describe('story cleanup reserve', () => {
     let release!: () => void, entered!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     const started = new Promise<void>(resolve => { entered = resolve; });
-    const story = { id: 'R17', run: async () => { entered(); await gate; } };
+    const story = { id: 'R10', run: async () => { entered(); await gate; } };
     const suite = { root, evidence: async () => {}, close: async () => ({ clean: true }) };
     const context = { story, root, options: {}, path, process, runStoryWork, markStoryWorkComplete,
       createSuite: async () => suite, storyOptions: () => ({}), scratchRoot: () => root, readFileSync: () => '{}', existsSync: () => false, record: () => {} };
@@ -156,18 +156,18 @@ describe('story cleanup reserve', () => {
     const work = run();
     try {
       await Promise.race([started, work.then(() => { throw new Error('story did not start'); })]);
-      expect(storyExecutionDeadline({ at: Date.now() + 10_000, expire() {} }, root, { ids: ['R17'], harness: false }).cleanupReady()).toBe(false);
+      expect(storyExecutionDeadline({ at: Date.now() + 10_000, expire() {} }, root, { ids: ['R10'], harness: false }).cleanupReady()).toBe(false);
       release(); await work;
-      expect(storyExecutionDeadline({ at: Date.now() + 10_000, expire() {} }, root, { ids: ['R17'], harness: false }).cleanupReady()).toBe(true);
+      expect(storyExecutionDeadline({ at: Date.now() + 10_000, expire() {} }, root, { ids: ['R10'], harness: false }).cleanupReady()).toBe(true);
     } finally { release(); await work; rmSync(root, { recursive: true, force: true }); }
   });
 
   it('finishes already-started cleanup in the existing reserve without expiring work', async () => {
     const root = mkdtempSync(resolve('.spider/scratch/work-complete-'));
     try {
-      await runStoryWork(root, 'R17', async () => {});
+      await runStoryWork(root, 'R10', async () => {});
       const expired: string[] = [], at = Date.now() + 400;
-      const deadline = storyExecutionDeadline({ at, expire: () => { expired.push('work'); } }, root, { ids: ['R17'], harness: false });
+      const deadline = storyExecutionDeadline({ at, expire: () => { expired.push('work'); } }, root, { ids: ['R10'], harness: false });
       expect(deadline.cleanupAt).toBe(at + 5_000);
       const result = await command(process.execPath, ['-e', 'setTimeout(() => console.log("clean"), 650)'], process.cwd(), process.env, resolve(root, 'log'), true, undefined, 60_000, deadline);
       expect(result.code).toBe(0);
@@ -179,11 +179,11 @@ describe('story cleanup reserve', () => {
   it('reconciles and writes a proof after suite cleanup hangs', async () => {
     const root = mkdtempSync(resolve(paths.scratch('worktree', process.cwd()), 'work-complete-'));
     try {
-      await runStoryWork(root, 'R17', async () => {});
+      await runStoryWork(root, 'R10', async () => {});
       const module = resolve(root, 'resources.mjs');
       writeFileSync(module, `export async function cleanupLedger() { return {clean:true}; } export async function reconcileLedgers() { return [{clean:true}]; }`);
       const overall = { at: Date.now() + 250, expire() {} };
-      const deadline = storyExecutionDeadline(overall, root, { ids: ['R17'], harness: false });
+      const deadline = storyExecutionDeadline(overall, root, { ids: ['R10'], harness: false });
       await expect(command(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], process.cwd(), process.env, resolve(root, 'log'), true, undefined, 60_000, deadline)).rejects.toThrow('runner-deadline');
       expect(await finishCleanup({ module, ledgers: root }, resolve(root, 'ledger.json'), process.cwd(), process.env, root,
         { at: runnerCleanupDeadline(overall), expire() {} })).toBe(true);
@@ -194,9 +194,9 @@ describe('story cleanup reserve', () => {
   it('kills work if any selected story has not finished by the work deadline', async () => {
     const root = mkdtempSync(resolve('.spider/scratch/work-complete-'));
     try {
-      await runStoryWork(root, 'R17', async () => {});
+      await runStoryWork(root, 'R10', async () => {});
       const expired: string[] = [], at = Date.now() + 350;
-      const deadline = storyExecutionDeadline({ at, expire: () => { expired.push('work'); } }, root, { ids: ['R17', 'R18'], harness: false });
+      const deadline = storyExecutionDeadline({ at, expire: () => { expired.push('work'); } }, root, { ids: ['R10', 'R18'], harness: false });
       await expect(command(process.execPath, ['-e', 'setTimeout(() => {}, 1500)'], process.cwd(), process.env, resolve(root, 'log'), true, undefined, 60_000, deadline)).rejects.toThrow('runner-deadline');
       expect(expired).toEqual(['work']);
     } finally { rmSync(root, { recursive: true, force: true }); }
@@ -205,11 +205,11 @@ describe('story cleanup reserve', () => {
   it('rejects late markers and never grants harness work the story cleanup reserve', async () => {
     const root = mkdtempSync(resolve('.spider/scratch/work-complete-'));
     try {
-      await runStoryWork(root, 'R17', async () => {});
-      const finishedAt = JSON.parse(readFileSync(resolve(root, 'work-complete/R17.json'), 'utf8')).finishedAt as number;
+      await runStoryWork(root, 'R10', async () => {});
+      const finishedAt = JSON.parse(readFileSync(resolve(root, 'work-complete/R10.json'), 'utf8')).finishedAt as number;
       const overall = { at: finishedAt - 1, expire() {} };
-      expect(storyExecutionDeadline(overall, root, { ids: ['R17'], harness: false }).cleanupReady()).toBe(false);
-      expect(storyExecutionDeadline(overall, root, { ids: ['R17'], harness: true })).toBe(overall);
+      expect(storyExecutionDeadline(overall, root, { ids: ['R10'], harness: false }).cleanupReady()).toBe(false);
+      expect(storyExecutionDeadline(overall, root, { ids: ['R10'], harness: true })).toBe(overall);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
@@ -220,33 +220,33 @@ describe('story cleanup reserve', () => {
   ])('checks completion and file times independently: $finished $modified', async ({ finished, modified, ready }) => {
     const root = mkdtempSync(resolve(paths.scratch('worktree', process.cwd()), 'work-complete-'));
     try {
-      await runStoryWork(root, 'R17', async () => {});
-      const file = resolve(root, 'work-complete/R17.json');
+      await runStoryWork(root, 'R10', async () => {});
+      const file = resolve(root, 'work-complete/R10.json');
       const at = Math.floor(Date.now() / 1000) * 1000;
-      writeFileSync(file, JSON.stringify({ id: 'R17', finishedAt: at + finished }));
+      writeFileSync(file, JSON.stringify({ id: 'R10', finishedAt: at + finished }));
       utimesSync(file, new Date(at + modified), new Date(at + modified));
       expect(lstatSync(file).mtimeMs <= at).toBe(modified < 0);
-      expect(storyExecutionDeadline({ at, expire() {} }, root, { ids: ['R17'], harness: false }).cleanupReady()).toBe(ready);
+      expect(storyExecutionDeadline({ at, expire() {} }, root, { ids: ['R10'], harness: false }).cleanupReady()).toBe(ready);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it('rejects a marker written late with a misleading completion timestamp', async () => {
     const root = mkdtempSync(resolve('.spider/scratch/work-complete-'));
     try {
-      await runStoryWork(root, 'R17', async () => {});
-      const file = resolve(root, 'work-complete/R17.json');
+      await runStoryWork(root, 'R10', async () => {});
+      const file = resolve(root, 'work-complete/R10.json');
       const at = Math.floor(lstatSync(file).mtimeMs) - 1;
-      writeFileSync(file, JSON.stringify({ id: 'R17', finishedAt: at - 1 }));
-      expect(storyExecutionDeadline({ at, expire() {} }, root, { ids: ['R17'], harness: false }).cleanupReady()).toBe(false);
+      writeFileSync(file, JSON.stringify({ id: 'R10', finishedAt: at - 1 }));
+      expect(storyExecutionDeadline({ at, expire() {} }, root, { ids: ['R10'], harness: false }).cleanupReady()).toBe(false);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it('stops cleanup at its shared ceiling instead of granting a second reserve', async () => {
     const root = mkdtempSync(resolve('.spider/scratch/work-complete-'));
     try {
-      await runStoryWork(root, 'R17', async () => {});
+      await runStoryWork(root, 'R10', async () => {});
       const expired: string[] = [], at = Date.now() + 300;
-      const deadline = storyExecutionDeadline({ at, expire: () => { expired.push('deadline'); } }, root, { ids: ['R17'], harness: false });
+      const deadline = storyExecutionDeadline({ at, expire: () => { expired.push('deadline'); } }, root, { ids: ['R10'], harness: false });
       deadline.cleanupAt = at + 300; // Accelerate the clock boundary in this unit test only.
       await expect(command(process.execPath, ['-e', 'setTimeout(() => {}, 1500)'], process.cwd(), process.env, resolve(root, 'log'), true, undefined, 60_000, deadline)).rejects.toThrow('runner-deadline');
       expect(expired).toEqual(['deadline']);
@@ -418,11 +418,10 @@ describe('runner boundary and report', () => {
       url: 'https://releases.herdr.dev/core/0.1.16/herdr-core-linux-x86_64.tar.gz',
       sha256: '58d6861176dc6fe905b58880d5bff07a9959be613a98e5d66b4583b04b6cfa45',
       binarySha256: '8c4c0930974e2b31978cbbb14b892cd29d5ace917f4c04ce6dfdd5573e1fe193',
-      timeouts: { R15: 4, R16: 4 },
     });
     // R04 to R08, R13 and R14 are flaky in CI and stay out of the default
     // set until fixed; they still run when requested by ID.
-    expect(config.stories).toEqual(['R01', 'R03', 'R09', 'R10', 'R11', 'R12', 'R15', 'R16', 'R17']);
+    expect(config.stories).toEqual(['R03', 'R10', 'R11', 'R12']);
     expect(new Set(config.stories).size).toBe(config.stories.length);
     expect(config.stories.every(id => profileIds.headless.includes(id))).toBe(true);
     // @ts-ignore Vite provides import.meta.glob during test transformation.
@@ -463,9 +462,7 @@ describe('runner boundary and report', () => {
       expect(() => selectScenarios(definitions, { tier, ids })).not.toThrow();
     }
     expect(profileIds.remote).toContain('H-tier2-smoke');
-    const r01 = definitions.find((definition: { id: string }) => definition.id === 'R01');
     const r02 = definitions.find((definition: { id: string }) => definition.id === 'R02');
-    expect(r01).toMatchObject({ tiers: ['headless'] });
     expect(r02).toMatchObject({ tiers: ['headless'] });
     expect(r02.title).toMatch(/admitted box readiness.*packaged hub/i);
   }, 5000);
@@ -485,20 +482,20 @@ describe('runner boundary and report', () => {
       expect(complete(missing, [id])).toBe(false);
     }
   }, 5000);
-  it('selects R01 and R02 in their own tiers and reports them unexercised in CI', () => {
-    expect(storyId('R01')).toBe('R01'); expect(storyId('R02')).toBe('R02');
-    expect(parseOptions(['--tier', 'headless', '--story', 'R01'], {}).ids).toEqual(['R01']);
+  it('selects R10 and R02 in their own tiers and reports them unexercised in CI', () => {
+    expect(storyId('R10')).toBe('R10'); expect(storyId('R02')).toBe('R02');
+    expect(parseOptions(['--tier', 'headless', '--story', 'R10'], {}).ids).toEqual(['R10']);
     expect(parseOptions(['--tier', 'headless', '--story', 'R02'], {}).ids).toEqual(['R02']);
-    expect(profileIds.headless).toContain('R01'); expect(profileIds.headless).toContain('R02'); expect(profileIds.app).not.toContain('R02');
-    expect(profileIds.ci).not.toContain('R01'); expect(profileIds.ci).not.toContain('R02');
-    expect(parseOptions(['--tier', 'headless', '--task', 'roam'], {}).ids).toEqual(['R01', 'R02', 'R03', 'R04', 'R05', 'R06', 'R07', 'R08', 'R09', 'R10', 'R11', 'R12', 'R13', 'R14', 'R15', 'R16', 'R17']);
+    expect(profileIds.headless).toContain('R10'); expect(profileIds.headless).toContain('R02'); expect(profileIds.app).not.toContain('R02');
+    expect(profileIds.ci).not.toContain('R10'); expect(profileIds.ci).not.toContain('R02');
+    expect(parseOptions(['--tier', 'headless', '--task', 'roam'], {}).ids).toEqual(['R02', 'R03', 'R04', 'R05', 'R06', 'R07', 'R08', 'R10', 'R11', 'R12', 'R13', 'R14']);
     expect(() => parseOptions(['--tier', 'app', '--task', 'roam'], { SPIDER_HERDR_APP_TESTS: '1', SPIDER_HERDR_TEST_DISPLAY_UUID: 'fixture' })).toThrow(/no stories/);
     expect(() => parseOptions(['--tier', 'ci', '--task', 'roam'], {})).toThrow(/no stories/);
     const matrix = buildMatrix('ci', profileIds.ci, []);
-    expect(matrix.find((row: { id: string }) => row.id === 'R01').result).toBe('not exercised');
+    expect(matrix.find((row: { id: string }) => row.id === 'R10').result).toBe('not exercised');
     expect(matrix.find((row: { id: string }) => row.id === 'R02').result).toBe('not exercised');
     expect(storyWorkers({ tier: 'headless', ids: profileIds.headless })).toBe(1);
-    expect(storyWorkers({ tier: 'headless', ids: ['S01', 'R01'] })).toBe(2);
+    expect(storyWorkers({ tier: 'headless', ids: ['S01', 'R02'] })).toBe(2);
     expect(storyWorkers({ tier: 'headless', ids: ['S01'] })).toBe(2);
     expect(storyWorkers({ tier: 'headless', ids: ['R02'] })).toBe(2);
     expect(storyWorkers({ tier: 'app', ids: ['S01'] })).toBe(1);
@@ -508,15 +505,13 @@ describe('runner boundary and report', () => {
     expect(r02.reason).toMatch(/packaged observer.*placement/i);
     expect(renderMatrix(passed)).toContain(r02.reason);
   }, 5000);
-  it('discovers move and recovery stories as serial headless work with explicit results', async () => {
+  it('discovers move and admission stories as serial headless work with explicit results', async () => {
     // @ts-ignore Vite provides import.meta.glob during test transformation.
     const definitions = await discoverScenarios(import.meta.glob('./*.test.ts'));
-    const ids = ['R06', 'R07', 'R08', 'R09', 'R10', 'R15', 'R16', 'R17'];
+    const ids = ['R06', 'R07', 'R08', 'R10'];
     const selected = selectScenarios(definitions, parseOptions(['--tier', 'headless', '--story', ids.join(',')], {}));
     expect(selected.map((definition: { id: string }) => definition.id)).toEqual(ids);
-    expect(selected.find((definition: { id: string }) => definition.id === 'R15').title).toBe('revoked home restores a visible presentation');
-    expect(selected.find((definition: { id: string }) => definition.id === 'R16').title).toBe('revoked home restores a parked presentation');
-    expect(selected.find((definition: { id: string }) => definition.id === 'R17').title).toBe('proved launch failure permits rollback');
+    expect(selected.find((definition: { id: string }) => definition.id === 'R10').title).toBe('copied v0 away home refuses ordinary work');
     for (const id of ids) {
       expect(profileIds.headless).toContain(id);
       expect(profileIds.ci).not.toContain(id);
@@ -634,7 +629,7 @@ describe('runner boundary and report', () => {
       { id: 'S54', tier: 'ci', result: 'blocked', evidence: 'S54.json', reason: 'native-input' },
       { id: 'S55', tier: 'ci', result: 'failed', evidence: 'S55.json', reason: 'cleanup failed' },
     ]);
-    expect(matrix).toHaveLength(82);
+    expect(matrix).toHaveLength(77);
     expect(matrix.find((x: { id: string }) => x.id === 'R14').result).toBe('not exercised');
     expect(matrix.find((x: { id: string }) => x.id === 'S01').result).toBe('not exercised');
     expect(matrix.find((x: { id: string }) => x.id === 'S56').result).toBe('failed');
@@ -654,26 +649,9 @@ describe('runner boundary and report', () => {
 
 describe('roaming completion states', () => {
   it.each([
-    [3, 'recovery-pending', true], [3, 'readiness-pending', true], [0, 'destroyed-machine-recovered', false],
-    [1, 'readiness-pending', false], [3, 'participant-owner-unproved', false], [3, 'unknown', false],
-  ] as const)('reconciles restoration code %s reason %s only when explicitly pending', (code, reason, pending) => {
-    expect(restorationPending({ code, reason })).toBe(pending);
-  });
-  it('replays a recovered home while its presentation is explicitly pending', () => {
-    expect(restorationPending({ code: 0, reason: 'destroyed-machine-recovered', value: { presentation: 'pending' } })).toBe(true);
-    for (const result of [{ code: 0, reason: 'destroyed-machine-recovered', value: { presentation: 'complete' } },
-      { code: 0, reason: 'unknown', value: { presentation: 'pending' } }, { code: 1, reason: 'destroyed-machine-recovered', value: { presentation: 'pending' } },
-      { code: 0, reason: 'destroyed-machine-recovered', value: null }, { code: 0, reason: 'destroyed-machine-recovered', value: {} }]) expect(restorationPending(result)).toBe(false);
-  });
-  it.each([
     ['pending', 'operation-in-progress', true], ['complete', 'native-view-converted', false], ['refused', 'operation-in-progress', false],
     ['pending', 'presentation-unavailable', false], ['pending', 'target-changed', false], ['pending', 'unknown', false],
   ] as const)('joins presentation status %s reason %s only for an existing operation', (status, reason, pending) => {
     expect(presentationInProgress({ status, reason })).toBe(pending);
   });
-});
-
-
-it.each([null, undefined, {}, [], { code: '3', reason: 'readiness-pending' }])('refuses malformed restoration status %j', result => {
-  expect(restorationPending(result)).toBe(false);
 });

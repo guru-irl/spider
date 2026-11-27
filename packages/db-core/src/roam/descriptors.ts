@@ -27,6 +27,6 @@ export const DESCRIPTORS: Readonly<Record<Entity, Descriptor>> = {
   },
   session_homes: {
     scope: "global", table: "session_homes", key: "session_id", sessionColumn: null, immutable: ["session_id"],
-    columns: ["session_id", "machine_id", "epoch", "move_id", "updated_at"],
+    columns: ["session_id", "machine_id", "epoch", "move_id", "updated_at", "state", "destination"],
   },
 };

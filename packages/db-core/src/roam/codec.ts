@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { DESCRIPTORS } from "./descriptors";
 import { assertHlc, validUnicode } from "./hlc";
-import type { BatchArtifact, BatchHeader, Entity, RecordChange, Scope, StoreKey, ValidatedBatch } from "./types";
+import type { BatchArtifact, BatchHeader, Entity, JsonObject, RecordChange, Scope, StoreKey, ValidatedBatch } from "./types";
 
 export const HARD_BATCH_BYTES: number = 16 * 1024 * 1024;
 const MAX_SKEW_MS = 5 * 60 * 1000;
@@ -127,6 +127,12 @@ export function assertBatchHeader(value: unknown): asserts value is BatchHeader 
   storeScope(value.storeKey);
 }
 
+/** Only the exact old five-column projection may omit the v0 fields. */
+export function normalizeHomeProjection(body: JsonObject): JsonObject {
+  const legacy = ["session_id", "machine_id", "epoch", "move_id", "updated_at"];
+  return exactKeys(body, legacy) ? { ...body, state: null, destination: null } : body;
+}
+
 /** Validate an entire row projection before it can reach an apply transaction. */
 export function assertRecordChange(value: unknown, key: StoreKey): asserts value is RecordChange {
   if (!object(value) || !exactKeys(value, RECORD_KEYS) || !nonnegative(value.seq) || value.seq === 0 ||
@@ -150,6 +156,7 @@ export function assertRecordChange(value: unknown, key: StoreKey): asserts value
     if (value.body !== null) throw new Error("Invalid roaming delete body");
     return;
   }
+  if (entity === "session_homes" && object(value.body)) value.body = normalizeHomeProjection(value.body as JsonObject);
   if (!object(value.body) || !exactKeys(value.body, descriptor.columns) || value.body[descriptor.key] !== value.rowKey ||
       (descriptor.sessionColumn !== null && value.body[descriptor.sessionColumn] !== value.writerSession)) {
     throw new Error("Invalid roaming row projection or key");
@@ -176,6 +183,22 @@ export function assertRecordChange(value: unknown, key: StoreKey): asserts value
     if (value.body.machine_id === "") {
       if (value.body.epoch !== 1 || value.body.move_id !== null) throw new Error("Invalid roaming home conflict marker");
     } else if (!isRoamUuid(value.body.machine_id)) throw new Error("Invalid roaming home machine");
+    const { state, destination, move_id: moveId } = value.body;
+    if (state === null) {
+      if (destination !== null) throw new Error("Invalid legacy roaming home destination");
+    } else {
+      if (!nonempty(value.body.session_id) || !value.body.session_id.trim() ||
+          /[\u0000-\u001f\u007f]/.test(value.body.session_id) || (value.body.updated_at as number) < 0 ||
+          !isRoamUuid(value.body.machine_id) ||
+          (moveId !== null && (typeof moveId !== "string" || !moveId.startsWith("v0-") || !isRoamUuid(moveId.slice(3))))) {
+        throw new Error("Invalid v0 roaming home identity");
+      }
+      if (state === "moving") {
+        if (moveId === null || !isRoamUuid(destination)) throw new Error("Invalid moving roaming home");
+      } else if ((state !== "running" && state !== "stopped") || destination !== null) {
+        throw new Error("Invalid settled roaming home");
+      }
+    }
   }
 }
 

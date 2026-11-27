@@ -304,7 +304,7 @@ describe("roaming identities", () => {
         ALTER TABLE todos ADD COLUMN uuid TEXT;
         ALTER TABLE run_events ADD COLUMN uuid TEXT;
         CREATE TABLE session_homes (session_id TEXT PRIMARY KEY, machine_id TEXT NOT NULL,
-          epoch INTEGER NOT NULL, move_id TEXT, updated_at INTEGER NOT NULL);
+          epoch INTEGER NOT NULL, move_id TEXT, updated_at INTEGER NOT NULL, state TEXT, destination TEXT);
       `);
       const omissions: Record<Entity, string[]> = {
         global_memory: ["id"], memory: ["id"], sessions: ["imported_from"], todos: ["id"],

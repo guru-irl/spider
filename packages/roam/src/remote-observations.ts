@@ -53,8 +53,8 @@ function consumerSnapshot(value: unknown): ConsumerSnapshot {
 }
 
 /** Each enable attempt observes every peer afresh, once per machine. */
-export function compatibleConsumerPorts(root: string, config: RoamConfig, transport: Transport, bundleUrl?: URL): DiagnosticPorts {
-  const local = createLocalDiagnosticPorts(root, [], bundleUrl);
+export function compatibleConsumerPorts(root: string, config: RoamConfig, transport: Transport, bundleUrl?: URL, hubPlistDir?: string | null): DiagnosticPorts {
+  const local = createLocalDiagnosticPorts(root, [], bundleUrl, hubPlistDir);
   const cache = new Map<string, Promise<ConsumerSnapshot>>();
   function snapshot(peer: Peer): Promise<ConsumerSnapshot> {
     let pending = cache.get(peer.machineId);

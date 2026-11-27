@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { Db } from "../db";
-import { assertBatchHeader, assertRecordChange, HARD_BATCH_BYTES, isRoamUuid, parseRoamJson, privateBatchDirectory, storeScope, writePrivateBatch } from "./codec";
+import { assertBatchHeader, assertRecordChange, HARD_BATCH_BYTES, isRoamUuid, normalizeHomeProjection, parseRoamJson, privateBatchDirectory, storeScope, writePrivateBatch } from "./codec";
 import type { BatchArtifact, BatchHeader, Entity, ExportPolicy, JsonObject, RecordChange, StoreKey } from "./types";
 
 interface Meta { machine_id: string; stream_id: string; store_key: StoreKey | null; roamable: number; problem: string | null }
@@ -20,11 +20,12 @@ function parseBody(json: string | null): JsonObject | null {
 }
 
 function envelope(row: ChangeRow): RecordChange {
+  const body = parseBody(row.portable_json);
   return {
     seq: row.seq, changeId: row.change_id, entity: row.entity, rowKey: row.row_key, op: row.op,
     clock: { ms: row.hlc_ms, count: row.hlc_count, machine: row.origin_machine, stream: row.origin_stream },
     writerSession: row.writer_session, writerEpoch: row.writer_epoch, schema: row.schema_version as 14,
-    body: parseBody(row.portable_json),
+    body: row.entity === "session_homes" && body !== null ? normalizeHomeProjection(body) : body,
   };
 }
 

@@ -4,6 +4,29 @@ import { dirname, join } from "node:path";
 import { scratchDbPath } from "@spider/db-core/testutil";
 import { renderSupervisorUnit } from "../systemd";
 
+it("v0 supervisor mode appends only --v0", () => {
+  const input = { node: "/home/agent/node", supervisor: "/home/agent/supervisor", coreUnit: "herdr-core.service", globalRoot: "/home/agent/data" };
+  const ordinary = renderSupervisorUnit(input);
+  expect(renderSupervisorUnit({ ...input, mode: "v0" })).toBe(ordinary.replace('ExecStart="/home/agent/node" "/home/agent/supervisor"', 'ExecStart="/home/agent/node" "/home/agent/supervisor" --v0'));
+});
+
+it("v0 supervisor unit pins a custom hc and core socket", () => {
+  const input = {node:"/home/agent/node",supervisor:"/home/agent/supervisor",coreUnit:"herdr-core.service",globalRoot:"/home/agent/data",mode:"v0" as const,
+    herdr:{binary:"/home/agent/tools/hc",session:"work",socket:"/run/user/1000/work.sock"}};
+  const lines = renderSupervisorUnit(input).split("\n");
+  expect(lines).toContain('Environment="SPIDER_ROAM_HC=/home/agent/tools/hc"');
+  expect(lines).toContain('Environment="HC_SESSION=work"');
+  expect(lines).toContain('Environment="HC_SOCKET=/run/user/1000/work.sock"');
+  expect(() => renderSupervisorUnit({...input,herdr:{...input.herdr,session:"../other"}})).toThrow();
+});
+
+it("v0 supervisor unit retains the destination's login PATH", () => {
+  const input = {node:"/home/agent/node",supervisor:"/home/agent/supervisor",coreUnit:"herdr-core.service",globalRoot:"/home/agent/data",mode:"v0" as const,
+    loginPath:"/home/agent/.local/bin:/usr/bin:/bin"};
+  const line = renderSupervisorUnit(input).split("\n").find(part => part.includes('"PATH='));
+  expect(line).toContain("/home/agent/.local/bin:");
+});
+
 it("renders a private login supervisor without dependencies on the core unit", () => {
   const parent = dirname(scratchDbPath("roam-systemd"));
   mkdirSync(parent, { recursive: true });

@@ -16,7 +16,7 @@ it.each(["readiness", "refusal"] as const)("conflicting final start %s appends a
   mkdirSync(join(global.root, "roam"), { mode: 0o700 });
   const journal = openFreezeJournal(join(global.root, "roam", "journal.db"));
   const home = { sessionId: "session-a", machineId: BOX, epoch: 2, moveId: "move-a", updatedAt: 1 };
-  global.db.prepare("INSERT INTO session_homes VALUES (?,?,2,'move-a',1)").run(home.sessionId, BOX);
+  global.db.prepare("INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES (?,?,2,'move-a',1)").run(home.sessionId, BOX);
   const operation: Operation = { id: "move-a", kind: "move", machineId: HUB, expectedEpoch: 1,
     args: { sessionId: home.sessionId, destinationMachine: BOX } };
   journal.begin(operation);

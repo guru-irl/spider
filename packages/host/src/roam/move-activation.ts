@@ -23,6 +23,8 @@ import { serveSessionControl } from "./control";
 import { createHostMoveBindings } from "./move-runtime";
 import { completeMoveRoster } from "./move-roster";
 import { readmitLiveSession } from "./readmit";
+import { loadRelocateAdmission } from "./relocate-admission";
+import type { SessionId } from "@spider/roam/relocate/types";
 
 export interface MoveActivationInput extends Pick<LiveFreezeInput, "usage" | "embeddings" | "organism" | "others" | "activity" | "bootId"> {
   root: string; sessionId: string; file: string; context(): ExtensionContext | undefined; gate: AdmissionGate;
@@ -30,6 +32,9 @@ export interface MoveActivationInput extends Pick<LiveFreezeInput, "usage" | "em
 export async function createMoveActivation(input: MoveActivationInput): Promise<{ close(): Promise<void>; ready(file: string, epoch: number, home: Home | null): Promise<void> } | null> {
   let config;
   try { config = readLocalIdentity(input.root); } catch { return null; }
+  // V0 admission has its own home check, capture and shutdown control.
+  const v0 = await loadRelocateAdmission(input.sessionId as SessionId, input.root);
+  if (v0.kind === "managed" || v0.kind === "virgin-local") return null;
   if (!(config.role === "hub" && config.enabled || config.role === "box" && participantCaptureReady(input.root, config.machineId))) return null;
   let mounted: Awaited<ReturnType<typeof createHostMoveBindings>> | undefined;
   let closeCore: (() => void) | undefined;

@@ -1,0 +1,166 @@
+import { dirname, join } from "node:path";
+import { processStartIdentity } from "@spider/herdr/jobs/handoff";
+import { claimIdLock, localBootId } from "@spider/herdr/sessions/id-lock";
+import { isRoamUuid } from "@spider/db-core/roam/codec";
+import { validUnicode } from "@spider/db-core/roam/hlc";
+import type { MachineId } from "@spider/db-core/roam/types";
+import { publishAwayHomeFence, readAwayHomeFence, withAwayHomeFenceLock, type AwayHomeFence } from "./away-home";
+import { AwayHomeRecoveryRequired, MacSessionOccupied, MacSourceNotStopped } from "./home-refusals";
+import type { HomeStore, HomeStoreOptions, RelocateHome, RelocateId, RunningHome, SessionId, V0Refusal, V0Result } from "./types";
+
+type MacSourceCheck = (sessionId: SessionId) => Promise<V0Result<void>>;
+interface HubHomeStore extends HomeStore {
+  compareAndSwap(expected: RelocateHome, next: RelocateHome, checkMacSource?: MacSourceCheck): ReturnType<HomeStore["compareAndSwap"]>;
+}
+
+export const legacyRecordedHomeRefusal: V0Refusal = {
+  code: "home-conflict",
+  message: "V0 cannot adopt a legacy home with a recorded move or claim.",
+  nextStep: "Keep the existing home and run spider roam doctor on the Mac.",
+};
+
+type HomeRow = Record<string, unknown>;
+const COLUMNS = "session_id, machine_id, epoch, move_id, updated_at, state, destination";
+
+function sessionId(value: unknown): asserts value is SessionId {
+  if (!validUnicode(value) || !value.trim() || /[\u0000-\u001f\u007f]/.test(value)) throw new Error("Invalid home session ID");
+}
+function machineId(value: unknown): asserts value is MachineId {
+  if (!isRoamUuid(value)) throw new Error("Invalid home machine ID");
+}
+function epoch(value: unknown): asserts value is number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) throw new Error("Invalid home epoch");
+}
+function moveId(value: unknown): asserts value is RelocateId | null {
+  if (value !== null && (typeof value !== "string" || !value.startsWith("v0-") || !isRoamUuid(value.slice(3))))
+    throw new Error("Invalid home move ID");
+}
+
+/** State-null rows belong to the unchanged legacy path, not v0 admission. */
+function parseHome(row: HomeRow | undefined): RelocateHome | null {
+  if (!row) return null;
+  if (row.state === null && row.destination === null) return null;
+  sessionId(row.session_id); machineId(row.machine_id); epoch(row.epoch); moveId(row.move_id);
+  if (typeof row.updated_at !== "number" || !Number.isSafeInteger(row.updated_at) || row.updated_at < 0)
+    throw new Error("Invalid home timestamp");
+  const identity = { sessionId: row.session_id, machineId: row.machine_id, epoch: row.epoch, moveId: row.move_id, updatedAt: row.updated_at };
+  if (row.state === "moving") {
+    machineId(row.destination);
+    if (row.move_id === null) throw new Error("Moving home requires a move ID");
+    return { ...identity, state: "moving", destination: row.destination, moveId: row.move_id };
+  }
+  if ((row.state === "running" || row.state === "stopped") && row.destination === null)
+    return { ...identity, state: row.state, destination: null };
+  throw new Error("Invalid home state or destination");
+}
+
+function row(home: RelocateHome): HomeRow {
+  return { session_id: home.sessionId, machine_id: home.machineId, epoch: home.epoch,
+    move_id: home.moveId, updated_at: home.updatedAt, state: home.state, destination: home.destination };
+}
+function same(a: RelocateHome | null, b: RelocateHome): boolean {
+  return a !== null && a.sessionId === b.sessionId && a.machineId === b.machineId && a.epoch === b.epoch &&
+    a.state === b.state && a.destination === b.destination && a.moveId === b.moveId && a.updatedAt === b.updatedAt;
+}
+
+function matchesFence(home: RelocateHome, fence: AwayHomeFence): boolean {
+  return home.state === "running" && home.machineId === fence.machineId && home.epoch === fence.epoch && home.moveId === fence.moveId;
+}
+
+async function reserveMacSession(root: string, sessionId: SessionId) {
+  try {
+    const startIdentity = processStartIdentity(process.pid), boot = await localBootId();
+    if (!startIdentity || !boot) throw new Error("Local process identity unavailable");
+    return await claimIdLock(join(root, "herdr"), sessionId, { pid: process.pid, startIdentity }, async pid => {
+      try {
+        const other = processStartIdentity(pid);
+        return other === null ? { kind: "absent" } : { kind: "live", startIdentity: other };
+      } catch { return { kind: "unknown" }; }
+    }, { bootId: async () => boot, exclusive: true });
+  } catch (error) { throw new MacSessionOccupied(error); }
+}
+
+export function createHomeStore(options: HomeStoreOptions): HubHomeStore {
+  const { db, hubMachineId, localMachineId } = options;
+  machineId(hubMachineId); machineId(localMachineId);
+  const find = (id: SessionId) => db.prepare(`SELECT ${COLUMNS} FROM session_homes WHERE session_id=?`).get(id) as HomeRow | undefined;
+  function requireHub(): void {
+    if (localMachineId !== hubMachineId) throw new Error("Only the hub may mutate homes");
+    const meta = db.prepare("SELECT machine_id, store_key FROM roam_meta WHERE id=1").get() as HomeRow | undefined;
+    if (meta?.machine_id !== localMachineId || (meta.store_key !== "global" && meta.store_key !== null))
+      throw new Error("Home database identity does not match the hub");
+  }
+  return {
+    async read(id) { sessionId(id); return parseHome(find(id)); },
+    async list() {
+      const rows = db.prepare(`SELECT ${COLUMNS} FROM session_homes ORDER BY session_id`).all() as HomeRow[];
+      return rows.map(parseHome).filter((home): home is RelocateHome => home !== null);
+    },
+    async initialize(id, sourceMachine) {
+      sessionId(id); machineId(sourceMachine);
+      return db.withRetry(() => db.raw.transaction(() => {
+        requireHub();
+        const old = find(id);
+        if (old) {
+          if (old.machine_id !== sourceMachine) throw new Error("Home owner does not match the source");
+          const managed = parseHome(old);
+          if (managed) {
+            if (managed.state !== "running") throw new Error("Home is already managed and not running");
+            return managed;
+          }
+          if (old.move_id !== null) throw new Error(`${legacyRecordedHomeRefusal.message} ${legacyRecordedHomeRefusal.nextStep}`);
+          epoch(old.epoch);
+          db.prepare("UPDATE session_homes SET state='running', destination=NULL, updated_at=? WHERE session_id=?").run(Date.now(),id);
+        } else {
+          db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state,destination) VALUES (?, ?, 1, NULL, ?, 'running', NULL)")
+            .run(id, sourceMachine, Date.now());
+        }
+        return parseHome(find(id)) as RunningHome;
+      }).immediate());
+    },
+    async compareAndSwap(expected, next, checkMacSource) {
+      if (!parseHome(row(expected)) || !parseHome(row(next))) throw new Error("CAS requires managed homes");
+      if (expected.sessionId !== next.sessionId || expected.epoch === Number.MAX_SAFE_INTEGER || next.epoch !== expected.epoch + 1)
+        throw new Error("Home CAS must increment exactly one safe epoch");
+      const apply = () => db.withRetry(() => db.raw.transaction(() => {
+        requireHub();
+        const current = parseHome(find(expected.sessionId));
+        if (same(current, next)) return {kind:"already-applied" as const,home:current!};
+        const result = db.prepare(`UPDATE session_homes SET machine_id=?, epoch=?, move_id=?, updated_at=?, state=?, destination=?
+          WHERE session_id=? AND machine_id=? AND epoch=? AND state=? AND destination IS ? AND move_id IS ? AND updated_at=?`)
+          .run(next.machineId,next.epoch,next.moveId,next.updatedAt,next.state,next.destination,
+            expected.sessionId,expected.machineId,expected.epoch,expected.state,expected.destination,expected.moveId,expected.updatedAt);
+        const home = parseHome(find(expected.sessionId));
+        return result.changes === 1 ? {kind:"applied" as const,home:home!} : {kind:"conflict" as const,home};
+      }).immediate());
+      if (next.state !== "running") return apply();
+      const { sessionId, machineId, epoch, moveId } = next;
+      const root = dirname(db.raw.name);
+      requireHub();
+      return withAwayHomeFenceLock(root, sessionId, async () => {
+        const current = parseHome(find(sessionId));
+        if (same(current, next)) return { kind: "already-applied", home: next };
+        if (!same(current, expected)) return { kind: "conflict", home: current };
+        const fence = await readAwayHomeFence(root, sessionId);
+        if (fence && expected.epoch <= fence.epoch && !matchesFence(expected, fence) &&
+            !(expected.state === "moving" && matchesFence(next, fence))) {
+          const pendingRelocation = expected.state === "moving" && expected.destination === fence.machineId &&
+            expected.moveId === fence.moveId && expected.epoch + 1 === fence.epoch;
+          throw new AwayHomeRecoveryRequired(fence, pendingRelocation);
+        }
+        if (machineId === hubMachineId) return apply();
+        if (!moveId) throw new Error("An away home needs a move ID");
+        const owner = await reserveMacSession(root, sessionId);
+        try {
+          if (current?.machineId === hubMachineId && checkMacSource) {
+            const stopped = await checkMacSource(sessionId);
+            if (!stopped.ok) throw new MacSourceNotStopped(stopped.refusal);
+          }
+          // If the process dies or the CAS loses after publication, the fence stays fail-closed.
+          await publishAwayHomeFence(root, sessionId, { machineId, epoch, moveId });
+          return await apply();
+        } finally { await owner.release(); }
+      });
+    },
+  };
+}

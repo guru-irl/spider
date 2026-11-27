@@ -132,7 +132,7 @@ export async function hostingFixture(suite: Suite, name = 'hosting'): Promise<Ho
     worktree.prepare('UPDATE roam_meta SET store_key=?,capture_enabled=1 WHERE id=1').run(`worktree:${repo}:${workspace}`);
     worktree.prepare('INSERT INTO sessions(id,started_at,origin_machine) VALUES (?,1,?)').run(sessionId, BOX);
     worktree.prepare("INSERT INTO roam_sessions(session_id,epoch,state) VALUES (?,1,'retired')").run(sessionId);
-    db.prepare('INSERT INTO session_homes VALUES (?,?,1,NULL,1)').run(sessionId, BOX);
+    db.prepare('INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES (?,?,1,NULL,1)').run(sessionId, BOX);
     recordLocation(db, { sessionId, stores: [`worktree:${repo}:${workspace}`], home: null, file, cwd });
   } finally { worktree.close(); db.close(); }
 

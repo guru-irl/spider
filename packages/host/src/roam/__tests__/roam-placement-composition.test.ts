@@ -40,7 +40,7 @@ it.each(['core-only', 'full'] as const)('%s production sync starts a presentatio
   openJournal(join(root, 'roam', 'journal.db'));
   const config: RoamConfig = { enabled: true, role: 'hub', machineId: HUB, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: 'fixture', syncMs: 1000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
   const rows = ['session-1', 'session-2'].map((sessionId, i) => ({ origin: 'hub-operation' as const, opId: 'op-' + i, sessionId, epoch: 1, cwd: '/example', file: '/example/session.jsonl', core: 'local-core', terminal: 't' + (i + 1) }));
-  for (const row of rows) globalDb.prepare('INSERT INTO session_homes VALUES(?,?,?,?,?)').run(row.sessionId, HUB, 1, null, 1);
+  for (const row of rows) globalDb.prepare('INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES(?,?,?,?,?)').run(row.sessionId, HUB, 1, null, 1);
   const placement = createHostRoamPlacement({ root, globalDb, config }); cleanups.push(() => placement.dispose());
   expect(await placement.reconcile(rows)).toEqual({ pending: ['t1', 't2'] });
   expect(await placement.reconcile(rows)).toEqual({ pending: ['t1', 't2'] });

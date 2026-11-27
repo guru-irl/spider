@@ -276,7 +276,7 @@ const destination = (address: SessionAddress): RemoteSessionInfo => ({ remote: t
 
 it("a live local presence can close its move intake without leaking roster fields into its endpoint", async () => {
   const f = machineFixture(), address = { sessionId: "moving-session", scopeId: null };
-  f.global.db.prepare("INSERT INTO session_homes VALUES(?,?,2,NULL,1)").run(address.sessionId, HUB);
+  f.global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES(?,?,2,NULL,1)").run(address.sessionId, HUB);
   let owns = true;
   f.options.moveOwns = async () => owns;
   Object.assign(f.broker, { async intake(_action: string, fence: { generation: string }) { return fence.generation; } });
@@ -304,7 +304,7 @@ it("selects the committed remote home without waking the stale local recipient",
   const f = machineFixture(), address = { sessionId: "moving-recipient", scopeId: "scope" }, from = { sessionId: "sender", scopeId: "scope" };
   const target = peer(BOX, "destination.invalid"), config = parseConfig({ ...f.options.config, peers: [target],
     intercom: { ...f.options.config.intercom, routes: [{ kind: "direct", peer: target, edgeEpoch: "edge-1" }] } });
-  f.global.db.prepare("INSERT INTO session_homes VALUES(?,?,1,NULL,1)").run(address.sessionId, HUB);
+  f.global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES(?,?,1,NULL,1)").run(address.sessionId, HUB);
   const service = await makeMachine({ ...f.options, config }); await service.start();
   const stale = { ...localPresence(address, "source-generation"), homeEpoch: 1 };
   f.broker.emit("presence", [stale, localPresence(from, "sender-generation")]);
@@ -331,7 +331,7 @@ it("selects the committed remote home without waking the stale local recipient",
 
 it.each(["unknown", "conflict"])("does not activate a local endpoint with %s committed ownership", async kind => {
   const f = machineFixture(), address = { sessionId: "unproved-recipient", scopeId: null };
-  if (kind === "conflict") f.global.db.prepare("INSERT INTO session_homes VALUES(?,?,2,NULL,1)").run(address.sessionId, BOX);
+  if (kind === "conflict") f.global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES(?,?,2,NULL,1)").run(address.sessionId, BOX);
   const service = await makeMachine(f.options); await service.start();
   f.broker.emit("presence", [{ ...localPresence(address, "source-generation"), homeEpoch: 2 }]);
   await expect(service.move.endpoint(address)).rejects.toThrow("intercom-endpoint-unproved");
@@ -1171,7 +1171,7 @@ it("settlement refuses an injected-looking retained row with no dispatch attempt
   const f = machineFixture(); let store: ReturnType<typeof openIntercomStore> | undefined;
   const service = await makeMachine({ ...f.options, recoverRevocations: async value => { store = value; } }); await service.start();
   const address = { sessionId: "recipient", scopeId: "scope" }, from = { sessionId: "sender", scopeId: "scope" };
-  f.global.db.prepare("INSERT INTO session_homes VALUES (?,?,2,?,1)").run("recipient", HUB, "move-a");
+  f.global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES (?,?,2,?,1)").run("recipient", HUB, "move-a");
   f.broker.emit("presence", [{ ...localPresence(address, "recipient-generation"), homeEpoch: 2 }]);
   const endpoint = { address, machineId: HUB, homeEpoch: 2, activationEpoch: "recipient-generation" };
   store!.acceptOutbound({ from, endpoint, nextHop: HUB, message: { id: "settlement-a", timestamp: 1000, content: { text: "synthetic" } } });
@@ -1188,7 +1188,7 @@ it.each([OTHER, BOX])("rebinds a moved recipient through the shared hub-only rou
       { kind: "relay", peer: peer(OTHER, "other.invalid"), via: HUB },
     ] } });
   const address = { sessionId: "relayed-move", scopeId: null }, from = { sessionId: "sender", scopeId: null };
-  f.global.db.prepare("INSERT INTO session_homes VALUES(?,?,2,NULL,1)").run(address.sessionId, BOX);
+  f.global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES(?,?,2,NULL,1)").run(address.sessionId, BOX);
   Object.assign(f.broker, { async intake(action: "close" | "check" | "open", fence: import("@spider/intercom/protocol").IntercomIntakeFence) { return f.broker.bridge!.intake!(action, fence); },
     async inspectFreezeBlockers() { return { asks: [], pendingDispatch: [], unknownOutcomes: [], unobservedReceipts: [] }; } });
   const service = await makeMachine({ ...f.options, config, moveOwns: async () => true }); await service.start();

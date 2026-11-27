@@ -19,7 +19,7 @@ import { handleSessionOperation } from "../participant-runtime";
 import { handleAgentOperation } from "../agent";
 import { createParticipantSupervisor } from "../participant-supervisor";
 import { createDurableLaunchPort } from "../supervisor";
-import { runLocalDoctor } from "../local-diagnostics";
+import { inspectLocalConsumers, runLocalDoctor } from "../local-diagnostics";
 import { createLocalExactHc, type LocalExactHc } from "../launcher";
 import * as launcherModule from "../launcher";
 import * as localDiagnostics from "../local-diagnostics";
@@ -54,7 +54,7 @@ async function participantFixture() {
   enrollFixtureCore(root, "core-1");
   writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: "session-1", cwd: worktree.root }) + "\n", { mode: 0o600 });
   global.db.prepare("UPDATE roam_meta SET capture_enabled=1 WHERE id=1").run();
-  global.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run("session-1", BOX);
+  global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES (?,?,1,NULL,1)").run("session-1", BOX);
   worktree.db.prepare("INSERT INTO sessions(id,started_at,origin_machine) VALUES (?,1,?)").run("session-1", BOX);
   worktree.db.prepare("INSERT INTO roam_sessions(session_id,epoch,state) VALUES (?,1,'active')").run("session-1");
   worktree.db.prepare("UPDATE roam_meta SET capture_enabled=1 WHERE id=1").run();
@@ -132,10 +132,10 @@ async function productionLaunchFixture(boundary?: "crash" | "stale" | "lost-invo
     pi: "/home/fixture/pi", cli: "/home/fixture/spider", core: "/home/fixture/hc", globalRoot: "/home/fixture/global" }] };
   writeFileSync(join(hub.root, "roam", "machine.json"), JSON.stringify({ machineId: HUB }), { mode: 0o600 });
   writeFileSync(join(hub.root, "roam", "config.json"), JSON.stringify(hubConfig), { mode: 0o600 });
-  hub.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run("session-1", BOX);
+  hub.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES (?,?,1,NULL,1)").run("session-1", BOX);
   await hub.db.raw.backup(join(hub.root, "spider.db"));
   const release = join(hub.root, "release.js");
-  writeFileSync(release, "// SPIDER_BUILD_ID=01234567@2026-01-01T00:00:00.000Z v0.1.0\n", { mode: 0o600 });
+  writeFileSync(release, "// SPIDER_BUILD_ID=01234567@2026-01-01T00:00:00.000Z v0.1.0\n", { mode: 0o700 });
   const bundleUrl = pathToFileURL(release);
   vi.stubEnv("SPIDER_GLOBAL_ROOT", hub.root);
   vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: unknown) { return peer; }, async exec(_peer: unknown, argv: string[]) {
@@ -144,14 +144,27 @@ async function productionLaunchFixture(boundary?: "crash" | "stale" | "lost-invo
       return Buffer.from(JSON.stringify(await (operation.kind.startsWith("session-") ?
         handleSessionOperation(operation, f.ports, { wake: async () => {}, launchRecovery: recovery }) : handleAgentOperation(operation, f.ports))));
     }
+    if (argv.join(" ") === "roam observe consumers") {
+      return Buffer.from(JSON.stringify({ version: 1, machineId: BOX, kind: "consumers", value: await inspectLocalConsumers(f.root, BOX, bundleUrl) }));
+    }
     expect(argv).toEqual(["roam", "observe", "doctor"]);
     return Buffer.from(JSON.stringify({ version: 1, machineId: BOX, kind: "doctor", value: await runLocalDoctor({ root: f.root, bundleUrl, currentCore: async () => "core-1", launchRecovery: recovery }) }));
   } } as never);
   const invokeHub = async (command: "stop" | "enable") => {
     const out: string[] = [], err: string[] = [];
-    const code = await main(["roam", command, ...(command === "stop" ? ["session-1"] : []), "--json"], { out: text => out.push(text), err: text => err.push(text) }, { bundleUrl });
-    expect(err).toEqual([]);
-    return { code, result: JSON.parse(out.join("")) };
+    const lifecycle = { resolveCli: () => release, launchd: { plistDir: join(hub.root, "LaunchAgents"), serviceHome: hub.root, async launchctl() {} } };
+    const pi = process.env.SPIDER_ROAM_PI, home = process.env.HOME;
+    if (command === "enable") {
+      vi.stubEnv("SPIDER_ROAM_PI", process.execPath);
+      vi.stubEnv("HOME", process.cwd());
+    }
+    try {
+      const code = await main(["roam", command, ...(command === "stop" ? ["session-1"] : []), "--json"], { out: text => out.push(text), err: text => err.push(text) }, { bundleUrl, v0: { lifecycle } });
+      expect(err).toEqual([]);
+      return { code, result: JSON.parse(out.join("")) };
+    } finally {
+      if (command === "enable") { vi.stubEnv("SPIDER_ROAM_PI", pi); vi.stubEnv("HOME", home); }
+    }
   };
   return { ...f, leases, release, invokeHub, nativeRun(run: LocalExactHc["run"]) { nativeRun = run; }, coreProbe(probe: () => Promise<string>) { coreProbe = probe; }, get supervisor() { return supervisor; }, get service() { return service; }, recovery, prepared, reservations, spawns: () => spawns,
     allowPreflight() { preflightFails = false; },
@@ -181,7 +194,8 @@ it.each(["same-process", "restart", "lost-stop-reply"] as const)("production pre
       await expect(handleSessionOperation(f.operation, f.ports, options)).rejects.toThrow("lost-stop-reply");
     }
     const beforeEnable = await f.invokeHub("enable");
-    if (state !== "lost-stop-reply") expect(beforeEnable.result.value.issues).toEqual(expect.arrayContaining([expect.objectContaining({ reason: expect.stringContaining("exact-launch") })]));
+    expect(beforeEnable.code, JSON.stringify(beforeEnable.result)).toBe(0);
+    if (state !== "lost-stop-reply") expect(beforeEnable.result.value.issues).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "warning", reason: expect.stringContaining("exact-launch") })]));
     expect(await f.invokeHub("stop")).toMatchObject({ code: 0, result: { reason: "stopped-intent" } });
     expect((await f.intents.get("session-1"))?.value).toMatchObject({ intent: { desired: "stopped" }, supervision: { kind: "idle", nextAttemptAt: null } });
     expect(await f.authority.get("session-1")).toMatchObject({ desired: "stopped" });
@@ -211,7 +225,8 @@ it.each(["crash", "stale", "lost-invoking-reply"] as const)("prepared production
     expect(f.ports.journal.read(launchId).filter(row => row.action === "exact-launch-prepared")).toHaveLength(1);
     expect((await f.intents.get("session-1"))?.value.supervision).toMatchObject({ kind: "launching", operationId: launchId });
     const beforeEnable = await f.invokeHub("enable");
-    expect(beforeEnable.result.value.issues).toEqual(expect.arrayContaining([expect.objectContaining({ reason: expect.stringContaining("exact-launch") })]));
+    expect(beforeEnable.code, JSON.stringify(beforeEnable.result)).toBe(0);
+    expect(beforeEnable.result.value.issues).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "warning", reason: expect.stringContaining("exact-launch") })]));
     expect(await f.invokeHub("stop")).toMatchObject({ code: 0, result: { reason: "stopped-intent" } });
     expect(await inspectIdLock(f.stateRoot, "session-1")).toBeNull();
     expect(await f.leases.get(f.file)).toBeNull();

@@ -12,7 +12,7 @@ import { validateRoamLayout } from "@spider/db-core/roam/layout";
 import { openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
 import { readSessionState } from "@spider/db-core/roam/state";
 import { isAbsolute, join, resolve } from "node:path";
-import { lockParticipant, type ParticipantLockOptions } from "../herdr/participant-lock.js";
+import { lockParticipant, lockParticipantId, type ParticipantLockOptions } from "../herdr/participant-lock.js";
 import { ordinaryWorkAllowed as isOrdinaryWorkAllowed } from "./activation.js";
 import { AUTO_RELOAD_ARG } from "../auto-reload.js";
 import { productionParticipantAdmission, type ParticipantAdmissionHooks } from "./readiness.js";
@@ -22,6 +22,11 @@ import { isDeepStrictEqual } from "node:util";
 import { isMachineId } from "@spider/roam/machine-id";
 import { isRevoked } from "@spider/roam/revocation";
 import type { HostIntent, RoamConfig } from "@spider/roam/contracts";
+import type { RunningHome, SessionId } from "@spider/roam/relocate/types";
+import { createV0Runtime } from "@spider/roam/relocate/runtime";
+import { createLocalSessionMachinePorts } from "@spider/roam/relocate/local";
+import { loadRelocateAdmission, prepareRelocateAdmission, type LocalHomeAdmission } from "./relocate-admission";
+import { serveRelocateShutdown } from "./relocate-control";
 
 export interface Admission { kind: "pending" | "ordinary" | "control-only" | "blocked"; home: Home | null; blockers: readonly Blocker[]; setupFailure?: MoveSetupFailure }
 export interface AdmissionGate {
@@ -35,7 +40,9 @@ export interface AdmissionGate {
 }
 export interface AdmissionPorts {
   expectedEpoch: number | null;
-  /** Enabled Mac controls claim only local ID/file locks, not portable membership. */
+  /** Interactive startup owns this ID even if roaming setup does not run. */
+  lockSessionId?(sessionId: string): Promise<() => Promise<void>>;
+  /** Enabled legacy Mac controls also need the file lease and move socket. */
   lockUntracked?(): boolean;
   localMachine(): Promise<MachineId>;
   knownParticipant(sessionId: string): boolean;
@@ -51,9 +58,12 @@ export interface AdmissionPorts {
   prepare?: ParticipantAdmissionHooks["prepare"];
   ready?(sessionId: string, file: string, epoch: number, home: Home | null): Promise<void>;
   stopped?(sessionId: string): Promise<void>;
+  v0Lookup?(sessionId: SessionId): Promise<LocalHomeAdmission>;
+  v0Ready?(sessionId: SessionId, file: string, home: RunningHome): Promise<{ close(): Promise<void> } | void>;
 }
 
 const VERIFY = "Cannot verify this session's home. Retry or run /spider roam doctor for details.";
+const ID_LOCK = "Cannot lock this session on this machine. Close any other copy of this session, then reopen it. If none is open, run /spider roam doctor.";
 const FROZEN = "This session is frozen for a move. Run /spider roam doctor for details.";
 const homeMessage = (machine: string) => `This session is at ${machine}. Run /spider roam doctor for details.`;
 const admissionFailure = (error: unknown) => error instanceof Error && ["participant-config-unavailable", "participant-not-box", "participant-capture-uninitialized"].includes(error.message)
@@ -86,11 +96,20 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
   let ownershipVerified = false;
   let discoverable = false, captureVersion: string | null = null, preparationPending = false;
   let held: { sessionId: string; file: string; release: () => Promise<void>; valid: boolean } | undefined;
+  let pinned: { sessionId: string; release: () => Promise<void>; valid: boolean } | undefined;
   let transition: Promise<void> = Promise.resolve();
   let freeze: { moveId: string; epoch: number } | undefined;
   let lastContext: ExtensionContext | undefined;
   let signalled = false, watchingSignals = false;
   const observed = new Set<string>();
+  const observedV0 = new Set<string>();
+  let v0Managed = false;
+  let v0Control: { close(): Promise<void> } | void;
+  async function closeV0Control(): Promise<void> {
+    const previous = v0Control;
+    v0Control = undefined;
+    await previous?.close();
+  }
   const noteSignal = () => { signalled = true; };
   const unwatchSignals = () => {
     if (!watchingSignals) return;
@@ -125,6 +144,13 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
     await previous.release();
     if (held === previous) held = undefined;
   }
+  async function releasePinnedId(): Promise<void> {
+    const previous = pinned;
+    if (!previous) return;
+    previous.valid = false;
+    await previous.release();
+    if (pinned === previous) pinned = undefined;
+  }
   async function start(ctx: ExtensionContext | undefined, reopening = false, late = false): Promise<void> {
     const id = ctx?.sessionManager?.getSessionId?.() ?? "";
     const file = ctx?.sessionManager?.getSessionFile?.() ?? "";
@@ -145,11 +171,75 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
       try {
         if (ticket !== generation) return;
         if (ctx) { lastContext = ctx; ports.setContext?.(ctx); }
-        try { if (held && (!held.valid || held.sessionId !== id || held.file !== file)) await release(); }
+        try {
+          if (v0Control) await closeV0Control();
+          if (held && (!held.valid || held.sessionId !== id || held.file !== file)) await release();
+          if (pinned && (!pinned.valid || pinned.sessionId !== id)) await releasePinnedId();
+        }
         catch { if (ticket === generation) { sessionId = id; publishResult("blocked", null, VERIFY); } return; }
         if (ticket !== generation) return;
         sessionId = id; sessionFile = file; epoch = null; participating = false; ownershipVerified = false; discoverable = false; captureVersion = null;
-        if (!id) { publishResult(handoffRequired ? "blocked" : "ordinary", null, handoffRequired ? VERIFY : undefined); return; }
+        const pinId = !handoffRequired && ctx?.mode === "tui" && ctx.hasUI && process.env.PI_SUBAGENT_CHILD !== "1" ? ports.lockSessionId : undefined;
+        if (!id) { publishResult(handoffRequired || pinId ? "blocked" : "ordinary", null, handoffRequired ? VERIFY : pinId ? ID_LOCK : undefined); return; }
+        if (pinId && !pinned && !held) {
+          try {
+            pinned = { sessionId: id, release: await pinId.call(ports, id), valid: true };
+            if (ticket !== generation) { await releasePinnedId(); return; }
+          } catch {
+            if (ticket === generation) publishResult("blocked", null, ID_LOCK);
+            return;
+          }
+        }
+        v0Managed = false;
+        if (ports.v0Lookup) {
+          let lookup: LocalHomeAdmission;
+          try { lookup = await ports.v0Lookup(id as SessionId); }
+          catch { lookup = { kind: "unavailable" }; }
+          if (ticket !== generation) return;
+          const away = lookup.kind === "unavailable" && lookup.awayMachine;
+          const arg = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(id) ? id : "<session>";
+          const v0Message = away
+            ? `The last recorded away home is ${away}. Restore spider.db or re-sync it from a peer if it is missing or stale. Then run spider roam set-home ${arg} mac --force on the Mac to recover the local copy.`
+            : "Cannot verify a local running home. Restore the local home before starting this session.";
+          if (lookup.kind === "virgin-local") {
+            v0Managed = true;
+            if (handoffRequired || ports.expectedEpoch !== null || !pinned?.valid || observedV0.has(id)) {
+              publishResult("blocked", null, v0Message);
+            } else {
+              freeze = undefined;
+              publishResult("ordinary", null);
+            }
+            return;
+          }
+          if (lookup.kind !== "unmanaged" || observedV0.has(id)) {
+            v0Managed = true;
+            observedV0.add(id);
+            const home = lookup.kind === "managed" ? lookup.home : null;
+            try {
+              const machine = await ports.localMachine();
+              if (!home || home.state !== "running" || home.sessionId !== id || home.machineId !== machine ||
+                  ports.expectedEpoch !== null && ports.expectedEpoch !== home.epoch || !file || !isAbsolute(file)) {
+                await release(); publishResult("blocked", home, v0Message); return;
+              }
+              if (!held) held = { sessionId: id, file, release: await ports.lock(id, file), valid: true };
+              if (ticket !== generation) { await release(); return; }
+              const current = await ports.v0Lookup(id as SessionId);
+              if (current.kind !== "managed" || !isDeepStrictEqual(current.home, home)) {
+                await release(); publishResult("blocked", home, v0Message); return;
+              }
+              v0Control = await ports.v0Ready?.(id as SessionId, file, home);
+              if (ticket !== generation) { await closeV0Control(); await release(); return; }
+              epoch = home.epoch; participating = true; ownershipVerified = true;
+              handoffRequired = false; freeze = undefined; admitted = true;
+              publishResult("ordinary", home);
+              if (!late) watchSignals();
+            } catch {
+              await closeV0Control(); await release();
+              publishResult("blocked", home, v0Message);
+            }
+            return;
+          }
+        }
         stage = "prepare";
         let preparationFailed = false, preparationFailure: unknown;
         preparationPending = false;
@@ -263,6 +353,9 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
           if (admitted && result) {
             participating = true; observed.add(id);
             publish(result.kind, result.home); watchSignals();
+          } else if (v0Managed && result) {
+            participating = false; ownershipVerified = false; epoch = null; discoverable = false;
+            publish(result.kind, result.home, result.blockers[0]?.detail);
           } else if (preparationPending && result?.kind === "ordinary" && !setupFailure) {
             publish("ordinary", null);
           } else {
@@ -288,7 +381,8 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
     // Pi starts shutdown from its prepended signal listener before other listeners run.
     await Promise.resolve();
     unwatchSignals();
-    if (!signalled && event.reason !== "reload" && participating && ordinaryWorkAllowed()) await ports.stopped?.(sessionId);
+    if (v0Control) await closeV0Control();
+    if (!v0Managed && !signalled && event.reason !== "reload" && participating && ordinaryWorkAllowed()) await ports.stopped?.(sessionId);
   });
   pi.on("input", (_event, ctx) => {
     if (ordinaryWorkAllowed()) return undefined;
@@ -357,8 +451,12 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
         if (current === transition) return admission;
       }
     },
-    async close() { unwatchSignals(); ++generation; publish("blocked", admission.home, VERIFY); await sequence(release); },
+    async close() {
+      unwatchSignals(); ++generation; publish("blocked", admission.home, VERIFY);
+      await sequence(async () => { if (v0Control) await closeV0Control(); await release(); await releasePinnedId(); });
+    },
     async freeze(moveId, expectedEpoch) {
+      if (v0Managed) throw new Error("V0 sessions stop without a freeze fence.");
       const sameFreeze = freeze?.moveId === moveId && freeze.epoch === expectedEpoch && admission.kind === "control-only";
       if (!participating || !ownershipVerified || !held?.valid || !moveId || epoch !== expectedEpoch || (!ordinaryWorkAllowed() && !sameFreeze) ||
           freeze && (freeze.moveId !== moveId || freeze.epoch !== expectedEpoch)) throw new Error(VERIFY);
@@ -366,6 +464,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
       await sequence(async () => {});
     },
     async readmit(moveId, source, restored) {
+      if (v0Managed) throw new Error("V0 sessions do not use legacy readmission proofs.");
       const ticket = generation;
       await sequence(async () => {
         if (!participating || !ownershipVerified || !held?.valid || !freeze || freeze.moveId !== moveId || freeze.epoch !== source.epoch ||
@@ -487,6 +586,7 @@ function assertIntentOwner(global: Db, home: Home | null, intent: HostIntent, ow
 /** Production ports perform read-only discovery before resolving identity or claiming locks. */
 export function createAdmissionPorts(options: ParticipantLockOptions = {}): AdmissionPorts & { setContext(ctx: ExtensionContext): void } {
   let context: ExtensionContext | undefined;
+  let pinnedId: { root: string; sessionId: string; lock: Awaited<ReturnType<typeof lockParticipantId>> } | undefined;
   let machineIds: string[] = [];
   let discoveryAllowed = false, discoveryFiles: string[] = [];
   let configVersion: string | undefined, config: RoamConfig | null = null;
@@ -501,6 +601,28 @@ export function createAdmissionPorts(options: ParticipantLockOptions = {}): Admi
   const cache = () => participantCache(paths.globalRoot);
   return {
     ...productionParticipantAdmission(() => context?.cwd),
+    async v0Lookup(id) {
+      const result = await loadRelocateAdmission(id, paths.globalRoot);
+      if (result.kind === "unavailable" && context?.cwd) {
+        // Global failure must not erase accessible legacy participation evidence.
+        // This is discovery only: the unavailable v0 result still blocks admission.
+        let worktree: Db | undefined;
+        try {
+          worktree = openDbReadOnlyAt(join(paths.projectRoot(context.cwd), "project.db"));
+          if (worktree && hasTable(worktree, "roam_sessions") && readSessionState(worktree, id)) cache().known.add(id);
+        } catch { /* Unknown provenance cannot make an unavailable home runnable. */ }
+        finally { worktree?.close(); }
+      }
+      return result;
+    },
+    async v0Ready(id,file,home) {
+      const runtime=createV0Runtime(paths.globalRoot);
+      try {
+        await prepareRelocateAdmission(home,file,createLocalSessionMachinePorts(runtime.options));
+        const control=await serveRelocateShutdown({sessionId:id,runtimeRoot:join(paths.globalRoot,"roam","s"),machineId:runtime.options.config.machineId,home:()=>runtime.homes.read(id),async shutdown(){if(!context)throw new Error("Session context unavailable");context.shutdown();}});
+        return {async close(){try{await control.close();}finally{await runtime.close();}}};
+      }catch(error){await runtime.close();throw error;}
+    },
     expectedEpoch: null,
     lockUntracked() { try { const current = readLocalIdentity(paths.globalRoot); return current.enabled && current.role === "hub"; } catch { return false; } },
     setContext(ctx) { context = ctx; },
@@ -542,7 +664,17 @@ export function createAdmissionPorts(options: ParticipantLockOptions = {}): Admi
       if (machineIds.some(id => id !== machine)) throw new Error("Recorded machine identity does not match local stores");
       return machine;
     },
-    async lock(id, file) { return lockParticipant(join(paths.globalRoot, "herdr"), id, file, options); },
+    async lockSessionId(sessionId) {
+      const root = join(paths.globalRoot, "herdr");
+      const pin = { root, sessionId, lock: await lockParticipantId(root, sessionId, options) };
+      pinnedId = pin;
+      return async () => { await pin.lock.release(); if (pinnedId === pin) pinnedId = undefined; };
+    },
+    async lock(id, file) {
+      const root = join(paths.globalRoot, "herdr");
+      const pin = pinnedId?.root === root && pinnedId.sessionId === id ? pinnedId.lock : undefined;
+      return lockParticipant(root, id, file, options, pin);
+    },
     async load(id) {
       discoveryAllowed = false;
       let failed = false, failure: unknown;

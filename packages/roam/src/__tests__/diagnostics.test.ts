@@ -410,7 +410,8 @@ it("local doctor detects a removed service Node without running launchctl", asyn
   const definition = `<plist><dict><key>ProgramArguments</key><array><string>${root}/missing-node</string><string>${cli}</string><string>roam</string><string>hub</string></array></dict></plist>`;
   writeFileSync(service, definition, { mode: 0o600 });
   const out: string[] = [], err: string[] = [];
-  const exit = await main(["roam", "doctor"], { out: text => out.push(text), err: text => err.push(text) });
+  const exit = await main(["roam", "doctor"], { out: text => out.push(text), err: text => err.push(text) },
+    { v0: { lifecycle: { launchd: { plistDir: directory, async launchctl() { throw new Error("Unexpected service change"); } } } } });
   expect(exit).toBe(1);
   expect(out.join("")).toMatch(/node.*executable.*missing/i);
   expect(readFileSync(service, "utf8")).toBe(definition);

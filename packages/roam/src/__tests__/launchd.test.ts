@@ -48,6 +48,41 @@ function plist(file: string) {
   };
 }
 
+it("v0 mode installs a distinct hub-v0 service without changing legacy definitions", async () => {
+  const f = fixture();
+  await installHubService(f, f.ports);
+  const legacyFile = plistAt(f.plistDir, f.globalRoot), legacy = readFileSync(legacyFile, "utf8");
+  await installHubService({ ...f, mode: "v0" }, f.ports);
+  const v0File = launchd.hubServiceFile(f.globalRoot, f.plistDir, "v0");
+  expect(v0File).not.toBe(legacyFile);
+  expect(plist(v0File).ProgramArguments).toEqual([realpathSync(f.node), realpathSync(f.cli), "roam", "hub-v0"]);
+  expect(readFileSync(legacyFile, "utf8")).toBe(legacy);
+  await installHubService({ ...f, mode: "v0" }, f.ports);
+  await removeHubService({ globalRoot: f.globalRoot, mode: "v0" }, f.ports);
+  expect(existsSync(v0File)).toBe(false); expect(readFileSync(legacyFile, "utf8")).toBe(legacy);
+});
+
+it("v0 launchd pins an explicit hc binary and retains the selected core", async () => {
+  const f = fixture(), hc = join(f.root, "hc in a separate folder"), socket = join(f.root,"work.sock");
+  writeFileSync(hc,"#!/bin/sh\n", {mode:0o700});
+  const input = {...f, hc, mode:"v0" as const, env:{HOME:f.root,HC_SESSION:"work",HC_SOCKET:socket,HC_TERMINAL_ID:"old"}};
+  await installHubService(input,f.ports);
+  const {xml} = plist(launchd.hubServiceFile(f.globalRoot,f.plistDir,"v0"));
+  expect(xml).toContain(`<key>SPIDER_ROAM_HC</key><string>${hc}</string>`);
+  expect(xml).toContain("<key>HC_SESSION</key><string>work</string>");
+  expect(xml).toContain(`<key>HC_SOCKET</key><string>${socket}</string>`);
+  expect(xml).not.toContain("HC_TERMINAL_ID");
+});
+
+it("v0 launchd records login PATH but not volatile credential settings", async () => {
+  const f = fixture();
+  await installHubService({...f,mode:"v0",env:{HOME:f.root,PATH:"/fixture/login/bin:/usr/bin:/bin",SSH_AUTH_SOCK:"/fixture/volatile.sock",FAKE_PROVIDER_KEY:"never-persist-this"}},f.ports);
+  const {xml} = plist(launchd.hubServiceFile(f.globalRoot,f.plistDir,"v0"));
+  expect(xml).toMatch(/<key>PATH<\/key><string>[^<]*\/fixture\/login\/bin/);
+  expect(xml).not.toContain("volatile.sock");
+  expect(xml).not.toContain("never-persist-this");
+});
+
 it("different roots install independent labels and remove only their own plist", async () => {
   const f = fixture(), secondRoot = join(f.root, "other-global");
   mkdirSync(f.globalRoot); mkdirSync(secondRoot);
@@ -324,7 +359,7 @@ it("doctor compares installed, current and legacy hub selections", async () => {
   writeFileSync(join(f.globalRoot, "roam", "config.json"), JSON.stringify({ enabled: false, role: "hub", machineId: "00000000-0000-4000-8000-000000000001", hubMachineId: "00000000-0000-4000-8000-000000000001", coreUnit: "fixture.service", peers: [] }), { mode: 0o600 });
   vi.stubEnv("HC_SOCKET", socket); vi.stubEnv("HC_SESSION", "team");
   await installHubService({ ...f, env: { HOME: f.root, HC_SOCKET: socket, HC_SESSION: "team" } }, ports);
-  const reasons = async () => (await runLocalDoctor({ root: f.globalRoot })).diagnostics.filter(row => row.reason.includes("hub-core-selection"));
+  const reasons = async () => (await runLocalDoctor({ root: f.globalRoot, hubLaunchd: ports })).diagnostics.filter(row => row.reason.includes("hub-core-selection"));
   expect(await reasons()).toEqual([]);
   vi.stubEnv("HC_SESSION", "other-team");
   expect(await reasons()).toEqual([expect.objectContaining({ reason: expect.stringContaining("hub-core-selection-mismatch"), repairCommand: "spider roam enable" })]);
@@ -360,7 +395,7 @@ it("doctor warns rather than guessing when a service environment is malformed", 
   await installHubService({ ...f, env }, { ...f.ports, plistDir });
   const file = plistAt(plistDir, f.globalRoot), text = readFileSync(file, "utf8");
   writeFileSync(file, text.replace("</dict>\n<key>StandardOutPath", "<key>HC_SOCKET</key><string>/home/fixture/another.sock</string></dict>\n<key>StandardOutPath"));
-  const diagnostics = (await runLocalDoctor({ root: f.globalRoot })).diagnostics;
+  const diagnostics = (await runLocalDoctor({ root: f.globalRoot, hubLaunchd: { plistDir } })).diagnostics;
   expect(diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ reason: expect.stringContaining("hub-core-selection-unavailable"), repairCommand: null })]));
   expect(JSON.stringify(diagnostics)).not.toContain("/home/fixture/another.sock");
 });

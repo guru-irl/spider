@@ -25,7 +25,7 @@ it("production mirror sync copies zero unchanged bytes, only an appended tail, a
   const original = JSON.stringify({ type: "session", version: 3, id: "session-a", cwd: box.root, timestamp: "2026-01-01T00:00:00Z" }) + "\n" + line("leaf-a", null, "fixture");
   writeFileSync(file, original, { mode: 0o600 });
   const home = { sessionId: "session-a", machineId: BOX, epoch: 1, moveId: null, updatedAt: 1 };
-  for (const f of [hub, box]) f.db.prepare("INSERT INTO session_homes VALUES(?,?,1,NULL,1)").run("session-a", BOX);
+  for (const f of [hub, box]) f.db.prepare("INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES(?,?,1,NULL,1)").run("session-a", BOX);
   recordLocation(box.db, { sessionId: "session-a", file, cwd: box.root, stores: ["global"], home });
   let copied = 0;
   const transport: Transport = { async resolve(p) { return p; }, async read(_p, path) { const bytes = readFileSync(path); copied += bytes.length; return bytes; }, async write() { throw new Error("unexpected write"); }, async run() { throw new Error("unexpected run"); }, async bootstrapProbe() { throw new Error("unexpected probe"); },

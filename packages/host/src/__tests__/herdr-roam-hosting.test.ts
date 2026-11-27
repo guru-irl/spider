@@ -79,7 +79,7 @@ it("a hub intent does not change an existing box-local owner's provenance on rel
     async open() { return { config, db: global.db, journal, authority, async stores() { return input.stores; }, close() {} }; } });
   await adapter.prepare(input.sessionId, input.file); await adapter.ready(input.sessionId, input.file, 1, null);
   const home = { sessionId: input.sessionId, machineId: BOX, epoch: 1, moveId: null, updatedAt: 1 };
-  global.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run(input.sessionId, BOX);
+  global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES (?,?,1,NULL,1)").run(input.sessionId, BOX);
   journal.begin({ id: "start-1", kind: "session-start", machineId: BOX, expectedEpoch: 1, args: {} });
   await authority.set({ sessionId: input.sessionId, epoch: 1, desired: "running", suspended: null, file: input.file, cwd: input.cwd, moveId: null }, "start-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
   await adapter.ready(input.sessionId, input.file, 1, home);
@@ -92,7 +92,7 @@ it("hub intent without a launch operation or a matching local owner cannot creat
   const { global, config, input } = fixture(); seedNewParticipant(input);
   writeFileSync(input.file, JSON.stringify({ type: "session", version: 3, id: input.sessionId, cwd: input.cwd }) + "\n", { mode: 0o600 });
   const home = { sessionId: input.sessionId, machineId: BOX, epoch: 1, moveId: null, updatedAt: 1 };
-  global.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run(input.sessionId, BOX);
+  global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES (?,?,1,NULL,1)").run(input.sessionId, BOX);
   const journal = openJournal(join(global.root, "roam/journal.db")), authority = createRunningIntentAuthority(global.db);
   journal.begin({ id: "start-1", kind: "session-start", machineId: BOX, expectedEpoch: 1, args: {} });
   await authority.set({ sessionId: input.sessionId, epoch: 1, desired: "running", suspended: null, file: input.file, cwd: input.cwd, moveId: null }, "start-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
@@ -107,7 +107,7 @@ it("a hub-authorized launch records the actual launch operation receipt", async 
   const { global, config, input } = fixture(); seedNewParticipant(input);
   writeFileSync(input.file, JSON.stringify({ type: "session", version: 3, id: input.sessionId, cwd: input.cwd }) + "\n", { mode: 0o600 });
   const home = { sessionId: input.sessionId, machineId: BOX, epoch: 1, moveId: null, updatedAt: 1 };
-  global.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run(input.sessionId, BOX);
+  global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES (?,?,1,NULL,1)").run(input.sessionId, BOX);
   const journal = openJournal(join(global.root, "roam/journal.db")), authority = createRunningIntentAuthority(global.db);
   journal.begin({ id: "launch-1", kind: "exact-session-launch", machineId: BOX, expectedEpoch: 1, args: {} });
   await authority.set({ sessionId: input.sessionId, epoch: 1, desired: "running", suspended: null, file: input.file, cwd: input.cwd, moveId: null }, "start-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
@@ -123,7 +123,7 @@ it("a hub-stopped intent gives native admission the explicit resume hint", async
   const { global, config, input } = fixture(); seedNewParticipant(input);
   writeFileSync(input.file, JSON.stringify({ type: "session", version: 3, id: input.sessionId, cwd: input.cwd }) + "\n", { mode: 0o600 });
   const home = { sessionId: input.sessionId, machineId: BOX, epoch: 1, moveId: null, updatedAt: 1 };
-  global.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run(input.sessionId, BOX);
+  global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES (?,?,1,NULL,1)").run(input.sessionId, BOX);
   const journal = openJournal(join(global.root, "roam/journal.db")), authority = createRunningIntentAuthority(global.db);
   await authority.set({ sessionId: input.sessionId, epoch: 1, desired: "running", suspended: null, file: input.file, cwd: input.cwd, moveId: null }, "start-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
   await authority.stop(input.sessionId);
@@ -166,7 +166,7 @@ it.each(["box", "hub"] as const)("an uninitialized %s installation creates no ho
 
 it("a hub-assigned home cannot be adopted without hub intent", async () => {
   const { global, worktree, input, config } = fixture(); seedNewParticipant(input);
-  global.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run(input.sessionId, BOX);
+  global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES (?,?,1,NULL,1)").run(input.sessionId, BOX);
   writeFileSync(input.file, JSON.stringify({ type: "session", version: 3, id: input.sessionId, cwd: input.cwd }) + "\n", { mode: 0o600 });
   const journal = openJournal(join(global.root, "roam/journal.db")), authority = createRunningIntentAuthority(global.db);
   const adapter = createParticipantAdmission({ cwd: () => input.cwd, async terminal() { return { core: "core-1", terminal: "term-1", operationId: null, owner: { pid: process.pid, startIdentity: "fixture-owner" } }; },
@@ -188,7 +188,7 @@ it("without initialized capture new local admission remains non-roaming", async 
 it("box-local admission never overrides a foreign home", async () => {
   vi.stubEnv("PI_SUBAGENT_CHILD", "0");
   const { global, worktree, input, config } = fixture(); seedNewParticipant(input);
-  global.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run(input.sessionId, HUB);
+  global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES (?,?,1,NULL,1)").run(input.sessionId, HUB);
   const home = { sessionId: input.sessionId, machineId: HUB, epoch: 1, moveId: null, updatedAt: 1 };
   const journal = openJournal(join(global.root, "roam/journal.db")), authority = createRunningIntentAuthority(global.db), hooks = new Map<string, any>();
   const adapter = createParticipantAdmission({ cwd: () => input.cwd, async terminal() { throw new Error("must not record readiness"); },
@@ -234,7 +234,7 @@ it("trigger fires once with hub absent after readiness and a restored session", 
 
 it.each(["conflict", "foreign-origin", "retired"])("new admission does not override %s", kind => {
   const { global, worktree, input } = fixture();
-  if (kind === "conflict") global.db.prepare("INSERT INTO session_homes VALUES (?,'',1,NULL,1)").run("new-session");
+  if (kind === "conflict") global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES (?,'',1,NULL,1)").run("new-session");
   if (kind === "foreign-origin") worktree.db.prepare("INSERT INTO sessions(id,started_at,origin_machine) VALUES (?,?,?)").run("new-session", 1, HUB);
   if (kind === "retired") worktree.db.prepare("INSERT INTO roam_sessions(session_id,epoch,state) VALUES (?,1,'retired')").run("new-session");
   const before = worktree.db.prepare("SELECT * FROM roam_sessions").all();
@@ -248,7 +248,7 @@ it.each([false, true])("a stopped box-local owner needs explicit resume after re
   const { global, config, input } = fixture(); seedNewParticipant(input);
   writeFileSync(input.file, JSON.stringify({ type: "session", version: 3, id: input.sessionId, cwd: input.cwd }) + "\n", { mode: 0o600 });
   const home = homed ? { sessionId: input.sessionId, machineId: BOX, epoch: 1, moveId: null, updatedAt: 1 } : null;
-  if (homed) global.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run(input.sessionId, BOX);
+  if (homed) global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES (?,?,1,NULL,1)").run(input.sessionId, BOX);
   const origin = { kind: "box-local", machineId: BOX, epoch: 1, file: input.file, cwd: input.cwd, pid: 123, startIdentity: "previous-owner", stopped: true };
   writeLocal(global.db, "participant-origin", input.sessionId, origin);
   const journal = openJournal(join(global.root, "roam/journal.db")), authority = createRunningIntentAuthority(global.db);

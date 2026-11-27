@@ -1656,7 +1656,7 @@ beforeEach(async context => {
   if (!context.task.name.startsWith("cancel aborts") && !context.task.name.startsWith("fresh move after cancel") && !context.task.name.startsWith("cancel cleanup")) return;
   abortPrepared = await transferFixture();
   const f = abortPrepared;
-  f.remoteGlobal.db.prepare("INSERT INTO session_homes VALUES (?,?,?,?,?)").run(SESSION, HUB, f.home.epoch, null, f.home.updatedAt);
+  f.remoteGlobal.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES (?,?,?,?,?)").run(SESSION, HUB, f.home.epoch, null, f.home.updatedAt);
   writeFileSync(join(f.repo, "tracked.txt"), "local edit\n");
 }, 5000);
 beforeEach(async context => {
@@ -1730,7 +1730,7 @@ it("cached readmission readiness cannot reopen intake after a different owner ta
 
 it("cancel before destination preparation completes cleanup without accessing an absent checkout", async () => {
   const f = await transferFixture();
-  f.remoteGlobal.db.prepare("INSERT INTO session_homes VALUES (?,?,?,?,?)").run(SESSION, HUB, f.home.epoch, null, f.home.updatedAt);
+  f.remoteGlobal.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES (?,?,?,?,?)").run(SESSION, HUB, f.home.epoch, null, f.home.updatedAt);
   rmSync(f.destination, { recursive: true });
   f.journal.record(f.operation.id, "move-request", { sessionId: SESSION, destinationMachine: BOX, operation: f.operation as unknown as JsonObject });
   f.journal.record(f.operation.id, "move-action-complete", { action: "check", value: f.check as unknown as JsonObject });

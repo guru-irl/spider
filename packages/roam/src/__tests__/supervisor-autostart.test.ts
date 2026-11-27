@@ -52,6 +52,15 @@ function fixture() {
   return { root, box, roam, bin, state, unit, calls, peer, config, journal, transport };
 }
 
+it("queries the v0 supervisor autostart when both definitions remain", async () => {
+  const f=fixture();
+  writeFileSync(join(f.root,".config/systemd/user/spider-roam-supervisor-v0.service"),"fixture v0 unit");
+  writeFileSync(join(f.bin,"systemctl"), `#!${process.execPath}\nconst args=process.argv.slice(2);\nif (args.join(' ') !== '--user is-enabled spider-roam-supervisor-v0.service') process.exit(1);\nconsole.log('enabled');\n`, {mode:0o700});
+  vi.stubEnv("PATH",f.bin);vi.stubEnv("HOME",f.root);vi.stubEnv("XDG_CONFIG_HOME",join(f.root,".config"));
+  const {inspectSupervisorAutostart}=await import("../local-diagnostics");
+  expect(await inspectSupervisorAutostart()).toBe("enabled");
+});
+
 it("restores supervisor autostart when explicit enable follows a blocked provision", async () => {
   const f = fixture();
   await setEnrolledPeerEnabled({ ...f, enabled: false, transport: f.transport as never });

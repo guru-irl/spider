@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { openDb, WORKTREE_SCHEMA } from "@spider/db-core";
@@ -29,6 +30,22 @@ function fixture() {
   const stores = createStorePort(config, global.db); fixtures.push(stores);
   return { global, source, stores, config };
 }
+it("a box creates an empty store at its explicit local repository mapping", () => {
+  const global = createReplica("global", BOX); fixtures.push(global);
+  const repository = join(global.root, "mapped-repo"); mkdirSync(repository);
+  execFileSync("git", ["init", "-q", "-b", "main", repository]);
+  global.db.prepare("INSERT INTO roam_repo_maps(repo_key,path,worktree_command_json) VALUES ('empty-repo',?,NULL)").run(repository);
+  const config = { enabled: true, role: "box" as const, machineId: BOX, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "core", syncMs: 120000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
+  const stores = createStorePort(config, global.db); fixtures.push(stores);
+  const key = "repo:empty-repo", file = join(repository, ".git", "spider", "repo.db");
+  expect(existsSync(file)).toBe(false);
+  const store = stores.openStore(key).db;
+  expect(store.raw.name).toBe(file);
+  expect(store.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get()).toEqual({ machine_id: BOX, store_key: key });
+  expect(store.prepare("SELECT count(*) AS n FROM memory").get()).toEqual({ n: 0 });
+  expect(stores.openStore(key).db.raw.name).toBe(file);
+  expect(() => stores.openStore("repo:not-mapped")).toThrow("Store has no local mapping");
+});
 const policy = { encode: (_: unknown, body: import("@spider/db-core/roam/types").JsonObject) => body };
 it("store adapter catalogs only committed sessions and ignores wire paths", async () => {
   const { global, source, stores } = fixture();
@@ -143,7 +160,7 @@ it("unlogged collisions consult the global home instead of retired membership", 
   const batch = await exportBatch(source.db, { after: 0, targetBytes: 4096, batchId: "batch-a" }, policy);
   await expect(stores.accept(source.storeKey, batch)).rejects.toThrow(new RegExp(`${localUuid}.*todo-a|todo-a.*${localUuid}`));
   expect(stores.cursor(source.storeKey, BOX, batch.header.senderStream)).toBe(0);
-  global.db.prepare("INSERT INTO session_homes VALUES ('session-a',?,1,NULL,1)").run(BOX);
+  global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES ('session-a',?,1,NULL,1)").run(BOX);
   await stores.accept(source.storeKey, batch);
   expect(target.prepare("SELECT uuid,text FROM todos").all()).toEqual([{ uuid: "todo-a", text: "portable" }]);
 }, 5000);

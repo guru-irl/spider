@@ -19,6 +19,8 @@ import { createLocalDiagnosticPorts, probeLocal } from "../local-diagnostics";
 import { buildRoamEntries } from "../../../../scripts/build-roam.mjs";
 import { buildIntercom } from "../../../../scripts/build-intercom.mjs";
 import { requestHubControl } from "../control-socket";
+import { installHubService } from "../launchd";
+import { probeV0Control } from "../relocate/service";
 import { openJournal } from "../journal";
 import { DEFAULT_LIMITS } from "../contracts";
 import { utimesSync } from "node:fs";
@@ -86,9 +88,9 @@ function fixture(capture = true) {
   const cli = join(built, "roam", "cli.mjs"), socket = join(root, "roam", "hub.sock");
   return { root, marker, env, cli, socket };
 }
-function servicePlist(root: string): string {
+function servicePlist(root: string, mode?: "v0"): string {
   const suffix = createHash("sha256").update(realpathSync(root)).digest("hex").slice(0, 16);
-  return join(root, "Library", "LaunchAgents", `com.spider.roam.hub.${suffix}.plist`);
+  return join(root, "Library", "LaunchAgents", `com.spider.roam.hub${mode === "v0" ? "-v0" : ""}.${suffix}.plist`);
 }
 function start(f: ReturnType<typeof fixture>): ChildProcess {
   const child = spawn(process.execPath, [f.cli, "roam", "hub"], { cwd: f.root, env: f.env, stdio: ["ignore", "pipe", "pipe"] });
@@ -183,6 +185,15 @@ async function ready(socket: string, child: ChildProcess) {
   throw new Error(`hub did not become ready; exit ${child.exitCode}`);
 }
 
+async function readyV0(root: string) {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    if (await probeV0Control(root, 50)) return;
+    await delay(20);
+  }
+  throw new Error("v0 hub did not become ready");
+}
+
 const fixtureIdentitySource = `
 async function fixtureIdentity(pid) {
   let startIdentity;
@@ -219,7 +230,9 @@ const a=process.argv.slice(2), calls=${JSON.stringify(input.calls ?? null)}, fai
 if(calls) appendFileSync(calls,JSON.stringify(a)+'\\n');
 if(a[0]==='bootstrap') {
   writeFileSync(pidFile + '.pending', '1');
-  const child=spawn(${JSON.stringify(process.execPath)},[${JSON.stringify(f.cli)},'roam','hub'],{env:process.env,detached:true,stdio:'ignore'});
+  const plist = readFileSync(a[2], 'utf8');
+  const mode = plist.includes('<string>hub-v0</string>') ? 'hub-v0' : 'hub';
+  const child=spawn(${JSON.stringify(process.execPath)},[${JSON.stringify(f.cli)},'roam',mode],{env:process.env,detached:true,stdio:'ignore'});
   child.unref();
   await recordIdentity(pidFile,child.pid);
   unlinkSync(pidFile + '.pending');
@@ -267,7 +280,7 @@ it("packaged enable checks live consumers before seeding and installing the isol
   writeFileSync(join(bin, "sqlite3"), `#!${process.execPath}\nconsole.log('3.45.0');\n`, { mode: 0o700 });
   const launchctl = join(bin, "launchctl");
   writeLaunchctl(f, { file: launchctl, pidFile, calls, failFile, stopOnBootout: true });
-  f.env.PATH = bin; f.env.SPIDER_TEST_ROAM_LAUNCHCTL = launchctl;
+  f.env.PATH = `${bin}:/bin`; f.env.SPIDER_TEST_ROAM_LAUNCHCTL = launchctl;
   try {
   writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify({ enabled: false, role: "hub", machineId: HUB,
     hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture" }), { mode: 0o600 });
@@ -293,17 +306,23 @@ it("packaged enable checks live consumers before seeding and installing the isol
     expect(db.prepare("SELECT entity,row_key FROM roam_changes").all()).toEqual([{ entity: "global_memory", row_key: "memory-a" }]);
   } finally { db.close(); }
   expect(JSON.parse(readFileSync(join(f.root, "roam", "config.json"), "utf8")).enabled).toBe(true);
-  expect(existsSync(servicePlist(f.root))).toBe(true);
-  expect(readFileSync(calls, "utf8").trim().split("\n").map(line => JSON.parse(line)[0])).toEqual(["bootout", "bootstrap"]);
-  writeFileSync(failFile, "fail once");
-  expect((await command(f, ["roam", "disable"])).code).toBe(3);
-  expect(existsSync(servicePlist(f.root))).toBe(true);
-  const callsBeforeRetry = readFileSync(calls, "utf8"), repeated = await command(f, ["roam", "disable"]);
-  expect(repeated.code, repeated.err).toBe(0); expect(repeated.out).toContain("Roaming hub disabled");
-  const retryCalls = readFileSync(calls, "utf8").slice(callsBeforeRetry.length).trim().split("\n").map(line => JSON.parse(line));
-  expect(retryCalls).toHaveLength(1); expect(retryCalls[0][0]).toBe("bootout");
-  expect(JSON.parse(readFileSync(join(f.root, "roam", "config.json"), "utf8")).enabled).toBe(false);
+  const plist = servicePlist(f.root, "v0");
+  expect(existsSync(plist)).toBe(true);
   expect(existsSync(servicePlist(f.root))).toBe(false);
+  expect(readFileSync(calls, "utf8").trim().split("\n").map(line => JSON.parse(line))).toEqual([
+    ["bootout", expect.any(String), plist], ["bootstrap", expect.any(String), plist],
+  ]);
+  await readyV0(f.root);
+  writeFileSync(failFile, "fail once");
+  const pending = await command(f, ["roam", "disable"]);
+  expect(pending.code, pending.err).toBe(3);
+  expect(existsSync(plist)).toBe(true);
+  const callsBeforeRetry = readFileSync(calls, "utf8"), repeated = await command(f, ["roam", "disable"]);
+  expect(repeated.code, repeated.err).toBe(0); expect(repeated.out).toContain("Roaming v0 hub disabled");
+  const retryCalls = readFileSync(calls, "utf8").slice(callsBeforeRetry.length).trim().split("\n").map(line => JSON.parse(line));
+  expect(retryCalls).toEqual([["bootout", expect.any(String), plist]]);
+  expect(JSON.parse(readFileSync(join(f.root, "roam", "config.json"), "utf8")).enabled).toBe(false);
+  expect(existsSync(plist)).toBe(false);
   db = openDb(join(f.root, "spider.db"));
   try { expect(db.prepare("SELECT capture_enabled FROM roam_meta").get()).toEqual({ capture_enabled: 1 }); }
   finally { db.close(); }
@@ -343,15 +362,18 @@ it.each(["lock.json.guard", "startup.json", "replace-intent.json", "replace-inte
     else expect(worker).toBeNull();
   }, 5000);
 
-it("disabled disable is a no-op only when no home change or live hub is unverified", async () => {
+it("disable is a no-op without v0 work, but still requires proof the hub is stopped", async () => {
   const f = fixture(false);
   writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify({ enabled: false, role: "hub", machineId: HUB,
     hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture" }), { mode: 0o600 });
-  expect((await command(f, ["roam", "disable"])).code).toBe(0);
+  const idle = await command(f, ["roam", "disable"]);
+  expect(idle.code, idle.err).toBe(0);
   expect(existsSync(join(f.root, "roam", "journal.db"))).toBe(false);
   const journal = openJournal(join(f.root, "roam", "journal.db"));
   journal.begin({ id: "pending-home", machineId: HUB, expectedEpoch: 1, kind: "move", args: {} });
-  expect((await command(f, ["roam", "disable"])).code).toBe(1);
+  const warned = await command(f, ["roam", "disable"]);
+  expect(warned.code).toBe(0);
+  expect(warned.out).toMatch(/Warning:.*spider roam cancel pending-home/);
   journal.record("pending-home", "done", { complete: true });
   expect((await command(f, ["roam", "disable"])).code).toBe(0);
   // An absent socket and plist do not prove that the old hub stopped scheduling.
@@ -370,22 +392,24 @@ it("disabled disable is a no-op only when no home change or live hub is unverifi
   expect((await command(f, ["roam", "disable"])).code).toBe(0);
 }, 5000);
 
-it("disabled retries finish service removal only after the hub and pending move stop", async () => {
+it("disable retries retain the service definition until the hub stops and warn about legacy moves", async () => {
   const f = fixture(false), bin = join(f.root, "bin"), pidFile = join(f.root, "hub-pid"), failFile = join(f.root, "fail-bootout");
   mkdirSync(bin);
   writeFileSync(join(bin, "sqlite3"), `#!${process.execPath}\nconsole.log('3.45.0');\n`, { mode: 0o700 });
   const launchctl = join(bin, "launchctl");
-  writeLaunchctl(f, { file: launchctl, pidFile, failFile, stopOnBootout: true });
-  f.env.PATH = bin; f.env.SPIDER_TEST_ROAM_LAUNCHCTL = launchctl;
+  writeLaunchctl(f, { file: launchctl, pidFile, failFile, stopOnBootout: false });
+  f.env.PATH = `${bin}:/bin`; f.env.SPIDER_TEST_ROAM_LAUNCHCTL = launchctl;
   writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify({ enabled: false, role: "hub", machineId: HUB,
     hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture" }), { mode: 0o600 });
-  const plist = servicePlist(f.root);
+  const plist = servicePlist(f.root, "v0"), socket = join(f.root, "roam", "relocate.sock");
   try {
     expect((await command(f, ["roam", "enable"])).code).toBe(0);
+    await readyV0(f.root);
     writeFileSync(failFile, "fail once");
-    expect((await command(f, ["roam", "disable"])).code).toBe(3);
+    const pending = await command(f, ["roam", "disable"]);
+    expect(pending.code, pending.err).toBe(3);
     expect(existsSync(plist)).toBe(true);
-    unlinkSync(f.socket);
+    unlinkSync(socket);
     expect((await command(f, ["roam", "disable"])).code).toBe(3);
     expect(existsSync(plist)).toBe(true);
     const pid = Number(readFileSync(pidFile, "utf8")); await stopFixturePidFile(pidFile);
@@ -394,18 +418,14 @@ it("disabled retries finish service removal only after the hub and pending move 
     let state = await observer.probeProcess(machine, pid);
     while (state.kind !== "absent" && Date.now() < end) { await delay(20); state = await observer.probeProcess(machine, pid); }
     expect(state.kind).toBe("absent");
-    expect(existsSync(f.socket)).toBe(false);
+    expect(existsSync(socket)).toBe(false);
     const journal = openJournal(join(f.root, "roam", "journal.db"));
     journal.begin({ id: "pending-home", machineId: HUB, expectedEpoch: 1, kind: "move", args: {} });
-    // A known blocker refuses this attempt without changing the service.
-    const refused = await command(f, ["roam", "disable"]);
-    expect(refused.code).toBe(1);
-    expect(refused.err).toContain('spider roam cancel pending-home');
-    expect(existsSync(plist)).toBe(true);
-    journal.record("pending-home", "done", { complete: true });
     const resumed = await command(f, ["roam", "disable"]);
     expect(resumed.code, resumed.err).toBe(0);
-    expect(resumed.out).toContain("Roaming hub disabled");
+    expect(resumed.out).toContain("Roaming v0 hub disabled");
+    expect(resumed.out).toMatch(/Warning:.*spider roam cancel pending-home/);
+    expect(journal.lookupOperation("pending-home")).toMatchObject({ state: "pending" });
     expect(existsSync(plist)).toBe(false);
     const db = openDb(join(f.root, "spider.db"));
     try { expect(db.prepare("SELECT capture_enabled FROM roam_meta").get()).toEqual({ capture_enabled: 1 }); }
@@ -484,8 +504,11 @@ it.each([false, true])("box controls preserve disabled-first and Mac-only guards
       ["roam", "stop", "session-1"], ["roam", "resume", "session-1"]]) {
       const result = await command(f, args);
       expect(result.code, args.join(" ")).toBe(1);
-      const hubOnlyWhileDisabled = ["provision", "forget", "stop"].includes(args[1]);
-      expect(result.err, args.join(" ")).toMatch(enabled || hubOnlyWhileDisabled ? /Mac hub/i : /roaming-disabled/);
+      if (args[0] === "move") expect(result.err).toMatch(/replaced.*spider roam relocate/i);
+      else {
+        const hubOnlyWhileDisabled = ["provision", "forget", "stop"].includes(args[1]);
+        expect(result.err, args.join(" ")).toMatch(enabled || hubOnlyWhileDisabled ? /Mac hub/i : /roaming-disabled/);
+      }
     }
     const inspect = openDb(join(box, "spider.db"));
     try { expect(inspect.prepare("SELECT machine_id FROM global_memory WHERE uuid='box-note'").get()).toEqual({ machine_id: BOX }); }
@@ -552,7 +575,7 @@ it("enable refuses old or unreadable remote consumer inventories before any capt
   } finally { await new Promise<void>(done => server.close(() => done())); }
 }, 5000);
 
-it("enable starts a fresh box broker and seeds both machines before the isolated hub starts", async () => {
+it("enable removes the legacy service and starts only the local v0 hub", async () => {
   const { f, alias, box, calls, peer, server } = await twoNodeFixture(false, true, false);
   const pidFile = join(f.root, "hub-pid"), launchCalls = join(f.root, "launch-calls");
   try {
@@ -565,24 +588,33 @@ it("enable starts a fresh box broker and seeds both machines before the isolated
     const launchctl = join(f.root, "bin", "launchctl");
     writeLaunchctl(f, { file: launchctl, pidFile, calls: launchCalls, stopOnBootout: false });
     f.env.SPIDER_TEST_ROAM_LAUNCHCTL = launchctl;
+    await installHubService({ node: process.execPath, cli: f.cli, globalRoot: f.root, pi: process.execPath, env: f.env },
+      { plistDir: dirname(servicePlist(f.root)), serviceHome: f.root, async launchctl() {} });
+    const legacy = servicePlist(f.root), v0 = servicePlist(f.root, "v0");
+    expect(existsSync(legacy)).toBe(true);
     const result = await command(f, ["roam", "enable"]);
     expect(result.code, result.err).toBe(0);
-    expect(existsSync(join(box, ".pi", "agent", "intercom", "broker.sock"))).toBe(true);
-    expect(JSON.parse(readFileSync(join(box, "roam/config.json"), "utf8")).enabled).toBe(true);
-    for (const [root, row] of [[f.root, "memory-a"], [box, "peer-memory"]]) {
-      const inspect = openDb(join(root, "spider.db"));
-      try {
-        expect(inspect.prepare("SELECT store_key,capture_enabled FROM roam_meta").get()).toEqual({ store_key: "global", capture_enabled: 1 });
-        expect(inspect.prepare("SELECT entity,row_key FROM roam_changes WHERE row_key=?").all(row)).toEqual([{ entity: "global_memory", row_key: row }]);
-      } finally { inspect.close(); }
-    }
+    expect(result.out).toMatch(/removed.*legacy.*hub/i);
+    expect(existsSync(legacy)).toBe(false);
+    expect(readFileSync(v0, "utf8")).toContain("<string>hub-v0</string>");
+    await readyV0(f.root);
+    expect(existsSync(join(box, ".pi", "agent", "intercom", "broker.sock"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(box, "roam/config.json"), "utf8")).enabled).toBe(false);
+    const local = openDb(join(f.root, "spider.db")), remote = openDb(join(box, "spider.db"));
+    try {
+      expect(local.prepare("SELECT store_key,capture_enabled FROM roam_meta").get()).toEqual({ store_key: "global", capture_enabled: 1 });
+      expect(local.prepare("SELECT entity,row_key FROM roam_changes WHERE row_key='memory-a'").all()).toEqual([{ entity: "global_memory", row_key: "memory-a" }]);
+      expect(remote.prepare("SELECT capture_enabled FROM roam_meta").get()).toEqual({ capture_enabled: 0 });
+      expect(remote.prepare("SELECT entity,row_key FROM roam_changes WHERE row_key='peer-memory'").all()).toEqual([]);
+    } finally { local.close(); remote.close(); }
     const entries = readFileSync(calls, "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]);
-    const operations = entries.filter(args => args[0] === "exec" && args.includes("agent"))
-      .map(args => ({ argv: args, op: JSON.parse(args.at(-1)!) as { kind: string; args: { storeKey?: string } } }));
-    expect(operations.some(({ op }) => op.kind === "stores")).toBe(true);
-    expect(operations.some(({ op }) => op.kind === "enable-capture" && op.args.storeKey === "global")).toBe(true);
-    expect(operations.every(({ argv }) => argv.includes(`--on=${alias}`) && argv.includes(box))).toBe(true);
-    expect(readFileSync(launchCalls, "utf8").trim().split("\n").map(line => JSON.parse(line)[0])).toEqual(["bootout", "bootstrap"]);
+    const observations = entries.filter(args => args[0] === "exec" && args.includes("observe"));
+    expect(observations.some(args => args.includes("consumers"))).toBe(true);
+    expect(observations.every(argv => argv.includes(`--on=${alias}`) && argv.includes(box))).toBe(true);
+    expect(entries.some(args => args.includes("start-broker") || args.includes("enable-capture"))).toBe(false);
+    expect(readFileSync(launchCalls, "utf8").trim().split("\n").map(line => JSON.parse(line))).toEqual([
+      ["bootout", expect.any(String), legacy], ["bootout", expect.any(String), v0], ["bootstrap", expect.any(String), v0],
+    ]);
   } finally {
     await new Promise<void>(done => server.close(() => done()));
   }
@@ -767,4 +799,5 @@ it("enable refuses a missing participant executable before capture or service ef
   finally { db.close(); }
   expect(existsSync(marker)).toBe(false);
   expect(existsSync(servicePlist(f.root))).toBe(false);
+  expect(existsSync(servicePlist(f.root, "v0"))).toBe(false);
 }, 5000);

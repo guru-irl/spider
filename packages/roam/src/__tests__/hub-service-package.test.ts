@@ -5,7 +5,6 @@ import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { buildRoamEntries } from "../../../../scripts/build-roam.mjs";
 import { assertRoamBundle } from "../../../../scripts/check-roam-bundle.mjs";
-import { startHubControl } from "../control-socket";
 import { openDb, migrate } from "@spider/db-core";
 import { build } from "vite";
 
@@ -37,7 +36,6 @@ it("packaged enable installs the executable CLI dispatcher rather than its impor
   vi.stubEnv("HOME", home); vi.stubEnv("SPIDER_GLOBAL_ROOT", globalRoot);
   vi.stubEnv("HC_SOCKET", join(root, "unused-core.sock")); vi.stubEnv("HC_SESSION", "fixture");
   vi.stubEnv("SPIDER_ROAM_PI", process.execPath); vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", launchctl);
-  const socket = await startHubControl(join(globalRoot, "roam/hub.sock"), async () => ({ code: 0, reason: "ready", value: { enabled: true } }));
   const out: string[] = [], err: string[] = [];
   try {
     const cli = await import(/* @vite-ignore */ pathToFileURL(join(packageRoot, "dist/roam/cli-main.mjs")).href);
@@ -47,13 +45,13 @@ it("packaged enable installs the executable CLI dispatcher rather than its impor
     expect(files).toHaveLength(1);
     const plist = readFileSync(join(directory, files[0]), "utf8");
     const args = [...plist.matchAll(/<string>([^<]*)<\/string>/g)].map(match => match[1]);
-    expect(args.slice(1, 5)).toEqual([process.execPath, join(packageRoot, "dist/roam/cli.mjs"), "roam", "hub"]);
-    const entry = spawnSync(process.execPath, [args[2], "roam", "hub", "--help"], { cwd: join(packageRoot, "dist"), encoding: "utf8", timeout: 2000 });
+    expect(args.slice(1, 5)).toEqual([process.execPath, join(packageRoot, "dist/roam/cli.mjs"), "roam", "hub-v0"]);
+    const entry = spawnSync(args[1], [...args.slice(2, 5), "--help"], { cwd: join(packageRoot, "dist"), encoding: "utf8", timeout: 2000 });
     expect(entry.status).toBe(2);
-    expect(entry.stderr).toContain("Invalid arguments. Run spider --help for usage.");
+    expect(entry.stderr).toContain("Use spider roam hub-v0.");
     expect(entry.stderr).not.toContain("ENOENT");
     expect(entry.stderr).not.toContain("runtime request");
-  } finally { await socket.close(); }
+  } finally { vi.unstubAllEnvs(); }
 });
 
 it.each(["file", "directory", "preserved main"])("the packaged supervisor runs through a symlinked %s entry", kind => {
@@ -99,7 +97,7 @@ it("imports the bundled supervisor without Node type stripping support", () => {
 });
 
 it("executing the bundled CLI library never starts a remote runtime", () => {
-  const result = spawnSync(process.execPath, [join(packageRoot, "dist/roam/cli-main.mjs"), "roam", "hub", "--help"],
+  const result = spawnSync(process.execPath, [join(packageRoot, "dist/roam/cli-main.mjs"), "roam", "hub-v0", "--help"],
     { cwd: join(packageRoot, "dist"), encoding: "utf8", timeout: 2000 });
   expect({ status: result.status, stdout: result.stdout, stderr: result.stderr }).toEqual({ status: 0, stdout: "", stderr: "" });
 });

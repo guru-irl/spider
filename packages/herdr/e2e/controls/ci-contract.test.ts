@@ -114,15 +114,15 @@ describe('headless story matrix', () => {
     const explicit = JSON.parse(selected.stdout) as typeof matrix;
     expect(explicit.include.map(row => row.story)).toEqual(['R03', 'S01', 'R13']);
     expect(explicit.include.find(row => row.story === 'R13')!.timeout).toBe(config.timeouts.R13);
-    for (const invalid of ['R09,,R13', 'R09,R09', 'R99', 'R09;echo']) expect(select(invalid).status).not.toBe(0);
+    for (const invalid of ['R10,,R13', 'R10,R10', 'R99', 'R10;echo']) expect(select(invalid).status).not.toBe(0);
   });
 
   it('keeps move story budgets and leaves the flaky ones out of the default set', () => {
     const defaults = JSON.parse(select('').stdout) as { include: { story: string; timeout: number }[] };
     // R06 to R08 are flaky in CI and stay out of the default set until fixed.
-    for (const story of ['R10', 'R17']) expect(defaults.include).toContainEqual({ story, timeout: 5 });
+    expect(defaults.include).toContainEqual({ story: 'R10', timeout: 5 });
     for (const story of ['R06', 'R07', 'R08']) expect(defaults.include.map(row => row.story)).not.toContain(story);
-    for (const story of ['R06', 'R07', 'R08', 'R10', 'R17'])
+    for (const story of ['R06', 'R07', 'R08', 'R10'])
       expect(JSON.parse(select(story).stdout).include).toEqual([{ story, timeout: 5 }]);
   });
 

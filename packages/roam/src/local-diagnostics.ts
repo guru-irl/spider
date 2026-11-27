@@ -1,8 +1,10 @@
 import { readMoveSetupDiagnostics } from "./setup-diagnostics";
+import { localEntries } from "@spider/db-core/roam/local-state";
+import type { V0Refusal } from "./relocate/types";
 import { parsePrivateTransferDiagnostic, type PrivateTransferDiagnostic } from "./private-transfer-diagnostics";
 import { corePinDiagnostics } from "./core-pin-diagnostics";
-import { hubStartupDiagnostics, inspectHubService, type HubServiceObservation } from "./hub-service-diagnostics";
-import { hubServiceExists, hubServiceFile, hubServiceSelectionMatches } from "./launchd";
+import { hubPlistDirectory, hubStartupDiagnostics, inspectHubService, observedHubServiceMode, type HubServiceObservation } from "./hub-service-diagnostics";
+import { hubServiceExists, hubServiceFile, hubServiceSelectionMatches, type LaunchdPorts } from "./launchd";
 import { inspectSupervisorCorePin } from "./enrollment";
 import { hostingWarningDiagnostic, readHostingWarnings } from "./hosting-warning";
 import { execFile, execFileSync } from "node:child_process";
@@ -10,7 +12,7 @@ import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, ope
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SCHEMA_VERSION, type Db } from "@spider/db-core";
+import { assertTestConfigPath, SCHEMA_VERSION, type Db } from "@spider/db-core";
 import { openRoamStoreReadOnly, type RoamCatalog } from "@spider/db-core/roam/reads";
 import { isRoamUuid, storeScope } from "@spider/db-core/roam/codec";
 import { readLocal } from "@spider/db-core/roam/local-state";
@@ -42,9 +44,13 @@ import { readPrivateBytes } from "./selected-files";
 function missing(error: unknown): boolean { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
 type SupervisorAutostart = "enabled" | "disabled" | "unknown";
 export async function inspectSupervisorAutostart(): Promise<SupervisorAutostart> {
-  if (!existsSync(join(homedir(), ".config/systemd/user/spider-roam-supervisor.service"))) return "unknown";
+  const v0 = "spider-roam-supervisor-v0.service", legacy = "spider-roam-supervisor.service";
+  const configHome = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+  const unit = existsSync(join(configHome,"systemd","user",v0)) ? v0
+    : existsSync(join(homedir(),".config","systemd","user",legacy)) ? legacy : null;
+  if (!unit) return "unknown";
   return new Promise(resolve => {
-    execFile("systemctl", ["--user", "is-enabled", "spider-roam-supervisor.service"], { timeout: 5000, maxBuffer: 4096 }, (error, stdout) => {
+    execFile("systemctl", ["--user", "is-enabled", unit], { timeout: 5000, maxBuffer: 4096 }, (error, stdout) => {
       const state = stdout.trim();
       if (!error && state === "enabled") resolve("enabled");
       else if (!error && state === "enabled-runtime" || error && error.code === 1 && state === "disabled") resolve("disabled");
@@ -152,9 +158,12 @@ export async function probeLocal(pid: number, usage: boolean, options: {
   return absentOrUnknown(pid);
 }
 
-function serviceExecutables(root: string): { label: string; file: string }[] {
-  const directory = join(homedir(), "Library", "LaunchAgents"), scoped = hubServiceFile(root, directory);
-  const file = existsSync(scoped) || !hubServiceExists(root, directory) ? scoped : join(directory, "com.spider.roam.hub.plist");
+function serviceExecutables(root: string, directory: string | null | undefined = hubPlistDirectory()): { label: string; file: string }[] {
+  if (!directory) return [];
+  const mode = observedHubServiceMode(root, directory);
+  const scoped = hubServiceFile(root, directory, mode);
+  const file = mode || existsSync(scoped) || !hubServiceExists(root, directory) ? scoped : join(directory, "com.spider.roam.hub.plist");
+  assertTestConfigPath(file);
   let text: string;
   try {
     const stat = lstatSync(file);
@@ -174,7 +183,7 @@ function localOnly(machine: DiagnosticMachine): void {
 }
 
 /** The remote-machine ports are deliberately unavailable until the transport wiring supplies them. */
-export function createLocalDiagnosticPorts(root: string, stores: readonly DiagnosticStore[], bundleUrl: URL = new URL("../extension.js", import.meta.url)): DiagnosticPorts {
+export function createLocalDiagnosticPorts(root: string, stores: readonly DiagnosticStore[], bundleUrl: URL = new URL("../extension.js", import.meta.url), hubPlistDir?: string | null): DiagnosticPorts {
   const presence = createProcessPresence(join(root, "herdr"));
   return {
     targetBuild: readTargetBuild(bundleUrl),
@@ -194,7 +203,7 @@ export function createLocalDiagnosticPorts(root: string, stores: readonly Diagno
       try { return execFileSync("sqlite3", ["--version"], { encoding: "utf8", timeout: 2000, maxBuffer: 1024 }).trim(); }
       catch { return null; }
     },
-    async listExecutables(machine) { localOnly(machine); return serviceExecutables(root); },
+    async listExecutables(machine) { localOnly(machine); return serviceExecutables(root, hubPlistDir); },
     async executable(machine, file) {
       localOnly(machine);
       try { const stat = lstatSync(file); if (!stat.isFile() || stat.isSymbolicLink()) return false; accessSync(file, constants.X_OK); return true; }
@@ -210,8 +219,8 @@ export interface ConsumerSnapshot {
   bundled: string; cli: string | null;
   executables: Array<{ label: string; file: string; available: boolean }>;
 }
-export async function inspectLocalConsumers(root: string, machineId: string, bundleUrl?: URL): Promise<ConsumerSnapshot> {
-  const ports = createLocalDiagnosticPorts(root, [], bundleUrl);
+export async function inspectLocalConsumers(root: string, machineId: string, bundleUrl?: URL, hubPlistDir?: string | null): Promise<ConsumerSnapshot> {
+  const ports = createLocalDiagnosticPorts(root, [], bundleUrl, hubPlistDir);
   const machine = { machineId, label: "local machine", peer: null };
   const records = await ports.listPresence(machine);
   const presence = await Promise.all(records.map(async record => ({ record, probe: await ports.probeProcess(machine, record.pid) })));
@@ -482,9 +491,11 @@ export async function localPendingLaunchDiagnostics(input: {
     ? { ...row, reason: `${row.reason} Run this repair command on the Mac hub.` } : row);
 }
 
-export function localHubServiceDiagnostics(root: string): Diagnostic[] {
+export function localHubServiceDiagnostics(root: string, launchd?: Pick<LaunchdPorts, "plistDir" | "serviceHome">): Diagnostic[] {
+  const directory = launchd?.plistDir ?? hubPlistDirectory();
+  if (!directory) return [];
   try {
-    const matches = hubServiceSelectionMatches(root, join(homedir(), "Library", "LaunchAgents"), process.env);
+    const matches = hubServiceSelectionMatches(root, directory, process.env, launchd?.serviceHome, observedHubServiceMode(root, directory));
     return matches === false ? [{ severity: "warning", reason: "hub-core-selection-mismatch: The hub service selects a different core. Run spider roam enable again from the intended environment.", repairCommand: "spider roam enable" }] : [];
   } catch {
     return [{ severity: "warning", reason: "hub-core-selection-unavailable: Cannot inspect the hub service core selection.", repairCommand: null }];
@@ -501,6 +512,7 @@ export function localPendingMoveDiagnostics(root: string): Diagnostic[] {
 /** Inspect registered local stores without modifying them. */
 export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; currentCore?: () => Promise<string | null>; inspectIntercomDoctor?: boolean;
   hubService?: () => Promise<HubServiceObservation>;
+  hubLaunchd?: Pick<LaunchdPorts, "plistDir" | "serviceHome">;
   launchRecovery?: { bootId(): Promise<string>; probe(pid: number): Promise<ProcessProbe> };
   intercomReadiness?: () => Promise<IntercomReadiness>;
   ensureIntercomBroker?: () => Promise<void>;
@@ -513,8 +525,12 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
   const config = existsSync(configFile) ? loadConfig(configFile) : disabledConfig();
   const required = localCaptureRequired(config), severity = required ? "block" : "warning";
   const inventory: Diagnostic[] = [], storeDiagnostics: Diagnostic[] = [], peerFailures: Diagnostic[] = [], consumers: LoadedConsumer[] = [];
-  if (config.enabled && config.role === "hub") inventory.push(...hubStartupDiagnostics(root, await (input.hubService ?? (() => inspectHubService(root)))()));
-  if (config.role === "hub") inventory.push(...localHubServiceDiagnostics(root), ...localPendingMoveDiagnostics(root));
+  if (config.enabled && config.role === "hub") {
+    const directory = input.hubLaunchd?.plistDir;
+    const service = await (input.hubService ? input.hubService() : inspectHubService(root, undefined, directory));
+    inventory.push(...hubStartupDiagnostics(root, service, directory));
+  }
+  if (config.role === "hub") inventory.push(...localHubServiceDiagnostics(root, input.hubLaunchd), ...localPendingMoveDiagnostics(root));
   if (config.role === "box") {
     if (config.enabled && (input.supervisorAutostart || process.platform === "linux")) {
       let autostart: SupervisorAutostart = "unknown";
@@ -667,7 +683,7 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
     }
     for (const peer of fences.keys()) if (!localPairs.some(record => [record.pair.source.machineId, record.pair.target.machineId].includes(peer))) inventory.push({ severity: "block", reason: `revocation-pending: An unmatched durable fence remains for ${peer}. Keep both boxes reachable. No repair command is available without the pair record; restore it before cleanup.`, repairCommand: null });
   } catch { inventory.push({ severity: "warning", reason: "intercom-registry-unavailable: Pair enrollment state could not be inspected.", repairCommand: null }); }
-  const ports = createLocalDiagnosticPorts(root, [], input.bundleUrl);
+  const ports = createLocalDiagnosticPorts(root, [], input.bundleUrl, config.role === "hub" ? input.hubLaunchd?.plistDir : null);
   const localDiagnostics = await doctorLocal(config, ports, consumers);
   if (input.inspectIntercomDoctor && config.intercom.enabled) try {
     const inspect = input.intercomDoctor ?? inspectLocalIntercomDoctor;
@@ -751,6 +767,16 @@ export function runLocalStatus(input: { root: string; now?: number }): RoamStatu
     const status = readStatus(local.config, { globalDb, stores: usable, journalDb: journal ?? null, now, observations,
       inventoryComplete: local.inventory.length === 0, journalAvailable });
     status.diagnostics.push(...local.inventory);
+    if (globalDb) try {
+      const safe = (value: string) => value.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 256);
+      for (const {key,value} of localEntries<Partial<V0Refusal> | null>(globalDb, "relocate-supervisor-refusal")) {
+        if (typeof value?.code !== "string" || typeof value.message !== "string" || typeof value.nextStep !== "string") continue;
+        status.diagnostics.push({ severity: "warning", repairCommand: null,
+          reason: `Last supervisor refusal for ${safe(key)} (${safe(value.code)}): ${safe(value.message)} ${safe(value.nextStep)}` });
+      }
+    } catch {
+      status.diagnostics.push({ severity: "warning", repairCommand: "spider roam doctor", reason: "Cannot read the last supervisor refusals." });
+    }
     return status;
   } finally { journal?.close(); local.close(); }
 }

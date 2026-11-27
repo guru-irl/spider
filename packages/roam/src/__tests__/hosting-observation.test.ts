@@ -29,7 +29,7 @@ it("reconnect reports new terminal for placement and durable suspension", async 
   const f = createReplica("global", BOX); roots.push(f);
   const journal = openJournal(join(f.root, "roam", "journal.db")), authority = createRunningIntentAuthority(f.db), intents = createIntentStore(f.root);
   const intent = { sessionId: "s-1", epoch: 1, file: join(f.root, "s.jsonl"), cwd: f.root, desired: "running" as const, suspended: null, moveId: null };
-  f.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run("s-1", BOX);
+  f.db.prepare("INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES (?,?,1,NULL,1)").run("s-1", BOX);
   await authority.set(intent, "launch-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
   const ports = { db: f.db, journal, authority, intents, machineId: BOX, hubMachineId: HUB, async live() { return true; }, async terminalOutcome() { return "unknown" as const; } };
   for (const [operationId, terminal] of [["launch-1", "terminal-1"], ["launch-2", "terminal-2"]]) {
@@ -50,7 +50,7 @@ it("a box-local owner is observable before sync but not under a foreign home", a
   writeLocal(f.db, "participant-origin", "s-1", origin); writeLocal(f.db, "participant-ready", "s-1", ready);
   const ports = { db: f.db, journal, authority, intents: createIntentStore(f.root), machineId: BOX, hubMachineId: HUB, async live() { return true; }, async terminalOutcome() { return "unknown" as const; } };
   expect((await observeHosting(ports)).readiness).toEqual([ready]);
-  f.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run("s-1", OTHER);
+  f.db.prepare("INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES (?,?,1,NULL,1)").run("s-1", OTHER);
   expect((await observeHosting(ports)).readiness).toEqual([]);
 }, 5000);
 
@@ -58,7 +58,7 @@ it.each(["missing-home", "wrong-machine", "new-epoch", "wrong-move", "untrusted-
   const f = createReplica("global", BOX); roots.push(f);
   const journal = openJournal(join(f.root, "roam", "journal.db")), authority = createRunningIntentAuthority(f.db);
   const intent = { sessionId: "s-1", epoch: 1, file: join(f.root, "s.jsonl"), cwd: f.root, desired: "running" as const, suspended: null, moveId: null };
-  if (scenario !== "missing-home") f.db.prepare("INSERT INTO session_homes VALUES (?,?,?,?,1)").run("s-1", scenario === "wrong-machine" ? OTHER : BOX, scenario === "new-epoch" ? 2 : 1, scenario === "wrong-move" ? "move-2" : null);
+  if (scenario !== "missing-home") f.db.prepare("INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES (?,?,?,?,1)").run("s-1", scenario === "wrong-machine" ? OTHER : BOX, scenario === "new-epoch" ? 2 : 1, scenario === "wrong-move" ? "move-2" : null);
   await authority.set(intent, "launch-1", { kind: "box-participant", machineId: scenario === "untrusted-intent" ? OTHER : BOX, hubMachineId: HUB });
   journal.begin({ id: "launch-1", kind: "exact-session-launch", machineId: BOX, expectedEpoch: 1, args: {} });
   const ready = { origin: "hub-operation" as const, opId: "launch-1", sessionId: "s-1", epoch: 1, cwd: f.root, file: intent.file, core: "core-1", terminal: "term-1" };
@@ -71,7 +71,7 @@ it("stopped or unproved owners never advertise an old readiness receipt", async 
   const f = createReplica("global", BOX); roots.push(f);
   const authority = createRunningIntentAuthority(f.db), journal = openJournal(join(f.root, "roam", "journal.db"));
   const intent = { sessionId: "s-1", epoch: 1, file: join(f.root, "s.jsonl"), cwd: f.root, desired: "running" as const, suspended: null, moveId: null };
-  f.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run("s-1", BOX);
+  f.db.prepare("INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES (?,?,1,NULL,1)").run("s-1", BOX);
   await authority.set(intent, "launch-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB }); journal.begin({ id: "launch-1", kind: "exact-session-launch", machineId: BOX, expectedEpoch: 1, args: {} });
   const ready = { origin: "hub-operation" as const, opId: "launch-1", sessionId: "s-1", epoch: 1, cwd: f.root, file: intent.file, core: "core-1", terminal: "old-terminal" };
   recordReadiness(journal, ready); writeLocal(f.db, "participant-ready", "s-1", ready);
@@ -91,7 +91,7 @@ async function executionFixture(epoch = 2) {
   worktree.db.prepare("UPDATE roam_meta SET capture_enabled=1 WHERE id=1").run();
   worktree.db.prepare("INSERT INTO sessions(id,started_at,origin_machine) VALUES (?,?,?)").run("s-1", 1, BOX);
   worktree.db.prepare("INSERT INTO roam_sessions(session_id,epoch,state) VALUES (?,?,'active')").run("s-1", epoch);
-  global.db.prepare("INSERT INTO session_homes VALUES (?,?,?,NULL,1)").run("s-1", BOX, epoch);
+  global.db.prepare("INSERT INTO session_homes (session_id, machine_id, epoch, move_id, updated_at) VALUES (?,?,?,NULL,1)").run("s-1", BOX, epoch);
   recordLocation(global.db, { sessionId: "s-1", stores: [worktree.storeKey], home: null, file, cwd });
   const journal = openJournal(join(global.root, "roam", "journal.db"));
   const authority = createRunningIntentAuthority(global.db), intents = createIntentStore(global.root);

@@ -178,7 +178,7 @@ it.each([
     writeLocal(f.global, "participant-origin", "session-1", { kind: "box-local", machineId: f.machine, epoch: 1,
       file: f.file, cwd: f.cwd, pid: f.identity.pid, startIdentity: f.identity.startIdentity, stopped: false });
   } else {
-    f.global.prepare("INSERT INTO session_homes VALUES(?,?,1,NULL,1)").run("session-1", f.machine);
+    f.global.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES(?,?,1,NULL,1)").run("session-1", f.machine);
     await createRunningIntentAuthority(f.global).set({ sessionId: "session-1", epoch: 1, file: f.file, cwd: f.cwd,
       desired: "running", suspended: null, moveId: null }, "start-1", { kind: "box-participant", machineId: f.machine, hubMachineId: "00000000-0000-4000-8000-000000000001" });
   }
@@ -541,7 +541,7 @@ async function ownedIntent(kind: "box-participant" | "hub-return" | "hub-restora
   const f = fixture(), HUB = f.machine, BOX = "00000000-0000-4000-8000-000000000002";
   const box = kind === "box-participant", machineId = box ? BOX : HUB, sourceMachine = box || rollback ? HUB : BOX, moveId = "owned-move";
   enableMemoryCapture(f.global, "global");
-  f.global.prepare("INSERT INTO session_homes VALUES(?,?,1,NULL,1)").run("session-1", sourceMachine);
+  f.global.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES(?,?,1,NULL,1)").run("session-1", sourceMachine);
   const source = sessionHome(f.global, "session-1");
   if (!source || source === "unknown") throw Error("Missing test source");
   const moved = casHome(f.global, source, rollback ? BOX : machineId, moveId, HUB);

@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { performance } from "node:perf_hooks";
 import { isDeepStrictEqual } from "node:util";
 import type { Db } from "../db";
-import { isRoamUuid } from "./codec";
+import { assertRecordChange, isRoamUuid, normalizeHomeProjection } from "./codec";
 import { DESCRIPTORS } from "./descriptors";
 import { compareHlc, observeHlc } from "./hlc";
 import { readLocal, writeLocal } from "./local-state";
@@ -84,7 +84,11 @@ function readChanges(batch: ValidatedBatch): RecordChange[] {
   const lines = bytes.toString("utf8").slice(0, -1).split("\n");
   const header = JSON.parse(lines[0]) as unknown;
   if (!isDeepStrictEqual(header, batch.header)) throw new Error("Roaming batch header changed after validation");
-  return lines.slice(1).map(line => JSON.parse(line) as RecordChange);
+  return lines.slice(1).map(line => {
+    const record: unknown = JSON.parse(line);
+    assertRecordChange(record, batch.header.storeKey);
+    return record;
+  });
 }
 
 function asClock(row: ClockRow): Hlc {
@@ -97,6 +101,7 @@ function sameEnvelope(row: StoredChange, change: Change): boolean {
     clock: asClock(row), writerSession: row.writer_session, writerEpoch: row.writer_epoch,
     schema: row.schema_version, body: row.portable_json === null ? null : JSON.parse(row.portable_json) as JsonObject,
   };
+  if (original.entity === "session_homes" && original.body !== null) original.body = normalizeHomeProjection(original.body);
   return isDeepStrictEqual(JSON.parse(JSON.stringify(original)), JSON.parse(JSON.stringify(change)));
 }
 
@@ -134,12 +139,17 @@ function checkIdentity(db: Db, change: Change, old: Version | undefined): void {
 function checkHome(db: Db, change: Change, hubMachine: MachineId): void {
   if (change.clock.machine !== hubMachine) throw new Error("Roaming home change did not originate on the hub");
   if (change.op !== "put" || change.body === null) throw new Error("Roaming home cannot be deleted");
-  const current = db.prepare("SELECT machine_id, epoch, move_id FROM session_homes WHERE session_id = ?")
-    .get(change.rowKey) as { machine_id: string; epoch: number; move_id: string | null } | undefined;
+  const current = db.prepare("SELECT machine_id, epoch, move_id, state, destination FROM session_homes WHERE session_id = ?")
+    .get(change.rowKey) as { machine_id: string; epoch: number; move_id: string | null; state: string | null; destination: string | null } | undefined;
   if (!current) return;
   const next = change.body;
+  // Initialization preserves an ordinary legacy home's epoch. This is not a
+  // managed-state transition: a null-state home was never runnable under v0.
+  const legacyAdoption = current.state === null && current.destination === null && current.move_id === null &&
+    next.state === "running" && next.destination === null && next.move_id === null;
   if ((next.epoch as number) < current.epoch ||
-      (next.epoch === current.epoch && (next.machine_id !== current.machine_id || next.move_id !== current.move_id))) {
+      (next.epoch === current.epoch && (next.machine_id !== current.machine_id || next.move_id !== current.move_id ||
+        (!legacyAdoption && (next.state !== current.state || next.destination !== current.destination))))) {
     throw new Error(`Roaming home epoch or owner conflicts for ${change.rowKey}`);
   }
 }

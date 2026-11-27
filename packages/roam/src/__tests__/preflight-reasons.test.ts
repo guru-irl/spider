@@ -95,7 +95,7 @@ it("does not expose a path-shaped mapping-fence store key", async () => {
 
 it("retains a real mirror-export agent exception and its operation ID through sync", async () => {
   const f = fixture(), remote = f.remotes.get(BOX)!;
-  remote.global.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run("mirror-session", BOX);
+  remote.global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES (?,?,1,NULL,1)").run("mirror-session", BOX);
   const home = { sessionId: "mirror-session", machineId: BOX, epoch: 1, moveId: null, updatedAt: 1 };
   recordLocation(remote.global.db, { sessionId: "mirror-session", stores: [remote.worktree.storeKey], home,
     file: join(f.root, "missing-private-mirror"), cwd: remote.worktree.root });

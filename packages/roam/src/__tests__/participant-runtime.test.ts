@@ -49,7 +49,7 @@ function fixture(enabled = true, homed = true) {
   enrollFixtureCore(global.root);
   const file = join(worktree.root, "s.jsonl"); writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: "s-1", cwd: worktree.root }) + "\n", { mode: 0o600 });
   global.db.prepare("UPDATE roam_meta SET capture_enabled=1 WHERE id=1").run();
-  if (homed) global.db.prepare("INSERT INTO session_homes VALUES (?,?,2,?,1)").run("s-1", BOX, "move-1");
+  if (homed) global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES (?,?,2,?,1)").run("s-1", BOX, "move-1");
   worktree.db.prepare("INSERT INTO sessions(id,started_at) VALUES (?,1)").run("s-1");
   worktree.db.prepare("INSERT INTO roam_sessions(session_id,epoch,state) VALUES (?,2,'retired')").run("s-1");
   worktree.db.prepare("UPDATE roam_meta SET capture_enabled=1 WHERE id=1").run();

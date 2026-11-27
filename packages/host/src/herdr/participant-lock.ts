@@ -1,6 +1,6 @@
 import type { ProcessIdentity, ProcessProbe, ProcessInventoryPorts } from "@spider/herdr/sessions/lease";
 import { canonicalSessionFile } from "@spider/herdr/sessions/registry";
-import { claimIdLock } from "@spider/herdr/sessions/id-lock";
+import { claimIdLock, type IdLockHandle } from "@spider/herdr/sessions/id-lock";
 import { readLaunchHandoff, removeLaunchHandoff } from "@spider/herdr/sessions/launch-handoff";
 import { HerdrError } from "@spider/herdr/client/parse";
 import type { SessionId } from "@spider/herdr/contracts";
@@ -13,10 +13,20 @@ export interface ParticipantLockOptions {
   env?: Readonly<NodeJS.ProcessEnv>;
 }
 
-/** Hold both local ownership records until the caller releases them. */
-export async function lockParticipant(root: string, sessionId: string, file: string, options: ParticipantLockOptions = {}): Promise<() => Promise<void>> {
+function processIdentity(options: ParticipantLockOptions): ProcessIdentity {
+  return options.identity ?? { pid: process.pid, startIdentity: processStartTime(process.pid) ?? '' };
+}
+
+/** The interactive process owns its session ID without a transcript or roaming config. */
+export async function lockParticipantId(root: string, sessionId: string, options: ParticipantLockOptions = {}): Promise<IdLockHandle> {
+  const probe = options.probe ?? createProcessInventory(root).probe;
+  return claimIdLock(root, sessionId, processIdentity(options), probe, { bootId: options.bootId });
+}
+
+/** Hold the file lease and, unless the caller already owns it, the session ID lock. */
+export async function lockParticipant(root: string, sessionId: string, file: string, options: ParticipantLockOptions = {}, pinnedId?: IdLockHandle): Promise<() => Promise<void>> {
   const inventory = createProcessInventory(root);
-  const identity = options.identity ?? { pid: process.pid, startIdentity: processStartTime(process.pid) ?? '' };
+  const identity = processIdentity(options);
   const probe = options.probe ?? inventory.probe;
   const env = options.env ?? process.env;
   const canonical = await canonicalSessionFile(file), handoffPath = env.SPIDER_HERDR_HANDOFF_FILE;
@@ -29,7 +39,10 @@ export async function lockParticipant(root: string, sessionId: string, file: str
   if (handoff && (!leaseToken || (await inventory.leases.get(canonical))?.token !== leaseToken)) {
     throw new HerdrError('lease-token-invalid', 'Participant handoff requires its exact file lease');
   }
-  const id = await claimIdLock(root, sessionId, identity, probe, { ...(options.bootId ? { bootId: options.bootId } : {}), ...(handoff ? { handoff } : {}) });
+  if (pinnedId && (handoff || !await pinnedId.isHeldByClaim?.())) {
+    throw new HerdrError('session-id-owner', 'Cannot verify the interactive session ID lock');
+  }
+  const id = pinnedId ?? await claimIdLock(root, sessionId, identity, probe, { bootId: options.bootId, handoff });
   const isSelf = (value: { pid: number; startIdentity: string | null }) => value.pid === identity.pid && value.startIdentity === identity.startIdentity;
   const others: ProcessInventoryPorts = {
     ...inventory, probe,
@@ -53,11 +66,11 @@ export async function lockParticipant(root: string, sessionId: string, file: str
     }
     return async () => {
       try { await inventory.leases.release(file, lease.token, { mode: 'switch' }); }
-      finally { await id.release(); }
+      finally { if (!pinnedId) await id.release(); }
     };
   } catch (error) {
     // An adopted ID stays fenced while its process is alive, even if file adoption fails.
-    if (!handoff) await id.release();
+    if (!handoff && !pinnedId) await id.release();
     throw error;
   }
 }

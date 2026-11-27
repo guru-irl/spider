@@ -176,8 +176,6 @@ it('production child mount receives a bounded stderr error reporter', async () =
     const { default: extension } = await import('../extension.js'); extension(withPiEvents(f.pi as never), hostUnitPorts);
     const reporter = mount.mock.calls.at(-1)![1].reportError;
     expect(reporter).toBeTypeOf('function');
-    // Extension setup can warn about the installed pi compaction version.
-    writes.mockClear();
     reporter!(new Error('activation failed\n' + 'x'.repeat(5000)));
     const text = writes.mock.calls.map(([value]) => String(value)).join('');
     expect(text).toBe("Spider's Herdr features hit a problem in this session. Everything else in spider still works. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine.\n"); expect(text.length).toBeLessThanOrEqual(1100);

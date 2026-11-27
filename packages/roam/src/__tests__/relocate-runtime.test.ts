@@ -513,16 +513,16 @@ describe("v0 local runtime",()=>{
    expect(f.launches).toHaveLength(1);
   } finally { vi.useRealTimers(); }
  });
- it.each(["session", "checkout", "epoch"] as const)("does not confirm a terminal from a different %s", async mismatch => {
+ it.each(["session", "checkout", "epoch", "session file", "machine"] as const)("does not confirm a terminal from a different %s", async mismatch => {
   const f = runtimeFixture();
   f.setLock({identity:{pid:42,startIdentity:"pi-42"},bootId:"boot",pendingOperationId:null,pendingFile:null,pendingCoreId:null,operationId:null});
   f.setProbe({kind:"live",startIdentity:"pi-42",pi:true});
   const labels = {"spider.kind":"session","spider.session":mismatch === "session" ? "another-session" : id,
-   "spider.machine":box,"spider.roam.epoch":mismatch === "epoch" ? "2" : "3"};
+   "spider.machine":mismatch === "machine" ? hub : box,"spider.roam.epoch":mismatch === "epoch" ? "2" : "3"};
   vi.spyOn(hcApi,"invokeCli").mockImplementation(async (_binary,argv) => argv[0] === "ls"
    ? {terminals:[{address:"core:t",state:"live",pid:42}]}
    : {address:"core:t",state:"live",pid:42,labels,cwd:mismatch === "checkout" ? "/other/sub" : f.placement.cwd,
-      argv:["pi","--session",f.placement.file]});
+      argv:["pi","--session",mismatch === "session file" ? "/other/session.jsonl" : f.placement.file]});
   const local = createLocalRuntime(f.options,{...f.io,terminals:createLocalIO(f.options).terminals});
   expect(await local.confirm(f.home,f.placement)).toMatchObject({ok:false,refusal:{code:"start-pending"}});
  });

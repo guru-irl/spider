@@ -1,7 +1,7 @@
 import type {
   MovingHome, RelocateCheckpoint, RelocateHome, RelocateId, RelocateOutcome,
   RelocatePlan, RelocatePorts, RelocateRequest, RelocateStep, RunningHome, SessionPlacement,
-  V0Refusal, V0RefusalCode, V0Result,
+  SettledHome, V0Refusal, V0RefusalCode, V0Result,
 } from "./types";
 
 class PortRefusal extends Error {
@@ -76,12 +76,30 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
     try { await ports.journal.save(checkpoint); }
     catch { refuse("journal-unavailable", "The relocation checkpoint could not be saved."); }
   };
+  const check = async (source: SettledHome): Promise<RelocateCheckpoint> => {
+    moveId = ports.newMoveId();
+    const plan = value(await ports.check(request, source, moveId));
+    return { plan, completed: ["check"], captured: null, installed: null, terminal: null, result: null };
+  };
   try {
     return await ports.withSession(request.sessionId, async () => {
       home = await ports.homes.read(request.sessionId);
+      let checkedFirst: RelocateCheckpoint | undefined;
+      let initialPlacement: SessionPlacement | undefined;
       if (!home) {
-        const source = value(await ports.initialSource(request.sessionId));
-        home = await ports.homes.initialize(request.sessionId, source);
+        const machineId = value(await ports.initialSource(request.sessionId));
+        const candidate: RunningHome = { sessionId: request.sessionId, machineId,
+          epoch: ports.initialEpoch?.(request.sessionId) ?? 1, state: "running", destination: null, moveId: null, updatedAt: 0 };
+        if (machineId === request.destinationMachine) {
+          initialPlacement = value(await ports.locate(machineId, request.sessionId));
+        } else {
+          checkedFirst = await check(candidate);
+          await save(checkedFirst);
+        }
+        home = await ports.homes.initialize(request.sessionId, machineId);
+        if (!sameHome({ ...home, updatedAt: candidate.updatedAt }, candidate)) {
+          refuse("home-conflict", "The initial session home changed during check.");
+        }
       }
       if (home.state === "running" && home.machineId === request.destinationMachine && home.moveId) {
         let pending: RelocateCheckpoint | null;
@@ -114,7 +132,7 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
       }
       if (home.state !== "moving" && home.machineId === request.destinationMachine) {
         moveId = home.moveId;
-        const placement = value(await ports.locate(home.machineId, request.sessionId));
+        const placement = initialPlacement ?? value(await ports.locate(home.machineId, request.sessionId));
         const resumed: RunningHome = { ...home, state: "running",
           epoch: home.state === "stopped" ? home.epoch + 1 : home.epoch };
         if (home.state === "stopped") {
@@ -148,10 +166,10 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
             `Use spider roam set-home ${request.sessionId} ${request.destinationMachine} --force only with a local backup; unsynced work can be lost.`);
         }
         checkpoint = pending;
+      } else if (checkedFirst) {
+        checkpoint = checkedFirst;
       } else {
-        moveId = ports.newMoveId();
-        const plan = value(await ports.check(request, home, moveId));
-        checkpoint = { plan, completed: ["check"], captured: null, installed: null, terminal: null, result: null };
+        checkpoint = await check(home);
         await save(checkpoint);
       }
       const plan = checkpoint.plan;
@@ -181,7 +199,7 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts): 
         return { ok: true, value: result };
       }
       step = "mark-moving";
-      if (home.state !== "moving") await cas(plan.source, moving);
+      if (home.state !== "moving") await cas(checkedFirst ? home : plan.source, moving);
       if (!done(step)) {
         try { value(await ports.publishHome(moving, moving.machineId)); }
         catch (error) {

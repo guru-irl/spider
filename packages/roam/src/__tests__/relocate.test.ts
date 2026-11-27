@@ -274,10 +274,41 @@ describe("relocate", () => {
     s.refuse = { effect: "initial-source", code: "session-not-found" };
     expect(await relocate(request, ports(s))).toMatchObject({ ok: false, refusal: { code: "session-not-found" } });
     expect(s.home).toBeNull(); expect(s.effects).toEqual([]);
-    s.refuse = { effect: "check", code: "repo-unmapped" };
-    expect(await relocate(request, ports(s))).toMatchObject({ ok: false, refusal: { code: "repo-unmapped" } });
-    expect(s.home).toEqual(running());
-    expect(s.effects).toEqual(["initial-source", "initialize"]);
+  });
+
+  it("a first move refused at check leaves the source ordinary", async () => {
+    const s = state(); s.home = null;
+    s.refuse = { effect: "check", code: "destination-unreachable" };
+    expect(await relocate(request, ports(s))).toMatchObject({ ok: false, home: null, step: "check", refusal: { code: "destination-unreachable" } });
+    expect(s.home).toBeNull();
+    expect(s.journal.size).toBe(0);
+    expect(s.effects).toEqual(["initial-source"]);
     expect(s.processes).toEqual(new Set([source]));
+  });
+
+  it("a failed first checkpoint leaves the source ordinary", async () => {
+    const s = state(); s.home = null; s.failAfter = "save-check";
+    expect(await relocate(request, ports(s))).toMatchObject({ ok: false, home: null, refusal: { code: "journal-unavailable" } });
+    expect(s.home).toBeNull();
+    expect(s.effects).toEqual(["initial-source", "check", "save-check"]);
+    expect(s.processes).toEqual(new Set([source]));
+  });
+
+  it("first move adopts the legacy epoch only after validating it", async () => {
+    const s = state(); s.home = null;
+    const p = ports(s);
+    p.initialEpoch = () => 7;
+    const check = p.check;
+    p.check = async (req, candidate, moveId) => {
+      expect(candidate.epoch).toBe(7);
+      return check(req, candidate, moveId);
+    };
+    p.homes.initialize = async () => {
+      s.home = { ...running(), epoch: 7, updatedAt: 137 };
+      return s.home;
+    };
+    expect(await relocate(request, p)).toMatchObject({ ok: true, value: { home: { machineId: destination, epoch: 9 } } });
+    expect(s.homesWritten[0]).toMatchObject({ machineId: source, state: "moving", epoch: 8 });
+    expect(s.processes).toEqual(new Set([destination]));
   });
 });

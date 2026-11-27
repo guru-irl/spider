@@ -127,6 +127,8 @@ export interface RelocatePorts extends SessionMachinePorts {
   newMoveId(): RelocateId;
   withSession<T>(sessionId: SessionId, run: () => Promise<T>): Promise<T>;
   initialSource(sessionId: SessionId): Promise<V0Result<MachineId>>;
+  // lane 3: home-C2
+  initialEpoch?(sessionId: SessionId): number;
   check(request: RelocateRequest, source: SettledHome, moveId: RelocateId): Promise<V0Result<RelocatePlan>>;
   stopSource(plan: RelocatePlan, moving: MovingHome): Promise<V0Result<void>>;
   pullSource(plan: RelocatePlan): Promise<V0Result<CapturedSession>>;

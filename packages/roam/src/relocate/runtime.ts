@@ -99,12 +99,19 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
       },
     }};
     const adapters=createRelocateAdapters(options);
+    const relocatePorts = {
+      ...adapters.ports,
+      initialEpoch(sessionId: string) {
+        const legacy = core.db.prepare("SELECT epoch FROM session_homes WHERE session_id=? AND state IS NULL").get(sessionId) as { epoch: number } | undefined;
+        return legacy?.epoch ?? 1;
+      },
+    };
     let closing:Promise<void>|undefined;
     const revokedDestination = { ok: false, refusal: { code: "machine-revoked", message: "The destination machine was forgotten.", nextStep: "Choose another configured machine or the Mac." } } as const;
     return {options,adapters,homes,sync,services:{
       async relocate(request) {
         if (forgotten(request.destinationMachine)) return { ...revokedDestination, step: "check", home: null, moveId: null };
-        return relocate(request,adapters.ports);
+        return relocate(request,relocatePorts);
       },
       async setHome(request) {
         if (forgotten(request.destinationMachine)) return revokedDestination;

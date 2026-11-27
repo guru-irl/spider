@@ -296,8 +296,9 @@ interface DriverBase {
   link: RelaySoakRunLink; clock: Clock; signal: AbortSignal; startMs: number; endMs: number;
   rssAllowanceBytes: number; process: BirthIdentity; emit(record: RelaySoakRecord): void;
 }
+export interface RelaySoakReceiptSink { receive(id: string): Promise<void> }
 export interface RelaySoakDialOptions extends DriverBase {
-  relay: RelayPeer; peer: Peer; transport: Pick<Transport, "resolve" | "exec">; rssBytes(): number;
+  relay: RelayPeer; peer: Peer; transport: Pick<Transport, "resolve" | "exec">; rssBytes(): number; sink?: RelaySoakReceiptSink;
 }
 export interface RelaySoakSubmitOptions extends DriverBase {
   submit(relayId: string, value: RelaySubmit, signal: AbortSignal): Promise<RelayResult>;
@@ -314,6 +315,7 @@ function runRecord(options: DriverBase, role: SoakRun["role"]): void {
 /** Drive the real carrier; the sink records a receipt independently of the broker outcome. */
 export async function runRelaySoakDial(options: RelaySoakDialOptions): Promise<void> {
   const { link, relay, peer, transport, clock, signal, emit } = options;
+  const sink = options.sink ?? { async receive(id: string) { emit({ type: "receipt", linkId: link.id, id, atMs: clock.now() }); } };
   runRecord(options, "dial");
   let cancelRss = () => {};
   const sampleRss = () => {
@@ -347,8 +349,7 @@ export async function runRelaySoakDial(options: RelaySoakDialOptions): Promise<v
             target.selector.by !== pin.selector.by || target.selector.value !== pin.selector.value) {
           return { type: "result", messageId: id, attempted: false, outcome: { kind: "refused", code: "unauthorized" } };
         }
-        // This is the sink's own observation, not an inference from the returned result.
-        emit({ type: "receipt", linkId: link.id, id, atMs: clock.now() });
+        await sink.receive(id);
         return { type: "result", messageId: id, attempted: true, outcome: { kind: "socket_delivered", id } };
       },
     });

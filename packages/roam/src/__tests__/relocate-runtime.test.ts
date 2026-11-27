@@ -41,6 +41,20 @@ describe("v0 local runtime",()=>{
   expect(env.NODE_OPTIONS).toBeUndefined();expect(env.HC_TERMINAL_ID).toBeUndefined();
   expect(env.AUTH_TOKEN).toBe("local-auth");expect(env.PI_CODING_AGENT_DIR).toBeTruthy();
  });
+ it("resolves live process identity from terminal details when summaries omit pid",async()=>{
+  const f=runtimeFixture();
+  vi.spyOn(hcApi,"invokeCli").mockImplementation(async(_binary,argv)=>{
+    if(argv[0]==="ls")return {terminals:[{address:"core:t",state:"live",agent:"pi"}]};
+    if(argv[0]==="get" && argv[1]==="core:t")return {address:"core:t",state:"live",pid:42};
+    throw new Error("unexpected native request");
+  });
+  expect(await createLocalIO(f.options).terminals(id)).toEqual([{terminal:"core:t",state:"live",pid:42}]);
+ });
+ it.each([{address:"other:t",state:"live",pid:42},{address:"core:t",state:"live",pid:-1},{address:"core:t",state:"finished",pid:42}])("refuses changed live terminal details %j",async detail=>{
+  const f=runtimeFixture();
+  vi.spyOn(hcApi,"invokeCli").mockImplementation(async(_binary,argv)=>argv[0]==="ls"?{terminals:[{address:"core:t",state:"live"}]}:detail);
+  await expect(createLocalIO(f.options).terminals(id)).rejects.toThrow();
+ });
  it("detached exact-file launch uses the destination environment",async()=>{
   const f=runtimeFixture(),pi=join(f.options.root,"pi");writeFileSync(pi,"#!/bin/sh\n",{mode:0o700});
   vi.stubEnv("SPIDER_ROAM_PI",pi);vi.stubEnv("HC_TERMINAL_ID","inherited");vi.stubEnv("HC_SESSION","foreign");vi.stubEnv("HC_SOCKET","/foreign.sock");vi.stubEnv("SPIDER_HERDR_LEASE_TOKEN","fake-lease");vi.stubEnv("SPIDER_HERDR_HANDOFF_FILE","/foreign-handoff");vi.stubEnv("SPIDER_GLOBAL_ROOT","/foreign-root");vi.stubEnv("AUTH_TOKEN","synthetic-secret");

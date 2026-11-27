@@ -5,7 +5,8 @@
 // override keys are preserved; conflicts and unsupported fields stop migration.
 // A dated snapshot permits additions but never migration. Dry-run by default;
 // --write backs up models.json before migration and is idempotent.
-import { readFileSync, writeFileSync, existsSync, copyFileSync, constants, accessSync, realpathSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, copyFileSync, constants, accessSync, realpathSync, statSync, openSync, closeSync, fchmodSync, renameSync, unlinkSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import https from "node:https";
@@ -154,6 +155,22 @@ function synth(m) {
   return entry;
 }
 
+function writeModelsAtomically(content) {
+  const mode = existsSync(MODELS_PATH) ? statSync(MODELS_PATH).mode & 0o7777 : undefined;
+  const temp = `${MODELS_PATH}.tmp-${process.pid}-${randomUUID()}`;
+  const fd = openSync(temp, "wx", mode ?? 0o666);
+  try {
+    try {
+      writeFileSync(fd, content, "utf8");
+      if (mode !== undefined) fchmodSync(fd, mode);
+    } finally { closeSync(fd); }
+    renameSync(temp, MODELS_PATH);
+  } catch (error) {
+    try { unlinkSync(temp); } catch {}
+    throw error;
+  }
+}
+
 function previewOverride(override) {
   const preview = {};
   const levels = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -287,7 +304,7 @@ async function main() {
     for (const m of migrations) gh.modelOverrides = { ...gh.modelOverrides, [m.id]: m.override };
   }
   gh.models.push(...synthed);
-  writeFileSync(MODELS_PATH, JSON.stringify(mj, null, 2) + "\n", "utf8");
+  writeModelsAtomically(JSON.stringify(mj, null, 2) + "\n");
   console.log(`[sync-copilot-models] wrote ${synthed.length} addition(s) and ${migrations.length} migration(s) to ${MODELS_PATH}`);
 }
 main().catch((e) => fail(e.message || String(e)));

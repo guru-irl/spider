@@ -77,8 +77,14 @@ it("production lookup reads v0 homes without legacy admission",async()=>{
     writeFileSync(join(f.root,"roam","config.json"),JSON.stringify(config),{mode:0o600});
     const homes=createHomeStore({db,localMachineId:local,hubMachineId:local});
     const running=await homes.initialize(id,local);
+    writeLocal(db,"relocate-managed",id,{synthetic:true});
+    const damaged = `${id}-damaged` as SessionId;
+    db.prepare("INSERT INTO roam_cursors(peer_machine,peer_stream,last_seq) VALUES ('',?,0)")
+      .run(`spider-local:relocate-managed:[${JSON.stringify(damaged)},`);
+    expect(await loadRelocateAdmission("unrelated" as SessionId,f.root)).toEqual({kind:"unmanaged"});
+    expect(await loadRelocateAdmission(damaged,f.root)).toMatchObject({kind:"managed",home:null});
     expect(await loadRelocateAdmission(id,f.root)).toEqual({kind:"managed",home:running});
-    writeLocal(db,"relocate-managed",id,{synthetic:true});db.prepare("DELETE FROM session_homes WHERE session_id=?").run(id);
+    db.prepare("DELETE FROM session_homes WHERE session_id=?").run(id);
     expect(await loadRelocateAdmission(id,f.root)).toEqual({kind:"managed",home:null});
     const unreadableRoot = join(f.root, "unreadable");
     mkdirSync(unreadableRoot);

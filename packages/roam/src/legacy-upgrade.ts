@@ -5,7 +5,7 @@ import type { Db } from "@spider/db-core";
 import { storeScope } from "@spider/db-core/roam/codec";
 import { FENCE_MACHINE, FENCE_STREAM, FENCE_TARGET } from "@spider/db-core/roam/apply";
 import { localEntries, readLocal } from "@spider/db-core/roam/local-state";
-import { mappingRedirect, openRoamPathReadOnly, openRoamStoreReadOnly, roamStorePath } from "@spider/db-core/roam/reads";
+import { mappingRedirect, openRoamPathReadOnly, openRoamStoreReadOnly, roamStorePath, type RoamCatalog } from "@spider/db-core/roam/reads";
 import { processStartIdentity } from "@spider/herdr/jobs/handoff";
 import { inspectIdLock, listPendingIdLocks, localBootId } from "@spider/herdr/sessions/id-lock";
 import { createSessionLeases, type ProcessProbe } from "@spider/herdr/sessions/lease";
@@ -272,6 +272,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
     } finally { db.close(); }
     const global = snapshot(join(root, "spider.db"));
     if (!global && config) throw new Error("Missing global store");
+    let globalOpen = !!global;
     if (global) try {
       const meta = global.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id?: unknown; store_key?: unknown } | undefined;
       if (!meta || !isMachineId(meta.machine_id) || config && meta.machine_id !== config.machineId || !(meta.store_key === null || meta.store_key === "global")) throw new Error("Global store identity mismatch");
@@ -348,6 +349,8 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
         if (ownedByV0) v0Maps.add(map.store_key);
         else findings.push(`map store ${safeId(map.store_key)}`);
       }
+      type FrozenRow = { session_id: string; epoch: number; move_id: string | null; freeze_seq: number | null };
+      const frozenRows: Array<{ key: string; row: FrozenRow }> = [];
       const inspectFrozen = (store: Db, key: string): void => {
         const identity = store.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id?: unknown; store_key?: unknown } | undefined;
         if (!identity || identity.machine_id !== meta.machine_id || !(identity.store_key === key || identity.store_key === null)) throw new Error("Store identity mismatch");
@@ -356,28 +359,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
         for (const row of rows) {
           if (typeof row.session_id !== "string" || !row.session_id || !Number.isSafeInteger(row.epoch) ||
               !(row.move_id === null || typeof row.move_id === "string") || !(row.freeze_seq === null || Number.isSafeInteger(row.freeze_seq))) throw new Error("Invalid frozen membership");
-          const label = `frozen session ${safeId(row.session_id)} store ${safeId(key)}`;
-          if (row.move_id && activeFreezes.has(JSON.stringify([row.session_id, row.move_id]))) { findings.push(label); continue; }
-          if (row.move_id !== null || row.freeze_seq !== null) {
-            if (row.move_id === null || row.freeze_seq === null || !completedFreezes.has(JSON.stringify([row.session_id, row.move_id]))) {
-              unknown.push(`${label} freeze record unavailable`); continue;
-            }
-          }
-          const home = global.prepare("SELECT session_id,machine_id,epoch,move_id,updated_at,state,destination FROM session_homes WHERE session_id=?").get(row.session_id) as
-            { session_id: string; machine_id: string; epoch: number; move_id: string | null; updated_at: number; state: string | null; destination: string | null } | undefined;
-          if ((!home || home.state === null) && config && v0.some(evidence => {
-            const plan = evidence.plan;
-            if (evidence.origin !== "incoming" || evidence.expectedKey !== key || plan.source.sessionId !== row.session_id ||
-                plan.destinationPlacement.machineId !== config.machineId || ![plan.source.epoch, plan.source.epoch + 1].includes(row.epoch as number)) return false;
-            const pointer = readLocal<unknown>(global, "relocate-incoming", key);
-            return !!pointer && typeof pointer === "object" && !Array.isArray(pointer) && (pointer as Record<string, unknown>).moveId === plan.moveId;
-          })) continue;
-          if (home && home.state !== null) {
-            const parsed = v0Home({ sessionId: home.session_id, machineId: home.machine_id, epoch: home.epoch, moveId: home.move_id,
-              updatedAt: home.updated_at, state: home.state, destination: home.destination });
-            if (parsed.state !== "moving" || v0.some(evidence => evidence.plan.moveId === parsed.moveId && evidence.plan.source.sessionId === row.session_id)) continue;
-          }
-          unknown.push(`${label} freeze record unavailable`);
+          frozenRows.push({ key, row: row as FrozenRow });
         }
       };
       const inspectedWorktrees = new Set<string>();
@@ -393,6 +375,21 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
           : global.prepare("SELECT 1 FROM roam_repo_maps WHERE repo_key=?").get(redirect.key.slice(5));
         if (!mapped || !present(redirect.value)) unknown.push(`map redirect store ${safeId(redirect.key)} unavailable`);
       }
+      const projects = global.prepare("SELECT project_key,db_path,git_common_dir FROM projects ORDER BY project_key").all() as
+        Array<{ project_key: string; db_path: string; git_common_dir: string | null }>;
+      for (const project of projects) if (typeof project.project_key !== "string" || typeof project.db_path !== "string" ||
+          !isAbsolute(project.db_path) || resolve(project.db_path) !== project.db_path ||
+          !(project.git_common_dir === null || typeof project.git_common_dir === "string" && isAbsolute(project.git_common_dir) && resolve(project.git_common_dir) === project.git_common_dir))
+        throw new Error("Invalid project registration");
+      const prefix = "spider-local:mapping-redirect:";
+      const catalog: RoamCatalog = {
+        globalPath: join(root, "spider.db"), machine: meta.machine_id, projects,
+        repos: global.prepare("SELECT repo_key,path FROM roam_repo_maps").all() as RoamCatalog["repos"],
+        worktrees: global.prepare("SELECT repo_key,workspace_id,path FROM roam_workspace_maps").all() as RoamCatalog["worktrees"],
+        redirects: global.prepare("SELECT peer_stream FROM roam_cursors WHERE peer_machine='' AND substr(peer_stream,1,?)=?")
+          .all(prefix.length, prefix) as RoamCatalog["redirects"],
+      };
+      global.close(); globalOpen = false;
       const replicaDir = join(root, "roam", "stores");
       if (present(replicaDir)) {
         const stat = lstatSync(replicaDir);
@@ -410,7 +407,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
           } finally { replica.close(); }
         }
       }
-      const keys = listStoreKeys(global, storeOptions);
+      const keys = listStoreKeys(catalog, storeOptions);
       for (const key of requiredFreezeStores) if (!keys.includes(key as (typeof keys)[number])) unknown.push(`freeze store ${safeId(key)} unavailable`);
       for (const key of keys) {
         if (key !== "global") {
@@ -430,9 +427,9 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
                     typeof target.inode !== "string" || typeof target.clearOnCancel !== "boolean") throw new Error("Invalid replica fence target");
               }
               if (fence || hint !== undefined) {
-                const at = key.lastIndexOf(":"), published = mappingRedirect(global, key) !== null || (key.startsWith("worktree:")
-                  ? global.prepare("SELECT 1 FROM roam_workspace_maps WHERE repo_key=? AND workspace_id=?").get(key.slice(9, at), key.slice(at + 1))
-                  : global.prepare("SELECT 1 FROM roam_repo_maps WHERE repo_key=?").get(key.slice(5)));
+                const at = key.lastIndexOf(":"), published = mappingRedirect(catalog, key) !== null || (key.startsWith("worktree:")
+                  ? catalog.worktrees.some(row => row.repo_key === key.slice(9, at) && row.workspace_id === key.slice(at + 1))
+                  : catalog.repos.some(row => row.repo_key === key.slice(5)));
                 if (!published && !v0Maps.has(key)) findings.push(`map fence store ${safeId(key)}`);
               }
               if (key.startsWith("worktree:")) { inspectFrozen(replica, key); inspectedWorktrees.add(file); }
@@ -440,16 +437,13 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
           }
         }
         if (!key.startsWith("worktree:")) continue;
-        const file = roamStorePath(global, key, storeOptions);
+        const file = roamStorePath(catalog, key, storeOptions);
         if (inspectedWorktrees.has(file) || !present(file)) continue;
-        const store = openRoamStoreReadOnly(global, key, storeOptions);
+        const store = openRoamStoreReadOnly(catalog, key, storeOptions);
         if (!store) { unknown.push(`store ${safeId(key)} unavailable`); continue; }
         try { inspectFrozen(store, key); inspectedWorktrees.add(file); } finally { store.close(); }
       }
-      const projects = global.prepare("SELECT project_key,db_path FROM projects ORDER BY project_key").all() as Array<{ project_key: unknown; db_path: unknown }>;
       for (const project of projects) {
-        if (typeof project.project_key !== "string" || typeof project.db_path !== "string" || !isAbsolute(project.db_path) || resolve(project.db_path) !== project.db_path)
-          throw new Error("Invalid project registration");
         if (inspectedWorktrees.has(project.db_path)) continue;
         const store = openRoamPathReadOnly(project.db_path, snapshot);
         if (!store) { unknown.push(`project ${safeId(project.project_key)} store unavailable`); continue; }
@@ -465,7 +459,37 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
         } finally { store.close(); }
       }
       if (storeProblem) unknown.push("registered store or replica unavailable");
-    } finally { global.close(); }
+      if (frozenRows.length) {
+        const homes = snapshot(join(root, "spider.db"));
+        if (!homes) throw new Error("Global store disappeared");
+        try {
+          for (const { key, row } of frozenRows) {
+            const label = `frozen session ${safeId(row.session_id)} store ${safeId(key)}`;
+            if (row.move_id && activeFreezes.has(JSON.stringify([row.session_id, row.move_id]))) { findings.push(label); continue; }
+            if (row.move_id !== null || row.freeze_seq !== null) {
+              if (row.move_id === null || row.freeze_seq === null || !completedFreezes.has(JSON.stringify([row.session_id, row.move_id]))) {
+                unknown.push(`${label} freeze record unavailable`); continue;
+              }
+            }
+            const home = homes.prepare("SELECT session_id,machine_id,epoch,move_id,updated_at,state,destination FROM session_homes WHERE session_id=?").get(row.session_id) as
+              { session_id: string; machine_id: string; epoch: number; move_id: string | null; updated_at: number; state: string | null; destination: string | null } | undefined;
+            if ((!home || home.state === null) && config && v0.some(evidence => {
+              const plan = evidence.plan;
+              if (evidence.origin !== "incoming" || evidence.expectedKey !== key || plan.source.sessionId !== row.session_id ||
+                  plan.destinationPlacement.machineId !== config.machineId || ![plan.source.epoch, plan.source.epoch + 1].includes(row.epoch)) return false;
+              const pointer = readLocal<unknown>(homes, "relocate-incoming", key);
+              return !!pointer && typeof pointer === "object" && !Array.isArray(pointer) && (pointer as Record<string, unknown>).moveId === plan.moveId;
+            })) continue;
+            if (home && home.state !== null) {
+              const parsed = v0Home({ sessionId: home.session_id, machineId: home.machine_id, epoch: home.epoch, moveId: home.move_id,
+                updatedAt: home.updated_at, state: home.state, destination: home.destination });
+              if (parsed.state !== "moving" || v0.some(evidence => evidence.plan.moveId === parsed.moveId && evidence.plan.source.sessionId === row.session_id)) continue;
+            }
+            unknown.push(`${label} freeze record unavailable`);
+          }
+        } finally { homes.close(); }
+      }
+    } finally { if (globalOpen) global.close(); }
     const stateRoot = join(root, "herdr"), pending = await pendingHandoffs(stateRoot);
     for (const handoff of pending) {
       const label = `handoff session ${safeId(handoff.sessionId)} operation ${safeId(handoff.operationId)}`;

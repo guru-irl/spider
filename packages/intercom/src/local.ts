@@ -2499,9 +2499,15 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
   pi.registerTool(defineTool({
     name: "intercom",
     label: "Intercom",
-    description: `Send a message to another pi session running on this machine.
+    description: `Send a message to another pi session ${v0 ? "on this machine or a configured roaming peer" : "running on this machine"}.
 Use this to communicate findings, request help, or coordinate work with other sessions.
-
+${v0 ? `
+For roaming v0, list is local only. Use a peer/name or full session ID for a remote target.
+Remote sends, asks, and replies are text only and are not queued. Use reply for an incoming ask.
+${V0_MAC_REPLY_ONLY_MESSAGE}
+A remote ask uses the configured timeout up to the v0 cap. If the result is no_reply or unknown,
+check the recipient before sending again; neither proves delivery.
+` : ""}
 Target a session by name, full session ID, or the short id shown in parentheses
 by "list" (a leading prefix of the ID is enough). Prefer the short id when two
 sessions share a name. Re-list before reusing a session ID; skip if it resolves to self.
@@ -2517,8 +2523,9 @@ Usage:
   intercom({ action: "reply", message: "..." })                      → Reply to the active/single pending ask
   intercom({ action: "pending" })                                      → List unresolved inbound asks
   intercom({ action: "status" })                  → Show connection status`,
-    promptSnippet:
-      "Use to coordinate with other local pi sessions: list peers, send updates, ask for help, or check intercom connectivity.",
+    promptSnippet: v0
+      ? "Use to coordinate with local pi sessions or named roaming peers: send updates, ask for help, or check intercom connectivity."
+      : "Use to coordinate with other local pi sessions: list peers, send updates, ask for help, or check intercom connectivity.",
 
     parameters: Type.Object({
       action: Type.Enum(["list", "list-cwd", "send", "ask", "reply", "pending", "status", "cancel"] as const, {
@@ -2526,7 +2533,7 @@ Usage:
         description: "Action: 'list', 'list-cwd', 'send', 'ask', 'reply', 'pending', 'status', or 'cancel'",
       }),
       to: Type.Optional(Type.String({
-        description: "Target session: name, full session ID, or the short id shown in parentheses by 'list' (a leading ID prefix resolves). For send/ask with cwd, omit to target the sole live session in that cwd or the newly opened project-pane session. For 'reply', disambiguates the pending ask.",
+        description: `Target session: name, full session ID, or the short id shown in parentheses by 'list' (a leading ID prefix resolves). For send/ask with cwd, omit to target the sole live session in that cwd or the newly opened project-pane session. For 'reply', disambiguates the pending ask.${v0 ? " For roaming v0, use a configured peer/name or a full session ID; list shows local sessions only." : ""}`,
       })),
       message: Type.Optional(Type.String({
         description: "Message to send (for 'send', 'ask', or 'reply' action)",

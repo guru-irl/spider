@@ -216,6 +216,22 @@ it.each([true, false])("lists remote federation sessions only when v0 is disable
   } finally { list.mockRestore(); await f.cleanup(); }
 });
 
+it("advertises configured roaming targets and their text-only limits in the tool help", async () => {
+  const f = await fixture({ homeEpoch: () => 7, prepare: async () => ({ kind: "legacy" }) });
+  try {
+    const tool = f.tool as any;
+    expect(tool.description).toContain("configured roaming peer");
+    expect(tool.description).toContain("text only");
+    expect(tool.description).toContain("list is local only");
+    expect(tool.promptSnippet).toContain("roaming");
+  } finally { await f.cleanup(); }
+  const local = await fixture();
+  try {
+    expect((local.tool as any).description).not.toContain("configured roaming peer");
+    expect((local.tool as any).promptSnippet).not.toContain("roaming");
+  } finally { await local.cleanup(); }
+});
+
 it("sends by name and reports socket dispatch, not consumption", async () => {
   const sent: V0Text[] = [];
   const prepare: V0Prepare = async () => ({

@@ -381,6 +381,15 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
       let storeProblem = false;
       const storeOptions = { globalPath: join(root, "spider.db"), open: snapshot,
         onProblem: () => { storeProblem = true; }, onIncomplete: () => { storeProblem = true; } };
+      for (const redirect of localEntries<unknown>(global, "mapping-redirect")) {
+        const scope = storeScope(redirect.key);
+        if (scope === "global" || typeof redirect.value !== "string" || !isAbsolute(redirect.value) || resolve(redirect.value) !== redirect.value)
+          throw new Error("Invalid mapping redirect");
+        const at = redirect.key.lastIndexOf(":"), mapped = scope === "worktree"
+          ? global.prepare("SELECT 1 FROM roam_workspace_maps WHERE repo_key=? AND workspace_id=?").get(redirect.key.slice(9, at), redirect.key.slice(at + 1))
+          : global.prepare("SELECT 1 FROM roam_repo_maps WHERE repo_key=?").get(redirect.key.slice(5));
+        if (!mapped || !present(redirect.value)) unknown.push(`map redirect store ${safeId(redirect.key)} unavailable`);
+      }
       const replicaDir = join(root, "roam", "stores");
       if (present(replicaDir)) {
         const stat = lstatSync(replicaDir);

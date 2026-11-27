@@ -2906,6 +2906,9 @@ Usage:
                     return { content: [{ type: "text", text: "Remote intercom supports text only; cwd, attachments, reply, retry, and pane options are unavailable." }],
                       details: { error: true, code: "unsupported" } };
                   }
+                  if (config.confirmSend && ctx.hasUI && !(await ctx.ui.confirm("Send message", `Send to "${plan.label}":\n\n${message}`))) {
+                    return { content: [{ type: "text", text: "Message cancelled by user" }], details: {} };
+                  }
                   questionId = randomUUID();
                   const question = { id: questionId, timestamp: Date.now(), text: message };
                   const result = await plan.ask(question, Math.min(askTimeoutMs, V0_ASK_MAX_MS), _signal);

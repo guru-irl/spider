@@ -139,6 +139,21 @@ it("reports a remote ask timeout or lost call without resending", async () => {
   }
 });
 
+it("does not dispatch a remote ask when confirmation is refused", async () => {
+  const questions: V0Text[] = [];
+  const prepare: V0Prepare = async () => ({
+    kind: "remote", label: "b/ben",
+    async send(message) { return { kind: "socket_delivered", id: message.id }; },
+    async ask(message) { questions.push(message); return { kind: "no_reply", id: message.id }; },
+  });
+  const f = await fixture({ homeEpoch: () => 7, prepare }, { confirm: async () => false });
+  try {
+    const result = await f.tool.execute("ask", { action: "ask", to: "ben", message: "private text" }, new AbortController().signal, undefined, f.ctx);
+    expect(result.content[0].text).toBe("Message cancelled by user");
+    expect(questions).toEqual([]);
+  } finally { await f.cleanup(); }
+});
+
 it("does not send when confirmation finishes in a different session", async () => {
   const sent: V0Text[] = [];
   let finish!: (value: boolean) => void;

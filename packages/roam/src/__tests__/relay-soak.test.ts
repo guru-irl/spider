@@ -475,6 +475,39 @@ describe("the opt-in soak drivers", () => {
     expect(JSON.stringify(records)).not.toContain("relay-soak");
   });
 
+  it("does not claim delivery when the independent receipt sink fails", async () => {
+    const controller = new AbortController(), records: RelaySoakRecord[] = [], polls: RelayPoll[] = [];
+    const submit: RelaySubmit = { type: "submit", kind: "send", from: fixtureLink.from, target: fixtureLink.target,
+      message: { id: "sink-failed", timestamp: 1, text: "relay-soak" } };
+    let completed!: () => void;
+    const resultSeen = new Promise<void>(resolve => { completed = resolve; });
+    let held = 0;
+    const transport = {
+      async resolve(peer: Peer) { return peer; },
+      async exec(_peer: Peer, argv: readonly string[], options: { stdin?: Buffer; signal?: AbortSignal }) {
+        const poll = decodeRelayPoll(options.stdin!, Number(argv.at(-1)) as 0 | 20000);
+        polls.push(poll);
+        if (poll.holdMs === 20_000 && held++ === 0) return reply(poll, [submit]);
+        if (poll.holdMs === 0) { completed(); return reply(poll); }
+        return new Promise<Buffer>((_resolve, reject) => {
+          if (options.signal?.aborted) reject(new Error("aborted"));
+          else options.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+      },
+    };
+    const run = runRelaySoakDial({ link: fixtureLink, relay: { machineId: RELAY, alias: "relay.invalid" }, peer: fixturePeer,
+      transport, clock: realClock, signal: controller.signal, startMs: START, endMs: END, rssAllowanceBytes: ALLOWANCE,
+      process: fixtureProcess, emit: event => records.push(event), rssBytes: () => 100_000_000,
+      sink: { async receive() { throw new Error("sink failed"); } } });
+    await resultSeen;
+    controller.abort();
+    await run;
+    expect(polls.find(poll => poll.holdMs === 0)!.results).toMatchObject([
+      { messageId: "sink-failed", attempted: true, outcome: { kind: "unknown", id: "sink-failed" } },
+    ]);
+    expect(records.filter(event => event.type === "receipt")).toEqual([]);
+  });
+
   it("refuses a non-fixture message instead of recording a sink receipt", async () => {
     const controller = new AbortController(), records: RelaySoakRecord[] = [], polls: RelayPoll[] = [];
     const foreign: RelaySubmit = { type: "submit", kind: "send", from: fixtureLink.from, target: fixtureLink.target,

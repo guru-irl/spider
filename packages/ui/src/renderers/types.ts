@@ -170,7 +170,7 @@ export type TodoChecklistDetails =
   | { kind: "item"; item: TodoItemView }
   | { kind: "removed"; item: TodoItemView; sessionName?: string }
   | { kind: "cleared"; removed: number; kept?: number }
-  | { kind: "list"; groups: { label?: string; items: TodoItemView[] }[] }
+  | { kind: "list"; groups: { label?: string; current?: boolean; items: TodoItemView[] }[] }
   | { kind: "sessions"; sessions: { label: string; done: number; total: number; current: boolean }[] };
 export interface RunView { runId: string; name: string; role?: string; status: string; model?: string; steps: number; tokens: number; phase?: string; }
 export interface RunResultDetails { runs: RunView[]; pipeline: { from: string; to: string; phase?: string }[]; }

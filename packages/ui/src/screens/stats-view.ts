@@ -1,3 +1,4 @@
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { ThemeAdapter } from "../agents/types.js";
 import type { StatsSummary } from "./stats-collect.js";
 import { renderTable } from "../components/table.js";
@@ -23,14 +24,18 @@ export function renderStats(s: StatsSummary, theme: ThemeAdapter, width: number,
   }
   if (s.models.length) {
     body.push(indent + sectionRule(theme, "models", contentWidth));
-    body.push(...renderTable(theme, {
-      columns: [
-        { header: "model" }, { header: "calls", align: "right" }, { header: "ok%", align: "right" },
-        { header: "avgms", align: "right" }, { header: "tok", align: "right" },
-      ],
-      rows: s.models.map((m) => [m.model, String(m.calls), `${Math.round(m.okRate * 100)}`, String(m.avgMs), String(m.tokens)]),
-      width: transcript && expanded ? Number.MAX_SAFE_INTEGER : contentWidth,
-    }, expanded).map(row => indent + row));
+    const columns = [
+      { header: "model" }, { header: "calls", align: "right" as const }, { header: "ok%", align: "right" as const },
+      { header: "avgms", align: "right" as const }, { header: "tok", align: "right" as const },
+    ];
+    let rows = s.models.map((m) => [m.model, String(m.calls), `${Math.round(m.okRate * 100)}`, String(m.avgMs), String(m.tokens)]);
+    if (transcript) {
+      const metricsWidth = columns.slice(1).reduce((sum, column, index) =>
+        sum + Math.max(visibleWidth(column.header), ...rows.map(row => visibleWidth(row[index + 1]))), 0);
+      const modelWidth = Math.max(1, contentWidth - metricsWidth - (columns.length - 1));
+      rows = rows.map(([model, ...metrics]) => [truncateToWidth(model, modelWidth, "…"), ...metrics]);
+    }
+    body.push(...renderTable(theme, { columns, rows, width: contentWidth }, expanded && !transcript).map(row => indent + row));
   }
   return fitResultLines(body, width, expanded, transcript ? 3 : undefined);
 }

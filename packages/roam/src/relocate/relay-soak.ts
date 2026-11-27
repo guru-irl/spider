@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { constants, readFileSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { processStartIdentity } from "@spider/herdr/jobs/handoff";
@@ -359,7 +360,7 @@ interface DriverBase {
 }
 export interface RelaySoakReceiptSink { receive(id: string): Promise<void> }
 export interface RelaySoakDialOptions extends DriverBase {
-  relay: RelayPeer; peer: Peer; transport: Pick<Transport, "resolve" | "exec">; rssBytes(): number; sink?: RelaySoakReceiptSink;
+  relay: RelayPeer; peer: Peer; transport: Pick<Transport, "resolve" | "exec">; rssBytes(): number; sink: RelaySoakReceiptSink;
 }
 export interface RelaySoakSubmitOptions extends DriverBase {
   submit(relayId: string, value: RelaySubmit, signal: AbortSignal): Promise<RelayResult>;
@@ -375,8 +376,7 @@ function runRecord(options: DriverBase, role: SoakRun["role"]): void {
 
 /** Drive the real carrier; the sink records a receipt independently of the broker outcome. */
 export async function runRelaySoakDial(options: RelaySoakDialOptions): Promise<void> {
-  const { link, relay, peer, transport, clock, signal, emit } = options;
-  const sink = options.sink ?? { async receive(id: string) { emit({ type: "receipt", linkId: link.id, id, atMs: clock.now() }); } };
+  const { link, relay, peer, transport, clock, signal, emit, sink } = options;
   runRecord(options, "dial");
   let cancelRss = () => {};
   const sampleRss = () => {
@@ -517,7 +517,9 @@ export async function runRelaySoakBurst(options: RelaySoakBurstOptions): Promise
 
 export interface RelaySoakManifest {
   startMs: number; endMs: number; rssAllowanceBytes: number;
-  links: readonly (Pick<RelaySoakLinkEvidence, "id" | "topology" | "relayId" | "peerId" | "clock"> & { recordFiles: readonly string[] })[];
+  links: readonly (Pick<RelaySoakLinkEvidence, "id" | "topology" | "relayId" | "peerId" | "clock"> & {
+    recordFiles: readonly string[]; receiptFile: string;
+  })[];
   faults: readonly RelaySoakFault[]; processes: readonly SoakProcessCensus[];
 }
 const invalidRecord = () => new Error("Invalid soak record");
@@ -543,27 +545,36 @@ function decodeRecord(line: string, linkId: string): RelaySoakRecord {
   return value as unknown as RelaySoakRecord;
 }
 
-/** Join operator observations with the exact NDJSON emitted by each driver process. */
+function* decodeLog(data: string, linkId: string, allowEmpty = false): Generator<RelaySoakRecord> {
+  if (allowEmpty && data === "") return;
+  if (typeof data !== "string" || !data.endsWith("\n")) throw invalidRecord();
+  for (const line of data.slice(0, -1).split("\n")) {
+    if (!line || Buffer.byteLength(line) > 8192) throw invalidRecord();
+    yield decodeRecord(line, linkId);
+  }
+}
+
+/** Join operator observations, driver logs, and the independent receipt files. */
 export function assembleRelaySoak(manifest: RelaySoakManifest, readRecords: (path: string) => string): RelaySoakEvidence {
   if (!object(manifest) || !Array.isArray(manifest.links) || !Array.isArray(manifest.faults) || !Array.isArray(manifest.processes)) throw invalidRecord();
   const links: RelaySoakLinkEvidence[] = manifest.links.map(input => {
-    if (!object(input) || !text(input.id) || !entries(input.recordFiles, text)) throw invalidRecord();
+    if (!object(input) || !text(input.id) || !entries(input.recordFiles, text) || !text(input.receiptFile)) throw invalidRecord();
     const runs: SoakRun[] = [], submissions: SoakSubmission[] = [], handoffs: SoakEvent[] = [], receipts: SoakEvent[] = [];
     const outcomes: SoakOutcomeEvent[] = [], stateEvents: SoakStateEvent[] = [], relayStates: SoakStateEvent[] = [];
     const rss: SoakRss[] = [], calls: SoakCall[] = [];
     const open = new Map<string, Extract<RelaySoakRecord, { type: "poll-start" | "poll-end" }>>();
     const seen = new Set<string>();
+    for (const record of decodeLog(readRecords(input.receiptFile), input.id, true)) {
+      if (record.type !== "receipt") throw invalidRecord();
+      receipts.push(record);
+    }
     for (const path of input.recordFiles as string[]) {
-      const data = readRecords(path);
-      if (typeof data !== "string" || !data.endsWith("\n")) throw invalidRecord();
-      for (const line of data.slice(0, -1).split("\n")) {
-        if (!line || Buffer.byteLength(line) > 8192) throw invalidRecord();
-        const record = decodeRecord(line, input.id);
+      for (const record of decodeLog(readRecords(path), input.id)) {
         switch (record.type) {
           case "run": runs.push(record); break;
           case "submission": submissions.push(record); break;
           case "handoff": handoffs.push(record); break;
-          case "receipt": receipts.push(record); break;
+          case "receipt": throw invalidRecord();
           case "outcome": outcomes.push(record); break;
           case "state": stateEvents.push(record); break;
           case "rss": rss.push(record); break;
@@ -668,10 +679,10 @@ export async function relaySoakMain(args: readonly string[], io: RelaySoakIo,
     io.out(`${JSON.stringify(result)}\n`);
     return result.ok ? 0 : 1;
   }
-  const dial = args[0] === "dial" && args.length === 3;
+  const dial = args[0] === "dial" && args.length === 4;
   const submit = args[0] === "submit" && (args.length === 3 || args.length === 4 && args[3] === "--burst");
   if (!dial && !submit) {
-    io.err("Usage: relay-soak dial <run-file> <link-id> | submit <run-file> <link-id> [--burst] | check <evidence-file>\n");
+    io.err("Usage: relay-soak dial <run-file> <link-id> <receipt-file> | submit <run-file> <link-id> [--burst] | check <evidence-file>\n");
     return 2;
   }
   try {
@@ -689,8 +700,20 @@ export async function relaySoakMain(args: readonly string[], io: RelaySoakIo,
       const peer = routes.sendTo.find(item => item.machineId === link.peerId), alias = config.intercom.machineAlias ?? link.relayId;
       if (config.machineId !== link.relayId || !routes.linkTo.includes(link.peerId) || !peer || !isV0Alias(alias)) throw new Error("Soak peer is not pinned");
       const transport = overrides.createTransport?.(run.root, routes) ?? createRoamTransport({ ...localHerdrConnection(run.root), enrolled: routes.sendTo });
-      await runRelaySoakDial({ ...common, relay: { machineId: link.relayId, alias }, peer, transport,
-        rssBytes: overrides.rssBytes ?? (() => process.memoryUsage().rss) });
+      const receiptFile = await open(args[3], constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+      try {
+        if (!(await receiptFile.stat()).isFile()) throw new Error("Invalid soak receipt file");
+        await runRelaySoakDial({ ...common, relay: { machineId: link.relayId, alias }, peer, transport,
+          rssBytes: overrides.rssBytes ?? (() => process.memoryUsage().rss),
+          sink: { async receive(id) {
+            const bytes = Buffer.from(JSON.stringify({ type: "receipt", linkId: link.id, id, atMs: clock.now() }) + "\n");
+            // One append per line, even when several deliveries settle together.
+            const { bytesWritten } = await receiptFile.write(bytes);
+            if (bytesWritten !== bytes.length) throw new Error("Incomplete soak receipt");
+            await receiptFile.sync();
+          } },
+        });
+      } finally { await receiptFile.close(); }
     } else {
       if (config.machineId !== link.peerId) throw new Error("Soak origin is not local");
       const submitRelay = overrides.submitRelay ?? submitV0Relay, listRelays = overrides.listRelays ?? listV0RelayLinks;

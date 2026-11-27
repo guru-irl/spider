@@ -402,9 +402,10 @@ expect(() => readV0Routes(v2LinkWithoutSendTo, config)).toThrow();
   Each submit has `deadlineMs` and a `cadence` or `burst` marker. Each fault records its kind, affected
   link IDs, `startMs` and `clearMs`. Include before and after inventories of owned process birth
   identities and timestamped relay RSS samples with a growth allowance fixed in the run file.
-- Produces: opt-in `dist/roam/relay-soak.mjs` with `dial <run-file> <link-id>`,
-  `submit <run-file> <link-id> [--burst]`, and `check <evidence-file>`. `dial` and `submit` emit NDJSON
-  evidence to stdout. The run file supplies the local `root`, the link's `relayId` and `peerId`,
+- Produces: opt-in `dist/roam/relay-soak.mjs` with `dial <run-file> <link-id> <receipt-file>`,
+  `submit <run-file> <link-id> [--burst]`, and `check <evidence-file>`. `dial` appends and syncs receipts
+  in the separate file. Other `dial` and `submit` NDJSON records go to stdout. The run file supplies
+  the local `root`, the link's `relayId` and `peerId`,
   synthetic `from` and `target` pins in `RelaySubmit` form, the shared start time, and the RSS
   allowance. Assemble the evidence file from these records and the operator's fault and process
   observations. `check` exits 0 only for a complete passing run.

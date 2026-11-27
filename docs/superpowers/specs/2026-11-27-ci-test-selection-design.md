@@ -29,16 +29,19 @@ Date: 2026-11-27. Status: draft for the user's approval.
 
 ### Recording on main
 
-- The 12 main test shards run under the recorder from `ci/tia-measure`. It is a `NODE_OPTIONS` preload that
-  records which functions each test process runs, including child processes, worker threads and Spider
-  bundles, which it maps back to source through source maps.
-- Measured overhead is about 1.27× per file, so shards take roughly 290-480 s. The timeout stays at
-  10 minutes.
+- A separate `selection map` workflow runs on every push to main, next to the normal full run:
+  - it runs the suite in six shards under the recorder from `ci/tia-measure`;
+  - the recorder is a `NODE_OPTIONS` preload that records which functions each test process runs,
+    including child processes, worker threads and Spider bundles, which it maps back to source through
+    source maps.
+- The normal 12-shard full run doesn't change, so recorder side effects can't make the miss detector
+  flaky. Public-repo runners cost nothing; the recording takes about 14 minutes and queues behind the
+  full run when runners are busy.
 - The recorded build makes bundles with source maps through an environment switch. Release builds and the
   npm package don't change.
-- A `selection map` job reduces the shard records to one file. For each test file, it lists every source
-  file the test loaded or ran, directly or through a bundle, and the test's duration. The job uploads it as
-  the `selection-map` artifact, kept for 30 days.
+- A final job reduces the shard records to one file. For each test file, it lists every source file the
+  test loaded or ran, directly or through a bundle, and the test's duration. The job uploads it as the
+  `selection-map` artifact, kept for 30 days.
 
 ### Selecting on PRs
 
@@ -95,9 +98,10 @@ same one. The steps:
 - Main checks:
   - `compile`;
   - `test shard 1/12` to `12/12`;
-  - `selection map` and `selection audit`;
+  - `selection audit`;
   - Herdr acceptance, the Chrome parts and stories;
   - the aggregate.
+- The `selection map` workflow's checks: `record 1/6` to `record 6/6`, and `selection map`.
 
 ### Node version
 
@@ -140,8 +144,8 @@ five-runner limit. Roaming's draft #307 owns the stories configuration until it 
 
 ## Rollout
 
-1. **PR A:** the recorder and the selection map on main. PR behaviour doesn't change. Merge it and wait
-   for the first map.
+1. **PR A:** the `selection map` workflow and the recorder. PR behaviour and the main full run don't
+   change. Merge it and wait for the first map.
 2. **PR B:**
    - `pr.yml` with recorded selection, the new names and the audit;
    - flake fixes go in first, as separate PRs;

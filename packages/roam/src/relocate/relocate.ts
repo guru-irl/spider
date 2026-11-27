@@ -64,11 +64,10 @@ const failureCodes: Record<RelocateStep, V0RefusalCode> = {
   "start-destination": "start-pending", confirm: "start-pending",
 };
 
-interface Readiness {
-  clock: Clock;
-  timeoutMs: number;
-  confirmPending?: (home: RunningHome, placement: SessionPlacement) => Promise<V0Result<{terminal:string}>>;
+export interface PendingConfirmationPort {
+  confirmPending(home: RunningHome, placement: SessionPlacement): Promise<V0Result<{terminal:string}>>;
 }
+interface Readiness { clock: Clock; timeoutMs: number }
 
 function waitForConfirmation<T>(attempt: () => Promise<V0Result<T>>, readiness: Readiness, pending: V0Refusal): Promise<V0Result<T>> {
   return new Promise((resolve, reject) => {
@@ -99,7 +98,7 @@ function waitForConfirmation<T>(attempt: () => Promise<V0Result<T>>, readiness: 
 }
 
 /** Hub-only orchestration. All durable state and exclusion belong to the ports. */
-export async function relocate(request: RelocateRequest, ports: RelocatePorts, readiness?: Readiness): Promise<RelocateOutcome> {
+export async function relocate(request: RelocateRequest, ports: RelocatePorts & Partial<PendingConfirmationPort>, readiness?: Readiness): Promise<RelocateOutcome> {
   let home: RelocateHome | null = null;
   let moveId: RelocateId | null = null;
   let step: RelocateStep = "check";
@@ -122,7 +121,7 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts, r
     catch { refuse("journal-unavailable", "The relocation checkpoint could not be saved."); }
   };
   const confirm = async (home: RunningHome, placement: SessionPlacement, startPending?: V0Refusal) => {
-    const exact = readiness?.confirmPending;
+    const exact = ports.confirmPending?.bind(ports);
     if (startPending && !exact) throw new PortRefusal(startPending);
     const attempt = startPending && exact ? () => exact(home, placement) : () => ports.confirm(home, placement);
     const pending = startPending ?? {
@@ -130,7 +129,9 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts, r
       message: `The home is committed to ${home.machineId}, but pi has not confirmed startup.`,
       nextStep: `Retry spider roam relocate ${request.sessionId} ${request.destinationMachine} to check startup.`,
     };
-    return value(await (readiness ? waitForConfirmation(attempt, readiness, pending) : attempt()));
+    const result = await (readiness ? waitForConfirmation(attempt, readiness, pending) : attempt());
+    if (startPending && !readiness && !result.ok && result.refusal.code === "start-pending") throw new PortRefusal(startPending);
+    return value(result);
   };
   const start = async (home: RunningHome, placement: SessionPlacement) => {
     const result = await ports.start(home, placement);

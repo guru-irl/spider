@@ -8,7 +8,7 @@ import { createReplicaEffects } from "@spider/db-core/roam/effects";
 import { createExportPolicy } from "@spider/db-core/roam/event-policy";
 import { exportBatch } from "@spider/db-core/roam/export";
 import { localEntries, writeLocal } from "@spider/db-core/roam/local-state";
-import { openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
+import { openRoamStoreReadOnly, roamStorePath } from "@spider/db-core/roam/reads";
 import type { ApplyReceipt, BatchArtifact, StoreBarrier, StoreKey } from "@spider/db-core/roam/types";
 import type { AgentPorts, RoamConfig, StorePort } from "./contracts";
 import { enableMemoryCapture } from "@spider/db-core/roam/seed";
@@ -79,6 +79,8 @@ export function createStorePort(config: RoamConfig, globalDb: Db, options: { all
     const mapped = openRoamStoreReadOnly(globalDb, key);
     if (mapped) { file = mapped.raw.name; mapped.close(); }
     if (!file) file = registeredStore(key);
+    // An empty repository has no replicated rows to create its database first.
+    if (!file && scope === "repo" && globalDb.prepare("SELECT 1 FROM roam_repo_maps WHERE repo_key=?").get(key.slice(5))) file = roamStorePath(globalDb, key);
     if (!file) {
       if (config.role !== "hub" && !(scope === "worktree" && key === options.unmappedWorktree)) throw new Error("Store has no local mapping");
       file = replicaPath(globalDb, key);

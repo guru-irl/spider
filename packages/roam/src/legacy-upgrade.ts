@@ -18,7 +18,7 @@ import { isMachineId } from "./machine-id";
 import { parseSourceCleanup } from "./move";
 import { readLocalIdentity } from "./runtime";
 import { parseCheckpoint, parseHome, parsePlacement, parsePlan } from "./relocate/journal";
-import { listStoreKeys } from "./store-inventory";
+import { listStoreKeys, type UngatheredStore } from "./store-inventory";
 import { artifactId } from "./staging";
 import type { RelocatePlan, SessionPlacement } from "./relocate/types";
 
@@ -128,7 +128,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
     watch(join(root, "roam", "config.json")); watch(join(root, "roam", "machine.json"));
     watchDb(join(root, "roam", "journal.db")); watchDb(join(root, "spider.db"));
     const journalKinds = new Map<string, string>();
-    const activeFreezes = new Set<string>(), completedFreezes = new Set<string>(), requiredFreezeStores = new Set<string>();
+    const activeFreezes = new Set<string>(), completedFreezes = new Set<string>(), requiredStores = new Set<string>();
     const v0Maps = new Set<string>();
     const v0Owners = new Map<string, { placement: SessionPlacement; epoch: number }>();
     const v0: Array<{ origin: "checkpoint" | "incoming"; plan: RelocatePlan; expectedKey?: string }> = [];
@@ -172,6 +172,16 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
         } else if (result === null) {
           findings.push(`${operation.kind} operation ${id}`);
           if (operation.kind === "move") {
+            const checks = db.prepare("SELECT action,result_json FROM roam_operation_actions WHERE operation_id=? AND action IN ('move-action-complete','move-state') ORDER BY seq").all(id) as Array<{ action: string; result_json: string }>;
+            for (const check of checks) {
+              const data: unknown = JSON.parse(check.result_json);
+              if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Invalid move evidence");
+              const entry = data as Record<string, unknown>, value = check.action === "move-state" && entry.state === "checked" ? entry.check
+                : check.action === "move-action-complete" && entry.action === "check" ? entry.value : null;
+              if (value === null) continue;
+              if (!value || typeof value !== "object" || Array.isArray(value) || !Array.isArray((value as Record<string, unknown>).storeKeys)) throw new Error("Invalid move store evidence");
+              for (const key of (value as { storeKeys: unknown[] }).storeKeys) { storeScope(key); requiredStores.add(key as string); }
+            }
             const pending = db.prepare("SELECT seq,result_json FROM roam_operation_actions WHERE operation_id=? AND action='move-source-cleanup-pending' ORDER BY seq DESC LIMIT 1").get(id) as { seq: number; result_json: string } | undefined;
             if (pending) try {
               const data: unknown = JSON.parse(pending.result_json);
@@ -255,7 +265,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
           const freeze = freezes.find(row => row.session_id === roster.session_id && row.move_id === roster.move_id)!;
           for (const key of stores) {
             storeScope(key);
-            if (freeze.state !== "complete" && freeze.state !== "aborted") requiredFreezeStores.add(key as string);
+            if (freeze.state !== "complete" && freeze.state !== "aborted") requiredStores.add(key as string);
           }
         }
         for (const row of freezes) {
@@ -362,10 +372,9 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
           frozenRows.push({ key, row: row as FrozenRow });
         }
       };
-      const inspectedWorktrees = new Set<string>();
-      let storeProblem = false;
+      const inspectedWorktrees = new Set<string>(), ungathered: UngatheredStore[] = [];
       const storeOptions = { globalPath: join(root, "spider.db"), open: snapshot,
-        onProblem: () => { storeProblem = true; }, onIncomplete: () => { storeProblem = true; } };
+        onUngathered: (entry: UngatheredStore) => { ungathered.push(entry); } };
       for (const redirect of localEntries<unknown>(global, "mapping-redirect")) {
         const scope = storeScope(redirect.key);
         if (scope === "global" || typeof redirect.value !== "string" || !isAbsolute(redirect.value) || resolve(redirect.value) !== redirect.value)
@@ -373,7 +382,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
         const at = redirect.key.lastIndexOf(":"), mapped = scope === "worktree"
           ? global.prepare("SELECT 1 FROM roam_workspace_maps WHERE repo_key=? AND workspace_id=?").get(redirect.key.slice(9, at), redirect.key.slice(at + 1))
           : global.prepare("SELECT 1 FROM roam_repo_maps WHERE repo_key=?").get(redirect.key.slice(5));
-        if (!mapped || !present(redirect.value)) unknown.push(`map redirect store ${safeId(redirect.key)} unavailable`);
+        if (!mapped || requiredStores.has(redirect.key) && !present(redirect.value)) unknown.push(`map redirect store ${safeId(redirect.key)} unavailable`);
       }
       const projects = global.prepare("SELECT project_key,db_path,git_common_dir FROM projects ORDER BY project_key").all() as
         Array<{ project_key: string; db_path: string; git_common_dir: string | null }>;
@@ -408,7 +417,11 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
         }
       }
       const keys = listStoreKeys(catalog, storeOptions);
-      for (const key of requiredFreezeStores) if (!keys.includes(key as (typeof keys)[number])) unknown.push(`freeze store ${safeId(key)} unavailable`);
+      for (const key of requiredStores) if (!keys.includes(key as (typeof keys)[number])) unknown.push(`required store ${safeId(key)} unavailable`);
+      for (const entry of ungathered) {
+        if (entry.scope === "replica") unknown.push("replica unavailable");
+        else if (entry.key && requiredStores.has(entry.key)) unknown.push(`required store ${safeId(entry.key)} unavailable`);
+      }
       for (const key of keys) {
         if (key !== "global") {
           const file = join(root, "roam", "stores", `${createHash("sha256").update(key).digest("hex")}.db`);
@@ -439,26 +452,33 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
         if (!key.startsWith("worktree:")) continue;
         const file = roamStorePath(catalog, key, storeOptions);
         if (inspectedWorktrees.has(file) || !present(file)) continue;
-        const store = openRoamStoreReadOnly(catalog, key, storeOptions);
-        if (!store) { unknown.push(`store ${safeId(key)} unavailable`); continue; }
-        try { inspectFrozen(store, key); inspectedWorktrees.add(file); } finally { store.close(); }
+        let store: Db | undefined, inspectingFrozen = false;
+        try {
+          store = openRoamStoreReadOnly(catalog, key, storeOptions);
+          if (!store) { if (requiredStores.has(key)) unknown.push(`required store ${safeId(key)} unavailable`); continue; }
+          inspectingFrozen = true; inspectFrozen(store, key); inspectedWorktrees.add(file);
+        } catch { if (inspectingFrozen || requiredStores.has(key)) unknown.push(`store ${safeId(key)} evidence unavailable`); }
+        finally { store?.close(); }
       }
       for (const project of projects) {
         if (inspectedWorktrees.has(project.db_path)) continue;
-        const store = openRoamPathReadOnly(project.db_path, snapshot);
-        if (!store) { unknown.push(`project ${safeId(project.project_key)} store unavailable`); continue; }
+        let store: Db | undefined, inspectingFrozen = false;
         try {
+          store = openRoamPathReadOnly(project.db_path, snapshot);
+          if (!store) continue;
           const identity = store.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id?: unknown; store_key?: unknown } | undefined;
-          if (!identity || identity.machine_id !== meta.machine_id || Number(store.pragma("user_version")) !== 14) throw new Error("Project store identity mismatch");
-          if (typeof identity.store_key === "string" && storeScope(identity.store_key) === "worktree") inspectFrozen(store, identity.store_key);
-          else if (identity.store_key === null) {
+          if (!identity || identity.machine_id !== meta.machine_id || Number(store.pragma("user_version")) !== 14) continue;
+          if (typeof identity.store_key === "string" && storeScope(identity.store_key) === "worktree") {
+            inspectingFrozen = true; inspectFrozen(store, identity.store_key);
+          } else if (identity.store_key === null) {
+            inspectingFrozen = true;
             const frozen = store.prepare("SELECT session_id FROM roam_sessions WHERE state='frozen'").all() as Array<{ session_id: unknown }>;
             for (const row of frozen) unknown.push(`frozen session ${typeof row.session_id === "string" ? safeId(row.session_id) : "unknown"} project ${safeId(project.project_key)} store identity unavailable`);
-          } else throw new Error("Invalid project store key");
+          }
           inspectedWorktrees.add(project.db_path);
-        } finally { store.close(); }
+        } catch { if (inspectingFrozen) unknown.push(`project ${safeId(project.project_key)} frozen evidence unavailable`); }
+        finally { store?.close(); }
       }
-      if (storeProblem) unknown.push("registered store or replica unavailable");
       if (frozenRows.length) {
         const homes = snapshot(join(root, "spider.db"));
         if (!homes) throw new Error("Global store disappeared");

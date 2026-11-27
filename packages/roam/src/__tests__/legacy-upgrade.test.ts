@@ -232,6 +232,17 @@ it("doctor blocks an unfinished legacy workspace preparation even after a termin
   ]));
 });
 
+it("reports a replica filename and store identity mismatch as unverified", async () => {
+  const f = fixture(), expected = "worktree:fixture-repo:expected", recorded = "worktree:fixture-repo:recorded", file = replica(f.root, expected);
+  const db = openDb(file);
+  try { db.prepare("UPDATE roam_meta SET store_key=? WHERE id=1").run(recorded); } finally { db.close(); }
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-unverified.*worktree:fixture-repo:recorded/) }),
+  ]));
+});
+
 it("doctor blocks an unpublished replica mapping fence with no map intent", async () => {
   const f = fixture(), key = "worktree:fixture-repo:fenced-workspace", file = replica(f.root, key);
   const store = openDb(file);

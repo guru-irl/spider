@@ -252,6 +252,18 @@ describe("Copilot model sync catalog", () => {
     expect(result.stdout + result.stderr).not.toContain("fixture-existing-header");
   });
 
+  // Pi gives a model entry's headers precedence even when they equal the built-in.
+  it("reports an existing header conflict when the shadow matches the built-in", () => {
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a", headers: { "X-Mode": "shared" } }];\n');
+    const before = { providers: { "github-copilot": { models: [{ id: "model-a", headers: { "X-Mode": "shared" } }],
+      modelOverrides: { "model-a": { headers: { "X-Mode": "fixture-existing-header" } } } } } };
+    const result = run([], before);
+    expect(result.status, result.stderr).toBe(0);
+    expect(saved().providers["github-copilot"].modelOverrides["model-a"]).toEqual(before.providers["github-copilot"].modelOverrides["model-a"]);
+    expect(result.stdout.split("\n").some(line => line.includes("model-a") && line.includes("existing override kept for headers"))).toBe(true);
+    expect(result.stdout + result.stderr).not.toContain("fixture-existing-header");
+  });
+
   // Copying all model fields, dropping thinking or overwriting hand tuning changes behavior.
   it("backs up migrations, drops equal fields, and preserves existing overrides", () => {
     writeFileSync(builtinPath, `export const GITHUB_COPILOT_MODELS = {

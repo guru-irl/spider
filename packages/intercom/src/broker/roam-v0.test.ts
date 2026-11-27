@@ -594,6 +594,24 @@ describe("private roaming broker", () => {
     } finally { controller.abort(); await pending; }
   });
 
+  it("does not echo an oversized invalid request ID in a broker refusal", async () => {
+    const socket = net.connect(getBrokerSocketPath());
+    try {
+      const response = new Promise<unknown | null>((resolve, reject) => {
+        socket.on("error", reject);
+        socket.on("close", () => resolve(null));
+        socket.on("data", createMessageReader(value => {
+          const frame = value as Record<string, unknown>;
+          if (frame.type === "health_ok") {
+            writeMessage(socket, { type: "roam_v0", requestId: "x".repeat(262_144), kind: "lookup", scopeId: "scope-1", selector: { by: "name", value: "ben" } });
+          } else resolve(value);
+        }, reject));
+        writeMessage(socket, { type: "health", requestId: "health-large-id" });
+      });
+      expect((await response) === null).toBe(true);
+    } finally { socket.destroy(); }
+  });
+
   it("advertises roaming over its private Unix socket", async () => {
     const socket = net.connect(getBrokerSocketPath());
     try {

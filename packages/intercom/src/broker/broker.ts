@@ -756,8 +756,9 @@ class IntercomBroker {
       this.v0Requests.add(socket);
       const request = parseV0BrokerRequest(msg);
       if (!request) {
-        if (typeof clientMessage.requestId !== "string" || !clientMessage.requestId) throw new Error("invalid-roam-v0-request");
-        writeMessage(socket, { type: "roam_v0_result", requestId: clientMessage.requestId, kind: "refused", code: "invalid" });
+        const refusal = { type: "roam_v0_result", requestId: clientMessage.requestId, kind: "refused", code: "invalid" };
+        if (!parseV0BrokerReply(refusal)) throw new Error("invalid-roam-v0-request");
+        writeMessage(socket, refusal);
         return;
       }
       if (request.kind === "lookup") {

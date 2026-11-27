@@ -3124,6 +3124,11 @@ Usage:
 
           try {
             const target = replyTracker.resolveReplyTarget({ to, replyTo });
+            if (v0 && target.from.remote && (cwd !== undefined || attachments !== undefined || Boolean(supersedes || retryOf || messageId) ||
+                openProjectPaneIfMissing !== undefined || focus !== undefined)) {
+              return { content: [{ type: "text", text: "Remote intercom replies support text only; cwd, attachments, retry, and pane options are unavailable." }],
+                details: { error: true, code: "unsupported" } };
+            }
             if (target.from.id === connectedClient.sessionId) {
               return {
                 content: [{ type: "text", text: "Cannot message the current session" }],

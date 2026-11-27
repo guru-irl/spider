@@ -1,9 +1,11 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import net from "node:net";
 import { once } from "node:events";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
-import { startTestBroker, stopTestBroker, testBrokerEnv } from "../test-support.js";
-import { getAgentDirPath, getBrokerSocketPath } from "./paths.js";
+import { startTestBroker, stopTestBroker, testBrokerEnv, testTmpDir } from "../test-support.js";
+import { getAgentDirPath, getBrokerSocketPath, getIntercomDirPath } from "./paths.js";
 import { requestV0Broker } from "./roam-v0-client.js";
 import { createMessageReader, writeMessage } from "./framing.js";
 import { IntercomClient } from "./client.js";
@@ -131,6 +133,30 @@ describe("private roaming broker", () => {
 
   function lookup(scopeId: string, by: "id" | "name", value: string) {
     return request({ kind: "lookup", scopeId, selector: { by, value } });
+  }
+
+  async function fakeBroker(features: string[], onRequest: (socket: net.Socket, frame: Record<string, unknown>) => void) {
+    const dir = mkdtempSync(join(testTmpDir(), "f-"));
+    mkdirSync(join(dir, "intercom"), { mode: 0o700 });
+    const path = join(dir, "intercom", "broker.sock");
+    const server = net.createServer(socket => {
+      socket.on("error", () => {});
+      socket.on("data", createMessageReader(value => {
+        const frame = value as Record<string, unknown>;
+        if (frame.type === "health") {
+          writeMessage(socket, { type: "health_ok", requestId: frame.requestId, protocol: "pi-intercom", version: 1, implementation: "spider", features });
+        } else onRequest(socket, frame);
+      }, () => socket.destroy()));
+    });
+    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(path, resolve); });
+    chmodSync(path, 0o600);
+    return {
+      dir,
+      async close() {
+        await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
   }
 
   beforeAll(async () => {
@@ -319,6 +345,64 @@ describe("private roaming broker", () => {
       .toMatchObject({ delivered: false, code: "E_INVALID_MESSAGE" });
     expect(await ben.send("sender", { text: "ok", replyTo: "unique-question", messageId: "valid-reply" })).toMatchObject({ delivered: true });
     expect(await pending).toEqual({ kind: "replied", id: "unique-question", replyId: "valid-reply", text: "ok" });
+  });
+
+  it("returns unknown without resending after a real delivery loses its acknowledgement", async () => {
+    const ben = await register("stable-b", "b", "ben", "scope-1", 3);
+    const target = ((await lookup("scope-1", "name", "ben")).targets as V0Endpoint[])[0];
+    const inbox: unknown[] = [];
+    ben.on("message", (...args) => inbox.push(args));
+    const frames: Record<string, unknown>[] = [];
+    const proxy = await fakeBroker([V0_INTERCOM_FEATURE], (socket, frame) => {
+      frames.push(frame);
+      const { type, requestId, ...op } = frame;
+      void request(op).then(() => socket.destroy(), () => socket.destroy());
+    });
+    try {
+      const result = await requestV0Broker(proxy.dir, { kind: "deliver", from: origin, target, message: { ...message, id: "lost-ack" } });
+      expect(result).toEqual({ kind: "unknown", id: "lost-ack" });
+      await ben.listSessions();
+      expect(inbox).toHaveLength(1);
+      expect(frames).toHaveLength(1);
+    } finally { await proxy.close(); }
+  });
+
+  it("refuses an older broker without sending a roaming request", async () => {
+    const frames: Record<string, unknown>[] = [];
+    const old = await fakeBroker([], (_socket, frame) => { frames.push(frame); });
+    try {
+      expect(await requestV0Broker(old.dir, { kind: "lookup", scopeId: "scope-1", selector: { by: "name", value: "ben" } }))
+        .toEqual({ kind: "refused", code: "unsupported" });
+      expect(frames).toEqual([]);
+    } finally { await old.close(); }
+  });
+
+  it("refuses a broker directory or socket with unsafe modes", async () => {
+    const op = { kind: "lookup" as const, scopeId: "scope-1", selector: { by: "name" as const, value: "ben" } };
+    const directory = getIntercomDirPath(), socket = getBrokerSocketPath();
+    try {
+      chmodSync(directory, 0o755);
+      expect(await requestV0Broker(getAgentDirPath(), op)).toEqual({ kind: "refused", code: "unauthorized" });
+      chmodSync(directory, 0o700);
+      chmodSync(socket, 0o666);
+      expect(await requestV0Broker(getAgentDirPath(), op)).toEqual({ kind: "refused", code: "unauthorized" });
+    } finally {
+      chmodSync(directory, 0o700);
+      chmodSync(socket, 0o600);
+    }
+  });
+
+  it("does not trust an uncorrelated delivery result", async () => {
+    const frames: Record<string, unknown>[] = [];
+    const peer = await fakeBroker([V0_INTERCOM_FEATURE], (socket, frame) => {
+      frames.push(frame);
+      writeMessage(socket, { type: "roam_v0_result", requestId: "wrong-request", kind: "socket_delivered", id: "wrong-ack" });
+    });
+    try {
+      expect(await requestV0Broker(peer.dir, { kind: "deliver", from: origin, target: endpoint, message: { ...message, id: "wrong-ack" } }))
+        .toEqual({ kind: "unknown", id: "wrong-ack" });
+      expect(frames).toHaveLength(1);
+    } finally { await peer.close(); }
   });
 
   it("advertises roaming over its private Unix socket", async () => {

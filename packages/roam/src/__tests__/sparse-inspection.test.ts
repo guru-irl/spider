@@ -33,15 +33,18 @@ it.each([{ version: "2.54.0.vfs.0.4", ignoreCase: false }, { version: "2.56.1", 
   const incoming = await snapshotWorkspace({ root: source, cwd: source, repoKey: "fixture-repo", workspaceId: "fixture-workspace", moveId: "incoming", stage: "pre", writers: [] }, base);
   const artifact = join(root, "incoming.bundle"); git(source, "bundle", "create", artifact, ...incoming.refs, `^${incoming.head}`); chmodSync(artifact, 0o600);
   let copiedBlobs = 0;
+  let importGitCalls = 0;
   const ports: WorkspaceImportPorts = { ...base, async run(cwd, argv, options) {
     if (argv.includes("--version")) return Buffer.from(`git version ${version}\n`);
     if (argv.includes("check-rules")) throw new Error("unsupported git command");
+    importGitCalls++;
     const result = run(cwd, argv, options);
     copiedBlobs = Math.max(copiedBlobs, readdirSync(scratch, { recursive: true, withFileTypes: true }).filter(file => file.isFile() && file.name.endsWith(".txt")).length);
     return result;
   }, resolveCommonRepository: async () => destination, lastExportedSnapshot: async () => previous, verifiedArtifactPath: async () => artifact };
   const prepared = await prepareWorkspace({ ...incoming, prerequisites: [incoming.head], bundle: { kind: "ready", artifactId: "incoming-bundle", byteLength: statSync(artifact).size } }, destination, ports);
   expect(copiedBlobs).toBe(0);
+  expect(importGitCalls).toBeLessThanOrEqual(100);
   expect(readdirSync(join(destination, "keep"))).toHaveLength(512);
   expect(git(destination, "ls-files", "-t", "keep/0.txt")).toBe("H keep/0.txt");
   expect(git(destination, "ls-files", "-t", "skip/hidden.txt")).toBe("S skip/hidden.txt");
@@ -53,7 +56,9 @@ it.each([{ version: "2.54.0.vfs.0.4", ignoreCase: false }, { version: "2.56.1", 
   const full = await snapshotWorkspace({ root: source, cwd: source, repoKey: "fixture-repo", workspaceId: "fixture-workspace", moveId: "incoming", stage: "final", writers: [] }, base);
   const fullArtifact = join(root, "full.bundle"); git(source, "bundle", "create", fullArtifact, ...full.refs, `^${full.head}`); chmodSync(fullArtifact, 0o600);
   ports.lastExportedSnapshot = async () => prepared.snapshot; ports.verifiedArtifactPath = async () => fullArtifact;
+  importGitCalls = 0;
   await prepareWorkspace({ ...full, prerequisites: [full.head], bundle: { kind: "ready", artifactId: "full-bundle", byteLength: statSync(fullArtifact).size } }, destination, ports);
   expect(git(destination, "ls-files", "-t", "skip/hidden.txt")).toBe("H skip/hidden.txt");
   expect(copiedBlobs).toBe(0);
+  expect(importGitCalls).toBeLessThanOrEqual(100);
 }, 5000);

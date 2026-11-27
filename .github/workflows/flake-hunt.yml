@@ -76,3 +76,71 @@ jobs:
           path: .spider/scratch/hunt
           include-hidden-files: true
           if-no-files-found: error
+
+  replay:
+    name: Replay ${{ matrix.case }} with its shard neighbor
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case: workspace-import
+            ref: 8dbd2acc583c599e2b4edac7061705c3c407e735
+            target: packages/roam/src/__tests__/workspace-import.test.ts
+            neighbor: packages/host/src/__tests__/herdr-setup-production-install.test.ts
+          - case: checkout-import
+            ref: 02de0ce5e91c56ab600a8bf3177a1c0b47a5af58
+            target: packages/host/src/roam/__tests__/roam-move-checkout.test.ts
+            neighbor: packages/roam/src/__tests__/intercom-fresh-pair-fence.test.ts
+          - case: first-home
+            ref: 748e19da93b72d5a84a516280e70806a6796276b
+            target: packages/roam/src/__tests__/move-ports.test.ts
+            neighbor: packages/host/src/__tests__/herdr-wiring-mount.test.ts
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+      - name: Prepare runner like a full CI shard
+        run: |
+          mkdir -p .spider/scratch/{tmp,hunt}
+          sudo apt-get update && sudo apt-get install -y sqlite3
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+          test ! -e "$rundir"
+      - run: npm ci
+      - name: Run three historical trials
+        env:
+          TARGET: ${{ matrix.target }}
+          NEIGHBOR: ${{ matrix.neighbor }}
+          TMPDIR: ${{ github.workspace }}/.spider/scratch/tmp
+          SPIDER_FIRST_MOVE_TRACE: '1'
+        run: |
+          unset PI_SUBAGENT_CHILD PI_SUBAGENT_RUN_ID PI_SPIDER_DB_PATH PI_SPIDER_SESSION_ID
+          unset SPIDER_HERDR_E2E SPIDER_HERDR_APP_TESTS SPIDER_HERDR_APP_E2E XDG_RUNTIME_DIR
+          output="$PWD/.spider/scratch/hunt"
+          git rev-parse HEAD
+          printf 'trial\texit\n' > "$output/status.tsv"
+          infra=0
+          for trial in {1..3}; do
+            rc=0
+            GIT_TRACE2_EVENT="$output/$trial.git-trace" npx vitest run "$TARGET" "$NEIGHBOR" --maxWorkers=2 --reporter=default --reporter=json --outputFile="$output/$trial.json" > "$output/$trial.log" 2>&1 || rc=$?
+            printf '%s\t%s\n' "$trial" "$rc" | tee -a "$output/status.tsv"
+            if [ ! -s "$output/$trial.json" ]; then
+              tail -80 "$output/$trial.log"
+              infra=1
+            fi
+          done
+          exit "$infra"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: replay-${{ matrix.case }}
+          path: .spider/scratch/hunt
+          include-hidden-files: true
+          if-no-files-found: error

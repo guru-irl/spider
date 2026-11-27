@@ -42,6 +42,25 @@ The enable check refuses older or unmarked live top-level builds. Keep hosting
 disabled until the full phase 4 acceptance gate passes. Interrupted
 rollout must retain the admission and origin guards.
 
+## Recover a v0 home after global database loss
+
+The Mac writes a private per-session fence under `roam/away-homes` before
+assigning a running home to another machine. The fence stays outside
+`spider.db` and outside the transcript. It prevents the Mac from starting
+its backup if the database disappears or is replaced with an older copy.
+Only a verified local running home at a newer epoch clears the fence.
+
+If the Mac cannot verify the home, restore the current `spider.db` or
+re-sync it from a peer. To assign the Mac copy after recovery, run
+`spider roam set-home <session> mac --force` and confirm that the old
+machine will not run the session. A fence alone cannot recover a home.
+If a relocation stopped before committing the home but left a fence, retry
+that relocation with its original journal. Do not remove the fence to admit
+a copy from an older database.
+
+Only moves made by a version that writes fences leave them. Upgrading
+does not add fences to earlier moves.
+
 ## Shell command
 
 The installed `spider roam` command provides status, doctor, sync, enable,

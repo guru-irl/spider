@@ -192,11 +192,15 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
         }
         v0Managed = false;
         if (ports.v0Lookup) {
-          const v0Message = "Cannot verify a local running home. Restore the local home before starting this session.";
           let lookup: HomeAdmission;
           try { lookup = await ports.v0Lookup(id as SessionId); }
           catch { lookup = { kind: "unavailable" }; }
           if (ticket !== generation) return;
+          const away = lookup.kind === "unavailable" && lookup.awayMachine;
+          const arg = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(id) ? id : "<session>";
+          const v0Message = away
+            ? `The last recorded away home is ${away}. Restore spider.db or re-sync it from a peer if it is missing or stale. Then run spider roam set-home ${arg} mac --force on the Mac to recover the local copy.`
+            : "Cannot verify a local running home. Restore the local home before starting this session.";
           if (lookup.kind !== "unmanaged" || observedV0.has(id)) {
             v0Managed = true;
             observedV0.add(id);

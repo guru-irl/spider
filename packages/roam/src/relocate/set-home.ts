@@ -1,3 +1,4 @@
+import { AwayHomeRecoveryRequired } from "./away-home";
 import type { RunningHome, SetHomePorts, SetHomeRequest, V0RefusalCode, V0Result } from "./types";
 
 function refuse(code: V0RefusalCode, message: string, nextStep: string): V0Result<RunningHome> {
@@ -16,7 +17,8 @@ export async function setHome(request: SetHomeRequest, ports: SetHomePorts): Pro
       let failure: V0RefusalCode = "home-unavailable";
       try {
         const current = await ports.homes.read(sessionId);
-        if (current === null) return refuse("home-unavailable", "No managed home is available to reassign.", "Choose a session with an existing managed home on the Mac.");
+        if (current === null) return refuse("home-unavailable", "No managed home is available to reassign.",
+          "Restore spider.db or re-sync it from a peer if the session was moved. Then retry set-home --force on the Mac.");
         failure = "destination-copy-missing";
         const located = await ports.locate(destinationMachine,sessionId);
         if (!located.ok) return located;
@@ -32,14 +34,19 @@ export async function setHome(request: SetHomeRequest, ports: SetHomePorts): Pro
         const published = await ports.publishHome(next,destinationMachine);
         if (!published.ok) return published;
         return {ok:true,value:next};
-      } catch {
+      } catch (error) {
+        if (error instanceof AwayHomeRecoveryRequired) return refuse("home-unavailable",
+          `The database cannot verify the away home on ${error.fence.machineId}.`,
+          "Restore spider.db or re-sync it from a peer. Then retry set-home --force on the Mac.");
         const messages: Partial<Record<V0RefusalCode,string>> = {
           "home-unavailable":"The hub could not read or update the home.",
           "destination-copy-missing":"The destination copy could not be verified.",
           "install-failed":"The reassigned destination copy could not be activated.",
           "sync-failed":"The reassigned home could not be published to the destination.",
         };
-        return refuse(failure,messages[failure]!,retry);
+        return refuse(failure,messages[failure]!,failure === "home-unavailable"
+          ? "Run spider roam doctor on the Mac and repair the home store before retrying set-home --force."
+          : retry);
       }
     });
   } catch {

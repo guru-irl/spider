@@ -1,6 +1,8 @@
+import { dirname } from "node:path";
 import { isRoamUuid } from "@spider/db-core/roam/codec";
 import { validUnicode } from "@spider/db-core/roam/hlc";
 import type { MachineId } from "@spider/db-core/roam/types";
+import { AwayHomeRecoveryRequired, publishAwayHomeFence, readAwayHomeFence, withAwayHomeFenceLock, type AwayHomeFence } from "./away-home";
 import type { HomeStore, HomeStoreOptions, RelocateHome, RelocateId, RunningHome, SessionId } from "./types";
 
 type HomeRow = Record<string, unknown>;
@@ -47,6 +49,10 @@ function same(a: RelocateHome | null, b: RelocateHome): boolean {
     a.state === b.state && a.destination === b.destination && a.moveId === b.moveId && a.updatedAt === b.updatedAt;
 }
 
+function matchesFence(home: RelocateHome, fence: AwayHomeFence): boolean {
+  return home.state === "running" && home.machineId === fence.machineId && home.epoch === fence.epoch && home.moveId === fence.moveId;
+}
+
 export function createHomeStore(options: HomeStoreOptions): HomeStore {
   const { db, hubMachineId, localMachineId } = options;
   machineId(hubMachineId); machineId(localMachineId);
@@ -89,7 +95,7 @@ export function createHomeStore(options: HomeStoreOptions): HomeStore {
       if (!parseHome(row(expected)) || !parseHome(row(next))) throw new Error("CAS requires managed homes");
       if (expected.sessionId !== next.sessionId || expected.epoch === Number.MAX_SAFE_INTEGER || next.epoch !== expected.epoch + 1)
         throw new Error("Home CAS must increment exactly one safe epoch");
-      return db.withRetry(() => db.raw.transaction(() => {
+      const apply = () => db.withRetry(() => db.raw.transaction(() => {
         requireHub();
         const current = parseHome(find(expected.sessionId));
         if (same(current, next)) return {kind:"already-applied" as const,home:current!};
@@ -100,6 +106,24 @@ export function createHomeStore(options: HomeStoreOptions): HomeStore {
         const home = parseHome(find(expected.sessionId));
         return result.changes === 1 ? {kind:"applied" as const,home:home!} : {kind:"conflict" as const,home};
       }).immediate());
+      if (next.state !== "running") return apply();
+      const { sessionId, machineId, epoch, moveId } = next;
+      const root = dirname(db.raw.name);
+      requireHub();
+      return withAwayHomeFenceLock(root, sessionId, async () => {
+        const current = parseHome(find(sessionId));
+        if (same(current, next)) return { kind: "already-applied", home: next };
+        if (!same(current, expected)) return { kind: "conflict", home: current };
+        const fence = await readAwayHomeFence(root, sessionId);
+        if (fence && expected.epoch <= fence.epoch && !matchesFence(expected, fence) &&
+            !(expected.state === "moving" && matchesFence(next, fence))) throw new AwayHomeRecoveryRequired(fence);
+        if (machineId !== hubMachineId) {
+          if (!moveId) throw new Error("An away home needs a move ID");
+          // If the process dies or the CAS loses after publication, the fence stays fail-closed.
+          await publishAwayHomeFence(root, sessionId, { machineId, epoch, moveId });
+        }
+        return apply();
+      });
     },
   };
 }

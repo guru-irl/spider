@@ -77,7 +77,7 @@ async function fixture(v0?: V0ToolOptions, options: { confirm?: () => Promise<bo
     expect((await observer.listSessions()).some(session => session.id === "sender-session")).toBe(true);
   }, { timeout: 2000, interval: 20 });
   return {
-    ctx, entries, inbound, renderers,
+    ctx, entries, inbound, renderers, emit,
     switchSession(id: string) { sessionId = id; },
     tool: tools.find(tool => tool.name === "intercom")!,
     async cleanup() { await emit("session_shutdown", { reason: "quit" }); rmSync(configPath, { force: true }); },
@@ -329,6 +329,31 @@ it("shows the broker's exact refusal for a late peer reply", async () => {
     expect(reply.content[0].text).toBe("The asker is no longer waiting.");
     expect(reply.details).toMatchObject({ delivered: false });
   } finally { socket?.destroy(); await f.cleanup(); }
+});
+
+it("closes an outstanding remote ask when the session is replaced", async () => {
+  let receivedSignal: AbortSignal | undefined, questionId = "";
+  const prepare: V0Prepare = async () => ({
+    kind: "remote", label: "b/ben",
+    async send(message) { return { kind: "socket_delivered", id: message.id }; },
+    async ask(message, _timeout, signal) {
+      receivedSignal = signal;
+      questionId = message.id;
+      return new Promise(resolve => signal!.addEventListener("abort", () => resolve({ kind: "unknown", id: message.id }), { once: true }));
+    },
+  });
+  const f = await fixture({ homeEpoch: () => 7, prepare });
+  const outer = new AbortController();
+  const pending = f.tool.execute("ask", { action: "ask", to: "ben", message: "hello" }, outer.signal, undefined, f.ctx);
+  try {
+    await vi.waitFor(() => expect(receivedSignal).toBeDefined());
+    f.switchSession("replacement-session");
+    await f.emit("turn_start");
+    expect(receivedSignal!.aborted).toBe(true);
+    const result = await pending;
+    expect(result.details).toMatchObject({ delivery: "unknown", messageId: questionId });
+    expect(f.entries.some(entry => entry.type === "intercom_received" || entry.type === "intercom_sent")).toBe(false);
+  } finally { outer.abort(); await pending; await f.cleanup(); }
 });
 
 it("does not dispatch a remote ask when confirmation is refused", async () => {

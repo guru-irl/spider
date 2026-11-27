@@ -762,7 +762,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     const receipt = latestOutboundReceipts.get(messageId);
     return receipt ? receipt.status : fallback;
   }
-  let v0AskInFlight: symbol | null = null;
+  let v0AskInFlight: { token: symbol; abort: AbortController } | null = null;
   let replyWaiter: {
     from: SessionAddress;
     remote: boolean;
@@ -1812,6 +1812,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     clearStartupConnectTimer();
     clearNamePollTimer();
     rejectReplyWaiter(new Error("Session replaced"));
+    v0AskInFlight?.abort.abort();
     v0AskInFlight = null;
     replyTracker.reset();
     if (previousClient) {
@@ -2106,6 +2107,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     clearDisconnectWarning();
     restoreIntercomSessionId();
     rejectReplyWaiter(new Error(event.reason === "reload" ? "session-reloaded" : "Session shutting down"));
+    v0AskInFlight?.abort.abort();
     v0AskInFlight = null;
     replyTracker.reset();
     agentRunning = false;
@@ -2950,12 +2952,20 @@ Usage:
                   }
                   questionId = randomUUID();
                   const question = { id: questionId, timestamp: Date.now(), text: message };
-                  const token = Symbol("v0-ask");
-                  v0AskInFlight = token;
+                  const token = Symbol("v0-ask"), abort = new AbortController();
+                  const onAbort = () => abort.abort();
+                  _signal?.addEventListener("abort", onAbort, { once: true });
+                  v0AskInFlight = { token, abort };
                   let result: V0Delivery;
-                  try { result = await plan.ask(question, Math.min(askTimeoutMs, V0_ASK_MAX_MS), _signal); }
+                  try { result = await plan.ask(question, Math.min(askTimeoutMs, V0_ASK_MAX_MS), abort.signal); }
                   catch { result = { kind: "unknown", id: question.id }; }
-                  finally { if (v0AskInFlight === token) v0AskInFlight = null; }
+                  finally {
+                    _signal?.removeEventListener("abort", onAbort);
+                    if (v0AskInFlight?.token === token) v0AskInFlight = null;
+                  }
+                  if (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected()) {
+                    result = { kind: "unknown", id: question.id };
+                  }
                   if (result.kind === "refused") {
                     return { content: [{ type: "text", text: V0_REFUSAL_TEXT[result.code] }], details: { error: true, code: result.code } };
                   }

@@ -180,6 +180,18 @@ describe("v0 transfer stop boundary",()=>{
   expect(f.events.indexOf("capture")).toBeGreaterThan(f.events.indexOf("lock-free"));
   expect(f.events.filter(e=>e==="wait")).toHaveLength(2);
  });
+ it.each([true,false])("waits for the stopped terminal to clear within the deadline (clears=%s)",async clears=>{
+  const f = stopFixture();
+  const pause = f.io.pause;
+  let ticks = 0;
+  f.io.pause = async ms => { ticks++; await pause(ms); };
+  f.io.terminals = async () => clears && ticks >= 3 ? [] : [{terminal:"t",state:"live",pid:42,owned:true}];
+  const result = await stopLocalSession(id,null,f.io,f.clock,30);
+  if (clears) expect(result).toEqual({ok:true,value:undefined});
+  else expect(result).toMatchObject({ok:false,refusal:{code:"session-busy",message:expect.stringContaining("PID 42")}});
+  expect(f.signals).toEqual([42]);
+  expect(ticks).toBe(3);
+ });
  it("changed lock owner is never signalled",async()=>{
   const f=stopFixture();let reads=0;
   f.io.inspect=async()=>++reads===1?f.owner:{...f.owner,identity:{pid:99,startIdentity:"replacement"}};

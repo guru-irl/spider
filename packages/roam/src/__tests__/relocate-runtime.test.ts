@@ -178,6 +178,13 @@ describe("v0 local runtime",()=>{
   vi.spyOn(hcApi,"invokeCli").mockImplementation(async(_binary,argv)=>argv[0]==="ls"?{terminals:[{address:"core:t",state:"live"}]}:detail);
   await expect(createLocalIO(f.options).terminals(id)).rejects.toThrow();
  });
+ it("accepts a matching finished detail when the compact list still shows live", async () => {
+  const f = runtimeFixture();
+  vi.spyOn(hcApi,"invokeCli").mockImplementation(async (_binary,argv) => argv[0] === "ls"
+   ? {terminals:[{address:"core:t",state:"live",pid:42}]}
+   : {address:"core:t",state:"finished",reason:"exited",exit_code:0});
+  expect(await createLocalIO(f.options).terminals(id)).toEqual([{terminal:"core:t",state:"finished",pid:null}]);
+ });
  it("accepts native signal exits and ignores remote terminal summaries",async()=>{
   const f=runtimeFixture();
   vi.spyOn(hcApi,"invokeCli").mockResolvedValue({terminals:[{address:"t7",state:"finished",reason:"exited",signal:15},{address:"peer/t1",state:"live"}]});

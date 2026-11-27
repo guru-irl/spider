@@ -31,6 +31,13 @@ import { localWriterBlockers } from "./local-writers";
 import { piLaunchArgv, toolPath } from "./launch-environment";
 
 type LocalTerminal = { terminal: string; state: "live" | "finished"; pid: number | null; owned?: true };
+function finishedTerminal(terminal: string, row: Record<string,unknown>): LocalTerminal {
+  const signaled = Number.isSafeInteger(row.signal) && (row.signal as number) > 0;
+  if (row.reason === "exited" && !Number.isSafeInteger(row.exit_code) && !signaled) throw new Error("Invalid terminal exit");
+  // Restart and other non-exit reasons need not carry exit data. A retained
+  // finished row cannot identify a live owner, even if it still has a PID.
+  return {terminal,state:"finished",pid:null};
+}
 export interface LocalIO {
   inspect(sessionId: string): Promise<IdLockObservation | null>;
   probe(pid: number): Promise<{kind:"absent"}|{kind:"unknown"}|{kind:"live";startIdentity:string;pi:boolean}>;
@@ -130,21 +137,18 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
         // Native peer addresses are qualified; their processes are not local.
         if (typeof row.address === "string" && row.address.includes("/")) return null;
         if (typeof row.address !== "string" || !row.address || row.state !== "live" && row.state !== "finished") throw new Error("Unknown terminal state");
-        if (row.state === "finished") {
-          const signaled = Number.isSafeInteger(row.signal) && (row.signal as number) > 0;
-          if (row.reason === "exited" && !Number.isSafeInteger(row.exit_code) && !signaled) throw new Error("Invalid terminal exit");
-          // Core restart and other non-exit reasons do not carry exit data.
-          // A finished row cannot identify a live owner, even if it kept a PID.
-          return {terminal:row.address,state:"finished" as const,pid:null};
-        }
+        if (row.state === "finished") return finishedTerminal(row.address,row);
         let pid: unknown = row.pid ?? row.process_id ?? null;
         let labels: unknown = row.labels;
         if (pid === null || labels == null) {
           const detail = await invokeCli(binary,["get",row.address,"--json"],env,options.limits.replyBytes,undefined,{timeoutMs:options.limits.controlMs});
-          if (!detail || typeof detail !== "object" || !("address" in detail) || detail.address !== row.address || !("state" in detail) || detail.state !== "live" || !("pid" in detail)) throw new Error("Terminal identity changed");
-          if (pid !== null && detail.pid !== pid) throw new Error("Terminal process changed");
-          pid = detail.pid;
-          if ("labels" in detail) labels = detail.labels;
+          const current = object(detail);
+          if (current.address !== row.address) throw new Error("Terminal identity changed");
+          if (current.state === "finished" && "reason" in current) return finishedTerminal(row.address,current);
+          if (current.state !== "live" || !("pid" in current)) throw new Error("Terminal identity changed");
+          if (pid !== null && current.pid !== pid) throw new Error("Terminal process changed");
+          pid = current.pid;
+          if ("labels" in current) labels = current.labels;
         }
         if (pid !== null && (!Number.isSafeInteger(pid) || (pid as number) <= 0)) throw new Error("Unknown terminal process");
         const terminal: LocalTerminal = {terminal:row.address,state:"live",pid:pid as number|null};
@@ -189,8 +193,10 @@ export async function stopLocalSession(sessionId: SessionId, moving: MovingHome 
       ? live.find(t=>t.owned && t.pid === lockPid)
       : live.length === 1 && live[0].owned ? live[0] : undefined;
     if (observed && !terminal) return busy([`PID ${observed.identity.pid} (pi)`]);
-    if (terminal && terminal.pid !== null) {
-      const {pid,terminal:address} = terminal, p = await io.probe(pid);
+    const pid = terminal?.pid ?? null;
+    const p = pid === null ? null : await io.probe(pid);
+    if (terminal && pid !== null && p && p.kind !== "absent") {
+      const address = terminal.terminal;
       if (p.kind !== "live" || !p.pi || observed && p.startIdentity !== observed.identity.startIdentity) return busy([terminalName(terminal)]);
       const root = {pid,startIdentity:p.startIdentity,command:"pi"};
       const expectedLock = (held: IdLockObservation | null): boolean => observed ? sameOwner(held,observed)
@@ -234,8 +240,18 @@ export async function stopLocalSession(sessionId: SessionId, moving: MovingHome 
     }
     // claimIdLock handles dead owners and stale records; never unlink a lock.
     await io.claimFree(sessionId);
-    const remaining = await liveTerminals();
-    if (remaining.length) return busy(remaining.map(terminalName));
+    for (;;) {
+      const remaining = await liveTerminals();
+      if (!remaining.length) break;
+      // Only the terminal whose process we checked can be waiting for the
+      // core's exit observation. A new terminal or owner is not proof of exit.
+      if (pid === null || remaining.length !== 1 || !remaining[0].owned || remaining[0].terminal !== terminal?.terminal || remaining[0].pid !== pid || clock.now() >= deadline) {
+        return busy(remaining.map(terminalName));
+      }
+      const held = await io.inspect(sessionId);
+      if (held) return busy([`PID ${held.identity.pid} (pi)`]);
+      await io.pause(Math.min(100,Math.max(1,deadline-clock.now())));
+    }
     const blockers = await io.writerBlockers(sessionId,undefined,moving !== null);
     if (blockers.length) return busy(blockers);
     const held = await io.inspect(sessionId);

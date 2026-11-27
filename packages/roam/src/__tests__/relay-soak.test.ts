@@ -28,9 +28,12 @@ function completeEvidence(): Evidence {
     submissions: [], handoffs: [], outcomes: [], receipts: [], states: [], calls: [], rss: [],
   }));
   const faults: Fault[] = [
-    { kind: "relay-kill", linkIds: [links[0].id], startMs: START + 60 * MINUTE, clearMs: START + 60 * MINUTE + 40_000 },
-    { kind: "herdr-restart-relay", linkIds: [links[0].id], startMs: START + 90 * MINUTE, clearMs: START + 90 * MINUTE + 40_000 },
-    { kind: "herdr-restart-peer", linkIds: [links[1].id], startMs: START + 120 * MINUTE, clearMs: START + 120 * MINUTE + 40_000 },
+    { kind: "relay-kill", linkIds: [links[0].id], startMs: START + 60 * MINUTE, clearMs: START + 60 * MINUTE + 40_000,
+      process: { machineId: machines[0], pid: 80, birthId: "800", bootId: "boot-a", observedMs: START + 60 * MINUTE } },
+    { kind: "herdr-restart-relay", linkIds: [links[0].id], startMs: START + 90 * MINUTE, clearMs: START + 90 * MINUTE + 40_000,
+      process: { machineId: machines[0], pid: 81, birthId: "810", bootId: "boot-a", observedMs: START + 90 * MINUTE } },
+    { kind: "herdr-restart-peer", linkIds: [links[1].id], startMs: START + 120 * MINUTE, clearMs: START + 120 * MINUTE + 40_000,
+      process: { machineId: machines[2], pid: 82, birthId: "820", bootId: "boot-b", observedMs: START + 120 * MINUTE } },
     { kind: "route-cut", linkIds: [links[1].id], startMs: START + 180 * MINUTE, clearMs: START + 181 * MINUTE },
     { kind: "laptop-sleep", linkIds: [links[0].id], startMs: START + 240 * MINUTE, clearMs: START + 240 * MINUTE + 40_000 },
     { kind: "endpoint-kill", linkIds: [links[2].id], startMs: START + 300 * MINUTE, clearMs: START + 300 * MINUTE + 40_000,
@@ -207,6 +210,12 @@ describe("the live relay soak reliability gate", () => {
     const shortCut = copy();
     faultOf(shortCut, "route-cut").clearMs--;
     expect(checkRelaySoak(shortCut).violations).toContain("faults");
+  });
+
+  it("requires birth identities for the relay and restarted Herdr processes", () => {
+    const evidence = copy();
+    delete faultOf(evidence, "relay-kill").process;
+    expect(checkRelaySoak(evidence).violations).toContain("faults");
   });
 
   it("requires the killed endpoint's birth identity and a matching active held call", () => {

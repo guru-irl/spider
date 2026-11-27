@@ -240,7 +240,8 @@ intercom({ action: "send", to: "box/worker", message: "Please check the logs." }
 A full session ID takes precedence. Otherwise, intercom prefers a unique live
 local match before looking on configured peers. If a name is ambiguous, use a
 machine-qualified name or a session ID. `list` does not list remote sessions in
-v0, and a missing remote target is not queued in a mailbox.
+v0, and a missing remote target is not queued in a mailbox. A remote send or ask
+requires a running home for the sender and recipient. Unhomed sessions can send only locally.
 
 Remote sends, asks, and replies are text only. Remote sends and asks do not
 accept attachments, `cwd`, `replyTo`, retry metadata, or pane options. To answer

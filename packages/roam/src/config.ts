@@ -60,7 +60,7 @@ function readLimits(value: unknown): Limits {
   return result;
 }
 
-function readPeer(value: unknown): Peer {
+export function readPeer(value: unknown): Peer {
   const input = object(value, "peer");
   keys(input, ["machineId", "alias", "node", "pi", "cli", "core", "globalRoot", "agentDir", "coreUnit"], "peer");
   const alias = nonempty(input.alias, "peer alias");

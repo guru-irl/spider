@@ -1,4 +1,5 @@
 import { createFederation } from "./federation.js";
+import { parseV0BrokerReply, parseV0BrokerRequest, v0ExplicitName, v0TextFits, V0_ASK_MAX_MS, V0_INTERCOM_FEATURE, type V0Delivery, type V0Endpoint } from "../roam-v0.js";
 import { MOVE_FENCE_FEATURE, type IntercomIntakeAction, type IntercomIntakeFence } from "../protocol.js";
 import { isIntercomIntakeAction, isIntercomIntakeFence } from "./protocol.js";
 import { RECEIPT_ACK_FEATURE, RECEIPT_EVIDENCE_FEATURE, compatibleReceipt, FEDERATION_FEATURE, FREEZE_BLOCKERS_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, addressKey, sessionAddress, type SessionAddress, type RemoteSessionInfo, type FederationDispatchResult, type FederationBrokerMessage, type SessionEndpoint, type LocalSessionInfo } from "../protocol.js";
@@ -106,6 +107,16 @@ interface AskEdge {
   scopeId?: string;
   createdAt: number;
 }
+
+type V0AskRoute = {
+  targetKey: string;
+  targetAddress: SessionAddress;
+  endpointEpoch: string;
+  askerId: string;
+} & (
+  | { state: "waiting"; socket: net.Socket; targetSocket: net.Socket; requestId: string; timer: NodeJS.Timeout }
+  | { state: "closed"; closedAt: number }
+);
 
 interface PendingAskRecord {
   askId: string;
@@ -254,6 +265,8 @@ class IntercomBroker {
   private noticePending = new Map<string, { bridge: net.Socket; receiver: net.Socket; timer: NodeJS.Timeout }>();
   private helperToken: string | null = null;
   private helperNegotiated = new Set<net.Socket>();
+  private v0Requests = new Set<net.Socket>();
+  private v0Asks = new Map<string, V0AskRoute>();
   private helpers = new Set<net.Socket>();
   private helperPending = new Map<string, { socket: net.Socket; requestId: string; timer: NodeJS.Timeout }>();
   private remoteRoutes = new Map<string, { createdAt: number; from: SessionAddress; to: RemoteSessionInfo }>();
@@ -354,6 +367,7 @@ class IntercomBroker {
       this.unregisteredConnections.delete(socket);
     };
     armRegistrationTimeout();
+    const holdV0Connection = () => clearRegistrationTimeout();
     const connection: ConnectionState = {
       socket,
       tokens: RATE_LIMIT_CAPACITY,
@@ -373,7 +387,7 @@ class IntercomBroker {
         } else {
           armRegistrationTimeout();
         }
-      });
+      }, holdV0Connection);
     }, (error) => {
       socket.destroy(error);
     });
@@ -384,6 +398,12 @@ class IntercomBroker {
       clearRegistrationTimeout();
       this.connections.delete(socket);
       this.helperNegotiated.delete(socket);
+      this.v0Requests.delete(socket);
+      for (const [id, ask] of this.v0Asks) {
+        if (ask.state !== "waiting") continue;
+        if (ask.socket === socket) this.finishV0Ask(id);
+        else if (ask.targetSocket === socket) this.finishV0Ask(id, { kind: "no_reply", id });
+      }
       this.helpers.delete(socket);
       for (const [id, pending] of this.noticePending) {
         if (pending.bridge !== socket && pending.receiver !== socket) continue;
@@ -419,6 +439,66 @@ class IntercomBroker {
     socket.on("error", (error) => {
       console.error("Socket error:", error);
     });
+  }
+
+  private pruneV0Asks(): void {
+    const now = Date.now();
+    for (const [id, ask] of this.v0Asks) {
+      if (ask.state === "closed" && (now - ask.closedAt > MESSAGE_RECEIPT_ROUTE_RETENTION_MS || this.v0Asks.size > MAX_DELIVERY_RECORDS)) this.v0Asks.delete(id);
+    }
+  }
+
+  private finishV0Ask(id: string, result?: V0Delivery): void {
+    const ask = this.v0Asks.get(id);
+    if (!ask || ask.state !== "waiting") return;
+    clearTimeout(ask.timer);
+    this.v0Asks.set(id, { state: "closed", targetKey: ask.targetKey, targetAddress: ask.targetAddress,
+      endpointEpoch: ask.endpointEpoch, askerId: ask.askerId, closedAt: Date.now() });
+    if (result && !ask.socket.destroyed && ask.socket.writable) {
+      try { writeMessage(ask.socket, { type: "roam_v0_result", requestId: ask.requestId, ...result }); } catch { /* The requester is gone. */ }
+    }
+    if (!ask.socket.destroyed) ask.socket.destroySoon();
+  }
+
+  private handleV0Reply(socket: net.Socket, from: ConnectedSession, to: string, message: Message): boolean {
+    if (!message.replyTo) return false;
+    const localAsk = this.askEdges.get(message.replyTo);
+    if (localAsk?.to === from.key && this.findSessions(to, from.scopeId).some(target => target.key === localAsk.from)) return false;
+    this.pruneV0Asks();
+    const ask = this.v0Asks.get(message.replyTo);
+    if (!ask) {
+      if (from.info.v0HomeEpoch !== undefined && !this.askEdges.has(message.replyTo) && !this.inboundRemoteRoutes.has(message.replyTo)) {
+        this.writeDeliveryFailure(socket, message.id, "The asker is no longer waiting.", "E_REPLY_TARGET");
+        return true;
+      }
+      return false;
+    }
+    const fail = (reason: string, code = "E_REPLY_TARGET") => this.writeDeliveryFailure(socket, message.id, reason, code);
+    if (ask.targetKey !== from.key || addressKey(ask.targetAddress) !== addressKey(sessionAddress(from.info, from.scopeId ?? null)) || to !== ask.askerId) {
+      fail("Reply target does not match the pending ask"); return true;
+    }
+    if (ask.state === "closed" || ask.socket.destroyed || !ask.socket.writable) {
+      if (ask.state === "waiting") this.finishV0Ask(message.replyTo);
+      fail("The asker is no longer waiting."); return true;
+    }
+    if (from.socket !== ask.targetSocket || from.info.endpointEpoch !== ask.endpointEpoch) {
+      fail("Reply target does not match the pending ask"); return true;
+    }
+    const response = { type: "roam_v0_result", requestId: ask.requestId, kind: "replied", id: message.replyTo,
+      replyId: message.id, text: message.content.text };
+    if (message.content.attachments !== undefined || message.expectsReply || message.supersedes || message.retryOf || message.provenance ||
+        !parseV0BrokerReply(response)) {
+      fail(v0TextFits(response.text) ? "Invalid remote reply" : "Remote reply text is too large.", "E_INVALID_MESSAGE"); return true;
+    }
+    try {
+      writeMessage(ask.socket, response);
+      this.finishV0Ask(message.replyTo);
+      this.writeDeliverySuccess(socket, message.id, "socket_delivered");
+    } catch {
+      this.finishV0Ask(message.replyTo);
+      fail("The asker is no longer waiting.");
+    }
+    return true;
   }
 
   private unknownBridgeResult(): FederationDispatchResult {
@@ -661,6 +741,7 @@ class IntercomBroker {
     msg: unknown,
     currentKey: string | null,
     setKey: (key: string | null) => void,
+    holdV0Connection: () => void,
   ): void {
     if (typeof msg !== "object" || msg === null || !("type" in msg) || typeof msg.type !== "string") {
       throw new Error("Invalid client message");
@@ -669,6 +750,76 @@ class IntercomBroker {
     const clientMessage = msg as { type: string } & Record<string, unknown>;
     const requiresEndpointAuth = typeof LISTEN_TARGET !== "string";
     const hasEndpointAuth = clientMessage.stateId === BROKER_STATE_ID;
+
+    if (this.v0Requests.has(socket)) throw new Error("roam-v0-one-request-only");
+    if (clientMessage.type === "roam_v0") {
+      if (typeof LISTEN_TARGET !== "string" || currentKey !== null || !this.helperNegotiated.has(socket)) throw new Error("roam-v0-private-socket-required");
+      this.v0Requests.add(socket);
+      const request = parseV0BrokerRequest(msg);
+      if (!request) {
+        const refusal = { type: "roam_v0_result", requestId: clientMessage.requestId, kind: "refused", code: "invalid" };
+        if (!parseV0BrokerReply(refusal)) throw new Error("invalid-roam-v0-request");
+        writeMessage(socket, refusal);
+        return;
+      }
+      if (request.kind === "lookup") {
+        const targets: V0Endpoint[] = [];
+        for (const session of this.sessions.values()) {
+          if (session.info.v0HomeEpoch === undefined || !session.info.address || session.socket.destroyed || !session.socket.writable ||
+              (session.scopeId ?? null) !== request.scopeId) continue;
+          const name = v0ExplicitName(session.info);
+          if (request.selector.by === "id" ? session.info.address.sessionId !== request.selector.value
+            : !name || name.toLowerCase() !== request.selector.value.toLowerCase()) continue;
+          targets.push({ address: session.info.address, name, homeEpoch: session.info.v0HomeEpoch, endpointEpoch: session.info.endpointEpoch! });
+        }
+        const result = { type: "roam_v0_result", requestId: request.requestId, kind: "matches", targets };
+        writeMessage(socket, parseV0BrokerReply(result) ? result : { type: "roam_v0_result", requestId: request.requestId, kind: "refused", code: "incomplete" });
+        return;
+      }
+      const respond = (result: Record<string, unknown>) => writeMessage(socket, { type: "roam_v0_result", requestId: request.requestId, ...result });
+      if (request.from.address.scopeId !== request.target.address.scopeId) {
+        respond({ kind: "refused", code: "unauthorized" }); return;
+      }
+      const candidates = [...this.sessions.values()].filter(session => session.info.address &&
+        addressKey(session.info.address) === addressKey(request.target.address));
+      if (!candidates.length || candidates.every(session => session.socket.destroyed || session.socket.writableEnded || !session.socket.writable)) {
+        respond({ kind: "refused", code: "offline" }); return;
+      }
+      const target = candidates.find(session => session.info.endpointEpoch === request.target.endpointEpoch &&
+        session.info.v0HomeEpoch === request.target.homeEpoch &&
+        v0ExplicitName(session.info) === request.target.name);
+      if (!target) { respond({ kind: "refused", code: "changed" }); return; }
+      if (target.socket.destroyed || target.socket.writableEnded || !target.socket.writable) {
+        respond({ kind: "refused", code: "offline" }); return;
+      }
+      if (request.kind === "ask") {
+        this.pruneV0Asks();
+        if (this.v0Asks.has(request.message.id) || this.askEdges.has(request.message.id)) {
+          respond({ kind: "refused", code: "invalid" }); return;
+        }
+        if ([...this.v0Asks.values()].filter(ask => ask.state === "waiting").length >= MAX_UNREGISTERED_CONNECTIONS) {
+          respond({ kind: "refused", code: "unreachable" }); return;
+        }
+        const timeoutMs = Math.min(request.timeoutMs, V0_ASK_MAX_MS);
+        const timer = setTimeout(() => this.finishV0Ask(request.message.id, { kind: "no_reply", id: request.message.id }), timeoutMs);
+        timer.unref();
+        this.v0Asks.set(request.message.id, { state: "waiting", socket, targetSocket: target.socket, requestId: request.requestId, timer,
+          targetKey: target.key, targetAddress: request.target.address, endpointEpoch: request.target.endpointEpoch, askerId: request.from.id });
+        holdV0Connection();
+      }
+      try {
+        writeMessage(target.socket, { type: "message", from: request.from, message: {
+          id: request.message.id, timestamp: request.message.timestamp, content: { text: request.message.text },
+          ...(request.kind === "ask" ? { expectsReply: true, remainingMs: Math.min(request.timeoutMs, V0_ASK_MAX_MS) } : {}),
+          brokerReceivedAt: Date.now(), brokerDeliveredAt: Date.now(),
+        } });
+        if (request.kind === "deliver") respond({ kind: "socket_delivered", id: request.message.id });
+      } catch {
+        if (request.kind === "ask") this.finishV0Ask(request.message.id, { kind: "unknown", id: request.message.id });
+        else respond({ kind: "unknown", id: request.message.id });
+      }
+      return;
+    }
 
     if (clientMessage.type === "health") {
       if (typeof clientMessage.requestId !== "string") {
@@ -683,7 +834,7 @@ class IntercomBroker {
         requestId: clientMessage.requestId,
         protocol: INTERCOM_PROTOCOL_NAME,
         version: INTERCOM_PROTOCOL_VERSION,
-        ...(typeof LISTEN_TARGET === "string" ? { implementation: "spider", features: [HELPER_EXCHANGE_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, FEDERATION_FEATURE] } : {}),
+        ...(typeof LISTEN_TARGET === "string" ? { implementation: "spider", features: [HELPER_EXCHANGE_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, FEDERATION_FEATURE, V0_INTERCOM_FEATURE] } : {}),
       });
       return;
     }
@@ -804,6 +955,7 @@ class IntercomBroker {
           endpointEpoch: randomUUID(),
           ...(session.activationEpoch ? { activationEpoch: session.activationEpoch } : {}),
           ...(session.homeEpoch !== undefined ? { homeEpoch: session.homeEpoch } : {}),
+          ...(session.v0HomeEpoch !== undefined ? { v0HomeEpoch: session.v0HomeEpoch } : {}),
           ...(session.address ? { address: session.address } : {}),
           ...(session.name !== undefined ? { name: session.name } : {}),
           ...(session.runtimeFallbackAlias !== undefined ? { runtimeFallbackAlias: session.runtimeFallbackAlias } : {}),
@@ -827,7 +979,7 @@ class IntercomBroker {
           extensions,
           receiptAck: Array.isArray(clientMessage.features) && clientMessage.features.includes(RECEIPT_ACK_FEATURE),
           receiptEvidence: Array.isArray(clientMessage.features) && clientMessage.features.includes(RECEIPT_EVIDENCE_FEATURE),
-          federation: Array.isArray(clientMessage.features) && clientMessage.features.includes(FEDERATION_FEATURE),
+          federation: session.v0HomeEpoch === undefined && Array.isArray(clientMessage.features) && clientMessage.features.includes(FEDERATION_FEATURE),
         };
         this.sessions.set(key, connectedSession);
         this.disconnectedSessions.delete(key);
@@ -972,6 +1124,10 @@ class IntercomBroker {
           break;
         }
 
+        if (message.expectsReply && this.v0Asks.get(message.id)?.state === "waiting") {
+          this.writeDeliveryFailure(socket, message.id, "Message ID is already in use by a remote ask", "E_INVALID_MESSAGE"); break;
+        }
+        if (message.replyTo && this.handleV0Reply(socket, fromSession, clientMessage.to, message)) break;
         const brokerReceivedAt = Date.now();
         this.pruneAskEdges();
         this.pruneMessageReceiptRoutes(brokerReceivedAt);

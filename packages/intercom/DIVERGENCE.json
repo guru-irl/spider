@@ -26,6 +26,12 @@
       "upstreamHash": "4f97b280ff3e4abc5f622db5e039b57ecda2aba4b93425b20a1aea3f4fec2943"
     },
     {
+      "path": "broker/roam-v0-client.ts",
+      "task": "3.6a",
+      "reason": "Call a private Unix broker once for roaming lookup, delivery, or an ask.",
+      "upstreamHash": null
+    },
+    {
       "path": "broker/spawn.ts",
       "task": "3.6e",
       "reason": "Use the configured agent directory and refuse to replace occupied or legacy broker endpoints.",
@@ -87,11 +93,17 @@
       "upstreamHash": "3782886bdb143ae11bbf68c87803153078d66d321858cc4d53c4e39b9704dbc2"
     },
     {
+      "path": "roam-v0.ts",
+      "task": "3.6a",
+      "reason": "Define and validate the shared roaming intercom contract for the broker, agent, and tool.",
+      "upstreamHash": null
+    },
+    {
       "path": "single-instance.ts",
       "task": "3.6-0",
-      "reason": "Fence duplicate extension registrations during rolling adoption, expose the active registration's pending-ask query to the host without bypassing conflict detection, and forward the host's icon style to intercom rendering.",
+      "reason": "Fence duplicate extension registrations during rolling adoption and expose the active registration's pending-ask query. Forward the host's icon style and roaming options through the same duplicate guard.",
       "upstreamHash": null,
-      "forkSha256": "9b2509145b260e96eef17fbe0ca9fa9560ee21e8a4d32ee68b8ec37e9be16e2f"
+      "forkSha256": "8b24b3585df1266a4785f414a9cec404947dba482e52130ee056299670936408"
     },
     {
       "path": "test-support.ts",

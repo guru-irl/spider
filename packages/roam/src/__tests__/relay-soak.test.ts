@@ -696,6 +696,20 @@ describe("packed soak operator commands", () => {
   afterEach(() => vi.useRealTimers());
   afterAll(() => { if (root) rmSync(root, { recursive: true, force: true }); });
 
+  it("obtains the documented origin pin from the packed module and a fake broker", async () => {
+    const config = { machineId: PEER } as RoamConfig;
+    const routes: V0Routes = { version: 2, agentDir: "/agent", sendTo: [], acceptFrom: [], relays: [RELAY], linkTo: [] };
+    const { machineId: _machineId, ...endpoint } = fixtureLink.from;
+    const origin = await packed.lookupRelaySoakOrigin("/fixture", "sender", "scope", {
+      readIdentity: () => config, readRoutes: () => routes,
+      lookup: async (agentDir, operation) => {
+        expect([agentDir, operation]).toEqual(["/agent", { kind: "lookup", scopeId: "scope", selector: { by: "id", value: "sender" } }]);
+        return { kind: "matches", targets: [endpoint] };
+      },
+    });
+    expect(origin).toEqual(fixtureLink.from);
+  });
+
   it("dials the pinned peer and returns a hold-0 result through a fake transport", async () => {
     const controller = new AbortController(), output: string[] = [], errors: string[] = [], polls: RelayPoll[] = [];
     const config = { machineId: RELAY, intercom: { machineAlias: "relay.invalid" } } as unknown as RoamConfig;

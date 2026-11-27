@@ -911,9 +911,19 @@ it("reimports after an installed checkout is reset to its previous state", async
   expect(git(f.destination, "write-tree")).toBe(f.previous.indexTree);
   expect(tree(f.destination, f.root)).toBe(f.previous.workingTree);
   const fetches = f.calls.filter(args => args[0] === "git" && args[1] === "fetch").length;
+  let inspectionsBeforeRollback = 0;
+  const run = f.ports.run;
+  f.ports.run = async (cwd, argv, options) => {
+    if (argv[0] === "git" && argv.includes("core.trustctime=true") &&
+        !f.ports.journal.read(snapshot.moveId).some(row => row.action === "workspace-settings-recovery-start")) {
+      inspectionsBeforeRollback++;
+    }
+    return run(cwd, argv, options);
+  };
 
   const prepared = await prepareWorkspace(snapshot, f.destination, f.ports);
 
+  expect(inspectionsBeforeRollback).toBe(0);
   expect(prepared.previous).toEqual(f.previous);
   expect(git(f.destination, "rev-parse", "HEAD")).toBe(snapshot.head);
   expect(git(f.destination, "write-tree")).toBe(snapshot.indexTree);
@@ -945,7 +955,21 @@ it("finishes an installed checkout after a mixed reset to the previous head", as
   expect(recovery?.result.workingApplied).toBe(true);
 }, 5000);
 
-it.each(["config", "tracked", "hidden"] as const)("refuses a %s edit after configuration installation was interrupted", async edit => {
+it("reinstalls when effective sparse settings change after installation", async () => {
+  const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
+  git(f.destination, "config", "--local", "extensions.worktreeConfig", "false");
+  expect(git(f.destination, "config", "--bool", "--get", "--default=false", "core.sparseCheckout")).toBe("false");
+
+  const prepared = await prepareWorkspace(snapshot, f.destination, f.ports);
+
+  expect(prepared.previous).toEqual(f.previous);
+  expect(git(f.destination, "config", "--bool", "--get", "core.sparseCheckout")).toBe("true");
+  expect(git(f.destination, "ls-files", "-t", "--", "skip/item.txt")).toBe("S skip/item.txt");
+  const recovery = f.ports.journal.read(snapshot.moveId).find(row => row.action === "workspace-settings-recovery-complete");
+  expect(recovery?.result.workingApplied).toBe(true);
+}, 5000);
+
+it.each(["config", "tracked", "hidden"] as const)("refuses a %s edit during interrupted settings recovery", async edit => {
   const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
   const file = edit === "config" ? join(f.destination, ".git", "config.worktree")
     : edit === "tracked" ? join(f.destination, "tracked.txt") : join(f.destination, "skip", "item.txt");

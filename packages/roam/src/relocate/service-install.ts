@@ -1,10 +1,9 @@
 import { execFile } from "node:child_process";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, parse, resolve } from "node:path";
 import { assertTestConfigPath } from "@spider/db-core";
-import { privateDirectory } from "../staging";
 
 export interface SupervisorInstallPorts {
   unitDir: string;
@@ -54,11 +53,37 @@ export async function removeLocalSupervisor(ports: SupervisorInstallPorts, rootL
   return name;
 }
 
+function prepareUnitDirectory(directory: string): void {
+  const root = parse(directory).root;
+  let current = root, created = false;
+  for (const part of directory.slice(root.length).split(/[\\/]+/).filter(Boolean)) {
+    current = join(current, part);
+    let stat;
+    try { stat = lstatSync(current); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      try { mkdirSync(current, { mode: 0o700 }); if (current === directory) created = true; }
+      catch (mkdirError) { if ((mkdirError as NodeJS.ErrnoException).code !== "EEXIST") throw mkdirError; }
+      stat = lstatSync(current);
+    }
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error("The systemd user unit directory contains a symlink or is not a directory.");
+  }
+  const fd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(fd);
+    if (process.getuid && stat.uid !== process.getuid()) throw new Error("The systemd user unit directory has a different owner; use a directory owned by the current user.");
+    if ((stat.mode & 0o022) !== 0 || created && (stat.mode & 0o7777) !== 0o700) {
+      try { fchmodSync(fd, 0o700); }
+      catch { throw new Error("The systemd user unit directory is group- or world-writable or has unsafe creation permissions; fix its permissions and retry."); }
+    }
+  } finally { closeSync(fd); }
+}
+
 export async function installLocalV0Supervisor(ports: SupervisorInstallPorts, rootLine: string, unit: string): Promise<void> {
   const file = join(ports.unitDir, v0Unit), temp = `${file}.${randomUUID()}.new`;
   assertTestConfigPath(file);
   if (resolve(ports.unitDir) !== ports.unitDir) throw new Error("The systemd user unit directory is not canonical.");
-  privateDirectory(ports.unitDir);
+  prepareUnitDirectory(ports.unitDir);
   const before = definition(file, rootLine, true);
   if (before && before.text !== unit) await removeLocalSupervisor(ports, rootLine, true);
   if (before?.text !== unit) {

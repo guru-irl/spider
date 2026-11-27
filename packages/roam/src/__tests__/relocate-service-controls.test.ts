@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
@@ -6,6 +6,7 @@ import { migrate, openDb } from "@spider/db-core";
 import { installHubService, hubServiceFile } from "../launchd";
 import { renderSupervisorUnit } from "../systemd";
 import { configureV0Service } from "../production-controls";
+import { installLocalV0Supervisor } from "../relocate/service-install";
 import { main } from "../cli";
 
 const roots: string[] = [];
@@ -84,6 +85,64 @@ it("enable refuses a non-executable CLI from the configured hub service before c
   expect(result).toMatchObject({ code: 1, message: expect.stringContaining("CLI executable is missing or inaccessible.") });
   expect(f.calls).toEqual([]);
   expect(readFileSync(plist, "utf8")).toBe(before);
+});
+
+it("enable preserves an existing 0755 systemd user directory", async () => {
+  const f = fixture("box"), io = { out: vi.fn(), err: vi.fn() };
+  vi.stubEnv("HOME", resolve("."));
+  mkdirSync(f.systemd.unitDir, { mode: 0o755 });
+  chmodSync(f.systemd.unitDir, 0o755);
+
+  expect(await main(["roam", "enable"], io, { v0: { lifecycle: f.options } }), io.err.mock.calls.flat().join("")).toBe(0);
+  expect(f.enabled()).toBe(true);
+  expect(lstatSync(f.systemd.unitDir).mode & 0o7777).toBe(0o755);
+  expect(existsSync(join(f.systemd.unitDir, "spider-roam-supervisor-v0.service"))).toBe(true);
+});
+
+it.each([0o775, 0o757])("enable tightens an existing unsafe systemd user directory with mode %o", async mode => {
+  const f = fixture("box"), io = { out: vi.fn(), err: vi.fn() };
+  vi.stubEnv("HOME", resolve("."));
+  mkdirSync(f.systemd.unitDir, { mode });
+  chmodSync(f.systemd.unitDir, mode);
+
+  expect(await main(["roam", "enable"], io, { v0: { lifecycle: f.options } }), io.err.mock.calls.flat().join("")).toBe(0);
+  expect(f.enabled()).toBe(true);
+  expect(lstatSync(f.systemd.unitDir).mode & 0o7777).toBe(0o700);
+  expect(existsSync(join(f.systemd.unitDir, "spider-roam-supervisor-v0.service"))).toBe(true);
+});
+
+it("enable creates a missing systemd user directory with mode 0700", async () => {
+  const f = fixture("box"), io = { out: vi.fn(), err: vi.fn() };
+  vi.stubEnv("HOME", resolve("."));
+  expect(existsSync(f.systemd.unitDir)).toBe(false);
+
+  expect(await main(["roam", "enable"], io, { v0: { lifecycle: f.options } }), io.err.mock.calls.flat().join("")).toBe(0);
+  expect(lstatSync(f.systemd.unitDir).mode & 0o7777).toBe(0o700);
+  expect(existsSync(join(f.systemd.unitDir, "spider-roam-supervisor-v0.service"))).toBe(true);
+});
+
+it("enable refuses a symlinked systemd user directory without changing its target", async () => {
+  const f = fixture("box"), io = { out: vi.fn(), err: vi.fn() }, target = join(f.root, "target");
+  vi.stubEnv("HOME", resolve("."));
+  mkdirSync(target, { mode: 0o755 }); chmodSync(target, 0o755);
+  symlinkSync(target, f.systemd.unitDir);
+
+  expect(await main(["roam", "enable"], io, { v0: { lifecycle: f.options } })).not.toBe(0);
+  expect(io.err.mock.calls.flat().join("")).toMatch(/symlink|canonical/i);
+  expect(f.enabled()).toBe(false);
+  expect(lstatSync(target).mode & 0o7777).toBe(0o755);
+  expect(existsSync(join(target, "spider-roam-supervisor-v0.service"))).toBe(false);
+});
+
+it("refuses a systemd user directory owned by another user", async () => {
+  const f = fixture("box"), uid = process.getuid?.();
+  if (uid === undefined) return;
+  mkdirSync(f.systemd.unitDir, { mode: 0o755 });
+  const getuid = vi.spyOn(process, "getuid").mockReturnValue(uid + 1);
+  try {
+    await expect(installLocalV0Supervisor(f.systemd, "root", "unit")).rejects.toThrow(/owner/i);
+    expect(existsSync(join(f.systemd.unitDir, "spider-roam-supervisor-v0.service"))).toBe(false);
+  } finally { getuid.mockRestore(); }
 });
 
 it("a Linux box enables and disables only its configured local v0 supervisor", async () => {

@@ -866,7 +866,8 @@ it("unproved terminal removal remains pending cleanup without rollback", async (
 }, 5000);
 
 it("recovery completes a pending start from durable readiness without a second start", async () => {
-  const f = fixture(), start = f.ports.start, endpoint = f.ports.intercom.destinationEndpoint;
+  const gitAtStart = gitCalls;
+  const f = fixture(false, HUB, BOX, "synthetic"), start = f.ports.start, endpoint = f.ports.intercom.destinationEndpoint;
   f.ports.start = async (...args) => ({ ...await start(...args), code: 3, reason: "readiness-pending", value: null });
   expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 3, reason: "move-destination-pending" });
   const saved = f.ports.journal.read(f.request.operation.id).filter(row => row.action === "move-action-complete" && row.result.action === "start");
@@ -883,6 +884,7 @@ it("recovery completes a pending start from durable readiness without a second s
   f.ports.intercom.destinationEndpoint = endpoint;
   expect(await recoverMove(f.request.operation.id, f.ports)).toMatchObject({ code: 0, reason: "moved", value: { home: { machineId: BOX, epoch: 2 } } });
   expect(f.events.filter(event => event === "start")).toHaveLength(1);
+  expect(gitCalls - gitAtStart, "durable readiness fixture must not run Git").toBe(0);
 }, 5000);
 
 it.each([3, 1] as const)("recovery never retries a saved start with code %s without readiness", async code => {

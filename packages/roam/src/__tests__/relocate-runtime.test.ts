@@ -182,6 +182,14 @@ describe("v0 local runtime",()=>{
   vi.spyOn(hcApi,"invokeCli").mockResolvedValue({terminals:[{address:"t7",state:"finished",reason:"exited",signal:15},{address:"peer/t1",state:"live"}]});
   expect(await createLocalIO(f.options).terminals(id)).toEqual([{terminal:"t7",state:"finished",pid:null}]);
  });
+ it("does not let a finished core-restart terminal block ownership checks", async () => {
+  const f = runtimeFixture();
+  const {moving} = localCheckout(f);
+  vi.mocked(hcApi.invokeCli).mockResolvedValue({terminals:[{address:"t7",state:"finished",reason:"stopped_by_restart",exit_code:null,signal:null}]});
+  const local = createLocalRuntime(f.options);
+  expect(await local.owner(id)).toEqual({kind:"free"});
+  expect(await local.stop(id,moving)).toEqual({ok:true,value:undefined});
+ });
  it.each([0,-1,1.5])("rejects an invalid native exit signal %s",async signal=>{
   const f=runtimeFixture();
   vi.spyOn(hcApi,"invokeCli").mockResolvedValue({terminals:[{address:"t7",state:"finished",reason:"exited",signal}]});

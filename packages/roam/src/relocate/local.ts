@@ -129,11 +129,17 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
         const row = value as Record<string,unknown>;
         // Native peer addresses are qualified; their processes are not local.
         if (typeof row.address === "string" && row.address.includes("/")) return null;
-        const signaled = Number.isSafeInteger(row.signal) && (row.signal as number) > 0;
-        if (typeof row.address !== "string" || !row.address || !["live","finished"].includes(row.state as string) || row.state === "finished" && (row.reason !== "exited" || !(Number.isSafeInteger(row.exit_code) || signaled))) throw new Error("Unknown terminal state");
+        if (typeof row.address !== "string" || !row.address || row.state !== "live" && row.state !== "finished") throw new Error("Unknown terminal state");
+        if (row.state === "finished") {
+          const signaled = Number.isSafeInteger(row.signal) && (row.signal as number) > 0;
+          if (row.reason === "exited" && !Number.isSafeInteger(row.exit_code) && !signaled) throw new Error("Invalid terminal exit");
+          // Core restart and other non-exit reasons do not carry exit data.
+          // A finished row cannot identify a live owner, even if it kept a PID.
+          return {terminal:row.address,state:"finished" as const,pid:null};
+        }
         let pid: unknown = row.pid ?? row.process_id ?? null;
         let labels: unknown = row.labels;
-        if (row.state === "live" && (pid === null || labels == null)) {
+        if (pid === null || labels == null) {
           const detail = await invokeCli(binary,["get",row.address,"--json"],env,options.limits.replyBytes,undefined,{timeoutMs:options.limits.controlMs});
           if (!detail || typeof detail !== "object" || !("address" in detail) || detail.address !== row.address || !("state" in detail) || detail.state !== "live" || !("pid" in detail)) throw new Error("Terminal identity changed");
           if (pid !== null && detail.pid !== pid) throw new Error("Terminal process changed");
@@ -141,8 +147,8 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
           if ("labels" in detail) labels = detail.labels;
         }
         if (pid !== null && (!Number.isSafeInteger(pid) || (pid as number) <= 0)) throw new Error("Unknown terminal process");
-        const terminal: LocalTerminal = {terminal:row.address,state:row.state as "live"|"finished",pid:pid as number|null};
-        if (row.state === "live" && labels && typeof labels === "object") {
+        const terminal: LocalTerminal = {terminal:row.address,state:"live",pid:pid as number|null};
+        if (labels && typeof labels === "object") {
           const tags = labels as Record<string,unknown>;
           if (tags["spider.kind"] === "session" && tags["spider.session"] === id && tags["spider.machine"] === options.config.machineId &&
               typeof tags["spider.roam.epoch"] === "string" && /^[1-9]\d*$/.test(tags["spider.roam.epoch"]) &&

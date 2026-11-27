@@ -121,7 +121,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
     watch(join(root, "roam", "config.json")); watch(join(root, "roam", "machine.json"));
     watchDb(join(root, "roam", "journal.db")); watchDb(join(root, "spider.db"));
     const journalKinds = new Map<string, string>();
-    const activeFreezes = new Set<string>();
+    const activeFreezes = new Set<string>(), completedFreezes = new Set<string>();
     const v0Maps = new Set<string>();
     const v0: Array<{ origin: "checkpoint" | "incoming"; plan: RelocatePlan; expectedKey?: string }> = [];
     const configFile = join(root, "roam", "config.json"), identityFile = join(root, "roam", "machine.json");
@@ -224,7 +224,8 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
           if (typeof row.session_id !== "string" || !row.session_id || /[\u0000-\u001f\u007f]/.test(row.session_id) ||
               typeof row.move_id !== "string" || !row.move_id || /[\u0000-\u001f\u007f]/.test(row.move_id) ||
               !Number.isSafeInteger(row.epoch) || Number(row.epoch) < 1 || !["freezing", "frozen", "aborting", "aborted", "complete"].includes(String(row.state))) throw new Error("Invalid freeze record");
-          if (row.state === "complete" || row.state === "aborted") continue;
+          if (row.state === "complete") { completedFreezes.add(JSON.stringify([row.session_id, row.move_id])); continue; }
+          if (row.state === "aborted") continue;
           if (row.state !== "freezing" && !rosters.some(roster => roster.session_id === row.session_id && roster.move_id === row.move_id)) throw new Error("Missing freeze roster");
           activeFreezes.add(JSON.stringify([row.session_id, row.move_id]));
           findings.push(`freeze session ${safeId(row.session_id)} operation ${safeId(row.move_id)}`);
@@ -337,6 +338,11 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
                 !(row.move_id === null || typeof row.move_id === "string") || !(row.freeze_seq === null || Number.isSafeInteger(row.freeze_seq))) throw new Error("Invalid frozen membership");
             const label = `frozen session ${safeId(row.session_id)} store ${safeId(key)}`;
             if (row.move_id && activeFreezes.has(JSON.stringify([row.session_id, row.move_id]))) { findings.push(label); continue; }
+            if (row.move_id !== null || row.freeze_seq !== null) {
+              if (row.move_id === null || row.freeze_seq === null || !completedFreezes.has(JSON.stringify([row.session_id, row.move_id]))) {
+                unknown.push(`${label} freeze record unavailable`); continue;
+              }
+            }
             const home = global.prepare("SELECT session_id,machine_id,epoch,move_id,updated_at,state,destination FROM session_homes WHERE session_id=?").get(row.session_id) as
               { session_id: string; machine_id: string; epoch: number; move_id: string | null; updated_at: number; state: string | null; destination: string | null } | undefined;
             if (home && home.state !== null) {

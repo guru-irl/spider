@@ -186,14 +186,15 @@ export async function installHubService(input: { node: string; cli: string; glob
   await ports.launchctl(["bootstrap", domain, file]);
 }
 
-async function removeDefinition(file: string, root: string, label: string, ports: LaunchdPorts, ignoreUnrelated: boolean): Promise<void> {
+async function removeDefinition(file: string, root: string, label: string, ports: LaunchdPorts, ignoreUnrelated: boolean, verifyStopped?: () => Promise<void>): Promise<void> {
   assertTestConfigPath(file);
   const before = managedDefinition(file, root, label, ignoreUnrelated);
-  if (!before) return;
+  if (!before) { await verifyStopped?.(); return; }
   const uid = process.getuid?.();
   if (uid === undefined) throw new Error("Launchd user domain is unavailable");
   try { await ports.launchctl(["bootout", `gui/${uid}`, file]); }
   catch (error) { if ((error as { code?: unknown } | null)?.code !== "service-not-loaded") throw error; }
+  await verifyStopped?.();
   if (!unchanged(before, managedDefinition(file, root, label))) throw new Error("Service definition changed during removal");
   unlinkSync(file);
 }
@@ -236,8 +237,9 @@ export function hubServiceSelectionMatches(globalRoot: string, plistDir: string,
 }
 
 /** A service with another definition or root is not ours to remove. */
-export async function removeHubService(input: { globalRoot: string; mode?: "v0" }, ports: LaunchdPorts): Promise<void> {
+export async function removeHubService(input: { globalRoot: string; mode?: "v0"; verifyStopped?: () => Promise<void> }, ports: LaunchdPorts): Promise<void> {
   const root = absolute(input.globalRoot), directory = absolute(ports.plistDir), label = hubServiceLabel(root, input.mode);
-  await removeDefinition(hubServiceFile(root, directory, input.mode), root, label, ports, false);
+  // Retain the definition for a retry when bootout did not prove shutdown.
+  await removeDefinition(hubServiceFile(root, directory, input.mode), root, label, ports, false, input.verifyStopped);
   if (input.mode !== "v0" && label !== LABEL) await removeDefinition(join(directory, `${LABEL}.plist`), root, LABEL, ports, true);
 }

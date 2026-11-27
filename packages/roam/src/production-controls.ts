@@ -61,9 +61,8 @@ function preflightDetail(reason: string): string | undefined {
   return undefined;
 }
 function servicePorts(): LaunchdPorts {
-  const binary = launchctlBinary();
   type ServiceFailure = Error & { code: string; notLoaded: boolean };
-  const invoke = (argv: readonly string[]) => new Promise<void>((done, reject) => execFile(binary, [...argv], { timeout: 15_000, maxBuffer: 64 * 1024 }, (error, stdout, stderr) => {
+  const invoke = (argv: readonly string[]) => new Promise<void>((done, reject) => execFile(launchctlBinary(), [...argv], { timeout: 15_000, maxBuffer: 64 * 1024 }, (error, stdout, stderr) => {
     if (!error) { done(); return; }
     const output = `${stdout}\n${stderr}`;
     const notLoaded = argv[0] === "print" && argv.length === 2 && !error.killed && !error.signal && error.code === 113 &&
@@ -232,7 +231,10 @@ export async function configureV0Service(root: string, enabled: boolean, options
           await setEnabled(true);
         } else {
           changed = true;
-          await removeHubService({ globalRoot: root, mode: "v0" }, ports);
+          await removeHubService({ globalRoot: root, mode: "v0", async verifyStopped() {
+            try { await locked(root, config, async () => {}, "roam-hub", 1000); }
+            catch { throw new Error("Could not verify the roaming hub stopped. Stop the running hub or run spider roam doctor before retrying."); }
+          } }, ports);
         }
       } else {
         const ports = options.systemd ?? localSupervisorInstallPorts();

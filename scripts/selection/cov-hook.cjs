@@ -9,7 +9,7 @@ const dir = threads.isMainThread ? process.env.SPIDER_SELECTION_DIR
   : process.execArgv.at(-1) === workerPreload ? threadContext?.dir : null;
 if (dir) {
   const { appendFileSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } = require('node:fs');
-  const { join, relative, resolve, isAbsolute, sep } = require('node:path');
+  const { basename, join, relative, resolve, isAbsolute, sep } = require('node:path');
   const { fileURLToPath } = require('node:url');
   const { createHash, randomUUID } = require('node:crypto');
   const { syncBuiltinESMExports } = require('node:module');
@@ -18,6 +18,9 @@ if (dir) {
   const keysEnv = threadContext?.keysEnv ?? (process.env.SPIDER_SELECTION_BUNDLE_KEYS || '');
   const keys = new Set(keysEnv.split(',').filter(Boolean));
   const sizes = new Set([...keys].map(key => Number(key.split(':', 1)[0])));
+  const processId = threadContext?.processId ?? randomUUID();
+  const launchId = threadContext?.launchId ?? process.env.SPIDER_SELECTION_LAUNCH_ID ?? null;
+  delete process.env.SPIDER_SELECTION_LAUNCH_ID;
   const id = `${process.pid}-${randomUUID()}`;
   const dest = join(dir, `${id}.json`);
   const preload = `--require=${JSON.stringify(__filename)}`;
@@ -45,7 +48,7 @@ if (dir) {
     catch { /* The recorder must not change a child exit code or its streams. */ }
   }
 
-  function withEnv(args, hasArgv) {
+  function withEnv(args, hasArgv, childLaunchId) {
     const index = hasArgv && (Array.isArray(args[1]) || (args[1] == null && args.length > 2)) ? 2 : 1;
     const options = args[index];
     if (options != null && typeof options !== 'function' && (typeof options !== 'object' || Array.isArray(options))) return args;
@@ -59,6 +62,8 @@ if (dir) {
     env.SPIDER_SELECTION_DIR = dir;
     env.SPIDER_SELECTION_ROOT = root;
     env.SPIDER_SELECTION_BUNDLE_KEYS = keysEnv;
+    if (childLaunchId) env.SPIDER_SELECTION_LAUNCH_ID = childLaunchId;
+    else delete env.SPIDER_SELECTION_LAUNCH_ID;
     if (test) {
       env.SPIDER_SELECTION_TEST = test;
       // A test that starts Vitest is still one outer test's execution.
@@ -70,8 +75,29 @@ if (dir) {
     return args;
   }
 
-  function wrap(fn, hasArgv) {
-    return function (...args) { return Reflect.apply(fn, this, withEnv(args, hasArgv)); };
+  function recordLaunch(event) {
+    try { appendFileSync(join(dir, 'launches.ndjson'), JSON.stringify({ test, ...event }) + '\n'); }
+    catch (error) { note('launch', error); }
+  }
+
+  function wrap(fn, hasArgv, name) {
+    return function (...args) {
+      // Only direct Node executables can be identified without guessing what a shell runs.
+      const direct = test && (name === 'fork' || (hasArgv && typeof args[0] === 'string'
+        && /^(node|nodejs)(\.exe)?$/i.test(basename(args[0]))));
+      const childLaunchId = direct ? randomUUID() : null;
+      try {
+        const result = Reflect.apply(fn, this, withEnv(args, hasArgv, childLaunchId));
+        const child = result?.child ?? result;
+        if (direct && (child?.pid > 0 || name === 'execFileSync')) {
+          recordLaunch({ kind: 'process', launchId: childLaunchId });
+        }
+        return result;
+      } catch (error) {
+        if (direct && error?.pid > 0) recordLaunch({ kind: 'process', launchId: childLaunchId });
+        throw error;
+      }
+    };
   }
 
   function scriptPath(url) {
@@ -99,16 +125,21 @@ if (dir) {
   }
 
   function installWorkerCapture() {
-    threads.setEnvironmentData(threadContextKey, { test, dir, root, keysEnv });
+    threads.setEnvironmentData(threadContextKey, { test, dir, root, keysEnv, processId, launchId });
     const BaseWorker = threads.Worker;
     threads.Worker = new Proxy(BaseWorker, {
       construct(target, [entry, options], newTarget) {
         const limit = options?.resourceLimits?.maxOldGenerationSizeMb;
         // An inspector session prevents Node from recovering a worker-local
         // OOM in deliberately heap-starved fixtures. Leave them unrecorded.
-        if (limit > 0 && limit <= 64) return Reflect.construct(target, [entry, options], newTarget);
+        if (limit > 0 && limit <= 64) {
+          const worker = Reflect.construct(target, [entry, options], newTarget);
+          recordLaunch({ kind: 'thread', processId, threadId: worker.threadId });
+          return worker;
+        }
         const execArgv = [...(options?.execArgv ?? process.execArgv), workerPreload];
         const worker = Reflect.construct(target, [entry, { ...options, execArgv }], newTarget);
+        recordLaunch({ kind: 'thread', processId, threadId: worker.threadId });
         const name = channelName(worker.threadId);
         const terminate = worker.terminate;
         let pending;
@@ -145,8 +176,8 @@ if (dir) {
     for (const name of ['spawn', 'spawnSync', 'execFile', 'execFileSync', 'fork', 'exec', 'execSync']) {
       const base = cp[name];
       const hasArgv = name !== 'exec' && name !== 'execSync';
-      cp[name] = wrap(base, hasArgv);
-      if (base[custom]) Object.defineProperty(cp[name], custom, { value: wrap(base[custom], hasArgv) });
+      cp[name] = wrap(base, hasArgv, name);
+      if (base[custom]) Object.defineProperty(cp[name], custom, { value: wrap(base[custom], hasArgv, name) });
     }
     syncBuiltinESMExports();
 
@@ -200,15 +231,17 @@ if (dir) {
       function flush(ended = false) {
         finished ||= ended;
         try {
+          const cpu = process.cpuUsage();
           writeFileSync(`${dest}.tmp`, JSON.stringify({
-            pid: process.pid, threadId: threads.threadId, test, argv: process.argv, worker, ended: finished,
-            scripts: [...scripts.values()],
+            pid: process.pid, processId, launchId, threadId: threads.threadId, test, argv: process.argv, worker, ended: finished,
+            cpuMs: (cpu.user + cpu.system) / 1000, scripts: [...scripts.values()],
           }), { mode: 0o600 });
           renameSync(`${dest}.tmp`, dest);
         } catch (error) { note('flush', error); }
       }
 
       collect = flush;
+      flush();
       setInterval(flush, 2_000).unref();
       process.on('exit', () => flush(true));
       if (threads.isMainThread && process.platform !== 'win32') {

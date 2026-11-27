@@ -74,7 +74,7 @@ export async function readRelocateAdmission(sessionId: SessionId, db: Db, homes:
     // A pre-v0 store has no state column. Its rows remain legacy.
     const row = db.prepare("SELECT * FROM session_homes WHERE session_id=?").get(sessionId) as { state?: unknown } | undefined;
     if (!row) return knownManaged(sessionId) ? { kind: "managed", home: null } : { kind: "unmanaged" };
-    if (row.state == null) return { kind: "unmanaged" };
+    if (row.state == null) return knownManaged(sessionId) ? { kind: "managed", home: null } : { kind: "unmanaged" };
     const store = typeof homes === "function" ? homes() : homes;
     return { kind: "managed", home: await store.read(sessionId) };
   } catch { return { kind: "unavailable" }; }

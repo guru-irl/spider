@@ -32,7 +32,7 @@ const otherSessionId = "3ca9327d-9895-4ebe-a35d-ab55a5e8a406";
 const memoryId = "bfc3fe01-cf01-46ba-b629-4d6ce7201ef2";
 const noticeId = "c02d5f17-4ca0-48d3-83ea-0abfd30b06e0";
 const run = { id: runId, name: "tia-3", agent: "worker", model: "github-copilot/gpt-6.2-sol", thinking: "high", status: "failed", cost: 0, token_count: 13616326, result: "The build failed in the final packaging step.\nThe package manifest is missing.\nSee the build report for the exact path." };
-const todo = { seq: 935, text: "Check the packaging job with a fresh build directory.", done: false, session: sessionId, name: "release" };
+const todo = { seq: 935, text: "Check the packaging job with a fresh build directory.", done: false, session: sessionId, name: "release", current: true };
 const doneTodo = { ...todo, seq: 936, text: "Read the build logs.", done: true };
 const memory = { uuid: memoryId, category: "convention", status: "active", content: "Check the output directory before packaging the release.", link: "docs/release.md" };
 const skill = { name: "check-packaging", tier: "project", state: "active", status: "approved", useCount: 3, candidateBody: "Use the packaging report to verify the manifest and confirm that all listed files are present." };
@@ -69,7 +69,7 @@ export function cardFixtures(): CardFixture[] {
   const notification = (name: string, verb: string, render: Render, runIds: string[] = []): CardFixture =>
     ({ name, verb, render, runIds, groups: 1, callDetails: false, notification: true });
   const listGroup = { session: sessionId, name: "release", todos: [todo, doneTodo] };
-  const otherGroup = { session: otherSessionId, name: "docs", todos: [{ ...todo, seq: 460, session: otherSessionId, name: "docs" }] };
+  const otherGroup = { session: otherSessionId, name: "docs", todos: [{ ...todo, seq: 460, session: otherSessionId, name: "docs", current: false }] };
   const defaultEntry = { provider: "github-copilot", id: "gpt-6.2-sol", tier: "standard", available: true, thinking: true, vision: true, ctx: 128000, speed: 2, costHint: 2 };
   const insights = {
     nodes: [{ id: memoryId, label: "Verify the manifest", kind: "memory", category: "convention" }],

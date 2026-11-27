@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { openDbAt } from "@spider/db-core";
 import { HerdrError } from "@spider/herdr/client/parse";
 import { testTmpDir } from "@spider/intercom/test-support";
-import { parseV0AgentReply, parseV0BrokerReply, V0_ASK_MAX_MS, V0_INTERCOM_BYTES, V0_INTERCOM_MS, type V0AgentRequest, type V0BrokerOp, type V0Endpoint, type V0Reply, type V0Text } from "@spider/intercom/roam-v0";
+import { parseV0AgentReply, parseV0AgentRequest, parseV0BrokerReply, parseV0RelayAgentRequest, V0_ASK_MAX_MS, V0_INTERCOM_BYTES, V0_INTERCOM_MS, type V0AgentRequest, type V0BrokerOp, type V0Endpoint, type V0Reply, type V0Text } from "@spider/intercom/roam-v0";
 import type { LocalSessionInfo, RemoteSessionInfo } from "@spider/intercom/types";
 import { DEFAULT_LIMITS, type CallOptions, type Peer, type Transport } from "../contracts";
 import { main } from "../cli";
@@ -138,6 +138,21 @@ describe("roaming v0 intercom", () => {
   it("parses a correlated reply-only refusal", () => {
     const reply = { version: 1, requestId: "request-1", machineId: BOX, kind: "refused", code: "reply-only" };
     expect(parseV0AgentReply(reply)).toEqual(reply);
+  });
+
+  it("parses only a bounded relay envelope for lookup or delivery", () => {
+    const deliver = { version: 1, requestId: "delivery-1", toMachineId: BOX, from: findBen.from,
+      kind: "deliver", target: ben, message } as const;
+    const relay = { version: 2, relayId: OTHER, request: findBen };
+    expect(parseV0RelayAgentRequest(relay)).toEqual(relay);
+    expect(parseV0RelayAgentRequest({ ...relay, request: deliver })).toEqual({ ...relay, request: deliver });
+    expect(parseV0AgentRequest(relay)).toBeNull();
+    expect(parseV0AgentRequest(findBen)).toEqual(findBen);
+    for (const wrong of [findBen, { ...relay, version: 1 }, { ...relay, relayId: "" }, { ...relay, extra: true },
+      { ...relay, request: { ...findBen, version: 2 } }, { ...relay, request: { ...deliver, kind: "ask", timeoutMs: 2000 } },
+      { ...relay, request: { ...deliver, message: { ...message, text: "x".repeat(V0_INTERCOM_BYTES) } } }]) {
+      expect(parseV0RelayAgentRequest(wrong)).toBeNull();
+    }
   });
 
   it("dispatches via the private v0 agent mode", async () => {

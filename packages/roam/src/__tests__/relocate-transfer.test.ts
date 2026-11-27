@@ -19,7 +19,7 @@ function stopFixture() {
  const owner={identity:{pid:42,startIdentity:"pi-42"},bootId:"boot",pendingOperationId:null,pendingFile:null,pendingCoreId:null,operationId:null};
  const signals:number[]=[];
  const events:string[]=[];
- const io:LocalIO={inspect:async()=>exits?null:owner,probe:async()=>{probes++;return exits?{kind:"absent"}:{kind:"live",startIdentity:"pi-42",pi:true};},claimFree:async()=>{events.push("lock-free");},signal:async pid=>{signals.push(pid);events.push("signal");},shutdown:async()=>{events.push("shutdown");return false;},pause:async()=>{events.push("wait");now+=10;if(now>=20)exits=true;},terminals:async()=>exits?[]:[{terminal:"t",state:"live",pid:42,owned:true}],descendants:async()=>[],writerBlockers:async()=>[],launch:async()=>({terminal:"t"})};
+ const io:LocalIO={inspect:async()=>exits?null:owner,probe:async()=>{probes++;return exits?{kind:"absent"}:{kind:"live",startIdentity:"pi-42",pi:true};},claimFree:async()=>{events.push("lock-free");},signal:async pid=>{signals.push(pid);events.push("signal");},shutdown:async()=>{events.push("shutdown");return false;},pause:async()=>{events.push("wait");now+=10;if(now>=20)exits=true;},terminals:async()=>exits?[]:[{terminal:"t",state:"live",pid:42,owned:true}],tree:async()=>({descendants:[],groups:[]}),groupBlockers:async()=>[],writerBlockers:async()=>[],launch:async()=>({terminal:"t"})};
  return {io,signals,events,clock:{now:()=>now,later:()=>()=>{}},owner,get probes(){return probes;}};
 }
 const fixtures: {close():void}[]=[];
@@ -123,7 +123,7 @@ describe("v0 transfer stop boundary",()=>{
  it("waits for verified tool descendants even after the locked pi exits", async () => {
   const f = stopFixture();
   const child = {pid: 43, startIdentity: "tool-43", command: "bash"};
-  f.io.descendants = async () => [child];
+  f.io.tree = async () => ({descendants:[child],groups:[]});
   f.io.terminals = async () => (await f.io.inspect(id)) ? [{state: "live", terminal: "t", pid: 42, owned: true}] : [];
   const probe = f.io.probe;
   let ticks = 0;
@@ -135,6 +135,14 @@ describe("v0 transfer stop boundary",()=>{
   expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toEqual({ok: true, value: undefined});
   expect(f.signals).toEqual([43, 42]);
   expect(ticks).toBe(3);
+ });
+ it("does not acknowledge stop while an observed tool process group still has a writer", async () => {
+  const f = stopFixture();
+  f.io.tree = async () => ({descendants: [], groups: [43]});
+  f.io.groupBlockers = async groups => groups.includes(43) ? ["PID 44 (bash)"] : [];
+  const result = await stopLocalSession(id, null, f.io, f.clock, 30);
+  expect(result).toMatchObject({ok: false, refusal: {code: "session-busy", message: expect.stringContaining("PID 44 (bash)"), nextStep: "Close these, then rerun relocate."}});
+  expect(f.signals).toEqual([42]);
  });
  it("refuses to signal an ordinary pi even when it owns the session ID lock", async () => {
   const f = stopFixture();

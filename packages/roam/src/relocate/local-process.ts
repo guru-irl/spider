@@ -9,9 +9,12 @@ export interface SessionProcess {
   startIdentity: string;
   command: string;
 }
-interface ProcessRow { pid: number; parent: number; uid: number; command: string }
+export interface SessionProcessTree { descendants: readonly SessionProcess[]; groups: readonly number[] }
+interface ProcessRow { pid: number; parent: number; group: number; uid: number; command: string }
 const execute = promisify(execFile);
 const runOptions = { encoding: "utf8" as const, timeout: 3000, maxBuffer: 4 * 1024 * 1024, env: { PATH: "/usr/bin:/bin", LC_ALL: "C" } };
+
+export const processName = (p: {pid:number;command:string}): string => `PID ${p.pid} (${p.command.replace(/[\u0000-\u001f\u007f]/g,"?").slice(0,96)})`;
 
 export function isPiTitle(command: string): boolean {
   return /(?:^|[/\\])pi(?:\.exe)?$/.test(command);
@@ -21,18 +24,19 @@ export function insideDirectory(root: string, path: string): boolean {
   return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 async function processes(): Promise<ProcessRow[]> {
-  const { stdout } = await execute("/bin/ps", ["-ww", "-A", "-o", "pid=,ppid=,uid=,stat=,comm="], runOptions);
+  const { stdout } = await execute("/bin/ps", ["-ww", "-A", "-o", "pid=,ppid=,pgid=,uid=,stat=,comm="], runOptions);
   return stdout.trimEnd().split("\n").flatMap(line => {
-    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.+?)\s*$/.exec(line);
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.+?)\s*$/.exec(line);
     if (!match) throw new Error("Local process inventory could not be read");
-    return match[4].startsWith("Z") ? [] : [{pid: Number(match[1]), parent: Number(match[2]), uid: Number(match[3]), command: match[5]}];
+    return match[5].startsWith("Z") ? [] : [{pid: Number(match[1]), parent: Number(match[2]), group: Number(match[3]), uid: Number(match[4]), command: match[6]}];
   });
 }
 
 /** Collect identities before shutdown can reparent the children. Do not assume an entire OS process group belongs to pi. */
-export async function localDescendants(pid: number): Promise<readonly SessionProcess[]> {
-  const byParent = new Map<number, ProcessRow[]>();
+export async function localProcessTree(pid: number): Promise<SessionProcessTree> {
+  const byParent = new Map<number, ProcessRow[]>(), groups: number[] = [];
   for (const row of await processes()) {
+    if (row.pid === pid && row.group === pid) groups.push(pid);
     const siblings = byParent.get(row.parent) ?? [];
     siblings.push(row);
     byParent.set(row.parent, siblings);
@@ -44,10 +48,18 @@ export async function localDescendants(pid: number): Promise<readonly SessionPro
     seen.add(child.pid);
     if (child.uid !== process.getuid?.() || child.pid === process.pid) throw new Error("Local process tree is not owned by this user");
     const startIdentity = processStartIdentity(child.pid);
-    if (startIdentity !== null) found.push({pid: child.pid, startIdentity, command: child.command});
+    if (startIdentity !== null) {
+      found.push({pid: child.pid, startIdentity, command: child.command});
+      if (child.group === child.pid) groups.push(child.group);
+    }
     remaining.push(child.pid);
   }
-  return found.reverse();
+  return {descendants: found.reverse(), groups};
+}
+
+/** A group can still have writers after its leader has exited. Observe only. */
+export async function localGroupBlockers(groups: readonly number[]): Promise<readonly string[]> {
+  return groups.length ? (await processes()).filter(row => groups.includes(row.group)).map(processName) : [];
 }
 
 async function darwinCwds(pids: readonly number[]): Promise<ReadonlyMap<number, string>> {

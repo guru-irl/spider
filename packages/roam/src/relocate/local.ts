@@ -25,7 +25,7 @@ import { createLocalExactHc, resolveParticipantPi } from "../launcher";
 import { requestSessionControl } from "../session-socket";
 import type { MovingHome, RelocateAdapterOptions, RelocateHome, RunningHome, SessionId, SessionOwner, SessionPlacement, SessionMachinePorts, SupervisorEntry, V0Result, RelocatePlan } from "./types";
 import { refusal } from "./remote";
-import { insideDirectory, isPiTitle, localDescendants, locklessPiInCheckout, type SessionProcess } from "./local-process";
+import { insideDirectory, isPiTitle, localProcessTree, localGroupBlockers, locklessPiInCheckout, processName, type SessionProcessTree } from "./local-process";
 import { localWriterBlockers } from "./local-writers";
 
 type LocalTerminal = { terminal: string; state: "live" | "finished"; pid: number | null; owned?: true };
@@ -33,7 +33,8 @@ export interface LocalIO {
   inspect(sessionId: string): Promise<IdLockObservation | null>;
   probe(pid: number): Promise<{kind:"absent"}|{kind:"unknown"}|{kind:"live";startIdentity:string;pi:boolean}>;
   claimFree(sessionId: string): Promise<void>;
-  descendants(pid: number): Promise<readonly SessionProcess[]>;
+  tree(pid: number): Promise<SessionProcessTree>;
+  groupBlockers(groups: readonly number[]): Promise<readonly string[]>;
   writerBlockers(sessionId: SessionId, placement?: SessionPlacement, requireCheckout?: boolean): Promise<readonly string[]>;
   signal(pid: number): Promise<void>;
   shutdown(operation: Operation): Promise<boolean>;
@@ -78,7 +79,7 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
   });
   return {
     inspect:id=>inspectIdLock(lockRoot,id),probe:probeLocalProcess,
-    descendants:localDescendants,
+    tree:localProcessTree,groupBlockers:localGroupBlockers,
     async writerBlockers(id, placement, requireCheckout) {
       const saved = placement ? undefined : readLocal<unknown>(options.globalDb,"relocate-managed",id);
       const known = placement ?? (saved === undefined ? undefined : parsePlacement(saved));
@@ -151,7 +152,6 @@ function busy<T>(blockers: readonly string[]): V0Result<T> {
   const list = [...new Set(blockers)], shown = list.slice(0,12);
   return refusal("session-busy",`Local session processes or jobs are still present: ${shown.join(", ")}${list.length > shown.length ? `, and ${list.length-shown.length} more` : ""}.`,"Close these, then rerun relocate.");
 }
-const processName = (p: SessionProcess): string => `PID ${p.pid} (${p.command.replace(/[\u0000-\u001f\u007f]/g,"?").slice(0,96)})`;
 const terminalName = (t: LocalTerminal): string => t.pid === null ? `terminal ${t.terminal} (PID unavailable)` : `PID ${t.pid} (pi)`;
 
 /** A free lock alone cannot clear an ordinary pi or a detached Spider job. */
@@ -166,7 +166,7 @@ export async function stopLocalSession(sessionId: SessionId, moving: MovingHome 
       if (p.kind === "unknown" || p.kind === "live" && (p.startIdentity !== startIdentity || !p.pi)) return busy([processName(root)]);
       if (p.kind === "live") {
         if (!(await io.terminals(sessionId)).some(t=>t.state === "live" && t.owned && t.pid === pid)) return busy([processName(root)]);
-        const children = await io.descendants(pid);
+        const {descendants:children,groups} = await io.tree(pid);
         const current = await io.inspect(sessionId), rechecked = await io.probe(pid);
         if (!sameOwner(current,observed) || rechecked.kind !== "live" || !rechecked.pi || rechecked.startIdentity !== startIdentity) return busy([processName(root)]);
         for (const child of children) {
@@ -190,6 +190,7 @@ export async function stopLocalSession(sessionId: SessionId, moving: MovingHome 
             const state = await io.probe(member.pid);
             if (state.kind === "unknown" || state.kind === "live" && state.startIdentity === member.startIdentity) alive.push(processName(member));
           }
+          if (!alive.length || clock.now() >= deadline) alive.push(...await io.groupBlockers(groups));
           if (!alive.length) break;
           if (clock.now() >= deadline) return busy(alive);
           await io.pause(Math.min(100,Math.max(1,deadline-clock.now())));

@@ -423,6 +423,7 @@ export async function captureOrdinarySource(plan: RelocatePlan, options: Relocat
   recordLocation(options.globalDb, { sessionId: plan.source.sessionId, stores: plan.sourcePlacement.stores, home: { sessionId: plan.source.sessionId, machineId: plan.source.machineId, epoch: plan.source.epoch, moveId: null, updatedAt: plan.source.updatedAt }, file: plan.sourcePlacement.file, cwd: plan.sourcePlacement.cwd });
 }
 export interface LocalRuntime extends SessionMachinePorts {
+  confirm(home: RunningHome, placement: SessionPlacement, exact?: true): Promise<V0Result<{terminal:string}>>;
   owner(id: SessionId, placement?: SessionPlacement): Promise<SessionOwner>;
   stop(id: SessionId, moving?: MovingHome | null, beforeOrdinaryCapture?: boolean): Promise<V0Result<void>>;
   entries(): Promise<readonly SupervisorEntry[]>;
@@ -453,9 +454,13 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
   async function runnable(home: RunningHome, placement: SessionPlacement): Promise<boolean> {
     return home.machineId === options.config.machineId && home.sessionId === placement.sessionId && placement.machineId === options.config.machineId && exactHome(await options.homes.read(home.sessionId),home);
   }
-  async function confirm(home: RunningHome,placement: SessionPlacement): Promise<V0Result<{terminal:string}>> {
+  async function confirm(home: RunningHome,placement: SessionPlacement,exact?: true): Promise<V0Result<{terminal:string}>> {
     try {
       if (!await runnable(home,placement)) return refusal("start-pending","The local running home changed.");
+      if (!exact) {
+        const current = await owner(home.sessionId);
+        return current.kind === "live" && current.terminal ? {ok:true,value:{terminal:current.terminal}} : refusal("start-pending","Pi has not claimed this session's ID lock.");
+      }
       const lock = await io.inspect(home.sessionId), current = await owner(home.sessionId);
       if (!lock || current.kind !== "live" || !current.terminal || current.pid !== lock.identity.pid) return refusal("start-pending","Pi has not claimed this session's ID lock.");
       const terminal = (await io.terminals(home.sessionId,undefined,true)).find(t=>t.state === "live" && t.pid === current.pid && t.terminal === current.terminal);

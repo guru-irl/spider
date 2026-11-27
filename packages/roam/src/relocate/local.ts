@@ -292,7 +292,7 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
     catch {return refusal("sync-failed","The local home cannot be read back.");}
   }
   async function activate(home: RunningHome,placement: SessionPlacement): Promise<V0Result<void>> {
-    try {
+    try { return await withProcessLock(join(options.root,"herdr"),`v0-state:${home.sessionId}`,async()=>{
       parsePlacement(placement);
       const current=await options.homes.read(home.sessionId);
       const allowed=exactHome(current,home) || current?.state === "moving" && current.moveId === home.moveId && current.epoch+1 === home.epoch && (current.machineId === home.machineId || current.destination === home.machineId) || current?.state === "stopped" && current.machineId === home.machineId && current.epoch+1 === home.epoch;
@@ -308,10 +308,10 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
       writeLocal(options.globalDb,"relocate-managed",home.sessionId,placement);
       recordLocation(options.globalDb,{sessionId:home.sessionId,stores:placement.stores,home,file:placement.file,cwd:placement.cwd});
       return {ok:true,value:undefined};
-    } catch {return refusal("install-failed","Local capture membership could not be activated.");}
+    }); } catch {return refusal("install-failed","Local capture membership could not be activated.");}
   }
   async function stop(id: SessionId,moving: MovingHome|null=null): Promise<V0Result<void>> {
-    try {
+    try { return await withProcessLock(join(options.root,"herdr"),`v0-state:${id}`,async()=>{
       if(moving && !exactHome(await options.homes.read(id),moving))return refusal("home-conflict","The source moving home changed before shutdown.");
       const stopped=await stopLocalSession(id,moving,io,options.clock,options.limits.readyMs);if(!stopped.ok)return stopped;
       const known=readLocal<unknown>(options.globalDb,"relocate-managed",id);
@@ -321,7 +321,7 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
       try {for(const key of keys)if(key.startsWith("worktree:"))stores.openStore(key).db.prepare("UPDATE roam_sessions SET state='frozen' WHERE session_id=? AND state='active'").run(id);}
       finally {stores.close();}
       return stopped;
-    }catch{return refusal("stop-timeout","The stopped source membership could not be frozen.");}
+    }); }catch{return refusal("stop-timeout","The stopped source membership could not be frozen.");}
   }
   async function entries(): Promise<readonly SupervisorEntry[]> {
     const homes=await options.homes.list(), byId=new Map(homes.map(home=>[home.sessionId,home]));

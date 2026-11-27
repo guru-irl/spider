@@ -5,6 +5,8 @@ import * as hcApi from "@spider/herdr/client/hc";
 import type { CoreIdentity } from "@spider/herdr/contracts";
 import { join } from "node:path";
 import { createReplica } from "@spider/db-core/testutil";
+import { recordLocation } from "@spider/db-core/roam/catalog";
+import { writeLocal } from "@spider/db-core/roam/local-state";
 import type { RelocateAdapterOptions, RunningHome, SessionId, SessionPlacement } from "../relocate/types";
 import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import { openJournal } from "../journal";
@@ -56,6 +58,29 @@ describe("v0 local runtime",()=>{
   expect(await local.activate(f.home,f.placement)).toEqual({ok:true,value:undefined});
   f.setHome(null);
   expect(await local.entries()).toEqual([{sessionId:id,home:null,placement:f.placement}]);
+ });
+ it("activation waits for an in-flight supervisor stop before updating membership",async()=>{
+  const f=runtimeFixture(),worktree=createReplica("worktree",box);fixtures.push(worktree);
+  const placement={...f.placement,repoKey:"fixture-repo",workspaceId:"fixture-workspace",stores:["global",worktree.storeKey]} as SessionPlacement;
+  f.options.globalDb.prepare("INSERT INTO roam_repo_maps(repo_key,path,worktree_command_json) VALUES ('fixture-repo',?,NULL)").run(worktree.root);
+  f.options.globalDb.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','fixture-workspace',?)").run(worktree.root);
+  writeLocal(f.options.globalDb,"mapping-redirect",worktree.storeKey,worktree.db.raw.name);
+  worktree.db.prepare("INSERT INTO sessions(id,started_at) VALUES (?,1)").run(id);
+  worktree.db.prepare("INSERT INTO roam_sessions(session_id,epoch,state) VALUES (?,1,'frozen')").run(id);
+  const moving={...f.home,machineId:hub,epoch:2,state:"moving",destination:box} as unknown as RunningHome;
+  f.setHome(moving);
+  recordLocation(f.options.globalDb,{sessionId:id,stores:placement.stores,home:moving,file:placement.file,cwd:placement.cwd});
+  let entered!:()=>void,release!:()=>void;
+  const stopping=new Promise<void>(done=>entered=done),gate=new Promise<void>(done=>release=done);
+  f.io.claimFree=async()=>{entered();await gate;};
+  const installer=createLocalRuntime(f.options,f.io),supervisor=createLocalRuntime(f.options,f.io);
+  const stop=supervisor.stop(id);await stopping;
+  const activate=installer.activate(f.home,placement);
+  // Keep native stop pending while the competing actor completes its lock I/O.
+  await new Promise<void>(done=>setTimeout(done,100));release();
+  expect(await stop).toEqual({ok:true,value:undefined});expect(await activate).toEqual({ok:true,value:undefined});
+  expect(worktree.db.prepare("SELECT epoch,state FROM roam_sessions WHERE session_id=?").get(id)).toEqual({epoch:3,state:"active"});
+  expect(f.launches).toHaveLength(0);
  });
  it("preparatory activation never launches pi",async()=>{
   const f=runtimeFixture(),local=createLocalRuntime(f.options,f.io);

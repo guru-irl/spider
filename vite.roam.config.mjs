@@ -5,6 +5,7 @@ const entries = {
   cli: "packages/roam/src/cli-entry.ts",
   "cli-main": "packages/host/src/roam/cli-main.ts",
   "intercom-helper": "packages/roam/src/intercom-helper.ts",
+  "relay-soak": "packages/roam/src/relocate/relay-soak.ts",
   supervisor: "packages/roam/src/supervisor-main.ts",
 };
 const builtins = new Set(builtinModules.flatMap(name => [name, `node:${name}`]));

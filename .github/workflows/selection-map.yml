@@ -63,7 +63,7 @@ jobs:
           node --test scripts/selection/*.test.mjs
           env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID \
             -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR \
-            node node_modules/vitest/vitest.mjs list --filesOnly --json |
+            npx vitest list --filesOnly --json |
             jq -e --arg prefix "$PWD/" 'map(.file | if startswith($prefix) then ltrimstr($prefix) else error("test outside checkout") end)' \
             > "$SELECTION_WORK/results/inventory.json"
 
@@ -73,7 +73,7 @@ jobs:
         run: |
           code=0
           bash scripts/selection/with-recorder.sh "$SELECTION_WORK/raw" \
-            node node_modules/vitest/vitest.mjs run --shard=${{ matrix.shard }}/6 --maxWorkers=2 \
+            npx vitest run --shard=${{ matrix.shard }}/6 --maxWorkers=2 \
             --reporter=default --reporter=json --outputFile="$SELECTION_WORK/vitest.json" || code=$?
           if [ "$code" -ne 0 ]; then
             # A failed test can still leave a usable record. A broken runner cannot.

@@ -269,7 +269,16 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
               !placementContainsCheckout(map.target_path as string, placement.cwd)) return false;
           if (evidence.origin === "incoming") {
             const pointer = readLocal<unknown>(global, "relocate-incoming", evidence.expectedKey!);
-            return !!pointer && typeof pointer === "object" && !Array.isArray(pointer) && (pointer as Record<string, unknown>).moveId === plan.moveId;
+            if (!pointer || typeof pointer !== "object" || Array.isArray(pointer) || (pointer as Record<string, unknown>).moveId !== plan.moveId) return false;
+            const home = global.prepare("SELECT session_id,machine_id,epoch,move_id,updated_at,state,destination FROM session_homes WHERE session_id=?").get(plan.source.sessionId) as
+              { session_id: string; machine_id: string; epoch: number; move_id: string | null; updated_at: number; state: string | null; destination: string | null } | undefined;
+            if (!home || home.state === null && home.destination === null) return true;
+            const parsed = parseHome({ sessionId: home.session_id, machineId: home.machine_id, epoch: home.epoch, moveId: home.move_id,
+              updatedAt: home.updated_at, state: home.state, destination: home.destination });
+            if (parsed.moveId !== null && (!parsed.moveId.startsWith("v0-") || !isMachineId(parsed.moveId.slice(3)))) throw new Error("Invalid v0 home move");
+            return parsed.epoch < plan.source.epoch || parsed.state === "moving" && parsed.moveId === plan.moveId &&
+              parsed.machineId === plan.source.machineId && parsed.destination === config.machineId && parsed.epoch === plan.source.epoch + 1 ||
+              parsed.state !== "moving" && parsed.machineId === plan.source.machineId && parsed.epoch <= plan.source.epoch;
           }
           const home = global.prepare("SELECT machine_id,epoch,move_id,state,destination FROM session_homes WHERE session_id=?").get(plan.source.sessionId) as
             { machine_id: string; epoch: number; move_id: string | null; state: string | null; destination: string | null } | undefined;

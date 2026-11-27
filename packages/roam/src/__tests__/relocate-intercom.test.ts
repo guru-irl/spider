@@ -398,6 +398,18 @@ describe("roaming v0 intercom", () => {
     }
   });
 
+  it("refuses running homes whose epochs change on either machine", async () => {
+    for (const [location, sessionId] of [["sender", "alice"], ["sender", "ben"], ["receiver", "alice"], ["receiver", "ben"]] as const) {
+      const f = paired(), plan = await remotePlan(f.intercom);
+      const db = openDbAt(join(f[location].root, "spider.db"), "global");
+      try { db.prepare("UPDATE session_homes SET epoch=epoch+1 WHERE session_id=?").run(sessionId); }
+      finally { db.close(); }
+      expect(await plan.send(message)).toEqual({ kind: "refused", code: "changed" });
+      expect(f.inbox).toEqual([]);
+      expect(f.calls.filter(call => call.request.kind === "deliver")).toHaveLength(location === "receiver" ? 1 : 0);
+    }
+  });
+
   it("lets the broker report an ask timeout instead of aborting it first", async () => {
     const { root } = boxFixture();
     vi.stubEnv("PI_CODING_AGENT_DIR", undefined);

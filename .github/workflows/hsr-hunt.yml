@@ -1,0 +1,77 @@
+name: Herdr setup release hunt
+
+on:
+  push:
+    branches: [ci/hsr-hunt]
+
+permissions:
+  contents: read
+
+env:
+  ONNXRUNTIME_NODE_INSTALL: skip
+
+jobs:
+  hunt:
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [1, 2, 3, 4, profile]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+      - run: npm ci
+      - name: Match PR fixture socket configuration
+        run: |
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+          test ! -e "$rundir"
+          mkdir -p "$PWD/.spider/scratch/tmp" hsr-results
+          lscpu
+          node --version
+      - name: Run three worker hunt
+        if: matrix.lane != 'profile'
+        env:
+          LANE: ${{ matrix.lane }}
+        run: |
+          set -o pipefail
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          unset XDG_RUNTIME_DIR
+          dir=packages/host/src/__tests__
+          for i in {1..6}; do
+            rc=0
+            npx vitest run --maxWorkers=3 --reporter=default --reporter=json \
+              --outputFile="hsr-results/$LANE-$i.json" \
+              "$dir/herdr-setup-releases.test.ts" \
+              "$dir/herdr-setup-production-install.test.ts" \
+              "$dir/herdr-setup-production-rollback.test.ts" \
+              2>&1 | tee "hsr-results/$LANE-$i.log" || rc=$?
+            printf '%s\n' "$rc" > "hsr-results/$LANE-$i.exit"
+          done
+      - name: Trace the original native-key sequence
+        if: matrix.lane == 'profile'
+        run: |
+          command -v strace || { sudo apt-get update && sudo apt-get install -y strace; }
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          unset XDG_RUNTIME_DIR
+          file=packages/host/src/__tests__/herdr-setup-releases.test.ts
+          python3 scripts/hsr-profile.py "$file"
+          set -o pipefail
+          strace -f -ttt -e trace=process -o hsr-results/process.trace \
+            node node_modules/vitest/vitest.mjs run --maxWorkers=1 \
+            --reporter=verbose --reporter=json --outputFile=hsr-results/profile.json \
+            "$file" -t '0.1.16 native keys are an offer' \
+            2>&1 | tee hsr-results/profile.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hsr-${{ matrix.lane }}
+          path: hsr-results
+          if-no-files-found: error

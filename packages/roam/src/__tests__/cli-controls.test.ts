@@ -73,8 +73,8 @@ async function fixture(identity = HUB, reply?: HubControlReply, withSocket = tru
     else (result.code === 0 ? io.out : io.err)(`${result.message}\n`);
     return result.code;
   };
-  return { root, calls, out, err, invoke: (args: string[]) =>
-    args[0] === "roam" && ["enable", "disable"].includes(args[1]) ? invokeLegacyLifecycle(args) : main(args, io) };
+  return { root, calls, out, err, invoke: (args: string[], options?: Parameters<typeof main>[2]) =>
+    args[0] === "roam" && ["enable", "disable"].includes(args[1]) ? invokeLegacyLifecycle(args) : main(args, io, options) };
 }
 
 it.each([true, false])("public doctor reports installed core drift when enabled=%s", async enabled => {
@@ -82,14 +82,15 @@ it.each([true, false])("public doctor reports installed core drift when enabled=
   const config = JSON.parse(readFileSync(file, "utf8")); config.enabled = enabled; config.peers = [];
   writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
   const plistDir = join(f.root, "Library/LaunchAgents"), ports = { plistDir, async launchctl() {} };
+  const options = { v0: { lifecycle: { launchd: ports } } };
   vi.stubEnv("HC_SOCKET", join(f.root, "selected.sock")); vi.stubEnv("HC_SESSION", "team");
   await launchd.installHubService({ node: process.execPath, cli: process.execPath, globalRoot: f.root, pi: process.execPath }, ports);
   vi.stubEnv("HC_SOCKET", join(f.root, "changed.sock"));
-  await f.invoke(["roam", "doctor", "--json"]);
+  await f.invoke(["roam", "doctor", "--json"], options);
   const first = JSON.parse(f.out.join(""));
   expect(first.value.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ reason: expect.stringContaining("hub-core-selection-mismatch"), repairCommand: "spider roam enable" })]));
   await launchd.installHubService({ node: process.execPath, cli: process.execPath, globalRoot: f.root, pi: process.execPath }, ports);
-  f.out.length = 0; await f.invoke(["roam", "doctor", "--json"]);
+  f.out.length = 0; await f.invoke(["roam", "doctor", "--json"], options);
   expect(JSON.parse(f.out.join("")).value.diagnostics.filter((row: { reason: string }) => row.reason.includes("hub-core-selection"))).toEqual([]);
 });
 

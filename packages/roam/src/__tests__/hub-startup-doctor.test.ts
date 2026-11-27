@@ -5,7 +5,7 @@ import { runLocalDoctor } from "../local-diagnostics";
 import { inspectHubService, hubStartupDiagnostics } from "../hub-service-diagnostics";
 import * as controlSocket from "../control-socket";
 import { main } from "../cli";
-import { hubServiceFile } from "../launchd";
+import { hubServiceFile, installHubService } from "../launchd";
 import { serveV0Control } from "../relocate/service";
 
 const roots: string[] = [];
@@ -45,12 +45,34 @@ it("doctor inspects the v0 control socket and points to the v0 service log", asy
   const unexpected=async()=>{throw new Error("doctor must not send a mutation request");};
   const endpoint=await serveV0Control(root,{relocate:unexpected,setHome:unexpected});
   try {
-    const state=await inspectHubService(root,async()=>({code:0,stdout:"state = running\npid = 123\n"}));
+    const state=await inspectHubService(root,async()=>({code:0,stdout:"state = running\npid = 123\n"}),directory);
     expect(state).toMatchObject({running:true,socketAvailable:true});
-    expect(hubStartupDiagnostics(root,state)).toEqual([]);
+    expect(hubStartupDiagnostics(root,state,directory)).toEqual([]);
   } finally {await endpoint.close();}
-  const stopped=await inspectHubService(root,async()=>({code:113,stdout:""}));
-  expect(hubStartupDiagnostics(root,stopped)[0]?.reason).toContain(join(root,"roam/logs/hub-v0.err.log"));
+  const stopped=await inspectHubService(root,async()=>({code:113,stdout:""}),directory);
+  expect(hubStartupDiagnostics(root,stopped,directory)[0]?.reason).toContain(join(root,"roam/logs/hub-v0.err.log"));
+});
+
+it("public doctor checks the configured v0 launchd directory instead of the login home", async () => {
+  const root = fixture(), plistDir = join(root, "custom-launch-agents"), cli = join(root, "cli.mjs");
+  writeFileSync(cli, "", { mode: 0o700 });
+  const launchd = { plistDir, serviceHome: root, async launchctl() {} };
+  await installHubService({ node: process.execPath, cli, pi: process.execPath, globalRoot: root, mode: "v0",
+    env: { HOME: root, HC_SESSION: "installed", HC_SOCKET: join(root, "installed.sock") } }, launchd);
+  const manager = join(root, "launchctl"), calls = join(root, "launchctl-args");
+  writeFileSync(manager, `#!/bin/sh\nprintf '%s\\n' "$@" > "${calls}"\nexit 113\n`, { mode: 0o700 });
+  vi.stubEnv("HOME", resolve("."));
+  vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", manager);
+  vi.stubEnv("HC_SESSION", "different"); vi.stubEnv("HC_SOCKET", join(root, "different.sock"));
+  const out: string[] = [];
+  expect(await main(["roam", "doctor", "--json"], { out: text => out.push(text), err: () => {} }, { v0: { lifecycle: { launchd } } })).toBe(1);
+  const report = JSON.parse(out.join(""));
+  expect(report.reason).toBe("doctor-blocked");
+  expect(report.value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ reason: expect.stringContaining(join(root, "roam/logs/hub-v0.err.log")) }),
+    expect.objectContaining({ reason: expect.stringContaining("hub-core-selection-mismatch:") }),
+  ]));
+  expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual(["print", `gui/${process.getuid?.()}/${hubServiceFile(root, plistDir, "v0").split("/").at(-1)!.replace(/\.plist$/, "")}`]);
 });
 
 it("a healthy enabled hub has no startup diagnostic", async () => {

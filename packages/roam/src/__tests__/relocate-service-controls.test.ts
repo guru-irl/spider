@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
@@ -23,7 +23,7 @@ function fixture(role: "hub" | "box") {
   const cli = join(root, "cli.mjs"), supervisor = join(root, "supervisor.mjs");
   const release = join(root, "extension.js");
   writeFileSync(release, "// SPIDER_BUILD_ID=01234567@2026-01-01T00:00:00.000Z v0.1.0\n", { mode: 0o600 });
-  writeFileSync(cli, ""); writeFileSync(supervisor, "");
+  writeFileSync(cli, "", { mode: 0o700 }); writeFileSync(supervisor, "");
   vi.stubEnv("SPIDER_GLOBAL_ROOT", root); vi.stubEnv("SPIDER_ROAM_PI", process.execPath);
   const calls: string[][] = [];
   const launchd = { plistDir: join(root, "LaunchAgents"), serviceHome: root, async launchctl(argv: readonly string[]) { calls.push([...argv]); } };
@@ -73,14 +73,31 @@ it("enable removes the scoped legacy hub before starting v0 and disable removes 
   expect(await configureV0Service(f.root, false, f.options)).toMatchObject({ code: 0 });
 });
 
-it("a box enables and disables only its local v0 supervisor", async () => {
+it("enable refuses a non-executable CLI from the configured hub service before changing it", async () => {
+  const f = fixture("hub");
+  const enabled = await configureV0Service(f.root, true, f.options);
+  expect(enabled.code, enabled.message).toBe(0);
+  const plist = hubServiceFile(f.root, f.launchd.plistDir, "v0"), before = readFileSync(plist, "utf8");
+  chmodSync(f.cli, 0o600);
+  f.calls.length = 0;
+  const result = await configureV0Service(f.root, true, f.options);
+  expect(result).toMatchObject({ code: 1, message: expect.stringContaining("CLI executable is missing or inaccessible.") });
+  expect(f.calls).toEqual([]);
+  expect(readFileSync(plist, "utf8")).toBe(before);
+});
+
+it("a Linux box enables and disables only its configured local v0 supervisor", async () => {
   const f = fixture("box");
+  // The test runner's real home in CI is outside the permitted fixture paths.
+  vi.stubEnv("HOME", resolve("."));
+  // A box has no launchd service even when this fixture runs on a Mac.
+  vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", join(f.root, "unused-launchctl"));
   const legacyName = "spider-roam-supervisor.service", v0Name = "spider-roam-supervisor-v0.service";
   const legacy = join(f.systemd.unitDir, legacyName), v0 = join(f.systemd.unitDir, v0Name);
   mkdirSync(f.systemd.unitDir, { mode: 0o700 });
   writeFileSync(legacy, renderSupervisorUnit({ node: process.execPath, supervisor: f.supervisor, globalRoot: f.root, coreUnit: f.coreUnit }), { mode: 0o600 });
   const io = { out: vi.fn(), err: vi.fn() }, cliOptions = { v0: { lifecycle: f.options } };
-  expect(await main(["roam", "enable"], io, cliOptions)).toBe(0);
+  expect(await main(["roam", "enable"], io, cliOptions), io.err.mock.calls.flat().join("")).toBe(0);
   expect(io.out.mock.calls.flat().join("")).toContain(legacyName);
   expect(f.enabled()).toBe(true);
   expect(existsSync(legacy)).toBe(false);

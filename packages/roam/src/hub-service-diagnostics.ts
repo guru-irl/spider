@@ -17,15 +17,23 @@ export interface HubServiceObservation {
 interface ServicePrint { code: number | null; stdout: string }
 const DOCTOR_HUB_DEADLINE_MS = 2000;
 
-export function observedHubServiceMode(root: string): "v0" | undefined {
-  const file = hubServiceFile(root, join(homedir(), "Library", "LaunchAgents"), "v0");
+export function hubPlistDirectory(platform: NodeJS.Platform = process.platform): string | undefined {
+  const supported = process.env.SPIDER_TEST_FIXTURE_CHECKOUT
+    ? Boolean(process.env.SPIDER_TEST_ROAM_LAUNCHCTL)
+    : platform === "darwin";
+  return supported ? join(homedir(), "Library", "LaunchAgents") : undefined;
+}
+
+export function observedHubServiceMode(root: string, directory: string | undefined = hubPlistDirectory()): "v0" | undefined {
+  if (!directory) return undefined;
+  const file = hubServiceFile(root, directory, "v0");
   assertTestConfigPath(file);
   return existsSync(file) ? "v0" : undefined;
 }
 
 /** Query metadata and read-only status. The error log is never opened. */
-export async function inspectHubService(root: string, print?: () => Promise<ServicePrint>): Promise<HubServiceObservation> {
-  const mode = observedHubServiceMode(root);
+export async function inspectHubService(root: string, print?: () => Promise<ServicePrint>, directory?: string): Promise<HubServiceObservation> {
+  const mode = observedHubServiceMode(root, directory);
   const socket = join(root, "roam", "hub.sock"); assertTestConfigPath(socket);
   const end = Date.now() + DOCTOR_HUB_DEADLINE_MS;
   let running: boolean | null = null, lastExitCode: number | null = null;
@@ -56,11 +64,11 @@ export async function inspectHubService(root: string, print?: () => Promise<Serv
   return { running, socketAvailable, lastExitCode };
 }
 
-export function hubStartupDiagnostics(root: string, state: HubServiceObservation): Diagnostic[] {
+export function hubStartupDiagnostics(root: string, state: HubServiceObservation, directory?: string): Diagnostic[] {
   if (state.running === true && state.socketAvailable) return [];
   const pending = state.running === false || state.running === true && !state.socketAvailable;
   const code = pending ? "hub-startup-pending" : "hub-startup-unverified";
   const detail = state.running === false ? "Hub service is not running." : state.running === true ? "Hub service did not answer a ready status probe within 2 seconds." : "Hub service state cannot be verified.";
-  const log = observedHubServiceMode(root) === "v0" ? "hub-v0.err.log" : "hub.err.log";
+  const log = observedHubServiceMode(root, directory) === "v0" ? "hub-v0.err.log" : "hub.err.log";
   return [{ severity: pending ? "block" : "warning", reason: `${code}: ${detail} Last exit code: ${state.lastExitCode ?? "unknown"}. Error log: ${join(root, "roam", "logs", log)}. Check the hub service and its error log on the Mac hub before retrying.`, repairCommand: 'spider roam enable' }];
 }

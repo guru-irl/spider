@@ -196,9 +196,10 @@ export async function configureV0Service(root: string, enabled: boolean, options
         const preflight = { ...config, peers };
         const env = { ...process.env, HC_SESSION: connection.env.HC_SESSION, HC_SOCKET: connection.env.HC_SOCKET };
         const transport = peers.length ? createTransport({ binary: connection.binary, env, enrolled: peers }) : null;
+        const hubPlistDir = config.role === "hub" ? options.launchd?.plistDir : null;
         await assertCompatibleConsumers(preflight, transport
-          ? compatibleConsumerPorts(root, preflight, transport, options.bundleUrl)
-          : createLocalDiagnosticPorts(root, [], options.bundleUrl));
+          ? compatibleConsumerPorts(root, preflight, transport, options.bundleUrl, hubPlistDir)
+          : createLocalDiagnosticPorts(root, [], options.bundleUrl, hubPlistDir));
         issues = await pendingLegacyLaunchWarnings(root, preflight, transport);
       } else if (config.role === "hub") {
         const pending = readPendingMoves(join(root, "roam", "journal.db"));

@@ -359,7 +359,7 @@ it("doctor compares installed, current and legacy hub selections", async () => {
   writeFileSync(join(f.globalRoot, "roam", "config.json"), JSON.stringify({ enabled: false, role: "hub", machineId: "00000000-0000-4000-8000-000000000001", hubMachineId: "00000000-0000-4000-8000-000000000001", coreUnit: "fixture.service", peers: [] }), { mode: 0o600 });
   vi.stubEnv("HC_SOCKET", socket); vi.stubEnv("HC_SESSION", "team");
   await installHubService({ ...f, env: { HOME: f.root, HC_SOCKET: socket, HC_SESSION: "team" } }, ports);
-  const reasons = async () => (await runLocalDoctor({ root: f.globalRoot })).diagnostics.filter(row => row.reason.includes("hub-core-selection"));
+  const reasons = async () => (await runLocalDoctor({ root: f.globalRoot, hubLaunchd: ports })).diagnostics.filter(row => row.reason.includes("hub-core-selection"));
   expect(await reasons()).toEqual([]);
   vi.stubEnv("HC_SESSION", "other-team");
   expect(await reasons()).toEqual([expect.objectContaining({ reason: expect.stringContaining("hub-core-selection-mismatch"), repairCommand: "spider roam enable" })]);
@@ -395,7 +395,7 @@ it("doctor warns rather than guessing when a service environment is malformed", 
   await installHubService({ ...f, env }, { ...f.ports, plistDir });
   const file = plistAt(plistDir, f.globalRoot), text = readFileSync(file, "utf8");
   writeFileSync(file, text.replace("</dict>\n<key>StandardOutPath", "<key>HC_SOCKET</key><string>/home/fixture/another.sock</string></dict>\n<key>StandardOutPath"));
-  const diagnostics = (await runLocalDoctor({ root: f.globalRoot })).diagnostics;
+  const diagnostics = (await runLocalDoctor({ root: f.globalRoot, hubLaunchd: { plistDir } })).diagnostics;
   expect(diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ reason: expect.stringContaining("hub-core-selection-unavailable"), repairCommand: null })]));
   expect(JSON.stringify(diagnostics)).not.toContain("/home/fixture/another.sock");
 });

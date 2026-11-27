@@ -415,13 +415,15 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
     try {
       const config = readLocalIdentity(root);
       let value: unknown;
-      if (argv[2] === "consumers") value = await inspectLocalConsumers(root, config.machineId, options?.bundleUrl);
+      if (argv[2] === "consumers") value = await inspectLocalConsumers(root, config.machineId, options?.bundleUrl,
+        config.role === "hub" ? options?.v0?.lifecycle?.launchd?.plistDir : null);
       else if (argv[2] === "hosting") {
         const { warnings, ...observation } = await observeLocalHosting(root);
         const earlyWarnings = warnings?.filter(row => row.count < 3) ?? [];
         value = { ...observation, ...(warnings ? { warnings: warnings.filter(row => row.count === 3) } : {}),
           ...(earlyWarnings.length ? { earlyWarnings } : {}) };
-      } else value = await runLocalDoctor({ root, bundleUrl: options?.bundleUrl, inspectIntercomDoctor: true, intercomDoctor: options?.intercomDoctor });
+      } else value = await runLocalDoctor({ root, bundleUrl: options?.bundleUrl, inspectIntercomDoctor: true, intercomDoctor: options?.intercomDoctor,
+        hubLaunchd: options?.v0?.lifecycle?.launchd });
       io.out(`${JSON.stringify({ version: 1, machineId: config.machineId, kind: argv[2], value })}\n`);
       return 0;
     } catch (error) { io.err(error instanceof ReadinessParseError ? `${error.reason}\n` : "Cannot inspect local roaming state. No data was changed.\n"); return 1; }
@@ -666,7 +668,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
             rows.push(...await localPendingLaunchDiagnostics({ root, machineId: config.machineId }));
           }
           rows.push(...localHostingWarningDiagnostics(root), ...localMoveSetupDiagnostics(root), ...await localPublicationDiagnostics(root));
-          if (config?.role === "hub") rows.push(...localHubServiceDiagnostics(root), ...localPendingMoveDiagnostics(root));
+          if (config?.role === "hub") rows.push(...localHubServiceDiagnostics(root, options?.v0?.lifecycle?.launchd), ...localPendingMoveDiagnostics(root));
           if (config?.role === "box") {
             rows.push(...corePinDiagnostics(inspectSupervisorCorePin(root, process.env), config.machineId));
             rows.push({ severity: "info", reason: `Recorded core unit ${config.coreUnit ?? "unavailable"} (diagnostic only).`, repairCommand: null });
@@ -678,7 +680,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
         }
       }
       let report: Awaited<ReturnType<typeof runLocalDoctor>>;
-      if (argv.length === 2) report = await runLocalDoctor({ root, bundleUrl: options?.bundleUrl, inspectIntercomDoctor: true, intercomDoctor: options?.intercomDoctor });
+      if (argv.length === 2) report = await runLocalDoctor({ root, bundleUrl: options?.bundleUrl, inspectIntercomDoctor: true, intercomDoctor: options?.intercomDoctor, hubLaunchd: options?.v0?.lifecycle?.launchd });
       else {
         let config: ReturnType<typeof readLocalIdentity>;
         try { config = readLocalIdentity(root); }

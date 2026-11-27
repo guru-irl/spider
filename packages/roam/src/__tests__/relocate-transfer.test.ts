@@ -426,6 +426,17 @@ describe("v0 transfer stop boundary",()=>{
   expect(await stopLocalSession(id,null,f.io,f.clock,30)).toMatchObject({ok:false,refusal:{code:"session-busy"}});
   expect(f.signals).toEqual([]);
  });
+ it("waits for the ID lock after a successful moving-home shutdown", async () => {
+  const f = stopFixture();
+  const moving = {sessionId: id, machineId: hub, epoch: 2, state: "moving" as const, destination: box, moveId: "v0-test" as RelocateId, updatedAt: 1};
+  let shutdownId: string | undefined;
+  f.io.shutdown = async operation => { shutdownId = operation.id; f.events.push("shutdown"); return true; };
+
+  expect(await stopLocalSession(id, moving, f.io, f.clock, 30)).toEqual({ok: true, value: undefined});
+  expect(shutdownId).toBe("v0-test-shutdown");
+  expect(f.signals).toEqual([]);
+  expect(f.events).toEqual(["shutdown", "wait", "wait", "lock-free"]);
+ });
  it("shutdown fallback waits for the ID lock",async()=>{
   const f=stopFixture();let capture=false;
   const done=stopLocalSession(id,null,f.io,f.clock,30).then(r=>{if(r.ok){capture=true;f.events.push("capture");}return r;});

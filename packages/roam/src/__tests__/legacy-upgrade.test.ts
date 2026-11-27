@@ -146,12 +146,12 @@ it("disabled doctor reports the unfinished legacy move and source cleanup by ope
   const f = fixture();
   f.journal.begin({ id: "legacy-move-1", machineId: hub, expectedEpoch: 1, kind: "move", args: { sessionId: "session-1" } });
   f.journal.record("legacy-move-1", "move-source-cleanup-pending", { sessionId: "session-1", sourceMachine: hub,
-    sourceCleanup: { status: "pending", reason: "move-cleanup-pending", blockers: [] } });
+    sourceCleanup: { status: "pending", reason: "move-cleanup-pending", blockers: ["move-cleanup-pending"] } });
   const io = { out: vi.fn(), err: vi.fn() };
   expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
   const report = JSON.parse(io.out.mock.calls.at(-1)![0]);
   expect(report.value.diagnostics).toEqual(expect.arrayContaining([
-    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-blocked.*legacy-move-1/) }),
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-blocked.*legacy-move-1.*source cleanup.*session-1.*legacy-move-1/) }),
   ]));
 });
 

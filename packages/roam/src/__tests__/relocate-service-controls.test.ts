@@ -121,7 +121,7 @@ it.each(["hub", "box"] as const)("enable refuses pending legacy work before chan
   const journal = openJournal(journalFile);
   journal.begin({ id: "legacy-move-1", machineId: f.machineId, expectedEpoch: 1, kind: "move", args: { sessionId: "session-1" } });
   journal.record("legacy-move-1", "move-source-cleanup-pending", { sessionId: "session-1", sourceMachine: f.machineId,
-    sourceCleanup: { status: "pending", reason: "move-cleanup-pending", blockers: [] } });
+    sourceCleanup: { status: "pending", reason: "move-cleanup-pending", blockers: ["move-cleanup-pending"] } });
   const files = [join(f.root, "spider.db"), journalFile, join(f.root, "roam", "config.json")];
   const before = files.map(file => readFileSync(file));
   const io = { out: vi.fn(), err: vi.fn() };

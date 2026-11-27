@@ -57,7 +57,6 @@ export interface DoctorPorts {
   /** Inspect only; never install, sign in, start, or repair. */
   inspectIntercom?(): Promise<IntercomDoctorState>;
   confirm(target: string, providers: readonly string[]): Promise<boolean>;
-  systemd: { unitDir: string; systemctl(argv: readonly string[]): Promise<void> };
   resources(): Promise<Pick<Inventory, "softNofile" | "hardNofile" | "inotifyInstances" | "inotifyWatches">>;
   bootId(): Promise<string>;
   release: { pi: "1.2.0"; intercom: "spider-owned"; spiderSha256: string; nodeRange: "22.23.4 || 26.4.0" };
@@ -171,7 +170,6 @@ export interface ProvisionPorts extends DoctorPorts {
     previewSettings(peer: Peer, home: string, entries: readonly SettingsKeyDigest[], maximum: number, core: CoreFence, selectedPaths?: readonly string[]): Promise<SettingsDestinationPreview>;
     claimIdentity(peer: Peer, operationId: string, core: CoreFence): Promise<{ machineId: string; coreId: string }>;
   };
-  systemd: DoctorPorts["systemd"] & { writeUnit(name: string, contents: string): Promise<void> };
   transfer: {
     repairAgentDirectory(peer: Peer): Promise<readonly AgentPrivateModeRepair[]>;
     reconcilePairUnits(peer: Peer): Promise<void>;

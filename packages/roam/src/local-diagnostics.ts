@@ -538,7 +538,7 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
     if (config.enabled && (input.supervisorAutostart || process.platform === "linux")) {
       let autostart: SupervisorAutostart = "unknown";
       try { autostart = await (input.supervisorAutostart ?? inspectSupervisorAutostart)(); } catch { /* An unavailable observation is not proof. */ }
-      if (autostart === "disabled") inventory.push({ severity: "warning", reason: "supervisor-autostart-disabled: Supervisor autostart is disabled. Run spider roam enable on the hub.", repairCommand: "spider roam enable" });
+      if (autostart === "disabled") inventory.push({ severity: "warning", reason: "supervisor-autostart-disabled: Supervisor autostart is disabled. Run spider roam enable locally on this box.", repairCommand: "spider roam enable" });
       else if (autostart === "unknown") inventory.push({ severity: "warning", reason: "supervisor-autostart-unavailable: Supervisor autostart cannot be verified. Check the supervisor unit and systemd user service.", repairCommand: null });
     }
     inventory.push(...corePinDiagnostics(inspectSupervisorCorePin(root, process.env), config.machineId));

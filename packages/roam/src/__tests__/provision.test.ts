@@ -61,7 +61,6 @@ function fixture() {
       return state.allow;
     },
     systemd: {
-      unitDir: "/home/fixture/.config/systemd/user",
       async writeUnit(name: string, bytes: string) { events.push("unit"); write(units, name, bytes); },
       async systemctl(argv: readonly string[]) {
         events.push("systemctl"); systemctl.push([...argv]);
@@ -302,7 +301,7 @@ it("completes ready provisioning when the permission count is unavailable", asyn
   f.ports.permissionTightening = async () => { throw Object.assign(new Error("unavailable"), { code: "unsafe-staging" }); };
   const result = await provision!(f.request("count-unavailable"), f.ports);
   expect(result).toMatchObject({ code: 0, reason: "installed", value: { hostingReady: true, permissionTightenings: null } });
-  expect(f.state.supervisorEnabled).toBe(true);
+  expect(f.systemctl).toEqual([]);
   expect(f.state.boxEnabled).toBe(true);
   expect(await provision!(f.request("count-unavailable"), f.ports)).toEqual(result);
 });
@@ -317,8 +316,8 @@ it.each(["core-pin-invalid", "core-pin-conflict", "core-pin-changed"])("keeps %s
 
 it.each([
   "chunk-mismatch", "cli-aborted", "cli-exit", "invalid-chunk", "invalid-chunks", "invalid-file", "invalid-providers",
-  "invalid-provision-reply", "invalid-release-receipt", "invalid-request", "invalid-switchover-journal", "invalid-systemctl",
-  "invalid-unit", "machine-not-enrolled", "missing-hc", "missing-switchover-backup", "peer-invalidated", "process-identity-unavailable",
+  "invalid-provision-reply", "invalid-release-receipt", "invalid-request", "invalid-switchover-journal",
+  "machine-not-enrolled", "missing-hc", "missing-switchover-backup", "peer-invalidated", "process-identity-unavailable",
   "release-launch-uncertain", "reply-too-large", "selection-not-allowed", "spawn-error", "stdin-error", "too-large", "unresolved-peer",
   "unsafe-context", "unsafe-path", "unsafe-release", "unsafe-staging", "invalid-operation", "invalid-provision-options",
   "staging-cleanup-pending", "invalid-bootstrap-reply", "invalid-bootstrap-request", "invalid-bootstrap-kind", "invalid-byte-limit",
@@ -490,10 +489,10 @@ it("names an explicit agent-directory mismatch before consent or effects", async
   expect(f.journal.read("directory-mismatch")).toEqual([]);
 }, 5000);
 
-it("refuses a supervisor unit outside the user systemd directory", async () => {
+it("refuses a supervisor executable outside the pinned installation prefix", async () => {
   expect(provision).toBeTypeOf("function");
-  const f = fixture(); f.ports.systemd.unitDir = "/home/fixture/not-systemd";
-  expect(await provision!(f.request("bad-unit-dir"), f.ports)).toMatchObject({ code: 1, reason: "invalid-provision-destination" });
+  const f = fixture(); f.ports.destination.supervisor = "/home/fixture/not-the-install-prefix/supervisor.mjs";
+  expect(await provision!(f.request("bad-supervisor-path"), f.ports)).toMatchObject({ code: 1, reason: "invalid-provision-destination" });
   expect(f.events).toEqual([]); expect(f.journal.read("bad-unit-dir")).toEqual([]);
 }, 5000);
 
@@ -532,83 +531,31 @@ it("holds a per-peer lock and clears interrupted credential staging before insta
   expect(f.events.indexOf("cleanup-secrets")).toBeLessThan(f.events.indexOf("release"));
 }, 5000);
 
-it.each([false, true])("installs but does not enable a blocked supervisor (hub enabled: %s)", async hubEnabled => {
+it.each([false, true])("installs with blocked verification without touching a supervisor (hub enabled: %s)", async hubEnabled => {
   const f = fixture(); f.write(f.source, "settings.json", "{}");
-  f.state.hubEnabled = hubEnabled; f.state.supervisorEnabled = true; f.state.verified = false;
-  const outcome = await provision!(f.request(`blocked-supervisor-${hubEnabled}`), f.ports);
-  expect(outcome).toMatchObject({ code: 0, reason: "installed-hosting-disabled", value: { hostingReady: false } });
-  expect(existsSync(join(f.units, "spider-roam-supervisor.service"))).toBe(true);
-  expect(f.state.supervisorEnabled).toBe(false);
-  expect(f.systemctl).toEqual([["--user", "daemon-reload"], ["--user", "disable", "spider-roam-supervisor.service"]]);
-  expect(f.state.boxEnabled).toBe(false);
-}, 5000);
-
-it("disables autostart when readiness verification is transiently unavailable", async () => {
-  const f = fixture(); f.write(f.source, "settings.json", "{}");
-  f.state.hubEnabled = true; f.state.boxEnabled = true; f.state.supervisorEnabled = true;
+  const unit = f.write(f.units, "spider-roam-supervisor.service", "existing legacy unit");
+  f.state.hubEnabled = hubEnabled; f.state.supervisorEnabled = true; f.state.boxEnabled = true;
   f.ports.verifyPeer = async () => { throw new Error("verification unavailable"); };
-  const outcome = await provision!(f.request("verification-unavailable"), f.ports);
+  const request = f.request(`blocked-supervisor-${hubEnabled}`);
+  const outcome = await provision!(request, f.ports);
   expect(outcome).toMatchObject({ code: 0, reason: "installed-hosting-disabled", value: { hostingReady: false } });
-  expect(f.state.supervisorEnabled).toBe(false);
   expect(f.state.boxEnabled).toBe(false);
-  expect(f.systemctl).toContainEqual(["--user", "disable", "spider-roam-supervisor.service"]);
+  expect(f.journal.read(request.operation.id).at(-1)).toMatchObject({ action: "done", result: outcome });
+  expect(readFileSync(unit, "utf8")).toBe("existing legacy unit");
+  expect(f.state.supervisorEnabled).toBe(true);
+  expect(f.systemctl).toEqual([]);
 });
 
-it("recovers autostart when enable follows transiently blocked reprovision", async () => {
-  const f = fixture(), hub = "00000000-0000-4000-8000-000000000002";
-  f.write(f.source, "settings.json", "{}"); f.state.supervisorEnabled = true; f.state.boxEnabled = true;
-  f.ports.hubMachineId = hub;
-  f.ports.transfer.enroll = async () => {};
-  const verifyPeer = f.ports.verifyPeer;
-  f.ports.verifyPeer = async () => { throw new Error("verification unavailable"); };
-  const blocked = await provision!(f.request("transient-reprovision"), f.ports);
-  expect(blocked).toMatchObject({ code: 0, reason: "installed-hosting-disabled", value: { hostingReady: false } });
-  expect(f.state.supervisorEnabled).toBe(false); expect(f.state.boxEnabled).toBe(false);
-  f.ports.verifyPeer = verifyPeer; f.state.verified = true;
-
-  const { openDb, migrate } = await import("@spider/db-core");
-  const controls = await import("../production-controls"), productionHub = await import("../production-hub");
-  const transport = await import("../transport"), diagnostics = await import("../diagnostics");
-  const observations = await import("../remote-observations"), launchd = await import("../launchd"), { doctorPeer } = await import("../resource-doctor");
-  mkdirSync(join(f.root, "roam"), { mode: 0o700 });
-  f.write(f.root, "roam/machine.json", JSON.stringify({ machineId: hub }));
-  f.write(f.root, "roam/config.json", JSON.stringify({ enabled: true, role: "hub", machineId: hub, hubMachineId: hub,
-    peers: [bootstrapPeer], discoveryRoots: [], coreUnit: "fixture.service" }));
-  const db = openDb(join(f.root, "spider.db")); migrate(db, "global", { machineId: hub, globalRoot: f.root }); db.close();
-  const launcher = f.write(f.root, "launchctl", "fixture");
-  vi.stubEnv("HOME", f.root); vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root); vi.stubEnv("SPIDER_ROAM_PI", process.execPath);
-  vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", launcher);
-  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/home/fixture/core" } } as never);
-  vi.spyOn(diagnostics, "assertCompatibleConsumers").mockResolvedValue(undefined);
-  vi.spyOn(launchd, "installHubService").mockRejectedValue(new Error("fixture prevents service launch"));
-  vi.spyOn(observations, "remoteDoctor").mockImplementation(async () => ({ enabled: f.state.boxEnabled,
-    diagnostics: await doctorPeer(bootstrapPeer, f.ports as never), consumers: [] }));
-  vi.spyOn(transport, "createTransport").mockReturnValue({ async resolve(peer: Peer) { return peer; }, async exec(_peer: Peer, argv: string[]) {
-    if (argv[1] === "intercom") return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: true, machineId: bootstrapPeer.machineId,
-      doctor: { enabled: f.state.boxEnabled, diagnostics: await doctorPeer(bootstrapPeer, f.ports as never), consumers: [] } }));
-    const op = JSON.parse(argv[2]);
-    return Buffer.from(JSON.stringify({ operationId: op.id, code: 0, value: op.kind === "stores"
-      ? { protocol: 1, schema: 14, machineId: bootstrapPeer.machineId, stores: ["global"] } : { complete: true } }));
-  } } as never);
-  vi.spyOn(transport, "createProvisionTransport").mockReturnValue({ transport: { async resolve(peer: Peer) { return peer; } },
-    async executeProvision(_peer: Peer, request: { enabled: boolean; restoreAutostart?: boolean }) {
-      f.state.boxEnabled = request.enabled;
-      if (request.enabled && request.restoreAutostart) f.state.supervisorEnabled = true;
-      return { enabled: request.enabled };
-    } } as never);
-  const enabled = await controls.enableRoaming(f.root, () => process.execPath);
-  expect(enabled).toMatchObject({ code: 3, reason: "enable-pending" });
-  expect(f.state.boxEnabled).toBe(true); expect(f.state.supervisorEnabled).toBe(true);
-}, 5000);
-
-it.each([false, true])("enables a ready supervisor without starting it (hub enabled: %s)", async hubEnabled => {
+it.each([false, true])("provisions a verified release without installing either supervisor (hub enabled: %s)", async hubEnabled => {
   const f = fixture(); f.write(f.source, "settings.json", "{}"); f.state.hubEnabled = hubEnabled; f.state.verified = true;
-  const outcome = await provision!(f.request(`ready-supervisor-${hubEnabled}`), f.ports);
+  const request = f.request(`ready-release-${hubEnabled}`);
+  const outcome = await provision!(request, f.ports);
   expect(outcome).toMatchObject({ code: 0, reason: "installed", value: { hostingReady: true } });
-  expect(f.state.supervisorEnabled).toBe(true);
-  expect(f.systemctl).toEqual([["--user", "daemon-reload"], ["--user", "enable", "spider-roam-supervisor.service"]]);
   expect(f.state.boxEnabled).toBe(hubEnabled);
-}, 5000);
+  expect(f.journal.read(request.operation.id).at(-1)).toMatchObject({ action: "done", result: outcome });
+  expect(readdirSync(f.units)).toEqual(["herdr-core.service"]);
+  expect(f.systemctl).toEqual([]);
+});
 
 it.each([0, 17, 1_000_000])("reports and replays the permission-tightening count %i without paths", async count => {
   const f = fixture(); f.write(f.source, "settings.json", "{}"); f.state.verified = true; f.state.permissionTightenings = count;
@@ -649,21 +596,21 @@ it("provision while the hub is disabled clears a previously enabled box without 
   expect(await provision!(f.request("disabled-provision"), f.ports)).toMatchObject({ code: 0, value: { hostingReady: true } });
   expect(f.state.boxEnabled).toBe(false);
   expect(f.events).toContain("enabled:false"); expect(f.events).not.toContain("enabled:true");
-  expect(f.systemctl.some(argv => argv.includes("start") || argv.includes("--now"))).toBe(false);
+  expect(f.systemctl).toEqual([]);
 }, 5000);
 
 it("disabled provision leaves no offline RPC probe process or session behind", async () => {
   const f = fixture(); f.write(f.source, "settings.json", "{}"); f.state.hubEnabled = false;
   const home = join(f.root, "probe-home"), agent = join(home, ".pi", "agent"), globalRoot = join(agent, "spider"), prefix = join(home, ".local"),
-    unitDir = join(home, ".config/systemd/user"), pi = join(prefix, "bin/pi"), observed = join(f.root, "probe-observed.json");
-  for (const dir of [home, agent, join(globalRoot, "roam"), dirname(pi), unitDir]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+    pi = join(prefix, "bin/pi"), observed = join(f.root, "probe-observed.json");
+  for (const dir of [home, agent, join(globalRoot, "roam"), dirname(pi)]) mkdirSync(dir, { recursive: true, mode: 0o700 });
   writeFileSync(join(globalRoot, "roam/machine.json"), JSON.stringify({ machineId: bootstrapPeer.machineId }), { mode: 0o600 });
   writeFileSync(pi, `#!${process.execPath}\nimport fs from 'node:fs'; const a=process.argv.slice(2), file=a[a.indexOf('--session')+1];
 fs.writeFileSync(${JSON.stringify(observed)},JSON.stringify({pid:process.pid,file,argv:a,agent:process.env.PI_CODING_AGENT_DIR,global:process.env.SPIDER_GLOBAL_ROOT}));
 const header=JSON.parse(fs.readFileSync(file,'utf8').split('\\n')[0]); fs.readFileSync(0,'utf8');
 console.log(JSON.stringify({id:'probe',type:'response',command:'get_state',success:true,data:{sessionFile:file,sessionId:header.id}}));\n`, { mode: 0o700 });
   f.ports.verifyPeer = async () => {
-    const request = { action: "verify", operationId: "probe-op", machineId: bootstrapPeer.machineId, home, agentDir: agent, globalRoot, npmPrefix: prefix, unitDir,
+    const request = { action: "verify", operationId: "probe-op", machineId: bootstrapPeer.machineId, home, agentDir: agent, globalRoot, npmPrefix: prefix,
       cli: join(prefix, "lib/spider/dist/roam/cli.mjs"), pi, providers: [], files: [], maximum: DEFAULT_LIMITS.agentBytes, chunkBytes: DEFAULT_LIMITS.chunkBytes };
     const child = spawnSync(process.execPath, ["--input-type=module", "-e", getProvisionRemoteScript()], { input: JSON.stringify(request), encoding: "utf8", timeout: 10_000,
       env: { ...process.env, HOME: home, SPIDER_GLOBAL_ROOT: globalRoot } });
@@ -678,17 +625,25 @@ console.log(JSON.stringify({id:'probe',type:'response',command:'get_state',succe
   expect(existsSync(probe.file)).toBe(false); expect(existsSync(probe.agent)).toBe(false); expect(existsSync(probe.global)).toBe(false);
   expect(() => process.kill(probe.pid, 0)).toThrow();
   expect(existsSync(join(agent, "intercom/broker.sock"))).toBe(false);
-  expect(f.systemctl.some(argv => argv.includes("start") || argv.includes("--now"))).toBe(false);
+  expect(f.systemctl).toEqual([]);
   expect(f.state.boxEnabled).toBe(false);
 }, 5000);
 
 it("a completed provisioning retry clears the box flag when the hub was disabled", async () => {
   const f = fixture(); f.write(f.source, "settings.json", "{}"); f.state.verified = true;
-  expect((await provision!(f.request("completed-disabled"), f.ports)).code).toBe(0);
+  const request = f.request("completed-disabled");
+  const outcome = await provision!(request, f.ports);
+  expect(outcome).toMatchObject({ code: 0, value: { hostingReady: true } });
   expect(f.state.boxEnabled).toBe(true);
+  const receipts = f.journal.read(request.operation.id);
+  const oldUnit = f.write(f.units, "spider-roam-supervisor.service", "unrelated to this retry");
+  f.systemctl.length = 0;
   f.state.hubEnabled = false;
-  expect((await provision!(f.request("completed-disabled"), f.ports)).code).toBe(0);
+  expect(await provision!(request, f.ports)).toEqual(outcome);
   expect(f.state.boxEnabled).toBe(false);
+  expect(f.journal.read(request.operation.id)).toEqual(receipts);
+  expect(readFileSync(oldUnit, "utf8")).toBe("unrelated to this retry");
+  expect(f.systemctl).toEqual([]);
 }, 5000);
 
 it("without auth install succeeds but hosting remains disabled", async () => {
@@ -989,20 +944,20 @@ it("secret commands are never executed and consented auth staging is removed", a
   expect(JSON.stringify({ result, events: f.events, preview: f.preview, diagnostics: f.diagnostics })).not.toContain("fixture-secret");
 }, 5000);
 
-it("reprovision backs up once and creates one unit", async () => {
+it("ready reprovision backs up once without changing supervisor units", async () => {
   expect(provision).toBeTypeOf("function");
   const f = fixture(); f.write(f.destination, "settings.json", JSON.stringify({ theme: "original" }));
   f.write(f.source, "settings.json", JSON.stringify({ theme: "first" }));
+  f.state.verified = true;
+  const v0Unit = f.write(f.units, "spider-roam-supervisor-v0.service", "existing v0 unit");
   expect((await provision!(f.request("first"), f.ports)).code).toBe(0);
   f.write(f.source, "settings.json", JSON.stringify({ theme: "second" }));
   expect((await provision!(f.request("second"), f.ports)).code).toBe(0);
   expect(JSON.parse(readFileSync(join(f.destination, "settings.json.spider-roam.bak"), "utf8"))).toEqual({ theme: "original" });
   expect(JSON.parse(readFileSync(join(f.destination, "settings.json"), "utf8"))).toEqual({ theme: "second" });
-  expect(readdirSync(f.units).filter(name => name === "spider-roam-supervisor.service")).toHaveLength(1);
-  const unit = readFileSync(join(f.units, "spider-roam-supervisor.service"), "utf8");
-  expect(unit).not.toMatch(/^(After|Requires|PartOf)=/m);
-  expect(unit).toContain('Environment="PI_CODING_AGENT_DIR=/home/fixture/.pi/agent"');
-  expect(unit).toContain("WantedBy=default.target");
+  expect(readdirSync(f.units).sort()).toEqual(["herdr-core.service", "spider-roam-supervisor-v0.service"]);
+  expect(readFileSync(v0Unit, "utf8")).toBe("existing v0 unit");
+  expect(f.systemctl).toEqual([]);
 }, 5000);
 
 it("provisions when a recorded diagnostic core unit has vanished", async () => {
@@ -1012,7 +967,7 @@ it("provisions when a recorded diagnostic core unit has vanished", async () => {
   expect(await provision!(f.request("missing-diagnostic-unit"), f.ports)).toMatchObject({ code: 0 });
   expect(readFileSync(f.coreFile)).toEqual(before);
   expect(readFileSync(f.terminals)).toEqual(terminals);
-  expect(f.systemctl).toEqual([["--user", "daemon-reload"], ["--user", "enable", "spider-roam-supervisor.service"]]);
+  expect(f.systemctl).toEqual([]);
 });
 
 it("core unit bytes and terminals remain unchanged", async () => {
@@ -1022,7 +977,7 @@ it("core unit bytes and terminals remain unchanged", async () => {
   expect((await provision!(f.request("core-safe"), f.ports)).code).toBe(0);
   expect(readFileSync(f.coreFile)).toEqual(core);
   expect(readFileSync(f.terminals)).toEqual(terminals);
-  expect(f.systemctl).toEqual([["--user", "daemon-reload"], ["--user", "enable", "spider-roam-supervisor.service"]]);
+  expect(f.systemctl).toEqual([]);
 }, 5000);
 
 it("reports a pending release and resumes the same operation without repeating consent", async () => {

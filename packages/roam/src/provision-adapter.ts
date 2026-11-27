@@ -15,10 +15,10 @@ import { destinationPermissionPath, isPermissionTighteningCount, permissionTreeR
 export { getProvisionRemoteScript } from "./provision-remote-script";
 interface Chunk { name: string; size: number; sha256: string }
 export interface AdapterOptions {
-  peer: Peer; operationId: string; destination: ProvisionDestination; unitDir: string;
+  peer: Peer; operationId: string; destination: ProvisionDestination;
   limits: Limits; transport: ProvisionTransport; piProviders: readonly string[];
 }
-export type HcProvisionAdapter = ProvisionPorts["transfer"] & { systemd: ProvisionPorts["systemd"]; verifyPeer(): Promise<ProvisionVerification>;
+export type HcProvisionAdapter = ProvisionPorts["transfer"] & { verifyPeer(): Promise<ProvisionVerification>;
   permissionTightening: ProvisionPorts["permissionTightening"] };
 const digest = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 function failure(error: unknown, action: string, destination: ProvisionDestination): HerdrError {
@@ -28,7 +28,7 @@ function failure(error: unknown, action: string, destination: ProvisionDestinati
     "enrollment-conflict", "unsafe-enrollment", "enrollment-identity-mismatch", "enrollment-publication-pending", "invalid-enrollment",
     "consent-required", "invalid-provision-request", "invalid-provision-reply", "invalid-request", "unsafe-path", "unsafe-staging", "unsafe-context",
     "invalid-chunk", "invalid-chunks", "chunk-mismatch", "too-large", "command-failed", "invalid-file", "invalid-release", "release-hash-mismatch",
-    "incomplete-release", "pi-version-mismatch", "invalid-unit", "invalid-systemctl", "unsafe-release", "invalid-switchover-journal",
+    "incomplete-release", "pi-version-mismatch", "unsafe-release", "invalid-switchover-journal",
     "missing-switchover-backup", "selection-not-allowed", "unsafe-destination", "invalid-destination-settings", "settings-preview-changed", "invalid-settings-preview",
     "credential-file-requires-consent", "provider-consent-required", "invalid-providers", "invalid-auth", "unsafe-auth",
     "provider-unavailable", "unsupported-credential-command", "release-arguments-changed", "invalid-release-receipt", "release-evidence-unavailable", "release-evidence-unfiltered",
@@ -58,7 +58,7 @@ function samePeer(expected: Peer, actual: Peer): boolean {
 
 /** A provisioning adapter is bound to one consented peer, operation and destination. */
 export function createHcProvisionAdapter(options: AdapterOptions): HcProvisionAdapter {
-  const { peer, operationId, destination, unitDir, limits, transport } = options;
+  const { peer, operationId, destination, limits, transport } = options;
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(operationId) || !Number.isSafeInteger(limits.chunkBytes) ||
       limits.chunkBytes <= 0 || limits.chunkBytes > 1024 * 1024 || !Number.isSafeInteger(limits.agentBytes) ||
       limits.agentBytes <= 0 || limits.agentBytes > 256 * 1024 * 1024) throw new HerdrError("invalid-provision-options", "Invalid provisioning options");
@@ -75,7 +75,7 @@ export function createHcProvisionAdapter(options: AdapterOptions): HcProvisionAd
   async function action(target: Peer, action: string, value: Record<string, unknown> = {}): Promise<unknown> {
     const request = {
       action, operationId, machineId: peer.machineId, home: destination.home, globalRoot: peer.globalRoot,
-      agentDir: destination.agentDir, npmPrefix: destination.npmPrefix, unitDir, core: peer.core, node: peer.node, pi: peer.pi,
+      agentDir: destination.agentDir, npmPrefix: destination.npmPrefix, core: peer.core, node: peer.node, pi: peer.pi,
       cli: peer.cli, supervisor: destination.supervisor, maximum: limits.agentBytes, chunkBytes: limits.chunkBytes,
       timeout: limits.importMs, ...value,
     };
@@ -176,20 +176,6 @@ export function createHcProvisionAdapter(options: AdapterOptions): HcProvisionAd
       },
     };
   }
-  const systemd: ProvisionPorts["systemd"] = {
-    unitDir,
-    async writeUnit(name, contents) {
-      if (name !== "spider-roam-supervisor.service") throw new HerdrError("invalid-unit", "Only the roaming supervisor unit may be installed");
-      await action(peer, "unit-write", { unit: name, contents });
-    },
-    async systemctl(argv) {
-      const allowed = JSON.stringify(argv) === JSON.stringify(["--user", "daemon-reload"]) ||
-        JSON.stringify(argv) === JSON.stringify(["--user", "enable", "spider-roam-supervisor.service"]) ||
-        JSON.stringify(argv) === JSON.stringify(["--user", "disable", "spider-roam-supervisor.service"]);
-      if (!allowed) throw new HerdrError("invalid-systemctl", "Only the roaming supervisor unit may be enabled or disabled");
-      await action(peer, "systemctl", { argv });
-    },
-  };
   return {
     async reconcilePairUnits(target) {
       if (!samePeer(peer, target)) throw new HerdrError("machine-mismatch", "Provision target changed");
@@ -275,6 +261,5 @@ export function createHcProvisionAdapter(options: AdapterOptions): HcProvisionAd
       if (requestedOperationId !== operationId) throw new HerdrError("invalid-operation", "Provisioning operation changed");
       return await action(target, "switchover") as { status: "applied" | "already" | "migration-pending" };
     },
-    systemd,
   };
 }

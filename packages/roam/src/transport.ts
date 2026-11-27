@@ -5,7 +5,7 @@ import type { CliRequestOptions } from '@spider/herdr/client/cli-transport';
 import { HerdrError, object, parseCore, selectedSocket, text } from '@spider/herdr/client/parse';
 import { DEFAULT_LIMITS } from './contracts';
 import { BOOTSTRAP_HOME_SCRIPT, BOOTSTRAP_AGENT_DIRECTORY_SCRIPT, BOOTSTRAP_IDENTITY_SCRIPT, BOOTSTRAP_SCRIPT, BOOTSTRAP_SETTINGS_SCRIPT } from './bootstrap-script';
-import { getProvisionRemoteScript, UnsupportedProvisioningNodeError } from './provision-remote-script';
+import { getProvisionRemoteScript, isProvisionAction, UnsupportedProvisioningNodeError } from './provision-remote-script';
 import { validIntercomReadiness } from './intercom-readiness';
 import { isCorePinStatus } from './enrollment';
 import { isMachineId } from './machine-id';
@@ -313,8 +313,8 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
     },
     async executeProvision(peer, request) {
       const state = resolved(peer);
-      const actions = new Set(['roaming-enabled', 'enrollment', 'prepare', 'secret-chunk', 'cleanup', 'install-files', 'auth-install', 'release-prepare', 'release-observe', 'unit-write', 'systemctl', 'switchover', 'verify', 'clear-secrets', 'permission-summary', 'agent-private-modes', 'pair-unit-repair']);
-      if (!request || typeof request !== 'object' || typeof request.action !== 'string' || !actions.has(request.action) ||
+      if (!request || typeof request !== 'object' || typeof request.action !== 'string' || !isProvisionAction(request.action) ||
+          request.action === 'roaming-enabled' && Object.hasOwn(request, 'restoreAutostart') ||
           typeof request.operationId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(request.operationId) ||
           request.machineId !== state.peer.machineId || request.globalRoot !== state.peer.globalRoot || request.node !== state.peer.node ||
           request.pi !== state.peer.pi || request.cli !== state.peer.cli) throw new HerdrError('invalid-provision-request', 'Invalid provisioning request');
@@ -322,9 +322,7 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
         result.approved === true && result.target === state.peer.alias && result.machineId === state.peer.machineId);
       if (!consent) throw new HerdrError('consent-required', 'Provisioning consent must be recorded before installation');
       if (request.action === 'roaming-enabled' && !(typeof request.enabled === 'boolean' &&
-          (consent.result.scope === 'roaming-enabled' && consent.result.enabled === request.enabled || request.enabled === true && consent.result.enablesRoaming === true) &&
-          (request.restoreAutostart === undefined || request.restoreAutostart === true && request.enabled === true &&
-            consent.result.scope === 'roaming-enabled' && consent.result.restoreAutostart === true)))
+          (consent.result.scope === 'roaming-enabled' && consent.result.enabled === request.enabled || request.enabled === true && consent.result.enablesRoaming === true)))
         throw new HerdrError('consent-required', 'Explicit roaming control consent is required');
       const file = request.file && typeof request.file === 'object' && !Array.isArray(request.file) ? request.file as Record<string, unknown> : null;
       const secretFile = request.action === 'install-files' && Array.isArray(file?.chunks) && file.chunks.some(chunk =>
@@ -380,7 +378,7 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
         const allowed = new Set(['invalid-enrollment','invalid-config', 'core-pin-required', 'core-pin-invalid', 'core-pin-conflict', 'core-pin-changed', 'core-pin-in-use', 'core-pin-busy',  'unsafe-enrollment', 'enrollment-identity-mismatch', 'enrollment-conflict', 'enrollment-publication-pending',
           'invalid-request', 'invalid-staging-name', 'unsafe-path', 'unsafe-staging', 'invalid-chunk', 'invalid-chunks',
           'chunk-mismatch', 'too-large', 'command-failed', 'unsafe-context', 'machine-mismatch', 'invalid-limits', 'invalid-file',
-          'invalid-release', 'release-hash-mismatch', 'incomplete-release', 'pi-version-mismatch', 'invalid-unit', 'invalid-systemctl',
+          'invalid-release', 'release-hash-mismatch', 'incomplete-release', 'pi-version-mismatch',
           'unsafe-release', 'invalid-switchover-journal', 'missing-switchover-backup', 'unknown-provision-action', 'provision-failed',
           'selection-not-allowed', 'unsafe-destination', 'invalid-destination-settings', 'settings-preview-changed', 'invalid-settings-preview',
           'credential-file-requires-consent', 'provider-consent-required', 'invalid-providers', 'invalid-auth', 'unsafe-auth', 'provider-unavailable',

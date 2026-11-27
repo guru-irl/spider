@@ -2752,44 +2752,42 @@ Usage:
                 return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
               }
               v0Source = from;
-              if (from) {
-                const plan = await v0.prepare({ to, from, locals, signal: _signal });
-                if (plan.kind === "refused") {
-                  return { content: [{ type: "text", text: V0_REFUSAL_TEXT[plan.code] }], details: { error: true, code: plan.code } };
+              const plan = await v0.prepare({ to, from, locals, signal: _signal });
+              if (plan.kind === "refused") {
+                return { content: [{ type: "text", text: V0_REFUSAL_TEXT[plan.code] }], details: { error: true, code: plan.code } };
+              }
+              if (plan.kind === "local") v0Target = plan.target;
+              if (plan.kind === "remote") {
+                if (from.v0HomeEpoch === undefined) {
+                  return { content: [{ type: "text", text: V0_REFUSAL_TEXT["not-configured"] }], details: { error: true, code: "not-configured" } };
                 }
-                if (plan.kind === "local") v0Target = plan.target;
-                if (plan.kind === "remote") {
-                  if (from.v0HomeEpoch === undefined) {
-                    return { content: [{ type: "text", text: V0_REFUSAL_TEXT["not-configured"] }], details: { error: true, code: "not-configured" } };
-                  }
-                  if (unsupportedV0Options) {
-                    return { content: [{ type: "text", text: "Remote intercom supports text only; cwd, attachments, reply, retry, and pane options are unavailable." }],
-                      details: { error: true, code: "unsupported" } };
-                  }
-                  if (confirmSend && !(await ctx.ui.confirm("Send message", `Send to "${plan.label}":\n\n${message}${attachmentText}`))) {
-                    return { content: [{ type: "text", text: "Message cancelled by user" }], details: {} };
-                  }
-                  if (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
-                      from.v0HomeEpoch === undefined || v0.homeEpoch(from.address!.sessionId) !== from.v0HomeEpoch) {
-                    return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
-                  }
-                  if (_signal?.aborted) return { content: [{ type: "text", text: "Cancelled" }], details: { error: true } };
-                  const sent = { id: randomUUID(), timestamp: Date.now(), text: message };
-                  const result = await plan.send(sent, _signal).catch(() => ({ kind: "unknown" as const, id: sent.id }));
-                  if (result.kind === "refused") {
-                    return { content: [{ type: "text", text: V0_REFUSAL_TEXT[result.code] }], details: { error: true, code: result.code } };
-                  }
-                  if (result.kind === "unknown") {
-                    return { content: [{ type: "text", text: `Delivery could not be confirmed (ID ${result.id}). Check the recipient before sending again.` }],
-                      details: { delivered: false, delivery: "unknown", messageId: result.id, outcomeKnown: false, retryable: false } };
-                  }
-                  if (result.kind !== "socket_delivered") {
-                    return { content: [{ type: "text", text: "Message was not delivered." }], details: { error: true } };
-                  }
-                  pi.appendEntry("intercom_sent", { to: plan.label, message: { text: message }, messageId: result.id, timestamp: Date.now() });
-                  return { content: [{ type: "text", text: `Sent to ${plan.label} (broker accepted the message).` }],
-                    details: { delivered: true, delivery: "socket_delivered", messageId: result.id } };
+                if (unsupportedV0Options) {
+                  return { content: [{ type: "text", text: "Remote intercom supports text only; cwd, attachments, reply, retry, and pane options are unavailable." }],
+                    details: { error: true, code: "unsupported" } };
                 }
+                if (confirmSend && !(await ctx.ui.confirm("Send message", `Send to "${plan.label}":\n\n${message}${attachmentText}`))) {
+                  return { content: [{ type: "text", text: "Message cancelled by user" }], details: {} };
+                }
+                if (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
+                    from.v0HomeEpoch === undefined || v0.homeEpoch(from.address!.sessionId) !== from.v0HomeEpoch) {
+                  return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
+                }
+                if (_signal?.aborted) return { content: [{ type: "text", text: "Cancelled" }], details: { error: true } };
+                const sent = { id: randomUUID(), timestamp: Date.now(), text: message };
+                const result = await plan.send(sent, _signal).catch(() => ({ kind: "unknown" as const, id: sent.id }));
+                if (result.kind === "refused") {
+                  return { content: [{ type: "text", text: V0_REFUSAL_TEXT[result.code] }], details: { error: true, code: result.code } };
+                }
+                if (result.kind === "unknown") {
+                  return { content: [{ type: "text", text: `Delivery could not be confirmed (ID ${result.id}). Check the recipient before sending again.` }],
+                    details: { delivered: false, delivery: "unknown", messageId: result.id, outcomeKnown: false, retryable: false } };
+                }
+                if (result.kind !== "socket_delivered") {
+                  return { content: [{ type: "text", text: "Message was not delivered." }], details: { error: true } };
+                }
+                pi.appendEntry("intercom_sent", { to: plan.label, message: { text: message }, messageId: result.id, timestamp: Date.now() });
+                return { content: [{ type: "text", text: `Sent to ${plan.label} (broker accepted the message).` }],
+                  details: { delivered: true, delivery: "socket_delivered", messageId: result.id } };
               }
             }
             if (confirmSend && cwd && openProjectPaneIfMissing) {
@@ -2934,70 +2932,68 @@ Usage:
                 return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
               }
               v0Source = from;
-              if (from) {
-                const plan = await v0.prepare({ to, from, locals, signal: _signal });
-                if (plan.kind === "refused") {
-                  return { content: [{ type: "text", text: V0_REFUSAL_TEXT[plan.code] }], details: { error: true, code: plan.code } };
+              const plan = await v0.prepare({ to, from, locals, signal: _signal });
+              if (plan.kind === "refused") {
+                return { content: [{ type: "text", text: V0_REFUSAL_TEXT[plan.code] }], details: { error: true, code: plan.code } };
+              }
+              if (plan.kind === "local") {
+                v0Target = plan.target;
+                const selected = locals.find(session => session.id === plan.target.id && session.endpointEpoch === plan.target.endpointEpoch);
+                if (selected) resolvedAddresses.set(selected.id, { address: sessionAddress(selected, getIntercomScopeId() ?? null), remote: false, activationEpoch: selected.activationEpoch });
+              }
+              if (plan.kind === "remote") {
+                if (from.v0HomeEpoch === undefined) {
+                  return { content: [{ type: "text", text: V0_REFUSAL_TEXT["not-configured"] }], details: { error: true, code: "not-configured" } };
                 }
-                if (plan.kind === "local") {
-                  v0Target = plan.target;
-                  const selected = locals.find(session => session.id === plan.target.id && session.endpointEpoch === plan.target.endpointEpoch);
-                  if (selected) resolvedAddresses.set(selected.id, { address: sessionAddress(selected, getIntercomScopeId() ?? null), remote: false, activationEpoch: selected.activationEpoch });
+                if (unsupportedV0Options) {
+                  return { content: [{ type: "text", text: "Remote intercom supports text only; cwd, attachments, reply, retry, and pane options are unavailable." }],
+                    details: { error: true, code: "unsupported" } };
                 }
-                if (plan.kind === "remote") {
-                  if (from.v0HomeEpoch === undefined) {
-                    return { content: [{ type: "text", text: V0_REFUSAL_TEXT["not-configured"] }], details: { error: true, code: "not-configured" } };
-                  }
-                  if (unsupportedV0Options) {
-                    return { content: [{ type: "text", text: "Remote intercom supports text only; cwd, attachments, reply, retry, and pane options are unavailable." }],
-                      details: { error: true, code: "unsupported" } };
-                  }
-                  if (config.confirmSend && ctx.hasUI && !(await ctx.ui.confirm("Send message", `Send to "${plan.label}":\n\n${message}`))) {
-                    return { content: [{ type: "text", text: "Message cancelled by user" }], details: {} };
-                  }
-                  if (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
-                      from.v0HomeEpoch === undefined || v0.homeEpoch(from.address!.sessionId) !== from.v0HomeEpoch) {
-                    return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
-                  }
-                  if (replyWaiter || v0AskInFlight) {
-                    return { content: [{ type: "text", text: "Already waiting for a reply" }], details: { error: true } };
-                  }
-                  if (_signal?.aborted) return { content: [{ type: "text", text: "Cancelled" }], details: { error: true } };
-                  questionId = randomUUID();
-                  const question = { id: questionId, timestamp: Date.now(), text: message };
-                  const token = Symbol("v0-ask"), abort = new AbortController();
-                  const onAbort = () => abort.abort();
-                  _signal?.addEventListener("abort", onAbort, { once: true });
-                  v0AskInFlight = { token, abort };
-                  let result: V0Delivery;
-                  try { result = await plan.ask(question, Math.min(askTimeoutMs, V0_ASK_MAX_MS), abort.signal); }
-                  catch { result = { kind: "unknown", id: question.id }; }
-                  finally {
-                    _signal?.removeEventListener("abort", onAbort);
-                    if (v0AskInFlight?.token === token) v0AskInFlight = null;
-                  }
-                  if (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected()) {
-                    result = { kind: "unknown", id: question.id };
-                  }
-                  if (result.kind === "refused") {
-                    return { content: [{ type: "text", text: V0_REFUSAL_TEXT[result.code] }], details: { error: true, code: result.code } };
-                  }
-                  if (result.kind === "replied") {
-                    pi.appendEntry("intercom_sent", { to: plan.label, message: { text: message }, messageId: question.id, timestamp: question.timestamp });
-                    pi.appendEntry("intercom_received", { from: plan.label, message: { text: result.text }, messageId: result.replyId, timestamp: Date.now() });
-                    return { content: [{ type: "text", text: `**Reply from ${plan.label}:**\n${result.text}` }],
-                      details: { delivery: "replied", messageId: question.id, replyId: result.replyId } };
-                  }
-                  if (result.kind === "no_reply") {
-                    return { content: [{ type: "text", text: `No reply was received (ID ${result.id}).` }],
-                      details: { error: true, delivery: "no_reply", messageId: result.id } };
-                  }
-                  if (result.kind === "unknown") {
-                    return { content: [{ type: "text", text: `Delivery could not be confirmed (ID ${result.id}). Check the recipient before sending again.` }],
-                      details: { error: true, delivered: false, delivery: "unknown", messageId: result.id, outcomeKnown: false, retryable: false } };
-                  }
-                  return { content: [{ type: "text", text: "No reply was received." }], details: { error: true } };
+                if (config.confirmSend && ctx.hasUI && !(await ctx.ui.confirm("Send message", `Send to "${plan.label}":\n\n${message}`))) {
+                  return { content: [{ type: "text", text: "Message cancelled by user" }], details: {} };
                 }
+                if (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
+                    from.v0HomeEpoch === undefined || v0.homeEpoch(from.address!.sessionId) !== from.v0HomeEpoch) {
+                  return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
+                }
+                if (replyWaiter || v0AskInFlight) {
+                  return { content: [{ type: "text", text: "Already waiting for a reply" }], details: { error: true } };
+                }
+                if (_signal?.aborted) return { content: [{ type: "text", text: "Cancelled" }], details: { error: true } };
+                questionId = randomUUID();
+                const question = { id: questionId, timestamp: Date.now(), text: message };
+                const token = Symbol("v0-ask"), abort = new AbortController();
+                const onAbort = () => abort.abort();
+                _signal?.addEventListener("abort", onAbort, { once: true });
+                v0AskInFlight = { token, abort };
+                let result: V0Delivery;
+                try { result = await plan.ask(question, Math.min(askTimeoutMs, V0_ASK_MAX_MS), abort.signal); }
+                catch { result = { kind: "unknown", id: question.id }; }
+                finally {
+                  _signal?.removeEventListener("abort", onAbort);
+                  if (v0AskInFlight?.token === token) v0AskInFlight = null;
+                }
+                if (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected()) {
+                  result = { kind: "unknown", id: question.id };
+                }
+                if (result.kind === "refused") {
+                  return { content: [{ type: "text", text: V0_REFUSAL_TEXT[result.code] }], details: { error: true, code: result.code } };
+                }
+                if (result.kind === "replied") {
+                  pi.appendEntry("intercom_sent", { to: plan.label, message: { text: message }, messageId: question.id, timestamp: question.timestamp });
+                  pi.appendEntry("intercom_received", { from: plan.label, message: { text: result.text }, messageId: result.replyId, timestamp: Date.now() });
+                  return { content: [{ type: "text", text: `**Reply from ${plan.label}:**\n${result.text}` }],
+                    details: { delivery: "replied", messageId: question.id, replyId: result.replyId } };
+                }
+                if (result.kind === "no_reply") {
+                  return { content: [{ type: "text", text: `No reply was received (ID ${result.id}).` }],
+                    details: { error: true, delivery: "no_reply", messageId: result.id } };
+                }
+                if (result.kind === "unknown") {
+                  return { content: [{ type: "text", text: `Delivery could not be confirmed (ID ${result.id}). Check the recipient before sending again.` }],
+                    details: { error: true, delivered: false, delivery: "unknown", messageId: result.id, outcomeKnown: false, retryable: false } };
+                }
+                return { content: [{ type: "text", text: "No reply was received." }], details: { error: true } };
               }
             }
             let target: DeliveryTarget;

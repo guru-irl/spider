@@ -582,5 +582,5 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
 export function legacyUpgradeDiagnostic(inventory: LegacyUpgradeInventory): Diagnostic {
   const detail = inventory.findings.length ? ` ${inventory.findings.join(", ")}.` : " No unfinished legacy work was found.";
   return { severity: inventory.status === "legacy-upgrade-ready" ? "info" : "block",
-    reason: `${inventory.status}:${detail} See docs/guide/roaming-upgrade.md.`, repairCommand: null };
+    reason: `${inventory.status}:${detail} See the roaming upgrade guide in the spider repository at docs/guide/roaming-upgrade.md.`, repairCommand: null };
 }

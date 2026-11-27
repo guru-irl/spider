@@ -8,6 +8,7 @@ Documentation for the spider pi extension.
 - [Contributing](../CONTRIBUTING.md): development setup, validation, package boundaries, and PR requirements.
 - [Using spider](guide/using-spider.md): skills, execution, indexing, todos, and project setup.
 - [Configuration](guide/configuration.md): config layers, defaults, where each value comes from, how unset works, and role models.
+- [Upgrading legacy roaming to v0](guide/roaming-upgrade.md): how to check for unfinished work before replacing the old service.
 - [Usage dashboard](guide/usage.md): the Overview, Session, and Calibration & data pages. It covers the default credits view, the optional `usage.monthlyBudget`, the local ledger, the read-only counter and doctor diagnostics. The footer shows, separated by middle dots: context percentage and window size, session credits, cache-hit rate (`CH`), `month` as a whole percentage, input and output tokens, and cache read and write tokens. The `month` item uses the budget when one is set, and otherwise the allowance. If neither is available, the footer leaves it out.
 - [Subagents](guide/subagents.md): dispatch, thinking, shutdown, which runs survive a reload, escalation, and messaging.
 - [Loops and scheduled wakeups](guide/loop-and-schedule.md): timers for external work, `/loop`, checks the agent paces itself, cancellation, and how long they last in a session.

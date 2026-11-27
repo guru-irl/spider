@@ -57,9 +57,9 @@ until the effects of starting it have been reviewed and approved.
   A missing or unreadable observation is not proof of exit.
 - **Repository map:** On the machine that owns the map, retry old
   `spider roam repo map <repo-key> <same-path>`.
-- **Workspace map:** Use the old operation that owns the map or the old hub's
-  supported `resumePendingMappings` on its own database. Do not start the hub
-  solely to make it resume mappings.
+- **Workspace map:** Use the old operation that owns the map. If no operation
+  owns it, leave the root quarantined. Do not start the old hub just to resume
+  a map.
 
 Do not hand-edit SQLite, intents, mappings, locks, or fences. Do not prescribe
 `set-home --force` for a legacy claim. If the old path cannot prove completion,

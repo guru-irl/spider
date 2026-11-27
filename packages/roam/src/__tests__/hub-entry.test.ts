@@ -522,7 +522,7 @@ it.each([false, true])("remote doctor retains disabled-box unit information and 
   const configFile = join(f.root, "roam", "config.json");
   writeFileSync(configFile, JSON.stringify({ ...JSON.parse(readFileSync(configFile, "utf8")), enabled }), { mode: 0o600 });
   try {
-    const ready = "legacy-upgrade-ready: No unfinished legacy work was found. See docs/guide/roaming-upgrade.md.";
+    const ready = "legacy-upgrade-ready: No unfinished legacy work was found. See the roaming upgrade guide in the spider repository at docs/guide/roaming-upgrade.md.";
     for (const selector of [["--", alias], ["--machine", alias]]) {
       const result = await command(f, ["roam", "doctor", ...selector]);
       expect(result.code, result.err).toBe(0);

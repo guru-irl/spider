@@ -4,7 +4,7 @@
 // as the title, so renderResult renders only the BODY (no header of its own — that
 // would double the "spider"). `options.expanded` reflects the in-chat Ctrl+O toggle;
 // `context.args` are the call params; `result.details` is the structured payload.
-import { truncateToWidth, visibleWidth, Box, Spacer, Container } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, Box } from "@earendil-works/pi-tui";
 import { icon, type Component, type IconStyle } from "@spider/ui";
 import { cachedLines, formatRunUsage, renderErrorResult, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, sectionRule, fitResultLines, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
 import {
@@ -824,7 +824,9 @@ export function renderSpiderCall(args: any, theme: any, context: any): Component
   });
 }
 
-export function renderSubagentDone(message: any, options: { expanded?: boolean }, theme: any, iconStyle?: IconStyle): Component {
+interface NotificationOptions { expanded?: boolean; outputPad?: number }
+
+export function renderSubagentDone(message: any, options: NotificationOptions, theme: any, iconStyle?: IconStyle): Component {
   const d = message?.details ?? {};
   // C-LOW: a malformed completion event without status is not proof of `done`.
   const status = String(d.status ?? "unknown");
@@ -839,7 +841,7 @@ export function renderSubagentDone(message: any, options: { expanded?: boolean }
   // (renderResult) carrying the child's name/agent/model/status and its output as the result.
   const args = { action: "run" };
   const result = { details: { run: { name: d.name, agent: d.agent, model: d.model, thinking: d.thinking, status, result: d.output, token_count: d.tokenCount, cost: d.cost, costText: d.costText, compactionCount: d.compactionCount } } };
-  const box = new Box(1, 1, bgFn);
+  const box = new Box(options.outputPad ?? 1, 1, bgFn);
   box.addChild(renderSpiderCall(args, theme, { cardBackground: background, iconStyle }) as any);
   if (d.chain?.outcome === "complete" || d.chain?.outcome === "stopped") {
     const headline = d.chain.outcome === "complete" ? "chain complete"
@@ -847,70 +849,64 @@ export function renderSubagentDone(message: any, options: { expanded?: boolean }
     box.addChild({ render: (width: number) => restoreCardBackground([clip(mkTheme(theme).fg("toolTitle", headline), width)], theme, background), invalidate() {} });
   }
   box.addChild(renderSpiderResult(result, { expanded }, theme, { args, cardBackground: background, iconStyle }) as any);
-  const container = new Container();
-  container.addChild(new Spacer(1));
-  container.addChild(box as any);
-  return cachedLines(width => container.render(width), () => container.invalidate());
+  return cachedLines(width => box.render(width), () => box.invalidate());
 }
 
 /** Transcript renderer for the `spider.command` message a slash command emits. Renders the
  *  SAME title + body a real spider tool call produces — renderSpiderCall + renderSpiderResult over
  *  the dispatch result normalized via toToolResult (so control's {ok,lines}/{details} shapes both
- *  populate result.details) — wrapped in the tool-success box, so /spider, /stats, /doctor look
+ *  populate result.details) — wrapped in the tool box, so /spider, /stats, /doctor look
  *  identical to the tool result. ctrl+o (options.expanded) expands. */
-export function renderCommandOutput(message: any, options: { expanded?: boolean }, theme: any, iconStyle?: IconStyle): Component {
+export function renderCommandOutput(message: any, options: NotificationOptions, theme: any, iconStyle?: IconStyle): Component {
   const d = message?.details ?? {};
   const args = d.args ?? { action: "control" };
   const result = d.result ?? {};
   const expanded = options?.expanded === true;
-  const bgFn = (text: string) => { try { return typeof theme?.bg === "function" ? theme.bg("toolSuccessBg", text) : text; } catch { return text; } };
-  const box = new Box(1, 1, bgFn);
-  box.addChild(renderSpiderCall(args, theme, { iconStyle }) as any);
-  // Normalize internal command output to the same boundary pi uses for tool rows.
-  // Its isError flag describes the shell, not whether a rich report should be hidden.
   const normalized = toToolResult(result);
-  box.addChild(renderSpiderResult({ content: normalized.content, details: normalized.details }, { expanded }, theme, { args, isError: normalized.isError, cardBackground: "toolSuccessBg", iconStyle }) as any);
-  const container = new Container();
-  container.addChild(new Spacer(1));
-  container.addChild(box as any);
-  return cachedLines(width => container.render(width), () => container.invalidate());
+  const context = { args, isError: normalized.isError, iconStyle };
+  const background = cardBackground(context);
+  const box = new Box(options.outputPad ?? 1, 1, text => mkTheme(theme).bg(background, text));
+  box.addChild(renderSpiderCall(args, theme, context) as any);
+  box.addChild(renderSpiderResult(normalized, { expanded }, theme, context) as any);
+  return cachedLines(width => box.render(width), () => box.invalidate());
 }
 
 /** TUI-only receipt: proposed knowledge stays pending and never masquerades as completed user work. */
-export function renderOrganismEntry(entry: unknown, options: { expanded?: boolean }, theme: unknown, iconStyle?: IconStyle): Component {
+export function renderOrganismEntry(entry: unknown, options: NotificationOptions, theme: unknown, iconStyle?: IconStyle): Component {
   const report = (entry as { data?: DrainReport } | undefined)?.data;
   const state = report?.status ?? "unknown";
-  const bad = state === "failed" || state === "partial";
-  const background = bad ? "toolErrorBg" : state === "completed" ? "toolSuccessBg" : "toolPendingBg";
-  const box = new Box(1, 1, text => mkTheme(theme).bg(background, text));
+  const failed = state === "failed";
+  const completed = state === "completed";
+  const background = failed ? "toolErrorBg" : completed ? "toolSuccessBg" : "toolPendingBg";
+  const box = new Box(options.outputPad ?? 1, 1, text => mkTheme(theme).bg(background, text));
+  box.addChild(renderSpiderCall({ action: "organism" }, theme, { cardBackground: background, iconStyle }) as any);
   box.addChild({
     render: (width: number) => {
       const t = mkTheme(theme);
-      const marker = bad ? icon(iconStyle, "warning") : state === "completed" ? "✓" : "○";
-      const lines = [t.fg(bad ? "error" : "toolTitle", `${marker} organism · ${state}`)];
+      const marker = failed ? icon(iconStyle, "failure") : state === "partial" ? icon(iconStyle, "warning") : completed ? "✓" : "○";
+      const color = failed ? "error" : state === "partial" ? "warning" : completed ? "success" : "muted";
+      const lines = [` ${t.fg(color, marker)} ${state}`];
+      const detail = (text: string) => ` ${t.fg("dim", icon(iconStyle, "gutter"))} ${t.fg("toolOutput", text)}`;
       if (report) {
-        lines.push(t.fg("toolOutput", `${report.memoryStaged} memories · ${report.skillsQueued === undefined && report.skillsStaged > 0 ? `${report.skillsStaged} skills staged` : `${report.skillsQueued ?? 0} skills queued`} · ${report.todosAdded} todos`));
-        if (report.skipReason) lines.push(t.fg("toolOutput", report.skipReason));
+        lines.push(detail(`${report.memoryStaged} memories · ${report.skillsQueued === undefined && report.skillsStaged > 0 ? `${report.skillsStaged} skills staged` : `${report.skillsQueued ?? 0} skills queued`} · ${report.todosAdded} todos`));
+        if (report.skipReason) lines.push(detail(report.skipReason));
         const errors = options?.expanded ? report.errors : report.errors.slice(0, 1);
-        for (const error of errors) lines.push(t.fg("toolOutput", `${error.phase}: ${error.message}`));
-        if (options?.expanded) lines.push(t.fg("toolOutput", `${report.modelCalls} model calls · ${report.reason} · ${report.finishedAt - report.startedAt} ms`));
+        for (const error of errors) lines.push(detail(`${error.phase}: ${error.message}`));
+        if (options?.expanded) lines.push(detail(`${report.modelCalls} model calls · ${report.reason} · ${report.finishedAt - report.startedAt} ms`));
         if (report.memoryStaged + report.skillsStaged > 0) {
-          lines.push(t.fg("toolOutput", "Review: spider control memory sub=pending · spider skill op=list"));
+          lines.push(detail("Review: spider control memory sub=pending · spider skill op=list"));
         }
       }
       return restoreCardBackground(fitResultLines(lines, width, options?.expanded === true), theme, background);
     },
     invalidate() {},
   });
-  const container = new Container();
-  container.addChild(new Spacer(1));
-  container.addChild(box);
-  return cachedLines(width => container.render(width), () => container.invalidate());
+  return cachedLines(width => box.render(width), () => box.invalidate());
 }
 
 /** Transcript renderer for `spider.escalation` custom messages. Escalations always use
  *  the error background (warnings/blocks are both urgent enough to warrant the red card). */
-export function renderEscalationMessage(message: any, options: { expanded?: boolean }, theme: any, iconStyle?: IconStyle): Component {
+export function renderEscalationMessage(message: any, options: NotificationOptions, theme: any, iconStyle?: IconStyle): Component {
   const d = message?.details ?? {};
   const escalationDetails: EscalationDetails = {
     runId: d.runId,
@@ -924,13 +920,10 @@ export function renderEscalationMessage(message: any, options: { expanded?: bool
   const bgFn = (text: string) => {
     try { return typeof theme?.bg === "function" ? theme.bg("toolErrorBg", text) : text; } catch { return text; }
   };
-  const box = new Box(1, 1, bgFn);
+  const box = new Box(options.outputPad ?? 1, 1, bgFn);
   box.addChild({
     render: (w: number) => restoreCardBackground(renderEscalation(escalationDetails, { theme: th, width: w, expanded: options?.expanded === true }), theme, "toolErrorBg"),
     invalidate() {},
   } as any);
-  const container = new Container();
-  container.addChild(new Spacer(1));
-  container.addChild(box as any);
-  return cachedLines(width => container.render(width), () => container.invalidate());
+  return cachedLines(width => box.render(width), () => box.invalidate());
 }

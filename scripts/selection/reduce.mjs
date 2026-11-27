@@ -59,6 +59,7 @@ export function reduce({ root = process.cwd(), rawDir, mapsDir, reportFile }) {
     hookErrors: existsSync(errors) ? readFileSync(errors, 'utf8').trim().split('\n').filter(Boolean).length : 0,
     malformedSnapshots: 0,
     unresolvedBundles: 0,
+    unresolvedObservations: [],
   };
   for (const name of readdirSync(rawDir).filter(name => /^\d+-[a-f0-9-]+\.json$/.test(name))) {
     let proc;
@@ -78,7 +79,7 @@ export function reduce({ root = process.cwd(), rawDir, mapsDir, reportFile }) {
         const sources = maps.get(script.sha256) ?? fixtures.get(script.sha256);
         if (sources) {
           for (const source of sources) entry.reads.add(source);
-        } else stats.unresolvedBundles++;
+        } else { stats.unresolvedBundles++; stats.unresolvedObservations.push({test: proc.test, url: script.url, sha256: script.sha256}); }
       } else {
         const file = script.url.startsWith('file:') ? fileURLToPath(script.url) : script.url.split(/[?#]/, 1)[0];
         const source = repoPath(root, file);

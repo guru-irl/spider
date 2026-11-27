@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Box, visibleWidth } from "@earendil-works/pi-tui";
+import { Box, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { renderCommandOutput, renderEscalationMessage, renderOrganismEntry, renderSpiderCall, renderSpiderResult, renderSubagentDone } from "../render-result";
 
 const BG = "48;5;160";
@@ -108,18 +108,34 @@ describe("card background through the right edge", () => {
       expect(rows.some((row) => row.includes("…"))).toBe(true);
       checkCard(rows, 30, backgrounds[token]);
     }
-    const failed = renderCommandOutput({ details: { args: { action: "unknown" }, result: { isError: true, details: { error: "failure\x1b[0m " + "details ".repeat(20) } } } }, {}, distinct).render(30).slice(1);
-    checkCard(failed, 30, backgrounds.toolSuccessBg);
-    const notice = renderEscalationMessage({ details: { runId: "id", severity: "warning", name: "n".repeat(100), summary: "short" } }, {}, distinct).render(30).slice(1);
+    const failed = renderCommandOutput({ details: { args: { action: "unknown" }, result: { isError: true, details: { error: "failure\x1b[0m " + "details ".repeat(20) } } } }, {}, distinct).render(30);
+    checkCard(failed, 30, backgrounds.toolErrorBg);
+    const notice = renderEscalationMessage({ details: { runId: "id", severity: "warning", name: "n".repeat(100), summary: "short" } }, {}, distinct).render(30);
     checkCard(notice, 30, backgrounds.toolErrorBg);
-    const done = renderSubagentDone({ details: { status: "failed", name: "worker", output: "failure ".repeat(20) } }, {}, distinct).render(30).slice(1);
+    const done = renderSubagentDone({ details: { status: "failed", name: "worker", output: "failure ".repeat(20) } }, {}, distinct).render(30);
     checkCard(done, 30, backgrounds.toolErrorBg);
+  });
+
+  it.each([0, 3])("uses Pi's notification padding of %i", (outputPad) => {
+    const options = { outputPad };
+    const renderers = [
+      renderCommandOutput({ details: { args: { action: "control", command: "doctor" }, result: { ok: true } } }, options, theme),
+      renderSubagentDone({ details: { status: "done", name: "worker" } }, options, theme),
+      renderOrganismEntry(undefined, options, theme),
+      renderEscalationMessage({ details: { runId: "example-run", severity: "warning", summary: "Review the changes" } }, options, theme),
+    ];
+    for (const component of renderers) {
+      const rows = component.render(60);
+      checkCard(rows, 60);
+      const firstText = rows.map(stripTerminalSequences).find(line => line.trim())!;
+      expect(firstText.match(/^ */)?.[0].length).toBe(outputPad);
+    }
   });
 
   it.each([30, 47, 80])("wraps notice bodies fully in both modes at width %i", (width) => {
     const summary = "The deployment needs a careful decision before the next step can safely proceed.\nPlease confirm the target and record the reason for the change.";
     for (const expanded of [false, true]) {
-      const rows = renderEscalationMessage({ details: { runId: "identifier-" + "x".repeat(100), severity: "warning", name: "worker-" + "n".repeat(100), summary } }, { expanded }, theme).render(width).slice(1);
+      const rows = renderEscalationMessage({ details: { runId: "identifier-" + "x".repeat(100), severity: "warning", name: "worker-" + "n".repeat(100), summary } }, { expanded }, theme).render(width);
       checkCard(rows, width);
       const text = rows.map((row) => row.replace(/\x1b\[[0-9;]*m/g, "").trim());
       const header = text.findIndex((line) => line.startsWith("⚠"));
@@ -133,7 +149,7 @@ describe("card background through the right edge", () => {
 
   it.each([30, 47, 80])("retains wide characters in a long notice word at width %i", (width) => {
     const summary = "界🙂".repeat(80);
-    const rows = renderEscalationMessage({ details: { runId: "id", severity: "question", name: "worker", summary } }, {}, theme).render(width).slice(1);
+    const rows = renderEscalationMessage({ details: { runId: "id", severity: "question", name: "worker", summary } }, {}, theme).render(width);
     checkCard(rows, width);
     const visible = rows.map((row) => row.replace(/\x1b\[[0-9;]*m/g, "").trim());
     const body = visible.filter((line) => line.includes("界") || line.includes("🙂")).join("");
@@ -144,7 +160,7 @@ describe("card background through the right edge", () => {
     const run = toolBox("run", {}, { run: { status: "done", name: "worker", task: "long ".repeat(80), result: "output ".repeat(80) } }).render(width);
     const search = toolBox("search", {}, [{ title: "title ".repeat(80), kind: "content", snippet: "snippet ".repeat(80) }]).render(width);
     const report = { status: "partial", memoryStaged: 0, skillsStaged: 0, todosAdded: 0, errors: [{ phase: "store", message: "error ".repeat(80) }], modelCalls: 0, reason: "done", startedAt: 0, finishedAt: 1 };
-    const organism = renderOrganismEntry({ data: report }, {}, theme).render(width).slice(1);
+    const organism = renderOrganismEntry({ data: report }, {}, theme).render(width);
     for (const rows of [run, search, organism]) {
       expect(rows.some((row) => row.includes("…"))).toBe(true);
       checkCard(rows, width);
@@ -153,9 +169,9 @@ describe("card background through the right edge", () => {
 
   it.each([30, 47, 80])("paints clipped message and notice cards at width %i", (width) => {
     const message = toolBox("message", { to: "peer", message: "word ".repeat(80) }, { delivered: true }).render(width);
-    const done = renderSubagentDone({ details: { status: "done", name: "worker", output: "word ".repeat(80) } }, {}, theme).render(width).slice(1);
-    const notice = renderEscalationMessage({ details: { runId: "identifier", severity: "warning", name: "n".repeat(100), summary: "short" } }, {}, theme).render(width).slice(1);
-    const command = renderCommandOutput({ details: { args: { action: "message", to: "peer", message: "word ".repeat(80) }, result: { details: { delivered: true } } } }, {}, theme).render(width).slice(1);
+    const done = renderSubagentDone({ details: { status: "done", name: "worker", output: "word ".repeat(80) } }, {}, theme).render(width);
+    const notice = renderEscalationMessage({ details: { runId: "identifier", severity: "warning", name: "n".repeat(100), summary: "short" } }, {}, theme).render(width);
+    const command = renderCommandOutput({ details: { args: { action: "message", to: "peer", message: "word ".repeat(80) }, result: { details: { delivered: true } } } }, {}, theme).render(width);
     for (const rows of [message, done, notice, command]) checkCard(rows, width);
   });
 });

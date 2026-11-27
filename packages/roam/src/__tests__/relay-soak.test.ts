@@ -59,7 +59,7 @@ function completeEvidence(): Evidence {
       const down = faults.some(fault => fault.linkIds.includes(link.id) && atMs >= fault.startMs + 1000 && atMs < fault.clearMs + 1000);
       link.states.push({ atMs, state: down ? "down" : "up" });
     }
-    for (let atMs = START; atMs <= END; atMs += 30_000) link.rss.push({ atMs, bytes: 100_000_000, process: { ...link.runs[0].process } });
+    for (let atMs = START - 30_000; atMs <= END + 30_000; atMs += 30_000) link.rss.push({ atMs, bytes: 100_000_000, process: { ...link.runs[0].process } });
     link.calls.push({ pollId: `${link.id}-held`, holdMs: 20_000, startMs: START, endMs: START + 1000, process: { ...link.runs[0].process } });
     link.calls.push({ pollId: `${link.id}-result`, holdMs: 0, startMs: START + 100, endMs: START + 200, process: { ...link.runs[0].process } });
   }
@@ -173,6 +173,19 @@ describe("the live relay soak reliability gate", () => {
       link.outcomes[i].atMs = link.receipts[i].atMs + 1;
     }
     expect(checkRelaySoak(evidence).violations).toContain("handoff");
+  });
+
+  it("accepts clock bounds measured from the relay over its existing route to the peer", () => {
+    const evidence = copy(), link = evidence.links[1];
+    link.clock.minOffsetMs = 900;
+    link.clock.maxOffsetMs = 1100;
+    for (const sample of link.clock.samples) {
+      sample.sentMs = sample.remoteMs + 900;
+      sample.receivedMs = sample.remoteMs + 1100;
+    }
+    for (const sample of [...link.handoffs, ...link.receipts, ...link.rss]) sample.atMs += 1000;
+    for (const call of link.calls) { call.startMs += 1000; if (call.endMs !== null) call.endMs += 1000; }
+    expect(checkRelaySoak(evidence)).toEqual({ ok: true, violations: [] });
   });
 
   it("fails closed on missing, inconsistent, or gapped clock bounds", () => {

@@ -2,9 +2,10 @@ import net from "node:net";
 import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import {
   parseV0BrokerReply, parseV0BrokerRequest, V0_ASK_MAX_MS, V0_INTERCOM_FEATURE,
-  type V0BrokerOp, type V0Reply,
+  type V0BrokerOp, type V0BrokerRequest, type V0Reply,
 } from "../roam-v0.js";
 import { createMessageReader, writeMessage } from "./framing.js";
 import { INTERCOM_PROTOCOL_NAME, INTERCOM_PROTOCOL_VERSION } from "./paths.js";
@@ -42,7 +43,7 @@ export async function requestV0Broker(agentDir: string, op: V0BrokerOp, signal?:
   try { broker = privateBroker(agentDir); } catch { return { kind: "refused", code: "unreachable" }; }
   if (!broker) return { kind: "refused", code: "unauthorized" };
 
-  const startedAt = Date.now();
+  const startedAt = performance.now();
   return new Promise<V0Reply>(resolveResult => {
     const socket = net.connect(broker.path);
     const healthId = randomUUID();
@@ -84,15 +85,17 @@ export async function requestV0Broker(agentDir: string, op: V0BrokerOp, signal?:
             health.implementation !== "spider" || !Array.isArray(health.features) || !health.features.includes(V0_INTERCOM_FEATURE)) {
           finish({ kind: "refused", code: "unsupported" }); return;
         }
+        let outbound: V0BrokerRequest = request;
         if (op.kind === "ask") {
-          const remaining = Math.min(op.timeoutMs, V0_ASK_MAX_MS) - (Date.now() - startedAt);
+          const remaining = Math.floor(Math.min(op.timeoutMs, V0_ASK_MAX_MS) - (performance.now() - startedAt));
           if (remaining <= 0) { finish({ kind: "no_reply", id: op.message.id }); return; }
           clearTimeout(timer);
           timer = setTimeout(() => finish({ kind: "no_reply", id: op.message.id }), remaining);
           timer.unref?.();
+          outbound = { type: "roam_v0", requestId, ...op, timeoutMs: remaining };
         }
         sent = true;
-        try { writeMessage(socket, request); } catch { finish(failure()); }
+        try { writeMessage(socket, outbound); } catch { finish(failure()); }
         return;
       }
       const response = parseV0BrokerReply(value);

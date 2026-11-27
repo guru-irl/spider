@@ -135,7 +135,7 @@ describe("private roaming broker", () => {
     return request({ kind: "lookup", scopeId, selector: { by, value } });
   }
 
-  async function fakeBroker(features: string[], onRequest: (socket: net.Socket, frame: Record<string, unknown>) => void) {
+  async function fakeBroker(features: string[], onRequest: (socket: net.Socket, frame: Record<string, unknown>) => void, healthDelayMs = 0) {
     const dir = mkdtempSync(join(testTmpDir(), "f-"));
     mkdirSync(join(dir, "intercom"), { mode: 0o700 });
     const path = join(dir, "intercom", "broker.sock");
@@ -144,7 +144,9 @@ describe("private roaming broker", () => {
       socket.on("data", createMessageReader(value => {
         const frame = value as Record<string, unknown>;
         if (frame.type === "health") {
-          writeMessage(socket, { type: "health_ok", requestId: frame.requestId, protocol: "pi-intercom", version: 1, implementation: "spider", features });
+          const sendHealth = () => writeMessage(socket, { type: "health_ok", requestId: frame.requestId, protocol: "pi-intercom", version: 1, implementation: "spider", features });
+          if (healthDelayMs) setTimeout(sendHealth, healthDelayMs);
+          else sendHealth();
         } else onRequest(socket, frame);
       }, () => socket.destroy()));
     });
@@ -410,6 +412,24 @@ describe("private roaming broker", () => {
     await expect(register("bad-scope", "scope-session", "ben", "scope\u0000one", 1)).rejects.toThrow();
     await expect(register("bad-name", "named-session", "bad\nname", "scope-1", 1)).rejects.toThrow();
     await expect(register("bad-epoch", "epoch-session", "ben", "scope-1", 0)).rejects.toThrow();
+  });
+
+  it("subtracts broker negotiation time from the recipient's ask budget", async () => {
+    const ben = await register("stable-b", "b", "ben", "scope-1", 3);
+    const target = ((await lookup("scope-1", "name", "ben")).targets as V0Endpoint[])[0];
+    const proxy = await fakeBroker([V0_INTERCOM_FEATURE], (socket, frame) => {
+      const { type, requestId, ...op } = frame;
+      void request(op).then(result => writeMessage(socket, { type: "roam_v0_result", requestId, ...result }), () => socket.destroy());
+    }, 200);
+    const controller = new AbortController();
+    const inbound = once(ben, "message");
+    const pending = requestV0Broker(proxy.dir, { kind: "ask", from: origin, target, message: { ...message, id: "budget-question" }, timeoutMs: 1500 }, controller.signal);
+    try {
+      const [, question] = await inbound;
+      expect(question.remainingMs).toBeLessThanOrEqual(1350);
+      expect(await ben.send("sender", { text: "ok", replyTo: "budget-question", messageId: "budget-reply" })).toMatchObject({ delivered: true });
+      expect(await pending).toEqual({ kind: "replied", id: "budget-question", replyId: "budget-reply", text: "ok" });
+    } finally { controller.abort(); await pending; await proxy.close(); }
   });
 
   it("advertises roaming over its private Unix socket", async () => {

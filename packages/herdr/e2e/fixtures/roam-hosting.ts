@@ -373,15 +373,14 @@ export async function v0HostingFixture(suite: Suite): Promise<V0HostingFixture> 
   };
   const leases = createSessionLeases(herdr);
   const waitOwner: V0HostingFixture['waitOwner'] = async previousPid => {
-    const owner = await waitFor('one v0 session holds its ID lock and file lease', async () => {
+    const rows = await waitFor('one packed exact-session owner', async () => {
       if (!supervisor || !identityAlive(supervisor.identity)) throw new Error(`v0 supervisor exited: ${await readFile(supervisorLog, 'utf8').catch(() => '')}`);
-      const rows = await owners();
-      if (rows.length !== 1 || rows[0].pid === previousPid) return null;
-      const candidate = rows[0], lock = await inspectIdLock(herdr, sessionId), lease = await leases.get(file);
-      return lock && lock.identity.pid === candidate.pid && lock.pendingOperationId === null && lease?.pid === candidate.pid &&
-        lease.startIdentity === lock.identity.startIdentity ? candidate : null;
-    }, value => value !== null, deadline(60_000), { reconcileMs: 100 });
-    if (!owner) throw new Error('v0 session owner was not verified');
+      return owners();
+    }, values => values.length === 1 && values[0].pid !== previousPid, deadline(60_000), { reconcileMs: 100 });
+    const owner = rows[0], lock = await inspectIdLock(herdr, sessionId);
+    if (!lock || lock.identity.pid !== owner.pid || lock.pendingOperationId !== null) throw new Error('session owner did not adopt its ID lock');
+    const lease = await leases.get(file);
+    if (!lease || lease.pid !== owner.pid || lease.startIdentity !== lock.identity.startIdentity) throw new Error('session owner did not adopt its file lease');
     const identity = identityOf(owner.pid);
     suite.ledger.update(ledger => {
       if (!ledger.terminals.some(item => item.side === 'local' && item.address === owner.terminal)) ledger.terminals.push({ side: 'local', address: owner.terminal });

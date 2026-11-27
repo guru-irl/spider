@@ -8,7 +8,7 @@ import { openJournal } from "../journal";
 import { isRevoked, revokeMachine } from "../revocation";
 import { main } from "../cli";
 import { createV0Runtime, startV0Hub } from "../relocate/runtime";
-import type { SessionId } from "../relocate/types";
+import type { RelocateId, SessionId } from "../relocate/types";
 
 const mac = "11111111-1111-4111-8111-111111111111";
 const box = "22222222-2222-4222-8222-222222222222";
@@ -121,7 +121,7 @@ it("cannot enter moving after hub disable has finished checking the homes", asyn
     const before = await runtime.homes.initialize(sessionId, mac);
     f.config.enabled = false;
     await expect(runtime.homes.compareAndSwap(before, { ...before, state: "moving", destination: box,
-      epoch: 2, moveId: "v0-33333333-3333-4333-8333-333333333333" })).rejects.toThrow(/disabled/);
+      epoch: 2, moveId: "v0-33333333-3333-4333-8333-333333333333" as RelocateId })).rejects.toThrow(/disabled/);
     expect(await runtime.homes.read(sessionId)).toEqual(before);
   } finally { await runtime.close(); f.replica.close(); }
 });

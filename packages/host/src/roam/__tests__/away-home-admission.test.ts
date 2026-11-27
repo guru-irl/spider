@@ -10,6 +10,7 @@ import { claimIdLock, inspectIdLock, type IdLockHandle } from "@spider/herdr/ses
 import { createSessionLeases } from "@spider/herdr/sessions/lease";
 import { writeLocal } from "@spider/db-core/roam/local-state";
 import { DEFAULT_LIMITS, disabledIntercom } from "@spider/roam/contracts";
+import { openJournal } from "@spider/roam/journal";
 import { createHomeStore } from "@spider/roam/relocate/home";
 import * as awayHome from "@spider/roam/relocate/away-home";
 import { relocate } from "@spider/roam/relocate/relocate";
@@ -243,6 +244,23 @@ it.skipIf(process.platform === "win32").each([false, true])(
     } finally { await session.gate.close(); }
   },
 );
+
+it("a repaired journal without freeze records admits the same unmanaged session", async () => {
+  const f = fixture(); f.removeDb();
+  const file = join(f.root, "roam", "journal.db");
+  writeFileSync(file, "corrupt fixture journal", { mode: 0o600 });
+  const session = productionSession(f);
+  try {
+    await session.emit("session_start");
+    expect(session.gate.inspect().kind).toBe("blocked");
+    unlinkSync(file);
+    openJournal(file);
+    await session.emit("session_start");
+    expect(session.gate.inspect().kind).toBe("ordinary");
+    expect(await session.emit("input", { text: "work" })).toBeUndefined();
+    expect(existsSync(f.file)).toBe(false);
+  } finally { await session.gate.close(); }
+});
 
 it("a genuine unmanaged local session works without creating a global DB", async () => {
   const f = fixture(); f.removeDb();

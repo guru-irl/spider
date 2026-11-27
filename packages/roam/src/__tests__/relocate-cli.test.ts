@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import { createConnection } from "node:net";
 import { PassThrough } from "node:stream";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -58,10 +59,11 @@ describe("v0 controls", () => {
     remote=createV0Runtime(target.root,{openCore:()=>({root:target.root,config:targetConfig,db:target.db,close(){}}),transport:raw});
     try {
       const sid="production-v0" as SessionId,home=await local.homes.initialize(sid,mac);
-      const file=join(source.root,"session.jsonl"),pi=join(source.root,"pi");
-      writeFileSync(file,JSON.stringify({type:"session",version:3,id:sid,cwd:source.root,timestamp:"2020-01-01T00:00:00Z"})+"\n"+JSON.stringify({type:"message",id:"entry",parentId:null,timestamp:"2020-01-01T00:00:00Z",message:{role:"user",content:[{type:"text",text:"synthetic"}]}})+"\n");
+      const checkout=join(source.root,"checkout"),file=join(checkout,"session.jsonl"),pi=join(source.root,"pi");
+      execFileSync("git",["init","--quiet",checkout],{cwd:source.root});
+      writeFileSync(file,JSON.stringify({type:"session",version:3,id:sid,cwd:checkout,timestamp:"2020-01-01T00:00:00Z"})+"\n"+JSON.stringify({type:"message",id:"entry",parentId:null,timestamp:"2020-01-01T00:00:00Z",message:{role:"user",content:[{type:"text",text:"synthetic"}]}})+"\n");
       writeFileSync(pi,"#!/bin/sh\n",{mode:0o700});vi.stubEnv("SPIDER_ROAM_PI",pi);
-      writeLocal(source.db,"relocate-managed",sid,{sessionId:sid,machineId:mac,repoKey:"repo",workspaceId:"ws",repository:source.root,cwd:source.root,file,stores:["global"],historyMachine:mac});
+      writeLocal(source.db,"relocate-managed",sid,{sessionId:sid,machineId:mac,repoKey:"repo",workspaceId:"ws",repository:checkout,cwd:checkout,file,stores:["global"],historyMachine:mac});
       vi.spyOn(hcApi,"observeCoreIdentity").mockResolvedValue({coreId:"local",sessionNamespace:"local",socket:"/local.sock"} as CoreIdentity);
       const launches:string[][]=[];
       vi.spyOn(hcApi,"invokeCli").mockImplementation(async(_bin,argv)=>{if(argv[0]==="ls")return {terminals:[]};launches.push([...argv]);return {address:"local:t"};});

@@ -339,6 +339,51 @@ describe("private roaming broker", () => {
     expect(late).toMatchObject({ delivered: false, reason: "The asker is no longer waiting." });
   });
 
+  it("refuses an ask whose health handshake outlasts its budget without sending a question", async () => {
+    const frames: unknown[] = [];
+    const proxy = await fakeBroker([V0_INTERCOM_FEATURE], (_socket, frame) => frames.push(frame), 120);
+    try {
+      const reply = await requestV0Broker(proxy.dir, { kind: "ask", from: origin, target: endpoint, message, timeoutMs: 40 });
+      expect(reply).toEqual({ kind: "refused", code: "unreachable" });
+      expect(frames).toEqual([]);
+    } finally { await proxy.close(); }
+  });
+
+  it("reports unknown if an ask frame was written but the broker never confirms a timeout", async () => {
+    const frames: unknown[] = [];
+    const proxy = await fakeBroker([V0_INTERCOM_FEATURE], (_socket, frame) => frames.push(frame));
+    try {
+      expect(await requestV0Broker(proxy.dir, { kind: "ask", from: origin, target: endpoint, message, timeoutMs: 150 }))
+        .toEqual({ kind: "unknown", id: message.id });
+      expect(frames).toHaveLength(1);
+    } finally { await proxy.close(); }
+  });
+
+  it("refuses a late reply while the broker timeout result is still in transit", async () => {
+    const ben = await register("stable-b", "b", "ben", "scope-1", 3);
+    const target = ((await lookup("scope-1", "name", "ben")).targets as V0Endpoint[])[0];
+    const question = { ...message, id: "timer-gap" };
+    const inbound = once(ben, "message");
+    const expired = Promise.withResolvers<{ socket: net.Socket; requestId: unknown; result: Record<string, unknown> }>();
+    const proxy = await fakeBroker([V0_INTERCOM_FEATURE], (socket, frame) => {
+      const { type, requestId, ...op } = frame;
+      // Hold the real broker's timeout result until the recipient has replied.
+      void request(op).then(result => expired.resolve({ socket, requestId, result }), expired.reject);
+    });
+    const abort = new AbortController();
+    const pending = requestV0Broker(proxy.dir, { kind: "ask", from: origin, target, message: question, timeoutMs: 900 }, abort.signal);
+    try {
+      const [, received] = await inbound;
+      expect(received.remainingMs).toBeLessThanOrEqual(800);
+      const { socket, requestId, result } = await expired.promise;
+      expect(result).toEqual({ kind: "no_reply", id: question.id });
+      expect(await ben.send("sender", { text: "late", replyTo: question.id, messageId: "timer-gap-reply" }))
+        .toMatchObject({ delivered: false, reason: "The asker is no longer waiting." });
+      writeMessage(socket, { type: "roam_v0_result", requestId, ...result });
+      expect(await pending).toEqual({ kind: "no_reply", id: question.id });
+    } finally { abort.abort(); await pending; await proxy.close(); }
+  });
+
   it("holds the negotiated connection beyond the ordinary registration deadline", async () => {
     const ben = await register("stable-b", "b", "ben", "scope-1", 3);
     const target = ((await lookup("scope-1", "name", "ben")).targets as V0Endpoint[])[0];

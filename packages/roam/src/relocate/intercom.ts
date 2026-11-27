@@ -28,7 +28,8 @@ export interface V0IntercomDeps {
 interface AcceptedPeer { machineId: MachineId; alias: string }
 interface Routes { agentDir: string; sendTo: readonly Peer[]; acceptFrom: readonly AcceptedPeer[] }
 const POST_CHECK_MS = 2000;
-const ASK_REPLY_RESERVE_MS = 2000;
+const ASK_REPLY_RESERVE_MS = 10_000;
+const REMOTE_ASK_STARTUP_MS = 9500;
 
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -183,7 +184,7 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
   const broker = deps.broker ?? requestV0Broker;
 
   async function callPeer(configured: Routes, peer: Peer, request: V0AgentRequest, deadline: number,
-    deliveryDeadline: number, signal?: AbortSignal, askDeadline?: number): Promise<V0Reply> {
+    deliveryDeadline: number, signal?: AbortSignal): Promise<V0Reply> {
     if (!parseV0AgentRequest(request)) return refused("invalid");
     let invoked = false;
     try {
@@ -198,14 +199,17 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
         if (remaining <= POST_CHECK_MS) throw new Error("Intercom post-check reserve unavailable");
         const bytes = Buffer.from(JSON.stringify(request));
         const input = request.kind !== "ask" ? { stdin: bytes } : {
-          stdinForTimeout: (_remoteMs: number) => {
-            if (callSignal.aborted || performance.now() >= deliveryDeadline) throw new Error("Intercom delivery deadline expired");
-            const askMs = Math.floor((askDeadline ?? deadline) - performance.now());
-            if (askMs <= 0) throw new Error("Intercom ask deadline expired");
-            return Buffer.from(JSON.stringify({ ...request, timeoutMs: Math.min(request.timeoutMs, askMs) }));
+          stdinForTimeout: (remoteMs: number) => {
+            if (callSignal.aborted) throw new Error("Intercom delivery deadline expired");
+            // Herdr starts this window before the remote agent reads stdin.
+            const timeoutMs = Math.min(request.timeoutMs, Math.floor(deliveryDeadline - performance.now()), remoteMs - REMOTE_ASK_STARTUP_MS);
+            if (timeoutMs <= 0) throw new Error("Intercom ask deadline expired");
+            const body = Buffer.from(JSON.stringify({ ...request, timeoutMs }));
+            invoked = true;
+            return body;
           },
         };
-        invoked = true;
+        if (request.kind === "deliver") invoked = true;
         const output = await transport.exec(target, ["roam", "agent", "--v0", "intercom"], {
           timeoutMs: remaining, maxBytes: V0_INTERCOM_BYTES, postReserveMs: POST_CHECK_MS, signal: callSignal, ...input,
         });
@@ -380,7 +384,7 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
         from: sourceWire, target: pinnedTarget, message };
       const request: V0AgentRequest = kind === "deliver" ? { ...common, kind: "deliver" }
         : { ...common, kind: "ask", timeoutMs: askMs! };
-      const result = await callPeer(current, currentPeer, request, deadline, setupDeadline, abort, askDeadline);
+      const result = await callPeer(current, currentPeer, request, deadline, setupDeadline, abort);
       return result.kind === "matches" ? { kind: "unknown" as const, id: message.id } : result;
     }
     return { kind: "remote", label,

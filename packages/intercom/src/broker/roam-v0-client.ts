@@ -10,6 +10,9 @@ import {
 import { createMessageReader, writeMessage } from "./framing.js";
 import { INTERCOM_PROTOCOL_NAME, INTERCOM_PROTOCOL_VERSION } from "./paths.js";
 
+const BROKER_REQUEST_MS = 2000;
+const BROKER_REPLY_RESERVE_MS = 250;
+
 interface PrivateBroker {
   path: string;
   directoryDev: number;
@@ -44,6 +47,7 @@ export async function requestV0Broker(agentDir: string, op: V0BrokerOp, signal?:
   if (!broker) return { kind: "refused", code: "unauthorized" };
 
   const startedAt = performance.now();
+  const askMs = op.kind === "ask" ? Math.min(op.timeoutMs, V0_ASK_MAX_MS) : undefined;
   return new Promise<V0Reply>(resolveResult => {
     const socket = net.connect(broker.path);
     const healthId = randomUUID();
@@ -62,7 +66,7 @@ export async function requestV0Broker(agentDir: string, op: V0BrokerOp, signal?:
       resolveResult(result);
     };
     const onAbort = () => finish(failure());
-    timer = setTimeout(() => finish(failure()), 2000);
+    timer = setTimeout(() => finish(failure()), Math.min(BROKER_REQUEST_MS, askMs ?? BROKER_REQUEST_MS));
     timer.unref?.();
     signal?.addEventListener("abort", onAbort, { once: true });
     socket.on("error", () => finish(failure()));
@@ -86,13 +90,16 @@ export async function requestV0Broker(agentDir: string, op: V0BrokerOp, signal?:
           finish({ kind: "refused", code: "unsupported" }); return;
         }
         let outbound: V0BrokerRequest = request;
-        if (op.kind === "ask") {
-          const remaining = Math.floor(Math.min(op.timeoutMs, V0_ASK_MAX_MS) - (performance.now() - startedAt));
-          if (remaining <= 0) { finish({ kind: "no_reply", id: op.message.id }); return; }
+        if (op.kind === "ask" && askMs !== undefined) {
+          const remaining = Math.floor(askMs - (performance.now() - startedAt));
+          // Leave room for the write and the broker's timeout result. For
+          // shorter asks, reserve only a fraction of the remaining budget.
+          const reserve = Math.min(BROKER_REPLY_RESERVE_MS, Math.max(1, Math.floor(remaining / 4)));
+          if (remaining <= reserve) { finish(failure()); return; }
           clearTimeout(timer);
-          timer = setTimeout(() => finish({ kind: "no_reply", id: op.message.id }), remaining);
+          timer = setTimeout(() => finish(failure()), remaining);
           timer.unref?.();
-          outbound = { type: "roam_v0", requestId, ...op, timeoutMs: remaining };
+          outbound = { type: "roam_v0", requestId, ...op, timeoutMs: remaining - reserve };
         }
         sent = true;
         try { writeMessage(socket, outbound); } catch { finish(failure()); }

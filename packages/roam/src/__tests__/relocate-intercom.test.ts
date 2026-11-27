@@ -472,22 +472,21 @@ describe("roaming v0 intercom", () => {
       expect(await plan.ask(message, 540_001)).toEqual({ kind: "no_reply", id: message.id });
       expect(f.calls).toMatchObject([
         { request: { kind: "lookup" }, options: { timeoutMs: 20_000 } },
-        // The total includes a two-second reply reserve and two-second post-check reserve.
-        { request: { kind: "ask", timeoutMs: 540_000 }, options: { timeoutMs: 544_000, postReserveMs: 2000 } },
+        // The total includes a ten-second reply reserve and two-second post-check reserve.
+        { request: { kind: "ask", timeoutMs: 540_000 }, options: { timeoutMs: 552_000, postReserveMs: 2000 } },
       ]);
     } finally { vi.useRealTimers(); }
   });
 
-  it("returns a confirmed no_reply when a capped ask reaches its deadline", async () => {
+  it("returns a confirmed no_reply after slow remote startup and a rounded Herdr timeout", async () => {
     const sender = machineFixture(MAC), receiver = boxFixture();
     vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
     configure(sender.root, [peer(BOX, "box", receiver)], []);
-    let entered!: () => void;
-    const received = new Promise<void>(resolve => { entered = resolve; });
+    let questionBudget: number | undefined;
     const remoteBroker = async (_dir: string, op: V0BrokerOp): Promise<V0Reply> => {
       if (op.kind === "lookup") return { kind: "matches", targets: [ben] };
       if (op.kind !== "ask") throw new Error("unexpected delivery");
-      entered();
+      questionBudget = op.timeoutMs;
       return new Promise(resolve => setTimeout(() => resolve({ kind: "no_reply", id: op.message.id }), op.timeoutMs));
     };
     const localBroker = async (): Promise<V0Reply> => ({ kind: "matches", targets: [aliceEndpoint] });
@@ -495,13 +494,22 @@ describe("roaming v0 intercom", () => {
     const transport = (): Pick<Transport, "resolve" | "exec"> => ({
       resolve: async target => target,
       async exec(_target, _argv, options) {
-        const bytes = options.stdin ?? options.stdinForTimeout?.(options.timeoutMs - 2000);
-        if (!bytes) throw new Error("missing request");
+        if (options.stdin) return Buffer.from(JSON.stringify(await remote.handle(JSON.parse(options.stdin.toString("utf8")))));
+        // The argv client incurs preflight time and rounds the remaining
+        // remote command window down to whole seconds.
+        await new Promise(resolve => setTimeout(resolve, 150));
+        const available = options.timeoutMs - options.postReserveMs! - 150;
+        const remoteWindow = Math.floor(available / 1000) * 1000;
+        const bytes = options.stdinForTimeout!(remoteWindow);
         const request = JSON.parse(bytes.toString("utf8"));
-        if (request.kind === "lookup") return Buffer.from(JSON.stringify(await remote.handle(request)));
         return new Promise<Buffer>((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error("direct call expired")), options.timeoutMs - options.postReserveMs!);
-          remote.handle(request).then(result => { clearTimeout(timer); resolve(Buffer.from(JSON.stringify(result))); }, reject);
+          const timer = setTimeout(() => reject(new Error("remote command expired")), remoteWindow);
+          setTimeout(() => {
+            remote.handle(request).then(result => {
+              clearTimeout(timer);
+              resolve(Buffer.from(JSON.stringify(result)));
+            }, reject);
+          }, 1500);
         });
       },
     });
@@ -509,9 +517,10 @@ describe("roaming v0 intercom", () => {
     vi.useFakeTimers();
     try {
       const pending = plan.ask(message, V0_ASK_MAX_MS);
-      await received;
-      await vi.advanceTimersByTimeAsync(V0_ASK_MAX_MS);
+      await vi.advanceTimersByTimeAsync(552_000);
       expect(await pending).toEqual({ kind: "no_reply", id: message.id });
+      // 549 s after Herdr rounds down, less 9.5 s for remote startup.
+      expect(questionBudget).toBe(539_500);
     } finally { vi.useRealTimers(); }
   });
 
@@ -622,7 +631,9 @@ describe("roaming v0 intercom", () => {
     let outcome: V0Reply | undefined;
     const pending = plan.ask(message, 60_000).then(result => { outcome = result; return result; });
     try {
-      await vi.advanceTimersByTimeAsync(64_000);
+      await vi.advanceTimersByTimeAsync(71_999);
+      expect(outcome).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
       expect(outcome).toEqual({ kind: "unknown", id: message.id });
       expect(questions).toBe(1);
     } finally {

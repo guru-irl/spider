@@ -252,6 +252,33 @@ describe("v0 transfer stop boundary",()=>{
   expect(f.signals).toEqual([42]);
   expect(f.events).toEqual(["shutdown", "root-absent", "group-check", "lock-free"]);
  });
+ it("does not ignore a denied pi signal", async () => {
+  const f = stopFixture();
+  f.io.signal = async pid => {
+   f.signals.push(pid);
+   throw Object.assign(new Error("permission denied"), {code: "EPERM"});
+  };
+
+  expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toMatchObject({ok: false, refusal: {code: "stop-timeout"}});
+  expect(f.signals).toEqual([42]);
+  expect(f.events).not.toContain("lock-free");
+ });
+ it("does not report success when pi remains live after ESRCH", async () => {
+  const f = stopFixture();
+  f.io.inspect = async () => f.owner;
+  f.io.probe = async () => ({kind: "live", startIdentity: "pi-42", pi: true});
+  f.io.signal = async pid => {
+   f.signals.push(pid);
+   throw Object.assign(new Error("process exited"), {code: "ESRCH"});
+  };
+
+  expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toMatchObject({
+   ok: false, refusal: {code: "session-busy", message: expect.stringContaining("PID 42")},
+  });
+  expect(f.signals).toEqual([42]);
+  expect(f.events).not.toContain("lock-free");
+  expect(f.clock.now()).toBe(30);
+ });
  it("refuses before signalling when any descendant is unreadable", async () => {
   const f = stopFixture();
   const first = {pid: 43, startIdentity: "tool-43", command: "bash"};

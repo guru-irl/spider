@@ -42,7 +42,7 @@ afterAll(async () => {
   vi.unstubAllEnvs();
 });
 
-async function fixture(v0?: V0ToolOptions, options: { confirm?: () => Promise<boolean>; homeUnavailable?: boolean } = {}) {
+async function fixture(v0?: V0ToolOptions, options: { confirm?: () => Promise<boolean>; homeUnavailable?: boolean; failAppend?: (type: string) => boolean } = {}) {
   const configPath = join(getIntercomDirPath(), "config.json");
   if (options.confirm) writeFileSync(configPath, JSON.stringify({ confirmSend: true }), { mode: 0o600 });
   let sessionId = "sender-session";
@@ -59,7 +59,10 @@ async function fixture(v0?: V0ToolOptions, options: { confirm?: () => Promise<bo
     getSessionName: () => "alice", setSessionName() {},
     registerMessageRenderer(name: string, renderer: (...args: any[]) => any) { renderers.set(name, renderer); },
     registerShortcut() {}, registerCommand() {},
-    appendEntry(type: string, data: unknown) { entries.push({ type, data }); },
+    appendEntry(type: string, data: unknown) {
+      if (options.failAppend?.(type)) throw new Error("private transcript write failure");
+      entries.push({ type, data });
+    },
     sendMessage(message: any) { inbound.push(message); physicalEntries.push({ ...message, type: "custom_message", id: `entry-${physicalEntries.length}` }); },
     registerTool(tool: { name: string; execute: (...args: any[]) => Promise<any> }) { tools.push(tool); },
     getAllTools: () => tools, getActiveTools: () => tools.map(tool => tool.name), setActiveTools() {},
@@ -248,6 +251,34 @@ it("sends by name and reports socket dispatch, not consumption", async () => {
     expect(sent).toEqual([{ id: result.details.messageId, timestamp: expect.any(Number), text: "i5:fixture" }]);
     expect(f.entries).toContainEqual(expect.objectContaining({ type: "intercom_sent", data: expect.objectContaining({ messageId: result.details.messageId }) }));
   } finally { await f.cleanup(); }
+});
+
+it("reports a confirmed remote send when its transcript entry cannot be saved", async () => {
+  const peer = new IntercomClient(), inbox: any[] = [];
+  peer.on("message", (_from, incoming) => inbox.push(incoming));
+  await peer.connect({ name: "ben", address: { sessionId: "remote-peer", scopeId: null }, v0HomeEpoch: 5,
+    cwd: process.cwd(), model: "fixture", pid: process.pid, startedAt: 1, lastActivity: 1 }, "remote-peer");
+  const recipient = (await observer.listSessions()).find(session => session.id === "remote-peer")!;
+  const from: RemoteSessionInfo = { remote: true, id: "sender-session", address: { sessionId: "sender-session", scopeId: null },
+    machineId: "origin-machine", machineAlias: "origin", homeEpoch: 7, activationEpoch: "origin-connection", endpointEpoch: "origin-connection",
+    name: "alice", cwd: "", model: "", startedAt: 0, lastActivity: 0 };
+  const target = { address: { sessionId: "remote-peer", scopeId: null }, name: "ben", homeEpoch: 5, endpointEpoch: recipient.endpointEpoch! };
+  const prepare: V0Prepare = async () => ({
+    kind: "remote", label: "b/ben",
+    async send(message, signal) {
+      const result = await requestV0Broker(getAgentDirPath(), { kind: "deliver", from, target, message }, signal);
+      if (result.kind === "matches") throw new Error("unexpected lookup result");
+      return result;
+    },
+    async ask(message) { return { kind: "no_reply", id: message.id }; },
+  });
+  const f = await fixture({ homeEpoch: () => 7, prepare }, { failAppend: type => type === "intercom_sent" });
+  try {
+    const result = await f.tool.execute("send", { action: "send", to: "ben", message: "broker accepted" }, new AbortController().signal, undefined, f.ctx);
+    await vi.waitFor(() => expect(inbox.map(item => item.content.text)).toEqual(["broker accepted"]));
+    expect(result.content[0].text).toBe("Sent to b/ben (broker accepted the message).\nThe transcript entry could not be saved.");
+    expect(result.details).toMatchObject({ delivered: true, delivery: "socket_delivered", messageId: expect.any(String) });
+  } finally { await f.cleanup(); await peer.disconnect(); }
 });
 
 it("keeps opt-out sends on the local broker", async () => {

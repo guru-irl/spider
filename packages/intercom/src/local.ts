@@ -39,6 +39,7 @@ import { formatContextUsage } from "./format-context.js";
 import { openProjectPane, resolveTargetInCwd, waitForProjectSession, type ProjectPaneLaunch } from "./project-agent.js";
 
 export const V0_MAC_REPLY_ONLY_MESSAGE: string = "Sessions on the Mac accept messages from other machines only as replies to their own asks.";
+const V0_TRANSCRIPT_SAVE_FAILURE = "\nThe transcript entry could not be saved.";
 const V0_REFUSAL_TEXT: Record<V0Code, string> = {
   moving: "Session is moving. Retry after it settles.",
   offline: "Session is not connected. No message was queued.",
@@ -2800,8 +2801,10 @@ Usage:
                 if (result.kind !== "socket_delivered") {
                   return { content: [{ type: "text", text: "Message was not delivered." }], details: { error: true } };
                 }
-                pi.appendEntry("intercom_sent", { to: plan.label, message: { text: message }, messageId: result.id, timestamp: Date.now() });
-                return { content: [{ type: "text", text: `Sent to ${plan.label} (broker accepted the message).` }],
+                let transcriptWarning = "";
+                try { pi.appendEntry("intercom_sent", { to: plan.label, message: { text: message }, messageId: result.id, timestamp: Date.now() }); }
+                catch { transcriptWarning = V0_TRANSCRIPT_SAVE_FAILURE; }
+                return { content: [{ type: "text", text: `Sent to ${plan.label} (broker accepted the message).${transcriptWarning}` }],
                   details: { delivered: true, delivery: "socket_delivered", messageId: result.id } };
               }
             }

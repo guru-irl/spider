@@ -7,6 +7,7 @@ import { IntercomClient } from "../../../intercom/src/broker/client.js";
 import { getAgentDirPath, getIntercomDirPath } from "../../../intercom/src/broker/paths.js";
 import { requestV0Broker } from "../../../intercom/src/broker/roam-v0-client.js";
 import type { RemoteSessionInfo } from "../../../intercom/src/types.js";
+import { INTERCOM_HOST_EVENT } from "../../../intercom/src/host-api.js";
 import { registerIntercomOnce } from "../../../intercom/src/single-instance.js";
 import { startTestBroker, stopTestBroker, testBrokerEnv } from "../../../intercom/src/test-support.js";
 import type { V0Code, V0Prepare, V0Text, V0ToolOptions } from "../../../intercom/src/roam-v0.js";
@@ -37,7 +38,7 @@ afterAll(async () => {
   vi.unstubAllEnvs();
 });
 
-async function fixture(v0?: V0ToolOptions, options: { confirm?: () => Promise<boolean> } = {}) {
+async function fixture(v0?: V0ToolOptions, options: { confirm?: () => Promise<boolean>; homeUnavailable?: boolean } = {}) {
   const configPath = join(getIntercomDirPath(), "config.json");
   if (options.confirm) writeFileSync(configPath, JSON.stringify({ confirmSend: true }), { mode: 0o600 });
   let sessionId = "sender-session";
@@ -46,6 +47,7 @@ async function fixture(v0?: V0ToolOptions, options: { confirm?: () => Promise<bo
   const entries: Array<{ type: string; data: unknown }> = [], physicalEntries: any[] = [], inbound: any[] = [];
   const renderers = new Map<string, (...args: any[]) => any>();
   const bus = new EventEmitter();
+  if (options.homeUnavailable) bus.on(INTERCOM_HOST_EVENT, request => { request.home = () => "unknown"; });
   const pi = {
     events: { on(name: string, handler: (value: unknown) => void) { bus.on(name, handler); return () => { bus.off(name, handler); }; },
       emit(name: string, value: unknown) { bus.emit(name, value); } },
@@ -200,6 +202,29 @@ it("renders and replies to a peer ask through the private broker", async () => {
     const reply = await f.tool.execute("reply", { action: "reply", replyTo: "peer-question", message: "ack i5:fixture" }, new AbortController().signal, undefined, f.ctx);
     expect(reply.details).toMatchObject({ delivered: true, replyTo: "peer-question" });
     expect(await pending).toMatchObject({ kind: "replied", id: "peer-question", replyId: reply.details.messageId, text: "ack i5:fixture" });
+  } finally { await f.cleanup(); }
+});
+
+it("replies to a peer ask without consulting legacy home routing", async () => {
+  const f = await fixture({ homeEpoch: () => 7, prepare: async () => ({ kind: "legacy" }) }, { homeUnavailable: true });
+  const from: RemoteSessionInfo = {
+    remote: true, id: "peer-session", address: { sessionId: "peer-session", scopeId: null },
+    machineId: "peer-machine", machineAlias: "peer", homeEpoch: 3,
+    activationEpoch: "peer-connection", endpointEpoch: "peer-connection", name: "ben",
+    cwd: "", model: "", startedAt: 0, lastActivity: 0,
+  };
+  try {
+    const own = (await observer.listSessions()).find(session => session.id === "sender-session")!;
+    const pending = requestV0Broker(getAgentDirPath(), {
+      kind: "ask", from,
+      target: { address: { sessionId: "sender-session", scopeId: null }, name: "alice", homeEpoch: 7, endpointEpoch: own.endpointEpoch! },
+      message: { id: "bound-question", timestamp: 123, text: "hello" }, timeoutMs: 2000,
+    });
+    await vi.waitFor(() => expect(f.inbound.some(message => message.customType === "intercom_message")).toBe(true));
+    const reply = await f.tool.execute("reply", { action: "reply", replyTo: "bound-question", message: "answer" }, new AbortController().signal, undefined, f.ctx);
+    expect(reply.content[0].text).toBe("Reply sent to ben");
+    expect(reply.details).toMatchObject({ delivered: true, replyTo: "bound-question" });
+    expect(await pending).toMatchObject({ kind: "replied", id: "bound-question", text: "answer" });
   } finally { await f.cleanup(); }
 });
 

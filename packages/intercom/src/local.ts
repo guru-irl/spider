@@ -3079,7 +3079,7 @@ Usage:
                 details: { error: true },
               };
             }
-            await resolveSessionTarget(connectedClient, target.from.id);
+            if (!v0 || !target.from.remote) await resolveSessionTarget(connectedClient, target.from.id);
             const result = await connectedClient.send(target.from.id, {
               text: message,
               attachments,

@@ -57,6 +57,25 @@ it("disabled doctor reports the unfinished legacy move and source cleanup by ope
   ]));
 });
 
+it.each(["move-session", "move-abort-cleanup", "exact-session-launch"] as const)(
+  "doctor blocks an unfinished %s journal record as the only pending operation", async kind => {
+    const f = fixture(), id = `${kind}-fixture`;
+    if (kind === "move-session") {
+      f.journal.begin({ id: "settled-move", kind: "move", machineId: hub, expectedEpoch: 1, args: {} });
+      f.journal.record("settled-move", "done", { code: 0, reason: "moved", value: { sourceCleanup: { status: "done" } } });
+    }
+    f.journal.begin({ id, kind, machineId: hub, expectedEpoch: 1, args: { sessionId: "session-slot" } });
+    if (kind === "move-session") f.journal.record(id, "reserved", { moveId: "settled-move", destinationMachine: hub });
+    const io = { out: vi.fn(), err: vi.fn() };
+    expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+    const report = JSON.parse(io.out.mock.calls.at(-1)![0]);
+    expect(report.value.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ severity: "block", reason: expect.stringContaining(id) }),
+    ]));
+    expect(report.value.diagnostics.some((row: { reason: string }) => row.reason.startsWith("legacy-upgrade-blocked:"))).toBe(true);
+  },
+);
+
 it("doctor blocks an unresolved legacy freeze roster even without a pending move", async () => {
   const f = fixture(), key = "worktree:fixture-repo:fixture-workspace";
   replica(f.root, key);

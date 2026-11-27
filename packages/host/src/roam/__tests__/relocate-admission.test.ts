@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { openDb, migrate, paths, setGlobalDbPathForTests } from "@spider/db-core";
 import { scratchDbPath } from "@spider/db-core/testutil";
 import type { HomeStore } from "@spider/roam/relocate/types";
-import { readRelocateAdmission, prepareRelocateAdmission, loadRelocateAdmission } from "../relocate-admission";
+import { readRelocateAdmission, prepareRelocateAdmission, loadRelocateAdmission, type LocalHomeAdmission } from "../relocate-admission";
 import { createReplica } from "@spider/db-core/testutil";
 import { writeLocal } from "@spider/db-core/roam/local-state";
 import { DEFAULT_LIMITS, disabledIntercom } from "@spider/roam/contracts";
@@ -12,7 +12,7 @@ import * as admissionLookup from "../relocate-admission";
 import { join } from "node:path";
 import type { SessionMachinePorts, SessionPlacement } from "@spider/roam/relocate/types";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { HomeAdmission, RunningHome, SessionId } from "@spider/roam/relocate/types";
+import type { RunningHome, SessionId } from "@spider/roam/relocate/types";
 import { createHostSessionFixture } from "../../__tests__/fixtures/pi-events";
 import { protectAdmissionApi, registerAdmission, createAdmissionPorts, type AdmissionGate, type AdmissionPorts } from "../admission";
 
@@ -21,7 +21,7 @@ const local = "11111111-1111-4111-8111-111111111111";
 const home: RunningHome = { sessionId: id, machineId: local, epoch: 3, state: "running", destination: null, moveId: null, updatedAt: 1 };
 const gates: AdmissionGate[] = [];
 afterEach(async () => { for (const gate of gates.splice(0)) await gate.close(); vi.unstubAllEnvs(); });
-function fixture(initial: HomeAdmission) {
+function fixture(initial: LocalHomeAdmission) {
   vi.stubEnv("PI_SUBAGENT_CHILD", "0");
   let current = initial;
   const release = vi.fn(async () => {}), close = vi.fn(async () => {});
@@ -34,7 +34,7 @@ function fixture(initial: HomeAdmission) {
   const host = createHostSessionFixture({ cwd: "/fixture", sessionId: id, sessionFile: "/fixture/session.jsonl", hasUI: false });
   const gate = registerAdmission(host.pi as unknown as ExtensionAPI, ports); gates.push(gate);
   async function emit(name: string, event = {}) { let result; for (const fn of host.hooks.get(name) ?? []) result = await fn(event, host.ctx); return result; }
-  return { gate, ports, release, close, emit, host, setHome(value: HomeAdmission) { current = value; } };
+  return { gate, ports, release, close, emit, host, setHome(value: LocalHomeAdmission) { current = value; } };
 }
 it("a missing global DB admits an unmanaged session without creating the DB", async () => {
   const f = createReplica("global", local);

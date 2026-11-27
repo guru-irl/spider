@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { buildRoamEntries } from "../../../../scripts/build-roam.mjs";
+import { paths } from "@spider/db-core";
 import { decodeRelayPoll, encodeRelayPollReply, type RelayPoll, type RelaySubmit, type RelayResult } from "@spider/intercom/relay-protocol";
 import type { Clock, Peer, RoamConfig } from "../contracts";
 import type { V0Routes } from "../relocate/intercom-routes";
@@ -693,7 +694,7 @@ describe("packed soak operator commands", () => {
   const runFile = JSON.stringify({ root: "/fixture", startMs: START, rssAllowanceBytes: ALLOWANCE, links: [fixtureLink] });
 
   beforeAll(async () => {
-    root = mkdtempSync(join(resolve(".spider/scratch"), "soak-package-"));
+    root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "soak-package-"));
     const outDir = join(root, "dist/roam");
     await buildRoamEntries(outDir);
     entry = join(outDir, "relay-soak.mjs");

@@ -2,7 +2,7 @@ import { parseV0Control, runV0Control, readV0Confirmation } from "./relocate/cli
 import { readPeerRevocation } from "./revocation";
 import { skippedProjectDbNotice, v0SessionCatalog } from "./relocate/session-catalog";
 import { requestV0Services, runV0Service } from "./relocate/service";
-import { startV0Hub, runV0Agent, V0HubLockRefusal } from "./relocate/runtime";
+import { startV0Hub, runV0Agent, V0HubLockRefusal, recoverMacHomeWithoutHub } from "./relocate/runtime";
 import type { V0ControlServices, V0Result } from "./relocate/types";
 import { corePinDiagnostics } from "./core-pin-diagnostics";
 import { inspectSupervisorCorePin } from "./enrollment";
@@ -187,7 +187,16 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       } catch { return refusal("home-unavailable", "The local session catalog could not be read safely.", "Run spider roam doctor to check the local databases, then retry.", 1); }
     }
     const confirmation = options?.v0?.confirmation ?? readV0Confirmation;
-    return runV0Control(control, config, catalog, options?.v0?.services ?? requestV0Services(root), { ...io, confirmation },
+    const socket = requestV0Services(root);
+    const services = options?.v0?.services ?? { ...socket, async setHome(request: Parameters<V0ControlServices["setHome"]>[0]) {
+      try { return await socket.setHome(request); }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException | null)?.code;
+        if (config.enabled || request.destinationMachine !== config.machineId || code !== "ENOENT" && code !== "ECONNREFUSED") throw error;
+        return recoverMacHomeWithoutHub(root, request);
+      }
+    } };
+    return runV0Control(control, config, catalog, services, { ...io, confirmation },
       { json, isForgotten: machineId => readPeerRevocation(root, machineId) });
   }
   if (argv[0] === "move" || argv[0] === "roam" && argv[1] === "move") {

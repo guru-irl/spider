@@ -5,7 +5,8 @@ import { PassThrough } from "node:stream";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_LIMITS, disabledIntercom, type RoamConfig } from "../contracts";
-import type { RunningHome, SessionId, V0ControlServices } from "../relocate/types";
+import type { RelocateId, RunningHome, SessionId, V0ControlServices } from "../relocate/types";
+import { createHomeStore } from "../relocate/home";
 import { parseV0Control, runV0Control, readV0Confirmation } from "../relocate/cli";
 import { serveV0Control, requestV0Services, runV0Service } from "../relocate/service";
 import { parsePublicControl } from "../commands";
@@ -284,6 +285,32 @@ describe("v0 controls", () => {
     }
     const f = fixture(phrase); expect(await runV0Control({ kind: "set-home", session: "session-abc", machine: "box-a.invalid", force: true, confirmation: null }, config, catalog, f.services, f.io, { json: true })).toBe(0);
     expect(f.services.setHome).toHaveBeenCalledWith({ sessionId: "session-abc", destinationMachine: box, force: true, confirmation: phrase });
+  });
+  it("recovers a verified Mac copy without the disabled hub service",async()=>{
+    const root=mkdtempSync(join(resolve(".spider/scratch"),"of-"));roots.push(root);
+    mkdirSync(join(root,"roam"),{mode:0o700});
+    writeFileSync(join(root,"roam","config.json"),JSON.stringify({...config,enabled:false}),{mode:0o600});
+    writeFileSync(join(root,"roam","machine.json"),JSON.stringify({machineId:mac}),{mode:0o600});
+    const file=join(root,"backup.jsonl"), sid=home.sessionId, dbPath=join(root,"spider.db");
+    writeFileSync(file, JSON.stringify({type:"session",version:3,id:sid,cwd:root,timestamp:"2020-01-01T00:00:00Z"})+"\n"+
+      JSON.stringify({type:"message",id:"entry",parentId:null,timestamp:"2020-01-01T00:00:00Z",message:{role:"user",content:[{type:"text",text:"backup"}]}})+"\n");
+    const db=openDbAt(dbPath,"global");
+    try {
+      db.prepare("UPDATE roam_meta SET machine_id=?,store_key='global' WHERE id=1").run(mac);
+      const homes=createHomeStore({db,localMachineId:mac,hubMachineId:mac});
+      const original=await homes.initialize(sid,mac);
+      expect(await homes.compareAndSwap(original,{...original,machineId:box,epoch:2,moveId:"v0-33333333-3333-4333-8333-333333333333" as RelocateId})).toMatchObject({kind:"applied"});
+      db.prepare("INSERT INTO roam_locations(session_id,stores_json,file,cwd) VALUES (?,'[\"global\"]',?,?)").run(sid,file,root);
+      writeLocal(db,"relocate-managed",sid,{sessionId:sid,machineId:mac,repoKey:"repo",workspaceId:"ws",repository:root,cwd:root,file,stores:["global"],historyMachine:mac});
+    } finally {db.close();}
+    vi.stubEnv("SPIDER_GLOBAL_ROOT",root);vi.stubEnv("HC_SESSION","fixture");vi.stubEnv("HC_SOCKET",join(root,"hc.sock"));
+    const f=fixture(`reassign ${sid} to ${mac}; source will not run`);
+    const code=await main(["roam","set-home",sid,"mac","--force","--json"],f.io,{v0:{confirmation:f.io.confirmation}});
+    expect(JSON.parse(f.out.join("")),f.out.join("")).toMatchObject({ok:true,value:{machineId:mac,epoch:3,state:"running"}});
+    expect(code).toBe(0);
+    const saved=openDbAt(dbPath,"global");
+    try {expect(saved.prepare("SELECT machine_id,epoch FROM session_homes WHERE session_id=?").get(sid)).toEqual({machine_id:mac,epoch:3});}
+    finally {saved.close();}
   });
   it("refuses a disabled remote assignment before confirm but allows recovery to the Mac", async () => {
     const disabled = { ...config, enabled: false }, remote = fixture();

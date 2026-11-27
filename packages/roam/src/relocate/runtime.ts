@@ -190,6 +190,19 @@ async function withV0HubLock<T>(root: string, run: () => Promise<T>): Promise<T>
   }
 }
 
+export async function recoverMacHomeWithoutHub(root: string, request: Parameters<V0ControlServices["setHome"]>[0]): ReturnType<V0ControlServices["setHome"]> {
+  return withV0HubLock(root, async () => {
+    const config = readLocalIdentity(root);
+    if (config.enabled || config.role !== "hub" || config.machineId !== config.hubMachineId || request.destinationMachine !== config.machineId) {
+      return {ok:false,refusal:{code:"home-unavailable",message:"Local reassignment requires disabled roaming on the Mac.",
+        nextStep:"If roaming is enabled, start the v0 hub on the Mac and retry set-home --force."}};
+    }
+    const runtime = createV0Runtime(root);
+    try { return await runtime.services.setHome(request); }
+    finally { await runtime.close(); }
+  });
+}
+
 export async function startV0Hub(root: string, overrides: V0RuntimeOverrides = {}): Promise<{stop():Promise<void>}> {
   let ready!: (service: { stop(): Promise<void> }) => void, rejectReady!: (error: unknown) => void;
   const started = new Promise<{stop():Promise<void>}>((resolve, reject) => { ready = resolve; rejectReady = reject; });

@@ -1026,6 +1026,27 @@ it("restores an installed non-sparse checkout when a skip bit was set", async ()
   expect(recovery?.result.workingApplied).toBe(true);
 }, 5000);
 
+it.each(["non-cone", "non-sparse"] as const)("resumes a verified %s checkout without fetching", async kind => {
+  const f = fixture(), base = kind === "non-cone" ? sparseSnapshot(f) : f.snapshot;
+  const snapshot = kind === "non-cone" ? { ...base,
+    worktreeConfig: "[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = false\n", sparse: { enabled: true, cone: false } }
+    : { ...base, worktreeConfig: "[core]\n\tsparseCheckout = false\n" };
+  const { prepareWorkspace } = await interruptedInstalledFixture(f, snapshot);
+  const run = f.ports.run;
+  f.ports.run = async (cwd, argv, options) => {
+    if (argv[0] === "git" && (argv[1] === "fetch" || argv[1] === "bundle")) throw new Error("import source offline");
+    return run(cwd, argv, options);
+  };
+
+  const prepared = await prepareWorkspace(snapshot, f.destination, f.ports);
+
+  expect(prepared.previous).toEqual(f.previous);
+  expect(git(f.destination, "rev-parse", "HEAD")).toBe(snapshot.head);
+  expect(git(f.destination, "write-tree")).toBe(snapshot.indexTree);
+  expect(tree(f.destination, f.root)).toBe(snapshot.workingTree);
+  expect(f.ports.journal.read(snapshot.moveId).some(row => row.action === "workspace-settings-recovery-complete")).toBe(false);
+}, 5000);
+
 it("reinstalls when effective sparse settings change after installation", async () => {
   const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
   git(f.destination, "config", "--local", "extensions.worktreeConfig", "false");

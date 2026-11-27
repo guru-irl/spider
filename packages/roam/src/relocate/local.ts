@@ -189,8 +189,11 @@ export async function stopLocalSession(sessionId: SessionId, moving: MovingHome 
     const liveTerminals = async () => (await io.terminals(sessionId)).filter(t=>t.state === "live");
     const live = await liveTerminals();
     const lockPid = observed?.identity.pid;
+    // Ordinary pi holds the admission lock without managed launch labels.
+    // Labels are still required before admission, when a lock cannot prove ownership.
+    const admitted = observed?.pendingOperationId === null;
     const terminal = lockPid !== undefined
-      ? live.find(t=>t.owned && t.pid === lockPid)
+      ? live.find(t=>t.pid === lockPid && (admitted || t.owned))
       : live.length === 1 && live[0].owned ? live[0] : undefined;
     if (observed && !terminal) return busy([`PID ${observed.identity.pid} (pi)`]);
     const pid = terminal?.pid ?? null;
@@ -245,7 +248,7 @@ export async function stopLocalSession(sessionId: SessionId, moving: MovingHome 
       if (!remaining.length) break;
       // Only the terminal whose process we checked can be waiting for the
       // core's exit observation. A new terminal or owner is not proof of exit.
-      if (pid === null || remaining.length !== 1 || !remaining[0].owned || remaining[0].terminal !== terminal?.terminal || remaining[0].pid !== pid || clock.now() >= deadline) {
+      if (pid === null || remaining.length !== 1 || remaining[0].terminal !== terminal?.terminal || remaining[0].pid !== pid || clock.now() >= deadline) {
         return busy(remaining.map(terminalName));
       }
       const held = await io.inspect(sessionId);

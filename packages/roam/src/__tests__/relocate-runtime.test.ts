@@ -54,6 +54,29 @@ function localCheckout(f: ReturnType<typeof runtimeFixture>) {
  return {file, placement, moving};
 }
 describe("v0 local runtime",()=>{
+ it("stops the admitted ordinary pi and waits for its unlabelled native terminal to exit", async () => {
+  const f = runtimeFixture(), {moving} = localCheckout(f);
+  f.setLock({identity:{pid:42,startIdentity:"pi-42"},bootId:"boot",pendingOperationId:null,pendingFile:null,pendingCoreId:null,operationId:null});
+  f.setProbe({kind:"live",pi:true,startIdentity:"pi-42"});
+  f.setTerminals([{terminal:"t12",state:"live",pid:42}]);
+  const signal = f.io.signal, pause = f.io.pause;
+  f.io.signal = async pid => { await signal(pid); f.setProbe({kind:"absent"}); f.setLock(null); };
+  f.io.pause = async ms => { await pause(ms); f.setTerminals([]); };
+  const local = createLocalRuntime(f.options,f.io);
+  expect(await local.stop(id,moving)).toEqual({ok:true,value:undefined});
+  expect(f.signalled).toEqual([42]);
+  expect(await local.owner(id)).toEqual({kind:"free"});
+ });
+ it.each([{pid:43,pendingOperationId:null},{pid:42,pendingOperationId:"pending-launch"}])(
+  "does not stop an unlabelled terminal with a mismatched pid or pending lock (%j)", async ({pid,pendingOperationId}) => {
+   const f = runtimeFixture(), {moving} = localCheckout(f);
+   f.setLock({identity:{pid:42,startIdentity:"pi-42"},bootId:"boot",pendingOperationId,pendingFile:null,pendingCoreId:null,operationId:null});
+   f.setProbe({kind:"live",pi:true,startIdentity:"pi-42"});
+   f.setTerminals([{terminal:"t12",state:"live",pid}]);
+   const local = createLocalRuntime(f.options,f.io);
+   expect(await local.stop(id,moving)).toMatchObject({ok:false,refusal:{code:"session-busy"}});
+   expect(f.signalled).toEqual([]);
+  });
  it.each(["open", "idle"])("refuses to acknowledge stop for a lockless unlabelled pi with an %s transcript", async mode => {
   const f = runtimeFixture();
   const {file, placement, moving} = localCheckout(f);

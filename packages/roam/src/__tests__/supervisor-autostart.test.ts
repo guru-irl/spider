@@ -152,6 +152,19 @@ it("observes persistent autostart through the systemctl result", async () => {
   expect(await inspectSupervisorAutostart()).toBe("unknown");
 });
 
+it("tells an enabled box to install a missing supervisor locally", async () => {
+  const f = fixture();
+  rmSync(f.unit);
+  vi.stubEnv("HOME", f.root); vi.stubEnv("XDG_CONFIG_HOME", join(f.root, ".config"));
+  writeFileSync(join(f.roam, "config.json"), JSON.stringify({ enabled: true, role: "box", machineId: BOX, hubMachineId: HUB,
+    peers: [], discoveryRoots: [], coreUnit: "fixture.service" }), { mode: 0o600 });
+  const { inspectSupervisorAutostart } = await import("../local-diagnostics");
+  const report = await runLocalDoctor({ root: f.box, supervisorAutostart: inspectSupervisorAutostart });
+  expect(report.diagnostics).toContainEqual({ severity: "warning", reason: "supervisor-not-installed: No roaming supervisor is installed. Run spider roam enable locally on this box.",
+    repairCommand: "spider roam enable" });
+  expect(existsSync(f.calls)).toBe(false);
+});
+
 it("warns when an enabled box has disabled supervisor autostart", async () => {
   const f = fixture();
   writeFileSync(join(f.roam, "config.json"), JSON.stringify({ enabled: true, role: "box", machineId: BOX, hubMachineId: HUB,

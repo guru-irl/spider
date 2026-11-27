@@ -358,6 +358,9 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
   async function handle(raw: unknown): Promise<V0AgentReply | null> {
     const request = parseV0AgentRequest(raw);
     if (!request) return null;
+    const started = performance.now();
+    const askDeadline = request.kind === "ask" ? started + request.timeoutMs : undefined;
+    const deliveryDeadline = Math.min(started + V0_INTERCOM_MS, askDeadline ?? Infinity);
     let configured: Settings;
     try { configured = settings(root); }
     catch {
@@ -370,7 +373,7 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
     const source = configured.acceptFrom.find(peer => peer.machineId === request.from.machineId);
     if (!source) return envelope(refused("unauthorized"));
     try {
-      const code = await withHomes(root, configured.config, async homes => {
+      const code = await bounded(deliveryDeadline, undefined, () => withHomes(root, configured.config, async homes => {
         const sourceHome = await homes.read(request.from.address.sessionId as SessionId);
         const sourceCode = homeCode(sourceHome, request.from.machineId, request.from.homeEpoch);
         if (sourceCode) return sourceCode;
@@ -379,17 +382,24 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
           return homeCode(await homes.read(request.target.address.sessionId as SessionId), configured.config.machineId, request.target.homeEpoch);
         }
         return null;
-      });
+      }));
       if (code) return envelope(refused(code));
     } catch { return envelope(refused("unreachable")); }
 
-    const signal = request.kind === "ask" ? undefined : AbortSignal.timeout(V0_INTERCOM_MS);
     let result: V0Reply;
     try {
-      result = request.kind === "lookup"
-        ? await broker(configured.agentDir, { kind: "lookup", scopeId: request.from.address.scopeId, selector: request.selector }, signal)
-        : await broker(configured.agentDir, { kind: request.kind, from: origin(request, source), target: request.target,
-            message: request.message, ...(request.kind === "ask" ? { timeoutMs: Math.min(request.timeoutMs, V0_ASK_MAX_MS) } : {}) } as Parameters<typeof broker>[1], signal);
+      if (request.kind === "lookup") {
+        result = await bounded(deliveryDeadline, undefined, signal => broker(configured.agentDir,
+          { kind: "lookup", scopeId: request.from.address.scopeId, selector: request.selector }, signal));
+      } else if (request.kind === "deliver") {
+        result = await bounded(deliveryDeadline, undefined, signal => broker(configured.agentDir,
+          { kind: "deliver", from: origin(request, source), target: request.target, message: request.message }, signal));
+      } else {
+        const remaining = Math.floor(askDeadline! - performance.now());
+        if (remaining <= 0 || performance.now() >= deliveryDeadline) return envelope(refused("unreachable"));
+        result = await broker(configured.agentDir, { kind: "ask", from: origin(request, source), target: request.target,
+          message: request.message, timeoutMs: Math.min(remaining, V0_ASK_MAX_MS) });
+      }
     } catch {
       result = request.kind === "lookup" ? refused("unreachable") : { kind: "unknown", id: request.message.id };
     }
@@ -398,13 +408,14 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
     if (request.kind === "lookup" && result.kind === "matches") {
       if (result.targets.some(endpoint => !matching(endpoint, request))) return envelope(refused("unauthorized"));
       try {
-        const code = await withHomes(root, configured.config, async homes => {
-          for (const endpoint of result.kind === "matches" ? result.targets : []) {
+        const targets = result.targets;
+        const code = await bounded(deliveryDeadline, undefined, () => withHomes(root, configured.config, async homes => {
+          for (const endpoint of targets) {
             const stale = homeCode(await homes.read(endpoint.address.sessionId as SessionId), configured.config.machineId, endpoint.homeEpoch);
             if (stale) return stale;
           }
           return null;
-        });
+        }));
         if (code) return envelope(refused(code));
       } catch { return envelope(refused("unreachable")); }
     }

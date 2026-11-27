@@ -522,6 +522,67 @@ describe("roaming v0 intercom", () => {
     expect(long?.request.kind === "ask" && long.request.timeoutMs).toBeLessThanOrEqual(V0_ASK_MAX_MS);
   });
 
+  it("does not deliver after incoming home validation exhausts its budget", async () => {
+    const { root } = boxFixture(), original = homesApi.createHomeStore;
+    vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+    vi.spyOn(homesApi, "createHomeStore").mockImplementation(options => {
+      const homes = original(options); let first = true;
+      return { ...homes, async read(id) {
+        if (first) { first = false; await new Promise(resolve => setTimeout(resolve, V0_INTERCOM_MS + 1)); }
+        return homes.read(id);
+      } };
+    });
+    const broker = vi.fn(async () => ({ kind: "socket_delivered" as const, id: message.id }));
+    vi.useFakeTimers();
+    try {
+      const pending = createV0Intercom(root, { broker }).handle({ version: 1, requestId: "request-1", toMachineId: BOX,
+        from: findBen.from, kind: "deliver", target: ben, message });
+      await vi.advanceTimersByTimeAsync(V0_INTERCOM_MS + 2);
+      expect(await pending).toMatchObject({ kind: "refused", code: "unreachable" });
+      expect(broker).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("reports unknown when an incoming delivery loses its broker acknowledgement", async () => {
+    const { root } = boxFixture();
+    vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+    let brokerSignal: AbortSignal | undefined;
+    const broker = vi.fn(async (_dir: string, _op: V0BrokerOp, signal?: AbortSignal): Promise<V0Reply> => {
+      brokerSignal = signal;
+      return new Promise(resolve => setTimeout(() => resolve({ kind: "socket_delivered", id: message.id }), V0_INTERCOM_MS + 1));
+    });
+    vi.useFakeTimers();
+    try {
+      const pending = createV0Intercom(root, { broker }).handle({ version: 1, requestId: "request-1", toMachineId: BOX,
+        from: findBen.from, kind: "deliver", target: ben, message });
+      await vi.advanceTimersByTimeAsync(V0_INTERCOM_MS + 2);
+      expect(await pending).toMatchObject({ kind: "unknown", id: message.id });
+      expect(broker).toHaveBeenCalledOnce();
+      expect(brokerSignal?.aborted).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("subtracts incoming validation time from the ask's remaining timeout", async () => {
+    const { root } = boxFixture(), original = homesApi.createHomeStore;
+    vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+    vi.spyOn(homesApi, "createHomeStore").mockImplementation(options => {
+      const homes = original(options); let first = true;
+      return { ...homes, async read(id) {
+        if (first) { first = false; await new Promise(resolve => setTimeout(resolve, 30)); }
+        return homes.read(id);
+      } };
+    });
+    const broker = vi.fn(async (_dir: string, _op: V0BrokerOp): Promise<V0Reply> => ({ kind: "no_reply", id: message.id }));
+    vi.useFakeTimers();
+    try {
+      const pending = createV0Intercom(root, { broker }).handle({ version: 1, requestId: "request-1", toMachineId: BOX,
+        from: findBen.from, kind: "ask", target: ben, message, timeoutMs: 100 });
+      await vi.advanceTimersByTimeAsync(30);
+      expect(await pending).toMatchObject({ kind: "no_reply", id: message.id });
+      expect(broker.mock.calls[0][1]).toMatchObject({ kind: "ask", timeoutMs: 70 });
+    } finally { vi.useRealTimers(); }
+  });
+
   it("rejects unsafe v0 configuration without falling back to legacy routing", async () => {
     const box = boxFixture(), mac = machineFixture(MAC);
     vi.stubEnv("PI_CODING_AGENT_DIR", undefined);

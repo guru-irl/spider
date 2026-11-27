@@ -22,7 +22,7 @@ const poll = (pollId: string, holdMs: RelayPoll["holdMs"] = 20_000, results: rea
 
 function fixture() {
   vi.useFakeTimers({ now: 0 });
-  return createRelayLinks({ now: Date.now, later(ms, fn) { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } });
+  return createRelayLinks({ now: Date.now, wallNow: Date.now, later(ms, fn) { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } });
 }
 
 afterEach(() => vi.useRealTimers());
@@ -174,6 +174,37 @@ describe("held relay polls", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(links.list()[0]).toMatchObject({ state: "down", sinceMs: 30_000, lastCallMs: 5000 });
     links.close();
+  });
+
+  it("keeps hand-off, hold, and grace on elapsed time across wall-clock steps", async () => {
+    const epoch = 1_700_000_000_000;
+    vi.useFakeTimers({ now: epoch, toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+    const clock = { now: () => performance.now(), wallNow: Date.now,
+      later(ms: number, fn: () => void) { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
+    const links = createRelayLinks(clock);
+    try {
+      await links.poll(poll("announce", 0));
+      const waiting = links.submit(relay.machineId, submission("waiting"));
+      vi.setSystemTime(epoch + 60_000);
+      expect((await links.poll(poll("take", 0))).submissions.map(s => s.message.id)).toEqual(["waiting"]);
+      await links.poll(poll("result", 0, [delivered("waiting")]));
+      expect(await waiting).toEqual(delivered("waiting"));
+      expect(links.list()[0]).toMatchObject({ sinceMs: epoch, lastCallMs: epoch + 60_000 });
+
+      const held = links.poll(poll("hold"));
+      await vi.advanceTimersByTimeAsync(19_999);
+      vi.setSystemTime(epoch + 120_000);
+      const send = links.submit(relay.machineId, submission("wake"));
+      expect((await held).submissions.map(s => s.message.id)).toEqual(["wake"]);
+      await links.poll(poll("finish", 0, [delivered("wake")]));
+      expect(await send).toEqual(delivered("wake"));
+
+      await vi.advanceTimersByTimeAsync(9999);
+      vi.setSystemTime(epoch + 180_000);
+      expect(links.list()[0].state).toBe("up");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(links.list()[0]).toMatchObject({ state: "down", sinceMs: epoch + 180_001, lastCallMs: epoch + 120_000 });
+    } finally { links.close(); }
   });
 
   it.each([20_000, 0] as const)("drops immediately when the %i ms call closes without its reply", async holdMs => {

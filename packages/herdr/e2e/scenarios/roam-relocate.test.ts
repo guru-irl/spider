@@ -57,7 +57,7 @@ async function roundTrip(suite: Suite): Promise<void> {
   } finally { await fixture.close(); }
 }
 
-export const scenarios: ScenarioDefinition[] = [
+export const scenarios: readonly ScenarioDefinition[] = [
   { id: storyId('R18'), title: 'ordinary session relocates to a fixture machine and back', tiers: ['headless'],
     script: { scripts: { birth: [text('ordinary source reply')], away: [text('fixture machine reply')], home: [text('returned session reply')] } },
     run: roundTrip },

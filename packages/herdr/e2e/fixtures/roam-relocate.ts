@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { existsSync } from 'node:fs';
-import { copyFile, mkdir, readFile, readdir, readlink, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { expect } from 'vitest';
 import { migrate, openDb } from '@spider/db-core';
@@ -10,7 +10,7 @@ import { enableMemoryCapture } from '@spider/db-core/roam/seed';
 import { processStartIdentity } from '../../src/jobs/handoff.js';
 import { inspectIdLock } from '../../src/sessions/id-lock.js';
 import { createSessionLeases } from '../../src/sessions/lease.js';
-import { observe } from '../harness/pi.js';
+import { readObserved } from '../harness/pi.js';
 import { spawnOwned, type OwnedProcess } from '../harness/processes.js';
 import { identityOf } from '../harness/resources.js';
 import type { Side } from '../harness/hc.js';
@@ -43,7 +43,7 @@ export async function relocateFixture(suite: Suite): Promise<RelocateFixture> {
   const source = await suite.project('relocate-source');
   const destination = suite.ownPath(join(suite.root, 'p', 'relocate-repository'));
   const gitEnv = { ...suite.env, GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid' };
-  const git = async (cwd: string, args: string[]): Promise<string> => {
+  const git = async (cwd: string, args: readonly string[]): Promise<string> => {
     const result = await suite.invoke('git', args, gitEnv, cwd);
     expect(result.exitCode, result.stderr + result.stdout).toBe(0);
     return result.stdout.trimEnd();
@@ -85,13 +85,6 @@ export async function relocateFixture(suite: Suite): Promise<RelocateFixture> {
     } finally { db.close(); }
   }
 
-  const events = async (pid?: number) => {
-    const pids = pid === undefined
-      ? (await readdir(suite.pi.observerDir).catch(() => [])).filter(name => /^\d+\.jsonl$/.test(name)).map(name => Number(name.slice(0, -6)))
-      : [pid];
-    const rows = await Promise.all(pids.map(value => observe(suite.pi.observerDir, () => value).events()));
-    return rows.flat().sort((a, b) => a.at - b.at);
-  };
   const logs = [join(suite.root, 'v0-hub.log'), join(suite.root, 'v0-supervisor.log')];
   const services: OwnedProcess[] = [];
   const close = async () => {
@@ -124,7 +117,7 @@ export async function relocateFixture(suite: Suite): Promise<RelocateFixture> {
     expect(launch.exitCode, launch.stderr + launch.stdout).toBe(0);
     if (!terminal) throw new Error('ordinary Pi terminal address is missing');
     suite.ledger.update(ledger => { ledger.terminals.push({ side: 'local', address: terminal }); });
-    const observed = await waitFor('ordinary Pi starts in its native terminal', () => events(),
+    const observed = await waitFor('ordinary Pi starts in its native terminal', () => readObserved(suite.pi.observerDir),
       rows => rows.some(row => row.type === 'session_start' && row.hcTerminal === terminal && row.cwd === source), deadline(30_000));
     const start = observed.find(row => row.type === 'session_start' && row.hcTerminal === terminal && row.cwd === source)!;
     if (typeof start.sessionId !== 'string' || typeof start.sessionFile !== 'string') throw new Error('Pi did not allocate its own session');
@@ -139,7 +132,7 @@ export async function relocateFixture(suite: Suite): Promise<RelocateFixture> {
       const at = Date.now();
       const sent = await suite.hc(['send', '--force', '--json', owner.terminal, mark(marker)], machine.side);
       expect(sent.exitCode, sent.stderr + sent.stdout).toBe(0);
-      const rows = await waitFor(`session turn ${marker} settles`, () => events(owner.pid),
+      const rows = await waitFor(`session turn ${marker} settles`, () => readObserved(suite.pi.observerDir, owner.pid),
         list => list.some(row => row.type === 'agent_settled' && row.at >= at), deadline(30_000));
       expect(rows.some(row => row.type === 'message_end' && row.at >= at && row.role === 'assistant' && JSON.stringify(row.content).includes(answer))).toBe(true);
       expect((await readFile(owner.file, 'utf8')).includes(answer)).toBe(true);
@@ -175,7 +168,7 @@ export async function relocateFixture(suite: Suite): Promise<RelocateFixture> {
         if (!ledger.terminals.some(row => row.side === machine.side && row.address === expectedTerminal)) ledger.terminals.push({ side: machine.side, address: expectedTerminal });
         if (!ledger.processes.some(row => row.pid === identity.pid && row.start === identity.start)) ledger.processes.push({ ...identity, label: 'relocated-pi', group: false });
       });
-      const eventRows = await waitFor('the ID-lock holder reports its Pi session', () => events(lock.identity.pid),
+      const eventRows = await waitFor('the ID-lock holder reports its Pi session', () => readObserved(suite.pi.observerDir, lock.identity.pid),
         rows => rows.some(row => row.type === 'session_start' && row.sessionId === id && row.hcTerminal === expectedTerminal), deadline(30_000));
       const event = eventRows.find(row => row.type === 'session_start' && row.sessionId === id && row.hcTerminal === expectedTerminal)!;
       if (typeof event.sessionFile !== 'string' || typeof event.cwd !== 'string') throw new Error('Pi session observation is incomplete');
@@ -188,7 +181,7 @@ export async function relocateFixture(suite: Suite): Promise<RelocateFixture> {
       expect(native.json).toMatchObject({ address: expectedTerminal, state: 'live', pid: lock.identity.pid });
       const lease = await createSessionLeases(join(machine.root, 'herdr')).get(observedFile);
       expect(lease).toMatchObject({ pid: lock.identity.pid, startIdentity: lock.identity.startIdentity });
-      const all = await events();
+      const all = await readObserved(suite.pi.observerDir);
       const candidates = [...new Set(all.filter(row => row.type === 'session_start' && row.sessionId === id).map(row => row.pid))];
       const alive = candidates.filter(pid => processStartIdentity(pid) !== null);
       expect(alive).toEqual([lock.identity.pid]);

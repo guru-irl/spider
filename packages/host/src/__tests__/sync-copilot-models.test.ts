@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,13 +11,32 @@ const scratch = mkdtempSync(join(scratchRoot, "sync-copilot-models-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 let fixture: string;
 let modelsPath: string;
+let builtinPath: string;
+let fakePath: string;
+
+function installPi(name: string, catalog: string, version = "1.0.0") {
+  const piRoot = join(fixture, name);
+  const executable = join(piRoot, "dist/bundle/cli.js");
+  const catalogPath = join(piRoot, "node_modules/@earendil-works/pi-ai/dist/providers/github-copilot.models.js");
+  mkdirSync(join(piRoot, "dist/bundle"), { recursive: true });
+  mkdirSync(join(piRoot, "node_modules/@earendil-works/pi-ai/dist/providers"), { recursive: true });
+  writeFileSync(join(piRoot, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", version, type: "module" }));
+  writeFileSync(executable, "#!/usr/bin/env node\n");
+  chmodSync(executable, 0o755);
+  writeFileSync(catalogPath, catalog);
+  return { piRoot, executable, catalogPath };
+}
 
 beforeEach(() => {
   fixture = mkdtempSync(join(scratch, "fixture-"));
   const agent = join(fixture, ".pi/agent");
   mkdirSync(agent, { recursive: true });
   modelsPath = join(agent, "models.json");
-  writeFileSync(join(fixture, "builtins.mjs"), 'export const GITHUB_COPILOT_MODELS = [{ id: "fixture-builtin" }];\n');
+  const pi = installPi("pi-active", 'export const GITHUB_COPILOT_MODELS = [{ id: "fixture-builtin" }];\n');
+  builtinPath = pi.catalogPath;
+  fakePath = join(fixture, "bin");
+  mkdirSync(fakePath);
+  symlinkSync(pi.executable, join(fakePath, "pi"));
   // Isolate home, credentials, catalog discovery, and the HTTP request.
   // The script still reads and writes the fixture's real models.json.
   writeFileSync(join(fixture, "boundary.mjs"), `
@@ -70,11 +89,12 @@ module.syncBuiltinESMExports();
 `);
 });
 
-function invoke(write = true, nativeHome = false, failBackup = false, script = join(root, "scripts/sync-copilot-models.mjs")) {
+function invoke(write = true, nativeHome = false, failBackup = false, script = join(root, "scripts/sync-copilot-models.mjs"), extraEnv: NodeJS.ProcessEnv = {}) {
   return spawnSync(process.execPath, ["--import", join(fixture, "boundary.mjs"), script, ...(write ? ["--write"] : [])], {
     cwd: fixture, encoding: "utf8",
     env: { ...process.env, HOME: fixture, USERPROFILE: fixture, FIXTURE_HOME: fixture, PI_CODING_AGENT_DIR: undefined,
-      FIXTURE_NATIVE_HOME: nativeHome ? "1" : "0", FIXTURE_FAIL_BACKUP: failBackup ? "1" : "0", SPIDER_PIAI_MODELS: join(fixture, "builtins.mjs") },
+      PATH: fakePath, FIXTURE_NATIVE_HOME: nativeHome ? "1" : "0", FIXTURE_FAIL_BACKUP: failBackup ? "1" : "0",
+      SPIDER_PIAI_MODELS: builtinPath, ...extraEnv },
   });
 }
 function run(models: object[], config: object, write = true, nativeHome = false, failBackup = false) {
@@ -90,9 +110,25 @@ const config = () => ({ providers: { "github-copilot": { models: [] } } });
 function saved() { return JSON.parse(readFileSync(modelsPath, "utf8")); }
 
 describe("Copilot model sync catalog", () => {
+  // Choosing a different installation moves an entry pi does not know into an ignored override.
+  it("uses the catalog belonging to the pi executable on PATH", () => {
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a" }];\n');
+    installPi("pi-inactive", 'export const GITHUB_COPILOT_MODELS = [{ id: "model-b" }];\n', "2.0.0");
+    const before = { providers: { "github-copilot": { models: [
+      { id: "model-a", compactAtPercent: 30 }, { id: "model-b", compactAtPercent: 60 },
+    ] } } };
+    writeFileSync(join(fixture, "catalog.json"), JSON.stringify({ data: [] }));
+    writeFileSync(modelsPath, JSON.stringify(before));
+    const result = invoke(true, false, false, undefined, { SPIDER_PIAI_MODELS: undefined });
+    expect(result.status, result.stderr).toBe(0);
+    expect(saved().providers["github-copilot"].models).toEqual([{ id: "model-b", compactAtPercent: 60 }]);
+    expect(saved().providers["github-copilot"].modelOverrides).toEqual({ "model-a": { compactAtPercent: 30 } });
+    expect(result.stdout).toContain("1.0.0");
+  });
+
   // Treating the keyed catalog as a snapshot adds a model already built in.
   it("recognizes built-in models in an object keyed by ID", () => {
-    writeFileSync(join(fixture, "builtins.mjs"), 'export const GITHUB_COPILOT_MODELS = { "model-a": { id: "model-a" } };\n');
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = { "model-a": { id: "model-a" } };\n');
     const result = run([model("model-a", "Example")], config());
     expect(result.status, result.stderr).toBe(0);
     expect(saved().providers["github-copilot"].models).toEqual([]);
@@ -101,7 +137,7 @@ describe("Copilot model sync catalog", () => {
   });
 
   it("recognizes built-in models in an array", () => {
-    writeFileSync(join(fixture, "builtins.mjs"), 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a" }];\n');
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a" }];\n');
     const result = run([model("model-a", "Example")], config());
     expect(result.status, result.stderr).toBe(0);
     expect(saved().providers["github-copilot"].models).toEqual([]);
@@ -110,7 +146,7 @@ describe("Copilot model sync catalog", () => {
 
   // A shadow must become a narrow override even if it is not in the live picker.
   it("previews migration and keeps the file untouched during a dry run", () => {
-    writeFileSync(join(fixture, "builtins.mjs"), 'export const GITHUB_COPILOT_MODELS = { "model-a": { id: "model-a" } };\n');
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = { "model-a": { id: "model-a" } };\n');
     const before = { providers: { "github-copilot": {
       models: [{ id: "model-a", compactAtPercent: 30, thinkingLevelMap: { xhigh: "max" }, contextWindow: 123 }],
       modelOverrides: { "model-a": { compactAtPercent: 70, name: "custom" } },
@@ -127,7 +163,7 @@ describe("Copilot model sync catalog", () => {
 
   // Copying all model fields, dropping thinking or overwriting hand tuning changes behavior.
   it("backs up and migrates only deliberate differences, preserving existing overrides", () => {
-    writeFileSync(join(fixture, "builtins.mjs"), `export const GITHUB_COPILOT_MODELS = {
+    writeFileSync(builtinPath, `export const GITHUB_COPILOT_MODELS = {
       "model-a": { id: "model-a", promptCache: { short: 60 }, thinkingLevelMap: { xhigh: "high" }, compat: { forceAdaptiveThinking: false } },
       "model-b": { id: "model-b", promptCache: { long: 10, short: 5 }, compat: { forceAdaptiveThinking: true } },
       "model-e": { id: "model-e", compat: { forceAdaptiveThinking: false } }
@@ -172,7 +208,7 @@ describe("Copilot model sync catalog", () => {
   });
 
   it("adds new models in the same write as a migration", () => {
-    writeFileSync(join(fixture, "builtins.mjs"), 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a" }];\n');
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a" }];\n');
     const before = { providers: { "github-copilot": { models: [{ id: "model-a", compactAtPercent: 30 }] } } };
     const result = run([model("model-b", "Example")], before);
     expect(result.status, result.stderr).toBe(0);
@@ -185,7 +221,7 @@ describe("Copilot model sync catalog", () => {
 
   // A failed backup must abort before either a migration or an addition is written.
   it("does not write any changes if the backup fails", () => {
-    writeFileSync(join(fixture, "builtins.mjs"), 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a" }];\n');
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a" }];\n');
     const before = { providers: { "github-copilot": { models: [{ id: "model-a", compactAtPercent: 30 }] } } };
     const result = run([model("model-b", "Example")], before, true, false, true);
     expect(result.status).not.toBe(0);
@@ -196,7 +232,7 @@ describe("Copilot model sync catalog", () => {
 
   // Even an ID in the stale snapshot is not proof that the real catalog has it.
   it("does not migrate a snapshot-listed entry when the real catalog is unavailable", () => {
-    writeFileSync(join(fixture, "builtins.mjs"), 'export const GITHUB_COPILOT_MODELS = {};\n');
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = {};\n');
     const source = readFileSync(join(root, "scripts/sync-copilot-models.mjs"), "utf8");
     const synthetic = source.replace(/const BUILTIN_SNAPSHOT = new Set\(\[[\s\S]*?\]\);/, 'const BUILTIN_SNAPSHOT = new Set(["model-a"]);');
     expect(synthetic).not.toBe(source);
@@ -217,7 +253,7 @@ describe("Copilot model sync catalog", () => {
 
   // A dated snapshot cannot identify safe migrations, but additions still work.
   it("does not migrate on snapshot fallback and still adds missing models", () => {
-    writeFileSync(join(fixture, "builtins.mjs"), 'export const GITHUB_COPILOT_MODELS = {};\n');
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = {};\n');
     const entry = { id: "model-a", compactAtPercent: 30 };
     const result = run([model("model-b", "Example")], { providers: { "github-copilot": { models: [entry] } } });
     expect(result.status, result.stderr).toBe(0);

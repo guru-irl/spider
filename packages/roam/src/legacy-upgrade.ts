@@ -14,6 +14,7 @@ import { snapshotPrivateRefs } from "./git-bundle";
 import { inspectIntentReservations, inspectIntentViews } from "./intent";
 import { inspectAdoptedOwner } from "./launcher";
 import { isMachineId } from "./machine-id";
+import { parseSourceCleanup } from "./move";
 import { readLocalIdentity } from "./runtime";
 import { parseCheckpoint, parseHome, parsePlan } from "./relocate/journal";
 import { listStoreKeys } from "./store-inventory";
@@ -156,8 +157,21 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
             else throw new Error("Invalid move reservation history");
           }
           if (reserved !== null) findings.push(`move reservation ${id} operation ${reserved}`);
-        } else if (result === null) findings.push(`${operation.kind} operation ${id}`);
-        else if (operation.kind === "move" && result.value && typeof result.value === "object" && !Array.isArray(result.value)) {
+        } else if (result === null) {
+          findings.push(`${operation.kind} operation ${id}`);
+          if (operation.kind === "move") {
+            const pending = db.prepare("SELECT seq,result_json FROM roam_operation_actions WHERE operation_id=? AND action='move-source-cleanup-pending' ORDER BY seq DESC LIMIT 1").get(id) as { seq: number; result_json: string } | undefined;
+            if (pending) try {
+              const data: unknown = JSON.parse(pending.result_json);
+              if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Invalid source cleanup");
+              const record = data as Record<string, unknown>, cleanup = parseSourceCleanup(record.sourceCleanup);
+              if (typeof record.sessionId !== "string" || !record.sessionId || !isMachineId(record.sourceMachine) || cleanup.status !== "pending") throw new Error("Invalid source cleanup");
+              const later = db.prepare("SELECT result_json FROM roam_operation_actions WHERE operation_id=? AND action='move-action-complete' AND seq>? ORDER BY seq").all(id, pending.seq) as { result_json: string }[];
+              if (!later.some(row => (JSON.parse(row.result_json) as { action?: unknown }).action === "cleanup"))
+                findings.push(`source cleanup session ${safeId(record.sessionId)} operation ${id}`);
+            } catch { unknown.push(`source cleanup operation ${id} unavailable`); }
+          }
+        } else if (operation.kind === "move" && result.value && typeof result.value === "object" && !Array.isArray(result.value)) {
           const cleanup = (result.value as Record<string, unknown>).sourceCleanup;
           if (cleanup && typeof cleanup === "object" && !Array.isArray(cleanup) && (cleanup as Record<string, unknown>).status === "pending") findings.push(`source cleanup operation ${id}`);
         }

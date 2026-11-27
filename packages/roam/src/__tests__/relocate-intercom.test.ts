@@ -7,6 +7,7 @@ import type { LocalSessionInfo, RemoteSessionInfo } from "@spider/intercom/types
 import { DEFAULT_LIMITS, type CallOptions, type Peer, type Transport } from "../contracts";
 import { main } from "../cli";
 import { createV0Intercom, hasV0IntercomConfig } from "../relocate/intercom";
+import * as homesApi from "../relocate/home";
 
 const MAC = "11111111-1111-4111-8111-111111111111";
 const BOX = "22222222-2222-4222-8222-222222222222";
@@ -125,6 +126,7 @@ async function remotePlan(intercom: ReturnType<typeof createV0Intercom>, to = "b
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -322,6 +324,24 @@ describe("roaming v0 intercom", () => {
     expect(await plan.send(message, controller.signal)).toEqual({ kind: "refused", code: "unreachable" });
     expect(f.calls.map(call => call.request.kind)).toEqual(["lookup"]);
     expect(f.inbox).toEqual([]);
+  });
+
+  it("includes home-store preparation in the lookup budget", async () => {
+    const f = paired(), original = homesApi.createHomeStore;
+    vi.spyOn(homesApi, "createHomeStore").mockImplementation(options => {
+      const homes = original(options);
+      return { ...homes, async list() {
+        await new Promise(resolve => setTimeout(resolve, V0_INTERCOM_MS + 1));
+        return homes.list();
+      } };
+    });
+    vi.useFakeTimers();
+    try {
+      const pending = f.intercom.prepare({ to: "box/ben", from: alice, locals: [alice] });
+      await vi.advanceTimersByTimeAsync(V0_INTERCOM_MS + 2);
+      expect(await pending).toEqual({ kind: "refused", code: "unreachable" });
+      expect(f.calls).toEqual([]);
+    } finally { vi.useRealTimers(); }
   });
 
   it("rejects an oversized encoded message before remote dispatch", async () => {

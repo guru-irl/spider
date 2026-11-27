@@ -220,13 +220,15 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
   }
 
   const prepare: V0Prepare = async ({ to, from, locals, signal }) => {
+    const deadline = performance.now() + V0_INTERCOM_MS;
     const selector = selectedTarget(to);
     if (!selector) return refused("invalid");
     let configured: Settings;
     try { configured = settings(root); } catch { return refused("not-configured"); }
     let all: readonly RelocateHome[];
-    try { all = await withHomes(root, configured.config, homes => homes.list()); }
+    try { all = await bounded(deadline, signal, () => withHomes(root, configured.config, homes => homes.list())); }
     catch { return refused("unreachable"); }
+    if (signal?.aborted || performance.now() >= deadline) return refused("unreachable");
     const byId = (id: string) => all.find(home => home.sessionId === id) ?? null;
     const senderHome = byId(from.address?.sessionId ?? from.id);
     const qualifiedPeer = selector.kind === "qualified" ? configured.sendTo.find(peer => peer.alias.toLowerCase() === selector.machine.toLowerCase()) : undefined;
@@ -282,7 +284,6 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
     const query = exactHome ? { by: "id" as const, value: exactHome.sessionId }
       : { by: "name" as const, value: selector.value };
     const sourceWire = { ...source, machineId: configured.config.machineId };
-    const deadline = performance.now() + V0_INTERCOM_MS;
     const lookups = await Promise.all(peers.map(async peer => {
       const request: Extract<V0AgentRequest, { kind: "lookup" }> = {
         version: 1, requestId: randomUUID(), toMachineId: peer.machineId, from: sourceWire, kind: "lookup", selector: query,

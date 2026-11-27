@@ -279,6 +279,56 @@ describe("Copilot model sync catalog", () => {
     expect(readdirSync(join(fixture, ".pi/agent"))).toEqual(["models.json"]);
   });
 
+  // Provider headers outrank built-in headers after the shadow is removed.
+  it("refuses equal shadow headers that conflict with provider headers", () => {
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a", headers: { "X-Mode": "fixture-builtin" } }];\n');
+    const before = { providers: { "github-copilot": { headers: { "X-Mode": "fixture-provider" },
+      models: [{ id: "model-a", headers: { "X-Mode": "fixture-builtin" } }] } } };
+    const result = run([], before);
+    expect(result.status).not.toBe(0);
+    for (const name of ["model-a", "headers", "X-Mode"]) expect(result.stderr).toContain(name);
+    expect(result.stdout + result.stderr).not.toContain("fixture-builtin");
+    expect(result.stdout + result.stderr).not.toContain("fixture-provider");
+    expect(readFileSync(modelsPath, "utf8")).toBe(JSON.stringify(before));
+    expect(readdirSync(join(fixture, ".pi/agent"))).toEqual(["models.json"]);
+  });
+
+  // Provider compatibility also changes merge order when the shadow is removed.
+  it("refuses equal shadow compatibility that conflicts with provider compatibility", () => {
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a", compat: { supportsStore: true } }];\n');
+    const before = { providers: { "github-copilot": { compat: { supportsStore: false },
+      models: [{ id: "model-a", compat: { supportsStore: true } }] } } };
+    const result = run([], before);
+    expect(result.status).not.toBe(0);
+    for (const name of ["model-a", "compat", "supportsStore"]) expect(result.stderr).toContain(name);
+    expect(readFileSync(modelsPath, "utf8")).toBe(JSON.stringify(before));
+    expect(readdirSync(join(fixture, ".pi/agent"))).toEqual(["models.json"]);
+  });
+
+  // Pi merges the routing compatibility maps by their nested keys.
+  it("identifies a nested provider compatibility key that would change", () => {
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a", compat: { openRouterRouting: { order: ["a"] } } }];\n');
+    const before = { providers: { "github-copilot": { compat: { openRouterRouting: { order: ["b"] } },
+      models: [{ id: "model-a", compat: { openRouterRouting: { order: ["a"] } } }] } } };
+    const result = run([], before);
+    expect(result.status).not.toBe(0);
+    for (const name of ["model-a", "compat", "openRouterRouting", "order"]) expect(result.stderr).toContain(name);
+    expect(readFileSync(modelsPath, "utf8")).toBe(JSON.stringify(before));
+    expect(readdirSync(join(fixture, ".pi/agent"))).toEqual(["models.json"]);
+  });
+
+  // An existing override can already mask a provider setting on both sides.
+  it("allows equal shadow fields when existing overrides preserve their effective values", () => {
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a", headers: { "X-Mode": "same" }, compat: { supportsStore: true } }];\n');
+    const existing = { headers: { "X-Mode": "same" }, compat: { supportsStore: false } };
+    const before = { providers: { "github-copilot": { headers: { "X-Mode": "provider" }, compat: { supportsStore: false },
+      models: [{ id: "model-a", headers: { "X-Mode": "same" }, compat: { supportsStore: true } }],
+      modelOverrides: { "model-a": existing } } } };
+    const result = run([], before);
+    expect(result.status, result.stderr).toBe(0);
+    expect(saved().providers["github-copilot"].modelOverrides["model-a"]).toEqual(existing);
+  });
+
   // Copying all model fields, dropping thinking or overwriting hand tuning changes behavior.
   it("backs up migrations, drops equal fields, and preserves existing overrides", () => {
     writeFileSync(builtinPath, `export const GITHUB_COPILOT_MODELS = {

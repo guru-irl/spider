@@ -1388,7 +1388,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
       const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
       const cli = quote(path.join(herdrPackageRoot, 'dist/herdr/cli.mjs')), node = quote(process.execPath), config = quote(file);
       const content = `From a plain shell:\n1. Save selected sessions. /reload old pi sessions so setup can identify them.\n2. Close selected sessions and any unknown PIDs reported by setup.\n3. Run: ${node} ${cli} setup --config ${config}\n4. Setup disables core notes and opens fresh leased terminals; never reuse retired terminals.\n5. Run: ${node} ${cli} doctor --config ${config}\nThis command only prints instructions; it never launches or writes.`;
-      (pi as unknown as ExtensionAPI).sendMessage?.({ customType: "spider.command", content, display: true });
+      (pi as unknown as ExtensionAPI).sendMessage?.({ customType: "spider.command", content, display: true, details: { args: { command: "herdr-setup" }, result: { text: content } } });
     },
   });
   registerHooks(pi, event => herdr?.guard(event) ?? Promise.resolve(undefined), ordinaryWorkAllowed);

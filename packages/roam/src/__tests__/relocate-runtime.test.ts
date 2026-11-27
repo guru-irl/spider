@@ -73,7 +73,8 @@ function supervisorRace(f: ReturnType<typeof runtimeFixture>) {
   return hubStart;
  };
  p.confirm = local.confirm;
- return {p,started,hubStart:()=>hubStart,confirmPending:(home:RunningHome,placement:SessionPlacement)=>local.confirm(home,placement,true)};
+ p.confirmPending = (home,placement)=>local.confirm(home,placement,true);
+ return {p,started,hubStart:()=>hubStart};
 }
 function claimFixtureLock(f: ReturnType<typeof runtimeFixture>) {
  f.setLock({identity:{pid:42,startIdentity:"pi-42"},bootId:"boot",pendingOperationId:null,pendingFile:null,pendingCoreId:null,operationId:null});
@@ -473,7 +474,7 @@ describe("v0 local runtime",()=>{
  it("confirms a supervisor-first launch without starting a second pi", async () => {
   const f = runtimeFixture(), race = supervisorRace(f), start = race.p.start;
   race.p.start = async (...args) => { const result=await start(...args); claimFixtureLock(f); return result; };
-  const outcome = await relocate(request,race.p,{clock:readyClock,timeoutMs:1_000,confirmPending:race.confirmPending});
+  const outcome = await relocate(request,race.p);
   expect(race.hubStart()).toMatchObject({ok:false,refusal:{code:"start-pending"}});
   expect(f.launches).toHaveLength(1);
   expect(outcome).toMatchObject({ok:true,value:{terminal:"core:t",disposition:"relocated"}});
@@ -482,7 +483,7 @@ describe("v0 local runtime",()=>{
   vi.useFakeTimers();
   try {
    const f = runtimeFixture(), race = supervisorRace(f);
-   const pending = relocate(request,race.p,{clock:readyClock,timeoutMs:1_000,confirmPending:race.confirmPending});
+   const pending = relocate(request,race.p,{clock:readyClock,timeoutMs:1_000});
    let result: Awaited<typeof pending> | undefined;
    void pending.then(value=>{result=value;});
    await race.started;
@@ -498,7 +499,7 @@ describe("v0 local runtime",()=>{
   vi.useFakeTimers();
   try {
    const f = runtimeFixture(), race = supervisorRace(f);
-   const pending = relocate(request,race.p,{clock:readyClock,timeoutMs:1_000,confirmPending:race.confirmPending});
+   const pending = relocate(request,race.p,{clock:readyClock,timeoutMs:1_000});
    let result: Awaited<typeof pending> | undefined;
    void pending.then(value=>{result=value;});
    await race.started;

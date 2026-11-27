@@ -207,17 +207,48 @@ it("does not block frozen membership governed by a settled v0 home", async () =>
     project.prepare("UPDATE roam_meta SET machine_id=?,store_key=? WHERE id=1").run(hub, key);
     project.prepare("INSERT INTO roam_sessions(session_id,epoch,state,move_id,freeze_seq) VALUES (?,1,'frozen',?,0)")
       .run("session-v0-frozen", "old-settled-move");
+    project.prepare("INSERT INTO roam_sessions(session_id,epoch,state) VALUES (?,1,'frozen')").run("session-v0-ordinary");
   } finally { project.close(); }
   const global = openDb(join(f.root, "spider.db"));
   try {
     global.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES (?,?,?)").run("fixture-repo", "workspace-1", checkout);
     global.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state,destination) VALUES (?,?,2,?,1,'running',NULL)")
       .run("session-v0-frozen", box, "v0-33333333-3333-4333-8333-333333333333");
+    global.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state,destination) VALUES (?,?,2,?,1,'running',NULL)")
+      .run("session-v0-ordinary", box, "v0-33333333-3333-4333-8333-333333333333");
   } finally { global.close(); }
+  const freeze = openFreezeJournal(join(f.root, "roam", "journal.db"));
+  freeze.beginFreeze("session-v0-frozen", "old-settled-move", 1);
+  freeze.bindFreezeRoster("session-v0-frozen", "old-settled-move", 1, ["global", key]);
+  freeze.advanceFreeze("session-v0-frozen", "old-settled-move", 1, "frozen");
+  freeze.advanceFreeze("session-v0-frozen", "old-settled-move", 1, "complete");
   const io = { out: vi.fn(), err: vi.fn() };
   expect(await main(["roam", "doctor", "--json"], io)).toBe(0);
   expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
     expect.objectContaining({ severity: "info", reason: expect.stringMatching(/^legacy-upgrade-ready/) }),
+  ]));
+});
+
+it("does not infer a lost legacy freeze is settled from a v0 home alone", async () => {
+  const f = fixture(), checkout = join(f.root, "worktree"), projectDir = join(checkout, ".spider"), key = "worktree:fixture-repo:workspace-1";
+  mkdirSync(projectDir, { recursive: true });
+  const project = openDb(join(projectDir, "project.db"));
+  try {
+    migrate(project, "worktree", { machineId: hub, globalRoot: f.root });
+    project.prepare("UPDATE roam_meta SET machine_id=?,store_key=? WHERE id=1").run(hub, key);
+    project.prepare("INSERT INTO roam_sessions(session_id,epoch,state,move_id,freeze_seq) VALUES (?,1,'frozen',?,0)")
+      .run("session-v0-lost", "old-lost-move");
+  } finally { project.close(); }
+  const global = openDb(join(f.root, "spider.db"));
+  try {
+    global.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES (?,?,?)").run("fixture-repo", "workspace-1", checkout);
+    global.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state,destination) VALUES (?,?,2,?,1,'running',NULL)")
+      .run("session-v0-lost", box, "v0-33333333-3333-4333-8333-333333333333");
+  } finally { global.close(); }
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-unverified.*session-v0-lost.*worktree:fixture-repo:workspace-1/) }),
   ]));
 });
 

@@ -100,7 +100,7 @@ function resolvePiPackage() {
     fail("Invalid pi installation. " + hint);
   }
   let executable;
-  for (const dir of (process.env.PATH || "").split(delimiter)) {
+  for (const dir of process.env.PATH === undefined ? [] : process.env.PATH.split(delimiter)) {
     const candidate = resolve(dir || ".", "pi");
     try {
       accessSync(candidate, constants.X_OK);
@@ -268,6 +268,10 @@ async function main() {
         if (names === null ? !isDeepStrictEqual(value, prior[key]) : names.length > 0) {
           conflicts.push({ key, names });
         }
+      }
+      if (equalsBuiltin && key === "baseUrl" && value != null && gh.oauth !== "radius" &&
+          gh.baseUrl != null && !isDeepStrictEqual(value, gh.baseUrl)) {
+        conflicts.push({ key, names: ["baseUrl"], provider: true });
       }
       if (equalsBuiltin && key === "headers" && gh.headers) {
         const before = { ...gh.headers, ...prior.headers, ...value };

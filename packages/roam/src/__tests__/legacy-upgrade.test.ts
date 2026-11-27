@@ -127,6 +127,50 @@ it("doctor reports frozen worktree membership with a missing freeze record as un
   ]));
 });
 
+it("does not block settled legacy receipts, released reservations, or stale map failure text", async () => {
+  const f = fixture();
+  f.journal.begin({ id: "settled-move", kind: "move", machineId: hub, expectedEpoch: 1, args: {} });
+  f.journal.record("settled-move", "done", { code: 0, reason: "moved", value: { sourceCleanup: { status: "done" } } });
+  f.journal.begin({ id: "settled-slot", kind: "move-session", machineId: hub, expectedEpoch: 1, args: { sessionId: "settled-session" } });
+  f.journal.record("settled-slot", "reserved", { moveId: "settled-move", destinationMachine: box });
+  f.journal.record("settled-slot", "released", { moveId: "settled-move" });
+  const freeze = openFreezeJournal(join(f.root, "roam", "journal.db"));
+  freeze.beginFreeze("settled-session", "settled-move", 1);
+  freeze.bindFreezeRoster("settled-session", "settled-move", 1, ["global"]);
+  freeze.advanceFreeze("settled-session", "settled-move", 1, "frozen");
+  freeze.advanceFreeze("settled-session", "settled-move", 1, "complete");
+  const db = openDb(join(f.root, "spider.db"));
+  try { writeLocal(db, "mapping-failure", "stale", "legacy map failed long ago"); } finally { db.close(); }
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(0);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "info", reason: expect.stringMatching(/^legacy-upgrade-ready/) }),
+  ]));
+});
+
+it("does not block frozen membership governed by a settled v0 home", async () => {
+  const f = fixture(), checkout = join(f.root, "worktree"), projectDir = join(checkout, ".spider"), key = "worktree:fixture-repo:workspace-1";
+  mkdirSync(projectDir, { recursive: true });
+  const project = openDb(join(projectDir, "project.db"));
+  try {
+    migrate(project, "worktree", { machineId: hub, globalRoot: f.root });
+    project.prepare("UPDATE roam_meta SET machine_id=?,store_key=? WHERE id=1").run(hub, key);
+    project.prepare("INSERT INTO roam_sessions(session_id,epoch,state,move_id,freeze_seq) VALUES (?,1,'frozen',?,0)")
+      .run("session-v0-frozen", "old-settled-move");
+  } finally { project.close(); }
+  const global = openDb(join(f.root, "spider.db"));
+  try {
+    global.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES (?,?,?)").run("fixture-repo", "workspace-1", checkout);
+    global.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state,destination) VALUES (?,?,2,?,1,'running',NULL)")
+      .run("session-v0-frozen", box, "v0-33333333-3333-4333-8333-333333333333");
+  } finally { global.close(); }
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(0);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "info", reason: expect.stringMatching(/^legacy-upgrade-ready/) }),
+  ]));
+});
+
 it("doctor blocks an interrupted repository map by its store key", async () => {
   const f = fixture(), directory = join(f.root, "repository");
   mkdirSync(directory);
@@ -170,6 +214,13 @@ it.each(["checkpoint", "incoming"] as const)("does not classify a %s-owned v0 wo
   expect(await main(["roam", "doctor", "--json"], io)).toBe(0);
   expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
     expect.objectContaining({ severity: "info", reason: expect.stringMatching(/^legacy-upgrade-ready/) }),
+  ]));
+  const changed = openDb(join(f.root, "spider.db"));
+  try { writeLocal(changed, "mapping-intent", JSON.stringify(["workspace", identity]), { kind: "workspace", identity,
+    target_path: other, store_key: key, command_json: null, attempt_id: "attempt-not-v0" }); } finally { changed.close(); }
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-blocked.*worktree:fixture-repo:workspace-1/) }),
   ]));
 });
 

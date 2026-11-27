@@ -62,6 +62,18 @@ describe("held relay polls", () => {
     links.close();
   });
 
+  it("returns empty when a submission arrives at the hold deadline before the timer runs", async () => {
+    const links = fixture();
+    const held = links.poll(poll("hold"));
+    vi.setSystemTime(20_000);
+    const send = links.submit(relay.machineId, submission("after-hold"));
+    expect((await held).submissions).toEqual([]);
+    expect((await links.poll(poll("next", 0))).submissions.map(s => s.message.id)).toEqual(["after-hold"]);
+    await links.poll(poll("result", 0, [delivered("after-hold")]));
+    expect(await send).toEqual(delivered("after-hold"));
+    links.close();
+  });
+
   it("takes a waiting submission in a hold-0 call with no held call", async () => {
     const links = fixture();
     await links.poll(poll("announce", 0));

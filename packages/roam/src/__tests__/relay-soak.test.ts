@@ -17,9 +17,11 @@ function completeEvidence(): Evidence {
     ["laptop-box", "laptop-to-box", machines[0], machines[1]],
     ["box-a-box-b", "box-to-box", machines[1], machines[2]],
     ["box-b-box-c", "box-to-box", machines[2], machines[3]],
-  ].map(([id, topology, relayId, peerId]) => ({
+  ].map(([id, topology, relayId, peerId], index) => ({
     id, topology: topology as Link["topology"], relayId, peerId,
-    runs: ["dial", "submit"].map(role => ({ role: role as "dial" | "submit", startMs: START, endMs: END, rssAllowanceBytes: ALLOWANCE })),
+    runs: ["dial", "submit"].map((role, roleIndex) => ({ role: role as "dial" | "submit", startMs: START, endMs: END,
+      rssAllowanceBytes: ALLOWANCE, machineId: role === "dial" ? relayId : peerId,
+      process: { pid: 200 + index * 2 + roleIndex, birthId: `birth-${index}-${roleIndex}`, bootId: `boot-${role === "dial" ? relayId : peerId}` } })), 
     clock: {
       fromMs: START, toMs: END + MINUTE, minOffsetMs: 0, maxOffsetMs: 0,
       samples: Array.from({ length: 49 }, (_, i) => ({ sentMs: START + i * 10 * MINUTE,
@@ -51,7 +53,7 @@ function completeEvidence(): Evidence {
       const down = faults.some(fault => fault.linkIds.includes(link.id) && atMs >= fault.startMs + 1000 && atMs < fault.clearMs + 1000);
       link.states.push({ atMs, state: down ? "down" : "up" });
     }
-    for (let atMs = START; atMs <= END; atMs += 30_000) link.rss.push({ atMs, bytes: 100_000_000 });
+    for (let atMs = START; atMs <= END; atMs += 30_000) link.rss.push({ atMs, bytes: 100_000_000, process: { ...link.runs[0].process } });
   }
   const burstAt = START + 30 * MINUTE;
   for (let i = 0; i < 100; i++) {
@@ -240,6 +242,19 @@ describe("the live relay soak reliability gate", () => {
     const reusedPid = copy();
     reusedPid.processes[0].after.identities[0].birthId = "different-birth";
     expect(checkRelaySoak(reusedPid).violations).toContain("cleanup");
+  });
+
+  it("rejects a surviving run helper even if it appeared in the before census", () => {
+    const evidence = copy(), run = evidence.links[0].runs[0], census = evidence.processes.find(item => item.machineId === run.machineId)!;
+    census.before.identities.push({ ...run.process });
+    census.after.identities.push({ ...run.process });
+    expect(checkRelaySoak(evidence).violations).toContain("cleanup");
+  });
+
+  it("rejects RSS samples attributed to a different process birth", () => {
+    const evidence = copy();
+    evidence.links[0].rss[1].process.birthId = "other";
+    expect(checkRelaySoak(evidence).violations).toContain("rss");
   });
 
   it("rejects RSS growth beyond the run allowance and missing samples", () => {

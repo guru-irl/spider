@@ -1,3 +1,5 @@
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -189,6 +191,58 @@ it.each(["hub", "box"] as const)("%s enable refuses each freeze-only and map-onl
     expect(f.calls).toEqual([]);
     expect(f.enabled()).toBe(false);
     expect(existsSync(role === "hub" ? hubServiceFile(f.root, f.launchd.plistDir, "v0") : join(f.systemd.unitDir, "spider-roam-supervisor-v0.service"))).toBe(false);
+  }
+});
+
+it("enable sees a legacy move written while waiting for the configuration lock", async () => {
+  const f = fixture("hub"), roam = join(f.root, "roam"), journal = openJournal(join(roam, "journal.db"));
+  const input = join(f.root, "hold-lock.ts"), runner = join(f.root, "hold-lock.mjs");
+  writeFileSync(input, `
+    import { once } from 'node:events';
+    import { withProcessLock } from ${JSON.stringify(resolve("packages/herdr/src/sessions/registry.ts"))};
+    await withProcessLock(process.argv[2], 'roam-configuration', async () => {
+      const released = once(process.stdin, 'end');
+      process.stdin.resume();
+      process.stdout.write('locked\\n');
+      await released;
+    });
+  `);
+  const { rolldown } = await import("rolldown");
+  const bundle = await rolldown({ input, platform: "node", external: [/^node:/, "better-sqlite3", "sqlite-vec"] });
+  try { await bundle.write({ file: runner, format: "es" }); }
+  finally { await bundle.close(); }
+  const child = spawn(process.execPath, [runner, roam], { stdio: "pipe" });
+  let stderr = "";
+  child.stderr.on("data", bytes => { stderr += String(bytes); });
+  const exited = once(child, "close");
+  let enabling: ReturnType<typeof configureV0Service> | undefined;
+  try {
+    const ready = once(child.stdout, "data").then(([bytes]) => String(bytes));
+    await expect(Promise.race([ready, exited.then(([code]) => { throw new Error(`Lock holder exited (${code}): ${stderr}`); })]))
+      .resolves.toBe("locked\n");
+    // Observe the actual liveness probe for the holder, without faking the lock
+    // or letting an arbitrary delay decide when to write the move.
+    let waiting!: () => void;
+    const waitingOnChild = new Promise<void>(resolve => { waiting = resolve; });
+    const kill = process.kill;
+    const probe = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (pid === child.pid && signal === 0) waiting();
+      return kill.call(process, pid, signal);
+    });
+    try {
+      enabling = configureV0Service(f.root, true, f.options);
+      await Promise.race([waitingOnChild, enabling.then(result => { throw new Error(`Enable did not wait for the lock: ${result.reason}`); })]);
+      journal.begin({ id: "move-during-enable", kind: "move", machineId: f.hub, expectedEpoch: 1, args: {} });
+    } finally { probe.mockRestore(); }
+    child.stdin.end();
+    await expect(exited).resolves.toEqual([0, null]);
+    expect(await enabling).toMatchObject({ code: 1, reason: "legacy-upgrade-blocked", message: expect.stringContaining("move-during-enable") });
+    expect(f.enabled()).toBe(false);
+    expect(f.calls).toEqual([]);
+  } finally {
+    if (!child.stdin.writableEnded) child.stdin.end();
+    await exited;
+    await enabling;
   }
 });
 

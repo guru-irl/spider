@@ -139,6 +139,19 @@ describe("Copilot model sync catalog", () => {
     expect(readdirSync(join(fixture, ".pi/agent"))).toEqual(["models.json"]);
   });
 
+  // An unset PATH is not a request to search the current directory.
+  it("refuses an unset PATH even when the working directory contains pi", () => {
+    symlinkSync(join(fakePath, "pi"), join(fixture, "pi"));
+    const before = config();
+    writeFileSync(join(fixture, "catalog.json"), JSON.stringify({ data: [model("model-c", "Example")] }));
+    writeFileSync(modelsPath, JSON.stringify(before));
+    const result = invoke(true, false, false, undefined, { PATH: undefined });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("--pi-root <dir>");
+    expect(readFileSync(modelsPath, "utf8")).toBe(JSON.stringify(before));
+    expect(readdirSync(join(fixture, ".pi/agent"))).toEqual(["models.json"]);
+  });
+
   // The documented override must select an installation without a pi on PATH.
   it("accepts an explicit pi root when pi is absent from PATH", () => {
     const other = installPi("pi-override", 'export const GITHUB_COPILOT_MODELS = [{ id: "model-c" }];\n', "2.0.0");
@@ -298,6 +311,20 @@ describe("Copilot model sync catalog", () => {
     for (const name of ["model-a", "headers", "X-Mode"]) expect(result.stderr).toContain(name);
     expect(result.stdout + result.stderr).not.toContain("fixture-builtin");
     expect(result.stdout + result.stderr).not.toContain("fixture-provider");
+    expect(readFileSync(modelsPath, "utf8")).toBe(JSON.stringify(before));
+    expect(readdirSync(join(fixture, ".pi/agent"))).toEqual(["models.json"]);
+  });
+
+  // A model entry's base URL wins over a different provider URL before migration.
+  it("refuses an equal shadow base URL that conflicts with the provider URL", () => {
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a", baseUrl: "https://builtin.invalid" }];\n');
+    const before = { providers: { "github-copilot": { baseUrl: "https://provider.invalid/fixture-private",
+      models: [{ id: "model-a", baseUrl: "https://builtin.invalid" }] } } };
+    const result = run([], before);
+    expect(result.status).not.toBe(0);
+    for (const name of ["model-a", "baseUrl", "provider"]) expect(result.stderr).toContain(name);
+    expect(result.stdout + result.stderr).not.toContain("fixture-private");
+    expect(result.stdout + result.stderr).not.toContain("builtin.invalid");
     expect(readFileSync(modelsPath, "utf8")).toBe(JSON.stringify(before));
     expect(readdirSync(join(fixture, ".pi/agent"))).toEqual(["models.json"]);
   });

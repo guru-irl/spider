@@ -17,12 +17,12 @@ import { relocate } from "./relocate";
 import { setHome } from "./set-home";
 import { createRelocateAdapters } from "./adapters";
 import { createV0SyncTransport, createV0ArtifactTransport, guardV0PeerTransport, handleRelocateAgent } from "./remote";
-import { exactHome, localHerdrConnection } from "./local";
+import { checkMacSourceWriters, exactHome, localHerdrConnection } from "./local";
 import { parseCaptured } from "./journal";
 import { resolveVerifiedArtifact } from "./transfer";
 import { createHomeSupervisor } from "./supervisor";
 import { serveV0Control } from "./service";
-import type { RelocateAdapterOptions, RelocateAdapters, HomeStore, RunningHome, V0ControlServices, V0Result } from "./types";
+import type { RelocateAdapterOptions, RelocateAdapters, HomeStore, RunningHome, SetHomePorts, V0ControlServices, V0Result } from "./types";
 
 export interface V0RuntimeOverrides {
   openCore?: (root: string) => LocalCore;
@@ -77,17 +77,17 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
     };
     stores=createStorePort(config,core.db);
     const homeStore=createHomeStore({db:core.db,hubMachineId:config.hubMachineId,localMachineId:config.machineId});
-    const homes: HomeStore = {
+    const homes: ReturnType<typeof createHomeStore> = {
       ...homeStore,
       async initialize(sessionId, source) {
         if (forgotten(source)) throw new Error("Cannot adopt a home on a forgotten peer");
         return homeStore.initialize(sessionId, source);
       },
-      async compareAndSwap(expected, next) {
+      async compareAndSwap(expected, next, checkMacSource) {
         const swap = () => {
           if (forgotten(next.machineId) || next.destination !== null && forgotten(next.destination))
             throw new Error("Cannot assign a home to a forgotten peer");
-          return homeStore.compareAndSwap(expected, next);
+          return homeStore.compareAndSwap(expected, next, checkMacSource);
         };
         if (next.state !== "moving") return swap();
         return withV0HomeLifecycle(root, config.limits.controlMs, async () => {
@@ -123,6 +123,10 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
       },
     }};
     const adapters=createRelocateAdapters(options);
+    const setHomePorts: SetHomePorts = { ...adapters.setHome, homes: {
+      ...homes,
+      compareAndSwap: (expected, next) => homes.compareAndSwap(expected, next, id => checkMacSourceWriters(id, options)),
+    } };
     const relocatePorts = {
       ...adapters.ports,
       async unlabelledLocalRunner(home: RunningHome) {
@@ -147,7 +151,7 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
       },
       async setHome(request) {
         if (forgotten(request.destinationMachine)) return revokedDestination;
-        return setHome(request,adapters.setHome,config);
+        return setHome(request,setHomePorts,config);
       },
     },
       close() {return closing ??= (async()=>{sync.stop();try {await sync.drain();await adapters.dispose();}finally{closeStores();}})();},

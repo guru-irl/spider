@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createReplica } from "@spider/db-core/testutil";
@@ -9,6 +10,9 @@ import { openJournal } from "../journal";
 import { createHomeStore } from "../relocate/home";
 import { createRelocateAdapters } from "../relocate/adapters";
 import { inspectLocalSource } from "../relocate/local";
+import { createV0Runtime } from "../relocate/runtime";
+import { readAwayHomeFence } from "../relocate/away-home";
+import { inspectIdLock } from "@spider/herdr/sessions/id-lock";
 import * as hcApi from "@spider/herdr/client/hc";
 import type { MovingHome, RelocateAdapterOptions, RelocateId, RelocatePlan, RunningHome, SessionId } from "../relocate/types";
 
@@ -78,6 +82,62 @@ describe("ordinary Mac source", () => {
       nextStep: expect.stringContaining("Restore the session's project database"),
     } });
     pristine(f);
+  });
+  it.each(["lockless pi", "subagent run", "background job"] as const)("refuses forced reassignment away from a Mac source with a %s", async writer => {
+    const f = fixture(), { plan: p, moving } = await plan(f);
+    await f.homes.compareAndSwap(p.source, moving);
+    const scanLocks: (number | undefined)[] = [];
+    const lockRoot = join(f.global.root, "herdr");
+    const peer = { machineId: box, alias: "box.invalid", node: "/node", pi: "/pi", cli: "/spider", core: "/core", globalRoot: "/root" };
+    const requests: string[] = [];
+    const runtime = createV0Runtime(f.global.root, {
+      openCore: () => ({ root: f.global.root, config: { ...f.options.config, peers: [peer] }, db: f.global.db, close() {} }),
+      transport: { ...f.options.transport, exec: async (_peer, _argv, options) => {
+        const request = JSON.parse(options.stdin!.toString()); requests.push(request.kind);
+        if (request.kind !== "locate") throw new Error("No publication expected");
+        return Buffer.from(JSON.stringify({ ok: true, value: { version: 1, placement: p.destinationPlacement } }));
+      } },
+      gitRun: async (root, argv, options) => {
+        if (argv[2] === "--show-toplevel") scanLocks.push((await inspectIdLock(lockRoot, sid))?.identity.pid);
+        return f.options.git.run(root, argv, options);
+      },
+    });
+    const child = writer === "lockless pi" ? spawn(process.execPath, ["-e", `
+      process.title = "pi";
+      process.once("message", () => process.exit(0));
+      process.send("ready");
+    `, "--", "--print", "--session", f.file], { cwd: f.cwd, stdio: ["ignore", "ignore", "ignore", "ipc"] }) : null;
+    const exited = child ? once(child, "exit") : null;
+    try {
+      let blocker: string;
+      if (child) {
+        expect((await Promise.race([once(child, "message"), exited!]))[0]).toBe("ready");
+        blocker = `PID ${child.pid} (pi)`;
+      } else if (writer === "subagent run") {
+        f.project.prepare("INSERT INTO runs (id,session_id,agent,status) VALUES ('run-z',?,'worker','running')").run(sid);
+        blocker = "subagent run run-z";
+      } else {
+        const job = join(f.cwd,".spider","scratch","bg","job-z"); mkdirSync(job,{recursive:true});
+        writeFileSync(join(job,"job.json"),JSON.stringify({schema:1,id:"job-z",cwd:f.cwd,ownerSessionId:sid,argv:["node","fixture.cjs"]}));
+        blocker = "background job job-z";
+      }
+      const stopped = await runtime.adapters.ports.stopSource(p, moving);
+      expect(stopped).toMatchObject({ok:false,refusal:{code:"session-busy",message:expect.stringContaining(blocker)}});
+      scanLocks.length = 0;
+      const result = await runtime.services.setHome({sessionId:sid,destinationMachine:box,force:true,confirmation:`reassign ${sid} to ${box}; source will not run`});
+      expect(result).toMatchObject({ok:false,refusal:{code:"session-busy",message:expect.stringContaining(blocker),nextStep:expect.stringContaining("Close these, then rerun set-home --force")}});
+      if (!stopped.ok && !result.ok) expect(result.refusal.message).toBe(stopped.refusal.message);
+      expect(scanLocks).toEqual([process.pid]);
+      expect(child?.exitCode ?? null).toBeNull();
+      expect(requests).toEqual(["locate"]);
+      expect(await runtime.homes.read(sid)).toEqual(moving);
+      expect(await readAwayHomeFence(f.global.root, sid)).toBeNull();
+      expect(await inspectIdLock(lockRoot, sid)).toBeNull();
+    } finally {
+      if (child?.connected) child.send("exit");
+      await exited;
+      await runtime.close();
+    }
   });
   it("captures the ordinary session after moving and stop, and converges on retry", async () => {
     const f = fixture(), { plan: p, moving } = await plan(f);

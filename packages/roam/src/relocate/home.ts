@@ -5,7 +5,12 @@ import { isRoamUuid } from "@spider/db-core/roam/codec";
 import { validUnicode } from "@spider/db-core/roam/hlc";
 import type { MachineId } from "@spider/db-core/roam/types";
 import { AwayHomeRecoveryRequired, publishAwayHomeFence, readAwayHomeFence, withAwayHomeFenceLock, type AwayHomeFence } from "./away-home";
-import type { HomeStore, HomeStoreOptions, RelocateHome, RelocateId, RunningHome, SessionId, V0Refusal } from "./types";
+import type { HomeStore, HomeStoreOptions, RelocateHome, RelocateId, RunningHome, SessionId, V0Refusal, V0Result } from "./types";
+
+type MacSourceCheck = (sessionId: SessionId) => Promise<V0Result<void>>;
+interface HubHomeStore extends HomeStore {
+  compareAndSwap(expected: RelocateHome, next: RelocateHome, checkMacSource?: MacSourceCheck): ReturnType<HomeStore["compareAndSwap"]>;
+}
 
 export const legacyRecordedHomeRefusal: V0Refusal = {
   code: "home-conflict",
@@ -61,6 +66,10 @@ function matchesFence(home: RelocateHome, fence: AwayHomeFence): boolean {
   return home.state === "running" && home.machineId === fence.machineId && home.epoch === fence.epoch && home.moveId === fence.moveId;
 }
 
+export class MacSourceNotStopped extends Error {
+  constructor(readonly refusal: V0Refusal) { super(refusal.message); }
+}
+
 export class MacSessionOccupied extends Error {
   constructor(cause: unknown) { super("The Mac session ID is not known to be free", { cause }); }
 }
@@ -78,7 +87,7 @@ async function reserveMacSession(root: string, sessionId: SessionId) {
   } catch (error) { throw new MacSessionOccupied(error); }
 }
 
-export function createHomeStore(options: HomeStoreOptions): HomeStore {
+export function createHomeStore(options: HomeStoreOptions): HubHomeStore {
   const { db, hubMachineId, localMachineId } = options;
   machineId(hubMachineId); machineId(localMachineId);
   const find = (id: SessionId) => db.prepare(`SELECT ${COLUMNS} FROM session_homes WHERE session_id=?`).get(id) as HomeRow | undefined;
@@ -116,7 +125,7 @@ export function createHomeStore(options: HomeStoreOptions): HomeStore {
         return parseHome(find(id)) as RunningHome;
       }).immediate());
     },
-    async compareAndSwap(expected, next) {
+    async compareAndSwap(expected, next, checkMacSource) {
       if (!parseHome(row(expected)) || !parseHome(row(next))) throw new Error("CAS requires managed homes");
       if (expected.sessionId !== next.sessionId || expected.epoch === Number.MAX_SAFE_INTEGER || next.epoch !== expected.epoch + 1)
         throw new Error("Home CAS must increment exactly one safe epoch");
@@ -146,6 +155,10 @@ export function createHomeStore(options: HomeStoreOptions): HomeStore {
         if (!moveId) throw new Error("An away home needs a move ID");
         const owner = await reserveMacSession(root, sessionId);
         try {
+          if (current?.machineId === hubMachineId && checkMacSource) {
+            const stopped = await checkMacSource(sessionId);
+            if (!stopped.ok) throw new MacSourceNotStopped(stopped.refusal);
+          }
           // If the process dies or the CAS loses after publication, the fence stays fail-closed.
           await publishAwayHomeFence(root, sessionId, { machineId, epoch, moveId });
           return await apply();

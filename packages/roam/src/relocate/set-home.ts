@@ -1,6 +1,6 @@
 import type { RoamConfig } from "../contracts";
 import { AwayHomeRecoveryRequired } from "./away-home";
-import { MacSessionOccupied } from "./home";
+import { MacSessionOccupied, MacSourceNotStopped } from "./home";
 import type { RunningHome, SetHomePorts, SetHomeRequest, V0Refusal, V0RefusalCode, V0Result } from "./types";
 
 type ReplicationAvailability = Pick<RoamConfig, "enabled" | "machineId">;
@@ -54,6 +54,7 @@ export async function setHome(request: SetHomeRequest, ports: SetHomePorts, repl
         if (!published.ok) return published;
         return {ok:true,value:next};
       } catch (error) {
+        if (error instanceof MacSourceNotStopped) return {ok:false,refusal:error.refusal};
         if (error instanceof MacSessionOccupied) return refuse("stop-timeout", error.message + ".",
           "Close the session on the Mac, then retry set-home --force. If it is already closed, run spider roam doctor on the Mac.");
         if (error instanceof AwayHomeRecoveryRequired) return refuse("home-unavailable",

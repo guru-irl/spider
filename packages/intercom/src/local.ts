@@ -2766,6 +2766,7 @@ Usage:
                       from.v0HomeEpoch === undefined || v0.homeEpoch(from.address!.sessionId) !== from.v0HomeEpoch) {
                     return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
                   }
+                  if (_signal?.aborted) return { content: [{ type: "text", text: "Cancelled" }], details: { error: true } };
                   const sent = { id: randomUUID(), timestamp: Date.now(), text: message };
                   const result = await plan.send(sent, _signal).catch(() => ({ kind: "unknown" as const, id: sent.id }));
                   if (result.kind === "refused") {
@@ -2950,6 +2951,7 @@ Usage:
                   if (replyWaiter || v0AskInFlight) {
                     return { content: [{ type: "text", text: "Already waiting for a reply" }], details: { error: true } };
                   }
+                  if (_signal?.aborted) return { content: [{ type: "text", text: "Cancelled" }], details: { error: true } };
                   questionId = randomUUID();
                   const question = { id: questionId, timestamp: Date.now(), text: message };
                   const token = Symbol("v0-ask"), abort = new AbortController();

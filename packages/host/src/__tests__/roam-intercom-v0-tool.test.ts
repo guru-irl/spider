@@ -392,6 +392,29 @@ it("does not dispatch a remote ask after a session change during confirmation", 
   } finally { finish?.(false); await f.cleanup(); }
 });
 
+it.each(["send", "ask"] as const)("does not dispatch a cancelled remote %s after confirmation", async action => {
+  const attempted: V0Text[] = [];
+  let finish!: (value: boolean) => void, confirmationOpened = false;
+  const confirm = () => new Promise<boolean>(resolve => { finish = resolve; confirmationOpened = true; });
+  const prepare: V0Prepare = async () => ({
+    kind: "remote", label: "b/ben",
+    async send(message) { attempted.push(message); return { kind: "socket_delivered", id: message.id }; },
+    async ask(message) { attempted.push(message); return { kind: "no_reply", id: message.id }; },
+  });
+  const f = await fixture({ homeEpoch: () => 7, prepare }, { confirm });
+  const abort = new AbortController();
+  try {
+    const pending = f.tool.execute(action, { action, to: "ben", message: "private text" }, abort.signal, undefined, f.ctx);
+    await vi.waitFor(() => expect(confirmationOpened).toBe(true));
+    abort.abort();
+    finish(true);
+    const result = await pending;
+    expect(result.content[0].text).toBe("Cancelled");
+    expect(result.details).toMatchObject({ error: true });
+    expect(attempted).toEqual([]);
+  } finally { finish?.(false); await f.cleanup(); }
+});
+
 it("does not send when confirmation finishes in a different session", async () => {
   const sent: V0Text[] = [];
   let finish!: (value: boolean) => void;

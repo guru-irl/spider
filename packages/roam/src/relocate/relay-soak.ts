@@ -52,7 +52,7 @@ export interface RelaySoakLinkEvidence {
   states: readonly SoakStateEvent[]; calls: readonly SoakCall[]; rss: readonly SoakRss[];
 }
 export interface RelaySoakFault {
-  kind: SoakFaultKind; linkIds: readonly string[]; startMs: number; clearMs: number;
+  kind: SoakFaultKind; clock: "relay" | "peer"; linkIds: readonly string[]; startMs: number; clearMs: number;
   process?: ObservedProcess;
   endpoint?: ObservedProcess & { pollId: string };
 }
@@ -95,7 +95,7 @@ function isEvidence(value: unknown): value is RelaySoakEvidence {
       entries(link.rss, sample => object(sample) && time(sample.atMs) && time(sample.bytes) && sample.bytes > 0 && identity(sample.process));
   })) return false;
   if (!entries(value.faults, fault => object(fault) && faultKinds.includes(fault.kind as SoakFaultKind) &&
-      entries(fault.linkIds, text) && time(fault.startMs) && time(fault.clearMs) &&
+      (fault.clock === "relay" || fault.clock === "peer") && entries(fault.linkIds, text) && time(fault.startMs) && time(fault.clearMs) &&
       (fault.process === undefined || observed(fault.process)) &&
       (fault.endpoint === undefined || observed(fault.endpoint) && object(fault.endpoint) && text(fault.endpoint.pollId)))) return false;
   return entries(value.processes, item => object(item) && text(item.machineId) && census(item.before) && census(item.after));
@@ -141,6 +141,10 @@ function keyed<T extends { id: string }>(events: readonly T[]): Map<string, T[]>
 }
 
 function birthKey(item: BirthIdentity): string { return JSON.stringify([item.pid, item.birthId, item.bootId]); }
+function faultTime(fault: RelaySoakFault, clock: SoakClock, atMs: number): { earliest: number; latest: number } {
+  return fault.clock === "peer" ? { earliest: atMs, latest: atMs }
+    : { earliest: atMs - clock.maxOffsetMs, latest: atMs - clock.minOffsetMs };
+}
 
 /** Check the operator's complete evidence. No live machines are contacted. */
 export function checkRelaySoak(evidence: RelaySoakEvidence): { ok: boolean; violations: readonly string[] } {
@@ -157,9 +161,13 @@ export function checkRelaySoak(evidence: RelaySoakEvidence): { ok: boolean; viol
   const allIds = new Set<string>();
   const burst: SoakSubmission[] = [];
   for (const fault of faults) {
+    const affected = links.filter(link => fault.linkIds.includes(link.id));
+    const clockMachines = new Set(affected.map(link => fault.clock === "relay" ? link.relayId : link.peerId));
     if (!fault.linkIds.length || new Set(fault.linkIds).size !== fault.linkIds.length || fault.linkIds.some(id => !linkIds.has(id)) ||
-        fault.startMs < startMs || fault.clearMs > endMs || fault.clearMs < fault.startMs ||
-        fault.kind === "route-cut" && fault.clearMs - fault.startMs < 60_000) fail("faults");
+        clockMachines.size !== 1 || fault.clearMs < fault.startMs ||
+        fault.kind === "route-cut" && fault.clearMs - fault.startMs < 60_000 ||
+        (fault.kind === "relay-kill" || fault.kind === "herdr-restart-relay") && fault.clock !== "relay" ||
+        (fault.kind === "herdr-restart-peer" || fault.kind === "endpoint-kill") && fault.clock !== "peer") fail("faults");
     if (fault.kind === "relay-kill" || fault.kind === "herdr-restart-relay" || fault.kind === "herdr-restart-peer") {
       const process = fault.process;
       if (!process || fault.startMs - process.observedMs < 0 || fault.startMs - process.observedMs > 5000 ||
@@ -186,12 +194,14 @@ export function checkRelaySoak(evidence: RelaySoakEvidence): { ok: boolean; viol
     const dialBirths = new Set(link.runs.filter(run => run.role === "dial").map(run => birthKey(run.process)));
     for (const call of link.calls) {
       if (!dialBirths.has(birthKey(call.process)) || call.endMs !== null && call.endMs < call.startMs ||
-          call.endMs === null && !linkFaults.some(fault => fault.kind === "relay-kill" && fault.process &&
-            birthKey(fault.process) === birthKey(call.process) && call.startMs - clock.minOffsetMs <= fault.startMs)) fail("timeline");
+          call.endMs === null && !linkFaults.some(fault => fault.kind === "relay-kill" && fault.clock === "relay" && fault.process &&
+            birthKey(fault.process) === birthKey(call.process) && call.startMs <= fault.startMs)) fail("timeline");
     }
     for (const fault of linkFaults) {
-      if (!samples.some(sample => sample.state !== "up" && sample.atMs >= fault.startMs && sample.atMs <= fault.startMs + 30_000)) fail("stall-detection");
-      if (!samples.some(sample => sample.state === "up" && sample.atMs >= fault.clearMs && sample.atMs <= fault.clearMs + 60_000)) fail("recovery");
+      const start = faultTime(fault, clock, fault.startMs), clear = faultTime(fault, clock, fault.clearMs);
+      if (start.earliest < startMs || clear.latest > endMs) fail("faults");
+      if (!samples.some(sample => sample.state !== "up" && sample.atMs >= start.latest && sample.atMs <= start.earliest + 30_000)) fail("stall-detection");
+      if (!samples.some(sample => sample.state === "up" && sample.atMs >= clear.latest && sample.atMs <= clear.earliest + 60_000)) fail("recovery");
       if (fault.kind === "endpoint-kill") {
         const endpoint = fault.endpoint;
         if (fault.linkIds.length !== 1 || !endpoint || endpoint.machineId !== link.peerId || endpoint.observedMs > fault.startMs ||
@@ -223,7 +233,10 @@ export function checkRelaySoak(evidence: RelaySoakEvidence): { ok: boolean; viol
       if (handed.length > 1) fail("handoff");
       if (settled.length !== 1 || settled.some(result => result.atMs < submit.atMs || result.atMs > submit.deadlineMs)) fail("outcome");
       const outcome = settled[0];
-      if (outcome?.kind === "unknown" && !linkFaults.some(fault => fault.startMs >= submit.atMs && fault.startMs <= outcome.atMs)) fail("unknown-outside-fault");
+      if (outcome?.kind === "unknown" && !linkFaults.some(fault => {
+        const start = faultTime(fault, clock, fault.startMs);
+        return submit.atMs <= start.earliest && outcome.atMs >= start.latest;
+      })) fail("unknown-outside-fault");
       if (outcome?.kind === "socket_delivered" && (received.length !== 1 || handed.length !== 1) ||
           outcome?.kind === "refused" && received.length !== 0 || received.length > 0 && handed.length !== 1) fail("receipt");
       if (received.length && handed.length && (received[0].atMs < handed[0].atMs ||
@@ -231,8 +244,8 @@ export function checkRelaySoak(evidence: RelaySoakEvidence): { ok: boolean; viol
       if (handed.length === 1) {
         const earliest = handed[0].atMs - clock.maxOffsetMs, latest = handed[0].atMs - clock.minOffsetMs;
         if (latest < submit.atMs || earliest > submit.deadlineMs) fail("handoff");
-        if (lastStateAt(samples, submit.atMs) === "up" &&
-            !linkFaults.some(fault => fault.startMs <= latest && fault.clearMs >= submit.atMs)) {
+        if (lastStateAt(samples, submit.atMs) === "up" && !linkFaults.some(fault =>
+          faultTime(fault, clock, fault.startMs).earliest <= latest && faultTime(fault, clock, fault.clearMs).latest >= submit.atMs)) {
           healthy++;
           if (latest - submit.atMs < 2000) fast++;
         }

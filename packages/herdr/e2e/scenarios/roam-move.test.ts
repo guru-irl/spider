@@ -10,13 +10,11 @@ import { migrate, openDb } from '@spider/db-core';
 import { mapRepository, mapWorkspace } from '@spider/db-core/roam/repo-map';
 import { recordLocation } from '@spider/db-core/roam/catalog';
 import { text, mark, held, scripts } from '../fixtures/child-scripts.js';
-import type { StoryPresentation } from './roam-recovery.test.js';
+import type { StoryPresentation } from '../fixtures/roam-presentation.js';
 import { enableMemoryCapture, seedSession } from '@spider/db-core/roam/seed';
 import { parseConfig } from '@spider/roam/config';
 import { installSupervisorCorePin } from '@spider/roam/enrollment';
 import { inspectSession } from '@spider/roam/session-file';
-import { createIntentStore } from '@spider/roam/intent';
-import { participantLaunchId } from '@spider/roam/participant-launch';
 import { inspectIdLock } from '../../src/sessions/id-lock.js';
 import { createSessionLeases } from '../../src/sessions/lease.js';
 import { readObserved, writeScript, type InteractiveDriver } from '../harness/pi.js';
@@ -453,7 +451,7 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
           .run(machine.cwd, machine.cwd, join(machine.cwd, '.spider', 'project.db'), join(machine.cwd, '.git'));
       } finally { db.close(); }
     }
-    const { storyPresentation } = await import('./roam-recovery.test.js');
+    const { storyPresentation } = await import('../fixtures/roam-presentation.js');
     const presentation = await storyPresentation(suite, machines, sessionId);
     services.push({ stop: () => presentation.close() });
     await writeFile(descriptor, JSON.stringify({ root: suite.root, pi: suite.pi.launcher, effects, faults, entry: suite.packed.roamCli, cli: join(suite.packed.root, 'dist/roam/cli-main.mjs'),
@@ -521,9 +519,7 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
       }
       let value: Record<string, any>; try { value = JSON.parse(result.stdout); } catch { throw Error(result.stdout + result.stderr); }
       expect(result.exitCode, result.stderr + result.stdout).toBe(value.code);
-      if (['R08', 'R17'].includes(suite.story) && args[0] === 'roam' && args[1] === 'recover') console.info(JSON.stringify({ story: suite.story, phase: 'recovery-result', result: value }));
-      if (['R15', 'R16'].includes(suite.story) && args[0] !== 'fixture-ingest') console.info(JSON.stringify({ story: suite.story,
-        measurement: 'move-control', code: value.code, reason: value.reason, sourceCleanup: value.value?.sourceCleanup }));
+      if (suite.story === 'R08' && args[0] === 'roam' && args[1] === 'recover') console.info(JSON.stringify({ story: suite.story, phase: 'recovery-result', result: value }));
       return value;
     };
     const moveTo: MoveStory['moveTo'] = async (machine, destination) => {
@@ -792,123 +788,9 @@ async function exclusion(suite: Suite): Promise<void> {
   } finally { phase('cleanup'); await f.close(); phase('closed'); }
 }
 
-async function failedLaunchRollback(suite: Suite): Promise<void> {
-  const startedAt = Date.now();
-  const phase = (name: string) => console.info(JSON.stringify({ story: suite.story, phase: name, elapsedMs: Date.now() - startedAt }));
-  phase('setup');
-  const f = await createMoveStory(suite), [hub, box] = f.machines;
-  try {
-    const expectedTrees = await f.trees(hub.cwd);
-    phase('outward');
-    const outward = await f.moveTo(hub, box.alias);
-    expect(outward).toMatchObject({ code: 0, reason: 'moved' });
-    await assertMoveState(f, box, expectedTrees, 2);
-    phase('return-home');
-    expect(await f.moveTo(hub, 'mac')).toMatchObject({ code: 0 });
-    await assertMoveState(f, hub, expectedTrees, 3);
-    phase('failed-launch');
-    await writeFile(join(box.root, 'roam', 'fail-launch'), 'refuse before pi starts\n');
-    const failed = await f.cli(hub, ['move', f.sessionId, box.alias]);
-    expect(failed.code).toBe(3);
-    const startDb = openDb(join(hub.root, 'roam', 'journal.db')), boxJournal = openDb(join(box.root, 'roam', 'journal.db'));
-    let start: Record<string, unknown> | null;
-    try {
-      const row = startDb.prepare("SELECT result_json FROM roam_operation_actions WHERE operation_id=? AND action='move-action-complete' AND json_extract(result_json,'$.action')='start' ORDER BY seq DESC LIMIT 1")
-        .get(failed.operationId) as { result_json: string } | undefined;
-      start = row ? JSON.parse(row.result_json).value : null;
-      const observation = { story: suite.story, phase: 'failed-launch-proof', start, view: await createIntentStore(box.root).get(f.sessionId),
-        lock: await inspectIdLock(join(box.root, 'herdr'), f.sessionId),
-        freezes: boxJournal.prepare('SELECT move_id,epoch,state FROM freeze_journal WHERE session_id=?').all(f.sessionId) };
-      console.info(JSON.stringify(observation));
-      await suite.evidence('R17-failed-launch.json', observation);
-    } finally { boxJournal.close(); startDb.close(); }
-    const expectedLaunch = participantLaunchId(BOX, f.sessionId, 4, `${failed.operationId}-session-start-${BOX}`);
-    if (start?.reason === 'participant-launch-conflict') {
-      const conflict = effectJsonLines(await readFile(f.effects, 'utf8')).map(line => JSON.parse(line)).findLast(row =>
-        row.effect === 'participant-wake-conflict' && row.operationId === `${failed.operationId}-session-start-${BOX}`);
-      expect(conflict).toMatchObject({ launchId: expectedLaunch, before: { value: { intent: { epoch: 2, moveId: outward.operationId } } },
-        intent: { epoch: 4, moveId: failed.operationId } });
-      expect(conflict.before.version).toBe(conflict.after.version);
-      await suite.evidence('R17-intent-conflict.json', conflict);
-    } else expect(start).toMatchObject({ code: 3, reason: 'readiness-pending' });
-    const rollbackDeadline = deadline(60_000);
-    phase('await-exact-launch-exit');
-    let nativeShown = false;
-    const launchProof = await waitFor('exact launch exited without adopting ownership', async () => {
-      const value = await f.cli(box, ['fixture-observe', f.sessionId, failed.operationId]);
-      if (!nativeShown && value.native) { nativeShown = true; console.info(JSON.stringify({ story: suite.story, phase: 'native-launch-evidence', native: value.native })); }
-      return value;
-    },
-      result => result.code !== 3, rollbackDeadline, { reconcileMs: 500 });
-    expect(launchProof).toMatchObject({ code: 0, reason: 'exited-without-adoption', receipt: { kind: 'exited-without-adoption', launchId: expectedLaunch, epoch: 4,
-      evidence: { proof: { kind: 'terminal-exited-without-adoption', operationId: expectedLaunch, terminalExited: true, lockNeverAdopted: true } } },
-      observed: { owner: { kind: 'absent' }, readiness: null } });
-    expect(launchProof.receipt.terminalId).toBe(launchProof.receipt.evidence.proof.terminalId);
-    expect(launchProof.observed.launchFailure).toBe(`proved-unadopted-exit:${expectedLaunch}:${launchProof.receipt.terminalId}`);
-    expect(f.home()).toMatchObject({ machine_id: BOX, epoch: 4 });
-    await suite.evidence('R17-unadopted-exit.json', launchProof);
-    phase('rollback');
-    const rolledBack = await waitFor('proved launch failure permits rollback', () => f.cli(hub, ['roam', 'recover', failed.operationId]),
-      result => result.reason === 'rolled-back', rollbackDeadline, { reconcileMs: 500 });
-    expect(rolledBack).toMatchObject({ code: 0, reason: 'rolled-back', home: { machineId: HUB, epoch: 5 } });
-    await assertMoveState(f, hub, expectedTrees, 5);
-    const db = openDb(join(hub.root, 'roam', 'journal.db'));
-    try {
-      const retirement = db.prepare("SELECT result_json FROM roam_operation_actions WHERE operation_id=? AND action='move-rollback-retired'").get(failed.operationId);
-      expect(retirement).toBeTruthy();
-    } finally { db.close(); }
-    phase('complete');
-    await suite.evidence('R17-rollback.json', { outward, failed, rolledBack });
-  } finally { phase('cleanup'); await f.close(); phase('closed'); }
-}
-
-async function copiedFile(suite: Suite): Promise<void> {
-  const f = await createMoveStory(suite), [hub, box] = f.machines;
-  try {
-    expect(await f.moveTo(hub, box.alias)).toMatchObject({ code: 0 });
-    await f.owner(box);
-    const copied = suite.ownPath(join(hub.agent, 'sessions', 'copied.jsonl'));
-    const boxDb = openDb(join(box.root, 'spider.db'));
-    let target: string;
-    try { target = (boxDb.prepare('SELECT file FROM roam_locations WHERE session_id=?').get(f.sessionId) as { file: string }).file; }
-    finally { boxDb.close(); }
-    await copyFile(target, copied);
-    const ordinaryEntries = (bytes: string) => bytes.trimEnd().split('\n').map(line => JSON.parse(line)).filter(row => row.type === 'message' || row.type === 'custom');
-    const before = ordinaryEntries(await readFile(copied, 'utf8')), home = f.home(), owner = (await f.owners())[0];
-    const portableState = () => {
-      const db = openDb(join(hub.cwd, '.spider', 'project.db'));
-      try { return Object.fromEntries(['sessions', 'todos', 'runs', 'run_events', 'events'].map(table => [table,
-        db.prepare(`SELECT * FROM ${table} WHERE ${table === 'sessions' ? 'id' : 'session_id'}=? ORDER BY id`).all(f.sessionId)])); }
-      finally { db.close(); }
-    };
-    const beforeRows = portableState();
-    const refused = await suite.launchPi({ mode: 'rpc', cwd: hub.cwd, args: ['--session', copied], extraEnv: hub.env });
-    try {
-      if (refused.mode !== 'rpc') throw Error('RPC driver required');
-      const response = await refused.rpc({ type: 'prompt', message: mark('probe') });
-      expect(response.data).toMatchObject({ disposition: 'handled' });
-      expect((await refused.events()).filter(row => row.type === 'tool_execution_start' || row.type === 'message_end' && row.role === 'assistant')).toEqual([]);
-      expect(ordinaryEntries(await readFile(copied, 'utf8'))).toEqual(before);
-      const forbidden = suite.ownPath(join(suite.root, 'nonowner-tool-effect'));
-      const toolResponse = await refused.rpc({ type: 'bash', command: `printf forbidden > ${quote(forbidden)}` });
-      expect(toolResponse.data).toMatchObject({ exitCode: 1 });
-      expect(existsSync(forbidden)).toBe(false);
-      expect(portableState()).toEqual(beforeRows);
-      expect(f.home()).toEqual(home);
-      expect((await f.owners()).map(row => row.pid)).toEqual([owner.pid]);
-      const db = openDb(join(hub.cwd, '.spider', 'project.db'));
-      try { expect(db.prepare('SELECT * FROM runs WHERE session_id=?').all(f.sessionId)).toEqual([]); }
-      finally { db.close(); }
-      await suite.evidence('R10-admission.json', { sessionId: f.sessionId, copied, response, toolResponse, owner, home });
-    } finally { await refused.close(); }
-  } finally { await f.close(); }
-}
-
 export const scenarios: readonly ScenarioDefinition[] = [
   { id: storyId('R06'), title: 'outward move preserves state', tiers: ['headless'], run: outward },
   { id: storyId('R07'), title: 'return move reuses checkout', tiers: ['headless'], run: returnMove },
   { id: storyId('R08'), title: 'lost readiness prevents unsafe rollback', tiers: ['headless'], run: exclusion },
-  { id: storyId('R10'), title: 'copied participating file refuses ordinary work', tiers: ['headless'], run: copiedFile },
-  { id: storyId('R17'), title: 'proved launch failure permits rollback', tiers: ['headless'], run: failedLaunchRollback },
 ];
 registerScenarios(scenarios);

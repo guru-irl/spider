@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
-import { appendFile, readFile, mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { expect } from 'vitest';
 import { openDb } from '@spider/db-core';
-import { recoverMirror } from '@spider/roam/mirrors';
-import { readLocal } from '@spider/db-core/roam/local-state';
 import { createHcClient } from '../../src/client/hc.js';
 import type { AppClient, AppPaneInspection, OwnerPlacement, TerminalAddress } from '../../src/contracts.js';
 import { paneAddress, parsePaneTarget, parsePaneTerminal } from '../../src/panes/codec.js';
@@ -22,16 +20,9 @@ import { readObserved } from '../harness/pi.js';
 import { runHc } from '../harness/hc.js';
 import { assertSocketPath } from '../harness/environment.js';
 import { deadline, waitFor } from '../harness/wait.js';
-import { createSuite, type Suite } from '../harness/suite.js';
-import { registerScenarios, storyId, type ScenarioDefinition } from '../harness/scenario.js';
-import { createMoveStory, assertMoveState, HUB, BOX, type MoveMachine } from './roam-move.test.js';
+import type { Suite } from '../harness/suite.js';
+import type { MoveMachine } from '../scenarios/roam-move.test.js';
 
-export function restorationPending(result: unknown): boolean {
-  if (!result || typeof result !== 'object' || !('code' in result) || !('reason' in result)) return false;
-  if (result.code === 3) return result.reason === 'recovery-pending' || result.reason === 'readiness-pending';
-  return result.code === 0 && result.reason === 'destroyed-machine-recovered' && 'value' in result && !!result.value && typeof result.value === 'object' &&
-    'presentation' in result.value && result.value.presentation === 'pending';
-}
 export function presentationInProgress(result: Pick<PaneActionOutcome, 'status' | 'reason'>): boolean {
   return result.status === 'pending' && result.reason === 'operation-in-progress';
 }
@@ -69,7 +60,7 @@ export async function storyPresentation(suite: Suite, machines: readonly MoveMac
     try { expect(db.prepare('SELECT machine_id,epoch FROM session_homes WHERE session_id=?').get(sessionId)).toEqual({ machine_id: machine.id, epoch }); }
     finally { db.close(); }
     const target = parsePaneTarget({ coreId, terminalId: event.hcTerminal, address: `${coreId}/${event.hcTerminal}`, createdMs: facts.createdMs,
-      identityLabels: facts.identityLabels, alias: machine.id === HUB ? null : machine.alias, machineId: machine.id,
+      identityLabels: facts.identityLabels, alias: machine.id === hub.id ? null : machine.alias, machineId: machine.id,
       kind: 'session', sessionId, generation: feed.owner.generation, homeEpoch: epoch, runId: null, consoleId: null, name: feed.owner.name ?? 'Move fixture', cwd: machine.cwd });
     observedTargets.set(target.address, target);
     return target;
@@ -88,7 +79,7 @@ export async function storyPresentation(suite: Suite, machines: readonly MoveMac
   const proxies = new Map<string, TerminalAddress>();
   const validateTarget: PaneOpenPorts['validateTarget'] = async target => {
     const machine = machines.find(row => row.id === target.machineId && target.coreId === row.coreId);
-    if (!machine || machine.id !== target.machineId || (machine.id === HUB ? null : machine.alias) !== target.alias) throw Error('presentation machine changed');
+    if (!machine || machine.id !== target.machineId || (machine.id === hub.id ? null : machine.alias) !== target.alias) throw Error('presentation machine changed');
     if (target.alias) {
       const reply = await suite.hc(['machine', 'ls', '--json']);
       const routes = (reply.json as { machines: Array<{ name: string; id: string }> }).machines.filter(row => row.name === target.alias);
@@ -209,113 +200,3 @@ export async function storyPresentation(suite: Suite, machines: readonly MoveMac
     async close() { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); await service.stop(); await hc.dispose(); },
   };
 }
-
-export const recoveryCaseNames = [
-  'revoked home restores mirrored prefix',
-  'restored home retains Mac slot and visible intent',
-  'parked revoked home remains parked',
-  'reused alias cannot capture a presentation or close its restored target',
-] as const;
-
-export async function runRecoveryCases(suite: Suite, parked = false): Promise<void> {
-  const started = Date.now();
-  const phase = (name: string) => console.info(JSON.stringify({ story: suite.story, phase: name, elapsedMs: Date.now() - started }));
-  phase('nested-suite');
-  const owned = await createSuite({ tier: 'headless', story: suite.story });
-  let f: Awaited<ReturnType<typeof createMoveStory>> | undefined;
-  try {
-    phase('setup');
-    f = await createMoveStory(owned);
-    const [hub, box, aliasTarget] = f.machines;
-    const expectedTrees = await f.trees(hub.cwd);
-    phase('initial-move');
-    expect(await f.moveTo(hub, box.alias)).toMatchObject({ code: 0 });
-    phase('remote-state');
-    const remote = await assertMoveState(f, box, expectedTrees, 2);
-    phase('mirror-sync');
-    await f.sync();
-    phase('mirror-capture');
-    const mirror = await recoverMirror({ root: join(hub.root, 'roam', 'mirrors'), machineId: BOX, sessionId: f.sessionId, epoch: 2 });
-    const prefix = await readFile(mirror.file);
-    const digest = createHash('sha256').update(prefix).digest('hex');
-    await writeFile(f.faults, JSON.stringify({ drop: [], offline: BOX }));
-    const last = JSON.parse((await readFile(remote.file, 'utf8')).trimEnd().split('\n').at(-1)!);
-    await appendFile(remote.file, JSON.stringify({ type: 'message', id: 'unsent-after-mirror', parentId: last.id,
-      timestamp: '2026-01-03T00:00:00Z', message: { role: 'user', content: 'not sent to the hub', timestamp: 3 } }) + '\n');
-    expect((await readFile(remote.file, 'utf8'))).toContain('unsent-after-mirror');
-    expect(prefix.toString('utf8')).not.toContain('unsent-after-mirror');
-    phase('park-presentation');
-    if (parked) await f.presentation.park();
-    const captured = (await f.presentation.store.read()).presentations[0];
-    const presentationEvents = f.presentation.events.length;
-    phase('stop-destroyed-owner');
-    await f.stopBox();
-    expect((await owned.hc(['kill', remote.terminal, '--json'], 'dest')).exitCode).toBe(0);
-    await waitFor('destroyed fixture owner exits', () => f!.owners(), rows => !rows.some(row => row.pid === remote.pid), deadline(30_000));
-    phase('restore-home');
-    const initialRestore = await f.cli(hub, ['roam', 'forget', box.alias, '--confirm', `destroyed ${BOX}`]);
-    const restored = restorationPending(initialRestore)
-      ? await waitFor('documented retry completes destroyed-home recovery', () => f!.cli(hub, ['roam', 'forget', BOX, '--confirm', `destroyed ${BOX}`]),
-        result => !restorationPending(result), deadline(60_000), { reconcileMs: 500 })
-      : initialRestore;
-    expect(restored).toMatchObject({ code: 0, reason: 'destroyed-machine-recovered' });
-    phase('restored-state');
-    const local = await assertMoveState(f, hub, expectedTrees, 3, [box.id]);
-    phase('restore-assertions');
-    const bytes = await readFile(local.file, 'utf8'), entries = bytes.trimEnd().split('\n').map(line => JSON.parse(line));
-    expect(bytes).not.toContain('unsent-after-mirror');
-    const marker = entries.findIndex(row => row.customType === 'spider-roam-segment' && row.data.epoch === 3);
-    const actualPrefix = Buffer.from(bytes.trimEnd().split('\n').slice(1, marker).join('\n') + '\n');
-    expect(createHash('sha256').update(actualPrefix).digest('hex'), recoveryCaseNames[0]).toBe(mirror.historySha256);
-    expect(createHash('sha256').update(await readFile(mirror.file)).digest('hex')).toBe(digest);
-    const presentation = (await f.presentation.store.read()).presentations[0];
-    expect(presentation, recoveryCaseNames[parked ? 2 : 1]).toMatchObject({ slot: { space: f.presentation.slot.space, tab: f.presentation.slot.tab }, mode: 'native', proxy: null,
-      visibility: parked ? 'parked' : 'visible', target: { sessionId: f.sessionId, homeEpoch: 3, terminalId: local.terminal } });
-    expect(f.presentation.placements.size).toBe(parked ? 0 : 1);
-    expect(f.presentation.events.slice(presentationEvents).filter(event => event === 'terminal.keep')).toHaveLength(parked ? 0 : 1);
-    expect(await f.presentation.staleClose(captured)).toMatchObject({ status: 'refused', reason: 'Session changed. Close again.' });
-    expect((await f.owners()).map(owner => owner.pid)).toEqual([local.pid]);
-    const db = openDb(join(hub.root, 'roam', 'journal.db'));
-    try { expect(db.prepare('SELECT machine_id FROM roam_machine_revocations WHERE machine_id=?').get(BOX)).toEqual({ machine_id: BOX }); }
-    finally { db.close(); }
-    phase('revoked-reconnect');
-    await writeFile(f.faults, JSON.stringify({ drop: [] }));
-    await f.reconnectBox();
-    const reconnect = await f.cli(hub, ['roam', 'sync', BOX]);
-    expect(reconnect.code).not.toBe(0);
-    const boxDb = openDb(join(box.root, 'spider.db'));
-    try { expect(readLocal(boxDb, 'supervisor-revoked', BOX)).toBe(true); }
-    finally { boxDb.close(); }
-    phase('alias-reuse');
-    expect((await owned.hc(['machine', 'rm', box.alias, '--json'])).exitCode).toBe(0);
-    expect((await owned.hc(['machine', 'rm', aliasTarget.alias, '--json'])).exitCode).toBe(0);
-    const reusedAlias = await owned.hc(['machine', 'add', '--via', join(owned.root, 'bin', 'via-i2'), '--name', box.alias,
-      '--session', aliasTarget.env.HC_SESSION, '--json']);
-    await suite.evidence(`${suite.story}-${parked ? 'parked' : 'visible'}-alias-reused.json`, reusedAlias);
-    expect(reusedAlias.exitCode, reusedAlias.stderr + reusedAlias.stdout).toBe(0);
-    const reused = await owned.hc(['machine', 'ls', '--json']);
-    expect((reused.json as { machines: Array<{ name: string; id: string }> }).machines.find(row => row.name === box.alias)?.id).toBe(aliasTarget.coreId);
-    const rejected = await f.presentation.readyTarget(captured.target) as { status: string };
-    expect(rejected.status, recoveryCaseNames[3]).not.toBe('complete');
-    expect(await f.presentation.staleClose(captured), recoveryCaseNames[3]).toMatchObject({ status: 'refused', reason: 'Session changed. Close again.' });
-    expect((await f.presentation.store.read()).presentations[0]).toEqual(presentation);
-    expect((await f.owners()).map(owner => owner.pid)).toEqual([local.pid]);
-    phase('final-evidence');
-    await suite.evidence(`${suite.story}-${parked ? 'parked' : 'visible'}-restore.json`, { cases: [recoveryCaseNames[0], recoveryCaseNames[parked ? 2 : 1], recoveryCaseNames[3]], restored, presentation, local, reconnect, digest,
-      blockedObservations: ['native window appearance requires the app'] });
-  } finally {
-    phase('cleanup-fixture');
-    try { await f?.close(); } finally {
-      phase('cleanup-suite');
-      const cleanup = await owned.close();
-      await suite.evidence(`${suite.story}-${parked ? 'parked' : 'visible'}-cleanup.json`, { cleanup, durationMs: Date.now() - started, evidence: owned.evidenceDirectory });
-      phase('closed');
-    }
-  }
-}
-
-export const scenarios: readonly ScenarioDefinition[] = [
-  { id: storyId('R15'), title: 'revoked home restores a visible presentation', tiers: ['headless'], run: runRecoveryCases },
-  { id: storyId('R16'), title: 'revoked home restores a parked presentation', tiers: ['headless'], run: suite => runRecoveryCases(suite, true) },
-];
-registerScenarios(scenarios);

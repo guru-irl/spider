@@ -560,6 +560,56 @@ describe("roaming v0 intercom", () => {
     });
   });
 
+  it("permits a peer in both lists but rejects duplicates, self, and missing agent directories", async () => {
+    const f = paired(), destination = peer(BOX, "box", f.receiver);
+    configure(f.sender.root, [destination], [{ machineId: BOX, alias: "box" }]);
+    const plan = await remotePlan(f.intercom);
+    expect(await plan.send(message)).toEqual({ kind: "socket_delivered", id: message.id });
+    const badConfigs = [
+      { sendTo: [destination, destination], acceptFrom: [] },
+      { sendTo: [destination, { ...destination, machineId: OTHER, alias: "BOX" }], acceptFrom: [] },
+      { sendTo: [{ ...destination, machineId: MAC }], acceptFrom: [] },
+      { sendTo: [{ ...destination, agentDir: undefined }], acceptFrom: [] },
+      { sendTo: [{ ...destination, agentDir: "relative" }], acceptFrom: [] },
+      { sendTo: [], acceptFrom: [{ machineId: BOX, alias: "box" }, { machineId: OTHER, alias: "BOX" }] },
+      { sendTo: [], acceptFrom: [{ machineId: MAC, alias: "self" }] },
+      { sendTo: [], acceptFrom: Array.from({ length: 9 }, (_, i) => ({ machineId: BOX, alias: `box-${i}` })) },
+    ];
+    for (const bad of badConfigs) {
+      configure(f.sender.root, bad.sendTo, bad.acceptFrom);
+      expect(await f.intercom.prepare({ to: "box/ben", from: alice, locals: [alice] })).toEqual({ kind: "refused", code: "not-configured" });
+    }
+    expect(f.calls.filter(call => call.request.kind === "deliver")).toHaveLength(1);
+  });
+
+  it("rejects a mismatched configured agent directory and global database identity", async () => {
+    const f = paired();
+    vi.stubEnv("PI_CODING_AGENT_DIR", f.receiver.agentDir);
+    expect(await f.intercom.prepare({ to: "box/ben", from: alice, locals: [alice] })).toEqual({ kind: "refused", code: "not-configured" });
+    vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+    const db = openDbAt(join(f.sender.root, "spider.db"), "global");
+    try { db.prepare("UPDATE roam_meta SET machine_id=? WHERE id=1").run(OTHER); } finally { db.close(); }
+    expect(await f.intercom.prepare({ to: "box/ben", from: alice, locals: [alice] })).toEqual({ kind: "refused", code: "unreachable" });
+    expect(f.calls).toEqual([]);
+  });
+
+  it("does not make a malformed intercom file a relocate prerequisite", async () => {
+    const sender = machineFixture(MAC);
+    vi.stubEnv("SPIDER_GLOBAL_ROOT", sender.root);
+    writeFileSync(join(sender.root, "roam", "intercom-v0.json"), "{invalid", { mode: 0o600 });
+    const relocate = vi.fn(async () => ({ ok: false as const, step: "check" as const, home: null, moveId: null,
+      refusal: { code: "session-not-found" as const, message: "No session.", nextStep: "Choose a session." } }));
+    const services = { relocate, setHome: vi.fn(async () => ({ ok: false as const, refusal: {
+      code: "destination-copy-missing" as const, message: "No copy.", nextStep: "Choose a copy." } })) };
+    let output = "";
+    const code = await main(["roam", "relocate", "alice", "mac", "--json"],
+      { out: text => { output += text; }, err: () => {} },
+      { v0: { services, catalog: [{ id: "alice", name: "alice" }] } });
+    expect(code).toBe(1);
+    expect(relocate).toHaveBeenCalledOnce();
+    expect(JSON.parse(output)).toMatchObject({ refusal: { code: "session-not-found" } });
+  });
+
   it("keeps an unhomed caller local and refuses an explicit remote target", async () => {
     const { root } = boxFixture();
     vi.stubEnv("PI_CODING_AGENT_DIR", undefined);

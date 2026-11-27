@@ -90,6 +90,23 @@ describe("copy button reload", () => {
     expect(proto.updateContent).toBe(other);
   });
 
+  it("uses the reloaded block copy code without rebuilding an existing message", async () => {
+    const first = await freshWithPlainText("before reload");
+    const firstCopied: string[] = [];
+    first.installCopyButtons(host, options(firstCopied));
+    const response: AssistantMessage = { ...message, content: [{ type: "text", text: "> Quoted **text**\n\nReply" }] };
+    const assistant = new AssistantMessageComponent(response, false, theme, undefined, 0);
+    await copyText(assistant);
+    expect(firstCopied).toEqual(["before reload"]);
+
+    const next = await freshWithPlainText("after reload");
+    const nextCopied: string[] = [];
+    next.installCopyButtons(host, options(nextCopied));
+    await copyText(assistant);
+    expect(firstCopied).toEqual(["before reload"]);
+    expect(nextCopied).toEqual(["after reload"]);
+  });
+
   it.each(["none", "legacy", "delegating"])("uses fresh code for messages rebuilt before session start with a %s patch", async shape => {
     if (shape === "legacy") {
       const legacyState = { options: options([]), enabled: false };

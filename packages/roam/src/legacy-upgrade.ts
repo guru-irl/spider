@@ -1,5 +1,6 @@
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { storeScope } from "@spider/db-core/roam/codec";
+import { localEntries } from "@spider/db-core/roam/local-state";
 import { processStartIdentity } from "@spider/herdr/jobs/handoff";
 import { listPendingIdLocks, localBootId } from "@spider/herdr/sessions/id-lock";
 import { createSessionLeases, type ProcessProbe } from "@spider/herdr/sessions/lease";
@@ -54,6 +55,25 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
         }
       }
     } finally { db.close(); }
+    const global = openDiagnosticSnapshot(join(root, "spider.db"));
+    if (global) try {
+      for (const row of localEntries<unknown>(global, "mapping-intent")) {
+        if (!row.value || typeof row.value !== "object" || Array.isArray(row.value)) throw new Error("Invalid mapping intent");
+        const map = row.value as Record<string, unknown>;
+        if (typeof map.identity !== "string" || !map.identity || typeof map.store_key !== "string" ||
+            typeof map.target_path !== "string" || !isAbsolute(map.target_path) || resolve(map.target_path) !== map.target_path ||
+            row.key !== JSON.stringify([map.kind, map.identity]) || !(map.command_json === null || typeof map.command_json === "string")) throw new Error("Invalid mapping intent");
+        if (map.kind === "repo") {
+          if (map.store_key !== `repo:${map.identity}`) throw new Error("Invalid repository mapping");
+        } else if (map.kind === "workspace") {
+          const identity: unknown = JSON.parse(map.identity);
+          if (!Array.isArray(identity) || identity.length !== 2 || identity.some(item => typeof item !== "string" || !item) ||
+              map.store_key !== `worktree:${identity[0]}:${identity[1]}` || map.command_json !== null) throw new Error("Invalid workspace mapping");
+        } else throw new Error("Invalid mapping kind");
+        storeScope(map.store_key);
+        findings.push(`map store ${safeId(map.store_key)}`);
+      }
+    } finally { global.close(); }
     const stateRoot = join(root, "herdr"), pending = await listPendingIdLocks(stateRoot);
     for (const handoff of pending) findings.push(`handoff session ${safeId(handoff.sessionId)} operation ${safeId(handoff.operationId)}`);
     for (const reservation of await inspectIntentReservations(root)) {

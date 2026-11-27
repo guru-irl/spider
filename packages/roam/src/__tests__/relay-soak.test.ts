@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import { decodeRelayPoll, encodeRelayPollReply, type RelayPoll, type RelaySubmit, type RelayResult } from "@spider/intercom/relay-protocol";
 import type { Clock, Peer, RoamConfig } from "../contracts";
 import type { V0Routes } from "../relocate/intercom-routes";
-import { assembleRelaySoak, checkRelaySoak, relaySoakMain, runRelaySoakDial, runRelaySoakSubmit, runRelaySoakBurst,
+import { assembleRelaySoak, checkRelaySoak, lookupRelaySoakOrigin, relaySoakMain, runRelaySoakDial, runRelaySoakSubmit, runRelaySoakBurst,
   type RelaySoakEvidence, type RelaySoakFault, type RelaySoakLinkEvidence, type RelaySoakRecord } from "../relocate/relay-soak";
 
 const START = 1_700_000_000_000;
@@ -579,6 +579,23 @@ describe("the opt-in soak drivers", () => {
     expect(records.filter(event => event.type === "submission-error")).toMatchObject([{ id: "cadence-2" }]);
     expect(records.some(event => event.type === "state" && event.state === "up")).toBe(true);
     expect(JSON.stringify(records)).not.toContain("do-not-log-this-error");
+  });
+
+  it("reads the fixture origin's exact live pin and refuses a missing or mismatched registration", async () => {
+    const config = { machineId: PEER } as RoamConfig;
+    const routes: V0Routes = { version: 2, agentDir: "/agent", sendTo: [], acceptFrom: [], relays: [RELAY], linkTo: [] };
+    const endpoint = { address: fixtureLink.from.address, name: fixtureLink.from.name,
+      homeEpoch: fixtureLink.from.homeEpoch, endpointEpoch: fixtureLink.from.endpointEpoch };
+    const deps = { readIdentity: () => config, readRoutes: () => routes,
+      lookup: async (agentDir: string, operation: { kind: string; scopeId: string | null; selector: { by: string; value: string } }) => {
+        expect([agentDir, operation]).toEqual(["/agent", { kind: "lookup", scopeId: "scope", selector: { by: "id", value: "sender" } }]);
+        return { kind: "matches" as const, targets: [endpoint] };
+      } };
+    expect(await lookupRelaySoakOrigin("/fixture", "sender", "scope", deps)).toEqual(fixtureLink.from);
+    await expect(lookupRelaySoakOrigin("/fixture", "sender", "scope", { ...deps,
+      lookup: async () => ({ kind: "matches" as const, targets: [] }) })).rejects.toThrow();
+    await expect(lookupRelaySoakOrigin("/fixture", "sender", "scope", { ...deps,
+      lookup: async () => ({ kind: "matches" as const, targets: [{ ...endpoint, address: { sessionId: "other", scopeId: "scope" } }] }) })).rejects.toThrow();
   });
 
   it("dials only the configured sendTo peer through the production carrier", async () => {

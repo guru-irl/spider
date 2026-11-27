@@ -24,3 +24,5 @@ export function readDimensionValues(db: Db, dimension: Dimension, page: { limit?
     { value: string; hasValue: number; firstSeen: number; lastSeen: number }[];
   return rows.map(({ value, hasValue, firstSeen, lastSeen }) => ({ value: hasValue === 0 ? null : value, firstSeen, lastSeen }));
 }
+
+// Throwaway CI probe for a source-only edit.

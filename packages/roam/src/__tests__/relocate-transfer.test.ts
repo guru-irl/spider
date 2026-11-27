@@ -262,6 +262,26 @@ describe("v0 transfer stop boundary",()=>{
   expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toEqual({ok: true, value: undefined});
   expect(f.signals).toEqual([43, 42]);
  });
+ it("does not signal a descendant PID reused during shutdown", async () => {
+  const f = stopFixture();
+  const first = {pid: 43, startIdentity: "first-43", command: "wrapper"};
+  const child = {pid: 44, startIdentity: "child-44", command: "tool"};
+  let firstLive = true, childIdentity = child.startIdentity;
+  f.io.tree = async () => ({descendants: [first, child], groups: []});
+  const probe = f.io.probe;
+  f.io.probe = async pid => {
+   if (pid === first.pid) return firstLive ? {kind: "live", startIdentity: first.startIdentity, pi: false} : {kind: "absent"};
+   if (pid === child.pid) return {kind: "live", startIdentity: childIdentity, pi: false};
+   return probe(pid);
+  };
+  f.io.signal = async pid => {
+   f.signals.push(pid);
+   if (pid === first.pid) { firstLive = false; childIdentity = "replacement-44"; }
+  };
+
+  expect(await stopLocalSession(id, null, f.io, f.clock, 30)).toEqual({ok: true, value: undefined});
+  expect(f.signals).toEqual([43, 42]);
+ });
  it("waits for verified tool descendants even after the locked pi exits", async () => {
   const f = stopFixture();
   const child = {pid: 43, startIdentity: "tool-43", command: "bash"};

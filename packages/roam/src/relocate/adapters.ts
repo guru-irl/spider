@@ -115,6 +115,7 @@ export function createRelocateAdapters(options: RelocateAdapterOptions): Relocat
     },
     async activate(home:RunningHome,placement:SessionPlacement):Promise<V0Result<void>> {
       if(home.machineId===options.config.machineId)return local.activate(home,placement);
+      const synchronized=await sync(home.machineId);if(!synchronized.ok)return synchronized;
       try{const reply=await rpc(home.machineId,{version:1,kind:"activate",home,placement});return reply.ok?{ok:true,value:undefined}:reply;}catch{return refusal("install-failed","The destination membership could not be activated.");}
     },
     async start(home:RunningHome,placement:SessionPlacement):Promise<V0Result<{terminal:string}>> {

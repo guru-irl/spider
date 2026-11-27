@@ -65,6 +65,26 @@ describe("relocate adapters", () => {
     f.options.homes.read=async()=>({...stale,epoch:11});
     expect(await handleRelocateAgent({version:1,kind:"authorize",plan},f.options)).toMatchObject({ok:false,refusal:{code:"home-conflict"}});
   });
+  it("remote forced activation first delivers the authoritative home",async()=>{
+    const f=adapterFixture(),global=createReplica("global",box),repo=createReplica("repo",box),worktree=createReplica("worktree",box);fixtures.push(global,repo,worktree);
+    global.db.prepare("INSERT INTO roam_repo_maps(repo_key,path,worktree_command_json) VALUES ('fixture-repo',?,NULL)").run(f.root);
+    global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','fixture-workspace',?)").run(f.root);
+    writeLocal(global.db,"mapping-redirect",repo.storeKey,repo.db.raw.name);writeLocal(global.db,"mapping-redirect",worktree.storeKey,worktree.db.raw.name);
+    const source=await inspectLocalSource(id,f.options);if(!source.ok)throw new Error("source missing");
+    const home={...checkpoint().plan.source,state:"running" as const,machineId:box,epoch:16,moveId:"v0-forced" as RelocateId};
+    let targetHome:Awaited<ReturnType<RelocateAdapterOptions["homes"]["read"]>>={...home,epoch:14,state:"moving",destination:hub,moveId:"v0-old" as RelocateId};
+    const destination:RelocateAdapterOptions={...f.options,root:global.root,globalDb:global.db,journal:openJournal(join(global.root,"journal.db")),config:{...f.options.config,machineId:box,role:"box"},homes:{...f.options.homes,read:async()=>targetHome}};
+    const peer:Peer={machineId:box,alias:"peer",node:"node",pi:"pi",cli:"cli",core:"core",globalRoot:global.root};f.options.config={...f.options.config,peers:[peer]};
+    let activated=0;
+    f.options.transport={...f.options.transport,exec:async(_peer,_argv,input)=>{activated++;return Buffer.from(JSON.stringify(await handleRelocateAgent(JSON.parse(input.stdin!.toString()),destination)));}};
+    f.options.sync.sync=async machine=>{if(machine!==box)throw new Error("wrong destination");targetHome=home;return [];};
+    const adapters=createRelocateAdapters(f.options),placement={...source.value.placement,machineId:box};
+    expect(await adapters.setHome.activate(home,placement)).toEqual({ok:true,value:undefined});
+    expect(worktree.db.prepare("SELECT epoch,state FROM roam_sessions WHERE session_id=?").get(id)).toEqual({epoch:16,state:"active"});
+    const previous=activated;f.options.sync.sync=async()=>{throw new Error("offline");};
+    expect(await adapters.setHome.activate(home,placement)).toMatchObject({ok:false,refusal:{code:"sync-failed"}});
+    expect(activated).toBe(previous);
+  });
   it("source readiness precedes home initialization",async()=>{
     const f=adapterFixture();
     expect(await inspectLocalSource(id,f.options)).toMatchObject({ok:true,value:{epoch:1,state:"active",placement:{cwd:join(f.root,"sub"),repository:f.root},root:f.root,relativeCwd:"sub"}});

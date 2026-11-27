@@ -19,13 +19,13 @@ interface SoakClock {
   fromMs: number; toMs: number; minOffsetMs: number; maxOffsetMs: number;
   samples: readonly ClockSample[];
 }
-interface SoakRun { role: "dial" | "submit"; startMs: number; endMs: number; rssAllowanceBytes: number }
+interface SoakRun { role: "dial" | "submit"; startMs: number; endMs: number; rssAllowanceBytes: number; machineId: string; process: BirthIdentity }
 interface SoakSubmission { id: string; atMs: number; deadlineMs: number; kind: "cadence" | "burst"; scheduledMs?: number; burstId?: string }
 interface SoakEvent { id: string; atMs: number }
 interface SoakOutcomeEvent extends SoakEvent { kind: SoakOutcome }
 interface SoakStateEvent { atMs: number; state: SoakState }
 interface SoakCall { pollId: string; holdMs: 0 | 20000; startMs: number; endMs: number }
-interface SoakRss { atMs: number; bytes: number }
+interface SoakRss { atMs: number; bytes: number; process: BirthIdentity }
 interface Census { atMs: number; complete: boolean; identities: readonly BirthIdentity[] }
 interface SoakProcessCensus { machineId: string; before: Census; after: Census }
 
@@ -69,14 +69,14 @@ function isEvidence(value: unknown): value is RelaySoakEvidence {
     const clock = link.clock;
     return time(clock.fromMs) && time(clock.toMs) && integer(clock.minOffsetMs) && integer(clock.maxOffsetMs) &&
       entries(clock.samples, sample => object(sample) && time(sample.sentMs) && time(sample.remoteMs) && time(sample.receivedMs)) &&
-      entries(link.runs, run => object(run) && (run.role === "dial" || run.role === "submit") && time(run.startMs) && time(run.endMs) && time(run.rssAllowanceBytes)) &&
+      entries(link.runs, run => object(run) && (run.role === "dial" || run.role === "submit") && time(run.startMs) && time(run.endMs) && time(run.rssAllowanceBytes) && text(run.machineId) && identity(run.process)) &&
       entries(link.submissions, submit => event(submit) && object(submit) && time(submit.deadlineMs) &&
         (submit.kind === "cadence" && time(submit.scheduledMs) || submit.kind === "burst" && text(submit.burstId))) &&
       entries(link.handoffs, event) && entries(link.receipts, event) &&
       entries(link.outcomes, result => event(result) && object(result) && outcomes.includes(result.kind as SoakOutcome)) &&
       entries(link.states, state => object(state) && time(state.atMs) && states.includes(state.state as SoakState)) &&
       entries(link.calls, call => object(call) && text(call.pollId) && (call.holdMs === 0 || call.holdMs === 20_000) && time(call.startMs) && time(call.endMs)) &&
-      entries(link.rss, sample => object(sample) && time(sample.atMs) && time(sample.bytes));
+      entries(link.rss, sample => object(sample) && time(sample.atMs) && time(sample.bytes) && sample.bytes > 0 && identity(sample.process));
   })) return false;
   if (!entries(value.faults, fault => object(fault) && faultKinds.includes(fault.kind as SoakFaultKind) &&
       entries(fault.linkIds, text) && time(fault.startMs) && time(fault.clearMs) &&
@@ -160,7 +160,8 @@ export function checkRelaySoak(evidence: RelaySoakEvidence): { ok: boolean; viol
     const clock = link.clock;
     if (!validClock(clock, startMs, endMs)) fail("clock");
     if (!link.runs.some(run => run.role === "dial") || !link.runs.some(run => run.role === "submit") ||
-        link.runs.some(run => run.startMs !== startMs || run.endMs !== endMs || run.rssAllowanceBytes !== rssAllowanceBytes)) fail("run-file");
+        link.runs.some(run => run.startMs !== startMs || run.endMs !== endMs || run.rssAllowanceBytes !== rssAllowanceBytes ||
+          run.machineId !== (run.role === "dial" ? link.relayId : link.peerId))) fail("run-file");
     const samples = [...link.states].sort((a, b) => a.atMs - b.atMs);
     if (!covers(samples, sample => sample.atMs, startMs, endMs, STATUS_GAP_MS)) fail("timeline");
     for (const fault of linkFaults) {
@@ -175,7 +176,9 @@ export function checkRelaySoak(evidence: RelaySoakEvidence): { ok: boolean; viol
     }
     const rss = [...link.rss].sort((a, b) => a.atMs - b.atMs);
     const rssStart = startMs + clock.minOffsetMs, rssEnd = endMs + clock.maxOffsetMs;
-    if (!covers(rss, sample => sample.atMs, rssStart, rssEnd, RSS_GAP_MS)) fail("rss");
+    const dialBirths = new Set(link.runs.filter(run => run.role === "dial").map(run => birthKey(run.process)));
+    if (!covers(rss, sample => sample.atMs, rssStart, rssEnd, RSS_GAP_MS) ||
+        rss.some(sample => !dialBirths.has(birthKey(sample.process)))) fail("rss");
     const baseline = rss.findLast(sample => sample.atMs <= rssStart);
     if (!baseline || rss.some(sample => sample.atMs >= baseline.atMs && sample.atMs <= rssEnd && sample.bytes > baseline.bytes + rssAllowanceBytes)) fail("rss");
 
@@ -227,8 +230,9 @@ export function checkRelaySoak(evidence: RelaySoakEvidence): { ok: boolean; viol
       continue;
     }
     const before = new Set(process.before.identities.map(birthKey));
+    const owned = new Set(links.flatMap(link => link.runs.filter(run => run.machineId === machineId).map(run => birthKey(run.process))));
     if (before.size !== process.before.identities.length || new Set(process.after.identities.map(birthKey)).size !== process.after.identities.length ||
-        process.after.identities.some(item => !before.has(birthKey(item)))) fail("cleanup");
+        process.after.identities.some(item => !before.has(birthKey(item)) || owned.has(birthKey(item)))) fail("cleanup");
   }
   return { ok: violations.size === 0, violations: [...violations] };
 }

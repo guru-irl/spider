@@ -1,5 +1,5 @@
 import { createFederation } from "./federation.js";
-import { parseV0BrokerReply, parseV0BrokerRequest, V0_ASK_MAX_MS, V0_INTERCOM_FEATURE, type V0Delivery, type V0Endpoint } from "../roam-v0.js";
+import { parseV0BrokerReply, parseV0BrokerRequest, v0ExplicitName, V0_ASK_MAX_MS, V0_INTERCOM_FEATURE, type V0Delivery, type V0Endpoint } from "../roam-v0.js";
 import { MOVE_FENCE_FEATURE, type IntercomIntakeAction, type IntercomIntakeFence } from "../protocol.js";
 import { isIntercomIntakeAction, isIntercomIntakeFence } from "./protocol.js";
 import { RECEIPT_ACK_FEATURE, RECEIPT_EVIDENCE_FEATURE, compatibleReceipt, FEDERATION_FEATURE, FREEZE_BLOCKERS_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, addressKey, sessionAddress, type SessionAddress, type RemoteSessionInfo, type FederationDispatchResult, type FederationBrokerMessage, type SessionEndpoint, type LocalSessionInfo } from "../protocol.js";
@@ -766,7 +766,7 @@ class IntercomBroker {
         for (const session of this.sessions.values()) {
           if (session.info.v0HomeEpoch === undefined || !session.info.address || session.socket.destroyed || !session.socket.writable ||
               (session.scopeId ?? null) !== request.scopeId) continue;
-          const name = session.info.runtimeFallbackAlias ? null : session.info.name ?? null;
+          const name = v0ExplicitName(session.info);
           if (request.selector.by === "id" ? session.info.address.sessionId !== request.selector.value
             : !name || name.toLowerCase() !== request.selector.value.toLowerCase()) continue;
           targets.push({ address: session.info.address, name, homeEpoch: session.info.v0HomeEpoch, endpointEpoch: session.info.endpointEpoch! });
@@ -786,7 +786,7 @@ class IntercomBroker {
       }
       const target = candidates.find(session => session.info.endpointEpoch === request.target.endpointEpoch &&
         session.info.v0HomeEpoch === request.target.homeEpoch &&
-        (session.info.runtimeFallbackAlias ? null : session.info.name ?? null) === request.target.name);
+        v0ExplicitName(session.info) === request.target.name);
       if (!target) { respond({ kind: "refused", code: "changed" }); return; }
       if (target.socket.destroyed || target.socket.writableEnded || !target.socket.writable) {
         respond({ kind: "refused", code: "offline" }); return;

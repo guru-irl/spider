@@ -6,7 +6,7 @@ import type { MachineId } from "@spider/db-core/roam/types";
 import { HerdrError } from "@spider/herdr/client/parse";
 import { requestV0Broker } from "@spider/intercom/broker/roam-v0-client";
 import {
-  parseV0AgentReply, parseV0AgentRequest, V0_ASK_MAX_MS, V0_INTERCOM_BYTES, V0_INTERCOM_MS,
+  parseV0AgentReply, parseV0AgentRequest, v0ExplicitName, V0_ASK_MAX_MS, V0_INTERCOM_BYTES, V0_INTERCOM_MS,
   type V0AgentReply, type V0AgentRequest, type V0Code, type V0Endpoint, type V0Prepare, type V0Refused, type V0Reply, type V0Text,
 } from "@spider/intercom/roam-v0";
 import type { LocalSessionInfo, RemoteSessionInfo } from "@spider/intercom/types";
@@ -133,7 +133,7 @@ function sameEndpoint(a: V0Endpoint, b: V0Endpoint): boolean {
 }
 function endpointOf(session: LocalSessionInfo): V0Endpoint | null {
   if (!session.address || !session.endpointEpoch || session.v0HomeEpoch === undefined) return null;
-  return { address: { ...session.address }, name: session.runtimeFallbackAlias ? null : session.name ?? null,
+  return { address: { ...session.address }, name: v0ExplicitName(session),
     homeEpoch: session.v0HomeEpoch, endpointEpoch: session.endpointEpoch };
 }
 function samePeer(a: Peer, b: Peer): boolean {
@@ -141,10 +141,10 @@ function samePeer(a: Peer, b: Peer): boolean {
     a.cli === b.cli && a.core === b.core && a.globalRoot === b.globalRoot && a.agentDir === b.agentDir && a.coreUnit === b.coreUnit;
 }
 function selectedTarget(to: string): { kind: "bare"; value: string } | { kind: "qualified"; machine: string; value: string } | null {
-  if (!to || to.length > 1024 || /[\u0000-\u001f\u007f-\u009f]/.test(to)) return null;
+  if (!to) return null;
   const slash = to.indexOf("/");
   if (slash < 0) return { kind: "bare", value: to };
-  if (to.indexOf("/", slash + 1) >= 0) return null;
+  if (to.length > 1024 || to.indexOf("/", slash + 1) >= 0 || /[\u0000-\u001f\u007f-\u009f]/.test(to)) return null;
   try {
     const machine = decodeURIComponent(to.slice(0, slash)), value = decodeURIComponent(to.slice(slash + 1));
     return alias(machine) && value.length > 0 && value.length <= 256 && value.trim().length > 0 &&

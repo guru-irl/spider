@@ -84,6 +84,10 @@ function identifier(value: unknown, limit = 256): value is string {
     && !/[\u0000-\u001f\u007f-\u009f]/.test(value);
 }
 
+export function v0ExplicitName(session: Pick<LocalSessionInfo, "name" | "runtimeFallbackAlias">): string | null {
+  return !session.runtimeFallbackAlias && identifier(session.name) ? session.name : null;
+}
+
 function scope(value: unknown): value is SessionAddress["scopeId"] {
   return value === null || identifier(value, 1024);
 }

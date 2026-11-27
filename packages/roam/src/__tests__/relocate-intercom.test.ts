@@ -290,6 +290,23 @@ describe("roaming v0 intercom", () => {
     expect(f.inbox.map(item => item.message)).toEqual([message]);
   });
 
+  it("selects an unsafe local name without using it on the wire", async () => {
+    const { intercom, state, calls, inbox } = paired();
+    const name = "retained\tlocally";
+    const local: LocalSessionInfo = { ...alice, id: "local-target", address: { sessionId: "local-target", scopeId: "scope-1" },
+      endpointEpoch: "local-socket", name, v0HomeEpoch: undefined };
+    expect(await intercom.prepare({ to: name, from: alice, locals: [alice, local] }))
+      .toEqual({ kind: "local", target: { id: "local-target", endpointEpoch: "local-socket" } });
+    expect(calls).toEqual([]);
+    const from = { ...alice, name };
+    state.source = { ...aliceEndpoint, name: null };
+    const plan = await intercom.prepare({ to: "box/ben", from, locals: [from] });
+    expect(plan.kind).toBe("remote");
+    if (plan.kind !== "remote") throw new Error("expected a remote plan");
+    expect(await plan.send(message)).toEqual({ kind: "socket_delivered", id: message.id });
+    expect(inbox[0].from.name).toBeUndefined();
+  });
+
   it("refuses a prepared send when the receiving home has started moving", async () => {
     const f = paired(), plan = await remotePlan(f.intercom);
     const db = openDbAt(join(f.receiver.root, "spider.db"), "global");

@@ -341,8 +341,7 @@ export function isSessionRegistration(value: unknown): value is SessionRegistrat
   if (value.v0HomeEpoch !== undefined) {
     if (!Number.isSafeInteger(value.v0HomeEpoch) || Number(value.v0HomeEpoch) < 1 || !isSessionAddress(value.address) ||
         !isV0Identifier(value.address.sessionId, 256) ||
-        value.address.scopeId !== null && !isV0Identifier(value.address.scopeId, 1024) ||
-        value.name !== undefined && !isV0Identifier(value.name, 256)) return false;
+        value.address.scopeId !== null && !isV0Identifier(value.address.scopeId, 1024)) return false;
   }
   if (value.activationEpoch !== undefined && (typeof value.activationEpoch !== "string" || !value.activationEpoch)) return false;
   if (value.name !== undefined && typeof value.name !== "string") {

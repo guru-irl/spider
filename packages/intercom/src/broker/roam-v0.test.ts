@@ -216,6 +216,32 @@ describe("private roaming broker", () => {
     expect(await lookup("scope-3", "name", "ben")).toEqual({ kind: "matches", targets: [] });
   });
 
+  it.each(["x".repeat(300), "tab\tname", "control\u0085name"])("keeps an unsafe local registration name out of roaming endpoints (%#)", async name => {
+    const sender = await register("stable-a", "a", "alice", "scope-1", 1);
+    const recipient = await register("stable-b", "b", name, "scope-1", 3);
+    const inbox: unknown[] = [];
+    recipient.on("message", (_from, message) => inbox.push(message));
+    expect((await sender.listSessions()).find(session => session.id === "stable-b")?.name).toBe(name);
+    expect(await sender.send(name, { text: "local" })).toMatchObject({ delivered: true, delivery: "socket_delivered" });
+    const found = await lookup("scope-1", "id", "b");
+    expect(found).toEqual({ kind: "matches", targets: [{ address: { sessionId: "b", scopeId: "scope-1" },
+      name: null, homeEpoch: 3, endpointEpoch: expect.any(String) }] });
+    const target = (found.targets as V0Endpoint[])[0];
+    expect(await request({ kind: "deliver", from: origin, target, message })).toEqual({ kind: "socket_delivered", id: message.id });
+    await recipient.listSessions();
+    expect(inbox).toMatchObject([{ content: { text: "local" } }, { content: { text: message.text } }]);
+  });
+
+  it("uses an unnamed roaming endpoint after a live rename to an unsafe name", async () => {
+    const ben = await register("stable-b", "b", "ben", "scope-1", 3);
+    const original = ((await lookup("scope-1", "name", "ben")).targets as V0Endpoint[])[0];
+    ben.updatePresence({ name: "hidden\tname" });
+    await ben.listSessions();
+    expect(await lookup("scope-1", "name", "ben")).toEqual({ kind: "matches", targets: [] });
+    expect(await lookup("scope-1", "id", "b")).toEqual({ kind: "matches", targets: [{ ...original, name: null }] });
+    expect(await request({ kind: "deliver", from: origin, target: original, message })).toEqual({ kind: "refused", code: "changed" });
+  });
+
   it("dispatches one ordinary text message to the pinned live endpoint", async () => {
     const ben = await register("stable-b", "b", "ben", "scope-1", 3);
     const found = await lookup("scope-1", "name", "ben");
@@ -480,10 +506,9 @@ describe("private roaming broker", () => {
     } finally { await peer.close(); }
   });
 
-  it("refuses v0 registrations with invalid IDs, scopes, names, or epochs", async () => {
+  it("refuses v0 registrations with invalid IDs, scopes, or epochs", async () => {
     await expect(register("bad-id", "bad\nid", "ben", "scope-1", 1)).rejects.toThrow();
     await expect(register("bad-scope", "scope-session", "ben", "scope\u0000one", 1)).rejects.toThrow();
-    await expect(register("bad-name", "named-session", "bad\nname", "scope-1", 1)).rejects.toThrow();
     await expect(register("bad-epoch", "epoch-session", "ben", "scope-1", 0)).rejects.toThrow();
   });
 

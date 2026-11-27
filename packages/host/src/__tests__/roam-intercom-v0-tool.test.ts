@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import net from "node:net";
 import { join } from "node:path";
-import { rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { IntercomClient } from "../../../intercom/src/broker/client.js";
 import { getAgentDirPath, getBrokerSocketPath, getIntercomDirPath } from "../../../intercom/src/broker/paths.js";
@@ -11,7 +11,9 @@ import { requestV0Broker } from "../../../intercom/src/broker/roam-v0-client.js"
 import type { RemoteSessionInfo } from "../../../intercom/src/types.js";
 import { INTERCOM_HOST_EVENT } from "../../../intercom/src/host-api.js";
 import { registerIntercomOnce } from "../../../intercom/src/single-instance.js";
-import { startTestBroker, stopTestBroker, testBrokerEnv } from "../../../intercom/src/test-support.js";
+import { startTestBroker, stopTestBroker, testBrokerEnv, testTmpDir } from "../../../intercom/src/test-support.js";
+import { createHostSessionFixture } from "./fixtures/pi-events.js";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { V0_ASK_MAX_MS, type V0Code, type V0Prepare, type V0Text, type V0ToolOptions } from "../../../intercom/src/roam-v0.js";
 
 let broker: ChildProcessWithoutNullStreams;
@@ -81,6 +83,54 @@ async function fixture(v0?: V0ToolOptions, options: { confirm?: () => Promise<bo
     async cleanup() { await emit("session_shutdown", { reason: "quit" }); rmSync(configPath, { force: true }); },
   };
 }
+
+it("wires an injected roaming factory for an admitted running home", async () => {
+  const admissionModule = await import("../roam/admission.js");
+  const runtimeModule = await import("@spider/roam/runtime");
+  const { default: spiderExtension } = await import("../extension.js");
+  const root = mkdtempSync(join(testTmpDir(), "host-"));
+  const previousCeiling = process.env.GIT_CEILING_DIRECTORIES;
+  process.env.GIT_CEILING_DIRECTORIES = testTmpDir();
+  const manager = SessionManager.create(root, join(root, "sessions"));
+  manager.appendMessage({ role: "user", content: "fixture", timestamp: 0 });
+  const sessionId = manager.getSessionId();
+  const home = { sessionId, machineId: "local-machine", epoch: 7, state: "running", destination: null, moveId: null, updatedAt: 1 };
+  const gate = { inspect: () => ({ kind: "ordinary", home, blockers: [] }), refreshInitialHome: async () => ({ kind: "ordinary", home, blockers: [] }),
+    whenSettled: async () => ({ kind: "ordinary", home, blockers: [] }), close: async () => {}, freeze: async () => {}, unfreeze: async () => {} };
+  vi.spyOn(admissionModule, "createAdmissionPorts").mockReturnValue({ setContext() {}, lock: async () => async () => {} } as never);
+  vi.spyOn(admissionModule, "registerAdmission").mockReturnValue(gate as never);
+  vi.spyOn(runtimeModule, "readLocalIdentity").mockReturnValue({ enabled: true, intercom: { enabled: false } } as never);
+  const prepare: V0Prepare = async () => ({
+    kind: "remote", label: "b/ben",
+    async send(message) { return { kind: "socket_delivered", id: message.id }; },
+    async ask(message) { return { kind: "no_reply", id: message.id }; },
+  });
+  const factory = { hasConfig: () => true, create: () => ({ prepare }) };
+  const host = createHostSessionFixture({ cwd: root, sessionId, sessionName: "host-alice", sessionManager: manager });
+  try {
+    spiderExtension(host.pi as never, { v0Intercom: factory, piVersion: "1.2.0" } as never);
+    for (const handler of host.hooks.get("session_start") ?? []) {
+      await handler({}, host.ctx);
+      if ((host.pi as any).getAllTools().some((item: any) => item.name === "intercom")) break;
+    }
+    const registered = await vi.waitFor(async () => {
+      const found = (await observer.listSessions()).find(session => session.id === sessionId);
+      expect(found).toBeDefined();
+      return found!;
+    });
+    expect(registered).toMatchObject({ v0HomeEpoch: 7 });
+    expect(registered.homeEpoch).toBeUndefined();
+    const tool = (host.pi as any).getAllTools().find((item: any) => item.name === "intercom");
+    const result = await tool.execute("host-send", { action: "send", to: "ben", message: "hello" }, new AbortController().signal, undefined, host.ctx);
+    expect(result.content[0].text).toBe("Sent to b/ben (broker accepted the message).");
+  } finally {
+    for (const handler of host.hooks.get("session_shutdown") ?? []) await handler({ reason: "quit" }, host.ctx);
+    vi.restoreAllMocks();
+    if (previousCeiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+    else process.env.GIT_CEILING_DIRECTORIES = previousCeiling;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 it("sends by name and reports socket dispatch, not consumption", async () => {
   const sent: V0Text[] = [];

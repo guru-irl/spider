@@ -16,7 +16,7 @@ import { InlineMessageComponent } from "./ui/inline-message.js";
 import { getAskTimeoutMs, loadConfig, type IntercomConfig } from "./config.js";
 import { EXTENSION_BUS_FEATURE } from "./types.js";
 import type { Attachment, BrokerMessage, LocalSessionInfo, Message, MessageControl, MessageReceipt, MessageReceiptStatus, SessionInfo, SessionRegistration } from "./types.js";
-import type { V0ToolOptions } from "./roam-v0.js";
+import type { V0Code, V0ToolOptions } from "./roam-v0.js";
 import {
   INTERCOM_EXTENSION_REGISTER_EVENT,
   INTERCOM_EXTENSION_REGISTRY_READY_EVENT,
@@ -37,6 +37,22 @@ import { resolve as resolvePath } from "node:path";
 import { sameCwd } from "./cwd.js";
 import { formatContextUsage } from "./format-context.js";
 import { openProjectPane, resolveTargetInCwd, waitForProjectSession, type ProjectPaneLaunch } from "./project-agent.js";
+
+export const V0_MAC_REPLY_ONLY_MESSAGE: string = "Sessions on the Mac accept messages from other machines only as replies to their own asks.";
+const V0_REFUSAL_TEXT: Record<V0Code, string> = {
+  moving: "Session is moving. Retry after it settles.",
+  offline: "Session is not connected. No message was queued.",
+  "no-match": "No live session matches that name or ID.",
+  ambiguous: "More than one live session matches. Use machine/name or a full session ID.",
+  incomplete: "Lookup was incomplete. Use machine/name or a full session ID.",
+  changed: "The session or connection changed. Resolve the recipient again.",
+  unreachable: "The route is unavailable. Try again when it is up.",
+  "not-configured": "No route is configured to that session.",
+  unauthorized: "The receiving machine refused this message.",
+  unsupported: "This roaming intercom operation is not supported.",
+  invalid: "The roaming intercom request is invalid.",
+  self: "Cannot message the current session.",
+};
 
 const INTERCOM_TOOL_NAME = "intercom";
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
@@ -2710,6 +2726,9 @@ Usage:
               const from = locals.find(session => session.id === connectedClient.sessionId && session.address?.sessionId === currentSessionId);
               if (from) {
                 const plan = await v0.prepare({ to, from, locals, signal: _signal });
+                if (plan.kind === "refused") {
+                  return { content: [{ type: "text", text: V0_REFUSAL_TEXT[plan.code] }], details: { error: true, code: plan.code } };
+                }
                 if (plan.kind === "remote") {
                   if (cwd !== undefined || attachments !== undefined || replyTo || supersedes || retryOf || messageId ||
                       openProjectPaneIfMissing !== undefined || focus !== undefined) {

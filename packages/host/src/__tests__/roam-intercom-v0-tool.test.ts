@@ -7,7 +7,7 @@ import { IntercomClient } from "../../../intercom/src/broker/client.js";
 import { getIntercomDirPath } from "../../../intercom/src/broker/paths.js";
 import { registerIntercomOnce } from "../../../intercom/src/single-instance.js";
 import { startTestBroker, stopTestBroker, testBrokerEnv } from "../../../intercom/src/test-support.js";
-import type { V0Prepare, V0Text, V0ToolOptions } from "../../../intercom/src/roam-v0.js";
+import type { V0Code, V0Prepare, V0Text, V0ToolOptions } from "../../../intercom/src/roam-v0.js";
 
 let broker: ChildProcessWithoutNullStreams;
 let observer: IntercomClient;
@@ -132,6 +132,30 @@ it("refuses remote-only unsupported options without dispatching", async () => {
       expect(sent).toEqual([]);
     }
   } finally { await f.cleanup(); }
+});
+
+it("reports routing refusals without sending to a local mailbox", async () => {
+  const legacyInbox: unknown[] = [];
+  const onMessage = (...args: unknown[]) => legacyInbox.push(args);
+  observer.on("message", onMessage);
+  let code: V0Code = "moving";
+  const prepare: V0Prepare = async () => ({ kind: "refused", code });
+  const f = await fixture({ homeEpoch: () => 7, prepare });
+  try {
+    const cases: Array<[V0Code, string]> = [
+      ["moving", "Session is moving. Retry after it settles."],
+      ["offline", "Session is not connected. No message was queued."],
+      ["no-match", "No live session matches that name or ID."],
+      ["not-configured", "No route is configured to that session."],
+    ];
+    for (const [next, text] of cases) {
+      code = next;
+      const result = await f.tool.execute("send", { action: "send", to: "observer", message: "private text" }, new AbortController().signal, undefined, f.ctx);
+      expect(result.content[0].text).toBe(text);
+      expect(result.details).toMatchObject({ error: true, code });
+      expect(legacyInbox).toEqual([]);
+    }
+  } finally { observer.off("message", onMessage); await f.cleanup(); }
 });
 
 it("reports uncertainty without a legacy send", async () => {

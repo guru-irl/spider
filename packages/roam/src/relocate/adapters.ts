@@ -9,7 +9,7 @@ import { storedManifestLimits } from "../artifact-layout";
 import type { Peer } from "../contracts";
 import { createRelocateJournal, parseCaptured, parseHome, parsePlacement, parsePlan, text, object } from "./journal";
 import { callV0, createV0ArtifactTransport, handleRelocateAgent, refusal } from "./remote";
-import { createLocalRuntime, exactHome, inspectLocalSource, inspectLocalDestination, seedLocalPlacement, type LocalSource } from "./local";
+import { createLocalRuntime, exactHome, inspectLocalSource, inspectLocalDestination, seedLocalPlacement, captureOrdinarySource, type LocalSource } from "./local";
 import { captureLocalSession, installLocalSession, stagingRoot } from "./transfer";
 import type { RelocateAdapterOptions, RelocateAdapters, RelocateId, RelocatePorts, SessionId, SessionPlacement, SettledHome, V0Result, RelocatePlan, CapturedSession, RunningHome, InstalledSession } from "./types";
 
@@ -134,7 +134,16 @@ export function createRelocateAdapters(options: RelocateAdapterOptions): Relocat
     if(!hub)throw new Error("Only the hub may mutate a v0 home");return withProcessLock(join(options.root,"roam","v0-locks"),id,run,{timeoutMs:options.limits.controlMs});
   },...machines};
   const ports:RelocatePorts={...shared,journal,initialSource,check,
-    async stopSource(plan,moving){if(plan.source.machineId===options.config.machineId)return local.stop(plan.source.sessionId,moving);try{const reply=await rpc(plan.source.machineId,{version:1,kind:"stop",sessionId:plan.source.sessionId,moving});return reply.ok?{ok:true,value:undefined}:reply;}catch{return refusal("stop-timeout","The source stop acknowledgement is unavailable.");}},
+    async stopSource(plan,moving){
+      if(plan.source.machineId===options.config.machineId){
+        const stopped=await local.stop(plan.source.sessionId,moving);if(!stopped.ok)return stopped;
+        try {await captureOrdinarySource(plan,options);}
+        catch {return refusal("stop-timeout","The stopped ordinary source could not be captured.");}
+        // Freeze any membership created after the first, confirmed stop.
+        return local.stop(plan.source.sessionId,moving);
+      }
+      try{const reply=await rpc(plan.source.machineId,{version:1,kind:"stop",sessionId:plan.source.sessionId,moving});return reply.ok?{ok:true,value:undefined}:reply;}catch{return refusal("stop-timeout","The source stop acknowledgement is unavailable.");}
+    },
     async pullSource(plan) {
       try {
         if(!await ownerAt(plan.source.machineId,plan.source.sessionId))return refusal("stop-timeout","The source ID lock is not free for final row sync.");

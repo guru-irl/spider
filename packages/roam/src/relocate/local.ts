@@ -1,7 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { delimiter, dirname, join, relative, isAbsolute, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { lstat, realpath } from "node:fs/promises";
+import { mapWorkspace } from "@spider/db-core/roam/repo-map";
+import { discoverOrdinarySource } from "./ordinary-source";
 import { parseLocationStores, recordLocation } from "@spider/db-core/roam/catalog";
 import { localEntries, readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { inspectSession } from "../session-file";
@@ -20,7 +23,7 @@ import { selectedSocket } from "@spider/herdr/client/parse";
 import type { Operation, Clock } from "../contracts";
 import { createLocalExactHc, resolveParticipantPi } from "../launcher";
 import { requestSessionControl } from "../session-socket";
-import type { MovingHome, RelocateAdapterOptions, RelocateHome, RunningHome, SessionId, SessionOwner, SessionPlacement, SessionMachinePorts, SupervisorEntry, V0Result } from "./types";
+import type { MovingHome, RelocateAdapterOptions, RelocateHome, RunningHome, SessionId, SessionOwner, SessionPlacement, SessionMachinePorts, SupervisorEntry, V0Result, RelocatePlan } from "./types";
 import { refusal } from "./remote";
 
 export interface LocalIO {
@@ -154,7 +157,11 @@ export interface LocalSource {placement:SessionPlacement;epoch:number;state:"act
 export async function inspectLocalSource(id: SessionId, options: RelocateAdapterOptions, allowStopped = false): Promise<V0Result<LocalSource>> {
   try {
     const row = options.globalDb.prepare("SELECT stores_json,home_json,file,cwd FROM roam_locations WHERE session_id=?").get(id) as {stores_json:string;home_json:string|null;file:string|null;cwd:string|null}|undefined;
-    if (!row) return refusal("session-not-found","The session has no local location.");
+    if (!row) {
+      const ordinary = await discoverOrdinarySource(id, options);
+      if (ordinary.ok) await normalRepository(ordinary.value.root, options);
+      return ordinary;
+    }
     const keys = parseLocationStores(JSON.parse(row.stores_json)), worktrees = keys.filter(key=>key.startsWith("worktree:"));
     if (worktrees.length !== 1) return refusal("ambiguous-session","The session has more than one working checkout.");
     const key = worktrees[0], rest = key.slice(9), at = rest.lastIndexOf(":"), repoKey = rest.slice(0,at), workspaceId = rest.slice(at+1);
@@ -217,6 +224,16 @@ export async function seedLocalPlacement(placement: SessionPlacement, epoch: num
       else enableMemoryCapture(db,key);
     }
   } finally {stores.close();}
+}
+export async function captureOrdinarySource(plan: RelocatePlan, options: RelocateAdapterOptions): Promise<void> {
+  if (options.globalDb.prepare("SELECT 1 FROM roam_locations WHERE session_id=?").get(plan.source.sessionId)) return;
+  const home = await options.homes.read(plan.source.sessionId);
+  if (!home || home.state !== "moving" || home.machineId !== options.config.machineId || home.moveId !== plan.moveId || home.epoch !== plan.source.epoch + 1 || home.destination !== plan.destinationPlacement.machineId) throw new Error("Ordinary capture requires the moving home");
+  const ready = await inspectLocalSource(plan.source.sessionId, options);
+  if (!ready.ok || !isDeepStrictEqual(ready.value.placement, plan.sourcePlacement)) throw new Error("Ordinary source changed before capture");
+  await mapWorkspace(options.globalDb, { repoKey: plan.sourcePlacement.repoKey, workspaceId: plan.sourcePlacement.workspaceId, path: ready.value.root });
+  await seedLocalPlacement(plan.sourcePlacement, plan.source.epoch, options);
+  recordLocation(options.globalDb, { sessionId: plan.source.sessionId, stores: plan.sourcePlacement.stores, home: { sessionId: plan.source.sessionId, machineId: plan.source.machineId, epoch: plan.source.epoch, moveId: null, updatedAt: plan.source.updatedAt }, file: plan.sourcePlacement.file, cwd: plan.sourcePlacement.cwd });
 }
 export interface LocalRuntime extends SessionMachinePorts {
   owner(id: SessionId): Promise<SessionOwner>;

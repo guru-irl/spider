@@ -149,6 +149,38 @@ describe("roaming v0 intercom", () => {
     expect(broker).toHaveBeenCalledWith(agentDir, { kind: "lookup", scopeId: "scope-1", selector: { by: "name", value: "ben" } }, expect.anything());
   });
 
+  it("accepts correlated private refusals but rejects invalid input before the handler", async () => {
+    const { root } = boxFixture();
+    vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+    let out = "", err = "";
+    const io = { out: (text: string) => { out += text; }, err: (text: string) => { err += text; } };
+    const intercom = vi.fn(async () => ({ version: 1 as const, requestId: "request-1", machineId: BOX,
+      kind: "refused" as const, code: "offline" as const }));
+    const argv = ["--global-root", root, "roam", "agent", "--v0", "intercom"];
+    expect(await main(argv, io, { stdin: Buffer.from(JSON.stringify(findBen)), v0: { intercom } })).toBe(0);
+    expect(JSON.parse(out)).toEqual({ version: 1, requestId: "request-1", machineId: BOX, kind: "refused", code: "offline" });
+    expect(err).toBe("");
+    for (const stdin of [Buffer.from("{"), Buffer.from([0xff]), Buffer.alloc(V0_INTERCOM_BYTES + 1), Buffer.from(JSON.stringify({ ...findBen, extra: true }))]) {
+      out = ""; err = "";
+      expect(await main(argv, io, { stdin, v0: { intercom } })).toBe(2);
+      expect(out).toBe("");
+    }
+    expect(intercom).toHaveBeenCalledOnce();
+    out = ""; err = "";
+    expect(await main([...argv, "extra"], io, { stdin: Buffer.from(JSON.stringify(findBen)), v0: { intercom } })).toBe(2);
+    expect(intercom).toHaveBeenCalledOnce();
+  });
+
+  it("uses the production private handler when no test seam is supplied", async () => {
+    const { root } = boxFixture();
+    vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+    let out = "";
+    const code = await main(["--global-root", root, "roam", "agent", "--v0", "intercom"],
+      { out: text => { out += text; }, err: () => {} }, { stdin: Buffer.from(JSON.stringify(findBen)) });
+    expect(code).toBe(0);
+    expect(JSON.parse(out)).toEqual({ version: 1, requestId: "request-1", machineId: BOX, kind: "refused", code: "unreachable" });
+  });
+
   it("resolves a qualified name without a replication peer or worktree catalog", async () => {
     const sender = machineFixture(MAC), receiver = boxFixture();
     vi.stubEnv("PI_CODING_AGENT_DIR", undefined);

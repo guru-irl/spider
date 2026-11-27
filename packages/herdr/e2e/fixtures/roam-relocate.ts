@@ -10,7 +10,6 @@ import { enableMemoryCapture } from '@spider/db-core/roam/seed';
 import { processStartIdentity } from '../../src/jobs/handoff.js';
 import { inspectIdLock } from '../../src/sessions/id-lock.js';
 import { createSessionLeases } from '../../src/sessions/lease.js';
-import { localProcessTree } from '../../../roam/src/relocate/local-process.js';
 import { readObserved } from '../harness/pi.js';
 import { spawnOwned, type OwnedProcess } from '../harness/processes.js';
 import { identityOf } from '../harness/resources.js';
@@ -161,7 +160,7 @@ export async function relocateFixture(suite: Suite): Promise<RelocateFixture> {
       try { return (db.prepare('SELECT session_id,machine_id,epoch,state,destination,move_id FROM session_homes WHERE session_id=?').get(sessionId) as HomeRow | undefined) ?? null; }
       finally { db.close(); }
     };
-    let ownerCalls = 0, currentOwner = original;
+    let ownerCalls = 0;
     const owner: RelocateFixture['owner'] = async (machine, expectedTerminal, id, placement) => {
       const stop = ++ownerCalls;
       const locks = await Promise.all([hub, box].map(host => inspectIdLock(join(host.root, 'herdr'), id)));
@@ -200,26 +199,13 @@ export async function relocateFixture(suite: Suite): Promise<RelocateFixture> {
       expect(alive).toEqual([lock.identity.pid]);
       const found = { pid: lock.identity.pid, terminal: expectedTerminal, sessionId: id, file: observedFile, cwd: observedCwd };
       await suite.evidence(`v0-owner-${stop}.json`, { owner: found, locks, native: native.json, home: home(), liveSessionPids: alive });
-      currentOwner = found;
       return found;
-    };
-    const processInfo = async (pid: number) => {
-      try {
-        return { pid, stat: await readFile(`/proc/${pid}/stat`, 'utf8'), command: (await readFile(`/proc/${pid}/cmdline`, 'utf8')).replaceAll('\0', ' ') };
-      } catch (error) { return { pid, error: (error as NodeJS.ErrnoException).code ?? String(error) }; }
     };
     let calls = 0;
     const relocate: RelocateFixture['relocate'] = async (id, target) => {
-      const call = ++calls, tree = await localProcessTree(currentOwner.pid);
-      const pids = [currentOwner.pid, ...tree.descendants.map(child => child.pid)];
-      const beforeProcesses = await Promise.all(pids.map(processInfo));
+      const call = ++calls;
       const result = await suite.invoke(process.execPath, [suite.packed.roamCli, 'roam', 'relocate', id, target, '--json'], hub.env);
       await suite.evidence(`v0-relocate-${call}.json`, result);
-      if (result.exitCode !== 0) {
-        const reported = [...result.stdout.matchAll(/\bPID (\d+)/g)].map(match => Number(match[1]));
-        const afterProcesses = await Promise.all([...new Set([...pids, ...reported])].map(processInfo));
-        await suite.evidence(`v0-processes-${call}.json`, { tree, beforeProcesses, afterProcesses });
-      }
       expect(result.exitCode, result.stderr + result.stdout).toBe(0);
       const reply = JSON.parse(result.stdout) as { ok?: boolean; value?: { terminal?: string; placement?: { file?: string; cwd?: string; sessionId?: string } } };
       expect(reply.ok, result.stdout).toBe(true);

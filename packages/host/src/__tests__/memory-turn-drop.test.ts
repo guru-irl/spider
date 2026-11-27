@@ -1,9 +1,10 @@
+import { Type } from "typebox";
 import { afterEach, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall, getCurrentSystemPrompt, getCurrentTools, InMemoryCredentialStore, InMemoryModelsStore, Type, type FauxResponseFactory } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall, getCurrentSystemPrompt, getCurrentTools, InMemoryCredentialStore, InMemoryModelsStore, type FauxResponseFactory } from "@earendil-works/pi-ai";
 import { openDbAt, setGlobalDbPathForTests } from "@spider/db-core";
 import { addMemory } from "@spider/memory";
 import { registerHooks } from "../hooks";

@@ -124,10 +124,10 @@ function sameGeometry(left: DockGeometry, right: DockGeometry): boolean {
   return left.width === right.width && left.safeHeight === right.safeHeight && left.frameRows === right.frameRows && left.origin === right.origin;
 }
 
-/** Install only for the inspected pi version and renderer shape. */
+/** Install only for inspected pi versions and renderer shapes. */
 export function installPiDockGeometry(tui: TUI, piVersion?: string): DockGeometryAdapter {
   if (piVersion === undefined) return inert("Pi host version is unavailable");
-  if (piVersion !== "1.2.0") return inert(`Unsupported pi version: ${piVersion}`);
+  if (piVersion !== "1.2.0" && piVersion !== "1.5.2") return inert(`Unsupported pi version: ${piVersion}`);
   const raw = resolveReceiver(tui);
   if (!raw) return inert("Unrecognized pi renderer");
   const shape = inspectShape(raw);

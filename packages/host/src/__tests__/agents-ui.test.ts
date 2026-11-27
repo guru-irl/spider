@@ -729,7 +729,7 @@ const incompatibleHosts = [
     name: "unsupported pi",
     piVersion: "1.2.1",
     layout: false,
-    reason: "Run detail needs pi 1.2.0 (running 1.2.1); the list still works",
+    reason: "Run detail needs pi 1.2.0 or 1.5.2 (running 1.2.1); the list still works",
   },
   {
     name: "old shim",

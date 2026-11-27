@@ -58,7 +58,7 @@ export function agentsHostFixture(options: { mode?: "regular" | "fullscreen"; do
   };
   const showCustom = Reflect.get(InteractiveMode.prototype, "showExtensionCustom") as
     (this: unknown, factory: CustomFactory, options?: CustomOptions) => Promise<void>;
-  const interactive = { ui: view.tui, editor: view.editor, editorContainer: view.children[4], keybindings: {} };
+  const interactive = { ui: view.tui, editor: view.editor, editorContainer: view.children[4], keybindings: {}, extensionOverlays: new Map() };
   ui.custom.mockImplementation((factory, opts = {}) => {
     const kind = opts.overlayOptions?.width === "80%" ? "detail" : "selector";
     const deferred = kind === "selector" ? (hold === "selector-handle" ? "handle" : undefined)

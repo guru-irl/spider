@@ -1,9 +1,10 @@
+import { Type } from "typebox";
 import { afterEach, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall, InMemoryCredentialStore, InMemoryModelsStore, getCurrentTools, getCurrentSystemPrompt, Type, type JsonObject } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall, InMemoryCredentialStore, InMemoryModelsStore, getCurrentTools, getCurrentSystemPrompt, type JsonObject } from "@earendil-works/pi-ai";
 import { setGlobalDbPathForTests } from "@spider/db-core";
 import spiderExtension from "../extension";
 import { hostUnitPorts } from "./fixtures/pi-events";

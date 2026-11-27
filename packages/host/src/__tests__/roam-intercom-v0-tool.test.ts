@@ -13,7 +13,7 @@ import { INTERCOM_HOST_EVENT } from "../../../intercom/src/host-api.js";
 import { registerIntercomOnce } from "../../../intercom/src/single-instance.js";
 import { startTestBroker, stopTestBroker, testBrokerEnv, testTmpDir } from "../../../intercom/src/test-support.js";
 import { createHostSessionFixture } from "./fixtures/pi-events.js";
-import { SessionManager, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type ExtensionToolContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { openDbAt, paths } from "@spider/db-core";
 import { V0_ASK_MAX_MS, type V0Code, type V0Delivery, type V0Prepare, type V0Text, type V0ToolOptions } from "../../../intercom/src/roam-v0.js";
 
@@ -149,7 +149,7 @@ async function withConfiguredBoxHost(run: (execute: RunBoxTool, sessionId: strin
     expect(tool).toBeDefined();
     await vi.waitFor(async () => expect((await observer.listSessions()).some(session => session.id === sessionId)).toBe(true));
     await run((action, to, message) => tool!.execute(`host-${action}`, { action, to, message },
-      new AbortController().signal, undefined, host.ctx as unknown as ExtensionContext), sessionId);
+      new AbortController().signal, undefined, host.ctx as unknown as ExtensionToolContext), sessionId);
   } finally {
     try {
       for (const handler of host.hooks.get("session_shutdown") ?? []) await handler({ reason: "quit" }, host.ctx);

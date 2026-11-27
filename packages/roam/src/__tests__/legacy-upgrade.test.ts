@@ -51,6 +51,16 @@ function replica(root: string, key: string) {
   return file;
 }
 
+it("reports lost roaming identity as unverified even when a pending move is visible", async () => {
+  const f = fixture();
+  f.journal.begin({ id: "known-move", kind: "move", machineId: hub, expectedEpoch: 1, args: {} });
+  rmSync(join(f.root, "roam", "config.json")); rmSync(join(f.root, "roam", "machine.json"));
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0])).toMatchObject({ reason: "legacy-upgrade-unverified", value: { enabled: null,
+    diagnostics: [expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-unverified.*known-move/) })] } });
+});
+
 it("reports an inventory as unverified when its journal changes between snapshots", async () => {
   const f = fixture(), journalFile = join(f.root, "roam", "journal.db"), original = snapshots.openDiagnosticSnapshot;
   let changed = false;

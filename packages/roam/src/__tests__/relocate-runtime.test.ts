@@ -290,6 +290,25 @@ describe("v0 local runtime",()=>{
   expect(worktree.db.prepare("SELECT epoch,state FROM roam_sessions WHERE session_id=?").get(id)).toEqual({epoch:3,state:"active"});
   expect(f.launches).toHaveLength(0);
  });
+ it("does not acknowledge a moving source stop while the local launch is in flight", async () => {
+  const f = runtimeFixture(), starter = createLocalRuntime(f.options,f.io), stopper = createLocalRuntime(f.options,f.io);
+  const moving = {...f.home,epoch:4,state:"moving" as const,destination:hub,moveId:f.home.moveId!};
+  let entered!: () => void, release!: () => void;
+  const inLaunch = new Promise<void>(resolve => { entered = resolve; });
+  const finish = new Promise<void>(resolve => { release = resolve; });
+  f.io.launch = async () => { entered(); await finish; return {terminal:"core:t"}; };
+  const started = starter.start(f.home,f.placement);
+  await inLaunch;
+  f.options.homes.read = async () => moving;
+  vi.useFakeTimers({toFake:["setTimeout","clearTimeout"]});
+  try {
+   const stopped = stopper.stop(id,moving);
+   await vi.advanceTimersByTimeAsync(5000); // Existing process-lock wait, not a real sleep.
+   expect(await stopped).toMatchObject({ok:false,refusal:{code:"session-busy"}});
+  } finally {
+   vi.useRealTimers(); release(); await started;
+  }
+ });
  it("preparatory activation never launches pi",async()=>{
   const f=runtimeFixture(),local=createLocalRuntime(f.options,f.io);
   f.setHome({...f.home,machineId:hub,epoch:2,state:"moving",destination:box} as unknown as RunningHome);

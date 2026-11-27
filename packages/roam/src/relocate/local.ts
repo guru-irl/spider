@@ -379,6 +379,9 @@ export interface LocalRuntime extends SessionMachinePorts {
   entries(): Promise<readonly SupervisorEntry[]>;
 }
 export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO = createLocalIO(options)): LocalRuntime {
+  function withSessionState<T>(id: SessionId, run: () => Promise<T>): Promise<T> {
+    return withProcessLock(join(options.root,"herdr"),`v0-state:${id}`,run);
+  }
   async function inspectOwner(id: SessionId, placement?: SessionPlacement): Promise<{owner:SessionOwner;blockers?:readonly string[]}> {
     try {
       const lock = await io.inspect(id), terminals = await io.terminals(id), live = terminals.filter(t=>t.state === "live");
@@ -409,7 +412,7 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
     } catch { return refusal("start-pending","The session owner cannot be confirmed."); }
   }
   async function start(home: RunningHome,placement: SessionPlacement): Promise<V0Result<{terminal:string}>> {
-    try { return await withProcessLock(join(options.root,"herdr"),`v0-spawn:${home.sessionId}`,async()=>{
+    try { return await withSessionState(home.sessionId,async()=>{
       if (!await runnable(home,placement)) return refusal("start-pending","The local running home does not authorize launch.");
       const {owner:current,blockers} = await inspectOwner(home.sessionId,placement);
       if (blockers) return busy(blockers);
@@ -439,7 +442,7 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
     catch {return refusal("sync-failed","The local home cannot be read back.");}
   }
   async function activate(home: RunningHome,placement: SessionPlacement): Promise<V0Result<void>> {
-    try { return await withProcessLock(join(options.root,"herdr"),`v0-state:${home.sessionId}`,async()=>{
+    try { return await withSessionState(home.sessionId,async()=>{
       parsePlacement(placement);
       const current=await options.homes.read(home.sessionId);
       const allowed=exactHome(current,home) || current?.state === "moving" && current.moveId === home.moveId && current.epoch+1 === home.epoch && (current.machineId === home.machineId || current.destination === home.machineId) || current?.state === "stopped" && current.machineId === home.machineId && current.epoch+1 === home.epoch;
@@ -458,7 +461,7 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
     }); } catch (error) {return error instanceof SessionSeedBusy ? seedBusyRefusal(error) : refusal("install-failed","Local capture membership could not be activated.");}
   }
   async function stop(id: SessionId,moving: MovingHome|null=null): Promise<V0Result<void>> {
-    try { return await withProcessLock(join(options.root,"herdr"),`v0-state:${id}`,async()=>{
+    try { return await withSessionState(id,async()=>{
       const current = await options.homes.read(id).catch(error => {
         if (moving) throw error;
         return null; // An unreadable home does not authorize a managed pi to run.
@@ -475,7 +478,12 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
       try {for(const key of keys)if(key.startsWith("worktree:"))stores.openStore(key).db.prepare("UPDATE roam_sessions SET state='frozen' WHERE session_id=? AND state='active'").run(id);}
       finally {stores.close();}
       return stopped;
-    }); }catch{return refusal("stop-timeout","The stopped source membership could not be frozen.");}
+    }); } catch (error) {
+      if ((error as {code?:string}|null)?.code === "lock-occupied") {
+        return refusal("session-busy","Another local launch or state change is in progress for this session.","Wait for it to finish, then rerun relocate.");
+      }
+      return refusal("stop-timeout","The stopped source membership could not be frozen.");
+    }
   }
   async function entries(): Promise<readonly SupervisorEntry[]> {
     const homes=await options.homes.list(), byId=new Map(homes.map(home=>[home.sessionId,home]));

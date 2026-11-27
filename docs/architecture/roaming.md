@@ -42,6 +42,16 @@ The enable check refuses older or unmarked live top-level builds. Keep hosting
 disabled until the full phase 4 acceptance gate passes. Interrupted
 rollout must retain the admission and origin guards.
 
+Before the v0 home migration, stop older hub and Pi processes that open the
+same global store. Upgrade every peer before the first v0 home write, including
+adoption of a legacy home. Older peers cannot import the v0 home format.
+
+An older opener can disable global capture after mistaking the new home triggers
+for drift. After stopping those openers, open the store with the upgraded Pi
+extension. It clears the old warning only when the entire layout matches and
+there are no other diagnostics. Run `spider roam enable` on the Mac to resume
+capture. This does not replay writes made while capture was off.
+
 ## Recover a v0 home after global database loss
 
 The Mac writes a private per-session fence under `roam/away-homes` before

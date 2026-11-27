@@ -30,6 +30,7 @@ interface SendOptions {
   supersedes?: string;
   retryOf?: string;
   provenance?: MessageProvenance;
+  exactTarget?: { id: string; endpointEpoch: string };
 }
 
 export interface SendResult extends DeliveryDetails {
@@ -704,6 +705,12 @@ export class IntercomClient extends EventEmitter {
       }
     });
 
+    if (options.exactTarget) {
+      if (!this.supportsFeature(EXACT_SEND_FEATURE) || !options.exactTarget.id || !options.exactTarget.endpointEpoch) {
+        return { id: messageId, delivered: false, delivery: "failed", code: "E_EXACT_SEND_UNSUPPORTED", reason: "Exact target is unavailable", retryable: false, outcomeKnown: true };
+      }
+      return sendOnce(options.exactTarget.id, options.exactTarget.endpointEpoch);
+    }
     if (!this.supportsFeature(EXACT_SEND_FEATURE) || options.replyTo) {
       return sendOnce();
     }

@@ -204,6 +204,27 @@ describe("private roaming broker", () => {
     expect(replacementInbox).toEqual([]);
   });
 
+  it("does not retarget an exact local send after the recipient reconnects", async () => {
+    const sender = await register("stable-a", "a", "alice", "scope-1", 1);
+    const old = await register("stable-b", "b", "ben", "scope-1", 3);
+    const oldInfo = (await sender.listSessions()).find(item => item.id === "stable-b")!;
+    await old.disconnect();
+    const replacement = await register("stable-b", "b", "ben", "scope-1", 3);
+    const inbox: unknown[] = [];
+    replacement.on("message", (...args) => inbox.push(args));
+    const result = await sender.send("ben", {
+      text: "must not retarget", messageId: "exact-local-1",
+      exactTarget: { id: "stable-b", endpointEpoch: oldInfo.endpointEpoch! },
+    });
+    expect(result).toMatchObject({ delivered: false, code: "E_TARGET_REBOUND", outcomeKnown: true });
+    await replacement.listSessions();
+    expect(inbox).toEqual([]);
+
+    expect(await sender.send("ben", { text: "ordinary send" })).toMatchObject({ delivered: true, delivery: "socket_delivered" });
+    await replacement.listSessions();
+    expect(inbox).toHaveLength(1);
+  });
+
   it("advertises roaming over its private Unix socket", async () => {
     const socket = net.connect(getBrokerSocketPath());
     try {

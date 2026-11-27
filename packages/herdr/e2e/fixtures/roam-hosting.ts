@@ -32,6 +32,33 @@ const BOX = '00000000-0000-4000-8000-000000000002';
 const BOOT = '00000000-0000-4000-8000-000000000005';
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
+export interface V0SupervisorCommand { command: string; args: string[]; env: Record<string, string> }
+
+/** Read the fixture-owned unit, rather than inventing the service's launch command. */
+export function parseV0SupervisorUnit(unit: string, node: string, supervisor: string): V0SupervisorCommand {
+  const lines = unit.split('\n');
+  const starts = lines.filter(line => line.startsWith('ExecStart='));
+  const match = starts.length === 1 && /^ExecStart=("(?:\\.|[^"\\])*") ("(?:\\.|[^"\\])*") --v0$/.exec(starts[0]);
+  if (!match) throw new Error('invalid v0 supervisor command');
+  const decode = (value: string): string => {
+    const parsed: unknown = JSON.parse(value);
+    if (typeof parsed !== 'string') throw new Error('invalid v0 supervisor value');
+    return parsed.replaceAll('%%', '%');
+  };
+  const command = decode(match[1]).replaceAll('$$', '$');
+  const executable = decode(match[2]).replaceAll('$$', '$');
+  if (command !== node || executable !== supervisor) throw new Error('unexpected v0 supervisor executable');
+  const env: Record<string, string> = {};
+  const allowed = new Set(['SPIDER_GLOBAL_ROOT', 'SPIDER_ROAM_PI', 'PI_CODING_AGENT_DIR', 'SPIDER_ROAM_HC', 'HC_SESSION', 'HC_SOCKET', 'PATH']);
+  for (const line of lines.filter(line => line.startsWith('Environment='))) {
+    const value = decode(line.slice('Environment='.length)), at = value.indexOf('=');
+    const key = value.slice(0, at);
+    if (at < 1 || !allowed.has(key) || Object.hasOwn(env, key)) throw new Error('unexpected v0 supervisor environment');
+    env[key] = value.slice(at + 1);
+  }
+  return { command, args: [executable, '--v0'], env };
+}
+
 export function participantBootSettings(settings: Record<string, unknown>, release: string, extension: string): Record<string, unknown> {
   if (!Array.isArray(settings.packages)) throw new Error('packed extension is unavailable');
   const packages = settings.packages.filter(entry => entry !== extension);

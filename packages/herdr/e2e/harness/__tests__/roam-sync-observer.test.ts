@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 // @ts-ignore The same ESM fixture is loaded directly by the owned hub process.
 import { instrumentBundle, observeSyncResults } from '../../fixtures/roam-sync-observer-loader.mjs';
@@ -105,4 +106,22 @@ it('records the failing store and leaves the instrumented return values unchange
 it('refuses to instrument an unrecognized or ambiguous bundle', () => {
   expect(() => instrumentBundle('export const unknown = 1;')).toThrow();
   expect(() => instrumentBundle(sampleBundle + '\n' + sampleBundle)).toThrow();
+});
+
+it('loads only the named module and records its unchanged outcome', () => {
+  const entry = join(root, 'sample.mjs'), driver = join(root, 'driver.mjs');
+  writeFileSync(entry, sampleBundle);
+  writeFileSync(join(root, 'other.mjs'), 'export const value = 7;\n');
+  writeFileSync(driver, `import { adapter } from './sample.mjs';
+import { value } from './other.mjs';
+console.log(await adapter('peer', { sync: { sync: async () => [{ code: 1, reason: 'denied', operationId: 'one' }] } }), value);
+`);
+  const register = fileURLToPath(new URL('../../fixtures/roam-sync-register.mjs', import.meta.url));
+  const child = spawnSync(process.execPath, ['--import', register, driver], {
+    env: { ...process.env, SPIDER_HERDR_E2E_SYNC_ENTRY: entry }, encoding: 'utf8',
+  });
+  expect(child.status, child.stderr).toBe(0);
+  expect(child.stdout).toBe('false 7\n');
+  expect(events()).toMatchObject([{ event: 'sync-result', machineId: 'peer',
+    results: [{ code: 1, reason: 'denied', operationId: 'one' }] }]);
 });

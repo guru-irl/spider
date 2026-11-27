@@ -166,7 +166,7 @@ describe("Copilot model sync catalog", () => {
   it("previews migration and keeps the file untouched during a dry run", () => {
     writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = { "model-a": { id: "model-a" } };\n');
     const before = { providers: { "github-copilot": {
-      models: [{ id: "model-a", compactAtPercent: 30, thinkingLevelMap: { xhigh: "max" }, contextWindow: 123 }],
+      models: [{ id: "model-a", compactAtPercent: 70, thinkingLevelMap: { xhigh: "max" }, contextWindow: 123 }],
       modelOverrides: { "model-a": { compactAtPercent: 70, name: "custom" } },
     } } };
     const result = run([], before, false);
@@ -229,8 +229,8 @@ describe("Copilot model sync catalog", () => {
     }
   });
 
-  // Existing override fields win exactly, with one diagnostic for each conflict.
-  it("keeps existing override keys unchanged and reports conflicting shadow fields", () => {
+  // A conflicting user override must be left intact, including header values.
+  it("refuses conflicting carried fields and names header conflicts", () => {
     writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a", name: "Built in", contextWindow: 64000, maxTokens: 2000 }];\n');
     const existing = { name: "Existing name", compactAtPercent: 70, compat: { custom: true },
       headers: { Authorization: "fixture-existing-header" }, contextWindow: 48000, maxTokens: 900 };
@@ -239,29 +239,44 @@ describe("Copilot model sync catalog", () => {
       contextWindow: 50000, maxTokens: 1000, promptCache: { short: 300 } }],
       modelOverrides: { "model-a": existing } } } };
     const result = run([], before);
-    expect(result.status, result.stderr).toBe(0);
-    expect(saved().providers["github-copilot"].modelOverrides["model-a"]).toEqual({
-      ...existing, promptCache: { short: 300 },
-    });
-    const lines = result.stdout.split("\n").filter(line => line.includes("model-a") && line.includes("existing override kept for"));
-    expect(lines).toHaveLength(4);
-    for (const field of ["name", "compactAtPercent", "compat", "headers"]) {
-      expect(lines.some(line => line.includes(field))).toBe(true);
+    expect(result.status).not.toBe(0);
+    for (const name of ["model-a", "name", "compactAtPercent", "compat", "headers", "Authorization"]) {
+      expect(result.stderr).toContain(name);
     }
     expect(result.stdout + result.stderr).not.toContain("fixture-shadow-header");
     expect(result.stdout + result.stderr).not.toContain("fixture-existing-header");
+    expect(readFileSync(modelsPath, "utf8")).toBe(JSON.stringify(before));
+    expect(readdirSync(join(fixture, ".pi/agent"))).toEqual(["models.json"]);
+  });
+
+  // Existing explicit limits remain in place even though shadow limits are discarded.
+  it("keeps existing inherited-field overrides and reports discarded shadow fields", () => {
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a", api: "current-api", contextWindow: 64000, maxTokens: 2000 }];\n');
+    const existing = { api: "existing-api", contextWindow: 48000, maxTokens: 900 };
+    const before = { providers: { "github-copilot": { models: [{ id: "model-a", api: "shadow-api",
+      contextWindow: 50000, maxTokens: 1000, promptCache: { short: 300 } }],
+      modelOverrides: { "model-a": existing } } } };
+    const result = run([], before);
+    expect(result.status, result.stderr).toBe(0);
+    expect(saved().providers["github-copilot"].modelOverrides["model-a"]).toEqual({ ...existing, promptCache: { short: 300 } });
+    const lines = result.stdout.split("\n").filter(line => line.includes("model-a") && /inherit/i.test(line));
+    expect(lines).toHaveLength(1);
+    for (const field of ["api", "contextWindow", "maxTokens"]) expect(lines[0]).toContain(field);
+    expect(result.stdout + result.stderr).not.toContain("shadow-api");
+    expect(result.stdout + result.stderr).not.toContain("existing-api");
   });
 
   // Pi gives a model entry's headers precedence even when they equal the built-in.
-  it("reports an existing header conflict when the shadow matches the built-in", () => {
+  it("refuses an existing header conflict when the shadow matches the built-in", () => {
     writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a", headers: { "X-Mode": "shared" } }];\n');
     const before = { providers: { "github-copilot": { models: [{ id: "model-a", headers: { "X-Mode": "shared" } }],
       modelOverrides: { "model-a": { headers: { "X-Mode": "fixture-existing-header" } } } } } };
     const result = run([], before);
-    expect(result.status, result.stderr).toBe(0);
-    expect(saved().providers["github-copilot"].modelOverrides["model-a"]).toEqual(before.providers["github-copilot"].modelOverrides["model-a"]);
-    expect(result.stdout.split("\n").some(line => line.includes("model-a") && line.includes("existing override kept for headers"))).toBe(true);
+    expect(result.status).not.toBe(0);
+    for (const name of ["model-a", "headers", "X-Mode"]) expect(result.stderr).toContain(name);
     expect(result.stdout + result.stderr).not.toContain("fixture-existing-header");
+    expect(readFileSync(modelsPath, "utf8")).toBe(JSON.stringify(before));
+    expect(readdirSync(join(fixture, ".pi/agent"))).toEqual(["models.json"]);
   });
 
   // Copying all model fields, dropping thinking or overwriting hand tuning changes behavior.
@@ -275,7 +290,7 @@ describe("Copilot model sync catalog", () => {
       "github-copilot": {
         extra: "keep",
         models: [
-          { id: "model-a", name: "old", api: "example", baseUrl: "example", headers: { a: "b" }, input: ["text"], contextWindow: 123, maxTokens: 45, reasoning: true, cost: { input: 5 }, compactAtPercent: 30, promptCache: { short: 300 }, thinkingLevelMap: { minimal: "low", xhigh: "max" }, compat: { forceAdaptiveThinking: true } },
+          { id: "model-a", name: "old", api: "example", baseUrl: "example", headers: { a: "b" }, input: ["text"], contextWindow: 123, maxTokens: 45, reasoning: true, cost: { input: 5 }, compactAtPercent: 70, promptCache: { short: 300 }, thinkingLevelMap: { minimal: "low", xhigh: "max" }, compat: { custom: true } },
           { id: "model-b", promptCache: { short: 5, long: 10 }, compat: { forceAdaptiveThinking: true } },
           { id: "model-e", compat: { forceAdaptiveThinking: true } },
           { id: "model-c", contextWindow: 100 },

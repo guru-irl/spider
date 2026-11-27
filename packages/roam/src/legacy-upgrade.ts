@@ -122,7 +122,7 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
     watch(join(root, "roam", "config.json")); watch(join(root, "roam", "machine.json"));
     watchDb(join(root, "roam", "journal.db")); watchDb(join(root, "spider.db"));
     const journalKinds = new Map<string, string>();
-    const activeFreezes = new Set<string>(), completedFreezes = new Set<string>();
+    const activeFreezes = new Set<string>(), completedFreezes = new Set<string>(), requiredFreezeStores = new Set<string>();
     const v0Maps = new Set<string>();
     const v0: Array<{ origin: "checkpoint" | "incoming"; plan: RelocatePlan; expectedKey?: string }> = [];
     const configFile = join(root, "roam", "config.json"), identityFile = join(root, "roam", "machine.json");
@@ -232,7 +232,11 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
           if (!freezes.some(row => row.session_id === roster.session_id && row.move_id === roster.move_id) || typeof roster.stores_json !== "string") throw new Error("Orphan freeze roster");
           const stores: unknown = JSON.parse(roster.stores_json);
           if (!Array.isArray(stores) || !stores.length || new Set(stores).size !== stores.length) throw new Error("Invalid freeze roster");
-          stores.forEach(storeScope);
+          const freeze = freezes.find(row => row.session_id === roster.session_id && row.move_id === roster.move_id)!;
+          for (const key of stores) {
+            storeScope(key);
+            if (freeze.state !== "complete" && freeze.state !== "aborted") requiredFreezeStores.add(key as string);
+          }
         }
         for (const row of freezes) {
           if (typeof row.session_id !== "string" || !row.session_id || /[\u0000-\u001f\u007f]/.test(row.session_id) ||
@@ -322,7 +326,9 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
           } finally { replica.close(); }
         }
       }
-      for (const key of listStoreKeys(global, storeOptions)) {
+      const keys = listStoreKeys(global, storeOptions);
+      for (const key of requiredFreezeStores) if (!keys.includes(key as (typeof keys)[number])) unknown.push(`freeze store ${safeId(key)} unavailable`);
+      for (const key of keys) {
         if (key !== "global") {
           const file = join(root, "roam", "stores", `${createHash("sha256").update(key).digest("hex")}.db`);
           if (present(file)) {

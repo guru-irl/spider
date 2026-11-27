@@ -245,6 +245,8 @@ export async function stopLocalSession(sessionId: SessionId, moving: MovingHome 
       }
       const {descendants:children,groups} = await io.tree(pid);
       if (!await stillOwned()) return busy([processName(root)]);
+      // Preflight every descendant before signalling any. Recheck each target
+      // because an earlier signal can end a relative or its PID can be reused.
       const liveChildren: Array<SessionProcessTree["descendants"][number]> = [];
       for (const child of children) {
         const member = await io.probe(child.pid);

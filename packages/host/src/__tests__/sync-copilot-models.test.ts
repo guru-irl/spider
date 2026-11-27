@@ -201,6 +201,38 @@ describe("Copilot model sync catalog", () => {
     expect(readdirSync(join(fixture, ".pi/agent"))).toEqual(["models.json"]);
   });
 
+  // A field supported by another pi release is unsafe if the active pi lacks it.
+  it("refuses fields unsupported by the active pi installation", () => {
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a" }];\n');
+    const activeSchema = join(fixture, "pi-active/dist/core/model-config.js");
+    mkdirSync(join(fixture, "pi-active/dist/core"), { recursive: true });
+    writeFileSync(activeSchema, 'export const ModelsJsonSchemas = { modelOverride: { properties: { name: {} } } };\n');
+    const other = installPi("pi-inactive", 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a" }];\n', "2.0.0");
+    mkdirSync(join(other.piRoot, "dist/core"), { recursive: true });
+    writeFileSync(join(other.piRoot, "dist/core/model-config.js"), 'export const ModelsJsonSchemas = { modelOverride: { properties: { samplingParams: {} } } };\n');
+    const before = { providers: { "github-copilot": { models: [{ id: "model-a", samplingParams: { temperature: 0.2 } }] } } };
+    const result = run([], before);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("model-a");
+    expect(result.stderr).toContain("samplingParams");
+    expect(readFileSync(modelsPath, "utf8")).toBe(JSON.stringify(before));
+    expect(readdirSync(join(fixture, ".pi/agent"))).toEqual(["models.json"]);
+  });
+
+  // Unknown schema support must not be mistaken for support in another installation.
+  it("refuses differing override fields when the active schema is unavailable", () => {
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a", reasoning: true }];\n');
+    rmSync(join(fixture, "pi-active/dist/core/model-config.js"), { force: true });
+    const before = { providers: { "github-copilot": { models: [{ id: "model-a", reasoning: false }] } } };
+    const result = run([], before);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/override support.*(?:unavailable|verify)/i);
+    expect(result.stderr).toContain("model-a");
+    expect(result.stderr).toContain("reasoning");
+    expect(readFileSync(modelsPath, "utf8")).toBe(JSON.stringify(before));
+    expect(readdirSync(join(fixture, ".pi/agent"))).toEqual(["models.json"]);
+  });
+
   // Supported fields such as false reasoning and model headers must survive migration.
   it("preserves supported differing fields and reports inherited limits without exposing headers", () => {
     writeFileSync(builtinPath, `export const GITHUB_COPILOT_MODELS = { "model-a": {

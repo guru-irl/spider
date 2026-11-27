@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lane: [1, profile-base, profile-after]
+        lane: [profile-base, profile-after]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -60,8 +60,9 @@ jobs:
         env:
           LANE: ${{ matrix.lane }}
         run: |
-          command -v strace || { sudo apt-get update && sudo apt-get install -y strace; }
           export TMPDIR="$PWD/.spider/scratch/tmp"
+          export HSR_PROCESS_TRACE="$PWD/hsr-results/process.jsonl"
+          export NODE_OPTIONS="--require=$PWD/scripts/hsr-process-clock.cjs ${NODE_OPTIONS:-}"
           unset XDG_RUNTIME_DIR
           file=packages/host/src/__tests__/herdr-setup-releases.test.ts
           if [ "$LANE" = profile-base ]; then
@@ -72,8 +73,7 @@ jobs:
           fi
           python3 scripts/hsr-profile.py "$file" "$LANE"
           set -o pipefail
-          strace -f -ttt -T -y -s 256 -e trace=process,fsync,fdatasync -o hsr-results/process.trace \
-            node node_modules/vitest/vitest.mjs run --maxWorkers=1 \
+          node node_modules/vitest/vitest.mjs run --maxWorkers=1 \
             --reporter=verbose --reporter=json --outputFile=hsr-results/profile.json \
             "$file" -t "$filter" \
             2>&1 | tee hsr-results/profile.log

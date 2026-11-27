@@ -135,8 +135,8 @@ export async function installLocalSession(plan:RelocatePlan,captured:CapturedSes
     const incoming=createStorePort(options.config,options.globalDb,{unmappedWorktree:`worktree:${placement.repoKey}:${placement.workspaceId}`});
     try {incoming.openStore(`worktree:${placement.repoKey}:${placement.workspaceId}`);}finally{incoming.close();}
     await mapWorkspace(options.globalDb,{repoKey:placement.repoKey,workspaceId:placement.workspaceId,path:checkout});
-    const staged=await stageSession({source:{...captured.session,file:transcript},destinationCwd:placement.cwd,destinationParent:null,segment:{version:1,moveId:plan.moveId,epoch:home.epoch,previousMachine:plan.source.machineId,nextMachine:home.machineId,historyMachine:placement.historyMachine,parentRef:null},limits:options.limits},stagingRoot(options));
-    await installSession(staged,placement.file,{journal:options.journal,limits:options.limits,
+    const staged=await stageSession({source:{...captured.session,file:transcript},destinationCwd:placement.cwd,destinationParent:null,preserveBody:true,segment:{version:1,moveId:plan.moveId,epoch:home.epoch,previousMachine:plan.source.machineId,nextMachine:home.machineId,historyMachine:placement.historyMachine,parentRef:null},limits:options.limits},stagingRoot(options));
+    await installSession(staged,placement.file,{preserveBody:true,journal:options.journal,limits:options.limits,
       withBothLocks:withBothLocks??((id,run)=>withPhysicalLocks(options,placement.file,id,run)),
       ownership:async()=>({kind:"absent"}),
     });

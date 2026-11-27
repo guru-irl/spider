@@ -93,14 +93,17 @@ describe("v0 real transfer",()=>{
   expect(readFileSync(join(f.sourceRoot,"file.txt"),"utf8")).toBe("unstaged\n");expect(readFileSync(join(f.sourceRoot,"untracked.txt"),"utf8")).toBe("untracked\n");expect(readFileSync(f.file)).toEqual(body);
   expect(await captureLocalSession(f.plan,f.options,async()=>({kind:"free"}))).toEqual(result);
  });
- it.each([false,true])("install rewrites cwd and appends one segment (linked=%s)",async(linked)=>{
+ it.each([false,true])("install rewrites only the header and preserves the exact body (linked=%s)",async(linked)=>{
   const f=transferFixture(linked),captured=await captureLocalSession(f.plan,f.options,async()=>({kind:"free"}));if(!captured.ok)throw new Error(JSON.stringify(captured));
   for(const manifest of [captured.value.transcriptArtifact,captured.value.bundleArtifact])await receiveArtifactLocally(manifest,f.options,f.destination);
   const installed=await installLocalSession(f.plan,captured.value,f.home,f.destination,undefined,async()=>({kind:"free"}));
   expect(installed).toMatchObject({ok:true});if(!installed.ok)throw new Error(JSON.stringify(installed));
   const bytes=readFileSync(f.plan.destinationPlacement.file),lines=bytes.toString().trimEnd().split("\n"),header=JSON.parse(lines[0]);
   expect(header.id).toBe(id);expect(header.cwd).toBe(join(f.checkout,"sub"));expect(lines[1]).toBe(readFileSync(f.file,"utf8").trimEnd().split("\n")[1]);
-  expect(bytes.toString().match(/"spider-roam-segment"/g)).toHaveLength(1);expect(bytes.toString()).toContain('"epoch":3');
+  const original=readFileSync(f.file);
+  expect(bytes.subarray(bytes.indexOf(10)+1)).toEqual(original.subarray(original.indexOf(10)+1));
+  expect(installed.value.session.leaf).toBe(captured.value.session.leaf);
+  expect(installed.value.session.historySha256).toBe(captured.value.session.historySha256);
   if(linked) expect(f.git(f.checkout,"symbolic-ref","HEAD")).toBe(captured.value.workspace.branch);
   else expect(f.destination.journal.read(f.plan.moveId)).toEqual(expect.arrayContaining([expect.objectContaining({action:"workspace-branch-conflict"})]));
   expect(f.git(f.checkout,"rev-parse","HEAD")).toBe(captured.value.workspace.head);expect(f.git(f.checkout,"write-tree")).toBe(captured.value.workspace.indexTree);expect(readFileSync(join(f.checkout,"file.txt"),"utf8")).toBe("unstaged\n");expect(readFileSync(join(f.checkout,"untracked.txt"),"utf8")).toBe("untracked\n");

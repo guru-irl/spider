@@ -365,8 +365,9 @@ function digestRange(file: string, start: number, end: number): string {
   } finally { closeSync(fd); }
 }
 
-function stagedScan(manifest: SessionManifest, limits?: Readonly<Limits>): { scan: SessionScan; segment: Segment } {
+function stagedScan(manifest: SessionManifest, limits?: Readonly<Limits>, preserveBody = false): { scan: SessionScan; moveId: string } {
   artifactId(manifest.artifactId);
+  if (preserveBody) return { scan: frozenScan(manifest, limits ?? DEFAULT_LIMITS), moveId: manifest.artifactId };
   const scan = scanSession(manifest.file, manifest.sessionId, undefined, limits);
   const actual = scan.manifest, marker = scan.lastEntry;
   if (actual.leaf !== manifest.leaf || actual.size !== manifest.size || actual.sha256 !== manifest.sha256 || actual.cwd !== manifest.cwd ||
@@ -375,7 +376,7 @@ function stagedScan(manifest: SessionManifest, limits?: Readonly<Limits>): { sca
   if (segment.moveId !== manifest.artifactId || digestRange(manifest.file, scan.headerBytes, scan.lastLineStart) !== manifest.historySha256) {
     invalid("staged destination history or marker changed");
   }
-  return { scan, segment };
+  return { scan, moveId: segment.moveId };
 }
 
 /** Validate installed recovery bytes and the next-epoch marker, not a digest that includes the new marker. */
@@ -443,7 +444,7 @@ function markerIdentity(store: OutgoingStore, sessionId: string, moveId: string,
 
 /** Stage the exact source first so later snapshots reuse complete prefix chunks. */
 export async function stageSession(
-  input: { source: SessionManifest; destinationCwd: string; destinationParent: string | null; segment: Segment; limits?: Limits },
+  input: { source: SessionManifest; destinationCwd: string; destinationParent: string | null; segment: Segment; limits?: Limits; preserveBody?: boolean },
   root: string,
 ): Promise<SessionManifest> {
   const { source, destinationCwd, destinationParent } = input;
@@ -453,9 +454,9 @@ export async function stageSession(
   const segment = segmentData(input.segment);
   const id = artifactId(segment.moveId);
   const scan = frozenScan(source, limits);
-  const expectedHistory = scan.firstHistoryMachine ?? segment.previousMachine;
-  if (segment.historyMachine !== expectedHistory || scan.lastSegment &&
-      (segment.previousMachine !== scan.lastSegment.nextMachine || segment.epoch <= scan.lastSegment.epoch)) {
+  const expectedHistory = input.preserveBody ? segment.historyMachine : scan.firstHistoryMachine ?? segment.previousMachine;
+  if (!input.preserveBody && (segment.historyMachine !== expectedHistory || scan.lastSegment &&
+      (segment.previousMachine !== scan.lastSegment.nextMachine || segment.epoch <= scan.lastSegment.epoch))) {
     invalid("segment does not continue the source history");
   }
   const parentRef = scan.header.parentSession && destinationParent === null
@@ -469,11 +470,12 @@ export async function stageSession(
   if (artifact.byteLength !== source.size || artifact.sha256 !== source.sha256) invalid("staged source digest changed");
   const store = openOutgoingStaging(root, limits, false);
   try {
-    const settings = hash(Buffer.from(JSON.stringify({ destinationCwd, destinationParent, data })));
+    const settings = hash(Buffer.from(JSON.stringify({ destinationCwd, destinationParent, data, ...(input.preserveBody ? { preserveBody: true } : {}) })));
     const identity = markerIdentity(store, source.sessionId, id, settings);
     if (scan.parents.has(identity.id)) invalid("segment marker ID already exists");
     const edits = rewriteHeader(scan.headerLayout, destinationCwd, destinationParent, scan.headerBytes);
-    const markerLine = Buffer.from(`${JSON.stringify({ type: "custom", id: identity.id, parentId: source.leaf,
+    const leaf = input.preserveBody ? source.leaf : identity.id;
+    const markerLine = input.preserveBody ? Buffer.alloc(0) : Buffer.from(`${JSON.stringify({ type: "custom", id: identity.id, parentId: source.leaf,
       timestamp: identity.timestamp, customType: "spider-roam-segment", data })}\n`);
     const size = source.size + edits.reduce((total, edit) => total + edit.bytes.length - (edit.end - edit.start), 0) + markerLine.length;
     if (size > limits.sessionBytes) invalid("staged session exceeds size limit");
@@ -521,7 +523,7 @@ export async function stageSession(
         emit(markerLine);
         const sha256 = outputHash.digest("hex");
         if (fd !== undefined) { fsyncSync(fd); closeSync(fd); fd = undefined; }
-        const staged = scanSession(existing ? output : temporary, source.sessionId, identity.id, limits);
+        const staged = scanSession(existing ? output : temporary, source.sessionId, leaf, limits);
         if (staged.manifest.size !== size || staged.manifest.sha256 !== sha256 || staged.header.cwd !== destinationCwd) {
           invalid("staged destination verification failed");
         }
@@ -530,13 +532,13 @@ export async function stageSession(
           try { linkSync(temporary, output); }
           catch (error) {
             if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-            const published = scanSession(output, source.sessionId, identity.id, limits);
+            const published = scanSession(output, source.sessionId, leaf, limits);
             if (published.manifest.size !== size || published.manifest.sha256 !== sha256) invalid("conflicting staged destination");
           }
         }
         if (existingRegular(temporary)) unlinkSync(temporary);
         syncStagingDirectory(directory);
-        return { file: output, sessionId: source.sessionId, cwd: destinationCwd, leaf: identity.id, size, sha256,
+        return { file: output, sessionId: source.sessionId, cwd: destinationCwd, leaf, size, sha256,
           historySha256: source.historySha256, artifactId: id };
       } finally {
         if (fd !== undefined) closeSync(fd);
@@ -616,6 +618,7 @@ function ensureBackup(target: string, backup: string, prior: SessionManifest): v
 
 export interface SessionInstallPorts {
   journal: Journal;
+  preserveBody?: boolean;
   limits?: Readonly<Limits>;
   ownership(): Promise<Probe>;
   withBothLocks<T>(sessionId: string, fn: () => Promise<T>): Promise<T>;
@@ -625,9 +628,9 @@ export interface SessionInstallPorts {
 export async function installSession(manifest: SessionManifest, target: string, ports: SessionInstallPorts): Promise<void> {
   if (!isAbsolute(target) || resolve(target) !== target || target === manifest.file) invalid("invalid destination path");
   await ports.withBothLocks(manifest.sessionId, async () => {
-    const { scan, segment } = stagedScan(manifest, ports.limits);
+    const { scan, moveId } = stagedScan(manifest, ports.limits, ports.preserveBody);
     if ((await ports.ownership()).kind !== "absent") invalid("destination owner is live or uncertain");
-    ports.journal.record(segment.moveId, "session-install-intent", { file: target, artifactId: manifest.artifactId, sha256: manifest.sha256 });
+    ports.journal.record(moveId, "session-install-intent", { file: target, artifactId: manifest.artifactId, sha256: manifest.sha256 });
     const directory = dirname(target);
     privateDirectory(directory);
     const targetStat = existingRegular(target);
@@ -635,24 +638,24 @@ export async function installSession(manifest: SessionManifest, target: string, 
     if (targetStat) {
       prior = scanSession(target, manifest.sessionId, undefined, ports.limits);
       if (prior.manifest.size === manifest.size && prior.manifest.sha256 === manifest.sha256) {
-        stagedScan({ ...manifest, file: target }, ports.limits);
-        ports.journal.record(segment.moveId, "session-install-complete", { file: target, sha256: manifest.sha256 });
+        stagedScan({ ...manifest, file: target }, ports.limits, ports.preserveBody);
+        ports.journal.record(moveId, "session-install-complete", { file: target, sha256: manifest.sha256 });
         return;
       }
       const length = prior.manifest.size - prior.headerBytes;
-      if (length > scan.lastLineStart - scan.headerBytes ||
+      if (length > (ports.preserveBody ? scan.manifest.size : scan.lastLineStart) - scan.headerBytes ||
           digestRange(manifest.file, scan.headerBytes, scan.headerBytes + length) !== prior.manifest.historySha256) {
         invalid("prior session history diverged");
       }
       backup = join(directory, `.${basename(target)}.${manifest.artifactId}.backup`);
-      ports.journal.record(segment.moveId, "session-backup-intent", { file: backup, sha256: prior.manifest.sha256 });
+      ports.journal.record(moveId, "session-backup-intent", { file: backup, sha256: prior.manifest.sha256 });
       ensureBackup(target, backup, prior.manifest);
-      ports.journal.record(segment.moveId, "session-backup-complete", { file: backup, sha256: prior.manifest.sha256 });
+      ports.journal.record(moveId, "session-backup-complete", { file: backup, sha256: prior.manifest.sha256 });
     }
     const temporary = join(directory, `.${randomUUID()}.session-part`);
     try {
       copyVerified(manifest.file, temporary, manifest.size, manifest.sha256);
-      stagedScan({ ...manifest, file: temporary }, ports.limits);
+      stagedScan({ ...manifest, file: temporary }, ports.limits, ports.preserveBody);
       syncStagingDirectory(directory);
       if ((await ports.ownership()).kind !== "absent") invalid("destination owner is live or uncertain");
       const current = existingRegular(target);
@@ -663,10 +666,10 @@ export async function installSession(manifest: SessionManifest, target: string, 
           invalid("prior destination changed");
         }
       } else if (current) invalid("destination appeared during installation");
-      ports.journal.record(segment.moveId, "session-install-publish", { file: target, sha256: manifest.sha256, backup });
+      ports.journal.record(moveId, "session-install-publish", { file: target, sha256: manifest.sha256, backup });
       renameSync(temporary, target);
       syncStagingDirectory(directory);
-      ports.journal.record(segment.moveId, "session-install-complete", { file: target, sha256: manifest.sha256 });
+      ports.journal.record(moveId, "session-install-complete", { file: target, sha256: manifest.sha256 });
     } finally { if (existsSync(temporary)) unlinkSync(temporary); }
   });
 }

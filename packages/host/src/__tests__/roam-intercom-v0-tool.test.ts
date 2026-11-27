@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import net from "node:net";
 import { join } from "node:path";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -1019,6 +1019,53 @@ it("does not record a completed remote send in a replacement session", async () 
     expect(result.details).toMatchObject({ delivery: "unknown", messageId: sent!.id, outcomeKnown: false });
     expect(f.entries.some(entry => entry.type === "intercom_sent")).toBe(false);
   } finally { if (sent) finish?.({ kind: "socket_delivered", id: sent.id }); await f.cleanup(); }
+});
+
+it.each(["send", "ask"] as const)("preserves a confirmed remote %s across local broker disconnect", async action => {
+  const entered = Promise.withResolvers<V0Text>(), outcome = Promise.withResolvers<V0Delivery>();
+  const start = (message: V0Text) => { entered.resolve(message); return outcome.promise; };
+  const prepare: V0Prepare = async () => ({ kind: "remote", label: "b/ben", send: start, ask: start });
+  let client: IntercomClient | undefined;
+  const connect = IntercomClient.prototype.connect;
+  const spy = vi.spyOn(IntercomClient.prototype, "connect").mockImplementation(function (this: IntercomClient, registration, id) {
+    if (id === "sender-session" && !client) client = this;
+    return connect.call(this, registration, id);
+  });
+  const replacement = new IntercomClient();
+  let f: Awaited<ReturnType<typeof fixture>> | undefined, pending: Promise<any> | undefined;
+  try {
+    f = await fixture({ homeEpoch: () => 7, prepare });
+    pending = f.tool.execute(action, { action, to: "ben", message: "original text" }, new AbortController().signal, undefined, f.ctx);
+    const message = await entered.promise;
+    expect(client?.isConnected()).toBe(true);
+    const disconnected = once(client!, "disconnected");
+    // The broker closes the previous client's socket on duplicate registration.
+    await replacement.connect({ name: "replacement", cwd: process.cwd(), model: "fixture", pid: process.pid,
+      startedAt: 1, lastActivity: 1 }, "sender-session");
+    await disconnected;
+    expect(client?.isConnected()).toBe(false);
+    outcome.resolve(action === "send" ? { kind: "socket_delivered", id: message.id }
+      : { kind: "replied", id: message.id, replyId: "returned-reply", text: "returned answer" });
+    const result = await pending;
+    const recorded = f.entries.filter(entry => entry.type === "intercom_sent" || entry.type === "intercom_received");
+    const sent = { type: "intercom_sent", data: expect.objectContaining({ messageId: message.id, message: { text: "original text" } }) };
+    if (action === "send") {
+      expect(result.details).toMatchObject({ delivered: true, delivery: "socket_delivered", messageId: message.id });
+      expect(recorded).toEqual([sent]);
+    } else {
+      expect(result.content[0].text).toContain("returned answer");
+      expect(result.details).toMatchObject({ delivery: "replied", messageId: message.id, replyId: "returned-reply" });
+      expect(recorded).toEqual([sent, { type: "intercom_received", data: expect.objectContaining({
+        messageId: "returned-reply", message: { text: "returned answer" },
+      }) }]);
+    }
+  } finally {
+    outcome.resolve({ kind: "unknown", id: "cleanup" });
+    await pending;
+    await replacement.disconnect();
+    await f?.cleanup();
+    spy.mockRestore();
+  }
 });
 
 it.each(["send", "ask"] as const)("does not record a remote %s after source admission changes in flight", async action => {

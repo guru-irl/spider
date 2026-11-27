@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 
@@ -49,8 +49,21 @@ https.request = (_url, options, callback) => {
     response.emit('data', JSON.stringify({ data: [{ id: 'fixture-only-picker', model_picker_enabled: true, capabilities: { type: 'chat', supports: {}, limits: {} } }] })); response.emit('end');
   }); return req;
 };\n`);
+  const fakeBin = join(root, 'bin');
+  const piRoot = join(root, 'pi-install');
+  const executable = join(piRoot, 'dist', 'bundle', 'cli.js');
+  const catalogDir = join(piRoot, 'node_modules', '@earendil-works', 'pi-ai', 'dist', 'providers');
+  mkdirSync(fakeBin);
+  mkdirSync(join(piRoot, 'dist', 'bundle'), { recursive: true });
+  mkdirSync(catalogDir, { recursive: true });
+  writeFileSync(join(piRoot, 'package.json'), JSON.stringify({ name: '@earendil-works/pi-coding-agent', version: '1.0.0', type: 'module' }));
+  writeFileSync(executable, '#!/usr/bin/env node\n');
+  chmodSync(executable, 0o755);
+  writeFileSync(join(catalogDir, 'github-copilot.models.js'), 'export const GITHUB_COPILOT_MODELS = [{ id: "fixture-builtin" }];\n');
+  symlinkSync(executable, join(fakeBin, 'pi'));
   for (const mode of ['unset', 'absolute', 'tilde'] as const) {
     const { agent, defaultAgent, env } = pathsFor(mode);
+    env.PATH = fakeBin;
     mkdirSync(agent, { recursive: true });
     writeFileSync(join(agent, 'auth.json'), JSON.stringify({ 'github-copilot': { access: 'fixture-token', availableModelIds: ['fixture-only-picker'] } }));
     const original = JSON.stringify({ providers: {}, marker: mode });

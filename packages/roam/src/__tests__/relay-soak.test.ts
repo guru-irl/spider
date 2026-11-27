@@ -695,9 +695,13 @@ describe("packed soak operator commands", () => {
 
   beforeAll(async () => {
     root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "soak-package-"));
-    const outDir = join(root, "dist/roam");
-    await buildRoamEntries(outDir);
-    entry = join(outDir, "relay-soak.mjs");
+    const builtEntry = process.env.ROAM_SOAK_TEST_ENTRY;
+    if (builtEntry) entry = resolve(builtEntry);
+    else {
+      const outDir = join(root, "dist/roam");
+      await buildRoamEntries(outDir);
+      entry = join(outDir, "relay-soak.mjs");
+    }
     packed = await import(/* @vite-ignore */ pathToFileURL(entry).href);
   }, 30_000);
   afterEach(() => vi.useRealTimers());

@@ -89,7 +89,7 @@ export function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 // Every new ports object sees only durable state, never another invocation's locals.
-export function ports(s: FakeState): RelocatePorts {
+export function ports(s: FakeState): RelocatePorts & {confirmPending: RelocatePorts["confirm"]} {
   const before = (effect: string) => {
     s.attempts.push(effect);
     expect(s.locked).toBe(true);
@@ -112,7 +112,7 @@ export function ports(s: FakeState): RelocatePorts {
     effect(name);
     return ok(value);
   };
-  return {
+  const result: RelocatePorts & {confirmPending: RelocatePorts["confirm"]} = {
     withSession: async (_id, run) => {
       expect(_id).toBe(sessionId);
       expect(s.locked).toBe(false);
@@ -193,5 +193,7 @@ export function ports(s: FakeState): RelocatePorts {
       expect(s.home).toEqual(home); expect(s.processes.has(p.machineId)).toBe(true);
       return { terminal: `terminal-${p.machineId}` };
     }),
+    confirmPending: (home, p) => result.confirm(home, p),
   };
+  return result;
 }

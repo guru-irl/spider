@@ -128,7 +128,7 @@ describe("relocate", () => {
     };
     const target = mode === "retry" ? destination : source;
     const disposition = mode === "retry" ? "relocated" : mode === "undo" ? "undone" : "already-home";
-    expect(await relocate({sessionId,destinationMachine:target},p,{clock:readyClock,timeoutMs:1_000,confirmPending:p.confirm})).toMatchObject({ok:true,value:{disposition,home:{machineId:target}}});
+    expect(await relocate({sessionId,destinationMachine:target},p)).toMatchObject({ok:true,value:{disposition,home:{machineId:target}}});
     expect(s.effects.slice(before).filter(effect=>effect===`start-${target}`)).toHaveLength(1);
     expect(s.processes).toEqual(new Set([target]));
   });
@@ -139,9 +139,10 @@ describe("relocate", () => {
       const started = await start(...args);
       return started.ok ? {ok:false,refusal:refusal("start-pending")} : started;
     };
-    expect(await relocate(request,p,{clock:readyClock,timeoutMs:1_000})).toMatchObject({ok:false,step:"start-destination",refusal:{code:"start-pending"}});
+    const {confirmPending: _confirmPending, ...withoutExact} = p;
+    expect(await relocate(request,withoutExact,{clock:readyClock,timeoutMs:1_000})).toMatchObject({ok:false,step:"start-destination",refusal:{code:"start-pending"}});
     expect(s.effects).not.toContain("confirm-destination");
-    expect(await relocate(request,p,{clock:readyClock,timeoutMs:1_000,confirmPending:p.confirm})).toMatchObject({ok:true,value:{disposition:"relocated"}});
+    expect(await relocate(request,p,{clock:readyClock,timeoutMs:1_000})).toMatchObject({ok:true,value:{disposition:"relocated"}});
     expect(s.processes).toEqual(new Set([destination]));
     expect(s.snapshots.size).toBe(1);
   });

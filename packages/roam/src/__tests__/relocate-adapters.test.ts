@@ -60,9 +60,11 @@ describe("relocate adapters", () => {
       received=JSON.parse(input.stdin!.toString());
       return Buffer.from(JSON.stringify({ok:true,value:{version:1,terminal:"core:t",...(acknowledged ? {exact:true} : {})}}));
     }};
-    const result=await createRelocateAdapters(f.options).ports.confirm(home,placement,true);
-    expect(result).toMatchObject(acknowledged ? {ok:true,value:{terminal:"core:t"}} : {ok:false,refusal:{code:"start-pending"}});
+    const adapters=createRelocateAdapters(f.options);
+    const expected=acknowledged ? {ok:true,value:{terminal:"core:t"}} : {ok:false,refusal:{code:"start-pending"}};
+    expect(await adapters.ports.confirm(home,placement,true)).toMatchObject(expected);
     expect(received).toMatchObject({version:1,kind:"confirm",exact:true,home,placement});
+    expect(await adapters.ports.confirmPending(home,placement)).toMatchObject(expected);
   });
   it("authorizes a revisit past a stale moving replica but rejects newer homes",async()=>{
     const f=adapterFixture(),source=await inspectLocalSource(id,f.options);if(!source.ok)throw new Error("source missing");

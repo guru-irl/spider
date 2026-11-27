@@ -407,6 +407,20 @@ describe('cross-machine pane story registration', () => {
 });
 
 describe('runner boundary and report', () => {
+  it('keeps the relay story out of the headless and roam defaults', () => {
+    expect(profileIds.headless).not.toContain('R19');
+    expect(parseOptions(['--task', 'roam'], {}).ids).not.toContain('R19');
+  });
+  it('discovers and selects the relay story explicitly with one worker', async () => {
+    const options = parseOptions(['--tier', 'headless', '--story', 'R19'], {});
+    expect(options.ids).toEqual(['R19']);
+    expect(storyWorkers(options)).toBe(1);
+    // @ts-ignore Vite provides import.meta.glob during test transformation.
+    const definitions = await discoverScenarios(import.meta.glob('./roam-relays.test.ts'));
+    const selected = selectScenarios(definitions, options);
+    expect(selected).toHaveLength(1);
+    expect(selected[0]).toMatchObject({ id: 'R19', tiers: ['headless'] });
+  });
   it('pins the Linux release and selects registered headless stories for CI', async () => {
     const file = resolve('packages/herdr/e2e/controls/ci-stories.json');
     expect(existsSync(file)).toBe(true);
@@ -630,7 +644,7 @@ describe('runner boundary and report', () => {
       { id: 'S54', tier: 'ci', result: 'blocked', evidence: 'S54.json', reason: 'native-input' },
       { id: 'S55', tier: 'ci', result: 'failed', evidence: 'S55.json', reason: 'cleanup failed' },
     ]);
-    expect(matrix).toHaveLength(78);
+    expect(matrix).toHaveLength(79);
     expect(matrix.find((x: { id: string }) => x.id === 'R14').result).toBe('not exercised');
     expect(matrix.find((x: { id: string }) => x.id === 'R18').result).toBe('not exercised');
     expect(matrix.find((x: { id: string }) => x.id === 'S01').result).toBe('not exercised');

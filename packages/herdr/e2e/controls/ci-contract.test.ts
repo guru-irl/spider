@@ -100,6 +100,19 @@ describe('release installation contract', () => {
 
 describe('headless story matrix', () => {
   const select = (input: string) => spawnSync(process.execPath, ['packages/herdr/e2e/controls/ci-matrix.mjs', input], { cwd: process.cwd(), encoding: 'utf8' });
+  const matrixFor = (input: string): { story: string; timeout: number }[] => {
+    const result = select(input);
+    expect(result.status, result.stderr).toBe(0);
+    return (JSON.parse(result.stdout) as { include: { story: string; timeout: number }[] }).include;
+  };
+
+  it('selects the relay story explicitly with the unmeasured timeout', () => {
+    expect(matrixFor('R19')).toEqual([{ story: 'R19', timeout: 5 }]);
+  });
+
+  it('keeps the relay story out of the default CI matrix', () => {
+    expect(matrixFor('')).not.toContainEqual(expect.objectContaining({ story: 'R19' }));
+  });
 
   it('runs each default or explicitly requested story exactly once', () => {
     const config = JSON.parse(readFileSync(join(process.cwd(), 'packages/herdr/e2e/controls/ci-stories.json'), 'utf8'));

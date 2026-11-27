@@ -6,12 +6,12 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const storyIds = Array.from({ length: 56 }, (_, i) => `S${String(i + 1).padStart(2, '0')}`);
-export const roamStoryIds = ['R02', 'R03', 'R04', 'R05', 'R06', 'R07', 'R08', 'R10', 'R11', 'R12', 'R13', 'R14', 'R14local', 'R18'];
+export const roamStoryIds = ['R02', 'R03', 'R04', 'R05', 'R06', 'R07', 'R08', 'R10', 'R11', 'R12', 'R13', 'R14', 'R14local', 'R18', 'R19'];
 export const paneStoryIds = ['B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08'];
 const allStoryIds = [...storyIds, ...roamStoryIds, ...paneStoryIds];
 const validStoryId = id => typeof id === 'string' && (allStoryIds.includes(id) || id === 'B00' || /^H-[a-z0-9-]+$/.test(id));
 export const profileIds = {
-  headless: [...storyIds.filter(id => id !== 'S53'), ...roamStoryIds.filter(id => id !== 'R14local'), ...paneStoryIds],
+  headless: [...storyIds.filter(id => id !== 'S53'), ...roamStoryIds.filter(id => id !== 'R14local' && id !== 'R19'), ...paneStoryIds],
   ci: ['S03', 'S04', 'S14', 'S27', 'S45', 'S46', 'S47', 'S48', 'S49', 'S51', 'S55', 'S56'],
   remote: ['H-tier2-smoke', 'S05', 'S07', ...storyIds.slice(14, 26), 'S28', 'S36', 'S45', 'S48'],
   app: [...storyIds.slice(0, 3), ...storyIds.slice(4, 13), ...storyIds.slice(14, 23), 'S25', ...storyIds.slice(25, 44).filter(id => id !== 'S27'), 'S50', 'S51', ...storyIds.slice(51, 54), ...paneStoryIds],
@@ -167,7 +167,7 @@ export function storyWorkerEnvironment(fenced, caller, tier) {
 }
 export function storyWorkers(options) {
   if (options.ids?.some(id => paneStoryIds.includes(id))) return 1;
-  if (options.ids?.some(id => ['R03', 'R04', 'R05', 'R06', 'R07', 'R08', 'R10', 'R11', 'R12', 'R13', 'R18'].includes(id))) return 1;
+  if (options.ids?.some(id => ['R03', 'R04', 'R05', 'R06', 'R07', 'R08', 'R10', 'R11', 'R12', 'R13', 'R18', 'R19'].includes(id))) return 1;
   if (options.ids?.length === 1 && ['R14', 'R14local'].includes(options.ids[0])) return 1;
   return options.tier === 'app' ? 1 : 2;
 }

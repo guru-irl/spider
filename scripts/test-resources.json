@@ -353,6 +353,7 @@
       "packages/host/src/__tests__/models-catalog.test.ts",
       "packages/host/src/__tests__/roam-cli-installed.test.ts",
       "packages/host/src/__tests__/roam-intercom-v0-tool.test.ts",
+      "packages/host/src/__tests__/sync-copilot-models.test.ts",
       "packages/host/src/compaction/__tests__/files.test.ts",
       "packages/host/src/compaction/__tests__/pi12-parity.test.ts",
       "packages/host/src/compaction/__tests__/seeded.test.ts",

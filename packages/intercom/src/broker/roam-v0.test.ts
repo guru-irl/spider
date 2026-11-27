@@ -91,8 +91,9 @@ describe("private roaming broker", () => {
   let broker: ChildProcess;
   const clients: IntercomClient[] = [];
 
-  async function register(stableId: string, persistentId: string, name: string, scopeId: string, v0HomeEpoch?: number, runtimeFallbackAlias = false) {
+  async function register(stableId: string, persistentId: string, name: string, scopeId: string, v0HomeEpoch?: number, runtimeFallbackAlias = false, onMessage?: (...args: unknown[]) => void) {
     const client = new IntercomClient();
+    if (onMessage) client.on("message", onMessage);
     clients.push(client);
     const prior = process.env.PI_INTERCOM_SCOPE_ID;
     process.env.PI_INTERCOM_SCOPE_ID = scopeId;
@@ -468,6 +469,47 @@ describe("private roaming broker", () => {
       else process.env.PI_CODING_AGENT_DIR = priorAgent;
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("refuses an endpoint whose explicit name changed after lookup", async () => {
+    const ben = await register("stable-b", "b", "ben", "scope-1", 3);
+    const target = ((await lookup("scope-1", "name", "ben")).targets as V0Endpoint[])[0];
+    const inbox: unknown[] = [];
+    ben.on("message", (...args) => inbox.push(args));
+    ben.updatePresence({ name: "renamed" });
+    await ben.listSessions();
+    expect(await request({ kind: "deliver", from: origin, target, message })).toEqual({ kind: "refused", code: "changed" });
+    await ben.listSessions();
+    expect(inbox).toEqual([]);
+  });
+
+  it("does not queue an exact send when its recipient disconnects", async () => {
+    const sender = await register("stable-a", "a", "alice", "scope-1", 1);
+    const old = await register("stable-b", "b", "ben", "scope-1", 3);
+    const oldInfo = (await sender.listSessions()).find(item => item.id === "stable-b")!;
+    await old.disconnect();
+    const result = await sender.send("ben", {
+      text: "not queued", messageId: "offline-exact",
+      exactTarget: { id: "stable-b", endpointEpoch: oldInfo.endpointEpoch! },
+    });
+    expect(result).toMatchObject({ delivered: false, code: "E_TARGET_NOT_FOUND" });
+    const inbox: unknown[] = [];
+    const replacement = await register("stable-b", "b", "ben", "scope-1", 3, false, (...args) => inbox.push(args));
+    await replacement.listSessions();
+    expect(inbox).toEqual([]);
+  });
+
+  it("keeps the ordinary local mailbox for clients without v0 admission", async () => {
+    const sender = await register("legacy-a", "a", "alice", "scope-1");
+    const old = await register("legacy-b", "b", "mailbox-ben", "scope-1");
+    await old.disconnect();
+    expect(await sender.send("mailbox-ben", { text: "queued locally", messageId: "local-mail" }))
+      .toMatchObject({ delivered: true, delivery: "queued" });
+    const inbox: unknown[][] = [];
+    const replacement = await register("legacy-b", "b", "mailbox-ben", "scope-1", undefined, false, (...args) => inbox.push(args));
+    await replacement.listSessions();
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0][1]).toMatchObject({ id: "local-mail", content: { text: "queued locally" } });
   });
 
   it("advertises roaming over its private Unix socket", async () => {

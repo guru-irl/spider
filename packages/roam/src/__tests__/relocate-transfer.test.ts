@@ -10,6 +10,7 @@ import { transferArtifact, handleArtifactRequest } from "../artifacts";
 import { openStaging } from "../staging";
 import type { ArtifactManifest } from "../contracts";
 import { captureLocalSession, installLocalSession, resolveVerifiedArtifact } from "../relocate/transfer";
+import { handleRelocateAgent } from "../relocate/remote";
 import type { RelocateAdapterOptions, RelocateId, RelocatePlan, RunningHome } from "../relocate/types";
 import { stopLocalSession, type LocalIO } from "../relocate/local";
 import type { SessionId } from "../relocate/types";
@@ -69,6 +70,16 @@ async function receiveArtifactLocally(manifest:ArtifactManifest,source:RelocateA
  if(result.code!==0)throw new Error(JSON.stringify(result));
 }
 describe("v0 real transfer",()=>{
+ it.each(["authorize", "install"] as const)("a box disabled before moving-home replication refuses %s", async kind => {
+  const f = transferFixture(), captured = await captureLocalSession(f.plan, f.options, async () => ({ kind: "free" }));
+  if (!captured.ok) throw new Error(JSON.stringify(captured));
+  f.destination.homes.read = async () => f.plan.source;
+  const request = kind === "authorize" ? { version: 1, kind, plan: f.plan } : { version: 1, kind, plan: f.plan, captured: captured.value, home: f.home };
+  expect(await handleRelocateAgent(request, f.destination)).toMatchObject({ ok: false, refusal: {
+    code: "replication-disabled", nextStep: expect.stringContaining("spider roam enable"),
+  } });
+  expect(f.destination.journal.read(f.plan.moveId)).toEqual([]);
+ });
  it("chunk retries preserve verified bytes",async()=>{
   const f=transferFixture(),captured=await captureLocalSession(f.plan,f.options,async()=>({kind:"free"}));
   if(!captured.ok)throw new Error(JSON.stringify(captured));

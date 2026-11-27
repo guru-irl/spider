@@ -26,7 +26,7 @@ function fixture(role: "hub" | "box") {
   const launchd = { plistDir: join(root, "LaunchAgents"), serviceHome: root, async launchctl(argv: readonly string[]) { calls.push([...argv]); } };
   const systemd = { unitDir: join(root, "units"), async run(argv: readonly string[]) { calls.push([...argv]); } };
   const options = { resolveCli: () => cli, launchd, systemd };
-  return { root, options, calls, launchd, systemd, cli, supervisor, coreUnit,
+  return { root, options, calls, launchd, systemd, cli, supervisor, coreUnit, hub, box, machineId,
     enabled: () => JSON.parse(readFileSync(configFile, "utf8")).enabled };
 }
 
@@ -67,6 +67,31 @@ it("a box enables and disables only its local v0 supervisor", async () => {
   expect(f.enabled()).toBe(false);
   expect(existsSync(v0)).toBe(false);
   expect(f.calls.slice(-2)).toEqual([["--user", "disable", "--now", v0Name], ["--user", "daemon-reload"]]);
+});
+
+it.each([
+  ["hub", "source"], ["hub", "destination"], ["box", "source"], ["box", "destination"],
+] as const)("disable leaves the %s running while it is the moving home's %s", async (role, side) => {
+  const f = fixture(role), io = { out: vi.fn(), err: vi.fn() }, options = { v0: { lifecycle: f.options } };
+  expect(await main(["roam", "enable"], io, options)).toBe(0);
+  const other = role === "hub" ? f.box : f.hub;
+  const [source, destination] = side === "source" ? [f.machineId, other] : [other, f.machineId];
+  const db = openDb(join(f.root, "spider.db"));
+  try {
+    db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state,destination) VALUES (?,?,2,?,1,'moving',?)")
+      .run("session-a", source, "v0-33333333-3333-4333-8333-333333333333", destination);
+  } finally { db.close(); }
+  f.calls.length = 0;
+  expect(await main(["roam", "disable"], io, options)).toBe(1);
+  const refusal = io.err.mock.calls.flat().join("");
+  expect(refusal).toContain(`spider roam relocate session-a ${destination}`);
+  expect(refusal).toContain(`spider roam relocate session-a ${source}`);
+  expect(refusal).toContain(`spider roam set-home session-a ${source} --force`);
+  expect(await main(["roam", "disable", "--json"], io, options)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0])).toMatchObject({ code: 1, reason: "v0-move-in-progress",
+    operationId: "v0-33333333-3333-4333-8333-333333333333", nextStep: expect.stringContaining(`spider roam relocate session-a ${destination}`) });
+  expect(f.enabled()).toBe(true);
+  expect(f.calls).toEqual([]);
 });
 
 it("retired legacy CLI move aliases name relocate before trying to contact a hub", async () => {

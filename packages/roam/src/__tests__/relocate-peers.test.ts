@@ -115,6 +115,17 @@ it.each([true, false])("forget records a revocation without a legacy hub (enable
   } finally { await runtime.close(); f.replica.close(); vi.unstubAllEnvs(); }
 });
 
+it("cannot enter moving after hub disable has finished checking the homes", async () => {
+  const f = fixture(), runtime = f.start();
+  try {
+    const before = await runtime.homes.initialize(sessionId, mac);
+    f.config.enabled = false;
+    await expect(runtime.homes.compareAndSwap(before, { ...before, state: "moving", destination: box,
+      epoch: 2, moveId: "v0-33333333-3333-4333-8333-333333333333" })).rejects.toThrow(/disabled/);
+    expect(await runtime.homes.read(sessionId)).toEqual(before);
+  } finally { await runtime.close(); f.replica.close(); }
+});
+
 it("rejects relocate and forced set-home to a forgotten peer without contacting it", async () => {
   const f = fixture();
   const runtime = f.start(); f.forget();

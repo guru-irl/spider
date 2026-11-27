@@ -10,6 +10,7 @@ import { createSync } from "../sync";
 import type { Clock, GitPorts, Transport } from "../contracts";
 import { openOutgoingStaging } from "../staging";
 import { createHomeStore } from "./home";
+import { withV0HomeLifecycle } from "./home-lifecycle";
 import { relocate } from "./relocate";
 import { setHome } from "./set-home";
 import { createRelocateAdapters } from "./adapters";
@@ -81,9 +82,16 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
         return homeStore.initialize(sessionId, source);
       },
       async compareAndSwap(expected, next) {
-        if (forgotten(next.machineId) || next.destination !== null && forgotten(next.destination))
-          throw new Error("Cannot assign a home to a forgotten peer");
-        return homeStore.compareAndSwap(expected, next);
+        const swap = () => {
+          if (forgotten(next.machineId) || next.destination !== null && forgotten(next.destination))
+            throw new Error("Cannot assign a home to a forgotten peer");
+          return homeStore.compareAndSwap(expected, next);
+        };
+        if (next.state !== "moving") return swap();
+        return withV0HomeLifecycle(root, config.limits.controlMs, async () => {
+          if (!config.enabled) throw new Error("Roaming replication is disabled");
+          return swap();
+        });
       },
     };
     const raw=guardV0PeerTransport(overrides.transport ?? createTransport({binary:process.env.SPIDER_ROAM_HC ?? "hc",env:{...localLaunchEnvironment(),SPIDER_GLOBAL_ROOT:root},enrolled:core.config.peers}), machine => {

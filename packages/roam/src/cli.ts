@@ -199,6 +199,10 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
     const result = await configureV0Service(root, argv[1] === "enable", {
       resolveCli: () => roamingCliEntry(options?.bundleUrl ?? new URL(import.meta.url)), ...options?.v0?.lifecycle,
     });
+    if (json && result.reason === "v0-move-in-progress") {
+      io.out(`${JSON.stringify({ ...outcome(result.code, result.reason), operationId: result.operationId, nextStep: result.nextStep })}\n`);
+      return result.code;
+    }
     const value = result.information || result.issues ? { information: result.information, issues: result.issues } : null;
     return emitOutcome(io, { ...outcome(result.code, result.reason, value),
       ...(result.repairCommand ? { repairCommand: result.repairCommand } : {}) }, json, `${result.message.split("\n").map(clean).join("\n")}\n`);

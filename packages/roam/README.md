@@ -5,7 +5,22 @@ hub synchronization, machine intercom and session moves. See
 [Roaming architecture](../../docs/architecture/roaming.md) for configuration,
 operator commands and ownership contracts.
 
-## Enable and broker readiness
+## Roaming v0 service controls
+
+Run `spider roam enable` on the Mac or box to replace its local legacy roaming
+service with the v0 service. Pending legacy launches are warnings with stop
+commands. `spider roam disable` removes the local v0 service. Pending legacy
+moves are warnings with cancel commands. Disable refuses if this machine is
+the source or destination of a moving v0 home it knows about.
+
+If a box disables roaming before it receives the Mac's moving home, relocate
+fails at the destination step and leaves the home `moving`. Re-enable the box
+and rerun `spider roam relocate <session> <destination>` to finish, or rerun it
+with the source to undo. If neither works and you have a verified backup, use
+`spider roam set-home <session> <machine> --force` to recover. The move does not
+start a second copy of the session.
+
+## Legacy enable and broker readiness
 
 `production-controls.ts` completes read-only peer preflight before starting
 services. The private box startup command runs doctor checks and resolves

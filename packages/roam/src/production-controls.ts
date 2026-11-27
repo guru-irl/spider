@@ -19,6 +19,7 @@ import { storeScope } from "@spider/db-core/roam/codec";
 import { enableMemoryCapture } from "@spider/db-core/roam/seed";
 import type { JsonObject, StoreKey } from "@spider/db-core/roam/types";
 import { withProcessLock, writePrivateJson } from "@spider/herdr/sessions/registry";
+import { shellQuote } from "@spider/herdr/sessions/launch-environment";
 import type { Diagnostic, Operation, Peer, RoamConfig, Transport } from "./contracts";
 import { requestHubControl } from "./control-socket";
 import { assertCompatibleConsumers } from "./diagnostics";
@@ -33,8 +34,10 @@ import { createStorePort } from "./stores";
 import { createTransport, createProvisionTransport } from "./transport";
 import { renderSupervisorUnit } from "./systemd";
 import { installLocalV0Supervisor, localSupervisorInstallPorts, removeLocalSupervisor, type SupervisorInstallPorts } from "./relocate/service-install";
+import { createHomeStore } from "./relocate/home";
+import { withV0HomeLifecycle } from "./relocate/home-lifecycle";
 
-export interface ControlResult { code: 0 | 1 | 2 | 3; reason: string; message: string; causeCode?: string; operationId?: string; repairCommand?: string; issues?: readonly { reason: string; repairCommand: string; detail?: string; causeCode?: string; severity?: "warning" }[];
+export interface ControlResult { code: 0 | 1 | 2 | 3; reason: string; message: string; causeCode?: string; operationId?: string; repairCommand?: string; nextStep?: string; issues?: readonly { reason: string; repairCommand: string; detail?: string; causeCode?: string; severity?: "warning" }[];
   information?: readonly { machine: string; reason: string }[] }
 const clean = (text: string) => text.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 1000);
 function preflightCheck(reason: string): string {
@@ -138,6 +141,25 @@ async function pendingLegacyLaunchWarnings(root: string, config: RoamConfig): Pr
   }
 }
 
+async function v0DisableBlocker(root: string, config: RoamConfig): Promise<ControlResult | null> {
+  const file = join(root, "spider.db");
+  try { statSync(file); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT" && !config.enabled) return null; throw error; }
+  const db = openDbReadOnly(file);
+  if (!db) throw new Error("Could not read local session homes. Run spider roam doctor.");
+  try {
+    const meta = db.prepare("SELECT machine_id FROM roam_meta WHERE id=1").get() as { machine_id?: unknown } | undefined;
+    if (meta?.machine_id !== config.machineId) throw new Error("Could not verify the local home database. Run spider roam doctor.");
+    const homes = await createHomeStore({ db, localMachineId: config.machineId, hubMachineId: config.hubMachineId }).list();
+    const moving = homes.find(home => home.state === "moving" &&
+      (home.machineId === config.machineId || home.destination === config.machineId));
+    if (!moving || moving.state !== "moving") return null;
+    const id = /^[A-Za-z0-9._-]+$/.test(moving.sessionId) && !moving.sessionId.startsWith("-") ? moving.sessionId : shellQuote(moving.sessionId);
+    const nextStep = `On the Mac, run spider roam relocate ${id} ${moving.destination} to finish, or spider roam relocate ${id} ${moving.machineId} to undo. If neither works and you have a verified backup, run spider roam set-home ${id} ${moving.machineId} --force.`;
+    return { code: 1, reason: "v0-move-in-progress", operationId: moving.moveId, message: `Session ${moving.sessionId} is still moving. Roaming was not disabled.\n${nextStep}`, nextStep };
+  } finally { db.close(); }
+}
+
 /** Public lifecycle: v0 is selected by role, never by the previous service or a stored mode. */
 export async function configureV0Service(root: string, enabled: boolean, options: V0ServiceOptions): Promise<ControlResult> {
   const action = enabled ? "enable" : "disable", repairCommand = `spider roam ${action}`;
@@ -168,6 +190,15 @@ export async function configureV0Service(root: string, enabled: boolean, options
           { severity: "warning", reason: "legacy-move-check-unavailable", detail: "Could not check for pending legacy moves.", repairCommand: "spider roam doctor" },
         ];
       }
+      if (!enabled) {
+        const blocker = await withV0HomeLifecycle(root, config.limits.controlMs, async () => {
+          const refusal = await v0DisableBlocker(root, config);
+          if (refusal) return refusal;
+          await setEnabled(false);
+          return null;
+        });
+        if (blocker) return blocker;
+      }
       if (config.role === "hub") {
         if (enabled) hubCoreSelection(process.env);
         const ports = options.launchd ?? servicePorts();
@@ -182,7 +213,6 @@ export async function configureV0Service(root: string, enabled: boolean, options
           await installHubService({ node: process.execPath, cli, globalRoot: root, pi, mode: "v0" }, ports);
           await setEnabled(true);
         } else {
-          await setEnabled(false);
           changed = true;
           await removeHubService({ globalRoot: root, mode: "v0" }, ports);
         }
@@ -201,7 +231,6 @@ export async function configureV0Service(root: string, enabled: boolean, options
           await installLocalV0Supervisor(ports, rootLine, unit);
           await setEnabled(true);
         } else {
-          await setEnabled(false);
           changed = true;
           if (await removeLocalSupervisor(ports, rootLine, true)) await ports.run(["--user", "daemon-reload"]);
         }

@@ -10,6 +10,7 @@ import { json, parseCaptured, parseHome, parsePlan, parsePlacement } from "./jou
 import type { Operation, Peer, Transport } from "../contracts";
 import { object, text } from "./journal";
 import { isMachineId } from "../machine-id";
+import { withV0HomeLifecycle } from "./home-lifecycle";
 import type { V0RefusalCode, V0Result, RelocateAdapterOptions, RelocatePlan, SessionId, SessionPlacement, RunningHome, MovingHome } from "./types";
 
 export const dataKinds: ReadonlySet<string> = new Set(["stores", "inventory", "enable-capture", "export", "release-export", "split", "assemble", "cursor", "receipt", "import", "recheck-store"]);
@@ -86,6 +87,9 @@ export async function handleRelocateAgent(input:unknown,options:RelocateAdapterO
   let r:RelocateAgentRequest;
   try {r=parseAgentRequest(input);}catch{return refusal("invalid-arguments","The private v0 request is invalid.");}
   const wrap=<T>(result:V0Result<T>,key?:string):V0Result<unknown>=>result.ok?{ok:true,value:key?{version:1,[key]:result.value}:{version:1,...(result.value && typeof result.value==="object"?result.value:{})}}:result;
+  const receive = (work: () => Promise<V0Result<unknown>>) => options.config.role !== "box" ? work()
+    : withV0HomeLifecycle(options.root, options.limits.controlMs, async () => options.config.enabled ? work()
+      : refusal("replication-disabled", "The destination box has disabled roaming.", "Run spider roam enable on the destination box, then retry relocate from the Mac."));
   try {
     switch(r.kind) {
       case "hello":return {ok:true,value:{version:1,machineId:options.config.machineId,pi:!!resolveParticipantPi(),spider:true}};
@@ -115,7 +119,7 @@ export async function handleRelocateAgent(input:unknown,options:RelocateAdapterO
         }
         await seedLocalPlacement(r.placement,r.epoch,options);return {ok:true,value:{version:1}};
       }
-      case "authorize":{
+      case "authorize":return await receive(async () => {
         const plan=r.plan,d=plan.destinationPlacement,key=`worktree:${d.repoKey}:${d.workspaceId}` as StoreKey;
         if(d.machineId!==options.config.machineId || !mappedKey(`repo:${d.repoKey}`,options))return refusal("repo-unmapped","The incoming repository is not locally mapped.","Run spider roam repo map on the destination, then retry.");
         const home=await options.homes.read(plan.source.sessionId);
@@ -126,7 +130,7 @@ export async function handleRelocateAgent(input:unknown,options:RelocateAdapterO
         writeLocal(options.globalDb,"relocate-incoming",key,{moveId:plan.moveId});
         const stores=createStorePort(options.config,options.globalDb,{unmappedWorktree:key});try{stores.openStore(key);}finally{stores.close();}
         return {ok:true,value:{version:1}};
-      }
+      });
       case "data":{
         const op=r.operation;let expected:StoreKey|undefined;
         if(op.args.storeKey!==undefined){storeScope(op.args.storeKey);const key=op.args.storeKey as StoreKey;if(!mappedKey(key,options)){if(!await incomingPlan(key,options))return refusal("repo-unmapped","This unmapped worktree is not authorized by the current move.");expected=key;}}
@@ -156,7 +160,7 @@ export async function handleRelocateAgent(input:unknown,options:RelocateAdapterO
         }finally{stores.close();}
       }
       case "capture":return wrap(await captureLocalSession(r.plan,options),"captured");
-      case "install":return wrap(await installLocalSession(r.plan,r.captured,r.home,options),"installed");
+      case "install":return await receive(async () => wrap(await installLocalSession(r.plan,r.captured,r.home,options),"installed"));
       default:{
         const local=createLocalRuntime(options);
         switch(r.kind){

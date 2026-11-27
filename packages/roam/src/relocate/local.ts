@@ -245,14 +245,17 @@ export async function stopLocalSession(sessionId: SessionId, moving: MovingHome 
       }
       const {descendants:children,groups} = await io.tree(pid);
       if (!await stillOwned()) return busy([processName(root)]);
-      const liveChildren: number[] = [];
+      const liveChildren: Array<SessionProcessTree["descendants"][number]> = [];
       for (const child of children) {
         const member = await io.probe(child.pid);
         if (member.kind === "unknown") return busy([processName(child)]);
-        if (member.kind === "live" && member.startIdentity === child.startIdentity) liveChildren.push(child.pid);
+        if (member.kind === "live" && member.startIdentity === child.startIdentity) liveChildren.push(child);
       }
       for (const child of liveChildren) {
-        try { await io.signal(child); }
+        const member = await io.probe(child.pid);
+        if (member.kind === "unknown") return busy([processName(child)]);
+        if (member.kind !== "live" || member.startIdentity !== child.startIdentity) continue;
+        try { await io.signal(child.pid); }
         catch (error) { if ((error as NodeJS.ErrnoException | null)?.code !== "ESRCH") throw error; }
       }
       const shutdown = observed && moving && await io.shutdown({id:`${moving.moveId}-shutdown`,machineId:moving.machineId,expectedEpoch:moving.epoch,kind:"session-shutdown",args:{sessionId,moveId:moving.moveId,v0:true}});

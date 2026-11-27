@@ -31,6 +31,20 @@ export function ownerError(trace, error) {
   } catch { /* An unusual error must not change the owner decision. */ }
 }
 
+export function terminalReply(machineId, sessionId, env, args, reply) {
+  try {
+    const fields = ['address', 'state', 'pid', 'process_id', 'labels', 'reason', 'exit_code', 'signal', 'finished_ms', 'created_ms'];
+    const terminals = Array.isArray(reply?.terminals) ? reply.terminals.map(row => {
+      if (!row || typeof row !== 'object') return row;
+      return Object.fromEntries(fields.filter(key => key in row).map(key => [key, row[key]]));
+    }) : null;
+    record({ event: 'terminal-list', machineId, sessionId, namespace: env.HC_SESSION ?? null,
+      socket: env.HC_SOCKET ?? null, args, terminals, replyType: typeof reply,
+      terminalsType: typeof reply?.terminals });
+  } catch { /* Evidence must not change the returned core reply. */ }
+  return reply;
+}
+
 function replaceCount(source, pattern, replacement, expected) {
   let count = 0;
   const result = source.replace(pattern, () => { count++; return replacement; });
@@ -40,6 +54,17 @@ function replaceCount(source, pattern, replacement, expected) {
 
 /** Fail closed if a packed entry no longer has the expected owner boundaries. */
 export function instrumentOwnerBundle(source) {
+  const listMarker = 'async terminals(id, admittedPid) {';
+  const launchMarker = 'async launch({ home, placement }) {';
+  const listStart = source.indexOf(listMarker), listEnd = source.indexOf(launchMarker, listStart);
+  if (listStart < 0 || listEnd < 0 || source.indexOf(listMarker, listStart + listMarker.length) !== -1) {
+    throw new Error('Unrecognized terminal observation point');
+  }
+  let list = source.slice(listStart, listEnd), listCount = 0;
+  list = list.replace(/const reply = (await invokeCli\(binary,\s*args,\s*env,\s*options\.limits\.replyBytes,\s*(?:void 0|undefined),\s*\{\s*timeoutMs:\s*options\.limits\.controlMs\s*\}\));/g,
+    (_match, call) => { listCount++; return `const reply = __r18TerminalReply(options.config.machineId, id, env, args, ${call});`; });
+  if (listCount !== 1) throw new Error('Unrecognized terminal list');
+  source = source.slice(0, listStart) + list + source.slice(listEnd);
   const marker = 'async function inspectOwner(id, placement) {';
   const endMarker = 'async function owner(id, placement) {';
   const start = source.indexOf(marker), end = source.indexOf(endMarker, start);
@@ -68,7 +93,7 @@ export function instrumentOwnerBundle(source) {
   source = source.slice(0, start) + replacement + source.slice(end);
   source = replaceCount(source, /await inspectOwner\(id,\s*placement\)/g, 'await inspectOwner(id, placement, "owner", null)', 1);
   source = replaceCount(source, /await inspectOwner\(home\.sessionId,\s*placement\)/g, 'await inspectOwner(home.sessionId, placement, "start", home)', 1);
-  const imports = `import { beginOwner as __r18BeginOwner, ownerValue as __r18OwnerValue, ownerError as __r18OwnerError } from ${JSON.stringify(import.meta.url)};\n`;
+  const imports = `import { beginOwner as __r18BeginOwner, ownerValue as __r18OwnerValue, ownerError as __r18OwnerError, terminalReply as __r18TerminalReply } from ${JSON.stringify(import.meta.url)};\n`;
   const at = source.startsWith('#!') ? source.indexOf('\n') + 1 : 0;
   if (source.startsWith('#!') && at === 0) throw new Error('Unrecognized bundle header');
   return source.slice(0, at) + imports + source.slice(at);

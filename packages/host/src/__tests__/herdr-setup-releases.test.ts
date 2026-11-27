@@ -4,7 +4,8 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { readFile, writeFile, rm } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { createProductionHerdrCliPorts } from '../herdr/ports.js';
-import { runHerdrCli } from '../../../herdr/src/setup/cli.js';
+import { runHerdrCli, type HerdrCliPorts } from '../../../herdr/src/setup/cli.js';
+import * as upgradeCheckpoint from '../../../herdr/src/setup/checkpoint.js';
 import { setupHerdr } from '../../../herdr/src/setup/installer.js';
 import { loadSpacesAFiles } from '../../../herdr/src/__tests__/spaces-a-fixture.js';
 import { replaySpacesBRecipe } from '../../../herdr/src/__tests__/spaces-b-fixture.js';
@@ -38,25 +39,33 @@ esac
 }
 const fastRelease = (version: Release) => localRelease(version, 'socket');
 
+function lookRelease(version: Release) {
+  // Keep the installed files and ordinary setup journal real. The separate
+  // upgrade-undo snapshots are covered in setup-checkpoint.test.ts.
+  vi.spyOn(upgradeCheckpoint, 'beginRunCheckpoint').mockResolvedValue(undefined);
+  return fastRelease(version);
+}
+
 async function nativeKeysFixture(version: Release, coreTransport: 'process' | 'socket' = 'process') {
   const f = await localRelease(version, coreTransport);
   vi.stubEnv('PI_CODING_AGENT_DIR', f.h.directories.agent);
   const path = join(f.h.directories.app, 'keys.json');
   const out: string[] = [], errors: string[] = [];
-  const ports = {
+  const ports: HerdrCliPorts = {
     ...f.ports,
-    stdout: (text: string) => out.push(text), stderr: (text: string) => errors.push(text),
-    setupParts: async (request: typeof f.request) => {
+    stdout: text => out.push(text),
+    stderr: text => errors.push(text),
+    setupParts: async request => {
       const parts = await f.ports.setupParts(request);
       // Keep production release detection, key planning, merge and rollback.
       // The A/B cases below cover publication and verification of the look files.
+      const isKeyMap = (file: { path: string }) => file.path === path;
       return {
         ...parts,
-        finalizeLook: async (...args: Parameters<NonNullable<typeof parts.finalizeLook>>) =>
-          (await parts.finalizeLook?.(...args) ?? args[2]).filter(file => file.path === path),
-        installFiles: async (...args: Parameters<typeof parts.installFiles>) =>
-          (await parts.installFiles(...args)).filter(file => file.path === path),
-        verify: async (request: typeof f.request) => {
+        finalizeLook: async (request, context, staged) =>
+          (await parts.finalizeLook?.(request, context, staged) ?? staged).filter(isKeyMap),
+        installFiles: async (request, context) => (await parts.installFiles(request, context)).filter(isKeyMap),
+        verify: async request => {
           const { failures, warnings = [] } = await (await f.ports.doctorParts(request)).inspect('keys', request);
           return { failures, warnings, probes: [] };
         },
@@ -76,7 +85,7 @@ async function seedUnboundNativeKeys(path: string) {
 
 for (const version of ['0.1.13', '0.1.16'] as const) {
   test(`${version} production setup stages the complete A and B result and doctor checks its release`, async () => {
-    const f = await fastRelease(version), home = f.h.directories.app;
+    const f = await lookRelease(version), home = f.h.directories.app;
     const records = JSON.parse(await readFile(join(f.root, 'packages/herdr/assets/look/cross-machine-patches.json'), 'utf8')).versions[version];
     const expected = replaySpacesBRecipe(version, loadSpacesAFiles(version), records);
     const stockToast = await readFile(join(home, 'mods/toast/main.js'));
@@ -123,7 +132,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   });
 
   test(`${version} stages additional records only after the verified A result and replays them in doctor`, async () => {
-    const f = await fastRelease(version), home = f.h.directories.app;
+    const f = await lookRelease(version), home = f.h.directories.app;
     const records = { [version]: {
       agents: [{ id: 'b-arrival-proof', anchor: 'this.spiderNotificationSound.observe(loaded);', replacement: 'this.spiderNotificationSound.observe(loaded); /* additional arrival */' }],
       picker: [{ id: 'b-picker-proof', anchor: 'export default Picker;', replacement: '/* "$&" */\nexport default Picker;' }],

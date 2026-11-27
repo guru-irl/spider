@@ -147,7 +147,7 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
       },
       async setHome(request) {
         if (forgotten(request.destinationMachine)) return revokedDestination;
-        return setHome(request,adapters.setHome);
+        return setHome(request,adapters.setHome,config);
       },
     },
       close() {return closing ??= (async()=>{sync.stop();try {await sync.drain();await adapters.dispose();}finally{closeStores();}})();},

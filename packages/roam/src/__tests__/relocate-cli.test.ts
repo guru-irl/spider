@@ -91,6 +91,24 @@ describe("v0 controls", () => {
     try {expect(await requestV0Services(hubRoot).setHome({sessionId:"missing" as SessionId,destinationMachine:mac,force:true,confirmation:"bad"})).toMatchObject({ok:false,refusal:{code:"confirmation-required"}});}
     finally {await hub.stop();await hub.stop();await supervisor.stop();await supervisor.stop();source.close();target.close();}
   });
+  it("the private hub refuses remote reassignment when its live replication flag is off",async()=>{
+    const source=createReplica("global",mac);
+    const root=mkdtempSync(join(resolve(".spider/scratch"),"sr-"));roots.push(root);
+    const initial={...config,peers:[{...config.peers[0]}]};
+    let current=initial;
+    const network=vi.fn(async()=>{throw new Error("unexpected network contact");});
+    const transport:Transport={resolve:network,bootstrapProbe:network,exec:network,run:network,read:network,write:network};
+    const runtime={openCore:()=>({root,config:initial,db:source.db,close(){}}),readConfig:()=>current,transport,clock:{now:()=>1,later:()=>()=>{}}};
+    const hub=await startV0Hub(root,runtime);
+    try {
+      source.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,updated_at,state) VALUES (?,?,1,1,'running')").run(home.sessionId,mac);
+      current={...initial,enabled:false};
+      const request={sessionId:home.sessionId,destinationMachine:box,force:true,confirmation:`reassign ${home.sessionId} to ${box}; source will not run`} as const;
+      expect(await requestV0Services(root).setHome(request)).toMatchObject({ok:false,refusal:{code:"replication-disabled",nextStep:expect.stringContaining("spider roam enable")}});
+      expect(network).not.toHaveBeenCalled();
+      expect(source.db.prepare("SELECT machine_id,epoch FROM session_homes").get()).toEqual({machine_id:mac,epoch:1});
+    } finally {await hub.stop();source.close();}
+  });
   it("v0 CLI and supervisor entrypoints bypass legacy services",async()=>{
     const f=fixture(),hubStop=vi.fn(async()=>{}),supervisorStop=vi.fn(async()=>{});
     const hub=vi.fn(async()=>{queueMicrotask(()=>process.emit("SIGTERM"));return {stop:hubStop};});

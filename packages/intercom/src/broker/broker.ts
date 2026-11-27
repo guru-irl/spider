@@ -466,7 +466,13 @@ class IntercomBroker {
     if (!message.replyTo) return false;
     this.pruneV0Asks();
     const ask = this.v0Asks.get(message.replyTo);
-    if (!ask) return false;
+    if (!ask) {
+      if (from.info.v0HomeEpoch !== undefined && !this.askEdges.has(message.replyTo) && !this.inboundRemoteRoutes.has(message.replyTo)) {
+        this.writeDeliveryFailure(socket, message.id, "The asker is no longer waiting.", "E_REPLY_TARGET");
+        return true;
+      }
+      return false;
+    }
     const fail = (reason: string, code = "E_REPLY_TARGET") => this.writeDeliveryFailure(socket, message.id, reason, code);
     if (ask.targetKey !== from.key || addressKey(ask.targetAddress) !== addressKey(sessionAddress(from.info, from.scopeId ?? null)) || to !== ask.askerId) {
       fail("Reply target does not match the pending ask"); return true;

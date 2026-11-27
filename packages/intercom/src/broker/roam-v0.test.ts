@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import net from "node:net";
 import { once } from "node:events";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { startTestBroker, stopTestBroker, testBrokerEnv, testTmpDir } from "../test-support.js";
@@ -430,6 +430,44 @@ describe("private roaming broker", () => {
       expect(await ben.send("sender", { text: "ok", replyTo: "budget-question", messageId: "budget-reply" })).toMatchObject({ delivered: true });
       expect(await pending).toEqual({ kind: "replied", id: "budget-question", replyId: "budget-reply", text: "ok" });
     } finally { controller.abort(); await pending; await proxy.close(); }
+  });
+
+  it("still tells a late replier that the asker stopped waiting after metadata expires", async () => {
+    const dir = mkdtempSync(join(testTmpDir(), "clock-"));
+    const clock = join(dir, "now"), preload = join(dir, "clock.mjs");
+    const priorAgent = process.env.PI_CODING_AGENT_DIR;
+    writeFileSync(clock, String(Date.now()));
+    writeFileSync(preload, `import { readFileSync } from 'node:fs'; Date.now = () => Number(readFileSync(${JSON.stringify(clock)}, 'utf8'));`);
+    process.env.PI_CODING_AGENT_DIR = dir;
+    let clocked: ChildProcess | undefined;
+    let ben: IntercomClient | undefined;
+    try {
+      clocked = startTestBroker(process.execPath, ["--import", preload, "dist/intercom/broker.mjs"], { env: testBrokerEnv(), stdio: ["ignore", "pipe", "pipe"] }, "suite");
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("clocked broker startup timed out")), 4000);
+        clocked!.once("exit", code => { clearTimeout(timer); reject(new Error(`clocked broker exit ${code}`)); });
+        clocked!.stdout!.on("data", chunk => { if (String(chunk).includes("Intercom broker started")) { clearTimeout(timer); resolve(); } });
+      });
+      ben = await register("stable-b", "b", "ben", "scope-1", 3);
+      const target = ((await lookup("scope-1", "name", "ben")).targets as V0Endpoint[])[0];
+      const inbound = once(ben, "message");
+      const controller = new AbortController();
+      const pending = requestV0Broker(dir, { kind: "ask", from: origin, target, message: { ...message, id: "expired-question" }, timeoutMs: 2000 }, controller.signal);
+      await inbound;
+      controller.abort();
+      expect(await pending).toEqual({ kind: "unknown", id: "expired-question" });
+      expect(await ben.send("sender", { text: "late", replyTo: "expired-question", messageId: "first-late" }))
+        .toMatchObject({ delivered: false, reason: "The asker is no longer waiting." });
+      writeFileSync(clock, String(Date.now() + 2 * 60 * 60 * 1000));
+      expect(await ben.send("sender", { text: "later", replyTo: "expired-question", messageId: "second-late" }))
+        .toMatchObject({ delivered: false, reason: "The asker is no longer waiting." });
+    } finally {
+      if (ben) await ben.disconnect();
+      if (clocked) await stopTestBroker(clocked);
+      if (priorAgent === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = priorAgent;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("advertises roaming over its private Unix socket", async () => {

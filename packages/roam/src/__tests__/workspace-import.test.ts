@@ -892,6 +892,23 @@ it("resumes an interrupted new no-checkout worktree without recreating it", asyn
   expect(tree(destination, f.root)).toBe(f.snapshot.workingTree);
 }, 5000);
 
+it("a prepared checkout accepts an equivalent snapshot after JSON key reordering", async () => {
+  const f = fixture();
+  const { prepareWorkspace, verifyWorkspace } = await import("../workspace-import");
+  const first = await prepareWorkspace(f.snapshot, f.destination, f.ports);
+  const reorder = (value: unknown): unknown => Array.isArray(value) ? value.map(reorder) : value && typeof value === "object"
+    ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, reorder(item)])) : value;
+  const restored = reorder(JSON.parse(JSON.stringify(f.snapshot))) as WorkspaceSnapshot;
+  const retried = await prepareWorkspace(restored, f.destination, f.ports);
+  await verifyWorkspace(retried, f.ports);
+  const reversed: WorkspaceSnapshot = { ...restored, normalization: { eol: restored.normalization.eol, autocrlf: restored.normalization.autocrlf } };
+  await verifyWorkspace(await prepareWorkspace(reversed, f.destination, f.ports), f.ports);
+  expect(retried.snapshot).toEqual(first.snapshot);
+  expect(git(f.destination, "rev-parse", "HEAD")).toBe(f.snapshot.head);
+  expect(git(f.destination, "write-tree")).toBe(f.snapshot.indexTree);
+  expect(tree(f.destination, f.root)).toBe(f.snapshot.workingTree);
+}, 5000);
+
 it("abort restores unchanged prepared trees to the prior mapped checkout", async () => {
   const f = fixture();
   const { prepareWorkspace, abortWorkspace } = await import("../workspace-import");

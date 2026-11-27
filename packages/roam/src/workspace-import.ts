@@ -948,7 +948,11 @@ function snapshotDigest(snapshot: WorkspaceSnapshot): string {
   return createHash("sha256").update(JSON.stringify([
     snapshot.repoKey, snapshot.workspaceId, snapshot.moveId, snapshot.stage, snapshot.head, snapshot.branch,
     snapshot.objectFormat, snapshot.indexTree, snapshot.workingTree, snapshot.relativeCwd, snapshot.sparsePatterns,
-    snapshot.worktreeConfig, snapshot.normalization, snapshot.sparse, snapshot.refs, snapshot.prerequisites, snapshot.bundle,
+    snapshot.worktreeConfig,
+    { autocrlf: snapshot.normalization.autocrlf, eol: snapshot.normalization.eol },
+    { enabled: snapshot.sparse.enabled, cone: snapshot.sparse.cone },
+    snapshot.refs, snapshot.prerequisites,
+    snapshot.bundle.kind === "ready" ? { kind: "ready", artifactId: snapshot.bundle.artifactId, byteLength: snapshot.bundle.byteLength } : { kind: "unbundled" },
   ])).digest("hex");
 }
 

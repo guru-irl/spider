@@ -112,6 +112,27 @@ it("does not send when confirmation finishes in a different session", async () =
   } finally { finish?.(false); await f.cleanup(); }
 });
 
+it("does not send after the source home epoch changes during confirmation", async () => {
+  const sent: V0Text[] = [];
+  let epoch = 7, finish!: (value: boolean) => void, confirmationOpened = false;
+  const confirm = () => new Promise<boolean>(resolve => { finish = resolve; confirmationOpened = true; });
+  const prepare: V0Prepare = async () => ({
+    kind: "remote", label: "b/ben",
+    async send(message) { sent.push(message); return { kind: "socket_delivered", id: message.id }; },
+    async ask(message) { return { kind: "no_reply", id: message.id }; },
+  });
+  const f = await fixture({ homeEpoch: () => epoch, prepare }, { confirm });
+  try {
+    const pending = f.tool.execute("send", { action: "send", to: "ben", message: "private text" }, new AbortController().signal, undefined, f.ctx);
+    await vi.waitFor(() => expect(confirmationOpened).toBe(true));
+    epoch = 8;
+    finish(true);
+    const result = await pending;
+    expect(result.details).toMatchObject({ error: true, code: "changed" });
+    expect(sent).toEqual([]);
+  } finally { finish?.(false); await f.cleanup(); }
+});
+
 it("refuses remote-only unsupported options without dispatching", async () => {
   const sent: V0Text[] = [];
   const prepare: V0Prepare = async () => ({

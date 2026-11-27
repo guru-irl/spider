@@ -2740,8 +2740,9 @@ Usage:
                   if (confirmSend && !(await ctx.ui.confirm("Send message", `Send to "${plan.label}":\n\n${message}${attachmentText}`))) {
                     return { content: [{ type: "text", text: "Message cancelled by user" }], details: {} };
                   }
-                  if (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected()) {
-                    return { content: [{ type: "text", text: "Session changed. Resolve the recipient again." }], details: { error: true } };
+                  if (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected() ||
+                      from.v0HomeEpoch === undefined || v0.homeEpoch(from.address!.sessionId) !== from.v0HomeEpoch) {
+                    return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
                   }
                   const sent = { id: randomUUID(), timestamp: Date.now(), text: message };
                   const result = await plan.send(sent, _signal);

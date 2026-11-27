@@ -110,8 +110,20 @@ describe("card background through the right edge", () => {
     }
     const failed = renderCommandOutput({ details: { args: { action: "unknown" }, result: { isError: true, details: { error: "failure\x1b[0m " + "details ".repeat(20) } } } }, {}, distinct).render(30);
     checkCard(failed, 30, backgrounds.toolErrorBg);
-    const notice = renderEscalationMessage({ details: { runId: "id", severity: "warning", name: "n".repeat(100), summary: "short" } }, {}, distinct).render(30);
-    checkCard(notice, 30, backgrounds.toolErrorBg);
+    for (const [severity, marker, token] of [
+      ["blocked", "❌ blocked", "toolErrorBg"],
+      ["question", "❓ question", "toolPendingBg"],
+      ["warning", "⚠️ warning", "toolPendingBg"],
+      ["unexpected", "⚠️ warning", "toolPendingBg"],
+    ]) {
+      const message = { details: { runId: "beb58fc6-193f-4247-bb38-c59612f6985d", severity, name: "tia-3", agent: "worker", summary: "short" } };
+      const rows = renderEscalationMessage(message, {}, distinct).render(80);
+      checkCard(rows, 80, backgrounds[token]);
+      const plain = rows.map(row => stripTerminalSequences(row).trimEnd());
+      expect(plain[1]).toBe(" 🕸️ spider · escalation · tia-3 · worker");
+      expect(plain[2]).toBe(`  ${marker} · short`);
+      expect(plain.join("\n")).not.toContain("beb58fc6");
+    }
     const done = renderSubagentDone({ details: { status: "failed", name: "worker", output: "failure ".repeat(20) } }, {}, distinct).render(30);
     checkCard(done, 30, backgrounds.toolErrorBg);
   });
@@ -137,13 +149,11 @@ describe("card background through the right edge", () => {
     for (const expanded of [false, true]) {
       const rows = renderEscalationMessage({ details: { runId: "identifier-" + "x".repeat(100), severity: "warning", name: "worker-" + "n".repeat(100), summary } }, { expanded }, theme).render(width);
       checkCard(rows, width);
-      const text = rows.map((row) => row.replace(/\x1b\[[0-9;]*m/g, "").trim());
-      const header = text.findIndex((line) => line.startsWith("⚠"));
-      const footer = text.findIndex((line) => line.startsWith("run "));
-      expect(text[header + 1]).toBe("");
-      expect(text[footer - 1]).toBe("");
-      expect(text.slice(header + 2, footer - 1).join(" ").replace(/\s+/g, " ").trim()).toBe(summary.replace(/\s+/g, " "));
-      expect(text.slice(footer + 1).every((line) => line === "")).toBe(true);
+      const text = rows.map((row) => stripTerminalSequences(row).trim());
+      expect(text[2]).toMatch(/^⚠️ warning · /u);
+      const body = text.slice(2, -1).join(" ").replace(/^⚠️ warning · /u, "");
+      expect(body.replace(/\s+/gu, " ").trim()).toBe(summary.replace(/\s+/gu, " "));
+      expect(text.join("\n")).not.toContain("identifier-");
     }
   });
 
@@ -152,7 +162,7 @@ describe("card background through the right edge", () => {
     const rows = renderEscalationMessage({ details: { runId: "id", severity: "question", name: "worker", summary } }, {}, theme).render(width);
     checkCard(rows, width);
     const visible = rows.map((row) => row.replace(/\x1b\[[0-9;]*m/g, "").trim());
-    const body = visible.filter((line) => line.includes("界") || line.includes("🙂")).join("");
+    const body = visible.slice(2, -1).join("").replace(/^❓ question · /u, "");
     expect(body).toBe(summary);
   });
 

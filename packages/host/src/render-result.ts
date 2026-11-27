@@ -795,6 +795,7 @@ export function renderSpiderCall(args: any, theme: any, context: any): Component
     } else if (args?.sub || args?.command) {
       suffix = `${verb(action)} ${t.fg("toolTitle", `· ${args.sub ?? args.command}`)}`;
     }
+    if (context?.titleDetails?.length) suffix += t.fg("toolTitle", ` · ${context.titleDetails.join(" · ")}`);
     const line = `${t.fg("toolTitle", icon(t.iconStyle, "spider"))} ${t.fg("toolTitle", t.bold("spider"))} ${t.fg("toolTitle", "·")} ${suffix}`;
 
     // The call is rendered as soon as the tool is invoked; the result only lands when the
@@ -904,26 +905,20 @@ export function renderOrganismEntry(entry: unknown, options: NotificationOptions
   return cachedLines(width => box.render(width), () => box.invalidate());
 }
 
-/** Transcript renderer for `spider.escalation` custom messages. Escalations always use
- *  the error background (warnings/blocks are both urgent enough to warrant the red card). */
+/** Transcript renderer for `spider.escalation`. The full summary is always visible. */
 export function renderEscalationMessage(message: any, options: NotificationOptions, theme: any, iconStyle?: IconStyle): Component {
   const d = message?.details ?? {};
-  const escalationDetails: EscalationDetails = {
-    runId: d.runId,
-    severity: d.severity ?? "warning",
-    summary: d.summary ?? "Escalation",
-    agent: d.agent ?? "worker",
-    name: d.name ?? d.agent ?? "subagent",
-    payload: d.payload,
-  };
+  const severity = d.severity === "blocked" || d.severity === "question" ? d.severity : "warning";
+  const escalationDetails: EscalationDetails = { severity, summary: d.summary ?? "Escalation" };
+  const background = severity === "blocked" ? "toolErrorBg" : "toolPendingBg";
   const th = adaptTheme(mkTheme(theme, iconStyle));
-  const bgFn = (text: string) => {
-    try { return typeof theme?.bg === "function" ? theme.bg("toolErrorBg", text) : text; } catch { return text; }
-  };
-  const box = new Box(options.outputPad ?? 1, 1, bgFn);
+  const box = new Box(options.outputPad ?? 1, 1, text => th.bg(background, text));
+  box.addChild(renderSpiderCall({ action: "escalation" }, theme, {
+    iconStyle, cardBackground: background, titleDetails: [d.name ?? d.agent ?? "subagent", d.agent ?? "worker"],
+  }) as any);
   box.addChild({
-    render: (w: number) => restoreCardBackground(renderEscalation(escalationDetails, { theme: th, width: w, expanded: options?.expanded === true }), theme, "toolErrorBg"),
+    render: (w: number) => restoreCardBackground(renderEscalation(escalationDetails, { theme: th, width: w }), theme, background),
     invalidate() {},
-  } as any);
+  });
   return cachedLines(width => box.render(width), () => box.invalidate());
 }

@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 // @ts-ignore The same ESM fixture is loaded directly by the owned processes.
 import { instrumentOwnerBundle } from '../../fixtures/roam-owner-observer.mjs';
+import { ownerNodeScript } from '../../fixtures/roam-owner-node.js';
 
 let root: string;
 beforeEach(() => {
@@ -174,5 +175,25 @@ console.log(JSON.stringify(await createLocalRuntime({ config: { machineId: 'dest
   expect(rows).toEqual(expect.arrayContaining([
     expect.objectContaining({ event: 'owner-begin', caller: 'owner', machineId: 'destination', sessionId: 'session' }),
     expect.objectContaining({ event: 'owner-value', phase: 'result', value: { owner: { kind: 'free' } } }),
+  ]));
+});
+
+it('runs the remote node entry with the observer and preserves its arguments', () => {
+  const quoted = join(root, "paths ' with spaces");
+  mkdirSync(quoted);
+  const entry = join(quoted, 'sample.mjs'), driver = join(quoted, 'driver.mjs'), wrapper = join(root, 'node-wrapper');
+  writeFileSync(entry, sampleBundle);
+  writeFileSync(driver, `import { createLocalRuntime } from './sample.mjs';
+const io = { inspect: async () => null, terminals: async () => [], writerBlockers: async () => [] };
+console.log(JSON.stringify(await createLocalRuntime({ config: { machineId: 'destination' } }, io).owner('session')), process.argv[2]);
+`);
+  const register = fileURLToPath(new URL('../../fixtures/roam-owner-register.mjs', import.meta.url));
+  writeFileSync(wrapper, ownerNodeScript(process.execPath, register, entry, quoted), { mode: 0o700 });
+  const child = spawnSync(wrapper, [driver, 'unchanged argument'], { env: process.env, encoding: 'utf8' });
+  expect(child.status, child.stderr).toBe(0);
+  expect(child.stdout).toBe('{"kind":"free"} unchanged argument\n');
+  const rows = readFileSync(join(quoted, `${child.pid}.jsonl`), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  expect(rows).toEqual(expect.arrayContaining([
+    expect.objectContaining({ event: 'owner-begin', caller: 'owner', sessionId: 'session' }),
   ]));
 });

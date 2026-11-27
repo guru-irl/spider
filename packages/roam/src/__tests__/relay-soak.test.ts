@@ -187,6 +187,16 @@ describe("the live relay soak reliability gate", () => {
     expect(checkRelaySoak(evidence).violations).toContain("handoff");
   });
 
+  it("counts refused healthy cadence submissions as slow even without a handoff", () => {
+    const evidence = copy(), link = evidence.links[0];
+    const refused = new Set(link.submissions.flatMap((submit, index) =>
+      submit.kind === "cadence" && index % 2 === 0 ? [submit.id] : []));
+    link.handoffs = link.handoffs.filter(item => !refused.has(item.id));
+    link.receipts = link.receipts.filter(item => !refused.has(item.id));
+    for (const result of link.outcomes) if (refused.has(result.id)) result.kind = "refused";
+    expect(checkRelaySoak(evidence)).toEqual({ ok: false, violations: ["handoff"] });
+  });
+
   it("counts clock-offset uncertainty against the handoff limit", () => {
     const evidence = copy(), link = evidence.links[1];
     link.clock.minOffsetMs = -101;

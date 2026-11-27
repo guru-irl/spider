@@ -134,8 +134,8 @@ Run R10 in the GitHub Linux stories job. The job builds and packs the release be
 npm run test:herdr:e2e -- --built --tier headless --story R10
 ```
 
-R10 is in `headless`, not the no-core `ci` tier. It uses one worker and keeps
-its existing startup, per-wait, and 300-second story deadlines. The overall runner, step, or job deadline can end a story sooner. The report records its duration and independent cleanup proof.
+R10 and R18 are in `headless`, not the no-core `ci` tier. They use one worker and keep
+the existing startup, per-wait, and 300-second story deadlines. The overall runner, step, or job deadline can end a story sooner. The report records each duration and independent cleanup proof. Run the v0 round trip explicitly with `--story R18`.
 
 | Story | Coverage |
 | --- | --- |
@@ -143,6 +143,7 @@ its existing startup, per-wait, and 300-second story deadlines. The overall runn
 | R07 | Return move, original checkout and file, higher epoch, retained history, and native same-tab presentation. |
 | R08 | Busy-source refusal, lost readiness replies, forward recovery, and return home. |
 | R10 | A copy of a v0 away-homed session refuses prompts and tools while the box retains its only owner. |
+| R18 | An ordinary Pi session relocates to a fixture machine and back. Both arrivals preserve the session ID and transcript body, with one ID-lock owner and the expected home. The header changes only its mapped cwd. |
 
 The legacy move stories remain out of CI. The old sync, automatic recovery, and failed-launch rollback stories are no longer registered because they require the legacy hub.
 

@@ -117,6 +117,15 @@ describe('headless story matrix', () => {
     for (const invalid of ['R10,,R13', 'R10,R10', 'R99', 'R10;echo']) expect(select(invalid).status).not.toBe(0);
   });
 
+  it('selects the relocation story explicitly but not by default', () => {
+    const defaults = select('');
+    expect(defaults.status, defaults.stderr).toBe(0);
+    expect(JSON.parse(defaults.stdout).include.map((row: { story: string }) => row.story)).not.toContain('R18');
+    const requested = select('R18');
+    expect(requested.status, requested.stderr).toBe(0);
+    expect(JSON.parse(requested.stdout).include).toEqual([{ story: 'R18', timeout: 5 }]);
+  });
+
   it('keeps move story budgets and leaves the flaky ones out of the default set', () => {
     const defaults = JSON.parse(select('').stdout) as { include: { story: string; timeout: number }[] };
     // R06 to R08 are flaky in CI and stay out of the default set until fixed.

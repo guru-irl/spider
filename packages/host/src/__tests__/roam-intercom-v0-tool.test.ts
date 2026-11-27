@@ -244,6 +244,21 @@ it("keeps unhomed sends local and refuses explicit remote targets", async () => 
   } finally { observer.off("message", onMessage); await f.cleanup(); }
 });
 
+it.each(["send", "ask"] as const)("refuses an unhomed remote %s even if the resolver offers dispatch", async action => {
+  const attempted: V0Text[] = [];
+  const prepare: V0Prepare = async () => ({
+    kind: "remote", label: "b/ben",
+    async send(message) { attempted.push(message); return { kind: "socket_delivered", id: message.id }; },
+    async ask(message) { attempted.push(message); return { kind: "no_reply", id: message.id }; },
+  });
+  const f = await fixture({ homeEpoch: () => undefined, prepare });
+  try {
+    const result = await f.tool.execute(action, { action, to: "b/ben", message: "private text" }, new AbortController().signal, undefined, f.ctx);
+    expect(result.details).toMatchObject({ error: true, code: "not-configured" });
+    expect(attempted).toEqual([]);
+  } finally { await f.cleanup(); }
+});
+
 it("returns the reply to a named remote ask", async () => {
   const questions: V0Text[] = [];
   const prepare: V0Prepare = async () => ({

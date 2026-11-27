@@ -2,12 +2,12 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { migrate, openDb, paths } from '@spider/db-core';
 import { recordLocation } from '@spider/db-core/roam/catalog';
-import { readLocal } from '@spider/db-core/roam/local-state';
+import { readLocal, writeLocal } from '@spider/db-core/roam/local-state';
 import { mapWorkspace } from '@spider/db-core/roam/repo-map';
 import { parseReadiness } from '@spider/db-core/roam/readiness';
 import { inspectIdLock } from '../../src/sessions/id-lock.js';
@@ -23,7 +23,7 @@ import { renderSupervisorUnit } from '../../../roam/src/systemd.js';
 import type { SupervisorSystemPorts } from '../../../roam/src/production-supervisor.js';
 import { readObserved, type ObservedEvent } from '../harness/pi.js';
 import { identityAlive, identityOf } from '../harness/resources.js';
-import { spawnOwned } from '../harness/processes.js';
+import { spawnOwned, type OwnedProcess } from '../harness/processes.js';
 import type { Suite } from '../harness/suite.js';
 import { deadline, waitFor } from '../harness/wait.js';
 
@@ -274,6 +274,153 @@ export async function hostingFixture(suite: Suite, name = 'hosting'): Promise<Ho
   };
   return { suite, root, cwd, sessionId, file, coreUnit, supervisorUnit, systemctlLog, shellLog, start, settle: stop, close, waitOwner, owners, events, control, provisionUnit, restartCore, crash,
     advance: ms => clock.advance(ms), state: () => intents.get(sessionId) };
+}
+
+export interface V0HostingFixture {
+  suite: Suite; root: string; cwd: string; sessionId: string; file: string; machineId: string; epoch: number;
+  coreUnit: string; supervisorUnit: string; systemctlLog: string;
+  provisionUnit(): Promise<void>; start(): Promise<void>; close(): Promise<void>; restartCore(): Promise<void>;
+  waitOwner(previousPid?: number): Promise<HostedOwner>; owners(): Promise<HostedOwner[]>;
+  events(pid: number): Promise<ObservedEvent[]>; home(): Record<string, unknown> | undefined;
+}
+
+/** A replicated running home on an isolated box, started by the installed v0 service definition. */
+export async function v0HostingFixture(suite: Suite): Promise<V0HostingFixture> {
+  const cores = suite.cores;
+  if (!cores || process.platform !== 'linux') throw new Error('v0 hosting needs an isolated Linux core');
+  const root = suite.directories.SPIDER_GLOBAL_ROOT, cwd = await suite.project('hosting-v0');
+  const agent = suite.directories.PI_CODING_AGENT_DIR, herdr = join(root, 'herdr');
+  const sessionId = randomUUID(), repo = randomUUID(), workspace = randomUUID(), moveId = `v0-${randomUUID()}`, epoch = 3;
+  const file = suite.ownPath(join(cwd, 'session.jsonl')), store = `worktree:${repo}:${workspace}` as const;
+  const unitDir = suite.ownPath(join(suite.root, 'units')), coreUnit = join(unitDir, 'herdr-core.service');
+  const supervisorUnit = join(unitDir, 'spider-roam-supervisor-v0.service');
+  const systemctlLog = suite.ownPath(join(suite.root, 'v0-systemctl.log'));
+  const supervisorLog = suite.ownPath(join(suite.root, 'v0-supervisor.log'));
+  for (const dir of [join(root, 'roam'), herdr, unitDir, paths.projectRoot(cwd)]) await mkdir(dir, { recursive: true, mode: 0o700 });
+  await writeFile(coreUnit, 'existing fixture core service\n', { mode: 0o600 });
+  await writeFile(join(root, 'roam', 'machine.json'), JSON.stringify({ machineId: BOX }), { mode: 0o600 });
+  await writeFile(join(root, 'roam', 'config.json'), JSON.stringify({ enabled: false, role: 'box', machineId: BOX,
+    hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: 'herdr-core.service' }), { mode: 0o600 });
+  await writeFile(join(herdr, 'config.json'), JSON.stringify({ enabled: true, mode: 'core-only',
+    core: { binary: cores.wrapper, config: join(suite.root, 'core.toml') }, agentDirectory: agent, globalRoot: root,
+    shellRc: join(suite.root, 'shellrc'), spaces: [], machines: [] }), { mode: 0o600 });
+  await writeFile(file, [
+    { type: 'session', version: 3, id: sessionId, cwd, timestamp: '2026-01-01T00:00:00Z' },
+    { type: 'message', id: 'seed', parentId: null, timestamp: '2026-01-01T00:00:00Z',
+      message: { role: 'user', content: 'fixture history', timestamp: 1 } },
+  ].map(row => JSON.stringify(row)).join('\n') + '\n', { mode: 0o600 });
+
+  const db = openDb(join(root, 'spider.db')), worktree = openDb(join(paths.projectRoot(cwd), 'project.db'));
+  try {
+    migrate(db, 'global', { machineId: BOX, globalRoot: root });
+    db.prepare("UPDATE roam_meta SET store_key='global' WHERE id=1").run();
+    migrate(worktree, 'worktree', { machineId: BOX, globalRoot: root });
+    await mapWorkspace(db, { repoKey: repo, workspaceId: workspace, path: cwd });
+    worktree.prepare('UPDATE roam_meta SET store_key=? WHERE id=1').run(store);
+    worktree.prepare('INSERT INTO sessions(id,started_at,origin_machine) VALUES (?,1,?)').run(sessionId, HUB);
+    worktree.prepare("INSERT INTO roam_sessions(session_id,epoch,state) VALUES (?,?,'active')").run(sessionId, epoch);
+    db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state,destination) VALUES (?,?,?,?,1,'running',NULL)")
+      .run(sessionId, BOX, epoch, moveId);
+    const placement = { sessionId, machineId: BOX, historyMachine: HUB, repoKey: repo, workspaceId: workspace,
+      repository: cwd, cwd, file, stores: ['global', store] };
+    writeLocal(db, 'relocate-managed', sessionId, placement);
+    recordLocation(db, { sessionId, stores: ['global', store], home: { sessionId, machineId: BOX, epoch, moveId, updatedAt: 1 }, file, cwd });
+  } finally { worktree.close(); db.close(); }
+
+  const env = { ...suite.env, ...cores.local.env, HC_SESSION: cores.local.namespace, HC_SOCKET: cores.local.socket,
+    SPIDER_GLOBAL_ROOT: root, PI_CODING_AGENT_DIR: agent, SPIDER_ROAM_PI: suite.pi.launcher };
+  const restoreEnv = enterHostingEnvironment(env);
+  let domain: NonNullable<ReturnType<typeof fixtureProcessDomain>>;
+  let cli: { main(argv: readonly string[], io: { out(text: string): void; err(text: string): void }, options: {
+    bundleUrl: URL; v0: { lifecycle: { systemd: { unitDir: string; run(args: readonly string[]): Promise<void> } } };
+  }): Promise<number> };
+  try {
+    const created = fixtureProcessDomain(herdr, env);
+    if (!created) throw new Error('missing fixture process domain');
+    domain = created;
+    cli = await import(/* @vite-ignore */ pathToFileURL(join(suite.packed.root, 'dist', 'roam', 'cli-main.mjs')).href) as typeof cli;
+  } catch (error) { restoreEnv(); throw error; }
+  let supervisor: OwnedProcess | undefined;
+  const provisionUnit = async () => {
+    const output: string[] = [], errors: string[] = [];
+    const code = await cli.main(['roam', 'enable'], { out: line => output.push(line), err: line => errors.push(line) }, {
+      bundleUrl: pathToFileURL(suite.packed.extension), v0: { lifecycle: { systemd: { unitDir, async run(args) {
+        const command = args.join(' ');
+        if (!['--user daemon-reload', '--user enable --now spider-roam-supervisor-v0.service'].includes(command))
+          throw new Error(`unexpected fixture service command: ${command}`);
+        await appendFile(systemctlLog, `${command}\n`, { mode: 0o600 });
+      } } } },
+    });
+    if (code !== 0) throw new Error(`packed v0 enable failed (${code}): ${errors.join('')}${output.join('')}`);
+  };
+  const start = async () => {
+    if (supervisor) throw new Error('supervisor already started');
+    const installed = parseV0SupervisorUnit(await readFile(supervisorUnit, 'utf8'), process.execPath, suite.packed.roamSupervisor);
+    const required: Record<string, string> = { SPIDER_GLOBAL_ROOT: root, PI_CODING_AGENT_DIR: agent, SPIDER_ROAM_PI: suite.pi.launcher,
+      SPIDER_ROAM_HC: cores.wrapper, HC_SESSION: cores.local.namespace, HC_SOCKET: cores.local.socket };
+    for (const [key, value] of Object.entries(required)) if (installed.env[key] !== value) throw new Error(`unit has the wrong ${key}`);
+    supervisor = spawnOwned(suite.ledger, { label: 'v0-supervisor', command: installed.command, args: installed.args,
+      env: { ...env, ...installed.env }, cwd: suite.root, stdio: { log: supervisorLog } });
+  };
+  const events = (pid: number) => readObserved(suite.pi.observerDir, pid);
+  const owners = async () => {
+    const rows: HostedOwner[] = [];
+    for (const item of await domain.processes()) {
+      const entry = (await events(item.pid)).find(event => event.type === 'session_start' && event.sessionId === sessionId && event.sessionFile === file);
+      if (entry && typeof entry.hcTerminal === 'string') rows.push({ pid: item.pid, terminal: entry.hcTerminal, sessionId, file, cwd });
+    }
+    return rows;
+  };
+  const leases = createSessionLeases(herdr);
+  const waitOwner: V0HostingFixture['waitOwner'] = async previousPid => {
+    const owner = await waitFor('one v0 session holds its ID lock and file lease', async () => {
+      if (!supervisor || !identityAlive(supervisor.identity)) throw new Error(`v0 supervisor exited: ${await readFile(supervisorLog, 'utf8').catch(() => '')}`);
+      const rows = await owners();
+      if (rows.length !== 1 || rows[0].pid === previousPid) return null;
+      const candidate = rows[0], lock = await inspectIdLock(herdr, sessionId), lease = await leases.get(file);
+      return lock && lock.identity.pid === candidate.pid && lock.pendingOperationId === null && lease?.pid === candidate.pid &&
+        lease.startIdentity === lock.identity.startIdentity ? candidate : null;
+    }, value => value !== null, deadline(60_000), { reconcileMs: 100 });
+    if (!owner) throw new Error('v0 session owner was not verified');
+    const identity = identityOf(owner.pid);
+    suite.ledger.update(ledger => {
+      if (!ledger.terminals.some(item => item.side === 'local' && item.address === owner.terminal)) ledger.terminals.push({ side: 'local', address: owner.terminal });
+      if (!ledger.processes.some(item => item.pid === identity.pid && item.start === identity.start)) ledger.processes.push({ ...identity, label: 'v0-hosted-pi', group: false });
+    });
+    return owner;
+  };
+  const restartCore = async () => {
+    if (!supervisor || !identityAlive(supervisor.identity)) throw new Error('fixture supervisor is not live');
+    const service = supervisor.identity;
+    const before = await suite.hc(['server', 'status', '--json']);
+    const current = before.json as { pid?: number; core?: { id?: string } } | null;
+    if (before.exitCode !== 0 || current?.pid !== cores.local.pid || current.core?.id !== cores.local.coreId) throw new Error('refusing to restart an unowned core');
+    const stopped = await suite.hc(['server', 'stop', '--json']);
+    if (stopped.exitCode !== 0) throw new Error(`fixture core stop failed: ${stopped.stderr}`);
+    const started = await suite.hc(['server', 'start', '--json']);
+    if (started.exitCode !== 0) throw new Error(`fixture core start failed: ${started.stderr}`);
+    const after = await suite.hc(['server', 'status', '--json']);
+    const next = after.json as { pid?: number; core?: { id?: string } } | null;
+    if (after.exitCode !== 0 || typeof next?.pid !== 'number' || next.pid === current.pid || next.core?.id !== cores.local.coreId)
+      throw new Error('fixture core identity changed or did not restart');
+    const identity = identityOf(next.pid); cores.local.pid = next.pid;
+    suite.ledger.update(ledger => { const core = ledger.cores.find(item => item.side === 'local'); if (!core) throw new Error('fixture core not recorded'); core.pid = identity.pid; core.start = identity.start; });
+    if (!identityAlive(service)) throw new Error('fixture supervisor did not survive the core restart');
+  };
+  const home = () => {
+    const current = openDb(join(root, 'spider.db'), { fileMustExist: true });
+    try { return current.prepare('SELECT session_id,machine_id,epoch,move_id,state,destination FROM session_homes WHERE session_id=?').get(sessionId) as Record<string, unknown> | undefined; }
+    finally { current.close(); }
+  };
+  const close = async () => {
+    try {
+      if (supervisor) await supervisor.stop();
+      if (hasFile(supervisorLog)) await suite.keepEvidence(supervisorLog, 'v0-supervisor.log');
+      await suite.keepEvidence(cores.recordLog, 'v0-hc.jsonl');
+    } finally { restoreEnv(); }
+  };
+  return { suite, root, cwd, sessionId, file, machineId: BOX, epoch, coreUnit, supervisorUnit, systemctlLog,
+    provisionUnit, start, close, restartCore, waitOwner, owners, events, home };
 }
 
 export const digestFile = async (file: string): Promise<string> => createHash('sha256').update(await readFile(file)).digest('hex');

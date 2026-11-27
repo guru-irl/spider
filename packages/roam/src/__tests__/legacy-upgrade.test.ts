@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { migrate, openDb } from "@spider/db-core";
 import { writeLocal } from "@spider/db-core/roam/local-state";
@@ -50,6 +50,53 @@ function replica(root: string, key: string) {
   } finally { db.close(); }
   return file;
 }
+
+it("reports a lost home-action journal record as unverified without changing evidence", async () => {
+  const f = fixture(), globalFile = join(f.root, "spider.db"), journalFile = join(f.root, "roam", "journal.db");
+  const global = openDb(globalFile);
+  try { global.prepare("INSERT INTO roam_home_actions(move_id,session_id,expected_epoch,args_digest) VALUES (?,?,1,?)")
+    .run("lost-action", "session-lost", "a".repeat(64)); } finally { global.close(); }
+  const files = [globalFile, journalFile, join(f.root, "roam", "config.json")], before = files.map(file => readFileSync(file));
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-unverified.*session-lost.*lost-action/) }),
+  ]));
+  expect(files.map(file => readFileSync(file))).toEqual(before);
+});
+
+it("reports a corrupt journal as unverified without repairing it", async () => {
+  const f = fixture(), file = join(f.root, "roam", "journal.db");
+  writeFileSync(file, "corrupt fixture journal", { mode: 0o600 });
+  const before = readFileSync(file), io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/^legacy-upgrade-unverified/) }),
+  ]));
+  expect(readFileSync(file)).toEqual(before);
+});
+
+it("classifies a v0-shaped operation ID by its legacy journal kind", async () => {
+  const f = fixture(), id = "v0-33333333-3333-4333-8333-333333333333";
+  f.journal.begin({ id, kind: "move", machineId: hub, expectedEpoch: 1, args: {} });
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(new RegExp(`legacy-upgrade-blocked.*${id}`)) }),
+  ]));
+});
+
+it("enabled local doctor includes the same pending legacy inventory", async () => {
+  const f = fixture(), config = join(f.root, "roam", "config.json");
+  const current = JSON.parse(readFileSync(config, "utf8")); current.enabled = true;
+  writeFileSync(config, JSON.stringify(current), { mode: 0o600 });
+  f.journal.begin({ id: "enabled-move", kind: "move", machineId: hub, expectedEpoch: 1, args: {} });
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-blocked.*enabled-move/) }),
+  ]));
+});
 
 it("reports lost roaming identity as unverified even when a pending move is visible", async () => {
   const f = fixture();
@@ -281,6 +328,27 @@ it("reports a replica filename and store identity mismatch as unverified", async
   expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
   expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
     expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-unverified.*worktree:fixture-repo:recorded/) }),
+  ]));
+});
+
+it("does not block a published mapping's retained replica fence", async () => {
+  const f = fixture(), key = "worktree:fixture-repo:workspace-1", file = replica(f.root, key);
+  const source = openDb(file);
+  try { fenceReplicaForMapping(source, key); } finally { source.close(); }
+  const checkout = join(f.root, "checkout"), directory = join(checkout, ".spider"), target = join(directory, "project.db");
+  mkdirSync(directory, { recursive: true });
+  const project = openDb(target);
+  try { migrate(project, "worktree", { machineId: hub, globalRoot: f.root });
+    project.prepare("UPDATE roam_meta SET machine_id=?,store_key=? WHERE id=1").run(hub, key); } finally { project.close(); }
+  const global = openDb(join(f.root, "spider.db"));
+  try {
+    global.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES (?,?,?)").run("fixture-repo", "workspace-1", checkout);
+    writeLocal(global, "mapping-redirect", key, target);
+  } finally { global.close(); }
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(0);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "info", reason: expect.stringMatching(/^legacy-upgrade-ready/) }),
   ]));
 });
 

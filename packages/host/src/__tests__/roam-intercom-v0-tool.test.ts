@@ -177,6 +177,15 @@ it("advertises the admitted session to private lookup with the production host f
   });
 });
 
+it.each(["send", "ask"] as const)("explains why a box cannot initiate %s to a Mac session", async action => {
+  await withConfiguredBoxHost(async execute => {
+    const result = await execute(action, hubSessionId, "reply-only fixture");
+    expect(result.content[0]).toEqual({ type: "text",
+      text: "Sessions on the Mac accept messages from other machines only as replies to their own asks." });
+    expect(result.details).toMatchObject({ error: true, code: "reply-only" });
+  });
+});
+
 it("wires an injected roaming factory for an admitted running home", async () => {
   const admissionModule = await import("../roam/admission.js");
   const runtimeModule = await import("@spider/roam/runtime");

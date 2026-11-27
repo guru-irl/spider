@@ -464,13 +464,15 @@ it.each(["frozen", "transferred", "home-committed", "unknown-start"] as const)("
 }, 5000);
 
 it("completed move recovery clears its stale diagnostic", async () => {
-  const f = fixture();
+  const gitAtStart = gitCalls;
+  const f = fixture(false, HUB, BOX, "synthetic");
   expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 0 });
   writeLocal(f.global.db, "recovery-diagnostic", f.request.operation.id, { reason: "move-lock-pending" });
   const effects = [...f.events];
   expect(await recoverMove(f.request.operation.id, f.ports)).toMatchObject({ code: 0 });
   expect(readLocal(f.global.db, "recovery-diagnostic", f.request.operation.id)).toBeUndefined();
   expect(f.events).toEqual(effects);
+  expect(gitCalls - gitAtStart, "diagnostic recovery fixture must not run Git").toBe(0);
 }, 5000);
 
 it.each([false, true])("peer recovery skips a concurrent move without a doctor warning (still pending: %s)", async unfinished => {

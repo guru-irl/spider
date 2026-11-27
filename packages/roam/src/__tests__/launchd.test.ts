@@ -74,6 +74,15 @@ it("v0 launchd pins an explicit hc binary and retains the selected core", async 
   expect(xml).not.toContain("HC_TERMINAL_ID");
 });
 
+it("v0 launchd records login PATH but not volatile credential settings", async () => {
+  const f = fixture();
+  await installHubService({...f,mode:"v0",env:{HOME:f.root,PATH:"/fixture/login/bin:/usr/bin:/bin",SSH_AUTH_SOCK:"/fixture/volatile.sock",FAKE_PROVIDER_KEY:"never-persist-this"}},f.ports);
+  const {xml} = plist(launchd.hubServiceFile(f.globalRoot,f.plistDir,"v0"));
+  expect(xml).toMatch(/<key>PATH<\/key><string>[^<]*\/fixture\/login\/bin/);
+  expect(xml).not.toContain("volatile.sock");
+  expect(xml).not.toContain("never-persist-this");
+});
+
 it("different roots install independent labels and remove only their own plist", async () => {
   const f = fixture(), secondRoot = join(f.root, "other-global");
   mkdirSync(f.globalRoot); mkdirSync(secondRoot);

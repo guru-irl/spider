@@ -20,6 +20,13 @@ it("v0 supervisor unit pins a custom hc and core socket", () => {
   expect(() => renderSupervisorUnit({...input,herdr:{...input.herdr,session:"../other"}})).toThrow();
 });
 
+it("v0 supervisor unit retains the destination's login PATH", () => {
+  const input = {node:"/home/agent/node",supervisor:"/home/agent/supervisor",coreUnit:"herdr-core.service",globalRoot:"/home/agent/data",mode:"v0" as const,
+    loginPath:"/home/agent/.local/bin:/usr/bin:/bin"};
+  const line = renderSupervisorUnit(input).split("\n").find(part => part.includes('"PATH='));
+  expect(line).toContain("/home/agent/.local/bin:");
+});
+
 it("renders a private login supervisor without dependencies on the core unit", () => {
   const parent = dirname(scratchDbPath("roam-systemd"));
   mkdirSync(parent, { recursive: true });

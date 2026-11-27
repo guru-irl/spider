@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { delimiter, dirname, join, relative, isAbsolute, resolve, sep } from "node:path";
+import { join, relative, isAbsolute, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { lstat, realpath } from "node:fs/promises";
@@ -28,6 +28,7 @@ import type { MovingHome, RelocateAdapterOptions, RelocateHome, RunningHome, Ses
 import { refusal } from "./remote";
 import { insideDirectory, isPiTitle, localProcessTree, localGroupBlockers, locklessPiInCheckout, processName, type SessionProcessTree } from "./local-process";
 import { localWriterBlockers } from "./local-writers";
+import { piLaunchArgv, toolPath } from "./launch-environment";
 
 type LocalTerminal = { terminal: string; state: "live" | "finished"; pid: number | null; owned?: true };
 export interface LocalIO {
@@ -66,7 +67,7 @@ export function localLaunchEnvironment(env: Readonly<NodeJS.ProcessEnv> = proces
   clean.HC_SESSION = core.session;
   clean.HC_SOCKET = core.socket;
   clean.PI_CODING_AGENT_DIR = env.PI_CODING_AGENT_DIR ?? join(homedir(),".pi","agent");
-  clean.PATH = [dirname(process.execPath),env.PATH ?? ""].filter(Boolean).join(delimiter);
+  clean.PATH = toolPath(env.PATH,process.execPath);
   return clean;
 }
 export function localHerdrConnection(root: string, base: Readonly<NodeJS.ProcessEnv> = process.env): {binary:string;env:NodeJS.ProcessEnv} {
@@ -152,7 +153,7 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
       if (!pi) throw new Error("Pi executable unavailable");
       const core = await observeCoreIdentity(binary,env,{timeoutMs:options.limits.controlMs});
       const launchEnv: NodeJS.ProcessEnv = {...env,HC_SESSION:core.sessionNamespace,HC_SOCKET:core.socket};
-      const request: PiSpawnRequest = {sessionId:home.sessionId as unknown as HerdrSessionId,sessionFile:placement.file,cwd:placement.cwd,environment:{agentDirectory:launchEnv.PI_CODING_AGENT_DIR!,extensionArguments:[]},argv:[pi,"--session",placement.file],env:launchEnv,terminal:{background:true,noNotify:true,outliveParent:true,parent:null,labels:{"spider.kind":"session","spider.session":home.sessionId,"spider.machine":home.machineId,"spider.roam.epoch":String(home.epoch)}}};
+      const request: PiSpawnRequest = {sessionId:home.sessionId as unknown as HerdrSessionId,sessionFile:placement.file,cwd:placement.cwd,environment:{agentDirectory:launchEnv.PI_CODING_AGENT_DIR!,extensionArguments:[]},argv:piLaunchArgv(pi,placement.file,launchEnv),env:launchEnv,terminal:{background:true,noNotify:true,outliveParent:true,parent:null,labels:{"spider.kind":"session","spider.session":home.sessionId,"spider.machine":home.machineId,"spider.roam.epoch":String(home.epoch)}}};
       return hc.run(request,{started(){},exited(){}});
     },
   };

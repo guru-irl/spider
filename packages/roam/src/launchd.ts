@@ -7,6 +7,7 @@ import { assertTestConfigPath } from "@spider/db-core";
 import { selectedSocket } from "@spider/herdr/client/parse";
 import { configSocket } from "@spider/herdr/client/socket-config";
 import { privateDirectory } from "./staging";
+import { toolPath } from "./relocate/launch-environment";
 
 const LABEL = "com.spider.roam.hub";
 const V0_LABEL = "com.spider.roam.hub-v0";
@@ -99,7 +100,7 @@ function selectionEnvironment(selection: CoreSelection, serviceHome: string): st
   if (!configured && standard && selection.session === standard.session && selection.socket === standard.socket) return "";
   return `<key>HC_SESSION</key><string>${xml(selection.session)}</string><key>HC_SOCKET</key><string>${xml(selection.socket)}</string>`;
 }
-function definition(node: string, cli: string, root: string, out: string, err: string, pi: string, label: string, selection: CoreSelection, serviceHome: string, hc?: string): string {
+function definition(node: string, cli: string, root: string, out: string, err: string, pi: string, label: string, selection: CoreSelection, serviceHome: string, hc?: string, v0Path?: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -108,7 +109,7 @@ function definition(node: string, cli: string, root: string, out: string, err: s
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><true/>
 <key>WorkingDirectory</key><string>${xml(root)}</string>
-<key>EnvironmentVariables</key><dict><key>SPIDER_GLOBAL_ROOT</key><string>${xml(root)}</string><key>SPIDER_ROAM_PI</key><string>${xml(pi)}</string>${selectionEnvironment(selection, serviceHome)}${hc ? `<key>SPIDER_ROAM_HC</key><string>${xml(hc)}</string>` : ""}</dict>
+<key>EnvironmentVariables</key><dict><key>SPIDER_GLOBAL_ROOT</key><string>${xml(root)}</string><key>SPIDER_ROAM_PI</key><string>${xml(pi)}</string>${selectionEnvironment(selection, serviceHome)}${hc ? `<key>SPIDER_ROAM_HC</key><string>${xml(hc)}</string>` : ""}${v0Path ? `<key>PATH</key><string>${xml(v0Path)}</string>` : ""}</dict>
 <key>StandardOutPath</key><string>${xml(out)}</string>
 <key>StandardErrorPath</key><string>${xml(err)}</string>
 <key>Umask</key><integer>63</integer>
@@ -178,7 +179,7 @@ export async function installHubService(input: { node: string; cli: string; glob
   if (!pi) throw new Error("participant-pi-unavailable");
   const participant = executable(pi, true);
   if (input.mode !== "v0" && label !== LABEL) await removeDefinition(join(directory, `${LABEL}.plist`), root, LABEL, ports, true);
-  writeDefinition(file, definition(node, cli, root, out, err, participant, label, selection, serviceHome, hc), root, label, previous);
+  writeDefinition(file, definition(node, cli, root, out, err, participant, label, selection, serviceHome, hc, input.mode === "v0" ? toolPath(env.PATH,node) : undefined), root, label, previous);
   const domain = `gui/${uid}`;
   try { await ports.launchctl(["bootout", domain, file]); }
   catch (error) { if ((error as { code?: unknown } | null)?.code !== "service-not-loaded") throw error; }

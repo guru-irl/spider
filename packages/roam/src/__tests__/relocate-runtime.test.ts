@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, delimiter } from "node:path";
@@ -176,14 +176,30 @@ describe("v0 local runtime",()=>{
  it("detached exact-file launch uses the destination environment",async()=>{
   const f=runtimeFixture(),pi=join(f.options.root,"pi");writeFileSync(pi,"#!/bin/sh\n",{mode:0o700});
   vi.stubEnv("SPIDER_ROAM_PI",pi);vi.stubEnv("HC_TERMINAL_ID","inherited");vi.stubEnv("HC_SESSION","foreign");vi.stubEnv("HC_SOCKET","/foreign.sock");vi.stubEnv("SPIDER_HERDR_LEASE_TOKEN","fake-lease");vi.stubEnv("SPIDER_HERDR_HANDOFF_FILE","/foreign-handoff");vi.stubEnv("SPIDER_GLOBAL_ROOT","/foreign-root");vi.stubEnv("AUTH_TOKEN","synthetic-secret");
+  vi.stubEnv("SSH_AUTH_SOCK",undefined);
   vi.spyOn(hcApi,"observeCoreIdentity").mockResolvedValue({coreId:"selected",sessionNamespace:"selected",socket:"/selected.sock"} as CoreIdentity);
   const calls:{argv:readonly string[];env:Readonly<NodeJS.ProcessEnv>}[]=[];
   vi.spyOn(hcApi,"invokeCli").mockImplementation(async(_binary,argv,env)=>{calls.push({argv,env});return {address:"selected:t"};});
   const io=createLocalIO(f.options);expect(await io.launch({home:f.home,placement:f.placement})).toEqual({terminal:"selected:t"});
-  expect(calls[0].argv).toEqual(["run","--json","--bg","--no-notify","--outlive-parent","--no-parent","--cwd","/mapped/sub","--label","spider.kind=session","--label",`spider.session=${id}`,"--label",`spider.machine=${box}`,"--label","spider.roam.epoch=3","--",pi,"--session","/sessions/exact.jsonl"]);
+  expect(calls[0].argv).toEqual(["run","--json","--bg","--no-notify","--outlive-parent","--no-parent","--cwd","/mapped/sub","--label","spider.kind=session","--label",`spider.session=${id}`,"--label",`spider.machine=${box}`,"--label","spider.roam.epoch=3","--","/usr/bin/env",`PATH=${calls[0].env.PATH}`,`PI_CODING_AGENT_DIR=${calls[0].env.PI_CODING_AGENT_DIR}`,`SPIDER_GLOBAL_ROOT=${f.options.root}`,"PI_SUBAGENT_CHILD=0",pi,"--session","/sessions/exact.jsonl"]);
   expect(calls[0].env).toMatchObject({HC_SESSION:"selected",HC_SOCKET:"/selected.sock",SPIDER_GLOBAL_ROOT:f.options.root});
   expect(calls[0].env.HC_TERMINAL_ID).toBeUndefined();expect(calls[0].env.SPIDER_HERDR_LEASE_TOKEN).toBeUndefined();expect(calls[0].env.SPIDER_HERDR_HANDOFF_FILE).toBeUndefined();
   expect(calls[0].env.PI_CODING_AGENT_DIR).toBeTruthy();expect(calls[0].env.PATH!.split(delimiter)).toContain(dirname(process.execPath));expect(calls[0].argv.join(" ")).not.toContain("synthetic-secret");
+ });
+ it("passes tool PATH, agent settings, and a local ssh socket to pi without client environment forwarding", async () => {
+  const f = runtimeFixture(), pi = join(f.options.root,"pi"), agent = join(f.options.root,"agent"), sock = join(f.options.root,"ssh.sock");
+  writeFileSync(pi,"#!/bin/sh\nprintf '%s\\n' \"$PATH\" \"$PI_CODING_AGENT_DIR\" \"$SPIDER_GLOBAL_ROOT\" \"$PI_SUBAGENT_CHILD\" \"$SSH_AUTH_SOCK\" \"$FAKE_PROVIDER_KEY\" \"$@\"\n",{mode:0o700});
+  vi.stubEnv("SPIDER_ROAM_PI",pi); vi.stubEnv("PI_CODING_AGENT_DIR",agent); vi.stubEnv("SSH_AUTH_SOCK",sock);
+  vi.stubEnv("PATH","/fixture/login/bin:/usr/bin:/bin"); vi.stubEnv("FAKE_PROVIDER_KEY","must-not-be-forwarded");
+  vi.spyOn(hcApi,"observeCoreIdentity").mockResolvedValue({coreId:"selected",sessionNamespace:"selected",socket:"/selected.sock"} as CoreIdentity);
+  let program: readonly string[] = [];
+  vi.spyOn(hcApi,"invokeCli").mockImplementation(async (_binary,argv) => {program = argv.slice(argv.indexOf("--")+1); return {address:"selected:t"};});
+  await createLocalIO(f.options).launch({home:f.home,placement:f.placement});
+  const [toolPath,agentDir,root,child,ssh,secret,...args] = execFileSync(program[0],[...program.slice(1)],{encoding:"utf8",env:{PATH:"/usr/bin:/bin"}}).trimEnd().split("\n");
+  expect(toolPath.split(delimiter)).toContain("/fixture/login/bin");
+  expect([agentDir,root,child,ssh,secret]).toEqual([agent,f.options.root,"0",sock,""]);
+  expect(args).toEqual(["--session",f.placement.file]);
+  expect(program.join(" ")).not.toContain("must-not-be-forwarded");
  });
  it("supervisor entries include missing homes",async()=>{
   const f=runtimeFixture(),local=createLocalRuntime(f.options,f.io);

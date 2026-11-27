@@ -1,4 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { V0_INTERCOM_MS } from "@spider/intercom/roam-v0";
+import { decodeRelayPoll, isRelayResult, type RelayLinkView, type RelayPeer, type RelayResult, type RelaySubmit } from "@spider/intercom/relay-protocol";
+import type { Clock, Peer, Transport } from "../contracts";
+import { runRelayPollLoop } from "./relay-poll";
 
 const SOAK_MS = 8 * 60 * 60 * 1000;
 const CADENCE_MS = 5000;
@@ -235,4 +239,173 @@ export function checkRelaySoak(evidence: RelaySoakEvidence): { ok: boolean; viol
         process.after.identities.some(item => !before.has(birthKey(item)) || owned.has(birthKey(item)))) fail("cleanup");
   }
   return { ok: violations.size === 0, violations: [...violations] };
+}
+
+export interface RelaySoakRunLink {
+  id: string; topology: SoakTopology; relayId: string; peerId: string;
+  from: RelaySubmit["from"]; target: RelaySubmit["target"];
+}
+export type RelaySoakRecord = { linkId: string } & (
+  | ({ type: "run" } & SoakRun)
+  | ({ type: "submission" } & SoakSubmission)
+  | ({ type: "handoff" | "receipt" } & SoakEvent)
+  | ({ type: "outcome" } & SoakOutcomeEvent)
+  | ({ type: "state" | "relay-state" } & SoakStateEvent)
+  | ({ type: "rss" } & SoakRss)
+  | { type: "poll-start" | "poll-end"; atMs: number; pollId: string; wireLinkId: string; holdMs: 0 | 20000 }
+  | { type: "submission-error"; atMs: number; id: string }
+);
+
+interface DriverBase {
+  link: RelaySoakRunLink; clock: Clock; signal: AbortSignal; startMs: number; endMs: number;
+  rssAllowanceBytes: number; process: BirthIdentity; emit(record: RelaySoakRecord): void;
+}
+export interface RelaySoakDialOptions extends DriverBase {
+  relay: RelayPeer; peer: Peer; transport: Pick<Transport, "resolve" | "exec">; rssBytes(): number;
+}
+export interface RelaySoakSubmitOptions extends DriverBase {
+  submit(relayId: string, value: RelaySubmit, signal: AbortSignal): Promise<RelayResult>;
+  list(signal: AbortSignal): Promise<readonly RelayLinkView[]>;
+  nextId?(): string;
+}
+export type RelaySoakBurstOptions = Omit<RelaySoakSubmitOptions, "list">;
+
+function runRecord(options: DriverBase, role: SoakRun["role"]): void {
+  options.emit({ type: "run", linkId: options.link.id, role, startMs: options.startMs, endMs: options.endMs,
+    rssAllowanceBytes: options.rssAllowanceBytes, machineId: role === "dial" ? options.link.relayId : options.link.peerId, process: options.process });
+}
+
+/** Drive the real carrier; the sink records a receipt independently of the broker outcome. */
+export async function runRelaySoakDial(options: RelaySoakDialOptions): Promise<void> {
+  const { link, relay, peer, transport, clock, signal, emit } = options;
+  runRecord(options, "dial");
+  let cancelRss = () => {};
+  const sampleRss = () => {
+    if (signal.aborted) return;
+    emit({ type: "rss", linkId: link.id, atMs: clock.now(), bytes: options.rssBytes(), process: options.process });
+    cancelRss = clock.later(30_000, sampleRss);
+  };
+  sampleRss();
+  const observedTransport: Pick<Transport, "resolve" | "exec"> = {
+    resolve: (value, call) => transport.resolve(value, call),
+    async exec(value, argv, call) {
+      const holdMs = Number(argv.at(-1)) as 0 | 20000;
+      const poll = decodeRelayPoll(call.stdin!, holdMs);
+      const event = { linkId: link.id, pollId: poll.hello.pollId, wireLinkId: poll.hello.linkId, holdMs };
+      emit({ type: "poll-start", atMs: clock.now(), ...event });
+      try { return await transport.exec(value, argv, call); }
+      finally { emit({ type: "poll-end", atMs: clock.now(), ...event }); }
+    },
+  };
+  try {
+    await runRelayPollLoop({ relay, peer, transport: observedTransport, clock, signal, reach: () => [relay],
+      observe: view => emit({ type: "relay-state", linkId: link.id, atMs: clock.now(), state: view.state }),
+      async forward(submit) {
+        const id = submit.message.id;
+        emit({ type: "handoff", linkId: link.id, id, atMs: clock.now() });
+        const from = submit.from, expected = link.from, target = submit.target, pin = link.target;
+        if (submit.kind !== "send" || submit.message.text !== "relay-soak" || from.machineId !== expected.machineId ||
+            from.address.sessionId !== expected.address.sessionId || from.address.scopeId !== expected.address.scopeId ||
+            from.name !== expected.name || from.homeEpoch !== expected.homeEpoch || from.endpointEpoch !== expected.endpointEpoch ||
+            target.machineId !== pin.machineId || target.homeEpoch !== pin.homeEpoch ||
+            target.selector.by !== pin.selector.by || target.selector.value !== pin.selector.value) {
+          return { type: "result", messageId: id, attempted: false, outcome: { kind: "refused", code: "unauthorized" } };
+        }
+        // This is the sink's own observation, not an inference from the returned result.
+        emit({ type: "receipt", linkId: link.id, id, atMs: clock.now() });
+        return { type: "result", messageId: id, attempted: true, outcome: { kind: "socket_delivered", id } };
+      },
+    });
+  } finally { cancelRss(); }
+}
+
+function waitUntil(clock: Clock, targetMs: number, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false);
+  if (clock.now() >= targetMs) return Promise.resolve(true);
+  return new Promise(resolve => {
+    let cancel = () => {};
+    const finish = (ready: boolean) => { cancel(); signal.removeEventListener("abort", aborted); resolve(ready); };
+    const aborted = () => finish(false);
+    cancel = clock.later(targetMs - clock.now(), () => finish(true));
+    signal.addEventListener("abort", aborted, { once: true });
+    if (signal.aborted) aborted();
+  });
+}
+
+function submissionDriver(options: RelaySoakBurstOptions) {
+  const { link, clock, signal, emit } = options;
+  const nextId = options.nextId ?? randomUUID;
+  const ids = new Set<string>();
+  const freshId = (): string => {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const id = nextId();
+      if (text(id) && !ids.has(id)) { ids.add(id); return id; }
+    }
+    throw new Error("Cannot create a unique soak message ID");
+  };
+  const send = (kind: "cadence" | "burst", marker: number | string): Promise<void> => {
+    const id = freshId(), atMs = clock.now();
+    const markerFields = kind === "cadence" ? { scheduledMs: marker as number } : { burstId: marker as string };
+    emit({ type: "submission", linkId: link.id, id, atMs, deadlineMs: atMs + V0_INTERCOM_MS, kind, ...markerFields });
+    const frame: RelaySubmit = { type: "submit", kind: "send", from: link.from, target: link.target,
+      message: { id, timestamp: atMs, text: "relay-soak" } };
+    return (async () => {
+      try {
+        const result = await options.submit(link.relayId, frame, signal);
+        if (!isRelayResult(result) || result.messageId !== id) throw new Error("Invalid soak result");
+        emit({ type: "outcome", linkId: link.id, id, atMs: clock.now(), kind: result.outcome.kind });
+      } catch {
+        // A failed call is not a fabricated final outcome. The checker will reject it.
+        emit({ type: "submission-error", linkId: link.id, id, atMs: clock.now() });
+      }
+    })();
+  };
+  return { send, freshId };
+}
+
+/** Submit on the peer clock without replaying missed five-second slots. */
+export async function runRelaySoakSubmit(options: RelaySoakSubmitOptions): Promise<void> {
+  const { link, clock, signal, startMs, endMs, emit } = options;
+  runRecord(options, "submit");
+  const driver = submissionDriver(options), pending = new Set<Promise<void>>();
+  const schedule = async () => {
+    let slot = 0;
+    while (!signal.aborted) {
+      const scheduledMs = startMs + slot * CADENCE_MS;
+      if (scheduledMs >= endMs || !await waitUntil(clock, scheduledMs, signal)) break;
+      const now = clock.now();
+      if (now >= endMs) break;
+      if (now >= scheduledMs + CADENCE_MS) { slot = Math.floor((now - startMs) / CADENCE_MS); continue; }
+      const sent = driver.send("cadence", scheduledMs);
+      pending.add(sent);
+      void sent.then(() => pending.delete(sent));
+      slot++;
+    }
+  };
+  const sampleStates = async () => {
+    let next = clock.now();
+    while (!signal.aborted) {
+      if (!await waitUntil(clock, Math.min(next, endMs), signal)) break;
+      let state: SoakState = "unavailable";
+      try {
+        const views = await options.list(signal);
+        const matches = views.filter(view => view.relay.machineId === link.relayId);
+        if (matches.length === 1) state = matches[0].state;
+      } catch { /* Missing broker evidence stays unavailable. */ }
+      emit({ type: "state", linkId: link.id, atMs: clock.now(), state });
+      if (clock.now() >= endMs) break;
+      next = Math.max(next + CADENCE_MS, clock.now());
+    }
+  };
+  await Promise.all([schedule(), sampleStates()]);
+  await Promise.allSettled([...pending]);
+}
+
+/** Send a single batch concurrently. A separate process may invoke it once during the run. */
+export async function runRelaySoakBurst(options: RelaySoakBurstOptions): Promise<void> {
+  if (options.signal.aborted || options.clock.now() < options.startMs || options.clock.now() >= options.endMs) throw new Error("Burst is outside the soak");
+  runRecord(options, "submit");
+  const driver = submissionDriver(options), burstId = driver.freshId();
+  const sends = Array.from({ length: 100 }, () => driver.send("burst", burstId));
+  await Promise.all(sends);
 }

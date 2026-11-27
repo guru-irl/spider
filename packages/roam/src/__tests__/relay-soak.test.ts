@@ -1,5 +1,8 @@
-import { beforeAll, describe, expect, it } from "vitest";
-import { checkRelaySoak, type RelaySoakEvidence, type RelaySoakFault, type RelaySoakLinkEvidence } from "../relocate/relay-soak";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { decodeRelayPoll, encodeRelayPollReply, type RelayPoll, type RelaySubmit, type RelayResult } from "@spider/intercom/relay-protocol";
+import type { Clock, Peer } from "../contracts";
+import { checkRelaySoak, runRelaySoakDial, runRelaySoakSubmit, runRelaySoakBurst,
+  type RelaySoakEvidence, type RelaySoakFault, type RelaySoakLinkEvidence, type RelaySoakRecord } from "../relocate/relay-soak";
 
 const START = 1_700_000_000_000;
 const END = START + 8 * 60 * 60 * 1000;
@@ -21,7 +24,7 @@ function completeEvidence(): Evidence {
     id, topology: topology as Link["topology"], relayId, peerId,
     runs: ["dial", "submit"].map((role, roleIndex) => ({ role: role as "dial" | "submit", startMs: START, endMs: END,
       rssAllowanceBytes: ALLOWANCE, machineId: role === "dial" ? relayId : peerId,
-      process: { pid: 200 + index * 2 + roleIndex, birthId: `birth-${index}-${roleIndex}`, bootId: `boot-${role === "dial" ? relayId : peerId}` } })), 
+      process: { pid: 200 + index * 2 + roleIndex, birthId: `birth-${index}-${roleIndex}`, bootId: `boot-${role === "dial" ? relayId : peerId}` } })),
     clock: {
       fromMs: START, toMs: END + MINUTE, minOffsetMs: 0, maxOffsetMs: 0,
       samples: Array.from({ length: 49 }, (_, i) => ({ sentMs: START + i * 10 * MINUTE,
@@ -278,5 +281,142 @@ describe("the live relay soak reliability gate", () => {
   it("fails closed on malformed evidence instead of reporting a pass", () => {
     expect(checkRelaySoak({} as RelaySoakEvidence).ok).toBe(false);
     expect(checkRelaySoak(null as unknown as RelaySoakEvidence).ok).toBe(false);
+  });
+});
+
+const RELAY = "11111111-1111-4111-8111-111111111111";
+const PEER = "22222222-2222-4222-8222-222222222222";
+const fixturePeer: Peer = { machineId: PEER, alias: "peer.invalid", node: "/node", pi: "/pi", cli: "/spider", core: "/core", globalRoot: "/root", agentDir: "/agent" };
+const fixtureLink = { id: "test-link", topology: "laptop-to-box" as const, relayId: RELAY, peerId: PEER,
+  from: { machineId: PEER, address: { sessionId: "sender", scopeId: "scope" }, name: "origin", homeEpoch: 1, endpointEpoch: "epoch" },
+  target: { machineId: RELAY, selector: { by: "name" as const, value: "sink" }, homeEpoch: 1 } };
+const fixtureProcess = { pid: 123, birthId: "start-123", bootId: "boot-123" };
+const realClock: Clock = { now: () => Date.now(), later(ms, fn) { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
+const reply = (poll: RelayPoll, submissions: readonly RelaySubmit[] = []): Buffer => encodeRelayPollReply({
+  ready: { type: "ready", version: 1, machineId: PEER, linkId: poll.hello.linkId, pollId: poll.hello.pollId, ok: true }, submissions,
+});
+
+describe("the opt-in soak drivers", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("uses the production held poll and hold-0 result path with a separate sink receipt", async () => {
+    const controller = new AbortController(), records: RelaySoakRecord[] = [], polls: RelayPoll[] = [];
+    const submit: RelaySubmit = { type: "submit", kind: "send", from: fixtureLink.from, target: fixtureLink.target,
+      message: { id: "sink-message", timestamp: 1, text: "relay-soak" } };
+    let reportResult!: () => void;
+    const resultSeen = new Promise<void>(resolve => { reportResult = resolve; });
+    let held = 0;
+    const transport = {
+      async resolve(peer: Peer) { return peer; },
+      async exec(_peer: Peer, argv: readonly string[], options: { stdin?: Buffer; signal?: AbortSignal }) {
+        const poll = decodeRelayPoll(options.stdin!, Number(argv.at(-1)) as 0 | 20000);
+        polls.push(poll);
+        if (poll.holdMs === 20_000 && held++ === 0) return reply(poll, [submit]);
+        if (poll.holdMs === 0) { reportResult(); return reply(poll); }
+        return new Promise<Buffer>((_resolve, reject) => {
+          if (options.signal?.aborted) reject(new Error("aborted"));
+          else options.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+      },
+    };
+    const run = runRelaySoakDial({ link: fixtureLink, relay: { machineId: RELAY, alias: "relay.invalid" }, peer: fixturePeer,
+      transport, clock: realClock, signal: controller.signal, startMs: START, endMs: END, rssAllowanceBytes: ALLOWANCE,
+      process: fixtureProcess, emit: event => records.push(event), rssBytes: () => 100_000_000 });
+    await resultSeen;
+    controller.abort();
+    await run;
+    const resultPoll = polls.find(poll => poll.holdMs === 0)!;
+    expect(resultPoll.results).toMatchObject([{ messageId: "sink-message", attempted: true, outcome: { kind: "socket_delivered", id: "sink-message" } }]);
+    expect(records.filter(event => event.type === "handoff")).toMatchObject([{ id: "sink-message" }]);
+    expect(records.filter(event => event.type === "receipt")).toMatchObject([{ id: "sink-message" }]);
+    expect(records.filter(event => event.type === "poll-start").map(event => event.holdMs)).toEqual(expect.arrayContaining([0, 20_000]));
+    expect(JSON.stringify(records)).not.toContain("relay-soak");
+  });
+
+  it("refuses a non-fixture message instead of recording a sink receipt", async () => {
+    const controller = new AbortController(), records: RelaySoakRecord[] = [], polls: RelayPoll[] = [];
+    const foreign: RelaySubmit = { type: "submit", kind: "send", from: fixtureLink.from, target: fixtureLink.target,
+      message: { id: "foreign", timestamp: 1, text: "do-not-deliver-or-log" } };
+    let completed!: () => void;
+    const resultSeen = new Promise<void>(resolve => { completed = resolve; });
+    let held = 0;
+    const transport = {
+      async resolve(peer: Peer) { return peer; },
+      async exec(_peer: Peer, argv: readonly string[], options: { stdin?: Buffer; signal?: AbortSignal }) {
+        const poll = decodeRelayPoll(options.stdin!, Number(argv.at(-1)) as 0 | 20000);
+        polls.push(poll);
+        if (poll.holdMs === 20_000 && held++ === 0) return reply(poll, [foreign]);
+        if (poll.holdMs === 0) { completed(); return reply(poll); }
+        return new Promise<Buffer>((_resolve, reject) => {
+          if (options.signal?.aborted) reject(new Error("aborted"));
+          else options.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+      },
+    };
+    const run = runRelaySoakDial({ link: fixtureLink, relay: { machineId: RELAY, alias: "relay.invalid" }, peer: fixturePeer,
+      transport, clock: realClock, signal: controller.signal, startMs: START, endMs: END, rssAllowanceBytes: ALLOWANCE,
+      process: fixtureProcess, emit: event => records.push(event), rssBytes: () => 100_000_000 });
+    await resultSeen;
+    controller.abort();
+    await run;
+    expect(polls.find(poll => poll.holdMs === 0)!.results).toMatchObject([
+      { messageId: "foreign", attempted: false, outcome: { kind: "refused", code: "unauthorized" } },
+    ]);
+    expect(records.filter(event => event.type === "receipt")).toEqual([]);
+    expect(JSON.stringify(records)).not.toContain("do-not-deliver-or-log");
+  });
+
+  it("submits every five seconds and records refusals and failures without replay", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START - 1000);
+    const controller = new AbortController(), records: RelaySoakRecord[] = [], sent: RelaySubmit[] = [];
+    let next = 0;
+    const run = runRelaySoakSubmit({ link: fixtureLink, clock: realClock, signal: controller.signal,
+      startMs: START, endMs: END, rssAllowanceBytes: ALLOWANCE, process: fixtureProcess,
+      emit: event => records.push(event), nextId: () => `cadence-${next++}`,
+      submit: async (_relayId, message) => {
+        sent.push(message);
+        if (message.message.id === "cadence-2") throw new Error("do-not-log-this-error");
+        return message.message.id === "cadence-1"
+          ? { type: "result", messageId: message.message.id, attempted: false, outcome: { kind: "refused", code: "relay-busy" } }
+          : { type: "result", messageId: message.message.id, attempted: true, outcome: { kind: "socket_delivered", id: message.message.id } };
+      },
+      list: async () => [{ relay: { machineId: RELAY, alias: "relay.invalid" }, reach: [], linkId: "wire", state: "up", sinceMs: START,
+        lastCallMs: START, lastError: null, messagesCarried: 0 }],
+    });
+    await vi.advanceTimersByTimeAsync(12_000);
+    controller.abort();
+    await run;
+    expect(sent.map(message => message.message.id)).toEqual(["cadence-0", "cadence-1", "cadence-2"]);
+    expect(records.filter(event => event.type === "submission").map(event => event.scheduledMs)).toEqual([START, START + 5000, START + 10_000]);
+    expect(records.filter(event => event.type === "outcome")).toMatchObject([
+      { id: "cadence-0", kind: "socket_delivered" }, { id: "cadence-1", kind: "refused" },
+    ]);
+    expect(records.filter(event => event.type === "submission-error")).toMatchObject([{ id: "cadence-2" }]);
+    expect(records.some(event => event.type === "state" && event.state === "up")).toBe(true);
+    expect(JSON.stringify(records)).not.toContain("do-not-log-this-error");
+  });
+
+  it("starts exactly 100 distinct extra submissions before any burst result settles", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START + MINUTE);
+    const controller = new AbortController(), records: RelaySoakRecord[] = [], releases: Array<() => void> = [];
+    let next = 0;
+    const run = runRelaySoakBurst({ link: fixtureLink, clock: realClock, signal: controller.signal,
+      startMs: START, endMs: END, rssAllowanceBytes: ALLOWANCE, process: fixtureProcess,
+      emit: event => records.push(event), nextId: () => `burst-id-${next++}`,
+      submit: (_relayId, message) => new Promise<RelayResult>(resolve => releases.push(() => resolve({
+        type: "result", messageId: message.message.id, attempted: false, outcome: { kind: "refused", code: "relay-busy" },
+      }))),
+    });
+    expect(releases).toHaveLength(100);
+    const submissions = records.filter(event => event.type === "submission");
+    expect(submissions).toHaveLength(100);
+    expect(new Set(submissions.map(event => event.id)).size).toBe(100);
+    expect(records.filter(event => event.type === "outcome")).toHaveLength(0);
+    for (const release of releases) release();
+    await run;
+    expect(records.filter(event => event.type === "outcome")).toHaveLength(100);
+    expect(records.filter(event => event.type === "outcome").every(event => event.kind === "refused")).toBe(true);
   });
 });

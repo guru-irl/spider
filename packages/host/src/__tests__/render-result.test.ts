@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { renderSpiderResult, renderSpiderCall, renderSubagentDone, renderCommandOutput } from "../render-result";
+import { renderSpiderResult, renderSpiderCall, renderSubagentDone, renderCommandOutput, renderEscalationMessage } from "../render-result";
 import type { StageResult } from "@spider/memory";
 
 // Minimal fakes for pi's renderResult call shape. We only exercise the fields the
@@ -321,6 +321,12 @@ describe("todo receipts", () => {
     expect(render("remove", { ...item, current: false }, { session: "session-id" })).toEqual([" Removed #935 Check the manifest from Release"]);
   });
 
+  it("names only another session in a single-session view, without a section rule", () => {
+    const group = { name: "docs", current: false, todos: [{ seq: 1, text: "Review docs", done: false }] };
+    expect(render("view", [group], { session: "docs" })).toEqual([" ○ #1 Review docs", " 0/1 completed · docs"]);
+    expect(render("view", [{ ...group, current: true }], { session: "docs" })).toEqual([" ○ #1 Review docs", " 0/1 completed"]);
+  });
+
   it.each(["toggle", "remove"])("keeps a missing %s target an error rather than showing an empty list", op => {
     const rows = render(op, { error: 'todo: id "935" not found in session "beb58fc6-193f-4247-bb38-c59612f6985d"' });
     expect(rows.join("\n")).toContain('id "935" not found');
@@ -329,11 +335,34 @@ describe("todo receipts", () => {
   });
 });
 
+describe("run block colors (#36)", () => {
+  it.each(["running", "done", "failed", "cancelled"])("does not status-color the glyph, type, or %s status", status => {
+    const details = { runs: [{ name: "todo-hunt", agent: "worker", model: "openai/gpt-5", status, task: "" }] };
+    const out = renderSpiderResult({ details }, { expanded: false }, marker, { args: { action: "run" } }).render(120).join("\n");
+    expect(out).not.toMatch(/⟨(success|error|warning|accent)\|/);
+    expect(out).toContain("⟨toolTitle|");
+  });
+});
+
 describe("run status rows", () => {
-  it("marks running work with the accent glyph in column 1", () => {
+  it("marks running work with a neutral glyph in column 1", () => {
     const details = { run: { name: "todo-hunt", agent: "worker", model: "openai/gpt-5", status: "running" } };
     const lines = renderSpiderResult({ details }, { expanded: false }, marker, mkCtx({ action: "run" })).render(120);
-    expect(lines[0]).toMatch(/^ ⟨accent\|●⟩ running /u);
+    expect(lines[0]).toMatch(/^ ⟨toolTitle\|●⟩ running /u);
+  });
+
+  it("does not repeat the agent when the run has no name", () => {
+    const details = { run: { agent: "worker", status: "running" } };
+    expect(renderSpiderResult({ details }, {}, theme, mkCtx({ action: "run" })).render(120)[0]).toBe(" ● running · worker · —");
+    const msg = { details: { agent: "worker", status: "done", severity: "warning", summary: "Check the logs" } };
+    expect(renderSubagentDone(msg, {}, theme).render(120).map(line => line.trimEnd()).join("\n")).toContain("spider · run · worker\n");
+    expect(renderEscalationMessage(msg, {}, theme).render(120).map(line => line.trimEnd()).join("\n")).toContain("spider · escalation · worker\n");
+  });
+
+  it("marks the first output line separately from an expanded task continuation", () => {
+    const details = { run: { name: "audit", agent: "worker", status: "done", task: "Check manifest\nRead logs", result: "Build failed\nManifest missing" } };
+    const rows = renderSpiderResult({ details }, { expanded: true }, theme, mkCtx({ action: "run" })).render(120);
+    expect(rows.slice(1)).toEqual(["   ↳ Check manifest", "   Read logs", "   ⤴ Build failed", "   Manifest missing"]);
   });
 
   it("shows one named status row per run, with a blank line between runs", () => {
@@ -604,6 +633,13 @@ describe("renderSpiderCall verb italics (UI standard)", () => {
   });
 });
 
+describe("plain-text card alignment", () => {
+  it.each(["loop", "schedule", "other"])("starts the first %s row in column 1", action => {
+    const component = renderSpiderResult(mkResult({}, "\n  first line\n  second line"), opts, theme, mkCtx({ action }));
+    expect(component.render(80)).toEqual([" first line", "   second line"]);
+  });
+});
+
 describe("run block output truncation (ctrl+o)", () => {
   it("collapses subagent output to 2 lines with an expand hint, shows all when expanded", () => {
     const details = { run: { name: "a", agent: "worker", status: "done", result: "line1\nline2\nline3\nline4" } };
@@ -627,10 +663,10 @@ describe("renderSubagentDone transcript renderer (ctrl+o)", () => {
     expect(rows).toEqual([
       "", " 🕸️ spider · run · tia-2 · worker",
       "  ❌ failed · gpt-6.2-sol · high · 13.6M tokens · 0.0 credits",
-      "    line one", "    line two", "    … 1 more line", "  ctrl+o to expand output", "",
+      "    ⤴ line one", "    line two", "    … 1 more line", "  ctrl+o to expand output", "",
     ]);
     const expanded = renderSubagentDone(msg, { expanded: true }, theme).render(120).map(line => line.trimEnd());
-    expect(expanded.slice(3, -1)).toEqual(["    line one", "    line two", "    line three"]);
+    expect(expanded.slice(3, -1)).toEqual(["    ⤴ line one", "    line two", "    line three"]);
   });
   it.each([["done", "toolSuccessBg"], ["failed", "toolErrorBg"], ["cancelled", "toolPendingBg"]])("paints the %s shell", (status, background) => {
     const out = renderSubagentDone({ ...msg, details: { ...msg.details, status } }, {}, th).render(200).join("\n");

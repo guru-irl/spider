@@ -405,6 +405,13 @@ describe("private roaming broker", () => {
     } finally { await peer.close(); }
   });
 
+  it("refuses v0 registrations with invalid IDs, scopes, names, or epochs", async () => {
+    await expect(register("bad-id", "bad\nid", "ben", "scope-1", 1)).rejects.toThrow();
+    await expect(register("bad-scope", "scope-session", "ben", "scope\u0000one", 1)).rejects.toThrow();
+    await expect(register("bad-name", "named-session", "bad\nname", "scope-1", 1)).rejects.toThrow();
+    await expect(register("bad-epoch", "epoch-session", "ben", "scope-1", 0)).rejects.toThrow();
+  });
+
   it("advertises roaming over its private Unix socket", async () => {
     const socket = net.connect(getBrokerSocketPath());
     try {

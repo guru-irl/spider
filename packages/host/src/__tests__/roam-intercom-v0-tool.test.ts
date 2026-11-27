@@ -474,6 +474,29 @@ it("does not retarget a local roaming send after the recipient reconnects", asyn
   } finally { await f.cleanup(); }
 });
 
+it("does not retarget a local roaming ask after the recipient reconnects", async () => {
+  const inbox: unknown[] = [];
+  const prepare: V0Prepare = async ({ locals }) => {
+    const target = locals.find(session => session.id === "observer")!;
+    const exactTarget = { id: target.id, endpointEpoch: target.endpointEpoch! };
+    await observer.disconnect();
+    observer = new IntercomClient();
+    observer.on("message", (...args: unknown[]) => inbox.push(args));
+    await observer.connect({ name: "observer", cwd: process.cwd(), model: "fixture", pid: process.pid, startedAt: 1, lastActivity: 1 }, "observer");
+    return { kind: "local", target: exactTarget };
+  };
+  const f = await fixture({ homeEpoch: () => 7, prepare });
+  const abort = new AbortController();
+  let settled: any;
+  const pending = f.tool.execute("ask", { action: "ask", to: "observer", message: "old endpoint only" }, abort.signal, undefined, f.ctx)
+    .then((result: any) => { settled = result; return result; });
+  try {
+    await vi.waitFor(() => expect(Boolean(settled) || inbox.length > 0).toBe(true));
+    expect(inbox).toEqual([]);
+    expect(settled.details).toMatchObject({ delivered: false });
+  } finally { abort.abort(); await pending; await f.cleanup(); }
+});
+
 it("reports routing refusals without sending to a local mailbox", async () => {
   const legacyInbox: unknown[] = [];
   const onMessage = (...args: unknown[]) => legacyInbox.push(args);

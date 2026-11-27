@@ -2898,6 +2898,8 @@ Usage:
           let replyPromise: Promise<Message> | null = null;
           let deliveryState = "created";
           let questionId: string | null = null;
+          const generation = runtimeGeneration;
+          let v0Target: { id: string; endpointEpoch: string } | undefined;
 
           try {
             if (openProjectPaneIfMissing && !cwd) {
@@ -2907,7 +2909,6 @@ Usage:
               };
             }
             if (v0 && to && currentSessionId && v0.homeEpoch(currentSessionId) !== undefined) {
-              const generation = runtimeGeneration;
               const sessions = await connectedClient.listSessions();
               const locals = sessions.filter((session): session is LocalSessionInfo => !session.remote);
               const from = locals.find(session => session.id === connectedClient.sessionId && session.address?.sessionId === currentSessionId);
@@ -2915,6 +2916,11 @@ Usage:
                 const plan = await v0.prepare({ to, from, locals, signal: _signal });
                 if (plan.kind === "refused") {
                   return { content: [{ type: "text", text: V0_REFUSAL_TEXT[plan.code] }], details: { error: true, code: plan.code } };
+                }
+                if (plan.kind === "local") {
+                  v0Target = plan.target;
+                  const selected = locals.find(session => session.id === plan.target.id && session.endpointEpoch === plan.target.endpointEpoch);
+                  if (selected) resolvedAddresses.set(selected.id, { address: sessionAddress(selected, getIntercomScopeId() ?? null), remote: false, activationEpoch: selected.activationEpoch });
                 }
                 if (plan.kind === "remote") {
                   if (unsupportedV0Options) {
@@ -2962,9 +2968,12 @@ Usage:
             }
             let target: DeliveryTarget;
             if (cwd) {
-              target = await resolveCwdDeliveryTarget(connectedClient, { to, cwd, openProjectPaneIfMissing, focus, signal: _signal });
+              target = await resolveCwdDeliveryTarget(connectedClient, { to, cwd, openProjectPaneIfMissing: v0Target ? false : openProjectPaneIfMissing, focus, signal: _signal });
+              if (v0Target && target.id !== v0Target.id) {
+                return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
+              }
             } else {
-              const resolved = await resolveSessionTarget(connectedClient, to!);
+              const resolved = v0Target?.id ?? await resolveSessionTarget(connectedClient, to!);
               if (!resolved) {
                 return {
                   content: [{ type: "text", text: `Session "${to}" is not currently connected. Blocking asks are not queued; use send for a non-blocking mailbox delivery or retry after the session reconnects.` }],
@@ -2993,6 +3002,9 @@ Usage:
                 details: { error: true },
               };
             }
+            if (v0Target && (!getLiveContext(ctx, generation) || client !== connectedClient || !connectedClient.isConnected())) {
+              return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
+            }
             questionId = randomUUID();
             replyPromise = waitForReply(sendTo, questionId, _signal, () => connectedClient.cancelAsk(questionId!), () => latestDeliveryState(questionId, deliveryState));
             replyPromise.catch(() => undefined);
@@ -3004,6 +3016,7 @@ Usage:
               expectsReply: true,
               supersedes,
               retryOf,
+              ...(v0Target ? { exactTarget: v0Target } : {}),
             });
 
             deliveryState = sendResult.delivery;

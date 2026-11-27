@@ -6,6 +6,7 @@ import { setEnrolledPeerEnabled } from "./peer-enabled";
 import { openJournal } from "./journal";
 import { isRevoked, revokeMachine } from "./revocation";
 import { readPendingMoves } from "./pending-moves";
+import { inspectLegacyUpgrade, legacyUpgradeDiagnostic } from "./legacy-upgrade";
 import { parseDoctorReport, remoteDoctor } from "./remote-observations";
 import { INTERCOM_UNIQUENESS_DESCRIPTION } from "./intercom-readiness";
 import { execFile } from "node:child_process";
@@ -173,6 +174,13 @@ export async function configureV0Service(root: string, enabled: boolean, options
     return await locked(root, initial, async () => {
       let config = readLocalIdentity(root);
       if (config.machineId !== initial.machineId || config.role !== initial.role) throw new Error("Roaming configuration changed during the operation.");
+      if (enabled) {
+        const inventory = await inspectLegacyUpgrade(root);
+        if (inventory.status !== "legacy-upgrade-ready") {
+          return { code: 1, reason: inventory.status, repairCommand: "spider roam doctor",
+            message: `${legacyUpgradeDiagnostic(inventory).reason} Roaming was not enabled.` };
+        }
+      }
       const setEnabled = async (next: boolean) => {
         if (config.enabled === next) return;
         changed = true;

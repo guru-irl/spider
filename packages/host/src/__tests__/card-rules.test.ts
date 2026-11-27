@@ -39,7 +39,7 @@ for (const fixture of fixtures) {
           }
           if (fixture.notification) check("one-spacer", titleIndex === 1, `${titleIndex} blank rows`);
           else check("title starts at top", titleIndex === 0, `${titleIndex} blank rows`);
-          const body = plain.slice(titleIndex + 1).map(line => line.slice(pad));
+          const body = plain.slice(titleIndex + 1, fixture.notification ? -1 : undefined).map(line => line.slice(pad));
           if (!fixture.callDetails && !fixture.callOnly) check("blank-under-title", Boolean(body[0]));
           if (fixture.callDetails) {
             const gap = body.indexOf("");
@@ -47,7 +47,23 @@ for (const fixture of fixtures) {
             const commandRows = gap === -1 ? body : body.slice(0, gap);
             check("command gutter", commandRows[0]?.startsWith(` ${icon(style, "gutter")}`) === true, commandRows[0]);
           }
-          for (const line of body.filter(Boolean)) check("columns", /^ {1}(?:\S| {2}\S)/u.test(line), line);
+          const statusGlyphs = ["✓", "✗", "❓", "○", "●", "◆", "⚠", icon(style, "warning"), icon(style, "failure"), icon(style, "gutter")].map(glyph => glyph.trimEnd());
+          for (const [i, line] of body.entries()) {
+            if (!line) {
+              check("doubled spacer", i > 0 && i < body.length - 1 && Boolean(body[i - 1]) && Boolean(body[i + 1]), line);
+              const callGap = fixture.callDetails && i === body.indexOf("");
+              const itemGap = fixture.groups > 1 && /^ \S/u.test(body[i + 1] ?? "");
+              const paragraphGap = fixture.verb === "escalation";
+              check("blank inside item", callGap || itemGap || paragraphGap, `${i}: ${body[i + 1] ?? "<end>"}`);
+              continue;
+            }
+            check("columns", /^ {1}(?:\S| {2}\S)/u.test(line), line);
+            const marker = line.trimStart();
+            // In nerd mode the task and gutter share a glyph. Run task rows use it at column 3.
+            const nerdTask = fixture.verb === "run" && style === "nerd" && marker.startsWith(icon(style, "task"));
+            const restartAnnotation = fixture.name === "control config list" && marker.startsWith(`${icon(style, "warning")}restart`);
+            check("glyph column", !line.startsWith("   ") || nerdTask || restartAnnotation || !statusGlyphs.some(glyph => marker === glyph || marker.startsWith(`${glyph} `)), line);
+          }
           for (const line of plain) {
             check("no-bar", !line.includes("│"), line);
             for (const id of fixture.runIds) check("no-ids", !line.includes(id) && !line.includes(id.slice(0, 8)), line);

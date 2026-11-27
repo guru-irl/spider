@@ -799,13 +799,13 @@ also wait for that sign-in. Supervisor recovery cannot power on a machine or
 sign in its host. Remote upgrade and uninstall orchestration are deferred; do not
 assume provisioning performs either.
 
-The headless acceptance stories use a packaged extension and supervisor on
-owned cores, with fixture service, boot, process and limit ports. R03 checks a
-core-only session, child status, and a supervisor unit installation against a
-live core without app configuration. R04 restarts the
-core and checks one exact-file owner and one restored trigger delivery. R05
-checks crash suspension and a durable stop. They do not prove actual systemd or
-real-box behavior; phase 4 owns those checks.
+The headless acceptance stories use a packaged extension and owned cores. R04
+installs the v0 supervisor unit through the packed CLI and runs its command
+against an owned core. It checks the exact owner, ID lock, file lease, core-only
+feed, child status, two launches, and one restored trigger across a core restart.
+R18 covers the outward and return move. R03 and R05 are retired. The default set
+is R18, R10, and R11; R12 remains selectable by ID. These stories do not prove
+actual systemd or real-box behavior; phase 4 owns those checks.
 
 ## Idle moves
 

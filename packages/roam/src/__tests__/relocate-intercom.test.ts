@@ -2,9 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { openDbAt } from "@spider/db-core";
-import { parseV0AgentReply, type V0AgentRequest, type V0BrokerOp, type V0Endpoint, type V0Reply, type V0Text } from "@spider/intercom/roam-v0";
+import { parseV0AgentReply, V0_ASK_MAX_MS, V0_INTERCOM_MS, type V0AgentRequest, type V0BrokerOp, type V0Endpoint, type V0Reply, type V0Text } from "@spider/intercom/roam-v0";
 import type { LocalSessionInfo, RemoteSessionInfo } from "@spider/intercom/types";
-import type { CallOptions, Peer, Transport } from "../contracts";
+import { DEFAULT_LIMITS, type CallOptions, type Peer, type Transport } from "../contracts";
 import { main } from "../cli";
 import { createV0Intercom, hasV0IntercomConfig } from "../relocate/intercom";
 
@@ -337,7 +337,54 @@ describe("roaming v0 intercom", () => {
     });
   });
 
-  it("keeps a long ask budget and caps it at ten minutes", async () => {
+  it("fits the capped ask, setup, and post-check inside Herdr's direct call limit", async () => {
+    const f = paired(), plan = await remotePlan(f.intercom);
+    expect(await plan.ask(message, V0_ASK_MAX_MS)).toEqual({ kind: "no_reply", id: message.id });
+    const call = f.calls.find(item => item.request.kind === "ask");
+    expect(call?.options.postReserveMs).toBe(2000);
+    // Herdr's DIRECT_MAX_MS in packages/herdr/src/client/argv-client.ts is 600,000 ms.
+    expect(V0_ASK_MAX_MS + V0_INTERCOM_MS + call!.options.postReserveMs!).toBeLessThan(DEFAULT_LIMITS.directMs);
+    expect(call!.options.timeoutMs).toBeGreaterThan(V0_ASK_MAX_MS + call!.options.postReserveMs!);
+  });
+
+  it("returns a confirmed no_reply when a capped ask reaches its deadline", async () => {
+    const sender = machineFixture(MAC), receiver = boxFixture();
+    vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+    configure(sender.root, [peer(BOX, "box", receiver)], []);
+    let entered!: () => void;
+    const received = new Promise<void>(resolve => { entered = resolve; });
+    const remoteBroker = async (_dir: string, op: V0BrokerOp): Promise<V0Reply> => {
+      if (op.kind === "lookup") return { kind: "matches", targets: [ben] };
+      if (op.kind !== "ask") throw new Error("unexpected delivery");
+      entered();
+      return new Promise(resolve => setTimeout(() => resolve({ kind: "no_reply", id: op.message.id }), op.timeoutMs));
+    };
+    const localBroker = async (): Promise<V0Reply> => ({ kind: "matches", targets: [aliceEndpoint] });
+    const remote = createV0Intercom(receiver.root, { broker: remoteBroker });
+    const transport = (): Pick<Transport, "resolve" | "exec"> => ({
+      resolve: async target => target,
+      async exec(_target, _argv, options) {
+        const bytes = options.stdin ?? options.stdinForTimeout?.(options.timeoutMs - 2000);
+        if (!bytes) throw new Error("missing request");
+        const request = JSON.parse(bytes.toString("utf8"));
+        if (request.kind === "lookup") return Buffer.from(JSON.stringify(await remote.handle(request)));
+        return new Promise<Buffer>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error("direct call expired")), options.timeoutMs - options.postReserveMs!);
+          remote.handle(request).then(result => { clearTimeout(timer); resolve(Buffer.from(JSON.stringify(result))); }, reject);
+        });
+      },
+    });
+    const plan = await remotePlan(createV0Intercom(sender.root, { broker: localBroker, transport }));
+    vi.useFakeTimers();
+    try {
+      const pending = plan.ask(message, V0_ASK_MAX_MS);
+      await received;
+      await vi.advanceTimersByTimeAsync(V0_ASK_MAX_MS);
+      expect(await pending).toEqual({ kind: "no_reply", id: message.id });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps a long ask budget and respects the configured cap", async () => {
     const f = paired(), plan = await remotePlan(f.intercom);
     expect(await plan.ask(message, 60_000)).toEqual({ kind: "no_reply", id: message.id });
     const ask = f.calls.find(call => call.request.kind === "ask");
@@ -346,8 +393,8 @@ describe("roaming v0 intercom", () => {
     expect(ask?.request.kind === "ask" && ask.request.timeoutMs).toBeLessThanOrEqual(60_000);
     expect(await plan.ask({ ...message, id: "long-ask" }, 2_000_000)).toEqual({ kind: "no_reply", id: "long-ask" });
     const long = f.calls.find(call => call.request.kind === "ask" && call.request.message.id === "long-ask");
-    expect(long?.options.timeoutMs).toBeLessThanOrEqual(600_000);
-    expect(long?.request.kind === "ask" && long.request.timeoutMs).toBeLessThanOrEqual(600_000);
+    expect(long?.options.timeoutMs).toBeLessThanOrEqual(DEFAULT_LIMITS.directMs);
+    expect(long?.request.kind === "ask" && long.request.timeoutMs).toBeLessThanOrEqual(V0_ASK_MAX_MS);
   });
 
   it("rejects unsafe v0 configuration without falling back to legacy routing", async () => {

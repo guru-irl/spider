@@ -10,7 +10,7 @@ import {
 } from "@spider/intercom/roam-v0";
 import type { LocalSessionInfo, RemoteSessionInfo } from "@spider/intercom/types";
 import { readPeer } from "../config";
-import type { Peer, RoamConfig, Transport } from "../contracts";
+import { DEFAULT_LIMITS, type Peer, type RoamConfig, type Transport } from "../contracts";
 import { loadHerdrConfig } from "../host-config";
 import { isMachineId } from "../machine-id";
 import { readLocalIdentity } from "../runtime";
@@ -26,6 +26,7 @@ export interface V0IntercomDeps {
 
 interface AcceptedPeer { machineId: MachineId; alias: string }
 interface Settings { config: RoamConfig; agentDir: string; sendTo: readonly Peer[]; acceptFrom: readonly AcceptedPeer[] }
+const POST_CHECK_MS = 2000;
 
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -181,7 +182,7 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
         const target = await transport.resolve(peer, { timeoutMs: resolveMs, signal: callSignal });
         if (callSignal.aborted || performance.now() >= deliveryDeadline) throw new Error("Intercom delivery deadline expired");
         const remaining = Math.floor(deadline - performance.now());
-        if (remaining <= 2000) throw new Error("Intercom post-check reserve unavailable");
+        if (remaining <= POST_CHECK_MS) throw new Error("Intercom post-check reserve unavailable");
         const bytes = Buffer.from(JSON.stringify(request));
         const input = request.kind !== "ask" ? { stdin: bytes } : {
           stdinForTimeout: (_remoteMs: number) => {
@@ -193,7 +194,7 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
         };
         invoked = true;
         const output = await transport.exec(target, ["roam", "agent", "--v0", "intercom"], {
-          timeoutMs: remaining, maxBytes: V0_INTERCOM_BYTES, postReserveMs: 2000, signal: callSignal, ...input,
+          timeoutMs: remaining, maxBytes: V0_INTERCOM_BYTES, postReserveMs: POST_CHECK_MS, signal: callSignal, ...input,
         });
         if (!Buffer.isBuffer(output) || output.length > V0_INTERCOM_BYTES) throw new Error("Invalid intercom reply size");
         const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(output));
@@ -310,7 +311,9 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
       const started = performance.now(), deliveryDeadline = started + V0_INTERCOM_MS;
       const askMs = kind === "ask" ? Math.min(timeoutMs!, V0_ASK_MAX_MS) : undefined;
       const askDeadline = askMs === undefined ? undefined : started + askMs;
-      const deadline = started + (askMs === undefined ? V0_INTERCOM_MS : Math.min(V0_ASK_MAX_MS, askMs + 3000));
+      // DEFAULT_LIMITS.directMs matches Herdr's DIRECT_MAX_MS in client/argv-client.ts.
+      const deadline = started + (askMs === undefined ? V0_INTERCOM_MS
+        : Math.min(DEFAULT_LIMITS.directMs, askMs + V0_INTERCOM_MS + POST_CHECK_MS));
       let current: Settings;
       try { current = settings(root); } catch { return refused("not-configured"); }
       if (current.config.machineId !== configured.config.machineId || current.agentDir !== configured.agentDir) return refused("changed");

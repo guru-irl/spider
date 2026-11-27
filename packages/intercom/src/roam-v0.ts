@@ -4,7 +4,7 @@ import { isRemoteSessionInfo } from "./broker/protocol.js";
 
 export const V0_INTERCOM_BYTES: number = 256 * 1024;
 export const V0_INTERCOM_MS = 20_000;
-export const V0_ASK_MAX_MS: number = 10 * 60_000;
+export const V0_ASK_MAX_MS: number = 9 * 60_000;
 export const V0_INTERCOM_FEATURE = "roam-intercom-v0";
 
 export type V0Selector = { by: "id" | "name"; value: string };

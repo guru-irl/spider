@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { decodeRelayPoll, encodeRelayPollReply, type RelayPoll, type RelaySubmit, type RelayResult } from "@spider/intercom/relay-protocol";
 import type { Clock, Peer } from "../contracts";
-import { checkRelaySoak, runRelaySoakDial, runRelaySoakSubmit, runRelaySoakBurst,
+import { assembleRelaySoak, checkRelaySoak, relaySoakMain, runRelaySoakDial, runRelaySoakSubmit, runRelaySoakBurst,
   type RelaySoakEvidence, type RelaySoakFault, type RelaySoakLinkEvidence, type RelaySoakRecord } from "../relocate/relay-soak";
 
 const START = 1_700_000_000_000;
@@ -57,6 +57,8 @@ function completeEvidence(): Evidence {
       link.states.push({ atMs, state: down ? "down" : "up" });
     }
     for (let atMs = START; atMs <= END; atMs += 30_000) link.rss.push({ atMs, bytes: 100_000_000, process: { ...link.runs[0].process } });
+    link.calls.push({ pollId: `${link.id}-held`, holdMs: 20_000, startMs: START, endMs: START + 1000, process: { ...link.runs[0].process } });
+    link.calls.push({ pollId: `${link.id}-result`, holdMs: 0, startMs: START + 100, endMs: START + 200, process: { ...link.runs[0].process } });
   }
   const burstAt = START + 30 * MINUTE;
   for (let i = 0; i < 100; i++) {
@@ -66,7 +68,8 @@ function completeEvidence(): Evidence {
     links[0].outcomes.push({ id, atMs: burstAt + 200, kind: "refused" });
   }
   const endpoint = faults.find(fault => fault.kind === "endpoint-kill")!;
-  links[2].calls.push({ pollId: "held-1", holdMs: 20_000, startMs: endpoint.startMs - 1000, endMs: endpoint.startMs + 1000 });
+  links[2].calls.push({ pollId: "held-1", holdMs: 20_000, startMs: endpoint.startMs - 1000, endMs: endpoint.startMs + 1000,
+    process: { ...links[2].runs[0].process } });
   return {
     startMs: START, endMs: END, rssAllowanceBytes: ALLOWANCE, links, faults,
     processes: machines.map(machineId => ({ machineId,
@@ -228,8 +231,23 @@ describe("the live relay soak reliability gate", () => {
     delete faultOf(missing, "endpoint-kill").endpoint;
     expect(checkRelaySoak(missing).violations).toContain("endpoint");
     const wrongCall = copy();
-    wrongCall.links[2].calls[0].endMs = faultOf(wrongCall, "endpoint-kill").startMs - 1;
+    wrongCall.links[2].calls.find(call => call.pollId === "held-1")!.endMs = faultOf(wrongCall, "endpoint-kill").startMs - 1;
     expect(checkRelaySoak(wrongCall).violations).toContain("endpoint");
+  });
+
+  it("requires evidence of both held calls and separate result calls on every link", () => {
+    const evidence = copy();
+    evidence.links[0].calls = evidence.links[0].calls.filter(call => call.holdMs !== 0);
+    expect(checkRelaySoak(evidence).violations).toContain("timeline");
+  });
+
+  it("accepts a missing call end only when that dial process was killed during the call", () => {
+    const evidence = copy(), link = evidence.links[0], fault = faultOf(evidence, "relay-kill");
+    fault.process = { ...link.runs[0].process, machineId: link.relayId, observedMs: fault.startMs };
+    link.calls.push({ pollId: "interrupted", holdMs: 20_000, startMs: fault.startMs - 1000, endMs: null, process: { ...link.runs[0].process } });
+    expect(checkRelaySoak(evidence).violations).not.toContain("timeline");
+    fault.process.birthId = "different-process";
+    expect(checkRelaySoak(evidence).violations).toContain("timeline");
   });
 
   it("requires complete before and after birth-identity censuses with no new helpers", () => {
@@ -281,6 +299,61 @@ describe("the live relay soak reliability gate", () => {
   it("fails closed on malformed evidence instead of reporting a pass", () => {
     expect(checkRelaySoak({} as RelaySoakEvidence).ok).toBe(false);
     expect(checkRelaySoak(null as unknown as RelaySoakEvidence).ok).toBe(false);
+  });
+});
+
+function recordManifest(evidence: Evidence) {
+  const files = new Map<string, string>();
+  const links = evidence.links.map(link => {
+    const linkId = link.id;
+    const records = [
+      ...link.runs.map(run => ({ type: "run", linkId, ...run })),
+      ...link.submissions.map(item => ({ type: "submission", linkId, ...item })),
+      ...link.handoffs.map(item => ({ type: "handoff", linkId, ...item })),
+      ...link.receipts.map(item => ({ type: "receipt", linkId, ...item })),
+      ...link.outcomes.map(item => ({ type: "outcome", linkId, ...item })),
+      ...link.states.map(item => ({ type: "state", linkId, ...item })),
+      { type: "relay-state", linkId, atMs: START, state: "connecting" },
+      ...link.rss.map(item => ({ type: "rss", linkId, ...item })),
+      ...link.calls.flatMap(call => [
+        { type: "poll-start", linkId, atMs: call.startMs, holdMs: call.holdMs, pollId: call.pollId, wireLinkId: "wire", process: call.process },
+        ...(call.endMs === null ? [] : [{ type: "poll-end", linkId, atMs: call.endMs, holdMs: call.holdMs, pollId: call.pollId, wireLinkId: "wire", process: call.process }]),
+      ]),
+    ];
+    files.set(`${linkId}.ndjson`, records.map(record => JSON.stringify(record)).join("\n") + "\n");
+    return { id: link.id, topology: link.topology, relayId: link.relayId, peerId: link.peerId, clock: link.clock, recordFiles: [`${linkId}.ndjson`] };
+  });
+  return { manifest: { startMs: evidence.startMs, endMs: evidence.endMs, rssAllowanceBytes: evidence.rssAllowanceBytes,
+    links, faults: evidence.faults, processes: evidence.processes }, files };
+}
+
+describe("offline evidence assembly", () => {
+  it("assembles the emitted records into a complete passing evidence file", () => {
+    const { manifest, files } = recordManifest(baseline);
+    const evidence = assembleRelaySoak(manifest, name => files.get(name)!);
+    expect(checkRelaySoak(evidence)).toEqual({ ok: true, violations: [] });
+  });
+
+  it("rejects truncated or unrecognized records instead of treating them as evidence", () => {
+    const { manifest, files } = recordManifest(baseline);
+    const first = manifest.links[0].recordFiles[0];
+    files.set(first, files.get(first)!.slice(0, -1));
+    expect(() => assembleRelaySoak(manifest, name => files.get(name)!)).toThrow();
+    const good = recordManifest(baseline);
+    good.files.set(first, good.files.get(first)! + JSON.stringify({ type: "unknown", linkId: manifest.links[0].id }) + "\n");
+    expect(() => assembleRelaySoak(good.manifest, name => good.files.get(name)!)).toThrow();
+  });
+
+  it("returns zero only for a complete passing check and never contacts a machine", async () => {
+    const output: string[] = [], errors: string[] = [];
+    const files = new Map([["/complete.json", JSON.stringify(baseline)], ["/incomplete.json", "{}"]]);
+    const io = { out: (value: string) => output.push(value), err: (value: string) => errors.push(value) };
+    const deps = { readText: (path: string) => { const data = files.get(path); if (!data) throw new Error("missing"); return data; } };
+    expect(await relaySoakMain(["check", "/complete.json"], io, deps)).toBe(0);
+    expect(JSON.parse(output.at(-1)!)).toEqual({ ok: true, violations: [] });
+    expect(await relaySoakMain(["check", "/incomplete.json"], io, deps)).not.toBe(0);
+    expect(JSON.parse(output.at(-1)!).ok).toBe(false);
+    expect(errors).toEqual([]);
   });
 });
 

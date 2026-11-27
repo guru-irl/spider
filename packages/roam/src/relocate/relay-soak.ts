@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { V0_INTERCOM_MS } from "@spider/intercom/roam-v0";
 import { decodeRelayPoll, isRelayResult, type RelayLinkView, type RelayPeer, type RelayResult, type RelaySubmit } from "@spider/intercom/relay-protocol";
 import type { Clock, Peer, Transport } from "../contracts";
@@ -28,7 +30,7 @@ interface SoakSubmission { id: string; atMs: number; deadlineMs: number; kind: "
 interface SoakEvent { id: string; atMs: number }
 interface SoakOutcomeEvent extends SoakEvent { kind: SoakOutcome }
 interface SoakStateEvent { atMs: number; state: SoakState }
-interface SoakCall { pollId: string; holdMs: 0 | 20000; startMs: number; endMs: number }
+interface SoakCall { pollId: string; holdMs: 0 | 20000; startMs: number; endMs: number | null; process: BirthIdentity }
 interface SoakRss { atMs: number; bytes: number; process: BirthIdentity }
 interface Census { atMs: number; complete: boolean; identities: readonly BirthIdentity[] }
 interface SoakProcessCensus { machineId: string; before: Census; after: Census }
@@ -79,7 +81,8 @@ function isEvidence(value: unknown): value is RelaySoakEvidence {
       entries(link.handoffs, event) && entries(link.receipts, event) &&
       entries(link.outcomes, result => event(result) && object(result) && outcomes.includes(result.kind as SoakOutcome)) &&
       entries(link.states, state => object(state) && time(state.atMs) && states.includes(state.state as SoakState)) &&
-      entries(link.calls, call => object(call) && text(call.pollId) && (call.holdMs === 0 || call.holdMs === 20_000) && time(call.startMs) && time(call.endMs)) &&
+      entries(link.calls, call => object(call) && text(call.pollId) && (call.holdMs === 0 || call.holdMs === 20_000) && time(call.startMs) &&
+        (call.endMs === null || time(call.endMs)) && identity(call.process)) &&
       entries(link.rss, sample => object(sample) && time(sample.atMs) && time(sample.bytes) && sample.bytes > 0 && identity(sample.process));
   })) return false;
   if (!entries(value.faults, fault => object(fault) && faultKinds.includes(fault.kind as SoakFaultKind) &&
@@ -167,7 +170,16 @@ export function checkRelaySoak(evidence: RelaySoakEvidence): { ok: boolean; viol
         link.runs.some(run => run.startMs !== startMs || run.endMs !== endMs || run.rssAllowanceBytes !== rssAllowanceBytes ||
           run.machineId !== (run.role === "dial" ? link.relayId : link.peerId))) fail("run-file");
     const samples = [...link.states].sort((a, b) => a.atMs - b.atMs);
-    if (!covers(samples, sample => sample.atMs, startMs, endMs, STATUS_GAP_MS)) fail("timeline");
+    if (!covers(samples, sample => sample.atMs, startMs, endMs, STATUS_GAP_MS) ||
+        !link.calls.some(call => call.holdMs === 20_000 && call.endMs !== null) ||
+        !link.calls.some(call => call.holdMs === 0 && call.endMs !== null) ||
+        new Set(link.calls.map(call => call.pollId)).size !== link.calls.length) fail("timeline");
+    const dialBirths = new Set(link.runs.filter(run => run.role === "dial").map(run => birthKey(run.process)));
+    for (const call of link.calls) {
+      if (!dialBirths.has(birthKey(call.process)) || call.endMs !== null && call.endMs < call.startMs ||
+          call.endMs === null && !linkFaults.some(fault => fault.kind === "relay-kill" && fault.process &&
+            birthKey(fault.process) === birthKey(call.process) && call.startMs - clock.minOffsetMs <= fault.startMs)) fail("timeline");
+    }
     for (const fault of linkFaults) {
       if (!samples.some(sample => sample.state !== "up" && sample.atMs >= fault.startMs && sample.atMs <= fault.startMs + 30_000)) fail("stall-detection");
       if (!samples.some(sample => sample.state === "up" && sample.atMs >= fault.clearMs && sample.atMs <= fault.clearMs + 60_000)) fail("recovery");
@@ -175,12 +187,11 @@ export function checkRelaySoak(evidence: RelaySoakEvidence): { ok: boolean; viol
         const endpoint = fault.endpoint;
         if (fault.linkIds.length !== 1 || !endpoint || endpoint.machineId !== link.peerId || endpoint.observedMs > fault.startMs ||
             fault.startMs - endpoint.observedMs > 5000 || !link.calls.some(call => call.pollId === endpoint.pollId && call.holdMs === 20_000 &&
-              call.startMs - clock.minOffsetMs <= endpoint.observedMs && call.endMs - clock.maxOffsetMs >= fault.startMs)) fail("endpoint");
+              call.endMs !== null && call.startMs - clock.minOffsetMs <= endpoint.observedMs && call.endMs - clock.maxOffsetMs >= fault.startMs)) fail("endpoint");
       }
     }
     const rss = [...link.rss].sort((a, b) => a.atMs - b.atMs);
     const rssStart = startMs + clock.minOffsetMs, rssEnd = endMs + clock.maxOffsetMs;
-    const dialBirths = new Set(link.runs.filter(run => run.role === "dial").map(run => birthKey(run.process)));
     if (!covers(rss, sample => sample.atMs, rssStart, rssEnd, RSS_GAP_MS) ||
         rss.some(sample => !dialBirths.has(birthKey(sample.process)))) fail("rss");
     const baseline = rss.findLast(sample => sample.atMs <= rssStart);
@@ -252,7 +263,7 @@ export type RelaySoakRecord = { linkId: string } & (
   | ({ type: "outcome" } & SoakOutcomeEvent)
   | ({ type: "state" | "relay-state" } & SoakStateEvent)
   | ({ type: "rss" } & SoakRss)
-  | { type: "poll-start" | "poll-end"; atMs: number; pollId: string; wireLinkId: string; holdMs: 0 | 20000 }
+  | { type: "poll-start" | "poll-end"; atMs: number; pollId: string; wireLinkId: string; holdMs: 0 | 20000; process: BirthIdentity }
   | { type: "submission-error"; atMs: number; id: string }
 );
 
@@ -291,7 +302,7 @@ export async function runRelaySoakDial(options: RelaySoakDialOptions): Promise<v
     async exec(value, argv, call) {
       const holdMs = Number(argv.at(-1)) as 0 | 20000;
       const poll = decodeRelayPoll(call.stdin!, holdMs);
-      const event = { linkId: link.id, pollId: poll.hello.pollId, wireLinkId: poll.hello.linkId, holdMs };
+      const event = { linkId: link.id, pollId: poll.hello.pollId, wireLinkId: poll.hello.linkId, holdMs, process: options.process };
       emit({ type: "poll-start", atMs: clock.now(), ...event });
       try { return await transport.exec(value, argv, call); }
       finally { emit({ type: "poll-end", atMs: clock.now(), ...event }); }
@@ -408,4 +419,102 @@ export async function runRelaySoakBurst(options: RelaySoakBurstOptions): Promise
   const driver = submissionDriver(options), burstId = driver.freshId();
   const sends = Array.from({ length: 100 }, () => driver.send("burst", burstId));
   await Promise.all(sends);
+}
+
+export interface RelaySoakManifest {
+  startMs: number; endMs: number; rssAllowanceBytes: number;
+  links: readonly (Pick<RelaySoakLinkEvidence, "id" | "topology" | "relayId" | "peerId" | "clock"> & { recordFiles: readonly string[] })[];
+  faults: readonly RelaySoakFault[]; processes: readonly SoakProcessCensus[];
+}
+const invalidRecord = () => new Error("Invalid soak record");
+function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
+}
+function decodeRecord(line: string, linkId: string): RelaySoakRecord {
+  let value: unknown;
+  try { value = JSON.parse(line); } catch { throw invalidRecord(); }
+  if (!object(value) || value.linkId !== linkId || typeof value.type !== "string") throw invalidRecord();
+  const fields: Record<string, readonly string[]> = {
+    run: ["role", "startMs", "endMs", "rssAllowanceBytes", "machineId", "process"],
+    submission: ["id", "atMs", "deadlineMs", "kind", value.kind === "cadence" ? "scheduledMs" : "burstId"],
+    handoff: ["id", "atMs"], receipt: ["id", "atMs"], outcome: ["id", "atMs", "kind"],
+    state: ["atMs", "state"], "relay-state": ["atMs", "state"], rss: ["atMs", "bytes", "process"],
+    "poll-start": ["atMs", "pollId", "wireLinkId", "holdMs", "process"],
+    "poll-end": ["atMs", "pollId", "wireLinkId", "holdMs", "process"],
+    "submission-error": ["atMs", "id"],
+  };
+  const expected = fields[value.type];
+  if (!expected || !exactKeys(value, ["type", "linkId", ...expected])) throw invalidRecord();
+  return value as unknown as RelaySoakRecord;
+}
+
+/** Join operator observations with the exact NDJSON emitted by each driver process. */
+export function assembleRelaySoak(manifest: RelaySoakManifest, readRecords: (path: string) => string): RelaySoakEvidence {
+  if (!object(manifest) || !Array.isArray(manifest.links) || !Array.isArray(manifest.faults) || !Array.isArray(manifest.processes)) throw invalidRecord();
+  const links: RelaySoakLinkEvidence[] = manifest.links.map(input => {
+    if (!object(input) || !text(input.id) || !entries(input.recordFiles, text)) throw invalidRecord();
+    const runs: SoakRun[] = [], submissions: SoakSubmission[] = [], handoffs: SoakEvent[] = [], receipts: SoakEvent[] = [];
+    const outcomes: SoakOutcomeEvent[] = [], stateEvents: SoakStateEvent[] = [], rss: SoakRss[] = [], calls: SoakCall[] = [];
+    const open = new Map<string, Extract<RelaySoakRecord, { type: "poll-start" | "poll-end" }>>();
+    const seen = new Set<string>();
+    for (const path of input.recordFiles as string[]) {
+      const data = readRecords(path);
+      if (typeof data !== "string" || !data.endsWith("\n")) throw invalidRecord();
+      for (const line of data.slice(0, -1).split("\n")) {
+        if (!line || Buffer.byteLength(line) > 8192) throw invalidRecord();
+        const record = decodeRecord(line, input.id);
+        switch (record.type) {
+          case "run": runs.push(record); break;
+          case "submission": submissions.push(record); break;
+          case "handoff": handoffs.push(record); break;
+          case "receipt": receipts.push(record); break;
+          case "outcome": outcomes.push(record); break;
+          case "state": stateEvents.push(record); break;
+          case "rss": rss.push(record); break;
+          case "relay-state": if (!time(record.atMs) || !states.includes(record.state)) throw invalidRecord(); break;
+          case "submission-error": throw invalidRecord();
+          case "poll-start":
+            if (!text(record.pollId) || !text(record.wireLinkId) || !time(record.atMs) || !identity(record.process) ||
+                record.holdMs !== 0 && record.holdMs !== 20_000 || seen.has(record.pollId)) throw invalidRecord();
+            seen.add(record.pollId); open.set(record.pollId, record); break;
+          case "poll-end": {
+            const started = open.get(record.pollId);
+            if (!started || !time(record.atMs) || record.atMs < started.atMs || record.holdMs !== started.holdMs ||
+                record.wireLinkId !== started.wireLinkId || !identity(record.process) || birthKey(record.process) !== birthKey(started.process)) throw invalidRecord();
+            calls.push({ pollId: record.pollId, holdMs: record.holdMs, startMs: started.atMs, endMs: record.atMs, process: record.process });
+            open.delete(record.pollId);
+            break;
+          }
+        }
+      }
+    }
+    for (const record of open.values()) calls.push({ pollId: record.pollId, holdMs: record.holdMs, startMs: record.atMs, endMs: null, process: record.process });
+    return { id: input.id, topology: input.topology as SoakTopology, relayId: input.relayId as string, peerId: input.peerId as string,
+      clock: input.clock as SoakClock, runs, submissions, handoffs, outcomes, receipts, states: stateEvents, rss, calls };
+  });
+  const evidence: RelaySoakEvidence = { startMs: manifest.startMs, endMs: manifest.endMs, rssAllowanceBytes: manifest.rssAllowanceBytes,
+    links, faults: manifest.faults, processes: manifest.processes };
+  if (!isEvidence(evidence)) throw invalidRecord();
+  return evidence;
+}
+
+export interface RelaySoakIo { out(text: string): void; err(text: string): void }
+export interface RelaySoakCliDeps { readText(path: string): string }
+
+/** The check command reads local evidence only. Other commands are opt-in. */
+export async function relaySoakMain(args: readonly string[], io: RelaySoakIo,
+  overrides: Partial<RelaySoakCliDeps> = {}): Promise<number> {
+  const readText = overrides.readText ?? ((path: string) => readFileSync(path, "utf8"));
+  if (args[0] !== "check" || args.length !== 2) { io.err("Usage: relay-soak check <evidence-file>\n"); return 2; }
+  let result: ReturnType<typeof checkRelaySoak>;
+  try {
+    const raw: unknown = JSON.parse(readText(args[1]));
+    const evidence = object(raw) && Array.isArray(raw.links) && raw.links.length > 0 &&
+      raw.links.every(link => object(link) && Array.isArray(link.recordFiles))
+      ? assembleRelaySoak(raw as unknown as RelaySoakManifest, path => readText(resolve(dirname(args[1]), path)))
+      : raw as RelaySoakEvidence;
+    result = checkRelaySoak(evidence);
+  } catch { result = { ok: false, violations: ["evidence"] }; }
+  io.out(`${JSON.stringify(result)}\n`);
+  return result.ok ? 0 : 1;
 }

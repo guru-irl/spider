@@ -7,6 +7,8 @@ import { scratchDbPath } from "@spider/db-core/testutil";
 import { claimIdLock, inspectIdLock } from "@spider/herdr/sessions/id-lock";
 import { createSessionLeases } from "@spider/herdr/sessions/lease";
 import { DEFAULT_LIMITS, disabledIntercom } from "@spider/roam/contracts";
+import { createHomeStore } from "@spider/roam/relocate/home";
+import type { SessionId } from "@spider/roam/relocate/types";
 import { createHostSessionFixture } from "../../__tests__/fixtures/pi-events";
 import { createAdmissionPorts, registerAdmission } from "../admission";
 
@@ -83,6 +85,18 @@ it.each(["unconfigured", "disabled", "prepare failed", "load failed", "no transc
   await expect(f.contend()).rejects.toThrow(/owner/i);
   await f.gate.close();
   expect(await f.lock()).toBeNull();
+});
+
+it("resumes a stranded virgin Mac home without replication or a repo map", async () => {
+  const f=fixture({configured:true,hasUI:true}), db=openDbAt(join(paths.globalRoot,"spider.db"),"global");
+  const sid=sessionId as SessionId;
+  try { await createHomeStore({db,localMachineId:machine,hubMachineId:machine}).initialize(sid,machine); }
+  finally {db.close();}
+  await f.emit("session_start");
+  expect(f.gate.inspect()).toMatchObject({kind:"ordinary",home:null});
+  expect(await f.lock()).toMatchObject({identity});
+  expect(await f.emit("input")).toBeUndefined();
+  await expect(f.contend()).rejects.toThrow(/owner/i);
 });
 
 it("a live ID holder blocks ordinary interactive input even when roaming is unconfigured", async () => {

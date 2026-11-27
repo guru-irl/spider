@@ -5,6 +5,13 @@ import { openDbReadOnlyAt, openGlobalReadOnly, paths } from "@spider/db-core";
 import { clearAwayHomeFence, readAwayHomeFence, type AwayHomeFence } from "@spider/roam/relocate/away-home";
 import { createHomeStore } from "@spider/roam/relocate/home";
 import { readLocalIdentity } from "@spider/roam/runtime";
+import type { RoamConfig } from "@spider/roam/contracts";
+
+function isAuthoritativeHub(db: Db, config: RoamConfig): boolean {
+  const meta = db.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id: string; store_key: string | null } | undefined;
+  return config.role === "hub" && config.machineId === config.hubMachineId && meta?.machine_id === config.machineId &&
+    (meta.store_key === "global" || meta.store_key === null);
+}
 
 function hasManagedMarker(db: Db, sessionId: SessionId): boolean {
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='roam_cursors'").get()) return false;
@@ -14,7 +21,9 @@ function hasManagedMarker(db: Db, sessionId: SessionId): boolean {
   return !!db.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine='' AND instr(peer_stream, ?)=1 LIMIT 1").get(key);
 }
 
-export async function loadRelocateAdmission(sessionId: SessionId, root: string): Promise<HomeAdmission> {
+export type LocalHomeAdmission = HomeAdmission | { kind: "virgin-local" };
+
+export async function loadRelocateAdmission(sessionId: SessionId, root: string): Promise<LocalHomeAdmission> {
   let db: Db | undefined, fence: AwayHomeFence | null = null;
   const unavailable = (): HomeAdmission => fence ? { kind: "unavailable", awayMachine: fence.machineId } : { kind: "unavailable" };
   try {
@@ -23,9 +32,7 @@ export async function loadRelocateAdmission(sessionId: SessionId, root: string):
     if (fence) {
       if (!db) return unavailable();
       const config = readLocalIdentity(root);
-      const meta = db.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id: string; store_key: string | null } | undefined;
-      if (config.role !== "hub" || config.machineId !== config.hubMachineId || meta?.machine_id !== config.machineId ||
-          (meta.store_key !== "global" && meta.store_key !== null)) return unavailable();
+      if (!isAuthoritativeHub(db, config)) return unavailable();
       const home = await createHomeStore({ db, hubMachineId: config.hubMachineId, localMachineId: config.machineId }).read(sessionId);
       if (home?.state !== "running" || home.machineId !== config.machineId || home.epoch <= fence.epoch ||
           !await clearAwayHomeFence(root, sessionId, fence)) return unavailable();
@@ -36,10 +43,17 @@ export async function loadRelocateAdmission(sessionId: SessionId, root: string):
     const knownManaged = (id: SessionId) => hasManagedMarker(store, id);
     if (!store.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_homes'").get())
       return knownManaged(sessionId) ? unavailable() : { kind: "unmanaged" };
-    return await readRelocateAdmission(sessionId, store, () => {
+    const result = await readRelocateAdmission(sessionId, store, () => {
       const config = readLocalIdentity(root);
       return createHomeStore({ db: store, hubMachineId: config.hubMachineId, localMachineId: config.machineId });
     }, knownManaged);
+    // A crash before the first moving CAS may strand an ordinary Mac session
+    // with an initial home but no managed checkout. Keep the startup ID lock.
+    if (result.kind === "managed" && result.home?.state === "running" && result.home.moveId === null && !knownManaged(sessionId)) {
+      const config = readLocalIdentity(root);
+      if (result.home.machineId === config.machineId && isAuthoritativeHub(store, config)) return { kind: "virgin-local" };
+    }
+    return result;
   }catch{return unavailable();}
   finally{db?.close();}
 }

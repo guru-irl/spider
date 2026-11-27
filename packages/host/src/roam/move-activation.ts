@@ -33,7 +33,8 @@ export async function createMoveActivation(input: MoveActivationInput): Promise<
   let config;
   try { config = readLocalIdentity(input.root); } catch { return null; }
   // V0 admission has its own home check, capture and shutdown control.
-  if ((await loadRelocateAdmission(input.sessionId as SessionId, input.root)).kind === "managed") return null;
+  const v0 = await loadRelocateAdmission(input.sessionId as SessionId, input.root);
+  if (v0.kind === "managed" || v0.kind === "virgin-local") return null;
   if (!(config.role === "hub" && config.enabled || config.role === "box" && participantCaptureReady(input.root, config.machineId))) return null;
   let mounted: Awaited<ReturnType<typeof createHostMoveBindings>> | undefined;
   let closeCore: (() => void) | undefined;

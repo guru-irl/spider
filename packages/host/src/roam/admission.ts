@@ -22,10 +22,10 @@ import { isDeepStrictEqual } from "node:util";
 import { isMachineId } from "@spider/roam/machine-id";
 import { isRevoked } from "@spider/roam/revocation";
 import type { HostIntent, RoamConfig } from "@spider/roam/contracts";
-import type { HomeAdmission, RunningHome, SessionId } from "@spider/roam/relocate/types";
+import type { RunningHome, SessionId } from "@spider/roam/relocate/types";
 import { createV0Runtime } from "@spider/roam/relocate/runtime";
 import { createLocalSessionMachinePorts } from "@spider/roam/relocate/local";
-import { loadRelocateAdmission, prepareRelocateAdmission } from "./relocate-admission";
+import { loadRelocateAdmission, prepareRelocateAdmission, type LocalHomeAdmission } from "./relocate-admission";
 import { serveRelocateShutdown } from "./relocate-control";
 
 export interface Admission { kind: "pending" | "ordinary" | "control-only" | "blocked"; home: Home | null; blockers: readonly Blocker[]; setupFailure?: MoveSetupFailure }
@@ -58,7 +58,7 @@ export interface AdmissionPorts {
   prepare?: ParticipantAdmissionHooks["prepare"];
   ready?(sessionId: string, file: string, epoch: number, home: Home | null): Promise<void>;
   stopped?(sessionId: string): Promise<void>;
-  v0Lookup?(sessionId: SessionId): Promise<HomeAdmission>;
+  v0Lookup?(sessionId: SessionId): Promise<LocalHomeAdmission>;
   v0Ready?(sessionId: SessionId, file: string, home: RunningHome): Promise<{ close(): Promise<void> } | void>;
 }
 
@@ -192,7 +192,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
         }
         v0Managed = false;
         if (ports.v0Lookup) {
-          let lookup: HomeAdmission;
+          let lookup: LocalHomeAdmission;
           try { lookup = await ports.v0Lookup(id as SessionId); }
           catch { lookup = { kind: "unavailable" }; }
           if (ticket !== generation) return;
@@ -201,6 +201,16 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
           const v0Message = away
             ? `The last recorded away home is ${away}. Restore spider.db or re-sync it from a peer if it is missing or stale. Then run spider roam set-home ${arg} mac --force on the Mac to recover the local copy.`
             : "Cannot verify a local running home. Restore the local home before starting this session.";
+          if (lookup.kind === "virgin-local") {
+            v0Managed = true;
+            if (handoffRequired || ports.expectedEpoch !== null || !pinned?.valid || observedV0.has(id)) {
+              publishResult("blocked", null, v0Message);
+            } else {
+              freeze = undefined;
+              publishResult("ordinary", null);
+            }
+            return;
+          }
           if (lookup.kind !== "unmanaged" || observedV0.has(id)) {
             v0Managed = true;
             observedV0.add(id);

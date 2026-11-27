@@ -58,6 +58,16 @@ describe("relocate", () => {
     expect(s.backups.has(source)).toBe(true);
   });
 
+  it("reports a busy session lock without changing the home", async () => {
+    const s = state(), p = ports(s);
+    p.withSession = async () => { throw Object.assign(new Error("The operation lock is busy"), { name: "HerdrError", code: "lock-occupied" }); };
+    expect(await relocate(request, p)).toMatchObject({ ok: false, step: "check", refusal: {
+      code: "session-busy", message: expect.stringMatching(/another operation/i), nextStep: expect.stringMatching(/wait.*retry/i),
+    } });
+    expect(s.home).toEqual(running());
+    expect(s.effects).toEqual([]);
+  });
+
   it("third destination refuses during moving", async () => {
     const s = state(); s.failAfter = "save-stop-source";
     expect((await relocate(request, ports(s))).ok).toBe(false);

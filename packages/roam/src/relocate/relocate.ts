@@ -98,6 +98,7 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts, r
   let home: RelocateHome | null = null;
   let moveId: RelocateId | null = null;
   let step: RelocateStep = "check";
+  let entered = false;
   function refuse(code: V0RefusalCode, message: string, nextStep =
     `Retry spider roam relocate ${request.sessionId} ${request.destinationMachine}.`): never {
     throw new PortRefusal({ code, message, nextStep });
@@ -130,6 +131,7 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts, r
   };
   try {
     return await ports.withSession(request.sessionId, async () => {
+      entered = true;
       home = await ports.homes.read(request.sessionId);
       let checkedFirst: RelocateCheckpoint | undefined;
       let initialPlacement: SessionPlacement | undefined;
@@ -292,6 +294,12 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts, r
       return { ok: true, value: result };
     });
   } catch (error) {
+    if (!entered && error instanceof Error && error.name === "HerdrError" && "code" in error && error.code === "lock-occupied") {
+      return { ok: false, step, home, moveId, refusal: {
+        code: "session-busy", message: "Another operation on this session is still in progress.",
+        nextStep: "Wait for that operation to finish, then retry relocation.",
+      } };
+    }
     return { ok: false, step, home, moveId, refusal: error instanceof PortRefusal ? error.refusal : {
       code: failureCodes[step], message: `Relocation could not finish ${step}.`,
       nextStep: `Retry spider roam relocate ${request.sessionId} ${request.destinationMachine}.`,

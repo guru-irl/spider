@@ -43,7 +43,9 @@ export type V0RefusalCode =
   | "stop-timeout" | "sync-failed" | "transfer-failed"
   | "install-failed" | "start-pending" | "journal-unavailable"
   // lane 3: entry-C1
-  | "machine-revoked";
+  | "machine-revoked"
+  // lane 3: move-9
+  | "session-busy";
 
 export interface V0Refusal {
   code: V0RefusalCode;

@@ -179,10 +179,83 @@ describe("Copilot model sync catalog", () => {
     expect(readdirSync(join(fixture, ".pi/agent"))).toEqual(["models.json"]);
   });
 
+  // Supported fields such as false reasoning and model headers must survive migration.
+  it("preserves supported differing fields and reports inherited limits without exposing headers", () => {
+    writeFileSync(builtinPath, `export const GITHUB_COPILOT_MODELS = { "model-a": {
+      id: "model-a", name: "Built in", reasoning: true, input: ["text", "image"],
+      api: "current-api", baseUrl: "shared-url", contextWindow: 64000, maxTokens: 2000,
+      cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }
+    } };\n`);
+    const secret = "fixture-sensitive-value";
+    const carried = {
+      name: "Custom name", reasoning: false, input: ["text"],
+      inputLimits: { images: { maxPerRequest: 2 } },
+      cost: { input: 5, output: 6, cacheRead: 1, cacheWrite: 2 },
+      samplingParams: { temperature: 0.2 },
+      samplingParamsByThinkingLevel: { high: { temperature: 0.4 } },
+      headers: { Authorization: secret }, compactAtPercent: 60,
+    };
+    const before = { providers: { "github-copilot": { models: [{
+      id: "model-a", ...carried, api: "old-api", baseUrl: "shared-url", contextWindow: 50000, maxTokens: 1000,
+    }] } } };
+    const result = run([], before);
+    expect(result.status, result.stderr).toBe(0);
+    expect(saved().providers["github-copilot"].modelOverrides).toEqual({ "model-a": carried });
+    const inherited = result.stdout.split("\n").filter(line => line.includes("model-a") && /inherit/i.test(line));
+    expect(inherited).toHaveLength(1);
+    for (const field of ["api", "contextWindow", "maxTokens"]) expect(inherited[0]).toContain(field);
+    expect(result.stdout + result.stderr).not.toContain(secret);
+    expect(result.stdout + result.stderr).not.toContain("old-api");
+  });
+
+  // An unsupported field must not vanish when any entry is migrated.
+  it("refuses unsupported differing fields before any write without revealing their values", () => {
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a", baseUrl: "built-in-url" }, { id: "model-b" }];\n');
+    const secret = "fixture-sensitive-value";
+    const before = { providers: { "github-copilot": { models: [
+      { id: "model-a", baseUrl: "custom-url", arbitraryField: secret, headers: { Authorization: secret } },
+      { id: "model-b", anotherField: secret, compactAtPercent: 50 },
+    ] } } };
+    for (const write of [false, true]) {
+      const result = run([], before, write);
+      expect(result.status).not.toBe(0);
+      for (const name of ["model-a", "baseUrl", "arbitraryField", "model-b", "anotherField"]) {
+        expect(result.stderr).toContain(name);
+      }
+      expect(result.stdout + result.stderr).not.toContain(secret);
+      expect(result.stdout + result.stderr).not.toContain("custom-url");
+      expect(readFileSync(modelsPath, "utf8")).toBe(JSON.stringify(before));
+      expect(readdirSync(join(fixture, ".pi/agent"))).toEqual(["models.json"]);
+    }
+  });
+
+  // Existing override fields win exactly, with one diagnostic for each conflict.
+  it("keeps existing override keys unchanged and reports conflicting shadow fields", () => {
+    writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a", name: "Built in", contextWindow: 64000, maxTokens: 2000 }];\n');
+    const existing = { name: "Existing name", compactAtPercent: 70, compat: { custom: true },
+      headers: { Authorization: "fixture-existing-header" }, contextWindow: 48000, maxTokens: 900 };
+    const before = { providers: { "github-copilot": { models: [{ id: "model-a", name: "Shadow name",
+      compactAtPercent: 30, compat: { forceAdaptiveThinking: true }, headers: { Authorization: "fixture-shadow-header" },
+      contextWindow: 50000, maxTokens: 1000, promptCache: { short: 300 } }],
+      modelOverrides: { "model-a": existing } } } };
+    const result = run([], before);
+    expect(result.status, result.stderr).toBe(0);
+    expect(saved().providers["github-copilot"].modelOverrides["model-a"]).toEqual({
+      ...existing, promptCache: { short: 300 },
+    });
+    const lines = result.stdout.split("\n").filter(line => line.includes("model-a") && line.includes("existing override kept for"));
+    expect(lines).toHaveLength(4);
+    for (const field of ["name", "compactAtPercent", "compat", "headers"]) {
+      expect(lines.some(line => line.includes(field))).toBe(true);
+    }
+    expect(result.stdout + result.stderr).not.toContain("fixture-shadow-header");
+    expect(result.stdout + result.stderr).not.toContain("fixture-existing-header");
+  });
+
   // Copying all model fields, dropping thinking or overwriting hand tuning changes behavior.
-  it("backs up and migrates only deliberate differences, preserving existing overrides", () => {
+  it("backs up migrations, drops equal fields, and preserves existing overrides", () => {
     writeFileSync(builtinPath, `export const GITHUB_COPILOT_MODELS = {
-      "model-a": { id: "model-a", promptCache: { short: 60 }, thinkingLevelMap: { xhigh: "high" }, compat: { forceAdaptiveThinking: false } },
+      "model-a": { id: "model-a", name: "old", baseUrl: "example", headers: { a: "b" }, input: ["text"], reasoning: true, cost: { input: 5 }, promptCache: { short: 60 }, thinkingLevelMap: { xhigh: "high" }, compat: { forceAdaptiveThinking: false } },
       "model-b": { id: "model-b", promptCache: { long: 10, short: 5 }, compat: { forceAdaptiveThinking: true } },
       "model-e": { id: "model-e", compat: { forceAdaptiveThinking: false } }
     };\n`);

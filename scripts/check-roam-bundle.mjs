@@ -45,7 +45,7 @@ function checkHelper(code, path) {
 
 export function assertRoamBundle(root, options = {}) {
   const directory = join(root, "dist/roam");
-  const legacy = ["cli.mjs", "supervisor.mjs"], current = ["cli-main.mjs", "cli.mjs", "intercom-helper.mjs", "supervisor.mjs"];
+  const legacy = ["cli.mjs", "supervisor.mjs"], current = ["cli-main.mjs", "cli.mjs", "intercom-helper.mjs", "relay-soak.mjs", "supervisor.mjs"];
   const found = lstatSync(directory).isDirectory() ? readdirSync(directory).sort().join() : "";
   const entries = found === current.join() ? current : !options.requireHelper && found === legacy.join() ? legacy : null;
   if (!entries) throw new Error("roaming entries missing or unexpected runtime chunk");

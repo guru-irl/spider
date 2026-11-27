@@ -768,7 +768,8 @@ class IntercomBroker {
             : !name || name.toLowerCase() !== request.selector.value.toLowerCase()) continue;
           targets.push({ address: session.info.address, name, homeEpoch: session.info.v0HomeEpoch, endpointEpoch: session.info.endpointEpoch! });
         }
-        writeMessage(socket, { type: "roam_v0_result", requestId: request.requestId, kind: "matches", targets });
+        const result = { type: "roam_v0_result", requestId: request.requestId, kind: "matches", targets };
+        writeMessage(socket, parseV0BrokerReply(result) ? result : { type: "roam_v0_result", requestId: request.requestId, kind: "refused", code: "incomplete" });
         return;
       }
       const respond = (result: Record<string, unknown>) => writeMessage(socket, { type: "roam_v0_result", requestId: request.requestId, ...result });

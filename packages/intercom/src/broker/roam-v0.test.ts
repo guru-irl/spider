@@ -557,6 +557,16 @@ describe("private roaming broker", () => {
     } finally { controller.abort(); await Promise.all(pending); }
   });
 
+  it("refuses a lookup whose complete encoded reply would exceed the wire limit", async () => {
+    const scope = "界".repeat(1024), name = "界".repeat(256);
+    for (let i = 0; i < 60; i++) {
+      await register(`many-${i}`, `id${"界".repeat(250)}${i}`, name, scope, 1);
+    }
+    const result = await lookup(scope, "name", name);
+    expect(result.kind).toBe("refused");
+    expect(result).toEqual({ kind: "refused", code: "incomplete" });
+  });
+
   it("advertises roaming over its private Unix socket", async () => {
     const socket = net.connect(getBrokerSocketPath());
     try {

@@ -5,6 +5,7 @@ import { existsSync } from 'node:fs';
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { expect } from 'vitest';
 import { migrate, openDb, paths } from '@spider/db-core';
 import { recordLocation } from '@spider/db-core/roam/catalog';
 import { writeLocal } from '@spider/db-core/roam/local-state';
@@ -63,15 +64,16 @@ export function enterHostingEnvironment(env: Readonly<Record<string, string>>): 
   };
 }
 
-/** Count attempts across the whole recording, including launches that exit before they can own a lock. */
-export function countHostedLaunches(records: readonly Pick<HcRecord, 'argv'>[], sessionId: string, file: string): number {
-  return records.filter(({ argv }) => {
+/** Check all exact Pi launches, including attempts that exit before they can own a lock. */
+export function assertHostedLaunches(records: readonly Pick<HcRecord, 'argv'>[], pi: string, file: string): number {
+  const count = records.filter(({ argv }) => {
     const end = argv.indexOf('--');
     if (argv[0] !== 'run' || end < 0) return false;
-    const options = argv.slice(0, end), command = argv.slice(end + 1);
-    return options.some((arg, index) => arg === '--label' && options[index + 1] === `spider.session=${sessionId}`) ||
-      command.some((arg, index) => arg === '--session' && command[index + 1] === file);
+    const command = argv.slice(end + 1);
+    return command.at(-3) === pi && command.at(-2) === '--session' && command.at(-1) === file;
   }).length;
+  expect(count, 'session launch attempts').toBe(2);
+  return count;
 }
 
 export interface HostedOwner { pid: number; terminal: string; sessionId: string; file: string; cwd: string }

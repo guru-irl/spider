@@ -903,6 +903,48 @@ async function interruptedInstalledFixture() {
   return { f, snapshot, prepareWorkspace };
 }
 
+it("reimports after an installed checkout is reset to its previous state", async () => {
+  const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
+  git(f.destination, "reset", "--hard", f.previous.head);
+  rmSync(join(f.destination, "untracked.bin"), { force: true });
+  expect(git(f.destination, "rev-parse", "HEAD")).toBe(f.previous.head);
+  expect(git(f.destination, "write-tree")).toBe(f.previous.indexTree);
+  expect(tree(f.destination, f.root)).toBe(f.previous.workingTree);
+  const fetches = f.calls.filter(args => args[0] === "git" && args[1] === "fetch").length;
+
+  const prepared = await prepareWorkspace(snapshot, f.destination, f.ports);
+
+  expect(prepared.previous).toEqual(f.previous);
+  expect(git(f.destination, "rev-parse", "HEAD")).toBe(snapshot.head);
+  expect(git(f.destination, "write-tree")).toBe(snapshot.indexTree);
+  expect(tree(f.destination, f.root)).toBe(snapshot.workingTree);
+  expect(f.calls.filter(args => args[0] === "git" && args[1] === "fetch")).toHaveLength(fetches + 1);
+  const recovery = f.ports.journal.read(snapshot.moveId).find(row => row.action === "workspace-settings-recovery-complete");
+  expect(recovery?.result.workingApplied).toBe(false);
+}, 5000);
+
+it("finishes an installed checkout after a mixed reset to the previous head", async () => {
+  const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
+  git(f.destination, "reset", "--mixed", f.previous.head);
+  expect(git(f.destination, "rev-parse", "HEAD")).toBe(f.previous.head);
+  expect(git(f.destination, "write-tree")).toBe(f.previous.indexTree);
+  expect(readFileSync(join(f.destination, "tracked.txt"), "utf8")).toBe("unpushed\n");
+  expect(readFileSync(join(f.destination, "binary.bin"))).toEqual(Buffer.from([255, 9, 0]));
+  expect(readFileSync(join(f.destination, "untracked.bin"))).toEqual(Buffer.from([42, 0, 99]));
+  expect(existsSync(join(f.destination, "skip", "item.txt"))).toBe(false);
+  const fetches = f.calls.filter(args => args[0] === "git" && args[1] === "fetch").length;
+
+  const prepared = await prepareWorkspace(snapshot, f.destination, f.ports);
+
+  expect(prepared.previous).toEqual(f.previous);
+  expect(git(f.destination, "rev-parse", "HEAD")).toBe(snapshot.head);
+  expect(git(f.destination, "write-tree")).toBe(snapshot.indexTree);
+  expect(tree(f.destination, f.root)).toBe(snapshot.workingTree);
+  expect(f.calls.filter(args => args[0] === "git" && args[1] === "fetch")).toHaveLength(fetches + 1);
+  const recovery = f.ports.journal.read(snapshot.moveId).find(row => row.action === "workspace-settings-recovery-complete");
+  expect(recovery?.result.workingApplied).toBe(true);
+}, 5000);
+
 it.each(["config", "tracked", "hidden"] as const)("refuses a %s edit after configuration installation was interrupted", async edit => {
   const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
   const file = edit === "config" ? join(f.destination, ".git", "config.worktree")

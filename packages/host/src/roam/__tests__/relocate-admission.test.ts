@@ -92,6 +92,32 @@ it("production lookup reads v0 homes without legacy admission",async()=>{
     expect(await loadRelocateAdmission(id,unreadableRoot)).toEqual({kind:"unavailable"});
   }finally{db.close();f.close();}
 });
+it("a managed marker fences a restored null-state home on a fresh admission", async () => {
+  const f = createReplica("global", local), db = openDb(join(f.root, "spider.db"));
+  migrate(db, "global", { machineId: local, globalRoot: f.root });
+  try {
+    mkdirSync(join(f.root, "roam"), { mode: 0o700 });
+    const config = { enabled: false, role: "hub", machineId: local, hubMachineId: local, peers: [], discoveryRoots: [], coreUnit: "core", syncMs: 10_000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
+    writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify(config), { mode: 0o600 });
+    writeFileSync(join(f.root, "roam", "machine.json"), JSON.stringify({ machineId: local }), { mode: 0o600 });
+    db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state) VALUES(?,?,3,NULL,1,NULL)").run(id, local);
+    writeLocal(db, "relocate-managed", id, { synthetic: true });
+
+    expect(await loadRelocateAdmission(id, f.root)).toEqual({ kind: "managed", home: null });
+    const session = fixture({ kind: "unmanaged" });
+    session.ports.v0Lookup = sessionId => loadRelocateAdmission(sessionId, f.root);
+    await session.emit("session_start");
+    expect(session.gate.inspect().kind).toBe("blocked");
+    expect(await session.emit("input")).toEqual({ action: "handled" });
+    expect(await session.emit("tool_call", { toolName: "edit" })).toMatchObject({ block: true });
+    const api = protectAdmissionApi(session.host.pi as unknown as ExtensionAPI, session.gate);
+    expect(() => api.sendMessage({ customType: "test", content: "no write", display: true })).toThrow();
+    expect(session.host.sent).toEqual([]);
+    expect(session.ports.load).not.toHaveBeenCalled();
+    expect(session.ports.lock).not.toHaveBeenCalled();
+  } finally { db.close(); f.close(); }
+});
+
 it("production admission ports use the v0 lookup seam",async()=>{
   const lookup=vi.spyOn(admissionLookup,"loadRelocateAdmission").mockResolvedValue({kind:"managed",home});
   try{const ports=createAdmissionPorts();expect(await ports.v0Lookup!(id)).toEqual({kind:"managed",home});expect(lookup).toHaveBeenCalledWith(id,expect.any(String));expect(ports.v0Ready).toBeTypeOf("function");}

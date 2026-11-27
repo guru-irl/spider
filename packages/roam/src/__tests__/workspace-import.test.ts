@@ -993,6 +993,23 @@ it("restores an installed checkout when only the index was reset", async () => {
   expect(recovery?.result.workingApplied).toBe(true);
 }, 5000);
 
+it("restores an installed checkout when a hidden sparse path loses its skip bit", async () => {
+  const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
+  git(f.destination, "update-index", "--no-skip-worktree", "--", "skip/item.txt");
+  expect(git(f.destination, "rev-parse", "HEAD")).toBe(snapshot.head);
+  expect(git(f.destination, "write-tree")).toBe(snapshot.indexTree);
+  expect(git(f.destination, "ls-files", "-t", "--", "skip/item.txt")).toBe("H skip/item.txt");
+  expect(existsSync(join(f.destination, "skip", "item.txt"))).toBe(false);
+
+  const prepared = await prepareWorkspace(snapshot, f.destination, f.ports);
+
+  expect(prepared.previous).toEqual(f.previous);
+  expect(git(f.destination, "ls-files", "-t", "--", "skip/item.txt")).toBe("S skip/item.txt");
+  expect(tree(f.destination, f.root)).toBe(snapshot.workingTree);
+  const recovery = f.ports.journal.read(snapshot.moveId).find(row => row.action === "workspace-settings-recovery-complete");
+  expect(recovery?.result.workingApplied).toBe(true);
+}, 5000);
+
 it("reinstalls when effective sparse settings change after installation", async () => {
   const { f, snapshot, prepareWorkspace } = await interruptedInstalledFixture();
   git(f.destination, "config", "--local", "extensions.worktreeConfig", "false");

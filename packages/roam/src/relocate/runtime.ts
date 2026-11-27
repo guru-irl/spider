@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { openDb, openDbReadOnly, type Db } from "@spider/db-core";
+import { withProcessLock } from "@spider/herdr/sessions/registry";
+import { probeLocal } from "../local-diagnostics";
 import { createStorePort } from "../stores";
 import { openLocalCore, readLocalIdentity, type LocalCore } from "../runtime";
 import { openJournal } from "../journal";
@@ -157,7 +159,52 @@ export async function runV0Agent(input: unknown, root: string): Promise<V0Result
   try {return await handleRelocateAgent(input,runtime.options);}
   finally {await runtime.close();}
 }
+export class V0HubLockRefusal extends Error {
+  constructor(cause: unknown) {
+    super("Stop the existing roaming hub before starting the v0 hub. If none is running, run spider roam doctor.", { cause });
+  }
+}
+
+async function withV0HubLock<T>(root: string, run: () => Promise<T>): Promise<T> {
+  // Use the same process-start identity as the legacy production hub.
+  const self = await probeLocal(process.pid, false);
+  if (self.kind !== "live") throw new Error("Cannot verify the hub process identity");
+  let entered = false;
+  try {
+    return await withProcessLock(join(root,"roam"), "roam-hub", () => {
+      entered = true;
+      return run();
+    }, { identity: { pid:process.pid,startIdentity:self.startIdentity }, timeoutMs:100,
+      async probe(pid, owner) {
+        const observed = await probeLocal(pid, false);
+        if (owner && observed.kind === "live" && observed.startIdentity !== owner.startIdentity) {
+          const format = /^(posix|linux):/.exec(owner.startIdentity)?.[0];
+          if (format && observed.startIdentity.startsWith(format)) return {kind:"absent"};
+        }
+        return observed;
+      },
+    });
+  } catch (error) {
+    if (!entered && /^lock-/.test((error as { code?: string } | null)?.code ?? "")) throw new V0HubLockRefusal(error);
+    throw error;
+  }
+}
+
 export async function startV0Hub(root: string, overrides: V0RuntimeOverrides = {}): Promise<{stop():Promise<void>}> {
+  let ready!: (service: { stop(): Promise<void> }) => void, rejectReady!: (error: unknown) => void;
+  const started = new Promise<{stop():Promise<void>}>((resolve, reject) => { ready = resolve; rejectReady = reject; });
+  let release!: () => void;
+  const hold = new Promise<void>(resolve => { release = resolve; });
+  const lifetime = withV0HubLock(root, async () => {
+    const service = await startLockedV0Hub(root, overrides);
+    ready({ stop() { release(); return lifetime; } });
+    try { await hold; } finally { await service.stop(); }
+  });
+  void lifetime.catch(rejectReady);
+  return started;
+}
+
+async function startLockedV0Hub(root: string, overrides: V0RuntimeOverrides): Promise<{stop():Promise<void>}> {
   const runtime=createV0Runtime(root,overrides);
   try {
     if(runtime.options.config.role!=="hub" || runtime.options.config.machineId!==runtime.options.config.hubMachineId)throw new Error("mac-required");

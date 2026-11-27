@@ -1,7 +1,7 @@
 import { parseV0Control, runV0Control, readV0Confirmation } from "./relocate/cli";
 import { skippedProjectDbNotice, v0SessionCatalog } from "./relocate/session-catalog";
 import { requestV0Services, runV0Service } from "./relocate/service";
-import { startV0Hub, runV0Agent } from "./relocate/runtime";
+import { startV0Hub, runV0Agent, V0HubLockRefusal } from "./relocate/runtime";
 import type { V0ControlServices, V0Result } from "./relocate/types";
 import { corePinDiagnostics } from "./core-pin-diagnostics";
 import { inspectSupervisorCorePin } from "./enrollment";
@@ -162,7 +162,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
   if (argv[0] === "roam" && argv[1] === "hub-v0") {
     if(argv.length!==2){io.err("Use spider roam hub-v0.\n");return 2;}
     try{await runV0Service(()=> (options?.v0?.hub ?? startV0Hub)(root));return 0;}
-    catch{io.err("The v0 hub could not start. Check the local roaming configuration.\n");return 1;}
+    catch(error){io.err(error instanceof V0HubLockRefusal ? `${error.message}\n` : "The v0 hub could not start. Check the local roaming configuration.\n");return 1;}
   }
   if (argv[0] === "roam" && ["relocate", "set-home"].includes(argv[1])) {
     const control = parseV0Control(argv), json = argv.at(-1) === "--json";

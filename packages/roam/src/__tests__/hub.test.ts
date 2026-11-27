@@ -26,6 +26,9 @@ import * as cleanupApi from "../cleanup";
 import * as syncApi from "../sync";
 import * as moveRuntimeApi from "../move-runtime-service";
 import { network, HUB, BOX } from "./sync-fixture";
+import { startV0Hub } from "../relocate/runtime";
+import { requestV0Services } from "../relocate/service";
+import type { SessionId } from "../relocate/types";
 
 const handles: Array<{ stop(): Promise<void> }> = [];
 const fixtures: Array<ReturnType<typeof network>> = [];
@@ -257,6 +260,41 @@ it("second hub refuses the process lock", async () => {
   expect((await h.request("status")).code).toBe(0);
   await replacement.stop();
 }, 5000);
+
+it.each(["legacy", "v0"])("excludes the other hub when %s starts first", async first => {
+  const h=fixture(), runtimeRoot=join(h.runtimeRoot,"roam");
+  const config={...h.f.config,peers:[]};
+  let entered!:()=>void, release!:()=>void;
+  const drainStarted=new Promise<void>(done=>{entered=done;});
+  const drain=new Promise<void>(done=>{release=done;});
+  const legacy=()=>runHub({...h.ports,config,runtimeRoot,socketPath:join(runtimeRoot,"hub.sock"),
+    sync:{start(){},stop(){},async sync(){return [];},async barriers(){return true;}},
+    async prepare(){},async drain(){if(first==="legacy"){entered();await drain;}},async closeStores(){},
+  });
+  const v0=()=>startV0Hub(h.runtimeRoot,{transport:h.f.transport,clock:h.ports.clock,
+    openCore:()=>({root:h.runtimeRoot,config,db:h.f.global.db,close(){}})});
+  const startFirst=first==="legacy"?legacy:v0, startSecond=first==="legacy"?v0:legacy;
+  const start=async (factory:typeof legacy)=>{const service=await factory();handles.push(service);return service;};
+  const running=await start(startFirst);
+  // Capture both outcomes so even an unexpected second live hub gets stopped.
+  const second=async()=>start(startSecond);
+  try {
+    await expect(second()).rejects.toThrow(first==="legacy"?/stop the existing.*hub/i:/lock/i);
+    if(first==="legacy") {
+      expect(existsSync(join(runtimeRoot,"relocate.sock"))).toBe(false);
+      const stopping=running.stop();
+      await drainStarted;
+      await expect(second()).rejects.toThrow(/stop the existing.*hub/i);
+      release(); await stopping;
+    } else {
+      expect(existsSync(join(runtimeRoot,"hub.sock"))).toBe(false);
+      expect(await requestV0Services(h.runtimeRoot).setHome({sessionId:"missing" as SessionId,destinationMachine:HUB,force:true,confirmation:"bad"}))
+        .toMatchObject({ok:false,refusal:{code:"confirmation-required"}});
+      await running.stop();
+    }
+    await second();
+  } finally {release();}
+});
 
 it("uncertain lock ownership blocks startup and proved absence permits recovery", async () => {
   const h = fixture();

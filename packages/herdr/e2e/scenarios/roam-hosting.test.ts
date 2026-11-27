@@ -123,6 +123,7 @@ async function restartAndRestore(suite: Suite): Promise<void> {
     expect(startup).toMatchObject({ mode: 'tui', stdinTTY: true, sessionFile: fixture.file, cwd: fixture.cwd, hcTerminal: first.terminal });
     const probe = await runTool(fixture, first, 'probe', 'hosting-probe');
     expect(probe.toolName).toBe('spider');
+    expect(probe.result).toMatchObject({ details: expect.any(Array) });
     const config = JSON.parse(await readFile(join(fixture.root, 'herdr', 'config.json'), 'utf8'));
     expect(config.mode).toBe('core-only');
     expect(config).not.toHaveProperty('app');

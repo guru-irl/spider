@@ -6,7 +6,7 @@ import { setEnrolledPeerEnabled } from "./peer-enabled";
 import { openJournal } from "./journal";
 import { isRevoked, revokeMachine } from "./revocation";
 import { readPendingMoves } from "./pending-moves";
-import { inspectLegacyUpgrade, legacyUpgradeDiagnostic } from "./legacy-upgrade";
+import { inspectLegacyUpgrade, legacyUpgradeDiagnostic, type LegacyUpgradeInventory } from "./legacy-upgrade";
 import { parseDoctorReport, remoteDoctor } from "./remote-observations";
 import { INTERCOM_UNIQUENESS_DESCRIPTION } from "./intercom-readiness";
 import { execFile } from "node:child_process";
@@ -162,6 +162,11 @@ async function v0DisableBlocker(root: string, config: RoamConfig): Promise<Contr
   } finally { db.close(); }
 }
 
+function upgradeRefusal(inventory: LegacyUpgradeInventory): ControlResult {
+  return { code: 1, reason: inventory.status, repairCommand: "spider roam doctor",
+    message: `${legacyUpgradeDiagnostic(inventory).reason} Roaming was not enabled.` };
+}
+
 /** Public lifecycle: v0 is selected by role, never by the previous service or a stored mode. */
 export async function configureV0Service(root: string, enabled: boolean, options: V0ServiceOptions): Promise<ControlResult> {
   const action = enabled ? "enable" : "disable", repairCommand = `spider roam ${action}`;
@@ -170,16 +175,21 @@ export async function configureV0Service(root: string, enabled: boolean, options
   const warnings = () => (issues ?? []).map(issue => `Warning: ${issue.detail ?? issue.reason} (${issue.repairCommand})`);
   const information = () => removed.map(reason => ({ machine: "local", reason }));
   try {
-    const initial = readLocalIdentity(root);
+    let initial: RoamConfig;
+    try { initial = readLocalIdentity(root); }
+    catch (error) {
+      if (enabled) {
+        const inventory = await inspectLegacyUpgrade(root);
+        if (inventory.status !== "legacy-upgrade-ready") return upgradeRefusal(inventory);
+      }
+      throw error;
+    }
     return await locked(root, initial, async () => {
       let config = readLocalIdentity(root);
       if (config.machineId !== initial.machineId || config.role !== initial.role) throw new Error("Roaming configuration changed during the operation.");
       if (enabled) {
         const inventory = await inspectLegacyUpgrade(root);
-        if (inventory.status !== "legacy-upgrade-ready") {
-          return { code: 1, reason: inventory.status, repairCommand: "spider roam doctor",
-            message: `${legacyUpgradeDiagnostic(inventory).reason} Roaming was not enabled.` };
-        }
+        if (inventory.status !== "legacy-upgrade-ready") return upgradeRefusal(inventory);
       }
       const setEnabled = async (next: boolean) => {
         if (config.enabled === next) return;

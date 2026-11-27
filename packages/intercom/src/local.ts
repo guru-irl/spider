@@ -2746,6 +2746,9 @@ Usage:
                   }
                   const sent = { id: randomUUID(), timestamp: Date.now(), text: message };
                   const result = await plan.send(sent, _signal);
+                  if (result.kind === "refused") {
+                    return { content: [{ type: "text", text: V0_REFUSAL_TEXT[result.code] }], details: { error: true, code: result.code } };
+                  }
                   if (result.kind === "unknown") {
                     return { content: [{ type: "text", text: `Delivery could not be confirmed (ID ${result.id}). Check the recipient before sending again.` }],
                       details: { delivered: false, delivery: "unknown", messageId: result.id, outcomeKnown: false, retryable: false } };

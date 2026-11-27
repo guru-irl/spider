@@ -198,6 +198,21 @@ it("reports routing refusals without sending to a local mailbox", async () => {
   } finally { observer.off("message", onMessage); await f.cleanup(); }
 });
 
+it("reports a receiver's moving refusal without claiming a send", async () => {
+  const prepare: V0Prepare = async () => ({
+    kind: "remote", label: "b/ben",
+    async send() { return { kind: "refused", code: "moving" }; },
+    async ask(message) { return { kind: "no_reply", id: message.id }; },
+  });
+  const f = await fixture({ homeEpoch: () => 7, prepare });
+  try {
+    const result = await f.tool.execute("send", { action: "send", to: "ben", message: "hello" }, new AbortController().signal, undefined, f.ctx);
+    expect(result.content[0].text).toBe("Session is moving. Retry after it settles.");
+    expect(result.details).toMatchObject({ error: true, code: "moving" });
+    expect(f.entries.some(entry => entry.type === "intercom_sent")).toBe(false);
+  } finally { await f.cleanup(); }
+});
+
 it("reports uncertainty without a legacy send", async () => {
   const sent: V0Text[] = [], legacyInbox: unknown[] = [];
   const onMessage = (...args: unknown[]) => legacyInbox.push(args);

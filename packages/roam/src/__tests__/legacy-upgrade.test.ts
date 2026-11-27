@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { migrate, openDb } from "@spider/db-core";
 import { writeLocal } from "@spider/db-core/roam/local-state";
 import type { JsonObject } from "@spider/db-core/roam/types";
@@ -12,7 +13,9 @@ import { processStartIdentity } from "@spider/herdr/jobs/handoff";
 import { afterEach, expect, it, vi } from "vitest";
 import { main } from "../cli";
 import { openFreezeJournal, openJournal } from "../journal";
+import * as intents from "../intent";
 import { createIntentStore } from "../intent";
+import { inspectLegacyUpgrade } from "../legacy-upgrade";
 import { parseDoctorReport } from "../remote-observations";
 import * as snapshots from "../diagnostic-snapshot";
 import { peerEnabledDiagnostics } from "../peer-enabled";
@@ -148,7 +151,76 @@ it("reports lost roaming identity as unverified even when a pending move is visi
   expect(JSON.parse(io.out.mock.calls.at(-1)![0])).toMatchObject({ reason: "status-unavailable", code: 1 });
 });
 
-it("reports an inventory as unverified when its journal changes between snapshots", async () => {
+async function withActivityDuringInventory(root: string, activity: () => void | Promise<void>) {
+  const original = intents.inspectIntentViews;
+  let ran = false;
+  const spy = vi.spyOn(intents, "inspectIntentViews").mockImplementation(async path => {
+    if (!ran) { ran = true; await activity(); }
+    return original(path);
+  });
+  try {
+    const inventory = await inspectLegacyUpgrade(root);
+    expect(ran).toBe(true);
+    return inventory;
+  } finally { spy.mockRestore(); }
+}
+
+it.each([false, true])("keeps upgrade ready after a concurrent read-only SELECT (open writer: %s)", async writerOpen => {
+  const { root } = fixture(), file = join(root, "spider.db");
+  const writer = writerOpen ? openDb(file) : undefined;
+  try {
+    expect((await inspectLegacyUpgrade(root)).status).toBe("legacy-upgrade-ready");
+    const result = await withActivityDuringInventory(root, () => {
+      const reader = new DatabaseSync(file, { readOnly: true });
+      try { reader.prepare("SELECT count(*) FROM sqlite_master").get(); } finally { reader.close(); }
+    });
+    expect(result).toEqual({ status: "legacy-upgrade-ready", findings: [] });
+  } finally { writer?.close(); }
+});
+
+it("keeps upgrade ready after a concurrent insert into an unrelated table", async () => {
+  const { root } = fixture(), writer = openDb(join(root, "spider.db"));
+  try {
+    writer.exec("CREATE TABLE fixture_unrelated (value INTEGER)");
+    expect((await inspectLegacyUpgrade(root)).status).toBe("legacy-upgrade-ready");
+    const result = await withActivityDuringInventory(root, () => { writer.exec("INSERT INTO fixture_unrelated VALUES (1)"); });
+    expect(result).toEqual({ status: "legacy-upgrade-ready", findings: [] });
+  } finally { writer.close(); }
+});
+
+it("notices a changed legacy receipt even though it remains settled", async () => {
+  const { root, journal } = fixture();
+  journal.begin({ id: "settled-launch", kind: "exact-session-launch", machineId: hub, expectedEpoch: 1, args: {} });
+  journal.record("settled-launch", "done", { code: 0, reason: "ready" });
+  expect((await inspectLegacyUpgrade(root)).status).toBe("legacy-upgrade-ready");
+  const result = await withActivityDuringInventory(root, () => {
+    const writer = openDb(join(root, "roam", "journal.db"));
+    try { writer.prepare("UPDATE roam_operations SET result_json=? WHERE operation_id=?").run('{"code":1,"reason":"launch-ended"}', "settled-launch"); }
+    finally { writer.close(); }
+  });
+  expect(result).toEqual({ status: "legacy-upgrade-unverified", findings: ["local evidence changed during inspection"] });
+  expect((await inspectLegacyUpgrade(root)).status).toBe("legacy-upgrade-ready");
+});
+
+it.each(["an ID lock", "a lease"] as const)("keeps upgrade ready when an ordinary session takes %s", async kind => {
+  const { root } = fixture(), stateRoot = join(root, "herdr"), file = join(root, "ordinary.jsonl");
+  writeFileSync(file, "fixture transcript\n", { mode: 0o600 });
+  const bootId = await localBootId(), startIdentity = processStartIdentity(process.pid);
+  expect(bootId).toBeTruthy(); expect(startIdentity).toBeTruthy();
+  const owner = { pid: process.pid, startIdentity: startIdentity! };
+  const probe = async () => ({ kind: "live" as const, startIdentity: owner.startIdentity });
+  expect((await inspectLegacyUpgrade(root)).status).toBe("legacy-upgrade-ready");
+  const result = await withActivityDuringInventory(root, async () => {
+    if (kind === "an ID lock") await claimIdLock(stateRoot, "ordinary-session", owner, probe, { bootId: async () => bootId });
+    else {
+      const leases = createSessionLeases(stateRoot);
+      await leases.claim(file, owner, { leases, presence: createProcessPresence(stateRoot), processes: async () => [], probe }, { mode: "cutover", bootId });
+    }
+  });
+  expect(result).toEqual({ status: "legacy-upgrade-ready", findings: [] });
+});
+
+it("reports an inventory as unverified and names the new move when its journal changes between snapshots", async () => {
   const f = fixture(), journalFile = join(f.root, "roam", "journal.db"), original = snapshots.openDiagnosticSnapshot;
   let changed = false;
   const spy = vi.spyOn(snapshots, "openDiagnosticSnapshot").mockImplementation(file => {
@@ -164,7 +236,7 @@ it("reports an inventory as unverified when its journal changes between snapshot
     expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
     expect(changed).toBe(true);
     expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ severity: "block", reason: expect.stringMatching(/^legacy-upgrade-unverified/) }),
+      expect.objectContaining({ severity: "block", reason: expect.stringMatching(/^legacy-upgrade-unverified: local evidence changed during inspection, move operation concurrent-move\./) }),
     ]));
   } finally { spy.mockRestore(); }
 });

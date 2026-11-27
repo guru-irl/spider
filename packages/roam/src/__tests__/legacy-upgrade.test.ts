@@ -367,6 +367,51 @@ it("reports a replica filename and store identity mismatch as unverified", async
   ]));
 });
 
+it("finds frozen legacy evidence in a registered project without a workspace map", async () => {
+  const f = fixture(), directory = join(f.root, "registered"), file = join(directory, "project.db"), key = "worktree:fixture-repo:workspace-1";
+  mkdirSync(directory);
+  const project = openDb(file);
+  try {
+    migrate(project, "worktree", { machineId: hub, globalRoot: f.root });
+    project.prepare("UPDATE roam_meta SET machine_id=?,store_key=? WHERE id=1").run(hub, key);
+    project.prepare("INSERT INTO roam_sessions(session_id,epoch,state,move_id,freeze_seq) VALUES (?,1,'frozen',?,0)")
+      .run("session-registered-frozen", "lost-project-move");
+  } finally { project.close(); }
+  const global = openDb(join(f.root, "spider.db"));
+  try { global.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES (?,?,?,1,1)")
+    .run("fixture-project", directory, file); } finally { global.close(); }
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-unverified.*session-registered-frozen.*worktree:fixture-repo:workspace-1/) }),
+  ]));
+});
+
+it("finds frozen legacy evidence in a retained replica after its mapping is published", async () => {
+  const f = fixture(), key = "worktree:fixture-repo:workspace-1", file = replica(f.root, key);
+  const source = openDb(file);
+  try {
+    source.prepare("INSERT INTO roam_sessions(session_id,epoch,state,move_id,freeze_seq) VALUES (?,1,'frozen',?,0)")
+      .run("session-replica-frozen", "lost-replica-move");
+    fenceReplicaForMapping(source, key);
+  } finally { source.close(); }
+  const checkout = join(f.root, "checkout"), directory = join(checkout, ".spider"), target = join(directory, "project.db");
+  mkdirSync(directory, { recursive: true });
+  const project = openDb(target);
+  try { migrate(project, "worktree", { machineId: hub, globalRoot: f.root });
+    project.prepare("UPDATE roam_meta SET machine_id=?,store_key=? WHERE id=1").run(hub, key); } finally { project.close(); }
+  const global = openDb(join(f.root, "spider.db"));
+  try {
+    global.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES (?,?,?)").run("fixture-repo", "workspace-1", checkout);
+    writeLocal(global, "mapping-redirect", key, target);
+  } finally { global.close(); }
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "doctor", "--json"], io)).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0]).value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/legacy-upgrade-unverified.*session-replica-frozen.*worktree:fixture-repo:workspace-1/) }),
+  ]));
+});
+
 it("does not block a published mapping's retained replica fence", async () => {
   const f = fixture(), key = "worktree:fixture-repo:workspace-1", file = replica(f.root, key);
   const source = openDb(file);

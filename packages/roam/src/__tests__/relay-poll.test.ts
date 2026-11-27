@@ -143,7 +143,7 @@ describe("private relay configuration and batches", () => {
       .toEqual({ ready: { ...ready, ok: false, code: "unauthorized" }, submissions: [] });
     writeRoutes({ version: 2, sendTo: [], acceptFrom: [], relays: [RELAY] });
     expect(decodeRelayPollReply(await runV0LinkOnce(root, lines({ ...hello, toMachineId: OTHER }, reach), 0)))
-      .toEqual({ ready: { ...ready, ok: false, code: "unauthorized" }, submissions: [] });
+      .toEqual({ ready: { ...ready, machineId: OTHER, ok: false, code: "unauthorized" }, submissions: [] });
   });
 });
 
@@ -184,6 +184,29 @@ function carrier(forward: (s: RelaySubmit, signal: AbortSignal) => Promise<Relay
 }
 
 describe("the relay's paired calls", () => {
+  it("reports unauthorized when the endpoint's machine differs from the intended peer", async () => {
+    const { root, writeRoutes } = localConfig(OTHER);
+    writeRoutes({ version: 2, sendTo: [], acceptFrom: [], relays: [RELAY] });
+    vi.useFakeTimers();
+    const stop = new AbortController(), views: RelayLinkView[] = [];
+    const forwarded: string[] = [];
+    const loop = runRelayPollLoop({ relay, peer, clock, signal: stop.signal, reach: () => [relay],
+      transport: {
+        async resolve(value) { return value; },
+        async exec(_value, argv, options) {
+          return runV0LinkOnce(root, options.stdin!, Number(argv.at(-1)) as RelayPoll["holdMs"], options.signal);
+        },
+      },
+      async forward(submission) { forwarded.push(submission.message.id); return delivered(submission.message.id); },
+      observe: view => views.push(view),
+    });
+    try {
+      await tick();
+      expect(views.at(-1)).toMatchObject({ state: "down", lastError: "unauthorized" });
+      expect(forwarded).toEqual([]);
+    } finally { stop.abort(); await loop; }
+  });
+
   it("sends results without waiting for a held poll and serializes only the hold-0 replies", async () => {
     const deliveries = new Map<string, ReturnType<typeof deferred<RelayResult>>>();
     const driver = carrier(async (submission, signal) => {

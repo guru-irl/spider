@@ -156,9 +156,9 @@ export function decodeRelayPollReply(input: Buffer): RelayPollReply {
   return reply;
 }
 
-export function relayReady(hello: RelayHello, code?: ReadyRefusal, machineId: string = hello.toMachineId): RelayReady {
-  const { linkId, pollId } = hello;
-  const header = { type: "ready" as const, version: RELAY_PROTOCOL_VERSION, machineId, linkId, pollId };
+export function relayReady(hello: RelayHello, code?: ReadyRefusal): RelayReady {
+  const { linkId, pollId, toMachineId } = hello;
+  const header = { type: "ready" as const, version: RELAY_PROTOCOL_VERSION, machineId: toMachineId, linkId, pollId };
   return code ? { ...header, ok: false, code } : { ...header, ok: true };
 }
 export function correlatesRelayReady(ready: RelayReady, hello: RelayHello): boolean {

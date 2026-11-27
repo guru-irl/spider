@@ -228,10 +228,12 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
     catch { return refused("unreachable"); }
     const byId = (id: string) => all.find(home => home.sessionId === id) ?? null;
     const senderHome = byId(from.address?.sessionId ?? from.id);
-    const exactHome = byId(to);
+    const qualifiedPeer = selector.kind === "qualified" ? configured.sendTo.find(peer => peer.alias.toLowerCase() === selector.machine.toLowerCase()) : undefined;
+    const qualifiedHome = selector.kind === "qualified" ? byId(selector.value) : null;
+    const exactHome = byId(to) ?? (qualifiedPeer && qualifiedHome?.machineId === qualifiedPeer.machineId ? qualifiedHome : null);
     const macQualifiedHome = selector.kind === "qualified" && configured.acceptFrom.some(peer =>
       peer.machineId === configured.config.hubMachineId && peer.alias.toLowerCase() === selector.machine.toLowerCase())
-      ? byId(selector.value) : null;
+      ? qualifiedHome : null;
     if (configured.config.role === "box" && (exactHome?.machineId === configured.config.hubMachineId ||
         macQualifiedHome?.machineId === configured.config.hubMachineId)) return refused("reply-only");
     if (!senderHome) {
@@ -243,6 +245,7 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
       return refused("changed");
     const senderCode = homeCode(senderHome, configured.config.machineId, source.homeEpoch);
     if (senderCode) return refused(senderCode);
+    if (qualifiedPeer && qualifiedHome && qualifiedHome.machineId !== qualifiedPeer.machineId) return refused("no-match");
 
     const localPlan = (target: LocalSessionInfo) => {
       if (target.id === from.id || target.address?.sessionId === source.address.sessionId) return refused("self");

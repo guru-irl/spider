@@ -244,6 +244,15 @@ describe("roaming v0 intercom", () => {
     expect(f.inbox.map(item => item.message)).toEqual([message]);
   });
 
+  it("resolves a qualified persistent ID when the remote endpoint has no name", async () => {
+    const f = paired();
+    f.state.live = [{ ...ben, name: null }];
+    const plan = await remotePlan(f.intercom, "box/ben");
+    expect(f.calls[0].request).toMatchObject({ kind: "lookup", selector: { by: "id", value: "ben" } });
+    expect(await plan.send(message)).toEqual({ kind: "socket_delivered", id: message.id });
+    expect(f.inbox.map(item => item.message)).toEqual([message]);
+  });
+
   it("refuses a prepared send when the receiving home has started moving", async () => {
     const f = paired(), plan = await remotePlan(f.intercom);
     const db = openDbAt(join(f.receiver.root, "spider.db"), "global");

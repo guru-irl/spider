@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import net from "node:net";
 import { join } from "node:path";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { IntercomClient } from "../../../intercom/src/broker/client.js";
 import { getAgentDirPath, getBrokerSocketPath, getIntercomDirPath } from "../../../intercom/src/broker/paths.js";
@@ -13,7 +13,8 @@ import { INTERCOM_HOST_EVENT } from "../../../intercom/src/host-api.js";
 import { registerIntercomOnce } from "../../../intercom/src/single-instance.js";
 import { startTestBroker, stopTestBroker, testBrokerEnv, testTmpDir } from "../../../intercom/src/test-support.js";
 import { createHostSessionFixture } from "./fixtures/pi-events.js";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { openDbAt, paths } from "@spider/db-core";
 import { V0_ASK_MAX_MS, type V0Code, type V0Delivery, type V0Prepare, type V0Text, type V0ToolOptions } from "../../../intercom/src/roam-v0.js";
 
 let broker: ChildProcessWithoutNullStreams;
@@ -86,6 +87,95 @@ async function fixture(v0?: V0ToolOptions, options: { confirm?: () => Promise<bo
     async cleanup() { await emit("session_shutdown", { reason: "quit" }); rmSync(configPath, { force: true }); },
   };
 }
+
+const boxMachineId = "22222222-2222-4222-8222-222222222222";
+const hubMachineId = "11111111-1111-4111-8111-111111111111";
+const hubSessionId = "hub-session";
+
+type RunBoxTool = (action: "send" | "ask", to: string, message: string) => ReturnType<ToolDefinition["execute"]>;
+
+async function withConfiguredBoxHost(run: (execute: RunBoxTool, sessionId: string) => Promise<void>, admitted = true) {
+  const admissionModule = await import("../roam/admission.js");
+  const { default: spiderExtension } = await import("../extension.js");
+  const cwd = mkdtempSync(join(testTmpDir(), "host-box-"));
+  const root = paths.globalRoot; // Vitest provides a separate global root for this file.
+  const roam = join(root, "roam"), herdr = join(root, "herdr"), dbPath = join(root, "spider.db");
+  const ownedDirs = [cwd];
+  let previousIdentity: { machine_id: string; store_key: string | null } | undefined;
+  const previousCeiling = process.env.GIT_CEILING_DIRECTORIES;
+  process.env.GIT_CEILING_DIRECTORIES = testTmpDir();
+  const manager = SessionManager.create(cwd, join(cwd, "sessions"));
+  manager.appendMessage({ role: "user", content: "fixture", timestamp: 0 });
+  const sessionId = manager.getSessionId();
+  const host = createHostSessionFixture({ cwd, sessionId, sessionName: "host-box", sessionManager: manager });
+  const pi = host.pi as typeof host.pi & { getAllTools(): ToolDefinition[] };
+  try {
+    for (const dir of [roam, herdr]) {
+      mkdirSync(dir, { mode: 0o700 });
+      ownedDirs.push(dir);
+    }
+    const config = { enabled: true, role: "box", machineId: boxMachineId, hubMachineId,
+      peers: [], discoveryRoots: [], coreUnit: "core.service" };
+    writeFileSync(join(roam, "config.json"), JSON.stringify(config), { mode: 0o600 });
+    writeFileSync(join(roam, "machine.json"), JSON.stringify({ machineId: boxMachineId }), { mode: 0o600 });
+    writeFileSync(join(roam, "intercom-v0.json"), JSON.stringify({ version: 1, sendTo: [],
+      acceptFrom: [{ machineId: hubMachineId, alias: "mac" }] }), { mode: 0o600 });
+    writeFileSync(join(herdr, "config.json"), JSON.stringify({ mode: "core-only", globalRoot: root,
+      core: { binary: process.execPath, config: join(root, "core.toml") }, agentDirectory: getAgentDirPath(),
+      shellRc: join(root, "shell.rc"), machines: [] }), { mode: 0o600 });
+    const home = { sessionId, machineId: boxMachineId, epoch: 7, state: "running", destination: null, moveId: null, updatedAt: 1 };
+    const db = openDbAt(dbPath, "global");
+    try {
+      previousIdentity = db.prepare("SELECT machine_id, store_key FROM roam_meta WHERE id=1").get() as typeof previousIdentity;
+      expect(previousIdentity).toBeDefined();
+      db.prepare("UPDATE roam_meta SET machine_id=?, store_key='global' WHERE id=1").run(boxMachineId);
+      const insert = db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,updated_at,state) VALUES (?,?,?,1,'running')");
+      insert.run(hubSessionId, hubMachineId, 3);
+      if (admitted) insert.run(sessionId, boxMachineId, 7);
+    } finally { db.close(); }
+    // Supply the admission result without starting the host's unrelated services.
+    const admission = { kind: "ordinary", home: admitted ? home : null, blockers: [] };
+    vi.spyOn(admissionModule, "createAdmissionPorts").mockReturnValue({ setContext() {}, lock: async () => async () => {} } as never);
+    vi.spyOn(admissionModule, "registerAdmission").mockReturnValue({ inspect: () => admission,
+      refreshInitialHome: async () => admission, whenSettled: async () => admission,
+      close: async () => {}, freeze: async () => {}, unfreeze: async () => {} } as never);
+    spiderExtension(pi as never, { piVersion: "1.2.0" });
+    // Invoke the real startup hooks up to and including intercom registration.
+    for (const handler of host.hooks.get("session_start") ?? []) {
+      await handler({ reason: "startup" }, host.ctx);
+      if (pi.getAllTools().some(tool => tool.name === "intercom")) break;
+    }
+    const tool = pi.getAllTools().find(tool => tool.name === "intercom");
+    expect(tool).toBeDefined();
+    await vi.waitFor(async () => expect((await observer.listSessions()).some(session => session.id === sessionId)).toBe(true));
+    await run((action, to, message) => tool!.execute(`host-${action}`, { action, to, message },
+      new AbortController().signal, undefined, host.ctx as unknown as ExtensionContext), sessionId);
+  } finally {
+    try {
+      for (const handler of host.hooks.get("session_shutdown") ?? []) await handler({ reason: "quit" }, host.ctx);
+    } finally {
+      vi.restoreAllMocks();
+      if (previousCeiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+      else process.env.GIT_CEILING_DIRECTORIES = previousCeiling;
+      for (const dir of ownedDirs) rmSync(dir, { recursive: true, force: true });
+      if (previousIdentity) {
+        const db = openDbAt(dbPath, "global");
+        try {
+          db.prepare("DELETE FROM session_homes WHERE session_id IN (?,?)").run(sessionId, hubSessionId);
+          db.prepare("UPDATE roam_meta SET machine_id=?, store_key=? WHERE id=1").run(previousIdentity.machine_id, previousIdentity.store_key);
+        } finally { db.close(); }
+      }
+    }
+  }
+}
+
+it("advertises the admitted session to private lookup with the production host factory", async () => {
+  await withConfiguredBoxHost(async (_execute, sessionId) => {
+    const found = await requestV0Broker(getAgentDirPath(), { kind: "lookup", scopeId: null, selector: { by: "id", value: sessionId } });
+    expect(found).toEqual({ kind: "matches", targets: [{ address: { sessionId, scopeId: null },
+      name: "host-box", homeEpoch: 7, endpointEpoch: expect.any(String) }] });
+  });
+});
 
 it("wires an injected roaming factory for an admitted running home", async () => {
   const admissionModule = await import("../roam/admission.js");

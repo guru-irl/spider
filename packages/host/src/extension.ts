@@ -3,6 +3,7 @@ import { createMoveActivation } from "./roam/move-activation";
 import { registerMoveCommand } from "./roam/move-command";
 import { requestHubControl } from "@spider/roam/control-socket";
 import { readLocalIdentity } from "@spider/roam/runtime";
+import { createV0Intercom, hasV0IntercomConfig } from "@spider/roam/relocate/intercom";
 import { fileURLToPath } from "node:url";
 import { registerIntercomOnce, intercomConflict, type IntercomBrokerPort } from "@spider/intercom";
 import { stripVTControlCharacters } from "node:util";
@@ -949,10 +950,10 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   });
   let intercom: ReturnType<typeof registerIntercomOnce> | undefined;
   try {
-    const v0Factory = ports.v0Intercom;
-    const v0Configured = Boolean(v0Factory && hasRoamIdentity && !legacyIntercomEnabled && v0Factory.hasConfig(paths.globalRoot));
+    const v0Factory = ports.v0Intercom ?? { hasConfig: hasV0IntercomConfig, create: createV0Intercom };
+    const v0Configured = hasRoamIdentity && !legacyIntercomEnabled && v0Factory.hasConfig(paths.globalRoot);
     const v0 = v0Configured && moveEnabled ? {
-      prepare: v0Factory!.create(paths.globalRoot).prepare,
+      prepare: v0Factory.create(paths.globalRoot).prepare,
       homeEpoch(sessionId: string): number | undefined {
         if (process.env.PI_SUBAGENT_CHILD === "1") return undefined;
         const current = admission.inspect(), home = current.home;

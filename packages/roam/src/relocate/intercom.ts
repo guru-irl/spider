@@ -76,7 +76,8 @@ function readRoutes(root: string, config: RoamConfig): Routes {
       throw new Error("Invalid intercom source");
     return { machineId: entry.machineId, alias: entry.alias };
   });
-  if (!distinct(acceptFrom, config.machineId)) throw new Error("Invalid intercom sources");
+  if (!distinct(acceptFrom, config.machineId) || config.role === "hub" && acceptFrom.length > 0)
+    throw new Error("Invalid intercom sources");
   const agentDir = loadHerdrConfig(root).agentDirectory;
   if (!isAbsolute(agentDir) || process.env.PI_CODING_AGENT_DIR !== undefined && process.env.PI_CODING_AGENT_DIR !== agentDir)
     throw new Error("Intercom agent directory mismatch");
@@ -265,10 +266,9 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
     const qualifiedPeer = selector.kind === "qualified" ? configured.sendTo.find(peer => peer.alias.toLowerCase() === selector.machine.toLowerCase()) : undefined;
     const qualifiedHome = selector.kind === "qualified" ? byId(selector.value) : null;
     const exactHome = unqualifiedHome ?? (qualifiedPeer && qualifiedHome?.machineId === qualifiedPeer.machineId ? qualifiedHome : null);
-    const macQualifiedHome = selector.kind === "qualified" && configured.acceptFrom.some(peer =>
-      peer.machineId === hubMachineId && peer.alias.toLowerCase() === selector.machine.toLowerCase())
-      ? qualifiedHome : null;
-    if (role === "box" && (exactHome?.machineId === hubMachineId || macQualifiedHome?.machineId === hubMachineId)) return refused("reply-only");
+    const macQualified = selector.kind === "qualified" && configured.acceptFrom.some(peer =>
+      peer.machineId === hubMachineId && peer.alias.toLowerCase() === selector.machine.toLowerCase());
+    if (role === "box" && (exactHome?.machineId === hubMachineId || macQualified)) return refused("reply-only");
     if (from.v0HomeEpoch === undefined) {
       return selector.kind === "qualified" || exactHome && exactHome.machineId !== machineId
         ? refused("not-configured") : { kind: "legacy" };
@@ -395,9 +395,9 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
     let config: RoamConfig;
     try { config = readLocalIdentity(root); } catch { return null; }
     const envelope = (result: V0Reply): V0AgentReply => ({ version: 1, requestId: request.requestId, machineId: config.machineId, ...result });
+    if (config.role === "hub" || request.toMachineId !== config.machineId) return envelope(refused("unauthorized"));
     let configured: Routes;
     try { configured = readRoutes(root, config); } catch { return envelope(refused("invalid-config")); }
-    if (request.toMachineId !== config.machineId) return envelope(refused("unauthorized"));
     const source = configured.acceptFrom.find(peer => peer.machineId === request.from.machineId);
     if (!source) return envelope(refused("unauthorized"));
     try {

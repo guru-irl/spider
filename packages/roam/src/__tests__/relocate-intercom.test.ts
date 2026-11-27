@@ -267,8 +267,34 @@ describe("roaming v0 intercom", () => {
     const { prepare } = createV0Intercom(root, { transport });
     expect(await prepare({ to: "alice", from, locals: [from] })).toEqual({ kind: "refused", code: "reply-only" });
     expect(await prepare({ to: "mac/alice", from, locals: [from] })).toEqual({ kind: "refused", code: "reply-only" });
+    expect(await prepare({ to: "Mac/some-label", from, locals: [from] })).toEqual({ kind: "refused", code: "reply-only" });
+    expect(await prepare({ to: "some-label", from, locals: [from] })).toEqual({ kind: "refused", code: "no-match" });
     expect(await prepare({ to: "carl", from, locals: [from] })).toEqual({ kind: "refused", code: "not-configured" });
     expect(transport).not.toHaveBeenCalled();
+  });
+
+  it("rejects inbound grants in the Mac route file", async () => {
+    const f = paired();
+    configure(f.sender.root, [peer(BOX, "box", f.receiver)], [{ machineId: BOX, alias: "box" }]);
+    expect(await f.intercom.prepare({ to: "box/ben", from: alice, locals: [alice] })).toEqual({ kind: "refused", code: "invalid-config" });
+    expect(f.calls).toEqual([]);
+  });
+
+  it("refuses inbound private agent calls on the Mac even if the peer is listed", async () => {
+    const mac = machineFixture(MAC);
+    vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+    configure(mac.root, [], [{ machineId: BOX, alias: "box" }]);
+    const broker = vi.fn(async (): Promise<V0Reply> => ({ kind: "matches", targets: [aliceEndpoint] }));
+    const intercom = createV0Intercom(mac.root, { broker });
+    const request = { ...findBen, toMachineId: MAC, from: { ...ben, machineId: BOX }, selector: { by: "name", value: "alice" } };
+    const out = vi.fn(), err = vi.fn();
+    expect(await main(["--global-root", mac.root, "roam", "agent", "--v0", "intercom"], { out, err }, {
+      stdin: Buffer.from(JSON.stringify(request)), v0: { intercom: intercom.handle },
+    })).toBe(0);
+    expect(JSON.parse(out.mock.calls[0][0])).toMatchObject({ machineId: MAC, requestId: request.requestId,
+      kind: "refused", code: "unauthorized" });
+    expect(broker).not.toHaveBeenCalled();
+    expect(err).not.toHaveBeenCalled();
   });
 
   it("uses a global store with an unassigned store key when its machine identity matches", async () => {
@@ -820,7 +846,7 @@ describe("roaming v0 intercom", () => {
     const a = boxFixture(), b = machineFixture(OTHER);
     vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
     for (const root of [a.root, b.root]) addHome(root, "carl", OTHER);
-    configure(a.root, [peer(OTHER, "b", b)], [{ machineId: MAC, alias: "mac" }]);
+    configure(a.root, [peer(OTHER, "b", b)], [{ machineId: MAC, alias: "mac" }, { machineId: OTHER, alias: "b" }]);
     configure(b.root, [], [{ machineId: BOX, alias: "a" }]);
     const carl: V0Endpoint = { address: { sessionId: "carl", scopeId: "scope-1" }, name: "carl", homeEpoch: 1, endpointEpoch: "carl-connection" };
     const from: LocalSessionInfo = { ...alice, id: "stable-ben", name: "ben", address: ben.address,
@@ -974,9 +1000,8 @@ describe("roaming v0 intercom", () => {
     });
   });
 
-  it("permits a peer in both lists but rejects duplicates, self, and missing agent directories", async () => {
+  it("accepts a valid route and rejects duplicates, self, and missing agent directories", async () => {
     const f = paired(), destination = peer(BOX, "box", f.receiver);
-    configure(f.sender.root, [destination], [{ machineId: BOX, alias: "box" }]);
     const plan = await remotePlan(f.intercom);
     expect(await plan.send(message)).toEqual({ kind: "socket_delivered", id: message.id });
     const badConfigs = [

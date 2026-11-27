@@ -603,6 +603,29 @@ it("refuses a local roaming send when the source admission epoch changed", async
   } finally { observer.off("message", onMessage); await f.cleanup(); }
 });
 
+it.each(["send", "ask"] as const)("refuses a roaming %s when its source registration is missing", async action => {
+  const inbox: unknown[] = [];
+  const onMessage = (...args: unknown[]) => inbox.push(args);
+  observer.on("message", onMessage);
+  const prepare = vi.fn<V0Prepare>(async () => ({ kind: "legacy" }));
+  const f = await fixture({ homeEpoch: () => 7, prepare });
+  const originalList = IntercomClient.prototype.listSessions;
+  const list = vi.spyOn(IntercomClient.prototype, "listSessions").mockImplementation(async function (this: IntercomClient, options) {
+    const sessions = await originalList.call(this, options);
+    return this.sessionId === "sender-session" ? sessions.filter(session => session.id !== "sender-session") : sessions;
+  });
+  const abort = new AbortController();
+  let settled: any;
+  const pending = f.tool.execute(action, { action, to: "observer", message: "unregistered source" }, abort.signal, undefined, f.ctx)
+    .then((result: any) => { settled = result; return result; });
+  try {
+    await vi.waitFor(() => expect(Boolean(settled) || inbox.length > 0).toBe(true));
+    expect(inbox).toEqual([]);
+    expect(settled.details).toMatchObject({ error: true, code: "changed" });
+    expect(prepare).not.toHaveBeenCalled();
+  } finally { abort.abort(); await pending; list.mockRestore(); observer.off("message", onMessage); await f.cleanup(); }
+});
+
 it("does not retarget a local roaming ask after the recipient reconnects", async () => {
   const inbox: unknown[] = [];
   const prepare: V0Prepare = async ({ locals }) => {

@@ -213,7 +213,8 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
     const json = argv.at(-1) === "--json";
     if (argv.length !== (json ? 3 : 2)) return emitOutcome(io, outcome(2, "invalid-arguments"), json, `Use spider roam ${argv[1]} [--json].\n`);
     const result = await configureV0Service(root, argv[1] === "enable", {
-      resolveCli: () => roamingCliEntry(options?.bundleUrl ?? new URL(import.meta.url)), ...options?.v0?.lifecycle,
+      resolveCli: () => roamingCliEntry(options?.bundleUrl ?? new URL(import.meta.url)),
+      bundleUrl: options?.bundleUrl, ...options?.v0?.lifecycle,
     });
     if (json && result.reason === "v0-move-in-progress") {
       io.out(`${JSON.stringify({ ...outcome(result.code, result.reason), operationId: result.operationId, nextStep: result.nextStep })}\n`);

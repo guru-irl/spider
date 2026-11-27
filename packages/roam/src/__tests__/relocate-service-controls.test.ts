@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
 import { migrate, openDb } from "@spider/db-core";
 import { installHubService, hubServiceFile } from "../launchd";
@@ -20,12 +21,14 @@ function fixture(role: "hub" | "box") {
   const db = openDb(join(root, "spider.db"));
   try { migrate(db, "global", { machineId, globalRoot: root }); } finally { db.close(); }
   const cli = join(root, "cli.mjs"), supervisor = join(root, "supervisor.mjs");
+  const release = join(root, "extension.js");
+  writeFileSync(release, "// SPIDER_BUILD_ID=01234567@2026-01-01T00:00:00.000Z v0.1.0\n", { mode: 0o600 });
   writeFileSync(cli, ""); writeFileSync(supervisor, "");
   vi.stubEnv("SPIDER_GLOBAL_ROOT", root); vi.stubEnv("SPIDER_ROAM_PI", process.execPath);
   const calls: string[][] = [];
   const launchd = { plistDir: join(root, "LaunchAgents"), serviceHome: root, async launchctl(argv: readonly string[]) { calls.push([...argv]); } };
   const systemd = { unitDir: join(root, "units"), async run(argv: readonly string[]) { calls.push([...argv]); } };
-  const options = { resolveCli: () => cli, launchd, systemd };
+  const options = { resolveCli: () => cli, bundleUrl: pathToFileURL(release), launchd, systemd };
   return { root, options, calls, launchd, systemd, cli, supervisor, coreUnit, hub, box, machineId,
     enabled: () => JSON.parse(readFileSync(configFile, "utf8")).enabled };
 }

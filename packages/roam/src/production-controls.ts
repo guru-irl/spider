@@ -101,11 +101,22 @@ async function locked<T>(root: string, config: RoamConfig, work: () => Promise<T
 }
 export interface V0ServiceOptions {
   resolveCli(): string;
+  bundleUrl?: URL;
   launchd?: LaunchdPorts;
   systemd?: SupervisorInstallPorts;
 }
 
-async function pendingLegacyLaunchWarnings(root: string, config: RoamConfig): Promise<NonNullable<ControlResult["issues"]>> {
+function v0EnablePeers(root: string, config: RoamConfig): readonly Peer[] {
+  if (config.role !== "hub" || !config.peers.length) return [];
+  const file = join(root, "roam", "journal.db");
+  const db = openDbReadOnly(file);
+  try {
+    if (!db && existsSync(file)) throw new Error("Cannot verify peer revocations. Run spider roam doctor.");
+    return db ? config.peers.filter(peer => !isRevoked(db, peer.machineId)) : config.peers;
+  } finally { db?.close(); }
+}
+
+async function pendingLegacyLaunchWarnings(root: string, config: RoamConfig, transport: Transport | null): Promise<NonNullable<ControlResult["issues"]>> {
   const warning = (reason: string, detail: string, repairCommand: string) => ({ severity: "warning" as const, reason, detail: clean(detail), repairCommand });
   const pending = (machine: string, label: string, doctor: string, rows: readonly Diagnostic[]) => rows.filter(isPendingLaunchDiagnostic)
     .map(row => {
@@ -116,18 +127,8 @@ async function pendingLegacyLaunchWarnings(root: string, config: RoamConfig): Pr
     });
   const issues = pending(config.machineId, "Local machine", "spider roam doctor", await localPendingLaunchDiagnostics({ root, machineId: config.machineId }));
   try {
-    if (config.role !== "hub" || !config.peers.length) return issues;
-    const file = join(root, "roam", "journal.db"), db = existsSync(file) ? openDbReadOnly(file) : null;
-    let peers: readonly Peer[];
-    try {
-      if (!db && existsSync(file)) throw new Error("Cannot read peer revocations");
-      peers = config.peers.filter(peer => !db || !isRevoked(db, peer.machineId));
-    }
-    finally { db?.close(); }
-    if (!peers.length) return issues;
-    const selection = hubCoreSelection(process.env);
-    const env = { ...process.env, HC_SESSION: selection.session, HC_SOCKET: selection.socket };
-    const transport = createTransport({ binary: loadHerdrConfig(root).core.binary, env, enrolled: peers });
+    if (!transport) return issues;
+    const peers = config.peers;
     for (let offset = 0; offset < peers.length; offset += config.limits.peerConcurrency) {
       const batch = await Promise.all(peers.slice(offset, offset + config.limits.peerConcurrency).map(async peer => {
         const doctor = `spider roam doctor ${peer.machineId}`;
@@ -182,15 +183,25 @@ export async function configureV0Service(root: string, enabled: boolean, options
       // Check every install input before removing a legacy service.
       const cli = enabled ? realpathSync(options.resolveCli()) : null;
       const pi = enabled ? resolveParticipantPi() : null;
-      if (enabled && (!pi || !cli || !statSync(cli).isFile())) throw new Error("Install pi and the Spider CLI first.");
+      if (enabled && !pi) return { code: 1, reason: "participant-pi-unavailable",
+        message: "participant-pi-unavailable: Install pi or set SPIDER_ROAM_PI, then rerun spider roam enable." };
+      if (enabled && (!cli || !statSync(cli).isFile())) throw new Error("Install the Spider CLI first, then retry spider roam enable.");
       const connection = enabled ? localHerdrConnection(root) : undefined;
       const hc = connection && isAbsolute(connection.binary) ? connection.binary : undefined;
       if (hc) {
         if (!statSync(hc).isFile()) throw new Error("The configured Herdr executable is not a file.");
         accessSync(hc, constants.X_OK);
       }
-      if (enabled) issues = await pendingLegacyLaunchWarnings(root, config);
-      else if (config.role === "hub") {
+      if (connection) {
+        const peers = v0EnablePeers(root, config);
+        const preflight = { ...config, peers };
+        const env = { ...process.env, HC_SESSION: connection.env.HC_SESSION, HC_SOCKET: connection.env.HC_SOCKET };
+        const transport = peers.length ? createTransport({ binary: connection.binary, env, enrolled: peers }) : null;
+        await assertCompatibleConsumers(preflight, transport
+          ? compatibleConsumerPorts(root, preflight, transport, options.bundleUrl)
+          : createLocalDiagnosticPorts(root, [], options.bundleUrl));
+        issues = await pendingLegacyLaunchWarnings(root, preflight, transport);
+      } else if (config.role === "hub") {
         const pending = readPendingMoves(join(root, "roam", "journal.db"));
         issues = pending?.map(({ operationId }) => ({ severity: "warning", reason: `legacy-move-pending:${operationId}`,
           detail: `Legacy move ${operationId} is still recorded as pending.`, repairCommand: `spider roam cancel ${operationId}` })) ?? [

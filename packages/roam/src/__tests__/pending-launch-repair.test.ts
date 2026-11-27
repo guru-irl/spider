@@ -19,7 +19,7 @@ import { handleSessionOperation } from "../participant-runtime";
 import { handleAgentOperation } from "../agent";
 import { createParticipantSupervisor } from "../participant-supervisor";
 import { createDurableLaunchPort } from "../supervisor";
-import { runLocalDoctor } from "../local-diagnostics";
+import { inspectLocalConsumers, runLocalDoctor } from "../local-diagnostics";
 import { createLocalExactHc, type LocalExactHc } from "../launcher";
 import * as launcherModule from "../launcher";
 import * as localDiagnostics from "../local-diagnostics";
@@ -143,6 +143,9 @@ async function productionLaunchFixture(boundary?: "crash" | "stale" | "lost-invo
       const operation = JSON.parse(argv[2]);
       return Buffer.from(JSON.stringify(await (operation.kind.startsWith("session-") ?
         handleSessionOperation(operation, f.ports, { wake: async () => {}, launchRecovery: recovery }) : handleAgentOperation(operation, f.ports))));
+    }
+    if (argv.join(" ") === "roam observe consumers") {
+      return Buffer.from(JSON.stringify({ version: 1, machineId: BOX, kind: "consumers", value: await inspectLocalConsumers(f.root, BOX, bundleUrl) }));
     }
     expect(argv).toEqual(["roam", "observe", "doctor"]);
     return Buffer.from(JSON.stringify({ version: 1, machineId: BOX, kind: "doctor", value: await runLocalDoctor({ root: f.root, bundleUrl, currentCore: async () => "core-1", launchRecovery: recovery }) }));

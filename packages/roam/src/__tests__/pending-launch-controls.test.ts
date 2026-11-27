@@ -19,7 +19,7 @@ import { handleAgentOperation } from "../agent";
 import { openJournal } from "../journal";
 import { revokeMachine } from "../revocation";
 import { readLocalIdentity } from "../runtime";
-import { localPendingLaunchDiagnostics, runLocalDoctor } from "../local-diagnostics";
+import { inspectLocalConsumers, localPendingLaunchDiagnostics, runLocalDoctor } from "../local-diagnostics";
 import * as transportModule from "../transport";
 import * as productionHub from "../production-hub";
 import { enrollFixtureCore } from "./supervisor-core-fixture";
@@ -53,6 +53,9 @@ async function fixture() {
   vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/home/fixture/hc" } } as never);
   vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: unknown) { return peer; }, async exec(_peer: unknown, argv: string[]) {
     if (argv[1] === "agent") return Buffer.from(JSON.stringify(await handleAgentOperation(JSON.parse(argv[2]), ports as never)));
+    if (argv.join(" ") === "roam observe consumers") {
+      return Buffer.from(JSON.stringify({ version: 1, machineId: BOX, kind: "consumers", value: await inspectLocalConsumers(remote, BOX, bundleUrl) }));
+    }
     expect(argv).toEqual(["roam", "observe", "doctor"]);
     return Buffer.from(JSON.stringify({ version: 1, machineId: BOX, kind: "doctor", value: await runLocalDoctor({ root: remote, bundleUrl, currentCore: async () => "core-1", launchRecovery: { bootId: async () => "boot-1", probe: async () => ({ kind: "absent" }) } }) }));
   } } as never);

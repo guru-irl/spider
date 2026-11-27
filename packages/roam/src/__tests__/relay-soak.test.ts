@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { open, type FileHandle } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
@@ -459,7 +460,6 @@ function recordManifest(evidence: Evidence) {
       ...link.runs.map(run => ({ type: "run", linkId, ...run })),
       ...link.submissions.map(item => ({ type: "submission", linkId, ...item })),
       ...link.handoffs.map(item => ({ type: "handoff", linkId, ...item })),
-      ...link.receipts.map(item => ({ type: "receipt", linkId, ...item })),
       ...link.outcomes.map(item => ({ type: "outcome", linkId, ...item })),
       ...link.states.map(item => ({ type: "state", linkId, ...item })),
       ...link.relayStates.map(item => ({ type: "relay-state", linkId, ...item })),
@@ -469,8 +469,10 @@ function recordManifest(evidence: Evidence) {
         ...(call.endMs === null ? [] : [{ type: "poll-end", linkId, atMs: call.endMs, holdMs: call.holdMs, pollId: call.pollId, wireLinkId: "wire", process: call.process }]),
       ]),
     ];
-    files.set(`${linkId}.ndjson`, records.map(record => JSON.stringify(record)).join("\n") + "\n");
-    return { id: link.id, topology: link.topology, relayId: link.relayId, peerId: link.peerId, clock: link.clock, recordFiles: [`${linkId}.ndjson`] };
+    const recordFile = `${linkId}.ndjson`, receiptFile = `${linkId}-receipts.ndjson`;
+    files.set(recordFile, records.map(record => JSON.stringify(record)).join("\n") + "\n");
+    files.set(receiptFile, link.receipts.map(item => JSON.stringify({ type: "receipt", linkId, ...item }) + "\n").join(""));
+    return { id: link.id, topology: link.topology, relayId: link.relayId, peerId: link.peerId, clock: link.clock, recordFiles: [recordFile], receiptFile };
   });
   return { manifest: { startMs: evidence.startMs, endMs: evidence.endMs, rssAllowanceBytes: evidence.rssAllowanceBytes,
     links, faults: evidence.faults, processes: evidence.processes }, files };
@@ -523,6 +525,17 @@ describe("offline evidence assembly", () => {
     expect(checkRelaySoak(assembled)).toEqual({ ok: true, violations: [] });
   });
 
+  it("rejects receipts in the ordinary dial log and non-receipts in the sink file", () => {
+    const { manifest, files } = recordManifest(baseline);
+    const { recordFiles: [log], receiptFile } = manifest.links[0];
+    const stdout = files.get(log)!, receipts = files.get(receiptFile)!;
+    files.set(log, stdout + receipts.split("\n")[0] + "\n");
+    expect(() => assembleRelaySoak(manifest, name => files.get(name)!)).toThrow("Invalid soak record");
+    files.set(log, stdout);
+    files.set(receiptFile, receipts + stdout.split("\n")[0] + "\n");
+    expect(() => assembleRelaySoak(manifest, name => files.get(name)!)).toThrow("Invalid soak record");
+  });
+
   it("rejects truncated or unrecognized records instead of treating them as evidence", () => {
     const { manifest, files } = recordManifest(baseline);
     const first = manifest.links[0].recordFiles[0];
@@ -562,7 +575,7 @@ describe("the opt-in soak drivers", () => {
   afterEach(() => vi.useRealTimers());
 
   it("uses the production held poll and hold-0 result path with a separate sink receipt", async () => {
-    const controller = new AbortController(), records: RelaySoakRecord[] = [], polls: RelayPoll[] = [];
+    const controller = new AbortController(), records: RelaySoakRecord[] = [], polls: RelayPoll[] = [], receipts: string[] = [];
     const submit: RelaySubmit = { type: "submit", kind: "send", from: fixtureLink.from, target: fixtureLink.target,
       message: { id: "sink-message", timestamp: 1, text: "relay-soak" } };
     let reportResult!: () => void;
@@ -583,14 +596,16 @@ describe("the opt-in soak drivers", () => {
     };
     const run = runRelaySoakDial({ link: fixtureLink, relay: { machineId: RELAY, alias: "relay.invalid" }, peer: fixturePeer,
       transport, clock: realClock, signal: controller.signal, startMs: START, endMs: END, rssAllowanceBytes: ALLOWANCE,
-      process: fixtureProcess, emit: event => records.push(event), rssBytes: () => 100_000_000 });
+      process: fixtureProcess, emit: event => records.push(event), rssBytes: () => 100_000_000,
+      sink: { async receive(id) { receipts.push(id); } } });
     await resultSeen;
     controller.abort();
     await run;
     const resultPoll = polls.find(poll => poll.holdMs === 0)!;
     expect(resultPoll.results).toMatchObject([{ messageId: "sink-message", attempted: true, outcome: { kind: "socket_delivered", id: "sink-message" } }]);
     expect(records.filter(event => event.type === "handoff")).toMatchObject([{ id: "sink-message" }]);
-    expect(records.filter(event => event.type === "receipt")).toMatchObject([{ id: "sink-message" }]);
+    expect(receipts).toEqual(["sink-message"]);
+    expect(records.filter(event => event.type === "receipt")).toEqual([]);
     expect(records.flatMap(event => event.type === "poll-start" ? [event.holdMs] : [])).toEqual(expect.arrayContaining([0, 20_000]));
     expect(JSON.stringify(records)).not.toContain("relay-soak");
   });
@@ -629,7 +644,7 @@ describe("the opt-in soak drivers", () => {
   });
 
   it("refuses a non-fixture message instead of recording a sink receipt", async () => {
-    const controller = new AbortController(), records: RelaySoakRecord[] = [], polls: RelayPoll[] = [];
+    const controller = new AbortController(), records: RelaySoakRecord[] = [], polls: RelayPoll[] = [], receipts: string[] = [];
     const foreign: RelaySubmit = { type: "submit", kind: "send", from: fixtureLink.from, target: fixtureLink.target,
       message: { id: "foreign", timestamp: 1, text: "do-not-deliver-or-log" } };
     let completed!: () => void;
@@ -650,14 +665,15 @@ describe("the opt-in soak drivers", () => {
     };
     const run = runRelaySoakDial({ link: fixtureLink, relay: { machineId: RELAY, alias: "relay.invalid" }, peer: fixturePeer,
       transport, clock: realClock, signal: controller.signal, startMs: START, endMs: END, rssAllowanceBytes: ALLOWANCE,
-      process: fixtureProcess, emit: event => records.push(event), rssBytes: () => 100_000_000 });
+      process: fixtureProcess, emit: event => records.push(event), rssBytes: () => 100_000_000,
+      sink: { async receive(id) { receipts.push(id); } } });
     await resultSeen;
     controller.abort();
     await run;
     expect(polls.find(poll => poll.holdMs === 0)!.results).toMatchObject([
       { messageId: "foreign", attempted: false, outcome: { kind: "refused", code: "unauthorized" } },
     ]);
-    expect(records.filter(event => event.type === "receipt")).toEqual([]);
+    expect(receipts).toEqual([]);
     expect(JSON.stringify(records)).not.toContain("do-not-deliver-or-log");
   });
 
@@ -731,14 +747,18 @@ describe("the opt-in soak drivers", () => {
     const deps = { readText: () => file, readIdentity: () => config, readRoutes: () => routes,
       createTransport: () => transport, processIdentity: async () => fixtureProcess, clock: realClock,
       signal: controller.signal, rssBytes: () => 100_000_000 };
-    const run = relaySoakMain(["dial", "/run.json", fixtureLink.id], io, deps);
-    expect(await Promise.race([connected, run.then(code => { throw new Error(`dial exited ${code}`); })])).toEqual(fixturePeer);
-    controller.abort();
-    expect(await run).toBe(0);
-    expect(output.map(line => JSON.parse(line)).some(record => record.type === "run" && record.machineId === RELAY)).toBe(true);
-    expect(errors).toEqual([]);
-    const missing = { ...deps, readRoutes: () => ({ ...routes, sendTo: [] }), signal: new AbortController().signal };
-    expect(await relaySoakMain(["dial", "/run.json", fixtureLink.id], io, missing)).not.toBe(0);
+    const scratch = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "soak-receipts-"));
+    const args = ["dial", "/run.json", fixtureLink.id, join(scratch, "receipts.ndjson")];
+    const run = relaySoakMain(args, io, deps);
+    try {
+      expect(await Promise.race([connected, run.then(code => { throw new Error(`dial exited ${code}`); })])).toEqual(fixturePeer);
+      controller.abort();
+      expect(await run).toBe(0);
+      expect(output.map(line => JSON.parse(line)).some(record => record.type === "run" && record.machineId === RELAY)).toBe(true);
+      expect(errors).toEqual([]);
+      const missing = { ...deps, readRoutes: () => ({ ...routes, sendTo: [] }), signal: new AbortController().signal };
+      expect(await relaySoakMain(args, io, missing)).not.toBe(0);
+    } finally { controller.abort(); await run; rmSync(scratch, { recursive: true, force: true }); }
   });
 
   it("submits the burst through the private-broker adapter with the configured live origin", async () => {
@@ -822,7 +842,7 @@ describe("packed soak operator commands", () => {
     expect(origin).toEqual(fixtureLink.from);
   });
 
-  it("dials the pinned peer and returns a hold-0 result through a fake transport", async () => {
+  it("appends and syncs a receipt before returning the packed dial's hold-0 result", async () => {
     const controller = new AbortController(), output: string[] = [], errors: string[] = [], polls: RelayPoll[] = [];
     const config = { machineId: RELAY, intercom: { machineAlias: "relay.invalid" } } as unknown as RoamConfig;
     const routes: V0Routes = { version: 2, agentDir: "/agent", sendTo: [fixturePeer], acceptFrom: [], relays: [RELAY], linkTo: [PEER] };
@@ -845,21 +865,44 @@ describe("packed soak operator commands", () => {
       },
     };
     const io = { out: (line: string) => output.push(line), err: (line: string) => errors.push(line) };
-    const run = packed.relaySoakMain(["dial", "/run.json", fixtureLink.id], io, {
+    const receiptFile = join(root, "packed-receipts.ndjson");
+    const previous = { type: "receipt", linkId: fixtureLink.id, id: "previous-dial", atMs: START - 1 };
+    writeFileSync(receiptFile, JSON.stringify(previous) + "\n", { mode: 0o600 });
+    const probe = await open(receiptFile, "r");
+    const prototype = Object.getPrototypeOf(probe) as Pick<FileHandle, "sync">;
+    const nativeSync = prototype.sync;
+    await probe.close();
+    let sawSync!: () => void, releaseSync!: () => void;
+    const synced = new Promise<void>(resolve => { sawSync = resolve; });
+    const release = new Promise<void>(resolve => { releaseSync = resolve; });
+    const sync = vi.spyOn(prototype, "sync").mockImplementation(async function (this: FileHandle) {
+      await nativeSync.call(this);
+      sawSync();
+      await release;
+    });
+    const run = packed.relaySoakMain(["dial", "/run.json", fixtureLink.id, receiptFile], io, {
       readText: () => runFile, readIdentity: () => config, readRoutes: () => routes,
       createTransport: () => transport, processIdentity: async () => fixtureProcess,
       clock: { now: () => START, later: () => () => {} }, signal: controller.signal, rssBytes: () => 100_000_000,
     });
-    await Promise.race([finished, run.then(code => { throw new Error(`dial exited ${code}`); })]);
-    controller.abort();
-    expect(await run).toBe(0);
-    const records = output.map(line => JSON.parse(line));
-    expect(records.filter(record => record.type === "handoff")).toMatchObject([{ id: "packed-message" }]);
-    expect(records.filter(record => record.type === "receipt")).toMatchObject([{ id: "packed-message" }]);
-    expect(polls.find(poll => poll.holdMs === 0)?.results).toMatchObject([
-      { messageId: "packed-message", outcome: { kind: "socket_delivered" } },
-    ]);
-    expect(errors).toEqual([]);
+    const exited = run.then(code => `dial exited ${code}`);
+    try {
+      expect(await Promise.race([synced.then(() => "synced"), finished.then(() => "returned result"), exited])).toBe("synced");
+      expect(polls.some(poll => poll.holdMs === 0)).toBe(false);
+      const lines = readFileSync(receiptFile, "utf8").trimEnd().split("\n");
+      expect(lines.map(line => JSON.parse(line))).toEqual([previous, { type: "receipt", linkId: fixtureLink.id, id: "packed-message", atMs: START }]);
+      releaseSync();
+      expect(await Promise.race([finished.then(() => "returned result"), exited])).toBe("returned result");
+      controller.abort();
+      expect(await run).toBe(0);
+      const records = output.map(line => JSON.parse(line));
+      expect(records.filter(record => record.type === "handoff")).toMatchObject([{ id: "packed-message" }]);
+      expect(records.filter(record => record.type === "receipt")).toEqual([]);
+      expect(polls.find(poll => poll.holdMs === 0)?.results).toMatchObject([
+        { messageId: "packed-message", outcome: { kind: "socket_delivered" } },
+      ]);
+      expect(errors).toEqual([]);
+    } finally { releaseSync(); controller.abort(); await run; sync.mockRestore(); }
   });
 
   it("submits the five-second cadence and burst through a fake broker", async () => {
@@ -924,7 +967,9 @@ describe("packed soak operator commands", () => {
     expect(duplicate.status).toBe(1);
     expect(JSON.parse(duplicate.stdout).violations).toContain("duplicate-receipt");
     for (const command of ["dial", "submit"]) {
-      const missing = execute([command, join(root, "missing.json"), fixtureLink.id]);
+      const args = [command, join(root, "missing.json"), fixtureLink.id];
+      if (command === "dial") args.push(join(root, "unused-receipts.ndjson"));
+      const missing = execute(args);
       expect(missing.status).toBe(1);
       expect(missing.stderr).toMatch(/cannot start/i);
     }

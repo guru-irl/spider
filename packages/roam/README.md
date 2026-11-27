@@ -212,10 +212,13 @@ Start the dial on the relay before `startMs`, early enough to capture an RSS
 sample before the start after accounting for the clock bound. Start the submit
 process on the peer before `startMs`. Use private files and retain every
 NDJSON record. `RUN` is the local run-file path and `LINK` is its link ID.
+Give each link its own receipt file. Start a fresh file for a new run, and
+reuse the same file when restarting the dial within that run. The dial
+appends and syncs each receipt before reporting delivery.
 
 ```sh
 # On the relay
-node "$ENTRY" dial "$RUN" "$LINK" >> "$RECORDS/dial.ndjson" 2>> "$RECORDS/dial.err" &
+node "$ENTRY" dial "$RUN" "$LINK" "$RECORDS/receipts.ndjson" >> "$RECORDS/dial.ndjson" 2>> "$RECORDS/dial.err" &
 
 # On the peer
 node "$ENTRY" submit "$RUN" "$LINK" >> "$RECORDS/submit.ndjson" 2>> "$RECORDS/submit.err" &
@@ -276,10 +279,11 @@ offset. Then stop the dial processes, wait for their held calls and helper
 processes to exit, and take a complete after census on every machine. Take
 both censuses far enough outside the run to account for the clock bounds.
 
-Collect the NDJSON files and build a manifest. `recordFiles` paths are relative
-to the manifest. The template below shows one link; include the other two,
-all fault records, all clock samples, and one census per participating
-machine. Empty arrays are not evidence and cause the check to fail.
+Collect the NDJSON files and build a manifest. List stdout logs in
+`recordFiles` and the separate sink in `receiptFile`. Both paths are relative
+to the manifest. The checker rejects receipts in stdout logs and other
+records in the receipt file. The template shows one link. Include the other
+two, all faults and clock samples, and one census per participating machine.
 
 ```json
 {
@@ -299,7 +303,8 @@ machine. Empty arrays are not evidence and cause the check to fail.
       "maxDriftMs": 0,
       "samples": []
     },
-    "recordFiles": ["laptop-box-dial.ndjson", "laptop-box-submit.ndjson"]
+    "recordFiles": ["laptop-box-dial.ndjson", "laptop-box-submit.ndjson"],
+    "receiptFile": "laptop-box-receipts.ndjson"
   }],
   "faults": [],
   "processes": []

@@ -8,11 +8,12 @@ import type { CoreIdentity } from "@spider/herdr/contracts";
 import { join } from "node:path";
 import { createReplica } from "@spider/db-core/testutil";
 import { recordLocation } from "@spider/db-core/roam/catalog";
+import * as seedApi from "@spider/db-core/roam/seed";
 import { writeLocal } from "@spider/db-core/roam/local-state";
 import type { RelocateAdapterOptions, RunningHome, SessionId, SessionPlacement } from "../relocate/types";
 import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import { openJournal } from "../journal";
-import { createLocalRuntime, createLocalIO, localLaunchEnvironment, type LocalIO } from "../relocate/local";
+import { createLocalRuntime, createLocalIO, localLaunchEnvironment, seedLocalPlacement, type LocalIO } from "../relocate/local";
 const hub = "11111111-1111-4111-8111-111111111111", box = "22222222-2222-4222-8222-222222222222";
 const id = "33333333-3333-4333-8333-333333333333" as SessionId;
 const fixtures: {close():void}[] = [];
@@ -104,6 +105,25 @@ describe("v0 local runtime",()=>{
   expect(await local.stop(id, moving)).toMatchObject({ok: false, refusal: {code: "session-busy", message: expect.stringContaining("job-a")}});
   writeFileSync(join(dir, "exit.json"), JSON.stringify({schema: 1, state: "exited", exitCode: 0, signal: null}));
   expect(await local.stop(id, moving)).toEqual({ok: true, value: undefined});
+ });
+ it("refuses retryable seed rollback without calling the seeder again", async () => {
+  const f = runtimeFixture(), tree = createReplica("worktree",box); fixtures.push(tree);
+  f.options.globalDb.prepare("INSERT INTO roam_repo_maps (repo_key,path,worktree_command_json) VALUES ('fixture-repo',?,NULL)").run(tree.root);
+  f.options.globalDb.prepare("INSERT INTO roam_workspace_maps (repo_key,workspace_id,path) VALUES ('fixture-repo','fixture-workspace',?)").run(tree.root);
+  writeLocal(f.options.globalDb,"mapping-redirect",tree.storeKey,tree.db.raw.name);
+  tree.db.prepare("INSERT INTO runs (id,session_id,agent,status,task) VALUES ('busy-run',?,'worker','running',?)").run(id,"x".repeat(16*1024*1024+1));
+  const placement = {...f.placement,repoKey:"fixture-repo",workspaceId:"fixture-workspace",stores:[tree.storeKey]};
+  const realSeed = seedApi.seedSession;
+  let retriable = false;
+  vi.spyOn(seedApi,"seedSession").mockImplementation((...args) => {
+   if (retriable) throw new Error("the synchronous loop called a rolled-back seed again");
+   const seeded = realSeed(...args);
+   retriable = seeded.retryable === true;
+   return seeded;
+  });
+  await expect(seedLocalPlacement(placement,f.home.epoch,f.options)).rejects.toMatchObject({code:"session-busy"});
+  expect(retriable).toBe(true);
+  expect(tree.db.prepare("SELECT * FROM roam_seed_progress").all()).toEqual([]);
  });
  it("resumed pi does not inherit worker or offline execution context",()=>{
   const env=localLaunchEnvironment({PATH:"/local/bin",PI_SUBAGENT_CHILD:"1",PI_SPIDER_SESSION:"old",PI_OFFLINE:"1",SPIDER_GLOBAL_ROOT:"/old",SPIDER_SUBAGENT_ID:"old",NODE_OPTIONS:"--inspect",HC_TERMINAL_ID:"remote",AUTH_TOKEN:"local-auth"});

@@ -12,7 +12,7 @@ import { seedSession, enableMemoryCapture } from "@spider/db-core/roam/seed";
 import { createStorePort } from "../stores";
 import { parsePlacement, object, text } from "./journal";
 import { homedir } from "node:os";
-import { setTimeout as delay } from "node:timers/promises";
+import { setImmediate as yieldTurn, setTimeout as delay } from "node:timers/promises";
 import { inspectIdLock, claimIdLock, localBootId, type IdLockObservation } from "@spider/herdr/sessions/id-lock";
 import { withProcessLock } from "@spider/herdr/sessions/registry";
 import { processStartIdentity } from "@spider/herdr/jobs/handoff";
@@ -287,13 +287,28 @@ export async function inspectLocalDestination(source: SessionPlacement, relative
     return {ok:true,value:{placement,head}};
   } catch {return refusal("unsupported-workspace","The destination is not a supported normal checkout.");}
 }
+const MAX_SEED_BATCHES = 64;
+export class SessionSeedBusy extends Error {
+  readonly code = "session-busy";
+}
+export function seedBusyRefusal<T = never>(error: SessionSeedBusy): V0Result<T> {
+  return refusal(error.code,error.message,"Close running subagents, then rerun relocate.");
+}
 export async function seedLocalPlacement(placement: SessionPlacement, epoch: number, options: RelocateAdapterOptions): Promise<void> {
   const stores = createStorePort(options.config,options.globalDb);
   try {
     for (const key of placement.stores) {
       const db=stores.openStore(key).db;
-      if (key.startsWith("worktree:")) { while (!seedSession(db,placement.sessionId,epoch,key,options.limits.hardBatchBytes).complete) { /* bounded seed chunks */ } }
-      else enableMemoryCapture(db,key);
+      if (!key.startsWith("worktree:")) { enableMemoryCapture(db,key); continue; }
+      let through = -1;
+      for (let batch = 1; ; batch++) {
+        const seeded = seedSession(db,placement.sessionId,epoch,key,options.limits.hardBatchBytes);
+        if (seeded.complete) break;
+        if (seeded.retryable || seeded.through <= through) throw new SessionSeedBusy("The session is too busy to prepare its capture rows.");
+        if (batch === MAX_SEED_BATCHES) throw new SessionSeedBusy("The session has more capture rows to prepare.");
+        through = seeded.through;
+        await yieldTurn();
+      }
     }
   } finally {stores.close();}
 }
@@ -389,7 +404,7 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
       writeLocal(options.globalDb,"relocate-managed",home.sessionId,placement);
       recordLocation(options.globalDb,{sessionId:home.sessionId,stores:placement.stores,home,file:placement.file,cwd:placement.cwd});
       return {ok:true,value:undefined};
-    }); } catch {return refusal("install-failed","Local capture membership could not be activated.");}
+    }); } catch (error) {return error instanceof SessionSeedBusy ? seedBusyRefusal(error) : refusal("install-failed","Local capture membership could not be activated.");}
   }
   async function stop(id: SessionId,moving: MovingHome|null=null): Promise<V0Result<void>> {
     try { return await withProcessLock(join(options.root,"herdr"),`v0-state:${id}`,async()=>{

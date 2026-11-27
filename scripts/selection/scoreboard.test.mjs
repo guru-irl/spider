@@ -12,7 +12,7 @@ test('prints the top 30 by observed CPU and suite totals without claiming missin
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const tests = Object.fromEntries(Array.from({ length: 31 }, (_, i) => [`test-${String(i).padStart(2, '0')}.ts`, {
     processes: i === 30 ? 50 : 1, cpuMs: i === 30 ? null : i * 100,
-    knownCpuMs: i * 100, unknownCpu: i === 30 ? 1 : 0, ms: i === 30 ? 89001 : 89000,
+    knownCpuMs: i * 100, unknownCpu: i === 30 ? 1 : 0, missingCpu: i === 30 ? 1 : 0, ms: i === 30 ? 89001 : 89000,
   }]));
   const file = join(dir, 'map.json');
   writeFileSync(file, JSON.stringify({ tests }));
@@ -26,4 +26,5 @@ test('prints the top 30 by observed CPU and suite totals without claiming missin
   assert.match(run.stdout, /1 file.*50 or more.*6\.5%/);
   assert.match(run.stdout, /1 file.*over 89,000 ms/);
   assert.match(run.stdout, /1 process.*unknown CPU/);
+  assert.match(run.stdout, /1 process.*no CPU sample/);
 });

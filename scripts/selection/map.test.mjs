@@ -13,7 +13,7 @@ const c = 'packages/c/src/c.test.ts';
 const shared = 'packages/shared/src/shared.ts';
 const own = 'packages/b/src/b.ts';
 const record = (reads, result = 'passed', ms = 10, unresolved = []) => ({ reads, result, ms, unresolved,
-  processes: 1, cpuMs: 20, knownCpuMs: 20, unknownCpu: 0 });
+  processes: 1, cpuMs: 20, knownCpuMs: 20, unknownCpu: 0, missingCpu: 0 });
 const shard = (records, extra = {}) => ({
   reportedFiles: Object.keys(records),
   records: Object.fromEntries(Object.entries(records).map(([file, value], i) => [file, { workerPids: [123 + i], ...value }])),
@@ -39,24 +39,24 @@ test('indexes deduplicated source paths across shards in stable order', () => {
 test('keeps failure and skip results with their reported durations', () => {
   const { map } = build([shard({ [a]: record([], 'passed', 15), [b]: record([], 'failed', 47), [c]: record([], 'skipped', 0) })]);
   assert.deepEqual(map.tests, {
-    [a]: { reads: [], unresolved: [], ms: 15, result: 'passed', processes: 1, cpuMs: 20, knownCpuMs: 20, unknownCpu: 0 },
-    [b]: { reads: [], unresolved: [], ms: 47, result: 'failed', processes: 1, cpuMs: 20, knownCpuMs: 20, unknownCpu: 0 },
-    [c]: { reads: [], unresolved: [], ms: 0, result: 'skipped', processes: 1, cpuMs: 20, knownCpuMs: 20, unknownCpu: 0 },
+    [a]: { reads: [], unresolved: [], ms: 15, result: 'passed', processes: 1, cpuMs: 20, knownCpuMs: 20, unknownCpu: 0, missingCpu: 0 },
+    [b]: { reads: [], unresolved: [], ms: 47, result: 'failed', processes: 1, cpuMs: 20, knownCpuMs: 20, unknownCpu: 0, missingCpu: 0 },
+    [c]: { reads: [], unresolved: [], ms: 0, result: 'skipped', processes: 1, cpuMs: 20, knownCpuMs: 20, unknownCpu: 0, missingCpu: 0 },
   });
 });
 
 test('publishes partial CPU without turning it into a complete measurement', () => {
-  const partial = { ...record([]), processes: 3, cpuMs: null, knownCpuMs: 55, unknownCpu: 1 };
+  const partial = { ...record([]), processes: 3, cpuMs: null, knownCpuMs: 55, unknownCpu: 1, missingCpu: 1 };
   const { map } = build([shard({ [a]: partial })]);
   assert.deepEqual({ processes: map.tests[a].processes, cpuMs: map.tests[a].cpuMs,
-    knownCpuMs: map.tests[a].knownCpuMs, unknownCpu: map.tests[a].unknownCpu },
-  { processes: 3, cpuMs: null, knownCpuMs: 55, unknownCpu: 1 });
+    knownCpuMs: map.tests[a].knownCpuMs, unknownCpu: map.tests[a].unknownCpu, missingCpu: map.tests[a].missingCpu },
+  { processes: 3, cpuMs: null, knownCpuMs: 55, unknownCpu: 1, missingCpu: 1 });
 });
 
 test('rejects invalid process and CPU measurements', () => {
   for (const bad of [
     { processes: 0 }, { processes: 2, cpuMs: null, unknownCpu: 0 },
-    { processes: 1, cpuMs: 21, knownCpuMs: 20 }, { processes: 1, unknownCpu: 2 },
+    { processes: 1, cpuMs: 21, knownCpuMs: 20 }, { processes: 1, unknownCpu: 2 }, { missingCpu: 1 },
   ]) {
     const result = build([shard({ [a]: { ...record([]), ...bad } })]);
     assert.equal(result.map, null);

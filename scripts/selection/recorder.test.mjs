@@ -88,6 +88,7 @@ test('counts distinct processes and worker threads once and does not double-coun
   assert.equal(records[id].cpuMs, 180);
   assert.equal(records[id].knownCpuMs, 180);
   assert.equal(records[id].unknownCpu, 0);
+  assert.equal(records[id].missingCpu, 0);
 });
 
 test('marks CPU incomplete when a process was killed after a checkpoint', t => {
@@ -102,6 +103,7 @@ test('marks CPU incomplete when a process was killed after a checkpoint', t => {
   assert.equal(records[id].cpuMs, null);
   assert.equal(records[id].knownCpuMs, 125);
   assert.equal(records[id].unknownCpu, 1);
+  assert.equal(records[id].missingCpu, 0);
 });
 
 test('counts a Node child that never reports CPU and preserves the measured lower bound', t => {
@@ -114,6 +116,7 @@ test('counts a Node child that never reports CPU and preserves the measured lowe
   assert.equal(records[id].cpuMs, null);
   assert.equal(records[id].knownCpuMs, 100);
   assert.equal(records[id].unknownCpu, 1);
+  assert.equal(records[id].missingCpu, 1);
 });
 
 test('keeps unmapped checkout bundles once per test even when multiple processes run them', t => {
@@ -272,6 +275,7 @@ test('counts a child killed before its preload and records CPU from the parent',
   assert.equal(entry.cpuMs, null);
   assert.ok(entry.knownCpuMs > 0);
   assert.equal(entry.unknownCpu, 1);
+  assert.equal(entry.missingCpu, 1);
 });
 
 test('measures a real child, grandchild and worker without counting shared process CPU twice', t => {

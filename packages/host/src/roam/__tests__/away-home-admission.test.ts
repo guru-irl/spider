@@ -448,6 +448,7 @@ it("a verified legacy freeze keeps its ownership-only control path", async () =>
     expect(session.lock).toHaveBeenCalledWith(sid, session.file);
     expect(await session.emit("input", { text: "work" })).toEqual({ action: "handled" });
     expect(await session.emit("tool_call", { toolName: "edit" })).toMatchObject({ block: true });
+    await expect(session.gate.freeze("legacy-move", 1)).resolves.toBeUndefined();
   } finally { await session.gate.close(); worktree.close(); }
   expect(release).toHaveBeenCalledOnce();
 });

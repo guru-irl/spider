@@ -90,13 +90,25 @@ it("enable refuses a non-executable CLI from the configured hub service before c
 it("enable preserves an existing 0755 systemd user directory", async () => {
   const f = fixture("box"), io = { out: vi.fn(), err: vi.fn() };
   vi.stubEnv("HOME", resolve("."));
-  mkdirSync(f.systemd.unitDir, { mode: 0o755 });
+  f.systemd.unitDir = join(f.root, ".config", "systemd", "user");
+  mkdirSync(f.systemd.unitDir, { recursive: true, mode: 0o755 });
   chmodSync(f.systemd.unitDir, 0o755);
 
   expect(await main(["roam", "enable"], io, { v0: { lifecycle: f.options } }), io.err.mock.calls.flat().join("")).toBe(0);
   expect(f.enabled()).toBe(true);
   expect(lstatSync(f.systemd.unitDir).mode & 0o7777).toBe(0o755);
   expect(existsSync(join(f.systemd.unitDir, "spider-roam-supervisor-v0.service"))).toBe(true);
+});
+
+it.each([0o750, 0o711])("enable preserves other safe systemd user directory modes: %o", async mode => {
+  const f = fixture("box"), io = { out: vi.fn(), err: vi.fn() };
+  vi.stubEnv("HOME", resolve("."));
+  mkdirSync(f.systemd.unitDir, { mode });
+  chmodSync(f.systemd.unitDir, mode);
+
+  expect(await main(["roam", "enable"], io, { v0: { lifecycle: f.options } }), io.err.mock.calls.flat().join("")).toBe(0);
+  expect(f.enabled()).toBe(true);
+  expect(lstatSync(f.systemd.unitDir).mode & 0o7777).toBe(mode);
 });
 
 it.each([0o775, 0o757])("enable tightens an existing unsafe systemd user directory with mode %o", async mode => {

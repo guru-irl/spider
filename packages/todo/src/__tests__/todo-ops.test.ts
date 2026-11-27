@@ -287,3 +287,5 @@ describe("todo mutations", () => {
     expect(listTodos(ctx.db, "other")).toHaveLength(1);
   });
 });
+
+// Throwaway CI probe for a test-only edit.

@@ -48,7 +48,7 @@ async function roundTrip(suite: Suite): Promise<void> {
     await waitForReplicatedHome(() => fixture.home(box), finalHome, deadline(20_000));
     const returned = await fixture.owner(hub, returning.terminal, id, returning);
     expect(returned).toMatchObject({ sessionId: id, file: returning.file, cwd: returning.cwd });
-    assertRelocatedCopy(away, returned, hub.repository, hub.agent);
+    assertRelocatedCopy(away, returned, original.cwd, hub.agent);
     assertDistinctInodes(away, returned);
     expect(returned.file).toBe(original.file);
     expect(returned.cwd).toBe(original.cwd);

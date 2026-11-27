@@ -14,10 +14,10 @@ function within(root: string, candidate: string): boolean {
 }
 
 /** Both fixture machines share a filesystem, so content equality alone is insufficient. */
-export function assertRelocatedCopy(source: Placement, destination: Placement, repository: string, agent: string): void {
+export function assertRelocatedCopy(source: Placement, destination: Placement, checkoutRoot: string, agent: string): void {
   expect(resolve(destination.cwd)).not.toBe(resolve(source.cwd));
   expect(resolve(destination.file)).not.toBe(resolve(source.file));
-  expect(within(repository, destination.cwd)).toBe(true);
+  expect(within(checkoutRoot, destination.cwd)).toBe(true);
   expect(within(agent, destination.file)).toBe(true);
 }
 

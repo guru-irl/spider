@@ -23,7 +23,7 @@ const HUB = '00000000-0000-4000-8000-000000000001';
 const BOX = '00000000-0000-4000-8000-000000000002';
 const REPO = '00000000-0000-4000-8000-000000000003';
 
-interface Machine { id: string; side: Side; root: string; agent: string; repository: string; env: Record<string, string> }
+interface Machine { id: string; side: Side; root: string; agent: string; env: Record<string, string> }
 export interface RelocateOwner { pid: number; terminal: string; sessionId: string; file: string; cwd: string }
 interface HomeRow { session_id: string; machine_id: string; epoch: number; state: string; destination: string | null; move_id: string | null }
 interface GitState { head: string; status: string; staged: string; working: string; untracked: string }
@@ -57,10 +57,10 @@ export async function relocateFixture(suite: Suite): Promise<RelocateFixture> {
 
   const hubRoot = suite.directories.SPIDER_GLOBAL_ROOT, hubAgent = suite.directories.PI_CODING_AGENT_DIR;
   const boxRoot = suite.ownPath(join(suite.root, 'bg')), boxAgent = suite.ownPath(join(suite.root, 'ba'));
-  const hub: Machine = { id: HUB, side: 'local', root: hubRoot, agent: hubAgent, repository: source,
+  const hub: Machine = { id: HUB, side: 'local', root: hubRoot, agent: hubAgent,
     env: { ...suite.env, ...cores.local.env, HC_SESSION: cores.local.namespace, HC_SOCKET: cores.local.socket,
       SPIDER_GLOBAL_ROOT: hubRoot, PI_CODING_AGENT_DIR: hubAgent, PI_CODING_AGENT_SESSION_DIR: join(hubAgent, 'sessions'), SPIDER_ROAM_PI: suite.pi.launcher } };
-  const box: Machine = { id: BOX, side: 'dest', root: boxRoot, agent: boxAgent, repository: destination,
+  const box: Machine = { id: BOX, side: 'dest', root: boxRoot, agent: boxAgent,
     env: { ...suite.env, ...cores.dest.env, HC_SESSION: cores.dest.namespace, HC_SOCKET: cores.dest.socket,
       SPIDER_GLOBAL_ROOT: boxRoot, PI_CODING_AGENT_DIR: boxAgent, PI_CODING_AGENT_SESSION_DIR: join(boxAgent, 'sessions'), SPIDER_ROAM_PI: suite.pi.launcher } };
   for (const dir of [join(hubAgent, 'sessions'), boxAgent, join(boxAgent, 'sessions'), join(boxRoot, 'roam')]) await mkdir(dir, { recursive: true, mode: 0o700 });

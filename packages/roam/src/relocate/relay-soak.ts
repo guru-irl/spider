@@ -245,14 +245,13 @@ export function checkRelaySoak(evidence: RelaySoakEvidence): { ok: boolean; viol
           outcome?.kind === "refused" && received.length !== 0 || received.length > 0 && handed.length !== 1) fail("receipt");
       if (received.length && handed.length && (received[0].atMs < handed[0].atMs ||
           outcome?.kind === "socket_delivered" && outcome.atMs < received[0].atMs - clock.maxOffsetMs)) fail("receipt");
+      const healthyCadence = submit.kind === "cadence" && lastStateAt(samples, submit.atMs) === "up" && !linkFaults.some(fault =>
+        faultTime(fault, clock, fault.startMs).earliest <= submit.atMs && faultTime(fault, clock, fault.clearMs).latest >= submit.atMs);
+      if (healthyCadence) healthy++;
       if (handed.length === 1) {
         const earliest = handed[0].atMs - clock.maxOffsetMs, latest = handed[0].atMs - clock.minOffsetMs;
         if (latest < submit.atMs || earliest > submit.deadlineMs) fail("handoff");
-        if (lastStateAt(samples, submit.atMs) === "up" && !linkFaults.some(fault =>
-          faultTime(fault, clock, fault.startMs).earliest <= latest && faultTime(fault, clock, fault.clearMs).latest >= submit.atMs)) {
-          healthy++;
-          if (latest - submit.atMs < 2000) fast++;
-        }
+        if (healthyCadence && outcome?.kind !== "refused" && latest - submit.atMs < 2000) fast++;
       }
     }
     if (!healthy || fast * 100 < healthy * 99) fail("handoff");

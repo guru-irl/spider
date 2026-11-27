@@ -1003,6 +1003,18 @@ describe("roaming v0 intercom", () => {
     });
   });
 
+  it("refuses an alias shared by different machines across sendTo and acceptFrom", async () => {
+    const a = boxFixture(), b = machineFixture(OTHER);
+    vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+    configure(a.root, [peer(OTHER, "shared", b)], [{ machineId: MAC, alias: "SHARED" }]);
+    const from: LocalSessionInfo = { ...alice, id: "stable-ben", name: ben.name!, address: ben.address,
+      endpointEpoch: ben.endpointEpoch, v0HomeEpoch: ben.homeEpoch };
+    const transport = vi.fn((): Pick<Transport, "resolve" | "exec"> => { throw new Error("must not resolve the alias"); });
+    expect(await createV0Intercom(a.root, { transport }).prepare({ to: "shared/target", from, locals: [from] }))
+      .toEqual({ kind: "refused", code: "invalid-config" });
+    expect(transport).not.toHaveBeenCalled();
+  });
+
   it("accepts a valid route and rejects duplicates, self, and missing agent directories", async () => {
     const f = paired(), destination = peer(BOX, "box", f.receiver);
     const plan = await remotePlan(f.intercom);

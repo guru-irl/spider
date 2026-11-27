@@ -78,6 +78,11 @@ function readRoutes(root: string, config: RoamConfig): Routes {
   });
   if (!distinct(acceptFrom, config.machineId) || config.role === "hub" && acceptFrom.length > 0)
     throw new Error("Invalid intercom sources");
+  const outboundAliases = new Map(sendTo.map(peer => [peer.alias.toLowerCase(), peer.machineId]));
+  for (const source of acceptFrom) {
+    const outbound = outboundAliases.get(source.alias.toLowerCase());
+    if (outbound !== undefined && outbound !== source.machineId) throw new Error("Conflicting intercom aliases");
+  }
   const agentDir = loadHerdrConfig(root).agentDirectory;
   if (!isAbsolute(agentDir) || process.env.PI_CODING_AGENT_DIR !== undefined && process.env.PI_CODING_AGENT_DIR !== agentDir)
     throw new Error("Intercom agent directory mismatch");

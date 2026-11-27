@@ -171,6 +171,20 @@ export async function inspectLegacyUpgrade(root: string): Promise<LegacyUpgradeI
           }
         } else if (result === null) {
           findings.push(`${operation.kind} operation ${id}`);
+          if (operation.kind === "move-abort-cleanup") {
+            try {
+              const action = db.prepare("SELECT result_json FROM roam_operation_actions WHERE operation_id=? AND action='abort-cleanup-request' ORDER BY seq LIMIT 1").get(id) as { result_json: string } | undefined;
+              if (!action) throw new Error("Missing abort cleanup request");
+              const request: unknown = JSON.parse(action.result_json);
+              if (!request || typeof request !== "object" || Array.isArray(request)) throw new Error("Invalid abort cleanup request");
+              const record = request as Record<string, unknown>, check = record.check;
+              if (typeof record.moveId !== "string" || !record.moveId || typeof record.sessionId !== "string" || !record.sessionId ||
+                  !check || typeof check !== "object" || Array.isArray(check) || !Array.isArray((check as Record<string, unknown>).storeKeys)) throw new Error("Invalid abort cleanup request");
+              const keys = (check as { storeKeys: unknown[] }).storeKeys;
+              if (!keys.includes("global") || new Set(keys).size !== keys.length) throw new Error("Invalid abort cleanup stores");
+              for (const key of keys) { storeScope(key); requiredStores.add(key as string); }
+            } catch { unknown.push(`abort cleanup operation ${id} request unavailable`); }
+          }
           if (operation.kind === "move") {
             const checks = db.prepare("SELECT action,result_json FROM roam_operation_actions WHERE operation_id=? AND action IN ('move-action-complete','move-state') ORDER BY seq").all(id) as Array<{ action: string; result_json: string }>;
             for (const check of checks) {

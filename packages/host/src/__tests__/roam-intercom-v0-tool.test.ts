@@ -534,6 +534,31 @@ it("renders and replies to a peer ask through the private broker", async () => {
   } finally { await f.cleanup(); }
 });
 
+it("reports a confirmed peer reply when its transcript entry cannot be saved", async () => {
+  const f = await fixture({ homeEpoch: () => 7, prepare: async () => ({ kind: "legacy" }) }, { failAppend: type => type === "intercom_sent" });
+  const from: RemoteSessionInfo = {
+    remote: true, id: "peer-session", address: { sessionId: "peer-session", scopeId: null },
+    machineId: "peer-machine", machineAlias: "peer", homeEpoch: 3,
+    activationEpoch: "peer-connection", endpointEpoch: "peer-connection", name: "ben",
+    cwd: "", model: "", startedAt: 0, lastActivity: 0,
+  };
+  const abort = new AbortController();
+  let pending: ReturnType<typeof requestV0Broker> | undefined;
+  try {
+    const own = (await observer.listSessions()).find(session => session.id === "sender-session")!;
+    pending = requestV0Broker(getAgentDirPath(), {
+      kind: "ask", from,
+      target: { address: { sessionId: "sender-session", scopeId: null }, name: "alice", homeEpoch: 7, endpointEpoch: own.endpointEpoch! },
+      message: { id: "unsaved-reply-question", timestamp: 123, text: "hello" }, timeoutMs: 2000,
+    }, abort.signal);
+    await vi.waitFor(() => expect(f.inbound.some(message => message.customType === "intercom_message")).toBe(true));
+    const result = await f.tool.execute("reply", { action: "reply", replyTo: "unsaved-reply-question", message: "confirmed answer" }, new AbortController().signal, undefined, f.ctx);
+    expect(await pending).toMatchObject({ kind: "replied", id: "unsaved-reply-question", text: "confirmed answer" });
+    expect(result.content[0].text).toBe("Reply sent to ben\nThe transcript entry could not be saved.");
+    expect(result.details).toMatchObject({ delivered: true, delivery: "socket_delivered", replyTo: "unsaved-reply-question" });
+  } finally { abort.abort(); await pending; await f.cleanup(); }
+});
+
 it("refuses unsupported remote reply options and leaves the ask pending", async () => {
   const f = await fixture({ homeEpoch: () => 7, prepare: async () => ({ kind: "legacy" }) });
   const from: RemoteSessionInfo = {

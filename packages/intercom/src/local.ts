@@ -3190,14 +3190,20 @@ Usage:
               };
             }
             dismissIncomingAsk(target.message.id);
-            pi.appendEntry("intercom_sent", {
-              to: target.from.name || target.from.id,
-              message: { text: message, attachments, replyTo: target.message.id },
-              messageId: result.id,
-              timestamp: Date.now(),
-            });
+            let transcriptWarning = "";
+            try {
+              pi.appendEntry("intercom_sent", {
+                to: target.from.name || target.from.id,
+                message: { text: message, attachments, replyTo: target.message.id },
+                messageId: result.id,
+                timestamp: Date.now(),
+              });
+            } catch (error) {
+              if (!replySource) throw error;
+              transcriptWarning = V0_TRANSCRIPT_SAVE_FAILURE;
+            }
             return {
-              content: [{ type: "text", text: `Reply sent to ${target.from.name || target.from.id}` }],
+              content: [{ type: "text", text: `Reply sent to ${target.from.name || target.from.id}${transcriptWarning}` }],
               details: { ...deliveryDetails(result), replyTo: target.message.id },
             };
           } catch (error) {

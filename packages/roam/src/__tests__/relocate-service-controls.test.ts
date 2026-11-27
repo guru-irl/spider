@@ -6,6 +6,7 @@ import { migrate, openDb } from "@spider/db-core";
 import { installHubService, hubServiceFile } from "../launchd";
 import { renderSupervisorUnit } from "../systemd";
 import { configureV0Service } from "../production-controls";
+import { openJournal } from "../journal";
 import { installLocalV0Supervisor } from "../relocate/service-install";
 import { main } from "../cli";
 
@@ -33,6 +34,24 @@ function fixture(role: "hub" | "box") {
   return { root, options, calls, launchd, systemd, cli, supervisor, coreUnit, hub, box, machineId,
     enabled: () => JSON.parse(readFileSync(configFile, "utf8")).enabled };
 }
+
+it.each(["hub", "box"] as const)("enable refuses pending legacy work before changing a %s service", async role => {
+  const f = fixture(role), journalFile = join(f.root, "roam", "journal.db");
+  const journal = openJournal(journalFile);
+  journal.begin({ id: "legacy-move-1", machineId: f.machineId, expectedEpoch: 1, kind: "move", args: { sessionId: "session-1" } });
+  journal.record("legacy-move-1", "move-source-cleanup-pending", { sessionId: "session-1", sourceMachine: f.machineId,
+    sourceCleanup: { status: "pending", reason: "move-cleanup-pending", blockers: [] } });
+  const files = [join(f.root, "spider.db"), journalFile, join(f.root, "roam", "config.json")];
+  const before = files.map(file => readFileSync(file));
+  const io = { out: vi.fn(), err: vi.fn() };
+  expect(await main(["roam", "enable", "--json"], io, { v0: { lifecycle: f.options } })).toBe(1);
+  expect(JSON.parse(io.out.mock.calls.at(-1)![0])).toMatchObject({ code: 1, reason: "legacy-upgrade-blocked" });
+  expect(f.calls).toEqual([]);
+  expect(f.enabled()).toBe(false);
+  expect(files.map(file => readFileSync(file))).toEqual(before);
+  expect(existsSync(role === "hub" ? hubServiceFile(f.root, f.launchd.plistDir, "v0")
+    : join(f.systemd.unitDir, "spider-roam-supervisor-v0.service"))).toBe(false);
+});
 
 it.each(["hub", "box"] as const)("enable pins the local Herdr installation in the %s service", async role => {
   const f=fixture(role), binary=join(f.root,"bin","hc"), socket=join(f.root,"socket"), agentDirectory=join(f.root,"agent");

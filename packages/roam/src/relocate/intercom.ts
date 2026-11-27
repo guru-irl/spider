@@ -188,19 +188,22 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
         if (callSignal.aborted || performance.now() >= deliveryDeadline) throw new Error("Intercom delivery deadline expired");
         const remaining = Math.floor(deadline - performance.now());
         if (remaining <= POST_CHECK_MS) throw new Error("Intercom post-check reserve unavailable");
-        const bytes = Buffer.from(JSON.stringify(request));
-        const input = request.kind !== "ask" ? { stdin: bytes } : {
+        const input = request.kind === "lookup" ? { stdin: Buffer.from(JSON.stringify(request)) } : {
           stdinForTimeout: (remoteMs: number) => {
-            if (callSignal.aborted) throw new Error("Intercom delivery deadline expired");
-            // Herdr starts this window before the remote agent reads stdin.
-            const timeoutMs = Math.min(request.timeoutMs, Math.floor(deliveryDeadline - performance.now()), remoteMs - REMOTE_ASK_STARTUP_MS);
-            if (timeoutMs <= 0) throw new Error("Intercom ask deadline expired");
-            const body = Buffer.from(JSON.stringify({ ...request, timeoutMs }));
+            const deliveryMs = Math.floor(deliveryDeadline - performance.now());
+            if (callSignal.aborted || deliveryMs <= 0) throw new Error("Intercom delivery deadline expired");
+            let outbound = request;
+            if (request.kind === "ask") {
+              // Herdr starts this window before the remote agent reads stdin.
+              const timeoutMs = Math.min(request.timeoutMs, deliveryMs, remoteMs - REMOTE_ASK_STARTUP_MS);
+              if (timeoutMs <= 0) throw new Error("Intercom ask deadline expired");
+              outbound = { ...request, timeoutMs };
+            }
+            const body = Buffer.from(JSON.stringify(outbound));
             invoked = true;
             return body;
           },
         };
-        if (request.kind === "deliver") invoked = true;
         const output = await transport.exec(target, ["roam", "agent", "--v0", "intercom"], {
           timeoutMs: remaining, maxBytes: V0_INTERCOM_BYTES, postReserveMs: POST_CHECK_MS, signal: callSignal, ...input,
         });

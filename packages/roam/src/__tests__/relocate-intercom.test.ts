@@ -81,7 +81,7 @@ function paired() {
   const inbox: { from: RemoteSessionInfo; message: V0Text }[] = [];
   const asks: V0Text[] = [];
   const calls: { machineId: string; request: V0AgentRequest; options: CallOptions }[] = [];
-  const state: { fault: "none" | "drop" | "truncated" | "wrong-id" | "wrong-machine"; live: V0Endpoint[]; source: V0Endpoint } = {
+  const state: { fault: "none" | "before-spawn" | "drop" | "truncated" | "wrong-id" | "wrong-machine"; live: V0Endpoint[]; source: V0Endpoint } = {
     fault: "none", live: [ben], source: aliceEndpoint,
   };
   const remoteBroker = async (_dir: string, op: V0BrokerOp): Promise<V0Reply> => {
@@ -102,6 +102,7 @@ function paired() {
     resolve: async target => target,
     async exec(target, argv, options) {
       expect(argv).toEqual(["roam", "agent", "--v0", "intercom"]);
+      if (state.fault === "before-spawn") throw new HerdrError("core-unavailable", "fixture stopped before spawn");
       const bytes = options.stdin ?? options.stdinForTimeout?.(options.timeoutMs - 2000);
       if (!bytes) throw new Error("missing request");
       const request = JSON.parse(bytes.toString("utf8")) as V0AgentRequest;
@@ -328,6 +329,14 @@ describe("roaming v0 intercom", () => {
       expect(f.calls.filter(call => call.request.kind === "deliver")).toHaveLength(1);
     },
   );
+
+  it("refuses a send when Herdr fails before spawning the remote command", async () => {
+    const f = paired(), plan = await remotePlan(f.intercom);
+    f.state.fault = "before-spawn";
+    expect(await plan.send(message)).toEqual({ kind: "refused", code: "unreachable" });
+    expect(f.calls.map(call => call.request.kind)).toEqual(["lookup"]);
+    expect(f.inbox).toEqual([]);
+  });
 
   it("returns unknown without asking twice when the reply is lost", async () => {
     const f = paired(), plan = await remotePlan(f.intercom);
@@ -829,7 +838,9 @@ describe("roaming v0 intercom", () => {
       async exec(target, _argv, options) {
         contacted.push(target.machineId);
         if (target.machineId === MAC) throw new Error("Mac transport is forbidden");
-        return Buffer.from(JSON.stringify(await receiver.handle(JSON.parse(options.stdin!.toString("utf8")))));
+        const bytes = options.stdin ?? options.stdinForTimeout?.(options.timeoutMs - 2000);
+        if (!bytes) throw new Error("missing request");
+        return Buffer.from(JSON.stringify(await receiver.handle(JSON.parse(bytes.toString("utf8")))));
       },
     });
     const localBroker = async (): Promise<V0Reply> => ({ kind: "matches", targets: [ben] });

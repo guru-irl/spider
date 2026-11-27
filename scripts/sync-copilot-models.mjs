@@ -4,17 +4,13 @@
 // entries that shadow real built-ins to narrow modelOverrides. Existing override
 // fields win. A dated snapshot permits additions but never migration. Dry-run by
 // default; --write backs up models.json before migration and is idempotent.
-import { readFileSync, writeFileSync, existsSync, copyFileSync, constants } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { createRequire } from "node:module";
+import { readFileSync, writeFileSync, existsSync, copyFileSync, constants, accessSync, realpathSync, statSync } from "node:fs";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { execSync } from "node:child_process";
 import https from "node:https";
 import { isDeepStrictEqual } from "node:util";
 import { piAgentDir } from "./pi-agent-dir.mjs";
 
-const HOME = homedir();
 const AUTH_PATH = join(piAgentDir(), "auth.json");
 const MODELS_PATH = join(piAgentDir(), "models.json");
 const COPILOT_HEADERS = {
@@ -67,38 +63,59 @@ function fetchModels(token) {
   });
 }
 
-function searchBuiltinFile() {
-  const roots = [join(HOME, ".volta"), "/usr/local/lib/node_modules", join(HOME, ".npm-global"), join(HOME, ".nvm")];
-  for (const root of roots) {
-    if (!existsSync(root)) continue;
-    try {
-      const out = execSync(`find "${root}" -maxdepth 14 -path "*@earendil-works/pi-ai/dist/providers/github-copilot.models.js" -print 2>/dev/null | head -1`, { encoding: "utf8", timeout: 8000 }).trim();
-      if (out) return out;
-    } catch {}
-  }
+function piPackage(dir) {
+  try {
+    const pkg = readJson(join(dir, "package.json"));
+    if (pkg.name === "@earendil-works/pi-coding-agent") return { root: dir, version: pkg.version };
+  } catch {}
   return null;
 }
 
-async function resolveBuiltinIds() {
-  const candidates = [];
-  if (process.env.SPIDER_PIAI_MODELS) candidates.push(process.env.SPIDER_PIAI_MODELS);
-  try { candidates.push(createRequire(import.meta.url).resolve("@earendil-works/pi-ai/dist/providers/github-copilot.models.js")); } catch {}
-  const found = searchBuiltinFile(); if (found) candidates.push(found);
-  for (const file of candidates) {
+function resolvePiPackage() {
+  const hint = "Cannot resolve pi on PATH; use --pi-root <dir> to select the pi installation.";
+  const flag = process.argv.indexOf("--pi-root");
+  if (flag !== -1) {
+    const value = process.argv[flag + 1];
+    if (!value || value.startsWith("--")) fail(hint);
     try {
-      if (!file || !existsSync(file)) continue;
-      const mod = await import(pathToFileURL(file).href);
-      const catalog = mod.GITHUB_COPILOT_MODELS || mod.default || mod.models;
-      const entries = Array.isArray(catalog)
-        ? catalog.map((model) => [model?.id, model])
-        : catalog && typeof catalog === "object" ? Object.entries(catalog) : [];
-      if (entries.length && entries.every(([id, model]) => typeof id === "string" && id && model && typeof model === "object")) {
-        const models = new Map(entries);
-        console.log("[sync-copilot-models] built-in catalog: " + file + " (" + models.size + " ids)");
-        return { models, snapshot: false };
-      }
+      const pkg = piPackage(realpathSync(resolve(value)));
+      if (pkg) return pkg;
+    } catch {}
+    fail("Invalid pi installation. " + hint);
+  }
+  let executable;
+  for (const dir of (process.env.PATH || "").split(delimiter)) {
+    const candidate = resolve(dir || ".", "pi");
+    try {
+      accessSync(candidate, constants.X_OK);
+      if (statSync(candidate).isFile()) { executable = realpathSync(candidate); break; }
     } catch {}
   }
+  if (!executable) fail(hint);
+  for (let dir = dirname(executable); ; dir = dirname(dir)) {
+    const pkg = piPackage(dir);
+    if (pkg) return pkg;
+    if (dirname(dir) === dir) break;
+  }
+  fail(hint);
+}
+
+async function resolveBuiltinIds() {
+  const pi = resolvePiPackage();
+  const file = join(pi.root, "node_modules/@earendil-works/pi-ai/dist/providers/github-copilot.models.js");
+  console.log("[sync-copilot-models] pi " + pi.version + " at " + pi.root);
+  try {
+    const mod = await import(pathToFileURL(file).href);
+    const catalog = mod.GITHUB_COPILOT_MODELS || mod.default || mod.models;
+    const entries = Array.isArray(catalog)
+      ? catalog.map((model) => [model?.id, model])
+      : catalog && typeof catalog === "object" ? Object.entries(catalog) : [];
+    if (entries.length && entries.every(([id, model]) => typeof id === "string" && id && model && typeof model === "object")) {
+      const models = new Map(entries);
+      console.log("[sync-copilot-models] built-in catalog: " + file + " (" + models.size + " ids)");
+      return { models, snapshot: false };
+    }
+  } catch {}
   console.warn("[sync-copilot-models] built-in catalog: using dated SNAPSHOT (" + BUILTIN_SNAPSHOT.size + " ids); migration skipped because the real catalog could not be read.");
   return { models: new Map([...BUILTIN_SNAPSHOT].map((id) => [id, undefined])), snapshot: true };
 }
@@ -130,10 +147,10 @@ function synth(m) {
 }
 
 async function main() {
+  const { models: builtin, snapshot } = await resolveBuiltinIds();
   const { token, available } = loadAuth();
   if (available.size === 0) console.warn("[sync-copilot-models] WARNING: availableModelIds empty in auth.json — nothing will be considered usable.");
   const all = await fetchModels(token);
-  const { models: builtin, snapshot } = await resolveBuiltinIds();
   const mj = existsSync(MODELS_PATH) ? readJson(MODELS_PATH) : { providers: {} };
   mj.providers ||= {};
   mj.providers["github-copilot"] ||= {};

@@ -42,13 +42,11 @@ beforeEach(() => {
   writeFileSync(join(fixture, "boundary.mjs"), `
 import os from 'node:os';
 import https from 'node:https';
-import childProcess from 'node:child_process';
 import fs from 'node:fs';
 import module from 'node:module';
 import { EventEmitter } from 'node:events';
 const originalRead = fs.readFileSync;
 const originalExists = fs.existsSync;
-const originalCreateRequire = module.createRequire;
 if (process.env.FIXTURE_FAIL_BACKUP === '1') fs.copyFileSync = () => { throw new Error('fixture backup failed'); };
 fs.existsSync = (path) => String(path) === process.env.FIXTURE_HOME + '/.pi/agent/auth.json' || originalExists(path);
 fs.readFileSync = (path, ...args) => {
@@ -59,20 +57,12 @@ fs.readFileSync = (path, ...args) => {
   }
   return originalRead(path, ...args);
 };
-module.createRequire = (url) => {
-  const require = originalCreateRequire(url);
-  if (String(url).endsWith('/scripts/sync-copilot-models.mjs')) {
-    require.resolve = () => { throw new Error('package catalog disabled in fixture'); };
-  }
-  return require;
-};
 if (process.env.FIXTURE_NATIVE_HOME === '1') {
   // Refuse to read auth/config if fixture home isolation is missing.
   if (process.env.HOME !== process.env.FIXTURE_HOME || process.env.USERPROFILE !== process.env.FIXTURE_HOME) {
     throw new Error('fixture HOME and USERPROFILE must be isolated');
   }
 } else os.homedir = () => process.env.FIXTURE_HOME;
-childProcess.execSync = () => { throw new Error('global catalog search disabled in fixture'); };
 https.request = (url, options, callback) => {
   if (url !== 'https://api.githubcopilot.com/models' || options.method !== 'GET') throw new Error('unexpected catalog request');
   const req = new EventEmitter();
@@ -94,7 +84,7 @@ function invoke(write = true, nativeHome = false, failBackup = false, script = j
     cwd: fixture, encoding: "utf8",
     env: { ...process.env, HOME: fixture, USERPROFILE: fixture, FIXTURE_HOME: fixture, PI_CODING_AGENT_DIR: undefined,
       PATH: fakePath, FIXTURE_NATIVE_HOME: nativeHome ? "1" : "0", FIXTURE_FAIL_BACKUP: failBackup ? "1" : "0",
-      SPIDER_PIAI_MODELS: builtinPath, ...extraEnv },
+      SPIDER_PIAI_MODELS: undefined, ...extraEnv },
   });
 }
 function run(models: object[], config: object, write = true, nativeHome = false, failBackup = false) {
@@ -113,13 +103,13 @@ describe("Copilot model sync catalog", () => {
   // Choosing a different installation moves an entry pi does not know into an ignored override.
   it("uses the catalog belonging to the pi executable on PATH", () => {
     writeFileSync(builtinPath, 'export const GITHUB_COPILOT_MODELS = [{ id: "model-a" }];\n');
-    installPi("pi-inactive", 'export const GITHUB_COPILOT_MODELS = [{ id: "model-b" }];\n', "2.0.0");
+    const other = installPi("pi-inactive", 'export const GITHUB_COPILOT_MODELS = [{ id: "model-b" }];\n', "2.0.0");
     const before = { providers: { "github-copilot": { models: [
       { id: "model-a", compactAtPercent: 30 }, { id: "model-b", compactAtPercent: 60 },
     ] } } };
     writeFileSync(join(fixture, "catalog.json"), JSON.stringify({ data: [] }));
     writeFileSync(modelsPath, JSON.stringify(before));
-    const result = invoke(true, false, false, undefined, { SPIDER_PIAI_MODELS: undefined });
+    const result = invoke(true, false, false, undefined, { SPIDER_PIAI_MODELS: other.catalogPath });
     expect(result.status, result.stderr).toBe(0);
     expect(saved().providers["github-copilot"].models).toEqual([{ id: "model-b", compactAtPercent: 60 }]);
     expect(saved().providers["github-copilot"].modelOverrides).toEqual({ "model-a": { compactAtPercent: 30 } });

@@ -443,7 +443,14 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
   }
   async function stop(id: SessionId,moving: MovingHome|null=null): Promise<V0Result<void>> {
     try { return await withProcessLock(join(options.root,"herdr"),`v0-state:${id}`,async()=>{
-      if(moving && !exactHome(await options.homes.read(id),moving))return refusal("home-conflict","The source moving home changed before shutdown.");
+      const current = await options.homes.read(id).catch(error => {
+        if (moving) throw error;
+        return null; // An unreadable home does not authorize a managed pi to run.
+      });
+      if (moving && !exactHome(current,moving)) return refusal("home-conflict","The source moving home changed before shutdown.");
+      if (!moving && current?.state === "running" && current.machineId === options.config.machineId) {
+        return refusal("home-conflict","This machine is now the running home; the supervisor did not stop pi.","Leave the session open. To move it, run spider roam relocate.");
+      }
       const stopped=await stopLocalSession(id,moving,io,options.clock,options.limits.readyMs);if(!stopped.ok)return stopped;
       const known=readLocal<unknown>(options.globalDb,"relocate-managed",id);
       const row=options.globalDb.prepare("SELECT stores_json FROM roam_locations WHERE session_id=?").get(id) as {stores_json:string}|undefined;

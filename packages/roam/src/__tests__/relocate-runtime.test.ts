@@ -14,6 +14,7 @@ import type { RelocateAdapterOptions, RunningHome, SessionId, SessionPlacement }
 import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import { openJournal } from "../journal";
 import { createLocalRuntime, createLocalIO, localLaunchEnvironment, seedLocalPlacement, type LocalIO } from "../relocate/local";
+import { createHomeSupervisor } from "../relocate/supervisor";
 const hub = "11111111-1111-4111-8111-111111111111", box = "22222222-2222-4222-8222-222222222222";
 const id = "33333333-3333-4333-8333-333333333333" as SessionId;
 const fixtures: {close():void}[] = [];
@@ -228,6 +229,20 @@ describe("v0 local runtime",()=>{
   expect(await local.activate(f.home,f.placement)).toEqual({ok:true,value:undefined});
   f.setHome(null);
   expect(await local.entries()).toEqual([{sessionId:id,home:null,placement:f.placement}]);
+ });
+ it("a stale supervisor tick does not stop the pi that already has a local running home", async () => {
+  const f = runtimeFixture(), local = createLocalRuntime(f.options,f.io);
+  writeLocal(f.options.globalDb,"relocate-managed",id,f.placement);
+  f.options.homes.list = async () => [{...f.home,machineId:hub,epoch:2,state:"moving",destination:box,moveId:f.home.moveId!}];
+  f.setLock({identity:{pid:42,startIdentity:"pi-42"},bootId:"boot",pendingOperationId:null,pendingFile:null,pendingCoreId:null,operationId:null});
+  f.setProbe({kind:"live",startIdentity:"pi-42",pi:true});
+  f.setTerminals([{terminal:"core:t",state:"live",pid:42,owned:true}]);
+  const signal = f.io.signal;
+  f.io.signal = async pid => { await signal(pid); f.setLock(null); f.setProbe({kind:"absent"}); f.setTerminals([]); };
+  const loop = createHomeSupervisor({...local,machineId:box,clock:f.options.clock,report() {}}, () => {});
+  await loop.tick();
+  expect(f.signalled).toEqual([]);
+  expect(await local.owner(id)).toEqual({kind:"live",pid:42,terminal:"core:t"});
  });
  it("activation waits for an in-flight supervisor stop before updating membership",async()=>{
   const f=runtimeFixture(),worktree=createReplica("worktree",box);fixtures.push(worktree);

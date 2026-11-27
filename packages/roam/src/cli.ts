@@ -26,6 +26,7 @@ import { homedir, userInfo } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { roamingCliEntry } from "./package-layout";
 import { inspectLocalConsumers, isPendingLaunchDiagnostic, localHubServiceDiagnostics, localPendingMoveDiagnostics, localPendingLaunchDiagnostics, localStoreInventoryDiagnostics, localHostingWarningDiagnostics, localMoveSetupDiagnostics, localPublicationDiagnostics, localPrivateTransferDiagnostics, runLocalDoctor, runLocalStatus } from "./local-diagnostics";
+import { inspectLegacyUpgrade, legacyUpgradeDiagnostic } from "./legacy-upgrade";
 import { requestHubControl } from "./control-socket";
 import { parseRoamJson, storeScope } from "@spider/db-core/roam/codec";
 import { mapRepository } from "@spider/db-core/roam/repo-map";
@@ -450,8 +451,8 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
         const earlyWarnings = warnings?.filter(row => row.count < 3) ?? [];
         value = { ...observation, ...(warnings ? { warnings: warnings.filter(row => row.count === 3) } : {}),
           ...(earlyWarnings.length ? { earlyWarnings } : {}) };
-      } else value = await runLocalDoctor({ root, bundleUrl: options?.bundleUrl, inspectIntercomDoctor: true, intercomDoctor: options?.intercomDoctor,
-        hubLaunchd: options?.v0?.lifecycle?.launchd });
+      } else value = await runLocalDoctor({ root, bundleUrl: options?.bundleUrl, inspectUpgrade: true, inspectIntercomDoctor: true,
+        intercomDoctor: options?.intercomDoctor, hubLaunchd: options?.v0?.lifecycle?.launchd });
       io.out(`${JSON.stringify({ version: 1, machineId: config.machineId, kind: argv[2], value })}\n`);
       return 0;
     } catch (error) { io.err(error instanceof ReadinessParseError ? `${error.reason}\n` : "Cannot inspect local roaming state. No data was changed.\n"); return 1; }
@@ -651,6 +652,8 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
   }
   if (argv[0] === "roam" && argv[1] === "status") {
     try {
+      if (existsSync(join(root, "roam", "config.json"))) readLocalIdentity(root);
+      else if ((await inspectLegacyUpgrade(root)).status !== "legacy-upgrade-ready") throw new Error("Roaming identity unavailable");
       const status = runLocalStatus({ root });
       if (jsonOutput) io.out(`${JSON.stringify(status.enabled ? { ...status, code: 0, reason: "status-complete", operationId: "", home: null, epoch: null, repairCommand: null } : status)}\n`);
       else {
@@ -682,14 +685,20 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       if (argv.length === 2) {
         let config: ReturnType<typeof readLocalIdentity> | undefined;
         try { config = readLocalIdentity(root); }
-        catch { if (existsSync(join(root, "roam", "config.json"))) throw new Error("roaming-config-unavailable"); }
+        catch { /* The inventory distinguishes an unconfigured root from unreadable legacy evidence. */ }
         if (!config || !config.enabled) {
-          let rows: Awaited<ReturnType<typeof peerEnabledDiagnostics>> = [];
+          const inventory = await inspectLegacyUpgrade(root), diagnostic = legacyUpgradeDiagnostic(inventory);
+          if (!config && inventory.status !== "legacy-upgrade-ready") {
+            if (jsonOutput) io.out(`${JSON.stringify({ ...outcome(1, inventory.status), value: { enabled: null, diagnostics: [diagnostic], consumers: [] } })}\n`);
+            else io.out(`${clean(diagnostic.reason)}\n`);
+            return 1;
+          }
+          const rows: Awaited<ReturnType<typeof peerEnabledDiagnostics>> = [diagnostic];
           if (config?.role === "hub" && config.peers.length) {
             try {
               const herdr = loadHerdrConfig(root), transport = createTransport({ binary: herdr.core.binary, env: process.env, enrolled: config.peers });
-              rows = await peerEnabledDiagnostics(config, transport);
-            } catch { rows = config.peers.map(peer => ({ reason: `peer-enabled-unavailable:${peer.machineId}`, severity: "warning" as const, repairCommand: "spider roam doctor" })); }
+              rows.push(...await peerEnabledDiagnostics(config, transport));
+            } catch { rows.push(...config.peers.map(peer => ({ reason: `peer-enabled-unavailable:${peer.machineId}`, severity: "warning" as const, repairCommand: "spider roam doctor" }))); }
           }
           if (config) {
             rows.push(...localStoreInventoryDiagnostics(root));
@@ -703,12 +712,16 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
           }
           const code = rows.some(row => row.severity === "block") ? 1 : 0;
           if (jsonOutput) io.out(`${JSON.stringify({ ...outcome(code, code ? "doctor-blocked" : "roaming-disabled"), value: { enabled: false, diagnostics: rows, consumers: [] } })}\n`);
-          else { io.out(`${MOVE_REFUSAL_MESSAGES["roaming-disabled"]}\n`); for (const row of rows) io.out(`${clean(row.reason)}\n`); }
+          else {
+            io.out(`${MOVE_REFUSAL_MESSAGES["roaming-disabled"]}\n`);
+            for (const row of rows) if (config || !row.reason.startsWith("legacy-upgrade-ready:")) io.out(`${clean(row.reason)}\n`);
+          }
           return code;
         }
       }
       let report: Awaited<ReturnType<typeof runLocalDoctor>>;
-      if (argv.length === 2) report = await runLocalDoctor({ root, bundleUrl: options?.bundleUrl, inspectIntercomDoctor: true, intercomDoctor: options?.intercomDoctor, hubLaunchd: options?.v0?.lifecycle?.launchd });
+      if (argv.length === 2) report = await runLocalDoctor({ root, bundleUrl: options?.bundleUrl, inspectUpgrade: true, inspectIntercomDoctor: true,
+        intercomDoctor: options?.intercomDoctor, hubLaunchd: options?.v0?.lifecycle?.launchd });
       else {
         let config: ReturnType<typeof readLocalIdentity>;
         try { config = readLocalIdentity(root); }
@@ -722,7 +735,9 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
         const herdr = loadHerdrConfig(root);
         report = await remoteDoctor(createTransport({ binary: herdr.core.binary, env: process.env, enrolled: config.peers }), peer, config);
         report = { ...report, consumers: report.enabled ? report.consumers : [], diagnostics: [
-          ...(report.enabled ? report.diagnostics : report.diagnostics.filter(row => row.reason.startsWith("core-pin-") || row.reason.startsWith("store-") || isPendingLaunchDiagnostic(row) || isMoveSetupDiagnostic(row) || row.severity === "info" || row.severity === "warning" && row.code === HOSTING_WARNING_CODE)),
+          ...(report.enabled ? report.diagnostics : report.diagnostics.filter(row => row.reason.startsWith("legacy-upgrade-") ||
+            row.reason.startsWith("core-pin-") || row.reason.startsWith("store-") || isPendingLaunchDiagnostic(row) ||
+            isMoveSetupDiagnostic(row) || row.severity === "info" || row.severity === "warning" && row.code === HOSTING_WARNING_CODE)),
           ...(report.enabled !== config.enabled ? [{ reason: `peer-enabled-mismatch:${peer.machineId}`, severity: "warning" as const,
             repairCommand: config.enabled ? "spider roam enable" : "spider roam disable" }] : []),
         ] };

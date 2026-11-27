@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { migrate, openDb } from "@spider/db-core";
 import { main } from "../cli";
 import { enableRoaming } from "../production-controls";
 
@@ -13,6 +14,8 @@ function fixture(role: "hub" | "box") {
   const machineId = role === "hub" ? hub : box;
   writeFileSync(join(root, "roam/machine.json"), JSON.stringify({ machineId }), { mode: 0o600 });
   writeFileSync(join(root, "roam/config.json"), JSON.stringify({ enabled: false, role, machineId, hubMachineId: hub, peers: [], discoveryRoots: [], coreUnit: "fixture" }), { mode: 0o600 });
+  const global = openDb(join(root, "spider.db"));
+  try { migrate(global, "global", { machineId, globalRoot: root }); } finally { global.close(); }
   vi.stubEnv("HOME", root); vi.stubEnv("SPIDER_GLOBAL_ROOT", root);
   return root;
 }

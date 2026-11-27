@@ -7,10 +7,13 @@ import { createHomeStore } from "@spider/roam/relocate/home";
 import { readLocalIdentity } from "@spider/roam/runtime";
 import type { RoamConfig } from "@spider/roam/contracts";
 
-function isAuthoritativeHub(db: Db, config: RoamConfig): boolean {
+function hasLocalDbIdentity(db: Db, config: RoamConfig): boolean {
   const meta = db.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id: string; store_key: string | null } | undefined;
-  return config.role === "hub" && config.machineId === config.hubMachineId && meta?.machine_id === config.machineId &&
-    (meta.store_key === "global" || meta.store_key === null);
+  return meta?.machine_id === config.machineId && (meta.store_key === "global" || meta.store_key === null);
+}
+
+function isAuthoritativeHub(db: Db, config: RoamConfig): boolean {
+  return config.role === "hub" && config.machineId === config.hubMachineId && hasLocalDbIdentity(db, config);
 }
 
 function hasManagedMarker(db: Db, sessionId: SessionId): boolean {
@@ -47,11 +50,14 @@ export async function loadRelocateAdmission(sessionId: SessionId, root: string):
       const config = readLocalIdentity(root);
       return createHomeStore({ db: store, hubMachineId: config.hubMachineId, localMachineId: config.machineId });
     }, knownManaged);
-    // A crash before the first moving CAS may strand an ordinary Mac session
-    // with an initial home but no managed checkout. Keep the startup ID lock.
-    if (result.kind === "managed" && result.home?.state === "running" && result.home.moveId === null && !knownManaged(sessionId)) {
+    if (result.kind === "managed" && result.home) {
       const config = readLocalIdentity(root);
-      if (result.home.machineId === config.machineId && isAuthoritativeHub(store, config)) return { kind: "virgin-local" };
+      if (!hasLocalDbIdentity(store, config)) return unavailable();
+      // A crash before the first moving CAS may strand an ordinary Mac session
+      // with an initial home but no managed checkout. Keep the startup ID lock.
+      if (result.home.state === "running" && result.home.moveId === null && !knownManaged(sessionId) &&
+          result.home.machineId === config.machineId && config.role === "hub" && config.machineId === config.hubMachineId)
+        return { kind: "virgin-local" };
     }
     return result;
   }catch{return unavailable();}
@@ -74,7 +80,7 @@ export async function readRelocateAdmission(sessionId: SessionId, db: Db, homes:
     // A pre-v0 store has no state column. Its rows remain legacy.
     const row = db.prepare("SELECT * FROM session_homes WHERE session_id=?").get(sessionId) as { state?: unknown } | undefined;
     if (!row) return knownManaged(sessionId) ? { kind: "managed", home: null } : { kind: "unmanaged" };
-    if (row.state == null) return { kind: "unmanaged" };
+    if (row.state == null) return knownManaged(sessionId) ? { kind: "managed", home: null } : { kind: "unmanaged" };
     const store = typeof homes === "function" ? homes() : homes;
     return { kind: "managed", home: await store.read(sessionId) };
   } catch { return { kind: "unavailable" }; }

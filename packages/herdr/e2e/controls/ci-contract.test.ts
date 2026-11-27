@@ -122,21 +122,27 @@ describe('headless story matrix', () => {
     expect(matrix.include.map(row => row.story)).toEqual(config.stories);
     expect(new Set(matrix.include.map(row => row.story)).size).toBe(config.stories.length);
     expect(matrix.include.every(row => Number.isInteger(row.timeout) && row.timeout > 0 && row.timeout <= 5)).toBe(true);
-    const selected = select(' R03, S01, R13 ');
+    const selected = select(' R04, S01, R13 ');
     expect(selected.status, selected.stderr).toBe(0);
     const explicit = JSON.parse(selected.stdout) as typeof matrix;
-    expect(explicit.include.map(row => row.story)).toEqual(['R03', 'S01', 'R13']);
+    expect(explicit.include.map(row => row.story)).toEqual(['R04', 'S01', 'R13']);
     expect(explicit.include.find(row => row.story === 'R13')!.timeout).toBe(config.timeouts.R13);
     for (const invalid of ['R10,,R13', 'R10,R10', 'R99', 'R10;echo']) expect(select(invalid).status).not.toBe(0);
   });
 
-  it('selects the relocation story explicitly but not by default', () => {
+  it('defaults to relocation and keeps R12 available only by explicit selection', () => {
     const defaults = select('');
     expect(defaults.status, defaults.stderr).toBe(0);
-    expect(JSON.parse(defaults.stdout).include.map((row: { story: string }) => row.story)).not.toContain('R18');
-    const requested = select('R18');
+    const matrix = JSON.parse(defaults.stdout) as { include: { story: string; timeout: number }[] };
+    expect(matrix.include.map(row => row.story)).toEqual(['R18', 'R10', 'R11']);
+    expect(matrix.include).toContainEqual({ story: 'R18', timeout: 3 });
+    const requested = select('R12');
     expect(requested.status, requested.stderr).toBe(0);
-    expect(JSON.parse(requested.stdout).include).toEqual([{ story: 'R18', timeout: 5 }]);
+    expect(JSON.parse(requested.stdout).include).toEqual([{ story: 'R12', timeout: 2 }]);
+  });
+
+  it('rejects the retired hosting story IDs', () => {
+    for (const id of ['R03', 'R05']) expect(select(id).status, id).not.toBe(0);
   });
 
   it('keeps move story budgets and leaves the flaky ones out of the default set', () => {
@@ -148,7 +154,7 @@ describe('headless story matrix', () => {
       expect(JSON.parse(select(story).stdout).include).toEqual([{ story, timeout: 5 }]);
   });
 
-  it('places R05 before its step limit without charging checkout against that step', () => {
+  it('uses the matrix timeout for the story step and preserves the overall deadline', () => {
     const job = workflow('herdr-stories').jobs.stories!;
     const setup = step(job, 'Set overall story deadline'), story = step(job, 'Run headless story');
     const root = mkdtempSync(join(process.cwd(), '.spider/scratch/story-deadline-'));
@@ -158,16 +164,16 @@ describe('headless story matrix', () => {
       writeFileSync(join(root, 'bin/npm'), '#!/bin/sh\nprintf "%s\\n" "$SPIDER_HERDR_E2E_DEADLINE" > "$CAPTURE"\n', { mode: 0o700 });
       const output = join(root, 'environment'), capture = join(root, 'effective-deadline');
       const env = { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, GITHUB_ENV: output,
-        JOB_MINUTES: '2', STEP_MINUTES: '1', SHORT_DEADLINE: '', CLOCK_NOW: '1000000', CAPTURE: capture, STORY: 'R05' };
+        JOB_MINUTES: '2', STEP_MINUTES: '2', SHORT_DEADLINE: '', CLOCK_NOW: '1000000', CAPTURE: capture, STORY: 'R04' };
       const shell = (source: string, extra = {}) => spawnSync('bash', ['-e', '-o', 'pipefail', '-c', source], { env: { ...env, ...extra }, encoding: 'utf8' });
       expect(shell(setup.run!).status).toBe(0);
       expect(readFileSync(output, 'utf8')).toBe('SPIDER_HERDR_E2E_DEADLINE=1100000\n');
-      expect(shell(story.run!, { CLOCK_NOW: '1030000', SPIDER_HERDR_E2E_DEADLINE: '1100000' }).status).toBe(0);
-      expect(readFileSync(capture, 'utf8')).toBe('1070000\n');
+      expect(shell(story.run!, { CLOCK_NOW: '1030000', SPIDER_HERDR_E2E_DEADLINE: '1200000' }).status).toBe(0);
+      expect(readFileSync(capture, 'utf8')).toBe('1130000\n');
       expect(shell(story.run!, { CLOCK_NOW: '1030000', SPIDER_HERDR_E2E_DEADLINE: '1040000' }).status).toBe(0);
       expect(readFileSync(capture, 'utf8')).toBe('1040000\n');
       expect(shell(setup.run!, { SHORT_DEADLINE: '101' }).status).not.toBe(0);
-      expect(story.env?.STEP_MINUTES).toBe("${{ matrix.story == 'R05' && 1 || matrix.timeout }}");
+      expect(story.env?.STEP_MINUTES).toBe('${{ matrix.timeout }}');
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
@@ -241,7 +247,7 @@ for (const line of lines) {
     expect(story.steps.some(item => item.run?.includes('npm ci'))).toBe(false);
     const run = step(story, 'Run headless story');
     expect(run.env?.STORY).toBe('${{ matrix.story }}');
-    expect(run['timeout-minutes']).toBe("${{ matrix.story == 'R05' && 1 || matrix.timeout }}");
+    expect(run['timeout-minutes']).toBe('${{ matrix.timeout }}');
     expect(run.run).toContain('--built --tier headless --story "$stories"');
     const artifacts = step(story, 'Upload failure artifacts');
     expect(artifacts.if).toBe('failure()');

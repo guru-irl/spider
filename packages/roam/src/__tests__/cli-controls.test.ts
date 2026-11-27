@@ -28,6 +28,7 @@ import * as hosting from "../production-supervisor";
 import * as hubRuntime from "../hub";
 import * as intercomRuntime from "../intercom-runtime";
 import * as localDiagnostics from "../local-diagnostics";
+import * as upgradeInventory from "../legacy-upgrade";
 import * as appModule from "@spider/herdr/client/app";
 import * as hcModule from "@spider/herdr/client/hc";
 import { createClientFixture } from "../../../herdr/src/__tests__/testutil";
@@ -646,25 +647,65 @@ it("unknown machines and malformed options cannot dispatch a sync", async () => 
   expect(f.calls).toEqual([]);
 }, 5000);
 
-it("disabled local doctor prints one line without inspecting move bindings", async () => {
+it("disabled local doctor prints status and upgrade readiness without inspecting move bindings", async () => {
   const f = await fixture(HUB, undefined, false), file = join(f.root, "roam/config.json");
   const config = JSON.parse(readFileSync(file, "utf8")); config.enabled = false; config.peers = [];
   writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  const global = openDb(join(f.root, "spider.db")); migrate(global, "global", { machineId: HUB, globalRoot: f.root }); global.close();
   const doctor = vi.spyOn(localDiagnostics, "runLocalDoctor");
   expect(await f.invoke(["roam", "doctor"])).toBe(0);
-  expect(f.out.join("")).toBe("Roaming is disabled.\n"); expect(f.err).toEqual([]);
+  expect(f.out.join("")).toBe("Roaming is disabled.\nlegacy-upgrade-ready: No unfinished legacy work was found. See the roaming upgrade guide in the spider repository at docs/guide/roaming-upgrade.md.\n");
+  expect(f.err).toEqual([]);
   expect(doctor).not.toHaveBeenCalled();
+}, 5000);
+
+it("fresh disabled doctor performs one upgrade inventory when identity is absent", async () => {
+  const f = await fixture(HUB, undefined, false);
+  unlinkSync(join(f.root, "roam", "config.json")); unlinkSync(join(f.root, "roam", "machine.json"));
+  const inspect = vi.spyOn(upgradeInventory, "inspectLegacyUpgrade");
+  expect(await f.invoke(["roam", "doctor"])).toBe(0);
+  expect(f.out.join("")).toBe("Roaming is disabled.\n");
+  expect(inspect).toHaveBeenCalledExactlyOnceWith(f.root);
 }, 5000);
 
 it("disabled local doctor adds only real peer flag mismatches", async () => {
   const f = await fixture(HUB, undefined, false), file = join(f.root, "roam/config.json");
   const config = JSON.parse(readFileSync(file, "utf8")); config.enabled = false; writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  const global = openDb(join(f.root, "spider.db")); migrate(global, "global", { machineId: HUB, globalRoot: f.root }); global.close();
   vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
   vi.spyOn(transportModule, "createTransport").mockReturnValue({} as never);
   vi.spyOn(remoteObservations, "remoteDoctor").mockResolvedValue({ enabled: true, diagnostics: [], consumers: [] });
   expect(await f.invoke(["roam", "doctor"])).toBe(0);
-  expect(f.out.join("").trim().split("\n")).toEqual(["Roaming is disabled.", `peer-enabled-mismatch:${BOX}`]);
+  expect(f.out.join("").trim().split("\n")).toEqual(["Roaming is disabled.", "legacy-upgrade-ready: No unfinished legacy work was found. See the roaming upgrade guide in the spider repository at docs/guide/roaming-upgrade.md.", `peer-enabled-mismatch:${BOX}`]);
   expect(f.out.join("")).not.toContain("adapter-unbound");
+}, 5000);
+
+it.each(["blocked", "unverified"] as const)("remote doctor shows a disabled peer's %s upgrade", async status => {
+  const f = await fixture(HUB, undefined, false), remote = join(f.root, "peer");
+  mkdirSync(join(remote, "roam"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(remote, "roam", "config.json"), JSON.stringify({ enabled: false, role: "box", machineId: BOX,
+    hubMachineId: HUB, coreUnit: "fixture.service" }), { mode: 0o600 });
+  writeFileSync(join(remote, "roam", "machine.json"), JSON.stringify({ machineId: BOX }), { mode: 0o600 });
+  const db = openDb(join(remote, "spider.db"));
+  try { migrate(db, "global", { machineId: BOX, globalRoot: remote }); } finally { db.close(); }
+  const file = join(remote, "roam", "journal.db");
+  if (status === "blocked") openJournal(file).begin({ id: "peer-pending-move", kind: "move", machineId: HUB, expectedEpoch: 1, args: {} });
+  else writeFileSync(file, "corrupt journal fixture", { mode: 0o600 });
+
+  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
+  vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: unknown) { return peer; },
+    async exec(_peer: unknown, argv: readonly string[]) {
+      const output: string[] = [];
+      expect(await main(["--global-root", remote, ...argv], { out: text => output.push(text), err: text => { throw new Error(text); } })).toBe(0);
+      return Buffer.from(output.join(""));
+    },
+  } as never);
+  expect(await f.invoke(["roam", "doctor", BOX, "--json"])).toBe(1);
+  const report = JSON.parse(f.out.join(""));
+  expect(report).toMatchObject({ reason: "doctor-blocked", value: { enabled: false, diagnostics: expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(status === "blocked"
+      ? /^legacy-upgrade-blocked:.*peer-pending-move/ : /^legacy-upgrade-unverified:/) }),
+  ]) } });
 }, 5000);
 
 it("enabled doctor summarizes an absent move-binding inventory once", async () => {

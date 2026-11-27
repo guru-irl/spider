@@ -139,6 +139,31 @@ it("reports a remote ask timeout or lost call without resending", async () => {
   }
 });
 
+it("allows only one outstanding remote ask", async () => {
+  const questions: V0Text[] = [];
+  let finish!: (value: { kind: "no_reply"; id: string }) => void;
+  const prepare: V0Prepare = async () => ({
+    kind: "remote", label: "b/ben",
+    async send(message) { return { kind: "socket_delivered", id: message.id }; },
+    async ask(message) {
+      questions.push(message);
+      if (questions.length === 1) return new Promise(resolve => { finish = resolve; });
+      return { kind: "no_reply", id: message.id };
+    },
+  });
+  const f = await fixture({ homeEpoch: () => 7, prepare });
+  try {
+    const args = { action: "ask", to: "ben", message: "question" };
+    const first = f.tool.execute("ask-1", args, new AbortController().signal, undefined, f.ctx);
+    await vi.waitFor(() => expect(questions).toHaveLength(1));
+    const second = await f.tool.execute("ask-2", args, new AbortController().signal, undefined, f.ctx);
+    expect(second.content[0].text).toBe("Already waiting for a reply");
+    expect(questions).toHaveLength(1);
+    finish({ kind: "no_reply", id: questions[0].id });
+    await first;
+  } finally { if (questions[0]) finish?.({ kind: "no_reply", id: questions[0].id }); await f.cleanup(); }
+});
+
 it("does not dispatch a remote ask when confirmation is refused", async () => {
   const questions: V0Text[] = [];
   const prepare: V0Prepare = async () => ({

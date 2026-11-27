@@ -16,7 +16,7 @@ import { InlineMessageComponent } from "./ui/inline-message.js";
 import { getAskTimeoutMs, loadConfig, type IntercomConfig } from "./config.js";
 import { EXTENSION_BUS_FEATURE } from "./types.js";
 import type { Attachment, BrokerMessage, LocalSessionInfo, Message, MessageControl, MessageReceipt, MessageReceiptStatus, SessionInfo, SessionRegistration } from "./types.js";
-import { V0_ASK_MAX_MS, type V0Code, type V0ToolOptions } from "./roam-v0.js";
+import { V0_ASK_MAX_MS, type V0Code, type V0Delivery, type V0ToolOptions } from "./roam-v0.js";
 import {
   INTERCOM_EXTENSION_REGISTER_EVENT,
   INTERCOM_EXTENSION_REGISTRY_READY_EVENT,
@@ -762,6 +762,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     const receipt = latestOutboundReceipts.get(messageId);
     return receipt ? receipt.status : fallback;
   }
+  let v0AskInFlight: symbol | null = null;
   let replyWaiter: {
     from: SessionAddress;
     remote: boolean;
@@ -1810,6 +1811,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     clearStartupConnectTimer();
     clearNamePollTimer();
     rejectReplyWaiter(new Error("Session replaced"));
+    v0AskInFlight = null;
     replyTracker.reset();
     if (previousClient) {
       client = null;
@@ -2103,6 +2105,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     clearDisconnectWarning();
     restoreIntercomSessionId();
     rejectReplyWaiter(new Error(event.reason === "reload" ? "session-reloaded" : "Session shutting down"));
+    v0AskInFlight = null;
     replyTracker.reset();
     agentRunning = false;
     activeTools.clear();
@@ -2868,7 +2871,7 @@ Usage:
             };
           }
 
-          if (replyWaiter) {
+          if (replyWaiter || v0AskInFlight) {
             return {
               content: [{ type: "text", text: "Already waiting for a reply" }],
               details: { error: true },
@@ -2914,9 +2917,16 @@ Usage:
                       from.v0HomeEpoch === undefined || v0.homeEpoch(from.address!.sessionId) !== from.v0HomeEpoch) {
                     return { content: [{ type: "text", text: V0_REFUSAL_TEXT.changed }], details: { error: true, code: "changed" } };
                   }
+                  if (replyWaiter || v0AskInFlight) {
+                    return { content: [{ type: "text", text: "Already waiting for a reply" }], details: { error: true } };
+                  }
                   questionId = randomUUID();
                   const question = { id: questionId, timestamp: Date.now(), text: message };
-                  const result = await plan.ask(question, Math.min(askTimeoutMs, V0_ASK_MAX_MS), _signal);
+                  const token = Symbol("v0-ask");
+                  v0AskInFlight = token;
+                  let result: V0Delivery;
+                  try { result = await plan.ask(question, Math.min(askTimeoutMs, V0_ASK_MAX_MS), _signal); }
+                  finally { if (v0AskInFlight === token) v0AskInFlight = null; }
                   if (result.kind === "refused") {
                     return { content: [{ type: "text", text: V0_REFUSAL_TEXT[result.code] }], details: { error: true, code: result.code } };
                   }
@@ -2966,7 +2976,7 @@ Usage:
                 details: { error: true },
               };
             }
-            if (replyWaiter) {
+            if (replyWaiter || v0AskInFlight) {
               return {
                 content: [{ type: "text", text: "Already waiting for a reply" }],
                 details: { error: true },

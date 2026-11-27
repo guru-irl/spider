@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { inspectIdLock } from '../../src/sessions/id-lock.js';
 import { createSessionLeases } from '../../src/sessions/lease.js';
 import { expect } from 'vitest';
-import { countHostedLaunches, digestFile, v0HostingFixture, type HostedOwner, type V0HostingFixture } from '../fixtures/roam-hosting.js';
+import { assertHostedLaunches, digestFile, v0HostingFixture, type HostedOwner, type V0HostingFixture } from '../fixtures/roam-hosting.js';
 import { assertNativeLaunch } from '../fixtures/relocate-assertions.js';
 import { mark, parentTurns, runChild, text, tool } from '../fixtures/child-scripts.js';
 import { writeScript, type ObservedEvent } from '../harness/pi.js';
@@ -113,8 +113,7 @@ async function restartAndRestore(suite: Suite): Promise<void> {
     const deliveries = entries.filter(row => row.type === 'message' && row.message?.role === 'user' && JSON.stringify(row.message.content).includes(mark('trigger')));
     expect(deliveries).toHaveLength(1);
     expect((await fixture.owners()).map(value => value.pid)).toEqual([restored.pid]);
-    const launchCount = countHostedLaunches(await suite.cores!.records(), fixture.sessionId, fixture.file);
-    expect(launchCount, 'session launch attempts').toBe(2);
+    const launchCount = assertHostedLaunches(await suite.cores!.records(), suite.pi.launcher, fixture.file);
     const finalUnits = (await readdir(unitDirectory)).sort();
     expect(finalUnits).toEqual(expectedUnits);
     const coreAfter = await digestFile(fixture.coreUnit);

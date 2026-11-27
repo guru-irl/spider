@@ -2362,7 +2362,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
           }
         }
 
-        if (replyWaiter) {
+        if (replyWaiter || v0AskInFlight) {
           return {
             content: [{ type: "text", text: "Already waiting for a reply" }],
             details: { error: true },

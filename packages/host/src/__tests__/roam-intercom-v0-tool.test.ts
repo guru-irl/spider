@@ -77,7 +77,7 @@ async function fixture(v0?: V0ToolOptions, options: { confirm?: () => Promise<bo
     expect((await observer.listSessions()).some(session => session.id === "sender-session")).toBe(true);
   }, { timeout: 2000, interval: 20 });
   return {
-    ctx, entries, inbound, renderers, emit,
+    ctx, entries, inbound, renderers, emit, tools,
     switchSession(id: string) { sessionId = id; },
     tool: tools.find(tool => tool.name === "intercom")!,
     async cleanup() { await emit("session_shutdown", { reason: "quit" }); rmSync(configPath, { force: true }); },
@@ -370,6 +370,43 @@ it("allows only one outstanding remote ask", async () => {
     finish({ kind: "no_reply", id: questions[0].id });
     await first;
   } finally { if (questions[0]) finish?.({ kind: "no_reply", id: questions[0].id }); await f.cleanup(); }
+});
+
+it("does not start a supervisor ask while a roaming ask is pending", async () => {
+  const values = { PI_SUBAGENT_ORCHESTRATOR_TARGET: "observer", PI_SUBAGENT_RUN_ID: "fixture-run",
+    PI_SUBAGENT_CHILD_AGENT: "worker", PI_SUBAGENT_CHILD_INDEX: "1" };
+  const prior = Object.fromEntries(Object.keys(values).map(key => [key, process.env[key]]));
+  Object.assign(process.env, values);
+  let finish!: (result: V0Delivery) => void, question: V0Text | undefined;
+  const prepare: V0Prepare = async () => ({
+    kind: "remote", label: "b/ben",
+    async send(message) { return { kind: "socket_delivered", id: message.id }; },
+    async ask(message) { question = message; return new Promise(resolve => { finish = resolve; }); },
+  });
+  const inbox: unknown[] = [];
+  const onMessage = (...args: unknown[]) => inbox.push(args);
+  observer.on("message", onMessage);
+  let f: Awaited<ReturnType<typeof fixture>> | undefined;
+  const abort = new AbortController();
+  let first: Promise<any> | undefined, second: Promise<any> | undefined, result: any;
+  try {
+    f = await fixture({ homeEpoch: () => 7, prepare });
+    const supervisor = f.tools.find(tool => tool.name === "contact_supervisor")!;
+    expect(supervisor).toBeDefined();
+    first = f.tool.execute("remote-ask", { action: "ask", to: "ben", message: "first" }, new AbortController().signal, undefined, f.ctx);
+    await vi.waitFor(() => expect(question).toBeDefined());
+    second = supervisor.execute("supervisor-ask", { reason: "need_decision", message: "second" }, abort.signal, undefined, f.ctx)
+      .then((value: any) => { result = value; return value; });
+    await vi.waitFor(() => expect(Boolean(result) || inbox.length > 0).toBe(true));
+    expect(inbox).toEqual([]);
+    expect(result.content[0].text).toBe("Already waiting for a reply");
+  } finally {
+    abort.abort(); await second;
+    if (question) finish?.({ kind: "no_reply", id: question.id });
+    await first; if (f) await f.cleanup();
+    observer.off("message", onMessage);
+    for (const [key, value] of Object.entries(prior)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
 });
 
 it("renders and replies to a peer ask through the private broker", async () => {

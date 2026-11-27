@@ -89,13 +89,20 @@ export interface CapturedSession {
   transcriptArtifact: ArtifactManifest;
   bundleArtifact: ArtifactManifest;
 }
-export interface InstalledSession { placement: SessionPlacement; session: SessionManifest }
+export interface InstalledSession {
+  placement: SessionPlacement;
+  session: SessionManifest;
+  // lane 3: adapters-I3
+  branchDetached?: true;
+}
 export interface RelocateSuccess {
   moveId: RelocateId | null;
   home: RunningHome;
   placement: SessionPlacement;
   terminal: string;
   disposition: "relocated" | "already-home" | "undone";
+  // lane 3: adapters-I3
+  branchRecovery?: { savedBranch: string; command: string };
 }
 export type RelocateOutcome =
   | { ok: true; value: RelocateSuccess }

@@ -296,6 +296,22 @@ describe("relocate", () => {
     expect(s.processes).toEqual(new Set([source]));
   });
 
+  it.each([false, true])("reports a safe git command for a detached destination (retry=%s)", async retry => {
+    const s = state(), p = ports(s);
+    const install = p.installDestination;
+    p.installDestination = async (...args) => {
+      const result = await install(...args);
+      return result.ok ? { ok: true, value: { ...result.value, branchDetached: true } } : result;
+    };
+    if (retry) {
+      s.failAfter = "start-destination";
+      expect(await relocate(request, p)).toMatchObject({ ok: false, step: "start-destination" });
+    }
+    expect(await relocate(request, p)).toMatchObject({ ok: true, value: { branchRecovery: {
+      savedBranch: "main", command: `git switch -c spider-relocated-3-111111111111 ${"1".repeat(40)}`,
+    } } });
+  });
+
   it("waits for a cold destination to confirm without starting twice", async () => {
     vi.useFakeTimers();
     try {

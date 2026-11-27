@@ -1,6 +1,6 @@
 import type { Clock } from "../contracts";
 import type {
-  MovingHome, RelocateCheckpoint, RelocateHome, RelocateId, RelocateOutcome,
+  CapturedSession, InstalledSession, MovingHome, RelocateCheckpoint, RelocateHome, RelocateId, RelocateOutcome, RelocateSuccess,
   RelocatePlan, RelocatePorts, RelocateRequest, RelocateStep, RunningHome, SessionPlacement,
   SettledHome, V0Refusal, V0RefusalCode, V0Result,
 } from "./types";
@@ -19,6 +19,14 @@ function movingHome(plan: RelocatePlan): MovingHome {
 function committedHome(plan: RelocatePlan): RunningHome {
   return { ...plan.source, machineId: plan.destinationPlacement.machineId, state: "running",
     epoch: plan.source.epoch + 2, moveId: plan.moveId, destination: null, updatedAt: plan.startedAt };
+}
+function branchAdvice(home: RunningHome, installed: InstalledSession | null, captured: CapturedSession | null): Pick<RelocateSuccess, "branchRecovery"> {
+  const workspace = captured?.workspace;
+  if (installed?.branchDetached !== true || !workspace?.branch?.startsWith("refs/heads/") ||
+      !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(workspace.head)) return {};
+  const savedBranch = workspace.branch.slice("refs/heads/".length);
+  const branch = `spider-relocated-${home.epoch}-${workspace.head.slice(0, 12)}`;
+  return { branchRecovery: { savedBranch, command: `git switch -c ${branch} ${workspace.head}` } };
 }
 function restoredHome(plan: RelocatePlan): RunningHome {
   return { ...plan.source, state: "running", epoch: plan.source.epoch + 2,
@@ -163,7 +171,8 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts, r
           value(await ports.start(home, placement));
           step = "confirm";
           const confirmed = await confirm(home, placement);
-          const result = { moveId, home, placement, terminal: confirmed.terminal, disposition };
+          const result = { moveId, home, placement, terminal: confirmed.terminal, disposition,
+            ...(disposition === "relocated" ? branchAdvice(home, pending.installed, pending.captured) : {}) };
           await save({ ...pending, completed: disposition === "relocated" ? steps : pending.completed,
             terminal: confirmed.terminal, result });
           return { ok: true, value: result };
@@ -278,7 +287,7 @@ export async function relocate(request: RelocateRequest, ports: RelocatePorts, r
       step = "confirm";
       const confirmed = await confirm(committed, installed.placement);
       const result = { moveId, home: committed, placement: installed.placement,
-        terminal: confirmed.terminal, disposition: "relocated" as const };
+        terminal: confirmed.terminal, disposition: "relocated" as const, ...branchAdvice(committed, installed, captured) };
       await complete(step, { terminal: confirmed.terminal, result });
       return { ok: true, value: result };
     });

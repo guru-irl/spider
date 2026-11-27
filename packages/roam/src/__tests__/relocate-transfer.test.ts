@@ -104,8 +104,13 @@ describe("v0 real transfer",()=>{
   expect(bytes.subarray(bytes.indexOf(10)+1)).toEqual(original.subarray(original.indexOf(10)+1));
   expect(installed.value.session.leaf).toBe(captured.value.session.leaf);
   expect(installed.value.session.historySha256).toBe(captured.value.session.historySha256);
-  if(linked) expect(f.git(f.checkout,"symbolic-ref","HEAD")).toBe(captured.value.workspace.branch);
-  else expect(f.destination.journal.read(f.plan.moveId)).toEqual(expect.arrayContaining([expect.objectContaining({action:"workspace-branch-conflict"})]));
+  if(linked) {
+   expect(f.git(f.checkout,"symbolic-ref","HEAD")).toBe(captured.value.workspace.branch);
+   expect(installed.value.branchDetached).toBeUndefined();
+  } else {
+   expect(f.destination.journal.read(f.plan.moveId)).toEqual(expect.arrayContaining([expect.objectContaining({action:"workspace-branch-conflict"})]));
+   expect(installed.value.branchDetached).toBe(true);
+  }
   expect(f.git(f.checkout,"rev-parse","HEAD")).toBe(captured.value.workspace.head);expect(f.git(f.checkout,"write-tree")).toBe(captured.value.workspace.indexTree);expect(readFileSync(join(f.checkout,"file.txt"),"utf8")).toBe("unstaged\n");expect(readFileSync(join(f.checkout,"untracked.txt"),"utf8")).toBe("untracked\n");
   expect(await installLocalSession(f.plan,captured.value,f.home,f.destination,undefined,async()=>({kind:"free"}))).toEqual(installed);expect(readFileSync(f.plan.destinationPlacement.file)).toEqual(bytes);
  });

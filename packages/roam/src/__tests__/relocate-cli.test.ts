@@ -197,6 +197,16 @@ describe("v0 controls", () => {
     const duplicate = fixture(); await runV0Control({ kind: "relocate", session: "first", machine: "box-a.invalid" }, { ...config, peers: [...config.peers, { ...config.peers[0], machineId: mac }] }, catalog, duplicate.services, duplicate.io);
     expect(duplicate.services.relocate).not.toHaveBeenCalled();
   });
+  it("prints the branch recovery command on successful relocate", async () => {
+    const f = fixture();
+    const result = await f.services.relocate({ sessionId: home.sessionId, destinationMachine: box });
+    if (!result.ok) throw new Error("fixture expects success");
+    const command = "git switch -c spider-relocated-3-111111111111 1111111111111111111111111111111111111111";
+    vi.mocked(f.services.relocate).mockResolvedValue({ ok: true, value: { ...result.value, branchRecovery: { savedBranch: "main", command } } });
+    expect(await runV0Control({ kind: "relocate", session: "session-abc", machine: "box-a.invalid" }, config, catalog, f.services, f.io)).toBe(0);
+    expect(f.out.join("")).toContain(command);
+    expect(f.out.join("")).toMatch(/detached.*main/i);
+  });
   it("relocate from a box is one actionable refusal", async () => {
     const f = fixture(); expect(await runV0Control({ kind: "relocate", session: "first", machine: macSelector }, { ...config, role: "box", machineId: box }, catalog, f.services, f.io, { json: true })).toBe(1);
     expect(JSON.parse(f.out.join(""))).toMatchObject({ ok: false, refusal: { code: "mac-required", message: expect.any(String), nextStep: expect.stringContaining("Mac") } });

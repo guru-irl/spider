@@ -132,6 +132,8 @@ export async function installLocalSession(plan:RelocatePlan,captured:CapturedSes
     const prior=options.journal.read(plan.moveId).some(row=>row.action==="workspace-prepared" && row.result.root===checkout && row.result.stage==="final");
     if(!prior){const prepared=await prepareWorkspace(initial.snapshot,checkout,imports);await verifyWorkspace(prepared,imports);}
     const prepared=await prepareWorkspace(captured.workspace,checkout,imports);await verifyWorkspace(prepared,imports);
+    const branchDetached = captured.workspace.branch !== null &&
+      (await options.workspaceImport.run(checkout, ["git", "rev-parse", "--abbrev-ref", "HEAD"])).toString().trim() === "HEAD";
     const incoming=createStorePort(options.config,options.globalDb,{unmappedWorktree:`worktree:${placement.repoKey}:${placement.workspaceId}`});
     try {incoming.openStore(`worktree:${placement.repoKey}:${placement.workspaceId}`);}finally{incoming.close();}
     await mapWorkspace(options.globalDb,{repoKey:placement.repoKey,workspaceId:placement.workspaceId,path:checkout});
@@ -142,7 +144,7 @@ export async function installLocalSession(plan:RelocatePlan,captured:CapturedSes
     });
     const local=createLocalRuntime(options),activated=await local.activate(home,placement);if(!activated.ok)return activated;
     writeLocal(options.globalDb,"relocate-incoming",`worktree:${placement.repoKey}:${placement.workspaceId}`,undefined);
-    const installed={placement,session:{...staged,file:placement.file}};
+    const installed: InstalledSession={placement,session:{...staged,file:placement.file}, ...(branchDetached ? { branchDetached: true } : {})};
     options.journal.record(plan.moveId,"relocate-installed",json({installed}));
     return {ok:true,value:installed};
   } catch(error) {

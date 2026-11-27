@@ -567,6 +567,33 @@ describe("private roaming broker", () => {
     expect(result).toEqual({ kind: "refused", code: "incomplete" });
   });
 
+  it("keeps local asks distinct from roaming asks with the same message ID", async () => {
+    const ben = await register("stable-b", "b", "ben", "scope-1", 3);
+    const alice = await register("local-a", "local-a", "collision-alice", "scope-1");
+    const charlie = await register("local-c", "local-c", "collision-charlie", "scope-1");
+    const target = ((await lookup("scope-1", "name", "ben")).targets as V0Endpoint[])[0];
+    const question = { ...message, id: "collision-question" };
+    const inbound = once(ben, "message");
+    const controller = new AbortController();
+    const pending = requestV0Broker(getAgentDirPath(), { kind: "ask", from: origin, target, message: question, timeoutMs: 2000 }, controller.signal);
+    try {
+      await inbound;
+      const inbox: unknown[] = [];
+      charlie.on("message", (...args) => inbox.push(args));
+      expect(await alice.send("collision-charlie", { text: "duplicate", messageId: question.id, expectsReply: true }))
+        .toMatchObject({ delivered: false, code: "E_INVALID_MESSAGE" });
+      await charlie.listSessions();
+      expect(inbox).toEqual([]);
+      expect(await ben.send("sender", { text: "remote answer", replyTo: question.id, messageId: "remote-collision-reply" })).toMatchObject({ delivered: true });
+      expect(await pending).toEqual({ kind: "replied", id: question.id, replyId: "remote-collision-reply", text: "remote answer" });
+
+      expect(await alice.send("collision-charlie", { text: "local question", messageId: question.id, expectsReply: true })).toMatchObject({ delivered: true });
+      const localReply = once(alice, "message");
+      expect(await charlie.send("collision-alice", { text: "local answer", replyTo: question.id, messageId: "local-collision-reply" })).toMatchObject({ delivered: true });
+      expect((await localReply)[1]).toMatchObject({ id: "local-collision-reply", content: { text: "local answer" } });
+    } finally { controller.abort(); await pending; }
+  });
+
   it("advertises roaming over its private Unix socket", async () => {
     const socket = net.connect(getBrokerSocketPath());
     try {

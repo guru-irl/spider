@@ -461,6 +461,8 @@ class IntercomBroker {
 
   private handleV0Reply(socket: net.Socket, from: ConnectedSession, to: string, message: Message): boolean {
     if (!message.replyTo) return false;
+    const localAsk = this.askEdges.get(message.replyTo);
+    if (localAsk?.to === from.key && this.findSessions(to, from.scopeId).some(target => target.key === localAsk.from)) return false;
     this.pruneV0Asks();
     const ask = this.v0Asks.get(message.replyTo);
     if (!ask) {
@@ -1120,6 +1122,9 @@ class IntercomBroker {
           break;
         }
 
+        if (message.expectsReply && this.v0Asks.get(message.id)?.state === "waiting") {
+          this.writeDeliveryFailure(socket, message.id, "Message ID is already in use by a remote ask", "E_INVALID_MESSAGE"); break;
+        }
         if (message.replyTo && this.handleV0Reply(socket, fromSession, clientMessage.to, message)) break;
         const brokerReceivedAt = Date.now();
         this.pruneAskEdges();

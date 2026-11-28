@@ -1,7 +1,7 @@
 import { brokerRelayObserver } from "./relay-observations.js";
 import { V0_INTERCOM_MS } from "../roam-v0.js";
 import {
-  RELAY_HOLD_MS, RELAY_MAX_LINKS, RELAY_MAX_SLOTS, RELAY_POLL_CALL_MS, RELAY_POLL_REMOTE_MS, RELAY_PROTOCOL_VERSION,
+  RELAY_HOLD_MS, RELAY_MAX_LINKS, RELAY_MAX_SLOTS, RELAY_POLL_CALL_MS, RELAY_POLL_REMOTE_MS, RELAY_PROTOCOL_VERSION, RELAY_RESULT_RESERVE_MS,
   relayReady, relayRefused, relayUnknown, type RelayLinkView, type RelayPoll, type RelayPollReply, type RelayReady,
   type RelayResult, type RelaySubmit,
 } from "../relay-protocol.js";
@@ -211,7 +211,7 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
     if (closed) return Promise.resolve(relayRefused(id, "relay-stopping"));
     const link = relays.get(relayId)?.current;
     if (link) refresh(link);
-    if (!link || link.view.state !== "up" || signal?.aborted || remainingMs <= 0)
+    if (!link || link.view.state !== "up" || signal?.aborted || remainingMs <= RELAY_RESULT_RESERVE_MS)
       return Promise.resolve(relayRefused(id, "unreachable"));
     const now = clock.now();
     for (const pending of link.pending.values()) if (pending) expire(pending, now);
@@ -221,7 +221,8 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
     return new Promise(resolve => {
       let cancelTimer = () => {};
       const deadlineMs = now + Math.min(remainingMs, V0_INTERCOM_MS);
-      const untilMs = Math.min(now + HAND_OFF_MS, deadlineMs);
+      // Leave time to return a proved refusal over the private socket.
+      const untilMs = Math.min(now + HAND_OFF_MS, deadlineMs - RELAY_RESULT_RESERVE_MS);
       const abort = () => pending.fail("unreachable");
       const pending: Pending = {
         stage: { kind: "waiting", submit, untilMs }, deadlineMs,

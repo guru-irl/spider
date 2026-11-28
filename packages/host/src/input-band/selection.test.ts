@@ -68,7 +68,7 @@ function install(tui: TuiAltScreen) {
   factory!(tui, editorTheme, keys);
 }
 
-const blue = "rgb(58,71,100)";
+const blue = "rgb(38,79,120)";
 describe("fullscreen selection", () => {
   it("draws clean selection backgrounds while copying the same bytes as Pi", async () => {
     const copied: string[] = [];

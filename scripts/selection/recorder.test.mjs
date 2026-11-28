@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 
 import { reduce } from './reduce.mjs';
@@ -169,6 +169,38 @@ test('decodes file URLs and does not mistake a temporary-root prefix for the roo
   writeFileSync(join(raw, '1-abc.ndjson'), JSON.stringify({ kind: 'bundle', url: url.href, sha256: 'unmatched' }) + '\n');
   const { records } = reduce({ root, tmpRoot: join(root, 'tmp'), rawDir: raw, mapsDir: maps, reportFile });
   assert.deepEqual(records[id].unresolved, ['tmp-other/a b.mjs']);
+});
+
+test('reduces encoded query and fragment suffixes on scripts and bundle sources', t => {
+  const { root, raw, maps, workspace } = fixture(t);
+  const bundle = 'export {};';
+  writeFileSync(join(root, 'dist/reference.mjs'), bundle);
+  writeFileSync(join(maps, 'reference.mjs.map'), JSON.stringify({ version: 3,
+    sources: ['../src/style.css%3Furl', '../src/entry.ts%23inline', '../src/literal.txt?raw'], names: [], mappings: '' }));
+  const reportFile = join(workspace, 'vitest.json');
+  writeFileSync(reportFile, JSON.stringify({ testResults: [{ name: join(root, id), status: 'passed', startTime: 0, endTime: 1 }] }));
+  writeFileSync(join(raw, '1-abc.json'), JSON.stringify({ test: id, worker: true, pid: 3 }));
+  const scripts = [
+    { kind: 'source', url: pathToFileURL(join(root, 'src/data.ts?raw')).href },
+    { kind: 'bundle', url: pathToFileURL(join(root, 'dist/reference.mjs')).href, sha256: createHash('sha256').update(bundle).digest('hex') },
+  ];
+  writeFileSync(join(raw, '1-abc.ndjson'), scripts.map(script => JSON.stringify(script) + '\n').join(''));
+  const { records } = reduce({ root, rawDir: raw, mapsDir: maps, reportFile });
+  assert.deepEqual(records[id].reads, ['src/data.ts', 'src/entry.ts', 'src/literal.txt', 'src/style.css']);
+});
+
+test('records the real file when the inspector encodes the Vite query in its URL', t => {
+  const { root, raw } = fixture(t);
+  const file = join(root, 'packages/example/src/raw-input.ts');
+  writeFileSync(file, 'export const value = 42;');
+  const url = pathToFileURL(file + '?raw').href;
+  // Vitest's evaluated module sets an encoded sourceURL for the transformed file.
+  const script = `eval(${JSON.stringify(`console.log(42);\n//# sourceURL=${url}`)});`;
+  const result = runNode(['--eval', script], { env: recorderEnv(root, raw) });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), '42');
+  assert.ok(records(raw).some(process => process.scripts.some(entry =>
+    entry.kind === 'source' && entry.url === pathToFileURL(file).href)));
 });
 
 test('counts unresolved observations by checkout, temporary, and other paths', t => {

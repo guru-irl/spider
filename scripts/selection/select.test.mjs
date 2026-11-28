@@ -175,6 +175,17 @@ test('runs every test whose record contains the changed source, including mapped
     records: { [a]: row({ reads: [0] }), [b]: row({ reads: [0], ranBundle: true }) } }), a, b);
 });
 
+test('selects raw, URL and inline readers recorded with Vite suffixes', async () => {
+  const machine = 'packages/db-core/src/roam/machine.ts';
+  const config = 'packages/roam/src/config.ts';
+  const identity = 'packages/roam/src/__tests__/bootstrap-identity.test.ts';
+  const payload = 'packages/roam/src/__tests__/provision-payload.test.ts';
+  const options = { inventory: [a, identity, payload], files: [machine, `${machine}?raw`, `${config}?url`, `${config}#inline`],
+    records: { [a]: row({ reads: [0] }), [identity]: row({ reads: [1] }), [payload]: row({ reads: [2, 3] }) } };
+  assertSelected(await fixture({ ...options, changes: [changed(machine)] }), a, identity);
+  assertSelected(await fixture({ ...options, changes: [changed(config, 'D')] }), payload);
+});
+
 test('uses static importers for a source not present in the map', async () => {
   const file = 'packages/one/src/new.ts';
   assertSelected(await fixture({ changes: [changed(file, 'A')], unmapped: { [file]: [b, d] } }), b, d);

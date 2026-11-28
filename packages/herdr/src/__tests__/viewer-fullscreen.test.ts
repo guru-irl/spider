@@ -132,7 +132,7 @@ test('invalid saved records mark the viewer credits as incomplete', async () => 
   viewer.presenter.snapshot(run, { protocol: RUN_VIEW_PROTOCOL, sessionFile: file, model: 'github-copilot/gpt-6.1-sol', contextWindow: 200000 });
   await vi.waitFor(() => {
     expect(plain()).toContain('Some saved session records could not be shown.');
-    expect(plain()).toContain('tail totals');
+    expect(plain()).toContain('partial totals');
     expect(plain()).toContain('? AIC');
   });
 });

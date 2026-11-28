@@ -125,7 +125,7 @@ test('viewer labels missing transcript history rather than claiming the tail is 
   view.addEntries([entry]);
   view.setHistoryTruncated();
   const footer = view.footerLines(120).map(stripTerminalSequences).join('\n');
-  expect(footer).toContain('tail totals');
+  expect(footer).toContain('partial totals');
   expect(footer).toContain('? AIC');
 });
 

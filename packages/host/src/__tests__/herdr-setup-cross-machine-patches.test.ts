@@ -1,19 +1,25 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import * as fs from 'node:fs/promises';
 import { afterEach, expect, test, vi } from 'vitest';
-import { mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rm, readdir, stat } from 'node:fs/promises';
 import { setupHerdr } from '../../../herdr/src/setup/installer.js';
 import { readJournal } from '../../../herdr/src/setup/backup.js';
-import { basename, join } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { cleanup } from './herdr-setup-fixture.js';
 import { fastRelease, tree } from './herdr-setup-cross-machine-fixture.js';
 import * as lookPatches from '@spider/herdr/look/patches';
 
+vi.mock('node:fs/promises', async importOriginal => {
+  const actual = await importOriginal<typeof fs>();
+  return { ...actual, rename: vi.fn(actual.rename), link: vi.fn(actual.link), mkdir: vi.fn(actual.mkdir) };
+});
+const realFs = await vi.importActual<typeof fs>('node:fs/promises');
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
-afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
+afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); for (const name of ['rename', 'link', 'mkdir'] as const) vi.mocked(fs[name]).mockImplementation(realFs[name] as never); });
 
 test('cross-machine helper digests affect the setup fingerprint', async () => {
   const f = await fastRelease('0.1.16'), path = join(f.root, 'packages/herdr/assets/look/cross-machine-patches.json');
@@ -44,6 +50,38 @@ test.each(['recipe', 'menu'] as const)('B refuses a missing A %s before staging'
 });
 
 for (const version of ['0.1.13', '0.1.16'] as const) {
+  test(`${version} publishes complete mods before the layout can reference them`, async () => {
+    const f = await fastRelease(version), mods = join(f.h.directories.app, 'mods');
+    const layout = join(f.h.directories.app, 'layouts/spider-glass.json');
+    const incomplete: string[] = [], published: string[] = [];
+    const inspect = async (directory: string) => {
+      const files = await readdir(directory).catch((): string[] => []);
+      if (!files.includes('mod.json') || !files.includes('main.js')) { incomplete.push(basename(directory)); return; }
+      const source = (await readFile(join(directory, 'main.js'), 'utf8')).replace(/^\s*\/\/[^\n]*$/gm, '');
+      for (const match of source.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)['"](\.[^'"]+)['"]/g))
+        if (!await stat(resolve(directory, match[1]!)).then(info => info.isFile(), () => false)) incomplete.push(`${basename(directory)} imports ${match[1]}`);
+    };
+    for (const name of ['mkdir', 'rename', 'link'] as const) {
+      const original = realFs[name] as (...args: any[]) => Promise<any>;
+      vi.mocked(fs[name]).mockImplementation((async (...args: any[]) => {
+        const result = await original(...args), destination = String(name === 'mkdir' ? args[0] : args[1]);
+        if (dirname(destination) === mods && basename(destination).startsWith('spider-')) { published.push(basename(destination)); await inspect(destination); }
+        if (destination === layout) for (const mod of ['spider-pane', 'spider-tabs', 'spider-menu', 'spider-new-menu']) await inspect(join(mods, mod));
+        return result;
+      }) as never);
+    }
+    const writes = (await setupHerdr(f.request, f.parts)).writes;
+    const entries = writes.filter(path => /^spider-[^/]+\/main\.js$/.test(relative(mods, path)));
+    expect(entries.length).toBeGreaterThan(5);
+    expect(incomplete).toEqual([]);
+    expect(published.sort()).toEqual(entries.map(entry => basename(dirname(entry))).sort());
+    for (const entry of entries) {
+      expect(writes).toContain(join(dirname(entry), 'mod.json'));
+      const source = (await readFile(entry, 'utf8')).replace(/^\s*\/\/[^\n]*$/gm, '');
+      for (const match of source.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)['"](\.[^'"]+)['"]/g)) expect(writes).toContain(resolve(dirname(entry), match[1]!));
+    }
+  });
+
   for (const change of ['changed-record', 'missing-record', 'missing-release', 'missing-asset', 'stale-input', 'changed-output', 'stale-stock'] as const) {
     test(`${version} refuses ${change} before installing B files or keys`, async () => {
       const f = await fastRelease(version);

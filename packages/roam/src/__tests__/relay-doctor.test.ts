@@ -101,6 +101,15 @@ it("reports a held call up after 10 seconds and down by the call deadline withou
   } finally { abort.abort(); await held; links.close(); }
 });
 
+it("reports a link down when the clock is behind its observation", async () => {
+  const { m, links } = inbound(), abort = new AbortController();
+  const held = links.poll(poll("clock-step"), abort.signal);
+  try {
+    expect(linkRows(m, START)[0]).toMatchObject({ severity: "info", reason: expect.stringContaining("relay-1.invalid up;") });
+    expect(linkRows(m, START - 1)[0]).toMatchObject({ severity: "warning", reason: expect.stringContaining("relay-1.invalid down;") });
+  } finally { abort.abort(); await held; links.close(); }
+});
+
 it("starts the 10-second grace at the last normal end, not at either call's start", async () => {
   const { m, links } = inbound();
   try {

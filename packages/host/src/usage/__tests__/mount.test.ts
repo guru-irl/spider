@@ -79,6 +79,20 @@ describe("public usage footer mount", () => {
     vi.advanceTimersByTime(1000); expect(f.requestRender).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(1); // Usage snapshots still refresh once a second.
   });
+  it("restores Pi's working row and leaves a replacement footer alone", () => {
+    const f = fixture(); mount(f);
+    f.emit("agent_start");
+    const replacement = { render: () => ["Another extension"], invalidate() {}, dispose: vi.fn() };
+    f.ctx.ui.setFooter(() => replacement);
+    expect(f.setWorkingVisible.mock.calls).toEqual([[false], [true]]);
+    expect(f.unsubBranch).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(1);
+    vi.advanceTimersByTime(2000);
+    f.emit("session_shutdown", { reason: "reload" });
+    expect(f.setFooter).toHaveBeenCalledTimes(2);
+    expect(f.render()).toEqual(["Another extension"]);
+    expect(replacement.dispose).not.toHaveBeenCalled();
+  });
   it("requests each Nerd frame once, including the boundary shared with the usage tick", () => {
     const f = fixture();
     controlConfig("set", f.ctx.cwd, "ui.icons", "nerd");

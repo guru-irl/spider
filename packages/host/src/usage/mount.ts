@@ -47,7 +47,8 @@ function guarded(callback: () => void, source: string, warn: (message: string) =
 export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: UsageRuntime, config: UsageConfig, admitted: () => boolean = () => true): { refresh(): void; configure(config: UsageConfig): void; dispose(): void } {
   let current = ctx;
   let settings = config;
-  let disposed = false, ownsFooter = false;
+  let disposed = false;
+  let footerOwnership: "unclaimed" | "owned" | "replaced" = "unclaimed";
   let workingSince: number | undefined;
   let file: string | undefined, sessionId: string | undefined;
   let count = 0, cursor: string | undefined;
@@ -61,10 +62,15 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
   const child = process.env.PI_SUBAGENT_CHILD === "1";
   const eligible = () => admitted() && !child && current.mode === "tui";
 
+  function disposeComponent(): void {
+    const previous = component;
+    component = undefined;
+    previous?.dispose();
+  }
   function releaseFooter(): void {
-    component?.dispose(); component = undefined;
-    if (ownsFooter) {
-      ownsFooter = false;
+    disposeComponent();
+    if (footerOwnership === "owned") {
+      footerOwnership = "unclaimed";
       current.ui.setFooter(undefined);
       current.ui.setWorkingVisible?.(true);
     }
@@ -77,7 +83,9 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
     if (replaced && (file !== undefined || sessionId !== undefined)) {
       workingSince = undefined;
       releaseFooter();
+      footerOwnership = "unclaimed";
     }
+    if (footerOwnership === "replaced") return;
     // pi 0.87.x sums ALL getEntries(), including abandoned branches and summaries.
     // Tree navigation intentionally re-reduces that same list, not getBranch().
     const entries = manager.getEntries();
@@ -108,13 +116,19 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
       calibration: settings.calibration === "off" ? calibrationFallback("off") : runtimeSnapshot.calibration ?? calibrationFallback(),
       counter: { availability: snapshot?.availability === "available" ? "available" : snapshot?.availability === "disabled" ? "disabled" : "unavailable", snapshot: snapshot?.latest ?? null },
     };
-    if (!ownsFooter) {
-      ownsFooter = true;
+    if (footerOwnership === "unclaimed") {
+      footerOwnership = "owned";
       current.ui.setFooter((tui, theme, footerData) => {
-        component?.dispose();
-        component = createUsageFooter(() => input, theme, footerData, () => tui.requestRender());
-        component.setWorking(workingSince);
-        return component;
+        disposeComponent();
+        const footer = createUsageFooter(() => input, theme, footerData, () => tui.requestRender(), () => {
+          if (component !== footer) return; // Spider already detached it on its own release path.
+          component = undefined;
+          footerOwnership = "replaced";
+          current.ui.setWorkingVisible?.(true);
+        });
+        component = footer;
+        footer.setWorking(workingSince);
+        return footer;
       });
       current.ui.setWorkingVisible?.(false);
     }
@@ -154,7 +168,7 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
       pi.on("session_start", (_event, next) => {
         // Same-instance hosts can replace contexts without a shutdown. Release the old UI first.
         workingSince = undefined; appearance = undefined;
-        releaseFooter(); current = next; refresh(true);
+        releaseFooter(); footerOwnership = "unclaimed"; current = next; refresh(true);
       }), pi.on("session_shutdown", dispose));
     configure(config);
   }

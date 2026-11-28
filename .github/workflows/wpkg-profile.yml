@@ -1,0 +1,64 @@
+name: Herdr package test profile
+
+on:
+  push:
+    branches: [ci/wpkg-profile-2]
+
+permissions:
+  contents: read
+
+env:
+  ONNXRUNTIME_NODE_INSTALL: skip
+
+jobs:
+  profile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+      - name: Prepare isolated scratch
+        run: mkdir -p "$PWD/.spider/scratch/tmp" "$PWD/.spider/scratch/wpkg-profile"
+      - name: Install SQLite CLI
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - name: Install
+        run: npm ci
+      - name: Remove runner runtime directory
+        run: |
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+          test ! -e "$rundir"
+          echo "XDG_RUNTIME_DIR=" >> "$GITHUB_ENV"
+      - name: Profile tests, one file at a time
+        run: |
+          dir="$PWD/.spider/scratch/wpkg-profile"
+          p=packages/herdr/src/__tests__
+          shopt -s nullglob
+          files=("$p"/setup-checkpoint-model-seed*.test.ts "$p"/checkpoint-model-shards.test.ts
+            "$p"/remote-execute.test.ts "$p"/production-cutover-{rollback,placement,launcher,journal}.test.ts
+            "$p"/spaces-a-install.test.ts "$p"/setup-backup-recovery.test.ts "$p"/setup-installation.test.ts
+            "$p"/setup-checkpoint.test.ts "$p"/acceptance.test.ts "$p"/agent-consoles.test.ts
+            "$p"/ssh-core-restart.test.ts "$p"/console-upgrade.test.ts)
+          status=0
+          for file in "${files[@]}"; do
+            name="${file##*/}"
+            export WPKG_PROFILE_LOG="$dir/$name.ndjson"
+            export NODE_OPTIONS="--require=$PWD/scripts/wpkg-speed/process.cjs"
+            export TMPDIR="$PWD/.spider/scratch/tmp"
+            export SPIDER_TEST_SEED=182
+            unset XDG_RUNTIME_DIR PI_SUBAGENT_CHILD PI_SUBAGENT_RUN_ID PI_SPIDER_DB_PATH PI_SPIDER_SESSION_ID SPIDER_HERDR_E2E SPIDER_HERDR_APP_TESTS SPIDER_HERDR_APP_E2E
+            echo "Profiling $file"
+            /usr/bin/time -f 'real %e\nuser %U\nsys %S' -o "$dir/$name.time" node node_modules/vitest/vitest.mjs run "$file" --maxWorkers=1 --reporter=json --outputFile="$dir/$name.json" >"$dir/$name.log" 2>&1 || { status=1; tail -100 "$dir/$name.log"; }
+          done
+          unset NODE_OPTIONS
+          node scripts/wpkg-speed/summarize.mjs "$dir"
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wpkg-profile
+          path: .spider/scratch/wpkg-profile/
+          include-hidden-files: true

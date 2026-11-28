@@ -1,6 +1,6 @@
 import { CustomEditor, Theme, type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, KeybindingsManager, TUI_KEYBINDINGS, renderFakeCursor, stripTerminalSequences, visibleWidth, type EditorTheme, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULTS } from "../control.js";
 import { CONFIG_SCHEMA } from "@spider/ui";
 import glass from "../../../herdr/assets/themes/dracula-plus-glass.json" with { type: "json" };
@@ -48,6 +48,8 @@ const click = (x: number, y: number, width: number, height: number): TuiMouseEve
 });
 
 describe("input band", () => {
+  // The prompt history is process-wide on purpose; keep each test's history its own.
+  afterEach(() => { (globalThis as Record<symbol, string[] | undefined>)[Symbol.for("spider.inputBand.history")]?.splice(0); });
   it("keeps pi's startup history after reimporting on reload and opening a new session", async () => {
     const first = session(); first.start();
     const original = first.editor();
@@ -70,7 +72,7 @@ describe("input band", () => {
     }
   });
 
-  it.each(["resume", "fork"])("replays user prompts in context order on %s", reason => {
+  it.each(["resume", "fork", "new"])("replays user prompts in context order on %s", reason => {
     const s = session(); s.start();
     s.editor().addToHistory("previous session prompt");
     s.stop();

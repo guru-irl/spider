@@ -8,8 +8,9 @@ Use `▄` and `▀` for the half-row edges, with no background behind the
 unfilled half. Draw the bar in the left half of column zero for the full band
 height: `▖` on the top edge, `▌` on text rows, and `▘` on the bottom edge.
 The rest of column zero uses the default background, leaving a half-cell gap
-before the strip starts in column one. The bar uses `accent` (`#82aaff`) or
-`bashMode`, regardless of thinking level. The remaining edge cells use the strip
+before the strip starts in column one. The bar uses the current `accent` or
+`bashMode`, regardless of thinking level. Spider blue (`#82aaff`) is the default
+accent in `dracula-plus-glass`. The remaining edge cells use the strip
 color. Scrolled edges show a dim hidden-line count beside the half-cell bar.
 Keep Pi's cursor, completion menu, and keys.
 
@@ -180,6 +181,12 @@ Text mode uses a pulsing `◇` while running. See [Patched Nerd Fonts](guide/con
 Full screens and overlays such as `/todos` and pickers use the active theme, a
 subtle heading rule, spacing between groups, a context line, and a footer with
 key hints. The `card()` frame is for standalone views only.
+
+`/color` previews the accent in a full-height left overlay. Use an `██` swatch,
+name, and hex value on each row. Highlight the selected row with 8% white over
+`#161618`. Use Pi's `│` track and `┃` thumb when the palette needs to scroll.
+The picker changes `accent`, `borderAccent`, and `customMessageLabel`. Status,
+thinking, role, syntax, and neutral background colors stay unchanged.
 
 ## Tests
 

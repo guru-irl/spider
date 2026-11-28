@@ -44,6 +44,7 @@ import { registerHooks } from "./hooks";
 import { registerCompaction } from "./compaction/index.js";
 import { registerCopyButtons, type CopyButtonsHost } from "./copy-buttons/index.js";
 import { registerInputBand, type InputBandHost } from "./input-band/index.js";
+import { registerAccentPicker } from "./accent/index.js";
 import { HostOrganismRuntime } from "./organism-runtime";
 import { HostEmbeddingRuntime } from "./embedding-runtime";
 import { UsageAccounting } from "./usage-accounting";
@@ -933,6 +934,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   const ordinaryWorkAllowed = () => isOrdinaryWorkAllowed(admission.inspect());
   const activity = trackReloadActivity(hostPi as unknown as ExtensionAPI);
   const pi = protectAdmissionApi(activity.pi, admission) as unknown as PiToolAPI;
+  if (pi.registerCommand) registerAccentPicker(pi as unknown as ExtensionAPI);
   if (ports.inputBand) registerInputBand(pi as unknown as ExtensionAPI, ports.inputBand, cwd => {
     const values = configValues(cwd);
     return { "ui.inputBand": values.config["ui.inputBand"], "ui.icons": values.config["ui.icons"] };

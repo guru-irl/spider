@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { once } from "node:events";
 import { startTestBroker, stopTestBroker, testBrokerEnv } from "../test-support.js";
-import type { RelayPoll, RelayResult, RelaySubmit } from "../relay-protocol.js";
+import { decodeRelayPoll, encodeRelayPoll, isRelayResult, type RelayPoll, type RelayResult, type RelaySubmit } from "../relay-protocol.js";
 import { IntercomClient } from "./client.js";
 import { createRelayLinks } from "./relay-links.js";
 import { listV0RelayLinks, pollV0RelayBroker, submitV0Relay } from "./roam-relay-client.js";
@@ -140,8 +140,32 @@ describe("held relay polls", () => {
     const next = await links.poll(poll("next", 0));
     expect(next.submissions).toEqual([]);
     expect(await expired).toEqual({ type: "result", messageId: "expired", attempted: false,
-      outcome: { kind: "refused", code: "unreachable" } });
+      outcome: { kind: "refused", code: "handoff-expired" } });
     links.close();
+  });
+
+  it("reports a withdrawn link as unavailable before hand-off", async () => {
+    const links = fixture();
+    try {
+      await links.poll(poll("announce", 0));
+      const stop = new AbortController();
+      const quick = links.poll(poll("quick", 0), stop.signal, () => new Promise(resolve => {
+        stop.signal.addEventListener("abort", () => resolve(), { once: true });
+      }));
+      const waiting = links.submit(relay.machineId, submission("waiting"));
+      stop.abort();
+      await quick;
+      expect(await waiting).toMatchObject({ attempted: false, outcome: { kind: "refused", code: "relay-stopping" } });
+      expect(await links.submit(relay.machineId, submission("link-gone"))).toMatchObject({ attempted: false,
+        outcome: { kind: "refused", code: "relay-stopping" } });
+    } finally { links.close(); }
+  });
+
+  it.each(["ask-timeout-too-short", "handoff-expired"] as const)("accepts %s only before attempted delivery", code => {
+    const result = { type: "result", messageId: "not-delivered", attempted: false, outcome: { kind: "refused", code } } as const;
+    expect(isRelayResult(result)).toBe(true);
+    expect(decodeRelayPoll(encodeRelayPoll(poll("result", 0, [result])), 0).results).toEqual([result]);
+    expect(isRelayResult({ ...result, attempted: true })).toBe(false);
   });
 
   it("refuses a waiting offer before the result budget expires", async () => {

@@ -54,7 +54,10 @@ if (dir) {
     const index = hasArgv && (Array.isArray(args[1]) || (args[1] == null && args.length > 2)) ? 2 : 1;
     const options = args[index];
     if (options != null && typeof options !== 'function' && (typeof options !== 'object' || Array.isArray(options))) return args;
-    const env = { ...(options?.env ?? process.env) };
+    const explicit = options?.env;
+    if (explicit?.SPIDER_SELECTION_DIR && explicit.SPIDER_SELECTION_DIR !== dir && explicit.SPIDER_SELECTION_ROOT &&
+      String(explicit.NODE_OPTIONS ?? '').includes(preload)) return args;
+    const env = { ...(explicit ?? process.env) };
     const nodeOptions = String(env.NODE_OPTIONS ?? '');
     if (!nodeOptions.includes(preload)) {
       if (env.NODE_OPTIONS === undefined) delete env[savedOptions];
@@ -235,7 +238,11 @@ if (dir) {
       if (collect) return;
       const { Session } = require('node:inspector');
       const session = new Session();
-      session.connect();
+      try { session.connect(); }
+      catch (error) {
+        if (error === 'This Environment was initialized without a V8::Inspector' && process.execArgv.includes('--test')) return;
+        throw error;
+      }
       const post = (method, params, accept = () => {}) => session.post(method, params, (error, value) => {
         try { if (error) note(method, error); else accept(value); }
         catch (error) { note(method, error); }

@@ -63,7 +63,7 @@ export function readV0Routes(root: string, config: RoamConfig): V0Routes {
       throw new Error("Invalid intercom source");
     return { machineId: entry.machineId, alias: entry.alias };
   });
-  if (!distinct(acceptFrom, config.machineId) || config.role === "hub" && acceptFrom.length > 0)
+  if (!distinct(acceptFrom, config.machineId) || value.version === 1 && config.role === "hub" && acceptFrom.length > 0)
     throw new Error("Invalid intercom sources");
   const outboundAliases = new Map(sendTo.map(peer => [peer.alias.toLowerCase(), peer.machineId]));
   for (const source of acceptFrom) {

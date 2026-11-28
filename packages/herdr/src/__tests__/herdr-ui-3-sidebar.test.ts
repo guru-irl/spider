@@ -948,11 +948,11 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     view.folded.add('sp-s1');
     const heading = all(view.render({})).find(node => node.id === 'sp-s1')!;
     const nodes = heading.children.flatMap(all);
-    expect(nodes.some(node => node.svg === 'mods/workspace-chrome/spinner.svg')).toBe(true);
-    expect(nodes.findIndex(node => node.svg === 'mods/workspace-chrome/spinner.svg')).toBeGreaterThan(nodes.findIndex(node => node.id === 'group-count-consoles-sp-s1'));
+    expect(nodes.some(node => call(node, 'frames'))).toBe(true);
+    expect(nodes.findIndex(node => call(node, 'frames'))).toBeGreaterThan(nodes.findIndex(node => node.id === 'group-count-consoles-sp-s1'));
     view.spiderFeeds[0].runs = { rows: [], total: 0, truncated: false };
     const unknown = all(view.render({})).find(node => node.id === 'sp-s1')!;
-    expect(unknown.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/spinner.svg')).toBe(false);
+    expect(unknown.children.flatMap(all).some(node => call(node, 'frames'))).toBe(false);
   });
 
   it('pinned headings use the grouped caret and counts without a space shape', async () => {
@@ -1099,13 +1099,13 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     const content = (id: string) => child(id).children.flatMap(all);
     expect(content('unknown-run').some(node => node.children.includes('Unknown'))).toBe(true);
     expect(content('known-run').some(node => node.children.includes('Disconnected'))).toBe(true);
-    for (const id of ['unknown-run', 'known-run']) expect(content(id).some(node => node.svg === 'mods/workspace-chrome/spinner.svg')).toBe(false);
+    for (const id of ['unknown-run', 'known-run']) expect(content(id).some(node => call(node, 'frames'))).toBe(false);
     view.spiderFeeds = [{ ...current, generation: 'next', lifecycle: 'live' }];
-    expect(content('known-run').some(node => node.svg === 'mods/workspace-chrome/spinner.svg')).toBe(true);
+    expect(content('known-run').some(node => call(node, 'frames'))).toBe(true);
     view.spiderFeeds = [{ ...current, generation: 'next', lifecycle: 'live',
       runs: { rows: [{ ...current.runs.rows[0], status: 'done', finishedAt: now - 1 }] } }];
     view.spiderShowFinished = new Set(['t1']);
-    expect(content('known-run').some(node => node.svg === 'mods/workspace-chrome/spinner.svg')).toBe(false);
+    expect(content('known-run').some(node => call(node, 'frames'))).toBe(false);
   });
 
   it('opens the saved view and its right-click menu when the old viewer machine is unavailable', async () => {

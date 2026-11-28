@@ -69,7 +69,7 @@ for (const version of ['0.1.12', '0.1.13', '0.1.16'] as const) {
       const working = all(render(source, mod, 'working'));
       const animation = working.filter(node => node.styles.frames);
       expect(animation).toHaveLength(1);
-      expect(animation[0].styles.frames).toEqual([ACTIVITY_FRAMES.nerd.working, 71]);
+      expect(animation[0].styles.frames).toEqual([ACTIVITY_FRAMES.nerd.working, 1000 / 14]);
       expect(animation[0].styles).toMatchObject({ size: [12], text_size: [12], font_family: ['CaskaydiaCove Nerd Font'], text_color: ['#123456'], flex_none: [] });
       expect(working.some(node => node.asset === 'mods/workspace-chrome/spinner.svg')).toBe(false);
       expect(all(render(source, mod, 'idle')).some(node => node.styles.frames)).toBe(false);

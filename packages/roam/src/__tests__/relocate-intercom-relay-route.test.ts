@@ -327,6 +327,14 @@ it("reports when no relay is reachable without queuing a send", async () => {
   expect(await f.remote.received()).toEqual([]);
 });
 
+it("omits the local relay from the skipped-relay list", async () => {
+  const f = await fixture({ link: false });
+  f.sender.configure({ relays: [ORIGIN, RELAY], acceptFrom: [relay] });
+  const refused = await f.tool("remote-recipient");
+  expect(refused.details).toMatchObject({ code: "no-relay", relaySkips: [{ relay: "relay-1.invalid", reason: "down" }] });
+  expect(await f.remote.received()).toEqual([]);
+});
+
 it("names the unreachable home and why the live relay was skipped", async () => {
   const f = await fixture({ reached: [relay] });
   const refused = await f.tool("remote-recipient");

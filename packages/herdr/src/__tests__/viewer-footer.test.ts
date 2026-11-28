@@ -104,6 +104,18 @@ test('viewer context includes trailing tool and user messages and ignores failed
   expect(view.footerLines(120).map(stripTerminalSequences).join('\n')).toContain('22.3%/200k');
 });
 
+test('late saved history does not replace the live context with an older response', () => {
+  const view = make();
+  view.setRunInfo({ protocol: 2, model: 'github-copilot/gpt-6.1-sol', contextWindow: 200000 });
+  view.live({ type: 'message_end', message });
+  view.addEntries([{ type: 'message', timestamp: '2026-10-02T11:59:58Z', message: {
+    ...message, timestamp: message.timestamp - 2000, usage: { ...message.usage, totalTokens: 1000 },
+  } }, { type: 'message', timestamp: '2026-10-02T11:59:59Z', message: {
+    role: 'user', content: 'y'.repeat(4000), timestamp: message.timestamp - 1000,
+  } }, entry]);
+  expect(view.footerLines(120).map(stripTerminalSequences).join('\n')).toContain('20.8%/200k');
+});
+
 test('viewer labels missing transcript history rather than claiming the tail is total run credits', () => {
   const view = make();
   view.setRunInfo({ protocol: 2, model: 'github-copilot/gpt-6.1-sol', contextWindow: 200000 });

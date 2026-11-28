@@ -94,6 +94,19 @@ test.each([
   for (const arg of argvIncludes) expect(calls.at(-1)).toContain(arg);
 });
 
+test('setup reuses the visible Node check after a failed runtime bootstrap', async () => {
+  const f = await fixture();
+  await f.h.scenario({ steps: [{ argvPrefix: ['run'], argvIncludes: ['--on', remote, '--install'], stderr: 'permission denied', exitCode: 1 }] });
+  const start = (await f.h.calls()).length;
+  await expect(apply(f)).rejects.toMatchObject({ code: 'runtime-bootstrap-failed' });
+  await f.h.scenario({});
+  const { result } = await apply(f);
+  expect(result.doctor.failures).toEqual([]);
+  const calls = await remoteCalls(f, start);
+  expect(calls.filter(argv => argv[0] === 'run' && argv.includes('--version'))).toHaveLength(1);
+  expect(calls.filter(argv => argv[0] === 'run' && argv.includes('--install'))).toHaveLength(2);
+});
+
 test('setup does not turn a permission error into a skipped runtime', async () => {
   const f = await fixture();
   await f.h.scenario({ steps: [{ argvPrefix: ['file', 'read'], argvIncludes: ['--on', remote],

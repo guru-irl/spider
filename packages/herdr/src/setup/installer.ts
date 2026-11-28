@@ -590,8 +590,9 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
         if (digest(await parts.hc.fileRead(runtime.machine, runtime.path)) !== runtime.sha256)
           throw new HerdrError('runtime-digest-mismatch', `Runtime verification failed on ${runtime.machine}`);
       });
+      // Reuse the Node check after a failed bootstrap, but retry bootstrap until verified.
+      if (recordRuntimes()) await saveSetupJournal();
       await bootstrap();
-      // Persist completed runtime work before local publication so recovery can reuse its probes.
       if (recordRuntimes()) await saveSetupJournal();
       await prepareModDirectories(request.journalRoot, request.config.app.home, files, journal, recordWrites);
       const writes = [...endpointWrites, ...await applyFiles(request.journalRoot, files.filter(file => !file.updateAfterCutover), journal, recordWrites)];

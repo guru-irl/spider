@@ -24,7 +24,8 @@ export interface V0Text {
 }
 export type V0Code = "moving" | "offline" | "no-match" | "ambiguous" | "incomplete"
   | "changed" | "unreachable" | "not-configured" | "unauthorized"
-  | "unsupported" | "invalid" | "self" | "reply-only" | "invalid-config" | "home-unreadable";
+  | "unsupported" | "invalid" | "self" | "reply-only" | "invalid-config" | "home-unreadable"
+  | "asker-no-longer-waiting";
 export type V0Refused = { kind: "refused"; code: V0Code };
 export type V0Delivery = V0Refused
   | { kind: "socket_delivered"; id: string }
@@ -193,10 +194,11 @@ function relayThread(value: unknown): value is V0RelayThread {
     value.kind === "reply" && fields(value, ["kind", "replyTo"]) && identifier(value.replyTo));
 }
 
-function reply(value: Record<string, unknown>, prefix: readonly string[]): boolean {
+function reply(value: Record<string, unknown>, prefix: readonly string[], allowEndedAsk = false): boolean {
   switch (value.kind) {
     case "refused":
-      return fields(value, [...prefix, "kind", "code"]) && typeof value.code === "string" && codes.has(value.code);
+      return fields(value, [...prefix, "kind", "code"]) && typeof value.code === "string" &&
+        (codes.has(value.code) || allowEndedAsk && value.code === "asker-no-longer-waiting");
     case "matches":
       return fields(value, [...prefix, "kind", "targets"]) && Array.isArray(value.targets) && value.targets.every(endpoint);
     case "socket_delivered":
@@ -224,9 +226,9 @@ export function parseV0BrokerRequest(value: unknown): V0BrokerRequest | null {
   return null;
 }
 
-export function parseV0BrokerReply(value: unknown): V0BrokerReply | null {
+export function parseV0BrokerReply(value: unknown, allowEndedAsk = false): V0BrokerReply | null {
   return record(value) && withinLimit(value) && value.type === "roam_v0_result" && identifier(value.requestId)
-    && reply(value, ["type", "requestId"]) ? value as V0BrokerReply : null;
+    && reply(value, ["type", "requestId"], allowEndedAsk) ? value as V0BrokerReply : null;
 }
 
 export function parseV0RelayAskBrokerRequest(value: unknown): V0RelayAskBrokerRequest | null {
@@ -283,7 +285,7 @@ export function parseV0RelayAgentRequest(value: unknown): V0RelayAgentRequest | 
   return relayId === null || identifier(relayId) ? { version: 2, relayId, request, thread } : null;
 }
 
-export function parseV0AgentReply(value: unknown): V0AgentReply | null {
+export function parseV0AgentReply(value: unknown, allowEndedAsk = false): V0AgentReply | null {
   return record(value) && withinLimit(value) && value.version === 1 && identifier(value.requestId) && identifier(value.machineId)
-    && reply(value, ["version", "requestId", "machineId"]) ? value as V0AgentReply : null;
+    && reply(value, ["version", "requestId", "machineId"], allowEndedAsk) ? value as V0AgentReply : null;
 }

@@ -165,7 +165,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       if (!request) throw new Error("Invalid private intercom request");
       const requestId = request.version === 2 ? request.request.requestId : request.requestId;
       const reply = await (options?.v0?.intercom ?? ((raw, targetRoot) => createV0Intercom(targetRoot).handle(raw)))(request, root);
-      const parsed = parseV0AgentReply(reply);
+      const parsed = parseV0AgentReply(reply, request.version === 2 && request.thread?.kind === "reply");
       if (!parsed || parsed.requestId !== requestId) throw new Error("Invalid private intercom reply");
       const output = `${JSON.stringify(parsed)}\n`;
       if (Buffer.byteLength(output) > V0_INTERCOM_BYTES) throw new Error("Private intercom reply too large");

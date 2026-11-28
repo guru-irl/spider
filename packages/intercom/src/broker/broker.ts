@@ -623,10 +623,11 @@ class IntercomBroker {
 
   private deliverV0RelayReply(target: ConnectedSession, from: RemoteSessionInfo, askId: string, message: { id: string; text: string }): V0Delivery {
     const waiter = this.v0RelayAskWaiters.get(askId);
-    if (!waiter || target !== waiter.asker || !this.isLiveV0Endpoint(target, waiter.from)) return { kind: "refused", code: "changed" };
+    if (!waiter) return { kind: "refused", code: "asker-no-longer-waiting" };
+    if (target !== waiter.asker || !this.isLiveV0Endpoint(target, waiter.from)) return { kind: "refused", code: "changed" };
     if (performance.now() >= waiter.deadline) {
       this.finishV0RelayAsk(askId, { kind: "no_reply", id: askId });
-      return { kind: "refused", code: "changed" };
+      return { kind: "refused", code: "asker-no-longer-waiting" };
     }
     const { machineId, selector, homeEpoch } = waiter.target;
     if (from.machineId !== machineId || from.address.scopeId !== waiter.from.address.scopeId ||

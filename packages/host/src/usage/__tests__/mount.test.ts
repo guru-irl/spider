@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { paths } from "@spider/db-core";
+import { controlConfig } from "../../control.js";
 import { UsageRuntime as RealUsageRuntime } from "../runtime.js";
 import { mountUsage, registerUsage } from "../mount.js";
 import type { UsageRuntime } from "../runtime.js";
@@ -28,7 +29,7 @@ function fixture(mode: ExtensionContext["mode"] = "tui") {
   });
   const getEntries = vi.fn(() => [...entries]); const getBranch = vi.fn(() => entries.slice(0, 1));
   const registry = { getProvider: vi.fn(() => ({ auth: { oauth: { isSubscription: true } } })), isUsingOAuth: vi.fn(() => true) };
-  const ctx = { mode, hasUI: mode === "tui" || mode === "rpc", cwd: "/fixture/project", sessionManager: { getEntries, getBranch, getSessionFile: () => file, getSessionId: () => file }, ui: { setFooter, setWorkingVisible, setWidget: vi.fn(), notify: vi.fn() }, model: { id: "gpt-6.1-sol", provider: "github-copilot", contextWindow: 100000, reasoning: true }, modelRegistry: registry, getContextUsage: vi.fn(() => ({ percent: 25, tokens: 25000, contextWindow: 100000 })), thinkingLevel: "high" } as unknown as ExtensionContext;
+  const ctx = { mode, hasUI: mode === "tui" || mode === "rpc", cwd: paths.globalRoot, sessionManager: { getEntries, getBranch, getSessionFile: () => file, getSessionId: () => file }, ui: { setFooter, setWorkingVisible, setWidget: vi.fn(), notify: vi.fn() }, model: { id: "gpt-6.1-sol", provider: "github-copilot", contextWindow: 100000, reasoning: true }, modelRegistry: registry, getContextUsage: vi.fn(() => ({ percent: 25, tokens: 25000, contextWindow: 100000 })), thinkingLevel: "high" } as unknown as ExtensionContext;
   const pi = { on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => void) => {
     if (!events.has(name)) events.set(name, new Set()); events.get(name)!.add(handler);
     return () => events.get(name)?.delete(handler);
@@ -45,7 +46,10 @@ function fixture(mode: ExtensionContext["mode"] = "tui") {
     render: (width = 200) => footer!.render(width), invalidate: () => footer!.invalidate(), listenerCount: () => [...events.values()].reduce((n, set) => n + set.size, 0) };
 }
 let mounted: ReturnType<typeof mountUsage> | undefined;
-beforeEach(() => { vi.useFakeTimers(); });
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.spyOn(paths, "projectRoot").mockReturnValue(paths.globalRoot);
+});
 afterEach(() => { mounted?.dispose(); mounted = undefined; vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.useRealTimers(); });
 function mount(f: ReturnType<typeof fixture>) { return mounted = mountUsage(f.pi, f.ctx, f.runtime, config); }
 describe("public usage footer mount", () => {
@@ -74,6 +78,20 @@ describe("public usage footer mount", () => {
     f.requestRender.mockClear();
     vi.advanceTimersByTime(1000); expect(f.requestRender).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(1); // Usage snapshots still refresh once a second.
+  });
+  it("requests each Nerd frame once, including the boundary shared with the usage tick", () => {
+    const f = fixture();
+    controlConfig("set", f.ctx.cwd, "ui.icons", "nerd");
+    try {
+      mount(f);
+      f.render();
+      f.emit("agent_start");
+      f.requestRender.mockClear();
+      vi.advanceTimersByTime(999);
+      expect(f.requestRender).toHaveBeenCalledTimes(27);
+      vi.advanceTimersByTime(1);
+      expect(f.requestRender).toHaveBeenCalledTimes(28);
+    } finally { controlConfig("unset", f.ctx.cwd, "ui.icons"); }
   });
   it("leaves Pi's row alone until mounted and stops the active timer on disable, reload and shutdown", () => {
     const f = fixture();
@@ -242,7 +260,6 @@ it("omits the month item when the worker published a previous billing period",()
 it("session registration passes the pi identity to the runtime that owns the worker", async () => {
   const f = fixture("print"), id = "fixture-pi-session";
   f.ctx.sessionManager.getSessionId = () => id;
-  vi.spyOn(paths, "projectRoot").mockReturnValue(paths.globalRoot);
   let captured: string | null | undefined;
   vi.spyOn(RealUsageRuntime.prototype, "start").mockImplementation(function(this: RealUsageRuntime) {
     captured = (this as unknown as { options: { sessionId?: string | null } }).options.sessionId;

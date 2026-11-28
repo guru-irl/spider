@@ -13,6 +13,12 @@ export const SPINNER_FRAMES: Record<IconStyle, readonly string[]> = {
   nerd: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
 };
 
+const NEW_MOON = "\uE3E3";
+export const ACTIVITY_FRAMES = {
+  text: { idle: "○", working: ["◐", "◓", "◑", "◒"] },
+  nerd: { idle: NEW_MOON, working: [NEW_MOON, ...Array.from({ length: 27 }, (_, i) => String.fromCodePoint(0xE3C8 + i))] },
+} as const;
+
 export function isIconStyle(value: unknown): value is IconStyle {
   return ICON_STYLES.some(style => style === value);
 }

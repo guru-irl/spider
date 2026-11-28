@@ -18,6 +18,7 @@ import { prepareRemoteProgram } from '../../../context/src/remote-plan.js';
 import { runExec } from '../../../context/src/actions/exec.js';
 import { createHostHerdrPorts } from '../herdr/ports.js';
 import { createHerdrDataSource } from '../herdr/data-source.js';
+import { installFastCoreTransport } from './herdr-setup-fast-core.js';
 import type { RuntimeTarget, RemoteResult } from '../../../herdr/src/contracts.js';
 
 const binary = process.env.SPIDER_HERDR_HC_BINARY || join(homedir(), '.local/bin/hc');
@@ -28,6 +29,7 @@ async function prove(mode: 'fake' | 'hc', kind: 'conflict' | 'delayed-receipt' |
   let restoreDeadline = () => {};
   // A complete receipt must not settle a tool before the monitor compares it to native exit evidence.
   const h = await createHerdrHarness(mode);
+  const restoreTransport = mode === 'fake' && !callLatencyMs ? installFastCoreTransport(h) : undefined;
   let output: ReturnType<typeof createHostHerdrPorts> | undefined, jobs: ReturnType<typeof createJobMonitor> | undefined;
   let source: ReturnType<typeof createHerdrDataSource> | undefined;
   let release!: () => void, seen!: () => void, collected!: () => void;
@@ -142,8 +144,10 @@ async function prove(mode: 'fake' | 'hc', kind: 'conflict' | 'delayed-receipt' |
     expect(journal.jobs[0].exitEvidence).toMatchObject({ native: { exitCode: 0 }, receipt: { exitCode: 23 } });
     await writeFile(resolve(`.spider/scratch/fx5-exit-${mode}-evidence.json`), JSON.stringify({ localSocket: h.localSocket, remoteSocket: h.remoteSocket, result, journal, feed: decoded }, null, 2));
   } finally {
-    restoreDeadline(); receiptVisible = true; release(); await writeFile(exitFile, 'exit'); await jobs?.reconcile(); await executing?.catch(() => {}); source?.dispose(); await jobs?.shutdown('reload'); output?.dispose(); vi.unstubAllEnvs(); await h.close();
-    expect(await h.remainingOwnedResources()).toEqual([]);
+    try {
+      restoreDeadline(); receiptVisible = true; release(); await writeFile(exitFile, 'exit'); await jobs?.reconcile(); await executing?.catch(() => {}); source?.dispose(); await jobs?.shutdown('reload'); output?.dispose(); vi.unstubAllEnvs(); await h.close();
+      expect(await h.remainingOwnedResources()).toEqual([]);
+    } finally { restoreTransport?.(); }
   }
 }
 it('a plain local command keeps its pre-fix result text byte-identical', async () => {

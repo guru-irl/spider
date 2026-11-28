@@ -17,13 +17,17 @@ import { installRuntimeDirectory } from '../../../herdr/src/remote/runtime.js';
 import { createProductionHerdrCliPorts } from '../herdr/ports.js';
 import { writeFixturePaneEndpoint } from '../../../herdr/src/__tests__/endpoint-fixture.js';
 import { mountHerdr } from '../herdr/mount.js';
+import { installFastCoreTransport } from './herdr-setup-fast-core.js';
 import type { HcClient, MachineName, TerminalAddress, TerminalHandle } from '../../../herdr/src/contracts.js';
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); vi.unstubAllEnvs(); });
 
 async function fixture(mode: 'fake' | 'hc' = 'fake', reportErrors = true, hasUI = false) {
-  const h: HerdrHarness = await createHerdrHarness(mode); cleanups.push(async () => { await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); }); await h.start();
+  const h: HerdrHarness = await createHerdrHarness(mode);
+  const restoreTransport = mode === 'fake' ? installFastCoreTransport(h) : undefined;
+  cleanups.push(async () => { try { await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); } finally { restoreTransport?.(); } });
+  await h.start();
   execFileSync('git', ['init', '-q', h.directories.local]);
   for (const [name, value] of Object.entries(h.localEnv)) if (value !== undefined && (name.startsWith('HC_') || name.startsWith('XDG_') || name.startsWith('HERDR_'))) vi.stubEnv(name, value);
   vi.stubEnv('SPIDER_GLOBAL_ROOT', h.directories.global); vi.stubEnv('PI_SUBAGENT_CHILD', '0');

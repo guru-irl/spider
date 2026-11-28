@@ -74,6 +74,8 @@ export interface InstallFile {
   path: string;
   bytes: Buffer;
   expected: string | null;
+  /** Target bytes used to derive this write. Unlike expected, this is not an ownership claim. */
+  observedTargetHash?: string | null;
   collision?: 'clone' | 'key';
   mode?: number;
   terminalKeys?: Readonly<Record<string, string>>;

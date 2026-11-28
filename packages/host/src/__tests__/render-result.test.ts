@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { stripTerminalSequences } from "@earendil-works/pi-tui";
+import { Box, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { flushLeft } from "@spider/ui";
 import { renderSpiderResult, renderSpiderCall, renderSubagentDone, renderCommandOutput, renderEscalationMessage } from "../render-result";
 import type { StageResult } from "@spider/memory";
 
@@ -336,25 +337,88 @@ describe("todo receipts", () => {
   });
 });
 
-describe("run block colors (#36)", () => {
-  it.each(["running", "done", "failed", "cancelled"])("does not status-color the glyph, type, or %s status", status => {
-    const details = { runs: [{ name: "todo-hunt", agent: "worker", model: "openai/gpt-5", status, task: "" }] };
-    const out = renderSpiderResult({ details }, { expanded: false }, marker, { args: { action: "run" } }).render(120).join("\n");
-    expect(out).not.toMatch(/⟨(success|error|warning|accent)\|/);
-    expect(out).toContain("⟨toolTitle|");
+describe("run block colors", () => {
+  it.each([["running", "toolTitle", "●"], ["done", "success", "✓"], ["failed", "error", "×"], ["cancelled", "warning", "▲"]])("uses a distinct %s glyph without a status word", (status, color, glyph) => {
+    const details = { runs: [{ name: "todo-hunt", agent: "worker", model: "openai/gpt-5", status }] };
+    const out = renderSpiderResult({ details }, {}, marker, { args: { action: "run" } }).render(200)[0];
+    expect(out).toContain(`⟨${color}|${glyph}⟩`);
+    expect(out).not.toContain(status);
+    expect(out).toContain("⟨accent|worker⟩");
   });
 });
 
 describe("run status rows", () => {
+  const layoutRun = { name: "audit", agent: "worker", model: "provider/Super Long Model", thinking: "high", token_count: 13616326, costText: "0.0 credits" };
+  const renderRow = (status: string, width: number, expanded = false) =>
+    stripTerminalSequences(renderSpiderResult({ details: { run: { ...layoutRun, status } } }, { expanded }, theme, mkCtx({ action: "run" })).render(width)[0]);
+
+  it("uses the agent-row role palette with a real color-capable theme", () => {
+    const colorTheme = { fg: (_: string, value: string) => value, bold: (value: string) => value,
+      italic: (value: string) => `\x1b[3m${value}\x1b[23m`, colors: { dim: { r: 0, g: 0, b: 0 } }, getColorMode: () => "truecolor" };
+    const render = (agent: string) => renderSpiderResult({ details: { run: { name: "audit", agent, status: "running" } } }, {}, colorTheme, mkCtx({ action: "run" })).render(120)[0];
+    expect(render("worker")).toContain("\x1b[38;2;130;170;255mworker");
+    expect(render("reviewer")).toContain("\x1b[38;2;255;184;108mreviewer");
+  });
+
+  it("colors the role in the completion card title like the agent rows", () => {
+    const colorTheme = { fg: (_: string, value: string) => value, bg: (_: string, value: string) => value, bold: (value: string) => value,
+      italic: (value: string) => `\x1b[3m${value}\x1b[23m`, colors: { dim: { r: 0, g: 0, b: 0 } }, getColorMode: () => "truecolor" };
+    const title = (agent: string) => renderSubagentDone({ details: { name: "rcard", agent, status: "done" } }, {}, colorTheme)
+      .render(120).find(line => stripTerminalSequences(line).includes("run · rcard"))!;
+    expect(title("worker")).toContain("\x1b[38;2;130;170;255mworker");
+    expect(title("reviewer")).toContain("\x1b[38;2;255;184;108mreviewer");
+    expect(stripTerminalSequences(title("worker"))).toContain("run · rcard · worker");
+  });
+
+  it.each([72, 120])("right-aligns running and done metadata at %i columns", width => {
+    const running = renderRow("running", width);
+    const done = renderRow("done", width);
+    expect(running).toMatch(/^● audit · worker +Super Long Model · high$/u);
+    expect(done).toMatch(/^✓ audit · worker · 13\.6M tokens · 0\.0 credits +Super Long Model · high$/u);
+    expect(visibleWidth(running)).toBe(width);
+    expect(visibleWidth(done)).toBe(width);
+  });
+
+  it.each([72, 120])("ends tool and completion metadata at the padded inner right edge at %i columns", width => {
+    const run = { ...layoutRun, status: "done" };
+    const box = new Box(1, 0);
+    box.addChild(flushLeft(renderSpiderResult({ details: { run } }, {}, theme, mkCtx({ action: "run" }))));
+    const body = stripTerminalSequences(box.render(width)[0]).trimEnd();
+    const notice = renderSubagentDone({ details: { ...run, tokenCount: run.token_count } }, {}, theme).render(width)
+      .map(stripTerminalSequences).find(line => line.includes("Super Long Model"))!.trimEnd();
+    for (const row of [body, notice]) {
+      expect(row).toMatch(/Super Long Model · high$/u);
+      expect(visibleWidth(row)).toBe(width - 1);
+    }
+  });
+
+  it("drops usage, then thinking, then truncates the model as width shrinks", () => {
+    expect(renderRow("done", 48)).toMatch(/^✓ audit · worker +Super Long Model · high$/u);
+    expect(renderRow("done", 37)).toMatch(/^✓ audit · worker +Super Long Model$/u);
+    expect(renderRow("done", 25)).toMatch(/^✓ audit · worker +Super L…$/u);
+    expect(renderRow("running", 25)).toMatch(/^● audit · worker +Super L…$/u);
+    for (const width of [25, 37, 48]) expect(visibleWidth(renderRow("done", width))).toBe(width);
+  });
+
+  it("keeps expanded task and output wrapping without wrapping the metadata row", () => {
+    const run = { ...layoutRun, status: "done", task: "An instruction that wraps over the available row width", result: "A result that also wraps over the available row width" };
+    const lines = renderSpiderResult({ details: { run } }, { expanded: true }, theme, mkCtx({ action: "run" })).render(37);
+    expect(lines[0]).toMatch(/^✓ audit · worker +Super Long Model$/u);
+    expect(lines.slice(1).join(" ")).toContain("instruction that wraps");
+    expect(lines.slice(1).join(" ")).toContain("result that also wraps");
+    expect(lines.every(line => visibleWidth(line) <= 37)).toBe(true);
+  });
+
   it("marks running work with a neutral glyph in column 1", () => {
     const details = { run: { name: "todo-hunt", agent: "worker", model: "openai/gpt-5", status: "running" } };
     const lines = renderSpiderResult({ details }, { expanded: false }, marker, mkCtx({ action: "run" })).render(120);
-    expect(lines[0]).toMatch(/^ ⟨toolTitle\|●⟩ running /u);
+    expect(lines[0]).toMatch(/^⟨toolTitle\|●⟩ todo-hunt/u);
   });
 
   it("does not repeat the agent when the run has no name", () => {
     const details = { run: { agent: "worker", status: "running" } };
-    expect(renderSpiderResult({ details }, {}, theme, mkCtx({ action: "run" })).render(120)[0]).toBe(" ● running · worker · —");
+    const row = renderSpiderResult({ details }, {}, theme, mkCtx({ action: "run" })).render(120)[0];
+    expect(row).toMatch(/^● worker +—$/u);
     const msg = { details: { agent: "worker", status: "done", severity: "warning", summary: "Check the logs" } };
     expect(renderSubagentDone(msg, {}, theme).render(120).map(line => line.trimEnd()).join("\n")).toContain("run · worker\n");
     expect(renderEscalationMessage(msg, {}, theme).render(120).map(line => line.trimEnd()).join("\n")).toContain("escalation · worker\n");
@@ -381,11 +445,11 @@ describe("run status rows", () => {
     ] };
     const args = { action: "run", tasks: [{ agent: "worker" }, { agent: "reviewer" }] };
     const lines = renderSpiderResult({ details }, { expanded: true }, theme, mkCtx(args)).render(120);
-    expect(lines).toEqual([
-      " × failed · tia-2 · worker · gpt-6.2-sol · high · 13.6M tokens · 0.0 credits",
-      "   → Check the manifest", "   Read the build logs", "",
-      " ● running · audit · reviewer · opus-5.5",
-    ]);
+    expect(lines[0]).toMatch(/^× tia-2 · worker · 13\.6M tokens · 0\.0 credits +gpt-6\.2-sol · high$/u);
+    expect(lines.slice(1, 4)).toEqual(["   → Check the manifest", "   Read the build logs", ""]);
+    expect(lines[4]).toMatch(/^● audit · reviewer +opus-5\.5$/u);
+    expect(lines[0].length).toBe(120);
+    expect(lines[4].length).toBe(120);
   });
 });
 
@@ -684,7 +748,7 @@ describe("renderSubagentDone transcript renderer (ctrl+o)", () => {
     const rows = renderSubagentDone(msg, {}, theme).render(120).map(line => line.trimEnd());
     expect(rows).toEqual([
       "", " ◆ run · tia-2 · worker",
-      " × failed · gpt-6.2-sol · high · 13.6M tokens · 0.0 credits",
+      expect.stringMatching(/^ × 13\.6M tokens · 0\.0 credits +gpt-6\.2-sol · high$/u),
       "   ↑ line one", "   line two", "   … 1 more line", " ctrl+o to expand output", "",
     ]);
     const expanded = renderSubagentDone(msg, { expanded: true }, theme).render(120).map(line => line.trimEnd());
@@ -697,7 +761,8 @@ describe("renderSubagentDone transcript renderer (ctrl+o)", () => {
   it("does not invent done/success when status evidence is absent (C-LOW)", () => {
     const { status: _status, ...withoutStatus } = msg.details;
     const out = renderSubagentDone({ ...msg, details: withoutStatus }, { expanded: false }, th).render(200).join("\n");
-    expect(out).toContain("unknown");
+    expect(out).toContain("○");
+    expect(out).not.toContain("unknown");
     expect(out).toContain("[toolPendingBg]");
     expect(out).not.toContain("[toolSuccessBg]");
   });

@@ -40,11 +40,11 @@ describe("agent role presentation", () => {
   it("puts the italic role before the bold name and removes activity from the footer", () => {
     const { footer, list } = views(snapshot("reviewer"));
     const plain = stripTerminalSequences(footer);
-    expect(plain).toContain("reviewer raven · fixture · high · 27 turns · 5m1s");
+    expect(plain).toMatch(/reviewer raven · 27 turns · 5m1s +fixture · high$/);
     expect(plain).not.toContain("private output");
     expect(footer).toMatch(/\x1b\[3m[^]*reviewer[^]*\x1b\[23m/u);
     expect(footer).toMatch(/\x1b\[1m[^]*raven[^]*\x1b\[22m/u);
-    expect(stripTerminalSequences(list)).toContain("reviewer raven");
+    expect(stripTerminalSequences(list)).toContain("reviewer raven · fixture · high · 27 turns · 5m1s");
   });
 
   it.each([

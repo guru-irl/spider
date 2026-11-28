@@ -8,6 +8,7 @@ import { delimiter, join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHerdrHarness } from './testutil.js';
 import { replacePackageFile, snapshotPackage } from './packaging-copy.js';
+import { createProcessRunners } from './packaging-process.js';
 import { releaseRemoteJob } from '../jobs/observer.js';
 import { PANE_ENDPOINT_BOOTSTRAP } from '../../../host/src/herdr/pane-installation.js';
 import type { JobRecord, JobId } from '../contracts.js';
@@ -19,7 +20,7 @@ const builtins = new Set(builtinModules.flatMap(name => [name, `node:${name}`]))
 let packedRoot: string;
 let files: string[];
 let tarball: string;
-const run = (args: string[], cwd = root) => execFileSync(process.execPath, args, { cwd, env, encoding: 'utf8', timeout: 180_000, stdio: 'pipe' });
+const { run, runAsync } = createProcessRunners(root, env);
 const npm = (args: string[]) => execFileSync('npm', args, { cwd: root, env, encoding: 'utf8', timeout: 180_000 });
 
 // A missing build entry or package allowlist entry must fail through npm's real artifact.
@@ -45,11 +46,12 @@ const h = {
 };
 
 beforeAll(() => {
+  vi.setConfig({ maxConcurrency: 2 });
   mkdirSync(scratch, { recursive: true });
   mkdirSync(env.TMPDIR!, { recursive: true });
   packedRoot = mkdtempSync(join(scratch, 'pack-'));
 });
-afterAll(() => { rmSync(packedRoot, { recursive: true, force: true }); });
+afterAll(() => { vi.resetConfig(); rmSync(packedRoot, { recursive: true, force: true }); });
 
 const identityArtifacts = new Map<string, string>();
 function packageWithIdentity(sha: string, missingViewer = false): string {
@@ -310,7 +312,7 @@ console.log(JSON.stringify([Object.keys(file).sort(),Object.keys(data).sort()]))
     } finally { await core.close(); }
   });
 
-  it.each(['missing entry', 'missing asset', 'missing parent icon', 'missing unreachable icon', 'Node mod API', 'Node mod global', 'external remote import', 'invalid runtime syntax', 'extra runtime', 'frozen built-in mod', 'truncated licence'])('rejects a broken artifact: %s', kind => {
+  it.concurrent.for(['missing entry', 'missing asset', 'missing parent icon', 'missing unreachable icon', 'Node mod API', 'Node mod global', 'external remote import', 'invalid runtime syntax', 'extra runtime', 'frozen built-in mod', 'truncated licence'])('rejects a broken artifact: %s', async (kind, { expect }) => {
     const copy = mkdtempSync(join(scratch, 'broken-'));
     try {
       snapshotPackage(join(packedRoot, 'package'), copy);
@@ -328,7 +330,7 @@ console.log(JSON.stringify([Object.keys(file).sort(),Object.keys(data).sort()]))
       if (kind === 'Node mod API') replacePackageFile(join(copy, 'packages/herdr/assets/mods/spider/data.js'), 'import fs from "node:fs";\nexport const bad = fs;\n');
       if (kind === 'external remote import') replacePackageFile(join(copy, 'dist/herdr/remote-runtime.mjs'), 'import "@spider/context";\n');
       if (kind === 'extra runtime') writeFileSync(join(copy, 'dist/herdr/metrics-runtime.mjs'), 'export {};\n');
-      expect(() => run(['scripts/assert-bundle.mjs', '--root', copy])).toThrow(new RegExp(kind.startsWith('Node mod') ? 'Node API' : kind === 'external remote import' ? 'non-builtin' : kind === 'missing asset' ? 'feed.js' : kind === 'missing parent icon' ? 'corner-up-left.svg' : kind === 'missing unreachable icon' ? 'unreachable.svg' : 'Herdr'));
+      await expect(runAsync(['scripts/assert-bundle.mjs', '--root', copy])).rejects.toThrow(new RegExp(kind.startsWith('Node mod') ? 'Node API' : kind === 'external remote import' ? 'non-builtin' : kind === 'missing asset' ? 'feed.js' : kind === 'missing parent icon' ? 'corner-up-left.svg' : kind === 'missing unreachable icon' ? 'unreachable.svg' : 'Herdr'));
     } finally { rmSync(copy, { recursive: true, force: true }); }
   });
 });

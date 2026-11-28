@@ -34,3 +34,22 @@ test('detects deleted and newly skipped cases while allowing extra cases', () =>
   const after = [{ name: 'case a', status: 'skipped' }, { name: 'case b', status: 'skipped' }, { name: 'new case', status: 'passed' }];
   assert.deepEqual(missingCases(before, after), [{ name: 'case a', status: 'passed', count: 1 }, { name: 'case c', status: 'passed', count: 1 }]);
 });
+
+const packaging = text => [source('packages/herdr/src/__tests__/packaging.test.ts', text)];
+const syncValidator = "expect(() => run(['scripts/assert-bundle.mjs', '--root', copy])).toThrow(/invalid/);";
+const asyncValidator = "await expect(runAsync(['scripts/assert-bundle.mjs', '--root', copy])).rejects.toThrow(/invalid/);";
+
+test('matches equivalent synchronous and asynchronous package validator assertions', () => {
+  assert.deepEqual(missingAssertions(packaging(syncValidator), packaging(asyncValidator)), []);
+});
+
+test('rejects changes to the package validator command or expected error', () => {
+  for (const changed of [
+    asyncValidator.replace('copy', 'another'),
+    asyncValidator.replace('/invalid/', '/other/'),
+    asyncValidator.replace('.rejects.toThrow', '.rejects.not.toThrow'),
+    asyncValidator.replace('runAsync', 'anotherRunner'),
+    asyncValidator.replace('await ', ''),
+  ]) assert.equal(missingAssertions(packaging(syncValidator), packaging(changed)).length, 1, changed);
+  assert.equal(missingAssertions([source('other.ts', syncValidator)], [source('other.ts', asyncValidator)]).length, 1);
+});

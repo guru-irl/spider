@@ -258,7 +258,7 @@
         {
           "id": "style-1",
           "anchor": "      .bg(t.background)\n      .when(bottom, el => el.border_t(1))\n      .when(!bottom, el => el.border_b(1))\n      .border_color(t.border)\n",
-          "replacement": "      .bg(p.focused ? \"#ffffff14\" : \"#00000000\")\n",
+          "replacement": "      .bg(\"#00000000\")\n",
           "file": "main.js"
         },
         {
@@ -268,7 +268,14 @@
           "file": "main.js"
         }
       ],
-      "tabs": [],
+      "tabs": [
+        {
+          "id": "pi-tab-icon",
+          "anchor": ".when(Boolean(program?.icon), el => el.child(program.tint ? svg(program.icon).size(14).text_color(t.muted) : image(program.icon).size(14)))",
+          "replacement": ".when(Boolean(program?.icon) && (program?.key ?? program?.name)?.toLowerCase() !== \"pi\", el => el.child(program.tint ? svg(program.icon).size(14).text_color(t.muted) : image(program.icon).size(14)))",
+          "file": "main.js"
+        }
+      ],
       "workspace-chrome": [
         {
           "id": "footer-settings-only",

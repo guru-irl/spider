@@ -12,7 +12,6 @@ import { migrate, openDb } from '@spider/db-core';
 import { buildRoamEntries } from '../../../../scripts/build-roam.mjs';
 import { openJournal } from '../../../roam/src/journal.js';
 import { createByteDaemonFixture, createClientFixture } from './testutil.js';
-import { installFastCoreTransport } from '../../../host/src/__tests__/herdr-setup-fast-core.js';
 
 const machine = { id: 'remote-core-1', name: 'box-1.invalid', host: 'box-1.invalid', target: 'box-1.invalid', session: 'remote', via: false };
 const peer = { machineId: '00000000-0000-4000-8000-000000000001', alias: machine.name, node: '/fixture/node', pi: '/fixture/pi', cli: '/fixture/cli', core: '/fixture/hc', globalRoot: '/fixture/global' };
@@ -319,10 +318,8 @@ test('roaming launch tags the operation and machine without polling for completi
   }
 }, 5000);
 
-// These daemon-backed cases retain process transport for deadlines and raw bytes.
 test('daemon-backed fake hc routes binary transfers without text conversion', async () => {
   const fixture = await createByteDaemonFixture();
-  const restoreTransport = installFastCoreTransport(fixture.transportTarget);
   try {
     await fixture.writeRemoteFile(identityPath, Buffer.from(JSON.stringify({ machineId: peer.machineId })));
     const transport = createTransport({ binary: fixture.binary, env: fixture.env, enrolled: [peer] });
@@ -333,13 +330,12 @@ test('daemon-backed fake hc routes binary transfers without text conversion', as
     expect(await fixture.readRemoteFile('/fixture/artifact')).toEqual(input);
     expect((await fixture.calls()).filter(call => call.argv[0] === 'exec').every(call => call.argv.includes('--on'))).toBe(true);
   } finally {
-    try { await fixture.close(); } finally { restoreTransport(); }
+    await fixture.close();
   }
 }, 5000);
 
 test('daemon-backed fake exec forwards binary stdin without executing the payload locally', async () => {
   const fixture = await createByteDaemonFixture();
-  const restoreTransport = installFastCoreTransport(fixture.transportTarget);
   try {
     await fixture.configureRemote({ execEchoStdin: true });
     const client = createArgvClient({ binary: fixture.binary, env: fixture.env });
@@ -347,7 +343,7 @@ test('daemon-backed fake exec forwards binary stdin without executing the payloa
     expect(await client.exec(peer.alias, ['/fixture/node', '/fixture/cli', 'inspect'], { timeoutMs: 1000, maxBytes: 4, stdin: input })).toEqual(input);
     expect(await client.exec(peer.alias, ['/fixture/node', '/fixture/cli', 'inspect'], { timeoutMs: 1000, maxBytes: 4 })).toEqual(Buffer.alloc(0));
   } finally {
-    try { await fixture.close(); } finally { restoreTransport(); }
+    await fixture.close();
   }
 }, 5000);
 

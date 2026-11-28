@@ -52,10 +52,10 @@ Build and test jobs use Node `26.4.0`. On a pull request, `pr.yml` runs
 `typecheck · test · build` check passes only when compile and all four runners
 pass and the runners agree on the selection hash.
 
-Each job uses the selection scripts from the PR base commit. This includes
-`select.mjs`, `run.mjs`, `aggregate.mjs`, and `manifest.mjs`. Before main has
-the judge scripts, the workflow uses a pinned, reviewed revision of them
-instead of the PR head.
+The test jobs use `select.mjs`, `run.mjs`, and `manifest.mjs` from the PR
+base commit. The required check also uses the base `aggregate.mjs` and
+`manifest.mjs`. Before main has the judge scripts, the workflow uses a
+pinned, reviewed revision of them instead of the PR head.
 
 The selector finds the newest usable main map whose commit is an ancestor
 of the PR merge base. It considers every change from the map commit to the

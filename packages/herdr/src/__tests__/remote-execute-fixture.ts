@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, vi } from 'vitest';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { join } from 'node:path';
+import { paths } from '@spider/db-core';
 import { createRemoteExecutor } from '../remote/execute.js';
 import { createHerdrHarness, type HerdrHarness } from './testutil.js';
 import { createRemoteTestFixture, type RemoteTestFixture } from './acceptance/c.js';
@@ -16,8 +17,9 @@ afterEach(async () => {
   for (const { h, restore } of harnesses.splice(0)) {
     try {
       await h.close(); expect(await h.remainingOwnedResources()).toEqual([]);
-      await mkdir(resolve('.spider/scratch/h/logs'), { recursive: true });
-      await writeFile(resolve(`.spider/scratch/h/logs/c3-${h.mode}-cleanup.json`), JSON.stringify(h.cleanupProof, null, 2));
+      const directory = join(paths.scratch('worktree', process.cwd()), 'h', 'logs');
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, `c3-${h.mode}-cleanup.json`), JSON.stringify(h.cleanupProof, null, 2));
     } finally { restore?.(); }
   }
 });

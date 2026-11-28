@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { execFile } from 'node:child_process';
-import { access, chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { access, chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, expect, test } from 'vitest';
 import { createAppClient } from '../client/app.js';
@@ -15,9 +16,7 @@ let layout: string;
 let calls: string;
 
 beforeEach(async () => {
-  const parent = resolve('.spider/scratch/cutover-app');
-  await mkdir(parent, { recursive: true });
-  root = await mkdtemp(join(parent, "app's space-"));
+  root = await mkdtemp(join(tmpdir(), "herdr app's space-"));
   app = join(root, 'app');
   layout = join(root, 'layout.json');
   calls = join(root, 'calls');

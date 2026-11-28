@@ -175,7 +175,7 @@
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",
-    "fastembed": "^2.1.0",
+    "fastembed": "^2.1.1",
     "sqlite-vec": "^0.1.6",
     "turndown": "^7.2.0"
   },

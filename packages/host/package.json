@@ -15,7 +15,7 @@
     "@spider/todo": "0.0.0",
     "@spider/organism": "0.0.0",
     "@spider/superpowers": "0.0.0",
-    "fastembed": "^2.1.0",
+    "fastembed": "^2.1.1",
     "marked": "18.0.11",
     "typebox": "^1.1.38",
     "@spider/subagents": "0.0.0",

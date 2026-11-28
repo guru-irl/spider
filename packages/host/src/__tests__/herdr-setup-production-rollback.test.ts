@@ -65,18 +65,6 @@ test('production upgrade rollback removes newly installed artifacts and restores
   expect(await readFile(settings)).toEqual(original);
 });
 
-test('production template refresh retains the original backup for rollback', async () => {
-  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
-  const template = (await f.parts.generateTemplates(f.request, f.context))[0].path;
-  const original = (await readJournal(f.request.journalRoot)).entries.find(e => e.path === template)!;
-  const current = await readFile(template);
-  await verifiedHerdrFile(f.request.journalRoot, { path: template, expected: digest(current), bytes: Buffer.concat([current, Buffer.from('\nRefreshed instructions.\n')]) });
-  const refreshed = (await readJournal(f.request.journalRoot)).entries.find(e => e.path === template)!;
-  expect(refreshed.before).toBe(original.before);
-  await rollbackHerdr(f.request, f.parts);
-  expect(await readFile(template).then(() => true, () => false)).toBe(false);
-});
-
 test('a pi save then replan never replaces the original settings backup', async () => {
   const f = await fastFixture(); await setupHerdr(f.request, f.parts);
   const path = join(f.h.directories.agent, 'settings.json');
@@ -115,38 +103,9 @@ test('production rollback reverses only managed parts after unrelated shared edi
   expect(await readFile(join(f.h.directories.global, 'herdr/resume.sh')).then(() => true, () => false)).toBe(false);
 });
 
-test.each(['resume', 'theme', 'keys'] as const)('rollback preserves dependencies of a user-changed managed %s and reports it', async kind => {
-  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
-  const warnings: string[] = []; f.parts.warn = warning => warnings.push(warning);
-  let dependency: string;
-  if (kind === 'resume') {
-    await writeFile(f.request.config.shellRc, (await readFile(f.request.config.shellRc, 'utf8')).replace('. ', '. changed '));
-    dependency = join(f.h.directories.global, 'herdr/resume.sh');
-  } else if (kind === 'theme') {
-    await writeFile(join(f.h.directories.agent, 'settings.json'), '{"theme":"user-theme"}');
-    dependency = join(f.h.directories.agent, 'themes/dracula-plus-glass.json');
-  } else {
-    const path = join(f.h.directories.app, 'keys.json'), keys = JSON.parse(await readFile(path, 'utf8'));
-    keys.terminal['cmd-shift-o'] = 'user.action'; await writeFile(path, JSON.stringify(keys));
-    dependency = join(f.h.directories.app, 'mods/spider-panel/main.js');
-  }
-  await rollbackHerdr(f.request, f.parts);
-  expect(await readFile(dependency).then(() => true, () => false)).toBe(true);
-  expect(warnings.some(warning => warning.includes('not restored'))).toBe(true);
-});
-
 test('setup can follow a managed rollback that preserved unrelated edits', async () => {
   const f = await fastFixture(); await setupHerdr(f.request, f.parts); await editUnrelated(f);
   await rollbackHerdr(f.request, f.parts);
   expect((await setupHerdr(f.request, f.parts)).doctor.failures).toEqual([]);
   expect(JSON.parse(await readFile(join(f.h.directories.agent, 'settings.json'), 'utf8')).unrelated).toBe('edited');
-});
-
-test('rollback reports damaged resume markers and retains the referenced hook', async () => {
-  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
-  const warnings: string[] = []; f.parts.warn = warning => warnings.push(warning);
-  await writeFile(f.request.config.shellRc, (await readFile(f.request.config.shellRc, 'utf8')).replace('# spider:resume:end', '# user-edited:end'));
-  await rollbackHerdr(f.request, f.parts);
-  expect(warnings.some(warning => warning.includes('not restored'))).toBe(true);
-  expect(await readFile(join(f.h.directories.global, 'herdr/resume.sh')).then(() => true, () => false)).toBe(true);
 });

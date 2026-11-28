@@ -86,6 +86,9 @@ test('publishes pre-tree-shake inputs, direct reads, and renamed executable byte
     writeFileSync(join(root, file), text);
   }
   run(`
+    // The outer capture wraps child launches. This build still needs the
+    // production archiver rather than the in-test fixture map writer.
+    delete process.env.SPIDER_SELECTION_DIR;
     const { build } = await import(${JSON.stringify(import.meta.resolve('vite'))});
     const { archiveMaps, sourcemap } = await import(${JSON.stringify(new URL('./build-maps.mjs', import.meta.url).href)});
     for (const name of ['main', 'other']) {

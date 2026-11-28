@@ -49,7 +49,7 @@ jobs:
           stem="packages/host/src/__tests__/$TEST_FILE"
           files=("$stem.test.ts")
           case "$TEST_FILE" in
-            herdr-setup-cross-machine|herdr-setup-production-install|herdr-setup-production-rollback|herdr-setup-selection)
+            herdr-setup-cross-machine|herdr-setup-production-install|herdr-setup-production-rollback|herdr-setup-selection|herdr-setup-probes)
               shopt -s nullglob
               files+=("$stem"-*.test.ts)
               ;;

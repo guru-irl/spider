@@ -28,9 +28,9 @@ export function isImageRow(row: string): boolean {
 
 interface MouseLayout { width: number; height: number; originalHeight: number; skipped: number }
 
-export function bindHalfBox(component: Component, enabled: () => boolean): void {
+export function bindHalfBox(component: Component, enabled: () => boolean): boolean {
   const shell = component as Component & { [HALF_BOX]?: Binding };
-  if (shell[HALF_BOX]) { shell[HALF_BOX].enabled = enabled; return; }
+  if (shell[HALF_BOX]) { shell[HALF_BOX].enabled = enabled; return false; }
   const binding: Binding = { enabled };
   Object.defineProperty(shell, HALF_BOX, { value: binding });
   const render = shell.render;
@@ -59,6 +59,7 @@ export function bindHalfBox(component: Component, enabled: () => boolean): void 
     const y = event.y === 0 ? 0 : event.y === layout.height - 1 ? layout.originalHeight - 1 : event.y + layout.skipped;
     return mouse.call(this, { ...event, y, height: layout.originalHeight });
   };
+  return true;
 }
 
 export function createHalfBox(paddingX: number, bg: (text: string) => string): Box {

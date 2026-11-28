@@ -1,7 +1,7 @@
 import { copyFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CustomEditor, CustomMessageComponent, ToolExecutionComponent, UserMessageComponent, Theme, createEditToolDefinition, getAgentDir, initTheme } from "@earendil-works/pi-coding-agent";
+import { BranchSummaryMessageComponent, CompactionSummaryMessageComponent, SkillInvocationMessageComponent, CustomEditor, CustomMessageComponent, ToolExecutionComponent, UserMessageComponent, Theme, createEditToolDefinition, getAgentDir, initTheme } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Text, stripTerminalSequences, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerInputBand } from "./index.js";
@@ -9,7 +9,8 @@ import { createHalfBox } from "./box.js";
 import { registerEditWriteOverrides } from "../routing/overrides.js";
 import glass from "../../../herdr/assets/themes/dracula-plus-glass.json" with { type: "json" };
 
-const host = { CustomEditor, CustomMessageComponent, ToolExecutionComponent, UserMessageComponent, Box, Markdown, Text };
+const host = { CustomEditor, CustomMessageComponent, ToolExecutionComponent, UserMessageComponent, Box, Markdown, Text,
+  BranchSummaryMessageComponent, CompactionSummaryMessageComponent, SkillInvocationMessageComponent };
 const tui = { requestRender() {} } as unknown as TUI;
 const colors = Object.fromEntries(Object.entries(glass.colors).map(([role, value]) => [role, glass.vars[value as keyof typeof glass.vars] ?? value]));
 const theme = new Theme(colors as ConstructorParameters<typeof Theme>[0], colors as ConstructorParameters<typeof Theme>[1], "truecolor");
@@ -135,6 +136,25 @@ it("changes the registered edit override and default custom message padding into
     expect(rows[1].startsWith(`${BG} `)).toBe(true);
     expect(plain(rows).at(-2)).not.toBe("");
   }
+});
+
+it.each([
+  ["branch", () => new BranchSummaryMessageComponent({ role: "branchSummary", fromId: "old", summary: "Branch details", timestamp: 0 }), "Branch details"],
+  ["compaction", () => new CompactionSummaryMessageComponent({ role: "compactionSummary", summary: "Compaction details", tokensBefore: 100, timestamp: 0 }), "Compaction details"],
+  ["skill", () => new SkillInvocationMessageComponent({ name: "review", location: "/project", content: "Skill details", userMessage: undefined }), "Skill details"],
+] as const)("draws half edges for Pi's %s box without losing expansion", (label, create, detail) => {
+  stop = activate();
+  const box = create();
+  const width = 64;
+  const rows = box.render(width);
+  verifyEdges(rows, width);
+  expect(plain(rows)[1]).toMatch(new RegExp(`^ \\[${label}\\]`));
+  expect(plain(rows).join("\n")).not.toContain(detail);
+  const clicked = box.handleMouse({ type: "click", button: "left", x: 1, y: 1, width, height: rows.length, screenX: 1, screenY: 1, shift: false, alt: false, ctrl: false });
+  expect(clicked).toMatchObject({ handled: true });
+  expect(plain(box.render(width)).join("\n")).toContain(detail);
+  stop();
+  expect(box.render(width)[0]).toBe(`${BG}${" ".repeat(width)}\x1b[49m`);
 });
 
 it("keeps just Pi's intentional separator before an edit error", () => {

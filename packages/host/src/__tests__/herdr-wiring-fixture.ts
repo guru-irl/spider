@@ -117,7 +117,7 @@ export async function mountedFixture(mode: 'fake' | 'hc' = 'fake', sessionMode =
   const { join } = await import('node:path');
   const { execFileSync } = await import('node:child_process');
   const { createSessionIpcClient } = await import('../../../herdr/src/feed/ipc-client.js');
-  if (options.fastInactive && (mode !== 'fake' || launches || !(child || requested === false || requested === 'auto' && !hcOwner))) {
+  if (options.fastInactive && (mode !== 'fake' || launches || !(child || requested === false || requested === 'auto' && !hcOwner || options.admitted?.() === false))) {
     throw new Error('The process-free fixture is only for inactive sessions');
   }
   const h = await createHostHerdrHarness(mode);

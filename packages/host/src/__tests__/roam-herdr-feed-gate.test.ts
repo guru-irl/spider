@@ -7,7 +7,7 @@ import { mountedFixture } from "./herdr-wiring-fixture";
 
 type FixtureOptions = NonNullable<Parameters<typeof mountedFixture>[11]>;
 type Fixture = Awaited<ReturnType<typeof mountedFixture>>;
-let fixtureWork: Promise<void> | undefined;
+let fixtureWork: { work: Promise<void>; signal: AbortSignal } | undefined;
 
 function runFixture(signal: AbortSignal, options: FixtureOptions, check: (fixture: Fixture) => Promise<void>, requested = true): Promise<void> {
   const work = (async () => {
@@ -15,28 +15,35 @@ function runFixture(signal: AbortSignal, options: FixtureOptions, check: (fixtur
     try { signal.throwIfAborted(); await check(f); }
     finally { await f.close(); }
   })();
-  fixtureWork = work;
+  fixtureWork = { work, signal };
   return work;
 }
 
-async function drainFixture(): Promise<void> {}
+async function drainFixture(): Promise<void> {
+  const pending = fixtureWork;
+  fixtureWork = undefined;
+  if (!pending) return;
+  try { await pending.work; }
+  catch (error) { if (!pending.signal.aborted || error !== pending.signal.reason) throw error; }
+}
 
-afterEach(() => { clearActions(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
+afterEach(async () => {
+  try { await drainFixture(); }
+  finally { clearActions(); vi.unstubAllEnvs(); vi.restoreAllMocks(); }
+});
 
-it("a refused Herdr session records presence without contacting hc or publishing a feed", async () => {
-  const f = await mountedFixture("fake", "tui", true, false, true, false, true, false, false, true, undefined, { admitted: () => false, allowMissingFeed: true });
-  try {
+it("a refused Herdr session records presence without contacting hc or publishing a feed", async ({ signal }) => {
+  await runFixture(signal, { admitted: () => false, allowMissingFeed: true, fastInactive: true }, async f => {
     expect(f.owner).toBeNull();
     expect(await f.calls()).toEqual([]);
     expect(existsSync(f.feedPath)).toBe(false);
     expect(await f.presence.list()).toEqual([expect.objectContaining({ sessionId: f.h.owner!.sessionId, build: LOADED_BUILD })]);
-  } finally { await f.close(); }
+  });
 }, 5000);
 
-it("a frozen mounted feed does not publish on rename or shutdown", async () => {
+it("a frozen mounted feed does not publish on rename or shutdown", async ({ signal }) => {
   let admitted = true;
-  const f = await mountedFixture("fake", "tui", true, false, true, false, true, false, false, true, undefined, { admitted: () => admitted });
-  try {
+  await runFixture(signal, { admitted: () => admitted }, async f => {
     const before = await readFile(f.feedPath, "utf8");
     admitted = false;
     Reflect.set(f.pi, "getSessionName", () => "renamed");
@@ -44,7 +51,7 @@ it("a frozen mounted feed does not publish on rename or shutdown", async () => {
     expect(await readFile(f.feedPath, "utf8")).toBe(before);
     await f.emit("session_shutdown", { reason: "quit" });
     expect(await readFile(f.feedPath, "utf8")).toBe(before);
-  } finally { await f.close(); }
+  });
 }, 5000);
 
 it("waits for an aborted fixture to close before restoring the environment", async () => {

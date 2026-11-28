@@ -42,7 +42,7 @@ import { createStorePort } from "./stores";
 import { loadHerdrConfig, startProductionHub } from "./production-hub";
 export { startProductionHub } from "./production-hub";
 import { createTransport } from "./transport";
-import { isPeerFailureReason, peerFailureReason, peerPreflightIssue, recoveryRefusalCode } from "./peer-errors";
+import { isPeerFailureReason, peerFailureReason, peerPreflightIssue } from "./peer-errors";
 import { remoteDoctor } from "./remote-observations";
 import { configureV0Service, forgetV0Peer, type V0ServiceOptions } from "./production-controls";
 import { runForeground, runLocalPairCleanup, runLocalPairOperation, createLocalPairRegistry, hasPairConsent, type LocalPairCleanup, type LocalPairOperation, type LocalPairPorts } from "./intercom-local-ops";
@@ -642,17 +642,22 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
     catch { return emitOutcome(io, outcome(1, "sync-unavailable"), jsonOutput, "Roaming synchronization is unavailable.\n"); }
     if (config.role !== "hub") return emitOutcome(io, outcome(1, "mac-hub-required"), jsonOutput, "Run this command on the Mac hub.\n");
     if (!config.enabled) return emitOutcome(io, outcome(1, "roaming-disabled"), jsonOutput, "Roaming synchronization is unavailable while disabled.\n");
-    const peer = argv[2] === undefined ? undefined : config.peers.find(candidate => candidate.alias === argv[2] || candidate.machineId === argv[2]);
-    if (argv[2] !== undefined && !peer) return emitOutcome(io, outcome(2, "machine-not-enrolled"), jsonOutput, "Machine is not enrolled.\n");
+    const peers = argv[2] === undefined ? [] : config.peers.filter(candidate => candidate.alias === argv[2] || candidate.machineId === argv[2]);
+    if (argv[2] !== undefined && peers.length !== 1) return emitOutcome(io, outcome(2, "machine-not-enrolled"), jsonOutput, "Machine is not enrolled.\n");
+    const peer = peers[0];
     try {
-      const reply = await requestHubControl(join(root, "roam", "hub.sock"), peer ? { op: "sync", machine: peer.machineId } : { op: "sync" });
-      const result = { ...reply, operationId: reply.operationId ?? "", home: reply.home ?? null, epoch: reply.epoch ?? null, repairCommand: reply.repairCommand ?? null };
+      if (peer && readPeerRevocation(root, peer.machineId)) return emitOutcome(io, outcome(1, "machine-revoked"), jsonOutput, "That machine was forgotten.\n");
+      const reply = await requestV0Services(root).sync(peer ? { machineId: peer.machineId } : {});
+      // Public receipts use whole milliseconds. Leave the adapter's timing and socket receipt untouched.
+      const result = reply.value === null ? reply : { ...reply, value: { outcomes: reply.value.outcomes.map(row =>
+        !row.value || row.value.applyMs === null ? row : { ...row, value: { ...row.value, applyMs: Math.round(row.value.applyMs) } }),
+      } };
       const safe = safeControlOutcome(result), value = safe.value as { outcomes?: Array<{ code: number; reason: string; operationId: string; operationKind?: string; causeCode?: string }> } | null;
       const outcomes = value?.outcomes ?? [];
       const failure = outcomes.map(row => row.code === 1 && isPeerFailureReason(row.reason) ? row.reason : null).find(Boolean);
       const causes = [...new Set(outcomes.flatMap(row => row.causeCode ? [row.causeCode] : []))].slice(0, 16);
-      const operations = [...new Set(outcomes.flatMap(row => row.code !== 0 && row.operationKind && (row.reason === "agent-operation-failed" || recoveryRefusalCode(row.reason) || row.reason.startsWith("Mapping fenced replica "))
-        ? [`${row.operationKind}: ${row.reason}${row.causeCode ? ` [${row.causeCode}]` : ""}${row.operationId ? ` (${row.operationId})` : ""}`] : []))].slice(0, 16);
+      const operations = [...new Set(outcomes.flatMap(row => row.code !== 0 && row.reason !== failure
+        ? [`${row.operationKind ? `${row.operationKind}: ` : ""}${row.reason}${row.causeCode ? ` [${row.causeCode}]` : ""}${row.operationId ? ` (${row.operationId})` : ""}`] : []))].slice(0, 16);
       const text = `${safe.reason}${failure ? `. ${failure}` : ""}${causes.length ? `. Causes: ${causes.join(", ")}` : ""}${operations.length ? `. Operations: ${operations.join(", ")}` : ""}`;
       return emitOutcome(io, result, jsonOutput, `${clean(text)}\n`);
     } catch { return emitOutcome(io, outcome(1, "hub-unavailable"), jsonOutput, "The roaming hub is unavailable.\n"); }

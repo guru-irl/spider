@@ -3,15 +3,15 @@ import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { processStartIdentity } from "@spider/herdr/jobs/handoff";
 import { claimIdLock, type IdLockHandle } from "@spider/herdr/sessions/id-lock";
-import { createConnection } from "node:net";
+import { createConnection, createServer } from "node:net";
 import { PassThrough } from "node:stream";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_LIMITS, disabledIntercom, type RoamConfig } from "../contracts";
-import type { RelocateId, RunningHome, SessionId, V0ControlServices } from "../relocate/types";
+import type { RelocateId, RunningHome, SessionId } from "../relocate/types";
 import { createHomeStore } from "../relocate/home";
 import { parseV0Control, runV0Control, readV0Confirmation } from "../relocate/cli";
-import { serveV0Control, requestV0Services, runV0Service } from "../relocate/service";
+import { serveV0Control, requestV0Services, runV0Service, type V0HubControlServices } from "../relocate/service";
 import { parsePublicControl } from "../commands";
 import { main } from "../cli";
 import * as legacySocket from "../control-socket";
@@ -29,6 +29,7 @@ import type { CoreIdentity } from "@spider/herdr/contracts";
 import type { Transport } from "../contracts";
 import { main as supervisorMain } from "../supervisor-main";
 import * as v0RuntimeApi from "../relocate/runtime";
+import { deferred } from "./relocate-fakes";
 
 const mac = "11111111-1111-4111-8111-111111111111", box = "22222222-2222-4222-8222-222222222222";
 // The public CLI's built-in local selector, not a remote hostname.
@@ -40,13 +41,161 @@ const roots: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function fixture(confirmation: string | null = null) {
   const out: string[] = [], err: string[] = [], prompts: string[] = [];
-  const services: V0ControlServices = {
+  const services: V0HubControlServices = {
+    sync: vi.fn(async () => { throw new Error("Unexpected sync request"); }),
     relocate: vi.fn(async () => ({ ok: true as const, value: { moveId: null, home, terminal: "core:term", disposition: "relocated" as const, placement: { sessionId: home.sessionId, machineId: box, repoKey: "repo", workspaceId: "ws", repository: "/repo", cwd: "/repo", file: "/session.jsonl", stores: [], historyMachine: mac } } })),
     setHome: vi.fn(async () => ({ ok: true as const, value: home })),
   };
   const io = { out: (text: string) => out.push(text), err: (text: string) => err.push(text), confirmation: vi.fn(async (prompt: string) => { prompts.push(prompt); return confirmation; }) };
   return { out, err, prompts, services, io };
 }
+const syncReply = { code: 0 as const, reason: "Synchronization complete", operationId: "", home: null, epoch: null,
+  repairCommand: null, value: { outcomes: [] } };
+const syncFrame = (request: object = {}) => ({ version: 1, kind: "sync", request });
+function socketRoot() {
+  const root = mkdtempSync(join(resolve(".spider/scratch"), "sc-")); roots.push(root);
+  return root;
+}
+async function rawControl(root: string, frame: string): Promise<unknown> {
+  const socket = createConnection(join(root, "roam", "relocate.sock"));
+  socket.write(frame);
+  const chunks: Buffer[] = [];
+  for await (const chunk of socket) chunks.push(chunk);
+  return JSON.parse(Buffer.concat(chunks).toString());
+}
+
+describe("manual sync socket", () => {
+  it("routes only valid sync frames and preserves the selector", async () => {
+    const root = socketRoot();
+    const f = fixture();
+    const sync = vi.fn(async (_request: { machineId?: string }) => syncReply);
+    const services = { ...f.services, sync };
+    const server = await serveV0Control(root, services);
+    try {
+      for (const invalid of [
+        JSON.stringify({ ...syncFrame(), version: 2 }),
+        JSON.stringify({ ...syncFrame(), kind: "other" }),
+        JSON.stringify(syncFrame({ machineId: "box-a.invalid" })),
+        JSON.stringify(syncFrame({ machineId: null })),
+        JSON.stringify(syncFrame({ machine: box })),
+        JSON.stringify(syncFrame({ machineId: box, extra: true })),
+        JSON.stringify({ ...syncFrame({ machineId: box }), extra: true }),
+        `${" ".repeat(32 * 1024)}${JSON.stringify(syncFrame())}`,
+        `${JSON.stringify(syncFrame())}\n${JSON.stringify(syncFrame())}`,
+      ]) expect(await rawControl(root, `${invalid}\n`)).toEqual({ version: 1, error: "invalid-arguments" });
+      expect(sync).not.toHaveBeenCalled();
+      expect(f.services.relocate).not.toHaveBeenCalled(); expect(f.services.setHome).not.toHaveBeenCalled();
+      for (const request of [{ machineId: box }, {}]) {
+        expect(await rawControl(root, `${JSON.stringify(syncFrame(request))}\n`)).toEqual({ version: 1, kind: "sync", result: syncReply });
+      }
+      expect(sync.mock.calls).toEqual([[{ machineId: box }], [{}]]);
+    } finally { await server.close(); }
+  });
+
+  it("rejects malformed, oversized, and mismatched sync replies rather than reporting success", async () => {
+    const root = socketRoot(), path = join(root, "roam", "relocate.sock");
+    mkdirSync(join(root, "roam"), { mode: 0o700 });
+    const good = { version: 1, kind: "sync", result: syncReply };
+    const row = { ...syncReply, code: 1, reason: "roaming-disabled", value: null };
+    let frame = "";
+    const server = createServer(socket => { socket.on("error", () => {}); socket.once("data", () => socket.end(frame)); });
+    await new Promise<void>((ready, reject) => { server.once("error", reject); server.listen(path, ready); });
+    chmodSync(path, 0o600);
+    try {
+      for (const invalid of [
+        "{}\n", JSON.stringify(good), `${" ".repeat(1024 * 1024)}${JSON.stringify(good)}\n`,
+        ...[
+          { ...good, version: 2 }, { ...good, kind: "set-home" }, { ...good, extra: true },
+          { ...good, result: { ...syncReply, code: "0" } },
+          { ...good, result: { ...syncReply, reason: null } },
+          { ...good, result: { ...syncReply, value: null } },
+          { ...good, result: { ...syncReply, value: { outcomes: "empty" } } },
+          { ...good, result: { ...syncReply, value: { outcomes: [null] } } },
+          { ...good, result: { ...syncReply, value: { outcomes: [{ ...row, code: "0" }] } } },
+          { ...good, result: { ...syncReply, value: { outcomes: [row] } } },
+        ].map(value => `${JSON.stringify(value)}\n`),
+      ]) {
+        frame = invalid;
+        await expect(requestV0Services(root).sync({}), `reply ${frame.slice(0, 180)}`).rejects.toThrow();
+      }
+      frame = `${JSON.stringify(good)}\n`;
+      expect(await requestV0Services(root).sync({})).toEqual(syncReply);
+    } finally { await new Promise<void>(done => server.close(() => done())); }
+  });
+
+  it("uses the 30-minute absolute deadline even when a partial sync reply arrives", async () => {
+    const root = socketRoot(), path = join(root, "roam", "relocate.sock");
+    mkdirSync(join(root, "roam"), { mode: 0o700 });
+    const received = deferred();
+    let connection: ReturnType<typeof createConnection> | undefined;
+    const server = createServer(socket => { connection = socket; socket.on("error", () => {}); socket.once("data", received.resolve); });
+    await new Promise<void>((ready, reject) => { server.once("error", reject); server.listen(path, ready); });
+    chmodSync(path, 0o600);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let failed = false;
+      const checked = requestV0Services(root).sync({}).catch((error: unknown) => { failed = true; return error; });
+      await received.promise;
+      await vi.advanceTimersByTimeAsync(29 * 60_000);
+      expect(failed).toBe(false);
+      connection!.write("{"); await new Promise<void>(done => setImmediate(done));
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(failed).toBe(true);
+      expect(await checked).toMatchObject({ message: expect.stringMatching(/timed out/i) });
+    } finally {
+      vi.useRealTimers(); connection?.destroy();
+      await new Promise<void>(done => server.close(() => done()));
+    }
+  });
+
+  it("refuses an unknown ID or a just-disabled hub even without the CLI checks", async () => {
+    const source = createReplica("global", mac), root = socketRoot();
+    const network = vi.fn(async () => { throw new Error("Unexpected peer contact"); });
+    const transport: Transport = { resolve: network, bootstrapProbe: network, exec: network, run: network, read: network, write: network };
+    let enabled = true;
+    vi.stubEnv("HC_SOCKET", join(root, "hc.sock")); vi.stubEnv("HC_SESSION", "sync-control");
+    let hub: Awaited<ReturnType<typeof startV0Hub>> | undefined;
+    try {
+      hub = await startV0Hub(root, { openCore: () => ({ root, config, db: source.db, close() {} }),
+        readConfig: () => ({ ...config, enabled }), transport, clock: { now: () => 1, later: () => () => {} } });
+      const send = (machineId: string) => rawControl(root, `${JSON.stringify(syncFrame({ machineId }))}\n`);
+      expect(await send("33333333-3333-4333-8333-333333333333")).toMatchObject({ version: 1, kind: "sync", result: { code: 2, reason: "machine-not-enrolled" } });
+      enabled = false;
+      expect(await send(box)).toMatchObject({ version: 1, kind: "sync", result: { code: 1, reason: "roaming-disabled" } });
+      expect(network).not.toHaveBeenCalled();
+    } finally { await hub?.stop(); source.close(); }
+  });
+
+  it("finishes an accepted sync reply during shutdown without accepting new work", async () => {
+    const root = socketRoot();
+    const entered = deferred(), release = deferred();
+    // The full reply must arrive even when it is larger than a socket's write buffer.
+    const receipt = { batchId: "batch-a", stream: "stream-a", through: 7, sha256: "a".repeat(64), applyMs: 42 };
+    const result = { ...syncReply, value: { outcomes: Array.from({ length: 1_500 }, (_, i) => ({
+      ...syncReply, reason: "pushed", operationId: `push-${i}`, value: receipt,
+    })) } };
+    const sync = vi.fn(async (_request: { machineId?: string }) => { entered.resolve(); await release.promise; return result; });
+    const services = { ...fixture().services, sync };
+    const server = await serveV0Control(root, services);
+    try {
+      const request = `${JSON.stringify(syncFrame({ machineId: box }))}\n`;
+      const first = rawControl(root, request);
+      const accepted = await Promise.race([entered.promise.then(() => true), first.then(() => false)]);
+      expect(accepted, "the valid frame must reach the running sync service").toBe(true);
+      const late = createConnection(join(root, "roam", "relocate.sock")); late.on("error", () => {}); late.resume();
+      await once(late, "connect");
+      let closed = false;
+      const closing = server.close().then(() => { closed = true; });
+      const lateClosed = once(late, "close"); late.write(request); await lateClosed;
+      expect(closed).toBe(false);
+      release.resolve();
+      expect(await first).toEqual({ version: 1, kind: "sync", result });
+      await closing;
+      expect(sync).toHaveBeenCalledExactlyOnceWith({ machineId: box });
+    } finally { release.resolve(); await server.close(); }
+  });
+});
+
 describe("v0 controls", () => {
   it("production runtime confirms a supervisor-first pending start", async () => {
     vi.stubEnv("HC_SOCKET",undefined);vi.stubEnv("HC_SESSION",undefined);vi.stubEnv("HC_TERMINAL_SOCKET",undefined);

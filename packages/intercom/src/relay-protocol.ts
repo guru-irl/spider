@@ -7,6 +7,7 @@ export const RELAY_PROTOCOL_VERSION = 1;
 export const RELAY_HOLD_MS = 20_000;
 export const RELAY_POLL_REMOTE_MS = 25_000;
 export const RELAY_POLL_CALL_MS = 30_000;
+export const RELAY_RESULT_RESERVE_MS = 250;
 export const RELAY_POLL_MAX_BYTES: number = 18 * V0_INTERCOM_BYTES;
 export const RELAY_MAX_SLOTS = 16;
 // A 64 KiB config cannot name this many distinct UUIDs.

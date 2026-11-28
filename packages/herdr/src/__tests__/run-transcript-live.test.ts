@@ -26,7 +26,7 @@ function fixture(accent?: () => string | undefined, overrides: Partial<RunTransc
   const source = createRunTranscriptSource({ owner: () => owner, pollMs: 50, resolveDb: () => ({ db: openDbAt(dbPath, 'worktree'), dbPath }), transcriptRoots: () => [root],
     modelContextWindow: model => model === 'example/model-one' ? 200000 : undefined,
     modelName: model => model === 'example/model-one' ? 'Model One' : undefined,
-    iconStyle: 'nerd', inputBand: false, creditFactor: () => 0.5, accent, ...overrides });
+    iconStyle: () => 'nerd', inputBand: () => false, creditFactor: () => 0.5, accent, ...overrides });
   cleanups.push(() => { source.dispose(); db.close(); rmSync(root, { recursive: true, force: true }); });
   return { source, id, store, root, db };
 }
@@ -78,7 +78,7 @@ test('viewer snapshots follow changes to the owner accent', async () => {
 test('viewer snapshots follow changed input-band and icon settings', async () => {
   vi.useFakeTimers();
   let band = false; let icons: 'text' | 'nerd' = 'text';
-  const f = fixture(undefined, { inputBand: (() => band) as never, iconStyle: (() => icons) as never });
+  const f = fixture(undefined, { inputBand: () => band, iconStyle: () => icons });
   const frames: RunViewFrame[] = [];
   f.source.subscribe(f.id, null, frame => frames.push(frame), { view: 2 });
   expect(frames.find(frame => frame.kind === 'snapshot')).toMatchObject({ data: { view: { inputBand: false, iconStyle: 'text' } } });
@@ -88,8 +88,7 @@ test('viewer snapshots follow changed input-band and icon settings', async () =>
 });
 
 test('owner config updates flow through snapshots to the editor without losing the draft', async () => {
-  const makeAppearance = (mount as unknown as { viewerAppearance?: (ctx: unknown) => Pick<RunTranscriptSourceOptions, 'accent' | 'iconStyle' | 'inputBand'> }).viewerAppearance;
-  expect(typeof makeAppearance).toBe('function');
+  const makeAppearance = mount.viewerAppearance;
   const root = resolve('.spider/scratch/hl', randomUUID()); mkdirSync(root, { recursive: true });
   execFileSync('git', ['init', '-q', root]);
   const global = resolve(root, 'global'); mkdirSync(global);
@@ -97,7 +96,7 @@ test('owner config updates flow through snapshots to the editor without losing t
   cleanups.push(() => { paths.globalRoot = previous; rmSync(root, { recursive: true, force: true }); });
   const config = resolve(global, 'config.json');
   writeFileSync(config, JSON.stringify({ 'ui.inputBand': false, 'ui.icons': 'text', 'ui.accent': 'green' }));
-  const appearance = makeAppearance!({ cwd: root, mode: 'rpc', hasUI: false });
+  const appearance = makeAppearance({ cwd: root, mode: 'rpc', hasUI: false } as never);
   vi.useFakeTimers();
   const f = fixture(undefined, appearance);
   const view = createPiRunView({ ui: { requestRender() {}, setFocus() {}, terminal: { columns: 80, rows: 24 } } as unknown as TUI,
@@ -117,10 +116,9 @@ test('owner config updates flow through snapshots to the editor without losing t
 });
 
 test('owner theme palette colors map to accent names and unknown colors use the base theme', () => {
-  const makeAppearance = (mount as unknown as { viewerAppearance?: (ctx: unknown) => { accent(): string | undefined } }).viewerAppearance;
-  expect(typeof makeAppearance).toBe('function');
+  const makeAppearance = mount.viewerAppearance;
   const ctx = { cwd: '.', mode: 'tui', hasUI: true, ui: { theme: { colors: { accent: rgbColor(80, 250, 123) } } } };
-  const appearance = makeAppearance!(ctx);
+  const appearance = makeAppearance(ctx as never);
   expect(appearance.accent()).toBe('green');
   ctx.ui.theme.colors.accent = rgbColor(1, 2, 3);
   expect(appearance.accent()).toBeUndefined();

@@ -24,6 +24,9 @@ export const UNREAD_EVENTS_QUERY = 'SELECT id FROM run_events WHERE run_id=? AND
 /** A live frame is a preview: anything larger waits for the transcript instead. */
 const LIVE_FRAME_BYTES = 192 * 1024;
 const LIVE_UPDATE_MS = 100;
+function optional<T>(read: () => T): T | undefined {
+  try { return read(); } catch { return undefined; }
+}
 function liveEvent(event: Record<string, any>): ({ type: string } & Record<string, unknown>) | null {
   if (event.parentToolCallId) return null; // pi shows nested calls inside their parent's row.
   switch (event.type) {
@@ -47,7 +50,7 @@ export interface RunTranscriptSourceOptions {
   recordBytes?: number;
   modelContextWindow?(model: string): number | undefined;
   modelName?(model: string): string | undefined;
-  iconStyle?: 'text' | 'nerd'; inputBand?: boolean;
+  iconStyle?(): 'text' | 'nerd'; inputBand?(): boolean;
   creditFactor?(): number | null;
   accent?(): string | undefined;
 }
@@ -291,10 +294,11 @@ export function createRunTranscriptSource(options: RunTranscriptSourceOptions): 
             const summary = runSummary(row, owner);
             const working = liveRunWorking(runId);
             const info: RunViewInfo = { ...view!, sessionFile: file?.path ?? null, model: row.model,
-              modelName: row.model ? options.modelName?.(row.model) ?? null : null, thinking: row.thinking,
-              contextWindow: row.model ? options.modelContextWindow?.(row.model) ?? null : null,
-              iconStyle: options.iconStyle ?? 'text', inputBand: options.inputBand !== false, creditFactor: options.creditFactor?.() ?? null,
-              accent: options.accent?.(), ...(working === undefined ? {} : { working }) };
+              modelName: row.model ? optional(() => options.modelName?.(row.model!)) ?? null : null, thinking: row.thinking,
+              contextWindow: row.model ? optional(() => options.modelContextWindow?.(row.model!)) ?? null : null,
+              iconStyle: optional(() => options.iconStyle?.()) ?? 'text', inputBand: optional(() => options.inputBand?.()) ?? true,
+              creditFactor: optional(() => options.creditFactor?.()) ?? null,
+              accent: optional(() => options.accent?.()), ...(working === undefined ? {} : { working }) };
             const state = JSON.stringify({ run: summary, view: info });
             if (first || state !== lastState) {
               send({ runId, cursor: encode(p), kind: 'snapshot', data: { run: summary, view: info } });

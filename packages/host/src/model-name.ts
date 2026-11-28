@@ -31,5 +31,9 @@ export function modelName(registry: Registry | undefined, ref: string): string |
 
 /** Resolve a model's context window with the same catalog precedence as its name. */
 export function modelContextWindow(registry: Registry | undefined, ref: string): number | undefined {
-  return modelValue(registry, ref, model => Number.isFinite(model.contextWindow) && model.contextWindow > 0 ? model.contextWindow : undefined);
+  return modelValue(registry, ref, model => {
+    if (!Number.isFinite(model.contextWindow) || model.contextWindow <= 0) return undefined;
+    const rounded = Math.max(1, Math.round(model.contextWindow));
+    return Number.isSafeInteger(rounded) ? rounded : undefined;
+  });
 }

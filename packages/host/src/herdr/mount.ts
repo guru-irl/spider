@@ -124,6 +124,23 @@ export function effectiveHerdrConfigPath(cwd: string, ctx?: ExtensionContext): s
   return existsSync(standard) ? standard : null;
 }
 
+export function viewerAppearance(ctx: ExtensionContext) {
+  return {
+    iconStyle: (): 'text' | 'nerd' => {
+      try { return configValues(ctx.cwd).config['ui.icons'] === 'nerd' ? 'nerd' : 'text'; } catch { return 'text'; }
+    },
+    inputBand: (): boolean => {
+      try { return configValues(ctx.cwd).config['ui.inputBand'] !== false; } catch { return true; }
+    },
+    accent: (): string | undefined => {
+      try {
+        const color = ctx.mode === 'tui' && ctx.hasUI ? ctx.ui.theme?.colors?.accent : undefined;
+        return color ? ACCENTS.find(accent => accent.hex === colorToHex(color))?.id : storedAccent(configValues(ctx.cwd).config['ui.accent'])?.id;
+      } catch { return undefined; }
+    },
+  };
+}
+
 export async function resolveRealSshBinary(env: Readonly<NodeJS.ProcessEnv>, shimDirectory: string): Promise<string> {
   const excluded = [shimDirectory];
   try { const inherited = JSON.parse(env.SPIDER_HERDR_SSH_DESCRIPTOR ?? 'null'); if (typeof inherited?.shimDirectory === 'string') excluded.push(inherited.shimDirectory); } catch { /* Ignore a stale inherited descriptor during resolution. */ }
@@ -529,15 +546,10 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
       await installSshShim(shimOptions); environment = createExecutionEnvironmentPolicy(shimOptions);
       remoteFiles = createRemoteFileResolver(hc, config.machines, { manager: ctx.sessionManager ?? ctx, id: owner.sessionId });
       output = createHostHerdrPorts({ hc, config, runtimeBytes: Buffer.alloc(0), runtimePath: on => runtimePath(on) });
-      const appearance = configValues(ctx.cwd).config;
       transcript = createRunTranscriptSource({ owner: () => owner, resolveDb: bindDb, openBindingDb: openGlobalReadOnly, transcriptRoots: o => [paths.scratch('project', o.cwd)].filter(root => existsSync(root)),
         modelContextWindow: model => modelContextWindow(ctx.modelRegistry, model),
-        modelName: model => modelName(ctx.modelRegistry, model), iconStyle: appearance['ui.icons'] === 'nerd' ? 'nerd' : 'text',
-        inputBand: appearance['ui.inputBand'] !== false, creditFactor: () => options.viewerCreditFactor?.() ?? null,
-        accent: () => {
-          const color = ctx.mode === 'tui' && ctx.hasUI ? ctx.ui.theme?.colors?.accent : undefined;
-          return color ? ACCENTS.find(accent => accent.hex === colorToHex(color))?.id : storedAccent(appearance['ui.accent'])?.id;
-        } });
+        modelName: model => modelName(ctx.modelRegistry, model), creditFactor: () => options.viewerCreditFactor?.() ?? null,
+        ...viewerAppearance(ctx) });
       inactiveNotice(ctx, false, 'activation-problem');
       stopped = false; activationEnv = env;
       const activeOwner = owner;

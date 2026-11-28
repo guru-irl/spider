@@ -515,7 +515,7 @@
   "packages/host/src/__tests__/herdr-setup-releases.test.ts": 46543,
   "packages/host/src/__tests__/herdr-setup-resume.test.ts": 1181,
   "packages/host/src/__tests__/herdr-setup-rollback-exit.test.ts": 32471,
-  "packages/host/src/__tests__/herdr-setup-rollback.test.ts": 37883,
+  "packages/host/src/__tests__/herdr-setup-rollback.test.ts": 64434,
   "packages/host/src/__tests__/herdr-setup-selection-sound.test.ts": 17381,
   "packages/host/src/__tests__/herdr-setup-selection.test.ts": 38416,
   "packages/host/src/__tests__/herdr-setup-selectors.test.ts": 7097,

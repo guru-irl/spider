@@ -934,8 +934,8 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   const activity = trackReloadActivity(hostPi as unknown as ExtensionAPI);
   const pi = protectAdmissionApi(activity.pi, admission) as unknown as PiToolAPI;
   if (ports.inputBand) registerInputBand(pi as unknown as ExtensionAPI, ports.inputBand, cwd => {
-    const { config } = configValues(cwd);
-    return { "ui.inputBand": config["ui.inputBand"], "ui.icons": config["ui.icons"] };
+    const values = configValues(cwd);
+    return { "ui.inputBand": values.config["ui.inputBand"], "ui.icons": values.config["ui.icons"] };
   });
   if (ports.copyButtons) registerCopyButtons(pi as unknown as ExtensionAPI, ports.copyButtons.host,
     cwd => {

@@ -36,6 +36,8 @@ export type FooterInput = {
    * the branch. The footer then leaves them out and puts the model on the stats line.
    */
   inPane?: boolean;
+  /** Viewer-only fallbacks when the model window or some run prices are unavailable. */
+  subagent?: { contextTokens: number | null; creditsKnown: boolean };
 };
 
 /** Whether the footer runs inside a Herdr pane: a Herdr terminal, with spider's Herdr support not disabled. */
@@ -136,10 +138,13 @@ function stats(input: FooterInput, width: number, theme?: Theme): string {
   const percent = context ? context.percent : 0;
   const percentText = typeof percent === "number" && Number.isFinite(percent) ? `${percent.toFixed(1)}%` : "?";
   const window = tokens(context?.contextWindow ?? 0);
-  const contextText = `${percentText}/${window}${input.autoCompaction === true ? " (auto)" : ""}`;
+  const contextText = input.subagent && !context?.contextWindow
+    ? input.subagent.contextTokens === null ? "context unknown" : `${tokens(input.subagent.contextTokens)} context`
+    : `${percentText}/${window}${input.autoCompaction === true ? " (auto)" : ""}`;
   const calibration = input.calibration ?? calibrationFallback();
   const display = toAicDisplay(totals.aic, totals.unpricedEntries, calibration);
-  const items = [contextText, `${credits(display.primaryAic ?? 0)} AIC`];
+  const creditText = input.subagent?.creditsKnown === false ? "?" : credits(display.primaryAic ?? 0);
+  const items = [contextText, `${creditText} AIC`];
   if ((totals.cacheRead > 0 || totals.cacheWrite > 0) && totals.latestCacheHitRate !== null) {
     items.push(`CH${totals.latestCacheHitRate.toFixed(1)}%`);
   }
@@ -147,11 +152,11 @@ function stats(input: FooterInput, width: number, theme?: Theme): string {
   const positive = (n: number | undefined): n is number => typeof n === "number" && Number.isFinite(n) && n > 0;
   const denominator = positive(input.monthlyBudget) ? input.monthlyBudget : positive(input.counter.snapshot?.entitlement) ? input.counter.snapshot!.entitlement : undefined;
   const used = input.monthUsed !== undefined ? input.monthUsed : snapshot?.creditsUsed;
-  if (typeof used === "number" && Number.isFinite(used) && used >= 0 && denominator !== undefined) {
+  if (!input.subagent && typeof used === "number" && Number.isFinite(used) && used >= 0 && denominator !== undefined) {
     const percent = 100 * (used / denominator);
     if (Number.isFinite(percent)) items.push(`month ${Math.round(percent)}%`);
   }
-  if (totals.input || totals.output) items.push(`${icon("text", "arrowUp")}${tokens(totals.input)} ${icon("text", "arrowDown")}${tokens(totals.output)}`);
+  if (!input.subagent && (totals.input || totals.output)) items.push(`${icon("text", "arrowUp")}${tokens(totals.input)} ${icon("text", "arrowDown")}${tokens(totals.output)}`);
   if (totals.cacheRead || totals.cacheWrite) items.push(`R${tokens(totals.cacheRead)} W${tokens(totals.cacheWrite)}`);
   // Drop the entire lowest-priority item. Context alone can also be omitted.
   while (items.length && visibleWidth(items.join(" · ")) > width) items.pop();

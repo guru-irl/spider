@@ -271,6 +271,7 @@ export interface HostHerdrOptions {
   killAction?(ctx: ExtensionContext, id: string): Promise<unknown>;
   readConfig?(ctx: ExtensionContext): Promise<HerdrConfig | null>;
   dataSource?: Pick<HostDataSourceOptions, 'resolveRunDb' | 'openApprovalDbs' | 'readUsage' | 'scheduler'>;
+  viewerCreditFactor?(): number | null;
   reportError?(error: unknown, notice?: string): void;
   admitted?(): boolean;
 }

@@ -14,7 +14,7 @@ import { isUsageConfigKey, readUsageConfig, USAGE_DEFAULTS, usageConfigError } f
 import { usageDoctorLines } from "./usage/doctor.js";
 import { COMPACTION_DEFAULTS, compactionConfigError } from "./compaction/config.js";
 import { legacyCompactionPath, legacyCompactionWarning } from "./compaction/legacy.js";
-import { ACCENT_KEY, storedAccent } from "./accent/palette.js";
+import { ACCENT_KEY, SPIDER_BLUE, storedAccent } from "./accent/palette.js";
 
 export { controlMigrate } from "./control/migrate-cmd";
 
@@ -24,6 +24,7 @@ export const DEFAULTS: Readonly<Record<string, unknown>> = {
   "herdr.config": "",
   "ui.footer": true,
   "ui.icons": "text",
+  "ui.accent": SPIDER_BLUE.id,
   "ui.inputBand": true,
   "ui.spiderGlyphs": false,
   "copyButtons.enabled": true,
@@ -213,6 +214,9 @@ export function configValues(cwd: string, localRoot?: string, globalRoot: string
     all[key] = Object.hasOwn(g, key) ? g[key] : DEFAULTS[key];
     sources[key] = Object.hasOwn(g, key) ? "global" : "default";
   }
+  const globalAccent = storedAccent(g[ACCENT_KEY]);
+  all[ACCENT_KEY] = globalAccent ? globalAccent.id : DEFAULTS[ACCENT_KEY];
+  sources[ACCENT_KEY] = globalAccent ? "global" : "default";
   const localIcons = isIconStyle(p["ui.icons"]);
   const globalIcons = isIconStyle(g["ui.icons"]);
   all["ui.icons"] = localIcons ? p["ui.icons"] : globalIcons ? g["ui.icons"] : DEFAULTS["ui.icons"];

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
-import assert from 'node:assert/strict';
 import { describe, expect, it } from 'vitest';
-import type { AcceptanceScenario } from './testutil.js';
+import { modes, run } from './acceptance-runner.js';
 import { scenarioStatus } from './scenario-status.js';
 import { scenarioJobs } from './scenario-jobs.js';
 import { scenarioRemote } from './scenario-remote.js';
@@ -11,18 +10,9 @@ import { scenarioResume, scenarioSpaces } from './scenario-sessions.js';
 import { scenarioGuidance, scenarioRoles, scenarioShortcuts } from './scenario-templates.js';
 import { scenarioSpiderPanel } from './scenario-panels.js';
 import { scenarioLook } from './scenario-look.js';
-import { runCompleteSetupAcceptance, createAcceptanceHarness, assertNoNativeNotes, scenarioShared, observeSecondSetup } from './scenario-setup.js';
-import type { AcceptanceMode } from '../contracts.js';
+import { assertNoNativeNotes, observeSecondSetup } from './scenario-setup.js';
 
-async function run(mode: AcceptanceMode, scenario: AcceptanceScenario): Promise<void> {
-  const h = await createAcceptanceHarness(mode);
-  try { await h.start(); await scenario(h); }
-  finally { await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); }
-}
-
-const modes: AcceptanceMode[] = ['fake'];
-if (process.env.SPIDER_HERDR_E2E === '1') modes.push(process.env.SPIDER_HERDR_APP_E2E === '1' ? 'app' : 'hc');
-else console.info('Real isolated-core acceptance disabled. Set SPIDER_HERDR_E2E=1; native app acceptance requires user opt-in.');
+if (modes.length === 1) console.info('Real isolated-core acceptance disabled. Set SPIDER_HERDR_E2E=1; native app acceptance requires user opt-in.');
 
 it('observes remote file writes and launches in the rerun counter', () => run('fake', async h => {
   const before = await h.calls();
@@ -37,7 +27,6 @@ it('rejects a launch that omits native-note suppression and an empty launch log'
 });
 
 describe.each(modes)('complete acceptance (%s)', mode => {
-  it('shared status, remote job, viewer, panel notification and setup do not interfere', () => run(mode, scenarioShared), 120000);
   it('status', () => run(mode, scenarioStatus), 60000);
   it('job notices', () => run(mode, scenarioJobs), 60000);
   it('guidance', () => run(mode, scenarioGuidance), 60000);
@@ -51,15 +40,4 @@ describe.each(modes)('complete acceptance (%s)', mode => {
   it('spider panel', () => run(mode, scenarioSpiderPanel), 60000);
   it('look', () => run(mode, scenarioLook), 60000);
   it('shortcuts', () => run(mode, scenarioShortcuts), 60000);
-  it('complete setup has zero second-run writes and no duplicate writer or resources', () => run(mode, async h => {
-    const result = await runCompleteSetupAcceptance(h);
-    expect(result.secondSetup).toMatchObject({ writes: 0, launches: 0 });
-    expect(result.piTerminalTextWrites).toEqual([]);
-    expect(result.duplicateSessionWriters).toEqual([]);
-    expect(result.remainingOwnedResources).toEqual([]);
-  }), 180000);
-  it('propagates a producer assertion failure instead of reporting success', () => run(mode, async h => {
-    const failure = new assert.AssertionError({ message: 'producer negative control', actual: 1, expected: 0, operator: 'strictEqual' });
-    await expect(runCompleteSetupAcceptance(h, [async () => { throw failure; }])).rejects.toBe(failure);
-  }), 60000);
 });

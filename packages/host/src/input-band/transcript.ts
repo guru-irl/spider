@@ -1,16 +1,19 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { stripTerminalSequences, truncateToWidth, type Component } from "@earendil-works/pi-tui";
-import { icon, joinToolCards, type IconStyle } from "@spider/ui";
-import { bindHalfBox, edgeInk, halfEdge, isImageRow, stripRow } from "./box.js";
+import { stripTerminalSequences, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { bindHalfBox, bindToolCardShell, edgeInk, halfEdge, icon, isHalfEdge, isImageRow, joinToolCards, stripRow, type IconStyle } from "@spider/ui";
 import type { InputBandHost } from "./index.js";
+import { formatMessageTime } from "../message-time.js";
 
 const PATCH = Symbol.for("spider.transcript.render");
 const OSC_START = "\x1b]133;A\x07";
 const OSC_END = "\x1b]133;B\x07\x1b]133;C\x07";
 type Container = Component & { children: Component[] };
-type Options = { inputBand: boolean; theme: () => Theme; iconStyle: () => IconStyle };
+type Options = { inputBand: boolean; theme: () => Theme; iconStyle: () => IconStyle;
+  live: { pending?: { text: string; timestamp: number } }; timestamp: (id: string) => number | undefined };
 type Decorator = (this: Container, render: Component["render"], width: number, options: Options) => string[];
 type Slot = { options?: Options; decorate: Decorator };
+const USER_TIME = Symbol.for("spider.transcript.user-time");
+type UserTimeSlot = { options?: Options; times: WeakMap<object, number> };
 
 function patch(prototype: Container | undefined, options: Options, decorate: Decorator): () => void {
   if (!prototype || typeof prototype.render !== "function") return () => {};
@@ -57,20 +60,7 @@ export function installTranscriptBands(host: InputBandHost, options: Options): (
   }
   const tool = host.ToolExecutionComponent?.prototype;
   off.push(patch(tool, options, function (render, width) {
-    const box = field(this, "contentBox");
-    const text = field(this, "contentText");
-    const child = this.children?.[1];
-    let shell: unknown;
-    if (child === box) shell = box;
-    else if (child === field(this, "contentTextRegion") && field(child, "child") === text) shell = text;
-    else if (field(this, "toolName") === "edit" && field(field(this, "toolDefinition"), "renderShell") === "self"
-      && child === field(this, "selfRenderContainer")) {
-      // Native edit owns its shell; only its known, padded header Box is changed.
-      const call = field(this, "callRendererComponent");
-      const shellChildren = field(child, "children");
-      if (Array.isArray(shellChildren) && shellChildren.some(region => field(region, "child") === call)) shell = call;
-    }
-    if (padded(shell)) bindHalfBox(shell, () => active(tool) && field(shell, "paddingY") === 1);
+    bindToolCardShell(this, padded, () => active(tool));
     return render.call(this, width);
   }));
   // Pi's chat container owns the layout and its mouse hit map. Work on its
@@ -81,10 +71,31 @@ export function installTranscriptBands(host: InputBandHost, options: Options): (
     const rows = render.call(this, width);
     const Tool = host.ToolExecutionComponent;
     if (!Tool) return rows;
-    return joinToolCards(this, rows, width, child => child instanceof Tool,
-      (row, edge, columns) => stripTerminalSequences(row) === (edge === "top" ? "▄" : "▀").repeat(columns));
+    return joinToolCards(this, rows, width, child => child instanceof Tool, isHalfEdge);
   }));
-  const sentCache = new WeakMap<Container, { rows: string[]; width: number; caret: string; output: string[] }>();
+  // Pi passes entry metadata on restore, but live components only receive text.
+  // Its message_start event precedes the synchronous component construction.
+  const user = host.UserMessageComponent?.prototype as (Container & { rebuild?: () => void; [USER_TIME]?: UserTimeSlot }) | undefined;
+  if (user && typeof user.rebuild === "function") {
+    if (!Object.hasOwn(user, USER_TIME)) {
+      const rebuild = user.rebuild;
+      const slot: UserTimeSlot = { times: new WeakMap() };
+      Object.defineProperty(user, USER_TIME, { value: slot });
+      user.rebuild = function () {
+        rebuild.call(this);
+        const pending = slot.options?.live.pending;
+        if (pending && field(this, "messageId") === undefined && field(this, "text") === pending.text) {
+          slot.times.set(this, pending.timestamp);
+          slot.options!.live.pending = undefined;
+        }
+      };
+    }
+    const slot = user[USER_TIME]!;
+    slot.options = options;
+    off.push(() => { if (slot.options === options) slot.options = undefined; });
+  }
+  const sentCache = new WeakMap<Container, { rows: string[]; width: number; caret: string; time: string; output: string[] }>();
+  const timeCache = new WeakMap<Container, { timestamp: number; offset: number; label: string }>();
   off.push(patch(host.UserMessageComponent?.prototype, options, function (render, width, opts) {
     const markdown = this.children?.[0];
     const padding = field(markdown, "paddingX");
@@ -93,24 +104,47 @@ export function installTranscriptBands(host: InputBandHost, options: Options): (
     const stock = () => render.call(this, width);
     if (width < 2 * padding + 4) return stock().map(row => isImageRow(row) ? row : truncateToWidth(row, width, ""));
     const inner = width - 2;
+    const id = field(this, "messageId");
+    const timestamp = typeof id === "string" ? opts.timestamp(id) : user?.[USER_TIME]?.times.get(this);
+    const date = typeof timestamp === "number" ? new Date(timestamp) : undefined;
+    let label = "";
+    if (typeof timestamp === "number" && date && Number.isFinite(date.getTime())) {
+      const offset = date.getTimezoneOffset();
+      let cachedTime = timeCache.get(this);
+      if (!cachedTime || cachedTime.timestamp !== timestamp || cachedTime.offset !== offset) {
+        cachedTime = { timestamp, offset, label: formatMessageTime(date) };
+        timeCache.set(this, cachedTime);
+      }
+      label = cachedTime.label;
+    }
+    // Reserve room on every Markdown row, so Pi does the wrapping and keeps
+    // Markdown styles intact. Omit the label only when the terminal is tiny.
+    const reserved = visibleWidth(label) + 1;
+    const time = label && inner - reserved >= 2 * padding + 4 ? label : "";
+    const contentWidth = time ? inner - reserved : inner;
     // Pi's UserMessageComponent allocates an array for the OSC markers on every
     // render; the underlying Markdown returns a stable array until invalidated.
-    const markdownRows = markdown.render(inner);
+    const markdownRows = markdown.render(contentWidth);
     const caret = opts.theme().fg("accent", icon(opts.iconStyle(), "prompt"));
     const cached = sentCache.get(this);
-    if (cached?.rows === markdownRows && cached.width === width && cached.caret === caret) return cached.output;
-    const rows = render.call(this, inner);
+    if (cached?.rows === markdownRows && cached.width === width && cached.caret === caret && cached.time === time) return cached.output;
+    const rows = render.call(this, contentWidth);
     if (rows.length === 0) return rows;
     if (rows.length < 3 || !rows[0].startsWith(OSC_START) || !rows.at(-1)?.startsWith(OSC_END) || rows.some(isImageRow)) return stock();
     const top = rows[0].slice(OSC_START.length);
-    const colors = edgeInk(top, inner);
+    const colors = edgeInk(top, contentWidth);
     if (!colors || rows.at(-1)?.slice(OSC_END.length) !== top) return stock();
     const text = rows.slice(1, -1);
     const first = text.findIndex(row => stripTerminalSequences(row).trim() !== "");
     const output = [OSC_START + halfEdge(colors.ink, width, "top"),
-      ...text.map((row, i) => stripRow(row, colors.bg, inner, i === first ? ` ${caret}` : "  ")),
+      ...text.map((row, i) => {
+        const painted = stripRow(row, colors.bg, inner, i === first ? ` ${caret}` : "  ");
+        if (i !== first || !time) return painted;
+        const start = width - visibleWidth(time) - 1;
+        return truncateToWidth(painted, start, "", true) + colors.bg + `\x1b[2m${time}\x1b[22m \x1b[49m`;
+      }),
       OSC_END + halfEdge(colors.ink, width, "bottom")];
-    sentCache.set(this, { rows: markdownRows, width, caret, output });
+    sentCache.set(this, { rows: markdownRows, width, caret, time, output });
     return output;
   }));
   return () => { for (const dispose of off) dispose(); };

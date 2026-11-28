@@ -7,6 +7,8 @@ import { icon, type IconStyle } from "./icons.js";
 export type { Component } from "./component";
 export { cachedLines } from "./component";
 export { joinToolCards } from "./tool-card-join.js";
+export { bindHalfBox, bindToolCardShell, edgeInk, halfEdge, isHalfEdge, isImageRow, stripRow } from "./tool-card-edge.js";
+export { foregroundFromBackground, reopenBackground } from "./ansi.js";
 export { ICON_STYLES, ACTIVITY_FRAMES, BAND_GLYPHS, REPLY_FRAME, icon, isIconStyle, type IconStyle, type IconRole } from "./icons.js";
 export { formatRunUsage, formatCompactionCount } from "./agents/usage";
 

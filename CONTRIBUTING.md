@@ -113,7 +113,11 @@ time, which also includes setup and process startup.
 The `selection map` workflow starts after full CI completes for a push to
 `main`. It skips recording if that commit is no longer the tip of `main`.
 It records the root Vitest suite in six shards. Missing records or recorder
-errors prevent publication. Manual dispatch is available for branch canaries.
+errors prevent publication. To refresh main's map without waiting for another
+push, run `gh workflow run selection-map.yml --ref main`. The dispatch joins
+the main queue and skips recording if main has advanced. You can also dispatch
+on another branch for a canary.
+
 PR selection accepts only successful map runs on `main` in this repository
 whose run SHA matches the map's commit.
 

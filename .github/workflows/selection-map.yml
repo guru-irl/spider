@@ -9,7 +9,10 @@ on:
 
 concurrency:
   # Match CI's main push group. A later push must wait for an active recorder.
-  group: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_sha == github.sha && 'ci-CI-refs/heads/main' || format('selection-map-{0}', github.run_id) }}
+  group: >-
+    ${{ ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_sha == github.sha)) &&
+      'ci-CI-refs/heads/main' || format('selection-map-{0}', github.run_id) }}
   cancel-in-progress: false
   # Queue instead of replacing any CI run already waiting for the group.
   queue: max
@@ -23,7 +26,7 @@ env:
 jobs:
   eligible:
     if: >-
-      (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main') ||
+      github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' &&
        github.event.workflow_run.path == '.github/workflows/ci.yml' &&
        github.event.workflow_run.head_repository.full_name == github.repository &&
@@ -37,7 +40,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = workflow_run ]; then
+          if [ "$GITHUB_EVENT_NAME" = workflow_run ] || [ "$GITHUB_REF" = refs/heads/main ]; then
             head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
             if [ "$head" != "$GITHUB_SHA" ]; then
               echo 'Main advanced while this run was queued. The next CI completion can record it.'

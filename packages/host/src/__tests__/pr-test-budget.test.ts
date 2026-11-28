@@ -36,6 +36,27 @@ describe('PR test budget', () => {
     expect(result.deferred.every((entry: { rule: string }) => /budget/.test(entry.rule))).toBe(true);
   });
 
+  it('reserves required files before filling the remaining budget', async () => {
+    const { cutToBudget } = await api();
+    const result = cutToBudget({ files: ['a-priority', 'z-required', 'b-small'], requiredFiles: ['z-required'],
+      priorities: { 'a-priority': 0, 'b-small': 2, 'z-required': 2 },
+      durations: { 'a-priority': 6, 'z-required': 7, 'b-small': 3 },
+      machines: 1, workerCount: 1, limitMs: 10 });
+    expect(result.files).toEqual(['b-small', 'z-required']);
+    expect(result.deferred.map((entry: { file: string }) => entry.file)).toEqual(['a-priority']);
+    expect(result.budget).toMatchObject({ predictedMaxMs: 10, requiredOverBudget: false });
+  });
+
+  it('reports when required files alone exceed the budget', async () => {
+    const { cutToBudget, selectionSummary } = await api();
+    const result = cutToBudget({ files: ['required', 'other'], requiredFiles: ['required'],
+      durations: { required: 11, other: 1 }, machines: 1, workerCount: 1, limitMs: 10 });
+    expect(result.files).toEqual(['required']);
+    expect(result.deferred.map((entry: { file: string }) => entry.file)).toEqual(['other']);
+    expect(result.budget).toMatchObject({ predictedMaxMs: 11, requiredOverBudget: true });
+    expect(selectionSummary({ ...result, optional: {} })).toMatch(/required files alone exceed the.*budget/i);
+  });
+
   it('reserves import time on the same workers instead of treating imports as free', async () => {
     const { cutToBudget } = await api();
     const result = cutToBudget({ files: ['a', 'b', 'c'], durations: { a: 4, b: 4, c: 4 },

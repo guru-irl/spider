@@ -1529,6 +1529,11 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
       ...(process.env.PI_SUBAGENT_CHILD === '1' ? { reportError: (error: unknown, notice?: string) => { process.stderr.write((notice ?? herdrErrorNotice(error)) + '\n'); } } : {}),
       packageRoot: herdrPackageRoot,
       admitted: ordinaryWorkAllowed,
+      viewerCreditFactor: () => {
+        const calibration = usageServices.get(pi)?.snapshot()?.calibration;
+        return calibration?.status === 'calibrated' && typeof calibration.factor === 'number'
+          && Number.isFinite(calibration.factor) && calibration.factor >= 0 ? calibration.factor : null;
+      },
       actionContext: ctx => buildActionCtx(pi, { action: "message" }, sessionIdOf(ctx), cwdOf(ctx) ?? process.cwd(), undefined, ctx.modelRegistry, undefined, parentModelOf(ctx)),
       killAction: (ctx, id) => {
         const args: SpiderArgs = { action: "kill", id };

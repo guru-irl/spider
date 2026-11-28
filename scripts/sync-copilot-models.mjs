@@ -14,8 +14,9 @@ import { isDeepStrictEqual } from "node:util";
 import { piAgentDir } from "./pi-agent-dir.mjs";
 import { isThinkingLevel } from "../packages/db-core/src/thinking.ts";
 
-const AUTH_PATH = join(piAgentDir(), "auth.json");
-const MODELS_PATH = join(piAgentDir(), "models.json");
+const agentDir = await piAgentDir();
+const AUTH_PATH = join(agentDir, "auth.json");
+const MODELS_PATH = join(agentDir, "models.json");
 const COPILOT_HEADERS = {
   "User-Agent": "GitHubCopilotChat/0.35.0",
   "Editor-Version": "vscode/1.107.0",

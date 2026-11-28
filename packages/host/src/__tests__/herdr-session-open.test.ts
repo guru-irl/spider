@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, it, vi } from 'vitest';
 import { readFile, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { openDbAt } from '@spider/db-core';
 import { createHerdrHarness } from '../../../herdr/src/__tests__/testutil.js';
@@ -18,6 +19,7 @@ it('mounted endpoint reopens the same parked owner terminal through openSession'
   let ipc: ReturnType<typeof createSessionIpcClient> | undefined;
   try {
     await h.start();
+    execFileSync('git', ['init', '-q', h.directories.local]);
     for (const [key, value] of Object.entries(h.localEnv)) if (value !== undefined) vi.stubEnv(key, value);
     vi.stubEnv('PI_SUBAGENT_CHILD', '0'); vi.stubEnv('SPIDER_GLOBAL_ROOT', h.directories.global); vi.stubEnv('PI_CODING_AGENT_DIR', h.directories.agent);
     const config = { enabled: true, app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.root, 'core.toml') }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [], limits: { auxiliaryPanes: 2, completedRows: 50, completedHours: 24 }, retention: { foregroundDays: 7 }, admin: { wrappers: [] } };

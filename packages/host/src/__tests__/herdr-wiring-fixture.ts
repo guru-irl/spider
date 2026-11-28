@@ -331,15 +331,16 @@ export async function installFixtureRuntime(f: Awaited<ReturnType<typeof mounted
   } finally { await ports.dispose(); }
 }
 
-export async function closePaneScenario(mode: 'fake' | 'hc', pane: 'observer' | 'console'): Promise<void> {
+export async function closePaneScenario(mode: 'fake' | 'hc', pane: 'observer' | 'console', beforeReadConsole?: () => void): Promise<void> {
   const f = await mountedFixture(mode, 'tui', true, false, true, true);
   const { writeFile, access } = await import('node:fs/promises');
   const gate = join(f.h.directories.remote, 'finish-payload');
   const started = join(f.h.directories.remote, 'payload-started');
+  const abort = new AbortController();
   const installed = installFixtureRuntime(f);
   const executing = (async () => {
     await installed;
-    return f.mount.execution().remote!.execute({ owner: f.owner!, on: 'remote.invalid' as never,
+    return f.mount.execution().remote!.execute({ owner: f.owner!, on: 'remote.invalid' as never, signal: abort.signal,
       source: { kind: 'code', language: 'shell', code: `printf 'started\\n'; printf yes > '${started}'; ${waitForGateFile(gate)}; printf 'completed\\n'; exit 23` } });
   })();
   void executing.catch(() => {});
@@ -359,6 +360,7 @@ export async function closePaneScenario(mode: 'fake' | 'hc', pane: 'observer' | 
       const installed = (await readJournal(join(f.config.globalRoot, 'herdr/setup'))).runtimes[0];
       const on = 'remote.invalid' as never;
       const request = { owner: f.owner!, on, target: { on, ...f.config.machines[0].runtime, environment: {}, nodePath: f.h.nodeBinary, runtimePath: installed.path, runtimeSha256: installed.after }, source: { kind: 'code' as const, language: 'shell' as const, code: 'explicit console view' } };
+      beforeReadConsole?.();
       const retained = await readRetainedAgentConsole(request, f.h.hc, f.h.localEnv); expect(retained).not.toBeNull();
       expect(await openRetainedConsole(request, f.h.hc, f.h.localEnv)).toMatchObject({ consoleId: retained!.consoleId });
     }
@@ -386,7 +388,14 @@ export async function closePaneScenario(mode: 'fake' | 'hc', pane: 'observer' | 
     expect((await f.calls()).filter(c => c.argv[0] === 'kill' && c.argv[1] === original.address)).toEqual([]);
     await writeFile(gate, 'finish');
     expect(await executing).toMatchObject({ outcome: 'exited', exitCode: 23, stdout: 'started\ncompleted\n' });
-  } finally { await writeFile(gate, 'finish').catch(() => {}); await f.close(); await executing.catch(() => {}); }
+  } catch (error) {
+    // Cancellation needs the job monitor and cores to stay up until execution settles.
+    abort.abort();
+    await executing.catch(() => {});
+    await f.close().catch(() => {}); // Preserve the first scenario error.
+    throw error;
+  }
+  await f.close();
   expect(await f.h.remainingOwnedResources()).toEqual([]);
   expect(f.h.cleanupProof).toMatchObject({ remaining: [], defaultCoreUnchanged: true });
 }

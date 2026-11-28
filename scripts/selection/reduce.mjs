@@ -204,7 +204,9 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
     else if (!existsSync(traceFile)) trace = { error: 'expected Linux trace missing' };
     else {
       const owners = new Map([...groups].flatMap(([file, entry]) => [...entry.workerPids].map(pid => [pid, file])));
-      trace = readKernelTrace(traceFile, { root: checkout, tracked: trackedPaths(), owners });
+      const ringFile = `${resolve(rawDir)}.io-uring`;
+      trace = readKernelTrace(traceFile, { root: checkout, tracked: trackedPaths(), owners,
+        ringFile: existsSync(ringFile) ? ringFile : undefined });
     }
     stats.kernelTrace = trace.error ?? 'observed';
   }

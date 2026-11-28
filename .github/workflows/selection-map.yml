@@ -6,6 +6,8 @@ jobs:
   linux-kernel-probe:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      ONNXRUNTIME_NODE_INSTALL: skip
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -24,10 +26,25 @@ jobs:
           node --test --test-concurrency=1
           --test-name-pattern 'kernel trace attributes|Node test supervisor|nested recorder keeps|treats io_uring'
           scripts/selection/recorder.test.mjs
+      - name: Inspect file paths in a representative real Vitest fork
+        if: always()
+        run: |
+          work="$PWD/.spider/scratch/selection/native-path-probe"
+          mkdir -p "$work/maps" "$work/tmp"
+          SPIDER_BUILD_SOURCEMAP=1 SPIDER_SELECTION_MAPS="$work/maps" npm ci
+          SPIDER_SELECTION_KERNEL_TRACE=1 TMPDIR="$work/tmp" bash scripts/selection/with-recorder.sh "$work/raw" \
+            npx vitest run --maxWorkers=1 packages/context/src/__tests__/import-idempotency.test.ts \
+            --reporter=json --outputFile="$work/vitest.json"
+          TMPDIR="$work/tmp" node scripts/selection/reduce.mjs "$work/raw" "$work/maps" "$work/vitest.json" "$work/records.json"
+          jq '.records | map_values(.capture)' "$work/records.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: synthetic-kernel-trace
-          path: .spider/scratch/selection/recorder-*
+          path: |
+            .spider/scratch/selection/recorder-*
+            .spider/scratch/selection/native-path-probe/raw.linux-trace
+            .spider/scratch/selection/native-path-probe/raw.io-uring
+            .spider/scratch/selection/native-path-probe/records.json
           include-hidden-files: true
           retention-days: 7

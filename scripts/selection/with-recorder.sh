@@ -19,6 +19,31 @@ if [[ ${SPIDER_SELECTION_KERNEL_TRACE:-} == 1 ]]; then
   calls=clone,clone3,fork,vfork,execve,execveat,open,openat,openat2,creat,open_by_handle_at,getdents,getdents64
   calls+=,recvmsg,recvmmsg,io_uring_setup,io_uring_enter,unshare,setns,chroot,pivot_root,mount,umount2
   printf '%s\n' linux-strace-v2 > "$SPIDER_SELECTION_DIR/kernel-mode"
-  exec strace -f -q -x -y --seccomp-bpf -e "trace=$calls" -o "${SPIDER_SELECTION_DIR}.linux-trace" -- "${run[@]}"
+  trace=(strace -f -q -x -y -s 256 --seccomp-bpf -e "trace=$calls" -o "${SPIDER_SELECTION_DIR}.linux-trace" -- "${run[@]}")
+  : > "${SPIDER_SELECTION_DIR}.io-uring"
+
+  # Strace cannot see operations submitted through a mapped io_uring queue.
+  # The private tracefs instance supplies those opcodes on Linux CI. Missing
+  # permissions, unknown opcodes, and dropped events keep the fallback.
+  instance="/sys/kernel/tracing/instances/spider-selection-$$-$RANDOM"
+  ring=0
+  trace_setting() { printf '%s\n' "$1" | sudo -n tee "$instance/$2" >/dev/null; }
+  if sudo -n mkdir "$instance" 2>/dev/null; then
+    trap 'sudo -n rmdir "$instance" || true' EXIT
+    if trace_setting 0 tracing_on && trace_setting 8192 buffer_size_kb &&
+      trace_setting 1 events/io_uring/io_uring_submit_req/enable && trace_setting 1 tracing_on; then
+      ring=1
+    fi
+  fi
+  code=0
+  "${trace[@]}" || code=$?
+  if ((ring)) && trace_setting 0 tracing_on &&
+    sudo -n find "$instance/per_cpu" -name stats -exec awk '
+      /^[[:space:]]*(overrun|commit overrun|dropped events):/ { seen++; if ($NF != 0) lost=1 }
+      END { exit !(seen > 0 && !lost) }
+    ' {} + && sudo -n cat "$instance/trace" > "${SPIDER_SELECTION_DIR}.io-uring.tmp"; then
+    mv "${SPIDER_SELECTION_DIR}.io-uring.tmp" "${SPIDER_SELECTION_DIR}.io-uring" || true
+  fi
+  exit "$code"
 fi
 exec "${run[@]}"

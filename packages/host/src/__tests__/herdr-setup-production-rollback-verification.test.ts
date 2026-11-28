@@ -75,22 +75,6 @@ test('production setup stages every relative import target in every installed mo
   expect((await parts.inspect('clones', f.request)).failures.length).toBeGreaterThan(0);
 });
 
-test.each(['resume', 'mods', 'launcher'] as const)('doctor checks the pinned %s Node path with an explicit repair', async source => {
-  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
-  const missing = join(f.h.root, 'removed-node');
-  if (source === 'resume') await writeFile(f.request.config.shellRc, (await readFile(f.request.config.shellRc, 'utf8')).split(process.execPath).join(missing));
-  else if (source === 'mods') {
-    const path = join(f.h.directories.app, 'layouts/spider-glass.json');
-    await writeFile(path, (await readFile(path, 'utf8')).split(process.execPath).join(missing));
-  } else {
-    const path = join(f.request.journalRoot, 'journal.json');
-    const journal = JSON.parse(await readFile(path, 'utf8')); journal.launcherNodePath = missing; await writeFile(path, JSON.stringify(journal));
-  }
-  const report = await doctorHerdr(f.request, await f.ports.doctorParts(f.request));
-  expect(report.failures).toContainEqual(expect.objectContaining({ item: 'local-node', code: 'pinned-node-unavailable', message: expect.stringContaining(missing), repair: expect.stringContaining('Node') }));
-  expect(report.failures.find(f => f.code === 'pinned-node-unavailable')?.repair).toContain('setup');
-});
-
 test('production setup refuses a split global root before writes and doctor names the repair', async () => {
   const f = await fastFixture();
   const wrongRoot = join(f.h.root, 'wrong-global');

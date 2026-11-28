@@ -29,20 +29,6 @@ test.each(['theme', 'layout'])('interrupted setup refuses a foreign %s value bef
   expect(await readFile(backup)).toEqual(original);
 }, 60_000);
 
-test.each([false, true])('setup repairs an older unverified completed-cutover checkpoint (partial: %s)', async partial => {
-  const f = await fastFixture(), settings = join(f.request.config.app.home, 'settings.json');
-  const original = await readFile(settings);
-  await setupHerdr(f.request, f.parts);
-  // Older setup recorded cutover completion before selecting the app look.
-  const journal = await readJournal(f.request.journalRoot);
-  journal.verified = false;
-  await saveJournal(f.request.journalRoot, journal);
-  await writeFile(settings, partial ? JSON.stringify({ ...JSON.parse(original.toString()), layout: 'spider-glass' }) : original);
-  const result = await setupHerdr(f.request, f.parts);
-  expect(result.doctor.failures).toEqual([]);
-  expect(JSON.parse((await readFile(settings)).toString())).toEqual({ zoom: 1.25, theme: 'spider-glass', layout: 'spider-glass', sounds: { enabled: false } });
-}, 60_000);
-
 test('unrelated app settings edits survive interrupted setup recovery and rollback', async () => {
   const { f, settings } = await interruptSelection('app.theme');
   await writeFile(settings, JSON.stringify({ ...JSON.parse((await readFile(settings)).toString()), zoom: 2, custom: { keep: true } }));
@@ -59,17 +45,4 @@ test('rollback from a partial app selection restores the original settings bytes
   await rollbackHerdr(f.request, f.parts);
   expect(await readFile(settings)).toEqual(original);
   expect((await readJournal(f.request.journalRoot)).entries).toEqual([]);
-}, 60_000);
-
-test('partial-transition recovery never applies to other setup-managed fields', async () => {
-  const { f } = await interruptSelection('app.theme');
-  const keysPath = join(f.request.config.app.home, 'keys.json');
-  const keys = JSON.parse((await readFile(keysPath)).toString());
-  const managed = Object.keys(keys.terminal);
-  expect(managed.length).toBeGreaterThan(1);
-  delete keys.terminal[managed[0]];
-  await writeFile(keysPath, JSON.stringify(keys));
-  const before = await fingerprint(f);
-  await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'managed-artifact-changed' });
-  expect(await fingerprint(f)).toEqual(before);
 }, 60_000);

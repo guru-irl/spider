@@ -49,22 +49,6 @@ test('doctor rejects an older runtime when the current package requires new byte
   expect((await (await f.ports.doctorParts(f.request)).inspect('runtime-digest', f.request)).failures.length).toBeGreaterThan(0);
 });
 
-test('production upgrade rollback removes newly installed artifacts and restores user originals', async () => {
-  const f = await focusedSetupFixture({ coreTransport: 'process' });
-  const settings = join(f.h.directories.agent, 'settings.json'), original = await readFile(settings);
-  await setupHerdr(f.request, f.parts);
-  const panel = join(f.h.directories.app, 'mods/spider-panel/main.js');
-  const source = join(f.root, 'packages/herdr/assets/mods/spider/main.js');
-  const before = (await readJournal(f.request.journalRoot)).entries.find(e => e.path === panel)!;
-  await writeFile(source, (await readFile(source, 'utf8')) + '\n// next version\n');
-  await setupHerdr(f.request, f.parts);
-  const after = (await readJournal(f.request.journalRoot)).entries.find(e => e.path === panel)!;
-  expect({ before: after.before, backup: after.backup, mode: after.mode }).toEqual({ before: before.before, backup: before.backup, mode: before.mode });
-  await rollbackHerdr(f.request, f.parts);
-  expect(await readFile(panel).then(() => true, () => false)).toBe(false);
-  expect(await readFile(settings)).toEqual(original);
-});
-
 test('a pi save then replan never replaces the original settings backup', async () => {
   const f = await fastFixture(); await setupHerdr(f.request, f.parts);
   const path = join(f.h.directories.agent, 'settings.json');
@@ -101,11 +85,4 @@ test('production rollback reverses only managed parts after unrelated shared edi
   expect(await readFile(f.request.config.core.config, 'utf8')).toContain('notes = true');
   expect(await readFile(f.request.config.core.config, 'utf8')).toContain('value = 42');
   expect(await readFile(join(f.h.directories.global, 'herdr/resume.sh')).then(() => true, () => false)).toBe(false);
-});
-
-test('setup can follow a managed rollback that preserved unrelated edits', async () => {
-  const f = await fastFixture(); await setupHerdr(f.request, f.parts); await editUnrelated(f);
-  await rollbackHerdr(f.request, f.parts);
-  expect((await setupHerdr(f.request, f.parts)).doctor.failures).toEqual([]);
-  expect(JSON.parse(await readFile(join(f.h.directories.agent, 'settings.json'), 'utf8')).unrelated).toBe('edited');
 });

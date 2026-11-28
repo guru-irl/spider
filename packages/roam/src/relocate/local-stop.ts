@@ -12,8 +12,8 @@ import type { Clock } from "../contracts";
 import { decodeManagedHome, readManagedHome, sameManagedHome } from "./home";
 import { object } from "./journal";
 import { localRecordRows, readLocalRecord, readStopPlacement, writeLocalRecord } from "./local-records";
-import type { LocalIO, LocalRuntime } from "./local";
-import { createStopWork } from "./local-stop-work";
+import type { LocalDurableTerminal, LocalIO, LocalRuntime } from "./local";
+import { createStopWork, type HostedRunBinding } from "./local-stop-work";
 import type { OwnerGeneration, StopBlocker, StopMode, StopObservation } from "./session-stop-types";
 import type { RelocateAdapterOptions, RelocateHome, SessionId, StoppedHome } from "./types";
 
@@ -30,7 +30,9 @@ type Child = Identity & { kind: "verified" | "run" | "detached" | "unclassified"
 // Earlier proofs marked only verified subagent children as "run".
 const verifiedChild = (child: Child) => child.kind === "verified" || child.kind === "run";
 type Capture = { owner: OwnerGeneration; terminal: string | null; children: Child[] };
-type Proof = { home: StoppedHome; bootId: string; observedAt: number; evidence: Evidence; capture: Capture | null; carried?: readonly Identity[] };
+type HostedCapture = { binding: HostedRunBinding; terminal: LocalDurableTerminal; holderBirth: string; members: Child[] };
+type Proof = { home: StoppedHome; bootId: string; observedAt: number; evidence: Evidence; capture: Capture | null;
+  hosted?: readonly HostedCapture[]; carried?: readonly Identity[] };
 type ModeRecord = { home: StoppedHome; mode: StopMode };
 type Location = { file: string | null; cwd: string | null; local: boolean };
 type Owner = { generation: OwnerGeneration; terminal: string | null; admitted: boolean };
@@ -55,6 +57,17 @@ function readProof(db: Db, home: StoppedHome, bootId: string, scope: "exact" | "
       (!sameManagedHome(savedHome, home) && !(scope === "include-earlier" && savedHome.epoch < home.epoch))) return null;
   const identity = (value: Identity) => safePid(value?.pid) && knownText(value?.startIdentity);
   const owner = (value: OwnerGeneration) => identity(value) && value.bootId === bootId;
+  const child = (value: Child) => identity(value) && ["verified", "run", "detached", "unclassified"].includes(value.kind);
+  const hosted = (value: HostedCapture) => {
+    const binding = value?.binding, terminal = value?.terminal;
+    return binding && terminal && knownText(binding.runId) && isAbsolute(binding.directory) && knownText(binding.address) &&
+      Number.isSafeInteger(binding.publishedAt) && binding.publishedAt >= terminal.createdAt && identity(binding.supervisor) && identity(binding.child) &&
+      safePid(terminal.pid) && knownText(terminal.identity) && knownText(terminal.core?.coreId) && knownText(terminal.core?.socket) &&
+      knownText(terminal.core?.sessionNamespace) && Number.isSafeInteger(terminal.createdAt) && terminal.createdAt > 0 && knownText(value.holderBirth) &&
+      Array.isArray(value.members) && value.members.length >= 2 && value.members.every(child) &&
+      sameProcess(value.members[0], binding.supervisor) && sameProcess(value.members[1], binding.child) &&
+      binding.supervisor.pid !== binding.child.pid && value.members.every(member => member.pid !== terminal.pid && member.pid !== proof.capture?.owner.pid);
+  };
   if (!Number.isSafeInteger(proof.observedAt) || proof.observedAt < 0 || !proof.evidence ||
       (proof.evidence.kind === "confirmed" ? proof.evidence.owner !== null && !owner(proof.evidence.owner)
         : proof.evidence.kind === "pending" ? !knownText(proof.evidence.reason) || !Array.isArray(proof.evidence.blockers)
@@ -63,8 +76,8 @@ function readProof(db: Db, home: StoppedHome, bootId: string, scope: "exact" | "
         proof.evidence.kind === "confirmed" && proof.carried.length > 0) ||
       proof.capture !== null && (!owner(proof.capture.owner) ||
         proof.capture.terminal !== null && !knownText(proof.capture.terminal) || !Array.isArray(proof.capture.children) ||
-        !proof.capture.children.every(child => identity(child) && child.pid !== proof.capture!.owner.pid &&
-          ["verified", "run", "detached", "unclassified"].includes(child.kind)))) throw new StopCheck(unavailable);
+        !proof.capture.children.every(member => child(member) && member.pid !== proof.capture!.owner.pid)) ||
+      proof.hosted !== undefined && (!Array.isArray(proof.hosted) || !proof.hosted.every(hosted))) throw new StopCheck(unavailable);
   return { ...proof, home: savedHome };
 }
 
@@ -166,6 +179,7 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
     const time = budget(clock, options.limits.readyMs);
     let home: RelocateHome | null = null, bootId: string | null = null;
     let capture: Capture | null = null;
+    let hosted: HostedCapture[] = [];
     let carried: readonly Identity[] = [];
     let proofUnreadable = false;
     const observation = (evidence: Evidence, observedAt = clock.now()): StopObservation => ({ sessionId: id, machineId, home, bootId, observedAt, evidence });
@@ -188,6 +202,7 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
       if (boot !== bootId) {
         bootId = boot || null;
         capture = null;
+        hosted = [];
         carried = [];
         throw new StopCheck("The local boot changed during the stop check.");
       }
@@ -209,7 +224,7 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
         // must not prevent enforcement of the exact stopped home.
         if (proofUnreadable && !capture) return;
         try { writeLocal(db, proofState, id, { home: expected, bootId, observedAt: at, evidence, capture,
-          ...(carried.length ? { carried } : {}),
+          ...(hosted.length ? { hosted } : {}), ...(carried.length ? { carried } : {}),
         } satisfies Proof); }
         catch (error) { if (!proofUnreadable) throw error; }
       }).immediate();
@@ -305,7 +320,7 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
       const state = await probe(identity.pid, until);
       return state.kind === "absent" || state.kind === "live" && state.startIdentity !== identity.startIdentity;
     }
-    async function inventory(children: readonly Identity[]) {
+    async function inventory(children: readonly Pick<Identity, "pid">[]) {
       const result = await time.read(() => work.inventory(id));
       const excluded = new Set(result.excludedRoots);
       for (const child of children) if (result.excludedRoots.includes(child.pid)) {
@@ -341,15 +356,81 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
       }
       save({ kind: "checking" });
     }
+    async function hostedTerminal(binding: HostedRunBinding): Promise<LocalDurableTerminal | null> {
+      const readTerminal = io.durableTerminal;
+      if (!readTerminal) return null;
+      const timeout = Math.min(terminalReadMs, options.limits.controlMs, time.remaining());
+      return time.read(() => readTerminal(binding.address, binding.directory, timeout), clock.now() + timeout).catch(() => null);
+    }
+    const hasBirth = (identity: Identity, p: Awaited<ReturnType<LocalIO["probe"]>>) =>
+      p.kind === "live" && p.startIdentity === identity.startIdentity;
+    async function supervisorInTerminal(binding: HostedRunBinding, holder: Identity): Promise<boolean> {
+      const tree = await time.read(() => io.tree(holder.pid, { verifyAncestry: true, targetPid: binding.supervisor.pid })).catch(() => null);
+      return !!tree?.descendants.some(member => member.ancestryVerified !== false && sameProcess(member, binding.supervisor)) &&
+        hasBirth(holder, await probe(holder.pid));
+    }
+    async function captureHosted(location: Location): Promise<void> {
+      if (!io.durableTerminal) return;
+      let changed = false;
+      for (const binding of await time.read(() => work.hostedRuns(id))) {
+        const { supervisor, child } = binding;
+        if (capture?.owner.pid === supervisor.pid || capture?.owner.pid === child.pid) continue;
+        const s = await probe(supervisor.pid), c = await probe(child.pid);
+        if (!hasBirth(supervisor, s) || !hasBirth(child, c) || c.kind !== "live" || !c.pi) continue;
+        const terminal = await hostedTerminal(binding);
+        // The live launcher must already have existed when this exact run
+        // published its event. A reused address, alone, proves nothing.
+        if (!terminal || terminal.createdAt > binding.publishedAt || !safePid(terminal.pid) ||
+            [capture?.owner.pid, supervisor.pid, child.pid].includes(terminal.pid)) continue;
+        const holder = await probe(terminal.pid);
+        if (holder.kind !== "live" || !knownText(holder.startIdentity)) continue;
+        const holderIdentity = { pid: terminal.pid, startIdentity: holder.startIdentity };
+        const tree = await time.read(() => io.tree(supervisor.pid, { verifyAncestry: true })).catch(() => null);
+        if (!tree?.descendants.some(member => member.ancestryVerified !== false && sameProcess(member, child)) ||
+            !await supervisorInTerminal(binding, holderIdentity) || !hasBirth(supervisor, await probe(supervisor.pid)) ||
+            !hasBirth(child, await probe(child.pid))) continue;
+        const descendants = tree.descendants.filter(member => member.pid !== child.pid && member.pid !== supervisor.pid &&
+          member.pid !== terminal.pid && member.pid !== capture?.owner.pid && safePid(member.pid) && knownText(member.startIdentity));
+        const processes = [{ ...supervisor, ancestryVerified: true }, { ...child, ancestryVerified: true }, ...descendants];
+        const { excluded, complete } = await inventory([holderIdentity, ...processes]);
+        // These live, checked ancestry links bind both births to this boot.
+        // Save them under the exact Stop fence before reparenting can occur.
+        const current = await currentOwner(location);
+        if (!current.terminalsKnown || !hasBirth(supervisor, await probe(supervisor.pid)) || !hasBirth(child, await probe(child.pid))) continue;
+        await guard();
+        const previous = hosted.find(group => isDeepStrictEqual(group.binding, binding) && isDeepStrictEqual(group.terminal, terminal) &&
+          group.holderBirth === holder.startIdentity);
+        const prior = previous?.members ?? [];
+        const members = processes.map((process): Child => {
+          const detached = excluded.has(terminal.pid) || excluded.has(process.pid) ||
+            prior.some(member => member.kind === "detached" && sameProcess(member, process));
+          const kind = detached ? "detached" : complete && process.ancestryVerified !== false ? "verified" : "unclassified";
+          return { pid: process.pid, startIdentity: process.startIdentity, kind };
+        });
+        for (const member of prior) if (!members.some(process => sameProcess(process, member))) members.push(member);
+        if (previous) previous.members = members;
+        else hosted.push({ binding, terminal, holderBirth: holder.startIdentity, members });
+        changed = true;
+      }
+      if (changed) save({ kind: "checking" });
+    }
     async function recapture(location: Location): Promise<void> {
       const { owner } = await currentOwner(location);
       if (owner) await captureTree(owner, location);
+      await captureHosted(location);
     }
-    async function canSignal(target: Identity | Child, location: Location): Promise<boolean> {
+    async function canSignal(target: Identity | Child, location: Location, group?: HostedCapture): Promise<boolean> {
+      if (group) {
+        if (sameProcess(target, group.binding.supervisor)) {
+          const { terminal, holderBirth, binding } = group;
+          if (!isDeepStrictEqual(terminal, await hostedTerminal(binding)) ||
+              !await supervisorInTerminal(binding, { pid: terminal.pid, startIdentity: holderBirth })) return false;
+        } else if (!await gone(group.binding.supervisor)) return false;
+      }
       const current = await currentOwner(location);
       const child = "kind" in target;
-      if (child ? !current.terminalsKnown || !current.owner && !await gone(capture!.owner) : !current.owner) return false;
-      if (child && current.owner) {
+      if (child ? !current.terminalsKnown || !current.owner && capture !== null && !await gone(capture.owner) : !current.owner) return false;
+      if (!group && child && current.owner) {
         const root = current.owner.generation.pid;
         const tree = await time.read(() => io.tree(root, { verifyAncestry: true, targetPid: target.pid })).catch(() => null);
         if (!tree?.descendants.some(member => member.ancestryVerified !== false && sameProcess(member, target))) {
@@ -364,20 +445,28 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
       }
       const state = await probe(target.pid);
       if (state.kind !== "live" || state.startIdentity !== target.startIdentity || !child && !state.pi) return false;
-      await readHome();
+      if (group) await guard();
+      else await readHome();
       return true;
     }
     async function signalTargets(signal: Signal, location: Location): Promise<boolean> {
-      if (!capture) return false;
       let sent = false;
-      const targets = [capture.owner, ...capture.children.filter(verifiedChild)];
-      for (const target of targets) {
+      const targets: { target: Identity | Child; group?: HostedCapture }[] = [];
+      const hostedPids = new Set(hosted.flatMap(group => group.members.map(member => member.pid)));
+      if (capture) targets.push({ target: capture.owner }, ...capture.children.filter(child => verifiedChild(child) && !hostedPids.has(child.pid))
+        .map(target => ({ target })));
+      // Graceful fallback signals only the owner's OS tree. Do not send
+      // SIGTERM to a hosted supervisor: its handler stops a process group.
+      if (signal === "SIGKILL" && hard()) for (const group of hosted) {
+        for (const target of group.members) if (verifiedChild(target)) targets.push({ target, group });
+      }
+      for (const { target, group } of targets) {
         if (signal === "SIGTERM" && hard()) break;
         if ("kind" in target) {
-          const { excluded, complete } = await inventory(capture.children);
-          if (excluded.has(target.pid) || !complete) continue;
+          const { excluded, complete } = await inventory(group ? [group.terminal, ...group.members] : capture!.children);
+          if (!complete || excluded.has(target.pid) || group && excluded.has(group.terminal.pid)) continue;
         }
-        if (!await canSignal(target, location)) continue;
+        if (!await canSignal(target, location, group)) continue;
         if (signal === "SIGTERM" && hard()) break;
         try { await time.read(() => io.signal(target.pid, signal)); }
         catch (error) { if ((error as NodeJS.ErrnoException | null)?.code !== "ESRCH") throw error; }
@@ -406,7 +495,12 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
         return save(pending("The verified pi process has not exited.", recordBlockers));
       const blockers = [...recordBlockers];
       if (!current.terminalsKnown) blockers.push(check("The labelled terminals could not be checked."));
-      const runs = await time.read(() => work.settleRuns(id, async row => {
+      const runs = await time.read(() => work.settleRuns(id, async (row, durable) => {
+        const saved = hosted.find(({ binding }) => binding.runId === row.id && binding.supervisor.pid === row.host_pid &&
+          binding.child.pid === row.pid && binding.child.startIdentity === row.pid_start_time)?.binding;
+        const supervisor = (saved ?? durable?.binding)?.supervisor;
+        if (supervisor ? !await gone(supervisor) : durable &&
+            (durable.hostPid === null || !safePid(durable.hostPid) || (await probe(durable.hostPid)).kind !== "absent")) return false;
         const pid = row.pid;
         const birth = knownText(row.pid_start_time) ? row.pid_start_time : null;
         const endedAt = birthlessTerminalEnd(row);
@@ -422,7 +516,7 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
       }));
       blockers.push(...runs);
       const survivors: Child[] = [];
-      for (const child of capture?.children ?? []) if (!await gone(child)) survivors.push(child);
+      for (const child of [...(capture?.children ?? []), ...hosted.flatMap(group => group.members)]) if (!await gone(child)) survivors.push(child);
       const jobs = await time.read(() => work.inspect(id));
       blockers.push(...jobs.blockers);
       if (!jobs.complete && !jobs.blockers.length) blockers.push(check("Session work records could not be checked."));
@@ -445,6 +539,7 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
       }
       await time.read(() => work.freezeMembership(id, expected.epoch, guard));
       if (!await shortCheck()) return save(pending("New local evidence appeared while freezing membership."));
+      hosted = [];
       return save({ kind: "confirmed", owner: capture?.owner ?? null });
     }
     async function enforceLocked(): Promise<StopObservation> {
@@ -464,12 +559,13 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
           if (!recordBlockers.length) return observation(prior.evidence, prior.observedAt);
         }
         carried = prior?.carried ?? [];
-        if (prior?.capture && prior.evidence.kind !== "confirmed") {
-          if (exact) capture = prior.capture;
+        if (prior && prior.evidence.kind !== "confirmed") {
+          if (exact) { capture = prior.capture; hosted = [...(prior.hosted ?? [])]; }
           else {
             // A new stopped epoch does not make the old tree disappear. Its
             // process identities can block exit, but cannot authorize a signal.
-            const previous = [...carried, prior.capture.owner, ...prior.capture.children];
+            const previous = [...carried, ...(prior.capture ? [prior.capture.owner, ...prior.capture.children] : []),
+              ...(prior.hosted ?? []).flatMap(group => group.members)];
             carried = [...new Map(previous.map(({ pid, startIdentity }) => [JSON.stringify([pid, startIdentity]), { pid, startIdentity }])).values()];
           }
         }
@@ -495,6 +591,9 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
           if (capture?.terminal && first.owner.terminal && capture.terminal !== first.owner.terminal)
             throw new StopCheck("The verified owner's terminal labels changed.");
           await captureTree(first.owner, location);
+        }
+        await captureHosted(location);
+        if (first.owner) {
           if (!hard() && first.owner.admitted && await canSignal(first.owner.generation, location) && !hard()) {
             const until = Math.min(time.end, clock.now() + graceMs);
             // The socket timeout covers transport; the independent deadline
@@ -514,7 +613,7 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
           waited = await signalTargets("SIGTERM", location);
           if (waited) await waitFor([capture.owner, ...capture.children.filter(verifiedChild)], clock.now() + graceMs);
         }
-        if (capture) {
+        if (capture || hosted.length) {
           if (waited) await recapture(location);
           await guard();
           save({ kind: "checking" });

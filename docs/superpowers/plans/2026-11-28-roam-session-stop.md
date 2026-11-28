@@ -1099,6 +1099,13 @@ expect(stoppedV0Repair).toContain("spider roam start");
   `start` repair. The CLI and repair assertions must catch them.
 - [ ] **Commit** as `feat(roam): cut public Stop and Start over to v0`.
 
+#### Amendment: Task 12A
+
+Hosted subagents run outside the owner's OS tree. Kill now binds the local run
+row and its event to private supervisor state and a live same-core terminal.
+In the current boot, signal the verified supervisor before its child.
+Graceful Stop keeps its signal scope and still checks hosted work for exit.
+
 #### Task 13: Prove Core on packaged Linux (R20)
 
 **Depends on:** Task 12.

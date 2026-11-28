@@ -1,8 +1,8 @@
-import { chmodSync, mkdirSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, renameSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { migrate, openDb } from "@spider/db-core";
+import { appendRunEvent, migrate, openDb } from "@spider/db-core";
 import { createReplica } from "@spider/db-core/testutil";
 import { recordLocation } from "@spider/db-core/roam/catalog";
 import { localEntries, writeLocal } from "@spider/db-core/roam/local-state";
@@ -13,6 +13,7 @@ import { DEFAULT_LIMITS, disabledIntercom, type Operation } from "../contracts";
 import { createHomeStore } from "../relocate/home";
 import { createLocalIO, createLocalRuntime, type LocalIO } from "../relocate/local";
 import { queueStopMode } from "../relocate/local-stop";
+import * as writers from "../relocate/local-writers";
 import { requestSessionControl, sessionControlPath } from "../session-socket";
 import type { RelocateAdapterOptions, RelocateHome, RunningHome, SessionId, StoppedHome } from "../relocate/types";
 
@@ -27,7 +28,14 @@ const bootA = "f22f2604-548d-421d-b5cb-9f31d7b50bd1";
 const bootB = "9556da36-1481-49f7-86c6-53bdcb282dd1";
 const cleanup: Array<() => void> = [];
 vi.mock("@spider/herdr/client/hc", { spy: true });
-afterEach(() => { vi.restoreAllMocks(); for (const close of cleanup.splice(0).reverse()) close(); });
+vi.mock("../relocate/local-writers", { spy: true });
+afterEach(() => {
+  vi.mocked(writers.inspectLocalBackgroundJobs).mockReset();
+  vi.mocked(hc.observeCoreIdentity).mockReset();
+  vi.mocked(hc.invokeCli).mockReset();
+  vi.restoreAllMocks();
+  for (const close of cleanup.splice(0).reverse()) close();
+});
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -88,8 +96,8 @@ function fixture(readyMs = 15_000) {
     launch: async (): Promise<{ terminal: string }> => { throw new Error("Lost launch reply"); },
   };
   const add = (pid: number, startIdentity: string, pi = true) => processes.set(pid, { startIdentity, pi });
-  const label = (ownerPid = pid, epoch = 7, source = machine) => {
-    terminals = [{ terminal: `pi-${ownerPid}`, state: "live", pid: ownerPid, owned: true,
+  const label = (ownerPid = pid, epoch = 7, source = machine, terminal = `pi-${ownerPid}`) => {
+    terminals = [{ terminal, state: "live", pid: ownerPid, owned: true,
       launch: { sessionId: id, machineId: source, epoch, cwd: checkout, file } }];
   };
   function owner(ownerPid = pid, birth = "pi-birth") {
@@ -133,14 +141,18 @@ function fixture(readyMs = 15_000) {
   const placement = { sessionId: id, machineId: machine, cwd: checkout, file, stores: ["global", key],
     repoKey: "fixture-repo", workspaceId: "fixture-workspace", repository: checkout, historyMachine: machine } as const;
   const run = (name: string, pid: number, birth: string | null, session = id, hostPid = 83001,
-    status = "running", endedAt: number | null = null) => project.db.prepare(`INSERT INTO runs(id,agent,session_id,status,pid,pid_start_time,host_pid,origin_machine,ended_at) VALUES (?,'test',?,?,?,?,?,?,?)`)
-    .run(name, session, status, pid, birth, hostPid, machine, endedAt);
+    status = "running", endedAt: number | null = null, origin = machine) => project.db.prepare(`INSERT INTO runs(id,agent,session_id,status,pid,pid_start_time,host_pid,origin_machine,ended_at) VALUES (?,'test',?,?,?,?,?,?,?)`)
+    .run(name, session, status, pid, birth, hostPid, origin, endedAt);
   return { runtime, options, io, effects, replicate, owner, exit, add, label, behavior, advance, descendants, placement, run,
     setLease: (value: typeof lease) => { lease = value; }, reboot: () => { boot = bootB; },
     advanceToNextTimer: () => advance(Math.min(...timers.values()) - now),
     fullCheckCount: () => fullCheckCount, clearCwd: () => rmdirSync(checkout),
     membership: (session = id) => project.db.prepare("SELECT state,epoch FROM roam_sessions WHERE session_id=?").get(session),
-    runStatus: (name: string) => project.db.prepare("SELECT status FROM runs WHERE id=?").get(name),
+    runDbPath: project.db.raw.name,
+    runStatus: (name: string) => (project.db.prepare("SELECT status FROM runs WHERE id=?").get(name) as { status: string }),
+    supervisorEvent: (runId: string, directory: string, sessionId = id) => appendRunEvent(project.db, {
+      runId, sessionId, ts: 100, type: "child_supervisor", payload: { version: 1, directory },
+    }),
     setRunEnd: (name: string, endedAt: number) => project.db.prepare("UPDATE runs SET ended_at=? WHERE id=?").run(endedAt, name),
   };
 }
@@ -231,6 +243,194 @@ it("hard stop verifies absence, not signal delivery", async () => {
   expect(f.membership(other)).toEqual({ state: "active", epoch: 7 });
   expect(f.runStatus("other-run")).toEqual({ status: "running" });
   expect(f.effects.map(effect => effect[2])).toEqual([pid, child, unclassified]);
+});
+
+const hostedRun = "edc1b087-4543-4ea6-91a6-f68ff71e8380";
+const supervisor = 83020, holder = 83021, hostedTool = 83022;
+const supervisorBirth = "supervisor-birth", childBirth = "hosted-child-birth";
+
+function hostedFixture({ event = true, stateFile = true, origin = machine } = {}) {
+  const f = fixture(); f.owner(); f.label(pid, 7, machine, "t2"); f.replicate(stopped);
+  f.add(holder, "holder-birth", false); f.add(supervisor, supervisorBirth, false); f.add(child, childBirth);
+  // The holder is the native terminal PID, not the supervisor and not a target.
+  f.descendants.set(holder, [supervisor, child]);
+  f.descendants.set(supervisor, [child]);
+  f.run(hostedRun, child, childBirth, id, supervisor, "running", null, origin);
+  const directory = join(f.placement.cwd, ".spider", "scratch", "sa", "edc1b087-454");
+  const path = join(directory, "state.json");
+  const state = { version: 1, directory, dbPath: f.runDbPath, runId: hostedRun, sessionId: id,
+    supervisorPid: supervisor, supervisorStartTime: supervisorBirth, childPid: child, childStartTime: childBirth,
+    herdrTerminal: "t3", token: "0".repeat(64), socket: join(directory, "s"), ownerPid: pid };
+  mkdirSync(directory, { mode: 0o700, recursive: true });
+  const writeState = (changes = {}) => writeFileSync(path, JSON.stringify({ ...state, ...changes }), { mode: 0o600 });
+  if (stateFile) writeState();
+  if (event) f.supervisorEvent(hostedRun, directory);
+
+  const terminal = { address: "t3", state: "live", pid: holder, created_ms: 90, identity: "terminal-t3", cwd: f.placement.cwd,
+    argv: ["/usr/bin/node", "--input-type=module", "-e", "/* hosted launcher */", "/fixture/herdr/subagent-supervisor.mjs",
+      join(directory, "request.json"), join(directory, "supervisor.log")] };
+  const core = { coreId: "same-core" as Awaited<ReturnType<typeof hc.observeCoreIdentity>>["coreId"],
+    socket: join(f.options.root, "hc.sock"), sessionNamespace: "fixture" };
+  let afterGet = () => core;
+  vi.mocked(hc.observeCoreIdentity).mockResolvedValue(core);
+  vi.mocked(hc.invokeCli).mockImplementation(async (_binary, argv) => {
+    if (argv[0] !== "get" || argv[1] !== "t3") throw new Error("Unexpected Herdr read");
+    vi.mocked(hc.observeCoreIdentity).mockImplementation(async () => afterGet());
+    return terminal;
+  });
+  f.io.durableTerminal = createLocalIO(f.options).durableTerminal;
+  return { ...f, directory, path, writeState, terminal, replaceCore: () => { afterGet = () => ({ ...core, coreId: "replaced-core" as typeof core.coreId }); } };
+}
+
+it("Kill now stops separately hosted workers before confirming their run and reports a held job", async () => {
+  const f = hostedFixture();
+  f.add(hostedTool, "hosted-tool", false);
+  const jobPid = 83023, jobChild = 83024, foreignChild = 83025, foreignSupervisor = 83026, holderSibling = 83027;
+  const jobId = "20261128T000000Z-deadbeef";
+  f.add(jobPid, "job-supervisor", false); f.add(jobChild, "job-child", false);
+  f.add(foreignChild, "foreign-child"); f.add(foreignSupervisor, "foreign-supervisor", false);
+  f.add(holderSibling, "unrelated-holder-child", false);
+  f.run("foreign-run", foreignChild, "foreign-child", id, foreignSupervisor, "running", null, hub);
+  f.supervisorEvent("foreign-run", f.directory);
+  f.descendants.set(supervisor, [hostedTool, jobChild, jobPid, child]);
+  f.descendants.set(holder, [supervisor, hostedTool, jobChild, jobPid, child, holderSibling]);
+  f.descendants.set(jobPid, [jobChild]);
+  let held = true;
+  vi.mocked(writers.inspectLocalBackgroundJobs).mockImplementation(async () => held
+    ? [{ id: jobId, description: "held job", excludedRoots: [jobPid], complete: true }] : []);
+  const statusAtEffect: string[] = [], statusAtAbsence: string[] = [];
+  const probe = f.io.probe;
+  f.io.probe = async target => {
+    const result = await probe(target);
+    if (target === child && result.kind === "absent") statusAtAbsence.push(f.runStatus(hostedRun).status);
+    return result;
+  };
+  f.behavior.signal = async target => { statusAtEffect.push(f.runStatus(hostedRun).status); f.exit(target); };
+  queueStopMode(f.options.globalDb, stopped, "hard");
+  const result = await f.runtime.enforceStopped(stopped);
+  expect(f.effects).toEqual([[0, "SIGKILL", pid], [0, "SIGKILL", supervisor], [0, "SIGKILL", child], [0, "SIGKILL", hostedTool]]);
+  expect(statusAtEffect).toEqual(["running", "running", "running", "running"]);
+  expect(statusAtAbsence[0]).toBe("running");
+  expect(f.runStatus(hostedRun).status).toBe("cancelled");
+  expect(f.runStatus("foreign-run").status).toBe("running");
+  expect(result.evidence).toMatchObject({ kind: "pending", blockers: [{ kind: "job", id: jobId }] });
+  expect(await f.io.probe(jobPid)).toMatchObject({ kind: "live" });
+  expect(await f.io.probe(jobChild)).toMatchObject({ kind: "live" });
+  held = false; f.exit(jobPid); f.exit(jobChild);
+  expect((await createLocalRuntime(f.options, f.io).enforceStopped(stopped)).evidence.kind).toBe("confirmed");
+  expect(f.effects).toHaveLength(4);
+});
+
+it.each(["missing event", "wrong event session", "missing state file", "different state run", "different state store", "public state file",
+  "symlinked state file", "finished terminal", "changed core", "different terminal launch", "wrong terminal ancestry",
+  "reused supervisor PID", "reused child PID", "pre-terminal run event"] as const)("keeps a hosted run pending without signal authority: %s", async gap => {
+  const f = hostedFixture({ event: !["missing event", "wrong event session"].includes(gap), stateFile: gap !== "missing state file" });
+  switch (gap) {
+    case "wrong event session": f.supervisorEvent(hostedRun, f.directory, other); break;
+    case "different state run": f.writeState({ runId: "unrelated-run" }); break;
+    case "different state store": f.writeState({ dbPath: join(f.placement.cwd, "foreign.db") }); break;
+    case "public state file": chmodSync(f.path, 0o644); break;
+    case "symlinked state file": renameSync(f.path, f.path + ".elsewhere"); symlinkSync(f.path + ".elsewhere", f.path); break;
+    case "finished terminal": f.terminal.state = "finished"; break;
+    case "changed core": f.replaceCore(); break;
+    case "different terminal launch": f.terminal.argv[5] = "/another/launch/request.json"; break;
+    case "wrong terminal ancestry": f.descendants.set(holder, []); break;
+    case "reused supervisor PID": f.add(supervisor, "reused-supervisor", false); break;
+    case "reused child PID": f.add(child, "reused-child"); break;
+    case "pre-terminal run event": f.terminal.created_ms = 101; break;
+  }
+  f.behavior.signal = async target => f.exit(target);
+  queueStopMode(f.options.globalDb, stopped, "hard");
+  expect((await f.runtime.enforceStopped(stopped)).evidence.kind).toBe("pending");
+  expect(f.effects).toEqual([[0, "SIGKILL", pid]]);
+  expect(f.runStatus(hostedRun).status).toBe("running");
+});
+
+it("does not signal a foreign-origin run even when its local launcher records match", async () => {
+  const f = hostedFixture({ origin: hub });
+  f.behavior.signal = async target => f.exit(target);
+  queueStopMode(f.options.globalDb, stopped, "hard");
+  expect((await f.runtime.enforceStopped(stopped)).evidence.kind).toBe("confirmed");
+  expect(f.effects).toEqual([[0, "SIGKILL", pid]]);
+  expect(f.runStatus(hostedRun).status).toBe("running");
+});
+
+it("retains hosted child authority on the same boot after the supervisor exits", async () => {
+  const f = hostedFixture();
+  // The fake records the supervisor's SIGKILL but doesn't report exit yet.
+  f.behavior.signal = async target => { if (target !== supervisor) f.exit(target); };
+  queueStopMode(f.options.globalDb, stopped, "hard");
+  expect((await f.runtime.enforceStopped(stopped)).evidence.kind).toBe("pending");
+  expect(f.effects).toEqual([[0, "SIGKILL", pid], [0, "SIGKILL", supervisor]]);
+  expect(f.runStatus(hostedRun).status).toBe("running");
+  f.exit(supervisor); f.exit(holder); f.terminal.state = "finished";
+  expect((await createLocalRuntime(f.options, f.io).enforceStopped(stopped)).evidence.kind).toBe("confirmed");
+  expect(f.effects).toEqual([[0, "SIGKILL", pid], [0, "SIGKILL", supervisor], [0, "SIGKILL", child]]);
+  expect(f.runStatus(hostedRun).status).toBe("cancelled");
+});
+
+it("discards hosted signal authority across a boot change", async () => {
+  const f = hostedFixture(); f.exit();
+  queueStopMode(f.options.globalDb, stopped, "hard");
+  expect((await f.runtime.enforceStopped(stopped)).evidence.kind).toBe("pending");
+  expect(f.effects).toEqual([[0, "SIGKILL", supervisor]]);
+  f.reboot(); f.exit(supervisor); f.exit(holder); f.terminal.state = "finished";
+  f.add(child, childBirth); // Linux birth ticks may repeat on another boot.
+  const result = await createLocalRuntime(f.options, f.io).enforceStopped(stopped);
+  expect(result).toMatchObject({ bootId: bootB, evidence: { kind: "pending" } });
+  expect(f.effects).toEqual([[0, "SIGKILL", supervisor]]);
+  expect(f.runStatus(hostedRun).status).toBe("running");
+});
+
+it("does not signal a different process that reuses the captured child's PID", async () => {
+  const f = hostedFixture();
+  f.behavior.signal = async target => {
+    f.exit(target);
+    if (target === supervisor) f.add(child, "replacement-child", false);
+  };
+  queueStopMode(f.options.globalDb, stopped, "hard");
+  expect((await f.runtime.enforceStopped(stopped)).evidence.kind).toBe("confirmed");
+  expect(f.effects).toEqual([[0, "SIGKILL", pid], [0, "SIGKILL", supervisor]]);
+  expect(await f.io.probe(child)).toMatchObject({ kind: "live", startIdentity: "replacement-child" });
+  expect(f.runStatus(hostedRun).status).toBe("cancelled");
+});
+
+it("graceful Stop leaves hosted workers unsignalled and hard upgrade works after pi exits", async () => {
+  const f = hostedFixture();
+  f.behavior.shutdown = async () => { f.exit(); return true; };
+  f.behavior.signal = async target => f.exit(target);
+  expect((await f.runtime.enforceStopped(stopped)).evidence.kind).toBe("pending");
+  expect(f.effects).toEqual([[0, "shutdown", pid]]);
+  expect(f.runStatus(hostedRun).status).toBe("running");
+  queueStopMode(f.options.globalDb, stopped, "hard");
+  expect((await createLocalRuntime(f.options, f.io).enforceStopped(stopped)).evidence.kind).toBe("confirmed");
+  expect(f.effects).toEqual([[0, "shutdown", pid], [0, "SIGKILL", supervisor], [0, "SIGKILL", child]]);
+  expect(f.runStatus(hostedRun).status).toBe("cancelled");
+});
+
+it("does not signal a hosted worker after an owner appears during the terminal recheck", async () => {
+  const f = hostedFixture();
+  const get = vi.mocked(hc.invokeCli).getMockImplementation()!;
+  vi.mocked(hc.invokeCli).mockImplementation((...args) => {
+    if (f.effects.length === 1) f.owner(83030, "replacement-owner");
+    return get(...args);
+  });
+  f.behavior.signal = async target => f.exit(target);
+  queueStopMode(f.options.globalDb, stopped, "hard");
+  expect((await f.runtime.enforceStopped(stopped)).evidence.kind).toBe("pending");
+  expect(f.effects).toEqual([[0, "SIGKILL", pid]]);
+  expect(f.runStatus(hostedRun).status).toBe("running");
+});
+
+it("a hosted supervisor that survives its child keeps graceful Stop pending", async () => {
+  const f = hostedFixture();
+  f.behavior.shutdown = async () => { f.exit(); f.exit(child); return true; };
+  expect((await f.runtime.enforceStopped(stopped)).evidence.kind).toBe("pending");
+  expect(f.effects).toEqual([[0, "shutdown", pid]]);
+  expect(f.runStatus(hostedRun).status).toBe("running");
+  f.exit(supervisor);
+  expect((await f.runtime.enforceStopped(stopped)).evidence.kind).toBe("confirmed");
+  expect(f.runStatus(hostedRun).status).toBe("cancelled");
 });
 
 it("signals a tool child left behind by graceful pi shutdown and confirms its exit", async () => {

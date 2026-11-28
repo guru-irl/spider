@@ -15,6 +15,8 @@ import { observeJobIdentity } from "@spider/herdr/jobs/identity";
 import { createJobStore, ensurePrivateDirectory, jobJournalRoot, type JobJournal, type JournalJob } from "@spider/herdr/jobs/store";
 import { readBoundedFile, sha256, type RuntimeReceipt } from "@spider/herdr/remote/runtime";
 import { parseRuntimeReceipt, type RemoteLogLocation } from "@spider/herdr/remote/transfer";
+import type { ProcessIdentity } from "@spider/herdr/sessions/lease";
+import { readPrivateJson } from "@spider/herdr/sessions/registry";
 import { reapStoppedSessionRuns } from "../../../subagents/src/reaper";
 import type { RunRow } from "../../../subagents/src/run-store";
 import { loadHerdrConfig } from "../host-config";
@@ -25,10 +27,22 @@ import { inspectLocalBackgroundJobs } from "./local-writers";
 import type { StopBlocker } from "./session-stop-types";
 import type { RelocateAdapterOptions, SessionId } from "./types";
 
+/** A recorded binding is not signal authority until Stop verifies its live terminal and births. */
+export interface HostedRunBinding {
+  runId: string;
+  directory: string;
+  address: string;
+  publishedAt: number;
+  supervisor: ProcessIdentity;
+  child: ProcessIdentity;
+}
+type DurableRunRecord = { hostPid: number | null; binding: HostedRunBinding | null };
+
 export interface StopWorkPorts {
   inventory(id: SessionId): Promise<{ excludedRoots: readonly number[]; complete: boolean }>;
   inspect(id: SessionId): Promise<{ blockers: readonly StopBlocker[]; excludedRoots: readonly number[]; complete: boolean }>;
-  settleRuns(id: SessionId, proveAbsent: (row: Readonly<RunRow>) => Promise<boolean>): Promise<readonly StopBlocker[]>;
+  hostedRuns(id: SessionId): Promise<readonly HostedRunBinding[]>;
+  settleRuns(id: SessionId, proveAbsent: (row: Readonly<RunRow>, durable: DurableRunRecord | null) => Promise<boolean>): Promise<readonly StopBlocker[]>;
   freezeMembership(id: SessionId, epoch: number, beforeWrite: () => Promise<void>): Promise<void>;
 }
 
@@ -135,6 +149,40 @@ async function sessionWorkLocations(id: SessionId, options: RelocateAdapterOptio
     }
   } catch { blockers.push(check("Session work locations could not be read.")); }
   return { files, checkouts, blockers };
+}
+
+function runPid(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 1 && value !== process.pid;
+}
+function birth(value: unknown): value is string { return typeof value === "string" && value.trim().length > 0; }
+
+const supervisorEvents = "SELECT payload,ts FROM run_events WHERE run_id=? AND session_id=? AND type='child_supervisor' LIMIT 2";
+async function readDurableRun(db: Db, row: Readonly<RunRow>, checkouts: ReadonlySet<string>, machineId: string): Promise<DurableRunRecord | null> {
+  const events = db.prepare(supervisorEvents).all(row.id, row.session_id) as { payload: string; ts: number }[];
+  if (!events.length) return null;
+  const record: DurableRunRecord = { hostPid: row.host_pid, binding: null };
+  if (events.length !== 1 || row.origin_machine !== machineId || !runPid(row.pid) || !runPid(row.host_pid) ||
+      row.pid === row.host_pid || !birth(row.pid_start_time) || !/^[a-zA-Z0-9_-]{1,160}$/.test(row.id)) return record;
+  try {
+    const { ts, payload } = events[0];
+    const event = parseObject(JSON.parse(payload));
+    const directory = [...checkouts].map(cwd => join(cwd, ".spider", "scratch", "sa", row.id.slice(0, 12)))
+      .find(path => path === event.directory);
+    if (event.version !== 1 || !directory || !Number.isSafeInteger(ts) || ts <= 0) return record;
+    const parent = await lstat(directory);
+    if (!parent.isDirectory() || parent.uid !== process.getuid?.() || (parent.mode & 0o077) !== 0) return record;
+    const state = parseObject(await readPrivateJson(join(directory, "state.json"), async handle => {
+      if ((await handle.stat()).uid !== process.getuid?.()) throw new Error("Supervisor state is not owned locally");
+    }, 64 * 1024));
+    if (state.version !== 1 || state.directory !== directory || state.dbPath !== db.raw.name || state.runId !== row.id ||
+        state.sessionId !== row.session_id || state.supervisorPid !== row.host_pid || !birth(state.supervisorStartTime) ||
+        state.childPid !== row.pid || state.childStartTime !== row.pid_start_time ||
+        typeof state.herdrTerminal !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(state.herdrTerminal)) return record;
+    return { ...record, binding: { runId: row.id, directory, address: state.herdrTerminal, publishedAt: ts,
+      supervisor: { pid: row.host_pid, startIdentity: state.supervisorStartTime },
+      child: { pid: row.pid, startIdentity: row.pid_start_time },
+    } };
+  } catch { return record; } // A bare host PID can block absence, never authorize a signal.
 }
 
 const receiptBound = 64 * 1024;
@@ -322,14 +370,36 @@ export function createStopWork(options: RelocateAdapterOptions): StopWorkPorts {
       } finally { await connections.close(); }
       return { complete, excludedRoots: [...excludedRoots], blockers: [...jobs.values(), ...blockers] };
     },
+    async hostedRuns(id) {
+      const { files, checkouts } = await sessionWorkLocations(id, options);
+      const bindings: HostedRunBinding[] = [];
+      for (const [file, store] of files) {
+        try {
+          const db = await openRunStore(file, store, options);
+          if (!db) continue;
+          try {
+            const rows = db.prepare(`SELECT r.* FROM runs r WHERE r.session_id=? AND r.pid IS NOT NULL AND ${localRunPredicate(db)}
+              AND EXISTS (SELECT 1 FROM run_events e WHERE e.run_id=r.id AND e.session_id=r.session_id AND e.type='child_supervisor') ORDER BY r.id`)
+              .all(id) as RunRow[];
+            for (const row of rows) {
+              const record = await readDurableRun(db, row, checkouts, options.config.machineId);
+              if (record?.binding) bindings.push(record.binding);
+            }
+          } finally { db.close(); }
+        } catch { /* The absence check reports unreadable stores separately. */ }
+      }
+      return bindings;
+    },
     async settleRuns(id, proveAbsent) {
-      const { files, blockers } = await sessionWorkLocations(id, options);
+      const { files, checkouts, blockers } = await sessionWorkLocations(id, options);
       for (const [file, store] of files) {
         try {
           const db = await openRunStore(file, store, options, true);
           if (!db) continue;
           try {
-            const pending = await reapStoppedSessionRuns({ db, globalDb: options.globalDb, sessionId: id, proveAbsent });
+            const pending = await reapStoppedSessionRuns({ db, globalDb: options.globalDb, sessionId: id,
+              proveAbsent: async row => proveAbsent(row, await readDurableRun(db, row, checkouts, options.config.machineId)),
+            });
             for (const runId of pending.blockers) blockers.push(check(`Subagent run ${safeId(runId)} has no verified absence.`));
           } finally { db.close(); }
         } catch { blockers.push(check(storeUnavailable)); }

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { join, relative, isAbsolute, sep } from "node:path";
+import { basename, join, relative, isAbsolute, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { lstat, realpath, stat } from "node:fs/promises";
@@ -20,7 +20,7 @@ import { createSessionLeases } from "@spider/herdr/sessions/lease";
 import { withProcessLock } from "@spider/herdr/sessions/registry";
 import { processStartIdentity } from "@spider/herdr/jobs/handoff";
 import { safeLaunchEnvironment, type PiSpawnRequest } from "@spider/herdr/sessions/launcher";
-import { HERDR_KINDS, type SessionId as HerdrSessionId } from "@spider/herdr/contracts";
+import { HERDR_KINDS, type CoreIdentity, type SessionId as HerdrSessionId } from "@spider/herdr/contracts";
 import { invokeCli, observeCoreIdentity } from "@spider/herdr/client/hc";
 import { hubCoreSelection } from "../launchd";
 import { loadHerdrConfig } from "../host-config";
@@ -38,6 +38,7 @@ import { piLaunchArgv, toolPath } from "./launch-environment";
 
 type LocalLaunch = { sessionId: string; machineId: string; epoch: number; cwd: string; file: string };
 type LocalTerminal = { terminal: string; state: "live" | "finished"; pid: number | null; owned?: true; labelled?: true; launch?: LocalLaunch };
+export type LocalDurableTerminal = { pid: number; core: CoreIdentity; identity: string; createdAt: number };
 const auxiliaryKinds = new Set<string>([...Object.values(HERDR_KINDS).filter(kind => kind !== HERDR_KINDS.session), "roam-proxy"]);
 function finishedTerminal(terminal: string, row: Record<string,unknown>): LocalTerminal {
   const signaled = Number.isSafeInteger(row.signal) && (row.signal as number) > 0;
@@ -59,6 +60,7 @@ export interface LocalIO {
   fileLease?(file: string): Promise<{ pid: number; startIdentity: string; bootId?: string } | null>;
   pause(ms: number): Promise<void>;
   terminals(sessionId: string, admittedPid?: number, includeLaunch?: boolean, stop?: { timeoutMs: number }): Promise<readonly LocalTerminal[]>;
+  durableTerminal?(address: string, directory: string, timeoutMs: number): Promise<LocalDurableTerminal | null>;
   launch(request: {home:RunningHome;placement:SessionPlacement}, beforeSpawn?: () => Promise<void>): Promise<{terminal:string}>;
 }
 export function exactHome(a: RelocateHome | null, b: RelocateHome): boolean {
@@ -207,6 +209,19 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
       const tagged = await list(["ls","--all","--json","--label",`spider.session=${id}`],undefined,true);
       if (admittedPid === undefined || tagged.some(terminal=>terminal.pid === admittedPid)) return tagged;
       return [...tagged,...await list(["ls","--json"],admittedPid)];
+    },
+    async durableTerminal(address, directory, timeoutMs) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(address)) return null;
+      const core = await observeCoreIdentity(binary, env, { timeoutMs });
+      const row = object(await invokeCli(binary, ["get", address, "--json"], env, options.limits.replyBytes, undefined, { timeoutMs }));
+      const { pid, identity, created_ms: createdAt, argv } = row;
+      if (row.address !== address || row.state !== "live" || typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 1 ||
+          typeof identity !== "string" || !identity || typeof createdAt !== "number" || !Number.isSafeInteger(createdAt) || createdAt <= 0 ||
+          !Array.isArray(argv) || argv.length !== 7 || argv[1] !== "--input-type=module" || argv[2] !== "-e" ||
+          typeof argv[4] !== "string" || !isAbsolute(argv[4]) || basename(argv[4]) !== "subagent-supervisor.mjs" ||
+          argv[5] !== join(directory, "request.json") || argv[6] !== join(directory, "supervisor.log")) return null;
+      if (!isDeepStrictEqual(core, await observeCoreIdentity(binary, env, { timeoutMs }))) return null;
+      return { pid, core, identity, createdAt };
     },
     async launch({home,placement}, beforeSpawn) {
       if (!pi) throw new Error("Pi executable unavailable");

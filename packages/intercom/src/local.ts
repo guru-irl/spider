@@ -51,6 +51,7 @@ const V0_REFUSAL_TEXT: Record<V0Code, string> = {
   ambiguous: "More than one live session matches. Use machine/name or a full session ID.",
   incomplete: "Lookup was incomplete. Use machine/name or a full session ID.",
   changed: "The session or connection changed. Resolve the recipient again.",
+  "asker-no-longer-waiting": "The asker is no longer waiting.",
   unreachable: "The route is unavailable. Try again when it is up.",
   "not-configured": "No route is configured to that session.",
   "invalid-config": "The roaming intercom route is invalid. Check roam/intercom-v0.json.",
@@ -3198,7 +3199,10 @@ Usage:
               const sent = { id: randomUUID(), timestamp: Date.now(), text: message };
               const askId = target.message.id;
               const result = await sendRoutedReply(connectedClient, ctx, generation, askId, sent, _signal);
-              if (result.kind === "refused") return v0RouteRefusal(result);
+              if (result.kind === "refused") {
+                if (result.code === "asker-no-longer-waiting") dismissIncomingAsk(askId);
+                return v0RouteRefusal(result);
+              }
               const route = v0RouteDetails(result);
               if (result.kind !== "socket_delivered") {
                 return { content: [{ type: "text", text: v0RouteText("The reply may have arrived. Check with the asker before replying again.", route) }],

@@ -106,7 +106,7 @@ export function isRelayResult(value: unknown): value is RelayResult {
   const { outcome, messageId, attempted } = value;
   if (outcome.kind === "refused" && fields(outcome, ["kind", "code"])) {
     return (!attempted && relayRefusals.has(outcome.code)) ||
-      parseV0BrokerReply({ type: "roam_v0_result", requestId: messageId, ...outcome }) !== null;
+      parseV0BrokerReply({ type: "roam_v0_result", requestId: messageId, ...outcome }, attempted) !== null;
   }
   return attempted && fields(outcome, ["kind", "id"]) && outcome.id === messageId &&
     (outcome.kind === "socket_delivered" || outcome.kind === "unknown");

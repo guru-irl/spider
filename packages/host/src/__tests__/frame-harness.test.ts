@@ -2,17 +2,20 @@
 // driven over a REAL scratch DB. Proves the whole integration without pi/Storybook:
 //
 //   raw DB writes (runs + run_events)  ->  appendRunEvent/bus  ->  AgentStore ingest
-//     ->  AgentSnapshot projection  ->  AgentFooter.render(width)  ->  text frame
+//     ->  AgentSnapshot projection  ->  AgentFooter.render(width) / renderGridCell  ->  text frame
 //
 // An identity ThemeAdapter keeps frames ANSI-free and stable, so substring asserts
 // on the rendered text prove the agent name, live activity tail, and terminal-state
-// glyph actually flow through every layer. These are NOT tautologies: each asserted
-// substring can only appear in the frame if the corresponding DB write was ingested,
-// projected, and rendered (verified by breaking the pipeline).
+// glyph actually flow through every layer. The footer row leaves the activity out
+// (the user asked for it, #336); the /agents grid cell still shows the tail, so the
+// activity assertion renders that cell from the same store snapshot. These are NOT
+// tautologies: each asserted substring can only appear in the frame if the
+// corresponding DB write was ingested, projected, and rendered (verified by breaking
+// the pipeline).
 import { afterAll, describe, expect, it } from "vitest";
 import { openDb, migrate, appendRunEvent, type Db } from "@spider/db-core";
 import { scratchDbPath, cleanupScratch } from "@spider/db-core/testutil";
-import { AgentStore, AgentFooter, type ThemeAdapter } from "@spider/ui";
+import { AgentStore, AgentFooter, renderGridCell, type ThemeAdapter } from "@spider/ui";
 import { createRunSource } from "../agents/run-source";
 
 const ANSI = /\x1b\[[0-9;]*m/g;
@@ -40,6 +43,11 @@ describe("TUI frame-snapshot harness (store -> footer render)", () => {
       footer.invalidate(); // render() caches per width; force a rebuild each call
       return strip(footer.render(120).join("\n"));
     };
+    const cell = (): string => {
+      const agent = store.snapshot().find((a) => a.runId === runId);
+      expect(agent).toBeDefined();
+      return strip(renderGridCell(idTheme, { agent: agent!, width: 120, height: 4, focused: false, pinned: false, now: Date.now() }).join("\n"));
+    };
 
     // --- lifecycle: start (running) ---
     db.prepare(
@@ -53,9 +61,11 @@ describe("TUI frame-snapshot harness (store -> footer render)", () => {
     appendRunEvent(db, { runId, sessionId, ts: now + 5, type: "tool_intent", tool: "grep", summary: "grepping repo for RunEventTailer" });
 
     const runningFrame = frame();
-    // (a) running frame contains the agent name AND the activity/summary tail
+    // (a) running frame contains the agent name; the activity/summary tail reaches
+    // the grid cell, and the footer row leaves it out
     expect(runningFrame).toContain("scout-alpha");
-    expect(runningFrame).toContain("grepping repo for RunEventTailer");
+    expect(cell()).toContain("grepping repo for RunEventTailer");
+    expect(runningFrame).not.toContain("grepping repo for RunEventTailer");
     // footer has NO status glyph anymore (status is colour-only)
     expect(runningFrame).not.toContain("✓");
 

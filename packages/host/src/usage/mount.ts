@@ -117,6 +117,7 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
       counter: { availability: snapshot?.availability === "available" ? "available" : snapshot?.availability === "disabled" ? "disabled" : "unavailable", snapshot: snapshot?.latest ?? null },
     };
     if (footerOwnership === "unclaimed") {
+      if (workingSince === undefined && current.isIdle?.() === false) workingSince = now;
       footerOwnership = "owned";
       current.ui.setFooter((tui, theme, footerData) => {
         disposeComponent();

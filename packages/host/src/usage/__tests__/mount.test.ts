@@ -79,6 +79,20 @@ describe("public usage footer mount", () => {
     vi.advanceTimersByTime(1000); expect(f.requestRender).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(1); // Usage snapshots still refresh once a second.
   });
+  it("animates when mounted mid-run and starts idle after switching to an idle session", () => {
+    const f = fixture();
+    const isIdle = vi.fn(() => false);
+    f.ctx.isIdle = isIdle;
+    mount(f);
+    expect(f.render()[1]).toMatch(/^◐  25.0%/);
+    vi.advanceTimersByTime(250);
+    expect(f.render()[1]).toMatch(/^◓  25.0%/);
+    isIdle.mockReturnValue(true);
+    f.replace([], "fixture-idle.jsonl");
+    f.emit("session_start", { reason: "resume" });
+    expect(f.render()[1]).toMatch(/^○  25.0%/);
+    expect(vi.getTimerCount()).toBe(1);
+  });
   it("restores Pi's working row and leaves a replacement footer alone", () => {
     const f = fixture(); mount(f);
     f.emit("agent_start");

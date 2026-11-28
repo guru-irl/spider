@@ -8,6 +8,7 @@ import { type Spacer, type Component, type Markdown, type TUI, type TuiMouseEven
 import type { Token } from "marked";
 import { icon, REPLY_FRAME as FRAME, type IconStyle } from "@spider/ui";
 import { layoutBlocks, markBlockEnd, replyTarget, sourceBoundaries, stripBlockMarkers, type BlockLayout, type CopyTarget } from "./block-layout.js";
+import { formatMessageTime } from "../message-time.js";
 
 type Format = "text" | "md";
 type Hit = { row: number; start: number; end: number; target: CopyTarget; format: Format };
@@ -56,11 +57,6 @@ type PatchedProto = AssistantInternals & { [PATCH]?: Patch };
 const COPY_BUTTON_SEPARATOR = " ";
 const labels = (style?: IconStyle): Record<Format, string> => ({ text: `${icon(style, "copy").trimEnd()}${COPY_BUTTON_SEPARATOR}text`, md: `${icon(style, "copy").trimEnd()}${COPY_BUTTON_SEPARATOR}md` });
 const dim = (text: string) => `\x1b[2m${text}\x1b[22m`;
-
-function formatTime(date: Date): string {
-  const time = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(date);
-  return `${new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(date)} ${time}`;
-}
 
 type BindingContent = { source: string; full: string | undefined; timestamp: number };
 type Drawing = {
@@ -152,7 +148,7 @@ function renderMarkdown(slot: MarkdownBinding, state: State, width: number): str
   const sharedTop = !!after && after.group !== seam.group && state.hovered === after.group;
   const date = new Date(content.timestamp);
   const key = `${new Date().toDateString()}|${date.getTimezoneOffset()}`;
-  if (key !== slot.time?.key) slot.time = { key, label: formatTime(date) };
+  if (key !== slot.time?.key) slot.time = { key, label: formatMessageTime(date) };
   const time = slot.time.label;
   const padding = renderPadding ?? 1;
   const { iconStyle, border = dim } = state.options;

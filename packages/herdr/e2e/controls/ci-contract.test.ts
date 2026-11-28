@@ -381,6 +381,11 @@ describe('CI acceptance contract', () => {
     const selection = step(pr, 'Select affected tests');
     expect(selection.run).toContain('--budget-ms 65000');
     expect(selection.run).not.toContain('mode=full');
+    // pull_request.base.sha stays at the base tip from when the PR opened, so
+    // a diff from it to the merge commit carries main's later commits in.
+    expect(JSON.stringify(selection)).not.toContain('pull_request.base.sha');
+    expect(selection.env).toEqual({ BASE_REF: '${{ github.event.pull_request.base.ref }}' });
+    expect(selection.run).toContain('--base "origin/$BASE_REF"');
     expect(step(pr, 'Test selected shard').run).toContain('scripts/run-selected-tests.mjs');
     expect(pr.outputs).toMatchObject({ acceptance: '${{ steps.selection.outputs.acceptance }}', chrome: '${{ steps.selection.outputs.chrome }}' });
     for (const job of [pr, verify, ci.jobs.checks!]) {

@@ -112,13 +112,15 @@ function renderResources(width: number, theme: IntroTheme, facts: StartupFacts):
   const counts = [knownCount(context), String(skills), `≥${extensions}`, String(prompts), promptTokens === undefined ? "—" : `~${compactCount(promptTokens)}`];
   const labels = ["Context", "Skills", "Extensions", "Prompts", "System prompt"];
   const abbreviated = ["Ctx", "Skills", "Ext", "Tmpl", "Sys"];
+  const shortest = ["Ctx", "Sk", "Ext", "Tpl", "Sys"];
   const inventory = (mode: number) => counts.map((n, i) => {
-    const label = (mode === 0 ? labels : abbreviated)[i];
-    return `${label}${mode === 2 && i !== 1 && i !== 4 ? "" : " "}${n}${mode === 0 && i === 4 ? " tokens" : ""}`;
-  }).join(mode === 2 ? " " : " · ");
+    const label = (mode === 0 ? labels : mode === 3 ? shortest : abbreviated)[i];
+    const joined = mode === 3 || (mode === 2 && i !== 1 && i !== 4);
+    return `${label}${joined ? "" : " "}${n}${mode === 0 && i === 4 ? " tokens" : ""}`;
+  }).join(mode >= 2 ? " " : " · ");
   const title = "Loaded resources", arrow = icon(facts.iconStyle, "arrowRight"), hotkey = `Alt+O ${arrow}`;
-  const modes = [[0, 2, 2], [1, 2, 2], [1, 1, 1], [2, 1, 1], [2, 1, 0]] as const;
-  const choice = modes.map(([mode, pad, endPad]) => ({ counts: inventory(mode), action: mode === 2 ? arrow : hotkey, pad, endPad }))
+  const modes = [[0, 2, 2], [1, 2, 2], [1, 1, 1], [2, 1, 1], [2, 1, 0], [3, 1, 0]] as const;
+  const choice = modes.map(([mode, pad, endPad]) => ({ counts: inventory(mode), action: mode >= 2 ? arrow : hotkey, pad, endPad }))
     .find(({ counts, action, pad, endPad }) => title.length + counts.length + visibleWidth(action) + 2 * pad + endPad + 1 <= inner);
   const fg = theme.fg.bind(theme);
   const { counts: visibleCounts, action, pad, endPad } = choice ?? { counts: "", action: width >= 28 ? hotkey : arrow, pad: 1, endPad: 1 };

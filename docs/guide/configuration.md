@@ -132,6 +132,29 @@ This setting does not turn on codemode, MCP or extra child tools. It takes effec
 
 `spider control command:"doctor"` reads pi's effective settings through `pi.getSettings()`. It reports the compaction values, cache warming, the codemode mode and inline budget, the TUI mode, and install telemetry. If the active model has a compaction override, the token values include it. The report leaves out credentials and unrelated settings. The codemode settings show the configuration, not which tools are active right now.
 
+## Startup header and quit summary
+
+Spider adds a header and a quit summary to interactive Pi sessions. Neither
+appears in print mode, RPC, or subagent sessions.
+
+To hide Pi's separate startup resource list, add `"quietStartup": "header"`
+to Pi's `~/.pi/agent/settings.json`. This keeps the Spider header visible.
+Spider does not change this setting. Pi's `--verbose` flag shows its list
+again. Set `PI_REDUCED_MOTION=1` in your environment to show Hinge at rest.
+
+Press **Alt+O** or run `/resources` to open the fullscreen reader. In Pi's
+fullscreen mode, you can also click **Loaded resources**. The reader shows the
+system prompt at the time you open it. Its token count is an estimate, not the
+context-window usage. Context paths come from the prompt's project instructions.
+The extension count is a lower bound: Pi only exposes paths for extensions
+that register commands or tools to this reader.
+
+On normal quit, **Docked** summarizes the current visit, including time across
+`/reload`. Changes count net text lines from successful `edit` and `write`
+calls, not changes made by shell commands or other sessions. Credits and tokens
+come from the cached local usage ledger and can be incomplete. Pi prints its
+own resume command for saved sessions.
+
 ## Monthly usage budget
 
 `usage.monthlyBudget` is unset by default. Set it to a positive finite number of credits per billing month. Positive fractions are valid. Zero does not mean unset. To clear the budget in the config screen, leave the field blank.

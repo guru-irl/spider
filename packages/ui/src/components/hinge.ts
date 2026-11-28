@@ -22,7 +22,7 @@ const THREAD = parseColor("#9a8ba9"), ANCHOR = parseColor("#c0aad0");
 const DOTS = [[1, 8], [2, 16], [4, 32], [64, 128]] as const;
 
 // Columns from the fixed hub and half-pixel rows from the top of the rig.
-export const COUNTERWEIGHT = [
+export const COUNTERWEIGHT: readonly { at: number; dx: number; top: number; blink?: boolean }[] = [
   { at: 0, dx: 0, top: 6 },
   { at: 200, dx: 0, top: 8 },
   { at: 460, dx: 0, top: 16 },
@@ -30,9 +30,9 @@ export const COUNTERWEIGHT = [
   { at: 1150, dx: -3, top: 12 },
   { at: 1630, dx: 0, top: 14, blink: true },
   { at: 1780, dx: 0, top: 14 },
-] as const satisfies readonly { at: number; dx: number; top: number; blink?: boolean }[];
-export const REST_POSE = COUNTERWEIGHT.length - 1;
-export const HINGE_WIDTH = HINGE[0].length;
+];
+export const REST_POSE: number = COUNTERWEIGHT.length - 1;
+export const HINGE_WIDTH: number = HINGE[0].length;
 export const HINGE_RIG_HEIGHT = 15;
 
 export type ColorCells = { style(text: string, options: { fg?: Color; bg?: Color }): string };
@@ -86,7 +86,7 @@ export function hangingHinge(theme: ColorCells, width: number, index: number): s
   const pose = COUNTERWEIGHT[index]!;
   const anchor = Math.floor((width - 1) / 2);
   const center = anchor + Math.round(pose.dx * (width < 33 ? 0.6 : 1));
-  return draw(theme, width, HINGE_RIG_HEIGHT, center, pose.top, "blink" in pose, dragline(width, anchor, center, pose.top));
+  return draw(theme, width, HINGE_RIG_HEIGHT, center, pose.top, pose.blink === true, dragline(width, anchor, center, pose.top));
 }
 
 export function dockedHinge(theme: ColorCells, background: Color): string[] {

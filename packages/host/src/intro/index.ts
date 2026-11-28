@@ -3,11 +3,13 @@ import { homedir } from "node:os";
 import { sep } from "node:path";
 import { VERSION, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
-import { renderDocked, StartupHeader, type DockedUsage, type IconStyle, type IntroTheme, type StartupFacts } from "@spider/ui";
+import { FULLSCREEN_READER_OVERLAY, renderDocked, StartupHeader, TabbedReader,
+  type DockedUsage, type IconStyle, type IntroTheme, type StartupFacts } from "@spider/ui";
 import { modelName } from "../model-name.js";
 import { openSessionHistoryDb } from "../session-run-db.js";
 import { beginChange, finishChange, newVisitChanges, summarizeChanges } from "./changes.js";
 import { countVisitCompactions, readIntroStats, readSpiderStats } from "./stats.js";
+import { observeResources, resourceCounts, resourcesDocument } from "./resources.js";
 export { readIntroStats } from "./stats.js";
 
 interface QuitTerminal {
@@ -47,6 +49,8 @@ interface Mount {
   header?: StartupHeader;
   statsRead?: ReturnType<typeof setImmediate>;
   branchRead?: AbortController;
+  readingResources?: boolean;
+  closeResources?: () => void;
 }
 
 const oneLine = (text: string) => stripTerminalSequences(text).replace(/[\x00-\x1f\x7f-\x9f]/gu, " ");
@@ -56,23 +60,6 @@ function identity(ctx: ExtensionContext) {
   const model = ctx.model;
   return { model: model ? modelName(ctx.modelRegistry, `${model.provider}/${model.id}`) ?? oneLine(model.name || model.id) : undefined,
     thinking: model ? ctx.thinkingLevel : undefined };
-}
-
-function observeResources(pi: ExtensionAPI, ctx: ExtensionContext): StartupFacts["resources"] {
-  const commands = pi.getCommands?.() ?? [];
-  const extensionPaths = new Set([
-    ...commands.filter(command => command.source === "extension").map(command => command.sourceInfo?.path),
-    ...(pi.getAllTools?.() ?? []).map(tool => tool.sourceInfo?.path),
-  ].filter(path => path && !path.startsWith("builtin:")));
-  const prompt = ctx.getSystemPrompt?.();
-  const project = prompt?.match(/(?:^|\n)<project_context>\n([\s\S]*?)\n<\/project_context>(?:\n|$)/u)?.[1];
-  return {
-    context: prompt === undefined ? undefined : [...(project ?? "").matchAll(/^<project_instructions path=".*">$/gmu)].length,
-    skills: commands.filter(command => command.source === "skill").length,
-    extensions: extensionPaths.size,
-    prompts: commands.filter(command => command.source === "prompt").length,
-    promptTokens: prompt === undefined ? undefined : Math.ceil(prompt.length / 4),
-  };
 }
 
 export function registerIntro(pi: ExtensionAPI, options: IntroOptions): void {
@@ -90,9 +77,32 @@ export function registerIntro(pi: ExtensionAPI, options: IntroOptions): void {
     if (previous?.statsRead) clearImmediate(previous.statsRead);
     previous?.branchRead?.abort();
     previous?.header?.dispose();
+    previous?.closeResources?.();
     if (previous && !keepVisit) processState[visitsKey]?.delete(previous.visit.sessionId);
     return previous;
   }
+  async function openResources(ctx: ExtensionContext): Promise<void> {
+    const current = mount;
+    if (!current || ctx.mode !== "tui" || ctx.sessionManager.getSessionId() !== current.visit.sessionId
+      || current.readingResources || !options.admitted()) return;
+    current.readingResources = true;
+    try {
+      const snapshot = observeResources(pi, ctx);
+      update(current, { resources: resourceCounts(snapshot) });
+      await ctx.ui.custom<void>((tui, theme, _keys, done) => {
+        current.closeResources = done;
+        return new TabbedReader(resourcesDocument(snapshot, theme), {
+          theme, height: () => tui.terminal.rows, requestRender: () => tui.requestRender(), close: done,
+        });
+      }, FULLSCREEN_READER_OVERLAY);
+    } catch {
+      if (mount === current) ctx.ui.notify?.("Could not open loaded resources.", "warning");
+    } finally { current.readingResources = false; current.closeResources = undefined; }
+  }
+  const description = "Open the loaded resources reader";
+  pi.registerShortcut?.("alt+o", { description, handler: openResources });
+  pi.registerCommand?.("resources", { description, handler: (_args, ctx) => openResources(ctx) });
+
   function readDbLater(current: Mount): void {
     if (current.statsRead) return;
     current.statsRead = setImmediate(() => {
@@ -121,7 +131,7 @@ export function registerIntro(pi: ExtensionAPI, options: IntroOptions): void {
     const facts: StartupFacts = {
       version: options.piVersion ?? VERSION,
       iconStyle: options.iconStyle?.(ctx.cwd), cwd: oneLine(shortCwd(ctx.cwd)), ...identity(ctx),
-      session: readIntroStats(ctx.sessionManager, now), resources: observeResources(pi, ctx),
+      session: readIntroStats(ctx.sessionManager, now), resources: resourceCounts(observeResources(pi, ctx)),
     };
     const current: Mount = { visit, context: ctx, facts };
     mount = current;
@@ -129,7 +139,9 @@ export function registerIntro(pi: ExtensionAPI, options: IntroOptions): void {
       current.theme = theme;
       const reducedMotion = process.env.PI_REDUCED_MOTION === "1" || process.env.NO_ANIMATION === "1"
         || ("reducedMotion" in tui.terminal && tui.terminal.reducedMotion === true);
-      return current.header = new StartupHeader(theme, current.facts, { requestRender: () => tui.requestRender(), openResources() {}, reducedMotion });
+      return current.header = new StartupHeader(theme, current.facts, {
+        requestRender: () => tui.requestRender(), openResources: () => { void openResources(current.context); }, reducedMotion,
+      });
     });
     readDbLater(current);
     const branchRead = current.branchRead = new AbortController();

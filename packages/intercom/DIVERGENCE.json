@@ -32,6 +32,12 @@
       "upstreamHash": null
     },
     {
+      "path": "broker/relay-observations.ts",
+      "task": "3.6a",
+      "reason": "Record private, message-free relay link status for roam doctor.",
+      "upstreamHash": null
+    },
+    {
       "path": "broker/roam-relay-client.ts",
       "task": "3.6a",
       "reason": "Carry roaming intercom relay calls over the owner-checked private broker socket.",

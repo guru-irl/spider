@@ -25,7 +25,7 @@ import type { HostIntent, RoamConfig } from "@spider/roam/contracts";
 import type { RunningHome, SessionId } from "@spider/roam/relocate/types";
 import { createV0Runtime } from "@spider/roam/relocate/runtime";
 import { createLocalSessionMachinePorts } from "@spider/roam/relocate/local";
-import { loadRelocateAdmission, prepareRelocateAdmission, type LocalHomeAdmission } from "./relocate-admission";
+import { loadRelocateAdmission, prepareRelocateAdmission, RelocateLaunchRefused, type LocalHomeAdmission } from "./relocate-admission";
 import { serveRelocateShutdown } from "./relocate-control";
 
 export interface Admission { kind: "pending" | "ordinary" | "control-only" | "blocked"; home: Home | null; blockers: readonly Blocker[]; setupFailure?: MoveSetupFailure }
@@ -236,9 +236,9 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
               handoffRequired = false; freeze = undefined; admitted = true;
               publishResult("ordinary", home);
               if (!late) watchSignals();
-            } catch {
+            } catch (error) {
               await closeV0Control(); await release();
-              publishResult("blocked", home, v0Message);
+              publishResult("blocked", home, error instanceof RelocateLaunchRefused ? error.message : v0Message);
             }
             return;
           }
@@ -620,9 +620,10 @@ export function createAdmissionPorts(options: ParticipantLockOptions = {}): Admi
       return result;
     },
     async v0Ready(id,file,home) {
+      if (!context) throw new Error("Session context unavailable");
       const runtime=createV0Runtime(paths.globalRoot);
       try {
-        await prepareRelocateAdmission(home,file,createLocalSessionMachinePorts(runtime.options));
+        await prepareRelocateAdmission(home,file,createLocalSessionMachinePorts(runtime.options),context.cwd);
         const control=await serveRelocateShutdown({sessionId:id,runtimeRoot:join(paths.globalRoot,"roam","s"),machineId:runtime.options.config.machineId,home:()=>runtime.homes.read(id),async shutdown(){if(!context)throw new Error("Session context unavailable");context.shutdown();}});
         return {async close(){try{await control.close();}finally{await runtime.close();}}};
       }catch(error){await runtime.close();throw error;}

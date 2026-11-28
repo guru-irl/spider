@@ -1,8 +1,9 @@
 import type { Db } from "@spider/db-core";
-import type { HomeAdmission, HomeStore, RunningHome, SessionId, SessionMachinePorts } from "@spider/roam/relocate/types";
+import type { HomeAdmission, HomeStore, RunningHome, SessionId, V0Refusal } from "@spider/roam/relocate/types";
 import { resolve, join } from "node:path";
 import { openDbReadOnlyAt, openGlobalReadOnly, paths } from "@spider/db-core";
 import { clearAwayHomeFence, readAwayHomeFence, type AwayHomeFence } from "@spider/roam/relocate/away-home";
+import type { createLocalSessionMachinePorts } from "@spider/roam/relocate/local";
 import { createHomeStore } from "@spider/roam/relocate/home";
 import { readLocalIdentity } from "@spider/roam/runtime";
 import type { RoamConfig } from "@spider/roam/contracts";
@@ -64,11 +65,19 @@ export async function loadRelocateAdmission(sessionId: SessionId, root: string):
   finally{db?.close();}
 }
 
-export async function prepareRelocateAdmission(home: RunningHome, file: string, machine: SessionMachinePorts): Promise<void> {
+export class RelocateLaunchRefused extends Error {
+  constructor(refusal: V0Refusal) {
+    super(`${refusal.message} ${refusal.nextStep}`);
+  }
+}
+
+export async function prepareRelocateAdmission(home: RunningHome, file: string, machine: ReturnType<typeof createLocalSessionMachinePorts>, cwd: string): Promise<void> {
   const located = await machine.locate(home.machineId, home.sessionId);
   if (!located.ok) throw new Error(located.refusal.code);
   const placement = located.value;
   if (placement.sessionId !== home.sessionId || placement.machineId !== home.machineId || resolve(placement.file) !== resolve(file)) throw new Error("home-conflict");
+  const ready = machine.checkLaunchReady(home, placement, cwd);
+  if (!ready.ok) throw new RelocateLaunchRefused(ready.refusal);
   const activated = await machine.activate(home, placement);
   if (!activated.ok) throw new Error(activated.refusal.code);
 }

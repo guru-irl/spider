@@ -22,7 +22,7 @@ import { parseCaptured } from "./journal";
 import { resolveVerifiedArtifact } from "./transfer";
 import { createHomeSupervisor } from "./supervisor";
 import { serveV0Control, summarizeSync, type V0HubControlServices, type V0SyncOutcome } from "./service";
-import type { RelocateAdapterOptions, RelocateAdapters, HomeStore, RunningHome, SetHomePorts, V0ControlServices, V0Result } from "./types";
+import type { RelocateAdapterOptions, HomeStore, RunningHome, SetHomePorts, V0ControlServices, V0Result } from "./types";
 
 export interface V0RuntimeOverrides {
   openCore?: (root: string) => LocalCore;
@@ -33,7 +33,7 @@ export interface V0RuntimeOverrides {
 }
 export interface V0Runtime {
   options: RelocateAdapterOptions;
-  adapters: RelocateAdapters;
+  adapters: ReturnType<typeof createRelocateAdapters>;
   homes: HomeStore;
   sync: ReturnType<typeof createSync>;
   services: V0HubControlServices;

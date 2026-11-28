@@ -1,5 +1,5 @@
 import { unexpectedBootstrapProbe } from "./transport-fixture";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { chmodSync, closeSync, createReadStream, existsSync, lstatSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
@@ -16,10 +16,14 @@ import * as stagingApi from "../staging";
 import { createManifestPages, handleArtifactRequest, pullArtifact, readManifestPages, stageArtifact, transferArtifact } from "../artifacts";
 
 const roots: string[] = [];
-function fixture(): { root: string; source: string; staging: string } {
+function newFixture(): { root: string; source: string; staging: string } {
   const root = mkdtempSync(join(dirname(scratchDbPath("artifact")), "artifact-"));
-  roots.push(root);
   return { root, source: join(root, "source"), staging: join(root, "staging") };
+}
+function fixture(): ReturnType<typeof newFixture> {
+  const files = newFixture();
+  roots.push(files.root);
+  return files;
 }
 afterEach(() => {
   vi.useRealTimers();
@@ -260,39 +264,52 @@ it("a pending transfer resumes after sender and receiver lower their layout limi
     expect(remote.sent).not.toContain(0);
   } finally { remote.close(); }
 }, 5000);
-it.each(["agent", "session"] as const)("streams a binary and session artifact above 64 MiB (%s)", async kind => {
-  const { root, source, staging } = fixture();
-  const out = openSync(source, "w", 0o600);
-  const sourceHash = createHash("sha256");
-  let length = 0, index = 0;
-  try {
-    while (length <= 64 * 1024 * 1024) {
-      const bytes = kind === "session"
-        ? Buffer.from(JSON.stringify({ type: "message", id: `m${index}`, text: "s".repeat(65_000) }) + "\n")
-        : Buffer.alloc(384 * 1024, index % 251);
-      let at = 0;
-      while (at < bytes.length) at += writeSync(out, bytes, at, bytes.length - at);
-      sourceHash.update(bytes);
-      length += bytes.length;
-      index++;
-    }
-  } finally { closeSync(out); }
-  const expected = sourceHash.digest("hex");
-  const manifest = await stageArtifact(source, kind, DEFAULT_LIMITS, { root: staging });
-  const remote = link(root, DEFAULT_LIMITS, true);
-  try {
-    const result = await transferArtifact(remote.peer, manifest,
-      { transport: remote.transport, journal: remote.localJournal, limits: DEFAULT_LIMITS, root: staging, operationId: `large-${kind}` });
-    expect(result.code).toBe(0);
+describe.each(["agent", "session"] as const)("artifact above 64 MiB (%s)", kind => {
+  let files: ReturnType<typeof newFixture>;
+  let expected: string;
+  let manifest: Awaited<ReturnType<typeof stageArtifact>>;
+  beforeAll(async () => {
+    files = newFixture();
+    const out = openSync(files.source, "w", 0o600);
+    const sourceHash = createHash("sha256");
+    let length = 0, index = 0;
+    try {
+      while (length <= 64 * 1024 * 1024) {
+        const bytes = kind === "session"
+          ? Buffer.from(JSON.stringify({ type: "message", id: `m${index}`, text: "s".repeat(65_000) }) + "\n")
+          : Buffer.alloc(384 * 1024, index % 251);
+        let at = 0;
+        while (at < bytes.length) at += writeSync(out, bytes, at, bytes.length - at);
+        sourceHash.update(bytes);
+        length += bytes.length;
+        index++;
+      }
+    } finally { closeSync(out); }
+    expected = sourceHash.digest("hex");
+    manifest = await stageArtifact(files.source, kind, DEFAULT_LIMITS, { root: files.staging });
+  }, 5000);
+  afterAll(() => { if (files) rmSync(files.root, { recursive: true, force: true }); });
+
+  it("stages the full payload with its source digest", () => {
     expect(manifest.byteLength).toBeGreaterThan(64 * 1024 * 1024);
     expect(manifest.sha256).toBe(expected);
-    const installed = createHash("sha256");
-    for await (const bytes of createReadStream(result.value!.file)) installed.update(bytes);
-    expect(installed.digest("hex")).toBe(expected);
-    expect(remote.largestChunk()).toBeLessThanOrEqual(384 * 1024);
-    expect(remote.largestReply()).toBeLessThanOrEqual(1024 * 1024);
-  } finally { remote.close(); }
-}, 5000);
+  }, 5000);
+
+  it("streams and installs byte-exact data within wire limits", async () => {
+    const { root, staging } = files;
+    const remote = link(root, DEFAULT_LIMITS, true);
+    try {
+      const result = await transferArtifact(remote.peer, manifest,
+        { transport: remote.transport, journal: remote.localJournal, limits: DEFAULT_LIMITS, root: staging, operationId: `large-${kind}` });
+      expect(result.code).toBe(0);
+      const installed = createHash("sha256");
+      for await (const bytes of createReadStream(result.value!.file)) installed.update(bytes);
+      expect(installed.digest("hex")).toBe(expected);
+      expect(remote.largestChunk()).toBeLessThanOrEqual(384 * 1024);
+      expect(remote.largestReply()).toBeLessThanOrEqual(1024 * 1024);
+    } finally { remote.close(); }
+  }, 5000);
+});
 
 it("resume reuses verified immutable chunks", async () => {
   const { root, source, staging } = fixture();

@@ -1,13 +1,18 @@
 name: selection map
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
     branches: [main]
+    types: [completed]
   workflow_dispatch:
 
 concurrency:
-  group: selection-map-${{ github.ref }}
-  cancel-in-progress: true
+  # Match CI's main push group. A later push must wait for an active recorder.
+  group: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_sha == github.sha && 'ci-CI-refs/heads/main' || format('selection-map-{0}', github.run_id) }}
+  cancel-in-progress: false
+  # Queue instead of replacing any CI run already waiting for the group.
+  queue: max
 
 permissions:
   contents: read
@@ -16,7 +21,34 @@ env:
   ONNXRUNTIME_NODE_INSTALL: skip
 
 jobs:
+  eligible:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.path == '.github/workflows/ci.yml' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       github.event.workflow_run.head_sha == github.sha && github.event.workflow_run.conclusion != 'cancelled')
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      record: ${{ steps.head.outputs.record }}
+    steps:
+      - id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_run ]; then
+            head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
+            if [ "$head" != "$GITHUB_SHA" ]; then
+              echo 'Main advanced while this run was queued. The next CI completion can record it.'
+              exit 0
+            fi
+          fi
+          echo 'record=true' >> "$GITHUB_OUTPUT"
+
   record:
+    needs: eligible
+    if: needs.eligible.outputs.record == 'true'
     name: record ${{ matrix.shard }}/6
     strategy:
       fail-fast: false
@@ -28,6 +60,9 @@ jobs:
       SELECTION_WORK: ${{ github.workspace }}/.spider/scratch/selection
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '26.4.0'
@@ -60,7 +95,7 @@ jobs:
           TMPDIR: ${{ github.workspace }}/.spider/scratch/tmp
         run: |
           set -o pipefail
-          node --test scripts/selection/*.test.mjs
+          node --test scripts/selection/{recorder,map,map-workflow,test-bundles}.test.mjs
           env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID \
             -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR \
             npx vitest list --filesOnly --json |
@@ -100,14 +135,27 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Save raw recorder data
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: selection-raw-${{ matrix.shard }}
+          path: ${{ env.SELECTION_WORK }}/raw/
+          include-hidden-files: true
+          retention-days: 7
+
   selection-map:
     name: selection map
     needs: record
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && needs.record.result != 'skipped' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '26.4.0'
@@ -128,17 +176,16 @@ jobs:
           node scripts/selection/map.mjs selection-map.json "$records/inventory.json" "$records"/record-{1..6}.json
           test "$RECORD_RESULT" = success
 
-      - name: Build scoreboard
-        run: |
-          node scripts/selection/scoreboard.mjs selection-map.json > scoreboard.md
-          cat scoreboard.md >> "$GITHUB_STEP_SUMMARY"
-
       - name: Publish selection map
         uses: actions/upload-artifact@v4
         with:
           name: selection-map
-          path: |
-            selection-map.json
-            scoreboard.md
+          path: selection-map.json
           if-no-files-found: error
           retention-days: 30
+
+      - name: Build scoreboard
+        continue-on-error: true
+        run: |
+          node scripts/selection/scoreboard.mjs selection-map.json > scoreboard.md
+          cat scoreboard.md >> "$GITHUB_STEP_SUMMARY"

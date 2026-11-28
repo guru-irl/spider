@@ -54,6 +54,18 @@ export interface ThemeAdapter {
   iconStyle?: IconStyle;
   spiderGlyphs?: boolean;
   activityTint?(text: string, strength: number): string;
+  roleTint?(hex: string, text: string, strength: number): string;
+}
+
+const ROLE_ACCENTS = new Map<string, string>([
+  ["worker", "#82aaff"], ["reviewer", "#ffb86c"], ["scout", "#8be9fd"],
+  ["planner", "#c792ea"], ["watcher", "#ff92df"],
+]);
+
+/** Color the role label or its running mark, falling back to the theme accent. */
+export function renderRoleAccent(theme: ThemeAdapter, role: string, text: string, strength = 1): string {
+  const color = ROLE_ACCENTS.get(role) ?? "#d6acff";
+  return theme.roleTint?.(color, text, strength) ?? theme.fg(strength < 0.5 ? "dim" : "accent", text);
 }
 
 export function agentGlyph(theme: ThemeAdapter): string {
@@ -101,10 +113,12 @@ export function statusToken(status: AgentStatus): string {
 export function renderAgentStatus(theme: ThemeAdapter, agent: AgentSnapshot, now: number): string {
   if (agent.status !== "running") return theme.fg(statusToken(agent.status), statusGlyph(theme, agent.status));
   const elapsed = Math.max(0, now - (agent.startedAt ?? 0));
-  if (theme.iconStyle === "nerd" && theme.spiderGlyphs) return theme.fg("accent", robotFrame(agent.runId, elapsed));
+  const role = agent.role ?? agent.agent;
+  if (theme.iconStyle === "nerd" && theme.spiderGlyphs) return renderRoleAccent(theme, role, robotFrame(agent.runId, elapsed));
   const glyph = agentGlyph(theme);
   const strength = robotPulse(agent.runId, elapsed);
-  return theme.activityTint?.(glyph, strength) ?? theme.fg(strength < 0.5 ? "dim" : "accent", glyph);
+  return theme.roleTint ? renderRoleAccent(theme, role, glyph, strength)
+    : theme.activityTint?.(glyph, strength) ?? theme.fg(strength < 0.5 ? "dim" : "accent", glyph);
 }
 
 export type { RunEvent };

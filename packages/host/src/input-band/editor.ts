@@ -87,12 +87,11 @@ export function createBandEditor(Base: typeof CustomEditor): new (
       const bandRow = (text: string) => {
         const line = truncateToWidth(text, inner, "");
         const pad = " ".repeat(Math.max(0, inner - visibleWidth(line)));
-        return `${bar}${bg} ${reopenBackground(line, bg)}${pad}\x1b[49m`;
+        return `${bg}${bar} ${reopenBackground(line, bg)}${pad}\x1b[49m`;
       };
       const edge = (top: boolean, hidden: number) => hidden > 0
         ? bandRow(theme.fg("dim", `${icon("text", top ? "arrowUp" : "arrowDown")} ${hidden} more`))
-        : theme.fg(color, top ? BAND_GLYPHS.barTop : BAND_GLYPHS.barBottom)
-          + fg + (top ? BAND_GLYPHS.top : BAND_GLYPHS.bottom).repeat(width - 1) + "\x1b[39m";
+        : fg + (top ? BAND_GLYPHS.top : BAND_GLYPHS.bottom).repeat(width) + "\x1b[39m";
       return [edge(true, edges.top.hidden), ...rows.slice(1, bottom).map(bandRow), edge(false, edges.bottom.hidden),
         ...rows.slice(bottom + 1).map(row => truncateToWidth("  " + row, width, ""))];
     }

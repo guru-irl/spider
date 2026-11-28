@@ -35,10 +35,10 @@ test('a lost version updates independent keys without rebinding an installed pic
   const after = JSON.parse(await readFile(keyPath, 'utf8'));
   expect(after.terminal['cmd-shift-a']).toBe('send:\u001b[99;6u');
   for (const key of ['cmd-t', 'cmd-d', 'cmd-shift-d']) expect(after.global[key]).toEqual(before.global[key]);
-  expect(after['layout:spider-glass']['cmd-shift-w']).toEqual(before['layout:spider-glass']['cmd-shift-w']);
+  expect(after['layout:Spider']['cmd-shift-w']).toEqual(before['layout:Spider']['cmd-shift-w']);
   const newJournal = (await readJournal(f.request.journalRoot)).entries.find(entry => entry.path === keyPath)!;
   for (const key of ['cmd-t', 'cmd-d', 'cmd-shift-d']) expect(newJournal.keysBefore?.global[key]).toEqual(oldJournal.keysBefore?.global[key]);
-  expect(newJournal.keysBefore?.['layout:spider-glass']['cmd-shift-w']).toEqual(oldJournal.keysBefore?.['layout:spider-glass']['cmd-shift-w']);
+  expect(newJournal.keysBefore?.['layout:Spider']['cmd-shift-w']).toEqual(oldJournal.keysBefore?.['layout:Spider']['cmd-shift-w']);
 });
 
 test.each([false, true])('a lost version updates independent keys without rebinding user-modified picker keys (overwrite=%s)', async overwrite => {
@@ -46,7 +46,7 @@ test.each([false, true])('a lost version updates independent keys without rebind
   const stockKeys = JSON.parse(await readFile(join(home, 'keys.json'), 'utf8'));
   await setupHerdr(f.request, f.parts);
   const keyPath = join(home, 'keys.json'), keys = JSON.parse(await readFile(keyPath, 'utf8'));
-  keys.global['cmd-t'] = 'tab.new'; keys['layout:spider-glass']['cmd-shift-w'] = 'custom.close';
+  keys.global['cmd-t'] = 'tab.new'; keys['layout:Spider']['cmd-shift-w'] = 'custom.close';
   if (overwrite) keys.terminal['cmd-shift-a'] = 'send:\u001b[88;6u';
   await writeFile(keyPath, JSON.stringify(keys));
   const journal = (await readJournal(f.request.journalRoot)).entries.find(entry => entry.path === keyPath)!;
@@ -63,18 +63,18 @@ test.each([false, true])('a lost version updates independent keys without rebind
   expect(result.doctor.warnings.filter(warning => warning.code === 'picker-version-unavailable')).toHaveLength(1);
   const current = JSON.parse(await readFile(keyPath, 'utf8'));
   expect(current.global['cmd-t']).toBe('tab.new');
-  expect(current['layout:spider-glass']['cmd-shift-w']).toBe('custom.close');
+  expect(current['layout:Spider']['cmd-shift-w']).toBe('custom.close');
   expect(current.terminal['cmd-shift-a']).toBe('send:\u001b[99;6u');
   const after = (await readJournal(f.request.journalRoot)).entries.find(entry => entry.path === keyPath)!;
   expect(after.keys?.global['cmd-t']).toEqual(journal.keys?.global['cmd-t']);
   expect(after.keysBefore?.global['cmd-t']).toEqual(journal.keysBefore?.global['cmd-t']);
-  expect(after.keysBefore?.['layout:spider-glass']['cmd-shift-w']).toEqual(journal.keysBefore?.['layout:spider-glass']['cmd-shift-w']);
+  expect(after.keysBefore?.['layout:Spider']['cmd-shift-w']).toEqual(journal.keysBefore?.['layout:Spider']['cmd-shift-w']);
   await writeFile(app, (await readFile(app, 'utf8')).replace('process.exit(1)', "console.log('herdr-app 0.1.13')"));
   const warnings: string[] = []; f.parts.warn = message => { warnings.push(message); };
   await rollbackHerdr(f.request, f.parts);
   expect(warnings.some(message => message.includes(keyPath) && message.includes('partially restored'))).toBe(true);
   const rolledBack = JSON.parse(await readFile(keyPath, 'utf8'));
   expect(rolledBack.global['cmd-t']).toBe('tab.new');
-  expect(rolledBack['layout:spider-glass']['cmd-shift-w']).toBe('custom.close');
+  expect(rolledBack['layout:Spider']['cmd-shift-w']).toBe('custom.close');
   expect(rolledBack.terminal['cmd-shift-a']).toEqual(overwrite ? 'send:\u001b[88;6u' : stockKeys.terminal?.['cmd-shift-a']);
 });

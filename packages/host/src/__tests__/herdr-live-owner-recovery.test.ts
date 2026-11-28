@@ -22,7 +22,9 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 test('a reconciled setup does not repeat the initial app selection', async () => {
   const f = await fixture(), script = join(f.h.root, 'app-selection.mjs'), log = join(f.h.root, 'app-selection-log');
   const source = await readFile(script, 'utf8');
-  await writeFile(script, `import { appendFileSync } from 'node:fs';\n` + source.replace("else if (a[0] === 'do') {", `else if (a[0] === 'do') { appendFileSync(${JSON.stringify(log)}, a[1] + '\\n');`));
+  const selectionBranch = "else if (a[0] === 'do' && ['layout.switch', 'app.theme'].includes(a[1])) {";
+  expect(source).toContain(selectionBranch);
+  await writeFile(script, `import { appendFileSync } from 'node:fs';\n` + source.replace(selectionBranch, `${selectionBranch} appendFileSync(${JSON.stringify(log)}, a[1] + '\\n');`));
   await setupHerdr(f.request, f.parts);
   expect((await readFile(log, 'utf8')).trim().split('\n')).toEqual(['layout.switch', 'app.theme']);
   const preflight = f.parts.preflight;

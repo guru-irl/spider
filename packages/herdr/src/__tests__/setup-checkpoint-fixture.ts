@@ -34,7 +34,7 @@ export async function fixture(): Promise<CheckpointFixture> {
   const app = join(root, 'app'), global = join(root, 'global'), agent = join(root, 'agent'), journalRoot = join(global, 'herdr/setup');
   await fs.mkdir(global, { recursive: true });
   const paths = { font: join(app, 'fonts/body.ttf'), theme: join(agent, 'themes/dracula-plus-glass.json'), svg: join(app, 'mods/spider-example/icon.svg'),
-    main: join(app, 'mods/spider-example/main.js'), manifest: join(app, 'mods/spider-example/mod.json'), layout: join(app, 'layouts/spider-glass.json'),
+    main: join(app, 'mods/spider-example/main.js'), manifest: join(app, 'mods/spider-example/mod.json'), layout: join(app, 'layouts/Spider.json'),
     keys: join(app, 'keys.json'), settings: join(agent, 'settings.json'), appSettings: join(app, 'settings.json'), notes: join(root, 'core/config.toml'),
     spaces: join(global, 'herdr/spaces/spaces.json'), registry: join(global, 'herdr/installation.json'), journal: join(journalRoot, 'journal.json'),
     added: join(global, 'herdr/instructions/worker.md'), roleTemplate: join(root, 'core/templates/spider-worker.md') };
@@ -57,7 +57,7 @@ export async function fixture(): Promise<CheckpointFixture> {
     { path: paths.notes, bytes: Buffer.from('notes = false\n'), expected: originalNotes.hash, managed: { kind: 'notes' } },
   ];
   await prepareBackups(journalRoot, old, legacy); await applyFiles(journalRoot, old, legacy);
-  await put(paths.appSettings, '{"layout":"spider-glass","theme":"spider-glass"}\n', 0o644);
+  await put(paths.appSettings, '{"layout":"Spider","theme":"spider-glass"}\n', 0o644);
   await put(paths.spaces, '{"version":1,"spaces":["existing"],"placements":["old"]}\n', 0o640);
   await put(paths.registry, '{ "version": 1, "packageRoot": "/home/fixture" }\n', 0o600);
   legacy.verified = true; legacy.fingerprint = 'legacy'; legacy.cutover = { terminals: [], identities: { old: 'owner-1' } };

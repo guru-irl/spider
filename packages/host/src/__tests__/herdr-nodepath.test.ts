@@ -75,7 +75,7 @@ test('setup checks an absolute machine Node path only on that machine', async ()
 test('doctor still rejects a missing local mod launcher beside an absolute remote Node path', async () => {
   const f = await remoteNodeFixture();
   await setupHerdr(f.request, f.parts);
-  const path = join(f.h.directories.app, 'layouts/spider-glass.json');
+  const path = join(f.h.directories.app, 'layouts/Spider.json');
   const layout = JSON.parse(await readFile(path, 'utf8'));
   // This is the sidebar written by the production installer, including its
   // separate local launcher pin and nested remote machine configuration.

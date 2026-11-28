@@ -36,6 +36,6 @@ test('setup owns and verifies the brand clone, repeats without writes and restor
   await writeFile(path, installed);
   await rollbackHerdr(f.request, f.parts);
   await expect(access(path)).rejects.toMatchObject({ code: 'ENOENT' });
-  await expect(access(join(f.h.directories.app, 'layouts/spider-glass.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(access(join(f.h.directories.app, 'layouts/Spider.json'))).rejects.toMatchObject({ code: 'ENOENT' });
   expect(await readFile(join(f.h.directories.app, 'mods/workspace-chrome/main.js'))).toEqual(original);
 }, 90000);

@@ -21,7 +21,7 @@ const desired = {
     'cmd-n': { command: 'space.new', args: { machine: '' } },
   },
   terminal: { 'cmd-shift-a': 'send:\u001b[97;6u' },
-  'layout:spider-glass': { 'cmd-shift-e': 'spider-pane.park' },
+  'layout:Spider': { 'cmd-shift-e': 'spider-pane.park' },
 } as const;
 
 test('ships picker and local new-space bindings with layout-scoped send back', async () => {
@@ -31,8 +31,8 @@ test('ships picker and local new-space bindings with layout-scoped send back', a
   expect(keys.global['cmd-t']).toBe('mod.open:spider-machine-picker');
   expect(keys.global['cmd-d']).toBe('mod.open:spider-machine-picker-right');
   expect(keys.global['cmd-shift-d']).toBe('mod.open:spider-machine-picker-down');
-  expect(keys['layout:spider-glass']['cmd-shift-w']).toBe('spider-pane.close');
-  expect(keys['layout:spider-glass']['cmd-shift-e']).toBe('spider-pane.park');
+  expect(keys['layout:Spider']['cmd-shift-w']).toBe('spider-pane.close');
+  expect(keys['layout:Spider']['cmd-shift-e']).toBe('spider-pane.park');
   expect(keys.global['cmd-shift-e']).toBeUndefined();
   expect(Object.keys(keys.terminal)).toEqual(['cmd-shift-a', 'cmd-shift-o', 'cmd-shift-u', 'cmd-shift-m', 'cmd-shift-k']);
 });
@@ -85,7 +85,7 @@ test('migrates stock keys in separate sections without changing close or image p
   const result = JSON.parse(backup.mergeKeys(original, desired, {}, false).toString());
   expect(result.global).toEqual({ 'cmd-p': 'mod.open:spider-picker', 'cmd-n': { command: 'space.new', args: { machine: '' } }, 'cmd-shift-w': 'pane.close' });
   expect(result.terminal).toEqual({ 'ctrl-v': 'terminal.paste_image', 'cmd-shift-a': 'send:\u001b[97;6u' });
-  expect(result['layout:spider-glass']['cmd-shift-e']).toBe('spider-pane.park');
+  expect(result['layout:Spider']['cmd-shift-e']).toBe('spider-pane.park');
   expect(result.global['cmd-shift-e']).toBeUndefined();
 });
 
@@ -116,7 +116,7 @@ test.each([
   ['terminal', 'cmd-shift-e'],
   ['global', 'cmd-shift-w'],
   ['terminal', 'cmd-shift-w'],
-  ['layout:spider-glass', 'cmd-shift-w'],
+  ['layout:Spider', 'cmd-shift-w'],
 ])('setup and dry-run refuse %s.%s even with overwrite permission', async (section, key) => {
   const { cleanup, fixture } = await import('../../../host/src/__tests__/herdr-setup-fixture.js');
   const f = await fixture(), path = join(f.h.directories.app, 'keys.json');
@@ -160,7 +160,7 @@ test('treats a native object without args as an unowned binding', () => {
   expect(result.global['cmd-p']).toBe('mod.open:spider-picker');
 });
 
-test.each(['terminal', 'layout:spider-glass'])('refuses a more-specific pane-close override in %s', section => {
+test.each(['terminal', 'layout:Spider'])('refuses a more-specific pane-close override in %s', section => {
   const bytes = Buffer.from(JSON.stringify({ global: { 'cmd-shift-w': 'pane.close' }, [section]: { 'cmd-shift-w': 'other.action' } }));
   expect(() => backup.mergeKeys(bytes, desired, {}, false)).toThrowError(expect.objectContaining({ code: 'key-binding-conflict' }));
   expect(() => backup.mergeKeys(bytes, desired, {}, true)).toThrowError(expect.objectContaining({ code: 'key-binding-conflict' }));
@@ -217,7 +217,7 @@ async function keyFixture() {
 const sections = {
   global: ['cmd-p', 'cmd-n'],
   terminal: ['cmd-shift-a'],
-  'layout:spider-glass': ['cmd-shift-e'],
+  'layout:Spider': ['cmd-shift-e'],
 } as const;
 async function publishKeys(root: string, file: InstallFile, journal: backup.SetupJournal) {
   await backup.validateFiles([file], journal);

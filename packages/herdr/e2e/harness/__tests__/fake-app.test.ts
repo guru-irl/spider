@@ -260,18 +260,18 @@ describe('strict fake app against the core boundary', () => {
       selectLayout: async name=>{order.push(`write:${name}`);entered();if(held)await gate;writes.push(name);},
       record: name=>{order.push(`reply:${name}`);},
     });
-    let completed=false;const pending=app.command('layout.switch',{name:'spider-glass'}).then(reply=>{completed=true;return reply;});await Promise.race([atWriter,pending]);
-    expect(completed).toBe(false);expect(order).toEqual(['load:spider-glass','write:spider-glass']);release();expect(await pending).toEqual({ok:true});
-    held=false;await app.command('layout.switch',{name:'spider-glass'});expect(writes).toEqual(['spider-glass','spider-glass']);
-    await expect(app.command('layout.switch',{name:'missing'})).rejects.toThrow(/layout missing/);expect(writes).toEqual(['spider-glass','spider-glass']);
-    expect(order.slice(0,3)).toEqual(['load:spider-glass','write:spider-glass','reply:layout.switch']);
+    let completed=false;const pending=app.command('layout.switch',{name:'Spider'}).then(reply=>{completed=true;return reply;});await Promise.race([atWriter,pending]);
+    expect(completed).toBe(false);expect(order).toEqual(['load:Spider','write:Spider']);release();expect(await pending).toEqual({ok:true});
+    held=false;await app.command('layout.switch',{name:'Spider'});expect(writes).toEqual(['Spider','Spider']);
+    await expect(app.command('layout.switch',{name:'missing'})).rejects.toThrow(/layout missing/);expect(writes).toEqual(['Spider','Spider']);
+    expect(order.slice(0,3)).toEqual(['load:Spider','write:Spider','reply:layout.switch']);
   });
   it('preserves the exact legacy layout replies and calls without selectLayout', async () => {
     const reads: string[]=[],records: unknown[]=[];
     const app=createFakeAppBoundary({hc:async()=>{throw new Error('no core operation');},readLayout:async name=>{reads.push(name);return {id:'root'};},record:(name,args,result)=>records.push({name,args,result})});
-    expect(JSON.stringify(await app.command('layout.switch',{name:'spider-glass'}))).toBe('{"ok":true}');
-    expect(JSON.stringify(await app.command('status',{}))).toBe('{"layout":"spider-glass","space":null,"tab":null,"focused_pane":null,"agent":null,"floats":[],"overlays":[],"errors":[],"zoom":1,"font_size":14,"ui_font_size":14}');
-    expect(reads).toEqual(['spider-glass']);expect(records[0]).toEqual({name:'layout.switch',args:{name:'spider-glass'},result:{ok:true}});
+    expect(JSON.stringify(await app.command('layout.switch',{name:'Spider'}))).toBe('{"ok":true}');
+    expect(JSON.stringify(await app.command('status',{}))).toBe('{"layout":"Spider","space":null,"tab":null,"focused_pane":null,"agent":null,"floats":[],"overlays":[],"errors":[],"zoom":1,"font_size":14,"ui_font_size":14}');
+    expect(reads).toEqual(['Spider']);expect(records[0]).toEqual({name:'layout.switch',args:{name:'Spider'},result:{ok:true}});
   });
   it('rejects malformed core replies and wrong get IDs rather than allocating guessed placement', async () => {
     const app = createFakeAppBoundary({ hc: async () => ({}) });

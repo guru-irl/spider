@@ -87,7 +87,8 @@ test('setup skips a disconnected machine and still installs the local look, keys
   expect(journal).toMatchObject({ verified: true, pendingRuntimes: [remote], runtimes: [] });
   expect(result.writes).toContain(join(f.request.config.app.home, 'keys.json'));
   expect(result.writes).toContain(join(f.request.config.app.home, 'mods/spider-panel/main.js'));
-  expect(JSON.parse(await readFile(join(f.request.config.app.home, 'settings.json'), 'utf8'))).toMatchObject({ theme: 'spider-glass', layout: 'spider-glass' });
+  expect(JSON.parse(await readFile(join(f.request.config.app.home, 'settings.json'), 'utf8'))).toMatchObject({ theme: 'spider-glass' });
+  expect(JSON.parse(await readFile(join(f.request.config.app.home, 'shared.json'), 'utf8'))).toMatchObject({ layout: 'Spider' });
 });
 
 test.each([

@@ -4,7 +4,7 @@ import { validUnicode } from "@spider/db-core/roam/hlc";
 import { localEntries, readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { decodeManagedHome, sameManagedHome } from "./home";
 import type { OperationBinding, SessionStatus, SessionStopStore, SessionTransition, StopBlocker, StopMode, StopObservation } from "./session-stop-types";
-import type { RelocateHome, SessionId } from "./types";
+import type { RelocateHome, SessionId, StoppedHome } from "./types";
 
 const TRANSITION = "session-transition";
 const OPERATION = "session-transition-operation";
@@ -103,8 +103,13 @@ function sameBinding(a: OperationBinding, b: OperationBinding): boolean {
     (a.action === "start" || (b.action === "stop" && a.request.mode === b.request.mode));
 }
 
+interface ObservableStopStore extends SessionStopStore {
+  subscribe(id: SessionId, changed: () => void): () => void;
+}
+
 /** Hub global store only. Call write under the session operation lock, on the same connection as the home CAS. */
-export function createSessionStopStore(db: Db): SessionStopStore {
+export function createSessionStopStore(db: Db): ObservableStopStore {
+  const listeners = new Map<SessionId, Set<() => void>>();
   function operation(id: string): OperationBinding | null {
     const saved = readLocal<unknown>(db, OPERATION, id);
     return saved === undefined ? null : parseBinding(saved, id);
@@ -123,6 +128,12 @@ export function createSessionStopStore(db: Db): SessionStopStore {
       });
     },
     operation,
+    subscribe(id, changed) {
+      let group = listeners.get(id);
+      if (!group) listeners.set(id, group = new Set());
+      group.add(changed);
+      return () => { if (group.delete(changed) && group.size === 0) listeners.delete(id); };
+    },
     write(record, binding) {
       const id = record.committed.sessionId;
       const saved = parseTransition(record, id);
@@ -140,6 +151,8 @@ export function createSessionStopStore(db: Db): SessionStopStore {
         writeLocal(db, TRANSITION, id, saved);
         if (!existing) writeLocal(db, OPERATION, opId, next);
       }).immediate());
+      // A CAS hook uses a savepoint. Notify after the outer synchronous transaction unwinds.
+      if (listeners.has(id)) queueMicrotask(() => { for (const changed of listeners.get(id) ?? []) changed(); });
       return undefined;
     },
   };
@@ -148,6 +161,11 @@ export function createSessionStopStore(db: Db): SessionStopStore {
 function confirmedExit(observation: StopObservation | undefined): boolean {
   return observation?.evidence.kind === "confirmed" && observation.observedAt !== null && observation.bootId !== null &&
     (observation.evidence.owner === null || observation.evidence.owner.bootId === observation.bootId);
+}
+
+export function hasStopProof(home: StoppedHome, observer: string, record: { observations: readonly StopObservation[] }): boolean {
+  const observation = record.observations.find(item => item.machineId === observer);
+  return !!observation && observation.sessionId === home.sessionId && sameManagedHome(observation.home, home) && confirmedExit(observation);
 }
 
 function describeBlocker(blocker: StopBlocker): string {
@@ -205,6 +223,8 @@ export function projectSessionStatus(home: RelocateHome | null, record: SessionT
   if (observation && !local) reasons.add(observation.home === null ? "The stopped replica is missing." : "The replica does not match the stopped home.");
   if (reasons.size > 0) return { ...pending, reason: [...reasons].join(" "), observedAt };
   if (local?.evidence.kind === "checking" && observedAt !== null) {
+    // Stopping assumes the box and Mac wall clocks agree within the 10-second
+    // window. A future or stale timestamp stays pending. Confirmation does not expire.
     const age = now - observedAt;
     if (age >= 0 && age < 10_000) return { ...base, status: "stopping", observedAt };
     return { ...pending, reason: "The exit check is not current.", observedAt };

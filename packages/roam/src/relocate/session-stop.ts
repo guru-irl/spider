@@ -14,6 +14,8 @@ export interface StopCommandPorts {
   clock: Clock;
   readyMs: number;
   reconcile(home: StoppedHome): Promise<void>;
+  // When reconciliation continues in the background, observe subsequent records.
+  subscribe?(id: SessionId, changed: () => void): () => void;
 }
 
 type StopBinding = Extract<OperationBinding, { action: "stop" }>;
@@ -21,7 +23,7 @@ type Admission = { kind: "committed"; home: StoppedHome } | { kind: "refused"; r
 interface Flight {
   request: StopRequest;
   move: MoveTurn | null;
-  snapshot(): SessionOutcome;
+  snapshot(): SessionOutcome | Promise<SessionOutcome>;
   done: Promise<SessionOutcome>;
 }
 
@@ -35,12 +37,19 @@ function matchesRequest(home: RelocateHome | null, request: StopRequest): boolea
     home.machineId === request.machineId && home.epoch === request.homeEpoch;
 }
 
-export function createStopCommand(ports: StopCommandPorts): (request: StopRequest) => Promise<SessionOutcome> {
+interface StopCommand {
+  (request: StopRequest): Promise<SessionOutcome>;
+  close(): Promise<void>;
+}
+
+export function createStopCommand(ports: StopCommandPorts): StopCommand {
   const { operations, store, homes, clock } = ports;
   // Until commit there is no durable binding. Reserve IDs across all sessions here.
   const flights = new Map<string, Flight>();
   // Only Stops pinned to this exact turn can share the successor a follower commits.
   const stoppedByFollower = new WeakMap<MoveTurn, StoppedHome>();
+  const wakeOnClose = new Set<() => void>();
+  let closing: Promise<void> | undefined;
 
   function statusFor(request: StopRequest, home: RelocateHome | null) {
     return projectSessionStatus(home, home ? store.current(home.sessionId) : null, request.sessionId, clock.now());
@@ -101,6 +110,14 @@ export function createStopCommand(ports: StopCommandPorts): (request: StopReques
     return { kind: "committed", home: committed };
   }
 
+  function hasBlocker(home: StoppedHome): boolean {
+    const record = store.current(home.sessionId);
+    if (!record || record.action === "start" || !sameManagedHome(record.committed, home)) return false;
+    return record.contactReason !== null || record.observations.some(observation =>
+      observation.evidence.kind === "pending" &&
+      (!sameManagedHome(observation.home, home) || observation.evidence.blockers.length > 0));
+  }
+
   async function settle(admission: Admission, flight: Flight): Promise<SessionOutcome> {
     const { request } = flight;
     if (admission.kind === "refused") return admission.reply;
@@ -111,18 +128,41 @@ export function createStopCommand(ports: StopCommandPorts): (request: StopReques
     };
     const beforeRead = flight.snapshot;
     let last: SessionOutcome | undefined;
-    flight.snapshot = () => {
-      // Evidence may be saved before the status read or contact round settles.
+    flight.snapshot = async () => {
+      // The home can change without a Stop record write, for example after a move.
       if (last?.outcome === "refused") return last;
-      try { return committedStatus(request, home); }
+      try { return await read(); }
       catch { return last ?? beforeRead(); }
     };
     last = await read();
-    if (last.outcome !== "pending" || !ports.enabled()) return last;
+    if (last.outcome !== "pending" || !ports.enabled() || closing) return last;
     // Admission released both the FIFO turn and process lock. Contact must fence its own effects.
-    try { await ports.reconcile(home); }
-    catch { /* Contact failure cannot undo the saved Stop. Return the cached result. */ }
-    return read();
+    const contact = async () => {
+      try { await ports.reconcile(home); }
+      catch { /* Contact failure cannot undo the saved Stop. */ }
+    };
+    let expired = false, roundEnded = false;
+    let wake!: () => void;
+    const nextChange = () => new Promise<void>(resolve => { wake = resolve; });
+    let change = nextChange();
+    const changed = () => wake();
+    const unsubscribe = ports.subscribe?.(home.sessionId, changed);
+    const cancel = clock.later(ports.readyMs, () => { expired = true; changed(); });
+    wakeOnClose.add(changed);
+    void contact().then(() => { roundEnded = true; changed(); });
+    try {
+      while (!expired && !closing) {
+        await change;
+        change = nextChange();
+        last = await read();
+        if (last.outcome !== "pending" || hasBlocker(home) || !ports.enabled() || !unsubscribe && roundEnded) return last;
+      }
+      return last;
+    } finally {
+      cancel();
+      unsubscribe?.();
+      wakeOnClose.delete(changed);
+    }
   }
 
   async function wait(flight: Flight): Promise<SessionOutcome> {
@@ -137,7 +177,8 @@ export function createStopCommand(ports: StopCommandPorts): (request: StopReques
     finally { cancel(); }
   }
 
-  return async input => {
+  async function stop(input: StopRequest): Promise<SessionOutcome> {
+    if (closing) return reply(input, "refused", "hub-closing");
     const existing = flights.get(input.operationId);
     if (existing) return sameRequest(existing.request, input) ? wait(existing) : reply(input, "refused", "operation-reused");
 
@@ -161,5 +202,13 @@ export function createStopCommand(ports: StopCommandPorts): (request: StopReques
     // The caller can receive a waiting reply before the accepted work settles.
     void flight.done.catch(() => {});
     return wait(flight);
-  };
+  }
+
+  return Object.assign(stop, { close() {
+    if (!closing) {
+      closing = Promise.allSettled([...flights.values()].map(flight => flight.done)).then(() => {});
+      for (const wake of wakeOnClose) wake();
+    }
+    return closing;
+  } });
 }

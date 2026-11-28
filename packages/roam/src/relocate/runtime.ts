@@ -16,6 +16,10 @@ import { withV0HomeLifecycle } from "./home-lifecycle";
 import { relocate } from "./relocate";
 import { setHome } from "./set-home";
 import { createSessionOperations, type SessionOperations } from "./session-operations";
+import { createSessionReconciler, type SessionReconciler } from "./session-reconcile";
+import { createStopCommand } from "./session-stop";
+import { createSessionStopStore, projectSessionStatus } from "./session-stop-store";
+import type { SessionOutcome, SessionStatus, StopRequest } from "./session-stop-types";
 import { createRelocateAdapters, type StopRelocateAdapters } from "./adapters";
 import { createV0SyncTransport, createV0ArtifactTransport, guardV0PeerTransport, handleRelocateAgent } from "./remote";
 import { checkMacSourceWriters, exactHome, localHerdrConnection } from "./local";
@@ -23,7 +27,7 @@ import { parseCaptured } from "./journal";
 import { resolveVerifiedArtifact } from "./transfer";
 import { createHomeSupervisor } from "./supervisor";
 import { serveV0Control, summarizeSync, type V0HubControlServices, type V0SyncOutcome } from "./service";
-import type { RelocateAdapterOptions, HomeStore, RunningHome, SetHomePorts, V0ControlServices, V0Result } from "./types";
+import type { RelocateAdapterOptions, HomeStore, RunningHome, SessionId, SetHomePorts, V0ControlServices, V0Result } from "./types";
 
 export interface V0RuntimeOverrides {
   openCore?: (root: string) => LocalCore;
@@ -31,6 +35,7 @@ export interface V0RuntimeOverrides {
   transport?: Transport;
   clock?: Clock;
   gitRun?: GitPorts["run"];
+  liveHub?: boolean;
 }
 export interface V0Runtime {
   options: RelocateAdapterOptions;
@@ -39,6 +44,9 @@ export interface V0Runtime {
   operations: SessionOperations;
   sync: ReturnType<typeof createSync>;
   services: V0HubControlServices;
+  stopSession(request: StopRequest): Promise<SessionOutcome>;
+  sessionStatus(id: SessionId): Promise<SessionStatus>;
+  resumeSessionStops(): void;
   close(): Promise<void>;
 }
 function syncRefusal(code: 1 | 2, reason: string): V0SyncOutcome {
@@ -107,7 +115,11 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
     });
     const transport=createV0ArtifactTransport(createV0SyncTransport(raw),config.machineId);
     const localClock=overrides.clock ?? clock;
-    const sync=createSync({config,globalDb:core.db,transport,journal,clock:localClock,stores});
+    const liveHub = overrides.liveHub && config.role === "hub" && config.machineId === config.hubMachineId;
+    let reconciler: SessionReconciler | undefined;
+    const sync=createSync({config,globalDb:core.db,transport,journal,clock:localClock,stores,
+      ...(liveHub && { onPeerSync(peer) { reconciler?.afterPeerSync(peer.machineId); } }),
+    });
     const git:GitPorts={run:overrides.gitRun ?? runGit,journal,limits:core.config.limits,scratch:join(root,"roam","staging"),worktreeCommand:null};
     const options:RelocateAdapterOptions={root,config,globalDb:core.db,homes,journal,sync,transport:raw,clock:localClock,git,limits:core.config.limits,workspaceImport:{...git,
       async resolveCommonRepository({repoKey}) {
@@ -145,6 +157,15 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
       },
     };
     const operations = createSessionOperations();
+    // The operation binding and transition must be on the home CAS connection.
+    const stopStore = createSessionStopStore(core.db);
+    const stopPorts = { operations, store: stopStore, homes, withSession: adapters.ports.withSession,
+      clock: localClock, readyMs: config.limits.readyMs };
+    reconciler = liveHub ? createSessionReconciler({ ...stopPorts, machines: adapters.stop, localMachineId: config.machineId,
+      mayContact: machine => config.enabled && (machine === config.machineId || config.peers.some(peer => peer.machineId === machine)),
+    }) : undefined;
+    const stop = reconciler && createStopCommand({ ...stopPorts, enabled: () => config.enabled,
+      reconcile: reconciler.reconcile, subscribe: stopStore.subscribe });
     let closing:Promise<void>|undefined;
     const revokedDestination = { ok: false, refusal: forgottenDestinationRefusal } as const;
     return {options,adapters,homes,operations,sync,services:{
@@ -195,7 +216,23 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
         });
       },
     },
-      close() {return closing ??= (async()=>{sync.stop();try {await sync.drain();await adapters.dispose();}finally{closeStores();}})();},
+      async stopSession(request) {
+      if (!stop) throw new Error("Stop requires the live v0 hub");
+      return stop(request);
+    },
+    async sessionStatus(id) {
+      const home = await homes.read(id);
+      return projectSessionStatus(home, home ? stopStore.current(id) : null, id, localClock.now());
+    },
+    resumeSessionStops() { reconciler?.resume(); },
+    close() {return closing ??= (async()=>{
+      sync.stop();
+      try {
+        await Promise.all([stop?.close(), reconciler?.close()]);
+        await sync.drain();
+        await adapters.dispose();
+      } finally { closeStores(); }
+    })();},
     };
   } catch(error) {closeStores();throw error;}
 }
@@ -263,7 +300,7 @@ export async function startV0Hub(root: string, overrides: V0RuntimeOverrides = {
 }
 
 async function startLockedV0Hub(root: string, overrides: V0RuntimeOverrides): Promise<{stop():Promise<void>}> {
-  const runtime=createV0Runtime(root,overrides);
+  const runtime=createV0Runtime(root,{...overrides,liveHub:true});
   try {
     if(runtime.options.config.role!=="hub" || runtime.options.config.machineId!==runtime.options.config.hubMachineId)throw new Error("mac-required");
     const socket=await serveV0Control(root,runtime.services);
@@ -273,7 +310,8 @@ async function startLockedV0Hub(root: string, overrides: V0RuntimeOverrides): Pr
       const next = runtime.options.config.enabled;
       if (enabled !== next) {
         enabled = next;
-        if (next) runtime.sync.start(); else runtime.sync.stop();
+        if (next) { runtime.sync.start(); runtime.resumeSessionStops(); }
+        else runtime.sync.stop();
       }
       cancelConfigCheck = runtime.options.clock.later(1_000, checkConfig);
     };

@@ -3,7 +3,7 @@ import { createHalfBox } from "./input-band/box.js";
 import type { ExtensionAPI, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import type { Message, SessionInfo } from "@spider/intercom/types";
-import { cardDetailIndent, fitResultLines, icon, type IconStyle } from "@spider/ui";
+import { cardDetailIndent, fitResultLines, flushLeft, icon, type IconStyle } from "@spider/ui";
 
 export function localMachineLabel(readHostname: () => string = hostname): string {
   return readHostname().split(".")[0] || "(unknown machine)";
@@ -157,13 +157,13 @@ export function withIntercomCards(pi: ExtensionAPI, iconStyle: () => IconStyle, 
         ...tool,
         renderCall: (args, theme) => {
           const params = args && typeof args === "object" ? args as Record<string, unknown> : {};
-          return callCard(command, params, theme, iconStyle(), supervisor);
+          return flushLeft(callCard(command, params, theme, iconStyle(), supervisor));
         },
         renderResult: (result, options, theme, context) => {
           const args = context.args as Record<string, unknown> | undefined;
           const action = typeof args?.action === "string" ? args.action : undefined;
-          return resultCard(command, result, options.isPartial, context.expanded ?? options.expanded,
-            context.isError, action, theme, iconStyle());
+          return flushLeft(resultCard(command, result, options.isPartial, context.expanded ?? options.expanded,
+            context.isError, action, theme, iconStyle()));
         },
       };
       return target.registerTool(wrapped);

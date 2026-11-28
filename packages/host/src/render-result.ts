@@ -5,7 +5,7 @@
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth, stripTerminalSequences } from "@earendil-works/pi-tui";
 import { icon, type Component, type IconStyle } from "@spider/ui";
-import { isAgentModelRole, cachedLines, formatRunUsage, renderErrorResult, renderExecCall, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, statusIcon, fitResultLines, cardDetailIndent, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
+import { isAgentModelRole, cachedLines, formatRunUsage, renderErrorResult, renderExecCall, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, statusIcon, fitResultLines, cardDetailIndent, flushLeft, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -838,10 +838,10 @@ export function renderSubagentDone(message: any, options: NotificationOptions, t
   const run: RunLike = { name: d.name, agent: d.agent, model: d.model, thinking: d.thinking, status, result: d.output, token_count: d.tokenCount, cost: d.cost, costText: d.costText, compactionCount: d.compactionCount };
   const detail = renderRun(t, { run }, expanded, undefined, false);
   const box = createHalfBox(options.outputPad ?? 1, text => t.bg(background, text));
-  box.addChild(renderSpiderCall({ action: "run" }, theme, {
+  box.addChild(flushLeft(renderSpiderCall({ action: "run" }, theme, {
     cardBackground: background, iconStyle, titleDetails: runTitleDetails(d.name, d.agent),
-  }) as any);
-  box.addChild({
+  })));
+  box.addChild(flushLeft({
     render: (width: number) => {
       const lines = detail.render(width);
       if (d.chain?.outcome === "complete" || d.chain?.outcome === "stopped") {
@@ -852,7 +852,7 @@ export function renderSubagentDone(message: any, options: NotificationOptions, t
       return restoreCardBackground(lines, theme, background);
     },
     invalidate: () => detail.invalidate?.(),
-  });
+  }));
   return cachedLines(width => box.render(width), () => box.invalidate());
 }
 
@@ -876,22 +876,22 @@ export function renderCommandOutput(message: any, options: NotificationOptions, 
   const background = cardBackground(context);
   const box = createHalfBox(options.outputPad ?? 1, text => mkTheme(theme).bg(background, text));
   const titleArgs = args.action ? args : { action: args.command ?? "command" };
-  box.addChild(renderSpiderCall(titleArgs, theme, context) as any);
+  box.addChild(flushLeft(renderSpiderCall(titleArgs, theme, context)));
   if (d == null || (!args.action && typeof result.text === "string")) {
     const content = d == null ? message?.content : result.text;
     const text = typeof content === "string" ? content : Array.isArray(content)
       ? content.filter(block => block?.type === "text" && typeof block.text === "string").map(block => block.text).join("\n") : "";
     const lines = nonblankLines(text).map(line => ` ${line.trim()}`);
-    box.addChild({
+    box.addChild(flushLeft({
       render: (width: number) => {
         const shown = expanded ? lines : lines.slice(0, 5);
         const remaining = lines.length - shown.length;
         return restoreCardBackground(fitResultLines([...shown, ...(remaining ? [` … ${remaining} more line${remaining === 1 ? "" : "s"}`] : [])], width, expanded, 3), theme, background);
       },
       invalidate() {},
-    });
+    }));
   } else {
-    box.addChild(renderSpiderResult(normalized, { expanded }, theme, context) as any);
+    box.addChild(flushLeft(renderSpiderResult(normalized, { expanded }, theme, context)));
   }
   return cachedLines(width => box.render(width), () => box.invalidate());
 }
@@ -904,8 +904,8 @@ export function renderOrganismEntry(entry: unknown, options: NotificationOptions
   const completed = state === "completed";
   const background = failed ? "toolErrorBg" : completed ? "toolSuccessBg" : "toolPendingBg";
   const box = createHalfBox(options.outputPad ?? 1, text => mkTheme(theme).bg(background, text));
-  box.addChild(renderSpiderCall({ action: "organism" }, theme, { cardBackground: background, iconStyle }) as any);
-  box.addChild({
+  box.addChild(flushLeft(renderSpiderCall({ action: "organism" }, theme, { cardBackground: background, iconStyle })));
+  box.addChild(flushLeft({
     render: (width: number) => {
       const t = mkTheme(theme);
       const marker = icon(iconStyle, failed ? "failure" : state === "partial" ? "warning" : completed ? "success" : "open");
@@ -925,7 +925,7 @@ export function renderOrganismEntry(entry: unknown, options: NotificationOptions
       return restoreCardBackground(fitResultLines(lines, width, options?.expanded === true, 3), theme, background);
     },
     invalidate() {},
-  });
+  }));
   return cachedLines(width => box.render(width), () => box.invalidate());
 }
 
@@ -937,12 +937,12 @@ export function renderEscalationMessage(message: any, options: NotificationOptio
   const background = severity === "blocked" ? "toolErrorBg" : "toolPendingBg";
   const th = adaptTheme(mkTheme(theme, iconStyle));
   const box = createHalfBox(options.outputPad ?? 1, text => th.bg(background, text));
-  box.addChild(renderSpiderCall({ action: "escalation" }, theme, {
+  box.addChild(flushLeft(renderSpiderCall({ action: "escalation" }, theme, {
     iconStyle, cardBackground: background, titleDetails: runTitleDetails(d.name, d.agent),
-  }) as any);
-  box.addChild({
+  })));
+  box.addChild(flushLeft({
     render: (w: number) => restoreCardBackground(renderEscalation(escalationDetails, { theme: th, width: w }), theme, background),
     invalidate() {},
-  });
+  }));
   return cachedLines(width => box.render(width), () => box.invalidate());
 }

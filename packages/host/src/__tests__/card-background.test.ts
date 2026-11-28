@@ -123,8 +123,8 @@ describe("card background through the right edge", () => {
       const rows = renderEscalationMessage(message, {}, distinct).render(80);
       checkCard(rows, 80, backgrounds[token]);
       const plain = rows.map(row => stripTerminalSequences(row).trimEnd());
-      expect(plain[1]).toBe("  ◆ escalation · tia-3 · worker");
-      expect(plain[2]).toBe(`  ${marker} · short`);
+      expect(plain[1]).toBe(" ◆ escalation · tia-3 · worker");
+      expect(plain[2]).toBe(` ${marker} · short`);
       expect(plain.join("\n")).not.toContain("beb58fc6");
     }
     const pending = renderCommandOutput({ details: { args: { action: "message", to: "peer" }, result: { details: { delivered: false, queued: true, delivery: "queued" } } } }, {}, distinct).render(60);
@@ -156,7 +156,7 @@ describe("card background through the right edge", () => {
       const rows = component.render(60);
       checkCard(rows, 60);
       const firstText = rows.slice(1, -1).map(stripTerminalSequences).find(line => line.trim())!;
-      expect(firstText.match(/^ */)?.[0].length).toBe(outputPad + 1);
+      expect(firstText.match(/^ */)?.[0].length).toBe(outputPad);
     }
   });
 

@@ -30,7 +30,7 @@ export function projectConversation(
         break;
       }
       case "tool_intent":
-        text = theme.fg("accent", `${icon(theme.iconStyle, "message")} ${event.summary ?? event.tool ?? "tool"}`);
+        text = theme.fg("accent", `${icon(theme.iconStyle, "arrowRight")} ${event.summary ?? event.tool ?? "tool"}`);
         break;
       case "tool_result":
         if (event.summary || time !== undefined) {

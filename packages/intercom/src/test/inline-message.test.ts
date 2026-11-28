@@ -1,82 +1,184 @@
-import test from "../test-support.js";
+import test, { testTmpDir } from "../test-support.js";
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
+
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { InlineMessageComponent } from "../ui/inline-message.js";
 import type { Message, SessionInfo } from "../types.js";
 
-const theme = { fg: (_name: string, text: string) => text, bold: (text: string) => text };
-const from: SessionInfo = { id: "session-12345678", name: "sender", cwd: "/project", model: "model", pid: 1, startedAt: 0, lastActivity: 0 };
-const remote: SessionInfo = { remote: true, id: "remote-session", address: { sessionId: "remote-session", scopeId: null }, machineId: "machine-id", machineAlias: "box-1", homeEpoch: 1, activationEpoch: "a", endpointEpoch: "e", name: "sender", cwd: "/remote", model: "model", startedAt: 0, lastActivity: 0 };
-const message: Message = { id: "message-id", timestamp: 0, replyTo: "parent-message-id", provenance: { type: "extension_outbox", extensionId: "ext-id", extensionName: "Notifier", requestId: "req-id" }, content: { text: "First line of the message\nSecond line has the full body", attachments: [{ type: "snippet", name: "note.txt", content: "details" }] } };
+const theme = {
+  fg(_name: string, text: string): string {
+    return text;
+  },
+};
 
-for (const style of ["text", "nerd"] as const) {
-  for (const [sender, machine] of [[from, "my-mac"], [remote, "box-1"]] as const) {
-    test(`${style} received message shows ${machine} and a one-line collapsed preview`, () => {
-      const component = new InlineMessageComponent(sender, message, theme as any, "intercom reply", undefined, true, style, "my-mac");
-      const lines = component.render(90);
-      const logo = style === "nerd" ? "\u{F0BCA}  " : "◆ ";
-      const gutter = style === "nerd" ? "└  " : "└ ";
-      assert.equal(lines[0], ` ${logo}intercom · from sender · ${machine}`);
-      assert.equal(lines[1], ` ${gutter}First line of the message Second line has the full body`);
-      assert.equal(lines.length, 2);
-      assert.doesNotMatch(lines.join("\n"), /parent-message|message-id|ext-id|req-id|[╭╮╰╯│]/);
-      assert.ok((lines.join("\n").match(/Ctrl\+O/g) ?? []).length <= 1);
-    });
-    test(`${style} received message expands body and metadata on ${machine}`, () => {
-      const original = structuredClone(message);
-      const component = new InlineMessageComponent(sender, message, theme as any, "intercom reply", undefined, false, style, "my-mac");
-      const lines = component.render(90);
-      const indent = style === "nerd" ? "    " : "   ";
-      assert.ok(lines.includes(`${indent}First line of the message`));
-      assert.ok(lines.includes(`${indent}Second line has the full body`));
-      assert.ok(lines.includes(`${indent}To reply: intercom reply`));
-      assert.ok(lines.includes(`${indent}Attachment: note.txt`));
-      assert.ok(lines.includes(`${indent}Via extension: Notifier`));
-      assert.ok(lines.includes(`${indent}In reply to a message`));
-      assert.doesNotMatch(lines.join("\n"), /parent-message|message-id|ext-id|req-id|[╭╮╰╯│]/);
-      assert.deepEqual(message, original);
-    });
-  }
-}
+const from: SessionInfo = {
+  id: "session-12345678",
+  name: "sender",
+  cwd: "/tmp/project",
+  model: "model",
+  pid: 1,
+  startedAt: 0,
+  lastActivity: 0,
+};
 
-test("an unnamed sender falls back to a short session id", () => {
-  const unnamed = { ...from, name: undefined };
-  assert.match(new InlineMessageComponent(unnamed, message, theme as any, undefined, undefined, false, "text", "my-mac").render(90)[0], /from session- · my-mac/);
+const message: Message = {
+  id: "message-1",
+  timestamp: 0,
+  content: {
+    text: "This is a long message that should use the available terminal width instead of a narrow fixed card.",
+  },
+};
+
+test("inline intercom messages render at the available terminal width", () => {
+  const component = new InlineMessageComponent(from, message, theme as any);
+
+  const lines = component.render(120);
+
+  assert.ok(lines.length > 0);
+  for (const line of lines) assert.equal(visibleWidth(line), 120);
 });
 
-test("cards wrap and truncate to the actual terminal width, including ANSI and wide characters", () => {
-  const styled = { fg: (_name: string, text: string) => `\u001b[33m${text}\u001b[0m`, bold: (text: string) => `\u001b[1m${text}\u001b[0m` };
-  const unicodeMessage = { ...message, content: { text: "\u001b[36m色付き本文\u001b[0m with emoji 🧪 and Unicode tail 計画計画計画" } };
-  for (const collapsed of [true, false]) {
-    const component = new InlineMessageComponent({ ...from, name: "送信者" }, unicodeMessage, styled as any, "返信", undefined, collapsed, "nerd");
-    for (const width of [1, 2, 18, 31, 52]) {
-      const lines = component.render(width);
-      assert.ok(lines.length > 0);
-      for (const line of lines) assert.ok(visibleWidth(line) <= width, `${width}: ${stripVTControlCharacters(line)}`);
+test("expanded inline intercom messages show the full body without collapse controls", () => {
+  const component = new InlineMessageComponent(from, message, theme as any, "intercom({ action: \"reply\", message: \"...\" })");
+
+  const rendered = component.render(100).join("\n");
+
+  assert.match(rendered, /available terminal width/);
+  assert.match(rendered, /narrow fixed/);
+  assert.match(rendered, /card/);
+  assert.match(rendered, /To reply: intercom/);
+  assert.doesNotMatch(rendered, /Ctrl\+O/);
+});
+
+test("collapsed inline intercom messages keep preview, reply hint, and expand key visible", () => {
+  const component = new InlineMessageComponent(
+    from,
+    {
+      ...message,
+      content: {
+        text: "Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu. This tail should only appear when expanded because the collapsed preview is intentionally brief.",
+        attachments: [{ type: "snippet", name: "note.txt", content: "important details" }],
+      },
+    },
+    theme as any,
+    "intercom({ action: \"reply\", message: \"...\" })",
+    undefined,
+    true,
+  );
+
+  const lines = component.render(120);
+  const rendered = lines.join("\n");
+
+  assert.equal(lines.length, 4);
+  for (const line of lines) assert.equal(visibleWidth(line), 120);
+  assert.match(rendered, /Alpha beta gamma/);
+  assert.doesNotMatch(rendered, /intentionally brief/);
+  assert.match(rendered, /To reply: intercom/);
+  assert.match(rendered, /Ctrl\+O/);
+  assert.match(rendered, /1 attachment/);
+});
+
+const roleCodes = {
+  accent: 31,
+  toolTitle: 32,
+  text: 33,
+  muted: 34,
+  dim: 35,
+} as const;
+
+function styledTheme(calls: string[] = []) {
+  return {
+    fg(name: keyof typeof roleCodes, text: string): string {
+      calls.push(name);
+      return `\u001b[${roleCodes[name]}m${text}\u001b[0m`;
+    },
+  };
+}
+
+test("inline message colors follow the tool-title, text, muted-border, and dim-metadata hierarchy", () => {
+  const calls: string[] = [];
+  const component = new InlineMessageComponent(
+    from,
+    {
+      ...message,
+      replyTo: "parent-message-id",
+      content: {
+        text: "Body copy",
+        attachments: [{ type: "snippet", name: "note.txt", content: "details" }],
+      },
+    },
+    styledTheme(calls) as any,
+    "intercom reply",
+  );
+
+  const lines = component.render(72);
+  const rendered = lines.join("\n");
+
+  assert.match(lines[0], /^\u001b\[34m╭\u001b\[0m\u001b\[32m From:/);
+  assert.match(rendered, /\u001b\[34m│\u001b\[0m\u001b\[33mBody copy\u001b\[0m/);
+  assert.match(rendered, /\u001b\[35m To reply: intercom reply\u001b\[0m/);
+  assert.match(rendered, /\u001b\[35m Attachment: note\.txt\u001b\[0m/);
+  assert.match(rendered, /\u001b\[35m Reply to parent-m\u001b\[0m/);
+  assert.match(lines.at(-1)!, /^\u001b\[34m╰─+╯\u001b\[0m$/);
+  assert.ok(calls.includes("toolTitle"));
+  assert.ok(calls.includes("text"));
+  assert.ok(calls.includes("muted"));
+  assert.ok(calls.includes("dim"));
+  assert.ok(!calls.includes("accent"));
+});
+
+test("collapsed inline messages preserve the same hierarchy without accent", () => {
+  const calls: string[] = [];
+  const component = new InlineMessageComponent(from, message, styledTheme(calls) as any, "intercom reply", undefined, true);
+
+  const rendered = component.render(72).join("\n");
+
+  assert.match(rendered, /\u001b\[32m From:/);
+  assert.match(rendered, /\u001b\[33mThis is a long message/);
+  assert.match(rendered, /\u001b\[35m To reply:/);
+  assert.ok(!calls.includes("accent"));
+});
+
+test("semantic styling remains ANSI- and Unicode-width safe", () => {
+  const unicodeFrom = { ...from, name: "送信者🛰️", cwd: "/tmp/計画" };
+  const unicodeMessage = {
+    ...message,
+    content: { text: "\u001b[36m色付き本文\u001b[0m with emoji 🧪 and a long Unicode tail 計画計画計画" },
+  };
+  const component = new InlineMessageComponent(unicodeFrom, unicodeMessage, styledTheme() as any, "返信");
+
+  for (const width of [18, 31, 52]) {
+    const lines = component.render(width);
+    assert.ok(lines.length > 0);
+    for (const line of lines) {
+      assert.equal(visibleWidth(line), width, `${width}: ${stripVTControlCharacters(line)}`);
     }
   }
 });
 
-test("title and metadata use the active theme and only the command is bold", () => {
-  const calls: string[] = [];
-  const styled = { fg: (name: string, text: string) => { calls.push(name); return `<${name}>${text}</${name}>`; }, bold: (text: string) => `<bold>${text}</bold>` };
-  const lines = new InlineMessageComponent(from, message, styled as any, "intercom reply").render(200).join("\n");
-  assert.match(lines, /<bold>intercom<\/bold>/);
-  assert.doesNotMatch(lines, /This computer/);
-  assert.match(lines, /<dim>To reply: intercom reply<\/dim>/);
-  assert.ok(calls.includes("text"));
-});
+test("inline messages pick up mutable theme proxy changes on rerender", () => {
+  const palette: Record<string, number> = { ...roleCodes };
+  const mutableTheme = new Proxy(
+    {},
+    {
+      get(_target, property) {
+        if (property !== "fg") return undefined;
+        return (name: string, text: string) => `\u001b[${palette[name]}m${text}\u001b[0m`;
+      },
+    },
+  );
+  const component = new InlineMessageComponent(from, message, mutableTheme as any);
 
-test("theme changes apply when the component rerenders", () => {
-  const palette: Record<string, number> = { accent: 31, toolTitle: 32, text: 33, muted: 34, dim: 35 };
-  const mutable = { fg: (name: string, text: string) => `\u001b[${palette[name]}m${text}\u001b[0m`, bold: (text: string) => text };
-  const component = new InlineMessageComponent(from, message, mutable as any);
   const before = component.render(72).join("\n");
-  palette.toolTitle = 96; palette.text = 97; palette.muted = 90;
+  palette.toolTitle = 96;
+  palette.text = 97;
+  palette.muted = 90;
   const after = component.render(72).join("\n");
-  assert.match(before, /\u001b\[32mintercom/);
-  assert.match(after, /\u001b\[96mintercom/);
-  assert.match(after, /\u001b\[97mFirst line/);
+
+  assert.match(before, /\u001b\[32m From:/);
+  assert.match(after, /\u001b\[96m From:/);
+  assert.match(after, /\u001b\[97mThis is a long message/);
+  assert.match(after, /\u001b\[90m╭/);
   assert.notEqual(before, after);
 });

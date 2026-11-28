@@ -6,6 +6,7 @@ import { readLocalIdentity } from "@spider/roam/runtime";
 import { createV0Intercom, hasV0IntercomConfig } from "@spider/roam/relocate/intercom";
 import { fileURLToPath } from "node:url";
 import { registerIntercomOnce, intercomConflict, type IntercomBrokerPort } from "@spider/intercom";
+import { localMachineLabel, withIntercomCards } from "./intercom-cards.js";
 import { stripVTControlCharacters } from "node:util";
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
 import { bootUsageWorker } from "./usage/worker-entry.js";
@@ -360,7 +361,7 @@ function buildOrganismDeps(ctx: ActionCtx): OrganismActionDeps {
 export const UPSTREAM_REPOS_FOR_TESTS: unique symbol = Symbol("upstream-repos-for-tests");
 
 /** control routing lives in-host (doctor/config work in Phase 0; memory in Phase 1). */
-/** Render a control upstream-watch report as a compact 🕸 panel string. */
+/** Render a control upstream-watch report as a compact panel string. */
 function renderUpstreamReport(report: {
   packages: Array<{
     package: string;
@@ -962,7 +963,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
       },
     } : undefined;
     if (!v0Configured) registerRoamIntercom(activity.pi, createHostIntercomPorts(admission));
-    intercom = registerIntercomOnce(activity.pi, ports.intercomBroker, () => iconStyle(), v0);
+    intercom = registerIntercomOnce(withIntercomCards(activity.pi, () => iconStyle(), localMachineLabel()), ports.intercomBroker, v0);
   } catch {
     hostPi.on("session_start", (_event, ctx) => {
       const message = "Intercom is unavailable in this session. Spider's other features still work.";

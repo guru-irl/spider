@@ -20,9 +20,8 @@ export function formatDuration(ms: number): string {
 /** Short model label (drop provider prefix + redundant 'claude-'). */
 export function shortModel(m?: string | null): string { if (!m) return "—"; return (m.split("/").pop() ?? m).replace(/^claude-/, ""); }
 
-/** Shared one-line agent summary used by BOTH the footer and the grid list:
- *  `<lead> 🕸  name · type · model · turns · dur · activity`. `lead` is the caller's status
- *  marker (animated spinner while running, terminal glyph otherwise), coloured by status. */
+/** Shared one-line agent summary: `<status> <agent glyph> name · role · model · turns · duration · activity`.
+ *  The caller's status marker is a spinner while running and a terminal glyph otherwise. */
 export function formatAgentLine(t: ThemeAdapter, a: AgentSnapshot, width: number, now: number, lead: string): string {
   const ital = (s: string) => (t.italic ? t.italic(s) : s);
   const elapsedMs = a.startedAt === undefined ? 0 : (a.endedAt ?? now) - a.startedAt;

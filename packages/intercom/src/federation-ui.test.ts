@@ -8,7 +8,7 @@ const local: LocalSessionInfo = { id: "local", name: "local", cwd: "/workspace",
 const theme = { fg: (_: string, value: string) => value, bold: (value: string) => value };
 it("incoming headers and peer lists show the remote machine", () => {
   const incoming = new InlineMessageComponent(remote, { id: "mail", timestamp: 1, content: { text: "synthetic" } }, theme as any).render(120).join("\n");
-  expect(incoming).toContain("from helper · box-1.invalid");
+  expect(incoming).toContain("box-1.invalid/helper");
   const list = new SessionListOverlay(theme as any, { getKeys: () => [] } as any, local, [remote], () => undefined).render(120).join("\n");
   expect(list).toContain("box-1.invalid/helper");
   expect(list).not.toContain("same cwd");

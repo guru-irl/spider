@@ -65,7 +65,7 @@ describe("escalation notifier", () => {
     expect(sendMessage).toHaveBeenCalledTimes(1);
     const [msg] = sendMessage.mock.calls[0];
     expect(msg.customType).toBe("spider.escalation");
-    expect(msg.content).toBe(`🚨 *escalation* "tia-3" (run ${runId}) · worker · *warning*\n\nCheck the manifest before another build.`);
+    expect(msg.content).toBe(`Escalation "tia-3" (run ${runId}) · *worker* · warning\n\nCheck the manifest before another build.`);
   });
 
   // Mutation: notify on every type → must fail

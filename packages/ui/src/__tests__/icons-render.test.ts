@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { icon, type IconRole } from "../icons.js";
+import { Panel, SectionRule, StatusLine } from "../index.js";
 import { formatAgentLine } from "../agents/footer.js";
 import { card, fitResultLines, statusIcon } from "../renderers/types.js";
 import { renderKillResult } from "../renderers/kill.js";
@@ -47,7 +48,7 @@ describe("icon styles in rendered rows", () => {
       ["agent", "◇", "\u{F167A} "], ["spider", "◆", "\u{F0BCA} "], ["warning", "▲", "\u{F002A} "], ["failure", "×", "\u{F0156} "], ["success", "✓", "\u{F012C} "], ["question", "?", "\u{F02D6} "],
       ["gutter", "└", "└ "], ["task", "→", "\u{F060D} "], ["result", "↑", "\u{F005C} "],
       ["message", "→", "\u{F01F0} "], ["reply", "←", "\u{F0F20} "], ["broadcast", "»", "\u{F0B23} "],
-      ["handoff", "→", "\u{F19B0} "], ["pin", "◇", "\u{F0931} "], ["modelDefault", "←", "\u{F004D} "],
+      ["handoff", "→", "\u{F19B0} "], ["pin", "†", "\u{F0931} "], ["modelDefault", "←", "\u{F004D} "],
       ["copy", "□", "\u{F018F} "], ["todoDone", "✓", "\u{F05E1} "], ["todoFailed", "×", "\u{F015A} "], ["todoPending", "○", "\u{F0766} "],
     ];
     for (const [role, text, nerd] of roles) {
@@ -90,6 +91,15 @@ describe("icon styles in rendered rows", () => {
     expect(visibleWidth(nerd)).toBe(visibleWidth(text));
   });
 
+  it.each(["text", "nerd"] as const)("keeps section rules and legacy component rows within width in %s style", style => {
+    for (const title of ["Agents", "色"]) {
+      const line = SectionRule(title, style).render(40)[0];
+      expect(visibleWidth(line)).toBe(40);
+    }
+    expect(visibleWidth(Panel({ body: ["色".repeat(12)], iconStyle: style }).render(10)[0])).toBeLessThanOrEqual(10);
+    expect(visibleWidth(StatusLine({ left: "色", right: "値" }).render(10)[0])).toBeLessThanOrEqual(10);
+  });
+
   it("heads spider tool calls with the spider icon, keeping the robot for subagent rows", () => {
     const call = { kind: "exec" as const, commands: ["echo"] };
     const text = renderExecCall(call, { theme: theme("text"), width: 80 });
@@ -112,6 +122,24 @@ describe("icon styles in rendered rows", () => {
     expect(visibleWidth(nerd[1])).toBe(visibleWidth(text[1]) + 1);
   });
 
+  it("keeps the question mark attached to the ask marker", () => {
+    const details = { verb: "ask" as const, to: "worker", body: "", delivered: true };
+    expect(renderMessageResult(details, { theme: theme("text"), width: 100 }).join("\n")).toContain("→? worker");
+    expect(renderMessageResult(details, { theme: theme("nerd"), width: 100 }).join("\n")).toContain("\u{F01F0}? worker");
+  });
+
+  it("uses a plain arrow for tool intents in agent detail", () => {
+    for (const style of ["text", "nerd"] as const) {
+      const detail = new AgentDetail("one", theme(style), { viewport: () => ({ safeHeight: 15 }), requestRender: () => {} });
+      try {
+        detail.update({ kind: "loaded", run: agent, events: [{ id: 1, runId: "one", sessionId: "s", ts: 1, type: "tool_intent", summary: "read files" }] });
+        const output = detail.render(100).join("\n");
+        expect(output).toContain("→ read files");
+        expect(output).not.toContain("\u{F01F0}");
+      } finally { detail.dispose(); }
+    }
+  });
+
   it("renders reply and broadcast markers with the same widths", () => {
     for (const [verb, textIcon, nerdIcon] of [["reply", "←", "\u{F0F20}"], ["broadcast", "»", "\u{F0B23}"]] as const) {
       const details = { verb, to: "worker", body: "", delivered: true };
@@ -128,7 +156,7 @@ describe("icon styles in rendered rows", () => {
       focused: false, pinned: true, now: 0, spinner: new Spinner() };
     const text = renderGridCell(theme("text"), opts);
     const nerd = renderGridCell(theme("nerd"), opts);
-    expect(text[0]).toContain("× ◇ scribe ◇");
+    expect(text[0]).toContain("× ◇ scribe †");
     expect(nerd[0]).toContain("\u{F0156}  \u{F167A}  scribe \u{F0931} ");
     expect(text[2]).toContain("→ read files");
     expect(nerd[2]).toContain("\u{F060D}  read files");
@@ -253,9 +281,19 @@ describe("icon styles in rendered rows", () => {
     expect(lines).toEqual([` ${icon("nerd", "success")} first`, "    second", "    third"]);
   });
 
+  it.each(["text", "nerd"] as const)("keeps wide wrapped graphemes inside a one-cell %s viewport", style => {
+    const lines = fitResultLines([` ${icon(style, "success")} 計画`], 1, true);
+    expect(lines.every(line => visibleWidth(line) <= 1)).toBe(true);
+  });
+
   it("preserves hanging indents for the shared output gutter", () => {
     const text = fitResultLines(["  └ first second third"], 12, true);
     expect(text).toEqual(["  └ first", "    second", "    third"]);
+  });
+
+  it("preserves the Nerd gutter's hanging indent when wrapping", () => {
+    const lines = fitResultLines(["  └  first second third"], 12, true);
+    expect(lines).toEqual(["  └  first", "     second", "     third"]);
   });
 
   it("uses matching gutters in kill, index, and insights results", () => {

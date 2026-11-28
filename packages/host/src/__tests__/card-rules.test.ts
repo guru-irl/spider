@@ -21,7 +21,8 @@ function bodyViolations(body: string[], fixture: Pick<Fixture, "name" | "verb" |
       if (!callGap && !itemGap && fixture.verb !== "escalation") failures.push(["blank inside item", `${i}: ${body[i + 1] ?? "<end>"}`]);
       continue;
     }
-    if (!/^ {1}(?:\S| {2}\S| {3}\S)/u.test(line)) failures.push(["columns", line]);
+    const columns = style === "nerd" ? /^ {1}(?:\S| {2}\S| {3}\S)/u : /^ {1}(?:\S| {2}\S)/u;
+    if (!columns.test(line)) failures.push(["columns", line]);
     const marker = line.trimStart();
     // Nerd task and gutter share a glyph. Only the fixture's actual task text is exempt.
     const taskText = marker.startsWith(icon(style, "task")) ? marker.slice(icon(style, "task").length).trimStart().replace(/…$/u, "").trimEnd() : "";
@@ -47,6 +48,8 @@ test("layout checks reject misplaced glyphs and invalid blank rows", () => {
       expect(bodyViolations([`   ${glyph} misplaced`], single, style)).toContainEqual(["glyph column", `   ${glyph} misplaced`]);
     }
   }
+  expect(bodyViolations(["    continuation"], single, "text")).toContainEqual(["columns", "    continuation"]);
+  expect(bodyViolations(["    continuation"], single, "nerd")).toEqual([]);
   expect(bodyViolations([" item", "", " detail"], single, "text").map(([rule]) => rule)).toContain("blank inside item");
   expect(bodyViolations([" item", "", "", " next"], single, "text").map(([rule]) => rule)).toContain("doubled spacer");
   expect(bodyViolations([" item", ""], single, "text").map(([rule]) => rule)).toContain("doubled spacer");

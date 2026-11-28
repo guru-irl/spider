@@ -107,7 +107,7 @@ function heading(input: FooterInput, width: number, theme?: Theme): string {
   const cwd = label(input.cwd);
   let branch = input.branch ? ` (${label(input.branch)})` : "";
   const name = input.sessionName ? label(input.sessionName) : "";
-  const namePart = () => name ? ` • ${name}` : "";
+  const namePart = () => name ? ` ${icon("text", "bullet")} ${name}` : "";
   let cwdBudget = budget - visibleWidth(branch + namePart());
   // A fitting short cwd is useful; an ellipsis without a real character is not.
   const cwdWidth = visibleWidth(cwd);

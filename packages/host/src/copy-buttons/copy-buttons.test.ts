@@ -375,6 +375,7 @@ describe("copy buttons", () => {
     const after = lines[row];
     expect(visibleWidth(after)).toBe(visibleWidth(before));
     expect(visibleWidth(after.slice(0, after.indexOf("\u{F018F} text")))).toBe(visibleWidth(before.slice(0, before.indexOf("□ text"))));
+    expect(visibleWidth(after.slice(0, after.indexOf("\u{F018F} md")))).toBe(visibleWidth(before.slice(0, before.indexOf("□ md"))));
     const x = visibleWidth(after.slice(0, after.indexOf("\u{F018F} md")));
     const event: TuiMouseEvent = { type: "click", button: "left", x, y: row, screenX: x, screenY: row, width: 90, height: lines.length, shift: false, alt: false, ctrl: false };
     expect((md as Component).handleMouse?.(event)).toEqual({ handled: true });

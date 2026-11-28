@@ -1,5 +1,4 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import type { IconStyle } from '@spider/ui';
 import localIntercom, { type IntercomBrokerPort, type IntercomRegistration } from './local.js';
 import type { V0ToolOptions } from './roam-v0.js';
 import { INTERCOM_EXTENSION_REGISTRY_READY_EVENT } from './extension-api.js';
@@ -12,7 +11,7 @@ export function intercomConflict(pi: Pick<ExtensionAPI, 'events'>): 'intercom-ex
   return instances.get(pi.events)?.conflict ? 'intercom-extension-conflict' : undefined;
 }
 
-export function registerIntercomOnce(pi: ExtensionAPI, brokerPort?: IntercomBrokerPort, iconStyle?: () => IconStyle, v0?: V0ToolOptions): IntercomRegistration {
+export function registerIntercomOnce(pi: ExtensionAPI, brokerPort?: IntercomBrokerPort, v0?: V0ToolOptions): IntercomRegistration {
   const existing = instances.get(pi.events);
   if (existing) return existing.registration;
   let local: IntercomRegistration | undefined;
@@ -55,7 +54,7 @@ export function registerIntercomOnce(pi: ExtensionAPI, brokerPort?: IntercomBrok
         } };
       return Reflect.get(target, key, receiver);
     } });
-    local = localIntercom(proxy, brokerPort, iconStyle, v0);
+    local = localIntercom(proxy, brokerPort, v0);
     for (const start of starts) await start(event, ctx);
   });
   return registration;

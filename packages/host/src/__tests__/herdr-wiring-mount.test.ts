@@ -35,7 +35,8 @@ it.each(['argument', 'effective', 'default'] as const)('prints a shell-safe setu
     const text = (messages[0] as { content: string }).content;
     expect(messages[0]).toMatchObject({ display: true, details: { args: { command: 'herdr-setup' }, result: { text } } });
     const card = renderCommandOutput(messages[0], { expanded: true }, {}).render(120).join('\n');
-    expect(card).toContain('spider · herdr-setup');
+    expect(card).toContain('◆ herdr-setup');
+    expect(card).not.toContain('spider · herdr-setup');
     expect(card).toContain('From a plain shell:');
     expect(card).toContain('This command only prints instructions; it never launches or writes.');
     expect(card).not.toContain('{}');

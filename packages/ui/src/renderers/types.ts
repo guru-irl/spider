@@ -29,12 +29,10 @@ function sgrCodes(marker: string): string {
   return [...active.values()].map((code) => `\x1b[${code}m`).join("");
 }
 
-// Both styles participate in wrapping; keep this list tied to the icon table. An icon can
-// be several code points (an emoji and its U+FE0F selector), so icons are matched as
-// alternatives, not as members of a character class. The bare ✗ and ⚠ stay recognised
-// for text written before those icons became emoji.
+// Both icon styles participate in wrapping. Match glyphs as alternatives, and keep the
+// bare ✗ and ⚠ for legacy output.
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\\-]/g, "\\$&");
-const markerGlyphs = (["gutter", "task", "result", "failure", "warning", "success", "question", "running", "open", "paused", "active", "todoDone", "todoFailed", "todoPending", "content", "todo", "bullet", "message"] as const)
+const markerGlyphs = (["spider", "gutter", "task", "result", "failure", "warning", "success", "question", "running", "open", "paused", "active", "todoDone", "todoFailed", "todoPending", "content", "todo", "bullet", "message"] as const)
   .flatMap(role => [icon("text", role), icon("nerd", role).trimEnd()]).map(escapeRegExp).join("|");
 const messageChars = [icon("text", "message"), icon("nerd", "message")].join("").replace(/[\\\]\-^]/g, "\\$&");
 const resultPrefix = new RegExp(`^([ \\t]*(?:(?:\\d+\\.[ \\t]+)?(?:[│✓✗⚠●○■◆▪▣•·\\-*]|${markerGlyphs})(?:[ \\t]*[→◆▪▣${messageChars}])?[ \\t]+|\\[[^\\]\\n]+\\][ \\t]+|\\d+\\.[ \\t]+|[ \\t]+))`, "u");
@@ -54,7 +52,7 @@ export function fitResultLines(lines: readonly string[], width: number, expanded
     }
     const prefixWidth = prefix ? visibleWidth(prefix) : 0;
     const indentWidth = hangingIndent === undefined ? prefixWidth
-      : prefix?.trimStart().startsWith("└") ? Math.max(hangingIndent, prefixWidth) : hangingIndent;
+      : prefix?.trimStart().startsWith(icon("text", "gutter")) ? Math.max(hangingIndent, prefixWidth) : hangingIndent;
     const reserved = Math.max(prefix ? visibleWidth(prefix) : 0, indentWidth);
     if (prefix && reserved < w) {
       let end = 0;
@@ -75,7 +73,7 @@ export function fitResultLines(lines: readonly string[], width: number, expanded
         .map((row, i) => (i === 0 ? marker + row.slice(state.length) : indent + row));
     }
     return wrapTextWithAnsi(line, w);
-  });
+  }).map(line => truncateToWidth(line, w, ""));
 }
 /** Keep full expanded content; retain the caller's collapsed truncation suffix. */
 export function trimResultLine(line: string, width: number, expanded: boolean, suffix = ""): string {
@@ -203,9 +201,8 @@ export function kv(theme: ThemeAdapter, label: string, value: string, width: num
   return truncateToWidth(`${theme.fg("muted", label)} ${theme.fg("text", value)}`, width, "");
 }
 
-/** A 🕸-ruled titled card. OVERLAY-ONLY: use this for standalone surfaces mounted via
- *  ctx.ui.custom (no outer tool shell). NEVER in a tool-result renderer — pi's tool shell
- *  already shows `🕸 spider · <action>`, so a second 🕸 header double-heads the output.
+/** A logo-ruled titled card for standalone overlays mounted via ctx.ui.custom.
+ *  Do not use in tool results: the call line already supplies a title.
  *  See docs/output-ui-guidelines.md. Every returned line is ≤ width visible cells. */
 export function card(theme: ThemeAdapter, title: string, lines: string[], width: number): string[] {
   const head = `${theme.fg("accent", icon(theme.iconStyle, "spider"))} ${theme.bold(theme.fg("accent", title))} `;
@@ -216,9 +213,8 @@ export function card(theme: ThemeAdapter, title: string, lines: string[], width:
   return out;
 }
 
-/** A glyph-free section rule for grouping lines INSIDE a tool-result body: `label ─────`
- *  (muted label + dim rule, no 🕸). This is the tool-result counterpart to card() — it adds
- *  structure without repeating the tool shell's header. See docs/output-ui-guidelines.md. */
+/** A glyph-free section rule for grouping lines inside a tool-result body: `label ─────`.
+ *  It adds structure without repeating the tool title. See docs/output-ui-guidelines.md. */
 export function sectionRule(theme: ThemeAdapter, label: string, width: number): string {
   const head = `${theme.fg("muted", label)} `;
   const fill = Math.max(0, width - visibleWidth(head));

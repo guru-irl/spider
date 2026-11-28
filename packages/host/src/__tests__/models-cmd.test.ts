@@ -182,7 +182,7 @@ it("control models card retains max support through registry enumeration and cat
   const result = renderSpiderResult({ details: { catalog: entries, defaults: { worker: "acme/reasoner:max" } } }, { expanded: false }, theme, { args: { action: "control", command: "models" } });
   const text = result.render(200).join("\n");
   expect(text).toMatch(/thinking:.*\bmax\b/);
-  expect(text).toMatch(/⟵.*worker/);
+  expect(text).toContain("← worker");
 });
 
 

@@ -1,12 +1,11 @@
 // packages/host/src/render-result.ts
 // pi `ToolDefinition.renderResult` for the spider tool. With renderShell:"default"
-// pi paints the standard green/red tool shell and uses the tool `label` ("🕸 spider")
-// as the title, so renderResult renders only the BODY (no header of its own — that
-// would double the "spider"). `options.expanded` reflects the in-chat Ctrl+O toggle;
+// pi paints the standard green/red tool shell and renderCall supplies its title, so
+// renderResult renders only the BODY. `options.expanded` reflects the in-chat Ctrl+O toggle;
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth, stripTerminalSequences, Box } from "@earendil-works/pi-tui";
 import { icon, type Component, type IconStyle } from "@spider/ui";
-import { MODEL_ROLES, cachedLines, formatRunUsage, renderErrorResult, renderExecCall, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, statusIcon, fitResultLines, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
+import { isAgentModelRole, cachedLines, formatRunUsage, renderErrorResult, renderExecCall, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, statusIcon, fitResultLines, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -194,9 +193,8 @@ function renderSearch(t: T, rows: any, expanded: boolean): Component {
   };
 }
 
-/** Health-check output for `control doctor`. The call line already shows
- *  `🕸 spider · control · doctor`, so this renders only a status line + the checks
- *  (markdown heading/blank lines dropped, `- ` bullets stripped) with a `⎿` gutter. */
+/** Health-check output for `control doctor`. The call line supplies the title; this
+ *  renders the status and checks with a gutter, without markdown headings or bullets. */
 function renderDoctor(t: T, details: any, expanded: boolean): Component {
   // C-LOW: absence of evidence is neither a passing check nor a failure. Preserve an
   // explicit boolean and render a third, neutral state when malformed/empty input has
@@ -229,8 +227,8 @@ function renderDoctor(t: T, details: any, expanded: boolean): Component {
   };
 }
 
-/** `control insights` — render the organism learning graph (nodes/edges/stats) as a 🕸
- *  insights card. Never throws on a missing/partial graph. */
+/** `control insights` — render the organism learning graph as a result body.
+ *  Never throws on a missing or partial graph. */
 function renderControlInsights(t: T, details: any, expanded: boolean): Component {
   const th = adaptTheme(t);
   const g: InsightGraphView = details && Array.isArray(details.nodes)
@@ -253,7 +251,7 @@ function renderControlModels(t: T, details: any, expanded: boolean): Component {
   const th = adaptTheme(t);
   if (details && details.catalog === undefined && (details.ok !== undefined || details.error !== undefined)) {
     const role = String(details.role ?? "");
-    const roleLabel = MODEL_ROLES.includes(role) ? t.italic(role) : role;
+    const roleLabel = isAgentModelRole(role) ? t.italic(role) : role;
     const line = details.ok
       ? statusIcon(th, "ok") + " " + th.fg("text", details.cleared === false
         ? `no local override for ${roleLabel}`
@@ -791,10 +789,8 @@ export function renderSpiderResult(result: any, options: any, theme: any, contex
   }, contentKey);
 }
 
-/** In-progress CALL title. renderCall REPLACES the title (pi does NOT prepend the tool
- *  label), so this renders the FULL header using the SAME 'toolTitle' colour pi uses for its
- *  own tool titles (glyph + all text). UI STANDARD: the action VERB (run/parallel/remember/
- *  recall/search/exec/…) is always italicised; separators, counts, and sub-commands are not. */
+/** CALL title. renderCall replaces the tool label, so it renders the full header.
+ *  The action is bold; an agent role is italic. Names, separators, and subcommands are plain. */
 export function renderSpiderCall(args: any, theme: any, context: any): Component {
   return cachedLines((w: number) => {
     const t = mkTheme(theme, context?.iconStyle);

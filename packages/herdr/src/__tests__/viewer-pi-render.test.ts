@@ -187,8 +187,8 @@ test.each(['saved', 'live'])('the %s viewer falls back when raw content no longe
 test('a live message and its saved copy count usage once', () => {
   const view = make(); const entry = assistant([{ type: 'text', text: 'once' }], 22);
   view.live({ type: 'message_end', message: entry.message }); view.addEntries([entry]);
-  expect(plain(view.footerLines(100))).toContain('↑1.2k');
-  expect(plain(view.footerLines(100))).not.toContain('↑2.4k');
+  expect(plain(view.footerLines(100))).toContain('R40k W0');
+  expect(plain(view.footerLines(100))).not.toContain('R80k');
 });
 
 test('renamed and reset saved sessions replace the visible conversation', () => {
@@ -213,15 +213,16 @@ test('a saved entry that lands before its live events is not rendered twice', ()
   expect(plain(view.render(100)).split('SAVED_FIRST')).toHaveLength(2);
 });
 
-test('the footer shows run, owner, model, thinking, context, tokens and status like pi', () => {
+test('the footer shows run, owner, model, thinking, context, cache and status', () => {
   const view = make({ contextWindow: () => 200000 });
   view.addEntries([header, { type: 'thinking_level_change', id: 'tl', parentId: null, timestamp: 't', thinkingLevel: 'high' },
     user('task', 1), assistant([{ type: 'text', text: 'ok' }], 2)]);
   view.setState({ status: 'running', steerable: true, reachable: true, readOnlyReason: null });
   const footer = plain(view.footerLines(100));
-  expect(footer).toContain('fix flaky test'); expect(footer).toContain('planner'); expect(footer).toContain('running');
+  expect(footer).toContain('fix flaky test'); expect(footer).toContain('planner'); expect(footer).toContain('◐');
   expect(footer).toContain('model-one'); expect(footer).toContain('high');
-  expect(footer).toContain('↑1.2k'); expect(footer).toContain('↓340'); expect(footer).toContain('$0.012');
+  expect(footer).toContain('CH97.1%'); expect(footer).toContain('R40k W0'); expect(footer).toContain('? AIC');
+  expect(footer).not.toMatch(/↑|↓|\$|running/);
   expect(footer).toContain('20.8%/200k');
   view.setState({ status: 'done', steerable: false, reachable: true, readOnlyReason: 'This run is done.' });
   expect(plain(view.footerLines(100))).toContain('done'); expect(plain(view.footerLines(100))).toContain('read-only');
@@ -230,11 +231,11 @@ test('the footer shows run, owner, model, thinking, context, tokens and status l
 test('the footer takes thinking from the response and includes non-assistant usage without changing context use', () => {
   const view = make();
   view.addEntries([assistant([{ type: 'text', text: 'answer' }], 24, { thinkingLevel: 'xhigh' }),
-    { type: 'usage', id: 'usage', parentId: 'a24', timestamp: 't', kind: 'cache_warm', usage: { input: 800, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } },
-    { ...toolResult('unknown', 'other', 'result', 25), message: { ...toolResult('unknown', 'other', 'result', 25).message, usage: { input: 500, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } } },
+    { type: 'usage', id: 'usage', parentId: 'a24', timestamp: 't', kind: 'cache_warm', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 800, cost: { total: 0 } } },
+    { ...toolResult('unknown', 'other', 'result', 25), message: { ...toolResult('unknown', 'other', 'result', 25).message, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 500, cost: { total: 0 } } } },
   ]);
   const footer = plain(view.footerLines(100));
-  expect(footer).toContain('xhigh'); expect(footer).toContain('↑2.5k'); expect(footer).toContain('42k context');
+  expect(footer).toContain('xhigh'); expect(footer).toContain('R40k W1.3k'); expect(footer).toContain('42k context');
 });
 
 test('compaction invalidates the old context reading until another model response arrives', () => {
@@ -254,7 +255,7 @@ test('tail usage is labelled and terminal state remains visible beside long name
 
 test('the footer uses owner model metadata without starting a model runtime', () => {
   const view = make(); view.setRunInfo({ protocol: 2, model: 'example/model-one', thinking: 'high', contextWindow: 200000 });
-  expect(plain(view.footerLines(100))).toContain('model-one • high');
+  expect(plain(view.footerLines(100))).toContain('model-one · high');
   view.addEntries([assistant([{ type: 'text', text: 'answer' }], 28)]);
   expect(plain(view.footerLines(100))).toContain('20.8%/200k');
 });
@@ -356,11 +357,11 @@ test('omitting older components does not omit their recorded usage or model sett
   const view = make({ maxItems: 20 });
   view.addEntries([header,
     { type: 'model_change', provider: 'example', modelId: 'model-one' }, { type: 'thinking_level_change', thinkingLevel: 'high' },
-    { type: 'usage', usage: { input: 1000, output: 0 } },
-    { ...toolResult('older', 'other', 'older result', 60), message: { ...toolResult('older', 'other', 'older result', 60).message, usage: { input: 500, output: 0 } } },
+    { type: 'usage', usage: { input: 0, output: 0, cacheRead: 1000, cacheWrite: 0 } },
+    { ...toolResult('older', 'other', 'older result', 60), message: { ...toolResult('older', 'other', 'older result', 60).message, usage: { input: 0, output: 0, cacheRead: 500, cacheWrite: 0 } } },
     ...Array.from({ length: 60 }, (_, n) => user(`newer question ${n}`, 100 + n))]);
   const footer = plain(view.footerLines(100));
-  expect(footer).toContain('↑1.5k'); expect(footer).toContain('model-one • high'); expect(footer).not.toContain('tail totals');
+  expect(footer).toContain('R1.5k W0'); expect(footer).toContain('model-one · high'); expect(footer).not.toContain('tail totals');
 });
 
 test('hundreds of messages render quickly and keep a bounded number of components', () => {

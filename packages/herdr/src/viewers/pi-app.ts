@@ -6,13 +6,16 @@
 import {
   AssistantMessageComponent, BashExecutionComponent, BranchSummaryMessageComponent, CompactionSummaryMessageComponent, CustomEditor, CustomMessageComponent,
   SettingsManager, SkillInvocationMessageComponent, ToolExecutionComponent, UserMessageComponent,
-  getMarkdownTheme, getSelectListTheme, initTheme, parseSkillBlock, sessionEntryToContextMessages, type Theme,
+  calculateContextTokens, estimateTokens, getMarkdownTheme, getSelectListTheme, initTheme, parseSkillBlock, sessionEntryToContextMessages, type ReadonlyFooterDataProvider, type Theme,
 } from '@earendil-works/pi-coding-agent';
 import { Box, Container, Editor, Spacer, Text, TruncatedText, getKeybindings, truncateToWidth, visibleWidth, type Component, type TUI } from '@earendil-works/pi-tui';
 import { bindToolCardShell, isHalfEdge, joinToolCards } from '@spider/ui';
 import { renderSpiderCall, renderSpiderResult } from '../../../host/src/render-result.js';
 import { restoreExecDetails } from '../../../host/src/exec-session-storage.js';
 import { createBandEditor } from '../../../host/src/input-band/editor.js';
+import { FooterAccumulator } from '../../../host/src/usage/footer-state.js';
+import { createUsageFooter, type FooterInput } from '../../../host/src/usage/footer.js';
+import { calibrationFallback } from '../../../host/src/usage/calibration.js';
 import type { SteerReply, RunViewInfo } from '../contracts.js';
 import type { ViewerState } from './program.js';
 import { TranscriptSanitizer } from './transcript.js';
@@ -83,12 +86,6 @@ export interface PiRunView {
   itemCount(): number;
   dispose(): void;
 }
-export function formatTokens(count: number): string {
-  if (count < 1000) return String(count);
-  if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-  if (count < 1000000) return `${Math.round(count / 1000)}k`;
-  return count < 10000000 ? `${(count / 1000000).toFixed(1)}M` : `${Math.round(count / 1000000)}M`;
-}
 const spiderRenderers = {
   renderCall: renderSpiderCall,
   renderResult: (result: unknown, options: unknown, theme: unknown, context: unknown) => renderSpiderResult(result, options, theme, context),
@@ -124,12 +121,16 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
   let cwd = options.cwd; let ownerName = sanitize(options.ownerName); let runName = sanitize(options.runName);
   let runInfo: RunViewInfo | null = null; let partialHistory = false; let fallbackNotice = false;
   let model: { provider: string; id: string } | null = null; let thinking: string | null = null;
-  const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
-  let contextTokens: number | null = null;
+  const totals = new FooterAccumulator();
+  let contextTokens: number | null = null; let contextAnchorAt: number | null = null; let contextFloorAt: number | null = null;
+  let latestAssistantAt: number | null = null; let latestUsageAt: number | null = null; let latestCacheHitRate: number | null = null;
+  const earlier = (at: number | null, reference: number | null) => at !== null && reference !== null && at < reference;
+  const messageTime = (message: Json) => typeof message?.timestamp === 'number' && Number.isFinite(message.timestamp) ? message.timestamp : null;
+  const entryTime = (entry: Json) => { const at = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN; return Number.isFinite(at) ? at : null; };
   let state: ViewState = { status: null, steerable: false, reachable: true, readOnlyReason: null };
   let unreachableSince: number | null = null;
   let steerHandler: ((text: string) => Promise<SteerReply | null>) | null = null;
-  let editor: Editor | null = null; let parkedEditor: Editor | null = null;
+  let editor: Editor | null = null; let parkedEditor: Editor | null = null; let editorBand = true;
   const remember = (keys: Set<string>, key: string) => {
     keys.add(key); while (keys.size > maxItems * 4) keys.delete(keys.values().next().value!);
   };
@@ -179,22 +180,43 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
       else component.setArgsComplete();
     }
   };
-  const addUsage = (usage: Json | undefined) => {
-    if (!usage) return;
-    totals.input += usage.input || 0; totals.output += usage.output || 0; totals.cacheRead += usage.cacheRead || 0; totals.cacheWrite += usage.cacheWrite || 0;
-    totals.cost += usage.cost?.total || 0;
+  const addUsage = (entry: Json) => { totals.append([entry]); };
+  const addContext = (message: Json) => {
+    if (contextTokens === null || earlier(messageTime(message), contextAnchorAt)) return;
+    try {
+      const trailing = estimateTokens(message as never);
+      contextTokens = Number.isFinite(trailing) && trailing >= 0 ? contextTokens + trailing : null;
+    } catch { contextTokens = null; }
   };
-  const noteAssistant = (message: Json) => {
-    if (typeof message.provider === 'string' && typeof (message.responseModel ?? message.model) === 'string') model = { provider: message.provider, id: message.responseModel ?? message.model };
-    if (typeof message.thinkingLevel === 'string') { thinking = message.thinkingLevel; refreshEditorBorder(); }
-    const usage = message.usage; addUsage(usage);
-    if (usage && typeof usage === 'object') {
-      const tokens = usage.totalTokens || (usage.input || 0) + (usage.output || 0) + (usage.cacheRead || 0) + (usage.cacheWrite || 0);
-      if (tokens) contextTokens = tokens;
+  const noteAssistant = (message: Json, entry?: Json) => {
+    const at = messageTime(message); const usage = message.usage;
+    addUsage(entry ?? { type: 'message', message });
+    if (!earlier(at, latestAssistantAt)) {
+      if (at !== null) latestAssistantAt = at;
+      if (typeof message.provider === 'string' && typeof (message.responseModel ?? message.model) === 'string') model = { provider: message.provider, id: message.responseModel ?? message.model };
+      if (typeof message.thinkingLevel === 'string') { thinking = message.thinkingLevel; refreshEditorBorder(); }
     }
+    if (usage && typeof usage === 'object' && !earlier(at, latestUsageAt)) {
+      if (at !== null) latestUsageAt = at;
+      latestCacheHitRate = totals.snapshot().latestCacheHitRate;
+    }
+    if (usage && typeof usage === 'object' && message.stopReason !== 'aborted' && message.stopReason !== 'error') {
+      const tokens = calculateContextTokens(usage as never);
+      if (Number.isFinite(tokens) && tokens > 0) {
+        if (!earlier(at, contextAnchorAt) && !earlier(at, contextFloorAt)) { contextTokens = tokens; contextAnchorAt = at; }
+        return;
+      }
+    }
+    addContext(message);
+  };
+  const compactContext = (entry: Json) => {
+    const at = entryTime(entry);
+    if (earlier(at, contextAnchorAt) || earlier(at, contextFloorAt)) return;
+    contextTokens = null; contextAnchorAt = null; contextFloorAt = at;
   };
   const addUser = (message: Json) => {
     const key = messageKey(message); if (key && users.has(key)) return; if (key) remember(users, key);
+    addContext(message);
     const text = userText(message); if (!text) return;
     const index = steers.findIndex(steer => steer.text.trim() === text.trim() && !steer.failed);
     if (index >= 0) { steers.splice(index, 1); renderSteers(); }
@@ -204,14 +226,14 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
       if (skill.userMessage) add(new UserMessageComponent(skill.userMessage, markdown, outputPad), true);
     } else add(new UserMessageComponent(text, markdown, outputPad), true);
   };
-  const addMessage = (message: Json) => {
+  const addMessage = (message: Json, entry?: Json) => {
     switch (message.role) {
       case 'user': addUser(message); break;
       case 'assistant': {
         const key = messageKey(message);
         const live = key ? streaming.get(key) : undefined;
         if (key && finished.has(key) && !live) break;
-        noteAssistant(message);
+        noteAssistant(message, entry);
         if (live) { live.updateContent(message as never, false); streaming.delete(key!); }
         else add(new AssistantMessageComponent(message as never, hideThinking, markdown, undefined, outputPad));
         if (key) remember(finished, key);
@@ -219,37 +241,39 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
         break;
       }
       case 'toolResult': {
-        addUsage(message.usage);
+        addUsage(entry ?? { type: 'message', message }); addContext(message);
         const component = tools.get(message.toolCallId);
         if (component) component.updateResult(message as never);
         break;
       }
       case 'bashExecution': {
+        if (!message.excludeFromContext) addContext(message);
         const component = new BashExecutionComponent(message.command, ui, message.excludeFromContext, outputPad);
         if (message.output) component.appendOutput(message.output);
         component.setComplete(message.exitCode, message.cancelled, message.truncated ? { truncated: true } as never : undefined, message.fullOutputPath);
         add(component); break;
       }
       case 'custom':
+        addContext(message);
         if (message.display) add(new CustomMessageComponent(message as never, undefined, markdown, outputPad));
         break;
       case 'compactionSummary': add(new CompactionSummaryMessageComponent(message as never, markdown, outputPad), true); break;
-      case 'branchSummary': add(new BranchSummaryMessageComponent(message as never, markdown, outputPad), true); break;
+      case 'branchSummary': addContext(message); add(new BranchSummaryMessageComponent(message as never, markdown, outputPad), true); break;
       default: break;
     }
   };
   const addEntry = (entry: Json) => {
     switch (entry.type) {
       case 'session': if (typeof entry.cwd === 'string') cwd = entry.cwd; return;
-      case 'model_change': if (typeof entry.provider === 'string' && typeof entry.modelId === 'string') model = { provider: entry.provider, id: entry.modelId }; return;
-      case 'usage': addUsage(entry.usage); return;
-      case 'compaction': contextTokens = null; addUsage(entry.usage); break;
-      case 'branch_summary': addUsage(entry.usage); break;
-      case 'thinking_level_change': if (typeof entry.thinkingLevel === 'string') { thinking = entry.thinkingLevel; refreshEditorBorder(); } return;
+      case 'model_change': if (!earlier(entryTime(entry), latestAssistantAt) && typeof entry.provider === 'string' && typeof entry.modelId === 'string') model = { provider: entry.provider, id: entry.modelId }; return;
+      case 'usage': addUsage(entry); return;
+      case 'compaction': compactContext(entry); addUsage(entry); break;
+      case 'branch_summary': addUsage(entry); break;
+      case 'thinking_level_change': if (!earlier(entryTime(entry), latestAssistantAt) && typeof entry.thinkingLevel === 'string') { thinking = entry.thinkingLevel; refreshEditorBorder(); } return;
     }
     let messages: Json[];
     try { messages = sessionEntryToContextMessages(entry as never) as Json[]; } catch { return; }
-    for (const message of messages) addMessage(message);
+    for (const message of messages) addMessage(message, entry);
   };
 
   const renderSteers = () => {
@@ -275,10 +299,20 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
   const refreshEditorBorder = () => { if (editor) editor.borderColor = theme.getThinkingBorderColor((thinking ?? 'off') as never); };
   const syncEditor = () => {
     const showEditor = state.steerable || state.canCompose === true;
+    const useBand = runInfo?.inputBand !== false;
+    let draft: string | undefined;
+    if (showEditor && (editor || parkedEditor) && editorBand !== useBand) {
+      draft = (editor ?? parkedEditor)!.getText();
+      if (editor) { editorSlot.clear(); (ui as Partial<TUI>).setFocus?.(null); }
+      editor = null; parkedEditor = null;
+    }
     if (showEditor && !editor) {
-      editor = parkedEditor ?? new BandEditor(ui, { borderColor: (text: string) => theme.fg('borderMuted', text), selectList: getSelectListTheme() },
-        getKeybindings() as unknown as ConstructorParameters<typeof BandEditor>[2], () => theme);
-      parkedEditor = null;
+      const editorTheme = { borderColor: (text: string) => theme.fg('borderMuted', text), selectList: getSelectListTheme() };
+      editor = parkedEditor ?? (useBand
+        ? new BandEditor(ui, editorTheme, getKeybindings() as unknown as ConstructorParameters<typeof BandEditor>[2], () => theme)
+        : new Editor(ui, editorTheme, { paddingX: 1 }));
+      editorBand = useBand; parkedEditor = null;
+      if (draft !== undefined) editor.setText(draft);
       refreshEditorBorder(); editor.onSubmit = submit;
       editorSlot.addChild(editor); (ui as Partial<TUI>).setFocus?.(editor);
     } else if (!showEditor && editor) {
@@ -286,42 +320,51 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
     }
   };
 
+  const footerData: ReadonlyFooterDataProvider = {
+    getGitBranch: () => null, getExtensionStatuses: () => new Map(), getAvailableProviderCount: () => 0,
+    onBranchChange: () => () => {},
+  };
+  const footerInput = (): FooterInput => {
+    const snapshot = { ...totals.snapshot(), latestCacheHitRate };
+    const modelRef = model ? `${model.provider}/${model.id}` : null;
+    const matchesInfo = modelRef !== null && runInfo?.model === modelRef;
+    const window = model ? options.contextWindow?.(model.provider, model.id) ?? (matchesInfo ? runInfo?.contextWindow : undefined) : undefined;
+    const factor = runInfo?.creditFactor;
+    return {
+      cwd: '', branch: null, sessionName: null, modelId: model?.id ?? 'no model yet',
+      modelName: matchesInfo ? runInfo?.modelName : null, thinking: thinking ?? 'thinking unknown',
+      context: window ? { percent: contextTokens === null ? null : contextTokens / window * 100, contextWindow: window } : null,
+      subscription: false, totals: snapshot, counter: { availability: 'disabled', snapshot: null }, statuses: new Map(),
+      calibration: factor == null ? undefined : { ...calibrationFallback(), status: 'calibrated', factor },
+      inPane: true, iconStyle: runInfo?.iconStyle ?? 'text',
+      subagent: { contextTokens, creditsKnown: !partialHistory && snapshot.unpricedEntries === 0 },
+    };
+  };
+  const usageFooter = createUsageFooter(footerInput, theme, footerData, () => ui.requestRender());
+  let working = false;
+  const setWorking = (active: boolean) => {
+    if (working === active) return;
+    working = active; usageFooter.setWorking(active ? Date.now() : undefined);
+  };
   const footer: Component = {
     render(width: number): string[] {
       const sep = theme.fg('dim', ' • ');
       const identity = [theme.fg('dim', runName), theme.fg('dim', ownerName ? `from ${ownerName}` : 'owner unknown')].join(sep);
       const parts: string[] = [];
       const status = state.status ? `${state.statusIsStale ? 'last known ' : ''}${state.status}` : 'waiting';
-      parts.push(state.status === 'failed' ? theme.fg('error', status) : theme.fg('dim', status));
+      if (state.status !== 'running' || state.statusIsStale) parts.push(state.status === 'failed' ? theme.fg('error', status) : theme.fg('dim', status));
       if (!state.reachable && unreachableSince !== null && now() - unreachableSince >= 3000) parts.push(theme.fg('warning', 'owner unreachable'));
       if (!state.steerable && !state.canCompose) parts.push(theme.fg('dim', 'read-only'));
+      if (partialHistory) parts.push(theme.fg('dim', 'tail totals'));
       const statusText = parts.join(sep);
-      const identityWidth = Math.max(0, width - visibleWidth(statusText) - 3);
+      const identityWidth = Math.max(0, width - visibleWidth(statusText) - (statusText ? 3 : 0));
       const shownIdentity = identityWidth > 0 ? truncateToWidth(identity, identityWidth, '...') : '';
-      const first = shownIdentity ? shownIdentity + ' '.repeat(Math.max(1, width - visibleWidth(shownIdentity) - visibleWidth(statusText))) + statusText : truncateToWidth(statusText, width, '');
-      const stats: string[] = partialHistory ? ['tail totals'] : [];
-      if (totals.input) stats.push(`↑${formatTokens(totals.input)}`);
-      if (totals.output) stats.push(`↓${formatTokens(totals.output)}`);
-      if (totals.cacheRead) stats.push(`R${formatTokens(totals.cacheRead)}`);
-      if (totals.cacheWrite) stats.push(`W${formatTokens(totals.cacheWrite)}`);
-      if (totals.cost) stats.push(`$${totals.cost.toFixed(3)}`);
-      const window = model ? options.contextWindow?.(model.provider, model.id) ?? (runInfo?.model === `${model.provider}/${model.id}` ? runInfo.contextWindow : undefined) : undefined;
-      let context: string;
-      if (contextTokens === null) context = 'context unknown';
-      else if (window) {
-        const percent = (contextTokens / window) * 100; const label = `${percent.toFixed(1)}%/${formatTokens(window)}`;
-        context = percent > 90 ? theme.fg('error', label) : percent > 70 ? theme.fg('warning', label) : label;
-      } else context = `${formatTokens(contextTokens)} context`;
-      stats.push(context);
-      let left = stats.join(' ');
-      const right = `${model?.id ?? 'no model yet'} • ${thinking ?? 'thinking unknown'}`;
-      if (visibleWidth(left) > width) left = truncateToWidth(left, width, '...');
-      const room = width - visibleWidth(left) - 2;
-      const shownRight = room > 0 ? truncateToWidth(right, room, '') : '';
-      const line = theme.fg('dim', left) + theme.fg('dim', ' '.repeat(Math.max(shownRight ? 2 : 0, width - visibleWidth(left) - visibleWidth(shownRight))) + shownRight);
-      return [first, truncateToWidth(line, width, '')];
+      const first = !statusText ? shownIdentity : shownIdentity
+        ? shownIdentity + ' '.repeat(Math.max(1, width - visibleWidth(shownIdentity) - visibleWidth(statusText))) + statusText
+        : truncateToWidth(statusText, width, '');
+      return [first, ...usageFooter.render(width)];
     },
-    invalidate() {},
+    invalidate() { usageFooter.invalidate(); },
   };
   const footerBox = new Container(); footerBox.addChild(new Spacer(1)); footerBox.addChild(footer);
   const root = new Container();
@@ -343,12 +386,12 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
         for (const raw of skipped) {
           const entry = sanitize(raw);
           if (entry?.type === 'session' && typeof entry.cwd === 'string') cwd = entry.cwd;
-          else if (entry?.type === 'model_change' && typeof entry.provider === 'string') model = { provider: entry.provider, id: entry.modelId };
-          else if (entry?.type === 'thinking_level_change') thinking = entry.thinkingLevel;
-          else if (entry?.type === 'usage' || entry?.type === 'branch_summary') addUsage(entry.usage);
-          else if (entry?.type === 'compaction') { contextTokens = null; addUsage(entry.usage); }
-          else if (entry?.type === 'message' && entry.message?.role === 'assistant') { noteAssistant(entry.message); hidden++; }
-          else if (entry?.type === 'message') { if (entry.message?.role === 'toolResult') addUsage(entry.message.usage); hidden++; }
+          else if (entry?.type === 'model_change' && !earlier(entryTime(entry), latestAssistantAt) && typeof entry.provider === 'string') model = { provider: entry.provider, id: entry.modelId };
+          else if (entry?.type === 'thinking_level_change' && !earlier(entryTime(entry), latestAssistantAt)) thinking = entry.thinkingLevel;
+          else if (entry?.type === 'usage' || entry?.type === 'branch_summary') addUsage(entry);
+          else if (entry?.type === 'compaction') { compactContext(entry); addUsage(entry); }
+          else if (entry?.type === 'message' && entry.message?.role === 'assistant') { noteAssistant(entry.message, entry); hidden++; }
+          else if (entry?.type === 'message') { if (entry.message?.role === 'toolResult') addUsage(entry); addContext(entry.message); hidden++; }
         }
         list = list.slice(-keep);
         hiddenNotice.setText(theme.fg('dim', `Earlier messages are not shown (${hidden} hidden).`));
@@ -370,6 +413,12 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
         ? { ...input, result: restoreForView(input.result) } : input;
       const event = sanitize(restored);
       switch (event.type) {
+        case 'agent_start':
+          if (runInfo) runInfo = { ...runInfo, working: true };
+          setWorking(state.status === 'running' && !state.statusIsStale); break;
+        case 'agent_end':
+          if (runInfo) runInfo = { ...runInfo, working: false };
+          setWorking(false); break;
         case 'message_start': case 'message_update': case 'message_end': {
           const message = event.message as Json; if (message?.role !== 'assistant') return;
           const key = messageKey(message); if (!key || finished.has(key)) return;
@@ -389,7 +438,11 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
     },
     setState(next) {
       if (!next.reachable) unreachableSince ??= next.unreachableSince ?? now(); else unreachableSince = null;
-      state = next; syncEditor(); ui.requestRender();
+      const wasLive = state.status === 'running' && !state.statusIsStale;
+      const isLive = next.status === 'running' && !next.statusIsStale;
+      state = next;
+      if (!isLive) setWorking(false); else if (!wasLive) setWorking(runInfo?.working ?? true);
+      syncEditor(); ui.requestRender();
     },
     setOwnerName(name) { ownerName = sanitize(name); ui.requestRender(); },
     setRunName(name) { runName = sanitize(name); ui.requestRender(); },
@@ -399,12 +452,16 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
         const slash = runInfo.model.indexOf('/');
         model = { provider: slash >= 0 ? runInfo.model.slice(0, slash) : '', id: runInfo.model.slice(slash + 1) };
       }
-      thinking ??= runInfo.thinking ?? null; refreshEditorBorder(); ui.requestRender();
+      thinking ??= runInfo.thinking ?? null;
+      if (state.status === 'running' && !state.statusIsStale && typeof runInfo.working === 'boolean') setWorking(runInfo.working);
+      syncEditor(); refreshEditorBorder(); ui.requestRender();
     },
     setHistoryTruncated() { partialHistory = true; ui.requestRender(); },
     reset() {
       chat.clear(); tools.clear(); streaming.clear(); finished.clear(); users.clear(); hidden = 0; hiddenNotice.setText('');
-      Object.assign(totals, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 }); contextTokens = null; model = null; thinking = null; partialHistory = false; fallbackNotice = false;
+      totals.reset([]); contextTokens = null; contextAnchorAt = null; contextFloorAt = null;
+      latestAssistantAt = null; latestUsageAt = null; latestCacheHitRate = null;
+      model = null; thinking = null; partialHistory = false; fallbackNotice = false;
       ui.requestRender();
     },
     toggleThinking() {
@@ -427,6 +484,6 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
     },
     onSteer(handler) { steerHandler = handler; },
     itemCount: () => chat.children.filter(child => !(child instanceof Spacer)).length,
-    dispose() { tools.clear(); streaming.clear(); finished.clear(); users.clear(); chat.clear(); editorSlot.clear(); editor = null; parkedEditor = null; },
+    dispose() { usageFooter.dispose(); tools.clear(); streaming.clear(); finished.clear(); users.clear(); chat.clear(); editorSlot.clear(); editor = null; parkedEditor = null; },
   };
 }

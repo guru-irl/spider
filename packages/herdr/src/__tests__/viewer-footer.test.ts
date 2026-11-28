@@ -133,7 +133,7 @@ test('a newly opened idle RPC child starts with the idle moon', () => {
   vi.useFakeTimers(); vi.setSystemTime(0);
   try {
     const view = make();
-    view.setRunInfo({ protocol: 2, working: false } as never);
+    view.setRunInfo({ protocol: 2, working: false });
     view.setState({ status: 'running', steerable: true, reachable: true, readOnlyReason: null });
     expect(view.footerLines(100).map(stripTerminalSequences).join('\n')).toMatch(/○/);
     view.live({ type: 'agent_start' });

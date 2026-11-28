@@ -11,7 +11,7 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import type { Owner, RunId, Disposable, RunSummary } from '../../../herdr/src/contracts.js';
 import type { RunCursor, RunViewFrame, RunViewEvent, RunViewInfo } from '../../../herdr/src/contracts.js';
 import { RUN_VIEW_PROTOCOL } from '../../../herdr/src/contracts.js';
-import { subscribeLiveRunEvents } from '../../../subagents/src/live-events.js';
+import { liveRunWorking, subscribeLiveRunEvents } from '../../../subagents/src/live-events.js';
 
 // Keep the session ownership filter without letting its index mask the per-run index.
 export const TRANSCRIPT_QUERY = "SELECT payload FROM run_events WHERE run_id=? AND +session_id=? AND type='child_transcript' ORDER BY id DESC LIMIT 1";
@@ -27,6 +27,7 @@ const LIVE_UPDATE_MS = 100;
 function liveEvent(event: Record<string, any>): ({ type: string } & Record<string, unknown>) | null {
   if (event.parentToolCallId) return null; // pi shows nested calls inside their parent's row.
   switch (event.type) {
+    case 'agent_start': case 'agent_end': return { type: event.type };
     case 'message_start': case 'message_update': case 'message_end':
       return event.message?.role === 'assistant' ? { type: event.type, message: event.message } : null;
     case 'tool_execution_start': return { type: event.type, toolCallId: event.toolCallId, toolName: event.toolName, args: event.args };
@@ -45,6 +46,9 @@ export interface RunTranscriptSourceOptions {
   /** Raw records are capped at 100 MiB; an oversized tail is reported as a gap. */
   recordBytes?: number;
   modelContextWindow?(model: string): number | undefined;
+  modelName?(model: string): string | undefined;
+  iconStyle?: 'text' | 'nerd'; inputBand?: boolean;
+  creditFactor?(): number | null;
 }
 export interface RunTranscriptSource extends Disposable { subscribe(runId: RunId, cursor: RunCursor | null, emit: (frame: RunViewFrame) => void, options?: { view?: number }): () => void }
 interface Position { version: 1; session: string; generation: string; run: string; binding: string; event: number; offset: number; textOffset: number; suppressProse?: boolean; pendingMessage?: { id: number; offset: number }; file: string | null; anchor: { offset: number; length: number; digest: string } | null }
@@ -284,8 +288,12 @@ export function createRunTranscriptSource(options: RunTranscriptSourceOptions): 
             // Rich viewers tail the verified session file. Do not scan or project its
             // whole history, especially when reopening a large finished transcript.
             const summary = runSummary(row, owner);
-            const info: RunViewInfo = { ...view!, sessionFile: file?.path ?? null, model: row.model, thinking: row.thinking,
-              contextWindow: row.model ? options.modelContextWindow?.(row.model) ?? null : null };
+            const working = liveRunWorking(runId);
+            const info: RunViewInfo = { ...view!, sessionFile: file?.path ?? null, model: row.model,
+              modelName: row.model ? options.modelName?.(row.model) ?? null : null, thinking: row.thinking,
+              contextWindow: row.model ? options.modelContextWindow?.(row.model) ?? null : null,
+              iconStyle: options.iconStyle ?? 'text', inputBand: options.inputBand !== false, creditFactor: options.creditFactor?.() ?? null,
+              ...(working === undefined ? {} : { working }) };
             const state = JSON.stringify({ run: summary, view: info });
             if (first || state !== lastState) {
               send({ runId, cursor: encode(p), kind: 'snapshot', data: { run: summary, view: info } });

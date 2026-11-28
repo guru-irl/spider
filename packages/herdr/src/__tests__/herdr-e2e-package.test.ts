@@ -5,12 +5,15 @@ import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import roamEntries from '../../../../scripts/roam-entries.json' with { type: 'json' };
 let root: string | undefined;
 afterEach(async () => { if (root) await rm(root, { recursive: true, force: true }); });
 it('fingerprints the packaged reader along with all other deployed entries', async () => {
   const scratch = resolve('.spider/scratch'); await mkdir(scratch, { recursive: true }); root = await mkdtemp(join(scratch, 'e2e-package-'));
   const checkout = join(root, 'checkout'); await mkdir(join(checkout, 'dist/herdr'), { recursive: true }); await mkdir(join(checkout, 'dist/roam'), { recursive: true }); await mkdir(join(checkout, 'dist/intercom'), { recursive: true });
-  for (const name of ['extension.js', 'herdr/cli.mjs', 'herdr/viewer.mjs', 'herdr/remote-runtime.mjs', 'herdr/feed-reader.mjs', 'herdr/pane-endpoint.mjs', 'herdr/viewer-pi.mjs', 'herdr/subagent-supervisor.mjs', 'roam/cli.mjs', 'roam/cli-main.mjs', 'roam/intercom-helper.mjs', 'roam/supervisor.mjs', 'intercom/broker.mjs']) await writeFile(join(checkout, 'dist', name), name);
+  for (const name of ['extension.js', 'herdr/cli.mjs', 'herdr/viewer.mjs', 'herdr/remote-runtime.mjs', 'herdr/feed-reader.mjs', 'herdr/pane-endpoint.mjs', 'herdr/viewer-pi.mjs', 'herdr/subagent-supervisor.mjs',
+    ...Object.keys(roamEntries).map(mode => `roam/${mode}.mjs`), 'intercom/broker.mjs']) await writeFile(join(checkout, 'dist', name), name);
+  await writeFile(join(checkout, 'dist/roam/relay-soak.mjs'), 'packed soak');
   const { packEntryDigests } = await import(pathToFileURL(resolve('scripts/herdr-e2e.mjs')).href);
   const result = await packEntryDigests(checkout, root, async () => {
     await writeFile(join(checkout, 'dist/herdr/feed-reader.mjs'), 'packed reader');
@@ -26,6 +29,7 @@ it('fingerprints the packaged reader along with all other deployed entries', asy
   expect(result.entries).toContain('roam/intercom-helper.mjs');
   expect(result.digests['roam/intercom-helper.mjs']).toBe(createHash('sha256').update('roam/intercom-helper.mjs').digest('hex'));
   expect(result.entries).toContain('roam/supervisor.mjs');
+  expect(result.digests['roam/relay-soak.mjs']).toBe(createHash('sha256').update('packed soak').digest('hex'));
   expect(result.entries).toContain('intercom/broker.mjs');
   expect(result.digests['intercom/broker.mjs']).toBe(createHash('sha256').update('intercom/broker.mjs').digest('hex'));
   expect(result.digests['herdr/subagent-supervisor.mjs']).toBe(createHash('sha256').update('packed supervisor').digest('hex'));

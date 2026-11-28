@@ -110,12 +110,343 @@ For a separately approved A-to-B route, add B's provisioned peer to A's
 `acceptFrom`. B does not need an outbound A entry. This directed route does not
 use the Mac as a relay. Do not configure the Mac in a box's `sendTo`.
 
-A bare remote name checks configured peers with running homes. A single
-verified match is enough even if another peer is unavailable. If more than
-one session matches, use a machine-qualified name or a full persistent session
-ID. With no verified match and an unavailable peer, lookup returns
-`incomplete`. A live local alias takes precedence over a remote name, while
-a full persistent ID takes precedence over an alias.
+With a version 1 file, a bare remote name checks configured peers with running
+homes. A single verified match is enough even if another peer is unavailable.
+With no verified match and an unavailable peer, lookup returns `incomplete`.
+With a version 2 file, a bare remote name needs a complete direct lookup before
+it can select a match. If more than one session matches, use a
+machine-qualified name or a full persistent session ID. A live local alias
+takes precedence over a remote name, while a full persistent ID takes
+precedence over an alias.
+
+## Run an intercom relay
+
+Upgrade the relay and linked machines together. Enable roaming and leave legacy
+intercom federation disabled. Keep `roam/intercom-v0.json` private as described
+above, set `version` to `2`, and put the same ordered list of relay machine IDs
+in `relays` on every machine. For example, use the machine ID of
+`relay-1.invalid`, not its alias.
+
+On the relay, list the IDs of its linked machines in `linkTo`. Each must also
+have a provisioned `sendTo` entry and an existing Herdr route from the relay.
+The relay advertises its own ID and the `sendTo` entries with connected routes.
+The recipient must list the relay in `relays` and the sender in `acceptFrom`.
+The linked machine does not need a reverse Herdr route. A machine without an
+inbound route can receive through a relay only if it runs that relay itself.
+Restart the relay after you change `intercom-v0.json`.
+
+A live local or direct route takes precedence. If neither exists, a send can
+use a relay for a full session ID or a machine-qualified name such as
+`target.invalid/recipient`. A bare remote name needs a complete direct lookup.
+A relayed ask is not supported. Refused messages are not queued. If the result
+is unknown, check the recipient before sending again.
+
+Install the relay separately from `spider roam enable`. Do not change the hub
+or supervisor service. Run it as the user who owns the roaming files. In the
+examples, replace the paths with canonical absolute paths to the installed
+release, its Node executable, the roaming root, and the intended Herdr core.
+Use the socket and session of the same core. Do not copy a terminal's
+`HC_TERMINAL_ID` or a remote target into the service environment.
+
+### Linux: Install the systemd user unit
+
+Save this as `~/.config/systemd/user/spider-roam-relay-v0.service`, with mode
+`0600`. Use an existing user-owned unit directory that other users cannot
+write to.
+
+```ini
+[Unit]
+Description=Spider roaming intercom relay
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart="/path/to/node" "/path/to/spider/dist/roam/cli.mjs" roam agent --v0 relay
+Environment="SPIDER_GLOBAL_ROOT=/path/to/roaming-root"
+Environment="SPIDER_ROAM_HC=/path/to/hc"
+Environment="HC_SESSION=relay"
+Environment="HC_SOCKET=/path/to/relay.sock"
+Restart=on-failure
+RestartSec=10s
+UMask=0077
+
+[Install]
+WantedBy=default.target
+```
+
+Run `systemctl --user daemon-reload`, then
+`systemctl --user enable --now spider-roam-relay-v0.service`.
+
+### macOS: Install the launchd user agent
+
+Save this as `~/Library/LaunchAgents/com.spider.roam.relay-v0.plist`, with mode
+`0600`. Create the log directory under the same roaming root with mode `0700`.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.spider.roam.relay-v0</string>
+  <key>ProgramArguments</key><array>
+    <string>/path/to/node</string>
+    <string>/path/to/spider/dist/roam/cli.mjs</string>
+    <string>roam</string><string>agent</string><string>--v0</string><string>relay</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>SPIDER_GLOBAL_ROOT</key><string>/path/to/roaming-root</string>
+    <key>SPIDER_ROAM_HC</key><string>/path/to/hc</string>
+    <key>HC_SESSION</key><string>relay</string>
+    <key>HC_SOCKET</key><string>/path/to/relay.sock</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>WorkingDirectory</key><string>/path/to/roaming-root</string>
+  <key>StandardOutPath</key><string>/path/to/roaming-root/roam/logs/relay-v0.out.log</string>
+  <key>StandardErrorPath</key><string>/path/to/roaming-root/roam/logs/relay-v0.err.log</string>
+  <key>Umask</key><integer>63</integer>
+</dict></plist>
+```
+
+Run `launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.spider.roam.relay-v0.plist"`.
+
+### Check the link
+
+Run `spider roam doctor` on the relay and linked machine. Look for an
+`intercom-link` row with state `up`. A `route-missing` row means the selected
+Herdr core has no configured route for that peer. A `version-mismatch` row
+names both versions. Doctor does not start the relay or the broker.
+
+Find the local link snapshots and logs in `roam/relay/in` and `roam/relay/out`
+under the roaming root. Each link keeps its current log and one previous log,
+with at most 64 KiB each. They do not contain messages.
+
+## Run a relay soak
+
+The opt-in `dist/roam/relay-soak.mjs` measures the held-poll carrier. It sends
+only synthetic `relay-soak` messages and records a sink receipt instead of
+writing to a session. The tool does not install services, change routes, claim
+machines, or inject faults. Building it or checking synthetic evidence does
+not prove that a live soak passed.
+
+### Stage the run
+
+1. Assign one laptop-to-box link and two box-to-box links. Install the same
+   build and provision the required Herdr routes and keys. Use version 2
+   `roam/intercom-v0.json` files. Each relay needs the peer in `sendTo` and
+   `linkTo`; each peer needs the relay in `relays`. Keep legacy intercom
+   federation disabled.
+2. Start a dedicated, admitted origin session on each submitting peer. Keep
+   each origin live for the run. The tool submits through the existing private
+   broker and refuses a stale origin pin.
+3. Choose a future `startMs`, in Unix milliseconds, shared by all three links.
+   Set `endMs` to `startMs + 28800000`. Synchronize the clocks and choose a
+   memory growth allowance in bytes before starting. Use the same start and
+   allowance in every run file.
+4. On every machine, take a complete census of the existing test helpers before
+   the run. Record each PID, process birth identity, and boot identity. Keep
+   the observations in a private run directory.
+
+On each peer, obtain the exact origin pin from its live broker. Use `-` for a
+null scope. `ENTRY` is the absolute path to the packaged executable and `ROOT`
+is the local global root.
+
+```sh
+node --input-type=module - "$ENTRY" "$ROOT" "$SESSION_ID" "$SCOPE_ID" <<'NODE'
+import { pathToFileURL } from "node:url";
+const [, , entry, root, sessionId, scope] = process.argv;
+const { lookupRelaySoakOrigin } = await import(pathToFileURL(entry).href);
+console.log(JSON.stringify(await lookupRelaySoakOrigin(root, sessionId, scope === "-" ? null : scope)));
+NODE
+```
+
+Create a run file on each side of each link. The following is a synthetic
+example of the required shape, not an admitted pin. Replace the IDs, pins,
+start time, allowance, and local `root` with the staged values. Use the same
+link fields on both sides; only `root` differs. Do not add fields to the file.
+
+```json
+{
+  "root": "/absolute/path/to/global-root",
+  "startMs": 1700000000000,
+  "rssAllowanceBytes": 10000000,
+  "links": [{
+    "id": "laptop-box",
+    "topology": "laptop-to-box",
+    "relayId": "11111111-1111-4111-8111-111111111111",
+    "peerId": "22222222-2222-4222-8222-222222222222",
+    "from": {
+      "machineId": "22222222-2222-4222-8222-222222222222",
+      "address": { "sessionId": "soak-origin", "scopeId": "soak-scope" },
+      "name": "soak-origin",
+      "homeEpoch": 1,
+      "endpointEpoch": "fixture-epoch"
+    },
+    "target": {
+      "machineId": "11111111-1111-4111-8111-111111111111",
+      "selector": { "by": "id", "value": "soak-target" },
+      "homeEpoch": 1
+    }
+  }]
+}
+```
+
+For the other links, use distinct link IDs and `"topology": "box-to-box"`.
+The target is a synthetic pin for the receipt sink, not a live recipient.
+
+### Sample clocks
+
+For each link, measure the relay clock minus the peer clock over the existing
+route. Take samples before the start, throughout the run at least every five
+minutes, and after the end. Each sample has relay `sentMs` and `receivedMs`
+and peer `remoteMs`, all in Unix milliseconds. The following command records
+one sample from the relay. Set `HC_BIN`, `PEER_ALIAS`, and `PEER_NODE` to the
+pinned route and executable.
+
+```sh
+node --input-type=module <<'NODE'
+import { execFileSync } from "node:child_process";
+const sentMs = Date.now();
+const reply = execFileSync(process.env.HC_BIN, ["exec", "--on", process.env.PEER_ALIAS,
+  "--timeout", "25", "--", process.env.PEER_NODE, "-p", "Date.now()"], { encoding: "utf8" });
+const receivedMs = Date.now();
+const remoteMs = Number(reply.trim());
+if (!Number.isSafeInteger(remoteMs)) throw new Error("Invalid peer clock sample");
+console.log(JSON.stringify({ sentMs, remoteMs, receivedMs }));
+NODE
+```
+
+Choose a justified `maxDriftMs` for the whole run. Set `minOffsetMs` to the
+minimum of `sentMs - remoteMs - maxDriftMs`, and `maxOffsetMs` to the maximum
+of `receivedMs - remoteMs + maxDriftMs`. The manifest's `clock.fromMs` must
+cover the start and `clock.toMs` must reach at least `endMs + 20000`. Keep all
+samples; the checker rejects gaps over ten minutes and charges uncertainty
+against the timing limits. Do not invent a bound when the clocks or samples are
+unavailable.
+
+### Start and mark the run
+
+Start the dial on the relay before `startMs`, early enough to capture an RSS
+sample before the start after accounting for the clock bound. Start the submit
+process on the peer before `startMs`. Use private files and retain every
+NDJSON record. `RUN` is the local run-file path and `LINK` is its link ID.
+Give each link its own receipt file. Start a fresh file for a new run, and
+reuse the same file when restarting the dial within that run. The dial
+appends and syncs each receipt before reporting delivery.
+
+```sh
+# On the relay
+node "$ENTRY" dial "$RUN" "$LINK" "$RECORDS/receipts.ndjson" >> "$RECORDS/dial.ndjson" 2>> "$RECORDS/dial.err" &
+
+# On the peer
+node "$ENTRY" submit "$RUN" "$LINK" >> "$RECORDS/submit.ndjson" 2>> "$RECORDS/submit.err" &
+```
+
+Repeat for all three links. The submit process records one attempt every five
+seconds for eight hours, including refusals. Once during the run, on one peer,
+start exactly one extra burst and retain its separate records.
+
+```sh
+node "$ENTRY" submit "$RUN" "$LINK" --burst >> "$RECORDS/burst.ndjson" 2>> "$RECORDS/burst.err"
+```
+
+After the affected link is up, inject and record each fault. Record the
+fault's `kind`, affected `linkIds`, `clock` (`relay` or `peer`), `startMs`,
+and `clearMs` on that clock. Each fault must affect links that share that
+clock's machine.
+
+- Keep `route-cut` active for at least 60 seconds.
+- For `relay-kill`, `herdr-restart-relay`, `herdr-restart-peer`, and
+  `laptop-sleep`, wait at least 40 seconds before clearing the fault. Confirm
+  that either side recorded a state other than `up` on each affected link.
+  A held call plus its grace period can take 30 seconds to expire, and the
+  next peer sample can arrive later.
+- For `endpoint-kill`, kill the matched held endpoint once. Don't delay the
+  next endpoint. The dial can log a transition even if the outage ends
+  before the next peer sample.
+
+Keep both `state` and `relay-state` records. The checker uses their
+`sinceMs` transition times, not when the tool observed them. If a transition
+and the fault share a clock, their difference needs no offset adjustment.
+
+The 60-second RSS gap limit excludes time from a fault on the relay clock
+until the first resumed RSS sample. For `relay-kill`, that sample must be
+from a replacement dial birth. A dial that survives sleep can resume with
+its original birth. The baseline still covers the whole run. The RSS check
+adds no restart limit, but each link must recover within 60 seconds after
+the fault clears.
+
+For a relay kill or a Herdr restart, add `process` with the affected
+`machineId`, `pid`, `birthId`, `bootId`, and `observedMs`. Observe that process
+on its own machine within five seconds before the fault. For an endpoint kill,
+add the same fields as `endpoint` plus the `pollId` from a still-open held
+`poll-start` record. Identify the actual peer endpoint and its birth identity
+before killing it. If more than one endpoint could match, do not guess.
+
+On Linux, `birthId` is `linux:` followed by field 22 of `/proc/<pid>/stat`,
+and `bootId` is `/proc/sys/kernel/random/boot_id`. On macOS, `birthId` is
+`posix:` followed by `LC_ALL=C TZ=UTC ps -p <pid> -o lstart=` with surrounding
+whitespace removed, and `bootId` is `sysctl -n kern.bootsessionuuid`. Record
+birth identities while the processes are live, not after PID reuse.
+
+### Stop and check
+
+Wait for the submit processes and their pending outcomes to finish. Keep each
+dial running until its RSS records cover `endMs` plus the maximum relay clock
+offset. Then stop the dial processes, wait for their held calls and helper
+processes to exit, and take a complete after census on every machine. Take
+both censuses far enough outside the run to account for the clock bounds.
+
+Collect the NDJSON files and build a manifest. List stdout logs in
+`recordFiles` and the separate sink in `receiptFile`. Both paths are relative
+to the manifest. The checker rejects receipts in stdout logs and other
+records in the receipt file. The template shows one link. Include the other
+two, all faults and clock samples, and one census per participating machine.
+
+```json
+{
+  "startMs": 1700000000000,
+  "endMs": 1700028800000,
+  "rssAllowanceBytes": 10000000,
+  "links": [{
+    "id": "laptop-box",
+    "topology": "laptop-to-box",
+    "relayId": "11111111-1111-4111-8111-111111111111",
+    "peerId": "22222222-2222-4222-8222-222222222222",
+    "clock": {
+      "fromMs": 1700000000000,
+      "toMs": 1700028820000,
+      "minOffsetMs": -100,
+      "maxOffsetMs": 100,
+      "maxDriftMs": 0,
+      "samples": []
+    },
+    "recordFiles": ["laptop-box-dial.ndjson", "laptop-box-submit.ndjson"],
+    "receiptFile": "laptop-box-receipts.ndjson"
+  }],
+  "faults": [],
+  "processes": []
+}
+```
+
+Each census is `{ "machineId": "...", "before": { "atMs": 0,
+"complete": true, "identities": [] }, "after": { "atMs": 0,
+"complete": true, "identities": [] } }`. Replace the timestamps and list
+all observed `{ "pid": 1, "birthId": "...", "bootId": "..." }` identities.
+Mark a census complete only when it covers all test-owned helpers. Add the
+burst file and every restarted dial's records to the relevant link.
+
+```sh
+node "$ENTRY" check "$RECORDS/manifest.json"
+```
+
+Exit 0 and `{"ok":true,"violations":[]}` mean the evidence met the soak
+criteria. Exit 1 reports violations or incomplete evidence. A failed soak blocks
+rollout. Fix the carrier and run the live gate again.
+
+If an outcome records `clientDeadlineMs` on the peer clock, the checker uses
+it as the deadline. The default driver logs the submission time and nominal
+20-second deadline instead. In that case, the checker allows up to 25 ms to
+observe completion after the deadline. The client timeout stays at 20 seconds.
 
 ## Legacy enable and broker readiness
 

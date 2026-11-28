@@ -7,6 +7,7 @@ import { createV0Intercom, hasV0IntercomConfig } from "@spider/roam/relocate/int
 import { fileURLToPath } from "node:url";
 import { registerIntercomOnce, intercomConflict, type IntercomBrokerPort } from "@spider/intercom";
 import { localMachineLabel, withIntercomCards } from "./intercom-cards.js";
+import { withClickExpansion } from "./message-click-expansion.js";
 import { stripVTControlCharacters } from "node:util";
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
 import { bootUsageWorker } from "./usage/worker-entry.js";
@@ -29,7 +30,7 @@ import { flushLeft, icon, isAbsolutePathList, isToolSelectorList } from "@spider
 // THE single spider pi extension entry. Composes the whole surface:
 // one `spider` tool + control routing + every contract hook. Later phases
 // attach action handlers via registerAction (re-exported below).
-import type { CacheWarmingDecisionEventResult, ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { CacheWarmingDecisionEventResult, ContextEvent, ExtensionAPI, ExtensionContext, MessageRenderer } from "@earendil-works/pi-coding-agent";
 import { registerLoopSchedule, type SessionScheduler, type LoopArgs, type ScheduleArgs } from "./loop/index";
 import { registerAutoReload } from "./auto-reload.js";
 import { trackReloadActivity } from "./reload-activity.js";
@@ -100,7 +101,7 @@ import { modelReviewer } from "./memory-reviewer";
 import { createAdmissionPorts, protectAdmissionApi, registerAdmission } from "./roam/admission.js";
 import { ordinaryWorkAllowed as isOrdinaryWorkAllowed } from "./roam/activation.js";
 import { createHostIntercomPorts, registerRoamIntercom } from "./roam/intercom.js";
-import type { V0Prepare } from "@spider/intercom/roam-v0";
+import type { V0Prepare, V0PrepareReply } from "@spider/intercom/roam-v0";
 
 export { registerGlobalAction as registerAction };
 
@@ -196,7 +197,7 @@ interface PiToolAPI {
     execute(toolCallId: string, params: SpiderArgs, signal: unknown, onUpdate: unknown, ctx: unknown): Promise<unknown>;
   }): void;
   registerCommand?(name: string, def: unknown): void;
-  registerMessageRenderer?(customType: string, renderer: (message: unknown, options: unknown, theme: unknown) => unknown): void;
+  registerMessageRenderer?(customType: string, renderer: MessageRenderer): void;
   registerEntryRenderer?(customType: string, renderer: (entry: unknown, options: unknown, theme: unknown) => unknown): void;
   appendEntry?(customType: string, data?: unknown): void;
   on(name: string, fn: (...args: unknown[]) => unknown): void;
@@ -899,7 +900,7 @@ async function dispatchWithDoctorSnapshot(
   }
 }
 
-type V0IntercomFactory = { hasConfig(root: string): boolean; create(root: string): { prepare: V0Prepare } };
+type V0IntercomFactory = { hasConfig(root: string): boolean; create(root: string): { prepare: V0Prepare; prepareReply?: V0PrepareReply } };
 
 export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBroker?: IntercomBrokerPort; bootId?: () => Promise<string>; copyButtons?: { host: CopyButtonsHost; copy: (text: string) => Promise<void> }; inputBand?: InputBandHost; piVersion?: string; v0Intercom?: V0IntercomFactory } = {}): void {
   // Admission must be the first session_start registration, before any producer opens a writer.
@@ -958,8 +959,10 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   try {
     const v0Factory = ports.v0Intercom ?? { hasConfig: hasV0IntercomConfig, create: createV0Intercom };
     const v0Configured = hasRoamIdentity && !legacyIntercomEnabled && v0Factory.hasConfig(paths.globalRoot);
-    const v0 = v0Configured && moveEnabled ? {
-      prepare: v0Factory.create(paths.globalRoot).prepare,
+    const v0Intercom = v0Configured && moveEnabled ? v0Factory.create(paths.globalRoot) : undefined;
+    const v0 = v0Intercom ? {
+      prepare: v0Intercom.prepare,
+      prepareReply: v0Intercom.prepareReply,
       homeEpoch(sessionId: string): number | undefined {
         if (process.env.PI_SUBAGENT_CHILD === "1") return undefined;
         const current = admission.inspect(), home = current.home;
@@ -1364,24 +1367,23 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
     /* best-effort cutover; never break load */
   }
 
-  // The async subagent_done message is expandable in the transcript: collapsed by default,
-  // ctrl+o reveals the COMPLETE curated output. Best-effort — older hosts may lack the API.
-  pi.registerMessageRenderer?.("spider.subagent_done", (message: any, options: any, theme: any) =>
+  // Expand a completion card to see the full curated output.
+  pi.registerMessageRenderer?.("spider.subagent_done", withClickExpansion((message, options, theme) =>
     renderSubagentDone(message, options, theme, iconStyle()),
-  );
+  ));
 
   // Slash commands (/spider, /doctor, /stats, …) emit a spider.command message; render its
   // output lines themed in the transcript instead of an ephemeral toast.
-  pi.registerMessageRenderer?.("spider.command", (message: any, options: any, theme: any) =>
+  pi.registerMessageRenderer?.("spider.command", withClickExpansion((message, options, theme) =>
     renderCommandOutput(message, options, theme, iconStyle()),
-  );
+  ));
 
   pi.registerEntryRenderer?.("spider.organism", (entry: unknown, options: any, theme: unknown) =>
     renderOrganismEntry(entry, options, theme, iconStyle()),
   );
 
-  // Escalation messages from subagents render in the error card style (red background).
-  pi.registerMessageRenderer?.("spider.escalation", (message: any, options: any, theme: any) =>
+  // Escalations always show the full summary, so they don't claim clicks.
+  pi.registerMessageRenderer?.("spider.escalation", (message, options, theme) =>
     renderEscalationMessage(message, options, theme, iconStyle()),
   );
 

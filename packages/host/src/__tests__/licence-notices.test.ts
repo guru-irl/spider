@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import { DEFAULT_UPSTREAM_REFS } from "../../../superpowers/src/upstream-watch";
 import { herdrPackageAssets } from "../../../../scripts/test-herdr-package-assets.js";
+import roamEntries from "../../../../scripts/roam-entries.json" with { type: "json" };
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 let scratch: string;
@@ -135,7 +136,7 @@ SOFTWARE.`;
     const requiredAssets = ["packages/herdr/assets/shared/presentations.js", ...herdrPackageAssets];
     const files = [
       "dist/extension.js", "dist/extension.js.ready", "dist/dashboard/index.html", "README.md",
-      "dist/roam/cli.mjs", "dist/roam/cli-main.mjs", "dist/roam/intercom-helper.mjs", "dist/roam/supervisor.mjs", "dist/intercom/broker.mjs", "scripts/intercom-switchover.mjs",
+      ...Object.keys(roamEntries).map(mode => `dist/roam/${mode}.mjs`), "dist/intercom/broker.mjs", "scripts/intercom-switchover.mjs",
       "scripts/link.mjs", "scripts/dev-link.mjs", "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/package-extension.ts", "scripts/pi-agent-dir.mjs",
       "dist/dashboard/assets/index-12345678.js", "dist/dashboard/assets/index-12345678.css",
       ...requiredLicences, ...requiredAssets, ...skillFiles,

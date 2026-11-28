@@ -3,7 +3,7 @@
 // pi paints the standard tool shell and renderCall supplies its title, so
 // renderResult renders only the BODY. `options.expanded` reflects the in-chat Ctrl+O toggle;
 // `context.args` are the call params; `result.details` is the structured payload.
-import { truncateToWidth, visibleWidth, stripTerminalSequences } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, stripTerminalSequences, type Component as PiComponent } from "@earendil-works/pi-tui";
 import { icon, type Component, type IconStyle } from "@spider/ui";
 import { isAgentModelRole, cachedLines, formatRunUsage, renderErrorResult, renderExecCall, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, statusIcon, fitResultLines, cardDetailIndent, flushLeft, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
 import {
@@ -828,7 +828,7 @@ function runTitleDetails(name: unknown, agent: unknown): { text: string; agent: 
   return details.length ? details : [{ text: "subagent", agent: false }];
 }
 
-export function renderSubagentDone(message: any, options: NotificationOptions, theme: any, iconStyle?: IconStyle): Component {
+export function renderSubagentDone(message: any, options: NotificationOptions, theme: any, iconStyle?: IconStyle): PiComponent {
   const d = message?.details ?? {};
   // C-LOW: a malformed completion event without status is not proof of `done`.
   const status = String(d.status ?? "unknown");
@@ -861,7 +861,7 @@ export function renderSubagentDone(message: any, options: NotificationOptions, t
  *  the dispatch result normalized via toToolResult (so control's {ok,lines}/{details} shapes both
  *  populate result.details) — wrapped in the tool box, so /spider, /stats, /doctor look
  *  identical to the tool result. ctrl+o (options.expanded) expands. */
-export function renderCommandOutput(message: any, options: NotificationOptions, theme: any, iconStyle?: IconStyle): Component {
+export function renderCommandOutput(message: any, options: NotificationOptions, theme: any, iconStyle?: IconStyle): PiComponent {
   const d = message?.details;
   const args = d?.args ?? { action: "command" };
   const result = d?.result ?? {};
@@ -930,7 +930,7 @@ export function renderOrganismEntry(entry: unknown, options: NotificationOptions
 }
 
 /** Transcript renderer for `spider.escalation`. The full summary is always visible. */
-export function renderEscalationMessage(message: any, options: NotificationOptions, theme: any, iconStyle?: IconStyle): Component {
+export function renderEscalationMessage(message: any, options: NotificationOptions, theme: any, iconStyle?: IconStyle): PiComponent {
   const d = message?.details ?? {};
   const severity = d.severity === "blocked" || d.severity === "question" ? d.severity : "warning";
   const escalationDetails: EscalationDetails = { severity, summary: typeof d.summary === "string" ? d.summary : "Escalation" };

@@ -1,23 +1,28 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { lstatSync } from "node:fs";
+import { join } from "node:path";
 import { openRoamPathReadOnly } from "@spider/db-core/roam/reads";
-import type { MachineId } from "@spider/db-core/roam/types";
+import { isHerdrConnectivityFailure } from "@spider/herdr/client/availability";
 import { HerdrError } from "@spider/herdr/client/parse";
 import { requestV0Broker } from "@spider/intercom/broker/roam-v0-client";
+import { authorizeV0RelayReply, beginV0RelayAsk } from "@spider/intercom/broker/roam-relay-client";
+import { RELAY_ASK_MIN_MS, relayRefused, relayUnknown, type RelayResult, type RelaySubmit, type RelayTarget } from "@spider/intercom/relay-protocol";
 import {
-  parseV0AgentReply, parseV0AgentRequest, v0BrokerOrigin, v0ExplicitName, V0_ASK_MAX_MS, V0_INTERCOM_BYTES, V0_INTERCOM_MS,
-  type V0AgentReply, type V0AgentRequest, type V0Code, type V0Endpoint, type V0Prepare, type V0Refused, type V0Reply, type V0Text,
+  parseV0AgentReply, parseV0AgentRequest, parseV0RelayAgentRequest, v0BrokerOrigin, v0ExplicitName,
+  V0_ASK_MAX_MS, V0_INTERCOM_BYTES, V0_INTERCOM_MS, V0_INTERCOM_POST_CHECK_MS as POST_CHECK_MS,
+  type V0AgentReply, type V0AgentRequest, type V0Code, type V0Endpoint, type V0Prepare, type V0PrepareReply, type V0Refused,
+  type V0RelayAgentRequest, type V0Reply, type V0RouteResult, type V0SendPlan, type V0Text,
 } from "@spider/intercom/roam-v0";
 import type { LocalSessionInfo } from "@spider/intercom/types";
-import { readPeer } from "../config";
 import { DEFAULT_LIMITS, type Peer, type RoamConfig, type Transport } from "../contracts";
-import { loadHerdrConfig } from "../host-config";
 import { isMachineId } from "../machine-id";
 import { readLocalIdentity } from "../runtime";
 import { createTransport } from "../transport";
 import { createHomeStore } from "./home";
 import { localHerdrConnection } from "./local";
+import { isV0Alias, readV0Routes, type V0Routes } from "./intercom-routes";
+import { configuredRelayLinks, routeV0Relay } from "./intercom-relay-route";
+import { observeV0HerdrRoutes } from "./relay-poll";
 import type { RelocateHome, SessionId } from "./types";
 
 export interface V0IntercomDeps {
@@ -25,68 +30,13 @@ export interface V0IntercomDeps {
   transport?: (peers: readonly Peer[]) => Pick<Transport, "resolve" | "exec">;
 }
 
-interface AcceptedPeer { machineId: MachineId; alias: string }
-interface Routes { agentDir: string; sendTo: readonly Peer[]; acceptFrom: readonly AcceptedPeer[] }
-const POST_CHECK_MS = 2000;
 const ASK_REPLY_RESERVE_MS = 10_000;
 const REMOTE_ASK_STARTUP_MS = 9500;
-
-function object(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-function keys(value: Record<string, unknown>, expected: readonly string[]): boolean {
-  return Object.keys(value).length === expected.length && expected.every(key => Object.hasOwn(value, key));
-}
-function alias(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && value.length <= 255 && value.trim() === value
-    && !/[\u0000-\u001f\u007f-\u009f]/.test(value);
-}
-function distinct(peers: readonly { machineId: string; alias: string }[], local: string): boolean {
-  return peers.every(peer => peer.machineId !== local) && new Set(peers.map(peer => peer.machineId)).size === peers.length
-    && new Set(peers.map(peer => peer.alias.toLowerCase())).size === peers.length;
-}
 
 /** A present but invalid file opts in and fails closed rather than falling back to federation. */
 export function hasV0IntercomConfig(root: string): boolean {
   try { lstatSync(join(root, "roam", "intercom-v0.json")); return true; }
   catch (error) { return (error as NodeJS.ErrnoException).code !== "ENOENT"; }
-}
-
-function readRoutes(root: string, config: RoamConfig): Routes {
-  if (!config.enabled || config.intercom.enabled) throw new Error("Intercom v0 is not enabled");
-  const file = join(root, "roam", "intercom-v0.json");
-  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  let value: unknown;
-  try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.nlink !== 1 || stat.size > 64 * 1024 ||
-        typeof process.getuid === "function" && stat.uid !== process.getuid() ||
-        process.platform !== "win32" && (stat.mode & 0o7777) !== 0o600) throw new Error("Unsafe intercom configuration");
-    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(readFileSync(fd)));
-  } finally { closeSync(fd); }
-  if (!object(value) || !keys(value, ["version", "sendTo", "acceptFrom"]) || value.version !== 1 ||
-      !Array.isArray(value.sendTo) || value.sendTo.length > 8 || !Array.isArray(value.acceptFrom) || value.acceptFrom.length > 8)
-    throw new Error("Invalid intercom configuration");
-  const sendTo = value.sendTo.map(readPeer);
-  if (sendTo.some(peer => !peer.agentDir || !isAbsolute(peer.agentDir) || !alias(peer.alias)) ||
-      !distinct(sendTo, config.machineId) || config.role === "box" && sendTo.some(peer => peer.machineId === config.hubMachineId))
-    throw new Error("Invalid intercom routes");
-  const acceptFrom = value.acceptFrom.map((entry): AcceptedPeer => {
-    if (!object(entry) || !keys(entry, ["machineId", "alias"]) || !isMachineId(entry.machineId) || !alias(entry.alias))
-      throw new Error("Invalid intercom source");
-    return { machineId: entry.machineId, alias: entry.alias };
-  });
-  if (!distinct(acceptFrom, config.machineId) || config.role === "hub" && acceptFrom.length > 0)
-    throw new Error("Invalid intercom sources");
-  const outboundAliases = new Map(sendTo.map(peer => [peer.alias.toLowerCase(), peer.machineId]));
-  for (const source of acceptFrom) {
-    const outbound = outboundAliases.get(source.alias.toLowerCase());
-    if (outbound !== undefined && outbound !== source.machineId) throw new Error("Conflicting intercom aliases");
-  }
-  const agentDir = loadHerdrConfig(root).agentDirectory;
-  if (!isAbsolute(agentDir) || process.env.PI_CODING_AGENT_DIR !== undefined && process.env.PI_CODING_AGENT_DIR !== agentDir)
-    throw new Error("Intercom agent directory mismatch");
-  return { agentDir, sendTo, acceptFrom };
 }
 
 async function withHomes<T>(root: string, config: RoamConfig, read: (homes: ReturnType<typeof createHomeStore>) => Promise<T>): Promise<T> {
@@ -99,11 +49,11 @@ async function withHomes<T>(root: string, config: RoamConfig, read: (homes: Retu
   } finally { db.close(); }
 }
 
-function homeCode(home: RelocateHome | null, machineId: string, epoch: number): V0Code | null {
+function homeCode(home: RelocateHome | null, machineId: string, epoch: number | undefined): V0Code | null {
   if (!home) return "changed";
   if (home.state === "moving") return "moving";
   if (home.state === "stopped") return "offline";
-  if (home.machineId !== machineId || home.epoch !== epoch) return "changed";
+  if (home.machineId !== machineId || (epoch !== undefined && home.epoch !== epoch)) return "changed";
   return null;
 }
 function refused(code: V0Code): V0Refused { return { kind: "refused", code }; }
@@ -144,7 +94,7 @@ function selectedTarget(to: string): { kind: "bare"; value: string } | { kind: "
   if (to.length > 1024 || to.indexOf("/", slash + 1) >= 0 || /[\u0000-\u001f\u007f-\u009f]/.test(to)) return null;
   try {
     const machine = decodeURIComponent(to.slice(0, slash)), value = decodeURIComponent(to.slice(slash + 1));
-    return alias(machine) && value.length > 0 && value.length <= 256 && value.trim().length > 0 &&
+    return isV0Alias(machine) && value.length > 0 && value.length <= 256 && value.trim().length > 0 &&
       !/[\u0000-\u001f\u007f-\u009f]/.test(value) ? { kind: "qualified", machine, value } : null;
   } catch { return null; }
 }
@@ -174,16 +124,20 @@ async function bounded<T>(deadline: number, signal: AbortSignal | undefined, wor
   });
 }
 
-export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
-  prepare: V0Prepare;
-  handle(raw: unknown): Promise<V0AgentReply | null>;
-} {
-  const broker = deps.broker ?? requestV0Broker;
+type V0WireRequest = V0AgentRequest | V0RelayAgentRequest;
+class DirectRouteUnavailable extends Error {}
 
-  async function callPeer(configured: Routes, peer: Peer, request: V0AgentRequest, deadline: number,
-    deliveryDeadline: number, signal?: AbortSignal): Promise<V0Reply> {
-    if (!parseV0AgentRequest(request)) return refused("invalid");
-    let invoked = false;
+function replyResult(reply: V0AgentReply): V0Reply {
+  const { version: _version, requestId: _requestId, machineId: _machineId, ...result } = reply;
+  return result;
+}
+
+function createV0PeerCaller(root: string, deps: V0IntercomDeps) {
+  return async function callPeer(configured: V0Routes, peer: Peer, wire: V0WireRequest, deadline: number,
+    deliveryDeadline: number, signal?: AbortSignal, onDeliveryHandOff?: () => void, onRouteUnavailable?: () => void): Promise<V0Reply> {
+    const request = wire.version === 2 ? parseV0RelayAgentRequest(wire)?.request : parseV0AgentRequest(wire);
+    if (!request) return refused("invalid");
+    let invoked = false, resolved = false;
     try {
       return await bounded(deadline, signal, async callSignal => {
         const transport = deps.transport?.(configured.sendTo) ?? createTransport({ ...localHerdrConnection(root), enrolled: configured.sendTo });
@@ -191,14 +145,16 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
         if (resolveMs <= 0) throw new Error("Intercom delivery deadline expired");
         const target = await bounded(Math.min(deadline, deliveryDeadline), callSignal,
           resolveSignal => transport.resolve(peer, { timeoutMs: resolveMs, signal: resolveSignal }));
+        resolved = true;
+        if ((wire.version === 2 || onRouteUnavailable) && !samePeer(peer, target)) return refused("changed");
         if (callSignal.aborted || performance.now() >= deliveryDeadline) throw new Error("Intercom delivery deadline expired");
         const remaining = Math.floor(deadline - performance.now());
         if (remaining <= POST_CHECK_MS) throw new Error("Intercom post-check reserve unavailable");
-        const input = request.kind === "lookup" ? { stdin: Buffer.from(JSON.stringify(request)) } : {
+        const input = request.kind === "lookup" ? { stdin: Buffer.from(JSON.stringify(wire)) } : {
           stdinForTimeout: (remoteMs: number) => {
             const deliveryMs = Math.floor(deliveryDeadline - performance.now());
             if (callSignal.aborted || deliveryMs <= 0) throw new Error("Intercom delivery deadline expired");
-            let outbound = request;
+            let outbound = wire;
             if (request.kind === "ask") {
               // Herdr starts this window before the remote agent reads stdin.
               const timeoutMs = Math.min(request.timeoutMs, deliveryMs, remoteMs - REMOTE_ASK_STARTUP_MS);
@@ -207,18 +163,22 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
             }
             const body = Buffer.from(JSON.stringify(outbound));
             invoked = true;
+            onDeliveryHandOff?.();
             return body;
           },
         };
         const output = await transport.exec(target, ["roam", "agent", "--v0", "intercom"], {
           timeoutMs: remaining, maxBytes: V0_INTERCOM_BYTES, postReserveMs: POST_CHECK_MS, signal: callSignal, ...input,
+          ...(onRouteUnavailable && { onConnected(connected: boolean) { if (!connected) throw new DirectRouteUnavailable(); } }),
         });
         if (!Buffer.isBuffer(output) || output.length > V0_INTERCOM_BYTES) throw new Error("Invalid intercom reply size");
         const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(output));
-        const reply = parseV0AgentReply(raw);
+        const reply = parseV0AgentReply(raw, wire.version === 2 && wire.thread?.kind === "reply");
         if (!reply || reply.requestId !== request.requestId || reply.machineId !== peer.machineId ||
-            reply.kind === "refused" && reply.code === "reply-only") throw new Error("Uncorrelated intercom reply");
-        const { version: _version, requestId: _requestId, machineId: _machineId, ...result } = reply;
+            wire.version === 1 && reply.kind === "refused" && reply.code === "reply-only")
+          throw new Error("Uncorrelated intercom reply");
+        if (wire.version === 2 && request.kind === "deliver" && !invoked) throw new Error("Missing intercom delivery hand-off");
+        const result = replyResult(reply);
         if (result.kind === "refused") return result;
         if (request.kind === "lookup") {
           if (result.kind !== "matches") throw new Error("Invalid lookup result");
@@ -232,17 +192,39 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
       });
     } catch (error) {
       if (request.kind !== "lookup" && invoked) return { kind: "unknown", id: request.message.id };
+      if (!invoked && onRouteUnavailable && !signal?.aborted && performance.now() < deliveryDeadline) {
+        if (error instanceof DirectRouteUnavailable || error instanceof HerdrError && error.code === "machine-not-found") onRouteUnavailable();
+        else if (!resolved && isHerdrConnectivityFailure(error)) {
+          // A failed dial alone says nothing about enrollment, trust, or the peer's identity.
+          try {
+            const states = await bounded(deliveryDeadline, signal,
+              s => observeV0HerdrRoutes(localHerdrConnection(root), [peer], s));
+            const state = states.get(peer.machineId);
+            if (state === "missing" || state === "disconnected") onRouteUnavailable();
+          } catch { /* No positive route observation. Preserve the refusal. */ }
+        }
+      }
       return refused(error instanceof HerdrError && (error.code === "machine-not-found" || error.code === "machine-ambiguous")
         ? "invalid-config" : "unreachable");
     }
-  }
+  };
+}
+
+export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
+  prepare: V0Prepare;
+  prepareReply: V0PrepareReply;
+  handle(raw: unknown): Promise<V0AgentReply | null>;
+} {
+  const broker = deps.broker ?? requestV0Broker;
+  const callPeer = createV0PeerCaller(root, deps);
+  const receive = createV0AgentReceiver(root, broker);
 
   const prepare: V0Prepare = async ({ to, from, locals, signal }) => {
     const deadline = performance.now() + V0_INTERCOM_MS;
     const selector = selectedTarget(to);
     if (!selector) return refused("invalid");
-    let config: RoamConfig | undefined, configured: Routes | undefined;
-    try { config = readLocalIdentity(root); configured = readRoutes(root, config); }
+    let config: RoamConfig | undefined, configured: V0Routes | undefined;
+    try { config = readLocalIdentity(root); configured = readV0Routes(root, config); }
     catch { /* Neither identity nor routes are needed to reach a known local peer. */ }
     let all: readonly RelocateHome[] | null = null;
     if (config) {
@@ -270,7 +252,8 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
     const senderHome = byId(from.address?.sessionId ?? from.id);
     const qualifiedPeer = selector.kind === "qualified" ? configured.sendTo.find(peer => peer.alias.toLowerCase() === selector.machine.toLowerCase()) : undefined;
     const qualifiedHome = selector.kind === "qualified" ? byId(selector.value) : null;
-    const exactHome = unqualifiedHome ?? (qualifiedPeer && qualifiedHome?.machineId === qualifiedPeer.machineId ? qualifiedHome : null);
+    let qualifiedMachine: string | undefined = qualifiedPeer?.machineId;
+    let exactHome = unqualifiedHome ?? (qualifiedPeer && qualifiedHome?.machineId === qualifiedPeer.machineId ? qualifiedHome : null);
     const macQualified = selector.kind === "qualified" && configured.acceptFrom.some(peer =>
       peer.machineId === hubMachineId && peer.alias.toLowerCase() === selector.machine.toLowerCase());
     if (role === "box" && (exactHome?.machineId === hubMachineId || macQualified)) return refused("reply-only");
@@ -285,7 +268,24 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
     const source: V0Endpoint = candidateSource;
     const senderCode = homeCode(senderHome, machineId, source.homeEpoch);
     if (senderCode) return refused(senderCode);
-    if (qualifiedPeer && qualifiedHome && qualifiedHome.machineId !== qualifiedPeer.machineId) return refused("no-match");
+    const useRelays = configured.version === 2;
+    const knownPeers = [...configured.sendTo, ...configured.acceptFrom, ...config.peers];
+    const machineLabel = (id: string) => knownPeers.find(peer => peer.machineId === id)?.alias ?? id;
+    if (useRelays && selector.kind === "qualified") {
+      let advertised;
+      try { advertised = await bounded(deadline, signal, s => configuredRelayLinks(configured!, s)); }
+      catch { return refused("unreachable"); }
+      const qualifier = selector.machine.toLowerCase();
+      const reachable = advertised.filter(link => link.state === "up").flatMap(link => link.reach);
+      const matches = new Set([...knownPeers, ...reachable].filter(peer => isMachineId(peer.machineId) &&
+        (peer.alias.toLowerCase() === qualifier || peer.machineId === qualifier)).map(peer => peer.machineId));
+      if (qualifiedHome?.machineId === qualifier) matches.add(qualifiedHome.machineId);
+      if (matches.size > 1) return refused("ambiguous");
+      [qualifiedMachine] = matches;
+      if (role === "box" && qualifiedMachine === hubMachineId) return refused("reply-only");
+      exactHome = qualifiedHome?.machineId === qualifiedMachine ? qualifiedHome : null;
+    }
+    if (qualifiedMachine && qualifiedHome && qualifiedHome.machineId !== qualifiedMachine) return refused("no-match");
 
     const localPlan = (target: LocalSessionInfo) => {
       const plan = pinLocal(from, target);
@@ -311,24 +311,33 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
       if (local.length) return local.length > 1 ? refused("ambiguous") : localPlan(local[0]);
     }
 
-    const peers = exactHome ? configured.sendTo.filter(peer => peer.machineId === exactHome.machineId)
-      : selector.kind === "qualified" ? configured.sendTo.filter(peer => peer.alias.toLowerCase() === selector.machine.toLowerCase())
-      : configured.sendTo.filter(peer => all.some(home => home.machineId === peer.machineId && home.state === "running"));
-    if (!peers.length) return exactHome || selector.kind === "qualified" ? refused("not-configured") : refused("no-match");
+    const targetMachine = exactHome?.machineId ?? qualifiedMachine;
+    const remoteHomes = new Set(all.filter(home => home.state === "running" && home.machineId !== machineId &&
+      !(role === "box" && home.machineId === hubMachineId)).map(home => home.machineId));
+    const peers = targetMachine ? configured.sendTo.filter(peer => peer.machineId === targetMachine)
+      : selector.kind === "qualified" ? [] : configured.sendTo.filter(peer => remoteHomes.has(peer.machineId));
     const query = exactHome ? { by: "id" as const, value: exactHome.sessionId }
       : { by: "name" as const, value: selector.value };
     const sourceWire = { ...source, machineId };
     const agentDir = configured.agentDir;
+    const relayTarget: RelayTarget | undefined = useRelays && targetMachine && targetMachine !== machineId
+      ? { machineId: targetMachine, selector: query, ...(exactHome && { homeEpoch: exactHome.epoch }) } : undefined;
+    const fanOut = selector.kind === "bare" && !exactHome;
+    if (useRelays && fanOut && [...remoteHomes].some(id => !peers.some(peer => peer.machineId === id))) return refused("incomplete");
+    if (!peers.length) return relayTarget ? relayPlan(relayTarget) : exactHome || selector.kind === "qualified" ? refused("not-configured") : refused("no-match");
     const lookups = await Promise.all(peers.map(async peer => {
       const request: Extract<V0AgentRequest, { kind: "lookup" }> = {
         version: 1, requestId: randomUUID(), toMachineId: peer.machineId, from: sourceWire, kind: "lookup", selector: query,
       };
-      return { peer, request, result: await callPeer(configured, peer, request, deadline, deadline, signal) };
+      let absent = false;
+      const result = await callPeer(configured, peer, request, deadline, deadline, signal, undefined,
+        useRelays ? () => { absent = true; } : undefined);
+      return { peer, request, result, absent };
     }));
     const candidates: { peer: Peer; endpoint: V0Endpoint }[] = [];
-    const fanOut = selector.kind === "bare" && !exactHome;
     let incomplete = false;
-    for (const { peer, request, result } of lookups) {
+    for (const { peer, request, result, absent } of lookups) {
+      if (absent && relayTarget) return relayPlan(relayTarget, peer);
       if (result.kind === "matches") {
         const bad = result.targets.map(endpoint => !matching(endpoint, request) ? "unauthorized" as const
           : homeCode(byId(endpoint.address.sessionId), peer.machineId, endpoint.homeEpoch)).find(code => code !== null);
@@ -343,11 +352,91 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
       incomplete = true;
     }
     if (candidates.length > 1) return refused("ambiguous");
-    if (!candidates.length) return refused(incomplete ? "incomplete" : exactHome ? "offline" : "no-match");
+    if ((incomplete && useRelays) || !candidates.length) return refused(incomplete ? "incomplete" : exactHome ? "offline" : "no-match");
     const { peer, endpoint } = candidates[0];
     if (endpoint.address.sessionId === source.address.sessionId) return refused("self");
     const pinnedPeer = { ...peer }, pinnedTarget = { ...endpoint, address: { ...endpoint.address } };
     const label = `${encodeURIComponent(peer.alias)}/${encodeURIComponent(endpoint.name ?? endpoint.address.sessionId)}`;
+
+    function relayPlan(target: RelayTarget, unavailablePeer?: Peer): V0SendPlan {
+      const targetMachine = machineLabel(target.machineId);
+      return { kind: "remote", label: `${encodeURIComponent(targetMachine)}/${encodeURIComponent(target.selector.value)}`,
+        async ask(message, timeoutMs, abort) {
+          if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) return refused("invalid");
+          if (timeoutMs < RELAY_ASK_MIN_MS) return { kind: "refused", code: "ask-timeout-too-short", targetMachine };
+          const started = performance.now();
+          const deadline = started + Math.min(timeoutMs, V0_ASK_MAX_MS);
+          const deliveryDeadline = Math.min(deadline, started + V0_INTERCOM_MS);
+          const checked = await revalidate(target, unavailablePeer, deliveryDeadline, abort);
+          if ("kind" in checked) return { ...checked, targetMachine };
+          if (checked.current.version !== 2) return { ...refused("changed"), targetMachine };
+          return relayAsk(checked.current, target, message, deadline, deliveryDeadline, abort);
+        },
+        async send(message, abort) {
+          const deadline = performance.now() + V0_INTERCOM_MS;
+          const checked = await revalidate(target, unavailablePeer, deadline, abort);
+          if ("kind" in checked) return { ...checked, targetMachine };
+          if (checked.current.version !== 2) return { ...refused("changed"), targetMachine };
+          return submit(checked.current, target, message, deadline, abort);
+        } };
+    }
+
+    function submit(current: V0Routes, target: RelayTarget, message: V0Text, deadline: number, abort?: AbortSignal) {
+      return routeV0Relay(current, machineId, machineLabel(target.machineId),
+        { type: "submit", kind: "send", from: sourceWire, target, message }, abort, deadline);
+    }
+
+    async function relayAsk(current: V0Routes, target: RelayTarget, message: V0Text, deadline: number, deliveryDeadline: number, abort?: AbortSignal): Promise<V0RouteResult> {
+      const targetMachine = machineLabel(target.machineId);
+      const timeoutMs = Math.floor(deadline - performance.now());
+      if (performance.now() >= deliveryDeadline || abort?.aborted) return { ...refused("unreachable"), targetMachine };
+      if (timeoutMs < RELAY_ASK_MIN_MS) return { kind: "refused", code: "ask-timeout-too-short", targetMachine };
+      let waiter;
+      try { waiter = await beginV0RelayAsk(current.agentDir, { from: sourceWire, target, askId: message.id, timeoutMs }, abort); }
+      catch { return { ...refused("unreachable"), targetMachine }; }
+      try {
+        const remainingMs = Math.floor(deadline - performance.now());
+        if (remainingMs <= 0 || performance.now() >= deliveryDeadline || abort?.aborted) return { ...refused("unreachable"), targetMachine };
+        const delivery: V0RouteResult = await routeV0Relay(current, machineId, targetMachine,
+          { type: "submit", kind: "ask", from: sourceWire, target, message, timeoutMs: remainingMs }, abort, deliveryDeadline)
+          .catch(() => ({ kind: "unknown" as const, id: message.id, targetMachine }));
+        if (delivery.kind === "refused") return delivery;
+        // A delivery result releases the poll slot, not the waiter. Lost results cannot trigger a resend.
+        const reply = await waiter.result;
+        if (reply.kind === "no_reply" && delivery.kind === "unknown") return delivery;
+        const { path, targetMachine: machine, relaySkips } = delivery;
+        return { ...reply, path, targetMachine: machine, relaySkips };
+      } finally { waiter.close(); }
+    }
+
+    async function revalidate(target: RelayTarget, pinnedPeer: Peer | undefined, deadline: number, abort?: AbortSignal) {
+      let identity: RoamConfig, current: V0Routes;
+      try { identity = readLocalIdentity(root); current = readV0Routes(root, identity); }
+      catch { return refused("invalid-config"); }
+      if (identity.machineId !== machineId || current.agentDir !== agentDir) return refused("changed");
+      try {
+        const code = await bounded(deadline, abort, () => withHomes(root, identity, async homes => {
+          const sourceHome = await homes.read(source.address.sessionId as SessionId);
+          const sourceCode = homeCode(sourceHome, identity.machineId, source.homeEpoch);
+          if (sourceCode) return sourceCode;
+          if (identity.role === "box" && target.machineId === identity.hubMachineId) return "reply-only";
+          if (target.selector.by === "name") return null;
+          const targetHome = await homes.read(target.selector.value as SessionId);
+          if (targetHome && identity.role === "box" && targetHome.machineId === identity.hubMachineId) return "reply-only";
+          return homeCode(targetHome, target.machineId, target.homeEpoch);
+        }));
+        if (code) return refused(code);
+      } catch { return refused(abort?.aborted || performance.now() >= deadline ? "unreachable" : "home-unreadable"); }
+      const currentPeer = current.sendTo.find(item => item.machineId === target.machineId);
+      if (pinnedPeer ? !currentPeer || !samePeer(currentPeer, pinnedPeer) : currentPeer) return refused("changed");
+      try {
+        const active = await bounded(deadline, abort, s => broker(current.agentDir,
+          { kind: "lookup", scopeId: source.address.scopeId, selector: { by: "id", value: source.address.sessionId } }, s));
+        if (active.kind === "refused") return active.code === "reply-only" ? refused("unreachable") : active;
+        if (active.kind !== "matches" || active.targets.length !== 1 || !sameEndpoint(active.targets[0], source)) return refused("changed");
+      } catch { return refused("unreachable"); }
+      return { current, currentPeer };
+    }
 
     async function dispatch(kind: "deliver" | "ask", message: V0Text, timeoutMs: number | undefined, abort?: AbortSignal) {
       if (kind === "ask" && (!Number.isSafeInteger(timeoutMs) || timeoutMs! <= 0)) return refused("invalid");
@@ -358,57 +447,106 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
       // Leave time for the ask result and Herdr's post-check after the ask's timeout.
       const deadline = askMs === undefined ? setupDeadline
         : started + Math.min(DEFAULT_LIMITS.directMs, askMs + ASK_REPLY_RESERVE_MS + POST_CHECK_MS);
-      let identity: RoamConfig, current: Routes;
-      try { identity = readLocalIdentity(root); current = readRoutes(root, identity); }
-      catch { return refused("invalid-config"); }
-      if (identity.machineId !== machineId || current.agentDir !== agentDir) return refused("changed");
-      try {
-        const code = await withHomes(root, identity, async homes => {
-          const sourceHome = await homes.read(source.address.sessionId as SessionId);
-          const sourceCode = homeCode(sourceHome, identity.machineId, source.homeEpoch);
-          if (sourceCode) return sourceCode;
-          const targetHome = await homes.read(pinnedTarget.address.sessionId as SessionId);
-          if (targetHome && identity.role === "box" && targetHome.machineId === identity.hubMachineId) return "reply-only";
-          return homeCode(targetHome, pinnedPeer.machineId, pinnedTarget.homeEpoch);
-        });
-        if (code) return refused(code);
-      } catch { return refused("home-unreadable"); }
-      const currentPeer = current.sendTo.find(item => item.machineId === pinnedPeer.machineId);
-      if (!currentPeer || !samePeer(currentPeer, pinnedPeer)) return refused("changed");
-      try {
-        const active = await bounded(Math.min(deadline, setupDeadline), abort, s => broker(current.agentDir,
-          { kind: "lookup", scopeId: source.address.scopeId, selector: { by: "id", value: source.address.sessionId } }, s));
-        if (active.kind === "refused") return active.code === "reply-only" ? refused("unreachable") : active;
-        if (active.kind !== "matches" || active.targets.length !== 1 || !sameEndpoint(active.targets[0], source)) return refused("changed");
-      } catch { return refused("unreachable"); }
+      const target: RelayTarget = { machineId: pinnedPeer.machineId,
+        selector: { by: "id", value: pinnedTarget.address.sessionId }, homeEpoch: pinnedTarget.homeEpoch };
+      const route = useRelays && kind === "deliver" ? { path: "direct" as const, targetMachine: pinnedPeer.alias } : {};
+      const checked = await revalidate(target, pinnedPeer, Math.min(deadline, setupDeadline), abort);
+      if ("kind" in checked) return { ...checked, ...route };
       const common = { version: 1 as const, requestId: randomUUID(), toMachineId: pinnedPeer.machineId,
         from: sourceWire, target: pinnedTarget, message };
       const request: V0AgentRequest = kind === "deliver" ? { ...common, kind: "deliver" }
         : { ...common, kind: "ask", timeoutMs: askMs! };
-      const result = await callPeer(current, currentPeer, request, deadline, setupDeadline, abort);
-      return result.kind === "matches" ? { kind: "unknown" as const, id: message.id } : result;
+      let absent = false;
+      const result = await callPeer(checked.current, checked.currentPeer!, request, deadline, setupDeadline, abort, undefined,
+        useRelays && checked.current.version === 2 ? () => { absent = true; } : undefined);
+      if (absent) {
+        if (askDeadline !== undefined) return relayAsk(checked.current, target, message, askDeadline,
+          Math.min(askDeadline, performance.now() + V0_INTERCOM_MS), abort);
+        return submit(checked.current, target, message, setupDeadline, abort);
+      }
+      return { ...(result.kind === "matches" ? { kind: "unknown" as const, id: message.id } : result), ...route };
     }
     return { kind: "remote", label,
       send: (message, abort) => dispatch("deliver", message, undefined, abort),
       ask: (message, timeoutMs, abort) => dispatch("ask", message, timeoutMs, abort) };
   };
 
+  const prepareReply: V0PrepareReply = async ({ from, askId, message, signal }) => {
+    const deadline = performance.now() + V0_INTERCOM_MS;
+    const source = endpointOf(from);
+    if (!source) return refused("changed");
+    let config: RoamConfig, routes: V0Routes;
+    try { config = readLocalIdentity(root); routes = readV0Routes(root, config); }
+    catch { return refused("invalid-config"); }
+    if (routes.version !== 2) return refused("changed");
+    let grant;
+    try { grant = await bounded(deadline, signal, s => authorizeV0RelayReply(routes.agentDir, source, askId, s)); }
+    catch { return refused("unreachable"); }
+    if ("kind" in grant) return grant;
+    const { asker: { machineId: targetMachineId, ...target }, remainingMs } = grant;
+    const deliveryDeadline = Math.min(deadline, performance.now() + remainingMs);
+    const machineId = config.machineId;
+    try {
+      const stale = await bounded(deliveryDeadline, signal, () => withHomes(root, config, async homes =>
+        homeCode(await homes.read(source.address.sessionId as SessionId), machineId, source.homeEpoch) ??
+        homeCode(await homes.read(target.address.sessionId as SessionId), targetMachineId, target.homeEpoch)));
+      if (stale) return refused(stale);
+    } catch { return refused(signal?.aborted || performance.now() >= deliveryDeadline ? "unreachable" : "home-unreadable"); }
+    const fromWire = { ...source, machineId };
+    const thread = { kind: "reply" as const, replyTo: askId };
+    const unknown = { kind: "unknown" as const, id: message.id };
+    if (targetMachineId === machineId) {
+      try {
+        const result = await bounded(deliveryDeadline, signal, s => broker(routes.agentDir,
+          { kind: "deliver", from: v0BrokerOrigin(fromWire, config.intercom.machineAlias ?? machineId), target, message, thread }, s));
+        return { ...(result.kind === "matches" ? unknown : result), path: "local" };
+      } catch { return { ...unknown, path: "local" }; }
+    }
+    const peer = routes.sendTo.find(entry => entry.machineId === targetMachineId);
+    if (peer) {
+      const request = { version: 1 as const, requestId: randomUUID(), toMachineId: targetMachineId,
+        kind: "deliver" as const, from: fromWire, target, message };
+      let absent = false;
+      const result = await callPeer(routes, peer, { version: 2, relayId: null, request, thread }, deliveryDeadline, deliveryDeadline,
+        signal, undefined, () => { absent = true; });
+      if (!absent) return { ...(result.kind === "matches" ? unknown : result), path: "direct", targetMachine: peer.alias };
+    }
+    const label = peer?.alias ?? [...routes.acceptFrom, ...config.peers].find(entry => entry.machineId === targetMachineId)?.alias ?? targetMachineId;
+    return routeV0Relay(routes, machineId, label, { type: "submit", kind: "reply", replyTo: askId, from: fromWire, message,
+      target: { machineId: targetMachineId, selector: { by: "id", value: target.address.sessionId }, homeEpoch: target.homeEpoch } }, signal, deliveryDeadline);
+  };
+
   async function handle(raw: unknown): Promise<V0AgentReply | null> {
-    const request = parseV0AgentRequest(raw);
-    if (!request) return null;
-    const started = performance.now();
-    const askDeadline = request.kind === "ask" ? started + request.timeoutMs : undefined;
-    const deliveryDeadline = askDeadline ?? started + V0_INTERCOM_MS;
+    const wire = parseV0AgentRequest(raw) ?? parseV0RelayAgentRequest(raw);
+    if (!wire) return null;
+    const deadline = performance.now() + (wire.version === 1 && wire.kind === "ask" ? wire.timeoutMs : V0_INTERCOM_MS);
     let config: RoamConfig;
     try { config = readLocalIdentity(root); } catch { return null; }
+    return receive(config, wire, deadline);
+  }
+  return { prepare, prepareReply, handle };
+}
+
+function createV0AgentReceiver(root: string, broker: typeof requestV0Broker) {
+  return async function receive(config: RoamConfig, wire: V0WireRequest, deliveryDeadline: number,
+    signal?: AbortSignal, onDeliveryHandOff?: () => void): Promise<V0AgentReply> {
+    const request = wire.version === 2 ? wire.request : wire;
     const envelope = (result: V0Reply): V0AgentReply => ({ version: 1, requestId: request.requestId, machineId: config.machineId, ...result });
-    if (config.role === "hub" || request.toMachineId !== config.machineId) return envelope(refused("unauthorized"));
-    let configured: Routes;
-    try { configured = readRoutes(root, config); } catch { return envelope(refused("invalid-config")); }
+    if (request.toMachineId !== config.machineId || wire.version === 1 && config.role === "hub")
+      return envelope(refused("unauthorized"));
+    let configured: V0Routes;
+    try { configured = readV0Routes(root, config); } catch { return envelope(refused("invalid-config")); }
+    const thread = wire.version === 2 ? wire.thread : undefined;
+    if (wire.version === 2) {
+      if (configured.version !== 2 || wire.relayId !== null && !configured.relays.includes(wire.relayId)) return envelope(refused("unauthorized"));
+      // A hub may validate a reply delivered by its own relay. No exec route to the hub is opened.
+      if (config.role === "hub" && !(thread?.kind === "reply" && wire.relayId === config.machineId && onDeliveryHandOff))
+        return envelope(refused("reply-only"));
+    }
     const source = configured.acceptFrom.find(peer => peer.machineId === request.from.machineId);
     if (!source) return envelope(refused("unauthorized"));
     try {
-      const code = await bounded(deliveryDeadline, undefined, () => withHomes(root, config, async homes => {
+      const code = await bounded(deliveryDeadline, signal, () => withHomes(root, config, async homes => {
         const sourceHome = await homes.read(request.from.address.sessionId as SessionId);
         const sourceCode = homeCode(sourceHome, request.from.machineId, request.from.homeEpoch);
         if (sourceCode) return sourceCode;
@@ -419,18 +557,23 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
         return null;
       }));
       if (code) return envelope(refused(code));
-    } catch { return envelope(refused(performance.now() >= deliveryDeadline ? "unreachable" : "home-unreadable")); }
+    } catch { return envelope(refused(signal?.aborted || performance.now() >= deliveryDeadline ? "unreachable" : "home-unreadable")); }
 
     let result: V0Reply;
     try {
       if (request.kind === "lookup") {
-        result = await bounded(deliveryDeadline, undefined, signal => broker(configured.agentDir,
-          { kind: "lookup", scopeId: request.from.address.scopeId, selector: request.selector }, signal));
+        result = await bounded(deliveryDeadline, signal, brokerSignal => broker(configured.agentDir,
+          { kind: "lookup", scopeId: request.from.address.scopeId, selector: request.selector }, brokerSignal));
       } else if (request.kind === "deliver") {
-        result = await bounded(deliveryDeadline, undefined, signal => broker(configured.agentDir,
-          { kind: "deliver", from: v0BrokerOrigin(request.from, source.alias), target: request.target, message: request.message }, signal));
+        result = await bounded(deliveryDeadline, signal, brokerSignal => {
+          const from = v0BrokerOrigin(request.from, source.alias);
+          // A local relay hands off here, after the same checks as a remote receipt.
+          onDeliveryHandOff?.();
+          return broker(configured.agentDir, { kind: "deliver", from, target: request.target, message: request.message,
+            ...(thread && { thread }) }, brokerSignal);
+        });
       } else {
-        const remaining = Math.floor(askDeadline! - performance.now());
+        const remaining = Math.floor(deliveryDeadline - performance.now());
         if (remaining <= 0 || performance.now() >= deliveryDeadline) return envelope(refused("unreachable"));
         result = await broker(configured.agentDir, { kind: "ask", from: v0BrokerOrigin(request.from, source.alias), target: request.target,
           message: request.message, timeoutMs: Math.min(remaining, V0_ASK_MAX_MS) });
@@ -438,13 +581,13 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
     } catch {
       result = request.kind === "lookup" ? refused("unreachable") : { kind: "unknown", id: request.message.id };
     }
-    if (result.kind === "refused" && result.code === "reply-only") result = request.kind === "lookup"
+    if (wire.version === 1 && result.kind === "refused" && result.code === "reply-only") result = request.kind === "lookup"
       ? refused("unreachable") : { kind: "unknown", id: request.message.id };
     if (request.kind === "lookup" && result.kind === "matches") {
       if (result.targets.some(endpoint => !matching(endpoint, request))) return envelope(refused("unauthorized"));
       try {
         const targets = result.targets;
-        const code = await bounded(deliveryDeadline, undefined, () => withHomes(root, config, async homes => {
+        const code = await bounded(deliveryDeadline, signal, () => withHomes(root, config, async homes => {
           for (const endpoint of targets) {
             const stale = homeCode(await homes.read(endpoint.address.sessionId as SessionId), config.machineId, endpoint.homeEpoch);
             if (stale) return stale;
@@ -452,11 +595,102 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
           return null;
         }));
         if (code) return envelope(refused(code));
-      } catch { return envelope(refused(performance.now() >= deliveryDeadline ? "unreachable" : "home-unreadable")); }
+      } catch { return envelope(refused(signal?.aborted || performance.now() >= deliveryDeadline ? "unreachable" : "home-unreadable")); }
     }
     const answer = envelope(result);
-    return parseV0AgentReply(answer) ? answer : envelope(request.kind === "lookup"
+    return parseV0AgentReply(answer, thread?.kind === "reply") ? answer : envelope(request.kind === "lookup"
       ? refused("incomplete") : { kind: "unknown", id: request.message.id });
-  }
-  return { prepare, handle };
+  };
+}
+
+/** The poll carrier has already bound the origin to its linked peer. Never route a submission to another relay. */
+export function createV0RelayForwarder(root: string, deps: V0IntercomDeps = {}):
+  (submit: RelaySubmit, signal?: AbortSignal) => Promise<RelayResult> {
+  const callPeer = createV0PeerCaller(root, deps);
+  const broker = deps.broker ?? requestV0Broker;
+  const receive = createV0AgentReceiver(root, broker);
+  return async (submit, signal) => {
+    const { from, target, message } = submit;
+    const refuse = (code: V0Code) => relayRefused(message.id, code);
+    const started = performance.now();
+    const askDeadline = submit.kind === "ask" ? started + submit.timeoutMs : undefined;
+    const deadline = Math.min(started + V0_INTERCOM_MS, askDeadline ?? Infinity);
+    let attempted = false;
+    const handOff = () => { attempted = true; };
+    let config: RoamConfig, configured: V0Routes;
+    try { config = readLocalIdentity(root); configured = readV0Routes(root, config); }
+    catch { return refuse("invalid-config"); }
+    if (configured.version !== 2 || !configured.relays.includes(config.machineId)) return refuse("unauthorized");
+    const local = target.machineId === config.machineId;
+    const hub = target.machineId === config.hubMachineId;
+    if (hub && (!local || submit.kind !== "reply")) return refuse("reply-only");
+    if (submit.kind === "reply" && (target.selector.by !== "id" || target.homeEpoch === undefined)) return refuse("invalid");
+    const peer = local ? undefined : configured.sendTo.find(entry => entry.machineId === target.machineId);
+    if (!local && !peer) return refuse("not-configured");
+
+    async function checkHomes(identity: RoamConfig, targetId?: string, epoch?: number): Promise<V0Code | null> {
+      try {
+        return await bounded(deadline, signal, () => withHomes(root, identity, async homes => {
+          const sourceCode = homeCode(await homes.read(from.address.sessionId as SessionId), from.machineId, from.homeEpoch);
+          if (sourceCode || targetId === undefined) return sourceCode;
+          return homeCode(await homes.read(targetId as SessionId), target.machineId, epoch);
+        }));
+      } catch { return signal?.aborted || performance.now() >= deadline ? "unreachable" : "home-unreadable"; }
+    }
+
+    async function exchange(wire: V0RelayAgentRequest, identity: RoamConfig, routes: V0Routes, pinned?: Peer): Promise<V0Reply> {
+      if (pinned) return callPeer(routes, pinned, wire, deadline, deadline, signal, handOff);
+      if (!parseV0RelayAgentRequest(wire)) return refused("invalid");
+      return replyResult(await receive(identity, wire, deadline, signal, handOff));
+    }
+
+    try {
+      const knownId = target.selector.by === "id" ? target.selector.value : undefined;
+      const stale = await checkHomes(config, knownId, target.homeEpoch);
+      if (stale) return refuse(stale);
+      if (knownId === from.address.sessionId) return refuse("self");
+      const header = { version: 1 as const, toMachineId: target.machineId, from };
+      const lookup = { ...header, kind: "lookup" as const, requestId: randomUUID(), selector: target.selector };
+      const relayHeader = { version: 2 as const, relayId: config.machineId };
+      // This lookup stays on the hub's private socket. Only the subsequent reply can be admitted.
+      const found = hub ? await bounded(deadline, signal, s => broker(configured.agentDir,
+        { kind: "lookup", scopeId: from.address.scopeId, selector: target.selector }, s))
+        : await exchange({ ...relayHeader, request: lookup }, config, configured, peer);
+      if (found.kind === "refused") return refuse(found.code);
+      if (found.kind !== "matches") return refuse("incomplete");
+      if (found.targets.some(endpoint => !matching(endpoint, lookup))) return refuse("unauthorized");
+      if (found.targets.length > 1) return refuse("ambiguous");
+      const [endpoint] = found.targets;
+      if (!endpoint) return refuse(knownId === undefined ? "no-match" : "offline");
+      if (endpoint.address.sessionId === from.address.sessionId) return refuse("self");
+      if (target.homeEpoch !== undefined && target.homeEpoch !== endpoint.homeEpoch) return refuse("changed");
+      const pinnedTarget = { ...endpoint, address: { ...endpoint.address } };
+
+      let identity: RoamConfig, current: V0Routes;
+      try { identity = readLocalIdentity(root); current = readV0Routes(root, identity); }
+      catch { return refuse("invalid-config"); }
+      if (identity.machineId !== config.machineId || identity.hubMachineId !== config.hubMachineId ||
+          identity.role !== config.role || current.agentDir !== configured.agentDir) return refuse("changed");
+      if (current.version !== 2 || !current.relays.includes(identity.machineId)) return refuse("unauthorized");
+      const currentPeer = peer && current.sendTo.find(entry => entry.machineId === peer.machineId);
+      if (peer) {
+        if (!currentPeer || !samePeer(peer, currentPeer)) return refuse("changed");
+        const stale = await checkHomes(identity, pinnedTarget.address.sessionId, pinnedTarget.homeEpoch);
+        if (stale) return refuse(stale);
+      }
+      const request = { ...header, kind: "deliver" as const, requestId: randomUUID(), target: pinnedTarget, message };
+      let wire: V0RelayAgentRequest = { ...relayHeader, request };
+      if (submit.kind === "reply") wire = { ...relayHeader, request, thread: { kind: "reply", replyTo: submit.replyTo } };
+      if (askDeadline !== undefined) {
+        const timeoutMs = Math.floor(askDeadline - performance.now());
+        if (timeoutMs <= 0) return refuse("unreachable");
+        wire = { ...relayHeader, request, thread: { kind: "ask", timeoutMs } };
+      }
+      const outcome = await exchange(wire, identity, current, currentPeer);
+      if (!attempted) return refuse(outcome.kind === "refused" ? outcome.code : "unreachable");
+      if (outcome.kind === "refused" || outcome.kind === "socket_delivered" && outcome.id === message.id)
+        return { type: "result", messageId: message.id, attempted: true, outcome };
+      return relayUnknown(message.id);
+    } catch { return attempted ? relayUnknown(message.id) : refuse("unreachable"); }
+  };
 }

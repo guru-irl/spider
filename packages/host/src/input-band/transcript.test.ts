@@ -193,6 +193,28 @@ it("removes only outer blank content rows and keeps Pi's mouse dispatch", () => 
   expect(plain(tool.render(width))).toContain(" Expanded");
 });
 
+it("trims box-colored padding without dropping outer swatches painted in other backgrounds", () => {
+  const box = createHalfBox(1, text => theme.bg("toolSuccessBg", text));
+  box.addChild({
+    render: () => [
+      "\x1b[1;48;2;6;6;7;38;5;48m  \x1b[0m", // The box color, with unrelated text attributes.
+      "\x1b[48:2::6:6:7m  \x1b[49m", // The same color with colon-delimited SGR.
+      "\x1b[1;48;5;4m   \x1b[49m", // An index-color swatch.
+      "Label",
+      "\x1b[48:2::9:8:7m   \x1b[49m", // A truecolor swatch.
+      "\x1b[44m   \x1b[49m", // A palette swatch.
+      "\x1b[38;2;40;48;100m  \x1b[39m", // Foreground values are not SGR background codes.
+    ],
+    invalidate() {},
+  });
+  const rows = box.render(32);
+  verifyEdges(rows, 32);
+  expect(plain(rows).slice(1, -1)).toEqual(["", " Label", "", ""]);
+  expect(rows[1]).toContain("\x1b[1;48;5;4m");
+  expect(rows[3]).toContain("\x1b[48:2::9:8:7m");
+  expect(rows[4]).toContain("\x1b[44m");
+});
+
 it("leaves Pi's self-rendered tool shell and a box without padding unchanged", () => {
   const tool = new ToolExecutionComponent("self", "call", {}, {}, { renderShell: "self", renderCall: () => new Text("Self", 0, 0) }, tui, "/project");
   const noPadding = custom();

@@ -8,6 +8,32 @@ export function foregroundFromBackground(ansi: string): string | undefined {
   return simple ? `\x1b[${Number(simple[1]) - 10}m` : undefined;
 }
 
+/** A blank-looking row can still paint another background (for example a swatch). */
+export function hasOtherBackground(row: string, ansi: string): boolean {
+  const boxColor = ansi.slice(2, -1);
+  for (const [, params] of row.matchAll(/\x1b\[([0-9;:]*)m/g)) {
+    const fields = params.split(";");
+    for (let i = 0; i < fields.length; i++) {
+      const [head, ...subfields] = fields[i].split(":");
+      const code = Number(head);
+      if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107)) {
+        if (head !== boxColor) return true;
+      } else if (code === 38 || code === 48 || code === 58) {
+        let color = subfields;
+        if (color.length === 0) {
+          const count = fields[i + 1] === "2" ? 4 : fields[i + 1] === "5" ? 2 : 0;
+          color = fields.slice(i + 1, i + 1 + count);
+          i += count;
+        } else if (color[0] === "2" && color.length === 5 && (color[1] === "" || color[1] === "0")) {
+          color = [color[0], ...color.slice(2)]; // Default color space in colon-delimited RGB.
+        }
+        if (code === 48 && [head, ...color].join(";") !== boxColor) return true;
+      }
+    }
+  }
+  return false;
+}
+
 /** An explicit inner background still wins until the row resets it. */
 export function reopenBackground(row: string, ansi: string): string {
   if (!ansi) return row;

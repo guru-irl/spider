@@ -1,6 +1,6 @@
 import { Box, stripTerminalSequences, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import { BAND_GLYPHS } from "@spider/ui";
-import { foregroundFromBackground, reopenBackground } from "./ansi.js";
+import { foregroundFromBackground, hasOtherBackground, reopenBackground } from "./ansi.js";
 
 const BG_RESET = "\x1b[49m";
 const HALF_BOX = Symbol.for("spider.transcript.half-box");
@@ -44,7 +44,8 @@ export function bindHalfBox(component: Component, enabled: () => boolean): boole
     if (!enabled) return rows;
     const colors = rows.length >= 3 && edgeInk(rows[0], width);
     if (!colors || rows.at(-1) !== rows[0] || rows.some(isImageRow)) return rows;
-    const blank = (row: string) => stripTerminalSequences(row).trim() === "";
+    const blank = (row: string) => row === rows[0] ||
+      (stripTerminalSequences(row).trim() === "" && !hasOtherBackground(row, colors.bg));
     let first = 1, end = rows.length - 1;
     while (first < end && blank(rows[first])) first++;
     while (first < end && blank(rows[end - 1])) end--;

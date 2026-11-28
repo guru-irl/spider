@@ -21,10 +21,12 @@ label's one-space pad and let Pi handle clicks outside the actions.
 ## Card layout
 
 1. Pi owns the transcript spacer and the default tool box. Notification renderers
-   return their box without another spacer. Use Pi's `outputPad` when supplied.
-   The fallback is one column. Replace blank top and bottom padding with half
-   edges; remove blank content rows next to the edges. Keep one cell of fill on
-   each side by default, with no outline.
+   return their box without another spacer. Consecutive tool cards with half
+   edges have no blank row between them. Keep the spacer between a tool card and
+   other content. Use Pi's `outputPad` when supplied. The fallback is one column.
+   Replace blank top and bottom padding with half edges; remove blank content
+   rows next to the edges. Keep one cell of fill on each side by default, with
+   no outline.
 2. A title is `<logo> <bold command>[ · details]`. Do not add `spider` to the
    title. Italics identify agent roles only, including roles in rows and overlays.
 3. Align status markers under the logo. Align detail rows under the title text,

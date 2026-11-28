@@ -1,0 +1,106 @@
+name: Herdr package lifecycle pairs
+
+on:
+  push:
+    branches: [ci/wpkg-lifecycle-20261128]
+
+permissions:
+  contents: read
+
+env:
+  ONNXRUNTIME_NODE_INSTALL: skip
+
+jobs:
+  pair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        trial: [1, 2, 3, 4, 5]
+    steps:
+      - name: Checkout measurement tools
+        uses: actions/checkout@v4
+        with:
+          path: tools
+      - name: Checkout baseline
+        uses: actions/checkout@v4
+        with:
+          ref: ae645c07c842c7c25974440d0aae0f8ef60177ff
+          path: before
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: dd6c5c8fbea1acd36ee56dc6b4b4a7e45bc51dec
+          path: after
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+          cache-dependency-path: |
+            before/package-lock.json
+            after/package-lock.json
+      - name: Install SQLite CLI
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - name: Install and build baseline
+        working-directory: before
+        run: npm ci
+      - name: Install and build candidate
+        working-directory: after
+        run: npm ci
+      - name: Remove runner runtime directory
+        run: |
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+          test ! -e "$rundir"
+          echo "XDG_RUNTIME_DIR=" >> "$GITHUB_ENV"
+      - name: Verify the timing reporter
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools="$GITHUB_WORKSPACE/tools/scripts/wpkg-speed"
+          node --test "$tools/lifecycle-summary.test.mjs"
+          export WPKG_PROBE_ROOT="$GITHUB_WORKSPACE/before/.spider/scratch/wpkg-lifecycle-probe"
+          mkdir -p "$WPKG_PROBE_ROOT"
+          cp "$tools/lifecycle-probe.test.ts" "$WPKG_PROBE_ROOT/lifecycle.test.ts"
+          export WPKG_LIFECYCLE_REPORT="$WPKG_PROBE_ROOT/lifecycle.json"
+          cd "$GITHUB_WORKSPACE/before"
+          node node_modules/vitest/vitest.mjs run --config "$tools/lifecycle-probe.config.mjs" --maxWorkers=1 \
+            --reporter=json --reporter="$tools/lifecycle-reporter.mjs" --outputFile.json="$WPKG_PROBE_ROOT/results.json"
+          node "$tools/lifecycle-probe-check.mjs"
+      - name: Measure one alternating pair
+        env:
+          TRIAL: ${{ matrix.trial }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          tools="$GITHUB_WORKSPACE/tools"
+          output="$tools/.spider/scratch/wpkg-lifecycle"
+          mkdir -p "$output"
+          if (( TRIAL % 2 )); then order=(before after); else order=(after before); fi
+          {
+            echo "trial $TRIAL"
+            echo "order ${order[*]}"
+            echo "node $(node --version)"
+            echo "cores $(nproc)"
+            uname -a
+            lscpu | grep -E 'Model name|CPU\(s\)|Thread|Core|Socket' || true
+            df -h "$GITHUB_WORKSPACE"
+          } > "$output/machine.txt"
+          failed=0
+          for side in "${order[@]}"; do
+            if [[ "$side" == before ]]; then expected=19; else expected=40; fi
+            if ! (cd "$GITHUB_WORKSPACE/$side" && bash "$tools/scripts/wpkg-speed/profile-loaded.sh" "$tools" "$output/$side" "$expected"); then
+              failed=1
+            fi
+          done
+          exit "$failed"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wpkg-lifecycle-${{ matrix.trial }}
+          path: tools/.spider/scratch/wpkg-lifecycle/
+          include-hidden-files: true
+          if-no-files-found: warn

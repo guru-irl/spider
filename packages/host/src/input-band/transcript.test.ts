@@ -14,8 +14,8 @@ const host = { CustomEditor, CustomMessageComponent, ToolExecutionComponent, Use
 const tui = { requestRender() {} } as unknown as TUI;
 const colors = Object.fromEntries(Object.entries(glass.colors).map(([role, value]) => [role, glass.vars[value as keyof typeof glass.vars] ?? value]));
 const theme = new Theme(colors as ConstructorParameters<typeof Theme>[0], colors as ConstructorParameters<typeof Theme>[1], "truecolor");
-const BG = "\x1b[48;2;6;6;7m";
-const INK = "\x1b[38;2;6;6;7m";
+const BG = "\x1b[48;2;16;16;18m";
+const INK = "\x1b[38;2;16;16;18m";
 const START = "\x1b]133;A\x07";
 const END = "\x1b]133;B\x07\x1b]133;C\x07";
 const plain = (rows: string[]) => rows.map(stripTerminalSequences).map(row => row.trimEnd());
@@ -222,8 +222,8 @@ it("trims box-colored padding without dropping outer swatches painted in other b
   const box = createHalfBox(1, text => theme.bg("toolSuccessBg", text));
   box.addChild({
     render: () => [
-      "\x1b[1;48;2;6;6;7;38;5;48m  \x1b[0m", // The box color, with unrelated text attributes.
-      "\x1b[48:2::6:6:7m  \x1b[49m", // The same color with colon-delimited SGR.
+      "\x1b[1;48;2;16;16;18;38;5;48m  \x1b[0m", // The box color, with unrelated text attributes.
+      "\x1b[48:2::16:16:18m  \x1b[49m", // The same color with colon-delimited SGR.
       "\x1b[1;48;5;4m   \x1b[49m", // An index-color swatch.
       "Label",
       "\x1b[48:2::9:8:7m   \x1b[49m", // A truecolor swatch.

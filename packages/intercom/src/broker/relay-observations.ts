@@ -74,11 +74,11 @@ function readSnapshot(file: string): RelayObservation | null {
     const raw = readJson(file, MAX_SNAPSHOT_BYTES);
     if (!object(raw) || raw.version !== 1) return null;
     const { alias: label, observedAtMs, expiresAtMs, state, sinceMs, lastCallMs, lastError, messagesCarried } = raw;
+    if (state !== "down" && state !== "up" && state !== "connecting") return null;
     if (!alias(label) || !timestamp(observedAtMs) || !timestamp(sinceMs) || !timestamp(messagesCarried) ||
         (lastCallMs !== null && !timestamp(lastCallMs)) || (lastError !== null && !safeError(lastError)) ||
-        (state === "down" ? expiresAtMs !== null : (state !== "up" && state !== "connecting") || !timestamp(expiresAtMs))) return null;
-    return { alias: label, observedAtMs, expiresAtMs: state === "down" ? null : expiresAtMs as number,
-      state, sinceMs, lastCallMs, lastError, messagesCarried };
+        (expiresAtMs !== null && !timestamp(expiresAtMs)) || (state === "down") !== (expiresAtMs === null)) return null;
+    return { alias: label, observedAtMs, expiresAtMs, state, sinceMs, lastCallMs, lastError, messagesCarried };
   } catch { return null; }
 }
 
@@ -152,10 +152,10 @@ export function brokerRelayObserver() {
     } catch { return false; }
   }
   return {
-    link(to: string, view: RelayLinkView, expiresAtMs: number | null, now: number) {
+    link(to: string, view: RelayLinkView, expiresAtMs: number | null, now: number): void {
       if (authorized(to, view.relay)) writeRelayObservation(root, "in", view.relay, view, expiresAtMs, now);
     },
-    mismatch(to: string, relay: RelayPeer, version: number, now: number, last?: RelayState) {
+    mismatch(to: string, relay: RelayPeer, version: number, now: number, last?: RelayState): void {
       if (authorized(to, relay)) recordRelayMismatch(root, relay, version, now, last);
     },
   };

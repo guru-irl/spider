@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { openDbAt } from "@spider/db-core";
 import { HerdrError } from "@spider/herdr/client/parse";
 import { testTmpDir } from "@spider/intercom/test-support";
-import { parseV0AgentReply, parseV0AgentRequest, parseV0BrokerReply, parseV0RelayAgentRequest, V0_ASK_MAX_MS, V0_INTERCOM_BYTES, V0_INTERCOM_MS, type V0AgentRequest, type V0BrokerOp, type V0Endpoint, type V0Reply, type V0Text } from "@spider/intercom/roam-v0";
+import { parseV0AgentReply, parseV0AgentRequest, parseV0BrokerReply, parseV0RelayAgentRequest, V0_ASK_MAX_MS, V0_INTERCOM_BYTES, V0_INTERCOM_MS, type V0AgentRequest, type V0BrokerOp, type V0Endpoint, type V0Reply, type V0RouteResult, type V0Text } from "@spider/intercom/roam-v0";
 import type { LocalSessionInfo, RemoteSessionInfo } from "@spider/intercom/types";
 import { DEFAULT_LIMITS, type CallOptions, type Peer, type Transport } from "../contracts";
 import { main } from "../cli";
@@ -695,7 +695,7 @@ describe("roaming v0 intercom", () => {
     const localBroker = async (): Promise<V0Reply> => ({ kind: "matches", targets: [aliceEndpoint] });
     const plan = await remotePlan(createV0Intercom(sender.root, { broker: localBroker, transport }));
     vi.useFakeTimers();
-    let outcome: V0Reply | undefined;
+    let outcome: V0RouteResult | undefined;
     const pending = plan.ask(message, 60_000).then(result => { outcome = result; return result; });
     try {
       await vi.advanceTimersByTimeAsync(71_999);

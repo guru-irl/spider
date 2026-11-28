@@ -1,6 +1,11 @@
 export const ICON_STYLES = ["text", "nerd"] as const;
 export type IconStyle = typeof ICON_STYLES[number];
 
+export const REPLY_FRAME = {
+  left: "│", right: "│", top: "─", bottom: "─",
+  topLeft: "╭", topRight: "╮", bottomLeft: "╰", bottomRight: "╯",
+} as const;
+
 export const SPINNER_FRAMES: Record<IconStyle, readonly string[]> = {
   text: ["|", "/", "-", "\\"],
   nerd: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],

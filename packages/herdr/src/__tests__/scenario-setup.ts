@@ -307,7 +307,7 @@ export const scenarioShared: AcceptanceScenario = async h => {
       await writeFile(join(h.directories.local, 'app-calls.jsonl'), '');
       const coreEntry = join(h.root, 'shared-core.ts');
       await writeFile(coreEntry, `export { invokeCli } from ${JSON.stringify(fileURLToPath(new URL('../client/hc.ts', import.meta.url)))};\n`);
-      const { build } = await import('vite');
+      const { buildViteFixture: build } = await import('../../../../scripts/test-bundle.js');
       await build({ configFile: false, logLevel: 'silent', build: { ssr: coreEntry, outDir: h.root, emptyOutDir: false, minify: false, rollupOptions: { output: { entryFileNames: 'shared-core.mjs' } } } });
       const coreCli = join(h.root, 'shared-hc.mjs');
       await writeFile(coreCli, `import { invokeCli } from './shared-core.mjs';

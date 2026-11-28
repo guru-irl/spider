@@ -127,7 +127,7 @@
   "packages/herdr/src/__tests__/feed-ipc.test.ts": 22267,
   "packages/herdr/src/__tests__/feed-reader-server.test.ts": 1111,
   "packages/herdr/src/__tests__/feed-resolution-perf.test.ts": 458,
-  "packages/herdr/src/__tests__/feed-writer.test.ts": 202,
+  "packages/herdr/src/__tests__/feed-writer.test.ts": 314,
   "packages/herdr/src/__tests__/handoff-backoff.test.ts": 6121,
   "packages/herdr/src/__tests__/handoff-empty-runs.test.ts": 76,
   "packages/herdr/src/__tests__/handoff-overlap.test.ts": 42,

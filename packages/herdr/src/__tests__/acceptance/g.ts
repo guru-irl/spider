@@ -7,7 +7,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { build } from 'vite';
+import { buildViteFixture as build } from '../../../../../scripts/test-bundle.js';
 import type { HerdrHarness } from '../testutil.js';
 import type { CoreIdentity, HerdrConfig, Owner, SessionId, TerminalAddress, TerminalIdentity } from '../../contracts.js';
 import { HERDR_LABELS } from '../../contracts.js';

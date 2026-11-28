@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 export interface SelectionMap {
-  version: 1;
+  version: 2;
   commit: string;
   runId: string;
   createdAt: string;
@@ -10,6 +10,10 @@ export interface SelectionMap {
     reads: number[];
     /** Bundle paths for which no source map was found. */
     unresolved: string[];
+    /** The test built or executed a bundle. */
+    ranBundle: boolean;
+    /** A process or worker did not leave a complete record. Always select this test. */
+    incomplete: boolean;
     ms: number;
     /** Observed Node processes and worker threads, including the test fork. */
     processes: number;

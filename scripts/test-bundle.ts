@@ -1,7 +1,31 @@
 import { builtinModules } from "node:module";
 import { dirname, resolve } from "node:path";
-import { build } from "vite";
+import type { InputOptions, Plugin } from "rolldown";
+import type { InlineConfig } from "vite";
 import { archiveFixtureMaps, fixtureMaps } from "./selection/build-maps.mjs";
+
+function observeBundleInputs(): Plugin | undefined {
+  const record = (globalThis as Record<symbol, ((ids: string[]) => void) | undefined>)[Symbol.for('spider.selection.bundle-inputs')];
+  if (!record) return;
+  return {
+    name: 'selection-observe-test-bundle',
+    buildStart() { record([]); },
+    buildEnd() { record([...this.getModuleIds()]); },
+  };
+}
+
+/** Keep the same build behavior, including write:false and watch builds. */
+export async function buildViteFixture(options: InlineConfig = {}) {
+  const { build } = await import('vite');
+  const observe = observeBundleInputs();
+  return build(observe ? { ...options, plugins: [...(options.plugins ?? []), observe] } : options);
+}
+
+export async function rolldownFixture(options: InputOptions) {
+  const { rolldown } = await import('rolldown');
+  const observe = observeBundleInputs();
+  return rolldown(observe ? { ...options, plugins: [options.plugins, observe] } : options);
+}
 
 /** Test-only Node bundles. Do not depend on pi's private build dependencies. */
 export async function buildFixture(options: {
@@ -23,7 +47,7 @@ export async function buildFixture(options: {
   }));
   const inputs = new Set<string>();
   const external = new Set([...builtinModules, ...builtinModules.map(name => `node:${name}`), ...options.external ?? []]);
-  const result = await build({
+  const result = await buildViteFixture({
     configFile: false,
     define: { "import.meta.spiderIntercomBrokerRelative": JSON.stringify(resolve("dist/intercom/broker.mjs")) },
     logLevel: "silent",

@@ -35,7 +35,7 @@ export function expectNoBrowserErrors(page: Page): () => readonly string[] {
 let buildPromise: Promise<void> | undefined;
 async function buildRealFixture(): Promise<void> {
   buildPromise ??= (async () => {
-    const { build } = await import("vite"); const outDir = resolve(process.env.SPIDER_PLAYWRIGHT_SCRATCH ?? ".spider/scratch/playwright", "real-dist");
+    const { buildViteFixture: build } = await import("../../../../../scripts/test-bundle.js"); const outDir = resolve(process.env.SPIDER_PLAYWRIGHT_SCRATCH ?? ".spider/scratch/playwright", "real-dist");
     await build({ configFile: resolve("vite.config.mjs"), build: { outDir } });
     await build({ configFile: resolve("vite.dashboard.config.mjs"), mode: "production", build: { outDir: join(outDir, "dashboard") } });
   })();

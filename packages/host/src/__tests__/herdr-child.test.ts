@@ -196,7 +196,7 @@ it('the parent opens a child job from its run journal with session and owner che
   const { RunStore } = await import('../../../subagents/src/run-store.js');
   const { createSessionIpcClient } = await import('../../../herdr/src/feed/ipc-client.js');
   const { createJobStore } = await import('../../../herdr/src/jobs/store.js');
-  const { build } = await import('vite');
+  const { buildViteFixture: build } = await import('../../../../scripts/test-bundle.js');
   const dbPath = join(f.h.root, 'runs.db'), globalPath = join(f.h.root, 'global.db'), db = openDbAt(dbPath, 'worktree'), store = new RunStore(db);
   const foreignPath = join(f.h.root, 'foreign-runs.db');
   let resolvedPath = dbPath;

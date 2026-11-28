@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { build } from "vite";
+import { buildViteFixture as build } from "../../../../scripts/test-bundle.js";
 import { lstat, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createIntentStore, type IntentState } from "../intent";

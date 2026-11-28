@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
@@ -30,7 +30,11 @@ function fixture(t) {
 const runNode = (args, options) => spawnSync(process.execPath, args, { encoding: 'utf8', ...options });
 
 function records(raw) {
-  return readdirSync(raw).filter(name => name.endsWith('.json')).map(name => JSON.parse(readFileSync(join(raw, name))));
+  return readdirSync(raw).filter(name => name.endsWith('.json')).map(name => {
+    const journal = join(raw, name.replace(/\.json$/, '.ndjson'));
+    const scripts = existsSync(journal) ? readFileSync(journal, 'utf8').trim().split('\n').map(line => JSON.parse(line)).filter(row => row.url) : [];
+    return { ...JSON.parse(readFileSync(join(raw, name))), scripts };
+  });
 }
 
 function fixtureRecords(t, { snapshots = [], results = [], hookErrors = '', launches = [] } = {}) {
@@ -44,7 +48,9 @@ function fixtureRecords(t, { snapshots = [], results = [], hookErrors = '', laun
   for (const [i, snapshot] of snapshots.entries()) {
     const scripts = snapshot.scripts?.map(script => ({ ...script, url: resolve(root, script.url) }))
       ?? snapshot.paths.map(path => ({ kind: 'source', url: resolve(root, path) }));
-    writeFileSync(join(raw, `${i + 1}-abc.json`), JSON.stringify({ ...snapshot, scripts }));
+    const { scripts: _, paths: _paths, ...metadata } = snapshot;
+    writeFileSync(join(raw, `${i + 1}-abc.json`), JSON.stringify(metadata));
+    writeFileSync(join(raw, `${i + 1}-abc.ndjson`), scripts.map(row => JSON.stringify(row) + '\n').join(''));
   }
   if (hookErrors) writeFileSync(join(raw, 'hook-errors.ndjson'), hookErrors);
   if (launches.length) writeFileSync(join(raw, 'launches.ndjson'), launches.map(row => JSON.stringify(row)).join('\n') + '\n');
@@ -158,8 +164,8 @@ test('decodes file URLs and does not mistake a temporary-root prefix for the roo
   const reportFile = join(workspace, 'vitest.json');
   writeFileSync(reportFile, JSON.stringify({ testResults: [{ name: join(root, id), status: 'passed', startTime: 0, endTime: 1 }] }));
   const url = new URL('file://' + join(root, 'tmp-other/a b.mjs'));
-  writeFileSync(join(raw, '1-abc.json'), JSON.stringify({ test: id, worker: true, pid: 3,
-    scripts: [{ kind: 'bundle', url: url.href, sha256: 'unmatched' }] }));
+  writeFileSync(join(raw, '1-abc.json'), JSON.stringify({ test: id, worker: true, pid: 3 }));
+  writeFileSync(join(raw, '1-abc.ndjson'), JSON.stringify({ kind: 'bundle', url: url.href, sha256: 'unmatched' }) + '\n');
   const { records } = reduce({ root, tmpRoot: join(root, 'tmp'), rawDir: raw, mapsDir: maps, reportFile });
   assert.deepEqual(records[id].unresolved, ['tmp-other/a b.mjs']);
 });
@@ -501,8 +507,8 @@ test('records all inputs of an in-memory bundle even when no output script runs'
   writeFileSync(join(root, 'elided.mjs'), 'export const unused = 10;');
   const result = runNode(['--input-type=module', '-e', `
     import assert from 'node:assert/strict';
-    import { build } from 'vite';
-    const output = await build({ configFile: false, logLevel: 'silent',
+    import { buildViteFixture } from './scripts/test-bundle.ts';
+    const output = await buildViteFixture({ configFile: false, logLevel: 'silent',
       build: { ssr: ${JSON.stringify(join(root, 'entry.mjs'))}, write: false } });
     assert.match(output.output[0].code, /live = 42/);
     assert.doesNotMatch(output.output[0].code, /unused/);

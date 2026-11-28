@@ -3,7 +3,7 @@ import { expect, test, vi } from 'vitest';
 import { access, readFile, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { build } from 'vite';
+import { buildViteFixture as build } from '../../../../scripts/test-bundle.js';
 import { fileURLToPath } from 'node:url';
 import { createHerdrHarness, createClientFixture, terminal } from './testutil.js';
 import { createHcClient, observeCoreIdentity } from '../client/hc.js';

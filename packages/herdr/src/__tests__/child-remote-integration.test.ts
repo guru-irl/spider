@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { build } from 'vite';
+import { buildViteFixture as build } from '../../../../scripts/test-bundle.js';
 import { createHerdrHarness, createClientFixture, terminal as fixtureTerminal } from './testutil.js';
 import { createJobMonitor, type JobMonitor, type JobNotice } from '../jobs/monitor.js';
 import { createHostHerdrPorts, createProductionHerdrCliPorts } from '../../../host/src/herdr/ports.js';

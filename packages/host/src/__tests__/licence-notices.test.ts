@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { build } from "vite";
+import { buildViteFixture as build } from "../../../../scripts/test-bundle.js";
 import { DEFAULT_UPSTREAM_REFS } from "../../../superpowers/src/upstream-watch";
 import { herdrPackageAssets } from "../../../../scripts/test-herdr-package-assets.js";
 import roamEntries from "../../../../scripts/roam-entries.json" with { type: "json" };

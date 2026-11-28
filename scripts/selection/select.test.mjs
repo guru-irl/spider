@@ -50,26 +50,40 @@ test('ignores artifacts published after the PR run started and rejects the wrong
   assert.equal(result.map.runId, '44');
 });
 
-test('accepts maps only from push runs in the target repository and workflow', async () => {
+test('accepts workflow_run and manual maps only from the target main branch, repository and workflow', async () => {
   const root = process.cwd();
   const commit = selector.git(root, 'rev-parse', 'HEAD').trim();
-  const mapFor = id => ({ ...map(), commit, runId: String(id) });
+  const repo = 'guru-irl/spider';
   const runs = [
-    { id: 47, event: 'pull_request', head_repository: { full_name: 'guru-irl/spider' } },
-    { id: 46, event: 'push', head_repository: { full_name: 'fork/spider' } },
-    { id: 45, event: 'push', head_repository: { full_name: 'guru-irl/spider' }, path: '.github/workflows/other.yml' },
-    { id: 44, event: 'push', head_repository: { full_name: 'guru-irl/spider' } },
-  ].map(item => ({ path: '.github/workflows/selection-map.yml', head_sha: commit,
+    { id: 50, event: 'pull_request' },
+    { id: 49, event: 'push' },
+    { id: 48, head_repository: { full_name: 'fork/spider' } },
+    { id: 47, path: '.github/workflows/other.yml' },
+    { id: 46, event: 'workflow_dispatch', head_branch: 'try-map' },
+    { id: 45 }, // The artifact claims a different commit.
+    { id: 44 },
+    { id: 43, event: 'workflow_dispatch' },
+  ].map(item => ({ path: '.github/workflows/selection-map.yml', event: 'workflow_run', head_sha: commit,
+    head_branch: 'main', head_repository: { full_name: repo }, conclusion: 'success',
     updated_at: '2026-11-27T12:00:00Z', ...item }));
   const loaded = [];
   const api = {
     get: () => ({ created_at: asOf }),
-    pages: () => [{ workflow_runs: runs }],
-    artifact: async id => { loaded.push(id); return artifact(mapFor(id)); },
+    pages: endpoint => {
+      const event = new URLSearchParams(endpoint.split('?')[1]).get('event');
+      return [{ workflow_runs: runs.filter(run => !event || run.event === event) }];
+    },
+    artifact: async id => {
+      loaded.push(id);
+      return artifact(map([], {}, { commit: id === 45 ? unrelated : commit, runId: String(id) }));
+    },
   };
-  const result = await selector.lookupMainMap({ root, mergeBase: commit, repo: 'guru-irl/spider', workflowRun: 1, api });
-  assert.equal(result.map.runId, '44');
-  assert.deepEqual(loaded, [44]);
+  const options = { root, mergeBase: commit, repo, workflowRun: 1, api };
+  assert.equal((await selector.lookupMainMap(options)).map.runId, '44');
+  assert.deepEqual(loaded, [45, 44]);
+  runs.splice(runs.findIndex(run => run.id === 44), 1);
+  assert.equal((await selector.lookupMainMap(options)).map.runId, '43');
+  assert.deepEqual(loaded, [45, 44, 45, 43]);
 });
 
 test('fails loudly on map API or artifact read errors instead of changing selections', async () => {

@@ -47,4 +47,9 @@ it('the launch checker rejects a recorded producer that omitted --no-notify', ()
 
 it.each(['observer', 'console'] as const)('closing a %s pane leaves the real payload running on fake hc', pane => closePaneScenario('fake', pane), 60000);
 
+it('closing a console pane reports the first error after the payload starts', async () => {
+  const firstError = new Error('Console metadata read failed');
+  await expect(closePaneScenario('fake', 'console', () => { throw firstError; })).rejects.toBe(firstError);
+}, 30_000);
+
 it.skipIf(process.env.SPIDER_HERDR_E2E !== '1').each(['observer', 'console'] as const)('real isolated hc: closing a %s pane leaves the payload running; requires SPIDER_HERDR_E2E=1', pane => closePaneScenario('hc', pane), 60000);

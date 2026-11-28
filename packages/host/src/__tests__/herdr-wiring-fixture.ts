@@ -331,7 +331,7 @@ export async function installFixtureRuntime(f: Awaited<ReturnType<typeof mounted
   } finally { await ports.dispose(); }
 }
 
-export async function closePaneScenario(mode: 'fake' | 'hc', pane: 'observer' | 'console'): Promise<void> {
+export async function closePaneScenario(mode: 'fake' | 'hc', pane: 'observer' | 'console', beforeReadConsole?: () => void): Promise<void> {
   const f = await mountedFixture(mode, 'tui', true, false, true, true);
   const { writeFile, access } = await import('node:fs/promises');
   const gate = join(f.h.directories.remote, 'finish-payload');
@@ -359,6 +359,7 @@ export async function closePaneScenario(mode: 'fake' | 'hc', pane: 'observer' | 
       const installed = (await readJournal(join(f.config.globalRoot, 'herdr/setup'))).runtimes[0];
       const on = 'remote.invalid' as never;
       const request = { owner: f.owner!, on, target: { on, ...f.config.machines[0].runtime, environment: {}, nodePath: f.h.nodeBinary, runtimePath: installed.path, runtimeSha256: installed.after }, source: { kind: 'code' as const, language: 'shell' as const, code: 'explicit console view' } };
+      beforeReadConsole?.();
       const retained = await readRetainedAgentConsole(request, f.h.hc, f.h.localEnv); expect(retained).not.toBeNull();
       expect(await openRetainedConsole(request, f.h.hc, f.h.localEnv)).toMatchObject({ consoleId: retained!.consoleId });
     }

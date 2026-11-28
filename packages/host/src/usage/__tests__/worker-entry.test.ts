@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { openDb } from "@spider/db-core";
 import * as sessionBackfill from "../session-backfill.js";
+import * as responseBackfill from "../response-backfill.js";
 import { bootUsageWorker } from "../worker-entry.js";
 import { openUsageLedger, type UsageLedger } from "../ledger.js";
 import { dashboardBatch, dashboardCall } from "./fixtures/dashboard-ledger.js";
@@ -37,20 +38,54 @@ vi.mock("../query-redesign-shared.js", async importOriginal => {
 class Port extends EventEmitter {
   events: UsageWorkerEvent[] = [];
   closed = false;
-  postMessage(e: UsageWorkerEvent) { this.events.push(e); }
-  close() { this.closed = true; }
+  postMessage(e: UsageWorkerEvent) { this.events.push(e); this.emit("fixture-event", e); }
+  close() { this.closed = true; this.emit("fixture-close"); }
 }
 let root: string, ports: Port[];
 const metadataBudget = 64 * 1024;
 const at = Date.parse("2026-10-04T12:00:00Z");
 beforeEach(() => { root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "worker-entry-")); ports = []; reads.followers = []; reads.month=0; reads.failMonth=false; reads.failPublish=false; vi.stubGlobal("fetch", vi.fn(() => { throw new Error("network forbidden"); })); });
 afterEach(async () => {
-  for (const port of ports) { port.emit("message", { type: "stop" }); await vi.waitFor(() => expect(port.closed).toBe(true)); }
+  for (const port of ports) { await stopPort(port); expect(port.closed).toBe(true); }
   vi.restoreAllMocks(); vi.useRealTimers(); vi.unstubAllGlobals(); rmSync(root, { recursive: true, force: true });
 });
 function command(child = false, poll = false) { return { type: "start" as const, owner: `${process.pid}:test`, child, poll, roots: { registryDb: join(root, "missing-registry.db"), sessionsDir: join(root, "sessions"), ledgerFile: join(root, "usage.db"), authPath: join(root, "auth.json"), leaseDir: join(root, "leases") } }; }
 function port() { const p = new Port(); ports.push(p); return p; }
+async function stopPort(p: Port) {
+  const closed = p.closed ? Promise.resolve() : new Promise<void>(resolve => p.once("fixture-close", resolve));
+  p.emit("message", { type: "stop" });
+  if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(0);
+  await closed;
+}
 function snapshots(p: Port) { return p.events.filter(e => e.type === "snapshot"); }
+type Snapshot = Extract<UsageWorkerEvent, { type: "snapshot" }>;
+function snapshotWhen(p: Port, matches: (snapshot: Snapshot) => boolean): Promise<Snapshot> {
+  const current = snapshots(p).at(-1);
+  if (current && matches(current)) return Promise.resolve(current);
+  return new Promise(resolve => {
+    const onEvent = (event: UsageWorkerEvent) => {
+      if (event.type === "snapshot" && matches(event)) { p.off("fixture-event", onEvent); resolve(event); }
+    };
+    p.on("fixture-event", onEvent);
+  });
+}
+// The final snapshot follows the response backfill, including when earlier
+// billing snapshots have the same metadata status.
+function ownerPasses(p: Port) {
+  const backfill = responseBackfill.backfillResponseMetadata;
+  let awaitingFinalSnapshot = false;
+  const completed: Snapshot[] = [], waiting: ((snapshot: Snapshot) => void)[] = [];
+  vi.spyOn(responseBackfill, "backfillResponseMetadata").mockImplementation(async (...args) => {
+    const result = await backfill(...args); awaitingFinalSnapshot = true; return result;
+  });
+  p.on("fixture-event", (event: UsageWorkerEvent) => {
+    if (event.type !== "snapshot" || !awaitingFinalSnapshot) return;
+    awaitingFinalSnapshot = false;
+    const resolve = waiting.shift();
+    if (resolve) resolve(event); else completed.push(event);
+  });
+  return () => completed.length ? Promise.resolve(completed.shift()!) : new Promise<Snapshot>(resolve => waiting.push(resolve));
+}
 it("child boot opens nothing and stops immediately", async () => {
   const p = port(); await bootUsageWorker(p as unknown as MessagePort, command(true));
   expect(p.events).toEqual([{ type: "stopped" }]); expect(p.closed).toBe(true);
@@ -96,15 +131,18 @@ it("reconciliation stops at the counter timestamp in its UTC month and exposes t
   expect(snapshots(p).at(-1)?.reconciliation).toMatchObject({ windowStart: Date.parse("2026-10-01T00:00:00Z"), windowEnd: at, computedAIC: 0.2, counterAIC: 4, gap: 3.8, ratio: 0.05, estimated: true });
 });
 it.each([false, true])("publishes a saved counter before the next ingest cycle, retried=%s", async retried => {
-  vi.useFakeTimers();
-  const c = command(false, true), p = port(); let clock = at, requested = false;
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  const c = command(false, true), p = port(); let clock = at, requested = false, notifyRequested!: () => void;
+  const requestStarted = new Promise<void>(resolve => { notifyRequested = resolve; });
   writeFileSync(c.roots.authPath, JSON.stringify({ "github-copilot": { type: "oauth", refresh: "fixture-token", access: "fixture-access", expires: 0 } }));
   let respond!: (response: Response) => void;
   const response = new Promise<Response>(resolve => { respond = resolve; });
   await bootUsageWorker(p as unknown as MessagePort, c, { now: () => clock,
-    discover: async () => ({ sources: [], runs: [], errors: [] }), fetch: () => { requested = true; return response; } });
-  await vi.waitFor(() => expect(snapshots(p).at(-1)?.backfill).toBe("complete"));
-  await vi.waitFor(() => expect(requested).toBe(true));
+    discover: async () => ({ sources: [], runs: [], errors: [] }), fetch: () => { requested = true; notifyRequested(); return response; } });
+  await vi.advanceTimersByTimeAsync(0);
+  await snapshotWhen(p, snapshot => snapshot.backfill === "complete");
+  expect(snapshots(p).at(-1)?.backfill).toBe("complete");
+  await requestStarted; expect(requested).toBe(true);
   expect(snapshots(p).at(-1)?.counter.latest).toBeNull();
   const writer = openDb(c.roots.ledgerFile);
   try {
@@ -120,11 +158,12 @@ it.each([false, true])("publishes a saved counter before the next ingest cycle, 
       writer.exec("ROLLBACK");
       clock += 40000; await vi.advanceTimersByTimeAsync(40000);
     }
-    await vi.waitFor(() => expect(snapshots(p).at(-1)).toMatchObject({
+    await snapshotWhen(p, snapshot => snapshot.counter.latest?.creditsUsed === 80);
+    expect(snapshots(p).at(-1)).toMatchObject({
       counter: { availability: "available", latest: { creditsUsed: 80, raw: {} } },
       monthPeriod: { start: Date.parse("2026-09-28"), end: Date.parse("2026-10-28") },
       reconciliation: { windowEnd: retried ? clock - 40000 : clock, counterAIC: 80, gap: 80 },
-    }));
+    });
     expect(writer.prepare("SELECT COUNT(*) AS n FROM counter_snapshots").get()).toEqual({ n: 1 });
   } finally {
     if (writer.raw.inTransaction) writer.exec("ROLLBACK"); writer.close();
@@ -132,7 +171,7 @@ it.each([false, true])("publishes a saved counter before the next ingest cycle, 
   }
 });
 it.each([false, true])("startup counter publication preserves a complete ledger before ingestion ends, early=%s", async early => {
-  vi.useFakeTimers();
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   const c = command(false, true), p = port();
   const store = openUsageLedger(c.roots.ledgerFile);
   store.apply({ ...dashboardBatch([]), backfillState: "complete" }); store.close();
@@ -146,7 +185,8 @@ it.each([false, true])("startup counter publication preserves a complete ledger 
     if (!early) await vi.advanceTimersByTimeAsync(0);
     respond(new Response(JSON.stringify({ quota_snapshots: { premium_interactions: { credits_used: 9 } } })));
     if (early) for (let i = 0; i < 20; i++) await Promise.resolve();
-    await vi.waitFor(() => expect(snapshots(p).at(-1)?.counter.latest?.creditsUsed).toBe(9));
+    await snapshotWhen(p, snapshot => snapshot.counter.latest?.creditsUsed === 9);
+    expect(snapshots(p).at(-1)?.counter.latest?.creditsUsed).toBe(9);
     expect(finished).toBe(false);
     expect(snapshots(p).map(snapshot => snapshot.backfill)).toEqual(["complete"]);
     const check = openUsageLedger(c.roots.ledgerFile);
@@ -158,14 +198,16 @@ it.each([false, true])("startup counter publication preserves a complete ledger 
   } finally { release(); await vi.advanceTimersByTimeAsync(0); }
 });
 it("a failed counter publication leaves a committed save and completed backfill healthy", async () => {
-  vi.useFakeTimers();
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   const c = command(false, true), p = port();
   writeFileSync(c.roots.authPath, JSON.stringify({ "github-copilot": { type: "oauth", refresh: "fixture-token", access: "fixture-access", expires: 0 } }));
   let respond!: (response: Response) => void;
   const response = new Promise<Response>(resolve => { respond = resolve; });
   await bootUsageWorker(p as unknown as MessagePort, c, { now: () => at, fetch: () => response,
     discover: async () => ({ sources: [], runs: [], errors: [] }) });
-  await vi.waitFor(() => expect(snapshots(p).at(-1)?.backfill).toBe("complete"));
+  await vi.advanceTimersByTimeAsync(0);
+  await snapshotWhen(p, snapshot => snapshot.backfill === "complete");
+  expect(snapshots(p).at(-1)?.backfill).toBe("complete");
   reads.failPublish = true;
   respond(new Response(JSON.stringify({ quota_snapshots: { premium_interactions: { credits_used: 9 } } })));
   await vi.advanceTimersByTimeAsync(0);
@@ -175,23 +217,26 @@ it("a failed counter publication leaves a committed save and completed backfill 
     expect(check.getBackfillState()).toBe("complete");
     expect(p.events.filter(event => event.type === "error")).toEqual([]);
     reads.failPublish = false; p.emit("message", { type: "refresh" });
-    await vi.waitFor(() => expect(snapshots(p).at(-1)).toMatchObject({ backfill: "complete", counter: { availability: "available", latest: { creditsUsed: 9 } } }));
+    await snapshotWhen(p, snapshot => snapshot.backfill === "complete" && snapshot.counter.latest?.creditsUsed === 9);
+    expect(snapshots(p).at(-1)).toMatchObject({ backfill: "complete", counter: { availability: "available", latest: { creditsUsed: 9 } } });
   } finally { reads.failPublish = false; check.close(); }
 });
 it("a lease lost during pending ingestion fences writes and switches to read-only refresh", async () => {
-  vi.useFakeTimers(); const c = command(), p = port(); let clock = at, release!: () => void, finished = false;
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  const c = command(), p = port(); let clock = at, release!: () => void, finished = false, notifyFinished!: () => void;
+  const ingestionFinished = new Promise<void>(resolve => { notifyFinished = resolve; });
   const source = { path: join(root, "fenced.jsonl"), project: null, repo: null, run: null };
   writeFileSync(source.path, JSON.stringify({ type: "message", id: "stale", timestamp: new Date(at).toISOString(), message: { role: "assistant", provider: "github-copilot", model: "gpt-6.1-sol", usage: { input: 1000, output: 0, cacheRead: 0, cacheWrite: 0 } } }) + "\n");
   const blocked = new Promise<void>(resolve => { release = resolve; });
   const discover = vi.fn(async () => ({ sources: [source], runs: [], errors: [] }));
-  await bootUsageWorker(p as unknown as MessagePort, c, { now: () => clock, discover, ingest: async (...args) => { await blocked; const health = await ingestOnce(...args); finished = true; return health; } });
+  await bootUsageWorker(p as unknown as MessagePort, c, { now: () => clock, discover, ingest: async (...args) => { await blocked; const health = await ingestOnce(...args); finished = true; notifyFinished(); return health; } });
   await vi.advanceTimersByTimeAsync(0);
   const successor = openUsageLedger(c.roots.ledgerFile); clock += 120001;
   const lease = acquireUsageLease(successor, "ingest", `${process.pid}:successor`, () => clock, 120000)!;
   try {
     const snapshotBefore = successor.getPublishedSnapshot();
     expect(lease).toBeDefined(); release();
-    await vi.waitFor(() => expect(finished).toBe(true));
+    await ingestionFinished; expect(finished).toBe(true);
     expect(successor.health().calls).toBe(0); expect(successor.getImportState(source.path)).toBeUndefined();
     expect(successor.getPublishedSnapshot()).toEqual(snapshotBefore);
     p.emit("message", { type: "refresh" }); await vi.advanceTimersByTimeAsync(0);
@@ -460,8 +505,9 @@ it.each(["lost", "busy"])("a %s heartbeat lease becomes a follower without faili
   } finally { if (db.inTransaction) db.exec("ROLLBACK"); db.close(); }
 });
 it.each(["first cycle", "heartbeat"])("ingestion resumes after a busy %s without waiting for its own lease to expire", async phase => {
-  vi.useFakeTimers();
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   const c = command(), p = port();
+  const nextPass = ownerPasses(p);
   const source = { path: join(root, "busy.jsonl"), project: null, repo: null, run: null };
   const entry = (id: string) => JSON.stringify({ type: "message", id, timestamp: new Date(at).toISOString(), message: {
     role: "assistant", provider: "github-copilot", model: "gpt-6.1-sol", usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0 },
@@ -471,8 +517,11 @@ it.each(["first cycle", "heartbeat"])("ingestion resumes after a busy %s without
     now: () => at, discover: async () => ({ sources: [source], runs: [], errors: [] }),
   });
   if (phase === "heartbeat") {
-    await vi.waitFor(() => expect(snapshots(p).at(-1)?.backfill).toBe("complete"));
+    await vi.advanceTimersByTimeAsync(0);
+    await nextPass();
+    expect(snapshots(p).at(-1)?.backfill).toBe("complete");
     expect(snapshots(p).at(-1)?.health.calls).toBe(1);
+    await new Promise<void>(resolve => setImmediate(resolve));
     appendFileSync(source.path, entry("second"));
   }
   const Database = (await import("better-sqlite3")).default;
@@ -485,13 +534,14 @@ it.each(["first cycle", "heartbeat"])("ingestion resumes after a busy %s without
     // The writer is gone, but the original lease is still live for two minutes.
     // Recovery must use the short retry timer, without a refresh or TTL expiry.
     await vi.advanceTimersByTimeAsync(3000);
-    await vi.waitFor(() => expect(snapshots(p).at(-1)).toMatchObject({
+    await nextPass();
+    expect(snapshots(p).at(-1)).toMatchObject({
       ingestRole: "owner", backfill: "complete", health: { calls: phase === "heartbeat" ? 2 : 1 },
-    }));
+    });
     const check = openUsageLedger(c.roots.ledgerFile);
     try { expect(check.leases.inspect("ingest", at).owner).toBe(c.owner); }
     finally { check.close(); }
-    p.emit("message", { type: "stop" }); await vi.advanceTimersByTimeAsync(0);
+    await stopPort(p);
     expect(p.closed).toBe(true);
     expect(writer.prepare("SELECT owner FROM leases WHERE name='ingest'").get()).toEqual({ owner: null });
   } finally { if (writer.inTransaction) writer.exec("ROLLBACK"); writer.close(); }
@@ -751,24 +801,32 @@ it.each([false, true])("incomplete metadata schedules short owner passes with bi
   await ingestOnce(store, d, at, new AbortController().signal);
   store.apply(dashboardBatch([], { resetSessionMetadata: [{ path, sessionId: "bounded-history" }] })); store.close();
   vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] }); let ingests = 0;
+  const nextPass = ownerPasses(p);
   await bootUsageWorker(p as unknown as MessagePort, c, { now: () => at, monotonicNow: () => Date.now(), discover: async () => d, ingest: async (...args) => { ingests++; return ingestOnce(...args); } });
   await vi.advanceTimersByTimeAsync(0);
-  await vi.waitFor(() => expect(snapshots(p).at(-1)?.metadataBackfill).toBe("running"));
-  await vi.advanceTimersByTimeAsync(0);
+  await nextPass();
+  expect(snapshots(p).at(-1)?.metadataBackfill).toBe("running");
+  await new Promise<void>(resolve => setImmediate(resolve));
   const first = snapshots(p).length;
   appendFileSync(live, entry("second"));
   await vi.advanceTimersByTimeAsync(3000);
-  await vi.waitFor(() => expect(snapshots(p).length).toBeGreaterThan(first));
+  expect(ingests).toBe(2);
+  await nextPass();
+  expect(snapshots(p).length).toBeGreaterThan(first);
   expect(snapshots(p).at(-1)?.health.calls).toBe(2); expect(ingests).toBe(2);
-  await vi.advanceTimersByTimeAsync(0);
+  await new Promise<void>(resolve => setImmediate(resolve));
   await vi.advanceTimersByTimeAsync(3000);
-  await vi.waitFor(() => expect(snapshots(p).at(-1)?.metadataBackfill).toBe("complete"));
-  await vi.advanceTimersByTimeAsync(0);
+  expect(ingests).toBe(3);
+  await nextPass();
+  expect(snapshots(p).at(-1)?.metadataBackfill).toBe("complete");
+  await new Promise<void>(resolve => setImmediate(resolve));
   const complete = snapshots(p).length, imported = ingests;
   await vi.advanceTimersByTimeAsync(59000);
   expect(ingests).toBe(imported);
   await vi.advanceTimersByTimeAsync(1100);
-  await vi.waitFor(() => expect(snapshots(p).length).toBeGreaterThan(complete));
+  expect(ingests).toBe(imported + 1);
+  await nextPass();
+  expect(snapshots(p).length).toBeGreaterThan(complete);
   expect(ingests).toBe(imported + 1);
   p.emit("message", { type: "stop" }); await vi.advanceTimersByTimeAsync(0);
 });
@@ -852,22 +910,28 @@ it.each([false, true])("incomplete repricing alone schedules three second owner 
   })))); store.close();
   vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   let ingests = 0;
+  const nextPass = ownerPasses(p);
   await bootUsageWorker(p as unknown as MessagePort, c, { repriceBatchSize: 1, now: () => at, monotonicNow: () => Date.now(),
     discover: async () => ({ sources: [], runs: [], errors: [] }), ingest: async (...args) => { ingests++; return ingestOnce(...args); } });
   await vi.advanceTimersByTimeAsync(0);
-  await vi.waitFor(() => expect(snapshots(p).at(-1)).toMatchObject({ metadataBackfill: "complete", health: { reprice: { state: "running", processed: 1 } } }));
-  await vi.advanceTimersByTimeAsync(0);
+  await nextPass();
+  expect(snapshots(p).at(-1)).toMatchObject({ metadataBackfill: "complete", health: { reprice: { state: "running", processed: 1 } } });
+  await new Promise<void>(resolve => setImmediate(resolve));
   await vi.advanceTimersByTimeAsync(3000);
-  await vi.waitFor(() => expect(snapshots(p).at(-1)?.health.reprice).toMatchObject({ state: "running", processed: 2 }));
   expect(ingests).toBe(2);
-  await vi.advanceTimersByTimeAsync(0);
+  await nextPass();
+  expect(snapshots(p).at(-1)?.health.reprice).toMatchObject({ state: "running", processed: 2 });
+  expect(ingests).toBe(2);
+  await new Promise<void>(resolve => setImmediate(resolve));
   await vi.advanceTimersByTimeAsync(3000);
-  await vi.waitFor(() => expect(snapshots(p).at(-1)?.health.reprice).toMatchObject({ state: "complete", processed: 3, repriced: 3 }));
   expect(ingests).toBe(3);
-  await vi.advanceTimersByTimeAsync(0);
+  await nextPass();
+  expect(snapshots(p).at(-1)?.health.reprice).toMatchObject({ state: "complete", processed: 3, repriced: 3 });
+  expect(ingests).toBe(3);
+  await new Promise<void>(resolve => setImmediate(resolve));
   await vi.advanceTimersByTimeAsync(59000); expect(ingests).toBe(3);
   await vi.advanceTimersByTimeAsync(1100);
-  await vi.waitFor(() => expect(ingests).toBe(4));
+  expect(ingests).toBe(4);
   p.emit("message", { type: "stop" }); await vi.advanceTimersByTimeAsync(0);
 });
 

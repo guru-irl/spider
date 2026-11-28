@@ -427,7 +427,7 @@ describe("hub Stop replay", () => {
     const revocations = openDb(journal);
     try { revokeMachine(revocations, movedTo); }
     finally { revocations.close(); }
-    await expect(f.stop({ ...input, machineId: movedTo, homeEpoch: 9 })).rejects.toThrow("forgotten peer");
+    expect(await f.stop({ ...input, machineId: movedTo, homeEpoch: 9 })).toMatchObject({ outcome: "refused", reason: "session-commit-failed" });
     expect(await f.runtime.homes.read(id)).toEqual(movedHome);
     expect(f.cache.operation(input.operationId)).toBeNull();
     expect(f.effects).toEqual([]);

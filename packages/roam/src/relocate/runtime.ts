@@ -19,7 +19,7 @@ import { createSessionOperations, type SessionOperations } from "./session-opera
 import { createSessionReconciler, type SessionReconciler } from "./session-reconcile";
 import { createStopCommand } from "./session-stop";
 import { createStartCommand } from "./session-start";
-import { createSessionStopStore, displacedByForce, hasStopProof, projectSessionStatus } from "./session-stop-store";
+import { createSessionStopStore, displacedByForce, hasStopProof, projectSessionStatus, readCachedSessionStatus } from "./session-stop-store";
 import type { SessionOutcome, SessionStatus, StartRequest, StopRequest } from "./session-stop-types";
 import { createRelocateAdapters, type StopRelocateAdapters } from "./adapters";
 import { createV0SyncTransport, createV0ArtifactTransport, guardV0PeerTransport, handleRelocateAgent, refusal } from "./remote";
@@ -27,7 +27,7 @@ import { checkMacSourceWriters, exactHome, localHerdrConnection } from "./local"
 import { parseCaptured } from "./journal";
 import { resolveVerifiedArtifact } from "./transfer";
 import { createHomeSupervisor } from "./supervisor";
-import { serveV0Control, summarizeSync, type V0HubControlServices, type V0PlacementControlServices, type V0SyncOutcome } from "./service";
+import { serveV0Control, summarizeSync, type V0HubControlServices, type V0PlacementControlServices, type V0SessionControlServices, type V0SyncOutcome } from "./service";
 import type { RelocateAdapterOptions, HomeStore, RelocateHome, RunningHome, SessionId, SetHomeRequest, V0Result } from "./types";
 
 export interface V0RuntimeOverrides {
@@ -45,7 +45,7 @@ export interface V0Runtime {
   homes: HubHomeStore;
   operations: SessionOperations;
   sync: ReturnType<typeof createSync>;
-  services: V0HubControlServices;
+  services: V0HubControlServices & V0SessionControlServices;
   stopSession(request: StopRequest): Promise<SessionOutcome>;
   startSession(request: StartRequest): Promise<SessionOutcome>;
   sessionStatus(id: SessionId): Promise<SessionStatus>;
@@ -207,7 +207,22 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
       reconcile: reconciler.reconcile, subscribe: stopStore.subscribe }) : undefined;
     let closing:Promise<void>|undefined;
     const revokedDestination = { ok: false, refusal: forgottenDestinationRefusal } as const;
+    function actionRefusal(request: StartRequest, reason: string): SessionOutcome {
+      return { sessionId: request.sessionId, operationId: request.operationId, outcome: "refused", reason,
+        machineId: null, homeEpoch: null, homeState: null, status: null, observedAt: null };
+    }
     return {options,adapters,homes,operations,sync,services:{
+      async stop(request) {
+        if (!liveHub || !stop) return actionRefusal(request, "mac-hub-required");
+        if (!config.enabled) return actionRefusal(request, "roaming-disabled");
+        return stop(request);
+      },
+      async start(request) {
+        if (!liveHub || !start) return actionRefusal(request, "mac-hub-required");
+        if (!config.enabled) return actionRefusal(request, "roaming-disabled");
+        return start(request);
+      },
+      async sessionStatus({ sessionId }) { return readCachedSessionStatus(core.db, sessionId, localClock.now()); },
       async sync({ machineId }) {
         if (config.role !== "hub" || config.machineId !== config.hubMachineId) return syncRefusal(1, "mac-hub-required");
         if (!config.enabled) return syncRefusal(1, "roaming-disabled");
@@ -280,7 +295,7 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
       if (!start) throw new Error("Start requires the live v0 hub");
       return start(request);
     },
-    async sessionStatus(id) { return cachedStatus(await homes.read(id), id); },
+    async sessionStatus(id) { return readCachedSessionStatus(core.db, id, localClock.now()); },
     resumeSessionStops() { if (liveHub) reconciler?.resume(); },
     close() {return closing ??= (async()=>{
       sync.stop();

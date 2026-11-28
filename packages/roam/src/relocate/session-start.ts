@@ -60,6 +60,11 @@ export function createStartCommand(ports: StartCommandPorts): StartCommand {
     const projected = projectSessionStatus(home, home ? store.current(home.sessionId) : null, request.sessionId, clock.now());
     return { ...projected, operationId: request.operationId, outcome, reason: reason ?? projected.reason };
   }
+  function unavailable(request: StartRequest, writeAttempted: boolean): SessionOutcome {
+    return { sessionId: request.sessionId, operationId: request.operationId,
+      outcome: writeAttempted ? "pending" : "refused", reason: writeAttempted ? "session-commit-unknown" : "session-commit-failed",
+      machineId: null, homeEpoch: null, homeState: null, status: null, observedAt: null };
+  }
   function replay(request: StartRequest, home: RelocateHome | null, binding: OperationBinding): Admission {
     if (binding.action !== "start" || !sameRequest(binding.request, request))
       return { reply: status(request, home, "refused", "operation-reused") };
@@ -82,9 +87,10 @@ export function createStartCommand(ports: StartCommandPorts): StartCommand {
     return status(request, home, saved && saved.observedAt !== null ? "complete" : "pending");
   }
 
-  async function admit(request: StartRequest): Promise<Admission> {
+  async function admit(request: StartRequest, bindingChecked: (bound: boolean) => void, willWrite: () => void): Promise<Admission> {
     const home = await homes.read(request.sessionId);
     const bound = store.operation(request.operationId);
+    bindingChecked(bound !== null);
     if (bound) return replay(request, home, bound);
     const refuse = (reason: string): Admission => ({ reply: status(request, home, "refused", reason) });
     if (closing || !ports.enabled()) return refuse("Roaming is disabled or the hub is closing.");
@@ -107,17 +113,20 @@ export function createStartCommand(ports: StartCommandPorts): StartCommand {
     // Checks can yield while another session binds this ID. The CAS hook also
     // rejects a conflicting binding on the same connection as the home write.
     const earlier = store.operation(request.operationId);
+    bindingChecked(earlier !== null);
     if (earlier) return replay(request, await homes.read(request.sessionId), earlier);
     const committed: RunningHome = home.state === "running" ? home : { ...home, state: "running", epoch: home.epoch + 1, updatedAt: clock.now() };
     const binding = { action: "start", request, committed } as const;
     const pending: StartRecord = { action: "start", operationId: request.operationId, expected: home, committed, observedAt: null, contactReason: null };
     if (home.state === "stopped") {
+      willWrite();
       const swapped = await homes.compareAndSwap(home, committed, undefined, () => store.write(pending, binding));
       if (swapped.kind !== "applied") return { reply: status(request, swapped.home, "refused", "home-changed") };
     } else {
       const current = await homes.read(home.sessionId);
       if (!sameManagedHome(current, home)) return { reply: status(request, current, "refused", "home-changed") };
       const existing = record(home);
+      willWrite();
       store.write(existing?.observedAt === null ? existing : pending, binding);
     }
     return { home: committed, placement: checked.value, continue: true };
@@ -190,19 +199,30 @@ export function createStartCommand(ports: StartCommandPorts): StartCommand {
   }
 
   async function perform(request: StartRequest): Promise<SessionOutcome> {
-    let admitted: Admission;
-    try { admitted = await underLock(request.sessionId, () => admit(request)); }
+    // Before the binding lookup this may be a replay of a committed request.
+    let admitted: Admission, commitPossible = true;
+    try { admitted = await underLock(request.sessionId, () => admit(request,
+      bound => { commitPossible = bound; }, () => { commitPossible = true; })); }
     catch (error) {
-      const bound = store.operation(request.operationId);
-      if (bound) return snapshot(request); // The CAS reply may have been lost after the atomic write.
-      const home = await homes.read(request.sessionId);
-      const reason = error instanceof AwayHomeRecoveryRequired ? error.refusal(request.sessionId).nextStep :
-        error instanceof MacSessionOccupied ? error.refusal("Start").message : "The session could not be authorized to start.";
-      return status(request, home, "refused", reason);
+      try {
+        const bound = store.operation(request.operationId);
+        commitPossible = bound !== null;
+        if (bound) return await snapshot(request); // The CAS reply may have been lost after the atomic write.
+        const home = await homes.read(request.sessionId);
+        const reason = error instanceof AwayHomeRecoveryRequired ? error.refusal(request.sessionId).nextStep :
+          error instanceof MacSessionOccupied ? error.refusal("Start").message : "The session could not be authorized to start.";
+        return status(request, home, "refused", reason);
+      } catch {
+        // An unreadable binding cannot rule out a replay or a committed write.
+        // A later replay will reconcile it.
+        return unavailable(request, commitPossible);
+      }
     }
     if ("reply" in admitted) return admitted.reply;
-    if (admitted.continue) await reconcile(admitted.home, true, admitted.placement);
-    return snapshot(request, admitted.home);
+    try {
+      if (admitted.continue) await reconcile(admitted.home, true, admitted.placement);
+      return await snapshot(request, admitted.home);
+    } catch { return unavailable(request, true); }
   }
   async function start(input: StartRequest): Promise<SessionOutcome> {
     const request = { ...input };
@@ -221,6 +241,7 @@ export function createStartCommand(ports: StartCommandPorts): StartCommand {
       cancel = clock.later(ports.readyMs, () => resolve(snapshot(request)));
     });
     try { return await Promise.race([active.done, deadline]); }
+    catch { return unavailable(request, true); }
     finally { cancel(); }
   }
   return Object.assign(start, { reconcile, close() {

@@ -59,6 +59,11 @@ export function createStopCommand(ports: StopCommandPorts): StopCommand {
     return { ...statusFor(request, home), operationId: request.operationId, outcome, reason };
   }
 
+  function unavailable(request: StopRequest, outcome: "refused" | "pending", reason: string): SessionOutcome {
+    return { sessionId: request.sessionId, machineId: null, homeEpoch: null, homeState: null, status: null,
+      observedAt: null, operationId: request.operationId, outcome, reason };
+  }
+
   function saved(request: StopRequest, binding: OperationBinding): Admission {
     return binding.action === "stop" && sameRequest(binding.request, request)
       ? { kind: "committed", home: binding.committed }
@@ -70,7 +75,7 @@ export function createStopCommand(ports: StopCommandPorts): StopCommand {
     return { ...status, operationId: request.operationId, outcome: status.status === "stopped" ? "complete" : "pending" };
   }
 
-  async function commit(request: StopRequest, move: MoveTurn | null): Promise<Admission> {
+  async function commit(request: StopRequest, move: MoveTurn | null, willWrite: () => void): Promise<Admission> {
     // The pinned turn is already over once this queued callback runs.
     const result = await move?.result;
     const home = await homes.read(request.sessionId);
@@ -97,11 +102,14 @@ export function createStopCommand(ports: StopCommandPorts): StopCommand {
       if (previous && previous.action !== "start" && sameManagedHome(home, previous.committed)) {
         const status = projectSessionStatus(home, previous, home.sessionId, clock.now());
         const upgrade = request.mode === "hard" && previous.mode === "graceful" && status.status !== "stopped";
+        willWrite();
         store.write(upgrade ? { ...previous, mode: "hard" } : previous, nextBinding);
       } else {
+        willWrite();
         store.write(record, nextBinding);
       }
     } else {
+      willWrite();
       const swap = await homes.compareAndSwap(home, committed, undefined, () => store.write(record, nextBinding));
       // An already-applied row without this binding was not committed by this operation.
       if (swap.kind !== "applied") return { kind: "refused", reply: reply(request, "refused", "home-changed", swap.home) };
@@ -167,14 +175,16 @@ export function createStopCommand(ports: StopCommandPorts): StopCommand {
 
   async function wait(flight: Flight): Promise<SessionOutcome> {
     const { request, move } = flight;
-    if (move && operations.activeMove(request.sessionId) === move)
-      return reply(request, "pending", "waiting-for-move", move.moving ?? move.source);
-    let cancel!: () => void;
-    const deadline = new Promise<SessionOutcome>(resolve => {
-      cancel = clock.later(ports.readyMs, () => resolve(flight.snapshot()));
-    });
-    try { return await Promise.race([flight.done, deadline]); }
-    finally { cancel(); }
+    try {
+      if (move && operations.activeMove(request.sessionId) === move)
+        return reply(request, "pending", "waiting-for-move", move.moving ?? move.source);
+      let cancel!: () => void;
+      const deadline = new Promise<SessionOutcome>(resolve => {
+        cancel = clock.later(ports.readyMs, () => resolve(flight.snapshot()));
+      });
+      try { return await Promise.race([flight.done, deadline]); }
+      finally { cancel(); }
+    } catch { return unavailable(request, "pending", "session-commit-unknown"); }
   }
 
   async function stop(input: StopRequest): Promise<SessionOutcome> {
@@ -184,10 +194,25 @@ export function createStopCommand(ports: StopCommandPorts): StopCommand {
 
     // Snapshot the input and take our position before any asynchronous lookup.
     const request = { ...input };
-    const binding = store.operation(request.operationId);
+    let binding: OperationBinding | null;
+    try { binding = store.operation(request.operationId); }
+    catch { return unavailable(request, "pending", "session-commit-unknown"); }
+    let writeAttempted = false;
     const move = binding ? null : operations.activeMove(request.sessionId);
-    const admission = binding ? Promise.resolve(saved(request, binding)) :
-      operations.enqueue(request.sessionId, () => ports.withSession(request.sessionId, () => commit(request, move)));
+    const admission = (binding ? Promise.resolve(saved(request, binding)) :
+      operations.enqueue(request.sessionId, () => ports.withSession(request.sessionId, () => commit(request, move, () => { writeAttempted = true; }))))
+      .catch((): Admission => {
+        // A CAS may have committed before its caller lost the result. Check the
+        // atomic binding before saying that the operation was refused.
+        try {
+          const committed = store.operation(request.operationId);
+          if (committed) return saved(request, committed);
+          return { kind: "refused", reply: unavailable(request, "refused", "session-commit-failed") };
+        } catch {
+          return { kind: "refused", reply: unavailable(request, writeAttempted ? "pending" : "refused",
+            writeAttempted ? "session-commit-unknown" : "session-commit-failed") };
+        }
+      });
     const flight: Flight = { request, move,
       snapshot() {
         // The atomic binding can be visible before the CAS and lock release settle.
@@ -197,7 +222,9 @@ export function createStopCommand(ports: StopCommandPorts): StopCommand {
         } catch { /* A failed cache read must not escape the deadline callback. */ }
         return reply(request, "pending", "waiting-for-session-operation");
       },
-      done: admission.then(result => settle(result, flight)).finally(() => flights.delete(request.operationId)) };
+      done: admission.then(result => settle(result, flight))
+        .catch(() => unavailable(request, "pending", "session-commit-unknown"))
+        .finally(() => flights.delete(request.operationId)) };
     flights.set(request.operationId, flight);
     // The caller can receive a waiting reply before the accepted work settles.
     void flight.done.catch(() => {});

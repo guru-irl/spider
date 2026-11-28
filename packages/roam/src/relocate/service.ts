@@ -3,12 +3,14 @@ import { createConnection, createServer, type Socket } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { assertTestConfigPath } from "@spider/db-core";
 import type { ApplyReceipt, MachineId } from "@spider/db-core/roam/types";
+import { validUnicode } from "@spider/db-core/roam/hlc";
 import type { Outcome } from "../contracts";
 import { isMachineId } from "../machine-id";
 import { privateDirectory } from "../staging";
 import { decodeManagedHome } from "./home";
 import type { SettledRelocateOutcome } from "./relocate";
-import type { RelocateRequest, SetHomeRequest, SettledHome, V0ControlServices, V0Result } from "./types";
+import type { RelocateRequest, SessionId, SetHomeRequest, SettledHome, V0ControlServices, V0Result } from "./types";
+import type { SessionOutcome, SessionStatus, StartRequest, StopRequest } from "./session-stop-types";
 
 export async function runV0Service(start: () => Promise<{ stop(): Promise<void> }>): Promise<void> {
   let signal!: () => void;
@@ -31,6 +33,17 @@ export type V0PlacementControlServices = Omit<V0ControlServices, "relocate" | "s
   setHome(request: SetHomeRequest): Promise<V0Result<SettledHome>>;
 };
 export type V0HubControlServices = V0PlacementControlServices & { sync(request: SyncRequest): Promise<V0SyncOutcome> };
+export interface V0SessionControlServices {
+  stop(request: StopRequest): Promise<SessionOutcome>;
+  start(request: StartRequest): Promise<SessionOutcome>;
+  sessionStatus(request: { sessionId: SessionId }): Promise<SessionStatus>;
+}
+export class V0SessionCallError extends Error {
+  constructor(readonly submission: "not-sent" | "unknown", cause: unknown) {
+    super(submission === "not-sent" ? "V0 session request was not sent" : "V0 session request outcome is unknown", { cause });
+    this.name = "V0SessionCallError";
+  }
+}
 
 function syncCode(outcomes: readonly Pick<Outcome<ApplyReceipt>, "code">[]): V0SyncOutcome["code"] {
   return outcomes.some(row => row.code === 3) ? 3 : outcomes.some(row => row.code === 1) ? 1 : outcomes.some(row => row.code === 2) ? 2 : 0;
@@ -41,7 +54,7 @@ export function summarizeSync(outcomes: readonly Outcome<ApplyReceipt>[]): V0Syn
     epoch: null, repairCommand: null, value: { outcomes } };
 }
 
-const text = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(value);
+const text = (value: unknown): value is string => validUnicode(value) && value.length > 0 && value.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(value);
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === "object" && !Array.isArray(value); }
 function socketPath(root: string): string {
   if (resolve(root) !== root) throw new Error("Invalid v0 runtime root");
@@ -63,7 +76,11 @@ export async function probeV0Control(root: string, timeoutMs: number): Promise<b
 }
 function decode(bytes: Buffer): unknown { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
 type Request = { version: 1; kind: "relocate"; request: RelocateRequest } | { version: 1; kind: "set-home"; request: SetHomeRequest }
-  | { version: 1; kind: "sync"; request: SyncRequest };
+  | { version: 1; kind: "sync"; request: SyncRequest } | { version: 1; kind: "stop"; request: StopRequest }
+  | { version: 1; kind: "start"; request: StartRequest } | { version: 1; kind: "session-status"; request: { sessionId: SessionId } };
+const sessionId = (value: unknown): value is SessionId => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(value);
+const exactKeys = (value: Record<string, unknown>, keys: readonly string[]) =>
+  Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 function parse(bytes: Buffer): Request {
   const value = decode(bytes);
   if (!object(value) || value.version !== 1 || Object.keys(value).length !== 3 || !object(value.request)) throw new Error("Invalid v0 control");
@@ -75,8 +92,19 @@ function parse(bytes: Buffer): Request {
       return { version: 1, kind: "sync", request: { machineId: r.machineId } };
     throw new Error("Invalid v0 sync target");
   }
+  if (value.kind === "session-status") {
+    if (!exactKeys(r, ["sessionId"]) || !sessionId(r.sessionId)) throw new Error("Invalid session status request");
+    return value as Request;
+  }
+  if (value.kind === "stop" || value.kind === "start") {
+    const keys = ["operationId", "sessionId", "machineId", "homeEpoch", ...(value.kind === "stop" ? ["mode"] : [])];
+    if (!exactKeys(r, keys) || !text(r.operationId) || !r.operationId.trim() || !sessionId(r.sessionId) || !isMachineId(r.machineId) ||
+        typeof r.homeEpoch !== "number" || !Number.isSafeInteger(r.homeEpoch) || r.homeEpoch < 1 ||
+        value.kind === "stop" && r.mode !== "graceful" && r.mode !== "hard") throw new Error("Invalid session action request");
+    return value as Request;
+  }
   if (value.kind !== "relocate" && value.kind !== "set-home") throw new Error("Invalid v0 control");
-  if (!text(r.sessionId) || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(r.sessionId) || !isMachineId(r.destinationMachine)) throw new Error("Invalid v0 target");
+  if (!sessionId(r.sessionId) || !isMachineId(r.destinationMachine)) throw new Error("Invalid v0 target");
   if (value.kind === "relocate" ? Object.keys(r).length !== 2 : Object.keys(r).length !== 4 || r.force !== true || !text(r.confirmation)) throw new Error("Invalid v0 confirmation");
   return value as Request;
 }
@@ -114,6 +142,34 @@ function checkRelocateSuccess(value: Record<string, unknown>, request: RelocateR
       (stop.observedAt !== null && (typeof stop.observedAt !== "number" || !Number.isSafeInteger(stop.observedAt) || stop.observedAt < 0)) ||
       (stop.status !== "stop-pending" && stop.observedAt === null)) throw invalid();
 }
+function parseSessionReply(result: unknown, request: Extract<Request, { kind: "stop" | "start" | "session-status" }>): SessionStatus | SessionOutcome {
+  const invalid = () => new Error("Invalid v0 session reply");
+  if (!object(result)) throw invalid();
+  const action = request.kind !== "session-status";
+  if (!exactKeys(result, ["sessionId", "machineId", "homeEpoch", "homeState", "status", "reason", "observedAt",
+    ...(action ? ["operationId", "outcome"] : [])]) || result.sessionId !== request.request.sessionId ||
+    result.reason !== null && (!validUnicode(result.reason) || !result.reason.trim() || /[\u0000-\u001f\u007f]/.test(result.reason)) ||
+    result.observedAt !== null && (typeof result.observedAt !== "number" || !Number.isSafeInteger(result.observedAt) || result.observedAt < 0)) throw invalid();
+  if (result.homeState === null) {
+    if (result.machineId !== null || result.homeEpoch !== null || result.status !== null || result.observedAt !== null) throw invalid();
+  } else {
+    if (!isMachineId(result.machineId) || typeof result.homeEpoch !== "number" || !Number.isSafeInteger(result.homeEpoch) || result.homeEpoch < 1) throw invalid();
+    if (result.homeState === "running") {
+      if (result.status !== null && result.status !== "running" && result.status !== "starting") throw invalid();
+    } else if (result.homeState === "stopped") {
+      if (result.status !== "stopped" && result.status !== "stopping" && result.status !== "stop-pending") throw invalid();
+    } else if (result.homeState !== "moving" || result.status !== "moving") throw invalid();
+    if ((result.status === "running" || result.status === "stopped" || result.status === "stopping") && result.observedAt === null) throw invalid();
+    if ((result.status === null || result.status === "starting" || result.status === "moving") && result.observedAt !== null) throw invalid();
+  }
+  if (action) {
+    if (result.operationId !== request.request.operationId ||
+      result.outcome !== "complete" && result.outcome !== "pending" && result.outcome !== "refused") throw invalid();
+    if (result.outcome === "complete" && result.status !== (request.kind === "stop" ? "stopped" : "running")) throw invalid();
+  }
+  return result as SessionStatus | SessionOutcome;
+}
+
 async function reclaim(path: string): Promise<void> {
   let stat;
   try { stat = lstatSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
@@ -127,7 +183,7 @@ async function reclaim(path: string): Promise<void> {
   if (!current.isSocket() || current.dev !== stat.dev || current.ino !== stat.ino) throw new Error("V0 socket changed");
   unlinkSync(path);
 }
-export async function serveV0Control(root: string, services: V0HubControlServices): Promise<{ close(): Promise<void> }> {
+export async function serveV0Control(root: string, services: V0HubControlServices & Partial<V0SessionControlServices>): Promise<{ close(): Promise<void> }> {
   const path = socketPath(root); privateDirectory(dirname(path)); await reclaim(path);
   const sockets = new Set<Socket>(), requests = new Set<Promise<void>>();
   let accepting = true;
@@ -154,6 +210,14 @@ export async function serveV0Control(root: string, services: V0HubControlService
       try { if (end < 0 || end >= MAX_REQUEST || end !== bytes.length - 1) throw new Error(); request = parse(bytes.subarray(0, end)); }
       catch { void send({ version: 1, error: "invalid-arguments" }); return; }
       const task = (async () => {
+        if (request.kind === "stop" || request.kind === "start" || request.kind === "session-status") {
+          const handler = request.kind === "stop" ? services.stop : request.kind === "start" ? services.start : services.sessionStatus;
+          if (!handler) { await send({ version: 1, error: "unsupported-control" }); return; }
+          const result = request.kind === "stop" ? await services.stop!(request.request)
+            : request.kind === "start" ? await services.start!(request.request) : await services.sessionStatus!(request.request);
+          await send({ version: 1, kind: request.kind, result });
+          return;
+        }
         const result = request.kind === "sync" ? await services.sync(request.request)
           : request.kind === "relocate" ? await services.relocate(request.request) : await services.setHome(request.request);
         await send({ version: 1, kind: request.kind, result });
@@ -174,8 +238,16 @@ export async function serveV0Control(root: string, services: V0HubControlService
     await closed;
   })(); } };
 }
-export function requestV0Services(root: string): V0HubControlServices {
+export function requestV0Services(root: string): V0HubControlServices & V0SessionControlServices {
   async function call(request: Request): Promise<unknown> {
+    const submission = { attempted: false };
+    try { return await callInner(request, submission); }
+    catch (error) {
+      if (request.kind === "stop" || request.kind === "start") throw new V0SessionCallError(submission.attempted ? "unknown" : "not-sent", error);
+      throw error;
+    }
+  }
+  async function callInner(request: Request, submission: { attempted: boolean }): Promise<unknown> {
     const path = socketPath(root), parent = lstatSync(dirname(path)), info = lstatSync(path), uid = process.getuid?.();
     if (!parent.isDirectory() || parent.isSymbolicLink() || realpathSync(dirname(path)) !== dirname(path) || !info.isSocket() || info.isSymbolicLink() ||
         uid !== undefined && (parent.uid !== uid || info.uid !== uid) || (parent.mode & 0o777) !== 0o700 || (info.mode & 0o777) !== 0o600) throw new Error("Unsafe v0 socket");
@@ -187,7 +259,10 @@ export function requestV0Services(root: string): V0HubControlServices {
       const timeout = () => fail(new Error("V0 control timed out"));
       const deadline = request.kind === "sync" ? setTimeout(timeout, CONTROL_TIMEOUT) : undefined;
       if (request.kind !== "sync") socket.setTimeout(CONTROL_TIMEOUT, timeout);
-      socket.once("error", fail); socket.once("connect", () => socket.write(encoded));
+      socket.once("error", fail); socket.once("connect", () => {
+        submission.attempted = true;
+        try { socket.write(encoded); } catch (error) { fail(error); }
+      });
       socket.once("close", () => fail(new Error("V0 control closed before its reply")));
       socket.on("data", data => {
         if (bytes.length + data.length > MAX_REPLY) fail(new Error("V0 reply too large"));
@@ -203,6 +278,11 @@ export function requestV0Services(root: string): V0HubControlServices {
             const result = parseSyncReply(value.result);
             finish(); done(result); return;
           }
+          if (request.kind === "stop" || request.kind === "start" || request.kind === "session-status") {
+            if (Object.keys(value).length !== 3 || bytes.length === 0 || bytes.indexOf(10) !== bytes.length - 1) throw new Error("Invalid v0 session frame");
+            const result = parseSessionReply(value.result, request);
+            finish(); done(result); return;
+          }
           if (!object(value.result) || typeof value.result.ok !== "boolean" ||
               (value.result.ok ? !object(value.result.value) : !object(value.result.refusal) || !text(value.result.refusal.code) || !text(value.result.refusal.message) || !text(value.result.refusal.nextStep))) throw new Error("Invalid v0 reply");
           if (request.kind === "relocate" && value.result.ok === true && object(value.result.value))
@@ -216,5 +296,8 @@ export function requestV0Services(root: string): V0HubControlServices {
     async sync(request) { return await call({ version: 1, kind: "sync", request }) as V0SyncOutcome; },
     async relocate(request) { return await call({ version: 1, kind: "relocate", request }) as SettledRelocateOutcome; },
     async setHome(request) { return await call({ version: 1, kind: "set-home", request }) as V0Result<SettledHome>; },
+    async stop(request) { return await call({ version: 1, kind: "stop", request }) as SessionOutcome; },
+    async start(request) { return await call({ version: 1, kind: "start", request }) as SessionOutcome; },
+    async sessionStatus(request) { return await call({ version: 1, kind: "session-status", request }) as SessionStatus; },
   };
 }

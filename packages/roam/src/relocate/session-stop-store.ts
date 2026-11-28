@@ -3,7 +3,7 @@ import { isRoamUuid } from "@spider/db-core/roam/codec";
 import { validUnicode } from "@spider/db-core/roam/hlc";
 import { localEntries, readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import type { MachineId } from "@spider/db-core/roam/types";
-import { decodeManagedHome, sameManagedHome } from "./home";
+import { decodeManagedHome, readManagedHome, sameManagedHome } from "./home";
 import type { OperationBinding, SessionStatus, SessionStopStore, SessionTransition, StopBlocker, StopMode, StopObservation } from "./session-stop-types";
 import type { RelocateHome, SessionId, StoppedHome } from "./types";
 
@@ -176,6 +176,31 @@ export function displacedByForce(expected: RelocateHome, home: StoppedHome, reco
     hasStopProof(expected, expected.machineId, prior);
   if (expected.machineId !== home.machineId && !sourceConfirmed) displaced.add(expected.machineId);
   return [...displaced];
+}
+
+/** Read one cached snapshot without contacting a machine or changing evidence. */
+export function readCachedSessionStatus(db: Db, sessionId: SessionId, now: number): SessionStatus {
+  return db.raw.transaction(() => {
+    const home = readManagedHome(db, sessionId);
+    const record = createSessionStopStore(db).current(sessionId);
+    const placement = readLocal<unknown>(db, "relocate-managed", sessionId);
+    const status = projectSessionStatus(home, record, sessionId, now);
+    if (!home) {
+      // The shared home decoder recognizes legacy rows by state alone. Check
+      // their remaining fields before using one as evidence of non-management.
+      const row = db.prepare("SELECT machine_id, epoch, move_id, updated_at FROM session_homes WHERE session_id=?").get(sessionId) as Record<string, unknown> | undefined;
+      if (row) {
+        machine(row.machine_id);
+        integer(row.epoch, 1);
+        integer(row.updated_at, 0);
+        if (row.move_id !== null) text(row.move_id);
+      }
+      const bound = !record && placement === undefined && localEntries<unknown>(db, OPERATION)
+        .some(({ key, value }) => parseBinding(value, key).request.sessionId === sessionId);
+      return { ...status, reason: record || placement !== undefined || bound ? "home-unavailable" : "unmanaged-session" };
+    }
+    return status;
+  })();
 }
 
 function describeBlocker(blocker: StopBlocker): string {

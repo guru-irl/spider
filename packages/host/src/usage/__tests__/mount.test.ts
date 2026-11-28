@@ -116,9 +116,9 @@ describe("public usage footer mount", () => {
       f.emit("agent_start");
       f.requestRender.mockClear();
       vi.advanceTimersByTime(999);
-      expect(f.requestRender).toHaveBeenCalledTimes(27);
+      expect(f.requestRender).toHaveBeenCalledTimes(13); // 14 frames a second (user, 2026-11-28)
       vi.advanceTimersByTime(1);
-      expect(f.requestRender).toHaveBeenCalledTimes(28);
+      expect(f.requestRender).toHaveBeenCalledTimes(14);
     } finally { controlConfig("unset", f.ctx.cwd, "ui.icons"); }
   });
   it("leaves Pi's row alone until mounted and stops the active timer on disable, reload and shutdown", () => {

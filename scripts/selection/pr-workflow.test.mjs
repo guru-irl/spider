@@ -63,6 +63,12 @@ esac
         GITHUB_OUTPUT: output, ...extra },
     });
   };
+  const checkoutMerge = (firstParent = base) => {
+    const head = git('rev-parse', 'HEAD');
+    const merge = git('commit-tree', `${head}^{tree}`, '-p', firstParent, '-p', head, '-m', 'Tested merge');
+    git('checkout', '-q', '--detach', merge);
+    return merge;
+  };
   const select = extra => run('select', 'Select affected tests', extra);
   const selection = () => JSON.parse(readFileSync(join(root, selectionPath), 'utf8'));
   const published = () => {
@@ -72,11 +78,11 @@ esac
     return lines[0].slice('manifest='.length);
   };
   const restore = (job, manifest) => run(job, 'Restore shared test selection', { SELECTION: manifest });
-  return { put, commit, base, legacy, select, selection, summary, run, published, restore, root };
+  return { put, commit, base, legacy, checkoutMerge, select, selection, summary, run, published, restore, root };
 }
 
 test('all PR shards and the audit receive one selection without transferring test artifacts', t => {
-  const { put, commit, select, selection, published, restore, run, root } = fixture(t);
+  const { put, commit, checkoutMerge, legacy, select, selection, published, restore, run, root } = fixture(t);
   const paths = [...tests, 'packages/example/src/c.test.ts', 'packages/example/src/d.test.ts'];
   put('scripts/selection/select.mjs', `
     import { execFileSync } from 'node:child_process';
@@ -93,8 +99,11 @@ test('all PR shards and the audit receive one selection without transferring tes
   for (const file of paths) put(file, 'import { it } from "vitest"; it("passes", () => {});');
   commit();
   assert.ok(workflow.jobs.select, 'the PR must compute one selection before starting the matrix');
-  const result = select({ BASE_SHA: base });
+  const merge = checkoutMerge(base);
+  const result = select({ BASE_SHA: legacy });
   assert.equal(result.status, 0, result.stderr);
+  assert.equal(selection().head, merge);
+  assert.equal(selection().mapCommit, base);
   const shared = published();
   assert.deepEqual(JSON.parse(gunzipSync(Buffer.from(shared, 'base64'))), selection());
   assert.deepEqual(selection().groups, paths.map(file => [file]));
@@ -143,13 +152,14 @@ test('the required PR check accepts success and rejects any failed, cancelled or
 });
 
 test('PR runner rejects an invalid selection even when the head runner and manifest accept it', t => {
-  const { put, commit, run, base, legacy } = fixture(t);
+  const { put, commit, checkoutMerge, run, base, legacy } = fixture(t);
   put('scripts/selection/run.mjs', 'console.log("Head runner always passes");');
   put('scripts/selection/manifest.mjs', 'export const validateSelection = () => ({ groups: [[], [], [], []] });');
   commit();
   put(selectionPath, '{}');
-  for (const BASE_SHA of [base, legacy]) {
-    const result = run('tests', 'Test selected group', { BASE_SHA });
+  for (const firstParent of [base, legacy]) {
+    checkoutMerge(firstParent);
+    const result = run('tests', 'Test selected group', { BASE_SHA: firstParent });
     assert.notEqual(result.status, 0, result.stdout);
     assert.match(result.stderr, /Selection belongs to a different checkout/);
   }
@@ -170,13 +180,14 @@ for (const [label, body] of [
   `],
 ]) {
   test(`PR uses the full head inventory if the base selector fails ${label}`, t => {
-    const { put, commit, selection, select, summary } = fixture(t);
+    const { put, commit, checkoutMerge, selection, select, summary } = fixture(t);
     put('scripts/selection/select.mjs', body);
     const broken = commit();
     put('scripts/selection/select.mjs', `console.log('HEAD SELECTOR RAN'); process.exit(9);`);
     put('scripts/test-shards.ts', `throw new Error('HEAD PARTITIONER RAN');`);
     put(tests[1], 'export {};');
     commit();
+    checkoutMerge(broken);
     const result = select({ BASE_SHA: broken });
     assert.equal(result.status, 0, result.stderr);
     assert.doesNotMatch(result.stdout + result.stderr, /HEAD (?:SELECTOR|PARTITIONER) RAN/);
@@ -193,7 +204,7 @@ for (const [label, body] of [
 
 
 test('oversized selections fall back to a compact full manifest without rerunning the selector', t => {
-  const { put, commit, selection, select, published, summary } = fixture(t);
+  const { put, commit, checkoutMerge, selection, select, published, summary } = fixture(t);
   put('scripts/selection/select.mjs', `
     import { createHash } from 'node:crypto';
     import { appendFileSync, writeFileSync } from 'node:fs';
@@ -204,6 +215,7 @@ test('oversized selections fall back to a compact full manifest without rerunnin
   const base = commit();
   put(tests[1], 'export {};');
   commit();
+  checkoutMerge(base);
   const result = select({ BASE_SHA: base });
   assert.equal(result.status, 0, result.stderr);
   const manifest = JSON.parse(gunzipSync(Buffer.from(published(), 'base64')));

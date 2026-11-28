@@ -208,6 +208,14 @@ describe("roaming v0 relay forwarding", () => {
     expect(f.calls).toEqual([]);
   });
 
+  it("refuses before lookup when this machine is no longer a relay", async () => {
+    const f = await forwardingFixture();
+    configure(f.relay, { relays: [], sendTo: [peer(f.origin), peer(f.receiver)] });
+    expect(await f.forward(f.submit("relay-removed"))).toEqual(refusal("relay-removed", "unauthorized"));
+    expect(f.calls).toEqual([]);
+    expect(await f.received()).toEqual([]);
+  });
+
   it.each(["relay", "origin"] as const)("refuses an unlisted %s without marking the lookup attempted", async missing => {
     const f = await forwardingFixture();
     configure(f.receiver, { relays: missing === "relay" ? [] : [RELAY], acceptFrom: missing === "origin" ? [] : [f.grant] });

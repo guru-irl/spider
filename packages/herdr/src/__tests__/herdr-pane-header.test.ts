@@ -100,7 +100,7 @@ test('a subagent header is bot, run pill, parent pill and a spacer before status
   expect(tree.items[1]).toMatchObject({ items: ['Reviewer'], styles: { px: [8], h: [18], rounded: [999], bg: ['#ffffff14'], font_family: ['JetBrains Mono'], text_size: [11], tooltip: ['Reviewer'] } });
   expect(tree.items[2]).toMatchObject({ items: [expect.objectContaining({ asset: 'mods/spider-agents/corner-up-left.svg' }), 'Planner'], styles: { px: [8], h: [18], rounded: [999], bg: ['#ffffff14'] } });
   expect(tree.items[3]).toMatchObject({ items: [], styles: { flex_1: [] } });
-  expect(tree.items[4]).toMatchObject({ asset: 'mods/workspace-chrome/spinner.svg' });
+  expect(tree.items[4]).toMatchObject({ styles: { frames: [expect.any(Array), 1000 / 14] } });
   expect(all(tree).some(el => el.styles.id?.[0] === 'spider-path')).toBe(false);
   expect(texts(tree).join(' ')).not.toMatch(/hidden-path|Can steer|Read-only/);
 });

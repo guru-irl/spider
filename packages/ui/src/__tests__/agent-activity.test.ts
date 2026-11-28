@@ -70,7 +70,7 @@ describe("agent activity marks", () => {
   it("uses one plain marker and never a private glyph in text mode, even with the patch enabled", () => {
     for (const line of surfaces("robot-7854", "running", 700, { ...theme, iconStyle: "text" })) {
       expect(line).not.toMatch(/\p{Co}|\p{Extended_Pictographic}/u);
-      expect(line).toMatch(/\]◇ (?:\[toolTitle\])?scribe/u);
+      expect(line).toMatch(/\]◇ (?:(?:\[accent\])?worker )?(?:\[toolTitle\])?scribe/u);
     }
   });
 });

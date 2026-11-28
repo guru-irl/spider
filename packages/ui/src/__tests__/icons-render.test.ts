@@ -60,7 +60,7 @@ describe("icon styles in rendered rows", () => {
   });
   it("uses the text icon for an adapter without an icon style", () => {
     const custom: ThemeAdapter = { ...theme("text"), glyph: "🕸", iconStyle: undefined };
-    expect(formatAgentLine(custom, agent, 100, 0)).toContain("◇ scribe");
+    expect(formatAgentLine(custom, agent, 100, 0)).toContain("◇ worker scribe");
     const opts = { agent, width: 100, height: 2, focused: false, pinned: false, now: 0 };
     expect(renderGridCell(custom, opts)[0]).toContain("◇ scribe");
   });
@@ -68,8 +68,8 @@ describe("icon styles in rendered rows", () => {
   it("keeps the agent marker and its following spaces aligned", () => {
     const text = formatAgentLine(theme("text"), agent, 100, 0);
     const nerd = formatAgentLine(theme("nerd"), agent, 100, 0);
-    expect(text).toContain("◇ scribe");
-    expect(nerd).toContain("\u{F167A}  scribe");
+    expect(text).toContain("◇ worker scribe");
+    expect(nerd).toContain("\u{F167A}  worker scribe");
     expect(visibleWidth(nerd)).toBe(visibleWidth(text) + 1);
   });
 
@@ -106,7 +106,7 @@ describe("icon styles in rendered rows", () => {
     expect(text[0]).toMatch(/^ ◆ exec/u);
     expect(nerd[0]).toMatch(/^ \u{F0BCA}  exec/u);
     expect(visibleWidth(nerd[0])).toBe(visibleWidth(text[0]) + 1);
-    expect(formatAgentLine(theme("nerd"), agent, 100, 0)).toContain("\u{F167A}  scribe");
+    expect(formatAgentLine(theme("nerd"), agent, 100, 0)).toContain("\u{F167A}  worker scribe");
   });
 
   it("aligns message details in both icon styles", () => {
@@ -169,15 +169,17 @@ describe("icon styles in rendered rows", () => {
     const snapshot = applyEvent(agent, event);
     const text = formatAgentLine(theme("text"), snapshot, 100, 0);
     const nerd = formatAgentLine(theme("nerd"), snapshot, 100, 0);
-    expect(text).toContain("× read — failed");
-    expect(nerd).toContain("\u{F0156}  read — failed");
+    expect(text).not.toContain("read — failed");
+    expect(nerd).not.toContain("read — failed");
     const current = applyEvent(agent, { ...event, summary: "\u274C read — failed" });
-    expect(formatAgentLine(theme("nerd"), current, 100, 0)).toContain("\u{F0156}  read — failed");
-    expect(visibleWidth(nerd)).toBe(visibleWidth(text) + 2);
+    expect(renderGridCell(theme("nerd"), { agent: current, width: 100, height: 3, focused: false, pinned: false, now: 0 }).join("\n"))
+      .toContain("\u{F0156}  read — failed");
+    expect(visibleWidth(nerd)).toBe(visibleWidth(text) + 1);
     const opts = { agent: snapshot, width: 100, height: 3, focused: false, pinned: false, now: 0 };
     expect(renderGridCell(theme("nerd"), opts).join("\n")).toContain("\u{F0156}  read — failed");
     const log = applyEvent(agent, { ...event, type: "log", summary: "✗ user text" });
-    expect(formatAgentLine(theme("nerd"), log, 100, 0)).toContain("✗ user text");
+    expect(renderGridCell(theme("nerd"), { agent: log, width: 100, height: 3, focused: false, pinned: false, now: 0 }).join("\n"))
+      .toContain("✗ user text");
     const detail = new AgentDetail("one", theme("nerd"), { viewport: () => ({ safeHeight: 15 }), requestRender: () => {} });
     detail.update({ kind: "loaded", run: agent, events: [{ ...event, id: 1 }] });
     try { expect(detail.render(100).join("\n")).toContain("\u{F0156}  read — failed"); }
@@ -188,7 +190,7 @@ describe("icon styles in rendered rows", () => {
     const event = { runId: "one", sessionId: "s", ts: 1, type: "tool_result" as const,
       summary: "✓ read — done", payload: { isError: false } };
     const snapshot = applyEvent(agent, event);
-    expect(formatAgentLine(theme("nerd"), snapshot, 100, 0)).toContain("\u{F012C}  read — done");
+    expect(formatAgentLine(theme("nerd"), snapshot, 100, 0)).not.toContain("read — done");
     const opts = { agent: snapshot, width: 100, height: 3, focused: false, pinned: false, now: 0 };
     expect(renderGridCell(theme("nerd"), opts).join("\n")).toContain("\u{F012C}  read — done");
     const detail = new AgentDetail("one", theme("nerd"), { viewport: () => ({ safeHeight: 15 }), requestRender: () => {} });
@@ -196,7 +198,8 @@ describe("icon styles in rendered rows", () => {
     try { expect(detail.render(100).join("\n")).toContain("\u{F012C}  read — done"); }
     finally { detail.dispose(); }
     const log = applyEvent(agent, { ...event, type: "log", summary: "✓ user text" });
-    expect(formatAgentLine(theme("nerd"), log, 100, 0)).toContain("✓ user text");
+    expect(renderGridCell(theme("nerd"), { agent: log, width: 100, height: 3, focused: false, pinned: false, now: 0 }).join("\n"))
+      .toContain("✓ user text");
   });
 
   it("keeps failed-tool provenance aligned when the activity tail rolls over", () => {
@@ -210,7 +213,9 @@ describe("icon styles in rendered rows", () => {
     expect(snapshot.recentActivityErrors?.slice(0, -1).every(value => value === undefined)).toBe(true);
     expect(snapshot.recentActivityErrors?.at(-1)).toBe(true);
     snapshot = applyEvent(snapshot, { runId: "one", sessionId: "s", ts: 23, type: "log", summary: "✗ user text" });
-    expect(formatAgentLine(theme("nerd"), snapshot, 100, 0)).toContain("✗ user text");
+    const grid = renderGridCell(theme("nerd"), { agent: snapshot, width: 100, height: 4, focused: false, pinned: false, now: 0 });
+    expect(grid.join("\n")).toContain("✗ user text");
+    expect(grid.join("\n")).toContain("\u{F0156}  read");
     expect(snapshot.recentActivityErrors?.at(-2)).toBe(true);
     expect(snapshot.recentActivityErrors?.at(-1)).toBeUndefined();
   });

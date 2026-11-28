@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { expect, it, vi } from "vitest";
+import { testTmpDir } from "@spider/intercom/test-support";
 import { openDb } from "@spider/db-core";
 import { writeLocal } from "@spider/db-core/roam/local-state";
 import { createReplica } from "@spider/db-core/testutil";
@@ -25,7 +26,7 @@ const uncertain = "66666666-6666-4666-8666-666666666666";
 
 type PeerCall = { machineId: string; kind: string; operation?: Operation; reply?: V0Result<unknown> };
 async function manualSyncFixture(machines = [box, other]) {
-  const root = mkdtempSync(join(resolve(".spider/scratch"), "ms-"));
+  const root = mkdtempSync(join(testTmpDir(), "ms-"));
   const replicas = new Map([mac, ...machines].map(machine => [machine, createReplica("global", machine)]));
   const local = replicas.get(mac)!;
   const peers = machines.map((machineId, i) => ({ machineId, alias: `box-${i}.invalid`, node: "/node", pi: "/pi", cli: "/spider",

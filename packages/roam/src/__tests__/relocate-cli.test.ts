@@ -7,6 +7,7 @@ import { createConnection, createServer } from "node:net";
 import { PassThrough } from "node:stream";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { testTmpDir } from "@spider/intercom/test-support";
 import { DEFAULT_LIMITS, disabledIntercom, type RoamConfig } from "../contracts";
 import type { RelocateId, RunningHome, SessionId } from "../relocate/types";
 import { createHomeStore } from "../relocate/home";
@@ -53,7 +54,7 @@ const syncReply = { code: 0 as const, reason: "Synchronization complete", operat
   repairCommand: null, value: { outcomes: [] } };
 const syncFrame = (request: object = {}) => ({ version: 1, kind: "sync", request });
 function socketRoot() {
-  const root = mkdtempSync(join(resolve(".spider/scratch"), "sc-")); roots.push(root);
+  const root = mkdtempSync(join(testTmpDir(), "sc-")); roots.push(root);
   return root;
 }
 async function rawControl(root: string, frame: string): Promise<unknown> {

@@ -201,6 +201,49 @@ test('runs possible unresolved fixture bundle users for non-doc source changes',
   assertSelected(await fixture({ changes: [changed('docs/guide.md')], records }), docGuard);
 });
 
+const paneWriter = 'packages/herdr/src/__tests__/endpoint-fixture.ts';
+const paneDigest = '8926a2faecbd602f6fec0248b87f80e8fea3dde43555c852f2a34ef475148463';
+const paneStub = `<tmp>/h/1/package/dist/herdr/pane-endpoint-${paneDigest}.mjs`;
+const wiringBuilder = 'packages/host/src/__tests__/herdr-wiring-fixture.ts';
+const wiringBlob = 'b209b9382a714bca041da4a50e348a926776e4d6';
+const viewerEntry = 'packages/herdr/src/bin/viewer.ts';
+const fixtureInput = 'packages/one/src/runtime-input.ts';
+const unrelatedInput = 'packages/one/src/unrelated.ts';
+const wiringRecord = path => row({ reads: [0], unresolved: [path], ranBundle: true });
+
+function wiringFixture({ path = '<tmp>/h/w0/dist/herdr/assets/ports-C3IoFaj8.js',
+  blob = wiringBlob, changes = [changed(unrelatedInput)], ...options } = {}) {
+  return fixture({ changes, files: [wiringBuilder], records: { [b]: wiringRecord(path) },
+    fixtureBlobs: () => new Map([[wiringBuilder, blob]]),
+    resolveRelated: async (seeds, targets) => seeds.includes(fixtureInput) && targets?.includes(viewerEntry) ? [viewerEntry] : [],
+    ...options });
+}
+
+test('a recorded standalone pane fixture needs its writer, not unrelated source', async () => {
+  const options = { files: [paneWriter], records: { [b]: row({ reads: [0], unresolved: [paneStub], ranBundle: true }) } };
+  assertSelected(await fixture({ ...options, changes: [changed(unrelatedInput)] }));
+  assertSelected(await fixture({ ...options, changes: [changed(paneWriter, 'D')] }), b);
+  assertSelected(await fixture({ ...options, changes: [changed('vite.config.mjs')] }), b, bundleReader);
+});
+
+test('a verified fixture chunk selects its transitive inputs instead of unrelated packages', async () => {
+  assertSelected(await wiringFixture());
+  assertSelected(await wiringFixture({ changes: [changed(fixtureInput)] }), b);
+});
+
+test('a changed builder, ambiguous path, or another unresolved chunk keeps the fixture conservative', async () => {
+  assertSelected(await wiringFixture({ blob: 'f'.repeat(40) }), b);
+  assertSelected(await wiringFixture({ path: '<tmp>/another-tool/dist/ports-C3IoFaj8.js' }), b);
+  assertSelected(await wiringFixture({ records: { [b]: row({ reads: [0], ranBundle: true,
+    unresolved: [paneStub, '<tmp>/h/w0/dist/herdr/assets/ports-C3IoFaj8.js', '<tmp>/mystery.js'] }) } }), b);
+  assertSelected(await fixture({ changes: [changed(unrelatedInput)], records: { [b]: row({ unresolved: [paneStub] }) } }), b);
+});
+
+test('a fixture with a verified build graph still runs on deletes and non-code inputs', async () => {
+  assertSelected(await wiringFixture({ changes: [changed(fixtureInput, 'D')] }), b);
+  assertSelected(await wiringFixture({ changes: [changed('packages/one/src/options.json')] }), b);
+});
+
 test('always runs failed, skipped and unrecorded test files', async () => {
   const tests = Object.fromEntries(inventory.filter(file => file !== d).map(file => [file, row()]));
   tests[b] = row({ result: 'failed' });

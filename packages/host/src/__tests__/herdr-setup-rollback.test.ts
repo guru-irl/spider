@@ -1,6 +1,8 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import { readJournal } from '../../../herdr/src/setup/backup.js';
 import { setupHerdr, rollbackHerdr } from '../../../herdr/src/setup/installer.js';
 import { cleanup, fixture } from './herdr-setup-fixture.js';
 
@@ -11,6 +13,34 @@ vi.mock('node:child_process', async importOriginal => {
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
 const fastFixture = () => fixture('fake', false, { coreTransport: 'socket' });
+
+it('rollback keeps the remote runtime shared by installs with the same digest', async () => {
+  const f = await fastFixture();
+  const runtimeBytes = await readFile(join(f.root, 'dist/herdr/remote-runtime.mjs'));
+  const digest = createHash('sha256').update(runtimeBytes).digest('hex');
+  const runtimePath = join(f.h.directories.remote, `spider-remote-runtime-${digest.slice(0, 16)}.mjs`);
+  const machine = f.request.config.machines[0].name;
+  const uploads = vi.spyOn(f.parts.hc, 'fileWrite');
+  const runtimeUploads = () => uploads.mock.calls.filter(([on, path]) => on === machine && path === runtimePath);
+
+  await setupHerdr(f.request, f.parts);
+  expect(runtimeUploads()).toHaveLength(1);
+  expect(await f.parts.hc.fileRead(machine, runtimePath)).toEqual(runtimeBytes);
+  const runtimeEntry = { machine, path: runtimePath, before: null, after: digest };
+  const installedJournal = await readJournal(f.request.journalRoot);
+  expect(installedJournal.entries.length).toBeGreaterThan(0);
+  expect(installedJournal.runtimes).toEqual([runtimeEntry]);
+
+  await rollbackHerdr(f.request, f.parts);
+  expect(await f.parts.hc.fileRead(machine, runtimePath)).toEqual(runtimeBytes);
+  const rolledBackJournal = await readJournal(f.request.journalRoot);
+  expect(rolledBackJournal.entries).toEqual([]);
+  expect(rolledBackJournal.runtimes).toEqual([runtimeEntry]);
+
+  await setupHerdr(f.request, f.parts);
+  expect(runtimeUploads()).toHaveLength(1);
+  expect(await f.parts.hc.fileRead(machine, runtimePath)).toEqual(runtimeBytes);
+});
 
 it.each(['export BEFORE=1', '# existing rc\nexport BEFORE=1', '', 'export BEFORE=1\n'])('rollback restores an untouched rc byte for byte: %j', async original => {
   const f = await fastFixture();

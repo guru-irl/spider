@@ -216,5 +216,6 @@ Herdr’s app theme, `spider-glass.json`, keeps its neutral chrome accent (`#d9d
 - Herdr draws cells with an explicit background opaque over its glass, which is what makes the strip read as solid.
 - Custom glyphs: a terminal without the patched font draws boxes for `U+F2120`-`F2123`, which is why
   `ui.spiderGlyphs` defaults to off. Herdr loads fonts only at start, so the patch needs a Herdr restart.
-- Render cost: the footer re-renders about 28 times a second while the agent works. Pi's own working row
-  animates at a similar rate today, so this replaces that cost rather than adding to it.
+- Render cost: the Nerd moon requests 28 frames a second while the agent works, up from 12.5 for Pi’s
+  default working row. Text mode requests four. Unchanged boxes reuse their painted rows, but Pi still walks
+  the transcript each frame. In main-screen mode it also scans and diffs every row.

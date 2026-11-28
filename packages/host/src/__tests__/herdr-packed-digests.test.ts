@@ -3,10 +3,12 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { expect, it } from 'vitest';
+import roamEntries from '../../../../scripts/roam-entries.json' with { type: 'json' };
 // @ts-ignore Runtime-tested JavaScript runner boundary.
 import { packEntryDigests } from '../../../../scripts/herdr-e2e.mjs';
 
-const entries = ['extension.js', 'herdr/cli.mjs', 'herdr/viewer.mjs', 'herdr/feed-reader.mjs', 'herdr/pane-endpoint.mjs', 'herdr/remote-runtime.mjs', 'herdr/viewer-pi.mjs', 'herdr/subagent-supervisor.mjs', 'roam/cli.mjs', 'roam/cli-main.mjs', 'roam/intercom-helper.mjs', 'roam/supervisor.mjs', 'intercom/broker.mjs'];
+const entries = ['extension.js', 'herdr/cli.mjs', 'herdr/viewer.mjs', 'herdr/feed-reader.mjs', 'herdr/pane-endpoint.mjs', 'herdr/remote-runtime.mjs', 'herdr/viewer-pi.mjs', 'herdr/subagent-supervisor.mjs',
+  ...Object.keys(roamEntries).map(mode => `roam/${mode}.mjs`), 'intercom/broker.mjs'];
 
 it('hashes the checkout after pack has rebuilt dist, matching the bytes in the tarball', async () => {
   const root = mkdtempSync(join(process.cwd(), '.spider/scratch/packed-digests-'));

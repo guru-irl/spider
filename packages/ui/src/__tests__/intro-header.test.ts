@@ -56,6 +56,13 @@ describe("Hinge startup header", () => {
     expect(rendered.join("").split(highlight)).toHaveLength(3);
   });
 
+  it("keeps all five resource values in view at 60 columns as the inventory grows", () => {
+    const { view } = makeHeader();
+    view.update({ ...facts, resources: { context: 11, skills: 350, extensions: 18, prompts: 15, promptTokens: 26_800 } });
+    expect(plain(view.render(60)).find(line => line.includes("Loaded resources")))
+      .toMatch(/Ctx11.*350.*≥18.*15.*~26\.8k.*→/);
+  });
+
   it("takes only left clicks inside the resources box, including its border", () => {
     const { view, openResources } = makeHeader();
     expect(view.handleMouse(click(3, 16))).toBeUndefined();

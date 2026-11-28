@@ -18,7 +18,7 @@ export class AgentList implements Component {
   constructor(private store: AgentStore, private theme: ThemeAdapter,
     opts?: { now?: () => number; spinner?: Spinner }) {
     this.now = opts?.now ?? Date.now;
-    this.spinner = opts?.spinner ?? new Spinner();
+    this.spinner = opts?.spinner ?? new Spinner({ iconStyle: theme.iconStyle });
   }
 
   onDrill(fn: (runId: string) => void): void { this.drill = fn; }
@@ -47,13 +47,13 @@ export class AgentList implements Component {
     const body: string[] = [];
     all.forEach((a, i) => {
       const lead = a.status === "running" ? this.spinner.frame(this.now()) : statusGlyph(t, a.status);
-      const marker = i === this.focus ? "▸ " : "  ";
+      const marker = i === this.focus ? `${icon(t.iconStyle, "select")} ` : "  ";
       const pin = this.store.isPinned(a.runId) ? ` ${icon(t.iconStyle, "pin")}` : "";
       const lineW = Math.max(4, width - visibleWidth(marker) - visibleWidth(pin));
       const line = formatAgentLine(t, a, lineW, this.now(), lead);
       body.push(truncateToWidth(`${t.fg("accent", marker)}${line}${pin ? t.fg("warning", pin) : ""}`, width, "…"));
     });
-    body.push(t.fg("dim", "↑↓ focus · enter · esc"));
+    body.push(t.fg("dim", `${icon(t.iconStyle, "arrowUp")}${icon(t.iconStyle, "arrowDown")} focus · enter · esc`));
     return body;
   }
 

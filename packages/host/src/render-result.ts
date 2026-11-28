@@ -6,7 +6,7 @@
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth, stripTerminalSequences, Box } from "@earendil-works/pi-tui";
 import { icon, type Component, type IconStyle } from "@spider/ui";
-import { cachedLines, formatRunUsage, renderErrorResult, renderExecCall, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, statusIcon, fitResultLines, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
+import { MODEL_ROLES, cachedLines, formatRunUsage, renderErrorResult, renderExecCall, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, statusIcon, fitResultLines, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -95,7 +95,7 @@ function runBlock(t: T, r: RunLike, width: number, expanded: boolean, formatRunC
   const status = r.status ?? "running";
   const glyph = t.fg("toolTitle", status === "failed" ? icon(t.iconStyle, "failure")
     : status === "cancelled" ? icon(t.iconStyle, "warning")
-    : status === "done" ? "✓" : status === "running" ? "●" : "○");
+    : icon(t.iconStyle, status === "done" ? "success" : status === "running" ? "running" : "open"));
   const agent = r.agent ?? "worker";
   const segments = [status];
   if (includeSubject) {
@@ -165,7 +165,7 @@ function adaptTheme(t: T): ThemeAdapter {
   return { fg: (tok, s) => t.fg(tok, s), bg: (tok, s) => t.bg(tok, s), bold: (s) => t.bold(s), italic: (s) => t.italic(s), glyph: icon(t.iconStyle, "agent"), iconStyle: t.iconStyle };
 }
 
-const SEARCH_GLYPH: Record<string, string> = { memory: "◆", content: "▪", todo: "▣", message: icon("text", "message") };
+const SEARCH_GLYPH = { memory: "active", content: "content", todo: "todo", message: "message" } as const;
 
 /** Render each search hit with its snippet under the shared result count. */
 function renderSearch(t: T, rows: any, expanded: boolean): Component {
@@ -178,9 +178,10 @@ function renderSearch(t: T, rows: any, expanded: boolean): Component {
       const gutter = ` ${t.fg("dim", icon(t.iconStyle, "gutter"))} `;
       for (const [i, hit] of list.entries()) {
         if (i > 0) lines.push("");
-        const glyph = t.fg("toolTitle", hit?.kind === "message" ? icon(t.iconStyle, "message") : SEARCH_GLYPH[String(hit?.kind)] ?? "•");
+        const role = SEARCH_GLYPH[String(hit?.kind) as keyof typeof SEARCH_GLYPH] ?? "bullet";
+        const glyph = t.fg("toolTitle", icon(t.iconStyle, role));
         const title = t.bold(String(hit?.title || "untitled"));
-        const kind = t.italic(t.fg("toolTitle", String(hit?.kind ?? "")));
+        const kind = t.fg("toolTitle", String(hit?.kind ?? ""));
         const source = hit?.source ? ` ${sep} ${t.fg("muted", String(hit.source))}` : "";
         lines.push(` ${t.fg("dim", `${i + 1}.`)} ${glyph} ${title} ${sep} ${kind}${source}`);
         const snippet = nonblankLines(String(hit?.snippet ?? "")).join("\n");
@@ -251,11 +252,13 @@ function renderControlStats(t: T, details: any, expanded: boolean): Component {
 function renderControlModels(t: T, details: any, expanded: boolean): Component {
   const th = adaptTheme(t);
   if (details && details.catalog === undefined && (details.ok !== undefined || details.error !== undefined)) {
+    const role = String(details.role ?? "");
+    const roleLabel = MODEL_ROLES.includes(role) ? t.italic(role) : role;
     const line = details.ok
       ? statusIcon(th, "ok") + " " + th.fg("text", details.cleared === false
-        ? `no local override for ${String(details.role ?? "")}`
-        : details.cleared ? `clear ${String(details.role ?? "")} (local)`
-        : `set ${String(details.role ?? "")} → ${String(details.ref ?? "")} (global)`)
+        ? `no local override for ${roleLabel}`
+        : details.cleared ? `clear ${roleLabel} (local)`
+        : `set ${roleLabel} ${icon(th.iconStyle, "arrowRight")} ${String(details.ref ?? "")} (global)`)
       : th.fg("error", icon(th.iconStyle, "failure")) + " " + th.fg("text", String(details.error ?? "failed"));
     const shadow = details.ok && details.shadowedBy
       ? `This worktree overrides it with ${String(details.shadowedBy.ref)} in ${String(details.shadowedBy.file)}` : "";
@@ -284,7 +287,7 @@ function renderControlConfig(t: T, details: any, expanded: boolean): Component {
   if (details && (details.ok !== undefined || details.error !== undefined)) {
     const line = details.error
       ? th.fg("error", icon(th.iconStyle, "failure")) + " " + th.fg("text", String(details.error))
-      : statusIcon(th, "ok") + " " + th.fg("text", `${details.op === "unset" ? "unset" : "set"} ${String(details.key ?? "")}${details.op === "unset" ? "" : ` → ${typeof details.value === "object" && details.value !== null ? JSON.stringify(details.value) : String(details.value ?? "")}`}${details.scope ? ` (${String(details.scope)})` : ""}${details.key === "ui.footer" ? " (applies from next session)" : ""}`);
+      : statusIcon(th, "ok") + " " + th.fg("text", `${details.op === "unset" ? "unset" : "set"} ${String(details.key ?? "")}${details.op === "unset" ? "" : ` ${icon(th.iconStyle, "arrowRight")} ${typeof details.value === "object" && details.value !== null ? JSON.stringify(details.value) : String(details.value ?? "")}`}${details.scope ? ` (${String(details.scope)})` : ""}${details.key === "ui.footer" ? " (applies from next session)" : ""}`);
     const destination = details.ok && details.file ? `Config file: ${String(details.file)}` : "";
     const shadow = details.ok && details.shadowedBy ? `Shadowed by ${String(details.shadowedBy)} config` : "";
     return { render: (w: number) => fitResultLines([` ${line}`, ...[destination, shadow].filter(Boolean).map(text => detailRow(t, text))], w, expanded, 3), invalidate() {} };
@@ -306,7 +309,7 @@ function renderControlMemory(t: T, details: any, expanded: boolean): Component {
       if (!entries.length) out.push(t.fg("dim", " (no active memories)"));
       for (const [i, entry] of entries.entries()) {
         if (i > 0) out.push("");
-        out.push(` ${t.fg("dim", "◆")} ${t.fg("accent", `[${String(entry?.category ?? "?")}]`)}`);
+        out.push(` ${t.fg("dim", icon(t.iconStyle, "active"))} ${t.fg("accent", `[${String(entry?.category ?? "?")}]`)}`);
         const content = nonblankLines(String(entry?.content ?? "")).join("\n");
         if (content) out.push(detailRow(t, expanded ? content : content.replace(/\s+/gu, " ").trim()));
       }
@@ -319,7 +322,7 @@ function renderControlMemory(t: T, details: any, expanded: boolean): Component {
 function renderUpstreamWatch(t: T, details: any, expanded: boolean): Component {
   if (details?.marked) {
     const { package: name, ref, sha } = details.marked;
-    return { render: w => fitResultLines([` ${t.fg("success", "✓")} Marked ${name} reviewed at ${sha ?? ref}`], w, expanded, 3), invalidate() {} };
+    return { render: w => fitResultLines([` ${t.fg("success", icon(t.iconStyle, "success"))} Marked ${name} reviewed at ${sha ?? ref}`], w, expanded, 3), invalidate() {} };
   }
   const packages: any[] = Array.isArray(details?.packages) ? details.packages : [];
   const rows = [` ${packages.length} packages checked · ${details?.todosAdded ?? 0} new cherry-pick todos`];
@@ -714,7 +717,7 @@ function renderSpiderResultBody(
     case "notify": {
       if (details?.ok !== true) return textComponent(result, expanded);
       const publication = details.presentation === "panel-feed" ? " · panel feed" : "";
-      return { render: w => fitResultLines([` ${t.fg("success", "✓")} Notification stored${publication}`], w, expanded, 3), invalidate() {} };
+      return { render: w => fitResultLines([` ${t.fg("success", icon(t.iconStyle, "success"))} Notification stored${publication}`], w, expanded, 3), invalidate() {} };
     }
     case "import": return wrapBespoke(renderImportResult(details as any, expanded, t.iconStyle));
     case "control":
@@ -741,7 +744,7 @@ function renderSpiderResultBody(
       }
       if (context?.args?.command === "memory" && sub === "approve") return wrapBespoke(renderRememberResult(details as StageResult, expanded, adaptTheme(t)));
       if (context?.args?.command === "memory" && sub === "reject") return {
-        render: w => fitResultLines([` ${t.fg("success", "✓")} Rejected pending memory`], w, expanded, 3), invalidate() {},
+        render: w => fitResultLines([` ${t.fg("success", icon(t.iconStyle, "success"))} Rejected pending memory`], w, expanded, 3), invalidate() {},
       };
       if (sub === "upstream-watch") return renderUpstreamWatch(t, details, expanded);
       if (context?.args?.command === "skill" && sub === "curate") return plainBody(renderCurateResult(details), expanded);
@@ -796,7 +799,7 @@ export function renderSpiderCall(args: any, theme: any, context: any): Component
   return cachedLines((w: number) => {
     const t = mkTheme(theme, context?.iconStyle);
     const action = String(args?.action ?? "");
-    const verb = (v: string) => t.italic(t.fg("toolTitle", v)); // universal: verbs are italicised
+    const verb = (v: string) => t.fg("toolTitle", t.bold(v));
     let suffix = verb(action || "run");
     if (action === "run") {
       const mode = Array.isArray(args?.pipeline) ? "pipeline"
@@ -815,8 +818,12 @@ export function renderSpiderCall(args: any, theme: any, context: any): Component
       const subject = action === "control" && args.command === "memory" && args.sub ? `memory · ${args.sub}` : args.sub ?? args.command;
       suffix = `${verb(action)} ${t.fg("toolTitle", `· ${subject}`)}`;
     }
-    if (context?.titleDetails?.length) suffix += t.fg("toolTitle", ` · ${context.titleDetails.join(" · ")}`);
-    const line = `${t.fg("toolTitle", icon(t.iconStyle, "spider"))} ${t.fg("toolTitle", t.bold("spider"))} ${t.fg("toolTitle", "·")} ${suffix}`;
+    if (context?.titleDetails?.length) {
+      for (const detail of context.titleDetails as { text: string; agent: boolean }[]) {
+        suffix += t.fg("toolTitle", " · ") + (detail.agent ? t.italic(t.fg("toolTitle", detail.text)) : t.fg("toolTitle", detail.text));
+      }
+    }
+    const line = ` ${t.fg("toolTitle", icon(t.iconStyle, "spider"))} ${suffix}`;
 
     // The call is visible before a result exists. Keep the commands here in both modes.
     const lines = isExecAction(action)
@@ -828,9 +835,14 @@ export function renderSpiderCall(args: any, theme: any, context: any): Component
 
 interface NotificationOptions { expanded?: boolean; outputPad?: number }
 
-function runTitleDetails(name: unknown, agent: unknown): string[] {
-  const labels = [...new Set([name, agent].filter((value): value is string => typeof value === "string" && Boolean(value)))];
-  return labels.length ? labels : ["subagent"];
+function runTitleDetails(name: unknown, agent: unknown): { text: string; agent: boolean }[] {
+  const role = typeof agent === "string" && agent ? agent : undefined;
+  const label = typeof name === "string" && name ? name : undefined;
+  const details = [
+    ...(label && label !== role ? [{ text: label, agent: false }] : []),
+    ...(role ? [{ text: role, agent: true }] : []),
+  ];
+  return details.length ? details : [{ text: "subagent", agent: false }];
 }
 
 export function renderSubagentDone(message: any, options: NotificationOptions, theme: any, iconStyle?: IconStyle): Component {
@@ -913,7 +925,7 @@ export function renderOrganismEntry(entry: unknown, options: NotificationOptions
   box.addChild({
     render: (width: number) => {
       const t = mkTheme(theme);
-      const marker = failed ? icon(iconStyle, "failure") : state === "partial" ? icon(iconStyle, "warning") : completed ? "✓" : "○";
+      const marker = icon(iconStyle, failed ? "failure" : state === "partial" ? "warning" : completed ? "success" : "open");
       const color = failed ? "error" : state === "partial" ? "warning" : completed ? "success" : "muted";
       const lines = [` ${t.fg(color, marker)} ${state}`];
       const detail = (text: string) => ` ${t.fg("dim", icon(iconStyle, "gutter"))} ${t.fg("toolOutput", text)}`;

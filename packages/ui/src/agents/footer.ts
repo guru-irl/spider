@@ -55,12 +55,12 @@ export class AgentFooter implements Component {
     this.theme = theme;
     this.maxVisible = opts.maxVisible ?? 4;
     this.now = opts.now ?? Date.now;
-    this.spinner = opts.spinner ?? new Spinner();
+    this.spinner = opts.spinner ?? new Spinner({ iconStyle: theme.iconStyle });
   }
 
   private agentLine(a: AgentSnapshot, width: number): string {
     const selecting = this.store.isSelecting();
-    const cursor = selecting ? (a.runId === this.store.selectedRunId() ? this.theme.fg("accent", "▸ ") : "  ") : "";
+    const cursor = selecting ? (a.runId === this.store.selectedRunId() ? this.theme.fg("accent", `${icon(this.theme.iconStyle, "select")} `) : "  ") : "";
     const cw = visibleWidth(cursor);
     const lead = a.status === "running" ? this.spinner.frame(this.now()) : statusGlyph(this.theme, a.status);
     const pin = this.store.isPinned(a.runId) ? ` ${icon(this.theme.iconStyle, "pin")}` : "";
@@ -83,7 +83,7 @@ export class AgentFooter implements Component {
       if (o.failed) seg.push(`${o.failed} failed`);
       if (o.cancelled) seg.push(`${o.cancelled} cancelled`);
       seg.push(`+${o.hidden} more`);
-      lines.push(truncateToWidth(this.theme.fg("muted", `${agentGlyph(this.theme)} ▸ ` + seg.join(" · ")), width, "…"));
+      lines.push(truncateToWidth(this.theme.fg("muted", `${agentGlyph(this.theme)} ${icon(this.theme.iconStyle, "select")} ` + seg.join(" · ")), width, "…"));
     }
     return lines.map((l) => (visibleWidth(l) > width ? truncateToWidth(l, width, "…") : l));
   }

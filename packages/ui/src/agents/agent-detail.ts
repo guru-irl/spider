@@ -125,7 +125,7 @@ export class AgentDetail implements Component {
   }
 
   private marker(): string {
-    return this.follow.mode === "paused" ? `↓ ${this.counts?.pending.size ?? 0} new` : "";
+    return this.follow.mode === "paused" ? `${icon(this.theme.iconStyle, "arrowDown")} ${this.counts?.pending.size ?? 0} new` : "";
   }
 
   private canShowConfirmation(view: NormalViewport): boolean {
@@ -278,7 +278,7 @@ export class AgentDetail implements Component {
     if (readError) add(" ", marker, "read err", "Esc");
     add(" ", marker, "Esc");
     const chosen = rows.find(row => visibleWidth(row.parts.join(row.separator)) <= width) ?? rows.at(-1)!;
-    const hints = "↑↓ scroll · PgUp/PgDn · End";
+    const hints = `${icon(this.theme.iconStyle, "arrowUp")}${icon(this.theme.iconStyle, "arrowDown")} scroll · PgUp/PgDn · End`;
     if (visibleWidth([hints, ...chosen.parts].join(chosen.separator)) <= width) chosen.parts.unshift(hints);
     if (this.isArmed()) {
       const index = chosen.parts.indexOf(status);
@@ -323,8 +323,10 @@ export class AgentDetail implements Component {
     let costText = a?.costText;
     try { if (a?.usageCosts && this.opts.formatRunCost) costText = this.opts.formatRunCost(a.usageCosts); }
     catch { /* retain the last formatted value */ }
+    const role = a?.role ?? a?.agent;
+    const roleLabel = role ? this.theme.italic?.(role) ?? role : "unknown";
     const header = [
-      `${model} · ${a?.role ?? a?.agent ?? "unknown"} · ${a?.thinking ?? "unknown"} · ${turns}`,
+      `${model} · ${roleLabel} · ${a?.thinking ?? "unknown"} · ${turns}`,
       `${formatRunUsage(a?.tokenCount ?? 0, a?.cost ?? 0, a?.compactionCount, costText)} · ${formatDuration(elapsed)}`,
       `Run: ${this.runId}`,
       `Instructions: ${instructions}`,

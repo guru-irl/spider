@@ -20,7 +20,7 @@ function shortId(session: string): string {
 function sessionLabel(g: { session: string; name?: string; current?: boolean }): string {
   const id = shortId(g.session);
   const base = g.name ? `${g.name} (${id})` : id;
-  return g.current ? `${base} ← current` : base;
+  return g.current ? `${base} ${icon("text", "arrowLeft")} current` : base;
 }
 
 /** A subtle full-width `─── Title ────` rule (no 🕸 chrome — this is an overlay, not a tool result). */
@@ -32,12 +32,12 @@ function ruleHeader(fg: Fg, label: string, width: number): string {
 }
 
 /** `done/total completed` summary + one `✓/○ #id text` line per todo (done → dim). */
-function todoLines(fg: Fg, todos: Todo[], width: number, indent: string): string[] {
+function todoLines(fg: Fg, todos: Todo[], width: number, indent: string, iconStyle: IconStyle | undefined): string[] {
   if (!todos.length) return [truncateToWidth(`${indent}${fg("dim", "No todos.")}`, width, "")];
   const done = todos.filter((t) => t.done).length;
   const out = [truncateToWidth(`${indent}${fg("muted", `${done}/${todos.length} completed`)}`, width, ""), ""];
   for (const t of todos) {
-    const check = t.done ? fg("success", "✓") : fg("dim", "○");
+    const check = t.done ? fg("success", icon(iconStyle, "todoDone")) : fg("dim", icon(iconStyle, "todoPending"));
     const id = fg("accent", `#${t.seq}`);
     const text = t.done ? fg("dim", t.text) : fg("text", t.text);
     out.push(truncateToWidth(`${indent}${check} ${id} ${text}`, width, ""));
@@ -114,7 +114,7 @@ export function makeTodosCommand(deps: TodosCommandDeps) {
                   truncateToWidth(`  ${fg("dim", "session: ")}${fg("muted", sessionLabel({ session: sessionId, name: sessionName, current: true }))}`, w, ""),
                   "",
                 );
-                lines.push(...todoLines(fg, listTodos(db, sessionId), w, "  "));
+                lines.push(...todoLines(fg, listTodos(db, sessionId), w, "  ", deps.iconStyle));
               } else {
                 lines.push(ruleHeader(fg, "Todos · all sessions", w), "");
                 const groups: SessionGroup[] = viewSession(db, "all", sessionId);
@@ -123,7 +123,7 @@ export function makeTodosCommand(deps: TodosCommandDeps) {
                 } else {
                   for (const g of groups) {
                     lines.push(truncateToWidth(`  ${fg("accent", sessionLabel(g))}`, w, ""));
-                    lines.push(...todoLines(fg, g.todos, w, "    "));
+                    lines.push(...todoLines(fg, g.todos, w, "    ", deps.iconStyle));
                     lines.push("");
                   }
                 }
@@ -136,7 +136,7 @@ export function makeTodosCommand(deps: TodosCommandDeps) {
                 maxScroll = Math.max(0, lines.length - pageSize);
                 scrollOffset = Math.min(scrollOffset, maxScroll);
                 if (lines.length + 3 > rows) {
-                  const footer = truncateToWidth(`  ${fg("dim", maxScroll > 0 ? `${hint} · ↑/↓, PgUp/PgDn scroll` : hint)}`, w, "");
+                  const footer = truncateToWidth(`  ${fg("dim", maxScroll > 0 ? `${hint} · ${icon(deps.iconStyle, "arrowUp")}/${icon(deps.iconStyle, "arrowDown")}, PgUp/PgDn scroll` : hint)}`, w, "");
                   return [...lines.slice(scrollOffset, scrollOffset + pageSize), ...(rows > 1 ? [footer] : [])];
                 }
               } else {

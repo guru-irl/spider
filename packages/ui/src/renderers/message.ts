@@ -5,8 +5,8 @@ import type { MessageDetails, RenderCtx } from "./types.js";
 
 function arrow(verb: MessageDetails["verb"], theme: RenderCtx["theme"]): string {
   switch (verb) {
-    case "send": return "→";
-    case "ask": return "→?";
+    case "send": return uiIcon(theme.iconStyle, "message");
+    case "ask": return `${uiIcon(theme.iconStyle, "message")}?`;
     case "reply": return uiIcon(theme.iconStyle, "reply");
     case "broadcast": return uiIcon(theme.iconStyle, "broadcast");
   }

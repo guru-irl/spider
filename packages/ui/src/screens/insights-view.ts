@@ -29,7 +29,7 @@ export function renderInsights(g: InsightGraphView, theme: ThemeAdapter, width: 
   if (!transcript || manyGroups) body.push(indent + sectionRule(theme, `nodes (${nodes.length})`, width - indent.length));
   const shownNodes = expanded ? nodes : nodes.slice(0, NODE_CAP);
   for (const n of shownNodes) {
-    const badge = n.kind === "skill" ? theme.fg("success", "◆") : theme.fg("dim", "•");
+    const badge = theme.fg(n.kind === "skill" ? "success" : "dim", uiIcon(theme.iconStyle, n.kind === "skill" ? "active" : "bullet"));
     const cat = n.category ? theme.fg("muted", ` (${n.category})`) : "";
     body.push(trim(`${indent}${badge} ${theme.fg("text", n.label)}${cat}`, width, ""));
   }
@@ -44,7 +44,7 @@ export function renderInsights(g: InsightGraphView, theme: ThemeAdapter, width: 
     const label = (id: string) => !transcript || names.has(id) ? id : labels.get(id) ?? "(unknown item)";
     const shownEdges = expanded ? edges : edges.slice(0, EDGE_CAP);
     for (const e of shownEdges) {
-      body.push(trim(`${indent}${theme.fg("text", label(e.source))} ${theme.fg("dim", "→")} ${theme.fg("text", label(e.target))}`, width, ""));
+      body.push(trim(`${indent}${theme.fg("text", label(e.source))} ${theme.fg("dim", uiIcon(theme.iconStyle, "arrowRight"))} ${theme.fg("text", label(e.target))}`, width, ""));
     }
     if (!expanded && edges.length > shownEdges.length) {
       body.push(trim(theme.fg("muted", `${indent}${uiIcon(theme.iconStyle, "gutter")} … ${edges.length - shownEdges.length} more`), width, ""));

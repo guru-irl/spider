@@ -10,9 +10,9 @@ export interface EscalationDetails {
 /** The notification shell owns the title. Never collapse the escalation summary. */
 export function renderEscalation({ severity, summary }: EscalationDetails, { theme, width }: RenderCtx): string[] {
   const marker = severity === "blocked" ? icon(theme.iconStyle, "failure")
-    : severity === "question" ? "❓" : icon(theme.iconStyle, "warning");
+    : icon(theme.iconStyle, severity === "question" ? "question" : "warning");
   const prefix = ` ${theme.fg(severity === "blocked" ? "error" : "warning", marker)} `;
-  const hang = "   ";
+  const hang = " ".repeat(visibleWidth(prefix));
   const [first, ...rest] = summary.split(/\r?\n/u);
   const status = theme.bold(severity) + (summary ? ` ·${first ? ` ${theme.fg("text", first)}` : ""}` : "");
   const [head, ...wrapped] = wrapTextWithAnsi(status, Math.max(1, width - visibleWidth(prefix)));

@@ -2,6 +2,7 @@ import { qualifiedName } from "../protocol.js";
 import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
+import { icon } from "@spider/ui";
 import type { SessionInfo } from "../types.js";
 
 function middleTruncate(text: string, maxWidth: number): string {
@@ -140,7 +141,7 @@ export class SessionListOverlay implements Component {
         const session = this.sessions[index];
         const isSelected = index === this.selectedIndex;
         const sameCwd = !session.remote && session.cwd === this.currentSession.cwd;
-        const prefix = isSelected ? this.theme.fg("accent", "→ ") : "  ";
+        const prefix = isSelected ? this.theme.fg("accent", `${icon("text", "arrowRight")} `) : "  ";
         const title = sessionTitle(session, { sameCwd });
         const pathText = `${middleTruncate(session.cwd, Math.max(8, contentWidth - 4))} • ${session.model}`;
 

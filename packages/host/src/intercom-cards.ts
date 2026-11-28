@@ -50,8 +50,22 @@ interface ResultDetails {
   messageId?: string;
   reason?: string;
   structuredReplyParseError?: string;
+  path?: "local" | "direct" | `relay ${string}`;
+  relaySkips?: readonly { relay: string; reason: "down" | "cannot reach the target" | "busy" }[];
 }
 interface ResultContent { content?: Array<{ type: string; text?: string }>; details?: unknown }
+
+function askRoute(details: ResultDetails | undefined) {
+  const path = details?.path;
+  const prefix = "relay ";
+  const alias = typeof path === "string" && path.startsWith(prefix) ? path.slice(prefix.length) : undefined;
+  if (!alias && path !== "local" && path !== "direct") return undefined;
+  const skips = details?.relaySkips ?? [];
+  if (!Array.isArray(skips) || skips.some(skip => typeof skip?.relay !== "string" || typeof skip.reason !== "string")) return undefined;
+  // Match v0RouteText on the raw result, before rewriting any display text.
+  const suffix = ["", `Path: ${path}.`, ...skips.map(skip => `${skip.relay}: ${skip.reason}.`)].join("\n");
+  return { alias, skips, suffix };
+}
 
 function resultCard(
   command: IntercomCommand, result: ResultContent, partial: boolean, expanded: boolean,
@@ -66,7 +80,10 @@ function resultCard(
   const parseWarning = typeof details?.structuredReplyParseError === "string";
   const role = failed ? "failure" : parseWarning ? "warning" : "success";
   const color = failed ? "error" : parseWarning ? "warning" : "success";
-  let content = result.content?.find(item => item.type === "text" && typeof item.text === "string")?.text?.replace(/\*\*/g, "") ?? "";
+  const route = command === "intercom" && action === "ask" ? askRoute(details) : undefined;
+  let content = result.content?.find(item => item.type === "text" && typeof item.text === "string")?.text ?? "";
+  if (route && content.endsWith(route.suffix)) content = content.slice(0, -route.suffix.length);
+  content = content.replace(/\*\*/g, "");
   if (!expanded) {
     // Change the display copy only; the original result remains model-facing.
     content = content.replace(/(^|[ \t]+)\(ID [^)]+\)([ \t]*)/gm, (_match, before: string, after: string) => before && after ? " " : "");
@@ -91,6 +108,11 @@ function resultCard(
   const rows = content.split("\n").map((line, index) => index === 0
     ? ` ${theme.fg(color, `${marker} `)}${theme.fg(failed ? "error" : "text", line)}`
     : `${indent}${theme.fg(failed ? "error" : "text", line)}`);
+  if (route?.alias) {
+    const detailIndent = cardDetailIndent(style);
+    rows.push(detailIndent + theme.fg("dim", `${icon(style, "arrowRight")} asked via ${route.alias}`));
+    for (const skip of route.skips) rows.push(detailIndent + theme.fg("dim", `${skip.relay} skipped: ${skip.reason}`));
+  }
   if (parseWarning) rows.push(`${indent}${theme.fg("warning", `Structured reply parse issue: ${details.structuredReplyParseError}`)}`);
   if (command === "intercom" && expanded && details?.reason) {
     rows.push(`${indent}${theme.fg("dim", `Reason: ${details.reason}`)}`);

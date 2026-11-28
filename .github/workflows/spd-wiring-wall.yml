@@ -1,0 +1,63 @@
+name: host Herdr paired file times
+on:
+  push:
+    branches: [ci/spd-wiring-hunt]
+    paths: [.github/workflows/spd-wiring-wall.yml]
+permissions:
+  contents: read
+jobs:
+  paired:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ONNXRUNTIME_NODE_INSTALL: skip
+      BASE_SHA: f61952635552c04cf301434ccfb2470804535a1e
+      HEAD_SHA: 2c22c2e2cbc15d3f664e443f4bf1916b2e3e0837
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 20
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+      - run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - run: npm ci
+      - name: Fence fixture sockets
+        run: |
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+          mkdir -p .spider/scratch/{tmp,wiring-wall}
+      - name: Alternate base and candidate at three workers
+        shell: bash
+        run: |
+          # Both revisions use the same production sources and dependencies.
+          git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -v '^packages/host/src/__tests__/' > .spider/scratch/wiring-wall/non-test-paths.txt || true
+          test ! -s .spider/scratch/wiring-wall/non-test-paths.txt
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          unset XDG_RUNTIME_DIR
+          status=0
+          for trial in 1 2; do
+            for variant in base head; do
+              files=(packages/host/src/__tests__/herdr-{wiring-remote,wiring-mount,wiring-lifecycle,viewer-layout,copy,kill-job,child,remote-file,unavailable}.test.ts)
+              if [[ "$variant" == head ]]; then
+                sha="$HEAD_SHA"
+                files+=(packages/host/src/__tests__/herdr-{wiring-console,viewer-reopen}.test.ts)
+              else
+                sha="$BASE_SHA"
+              fi
+              git -c advice.detachedHead=false checkout --detach "$sha"
+              echo "::group::$variant $trial: $sha"
+              node node_modules/vitest/vitest.mjs run "${files[@]}" --maxWorkers=3 --reporter=default --reporter=json \
+                --outputFile.json=".spider/scratch/wiring-wall/$variant-$trial.json" || status=1
+              echo '::endgroup::'
+            done
+          done
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wiring-file-times
+          path: .spider/scratch/wiring-wall/
+          include-hidden-files: true

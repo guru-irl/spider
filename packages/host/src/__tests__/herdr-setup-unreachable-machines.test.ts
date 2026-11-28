@@ -142,6 +142,25 @@ test('setup does not turn a permission error into a skipped runtime', async () =
   expect((await readJournal(f.request.journalRoot)).verified).toBe(false);
 });
 
+test('setup rejects an existing runtime with the wrong digest', async () => {
+  const f = await fixture();
+  await f.h.scenario({ steps: [{ argvPrefix: ['file', 'read'], argvIncludes: ['--on', remote], reply: { text: 'wrong runtime bytes' } }] });
+  await expect(apply(f)).rejects.toMatchObject({ code: 'runtime-digest-mismatch' });
+});
+
+test('setup rejects a failed runtime install', async () => {
+  const f = await fixture();
+  await f.h.scenario({ steps: [{ argvPrefix: ['run'], argvIncludes: ['--on', remote, '--install'],
+    stderr: { error: { kind: 'probe-failed', message: 'Destination probe failed' } }, exitCode: 1 }] });
+  await expect(apply(f)).rejects.toMatchObject({ code: 'runtime-bootstrap-failed' });
+});
+
+test('setup rejects an unsupported remote Node version', async () => {
+  const f = await fixture();
+  await f.h.scenario({ steps: [{ argvPrefix: ['read'], reply: { text: 'v16.20.2', complete: true, how: 'history' }, once: true }] });
+  await expect(apply(f)).rejects.toMatchObject({ code: 'remote-node-unavailable', message: expect.stringContaining('Unsupported or missing Node version') });
+});
+
 test('a later setup installs the deferred runtime without repeating local cutover', async () => {
   const f = await fixture();
   await sleep(f);
@@ -171,6 +190,21 @@ test('doctor warns once for an unreachable runtime and does not probe it', async
     expect.objectContaining({ repair: expect.stringMatching(/setup.*reachable/i) }),
   ]);
   expect(await remoteCalls(f, start)).toEqual([]);
+});
+
+test.each([
+  { check: 'Node version probe', flag: '--version' },
+  { check: 'runtime root probe', flag: '--probe' },
+])('doctor defers a machine that becomes unreachable at the $check', async ({ flag }) => {
+  const f = await fixture();
+  await apply(f);
+  await f.h.scenario({ steps: [{ argvPrefix: ['run'], argvIncludes: ['--on', remote, flag], ...unreachable }] });
+  const report = await doctorHerdr(f.request, await f.ports.doctorParts(f.request));
+  expect(report.failures).toEqual([]);
+  expect(report.deferredRuntimes).toEqual([remote]);
+  expect(report.warnings.filter(row => row.code === 'runtime-unavailable')).toEqual([
+    expect.objectContaining({ message: expect.stringContaining(remote) }),
+  ]);
 });
 
 test('doctor warns about a pending runtime even after the machine reconnects', async () => {

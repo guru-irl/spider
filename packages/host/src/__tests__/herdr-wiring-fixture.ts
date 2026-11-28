@@ -4,6 +4,17 @@ import { resolve, join } from 'node:path';
 import { configFixtureCwd } from './herdr-config-fixture.js';
 import { writeWiringArtifacts } from './herdr-wiring-artifact.testutil.js';
 
+const shellQuote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+
+function waitForGateFile(path: string): string {
+  // Keep the real shell payload and gate, but don't fork sleep at every poll.
+  const wait = `const fs = require('node:fs'); const file = process.argv[1];
+if (!fs.existsSync(file)) {
+  const timer = setInterval(() => { if (fs.existsSync(file)) clearInterval(timer); }, 50);
+}`;
+  return `${shellQuote(process.execPath)} -e ${shellQuote(wait)} ${shellQuote(path)}`;
+}
+
 export async function mountedFixture(mode: 'fake' | 'hc' = 'fake', sessionMode = 'tui', hasUI = true, child = false, hcOwner = true, launches = false, requested: boolean | 'auto' = true, deadSocket = false, failShortcutRegistration = false, coreAvailable = true, killAction?: (ctx: any, id: string) => Promise<unknown>, options: { automaticSubagentPanes?: boolean; admitted?: () => boolean; allowMissingFeed?: boolean; fastInactive?: boolean; beforeStart?: (h: import('@spider/herdr/__tests__/isolated').HerdrHarness) => Promise<void> } = {}): Promise<{
     h: import("@spider/herdr/__tests__/isolated").HerdrHarness;
     pi: {
@@ -146,7 +157,6 @@ export async function mountedFixture(mode: 'fake' | 'hc' = 'fake', sessionMode =
 
   const callLog = join(h.root, 'host-hc-calls.jsonl'); await writeFile(callLog, '');
     const { chmod } = await import('node:fs/promises');
-    const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
     const logger = join(h.root, 'argv.mjs');
     const record = `import { appendFileSync } from 'node:fs';\nconst argv = process.argv.slice(2);\nappendFileSync(${JSON.stringify(callLog)}, JSON.stringify({ argv }) + '\\n');\n`;
     const recorded = join(h.root, 'recorded-hc');
@@ -159,11 +169,11 @@ if (!${coreAvailable} && argv[0] === 'server' && argv[1] === 'status') {
 }
 await import(${JSON.stringify(fake.href)});
 `);
-      await writeFile(recorded, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(logger)} "$@"\n`);
+      await writeFile(recorded, `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(logger)} "$@"\n`);
     } else {
       await writeFile(logger, record);
       const offline = 'if [ "$1" = server ] && [ "$2" = status ]; then printf \'%s\\n\' \'{"error":{"kind":"unavailable","message":"Fixture core is offline"}}\' >&2; exit 2; fi\n';
-      await writeFile(recorded, `#!/bin/sh\n${quote(process.execPath)} ${quote(logger)} "$@"\n${coreAvailable ? '' : offline}exec ${quote(h.hcBinary)} "$@"\n`);
+      await writeFile(recorded, `#!/bin/sh\n${shellQuote(process.execPath)} ${shellQuote(logger)} "$@"\n${coreAvailable ? '' : offline}exec ${shellQuote(h.hcBinary)} "$@"\n`);
     }
     await chmod(recorded, 0o700); config.core.binary = recorded;
   if (launches || mode === 'hc') {
@@ -178,7 +188,7 @@ else { const core = JSON.parse(${mode === 'fake'
 const terminals = core.terminals.filter(t => t.state === 'live' && !t.address.includes('/') && !parked.includes(t.address)).map(t => ({ terminal: t.address, pane: 'p-' + t.address }));
 console.log(JSON.stringify({ spaces: [{ id: 's1', name: 'work', tabs: [{ id: 'tb1', name: 'owner', terminals }] }] })); }
 `);
-    const appBinary = join(h.root, 'app-port'); await writeFile(appBinary, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(appScript)} "$@"\n`); await chmod(appBinary, 0o700); config.app.binary = appBinary;
+    const appBinary = join(h.root, 'app-port'); await writeFile(appBinary, `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(appScript)} "$@"\n`); await chmod(appBinary, 0o700); config.app.binary = appBinary;
     if (launches) {
       await writeWiringArtifacts(join(h.root, 'dist/herdr'));
       const runtime = await buildRuntimeArtifact();
@@ -232,7 +242,7 @@ export async function heldObserverScenario(mode: 'fake' | 'hc', timing: 'before'
       stageLook: async () => [], installFiles: async () => [], generateTemplates: async () => [], installResume: async () => [],
       cutover: async () => ({ terminals: [], identities: {} }), verify: async () => ({ failures: [], warnings: [], probes: [] }),
     });
-    executing = f.mount.execution().remote!.execute({ owner: f.owner!, on: 'remote.invalid' as never, source: { kind: 'code', language: 'shell', code: `printf 'first line\\n'; while [ ! -f '${finish}' ]; do sleep 0.05; done; printf 'last line\\n'; exit 23` } });
+    executing = f.mount.execution().remote!.execute({ owner: f.owner!, on: 'remote.invalid' as never, source: { kind: 'code', language: 'shell', code: `printf 'first line\\n'; ${waitForGateFile(finish)}; printf 'last line\\n'; exit 23` } });
     void executing.catch(() => {});
     let id: string | undefined;
     await vi.waitFor(async () => {
@@ -349,7 +359,7 @@ export async function closePaneScenario(mode: 'fake' | 'hc', pane: 'observer' | 
   const executing = (async () => {
     await installed;
     return f.mount.execution().remote!.execute({ owner: f.owner!, on: 'remote.invalid' as never,
-      source: { kind: 'code', language: 'shell', code: `printf 'started\\n'; printf yes > '${started}'; while [ ! -f '${gate}' ]; do sleep 0.05; done; printf 'completed\\n'; exit 23` } });
+      source: { kind: 'code', language: 'shell', code: `printf 'started\\n'; printf yes > '${started}'; ${waitForGateFile(gate)}; printf 'completed\\n'; exit 23` } });
   })();
   void executing.catch(() => {});
   const inventory = async () => {

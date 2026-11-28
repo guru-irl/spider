@@ -193,7 +193,7 @@ export interface SetupParts {
 }
 export interface SetupResult {
   journalChanged?: boolean;
-  plan?: { files: readonly FileAction[]; cutover: readonly string[] };
+  plan?: { files: readonly FileAction[]; cutover: readonly string[]; skippedRuntimes: readonly MachineName[] };
   writes: readonly string[];
   probes: readonly NodeObservation[];
   cutover: CutoverResult | null;
@@ -445,14 +445,15 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
       const file = files.find(file => file.path === plannedAppSettings(request).path)!;
       if (file.snapshotOnly) file.bytes = Buffer.from(JSON.stringify(plannedAppSettings(request).planned));
     }
-    if (request.dryRun) {
-      const cutover = [...(cutoverNeeded ? preflight.cutoverActions ?? ['Recheck recorded sessions and open only closed selections'] : []), ...(needsAppSelection ? ['Select the installed layout and theme'] : [])];
-      return { plan: { files: fileActions, cutover }, writes: [], probes: [], cutover: journal.cutover, doctor: { failures: [], warnings: [], probes: [] } };
-    }
     const inventory = await parts.runtimeInventory?.(request);
     if (inventory?.missing.length)
       throw new HerdrError('machine-not-found', `No unique entry in the local core inventory for: ${inventory.missing.join(', ')}`);
     const deferred = new Set(inventory?.unreachable);
+    if (request.dryRun) {
+      const cutover = [...(cutoverNeeded ? preflight.cutoverActions ?? ['Recheck recorded sessions and open only closed selections'] : []), ...(needsAppSelection ? ['Select the installed layout and theme'] : [])];
+      const skippedRuntimes = [...deferred].sort();
+      return { plan: { files: fileActions, cutover, skippedRuntimes }, writes: [], probes: [], cutover: journal.cutover, doctor: { failures: [], warnings: [], probes: [] } };
+    }
     const priorPending = new Set(journal.pendingRuntimes);
     const onMachine = async (machine: MachineName, work: () => Promise<void>, explain?: (error: unknown) => HerdrError) => {
       if (deferred.has(machine)) return;

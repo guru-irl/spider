@@ -77,6 +77,14 @@ function inbound() {
   return { m, links };
 }
 
+it("treats a relay with no inbound observation as informational", () => {
+  const m = machine(linked);
+  m.configure({ acceptFrom: [relay] });
+  select(m);
+  expect(linkRows(m, START)).toEqual([{ severity: "info", repairCommand: null, reason:
+    "intercom-link: relay-1.invalid down; state age 0ms; last call age never; last error no-poll; messages carried 0" }]);
+});
+
 it("reports a held call up after 10 seconds and down by the call deadline without a close observation", async () => {
   const { m, links } = inbound(), abort = new AbortController();
   const held = links.poll(poll("held"), abort.signal);
@@ -87,6 +95,7 @@ it("reports a held call up after 10 seconds and down by the call deadline withou
     // Doctor may run after a crash, with no broker callback to mark the link down.
     const expired = linkRows(m, START + 30_000);
     expect(expired).toHaveLength(1);
+    expect(expired[0].severity).toBe("warning");
     expect(expired[0].reason).toMatch(/relay-1\.invalid down; state age .*; last call age .*; last error poll-expired; messages carried 0/);
     expect(linkRows(m)[0].reason).toContain("relay-1.invalid up;");
   } finally { abort.abort(); await held; links.close(); }
@@ -172,14 +181,14 @@ it("keeps mismatch metadata without a broker and does not let the endpoint overw
   expect(await listV0RelayLinks(m.agentDir)).toMatchObject([{ lastCallMs: expect.any(Number) }]);
 });
 
-it("names missing config, service, and broker without starting or creating them", () => {
+it("names missing config and service without starting or creating a broker", () => {
   const sender = machine(linked), carrier = machine(relay);
   select(carrier);
   expect(doctor.localRelayDiagnostics(carrier.root, readLocalIdentity(carrier.root))[0]?.reason).toContain("config-missing");
   carrier.configure({ sendTo: [sender.peer], linkTo: [linked.machineId] });
   expect(linkRows(carrier)[0]?.reason).toMatch(/linked\.invalid down;.*service-missing/);
   sender.configure({ acceptFrom: [relay] });
-  expect(linkRows(sender)[0]?.reason).toMatch(/relay-1\.invalid down;.*broker-missing/);
+  expect(linkRows(sender)[0]).toMatchObject({ severity: "info", reason: expect.stringMatching(/relay-1\.invalid down;.*no-poll/) });
   for (const m of [sender, carrier]) {
     expect(existsSync(join(m.root, "roam", "relay"))).toBe(false);
     expect(existsSync(join(m.agentDir, "intercom"))).toBe(false);
@@ -219,7 +228,7 @@ it("adopts the selected core display name and advertises only connected routes w
   } finally { await service.stop(); }
 });
 
-it("reports an absent Herdr route on the relay and a missing broker on the linked machine", async () => {
+it("reports an absent Herdr route and an unobserved inbound link", async () => {
   const carrier = machine(relay), sender = machine(linked);
   carrier.configure({ sendTo: [sender.peer], linkTo: [linked.machineId] });
   sender.configure({ acceptFrom: [relay] });
@@ -236,6 +245,6 @@ it("reports an absent Herdr route on the relay and a missing broker on the linke
     // Doctor may already have unrelated diagnostics; the JSON is the contract.
     await main(["roam", "doctor", "--json"], { out: chunk => out.push(chunk), err() {} });
     expect(JSON.parse(out.join("")).value.diagnostics).toContainEqual(expect.objectContaining({ reason: expect.stringContaining("route-missing") }));
-    expect(linkRows(sender)[0]?.reason).toContain("broker-missing");
+    expect(linkRows(sender)[0]).toMatchObject({ severity: "info", reason: expect.stringContaining("no-poll") });
   } finally { await service.stop(); }
 });

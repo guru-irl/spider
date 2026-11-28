@@ -180,7 +180,7 @@ export async function authorizeV0RelayReply(agentDir: string, from: V0Endpoint, 
 }
 
 export async function submitV0Relay(agentDir: string, relayId: string, submit: RelaySubmit,
-  signal?: AbortSignal, budgetMs = V0_INTERCOM_MS): Promise<RelayResult> {
+  signal?: AbortSignal, budgetMs: number = V0_INTERCOM_MS): Promise<RelayResult> {
   const messageId = submit.message.id;
   const response = await exchange(agentDir, Math.min(budgetMs, V0_INTERCOM_MS), signal,
     (requestId, remainingMs) => ({ type: "roam_v0_relay", requestId, kind: "submit", relayId, submit, remainingMs }), frame => {

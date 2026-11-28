@@ -9,7 +9,7 @@ export const RELAY_POLL_REMOTE_MS = 25_000;
 export const RELAY_POLL_CALL_MS = 30_000;
 export const RELAY_HANDOFF_MS = 2000;
 export const RELAY_RESULT_RESERVE_MS = 250;
-export const RELAY_ASK_MIN_MS = RELAY_HANDOFF_MS + V0_INTERCOM_POST_CHECK_MS + 1;
+export const RELAY_ASK_MIN_MS: number = RELAY_HANDOFF_MS + V0_INTERCOM_POST_CHECK_MS + 1;
 export const RELAY_POLL_MAX_BYTES: number = 18 * V0_INTERCOM_BYTES;
 export const RELAY_MAX_SLOTS = 16;
 // A 64 KiB config cannot name this many distinct UUIDs.

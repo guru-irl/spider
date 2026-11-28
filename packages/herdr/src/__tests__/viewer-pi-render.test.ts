@@ -282,10 +282,10 @@ test('the footer says the owner is unreachable only after 3 seconds, and clears 
   expect(plain(view.render(100))).not.toMatch(/reconnect/i);
 });
 
-test('a steerable run shows a pi editor; a read-only run has none', () => {
+test('a steerable run shows the band editor; a read-only run has none', () => {
   const view = make();
   view.setState({ status: 'running', steerable: true, reachable: true, readOnlyReason: null });
-  expect(view.editor).not.toBeNull(); expect(view.render(100).join('\n')).toContain('─');
+  expect(view.editor).not.toBeNull(); expect(view.render(100).join('\n')).toContain('▖');
   view.setState({ status: 'done', steerable: false, reachable: true, readOnlyReason: 'This run is done.' });
   expect(view.editor).toBeNull();
 });

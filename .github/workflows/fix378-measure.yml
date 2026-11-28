@@ -1,0 +1,142 @@
+name: Herdr host lifecycle and weights
+on:
+  push:
+    branches: [ci/fix378-measure-20261128]
+permissions:
+  contents: read
+env:
+  ONNXRUNTIME_NODE_INSTALL: skip
+jobs:
+  named:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: tools
+      - uses: actions/checkout@v4
+        with:
+          ref: d6ad49d3c601f3b7d4dd866740447593a0e80dba
+          path: candidate
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+          cache-dependency-path: candidate/package-lock.json
+      - name: Install SQLite CLI
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - name: Install
+        working-directory: candidate
+        run: npm ci
+      - name: Remove runner runtime directory
+        run: |
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+          test ! -e "$rundir"
+      - name: Named test files twice
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools="$GITHUB_WORKSPACE/tools/scripts/fix378"
+          out="$GITHUB_WORKSPACE/tools/.spider/scratch/fix378-named"
+          mkdir -p "$out" "$GITHUB_WORKSPACE/candidate/.spider/scratch/tmp"
+          cd "$GITHUB_WORKSPACE/candidate"
+          mapfile -t files < "$tools/head-files.txt"
+          test "${#files[@]}" = 69
+          for file in "${files[@]}"; do test -f "$file"; done
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          unset XDG_RUNTIME_DIR PI_SUBAGENT_CHILD PI_SUBAGENT_RUN_ID PI_SPIDER_DB_PATH PI_SPIDER_SESSION_ID SPIDER_HERDR_E2E SPIDER_HERDR_APP_TESTS SPIDER_HERDR_APP_E2E NODE_OPTIONS || true
+          for i in 1 2; do
+            node node_modules/vitest/vitest.mjs run "${files[@]}" --maxWorkers=3 --reporter=default --reporter=json --outputFile.json="$out/run-$i.json"
+          done
+          git rev-parse HEAD > "$out/head.sha"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fix378-named
+          path: tools/.spider/scratch/fix378-named/
+          include-hidden-files: true
+          if-no-files-found: warn
+  lifecycle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: tools
+      - uses: actions/checkout@v4
+        with:
+          ref: 1b0c5a908f5c785d9fbd9bc5b591b96297a3d130
+          path: before
+      - uses: actions/checkout@v4
+        with:
+          ref: d6ad49d3c601f3b7d4dd866740447593a0e80dba
+          path: after
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+          cache-dependency-path: |
+            before/package-lock.json
+            after/package-lock.json
+      - name: Install SQLite CLI
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - name: Install baseline
+        working-directory: before
+        run: npm ci
+      - name: Install candidate
+        working-directory: after
+        run: npm ci
+      - name: Remove runner runtime directory
+        run: |
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+          test ! -e "$rundir"
+      - name: Verify the timing reporter
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools="$GITHUB_WORKSPACE/tools/scripts/fix378"
+          node --test "$tools/lifecycle-summary.test.mjs"
+          export WPKG_PROBE_ROOT="$GITHUB_WORKSPACE/before/.spider/scratch/lifecycle-probe"
+          mkdir -p "$WPKG_PROBE_ROOT"
+          cp "$tools/lifecycle-probe.test.ts" "$WPKG_PROBE_ROOT/lifecycle.test.ts"
+          export WPKG_LIFECYCLE_REPORT="$WPKG_PROBE_ROOT/lifecycle.json"
+          cd "$GITHUB_WORKSPACE/before"
+          node node_modules/vitest/vitest.mjs run --config "$tools/lifecycle-probe.config.mjs" --maxWorkers=1 --reporter=json --reporter="$tools/lifecycle-reporter.mjs" --outputFile.json="$WPKG_PROBE_ROOT/results.json"
+          node "$tools/lifecycle-probe-check.mjs"
+      - name: Three alternating pairs on this runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools="$GITHUB_WORKSPACE/tools/scripts/fix378"
+          out="$GITHUB_WORKSPACE/tools/.spider/scratch/fix378-lifecycle"
+          mkdir -p "$out"
+          { node --version; nproc; uname -a; lscpu | grep -E 'Model name|CPU\(s\)|Thread|Core|Socket'; } > "$out/machine.txt"
+          for trial in 1 2 3; do
+            if (( trial % 2 )); then order=(before after); else order=(after before); fi
+            printf '%s\n' "${order[*]}" > "$out/order-$trial.txt"
+            for side in "${order[@]}"; do
+              dir="$GITHUB_WORKSPACE/$side"
+              if [[ "$side" == before ]]; then list="$tools/base-files.txt"; expected=37; else list="$tools/head-files.txt"; expected=69; fi
+              result="$out/$trial-$side"
+              mkdir -p "$result" "$dir/.spider/scratch/tmp"
+              mapfile -t files < "$list"
+              test "${#files[@]}" = "$expected"
+              for file in "${files[@]}"; do test -f "$dir/$file"; done
+              printf '%s\n' "${files[@]}" > "$result/file-list.txt"
+              cd "$dir"
+              git rev-parse HEAD > "$result/head.sha"
+              export TMPDIR="$dir/.spider/scratch/tmp" WPKG_LIFECYCLE_REPORT="$result/lifecycle.json"
+              unset XDG_RUNTIME_DIR PI_SUBAGENT_CHILD PI_SUBAGENT_RUN_ID PI_SPIDER_DB_PATH PI_SPIDER_SESSION_ID SPIDER_HERDR_E2E SPIDER_HERDR_APP_TESTS SPIDER_HERDR_APP_E2E NODE_OPTIONS || true
+              /usr/bin/time -f 'real %e\nuser %U\nsys %S' -o "$result/loaded.time" node node_modules/vitest/vitest.mjs run "${files[@]}" --maxWorkers=3 --reporter=json --reporter="$tools/lifecycle-reporter.mjs" --outputFile.json="$result/loaded.json" > "$result/loaded.log" 2>&1
+              node "$tools/lifecycle-summary.mjs" "$result/lifecycle.json" "$result/loaded.json" "$result/file-list.txt" --report-only | tee "$result/summary.txt"
+            done
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fix378-lifecycle
+          path: tools/.spider/scratch/fix378-lifecycle/
+          include-hidden-files: true
+          if-no-files-found: warn

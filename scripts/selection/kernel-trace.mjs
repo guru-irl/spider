@@ -38,7 +38,7 @@ function decoded(text) {
   catch { return null; }
 }
 
-const fdArgument = /^(AT_FDCWD|\d+)(?:<([^>]+)>)?\s*,\s*/;
+const fdArgument = /^(AT_FDCWD|-?\d+)(?:<([^>]+)>)?\s*,\s*/;
 const quotedPath = /^"((?:[^"\\]|\\.)*)"(?=\s*,)/;
 const procAlias = /^\/(?:proc\/(?:self|thread-self|\d+)\/(?:task\/\d+\/)?(?:fd|cwd|exe|root)|dev\/(?:fd|std(?:in|out|err)))(?:\/|$)/;
 const anonymousFd = /^(?:(?:pipe|socket):\[\d+\]|anon_inode:\[[^\]]+\])$/;
@@ -51,9 +51,13 @@ function pathname(args, at) {
   const base = decoded(fd?.[2]);
   const absolute = operand && isAbsolute(operand);
   const anchored = base && isAbsolute(base) && !base.endsWith(' (deleted)');
-  const kind = !operand ? 'pathname unavailable' : absolute ? procAlias.test(operand) ? 'proc/dev fd' : 'absolute pathname'
-    : !anchored ? fd && fd[1] !== 'AT_FDCWD' ? 'unknown dirfd' : 'unknown cwd'
-    : fd[1] === 'AT_FDCWD' ? 'cwd-relative' : 'dirfd-relative';
+  let kind = 'pathname unavailable';
+  if (absolute) kind = procAlias.test(operand) ? 'proc/dev fd' : 'absolute pathname';
+  else if (operand?.startsWith('node:')) kind = 'node: pathname';
+  else if (operand) {
+    const cwd = !fd || fd[1] === 'AT_FDCWD';
+    kind = anchored ? cwd ? 'cwd-relative' : 'dirfd-relative' : cwd ? 'unknown cwd' : 'unknown dirfd';
+  }
   // This is a lookup name, not a resolved target. In particular a symlink
   // followed by .. need not end up at the lexically normalized path.
   const candidate = operand && !operand.split('/').includes('..') &&
@@ -68,8 +72,10 @@ const directories = new Set(['getdents', 'getdents64']);
 const descriptors = new Set(['recvmsg', 'recvmmsg']);
 const unsupported = new Set(['unshare', 'setns', 'chroot', 'pivot_root', 'mount', 'umount2']);
 
-function readRingEvents(file) {
-  const events = new Map();
+function readTraceEvents(file) {
+  const rings = new Map();
+  const forks = new Map();
+  let uniqueForkPids = true;
   let expected;
   let count = 0;
   for (const line of lines(file)) {
@@ -82,20 +88,31 @@ function readRingEvents(file) {
       }
       continue;
     }
-    const event = /-(\d+)\s+\[\d+\].*:\s+io_uring_submit_req:.*\bopcode (\w+),.*\bsq_thread (0|1)\s*$/.exec(line);
+    const event = /-(\d+)\s+\[\d+\].*:\s+(io_uring_submit_req|sched_process_fork): (.*)$/.exec(line);
     if (!event) return null;
-    const [, pid, opcode, polling] = event;
-    const entry = events.get(Number(pid)) ?? { count: 0, epollOnly: true };
-    entry.count++;
-    entry.epollOnly &&= (opcode === 'EPOLL' || opcode === 'EPOLL_CTL') && polling === '0';
-    events.set(Number(pid), entry);
+    const [, pid, type, body] = event;
+    if (type === 'sched_process_fork') {
+      const fork = /^comm=.* pid=(\d+) child_comm=.* child_pid=(\d+)\s*$/.exec(body);
+      if (!fork || fork[1] !== pid) return null;
+      const child = Number(fork[2]);
+      uniqueForkPids &&= !forks.has(child);
+      forks.set(child, Number(pid));
+    } else {
+      const submit = /\bopcode (\w+),.*\bsq_thread (0|1)\s*$/.exec(body);
+      if (!submit) return null;
+      const [, opcode, polling] = submit;
+      const entry = rings.get(Number(pid)) ?? { count: 0, epollOnly: true };
+      entry.count++;
+      entry.epollOnly &&= (opcode === 'EPOLL' || opcode === 'EPOLL_CTL') && polling === '0';
+      rings.set(Number(pid), entry);
+    }
     count++;
   }
-  return count === expected ? events : null;
+  return count === expected ? { rings, forks, uniqueForkPids } : null;
 }
 
-export function readKernelTrace(file, { root, tracked, owners, ringFile }) {
-  const ringEvents = ringFile && readRingEvents(ringFile);
+export function readKernelTrace(file, { root, tracked, owners, ringFile, tracerStatus }) {
+  const events = ringFile && readTraceEvents(ringFile);
   const tasks = new Map();
   const pending = new Map();
   const repoFiles = new Set(tracked);
@@ -142,8 +159,11 @@ export function readKernelTrace(file, { root, tracked, owners, ringFile }) {
     let body = row[2];
     if (tracee.exited) return { error: 'PID reused in trace' };
     if (body.startsWith('--- ')) continue;
-    if (/^\+\+\+ (?:exited with \d+|killed by SIG\w+(?: \(core dumped\))?) \+\+\+$/.test(body)) {
+    tracee.firstEvent ??= /^\w+(?=\()/.exec(body)?.[0] ?? (body.startsWith('+++ ') ? 'exit' : 'other');
+    const exit = /^\+\+\+ (?:exited with (\d+)|killed by SIG\w+(?: \(core dumped\))?) \+\+\+$/.exec(body);
+    if (exit) {
       tracee.exited = true;
+      if (exit[1] !== undefined) tracee.exitStatus = Number(exit[1]);
       if (pending.delete(pid)) tracee.gaps.add('unfinished syscall');
       continue;
     }
@@ -180,6 +200,7 @@ export function readKernelTrace(file, { root, tracked, owners, ringFile }) {
       if (!flags || /IORING_SETUP_SQPOLL|0x/.test(flags)) tracee.gaps.add('io_uring polling or unknown flags');
     } else if (creation.has(name)) {
       if (Number(status) <= 0) continue;
+      if (/\bCLONE_UNTRACED\b/.test(args)) tracee.gaps.add('untraced clone');
       const child = task(Number(status));
       if (child.parent !== undefined) return { error: 'PID reused in trace' };
       child.parent = pid;
@@ -222,7 +243,46 @@ export function readKernelTrace(file, { root, tracked, owners, ringFile }) {
   }
 
   const first = tasks.get(rootPid);
-  if (!first || first.parent !== undefined) return { error: 'no unique trace root' };
+  const unlinked = [];
+  let missingExits = 0;
+  for (const [pid, tracee] of tasks) {
+    if (pid !== rootPid && tracee.parent === undefined) unlinked.push(pid);
+    if (!tracee.exited) missingExits++;
+  }
+  const lifecycle = { rootPid, rootExited: first?.exited === true, rootStatus: first?.exitStatus ?? null,
+    tracerStatus: tracerStatus ?? null, tasks: tasks.size, missingExits, unlinked: unlinked.length,
+    unlinkedExamples: unlinked.slice(0, 8).map(pid => [pid, tasks.get(pid).firstEvent]),
+    witnessedForks: events?.forks.size ?? null, forkProof: false, recoveredForks: 0, untracedForks: 0 };
+  if (!first || first.parent !== undefined) return { error: 'no unique trace root', lifecycle };
+  if (!first.exited) return { error: 'missing trace root exit', lifecycle };
+  if (tracerStatus !== undefined && tracerStatus !== first.exitStatus) return { error: 'trace root exit disagrees with tracer', lifecycle };
+
+  // A fork can happen before strace obtains its return value from the
+  // parent. The scheduler records the link at creation. Use it only when
+  // it agrees with every observed link, and still require strace's exits.
+  const forks = events?.forks;
+  let forkProof = Boolean(events?.uniqueForkPids && forks.size);
+  for (const [pid, tracee] of tasks) {
+    if (!forkProof) break;
+    if (pid === rootPid) continue;
+    const parent = forks.get(pid);
+    if (!tasks.has(parent) || (tracee.parent !== undefined && tracee.parent !== parent)) forkProof = false;
+  }
+  if (forkProof) {
+    lifecycle.forkProof = true;
+    for (const pid of unlinked) {
+      const parent = forks.get(pid);
+      tasks.get(pid).parent = parent;
+      tasks.get(parent).children.push(pid);
+      lifecycle.recoveredForks++;
+    }
+    for (const [child, parent] of forks) {
+      if (tasks.has(child) || !tasks.has(parent)) continue;
+      tasks.get(parent).gaps.add('untraced kernel fork');
+      lifecycle.untracedForks++;
+    }
+  } else if (unlinked.length) return { error: 'unattributed trace process', lifecycle };
+
   const byTest = new Map();
   const todo = [[rootPid, null]];
   let visited = 0;
@@ -230,7 +290,11 @@ export function readKernelTrace(file, { root, tracked, owners, ringFile }) {
     const [pid, parent] = todo.pop();
     const name = owners.get(pid) ?? parent;
     const tracee = tasks.get(pid);
-    if (++visited > tasks.size) return { error: 'cyclic trace ancestry' };
+    if (++visited > tasks.size) return { error: 'cyclic trace ancestry', lifecycle };
+    if (!name && (tracee.gaps.has('untraced kernel fork') || tracee.gaps.has('untraced clone'))) {
+      return { error: 'untraced fork before test attribution', lifecycle };
+    }
+    if (!name && !tracee.exited) return { error: 'unobserved exit before test attribution', lifecycle };
     if (name) {
       if (!byTest.has(name)) byTest.set(name, { reads: new Set(), trees: new Set(), artifacts: new Set(),
         exited: new Set(), gaps: new Set(), nodeStarts: new Map(), pathCounts: new Map() });
@@ -244,7 +308,7 @@ export function readKernelTrace(file, { root, tracked, owners, ringFile }) {
       for (const path of tracee.artifacts) test.artifacts.add(path);
       for (const gap of tracee.gaps) test.gaps.add(gap);
       for (const [kind, count] of tracee.pathCounts ?? []) test.pathCounts.set(kind, (test.pathCounts.get(kind) ?? 0) + count);
-      const ring = ringEvents?.get(pid);
+      const ring = events?.rings.get(pid);
       // A regular libuv loop submits EPOLL_CTL. Counting the opcodes is
       // evidence for those calls, not for other operations on the same ring.
       if ((tracee.ringSubmissions || ring) && (!ring?.epollOnly || ring.count !== tracee.ringSubmissions)) {
@@ -256,6 +320,6 @@ export function readKernelTrace(file, { root, tracked, owners, ringFile }) {
     }
     for (const child of tracee.children) todo.push([child, name]);
   }
-  if (visited !== tasks.size || !first.exited) return { error: 'unattributed trace process or missing root exit' };
-  return { byTest };
+  if (visited !== tasks.size) return { error: 'disconnected trace process', lifecycle };
+  return { byTest, lifecycle };
 }

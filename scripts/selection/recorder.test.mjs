@@ -709,8 +709,12 @@ ${rootExit ? '1 +++ exited with 0 +++\n' : ''}`,
   });
 }
 
-for (const [label, status] of [['no tracer status', null], ['inconsistent tracer status', 1]]) {
-  test(`keeps the fallback for a trace without matching completion evidence: ${label}`, t => {
+for (const [label, status, complete] of [
+  ['matching tracer status', 0, true],
+  ['no tracer status', null, false],
+  ['inconsistent tracer status', 1, false],
+]) {
+  test(`requires matching completion evidence: ${label}`, t => {
     const { records } = fixtureRecords(t, {
       results: [{ name: id }],
       snapshots: [{ test: id, worker: true, pid: 3, cpuMs: 100, ended: true, paths: [] }],
@@ -720,7 +724,7 @@ for (const [label, status] of [['no tracer status', null], ['inconsistent tracer
 1 +++ exited with 0 +++
 `,
     });
-    assert.equal(records[id].incomplete, true);
+    assert.equal(records[id].incomplete, !complete);
   });
 }
 

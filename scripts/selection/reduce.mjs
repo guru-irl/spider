@@ -200,15 +200,24 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
   const traceMode = join(rawDir, 'kernel-mode');
   let trace;
   if (existsSync(traceMode)) {
-    if (readFileSync(traceMode, 'utf8').trim() !== 'linux-strace-v2') trace = { error: 'unknown Linux trace format' };
+    const mode = readFileSync(traceMode, 'utf8').trim();
+    const statusPath = join(rawDir, 'kernel-status');
+    const status = mode === 'linux-strace-v3' && existsSync(statusPath) && readFileSync(statusPath, 'utf8').trim();
+    if (mode !== 'linux-strace-v2' && mode !== 'linux-strace-v3') trace = { error: 'unknown Linux trace format' };
     else if (!existsSync(traceFile)) trace = { error: 'expected Linux trace missing' };
+    else if (mode === 'linux-strace-v3' && (!status || !/^[01]$/.test(status))) trace = { error: 'no successful tracer completion' };
     else {
-      const owners = new Map([...groups].flatMap(([file, entry]) => [...entry.workerPids].map(pid => [pid, file])));
+      const owners = new Map();
+      for (const [file, entry] of groups) for (const pid of entry.workerPids) {
+        if (owners.has(pid)) trace = { error: 'ambiguous Vitest fork owner' };
+        owners.set(pid, file);
+      }
       const ringFile = `${resolve(rawDir)}.io-uring`;
-      trace = readKernelTrace(traceFile, { root: checkout, tracked: trackedPaths(), owners,
-        ringFile: existsSync(ringFile) ? ringFile : undefined });
+      trace ??= readKernelTrace(traceFile, { root: checkout, tracked: trackedPaths(), owners,
+        ringFile: existsSync(ringFile) ? ringFile : undefined, tracerStatus: status ? Number(status) : undefined });
     }
     stats.kernelTrace = trace.error ?? 'observed';
+    if (trace.lifecycle) stats.kernelLifecycle = trace.lifecycle;
   }
   const reportedFiles = [...outcomes.keys()].sort();
   const failedFiles = [];

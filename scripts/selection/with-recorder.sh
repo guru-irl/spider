@@ -18,35 +18,42 @@ if [[ ${SPIDER_SELECTION_KERNEL_TRACE:-} == 1 ]]; then
   # clear their environment. Keep the raw trace out of the uploaded raw dir.
   calls=clone,clone3,fork,vfork,execve,execveat,open,openat,openat2,creat,open_by_handle_at,getdents,getdents64
   calls+=,recvmsg,recvmmsg,io_uring_setup,io_uring_enter,unshare,setns,chroot,pivot_root,mount,umount2
-  printf '%s\n' linux-strace-v2 > "$SPIDER_SELECTION_DIR/kernel-mode"
-  trace=(strace -f -q -x -y -s 256 --seccomp-bpf -e "trace=$calls" -o "${SPIDER_SELECTION_DIR}.linux-trace" -- "${run[@]}")
+  printf '%s\n' linux-strace-v3 > "$SPIDER_SELECTION_DIR/kernel-mode"
+  printf '%s\n' recording > "$SPIDER_SELECTION_DIR/kernel-status"
+  trace=(strace -f -q -x -y -s 256 --seccomp-bpf --kill-on-exit -e "trace=$calls"
+    -o "${SPIDER_SELECTION_DIR}.linux-trace" -- "${run[@]}")
   : > "${SPIDER_SELECTION_DIR}.io-uring"
 
   # Strace cannot see operations submitted through a mapped io_uring queue.
   # The private tracefs instance supplies those opcodes on Linux CI. Missing
   # permissions, unknown opcodes, and dropped events keep the fallback.
   instance="/sys/kernel/tracing/instances/spider-selection-$$-$RANDOM"
-  ring=0
+  kernel_events=0
   trace_setting() { printf '%s\n' "$1" | sudo -n tee "$instance/$2" >/dev/null; }
   if sudo -n mkdir "$instance" 2>/dev/null; then
     trap 'sudo -n rmdir "$instance" || true' EXIT
-    # IORING_OP_EPOLL_CTL is 29. An omitted opcode leaves fewer events
-    # than strace's submission count, so it cannot make a record complete.
-    if trace_setting 0 tracing_on && trace_setting 8192 buffer_size_kb &&
-      trace_setting 'opcode == 29 && sq_thread == 0' events/io_uring/io_uring_submit_req/filter &&
-      trace_setting 1 events/io_uring/io_uring_submit_req/enable && trace_setting 1 tracing_on; then
-      ring=1
+    if trace_setting 0 tracing_on && trace_setting 8192 buffer_size_kb; then
+      # Record the parent at actual creation, even when strace cannot
+      # return to the parent syscall to print the new PID.
+      trace_setting 1 events/sched/sched_process_fork/enable || true
+      # IORING_OP_EPOLL_CTL is 29. Missing events leave fewer than
+      # strace's submission count and cannot make a record complete.
+      if trace_setting 'opcode == 29 && sq_thread == 0' events/io_uring/io_uring_submit_req/filter &&
+        trace_setting 1 events/io_uring/io_uring_submit_req/enable && trace_setting 1 tracing_on; then
+        kernel_events=1
+      fi
     fi
   fi
   code=0
   "${trace[@]}" || code=$?
-  if ((ring)) && trace_setting 0 tracing_on &&
+  if ((kernel_events)) && trace_setting 0 tracing_on &&
     sudo -n find "$instance/per_cpu" -name stats -exec awk '
       /^[[:space:]]*(overrun|commit overrun|dropped events):/ { seen++; if ($NF != 0) lost=1 }
       END { exit !(seen > 0 && !lost) }
     ' {} + && sudo -n cat "$instance/trace" > "${SPIDER_SELECTION_DIR}.io-uring.tmp"; then
     mv "${SPIDER_SELECTION_DIR}.io-uring.tmp" "${SPIDER_SELECTION_DIR}.io-uring" || true
   fi
+  printf '%s\n' "$code" > "$SPIDER_SELECTION_DIR/kernel-status"
   exit "$code"
 fi
 exec "${run[@]}"

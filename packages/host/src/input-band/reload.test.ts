@@ -49,6 +49,23 @@ function fixture(mismatch = false) {
   return { view, footer, before, complete: () => finish() };
 }
 
+it("survives Pi's full extension UI reset before the reload box is installed", async () => {
+  const { view, before, complete } = fixture();
+  delete view.resetExtensionUI;
+  const editor = { getText: () => "draft", setText() {}, render: () => ["editor"], invalidate() {} };
+  Object.assign(view, {
+    editor, defaultEditor: editor, extensionDialogs: [], extensionOverlays: new Map(),
+    clearExtensionTerminalInputListeners() {}, setExtensionHeader() {}, clearExtensionWidgets() {},
+    footerDataProvider: { ...provider, clearExtensionStatuses() {} }, disposeActiveSelector() {},
+    updateTerminalTitle() {}, chatContainer: new Container(), statusContainer: new Container(),
+  });
+  const pending = view.handleReloadCommand();
+  expect(plain(view.editorContainer.render(100))[1]).toContain("Reloading keybindings");
+  expect(plain(view.footerContainer.render(100))).toEqual(plain(before));
+  await new Promise(resolve => process.nextTick(resolve));
+  complete(); await pending;
+});
+
 it("shows a static reload band and keeps a dim frozen Spider footer until its replacement", async () => {
   const { view, before, complete } = fixture();
   const pending = view.handleReloadCommand();

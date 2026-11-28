@@ -5,6 +5,9 @@ import { foregroundFromBackground, reopenBackground } from "./ansi.js";
 
 type Edge = { original: string; hidden: number };
 const INSET = 2;
+const HISTORY_KEY = Symbol.for("spider.inputBand.history");
+const processState = globalThis as typeof globalThis & { [HISTORY_KEY]?: string[] };
+const history = processState[HISTORY_KEY] ??= []; // Oldest first, as when Pi replays a session.
 
 // The shim supplies the running Pi's class, not the native bundle's other copy.
 export function createBandEditor(Base: typeof CustomEditor): new (
@@ -17,6 +20,15 @@ export function createBandEditor(Base: typeof CustomEditor): new (
 
     constructor(tui: TUI, theme: EditorTheme, keys: KeybindingsManager, private readTheme: () => Theme) {
       super(tui, theme, keys, { paddingX: 0 });
+      for (const prompt of history) super.addToHistory(prompt);
+    }
+
+    override addToHistory(text: string): void {
+      super.addToHistory(text);
+      const prompt = text.trim();
+      if (!prompt || prompt === history.at(-1)) return;
+      history.push(prompt);
+      if (history.length > 100) history.shift();
     }
 
     // Pi may set its symmetric editor padding at any time. The band has a fixed left inset.

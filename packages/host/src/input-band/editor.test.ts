@@ -20,16 +20,18 @@ const BLUE = "\x1b[38;2;130;170;255m";
 const GREEN = "\x1b[38;2;80;250;123m";
 const STRIP = "\x1b[48;2;6;6;7m";
 
-function session(existing?: typeof stock) {
+function session(existing?: typeof stock, register = registerInputBand) {
   type Factory = Parameters<ExtensionUIContext["setEditorComponent"]>[0];
   let factory: Factory = existing;
   let config: Record<string, unknown> = {};
   const handlers = new Map<string, (evt: unknown, ctx: unknown) => void>();
   const pi = { on: (evt: string, handler: (evt: unknown, ctx: unknown) => void) => handlers.set(evt, handler) } as unknown as ExtensionAPI;
-  const ctx = { cwd: "/project", mode: "tui", hasUI: true, ui: { theme, setEditorComponent: (next: Factory) => { factory = next; }, getEditorComponent: () => factory } };
-  registerInputBand(pi, { CustomEditor }, () => config);
+  const buildContextEntries = vi.fn<() => unknown[]>(() => []);
+  const ctx = { cwd: "/project", mode: "tui", hasUI: true, sessionManager: { buildContextEntries }, ui: { theme, setEditorComponent: (next: Factory) => { factory = next; }, getEditorComponent: () => factory } };
+  register(pi, { CustomEditor }, () => config);
   return {
-    start: () => handlers.get("session_start")?.({}, ctx),
+    start: (reason = "startup") => handlers.get("session_start")?.({ reason }, ctx),
+    buildContextEntries,
     stop: () => handlers.get("session_shutdown")?.({ reason: "reload" }, ctx),
     configure: (next: Record<string, unknown>) => { config = next; },
     factory: () => factory,
@@ -45,6 +47,46 @@ const click = (x: number, y: number, width: number, height: number): TuiMouseEve
 });
 
 describe("input band", () => {
+  it("keeps pi's startup history after reimporting on reload and opening a new session", async () => {
+    const first = session(); first.start();
+    const original = first.editor();
+    expect(first.buildContextEntries).not.toHaveBeenCalled(); // Pi seeds the editor after binding at startup.
+    original.addToHistory(" startup prompt ");
+    original.addToHistory(" latest prompt ");
+    original.addToHistory("latest prompt");
+    original.addToHistory(" ");
+    first.stop();
+    vi.resetModules();
+    const reloaded = session(undefined, (await import("./index.js")).registerInputBand);
+    for (const reason of ["reload", "new"]) {
+      reloaded.start(reason);
+      const restored = reloaded.editor();
+      restored.handleInput("\x1b[A");
+      expect(restored.getText()).toBe("latest prompt");
+      restored.handleInput("\x1b[A");
+      expect(restored.getText()).toBe("startup prompt");
+      reloaded.stop();
+    }
+  });
+
+  it.each(["resume", "fork"])("replays user prompts in context order on %s", reason => {
+    const s = session(); s.start();
+    s.editor().addToHistory("previous session prompt");
+    s.stop();
+    s.buildContextEntries.mockReturnValue([
+      { type: "message", message: { role: "user", content: "first on branch" } },
+      { type: "message", message: { role: "assistant", content: [] } },
+      { type: "message", message: { role: "user", content: [
+        { type: "text", text: "latest" }, { type: "image" }, { type: "text", text: " on branch" },
+      ] } },
+    ]);
+    s.start(reason);
+    const editor = s.editor();
+    for (const text of ["latest on branch", "first on branch", "previous session prompt"]) {
+      editor.handleInput("\x1b[A");
+      expect(editor.getText()).toBe(text);
+    }
+  });
   it("draws two half edges and one opaque text row for empty or single-line input", () => {
     const e = editor("hello");
     const rows = e.render(16);

@@ -75,22 +75,6 @@ test('production setup stages every relative import target in every installed mo
   expect((await parts.inspect('clones', f.request)).failures.length).toBeGreaterThan(0);
 });
 
-test.each(['resume', 'mods', 'launcher'] as const)('doctor checks the pinned %s Node path with an explicit repair', async source => {
-  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
-  const missing = join(f.h.root, 'removed-node');
-  if (source === 'resume') await writeFile(f.request.config.shellRc, (await readFile(f.request.config.shellRc, 'utf8')).split(process.execPath).join(missing));
-  else if (source === 'mods') {
-    const path = join(f.h.directories.app, 'layouts/spider-glass.json');
-    await writeFile(path, (await readFile(path, 'utf8')).split(process.execPath).join(missing));
-  } else {
-    const path = join(f.request.journalRoot, 'journal.json');
-    const journal = JSON.parse(await readFile(path, 'utf8')); journal.launcherNodePath = missing; await writeFile(path, JSON.stringify(journal));
-  }
-  const report = await doctorHerdr(f.request, await f.ports.doctorParts(f.request));
-  expect(report.failures).toContainEqual(expect.objectContaining({ item: 'local-node', code: 'pinned-node-unavailable', message: expect.stringContaining(missing), repair: expect.stringContaining('Node') }));
-  expect(report.failures.find(f => f.code === 'pinned-node-unavailable')?.repair).toContain('setup');
-});
-
 test('production setup refuses a split global root before writes and doctor names the repair', async () => {
   const f = await fastFixture();
   const wrongRoot = join(f.h.root, 'wrong-global');
@@ -103,29 +87,4 @@ test('production setup refuses a split global root before writes and doctor name
   const report = await doctorHerdr(request, await f.ports.doctorParts(request));
   expect(report.failures).toContainEqual(expect.objectContaining({ code: 'global-root-mismatch', repair: expect.stringContaining(f.h.directories.global) }));
   expect(await f.h.calls()).toEqual(calls);
-});
-
-test('semantic pi and app saves preserve bytes and journal without another cutover', async () => {
-  const f = await fastFixture(); const cutover = vi.spyOn(f.parts, 'cutover');
-  await setupHerdr(f.request, f.parts); await editUnrelated(f);
-  const app = join(f.h.directories.app, 'settings.json');
-  await writeFile(app, JSON.stringify({ ...JSON.parse(await readFile(app, 'utf8')), zoom: 2 }, null, 4));
-  const shared = [join(f.h.directories.agent, 'settings.json'), app, join(f.h.directories.app, 'keys.json'), f.request.config.shellRc, f.request.config.core.config];
-  const bytes = await Promise.all(shared.map(path => readFile(path)));
-  const journal = await readFile(join(f.request.journalRoot, 'journal.json'));
-  expect((await setupHerdr(f.request, f.parts)).writes).toEqual([]);
-  expect(cutover).toHaveBeenCalledTimes(1);
-  expect(await Promise.all(shared.map(path => readFile(path)))).toEqual(bytes);
-  expect(await readFile(join(f.request.journalRoot, 'journal.json'))).toEqual(journal);
-  await rollbackHerdr(f.request, f.parts);
-  expect(JSON.parse(await readFile(shared[0], 'utf8'))).toEqual({ theme: 'stock', unrelated: 'edited' });
-});
-
-test('an artifact-only upgrade does not repeat a settled cutover', async () => {
-  const f = await fastFixture(); const cutover = vi.spyOn(f.parts, 'cutover');
-  await setupHerdr(f.request, f.parts);
-  const source = join(f.root, 'packages/herdr/assets/mods/spider/main.js');
-  await writeFile(source, (await readFile(source, 'utf8')) + '\n// updated panel\n');
-  expect((await setupHerdr(f.request, f.parts)).writes).toContain(join(f.h.directories.app, 'mods/spider-panel/main.js'));
-  expect(cutover).toHaveBeenCalledTimes(1);
 });

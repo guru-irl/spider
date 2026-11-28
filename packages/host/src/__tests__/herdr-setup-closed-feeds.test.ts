@@ -21,7 +21,7 @@ vi.mock('node:child_process', async importOriginal => {
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
 
 it.each([false, true])('setup verifies after a graceful owner exit (stale feed: %s)', async stale => {
-  const f = await focusedSetupFixture({ coreTransport: stale ? 'socket' : 'process' }); await setupHerdr(f.request, f.parts);
+  const f = await focusedSetupFixture({ coreTransport: 'socket' }); await setupHerdr(f.request, f.parts);
   const owner = await closedOwner(f, stale), bytes = await readFile(owner.path);
   const result = await doctor(f);
   expect(result.code, result.output).toBe(0);

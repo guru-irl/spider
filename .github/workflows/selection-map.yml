@@ -74,8 +74,8 @@ jobs:
       - name: Prepare isolated scratch
         run: mkdir -p "$PWD/.spider/scratch/tmp" "$SELECTION_WORK/raw" "$SELECTION_WORK/maps" "$SELECTION_WORK/results"
 
-      - name: Install SQLite CLI
-        run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - name: Install SQLite CLI and strace
+        run: sudo apt-get update && sudo apt-get install -y sqlite3 strace
 
       - name: Install and build with source maps
         env:
@@ -107,6 +107,7 @@ jobs:
 
       - name: Record test shard
         env:
+          SPIDER_SELECTION_KERNEL_TRACE: '1'
           TMPDIR: ${{ github.workspace }}/.spider/scratch/tmp
         run: |
           code=0

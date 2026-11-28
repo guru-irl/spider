@@ -2,16 +2,19 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 
+import { buildSelectionMap } from './map.mjs';
 import { reduce } from './reduce.mjs';
 import { selectTests } from './select.mjs';
 
 const hook = fileURLToPath(new URL('./cov-hook.cjs', import.meta.url));
 const id = 'packages/example/src/probe.test.ts';
+// The map workflow also runs this file before starting its outer strace.
+const canTrace = !process.env.SPIDER_SELECTION_DIR && process.platform === 'linux' && spawnSync('strace', ['--version']).status === 0;
 
 function fixture(t) {
   const scratch = resolve('.spider/scratch/selection');
@@ -38,7 +41,7 @@ function records(raw) {
   });
 }
 
-function fixtureRecords(t, { snapshots = [], results = [], hookErrors = '', launches = [] } = {}) {
+function fixtureRecords(t, { snapshots = [], results = [], hookErrors = '', launches = [], kernelTrace, trackedInputs = [] } = {}) {
   const { root, raw, maps, workspace } = fixture(t);
   writeFileSync(join(root, 'dist/reference.mjs'), 'export {};');
   writeFileSync(join(maps, 'reference.mjs.map'), JSON.stringify({ version: 3, sources: [], names: [], mappings: '' }));
@@ -54,6 +57,12 @@ function fixtureRecords(t, { snapshots = [], results = [], hookErrors = '', laun
     writeFileSync(join(raw, `${i + 1}-abc.ndjson`), scripts.map(row => JSON.stringify(row) + '\n').join(''));
   }
   if (hookErrors) writeFileSync(join(raw, 'hook-errors.ndjson'), hookErrors);
+  if (kernelTrace) {
+    execFileSync('git', ['init', '-q'], { cwd: root });
+    for (const file of trackedInputs) writeFileSync(join(root, file), 'fixture');
+    if (trackedInputs.length) execFileSync('git', ['add', '--', ...trackedInputs], { cwd: root });
+    writeFileSync(`${raw}.linux-trace`, kernelTrace.replaceAll('$ROOT', root));
+  }
   if (launches.length) writeFileSync(join(raw, 'launches.ndjson'), launches.map(row => JSON.stringify(row)).join('\n') + '\n');
   return reduce({ root, tmpRoot: join(root, '.spider/scratch/tmp'), rawDir: raw, mapsDir: maps, reportFile });
 }
@@ -461,12 +470,64 @@ test('a native signal can kill a Node process blocked inside Atomics.wait', { sk
   assert.equal(result.status, 0, result.stderr);
 });
 
-function reduceProbe({ root, raw, maps, workspace }) {
+function probeShard({ root, raw, maps, workspace }) {
   writeFileSync(join(root, 'dist/reference.mjs'), 'export {};');
   writeFileSync(join(maps, 'reference.mjs.map'), JSON.stringify({ version: 3, sources: [], names: [], mappings: '' }));
   const reportFile = join(workspace, 'vitest.json');
   writeFileSync(reportFile, JSON.stringify({ testResults: [{ name: join(root, id), status: 'passed', startTime: 0, endTime: 1 }] }));
-  return reduce({ root, rawDir: raw, mapsDir: maps, reportFile }).records[id];
+  return reduce({ root, rawDir: raw, mapsDir: maps, reportFile });
+}
+
+const reduceProbe = paths => probeShard(paths).records[id];
+
+test('publishes the dependencies of exact Node version probes without inventing CPU samples', t => {
+  const paths = fixture(t);
+  const { root, raw } = paths;
+  const result = runNode(['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import { spawn, spawnSync, execFile, execFileSync } from 'node:child_process';
+    import { once } from 'node:events';
+    import { promisify } from 'node:util';
+    globalThis[Symbol.for('spider.selection.tag')](${JSON.stringify(id)});
+    const options = { env: {}, encoding: 'utf8' };
+    const args = ['--version'];
+    const expected = process.version + '\\n';
+    const child = spawn(process.execPath, args, { env: {}, stdio: 'ignore' });
+    assert.deepEqual(await once(child, 'exit'), [0, null]);
+    assert.equal(spawnSync(process.execPath, args, options).stdout, expected);
+    assert.equal(execFileSync(process.execPath, args, options), expected);
+    assert.equal((await promisify(execFile)(process.execPath, args, options)).stdout, expected);
+  `], { cwd: root, env: recorderEnv(root, raw) });
+  assert.equal(result.status, 0, result.stderr);
+  const shard = probeShard(paths);
+  const { map, problems } = buildSelectionMap({ shards: [shard], expectedFiles: [id] });
+  assert.deepEqual(problems, []);
+  const record = map.tests[id];
+  assert.equal(record.incomplete, false);
+  assert.equal(record.processes, 5);
+  assert.equal(record.missingCpu, 4);
+  assert.equal(record.unknownCpu, 4);
+  assert.equal(record.cpuMs, null);
+});
+
+for (const [label, invocation] of [
+  ['a PATH wrapper named node', `spawnSync('node', ['--version'], { env: { PATH: process.cwd() } })`],
+  ['extra arguments', `spawnSync(process.execPath, ['--version', 'config.toml'], { env: {} })`],
+  ['unverified startup options', `spawnSync(process.execPath, ['--version'], { env: { NODE_OPTIONS: '--no-warnings' } })`],
+]) {
+  test(`keeps the startup gap for ${label}`, { skip: process.platform === 'win32' }, t => {
+    const paths = fixture(t);
+    const { root, raw } = paths;
+    writeFileSync(join(root, 'config.toml'), 'fixture\n');
+    writeFileSync(join(root, 'node'), '#!/bin/sh\nread value < config.toml || exit 1\nprintf "%s" "$value"\n', { mode: 0o700 });
+    const result = runNode(['--input-type=module', '-e', `
+      import assert from 'node:assert/strict';
+      import { spawnSync } from 'node:child_process';
+      assert.equal((${invocation}).status, 0);
+    `], { cwd: root, env: recorderEnv(root, raw) });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(reduceProbe(paths).incomplete, true);
+  });
 }
 
 test('keeps scripts loaded by an externally killed child and marks its record incomplete', { skip: process.platform === 'win32' }, t => {
@@ -494,6 +555,190 @@ test('keeps scripts loaded by an externally killed child and marks its record in
   assert.deepEqual(record.reads, ['child.mjs', 'dependency.mjs']);
   assert.equal(record.incomplete, true);
   assert.equal(record.cpuMs, null);
+});
+
+test('a Node test supervisor without an inspector stays incomplete without breaking publication', t => {
+  const paths = fixture(t);
+  const { root, raw } = paths;
+  writeFileSync(join(root, 'sample.test.mjs'), `import { test } from 'node:test'; test('sample', () => {});`);
+  const result = runNode(['--input-type=module', '-e', `
+    import { execFileSync } from 'node:child_process';
+    execFileSync(process.execPath, ['--test', 'sample.test.mjs']);
+  `], { cwd: root, env: recorderEnv(root, raw) });
+  assert.equal(result.status, 0, result.stderr);
+  const { records, stats } = probeShard(paths);
+  assert.equal(stats.hookErrors, 0);
+  assert.equal(records[id].incomplete, true);
+});
+
+test('a nested recorder keeps its fixture journal and does not claim an outer startup', t => {
+  const outer = fixture(t);
+  const inner = fixture(t);
+  writeFileSync(join(inner.root, 'nested.cjs'), 'process.stdout.write(require("node:fs").readFileSync("nested.txt"));');
+  writeFileSync(join(inner.root, 'nested.txt'), 'inner fixture');
+  const result = runNode(['--input-type=module', '-e', `
+    import { execFileSync } from 'node:child_process';
+    import assert from 'node:assert/strict';
+    const child = execFileSync(process.execPath, ['nested.cjs'], {
+      cwd: ${JSON.stringify(inner.root)}, env: ${JSON.stringify({
+        SPIDER_SELECTION_DIR: inner.raw, SPIDER_SELECTION_ROOT: inner.root,
+        SPIDER_SELECTION_TEST: id, NODE_OPTIONS: `--require=${JSON.stringify(hook)}`,
+      })}, encoding: 'utf8',
+    });
+    assert.equal(child, 'inner fixture');
+  `], { cwd: outer.root, env: recorderEnv(outer.root, outer.raw) });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(reduceProbe(inner)?.reads, ['nested.cjs', 'nested.txt']);
+  assert.equal(reduceProbe(outer).incomplete, true);
+});
+
+test('a kernel trace attributes shell and killed Node reads to the test that spawned them', {
+  skip: !canTrace,
+}, t => {
+  const paths = fixture(t);
+  const { root, raw } = paths;
+  // Use the real wrapper in a tiny checkout, without building any bundles.
+  const selection = join(root, 'scripts/selection');
+  mkdirSync(selection, { recursive: true });
+  for (const name of ['with-recorder.sh', 'cov-hook.cjs', 'bundle-keys.mjs']) {
+    copyFileSync(fileURLToPath(new URL(name, import.meta.url)), join(selection, name));
+  }
+  writeFileSync(join(root, 'resume.sh'), 'read text < shell.txt; printf "%s" "$text"\n');
+  writeFileSync(join(root, 'shell.txt'), 'shell read\n');
+  writeFileSync(join(root, 'child.txt'), 'child read');
+  writeFileSync(join(root, 'worker.txt'), 'worker read');
+  writeFileSync(join(root, 'thread.mjs'), `
+    import { readFileSync } from 'node:fs';
+    import { parentPort } from 'node:worker_threads';
+    parentPort.postMessage(readFileSync('worker.txt', 'utf8'));
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+  `);
+  writeFileSync(join(root, 'child.mjs'), `
+    import { readFileSync } from 'node:fs';
+    process.stdout.write(readFileSync('child.txt'));
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+  `);
+  execFileSync('git', ['init', '-q'], { cwd: root });
+  execFileSync('git', ['add', '--', 'child.txt', 'shell.txt', 'resume.sh', 'worker.txt'], { cwd: root });
+  const result = spawnSync('bash', ['scripts/selection/with-recorder.sh', raw, process.execPath, '--input-type=module', '-e', `
+    import { spawn, execFileSync } from 'node:child_process';
+    import { Worker } from 'node:worker_threads';
+    import { once } from 'node:events';
+    import assert from 'node:assert/strict';
+    globalThis[Symbol.for('spider.selection.tag')](${JSON.stringify(id)});
+    // The shell cannot inherit or rely on JavaScript instrumentation.
+    assert.equal(execFileSync('/bin/sh', ['resume.sh'], { env: {}, encoding: 'utf8' }), 'shell read');
+    const child = spawn(process.execPath, ['child.mjs']);
+    const exited = once(child, 'exit');
+    const [ready] = await once(child.stdout, 'data');
+    assert.equal(String(ready), 'child read');
+    child.kill('SIGKILL');
+    assert.deepEqual(await exited, [null, 'SIGKILL']);
+    const thread = new Worker('./thread.mjs', { execArgv: [] });
+    assert.deepEqual(await once(thread, 'message'), ['worker read']);
+    assert.equal(await thread.terminate(), 1);
+  `], { cwd: root, env: { ...process.env, SPIDER_SELECTION_KERNEL_TRACE: '1' }, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  const record = reduceProbe(paths);
+  assert.deepEqual(record.reads, ['child.mjs', 'child.txt', 'resume.sh', 'shell.txt', 'thread.mjs', 'worker.txt']);
+  assert.equal(record.incomplete, false);
+  assert.equal(record.unknownCpu, 1);
+  assert.equal(record.cpuMs, null);
+});
+
+for (const [label, parent, ready, exitLine, extra, complete] of [
+  ['a traced descendant', 3, true, '4 +++ killed by SIGKILL +++\n', '', true],
+  ['a PID outside the test fork', 1, true, '4 +++ killed by SIGKILL +++\n', '', false],
+  ['a child killed before recorder setup', 3, false, '4 +++ killed by SIGKILL +++\n', '', false],
+  ['a trace cut off before exit', 3, true, '', '', false],
+  ['a pathless successful file open', 3, true, '4 +++ killed by SIGKILL +++\n', '4 open("unseen", O_RDONLY) = 8\n', false],
+]) {
+  test(`uses independent lifecycle proof only for complete input traces: ${label}`, t => {
+    const result = fixtureRecords(t, {
+      results: [{ name: id }],
+      snapshots: [
+        { test: id, worker: true, pid: 3, processId: 'parent', threadId: 0, cpuMs: 100, ended: true, paths: [] },
+        { test: id, pid: 4, processId: 'child', threadId: 0, cpuMs: 25, ended: false, captureReady: ready, paths: [] },
+      ],
+      trackedInputs: ['native.txt'],
+      kernelTrace: `1 execve("/usr/bin/node", ["node"], 0x0) = 0
+1 clone(child_stack=NULL, flags=SIGCHLD) = 3
+${parent} clone(child_stack=NULL, flags=SIGCHLD) = 4
+4 openat(AT_FDCWD, "native.txt", O_RDONLY <unfinished ...>
+4 <... openat resumed>) = 3<$ROOT/native.txt>
+${extra}${exitLine}3 +++ exited with 0 +++
+1 +++ exited with 0 +++
+`,
+    });
+    const record = result.records[id];
+    assert.equal(record.incomplete, !complete);
+    assert.equal(record.cpuMs, null);
+    if (complete) assert.deepEqual(record.reads, ['native.txt']);
+  });
+}
+
+for (const [label, ready, exited, complete] of [
+  ['a ready worker with observed termination', true, true, true],
+  ['a heap-limited worker without a recorder', false, true, false],
+  ['a ready worker without an observed exit', true, false, false],
+]) {
+  test(`reconciles forced worker termination without assuming a flush: ${label}`, t => {
+    const processId = 'worker-parent';
+    const thread = { test: id, processId, threadId: 1 };
+    const result = fixtureRecords(t, {
+      results: [{ name: id }],
+      launches: [{ ...thread, kind: 'thread' }, ...(exited ? [{ ...thread, kind: 'thread-exit' }] : [])],
+      snapshots: [
+        { test: id, worker: true, pid: 3, processId, threadId: 0, cpuMs: 132, ended: true, paths: [] },
+        ...(ready ? [{ ...thread, pid: 3, cpuMs: 50, captureReady: true, paths: ['src/worker.ts'] }] : []),
+      ],
+      kernelTrace: `1 clone(child_stack=NULL, flags=SIGCHLD) = 3
+3 clone(child_stack=NULL, flags=CLONE_THREAD) = 4
+4 +++ exited with 0 +++
+3 +++ exited with 0 +++
+1 +++ exited with 0 +++
+`,
+    });
+    const record = result.records[id];
+    assert.equal(record.incomplete, !complete);
+    assert.equal(record.cpuMs, 132);
+    if (complete) assert.deepEqual(record.reads, ['src/worker.ts']);
+  });
+}
+
+test('a Node image reached through a clean shell is not complete without startup evidence', t => {
+  const { records } = fixtureRecords(t, {
+    results: [{ name: id }],
+    snapshots: [{ test: id, worker: true, pid: 3, processId: 'parent', cpuMs: 100, ended: true, paths: [] }],
+    trackedInputs: ['shell.txt'],
+    kernelTrace: `1 clone(child_stack=NULL, flags=SIGCHLD) = 3
+3 clone(child_stack=NULL, flags=SIGCHLD) = 4
+4 execve("/bin/sh", ["sh"], 0x0) = 0
+4 execve(${JSON.stringify(process.execPath)}, ["node", "script.cjs"], 0x0) = 0
+4 open("shell.txt", O_RDONLY) = 8<$ROOT/shell.txt>
+4 +++ exited with 0 +++
+3 +++ exited with 0 +++
+1 +++ exited with 0 +++
+`,
+  });
+  assert.deepEqual(records[id].reads, ['shell.txt']);
+  assert.equal(records[id].incomplete, true);
+});
+
+test('native reads of a generated bundle retain the unresolved bundle fallback', t => {
+  const { records } = fixtureRecords(t, {
+    results: [{ name: id }],
+    snapshots: [{ test: id, worker: true, pid: 3, processId: 'parent', cpuMs: 100, ended: true, paths: [] }],
+    kernelTrace: `1 clone(child_stack=NULL, flags=SIGCHLD) = 3
+3 clone(child_stack=NULL, flags=SIGCHLD) = 4
+4 open("dist/reference.mjs", O_RDONLY) = 8<$ROOT/dist/reference.mjs>
+4 +++ exited with 0 +++
+3 +++ exited with 0 +++
+1 +++ exited with 0 +++
+`,
+  });
+  assert.equal(records[id].ranBundle, true);
+  assert.deepEqual(records[id].unresolved, ['dist/reference.mjs']);
 });
 
 test('records non-code file reads through Node fs APIs in a child with a replacement environment', t => {

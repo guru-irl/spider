@@ -28,7 +28,7 @@ export function shardProblems({ reportedFiles, records, stats }) {
       problems.push(`Invalid unresolved bundle list for ${file}`);
     }
     if (typeof record.ranBundle !== 'boolean' || (record.unresolved?.length && !record.ranBundle) ||
-        typeof record.incomplete !== 'boolean' || (!record.incomplete && record.unknownCpu > 0)) {
+        typeof record.incomplete !== 'boolean') {
       problems.push(`Invalid bundle or recording completeness flags for ${file}`);
     }
     const { processes, cpuMs, knownCpuMs, unknownCpu, missingCpu } = record;

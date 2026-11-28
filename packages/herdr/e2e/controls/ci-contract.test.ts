@@ -300,10 +300,10 @@ describe('CI acceptance contract', () => {
     const ci = workflow('ci');
     expect(Object.keys(ci.on).sort()).toEqual(['push', 'workflow_call', 'workflow_dispatch']);
     expect(ci.on.workflow_dispatch).toEqual({ inputs: { force_full: {
-      description: 'Run all tests, Chrome, packed acceptance, and headless stories before merge',
-      type: 'boolean',
-      required: true,
-      default: true,
+      description: 'Run full CI on this ref; the force_full value is ignored',
+      type: 'string',
+      required: false,
+      default: 'true',
     } } });
     expect(ci.on.push).toEqual({ branches: ['main'] });
     expect(ci.jobs.chrome!.strategy!.matrix.include).toHaveLength(4);
@@ -322,6 +322,9 @@ describe('CI acceptance contract', () => {
     expect(pr.on).toEqual({ pull_request: { branches: ['main'] } });
     expect(Object.keys(pr.jobs).sort()).toEqual(['checks', 'compile', 'tests']);
     expect(pr.jobs.compile!.name).toBe('compile');
+    expect(step(pr.jobs.compile!, 'Herdr acceptance typecheck')?.run ?? '').toContain('npm run typecheck:herdr:e2e');
+    expect(step(pr.jobs.compile!, 'Check workflow contract')?.run ?? '').toContain('packages/herdr/e2e/controls/ci-contract.test.ts');
+    expect(step(pr.jobs.compile!, 'Check workflow contract')?.run ?? '').toContain('--config packages/herdr/e2e/vitest.config.ts');
     expect(pr.jobs.tests!.strategy!.matrix.group).toEqual([1, 2, 3, 4]);
     expect(pr.jobs.tests!.if).toBeUndefined();
     expect(pr.jobs.tests!.needs).toBeUndefined();
@@ -331,13 +334,29 @@ describe('CI acceptance contract', () => {
     expect(step(pr.jobs.checks!, 'Require identical PR selections').run).toContain('scripts/selection/aggregate.mjs');
     for (const job of Object.values(pr.jobs)) for (const item of job.steps) {
       expect(item.run ?? '').not.toMatch(/npm run (?:-s )?(?:test:e2e|test:herdr:e2e:ci)/);
-      expect(item.run ?? '').not.toContain('--config packages/herdr/e2e/vitest.config.ts');
+      if (item.name !== 'Check workflow contract') expect(item.run ?? '').not.toContain('--config packages/herdr/e2e/vitest.config.ts');
     }
   });
 
   it('sets explicit timeouts for every runner job', () => {
     for (const name of ['ci', 'pr', 'release', 'publish']) for (const job of Object.values(workflow(name).jobs)) {
       if (!job.uses) expect(job['timeout-minutes']).toBeGreaterThan(0);
+    }
+    const expected = { ci: { checks: 2, compile: 10, test: 25, 'herdr-acceptance': 10, chrome: 10, audit: 5 },
+      pr: { compile: 10, tests: 30, checks: 5 } };
+    for (const [name, jobs] of Object.entries(expected)) for (const [id, timeout] of Object.entries(jobs)) {
+      expect(workflow(name).jobs[id]!['timeout-minutes'], `${name}:${id}`).toBe(timeout);
+    }
+  });
+
+  it('uses the npm cache in installing jobs and names the required check once per workflow', () => {
+    for (const name of ['ci', 'pr']) {
+      expect(source(name).split('typecheck · test · build')).toHaveLength(2);
+      for (const [id, job] of Object.entries(workflow(name).jobs)) {
+        if (!job.steps?.some(item => /\bnpm ci\b/.test(item.run ?? ''))) continue;
+        const node = job.steps.find(item => item.uses === 'actions/setup-node@v4');
+        expect(node?.with?.cache, `${name}:${id}`).toBe('npm');
+      }
     }
   });
 
@@ -357,7 +376,9 @@ describe('CI acceptance contract', () => {
     expect(artifact.if).toBe('always()');
     expect(artifact.uses).toBe('actions/upload-artifact@v4');
     expect(artifact.with!.name).toBe('test-results-${{ matrix.shard }}');
-    expect(artifact.with!.path).toBe('.spider/scratch/test-results/shard-${{ matrix.shard }}.json');
+    expect(artifact.with!.path).toContain('.spider/scratch/test-results/shard-${{ matrix.shard }}.json');
+    expect(artifact.with!.path).toContain('.spider/scratch/test-results/shard-${{ matrix.shard }}.count');
+    expect(step(job, 'Prepare isolated scratch').run).toContain('${{ strategy.job-total }}');
   });
 
   it('keeps the dashboard and acceptance typecheck entry points unchanged', () => {

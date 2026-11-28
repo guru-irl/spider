@@ -50,6 +50,39 @@ test('ignores artifacts published after the PR run started and rejects the wrong
   assert.equal(result.map.runId, '44');
 });
 
+test('accepts maps only from push runs in the target repository and workflow', async () => {
+  const root = process.cwd();
+  const commit = selector.git(root, 'rev-parse', 'HEAD').trim();
+  const mapFor = id => ({ ...map(), commit, runId: String(id) });
+  const runs = [
+    { id: 47, event: 'pull_request', head_repository: { full_name: 'guru-irl/spider' } },
+    { id: 46, event: 'push', head_repository: { full_name: 'fork/spider' } },
+    { id: 45, event: 'push', head_repository: { full_name: 'guru-irl/spider' }, path: '.github/workflows/other.yml' },
+    { id: 44, event: 'push', head_repository: { full_name: 'guru-irl/spider' } },
+  ].map(item => ({ path: '.github/workflows/selection-map.yml', head_sha: commit,
+    updated_at: '2026-11-27T12:00:00Z', ...item }));
+  const loaded = [];
+  const api = {
+    get: () => ({ created_at: asOf }),
+    pages: () => [{ workflow_runs: runs }],
+    artifact: async id => { loaded.push(id); return artifact(mapFor(id)); },
+  };
+  const result = await selector.lookupMainMap({ root, mergeBase: commit, repo: 'guru-irl/spider', workflowRun: 1, api });
+  assert.equal(result.map.runId, '44');
+  assert.deepEqual(loaded, [44]);
+});
+
+test('fails loudly on map API or artifact read errors instead of changing selections', async () => {
+  const failure = new Error('network unavailable');
+  const options = { mergeBase: head, asOf, isAncestor: () => true,
+    listRuns: async () => [run(44, base)], load: async () => { throw failure; } };
+  await assert.rejects(selector.lookupMap(options), /network unavailable/);
+  await assert.rejects(selector.lookupMap({ ...options, listRuns: async () => { throw failure; } }), /network unavailable/);
+  await assert.rejects(selector.lookupMap({ ...options, load: async () => ({ ...artifact(map()), read: () => { throw failure; } }) }), /network unavailable/);
+  const api = { get: () => { throw failure; } };
+  await assert.rejects(selector.lookupMainMap({ root: process.cwd(), mergeBase: head, repo: 'guru-irl/spider', workflowRun: 1, api }), /network unavailable/);
+});
+
 test('rejects a malformed source index instead of inferring an empty read set', async () => {
   const result = await lookup([run(44, base)], { 44: artifact(map([], { [a]: row({ reads: [0] }) })) });
   assert.equal(result.map, null);
@@ -80,6 +113,18 @@ test('runs the complete inventory on toolchain changes', async () => {
     const result = await fixture({ changes: [changed(file)] });
     assertSelected(result, ...inventory);
     assert.equal(result.mode, 'full');
+  }
+});
+
+test('runs the complete inventory when selection infrastructure or workflows change', async () => {
+  for (const file of ['scripts/selection/select.mjs', 'scripts/selection/subdir/helper.mjs',
+    'scripts/test-resources.json', 'scripts/test-shards.ts', 'scripts/selection/known-flakes.json',
+    '.github/workflows/pr.yml', '.github/workflows/ci.yml']) {
+    for (const status of ['A', 'M', 'D']) {
+      const result = await fixture({ changes: [changed(file, status), changed('packages/one/src/product.ts')] });
+      assert.equal(result.mode, 'full', `${status} ${file}`);
+      assertSelected(result, ...inventory);
+    }
   }
 });
 
@@ -188,7 +233,9 @@ test('runs bundle executors and readers for build config', async () => {
 });
 
 test('runs the selector and guard tests on a selection policy edit', async () => {
-  assertSelected(await fixture({ changes: [changed('scripts/test-resources.json')] }), selectorTest, guard, docGuard);
+  const result = await fixture({ changes: [changed('scripts/test-resources.json')] });
+  for (const file of [selectorTest, guard, docGuard]) assert.ok(result.selected[file]);
+  assertSelected(result, ...inventory);
 });
 
 test('runs bundle policy readers when a changed input reaches a bundle entry', async () => {
@@ -318,10 +365,29 @@ test('requires successful compile and four numbered runners agreeing with the up
   assert.equal(manifest.requireAgreement({ needs, hashes, selection: result, head }), result.selectionHash);
   for (const state of ['skipped', 'failure', 'cancelled']) {
     assert.throws(() => manifest.requireAgreement({ needs: { ...needs, tests: { result: state } }, hashes, selection: result, head }));
+    assert.throws(() => manifest.requireAgreement({ needs: { ...needs, compile: { result: state } }, hashes, selection: result, head }));
   }
   assert.throws(() => manifest.requireAgreement({ needs, hashes: hashes.slice(1), selection: result, head }));
   assert.throws(() => manifest.requireAgreement({ needs, hashes: [hashes[0], ...hashes.slice(0, 3)], selection: result, head }));
   assert.throws(() => manifest.requireAgreement({ needs, hashes: [...hashes.slice(0, 3), { group: 4, selectionHash: 'wrong' }], selection: result, head }));
   assert.throws(() => manifest.requireAgreement({ needs, hashes, selection: { ...result, changedFiles: [] }, head }));
   assert.throws(() => manifest.requireAgreement({ needs, hashes, selection: result, head: base }));
+});
+
+test('reports the runner map and fallback when selections disagree', async () => {
+  const result = await fixture({ changes: [changed(a)] });
+  const needs = { compile: { result: 'success' }, tests: { result: 'success' } };
+  const hashes = [1, 2, 3, 4].map(group => ({ group, selectionHash: result.selectionHash, mapRunId: '44', fallback: null }));
+  hashes[2] = { group: 3, selectionHash: 'a'.repeat(64), mapRunId: null, fallback: 'selection-map lookup failed' };
+  assert.throws(() => manifest.requireAgreement({ needs, hashes, selection: result, head }),
+    /group 3.*selection-map lookup failed/);
+});
+
+test('rejects unsafe changed paths before they enter the audit summary', async () => {
+  const result = await fixture({ changes: [changed(a)] });
+  for (const change of [{ file: 'docs/`injected`', status: 'M' }, { file: a, status: 'X' }]) {
+    const unsafe = { ...result, changedFiles: [change] };
+    unsafe.selectionHash = manifest.selectionHash(unsafe);
+    assert.throws(() => manifest.validateSelection(unsafe, head), /changed files/i);
+  }
 });

@@ -1,8 +1,42 @@
 // SPDX-License-Identifier: MIT
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { auditFailures, failureRows, mergedSelection, summarizeAudit } from './audit.mjs';
 import { selectionHash } from './manifest.mjs';
+
+test('audits every matrix shard and refuses a missing shard report', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'audit-shards-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const bin = join(dir, 'bin'); mkdirSync(bin);
+  const gh = join(bin, 'gh');
+  writeFileSync(gh, '#!/bin/sh\nprintf "[[]]\\n"\n'); chmodSync(gh, 0o755);
+  for (let i = 1; i <= 7; i++) {
+    writeFileSync(join(dir, `shard-${i}.count`), '7\n');
+    const row = i === 7 ? fail(b, 'missed', ['failure']) : { name: `/workspace/${a}`, status: 'passed' };
+    writeFileSync(join(dir, `shard-${i}.json`), JSON.stringify(shard(row)));
+  }
+  const run = () => spawnSync(process.execPath, ['scripts/selection/audit.mjs', dir], { encoding: 'utf8', env: {
+    ...process.env, PATH: `${bin}:${process.env.PATH}`, GITHUB_EVENT_NAME: 'push', GITHUB_REF: 'refs/heads/main',
+    GITHUB_SHA: newest, GITHUB_REPOSITORY: 'guru-irl/spider', GITHUB_STEP_SUMMARY: '',
+  } });
+  const result = run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /::warning::Selection audit inconclusive/);
+  assert.match(result.stdout, /packages\/two\/src\/b.test.ts/);
+  rmSync(join(dir, 'shard-7.json'));
+  const missing = run();
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /shard 7\/7/);
+  writeFileSync(join(dir, 'shard-7.json'), JSON.stringify(shard(fail(b, 'missed', ['failure']))));
+  rmSync(join(dir, 'shard-3.count'));
+  assert.match(run().stderr, /shard 3\/7/);
+  writeFileSync(join(dir, 'shard-3.count'), '6\n');
+  assert.match(run().stderr, /inconsistent shard counts/);
+});
 
 const a = 'packages/one/src/a.test.ts', b = 'packages/two/src/b.test.ts';
 const head = 'a'.repeat(40), newest = 'b'.repeat(40), mapCommit = 'c'.repeat(40);

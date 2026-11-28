@@ -3,13 +3,14 @@
 import { readFile, lstat, readdir, readlink } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { digest } from '../../../herdr/src/setup/backup.js';
+import type { SetupFixture } from './herdr-setup-fixture.js';
 import { releaseFixture } from './herdr-setup-release-fixture.js';
 import { useStaticSetupApp } from './herdr-setup-focused-fixture.js';
 
 type Release = Parameters<typeof releaseFixture>[0];
-export const fastRelease = async (version: Release, localOnly = true) =>
+export const fastRelease = async (version: Release, localOnly = true): Promise<SetupFixture> =>
   useStaticSetupApp(await releaseFixture(version, { coreTransport: 'socket', localOnly }), version);
-export const changingAppVersion = async (version: Release, coreTransport: 'process' | 'socket' = 'socket') =>
+export const changingAppVersion = async (version: Release, coreTransport: 'process' | 'socket' = 'socket'): Promise<SetupFixture> =>
   useStaticSetupApp(await releaseFixture(version, { coreTransport, localOnly: true }), null);
 
 export async function tree(root: string): Promise<string[]> {

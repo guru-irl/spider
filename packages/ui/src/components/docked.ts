@@ -36,7 +36,8 @@ export function renderDocked(width: number, theme: IntroTheme, facts: DockedFact
   const available = !!usage?.calls;
   const rows: [label: string, value: string, details?: string][] = [
     ["Changes", fg("success", bold(`+${changes.added}`)) + " " + fg("error", bold(`−${changes.removed}`)), changes.partial ? "(partial)" : undefined],
-    ["AI credits", available && usage.credits !== null ? bold(`~${usage.credits.toFixed(2)}`) : "unavailable", `(${introDuration(timeMs)})`],
+    ["AI credits", available && usage.credits !== null ? bold(`~${usage.credits.toFixed(2)}`) : "unavailable",
+      `(${introDuration(timeMs)}${available ? ", cached" : ""})${available && usage.unpricedCalls ? " · some calls unpriced" : ""}`],
     ["Tokens in", available ? bold(`${icon(undefined, "arrowUp")} ${compactCount(usage.input + usage.cacheRead + usage.cacheWrite)}`) : "unavailable",
       available ? `(${compactCount(usage.cacheRead)} cached, ${compactCount(usage.cacheWrite)} written)` : undefined],
     ["Tokens out", available ? bold(`${icon(undefined, "arrowDown")} ${compactCount(usage.output)}`) : "unavailable",
@@ -52,7 +53,6 @@ export function renderDocked(width: number, theme: IntroTheme, facts: DockedFact
       if (details) lines.push(...wrapTextWithAnsi(dim(details), textWidth));
     }
   }
-  if (available) lines.push(...wrapTextWithAnsi(dim(usage.unpricedCalls ? "Cached usage · some calls unpriced" : "Cached usage"), textWidth));
   const bg = theme.colors.customMessageBg;
   const tint = (text: string, width: number) => theme.style(truncateToWidth(text, width, "", true), { bg });
   const art = strip >= HINGE_WIDTH ? dockedHinge(theme, bg) : [];

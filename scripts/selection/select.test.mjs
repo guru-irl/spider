@@ -151,7 +151,8 @@ test('runs the complete inventory on toolchain changes', async () => {
 
 test('runs the complete inventory for Vite config and Vitest setup changes', async t => {
   for (const file of ['vite.config.mjs', 'vite.dashboard.config.mjs', 'packages/one/viteExtra.config.ts',
-    'vitest.setup.ts', 'vitest.herdr-global-setup.ts', 'packages/herdr/e2e/setup.ts', 'scripts/vitest-sequencer.ts']) {
+    'vitest.setup.ts', 'vitest.herdr-global-setup.ts', 'packages/herdr/e2e/setup.ts', 'scripts/vitest-sequencer.ts',
+    'packages/db-core/src/__tests__/global-config.testutil.ts']) {
     await t.test(file, async () => {
       for (const status of ['A', 'M', 'D']) {
         const result = await fixture({ changes: [changed(file, status), changed('packages/one/src/product.ts')] });

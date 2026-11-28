@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { checkThemeContrast, checkGlassContrast, composite, type GlassEdits, type PiThemeData } from '../look/contrast.js';
+import herdrTheme from '../../assets/themes/spider-glass.json' with { type: 'json' };
 import glassEdits from '../../assets/look/layout-edits.json' with { type: 'json' };
 import { acceptanceK } from './acceptance/k.js';
 import { runAcceptance } from './scenarios.js';
@@ -32,6 +33,19 @@ describe('glass themes and fonts', () => {
       }
     });
   }, 30000);
+  it('draws the blue accent and dark Pi panels without recoloring the logo', async () => {
+    const theme = await loadPiTheme();
+    const { backgrounds, rows } = checkThemeContrast(theme);
+    expect(theme.vars?.strip).toBe('#060607');
+    for (const token of ['userMessageBg', 'customMessageBg', 'toolPendingBg', 'toolSuccessBg', 'toolErrorBg']) {
+      expect(backgrounds[token], token).toBe('#060607');
+    }
+    for (const token of ['accent', 'borderAccent', 'customMessageLabel']) {
+      expect(rows.find(row => row.token === token)?.foreground, token).toBe('#82aaff');
+    }
+    expect(herdrTheme.colors.accent).toBe('#82aaff');
+    expect(rows.find(row => row.token === 'toolTitle')?.foreground).toBe('#f8f8f2');
+  });
   it('both themes preserve neutral backgrounds and readable pi roles', async () => {
     const theme = await loadPiTheme();
     const herdr = JSON.parse(await readFile(join(assets, 'themes/spider-glass.json'), 'utf8'));
@@ -39,7 +53,7 @@ describe('glass themes and fonts', () => {
     expect(herdr.ansi).toEqual(palette);
     const report = checkThemeContrast(theme);
     expect(report.failures).toEqual([]); expect(report.rows.length).toBeGreaterThan(40);
-    expect(Object.values(report.backgrounds).sort()).toEqual(['#161618', '#202022', '#202022', '#242426', '#262628', '#262628', '#29292a', '#29292a', '#303031', '#161618', '#202022'].sort());
+    expect(Object.values(report.backgrounds).sort()).toEqual(['#161618', '#161618', '#202022', '#29292a', '#29292a', '#303031', ...Array(5).fill('#060607')].sort());
     const fonts = await prepareFonts({}, { readFile, bundledRoot: join(assets, 'fonts') });
     expect(Object.values(fonts.families)).toEqual(expect.arrayContaining(['Google Sans Flex', 'Glass Label']));
     expect(fonts.families.paths).toBe('JetBrains Mono');

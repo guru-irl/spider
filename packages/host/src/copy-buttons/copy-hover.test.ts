@@ -168,7 +168,10 @@ describe("assistant copy hover", () => {
     const app = fullscreenFixture();
     app.move("Hello there");
     app.screen();
-    expect(app.tui.getScreenLines().join("\n")).toContain("\x1b[38;5;245m🭽");
+    const frame = app.tui.getScreenLines().filter(row => /[╭│╰]/u.test(row));
+    expect(frame).toHaveLength(3);
+    expect(frame.every(row => row.includes("\x1b[38;5;245m"))).toBe(true);
+    expect(frame.join("\n")).not.toMatch(/\x1b\[(?:4[0-7]|48;|10[0-7])/u);
   });
 
   it("copies both exact formats through Pi's fullscreen click dispatch", async () => {
@@ -365,7 +368,7 @@ describe("assistant copy hover", () => {
     render(md);
     mouse(md, "move");
     const row = render(md).find(line => line.includes("□ text"));
-    expect(row).toMatch(/^🭼Jan 3 03:15▁+□ text▁▁▁□ md🭿$/u);
+    expect(row).toMatch(/^╰Jan 3 03:15─+□ text───□ md╯$/u);
   });
 
   it("updates the timestamp label when the system time zone changes", () => {
@@ -400,7 +403,7 @@ describe("assistant copy hover", () => {
     render(md);
     mouse(md, "move");
     const row = render(md).find(line => line.includes("□ text"));
-    expect(row).toMatch(/^🭼Jan 2 21:00.*□ text/u);
+    expect(row).toMatch(/^╰Jan 2 21:00.*□ text/u);
   });
 
   it("adds the local month and day when the message was sent on an earlier day", () => {
@@ -410,7 +413,7 @@ describe("assistant copy hover", () => {
     const { md } = fixture("Yesterday", Date.UTC(2024, 0, 1, 8, 15));
     render(md);
     mouse(md, "move");
-    expect(render(md).find(line => line.includes("□ text"))).toMatch(/^🭼Jan 1 03:15.*□ text/u);
+    expect(render(md).find(line => line.includes("□ text"))).toMatch(/^╰Jan 1 03:15.*□ text/u);
   });
 
   it("keeps extremely narrow layouts within the terminal width", () => {
@@ -459,7 +462,7 @@ describe("assistant copy hover", () => {
     const after = render(md, 26);
     expect(after).toHaveLength(before.length);
     for (const line of after.slice(1, -1)) {
-      expect(line).toMatch(/^▏.*▕$/);
+      expect(line).toMatch(/^│.*│$/);
       expect(visibleWidth(line)).toBe(26);
     }
     expect(after.join("\n").match(/□ text/g)).toHaveLength(2);
@@ -519,9 +522,9 @@ describe("assistant copy hover", () => {
     const before = render(md);
     mouse(md, "move");
     const after = render(md);
-    expect(after[0]).toMatch(/^🭽▔+🭾$/u);
-    expect(after.at(-1)).toMatch(/^🭼.*□ text▁▁▁□ md🭿$/u);
-    expect(after.filter(line => line.includes("First line"))[0]).toMatch(/^▏.*▕$/);
+    expect(after[0]).toMatch(/^╭─+╮$/u);
+    expect(after.at(-1)).toMatch(/^╰.*□ text───□ md╯$/u);
+    expect(after.filter(line => line.includes("First line"))[0]).toMatch(/^│.*│$/);
     expect(after).toHaveLength(before.length);
     expect(after.every(line => visibleWidth(line) <= 60)).toBe(true);
     for (const fragment of ["First line", "x".repeat(55)]) {
@@ -550,9 +553,9 @@ describe("assistant copy hover", () => {
     expect(before[thinking + 3]).toBe(" ".repeat(60));
     mouse(md, "move");
     const after = assistant.render(60).map(stripTerminalSequences);
-    expect(after[thinking + 1]).toBe(`🭽${"▔".repeat(58)}🭾`);
-    expect(after[thinking + 2]).toBe(`▏Hello${" ".repeat(53)}▕`);
-    expect(after[thinking + 3]).toMatch(/^🭼Jan 3 08:15▁+□ text▁▁▁□ md🭿$/u);
+    expect(after[thinking + 1]).toBe(`╭${"─".repeat(58)}╮`);
+    expect(after[thinking + 2]).toBe(`│Hello${" ".repeat(53)}│`);
+    expect(after[thinking + 3]).toMatch(/^╰Jan 3 08:15─+□ text───□ md╯$/u);
     expect(after).toHaveLength(before.length);
   });
 
@@ -560,7 +563,7 @@ describe("assistant copy hover", () => {
     const { md } = fixture("ABCDEFGHIJKLMNOPQR");
     mouse(md, "move");
     const lines = render(md, 20);
-    expect(lines).toContain("▏ABCDEFGHIJKLMNOPQR▕");
+    expect(lines).toContain("│ABCDEFGHIJKLMNOPQR│");
     expect(lines.every(line => visibleWidth(line) <= 20)).toBe(true);
   });
 
@@ -572,7 +575,7 @@ describe("assistant copy hover", () => {
     expect(render(md, 58)).toEqual(regular);
     setFullscreen(true);
     mouse(md, "move");
-    expect(render(md, 60)).toContain(`▏${text}▕`);
+    expect(render(md, 60)).toContain(`│${text}│`);
     setFullscreen(false);
     expect(render(md, 58)).toEqual(regular);
   });
@@ -598,7 +601,7 @@ describe("assistant copy hover", () => {
     expect(after).toHaveLength(before.length);
     expect(before.findIndex(line => line.includes("Hello"))).toBe(textRow);
     expect(after[textRow]).not.toContain("□ text");
-    expect(after[textRow + 1]).toMatch(/^🭼Jan 3 08:15▁+□ text▁▁▁□ md🭿$/u);
+    expect(after[textRow + 1]).toMatch(/^╰Jan 3 08:15─+□ text───□ md╯$/u);
     expect(before[textRow + 1]).not.toContain("□ text");
   });
 
@@ -665,7 +668,7 @@ describe("assistant copy hover", () => {
       return render(md, width);
     };
     const minimum = move(15);
-    expect(minimum.find(line => line.includes("□ text"))).toBe("🭼□ text▁▁▁□ md🭿");
+    expect(minimum.find(line => line.includes("□ text"))).toBe("╰□ text───□ md╯");
     expect(minimum.every(line => visibleWidth(line) <= 15)).toBe(true);
     const sixteen = move(16);
     expect(column(sixteen.find(line => line.includes("□ text"))!, "□ md") + 4).toBe(15);
@@ -675,7 +678,7 @@ describe("assistant copy hover", () => {
     expect(narrow.join("\n")).toContain("□ text");
     expect(narrow.join("\n")).not.toContain("Jan 3 08:15");
     const fits = move(27);
-    expect(fits.find(line => line.includes("□ text"))).toMatch(/^🭼Jan 3 08:15▁□ text▁▁▁□ md🭿$/u);
+    expect(fits.find(line => line.includes("□ text"))).toMatch(/^╰Jan 3 08:15─□ text───□ md╯$/u);
   });
 
   it.each([80, 30])("ends the natural-width controls at the reply margin at width %i", width => {
@@ -685,7 +688,7 @@ describe("assistant copy hover", () => {
     (md as Component).handleMouse?.({ type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width, height: before.length, shift: false, alt: false, ctrl: false });
     const lines = render(md, width);
     const row = lines.find(line => line.includes("□ text"))!;
-    expect(row).toBe(`🭼Jan 3 08:15${"▁".repeat(width - 26)}□ text▁▁▁□ md🭿`);
+    expect(row).toBe(`╰Jan 3 08:15${"─".repeat(width - 26)}□ text───□ md╯`);
     expect(visibleWidth(row)).toBe(width);
   });
 
@@ -759,6 +762,6 @@ describe("assistant copy hover", () => {
     expect(lines).not.toContain("□ text");
     expect(lines).not.toContain("□ md");
     expect(lines).not.toContain("08:15");
-    expect(lines).not.toMatch(/[🭽🭾🭼🭿▔▁▏▕]/u);
+    expect(lines).not.toMatch(/[╭╮╰╯─│]/u);
   });
 });

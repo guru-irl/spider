@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { expect } from 'vitest';
 import type { SessionOutcome, SessionStatus } from '../../../roam/src/relocate/session-stop-types.js';
 import { held, parentTurns, runChild, scripts, text, tool } from '../fixtures/child-scripts.js';
-import { sessionStopFixture } from '../fixtures/roam-session-stop.js';
+import { sessionStopFixture, type CliResult } from '../fixtures/roam-session-stop.js';
 import { registerScenarios, storyId, type ScenarioDefinition } from '../harness/scenario.js';
 import type { Suite } from '../harness/suite.js';
 import { deadline, waitFor } from '../harness/wait.js';
@@ -21,14 +21,15 @@ async function stopAndStart(suite: Suite): Promise<void> {
       await suite.evidence(`R20-${stage}.json`, result);
       return result;
     };
-    const mutate = async (action: 'stop' | 'start', ...options: string[]) => {
-      const result = await fixture.cli(action, sessionId, ...options, '--json');
+    const mutationReply = (result: CliResult) => {
       expect([0, 3], result.stderr + result.stdout).toContain(result.exitCode);
       const reply = JSON.parse(result.stdout) as SessionOutcome;
       expect(reply).toMatchObject({ sessionId, machineId: fixture.box.id,
         outcome: result.exitCode === 0 ? 'complete' : 'pending' });
       return reply;
     };
+    const mutate = async (action: 'stop' | 'start') =>
+      mutationReply(await fixture.cli(action, sessionId, '--json'));
     const status = async (wanted: 'stopped' | 'running'): Promise<SessionStatus> => {
       const found = await waitFor(`cached CLI reports ${wanted}`, async () => {
         const result = await fixture.cli('status', '--json');
@@ -112,9 +113,10 @@ const poll = setInterval(() => {
       expect(jobProcesses).toContainEqual(expect.objectContaining({ pid: beforeKill.jobEvidence[0].manifest.supervisorPid }));
       expect(jobProcesses.map(identity => identity.pid)).not.toContain(child.pid);
 
-      const killWithJob = await mutate('stop', '--now');
-      expect(killWithJob).toMatchObject({ status: 'stop-pending', outcome: 'pending', reason: expect.stringContaining(jobId) });
+      const killResult = await fixture.cli('stop', sessionId, '--now', '--json');
       const beforeJobRelease = await proof('kill-with-held-job');
+      const killWithJob = mutationReply(killResult);
+      expect(killWithJob).toMatchObject({ status: 'stop-pending', outcome: 'pending', reason: expect.stringContaining(jobId) });
       expect(beforeJobRelease).toMatchObject({ liveOwnerCount: 0, liveOwned: jobProcesses,
         runs: [{ id: childRunId, status: 'cancelled' }], jobs: [{ id: jobId, exitVerified: false }] });
       await releaseJob();

@@ -83,9 +83,9 @@ The freshness dot turns grey after five minutes without an ingest. Visible pages
 
 ## Terminal footer
 
-The parent TUI footer shows the context percentage and window after the activity icon. Then come the session credits, the prompt cache-hit rate of the latest assistant reply (`CH`), `month`, input and output tokens, and cache read and write tokens. Items are separated by middle dots. The footer shows credits without pricing-basis markers. `month` is a whole percentage of your budget when one is set, and of the allowance otherwise. If neither is available, the `month` item is left out.
+The parent TUI footer shows the context percentage and window after the activity icon. Then come the session credits, labeled `AIC`, the prompt cache-hit rate of the latest assistant reply (`CH`), `month`, input and output tokens, and cache read and write tokens. Items are separated by middle dots. The footer shows the amount without pricing-basis markers. `month` is a whole percentage of your budget when one is set, and of the allowance otherwise. If neither is available, the `month` item is left out.
 
-With text icons, the idle line starts with `○`. The icon animates while the agent is working. The usage segment follows this format: `○  context%/window · credits · CH% · month % · ↑input ↓output · Rread Wwrite`.
+With text icons, the idle line starts with `○`. The icon animates while the agent is working. The usage segment follows this format: `○  context%/window · AIC · CH% · month % · ↑input ↓output · Rread Wwrite`.
 
 The working directory, branch and session name stay on the first row. Extension statuses appear when there are any. In narrow panes, the lower-priority usage items disappear first. Token totals follow pi's session history across all entries, including copied fork history, compaction and usage appended in the background. The footer renders from cached values and does not open the ledger. Turning `usage.footer` off brings back pi's built-in footer and leaves the agents widget as it is.
 

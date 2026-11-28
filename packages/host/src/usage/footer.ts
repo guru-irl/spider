@@ -161,7 +161,7 @@ function stats(input: FooterInput, width: number, theme?: Theme): string {
       return theme.fg(percent > 90 ? "error" : "warning", item);
     }
     return theme.fg("dim", item);
-  }).join(" · ");
+  }).join(theme ? theme.fg("dim", " · ") : " · ");
 }
 
 function statsWithMoon(input: FooterInput, width: number, moon: string, theme?: Theme): string {

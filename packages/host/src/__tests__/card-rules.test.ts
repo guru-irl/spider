@@ -140,7 +140,7 @@ for (const fixture of fixtures) {
           const rendered = fixture.render(width, expanded, style);
           for (const line of rendered) check("width", visibleWidth(line) <= width, stripTerminalSequences(line));
           const plain = rendered.map(line => stripTerminalSequences(line).trimEnd());
-          const titleIndex = plain.findIndex(Boolean);
+          const titleIndex = fixture.notification ? 1 : plain.findIndex(Boolean);
           const pad = fixture.notification ? 1 : 0;
           const title = plain[titleIndex]?.slice(pad + 1) ?? "";
           const titlePrefix = `${icon(style, "spider")} ${fixture.verb}`;
@@ -157,7 +157,10 @@ for (const fixture of fixtures) {
               check("only agent roles italic", /^(worker|reviewer|scout)$/u.test(italic), italic);
             }
           }
-          if (fixture.notification) check("one-spacer", titleIndex === 1, `${titleIndex} blank rows`);
+          if (fixture.notification) {
+            check("half edges", plain[0] === "▄".repeat(width) && plain.at(-1) === "▀".repeat(width));
+            check("title follows top edge", Boolean(title));
+          }
           else check("title starts at top", titleIndex === 0, `${titleIndex} blank rows`);
           const body = plain.slice(titleIndex + 1, fixture.notification ? -1 : undefined).map(line => line.slice(pad));
           if (!fixture.callDetails && !fixture.callOnly) check("blank-under-title", Boolean(body[0]));

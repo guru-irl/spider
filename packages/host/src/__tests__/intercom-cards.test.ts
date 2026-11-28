@@ -4,8 +4,8 @@ import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { registerIntercomOnce } from "@spider/intercom";
 import { localMachineLabel, withIntercomCards } from "../intercom-cards.js";
 
-const plain = { fg: (_: string, value: string) => value, bold: (value: string) => value };
-const marked = { fg: (name: string, value: string) => `<${name}>${value}</${name}>`, bold: (value: string) => `<bold>${value}</bold>` };
+const plain = { bg: (_: string, value: string) => value, fg: (_: string, value: string) => value, bold: (value: string) => value };
+const marked = { bg: plain.bg, fg: (name: string, value: string) => `<${name}>${value}</${name}>`, bold: (value: string) => `<bold>${value}</bold>` };
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); vi.unstubAllEnvs(); });
 
@@ -43,6 +43,7 @@ async function fixture(initialStyle: "text" | "nerd") {
 }
 
 const lines = (component: any) => component.render(160).map((line: string) => line.trimEnd());
+const messageLines = (component: any) => lines(component).slice(1, -1);
 const call = (tool: any, args: object, theme = plain) => lines(tool.renderCall(args, theme, {})).join("\n");
 const result = (tool: any, value: object, action: string, expanded = false, partial = false) =>
   lines(tool.renderResult(value, { isPartial: partial, expanded }, plain, { args: { action }, isError: false, expanded })).join("\n");
@@ -189,7 +190,7 @@ describe.each(["text", "nerd"] as const)("registered intercom cards in %s style"
     const replyCommand = `intercom({ action: "reply", replyTo: ${JSON.stringify(message.id)}, message: "..." })`;
     const details = { from: local, message, replyCommand };
     const before = structuredClone(details);
-    const output = lines(render({ details }, { expanded: true }, plain)).join("\n");
+    const output = messageLines(render({ details }, { expanded: true }, plain)).join("\n");
     expect(output).toContain("To reply: use intercom for this message");
     expect(output).not.toContain(message.id);
     expect(details).toEqual(before);
@@ -201,13 +202,13 @@ describe.each(["text", "nerd"] as const)("registered intercom cards in %s style"
     for (const [from, machine] of [[local, "Desk-Mac"], [remote, "peer"]] as const) {
       const details = { from, message, replyCommand: "intercom reply" };
       const before = structuredClone(details);
-      const collapsed = lines(render({ details }, { expanded: false }, plain));
+      const collapsed = messageLines(render({ details }, { expanded: false }, plain));
       expect(collapsed).toEqual([` ${logo}intercom · from ben · ${machine}`, `${indent}First line Second line`]);
-      const expanded = lines(render({ details }, { expanded: true }, plain));
+      const expanded = messageLines(render({ details }, { expanded: true }, plain));
       expect(expanded[0]).toBe(` ${logo}intercom · from ben · ${machine}`);
       for (const text of ["First line", "Second line", "To reply: intercom reply", "Attachment: note.txt", "Via extension: Notifier", "In reply to a message"]) expect(expanded).toContain(`${indent}${text}`);
       expect(expanded.join("\n")).not.toMatch(/msg-id|parent-id|ext-id|req-id|[╭╮╰╯│]/);
-      const styledTitle = lines(render({ details }, { expanded: false }, marked))[0];
+      const styledTitle = messageLines(render({ details }, { expanded: false }, marked))[0];
       expect(styledTitle).toContain(`<toolTitle>${style === "nerd" ? "\u{F0BCA} " : "◆"}</toolTitle>`);
       expect(styledTitle).toContain("<bold>intercom</bold>");
       expect(details).toEqual(before);
@@ -238,10 +239,10 @@ it("uses the current icon style for registered tool and incoming-message rendere
   const tool = h.tools.find(tool => tool.name === "intercom");
   const details = { from: local, message };
   expect(call(tool, { action: "list" })).toBe(" ◆ intercom · list");
-  expect(lines(render({ details }, { expanded: false }, plain))[0]).toBe(" ◆ intercom · from ben · Desk-Mac");
+  expect(messageLines(render({ details }, { expanded: false }, plain))[0]).toBe(" ◆ intercom · from ben · Desk-Mac");
   h.setStyle("nerd");
   expect(call(tool, { action: "list" })).toBe(" \u{F0BCA}  intercom · list");
-  expect(lines(render({ details }, { expanded: false }, plain))[0]).toBe(" \u{F0BCA}  intercom · from ben · Desk-Mac");
+  expect(messageLines(render({ details }, { expanded: false }, plain))[0]).toBe(" \u{F0BCA}  intercom · from ben · Desk-Mac");
   expect(render({}, { expanded: false }, plain)).toBeUndefined();
 });
 

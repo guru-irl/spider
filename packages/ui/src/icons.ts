@@ -47,6 +47,7 @@ const ICONS = {
   bullet: { text: "•", nerd: "•" },
   select: { text: "▸", nerd: "▸" },
   arrowLeft: { text: "←", nerd: "←" },
+  prompt: { text: "❯", nerd: "❯" },
   arrowRight: { text: "→", nerd: "→" },
   arrowUp: { text: "↑", nerd: "↑" },
   arrowDown: { text: "↓", nerd: "↓" },

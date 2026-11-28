@@ -3,7 +3,7 @@
 // pi paints the standard green/red tool shell and renderCall supplies its title, so
 // renderResult renders only the BODY. `options.expanded` reflects the in-chat Ctrl+O toggle;
 // `context.args` are the call params; `result.details` is the structured payload.
-import { truncateToWidth, visibleWidth, stripTerminalSequences, Box } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, stripTerminalSequences } from "@earendil-works/pi-tui";
 import { icon, type Component, type IconStyle } from "@spider/ui";
 import { isAgentModelRole, cachedLines, formatRunUsage, renderErrorResult, renderExecCall, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, statusIcon, fitResultLines, cardDetailIndent, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
 import {
@@ -17,6 +17,7 @@ import { renderImportResult, isKnownFailureOutcome, foregroundTimedOut, isExecEr
 import type { ModelEntry } from "@spider/models";
 import { renderSkillList, renderSkillView, renderDistill, renderCurateResult, type DrainReport, type SkillRow } from "@spider/organism";
 import { UI_CONFIG_SCHEMA, modelThinkingDisplay } from "./ui-thinking";
+import { createHalfBox } from "./input-band/box.js";
 import { toToolResult } from "./result";
 import { makeRunCostFormatter } from "./run-credits";
 import { restoreExecDetails } from "./exec-session-storage";
@@ -850,7 +851,7 @@ export function renderSubagentDone(message: any, options: NotificationOptions, t
   const t = mkTheme(theme, iconStyle);
   const run: RunLike = { name: d.name, agent: d.agent, model: d.model, thinking: d.thinking, status, result: d.output, token_count: d.tokenCount, cost: d.cost, costText: d.costText, compactionCount: d.compactionCount };
   const detail = renderRun(t, { run }, expanded, undefined, false);
-  const box = new Box(options.outputPad ?? 1, 1, text => t.bg(background, text));
+  const box = createHalfBox(options.outputPad ?? 1, text => t.bg(background, text));
   box.addChild(renderSpiderCall({ action: "run" }, theme, {
     cardBackground: background, iconStyle, titleDetails: runTitleDetails(d.name, d.agent),
   }) as any);
@@ -887,7 +888,7 @@ export function renderCommandOutput(message: any, options: NotificationOptions, 
   );
   const context = { args, expanded, isError: normalized.isError, isPartial: !normalized.isError && (Boolean(details?.warning) || pendingMessage), iconStyle };
   const background = cardBackground(context);
-  const box = new Box(options.outputPad ?? 1, 1, text => mkTheme(theme).bg(background, text));
+  const box = createHalfBox(options.outputPad ?? 1, text => mkTheme(theme).bg(background, text));
   const titleArgs = args.action ? args : { action: args.command ?? "command" };
   box.addChild(renderSpiderCall(titleArgs, theme, context) as any);
   if (d == null || (!args.action && typeof result.text === "string")) {
@@ -916,7 +917,7 @@ export function renderOrganismEntry(entry: unknown, options: NotificationOptions
   const failed = state === "failed";
   const completed = state === "completed";
   const background = failed ? "toolErrorBg" : completed ? "toolSuccessBg" : "toolPendingBg";
-  const box = new Box(options.outputPad ?? 1, 1, text => mkTheme(theme).bg(background, text));
+  const box = createHalfBox(options.outputPad ?? 1, text => mkTheme(theme).bg(background, text));
   box.addChild(renderSpiderCall({ action: "organism" }, theme, { cardBackground: background, iconStyle }) as any);
   box.addChild({
     render: (width: number) => {
@@ -949,7 +950,7 @@ export function renderEscalationMessage(message: any, options: NotificationOptio
   const escalationDetails: EscalationDetails = { severity, summary: typeof d.summary === "string" ? d.summary : "Escalation" };
   const background = severity === "blocked" ? "toolErrorBg" : "toolPendingBg";
   const th = adaptTheme(mkTheme(theme, iconStyle));
-  const box = new Box(options.outputPad ?? 1, 1, text => th.bg(background, text));
+  const box = createHalfBox(options.outputPad ?? 1, text => th.bg(background, text));
   box.addChild(renderSpiderCall({ action: "escalation" }, theme, {
     iconStyle, cardBackground: background, titleDetails: runTitleDetails(d.name, d.agent),
   }) as any);

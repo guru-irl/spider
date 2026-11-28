@@ -4,7 +4,7 @@ export interface InstalledLookReport { contrast: { token: string; foreground: st
 const ansi = ['#21222c','#ff5555','#50fa7b','#ffcb6b','#82aaff','#c792ea','#8be9fd','#f8f8f2','#545454','#ff6e6e','#69ff94','#ffcb6b','#d6acff','#ff92df','#a4ffff','#f8f8f2'];
 const shortcuts: Readonly<Record<string, string>> = { 'cmd-shift-a': 'send:\u001b[97;6u', 'cmd-shift-o': 'send:\u001b[111;6u', 'cmd-shift-u': 'send:\u001b[117;6u', 'cmd-shift-m': 'send:\u001b[109;6u', 'cmd-shift-k': 'send:\u001b[107;6u' };
 const backgroundTokens = ['selectedBg', 'searchMatchBg', 'userMessageBg', 'customMessageBg', 'toolPendingBg', 'toolSuccessBg', 'toolErrorBg'];
-const neutral = new Set(['#161618','#202022','#242426','#262628','#29292a','#303031']);
+const neutral = new Set(['#060607','#161618','#202022','#242426','#262628','#29292a','#303031']);
 const decorative = new Set(['borderMuted', 'scrollbarTrack']);
 const indicators = new Set(['border','borderAccent','scrollbarThumb','mdCodeBlockBorder','mdQuoteBorder','mdHr','thinkingOff','thinkingMinimal','thinkingLow','thinkingMedium','thinkingHigh','thinkingXhigh','thinkingMax','bashMode']);
 function object(raw: unknown): Record<string, unknown> {

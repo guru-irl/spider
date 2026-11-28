@@ -123,16 +123,15 @@ it("removes only outer blank content rows and keeps Pi's mouse dispatch", () => 
   const rows = tool.render(width);
   expect(plain(rows).slice(2, -1)).toEqual([" Title", "", " Detail", " Result"]);
   const click = (x: number) => tool.handleMouse({ type: "click", button: "left", x, y: 5, width, height: rows.length, screenX: x, screenY: 5, shift: false, alt: false, ctrl: false });
-  expect(click(1)).toEqual({ handled: true });
+  expect(click(1)).toMatchObject({ handled: true });
   expect(resultClicks).toBe(1);
-  expect(click(2)).toEqual({ handled: true });
+  expect(click(2)).toMatchObject({ handled: true });
   expect(plain(tool.render(width))).toContain(" Expanded");
 });
 
 it("leaves Pi's self-rendered tool shell and a box without padding unchanged", () => {
   const tool = new ToolExecutionComponent("self", "call", {}, {}, { renderShell: "self", renderCall: () => new Text("Self", 0, 0) }, tui, "/project");
-  const noPadding = editTool();
-  noPadding.updateResult({ content: [{ type: "text", text: "Applied the edit" }], isError: false });
+  const noPadding = custom();
   const box = noPadding.children.find(child => child instanceof Box)!;
   Object.assign(box, { paddingY: 0 });
   const before = [tool.render(40), noPadding.render(40)];

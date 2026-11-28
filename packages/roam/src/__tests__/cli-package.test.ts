@@ -20,6 +20,10 @@ import { DEFAULT_LIMITS } from "../contracts";
 
 // npm's prepare step builds these once for the package, including in CI.
 const builtRoamEntries = resolve("dist/roam");
+function copyBuiltRoamEntries(source: string, destination: string): void {
+  if (!existsSync(source)) throw new Error(`${source}: run npm run build:roam`);
+  cpSync(source, destination, { recursive: true });
+}
 const roots: string[] = [];
 function fixture(): string {
   const root = mkdtempSync(join(dirname(scratchDbPath("roam-cli")), "roam-cli-"));
@@ -361,6 +365,11 @@ it("the package gate refuses a missing roaming executable or link script", () =>
   }
 }, 5000);
 
+it("explains how to build missing roaming entries", () => {
+  const root = fixture(), missing = join(root, "dist/roam");
+  expect(() => copyBuiltRoamEntries(missing, join(root, "copy"))).toThrow(`${missing}: run npm run build:roam`);
+}, 5000);
+
 it("the packaged roaming doctor reads actual loaded builds and leaves stores unchanged", async () => {
   const root = fixture(), globalRoot = join(root, "global"), bundleRoot = join(root, "built"), bin = join(root, "bin");
   mkdirSync(globalRoot, { recursive: true });
@@ -378,7 +387,7 @@ it("the packaged roaming doctor reads actual loaded builds and leaves stores unc
     kind: "top-level" as const, hcAddress: null, capabilities: { roamSchema: 14 } };
   await presence.record({ ...live, build: { sha: "1234567", builtAt: "2026-01-02T03:04:05.000Z", version: "1.0.0", dirty: false } });
   writeFileSync(join(bin, "sqlite3"), "#!/bin/sh\nprintf '3.37.9\\n'\n", { mode: 0o700 });
-  cpSync(builtRoamEntries, join(bundleRoot, "roam"), { recursive: true });
+  copyBuiltRoamEntries(builtRoamEntries, join(bundleRoot, "roam"));
   writeFileSync(join(bundleRoot, "extension.js"), "// SPIDER_BUILD_ID=abcdef1@2026-01-02T03:04:05.000Z v1.0.0\n");
   const snapshot = (directory: string): Array<[string, string]> => readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
     const path = join(directory, entry.name);
@@ -423,7 +432,7 @@ it("packed entries have no pi imports", async () => {
   const packageRoot = join(root, "package"), unpacked = join(root, "unpacked"), archive = join(root, "fixture.tgz");
   mkdirSync(join(packageRoot, "dist"), { recursive: true });
   mkdirSync(unpacked);
-  cpSync(builtRoamEntries, join(packageRoot, "dist", "roam"), { recursive: true });
+  copyBuiltRoamEntries(builtRoamEntries, join(packageRoot, "dist", "roam"));
   cpSync(resolve("package.json"), join(packageRoot, "package.json"));
   execFileSync("tar", ["-czf", archive, "-C", root, "package"], { timeout: 2000 });
   const paths = execFileSync("tar", ["-tzf", archive], { encoding: "utf8", timeout: 2000 }).split("\n");

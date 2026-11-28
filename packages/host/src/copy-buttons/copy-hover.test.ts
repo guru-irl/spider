@@ -101,40 +101,40 @@ describe("assistant copy hover", () => {
   it("keeps hover working when an active widget is replaced", () => {
     const app = fullscreenFixture();
     app.move("Hello there");
-    expect(app.screen().join("\n")).toContain("⧉ text");
+    expect(app.screen().join("\n")).toContain("□ text");
     app.restart();
     app.move("Hello there");
-    expect(app.screen().join("\n")).toContain("⧉ text");
+    expect(app.screen().join("\n")).toContain("□ text");
     app.move("Outside message");
-    expect(app.screen().join("\n")).not.toContain("⧉ text");
+    expect(app.screen().join("\n")).not.toContain("□ text");
   });
 
   it("stops observing hover when its widget is disposed", () => {
     const app = fullscreenFixture();
     app.move("Hello there");
-    expect(app.screen().join("\n")).toContain("⧉ text");
+    expect(app.screen().join("\n")).toContain("□ text");
     app.disposeWidget();
-    expect(app.screen().join("\n")).not.toContain("⧉ text");
+    expect(app.screen().join("\n")).not.toContain("□ text");
     app.move("Hello there");
-    expect(app.screen().join("\n")).not.toContain("⧉ text");
+    expect(app.screen().join("\n")).not.toContain("□ text");
     app.restart();
     app.move("Hello there");
-    expect(app.screen().join("\n")).toContain("⧉ text");
+    expect(app.screen().join("\n")).toContain("□ text");
   });
 
   it("removes hover on shutdown and reinstalls it in the next session", () => {
     const app = fullscreenFixture();
     app.move("Hello there");
-    expect(app.screen().join("\n")).toContain("⧉ text");
+    expect(app.screen().join("\n")).toContain("□ text");
     app.shutdown();
-    expect(app.screen().join("\n")).not.toContain("⧉ text");
+    expect(app.screen().join("\n")).not.toContain("□ text");
     app.move("Hello there");
-    expect(app.screen().join("\n")).not.toContain("⧉ text");
+    expect(app.screen().join("\n")).not.toContain("□ text");
     app.restart();
     app.move("Hello there");
-    expect(app.screen().join("\n")).toContain("⧉ text");
+    expect(app.screen().join("\n")).toContain("□ text");
     app.move("Outside message");
-    expect(app.screen().join("\n")).not.toContain("⧉ text");
+    expect(app.screen().join("\n")).not.toContain("□ text");
   });
 
   it("preserves OSC 8 link activation while a message is hovered", () => {
@@ -175,7 +175,7 @@ describe("assistant copy hover", () => {
     const app = fullscreenFixture();
     app.assistant.updateContent(message("**Hello there**"), false);
     app.move("Hello there");
-    for (const label of ["⧉ text", "⧉ md"]) {
+    for (const label of ["□ text", "□ md"]) {
       const { x, y } = app.at(label);
       app.send(`\x1b[<0;${x + 1};${y + 1}M`);
       app.send(`\x1b[<0;${x + 1};${y + 1}m`);
@@ -190,104 +190,104 @@ describe("assistant copy hover", () => {
     second.updateContent(message("Second reply"), false);
     app.tui.addChild(second);
     app.move("Hello there");
-    expect(app.screen().join("\n").match(/⧉ text/g)).toHaveLength(1);
+    expect(app.screen().join("\n").match(/□ text/g)).toHaveLength(1);
     app.move("Second reply");
     const screen = app.screen();
-    expect(screen.join("\n").match(/⧉ text/g)).toHaveLength(1);
+    expect(screen.join("\n").match(/□ text/g)).toHaveLength(1);
     const secondRow = screen.findIndex(line => line.includes("Second reply"));
     const firstRow = screen.findIndex(line => line.includes("Hello there"));
-    expect(screen[secondRow + 1]).toContain("⧉ text");
-    expect(screen[firstRow + 1]).not.toContain("⧉ text");
+    expect(screen[secondRow + 1]).toContain("□ text");
+    expect(screen[firstRow + 1]).not.toContain("□ text");
   });
 
   it("clears the hover when terminal columns change", () => {
     const app = fullscreenFixture();
     app.move("Hello there");
-    expect(app.screen().join("\n")).toContain("⧉ text");
+    expect(app.screen().join("\n")).toContain("□ text");
     app.terminal.columns += 1;
     app.resize();
-    expect(app.screen().join("\n")).not.toContain("⧉ text");
+    expect(app.screen().join("\n")).not.toContain("□ text");
   });
 
   it("clears the hover on terminal resize", () => {
     const app = fullscreenFixture();
     app.move("Hello there");
-    expect(app.screen().join("\n")).toContain("⧉ text");
+    expect(app.screen().join("\n")).toContain("□ text");
     app.terminal.rows += 1;
     app.resize();
     expect(app.screen().join("\n")).toContain("Hello there");
-    expect(app.screen().join("\n")).not.toContain("⧉ text");
+    expect(app.screen().join("\n")).not.toContain("□ text");
   });
 
   it("clears hover when new output moves the following viewport", () => {
     const app = fullscreenFixture(true);
     app.move("Hello there");
-    expect(app.screen().join("\n")).toContain("⧉ text");
+    expect(app.screen().join("\n")).toContain("□ text");
     const before = app.tui.viewportTop;
     app.tui.addChild(new Text("New output", 0, 0));
     app.tui.requestRender();
     app.screen();
     expect(app.tui.viewportTop).toBeGreaterThan(before);
     expect(app.screen().join("\n")).toContain("Hello there");
-    expect(app.screen().join("\n")).not.toContain("⧉ text");
+    expect(app.screen().join("\n")).not.toContain("□ text");
   });
 
   it("clears the hover when the transcript scrolls outside input dispatch", () => {
     const app = fullscreenFixture(true);
     app.move("Hello there");
-    expect(app.screen().join("\n")).toContain("⧉ text");
+    expect(app.screen().join("\n")).toContain("□ text");
     const before = app.tui.viewportTop;
     app.tui.scrollBy(-1);
     expect(app.tui.viewportTop).toBe(before - 1);
     app.tui.scrollToBottom();
     expect(app.screen().join("\n")).toContain("Hello there");
-    expect(app.screen().join("\n")).not.toContain("⧉ text");
+    expect(app.screen().join("\n")).not.toContain("□ text");
   });
 
   it("clears the hover on keyboard scrolling", () => {
     const app = fullscreenFixture(true);
     app.move("Hello there");
-    expect(app.screen().join("\n")).toContain("⧉ text");
+    expect(app.screen().join("\n")).toContain("□ text");
     const before = app.tui.viewportTop;
     app.send("\x1b[5~");
     expect(app.tui.viewportTop).toBeLessThan(before);
     app.send("\x1b[6~");
     expect(app.screen().join("\n")).toContain("Hello there");
-    expect(app.screen().join("\n")).not.toContain("⧉ text");
+    expect(app.screen().join("\n")).not.toContain("□ text");
   });
 
   it("clears the hover when the mouse wheel scrolls", () => {
     const app = fullscreenFixture();
     app.move("Hello there");
-    expect(app.screen().join("\n")).toContain("⧉ text");
+    expect(app.screen().join("\n")).toContain("□ text");
     const { x, y } = app.at("Outside message");
     app.send(`\x1b[<65;${x + 1};${y + 1}M`);
-    expect(app.screen().join("\n")).not.toContain("⧉ text");
+    expect(app.screen().join("\n")).not.toContain("□ text");
   });
 
   it("clears the hover on legacy wheel input", () => {
     const app = fullscreenFixture();
     app.move("Hello there");
-    expect(app.screen().join("\n")).toContain("⧉ text");
+    expect(app.screen().join("\n")).toContain("□ text");
     const { x, y } = app.at("Outside message");
     app.send(`\x1b[M${String.fromCharCode(32 + 65, x + 33, y + 33)}`);
-    expect(app.screen().join("\n")).not.toContain("⧉ text");
+    expect(app.screen().join("\n")).not.toContain("□ text");
   });
 
   it("clears the hover when terminal focus is lost", () => {
     const app = fullscreenFixture();
     app.move("Hello there");
-    expect(app.screen().join("\n")).toContain("⧉ text");
+    expect(app.screen().join("\n")).toContain("□ text");
     app.send("\x1b[O");
-    expect(app.screen().join("\n")).not.toContain("⧉ text");
+    expect(app.screen().join("\n")).not.toContain("□ text");
   });
 
   it("clears the hover when motion reaches another component", () => {
     const app = fullscreenFixture();
     app.move("Hello there");
-    expect(app.screen().join("\n")).toContain("⧉ text");
+    expect(app.screen().join("\n")).toContain("□ text");
     app.move("Outside message");
-    expect(app.screen().join("\n")).not.toContain("⧉ text");
+    expect(app.screen().join("\n")).not.toContain("□ text");
   });
 
   it("copies from the last text label cell but not the following gap", async () => {
@@ -295,8 +295,8 @@ describe("assistant copy hover", () => {
     render(md);
     mouse(md, "move");
     const lines = render(md);
-    const y = lines.findIndex(line => line.includes("⧉ text"));
-    const x = column(lines[y], "⧉ text");
+    const y = lines.findIndex(line => line.includes("□ text"));
+    const x = column(lines[y], "□ text");
     const clickAt = (col: number) => (md as Component).handleMouse?.({ type: "click", button: "left", x: col, y, screenX: col, screenY: y, width: 60, height: lines.length, shift: false, alt: false, ctrl: false });
     expect(clickAt(x + 5)).toEqual({ handled: true });
     await Promise.resolve();
@@ -315,8 +315,8 @@ describe("assistant copy hover", () => {
     render(first.md);
     mouse(first.md, "move");
     const lines = render(first.md);
-    const y = lines.findIndex(line => line.includes("⧉ md"));
-    const x = column(lines[y], "⧉ md");
+    const y = lines.findIndex(line => line.includes("□ md"));
+    const x = column(lines[y], "□ md");
     render(other);
     mouse(other, "move");
     const event: TuiMouseEvent = { type: "click", button: "left", x, y, screenX: x, screenY: y, width: 60, height: lines.length, shift: false, alt: false, ctrl: false };
@@ -335,8 +335,8 @@ describe("assistant copy hover", () => {
     expect(parts).toHaveLength(2);
     parts.forEach(part => render(part));
     mouse(parts[0], "move");
-    expect(render(parts[0]).join("\n")).toContain("⧉ text");
-    expect(render(parts[1]).join("\n")).toContain("⧉ text");
+    expect(render(parts[0]).join("\n")).toContain("□ text");
+    expect(render(parts[1]).join("\n")).toContain("□ text");
   });
 
   it("does not schedule another render for motion within the same message", () => {
@@ -352,8 +352,8 @@ describe("assistant copy hover", () => {
     const { md, requestRender } = fixture("Hello there");
     render(md);
     expect(mouse(md, "move")).toBeUndefined();
-    expect(render(md).join("\n")).toContain("⧉ text");
-    expect(render(md).join("\n")).toContain("⧉ md");
+    expect(render(md).join("\n")).toContain("□ text");
+    expect(render(md).join("\n")).toContain("□ md");
     expect(requestRender).toHaveBeenCalled();
   });
 
@@ -364,8 +364,8 @@ describe("assistant copy hover", () => {
     const { md } = fixture("Hello", Date.UTC(2024, 0, 3, 8, 15));
     render(md);
     mouse(md, "move");
-    const row = render(md).find(line => line.includes("⧉ text"));
-    expect(row).toMatch(/^🭼Jan 3 03:15▁+⧉ text▁▁▁⧉ md🭿$/u);
+    const row = render(md).find(line => line.includes("□ text"));
+    expect(row).toMatch(/^🭼Jan 3 03:15▁+□ text▁▁▁□ md🭿$/u);
   });
 
   it("updates the timestamp label when the system time zone changes", () => {
@@ -375,9 +375,9 @@ describe("assistant copy hover", () => {
     const { md } = fixture("Time zone change", Date.UTC(2024, 0, 3, 8, 15));
     render(md);
     mouse(md, "move");
-    expect(render(md).join("\n")).toMatch(/Jan 3 08:15.*⧉ text/);
+    expect(render(md).join("\n")).toMatch(/Jan 3 08:15.*□ text/);
     vi.stubEnv("TZ", "America/New_York");
-    expect(render(md).join("\n")).toMatch(/Jan 3 03:15.*⧉ text/);
+    expect(render(md).join("\n")).toMatch(/Jan 3 03:15.*□ text/);
   });
 
   it("keeps the message date when the local day changes", () => {
@@ -387,9 +387,9 @@ describe("assistant copy hover", () => {
     const { md } = fixture("Before midnight", Date.UTC(2024, 0, 3, 8, 15));
     render(md);
     mouse(md, "move");
-    expect(render(md).join("\n")).toMatch(/Jan 3 08:15.*⧉ text/);
+    expect(render(md).join("\n")).toMatch(/Jan 3 08:15.*□ text/);
     vi.setSystemTime(new Date("2024-01-04T00:01:00Z"));
-    expect(render(md).join("\n")).toMatch(/Jan 3 08:15.*⧉ text/);
+    expect(render(md).join("\n")).toMatch(/Jan 3 08:15.*□ text/);
   });
 
   it("uses the local date rather than the UTC date", () => {
@@ -399,8 +399,8 @@ describe("assistant copy hover", () => {
     const { md } = fixture("Same local day", Date.UTC(2024, 0, 3, 2, 0));
     render(md);
     mouse(md, "move");
-    const row = render(md).find(line => line.includes("⧉ text"));
-    expect(row).toMatch(/^🭼Jan 2 21:00.*⧉ text/u);
+    const row = render(md).find(line => line.includes("□ text"));
+    expect(row).toMatch(/^🭼Jan 2 21:00.*□ text/u);
   });
 
   it("adds the local month and day when the message was sent on an earlier day", () => {
@@ -410,23 +410,23 @@ describe("assistant copy hover", () => {
     const { md } = fixture("Yesterday", Date.UTC(2024, 0, 1, 8, 15));
     render(md);
     mouse(md, "move");
-    expect(render(md).find(line => line.includes("⧉ text"))).toMatch(/^🭼Jan 1 03:15.*⧉ text/u);
+    expect(render(md).find(line => line.includes("□ text"))).toMatch(/^🭼Jan 1 03:15.*□ text/u);
   });
 
   it("keeps extremely narrow layouts within the terminal width", () => {
     const { md } = fixture("Hi", undefined, true, 0);
     const two = render(md, 2);
     expect(two.every(line => visibleWidth(line) <= 2)).toBe(true);
-    expect(two.join("\n")).not.toContain("⧉ text");
+    expect(two.join("\n")).not.toContain("□ text");
     const fifteen = render(md, 15);
     const event: TuiMouseEvent = { type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width: 15, height: fifteen.length, shift: false, alt: false, ctrl: false };
     (md as Component).handleMouse?.(event);
     const hovered = render(md, 15);
     expect(hovered.every(line => visibleWidth(line) <= 15)).toBe(true);
-    expect(hovered.join("\n")).toContain("⧉ text");
+    expect(hovered.join("\n")).toContain("□ text");
     const fourteen = render(md, 14);
     expect(fourteen.every(line => visibleWidth(line) <= 14)).toBe(true);
-    expect(fourteen.join("\n")).not.toContain("⧉ text");
+    expect(fourteen.join("\n")).not.toContain("□ text");
   });
 
   it("keeps controls without reflow when the timestamp does not fit", () => {
@@ -438,11 +438,11 @@ describe("assistant copy hover", () => {
     const event: TuiMouseEvent = { type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width: 26, height: before.length, shift: false, alt: false, ctrl: false };
     (md as Component).handleMouse?.(event);
     const after = render(md, 26);
-    expect(after.join("\n")).toContain("⧉ text");
+    expect(after.join("\n")).toContain("□ text");
     expect(after.join("\n")).not.toContain("08:15");
-    const controls = after.find(line => line.includes("⧉ text"))!;
-    expect(column(controls, "⧉ text")).toBe(12);
-    expect(column(controls, "⧉ md")).toBe(21);
+    const controls = after.find(line => line.includes("□ text"))!;
+    expect(column(controls, "□ text")).toBe(12);
+    expect(column(controls, "□ md")).toBe(21);
     expect(after).toHaveLength(before.length);
     expect(after.findIndex(line => line.includes("Hello"))).toBe(before.findIndex(line => line.includes("Hello")));
     expect(after.every(line => visibleWidth(line) <= 26)).toBe(true);
@@ -462,7 +462,7 @@ describe("assistant copy hover", () => {
       expect(line).toMatch(/^▏.*▕$/);
       expect(visibleWidth(line)).toBe(26);
     }
-    expect(after.join("\n").match(/⧉ text/g)).toHaveLength(2);
+    expect(after.join("\n").match(/□ text/g)).toHaveLength(2);
   });
 
   it("copies the right block when the narrow row omits its timestamp", async () => {
@@ -474,8 +474,8 @@ describe("assistant copy hover", () => {
     const motion: TuiMouseEvent = { type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width: 26, height: before.length, shift: false, alt: false, ctrl: false };
     (md as Component).handleMouse?.(motion);
     const after = render(md, 26);
-    const y = after.findIndex(line => line.includes("⧉ md"));
-    const x = after[y].indexOf("⧉ md");
+    const y = after.findIndex(line => line.includes("□ md"));
+    const x = after[y].indexOf("□ md");
     expect(x).toBe(21);
     expect(after[y]).not.toContain("Jan 1 08:15");
     expect((md as Component).handleMouse?.({ ...motion, type: "click", button: "left", x, y, screenX: x, screenY: y, height: after.length })).toEqual({ handled: true });
@@ -493,7 +493,7 @@ describe("assistant copy hover", () => {
     (md as Component).handleMouse?.(event);
     const after = render(md, 26);
     expect(after.join("\n")).not.toContain("Jan 1 08:15");
-    expect(after.join("\n")).toContain("⧉ text");
+    expect(after.join("\n")).toContain("□ text");
     expect(after).toHaveLength(before.length);
     expect(after.findIndex(line => line.includes("Hello"))).toBe(before.findIndex(line => line.includes("Hello")));
     expect(after.every(line => visibleWidth(line) <= 26)).toBe(true);
@@ -520,7 +520,7 @@ describe("assistant copy hover", () => {
     mouse(md, "move");
     const after = render(md);
     expect(after[0]).toMatch(/^🭽▔+🭾$/u);
-    expect(after.at(-1)).toMatch(/^🭼.*⧉ text▁▁▁⧉ md🭿$/u);
+    expect(after.at(-1)).toMatch(/^🭼.*□ text▁▁▁□ md🭿$/u);
     expect(after.filter(line => line.includes("First line"))[0]).toMatch(/^▏.*▕$/);
     expect(after).toHaveLength(before.length);
     expect(after.every(line => visibleWidth(line) <= 60)).toBe(true);
@@ -552,7 +552,7 @@ describe("assistant copy hover", () => {
     const after = assistant.render(60).map(stripTerminalSequences);
     expect(after[thinking + 1]).toBe(`🭽${"▔".repeat(58)}🭾`);
     expect(after[thinking + 2]).toBe(`▏Hello${" ".repeat(53)}▕`);
-    expect(after[thinking + 3]).toMatch(/^🭼Jan 3 08:15▁+⧉ text▁▁▁⧉ md🭿$/u);
+    expect(after[thinking + 3]).toMatch(/^🭼Jan 3 08:15▁+□ text▁▁▁□ md🭿$/u);
     expect(after).toHaveLength(before.length);
   });
 
@@ -597,9 +597,9 @@ describe("assistant copy hover", () => {
     const textRow = after.findIndex(line => line.includes("Hello"));
     expect(after).toHaveLength(before.length);
     expect(before.findIndex(line => line.includes("Hello"))).toBe(textRow);
-    expect(after[textRow]).not.toContain("⧉ text");
-    expect(after[textRow + 1]).toMatch(/^🭼Jan 3 08:15▁+⧉ text▁▁▁⧉ md🭿$/u);
-    expect(before[textRow + 1]).not.toContain("⧉ text");
+    expect(after[textRow]).not.toContain("□ text");
+    expect(after[textRow + 1]).toMatch(/^🭼Jan 3 08:15▁+□ text▁▁▁□ md🭿$/u);
+    expect(before[textRow + 1]).not.toContain("□ text");
   });
 
   it("shows today's local date beside the time", () => {
@@ -617,10 +617,10 @@ describe("assistant copy hover", () => {
     mouse(md, "move");
     const lines = render(md);
     const text = lines.find(line => line.includes("Hello"))!;
-    const row = lines.find(line => line.includes("⧉ text"))!;
+    const row = lines.find(line => line.includes("□ text"))!;
     expect(column(row, "Jan 3 08:15")).toBe(text.indexOf("Hello"));
     expect(column(row, "Jan 3 08:15")).toBe(1);
-    expect(column(row, "⧉ md") + 4).toBe(59);
+    expect(column(row, "□ md") + 4).toBe(59);
   });
 
   it("falls back to a one-cell inset when Markdown padding is unavailable", () => {
@@ -630,9 +630,9 @@ describe("assistant copy hover", () => {
     render(md); // Prime Markdown's own cache before simulating an inaccessible field.
     const internals = md as unknown as { paddingX?: number };
     delete internals.paddingX;
-    const row = render(md).find(line => line.includes("⧉ text"))!;
+    const row = render(md).find(line => line.includes("□ text"))!;
     expect(column(row, "Jan 3 08:15")).toBe(2);
-    expect(column(row, "⧉ md") + 4).toBe(58);
+    expect(column(row, "□ md") + 4).toBe(58);
   });
 
   it.each([[28, 26], [16, 15]])("drops time before reducing an unavailable-padding fallback at width %i", (width, groupEnd) => {
@@ -641,19 +641,19 @@ describe("assistant copy hover", () => {
     mouse(md, "move");
     render(md, width); // Prime Markdown's cache at this width before hiding its padding.
     delete (md as unknown as { paddingX?: number }).paddingX;
-    const row = render(md, width).find(line => line.includes("⧉ text"))!;
+    const row = render(md, width).find(line => line.includes("□ text"))!;
     expect(row).not.toContain("Jan 3 08:15");
-    expect(column(row, "⧉ md") + 4).toBe(groupEnd);
+    expect(column(row, "□ md") + 4).toBe(groupEnd);
     expect(visibleWidth(row)).toBe(width);
   });
 
   it("keeps controls aligned when the original Markdown padding is large", () => {
     const { md } = fixture("Hi", undefined, true, 3);
     mouse(md, "move");
-    const row = render(md, 21).find(line => line.includes("⧉ text"))!;
+    const row = render(md, 21).find(line => line.includes("□ text"))!;
     expect(visibleWidth(row)).toBe(21);
-    expect(column(row, "⧉ text")).toBe(7);
-    expect(column(row, "⧉ md") + 4).toBe(20);
+    expect(column(row, "□ text")).toBe(7);
+    expect(column(row, "□ md") + 4).toBe(20);
   });
 
   it("keeps controls and drops the date when the two no longer fit", () => {
@@ -665,17 +665,17 @@ describe("assistant copy hover", () => {
       return render(md, width);
     };
     const minimum = move(15);
-    expect(minimum.find(line => line.includes("⧉ text"))).toBe("🭼⧉ text▁▁▁⧉ md🭿");
+    expect(minimum.find(line => line.includes("□ text"))).toBe("🭼□ text▁▁▁□ md🭿");
     expect(minimum.every(line => visibleWidth(line) <= 15)).toBe(true);
     const sixteen = move(16);
-    expect(column(sixteen.find(line => line.includes("⧉ text"))!, "⧉ md") + 4).toBe(15);
+    expect(column(sixteen.find(line => line.includes("□ text"))!, "□ md") + 4).toBe(15);
     const seventeen = move(17);
-    expect(column(seventeen.find(line => line.includes("⧉ text"))!, "⧉ md") + 4).toBe(16);
+    expect(column(seventeen.find(line => line.includes("□ text"))!, "□ md") + 4).toBe(16);
     const narrow = move(26);
-    expect(narrow.join("\n")).toContain("⧉ text");
+    expect(narrow.join("\n")).toContain("□ text");
     expect(narrow.join("\n")).not.toContain("Jan 3 08:15");
     const fits = move(27);
-    expect(fits.find(line => line.includes("⧉ text"))).toMatch(/^🭼Jan 3 08:15▁⧉ text▁▁▁⧉ md🭿$/u);
+    expect(fits.find(line => line.includes("□ text"))).toMatch(/^🭼Jan 3 08:15▁□ text▁▁▁□ md🭿$/u);
   });
 
   it.each([80, 30])("ends the natural-width controls at the reply margin at width %i", width => {
@@ -684,8 +684,8 @@ describe("assistant copy hover", () => {
     const before = render(md, width);
     (md as Component).handleMouse?.({ type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width, height: before.length, shift: false, alt: false, ctrl: false });
     const lines = render(md, width);
-    const row = lines.find(line => line.includes("⧉ text"))!;
-    expect(row).toBe(`🭼Jan 3 08:15${"▁".repeat(width - 26)}⧉ text▁▁▁⧉ md🭿`);
+    const row = lines.find(line => line.includes("□ text"))!;
+    expect(row).toBe(`🭼Jan 3 08:15${"▁".repeat(width - 26)}□ text▁▁▁□ md🭿`);
     expect(visibleWidth(row)).toBe(width);
   });
 
@@ -696,17 +696,17 @@ describe("assistant copy hover", () => {
     const event: TuiMouseEvent = { type: "move", button: "none", x: 1, y: 1, screenX: 1, screenY: 1, width, height: before.length, shift: false, alt: false, ctrl: false };
     (md as Component).handleMouse?.(event);
     const lines = render(md, width);
-    const y = lines.findIndex(line => line.includes("⧉ text"));
+    const y = lines.findIndex(line => line.includes("□ text"));
     const initial = lines[y];
     const textX = width - 14;
     const mdX = width - 5;
     const click = (x: number) => (md as Component).handleMouse?.({ ...event, type: "click", button: "left", x, y, screenX: x, screenY: y });
     expect(click(textX)).toEqual({ handled: true });
     await Promise.resolve();
-    expect(render(md, width)[y]).toBe(initial.replace("⧉ text", "✓ text"));
+    expect(render(md, width)[y]).toBe(initial.replace("□ text", "✓ text"));
     expect(click(mdX)).toEqual({ handled: true });
     await Promise.resolve();
-    expect(render(md, width)[y]).toBe(initial.replace("⧉ md", "✓ md"));
+    expect(render(md, width)[y]).toBe(initial.replace("□ md", "✓ md"));
     expect(copied).toEqual(["Bold", "**Bold**"]);
   });
 
@@ -715,7 +715,7 @@ describe("assistant copy hover", () => {
     const { md, copied } = fixture("**Bold**", Date.UTC(2024, 0, 3, 8, 15));
     mouse(md, "move");
     const lines = render(md);
-    const y = lines.findIndex(line => line.includes("⧉ text"));
+    const y = lines.findIndex(line => line.includes("□ text"));
     const click = (x: number) => (md as Component).handleMouse?.({ type: "click", button: "left", x, y, screenX: x, screenY: y, width: 60, height: lines.length, shift: false, alt: false, ctrl: false });
     for (const x of [1, 25, 45, 52, 53, 54, 59]) expect(click(x)).toBeUndefined();
     expect(copied).toEqual([]);
@@ -729,9 +729,9 @@ describe("assistant copy hover", () => {
     const { md, copied } = fixture("**Bold**", Date.UTC(2024, 0, 3, 8, 15));
     mouse(md, "move");
     const lines = render(md);
-    const y = lines.findIndex(line => line.includes("⧉ text"));
-    const textX = column(lines[y], "⧉ text");
-    const mdX = column(lines[y], "⧉ md");
+    const y = lines.findIndex(line => line.includes("□ text"));
+    const textX = column(lines[y], "□ text");
+    const mdX = column(lines[y], "□ md");
     const timeX = column(lines[y], "Jan 3 08:15");
     expect(timeX).toBe(1);
     expect(textX).toBe(46);
@@ -746,7 +746,7 @@ describe("assistant copy hover", () => {
     await Promise.resolve();
     const confirmed = render(md)[y];
     expect(column(confirmed, "✓ text")).toBe(textX);
-    expect(column(confirmed, "⧉ md")).toBe(mdX);
+    expect(column(confirmed, "□ md")).toBe(mdX);
     expect(click(mdX)).toEqual({ handled: true });
     await Promise.resolve();
     expect(copied).toEqual(["Bold", "**Bold**"]);
@@ -756,8 +756,8 @@ describe("assistant copy hover", () => {
     const { md } = fixture("Hello there");
     const lines = render(md).join("\n");
     expect(lines).toContain("Hello there");
-    expect(lines).not.toContain("⧉ text");
-    expect(lines).not.toContain("⧉ md");
+    expect(lines).not.toContain("□ text");
+    expect(lines).not.toContain("□ md");
     expect(lines).not.toContain("08:15");
     expect(lines).not.toMatch(/[🭽🭾🭼🭿▔▁▏▕]/u);
   });

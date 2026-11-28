@@ -1779,19 +1779,20 @@ test("intercom tool renders compact call and result rows", async () => {
     to: "planner",
     message: "Need a decision before I continue with this implementation.",
     attachments: [{ type: "snippet", name: "note.ts", content: "const ok = true;" }],
-  }, renderTheme, {})), /intercom ask → planner \(1 attachment\)\n {2}Need a decision/);
+  }, renderTheme, {})), /◆ intercom · ask → planner \(1 attachment\)\n └ Need a decision/);
 
   const resultText = renderToText(intercomTool.renderResult({
     content: [{ type: "text", text: "Message sent to planner" }],
     details: { delivered: true, messageId: "abcdef123456" },
   }, { isPartial: false, expanded: false }, renderTheme, { isError: false, expanded: false }));
-  assert.match(resultText, /✓ Message sent to planner \(abcdef12\)/);
+  assert.match(resultText, /✓ Message sent to planner/);
+  assert.doesNotMatch(resultText, /abcdef12/);
 
   const errorText = renderToText(intercomTool.renderResult({
     content: [{ type: "text", text: "Missing 'to' or 'message' parameter" }],
     details: { error: true, reason: "Missing target" },
   }, { isPartial: false, expanded: true }, renderTheme, { isError: false, expanded: true }));
-  assert.match(errorText, /❌ Missing 'to' or 'message' parameter/);
+  assert.match(errorText, /× Missing 'to' or 'message' parameter/);
   assert.match(errorText, /Reason: Missing target/);
 });
 
@@ -1902,20 +1903,20 @@ test("contact supervisor tool renders reason and reply state", async () => {
       reason: "interview_request",
       message: "Please answer these before I continue.",
       interview: { title: "API migration", questions: [] },
-    }, renderTheme, {})), /contact_supervisor interview_request API migration\n {2}Please answer/);
+    }, renderTheme, {})), /◆ contact_supervisor · interview_request → orchestrator · API migration\n └ Please answer/);
 
     const warningText = renderToText(supervisorTool.renderResult({
       content: [{ type: "text", text: "Reply from supervisor:\nUse stable API" }],
       details: { structuredReplyParseError: "reply JSON must include a responses array" },
     }, { isPartial: false }, renderTheme, { isError: false }));
-    assert.match(warningText, /⚠\uFE0F Reply from supervisor:\nUse stable API/);
+    assert.match(warningText, /▲ Reply from supervisor:\nUse stable API/);
     assert.match(warningText, /Structured reply parse issue: reply JSON must include a responses array/);
 
     const failureText = renderToText(supervisorTool.renderResult({
       content: [{ type: "text", text: "Invalid reason" }],
       details: { error: true },
     }, { isPartial: false }, renderTheme, { isError: false }));
-    assert.match(failureText, /❌ Invalid reason/);
+    assert.match(failureText, /× Invalid reason/);
   });
 });
 

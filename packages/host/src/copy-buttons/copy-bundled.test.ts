@@ -81,7 +81,7 @@ it("uses Pi's bundled spacers and tool components for one line around a reply", 
   const after = plain(app.chat);
   expect(after).toHaveLength(before.length);
   expect(after[reasoning + 1]).toMatch(/^🭽▔+🭾$/u);
-  expect(after[reasoning + 3]).toMatch(/^🭼Jan 3 08:15▁+⧉ text▁▁▁⧉ md🭿$/u);
+  expect(after[reasoning + 3]).toMatch(/^🭼Jan 3 08:15▁+□ text▁▁▁□ md🭿$/u);
 });
 
 it("uses the reply seam before bundled reasoning and a truncation notice", () => {

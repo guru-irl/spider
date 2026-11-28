@@ -6,8 +6,9 @@ const theme = { fg: (_: string, text: string) => text, bg: (_: string, text: str
   bold: (text: string) => text, italic: (text: string) => text };
 const style = (iconStyle: "text" | "nerd") => ({ iconStyle });
 
-function equalWidths(text: string[], nerd: string[]): void {
-  expect(nerd.map(visibleWidth)).toEqual(text.map(visibleWidth));
+function expectFits(text: string[], nerd: string[]): void {
+  // Nerd icons intentionally include a pad cell; both styles must still fit.
+  for (const line of [...text, ...nerd]) expect(visibleWidth(line)).toBeLessThanOrEqual(100);
 }
 
 describe("host icon rendering", () => {
@@ -31,32 +32,32 @@ describe("host icon rendering", () => {
     const args = { action: "run" };
     const text = renderSpiderCall(args, theme, style("text")).render(100);
     const nerd = renderSpiderCall(args, theme, style("nerd")).render(100);
-    expect(text[0]).toContain("\u{1F578}\uFE0F spider");
-    expect(nerd[0]).toContain("\u{F0BCA}  spider");
-    equalWidths(text, nerd);
+    expect(text[0]).toContain("◆ run");
+    expect(nerd[0]).toContain("\u{F0BCA}  run");
+    expectFits(text, nerd);
   });
 
   it("uses configured failure, task and result markers in a run result", () => {
     const result = { details: { run: { name: "scribe", agent: "worker", status: "failed", task: "read", result: "done" } } };
     const render = (iconStyle: "text" | "nerd") => renderSpiderResult(result, {}, theme, { args: { action: "run" }, iconStyle }).render(100);
     const text = render("text"), nerd = render("nerd");
-    expect(text.join("\n")).toContain("❌ failed · scribe");
+    expect(text.join("\n")).toContain("× failed · scribe");
     expect(nerd.join("\n")).toContain("\u{F0156}  failed · scribe");
-    expect(text.join("\n")).toContain("↳ read");
-    expect(nerd.join("\n")).toContain("\u{F060D} read");
-    expect(text).toContain("   ⤴ done");
-    expect(nerd).toContain("   \u{F005C} done");
-    equalWidths(text, nerd);
+    expect(text.join("\n")).toContain("→ read");
+    expect(nerd.join("\n")).toContain("\u{F060D}  read");
+    expect(text).toContain("   ↑ done");
+    expect(nerd).toContain("   \u{F005C}  done");
+    expectFits(text, nerd);
   });
 
   it("uses the message search icon and preserves the snippet", () => {
     const result = { details: [{ kind: "message", title: "hello", snippet: "Some snippet" }] };
     const render = (iconStyle: "text" | "nerd") => renderSpiderResult(result, {}, theme, { args: { action: "search" }, iconStyle }).render(100);
     const text = render("text"), nerd = render("nerd");
-    expect(text.join("\n")).toContain("✉ hello");
-    expect(nerd.join("\n")).toContain("\u{F01F0} hello");
-    expect(nerd.join("\n")).toContain("\u{F060D} Some snippet");
-    equalWidths(text, nerd);
+    expect(text.join("\n")).toContain("→ hello");
+    expect(nerd.join("\n")).toContain("\u{F01F0}  hello");
+    expect(nerd.join("\n")).toContain("└  Some snippet");
+    expectFits(text, nerd);
   });
 
   it("uses failure and gutter markers in doctor and configuration results", () => {
@@ -64,16 +65,16 @@ describe("host icon rendering", () => {
       renderSpiderResult({ details }, {}, theme, { args: { action: "control", command: action }, iconStyle }).render(100);
     const text = render("doctor", { ok: false, lines: ["- storage: unavailable"] }, "text");
     const nerd = render("doctor", { ok: false, lines: ["- storage: unavailable"] }, "nerd");
-    expect(text.join("\n")).toContain("❌ issues found");
+    expect(text.join("\n")).toContain("× issues found");
     expect(nerd.join("\n")).toContain("\u{F0156}  issues found");
-    expect(nerd.join("\n")).toContain("\u{F060D} storage");
-    equalWidths(text, nerd);
+    expect(nerd.join("\n")).toContain("└  storage");
+    expectFits(text, nerd);
     for (const command of ["config", "models"]) {
       const a = render(command, { ok: false, error: "not available" }, "text");
       const b = render(command, { ok: false, error: "not available" }, "nerd");
-      expect(a.join("\n")).toContain("❌ not available");
+      expect(a.join("\n")).toContain("× not available");
       expect(b.join("\n")).toContain("\u{F0156}  not available");
-      equalWidths(a, b);
+      expectFits(a, b);
     }
   });
 
@@ -85,8 +86,8 @@ describe("host icon rendering", () => {
       for (const iconStyle of ["text", "nerd"] as const) {
         const call = renderSpiderCall(args, theme, { iconStyle }).render(100).join("\n");
         const result = renderSpiderResult({ details }, {}, theme, { args, iconStyle }).render(100).join("\n");
-        expect(call).toContain(iconStyle === "text" ? "🕸️" : "\u{F0BCA}");
-        expect(result).not.toMatch(/[🕸\u{F0BCA}\u{F167A}]/u);
+        expect(call).toContain(iconStyle === "text" ? "◆" : "\u{F0BCA}");
+        expect(result).not.toMatch(/[◆\u{F0BCA}\u{F167A}]/u);
       }
     }
   });
@@ -95,16 +96,16 @@ describe("host icon rendering", () => {
     const done = { details: { status: "cancelled", name: "scribe", output: "result" } };
     const text = renderSubagentDone(done, {}, theme, "text").render(100);
     const nerd = renderSubagentDone(done, {}, theme, "nerd").render(100);
-    expect(text.join("\n")).toContain("⚠\uFE0F cancelled");
+    expect(text.join("\n")).toContain("▲ cancelled");
     expect(nerd.join("\n")).toContain("\u{F002A}  cancelled");
-    expect(nerd.join("\n")).toContain("\u{F0BCA}  spider");
-    equalWidths(text, nerd);
+    expect(nerd.join("\n")).toContain("\u{F0BCA}  run");
+    expectFits(text, nerd);
     const report = { data: { status: "failed", errors: [], memoryStaged: 0, skillsStaged: 0, todosAdded: 0 } };
     const a = renderOrganismEntry(report, {}, theme, "text").render(100);
     const b = renderOrganismEntry(report, {}, theme, "nerd").render(100);
-    expect(a.join("\n")).toContain("❌ failed");
+    expect(a.join("\n")).toContain("× failed");
     expect(b.join("\n")).toContain("\u{F0156}  failed");
-    equalWidths(a, b);
+    expectFits(a, b);
     const escalation = { details: { runId: "run-one", severity: "warning", summary: "attention" } };
     expect(renderEscalationMessage(escalation, {}, theme, "nerd").render(100).join("\n")).toContain("\u{F002A}");
   });

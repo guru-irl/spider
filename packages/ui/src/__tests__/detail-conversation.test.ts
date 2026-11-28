@@ -99,6 +99,15 @@ describe("detail conversation projection", () => {
     expect(blocks.at(-1)?.eventId).toBeUndefined();
   });
 
+  it("italicizes only the agent roles in a pipeline handoff", () => {
+    const theme = { ...plainTheme, italic: (text: string) => `<i>${text}</i>` };
+    const event = { ...storedEvent(11, "worker→reviewer"), type: "handoff" };
+    const block = projectConversation([event], snapshot(), theme)[0];
+    expect(block?.text).toContain("<i>worker</i>→<i>reviewer</i>");
+    const other = { ...event, summary: "plain handoff" };
+    expect(projectConversation([other], snapshot(), theme)[0]?.text).not.toContain("<i>");
+  });
+
   it("omits an empty or invalid message and does not show activity for ended runs", () => {
     const events = [storedEvent(1, ""), { ...storedEvent(2, ""), payload: { durationMs: Infinity } }];
     expect(projectConversation(events, snapshot({ status: "failed", activity: "stale" }), plainTheme)).toEqual([]);

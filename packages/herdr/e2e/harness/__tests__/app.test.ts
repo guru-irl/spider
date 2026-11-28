@@ -90,22 +90,22 @@ describe('native owned space selection', () => {
   });
 });
 describe('native layout selection persistence', () => {
-  it('writes the exact selected layout name to the owned settings after loading the layout', async () => {
+  it('writes the exact selected layout name to shared.json after loading the layout', async () => {
     const original = await createSuite({ tier: 'headless', story: storyId('H-layout-selection') });
     try {
-      const { suite, app, config } = await prepareInstallInputs(original), path = suite.ownPath(join(config.app.home, 'settings.json'));
-      await cp(join(config.app.home, 'layouts/main.json'), suite.ownPath(join(config.app.home, 'layouts/spider-glass.json')));
+      const { suite, app, config } = await prepareInstallInputs(original), path = suite.ownPath(join(config.app.home, 'shared.json'));
+      await cp(join(config.app.home, 'layouts/main.json'), suite.ownPath(join(config.app.home, 'layouts/Spider.json')));
       await writeFile(path, '{"layout":"main","theme":"fixture-theme","retained":17}\n', { mode: 0o600 });
-      await app.command('layout.switch', { name: 'spider-glass' });
-      expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ layout: 'spider-glass', theme: 'fixture-theme', retained: 17 });
-      expect(await app.status()).toMatchObject({ layout: 'spider-glass' });
-      const bytes = await readFile(path, 'utf8'); await app.command('layout.switch', { name: 'spider-glass' }); expect(await readFile(path, 'utf8')).toBe(bytes);
+      await app.command('layout.switch', { name: 'Spider' });
+      expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ layout: 'Spider', theme: 'fixture-theme', retained: 17 });
+      expect(await app.status()).toMatchObject({ layout: 'Spider' });
+      const bytes = await readFile(path, 'utf8'); await app.command('layout.switch', { name: 'Spider' }); expect(await readFile(path, 'utf8')).toBe(bytes);
       await expect(app.command('layout.switch', { name: 'unavailable-layout' })).rejects.toThrow(); expect(await readFile(path, 'utf8')).toBe(bytes);
-      await suite.evidence('native-layout-selection.json', { settings: JSON.parse(bytes), status: await app.status(), source: 'window.rs:878-923,933-967; load_layout publishes the selected name after loading, including same-name selections' });
-      await writeFile(path, '[]', { mode: 0o600 }); await expect(app.command('layout.switch', { name: 'main' })).rejects.toThrow(/malformed owned app settings/); expect(await readFile(path, 'utf8')).toBe('[]');
+      await suite.evidence('native-layout-selection.json', { shared: JSON.parse(bytes), status: await app.status(), source: 'Herdr 0.1.18 window.rs load_layout publishes the selected name to the shared store' });
+      await writeFile(path, '[]', { mode: 0o600 }); await expect(app.command('layout.switch', { name: 'main' })).rejects.toThrow(/malformed owned app shared state/); expect(await readFile(path, 'utf8')).toBe('[]');
       await writeFile(path, bytes, { mode: 0o600 }); const target = suite.ownPath(join(suite.root, 'guard-target')); await writeFile(target, 'untouched', { mode: 0o600 }); await symlink(target, suite.ownPath(`${path}.new`));
       await expect(app.command('layout.switch', { name: 'main' })).rejects.toThrow(/symlink app path/); expect(await readFile(target, 'utf8')).toBe('untouched'); expect(await readFile(path, 'utf8')).toBe(bytes);
-      await suite.evidence('layout-selection-faults.json', { malformedSettingsRetained: '[]', stagingSymlinkTarget: await readFile(target, 'utf8'), settings: JSON.parse(await readFile(path, 'utf8')) });
+      await suite.evidence('layout-selection-faults.json', { malformedSharedStateRetained: '[]', stagingSymlinkTarget: await readFile(target, 'utf8'), shared: JSON.parse(await readFile(path, 'utf8')) });
     } finally { expect((await original.close()).clean).toBe(true); }
   });
 });
@@ -116,7 +116,7 @@ describe('app 0.1.11 command boundary', () => {
     ['tab.new', { space: 'sp1', name: 'Agent', argv: ['pi'] }], ['tab.rename', { id: 'tb1', name: '' }],
     ['tab.close', { id: 'tb1', confirmed: true }], ['pane.focus', { terminal: 't1' }],
     ['terminal.park', { terminal: 't1' }], ['terminal.keep', { terminal: 't1', place: 'right' }],
-    ['layout.switch', { name: 'spider-glass' }], ['layout.show', { id: 'panel' }],
+    ['layout.switch', { name: 'Spider' }], ['layout.show', { id: 'panel' }],
     ['layout.hide', { id: 'panel' }], ['layout.select', { stack: 'panel-body', child: 'spider' }],
     ['app.theme', { name: 'spider-glass' }],
   ])('accepts verified %s arguments', (name, args) => {
@@ -134,7 +134,7 @@ describe('app 0.1.11 command boundary', () => {
     expect(() => parseAppReply('ls', {}, nativeWorld(status))).toThrow(/invalid app reply/);
   });
   const nativeStatus = (floats: unknown) => ({ zoom: 1, font_size: 14, ui_font_size: 13, space: 'sp1', tab: 'tb1', focused_pane: 'p1',
-    layout: 'spider-glass', agent: 't1', floats, overlays: ['frame-welcome', 'confirm'], errors: [] });
+    layout: 'Spider', agent: 't1', floats, overlays: ['frame-welcome', 'confirm'], errors: [] });
   it('accepts the observed native floating-window status map', () => {
     const status = nativeStatus({}); expect(parseAppReply('status', {}, status)).toEqual(status);
   });
@@ -200,7 +200,7 @@ describe('app 0.1.11 command boundary', () => {
       const driver = createNativeAppDriver({ binary: owned.binary, env: owned.env, ownPath: p => p, ownsTarget: (_kind, id) => registered.has(id),
         invoke: async (_binary, argv) => {
           (calls as string[][]).push([...argv]);
-          const value = argv[0] === 'commands' ? { commands: [{ name: 'pane.close' }] } : argv[0] === 'status' ? { layout: 'spider-glass', space: 's1', tab: 'tb1', focused_pane: 'p1', agent: 't1', errors: [], overlays: [], floats: {} } : { ok: true };
+          const value = argv[0] === 'commands' ? { commands: [{ name: 'pane.close' }] } : argv[0] === 'status' ? { layout: 'Spider', space: 's1', tab: 'tb1', focused_pane: 'p1', agent: 't1', errors: [], overlays: [], floats: {} } : { ok: true };
           return { exitCode: 0, stderr: '', stdout: JSON.stringify(value) };
         } });
       expect(await driver.command('commands', {})).toEqual({ commands: [{ name: 'pane.close' }] });

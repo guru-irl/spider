@@ -685,7 +685,7 @@ test('I4 a selected app preference intent survives a kill before cutover observa
   await put(f.paths.appSettings, '{"layout":"legacy","theme":"legacy","zoom":1}', 0o644);
   f.parts.stageLook = async (...args) => [...await stage(...args), { path: f.paths.appSettings, bytes: (await snapshot(f.paths.appSettings)).bytes!, expected: (await snapshot(f.paths.appSettings)).hash, snapshotOnly: true, managed: { kind: 'json', fields: ['layout', 'theme'] } }];
   f.parts.cutover = async () => {
-    await put(f.paths.appSettings, '{"layout":"spider-glass","theme":"spider-glass","zoom":2}', 0o644);
+    await put(f.paths.appSettings, '{"layout":"Spider","theme":"spider-glass","zoom":2}', 0o644);
     const fail = async () => { throw new Error('kill before cutover observation'); };
     vi.mocked(fs.rename).mockImplementation(fail); vi.mocked(fs.link).mockImplementation(fail);
     throw new Error('kill before cutover observation');

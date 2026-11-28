@@ -75,7 +75,7 @@ test('stages the verified 0.1.16 toast and checks its layout selector', async ()
   expect(toastFiles.map(file => file.path.slice((join(app, 'mods/spider-toast') + '/').length)).sort()).toEqual(['NOTICE', 'filter.js', 'main.js', 'mod.json']);
   expect(toastFiles.find(file => file.path.endsWith('/main.js'))?.bytes).toEqual(await readFile(resolve('packages/herdr/assets/toast/main.js')));
   expect(await readFile(join(app, 'mods/toast/main.js'))).toEqual(originalToast);
-  const layoutPath = join(app, 'layouts/spider-glass.json');
+  const layoutPath = join(app, 'layouts/Spider.json');
   const layout = JSON.parse(files.find(file => file.path === layoutPath)!.bytes.toString());
   layout.toast = 'unknown-toast';
   await writeFile(layoutPath, JSON.stringify(layout));
@@ -85,7 +85,8 @@ test('stages the verified 0.1.16 toast and checks its layout selector', async ()
   await writeFile(layoutPath, JSON.stringify(layout));
   await mkdir(join(app, 'themes'), { recursive: true });
   await cp(join(f.root, 'packages/herdr/assets/themes/spider-glass.json'), join(app, 'themes/spider-glass.json'));
-  await writeFile(join(app, 'settings.json'), JSON.stringify({ theme: 'spider-glass', layout: 'spider-glass', sounds: { enabled: false } }));
+  await writeFile(join(app, 'settings.json'), JSON.stringify({ theme: 'spider-glass', sounds: { enabled: false } }));
+  await writeFile(join(app, 'shared.json'), JSON.stringify({ layout: 'Spider' }));
   const result = await doctor.inspect('layout-theme', f.request);
   expect(result.failures).toEqual([]);
   expect(result.information).toContainEqual(expect.objectContaining({ code: 'native-sound-policy', message: expect.stringContaining('derived toast is selected') }));
@@ -97,7 +98,7 @@ test('plans a native sound compare-write without changing custom sound fields', 
   await writeFile(path, JSON.stringify(original));
   const files = await f.parts.installFiles(f.request, f.context), file = files.find(item => item.path === path)!;
   expect(JSON.parse(file.bytes.toString())).toEqual({ ...original, sounds: { ...original.sounds, enabled: false } });
-  expect(file.managed).toEqual({ kind: 'json-paths', paths: ['theme', 'layout', 'sounds.enabled'] });
+  expect(file.managed).toEqual({ kind: 'json-paths', paths: ['theme', 'sounds.enabled'] });
   expect(file.updateAfterCutover).toBe(true);
   expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(original);
 });
@@ -110,11 +111,12 @@ test('owns native sound with app selection while preserving custom sounds and st
   await cp(resolve('packages/herdr/src/__tests__/fixtures/herdr-0.1.13/mods/toast/main.js'), join(stock, 'main.js'));
   const stockBefore = await readFile(join(stock, 'main.js'));
   await setupHerdr(f.request, f.parts);
-  expect(JSON.parse(await readFile(settingsPath, 'utf8'))).toMatchObject({ theme: 'spider-glass', layout: 'spider-glass', sounds: { ...original.sounds, enabled: false } });
+  expect(JSON.parse(await readFile(settingsPath, 'utf8'))).toMatchObject({ theme: 'spider-glass', layout: 'main', sounds: { ...original.sounds, enabled: false } });
+  expect(JSON.parse(await readFile(join(f.h.directories.app, 'shared.json'), 'utf8')).layout).toBe('Spider');
   expect(await readFile(join(stock, 'main.js'))).toEqual(stockBefore);
   const journal = await readJournal(f.request.journalRoot), entries = journal.entries.filter(entry => entry.path === settingsPath);
   expect(entries).toHaveLength(1);
-  expect(entries[0].managed).toEqual({ kind: 'json-paths', paths: ['theme', 'layout', 'sounds.enabled'] });
+  expect(entries[0].managed).toEqual({ kind: 'json-paths', paths: ['theme', 'sounds.enabled'] });
   expect((await setupHerdr(f.request, f.parts)).writes).toEqual([]);
   const current = JSON.parse(await readFile(settingsPath, 'utf8')); current.sounds.enabled = true;
   await writeFile(settingsPath, JSON.stringify(current));
@@ -133,7 +135,7 @@ test('installs the separate intentional sound preference in panel props', async 
   f.context.modProps = [...f.context.modProps, { directory: join(f.h.directories.app, 'mods/spider-picker'), props: { ...base, modId: 'spider-picker' } }];
   const panelProps = async () => {
     const files = await f.parts.stageLook(f.request, f.context, 'export');
-    const layout = JSON.parse(files.find(file => file.path === join(f.h.directories.app, 'layouts/spider-glass.json'))!.bytes.toString());
+    const layout = JSON.parse(files.find(file => file.path === join(f.h.directories.app, 'layouts/Spider.json'))!.bytes.toString());
     const find = (node: any): any => node.id === 'spider' ? node.content.props : (node.children ?? []).map(find).find(Boolean);
     return find(layout);
   };

@@ -14,6 +14,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { isAbsolute, join } from 'node:path';
 import { checkRemoteNodeVersion, REMOTE_NODE_MINIMUM, isRuntimeRootProbe } from '../remote/node-version.js';
+import { LEGACY_SPIDER_LAYOUT, SPIDER_LAYOUT, SPIDER_LAYOUT_KEYS, layoutSelectionPath, legacySpiderLayoutPath, spiderLayoutPath } from '../look/names.js';
+import { hasLegacyLayout, readLayoutSelection } from './layout-rename.js';
 export const DOCTOR_ITEMS = ['baseline', 'core-identity', 'hc-json', 'status-instance', 'feed-permissions', 'feed-freshness', 'ipc-authentication', 'jobs', 'observers', 'runtime-digest', 'ssh-cache', 'bypass-stripping', 'mods', 'clones', 'patch-version', 'layout-theme', 'fonts', 'pi-schema-contrast', 'keys', 'roles', 'resume', 'presence', 'mappings-leases', 'spaces-tabs', 'measurements', 'lock-adapters', 'pane-core', 'pane-capabilities', 'pane-helper', 'pane-installation'] as const;
 export type DoctorItem = typeof DOCTOR_ITEMS[number];
 export interface DoctorFailure {
@@ -49,12 +51,12 @@ export function checkManagedKeyBindings(bytes: Buffer | null, desired: KeySectio
       for (const [key, value] of Object.entries(bindings))
         if (!options.ignoredKeys?.[name]?.includes(key) && !isDeepStrictEqual(actual[key], value)) failures.push(issue(`Managed key differs: ${name}.${key}`));
     }
-    if (desired['layout:spider-glass']?.['cmd-shift-e'] !== undefined) {
-      const global = section('global'), terminal = section('terminal'), layout = section('layout:spider-glass');
+    if (desired[SPIDER_LAYOUT_KEYS]?.['cmd-shift-e'] !== undefined) {
+      const global = section('global'), terminal = section('terminal'), layout = section(SPIDER_LAYOUT_KEYS);
       for (const [name, values] of [['global', global], ['terminal', terminal]] as const)
         if (!options.ignoredKeys?.[name]?.includes('cmd-shift-e') && values['cmd-shift-e'] !== undefined) failures.push(issue(`Competing key: ${name}.cmd-shift-e`));
-      for (const [name, values] of [['global', global], ['terminal', terminal], ['layout:spider-glass', layout]] as const)
-        if (!options.ignoredKeys?.[name]?.includes('cmd-shift-w') && values['cmd-shift-w'] !== undefined && values['cmd-shift-w'] !== 'pane.close' && !(name === 'layout:spider-glass' && desired[name]?.['cmd-shift-w'] === 'spider-pane.close' && values['cmd-shift-w'] === 'spider-pane.close')) failures.push(issue(`Pane close differs: ${name}.cmd-shift-w`));
+      for (const [name, values] of [['global', global], ['terminal', terminal], [SPIDER_LAYOUT_KEYS, layout]] as const)
+        if (!options.ignoredKeys?.[name]?.includes('cmd-shift-w') && values['cmd-shift-w'] !== undefined && values['cmd-shift-w'] !== 'pane.close' && !(name === SPIDER_LAYOUT_KEYS && desired[name]?.['cmd-shift-w'] === 'spider-pane.close' && values['cmd-shift-w'] === 'spider-pane.close')) failures.push(issue(`Pane close differs: ${name}.cmd-shift-w`));
       if (global['cmd-shift-w'] === undefined) warnings.push({ item: 'keys', code: 'inspection-unavailable', message: 'The effective global.cmd-shift-w default is not recorded in keys.json', repair: 'Check the active app key binding before relying on pane close.' });
     }
   } catch (error) {
@@ -147,7 +149,7 @@ async function pinnedNodePaths(request: DoctorRequest): Promise<Map<string, stri
   const rc = managedProjection((await snapshot(request.config.shellRc)).bytes, { kind: 'resume' });
   const source = /^\s*\.\s+(.+)$/m.exec(rc);
   if (source) { const args = shellWords(source[1]); if (args[1]) add(args[1], 'shell resume block'); }
-  const layout = (await snapshot(join(request.config.app.home, 'layouts/spider-glass.json'))).bytes;
+  const layout = (await snapshot(spiderLayoutPath(request.config.app.home))).bytes;
   if (layout) {
     const walk = (value: unknown): void => {
       if (!value || typeof value !== 'object') return;
@@ -195,6 +197,15 @@ export async function doctorHerdr(request: DoctorRequest, parts: DoctorParts): P
       fail(item, 'doctor-inspection-failed', e instanceof Error ? e.message : String(e), `Repair ${item} and rerun doctor --config ${request.configPath}`);
     }
   }
+  const legacy = legacySpiderLayoutPath(request.config.app.home), shared = layoutSelectionPath(request.config.app.home);
+  try {
+    if (await hasLegacyLayout(request.config.app.home))
+      fail('layout-theme', 'legacy-layout-present', `The old layout file is still present: ${legacy}`, 'Run setup to migrate it. If both layouts are present after an interrupted upgrade, use rollback --undo-upgrade first.');
+  } catch (error) { fail('layout-theme', 'legacy-layout-inspection-failed', String(error), `Inspect ${legacy}.`); }
+  try {
+    if ((await readLayoutSelection(shared)).layout === LEGACY_SPIDER_LAYOUT)
+      fail('layout-theme', 'legacy-layout-selected', `Herdr still has ${LEGACY_SPIDER_LAYOUT} selected in ${shared}`, `Run setup to migrate the layout, or select ${SPIDER_LAYOUT} in Herdr if it is already installed.`);
+  } catch (error) { fail('layout-theme', 'layout-selection-inspection-failed', String(error), `Inspect ${shared}.`); }
   try {
     for (const [path, sources] of await pinnedNodePaths(request)) {
       try {

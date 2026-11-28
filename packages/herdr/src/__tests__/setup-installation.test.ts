@@ -26,13 +26,11 @@ registerSetupCleanup();
 
 test('CLI plan mode lists every file without a journal, probes or cutover', async () => {
   const f = await fixture(), output: string[] = [], errors: string[] = [];
-  await mkdir(dirname(f.paths.layout), { recursive: true });
-  await writeFile(f.paths.layout, '{"name":"spider-glass"}');
   await mkdir(dirname(f.paths.font), { recursive: true }); await writeFile(f.paths.font, 'user font');
   const before = await f.h.calls();
   const ports: HerdrCliPorts = { request: async () => f.request, setupParts: async () => f.parts, doctorParts: async () => f.doctorParts, stdout: text => output.push(text), stderr: text => errors.push(text) };
   expect(await runHerdrCli(['setup', '--dry-run'], ports)).toBe(1);
-  expect(output.join('')).toContain(`adopt ${f.paths.layout}`);
+  expect(output.join('')).toContain(`write ${f.paths.layout}`);
   expect(output.join('')).toContain(`replace ${f.paths.font}`);
   expect(output.join('')).toContain(`write ${f.paths.spider}`);
   expect(output.join('')).toContain('cutover');
@@ -699,7 +697,7 @@ test('doctor does not inspect app or core placement when no repair record exists
 
 const sectionKeys = {
   global: { 'cmd-p': 'mod.open:spider-picker', 'cmd-n': { command: 'space.new', args: { machine: '' } }, 'cmd-t': 'mod.open:spider-machine-picker', 'cmd-d': 'mod.open:spider-machine-picker-right', 'cmd-shift-d': 'mod.open:spider-machine-picker-down' },
-  'layout:spider-glass': { 'cmd-shift-e': 'spider-pane.park', 'cmd-shift-w': 'spider-pane.close' },
+  'layout:Spider': { 'cmd-shift-e': 'spider-pane.park', 'cmd-shift-w': 'spider-pane.close' },
 } as const;
 const legacyTerminalKeys = { 'cmd-shift-a': 'send:\u001b[97;6u' };
 
@@ -726,9 +724,9 @@ test('setup composes legacy and section keys in one write and records ownership'
   expect(first.writes.filter(p => p === path)).toEqual([path]);
   const keys = JSON.parse(await readFile(path, 'utf8'));
   expect(keys.global).toEqual({ ...sectionKeys.global, 'cmd-shift-w': 'pane.close' });
-  expect(keys['layout:spider-glass']['cmd-shift-w']).toBe('spider-pane.close');
+  expect(keys['layout:Spider']['cmd-shift-w']).toBe('spider-pane.close');
   expect(keys.terminal).toEqual({ 'ctrl-v': 'terminal.paste_image', 'cmd-shift-a': legacyTerminalKeys['cmd-shift-a'] });
-  expect(keys['layout:spider-glass']['cmd-shift-e']).toBe('spider-pane.park');
+  expect(keys['layout:Spider']['cmd-shift-e']).toBe('spider-pane.park');
   const saved = await readJournal(f.request.journalRoot);
   expect(saved.entries.find(entry => entry.path === path)).toMatchObject({ keys: { ...sectionKeys, terminal: legacyTerminalKeys }, managed: { kind: 'keys' } });
   expect((await setupHerdr(f.request, f.parts)).writes).toEqual([]);

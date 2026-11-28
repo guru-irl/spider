@@ -75,7 +75,7 @@ test('installs a standalone picker with private config and resolved helper impor
   expect(await unresolvedImports(mods, imports)).toEqual([]);
   for (const name of ['grouping.js', 'connections.js', 'console-groups.js']) expect(await exists(join(mods, 'spider-agents', name)), name).toBe(true);
   expect(await exists(join(mods, 'spider-spaces/local.js'))).toBe(true);
-  const layout = await readFile(join(f.h.directories.app, 'layouts/spider-glass.json'), 'utf8');
+  const layout = await readFile(join(f.h.directories.app, 'layouts/Spider.json'), 'utf8');
   expect(layout).not.toContain('spider-picker');
   for (const file of ['picker/main.js', 'picker/model.js', 'shared/navigation.js', 'agents/children.js']) {
     const source = await readFile(join(f.root, 'packages/herdr/assets', file), 'utf8');

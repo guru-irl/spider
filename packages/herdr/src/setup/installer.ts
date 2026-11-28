@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve, relative, isAbsolute } from 'node:pat
 import { HerdrLabelContract } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
 import { VIEW_ON_MAC_MESSAGE } from '../notices.js';
-import { digest, snapshot, atomicWrite, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, prepareModDirectories, rollbackModDirectories, discardModStages, unpublishNewMods, applyFiles, rejectSymlinks, mergeTheme, mergeKeys, mergeTerminalKeys, disableRootNotes, rollbackFiles, managedProjection, assertGlobalRoot, missingKeyMapMessage, type KeyBinding, type KeyFields, type KeySections, type ManagedPart, type FileAction, type SetupJournal } from './backup.js';
+import { digest, snapshot, atomicWrite, removeFile, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, prepareModDirectories, rollbackModDirectories, discardModStages, unpublishNewMods, applyFiles, rejectSymlinks, mergeTheme, mergeKeys, mergeTerminalKeys, disableRootNotes, rollbackFiles, managedProjection, stageLayoutKeyRename, assertGlobalRoot, missingKeyMapMessage, type KeyBinding, type KeyFields, type KeySections, type ManagedPart, type FileAction, type SetupJournal } from './backup.js';
 import { probeLaunch, type DoctorReport } from './doctor.js';
 import { checkRemoteNodeVersion, REMOTE_NODE_MINIMUM } from '../remote/node-version.js';
 import { shellQuote } from '../sessions/resume.js';
@@ -15,6 +15,8 @@ import { planModStorage } from './mod-storage.js';
 import { collectCheckpointBlobs, assertSetupNotUndoing, beginRunCheckpoint, finishRunCheckpoint, readCheckpoint, pendingCheckpointBaselines, recordRemoteWrite, recordCheckpointIntents, recordCheckpointEffects, recordCheckpointWrites, undoUpgrade, includeRegistryCheckpoint, completeDanglingCheckpoint, supersedeCheckpoint, checkpointBaseline, checkpointBytes, type UpgradeCheckpoint, type UpgradeUndoResult } from './checkpoint.js';
 
 import { globalHerdrTemplatePaths } from '../templates/paths.js';
+import { LEGACY_SPIDER_LAYOUT, LEGACY_SPIDER_LAYOUT_KEYS, SPIDER_LAYOUT, SPIDER_LAYOUT_KEYS, layoutSelectionPath, legacySpiderLayoutPath, spiderLayoutPath } from '../look/names.js';
+import { awaitSpiderSelection, hasLegacyLayout, readLayoutSelection, readLayoutTargets } from './layout-rename.js';
 
 function runtimeTemplatePaths(request: SetupRequest): string[] {
   const instructions = join(request.config.globalRoot, 'herdr/instructions');
@@ -68,7 +70,7 @@ export interface SetupRequest<T extends HerdrConfig = FullHerdrConfig> {
   adoptExistingSpaces?: readonly string[];
 }
 function plannedAppSettings(request: SetupRequest) {
-  return { path: join(request.config.app.home, 'settings.json'), planned: { theme: 'spider-glass', layout: 'spider-glass', sounds: { enabled: false as const } } };
+  return { path: join(request.config.app.home, 'settings.json'), planned: { theme: 'spider-glass', layout: SPIDER_LAYOUT, sounds: { enabled: false as const } } };
 }
 export interface InstallFile {
   path: string;
@@ -151,6 +153,10 @@ export interface SetupContext {
   labelContract: HerdrLabelContract;
   modProps: readonly InstalledModCopy[];
   installed: Readonly<Record<string, string>>;
+  /** The layout bytes seen in preflight, before rebuilding the look. */
+  previousLayout?: Buffer | null;
+  /** Run selection only when setup requests it; keep an upgrade's other layout active. */
+  selectApp?(): Promise<void>;
   retiredTerminals: readonly TerminalAddress[];
   priorCutover: CutoverResult | null;
   recordCutover(result: CutoverResult): Promise<void>;
@@ -184,7 +190,7 @@ export interface SetupParts {
   /** Recheck existing owners without repeating initial app selection. */
   reconcileCutover?(request: SetupRequest, context: SetupContext): Promise<CutoverResult>;
   persistCutover?(request: SetupRequest): Promise<CutoverResult>;
-  selectApp?(request: SetupRequest): Promise<void>;
+  selectApp?(request: SetupRequest, mode: 'look' | 'layout'): Promise<void>;
   verify(request: SetupRequest): Promise<DoctorReport>;
   rollback(result: CutoverResult, options?: { preserve?: CutoverResult; beforeClose?: () => Promise<void> }): Promise<void>;
   warn(message: string): void;
@@ -248,18 +254,24 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
   await assertGlobalRoot(request.config.globalRoot, parts.globalRoot);
   await parts.validateSelections?.(request);
   const work = async (): Promise<SetupResult> => {
-    if (!request.dryRun) await collectCheckpointBlobs(request.journalRoot);
     await assertSetupNotUndoing(request.journalRoot);
     const journal = await readJournal(request.journalRoot);
+    const layoutPath = spiderLayoutPath(request.config.app.home), legacyPath = legacySpiderLayoutPath(request.config.app.home);
+    const layoutTargets = await readLayoutTargets(request.config.app.home, journal);
+    if (!request.dryRun) await collectCheckpointBlobs(request.journalRoot);
     let checkpoint: UpgradeCheckpoint | undefined, completed = false, setupError: unknown;
     const recordWrites = async (paths: readonly string[]) => { if (checkpoint) await recordCheckpointWrites(request.journalRoot, checkpoint, paths); };
     const saveSetupJournal = async () => { await saveJournal(request.journalRoot, journal); await recordWrites([join(request.journalRoot, 'journal.json')]); };
-    const recordSelectionIntent = async () => {
+    const recordSelectionIntent = async (mode: 'look' | 'layout' | undefined, selection: InstallFile | undefined) => {
       if (!checkpoint) return;
-      const { path, planned } = plannedAppSettings(request), current = await snapshot(path);
-      const settings = JSON.parse(current.bytes?.toString('utf8') ?? '{}') as Record<string, unknown>;
-      const bytes = Buffer.from(JSON.stringify({ ...settings, layout: planned.layout, theme: planned.theme }));
-      await recordCheckpointIntents(request.journalRoot, checkpoint, [{ path, bytes, expected: current.hash, mode: current.mode }], journal);
+      const intents: InstallFile[] = selection ? [{ ...selection, updateAfterCutover: false }] : [];
+      if (mode === 'look' || !parts.selectApp) {
+        const { path, planned } = plannedAppSettings(request), current = await snapshot(path);
+        const settings = JSON.parse(current.bytes?.toString('utf8') ?? '{}') as Record<string, unknown>;
+        const bytes = Buffer.from(JSON.stringify({ ...settings, ...(!parts.selectApp ? { layout: planned.layout } : {}), theme: planned.theme }));
+        intents.push({ path, bytes, expected: current.hash, mode: current.mode });
+      }
+      if (intents.length) await recordCheckpointIntents(request.journalRoot, checkpoint, intents, journal);
     };
     const observeWrites = async <T>(paths: readonly string[], work: () => Promise<T>): Promise<T> => {
       const before = await Promise.all(paths.map(path => snapshot(path)));
@@ -300,7 +312,8 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
     if (runningInPlace) { journal.cutover = preflight.recoveredCutover!; journal.cutoverFingerprint = cutoverFingerprint; }
     let cutoverMetadataChanged = previousCutover !== JSON.stringify([journal.cutover, journal.cutoverFingerprint]);
     const context: SetupContext = { labelContract: HerdrLabelContract, modProps,
-      installed: Object.fromEntries(journal.entries.map(e => [e.path, e.after])), retiredTerminals, priorCutover: journal.cutover,
+      installed: Object.fromEntries(journal.entries.flatMap(e => e.after === null ? [] : [[e.path, e.after] as const])),
+      previousLayout: layoutTargets.legacy?.bytes ?? layoutTargets.target.bytes, retiredTerminals, priorCutover: journal.cutover,
       recordCutover: async (result) => {
         if (result.terminals.some(t => retiredTerminals.includes(t)))
           throw new HerdrError('retired-terminal-reused', 'Fresh owners must not reuse retired terminal IDs');
@@ -347,7 +360,7 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
     ];
     const releasedSounds: string[] = [];
     for (const plan of plans) {
-      if (!plan.updateAfterCutover || plan.managed?.kind !== 'json-paths') continue;
+      if (!plan.updateAfterCutover || plan.managed?.kind !== 'json-paths' || !plan.managed.paths.includes('sounds.enabled')) continue;
       const prior = journal.entries.find(entry => entry.path === plan.path);
       if (prior?.managed?.kind !== 'json-paths' || !journal.verified && prior.managed.paths.includes('sounds.enabled')) continue;
       const rows = JSON.parse(prior.managedAfter ?? '[]') as unknown[];
@@ -366,6 +379,8 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
         releasedSounds.push(plan.path);
       }
     }
+    const migration = layoutTargets.legacy?.hash && plans.some(file => file.path === layoutPath) ? layoutTargets.legacy : undefined;
+    const keysPath = join(request.config.app.home, 'keys.json');
     const files: InstallFile[] = [];
     for (const plan of plans) {
       if (!plan.terminalKeys && !plan.keys) {
@@ -379,16 +394,38 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
       const prior = journal.entries.find(e => e.path === plan.path);
       let refusal: InstallFile['refusal'];
       if (plan.keys) {
-        const desired: Record<string, Readonly<Record<string, KeyBinding>>> = { ...plan.keys };
+        let desired: Record<string, Readonly<Record<string, KeyBinding | null>>> = { ...plan.keys };
         if (plan.terminalKeys) {
           for (const [key, value] of Object.entries(plan.terminalKeys))
             if (desired.terminal?.[key] !== undefined && desired.terminal[key] !== value)
               throw new HerdrError('key-binding-conflict', `Inconsistent terminal key: ${key}`);
           desired.terminal = { ...plan.terminalKeys, ...desired.terminal };
         }
-        const owned: KeySections = { ...prior?.keys, ...(prior?.terminalKeys || prior?.keys?.terminal ? { terminal: { ...prior?.terminalKeys, ...prior?.keys?.terminal } } : {}) };
-        const recorded: Record<string, Readonly<Record<string, KeyBinding>>> = { ...desired };
-        for (const [section, bindings] of Object.entries(plan.retainedKeys ?? {})) {
+        let owned: KeySections = { ...prior?.keys, ...(prior?.terminalKeys || prior?.keys?.terminal ? { terminal: { ...prior?.terminalKeys, ...prior?.keys?.terminal } } : {}) };
+        let keyInput = current.bytes;
+        let retained = plan.retainedKeys;
+        if (plan.path === keysPath && migration) {
+          const renamed = stageLayoutKeyRename(keyInput, desired, owned);
+          keyInput = renamed.bytes; desired = { ...renamed.desired }; owned = renamed.owned;
+          if (retained) {
+            const { [LEGACY_SPIDER_LAYOUT_KEYS]: _legacy, ...other } = retained;
+            retained = other;
+          }
+        } else if (plan.path === keysPath) {
+          const retired = Object.entries(prior?.keys?.[LEGACY_SPIDER_LAYOUT_KEYS] ?? {}).filter(([, value]) => value === null);
+          if (retired.length) {
+            // Copied user keys are not managed by the current recipe. Keep
+            // their rollback records without changing the user bindings again.
+            const carried = retired.flatMap(([key]) => {
+              const value = prior?.keys?.[SPIDER_LAYOUT_KEYS]?.[key];
+              return value != null && !Object.hasOwn(desired[SPIDER_LAYOUT_KEYS] ?? {}, key) ? [[key, value] as const] : [];
+            });
+            retained = { ...retained, [LEGACY_SPIDER_LAYOUT_KEYS]: Object.fromEntries(retired),
+              [SPIDER_LAYOUT_KEYS]: { ...Object.fromEntries(carried), ...retained?.[SPIDER_LAYOUT_KEYS] } };
+          }
+        }
+        const recorded = { ...desired };
+        for (const [section, bindings] of Object.entries(retained ?? {})) {
           const active = { ...desired[section] };
           for (const key of Object.keys(bindings)) delete active[key];
           if (Object.keys(active).length) desired[section] = active;
@@ -396,20 +433,20 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
           recorded[section] = { ...active, ...bindings };
         }
         const managed: ManagedPart = { kind: 'keys', sections: Object.fromEntries(Object.entries(recorded).map(([section, bindings]) => [section, Object.keys(bindings)])) };
-        try { mergeKeys(current.bytes, desired, owned, false, { ignoredKeys: plan.ignoredKeys }); }
+        try { mergeKeys(keyInput, desired, owned, false, { ignoredKeys: plan.ignoredKeys }); }
         catch (error) {
           if (!(error instanceof HerdrError) || error.code !== 'key-binding-conflict') throw error;
           refusal = { code: error.code, message: error.message };
         }
         let bytes: Buffer, refusalRequired = false;
-        try { bytes = mergeKeys(current.bytes, desired, owned, true, { ignoredKeys: plan.ignoredKeys }); }
+        try { bytes = mergeKeys(keyInput, desired, owned, true, { ignoredKeys: plan.ignoredKeys }); }
         catch (error) {
           if (!(error instanceof HerdrError) || error.code !== 'key-binding-conflict') throw error;
           refusal = { code: error.code, message: `${plan.path}: ${error.message}` };
           refusalRequired = true;
           bytes = current.bytes;
         }
-        files.push({ ...plan, keys: recorded, managed, refusal, refusalRequired, bytes });
+        files.push({ ...plan, keys: recorded, retainedKeys: retained, managed, refusal, refusalRequired, bytes });
       } else {
         const owned = prior?.terminalKeys ?? {};
         const managed: ManagedPart = { kind: 'json', section: 'terminal', fields: Object.keys(plan.terminalKeys!) };
@@ -421,9 +458,33 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
         files.push({ ...plan, managed, refusal, bytes: mergeTerminalKeys(current.bytes, plan.terminalKeys!, owned, true) });
       }
     }
-    const layoutPath = join(request.config.app.home, 'layouts/spider-glass.json');
     const layoutPlan = files.find(file => file.path === layoutPath);
-    if (layoutPlan) files.splice(files.indexOf(layoutPlan), 0, ...await planModStorage(request.config.app.home, (await snapshot(layoutPath)).bytes, layoutPlan.bytes));
+    if (layoutPlan) {
+      layoutPlan.observedTargetHash = layoutTargets.target.hash;
+      if (migration) {
+        if ((await snapshot(legacyPath)).hash !== migration.hash)
+          throw new HerdrError('concurrent-settings-edit', `Legacy layout changed after staging: ${legacyPath}`);
+        layoutPlan.mode ??= migration.mode;
+      }
+      files.splice(files.indexOf(layoutPlan), 0, ...await planModStorage(request.config.app.home, context.previousLayout ?? null, layoutPlan.bytes));
+    }
+    const sharedPath = layoutSelectionPath(request.config.app.home);
+    const selection = layoutPlan && parts.selectApp ? await readLayoutSelection(sharedPath) : undefined;
+    const interrupted = selection && !journal.verified && journal.entries.some(entry => entry.path === sharedPath) ? await readCheckpoint(request.journalRoot) : null;
+    const before = interrupted ? checkpointBaseline(interrupted) : [];
+    const freshLook = !migration && (!layoutTargets.target.bytes || before.some(file => file.path === layoutPath && file.hash === null) && !before.some(file => file.path === legacyPath && file.hash !== null));
+    const switchLayout = selection && (freshLook || selection.layout === LEGACY_SPIDER_LAYOUT);
+    const layoutChoiceBytes = (values: Record<string, unknown>) => Buffer.from(JSON.stringify({ ...values, layout: SPIDER_LAYOUT }));
+    const assertLayoutChoice = async () => {
+      const current = await readLayoutSelection(sharedPath);
+      if (current.layout !== selection?.layout) throw new HerdrError('concurrent-settings-edit', `Layout choice changed after preflight: ${sharedPath}`);
+      return current;
+    };
+    const selectionFile: InstallFile | undefined = switchLayout ? {
+      path: sharedPath, expected: selection.hash, bytes: layoutChoiceBytes(selection.values),
+      updateAfterCutover: true, managed: { kind: 'json-paths', paths: ['layout'] },
+    } : undefined;
+    if (selectionFile) files.push(selectionFile);
     for (const file of files) {
       if (!file.managed || file.snapshotOnly) continue;
       const current = await snapshot(file.path);
@@ -444,13 +505,24 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
       }
     const fileActions = await validateFiles(files, journal, request.overwriteUnownedKeys, plannedAppSettings(request), { replaceChanged: request.replaceChanged, planOnly: request.dryRun, pendingBaselines: await pendingCheckpointBaselines(request.journalRoot) });
     const selectionReplacement = fileActions.some(action => action.action === 'replace' && action.path === plannedAppSettings(request).path && files.some(file => file.path === action.path && (file.snapshotOnly || file.updateAfterCutover)));
-    needsAppSelection ||= selectionReplacement;
+    const selectionMode = selectionFile ? freshLook ? 'look' : 'layout'
+      : selectionReplacement && selection?.layout === SPIDER_LAYOUT && !migration ? 'look' : undefined;
+    if (selectionMode && parts.selectApp) context.selectApp = async () => {
+      await assertLayoutChoice();
+      await parts.selectApp!(request, selectionMode);
+      if (selectionFile) {
+        await awaitSpiderSelection(sharedPath);
+        await recordWrites([sharedPath]);
+      }
+    };
+    needsAppSelection ||= !!selectionMode;
     if (selectionReplacement) {
       const file = files.find(file => file.path === plannedAppSettings(request).path)!;
       if (file.snapshotOnly) file.bytes = Buffer.from(JSON.stringify(plannedAppSettings(request).planned));
     }
     if (request.dryRun) {
-      const cutover = [...(cutoverNeeded ? preflight.cutoverActions ?? ['Recheck recorded sessions and open only closed selections'] : []), ...(needsAppSelection ? ['Select the installed layout and theme'] : [])];
+      if (migration) fileActions.push({ path: legacyPath, action: 'remove' });
+      const cutover = [...(cutoverNeeded ? preflight.cutoverActions ?? ['Recheck recorded sessions and open only closed selections'] : []), ...(selectionMode ? [`Select the ${SPIDER_LAYOUT} layout${selectionMode === 'look' ? ' and installed theme' : ''}`] : [])];
       return { plan: { files: fileActions, cutover }, writes: [], probes: [], cutover: journal.cutover, doctor: { failures: [], warnings: [], probes: [] } };
     }
     const runtimes = await parts.ensureRuntime(request, context);
@@ -502,15 +574,21 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
     const unchanged = releasedSounds.length === 0 && fileActions.every(action => action.action === 'unchanged') && journal.verified && !cutoverNeeded && fingerprint === journal.fingerprint && probes.length === 0 && runtimePlans.every(p => p.before === p.runtime.sha256) && (await Promise.all(files.map(async file => file.snapshotOnly || (await snapshot(file.path)).hash === digest(file.bytes)))).every(Boolean);
     await ensureSessionFeedDirectory(request.config.globalRoot, false);
     const endpointPlan = await parts.paneEndpointPlan?.(request);
-    const checkpointPaths = [...files.map(file => file.path), layoutPath, join(request.config.app.home, 'keys.json'),
+    const checkpointPaths = [...(migration ? [legacyPath] : []), ...files.map(file => file.path), layoutPath, keysPath,
       plannedAppSettings(request).path, join(request.config.globalRoot, 'herdr/spaces/spaces.json'),
       join(request.config.globalRoot, 'herdr/installation.json'), join(request.journalRoot, 'journal.json'), ...(endpointPlan?.paths ?? [])];
     const runtimeTemplates = new Set(runtimeTemplatePaths(request));
     const runtimeRewritten = (file: InstallFile) => file.path === layoutPath || file.copyFrom || runtimeTemplates.has(file.path);
-    const substantive = fileActions.some(action => action.action !== 'unchanged' && files.some(file => file.path === action.path && !file.snapshotOnly && !runtimeRewritten(file) && digest(file.bytes) !== file.expected)) || !!endpointPlan?.changed;
+    const substantive = !!migration || !!selectionFile || fileActions.some(action => action.action !== 'unchanged' && files.some(file => file.path === action.path && !file.snapshotOnly && !runtimeRewritten(file) && digest(file.bytes) !== file.expected)) || !!endpointPlan?.changed;
     if (!unchanged || endpointPlan?.changed || !endpointPlan && parts.stagePaneEndpoint || cutoverMetadataChanged || runningInPlace && preflight.cutoverNeedsRecheck && parts.persistCutover)
       checkpoint = await beginRunCheckpoint(request.journalRoot, checkpointPaths, substantive);
     try {
+      if (migration) {
+        const saved = checkpoint?.runs.at(-1)?.before.find(file => file.path === legacyPath);
+        if (!saved || saved.hash !== migration.hash || saved.mode !== migration.mode)
+          throw new HerdrError('concurrent-settings-edit', `Legacy layout changed before backup: ${legacyPath}`);
+        await checkpointBytes(request.journalRoot, saved);
+      }
       if (checkpoint && endpointPlan?.files) await recordCheckpointIntents(request.journalRoot, checkpoint, endpointPlan.files, journal);
       if (runningInPlace && preflight.cutoverNeedsRecheck && parts.persistCutover) {
         journal.cutover = await observeWrites([join(request.config.globalRoot, 'herdr/spaces/spaces.json')], () => parts.persistCutover!(request));
@@ -546,12 +624,17 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
       journal.fingerprint = fingerprint;
       journal.verified = false;
       journal.retiredTerminals = retiredTerminals;
+      if (selectionFile) {
+        const current = await assertLayoutChoice();
+        selectionFile.expected = current.hash;
+        selectionFile.bytes = layoutChoiceBytes(current.values);
+      }
       await prepareBackups(request.journalRoot, files, journal);
       if (checkpoint) await recordCheckpointIntents(request.journalRoot, checkpoint, files, journal);
       await prepareModDirectories(request.journalRoot, request.config.app.home, files, journal, recordWrites);
       const writes = [...endpointWrites, ...await applyFiles(request.journalRoot, files.filter(file => !file.updateAfterCutover), journal, recordWrites)];
       for (const file of appFiles)
-        if ((await snapshot(file.path)).hash !== file.expected) throw new HerdrError('concurrent-settings-edit', `Changed before app selection: ${file.path}`);
+        if (file !== selectionFile && (await snapshot(file.path)).hash !== file.expected) throw new HerdrError('concurrent-settings-edit', `Changed before app selection: ${file.path}`);
       for (const path of releasedSounds) parts.warn(`${path}: sounds.enabled was changed by the user and released.`);
       for (const { runtime, before } of runtimePlans) {
         const installed = await readRuntime(parts, runtime);
@@ -568,22 +651,24 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
       await bootstrap();
       let cutover = journal.cutover;
       try {
-        if (cutoverNeeded || selectionReplacement) {
+        if (cutoverNeeded || selectionMode) {
           if (cutoverNeeded) { journal.cutoverPending = true; await saveSetupJournal(); }
           let selectionError: unknown;
           try {
-            await recordSelectionIntent();
-            if (cutoverNeeded) cutover = await observeWrites([layoutPath, plannedAppSettings(request).path, join(request.config.globalRoot, 'herdr/spaces/spaces.json')], () => context.priorCutover && !needsAppSelection && parts.reconcileCutover ? parts.reconcileCutover(request, context) : parts.cutover(request, context));
+            await recordSelectionIntent(selectionMode, selectionFile);
+            const selectionPaths = [layoutPath, plannedAppSettings(request).path];
+            if (cutoverNeeded) cutover = await observeWrites([...selectionPaths, join(request.config.globalRoot, 'herdr/spaces/spaces.json')], () => context.priorCutover && !needsAppSelection && parts.reconcileCutover ? parts.reconcileCutover(request, context) : parts.cutover(request, context));
             else {
-              if (!parts.selectApp) throw new HerdrError('app-selection-unavailable', 'App selection is unavailable; run setup again');
-              await observeWrites([plannedAppSettings(request).path], () => parts.selectApp!(request));
+              if (!context.selectApp) throw new HerdrError('app-selection-unavailable', 'App selection is unavailable; run setup again');
+              await observeWrites(selectionPaths, context.selectApp);
             }
           } catch (error) { selectionError = error; }
           try {
             for (const file of files.filter(file => file.snapshotOnly || file.updateAfterCutover)) {
               const current = await snapshot(file.path);
+              if (file === selectionFile && managedProjection(current.bytes, file.managed!) !== managedProjection(file.bytes, file.managed!)) continue;
               const entry = journal.entries.find(entry => entry.path === file.path)!;
-              entry.after = current.hash ?? digest(Buffer.alloc(0));
+              entry.after = current.hash;
               if (file.managed) entry.managedAfter = managedProjection(current.bytes, file.managed);
             }
             await saveSetupJournal();
@@ -620,6 +705,17 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
           if (soundError !== undefined) throw soundError;
         }
         if (!cutover) throw new HerdrError('cutover-reconciliation-required', 'No completed cutover was recorded');
+        if (migration && checkpoint) {
+          if ((await readLayoutSelection(sharedPath)).layout === LEGACY_SPIDER_LAYOUT)
+            throw new HerdrError('layout-selection-not-saved', `Herdr still has ${LEGACY_SPIDER_LAYOUT} selected in ${sharedPath}; the old layout was kept.`);
+          await recordCheckpointIntents(request.journalRoot, checkpoint, [{ path: legacyPath, bytes: null, expected: migration.hash }], journal);
+          if (!await hasLegacyLayout(request.config.app.home)) throw new HerdrError('concurrent-settings-edit', `Layout name changed after backup: ${legacyPath}`);
+          await removeFile(legacyPath, migration.hash!);
+          await recordWrites([legacyPath]);
+          const oldEntry = journal.entries.find(entry => entry.path === legacyPath);
+          if (oldEntry) oldEntry.after = null;
+          writes.push(legacyPath);
+        }
         journal.cutoverFingerprint = cutoverFingerprint;
         journal.launcherNodePath = process.execPath;
         if (cutover.terminals.some(t => retiredTerminals.includes(t)))
@@ -697,12 +793,19 @@ export async function undoHerdrUpgrade(request: SetupRequest, parts: SetupParts)
     const journal = await readJournal(request.journalRoot);
     const checkpoint = await readCheckpoint(request.journalRoot);
     const dataRoot = join(request.config.app.home, 'data') + '/';
+    const spider = spiderLayoutPath(request.config.app.home), legacy = legacySpiderLayoutPath(request.config.app.home);
+    const savedPaths = checkpoint ? checkpointBaseline(checkpoint) : [];
+    const legacySaved = savedPaths.some(file => file.path === legacy);
+    // Undo of a rename restores the old file exactly, including bytes the
+    // look composer couldn't parse. Only same-name changes use a reverse edit.
+    const layoutPath = legacySaved ? savedPaths.some(file => file.path === spider) ? undefined : legacy : spider;
+    const shared = layoutSelectionPath(request.config.app.home);
     try { return await undoUpgrade(request.journalRoot, {
       replaceChanged: request.replaceChanged,
-      ownerPaths: [join(request.config.globalRoot, 'herdr/spaces/spaces.json'), join(request.journalRoot, 'journal.json'), join(request.config.app.home, 'layouts/spider-glass.json'), plannedAppSettings(request).path],
+      ownerPaths: [join(request.config.globalRoot, 'herdr/spaces/spaces.json'), join(request.journalRoot, 'journal.json'), ...(layoutPath ? [layoutPath] : []), plannedAppSettings(request).path, ...(savedPaths.some(file => file.path === shared) ? [shared] : [])],
       managed: new Map(journal.entries.flatMap(entry => entry.managed ? [[entry.path, entry.managed] as const] : [])),
       runtimePaths: [join(request.config.globalRoot, 'herdr/spaces/spaces.json')],
-      layoutPath: join(request.config.app.home, 'layouts/spider-glass.json'),
+      layoutPath,
       removedMods: checkpoint ? checkpointBaseline(checkpoint).filter(file => file.hash === null && dirname(dirname(file.path)) === join(request.config.app.home, 'mods') && basename(file.path) === 'mod.json').map(file => basename(dirname(file.path))) : [],
       runtimeStorePaths: checkpoint?.runs.flatMap(run => run.before.map(file => file.path)).filter(path => path.startsWith(dataRoot) && /^spider-[a-zA-Z0-9_-]+\/store(?:-[a-f0-9]+)?\.json$/.test(path.slice(dataRoot.length))) ?? [],
       runtimeRewrittenPaths: runtimeTemplatePaths(request),
@@ -742,6 +845,7 @@ export async function rollbackHerdr(request: SetupRequest, parts: SetupParts): P
       [request.config.shellRc]: [join(request.config.globalRoot, 'herdr/resume.sh')],
       [join(request.config.agentDirectory, 'settings.json')]: [join(request.config.agentDirectory, 'themes/dracula-plus-glass.json')],
       [join(request.config.app.home, 'settings.json')]: appArtifacts,
+      [layoutSelectionPath(request.config.app.home)]: appArtifacts,
       [join(request.config.app.home, 'keys.json')]: appArtifacts,
     };
     const restored = await rollbackFiles(request.journalRoot, journal, { dependencies, appSettings, warn: message => parts.warn(message) });

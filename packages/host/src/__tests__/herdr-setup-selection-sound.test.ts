@@ -24,14 +24,18 @@ if (args[0] === 'do' && (args[1] === 'layout.switch' || args[1] === 'app.theme')
   const settings = JSON.parse(readSettings(path, 'utf8'));
   recordSettings(${JSON.stringify(seen)}, JSON.stringify(settings.sounds ?? null) + '\\n');
   delete settings.sounds;
-  settings[args[1] === 'layout.switch' ? 'layout' : 'theme'] = args[args.indexOf('--name') + 1];
+  const choice = args[args.indexOf('--name') + 1];
+  if (args[1] === 'layout.switch') {
+    const shared = process.env.HERDR_APP_HOME + '/shared.json';
+    saveSettings(shared, JSON.stringify({ ...JSON.parse(readSettings(shared, 'utf8')), layout: choice }));
+  } else settings.theme = choice;
   saveSettings(path, JSON.stringify(settings)); console.log('{}'); process.exit(0);
 }
 ` + await readFile(script, 'utf8'));
   const result = await setupHerdr(f.request, f.parts);
   expect(result.doctor.failures).toEqual([]);
   expect(await readFile(seen, 'utf8')).toBe('null\nnull\n');
-  expect(JSON.parse(await readFile(settings, 'utf8'))).toEqual({ zoom: 1.25, theme: 'spider-glass', layout: 'spider-glass', sounds: { enabled: false } });
+  expect(JSON.parse(await readFile(settings, 'utf8'))).toEqual({ zoom: 1.25, theme: 'spider-glass', sounds: { enabled: false } });
   expect((await readJournal(f.request.journalRoot)).entries.find(entry => entry.path === settings)?.soundApplied).toBe(true);
   expect((await setupHerdr(f.request, f.parts)).writes).toEqual([]);
   await rollbackHerdr(f.request, f.parts);

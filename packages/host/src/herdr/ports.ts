@@ -31,6 +31,8 @@ import { applyLookPatches, selectLookPatches, applyModPatches, hasNativeLookFeat
 import { notificationAgentPatches } from '@spider/herdr/look/notification-patches';
 import { applyCrossMachinePatches, crossMachineKinds, selectCrossMachinePatches, type CrossMachineLookRecipe } from '@spider/herdr/look/cross-machine';
 import { buildGlassLayout } from '@spider/herdr/look/layout';
+import { LEGACY_SPIDER_LAYOUT_KEYS, SPIDER_LAYOUT, SPIDER_LAYOUT_KEYS, layoutSelectionPath, spiderLayoutPath } from '@spider/herdr/look/names';
+import { readLayoutSelection } from '@spider/herdr/setup/layout-rename';
 import { prepareFonts } from '@spider/herdr/look/fonts';
 import { checkThemeContrast, type PiThemeData } from '@spider/herdr/look/contrast';
 import { readGlobalHerdrTemplateFiles } from '@spider/herdr/templates/register';
@@ -589,7 +591,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     const keys = JSON.parse(await readFile(join(packageRoot, 'packages/herdr/assets/keys.json'), 'utf8')) as Record<string, Record<string, KeyBinding>>;
     if (!selected?.crossMachine) {
       for (const key of ['cmd-t', 'cmd-d', 'cmd-shift-d']) delete keys.global?.[key];
-      delete keys['layout:spider-glass']?.['cmd-shift-w'];
+      delete keys[SPIDER_LAYOUT_KEYS]?.['cmd-shift-w'];
     }
     return keys;
   };
@@ -602,7 +604,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
   const unknownPickerKeys = (bytes: Buffer | null, prior: KeySections | undefined): { ignored: KeyFields; retained: KeySections } => {
     const ignored = new Map<string, Set<string>>();
     const add = (section: string, key: string) => { const fields = ignored.get(section) ?? new Set<string>(); fields.add(key); ignored.set(section, fields); };
-    add('layout:spider-glass', 'cmd-shift-w');
+    add(SPIDER_LAYOUT_KEYS, 'cmd-shift-w');
     for (const [section, bindings] of Object.entries(prior ?? {})) for (const [key, value] of Object.entries(bindings)) if (pickerBinding(value)) add(section, key);
     try {
       const current: unknown = JSON.parse(bytes?.toString('utf8') ?? '{}');
@@ -612,7 +614,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     const retained: Record<string, Record<string, KeyBinding>> = {};
     for (const [section, fields] of ignored) for (const key of fields) {
       const binding = prior?.[section]?.[key];
-      if (binding !== undefined) (retained[section] ??= {})[key] = binding;
+      if (binding != null) (retained[section] ??= {})[key] = binding;
     }
     return { ignored: Object.fromEntries([...ignored].map(([section, fields]) => [section, [...fields]])), retained };
   };
@@ -622,7 +624,8 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       ['global', 'cmd-t', 'mod.open:spider-machine-picker'],
       ['global', 'cmd-d', 'mod.open:spider-machine-picker-right'],
       ['global', 'cmd-shift-d', 'mod.open:spider-machine-picker-down'],
-      ['layout:spider-glass', 'cmd-shift-w', 'spider-pane.close'],
+      [SPIDER_LAYOUT_KEYS, 'cmd-shift-w', 'spider-pane.close'],
+      [LEGACY_SPIDER_LAYOUT_KEYS, 'cmd-shift-w', 'spider-pane.close'],
     ] as const;
     let current: Record<string, Record<string, unknown>> = {};
     try { current = JSON.parse(bytes?.toString('utf8') ?? '{}'); } catch { /* key validation reports malformed input */ }
@@ -706,11 +709,12 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       }];
     }));
     const current = JSON.parse(await readFile(join(request.config.app.home, 'layouts/main.json'), 'utf8'));
-    const layoutPath = join(request.config.app.home, 'layouts/spider-glass.json');
+    const layoutPath = spiderLayoutPath(request.config.app.home);
     const installedLayout = await snapshot(layoutPath);
+    const previousBytes = context.previousLayout === undefined ? installedLayout.bytes : context.previousLayout;
     let previous: unknown;
-    if (installedLayout.bytes) {
-      try { previous = JSON.parse(installedLayout.bytes.toString('utf8')); }
+    if (previousBytes) {
+      try { previous = JSON.parse(previousBytes.toString('utf8')); }
       catch (error) {
         // A malformed layout has no value to carry forward. The replace guard still applies.
         if (!(error instanceof SyntaxError)) throw error;
@@ -878,7 +882,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       const selected = item === 'keys' ? fallback ? undefined : await optionalPickerLook(request) : ['mods', 'clones', 'patch-version', 'layout-theme'].includes(item) ? fallback?.selection ?? await releaseLook(request) : undefined;
       const release = selected?.upstreamVersion;
       const hasToast = await toastAvailable(release, request.config.app.home);
-      const context: SetupContext = { labelContract: HerdrLabelContract, installed: Object.fromEntries(journal.entries.map(entry => [entry.path, entry.after])), retiredTerminals: [], priorCutover: journal.cutover, recordCutover: async () => { throw new HerdrError('doctor-read-only', 'Doctor cannot record a cutover'); }, modProps: modNames(selected, hasToast).map(name => ({ directory: join(request.config.app.home, 'mods', `spider-${name}`), props: { modId: `spider-${name}`, feedRoot: join(request.config.globalRoot, 'herdr'), cliPath: join(packageRoot, 'dist/herdr/cli.mjs'), nodePath: process.execPath, appBinary: request.config.app.binary, configPath: request.configPath, labelContract: HerdrLabelContract } })) };
+      const context: SetupContext = { labelContract: HerdrLabelContract, installed: Object.fromEntries(journal.entries.flatMap(entry => entry.after === null ? [] : [[entry.path, entry.after] as const])), retiredTerminals: [], priorCutover: journal.cutover, recordCutover: async () => { throw new HerdrError('doctor-read-only', 'Doctor cannot record a cutover'); }, modProps: modNames(selected, hasToast).map(name => ({ directory: join(request.config.app.home, 'mods', `spider-${name}`), props: { modId: `spider-${name}`, feedRoot: join(request.config.globalRoot, 'herdr'), cliPath: join(packageRoot, 'dist/herdr/cli.mjs'), nodePath: process.execPath, appBinary: request.config.app.binary, configPath: request.configPath, labelContract: HerdrLabelContract } })) };
       const compareFiles = async (files: readonly InstallFile[]) => {
         for (const file of files) if (!(await snapshot(file.path)).bytes?.equals(file.bytes)) {
           if (item === 'mods' || item === 'clones') { const notice = installedModMismatchNotice(file.path); return failure('installed-artifact-changed', notice.message, notice.repair); }
@@ -930,7 +934,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         return { failures: [] };
       }
       if (item === 'layout-theme') {
-        const path = join(request.config.app.home, 'layouts/spider-glass.json'), layout = JSON.parse(await readFile(path, 'utf8'));
+        const path = spiderLayoutPath(request.config.app.home), layout = JSON.parse(await readFile(path, 'utf8'));
         if (layout.theme !== 'spider-glass') return failure('layout-theme-mismatch', 'Installed layout does not use spider-glass');
         const blur = hasNativeLookFeatures(release) && request.config.look?.windowBlur !== false;
         if (blur ? layout.window_blur !== true : Object.hasOwn(layout, 'window_blur')) return failure('window-blur-mismatch', 'Installed window blur differs from the verified release and configured preference');
@@ -951,12 +955,12 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         for (const name of ['agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome']) if (!isDeepStrictEqual(installed.get(`spider-${name}`), expected.get(`spider-${name}`))) return failure('layout-props-mismatch', `Installed spider-${name} props differ from the current configuration`);
         if (!(await snapshot(join(request.config.app.home, 'themes/spider-glass.json'))).bytes?.equals(await readFile(join(packageRoot, 'packages/herdr/assets/themes/spider-glass.json')))) return failure('app-theme-mismatch', 'Installed Herdr theme differs');
         const settings = JSON.parse((await snapshot(join(request.config.app.home, 'settings.json'))).bytes?.toString() ?? '{}');
-        if (settings.theme !== undefined && settings.theme !== 'spider-glass' || settings.layout !== undefined && settings.layout !== 'spider-glass') return failure('app-selection-mismatch', 'App selection differs from spider-glass');
+        const { layout: activeLayout } = await readLayoutSelection(layoutSelectionPath(request.config.app.home));
         const information: DoctorInformation[] = [
           { item, code: 'native-sound-policy', message: settings.sounds?.enabled === true ? 'Native automatic sounds are enabled by the user.' : settings.sounds?.enabled === false ? (hasToast ? 'Native automatic sounds are disabled and the derived toast is selected.' : 'Native automatic sounds are disabled; stock automatic toasts can still appear.') : 'Native automatic sound setting is not available.' },
           { item, code: 'intentional-sound-policy', message: `Intentional notification sounds are ${request.config.notifications?.sound === false ? 'disabled' : 'enabled'}.` },
         ];
-        if (settings.theme === undefined || settings.layout === undefined) return { failures: [], information, warnings: [{ item, code: 'inspection-unavailable', message: 'Installed layout and theme are valid; active app selection is not exposed in settings', repair: 'Check the app layout and theme selection, then rerun doctor.' }] };
+        if (activeLayout === undefined) return { failures: [], information, warnings: [{ item, code: 'inspection-unavailable', message: 'Installed layout and theme are valid; Herdr has not saved an active layout in shared.json', repair: 'Check the layout picker in Herdr, then rerun doctor.' }] };
         return { failures: [], information };
       }
       if (item === 'keys') {
@@ -1125,8 +1129,13 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       // Root probes made during this setup run. Verification reuses them instead of launching another per machine.
       const rootProbes = new Map<string, string>(), rootKey = (launch: HcRunRequest) => JSON.stringify([launch.on, launch.argv]);
       const probeRoot = async (launch: HcRunRequest) => { const output = await probe(request, launch); rootProbes.set(rootKey(launch), output); return output; };
-      const selectApp = async () => {
-        for (const [name, args] of [['layout.switch', { name: 'spider-glass' }], ['app.theme', { name: 'spider-glass' }]] as const) { const reply = await getSpaces().app.command(name, args); if (reply.error) throw new HerdrError(reply.error.code, reply.error.message); }
+      const selectApp: NonNullable<SetupParts['selectApp']> = async (_, mode) => {
+        const layout = await getSpaces().app.command('layout.switch', { name: SPIDER_LAYOUT });
+        if (layout.error) throw new HerdrError(layout.error.code, layout.error.message);
+        if (mode === 'look') {
+          const theme = await getSpaces().app.command('app.theme', { name: 'spider-glass' });
+          if (theme.error) throw new HerdrError(theme.error.code, theme.error.message);
+        }
       };
       const runSpaces = async (request: SetupRequest, context: SetupContext, selectLook: boolean) => {
         const spaces = getSpaces();
@@ -1138,7 +1147,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         const recovery = result.conflicts?.length ? await readCutoverRecovery(spaces.journalRoot) : null;
         const owners = recovery ? recovery.entries.flatMap(entry => entry.result ? [entry.result] : []) : result.launched;
         const cutover = { terminals: result.tabs.map(tab => tab.terminal), identities: Object.fromEntries(owners.map(owner => [owner.sessionId, owner.startIdentity])) };
-        if (selectLook && !result.conflicts?.length) await selectApp();
+        if (selectLook && !result.conflicts?.length) await context.selectApp?.();
         await context.recordCutover(cutover);
         if (result.conflicts?.length) throw new HerdrError('duplicate-live-session', result.conflicts.map(conflict => duplicateSessionNotice(conflict.sessionId, conflict.terminals)).join('\n'));
         return cutover;
@@ -1240,7 +1249,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           const sounds = (rawSounds ?? {}) as Record<string, unknown>;
           if (sounds.enabled !== undefined && typeof sounds.enabled !== 'boolean') throw new HerdrError('invalid-app-settings', 'App settings sounds.enabled must be boolean');
           const bytes = Buffer.from(JSON.stringify({ ...appSettings, sounds: { ...sounds, enabled: false } }, null, 2) + '\n');
-          return [...await filesFor(files, context), { path: keyPath, expected: currentKeys.hash, bytes: Buffer.alloc(0), keys, retainedKeys: preserved?.retained, ignoredKeys: preserved?.ignored, collision: 'key' as const }, { path: settingsPath, expected: settings.hash, bytes, updateAfterCutover: true, managed: { kind: 'json-paths' as const, paths: ['theme', 'layout', 'sounds.enabled'] } }];
+          return [...await filesFor(files, context), { path: keyPath, expected: currentKeys.hash, bytes: Buffer.alloc(0), keys, retainedKeys: preserved?.retained, ignoredKeys: preserved?.ignored, collision: 'key' as const }, { path: settingsPath, expected: settings.hash, bytes, updateAfterCutover: true, managed: { kind: 'json-paths' as const, paths: ['theme', 'sounds.enabled'] } }];
         }, generateTemplates: (request, context) => templates(request, context),
         installResume: async (request, context) => {
           const hookPath = join(request.config.globalRoot, 'herdr/resume.sh'), current = await snapshot(request.config.shellRc);

@@ -63,10 +63,19 @@ beforeAll(async () => {
   await writeFile(join(h.directories.app, 'settings.json'), '{"theme":"stock"}');
   await writeFile(join(h.directories.agent, 'settings.json'), '{"theme":"stock"}');
   const script = join(h.root, 'app-selection.mjs');
-  await writeFile(script, `import { readFileSync, writeFileSync } from 'node:fs';
-const args = process.argv.slice(2), path = process.env.HERDR_APP_HOME + '/settings.json';
+  await writeFile(script, `import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+const args = process.argv.slice(2);
 if (args[0] === '--version') console.log('herdr-app 0.1.12');
-else if (args[0] === 'do') { const settings = JSON.parse(readFileSync(path, 'utf8')); if (args[1] === 'layout.switch') settings.layout = args[args.indexOf('--name') + 1]; if (args[1] === 'app.theme') settings.theme = args[args.indexOf('--name') + 1]; writeFileSync(path, JSON.stringify(settings)); console.log('{}'); }
+else if (args[0] === 'do') {
+  const layout = args[1] === 'layout.switch';
+  if (layout || args[1] === 'app.theme') {
+    const path = process.env.HERDR_APP_HOME + (layout ? '/shared.json' : '/settings.json');
+    const values = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {};
+    values[layout ? 'layout' : 'theme'] = args[args.indexOf('--name') + 1];
+    writeFileSync(path, JSON.stringify(values));
+  }
+  console.log('{}');
+}
 else console.log('{"spaces":[]}');\n`);
   const app = join(h.root, 'app-selection');
   await writeFile(app, `#!/bin/sh\nexec '${process.execPath}' '${script}' "$@"\n`);
@@ -97,7 +106,7 @@ else console.log('{"spaces":[]}');\n`);
       }
       if (plan.path === join(request.config.app.home, 'mods/spider-agents/spider-children.js')) bytes = await readFile(join(previous, 'children.js'));
       if (plan.path === join(request.config.app.home, 'mods/spider-tabs/spider.svg')) bytes = await readFile(join(previous, 'spider.svg'));
-      if (plan.path === join(request.config.app.home, 'layouts/spider-glass.json')) {
+      if (plan.path === join(request.config.app.home, 'layouts/Spider.json')) {
         const layout = JSON.parse(bytes.toString());
         const walk = (node: any): void => {
           if (node.content?.tab === 'active') Object.assign(node.content.pane, oldEdits.pane);
@@ -116,7 +125,7 @@ else console.log('{"spaces":[]}');\n`);
   const iconPath = join(h.directories.app, 'mods/spider-tabs/spider.svg');
   const oldIcon = await readFile(iconPath);
   const oldJournal = await readJournal(request.journalRoot);
-  const previousLayout = JSON.parse(await readFile(join(h.directories.app, 'layouts/spider-glass.json'), 'utf8'));
+  const previousLayout = JSON.parse(await readFile(join(h.directories.app, 'layouts/Spider.json'), 'utf8'));
   const previousAgents = await readFile(join(h.directories.app, 'mods/spider-agents/main.js'), 'utf8');
   const oldChevronAbsent = await readFile(join(h.directories.app, 'mods/spider-agents/chevron-up.svg')).then(() => false, (error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return true; throw error; });
   await writeFile(iconPath, Buffer.concat([oldIcon, Buffer.from('<!-- user edit -->')]));
@@ -247,10 +256,10 @@ describe('installed agents sidebar', () => {
     expect(old.oldJournalHash).toBe(old.oldIconHash);
     expect(old.oldChevronAbsent).toBe(true);
     expect(old.refusedEdit).toBe(true); expect(old.editPreserved).toBe(true);
-    const paths = ['layouts/spider-glass.json', 'mods/spider-agents/main.js', 'mods/spider-agents/spider-children.js', 'mods/spider-agents/chevron-up.svg', 'mods/spider-spaces/main.js', 'mods/spider-tabs/spider.svg'];
+    const paths = ['layouts/Spider.json', 'mods/spider-agents/main.js', 'mods/spider-agents/spider-children.js', 'mods/spider-agents/chevron-up.svg', 'mods/spider-spaces/main.js', 'mods/spider-tabs/spider.svg'];
     for (const path of paths) expect(old.writes).toContain(join(appHome, path));
     expect(old.probes).toEqual([]);
-    const installed = JSON.parse(await readFile(join(appHome, 'layouts/spider-glass.json'), 'utf8'));
+    const installed = JSON.parse(await readFile(join(appHome, 'layouts/Spider.json'), 'utf8'));
     expect(find(installed, 'main').content.pane.border).toEqual({ width: 1, color: '#38383a' });
     expect(find(installed, 'panel')).toMatchObject({ radius: 12, border: { width: 1, color: '#38383a' }, padding: 5, background: '#161618f0' });
     expect(find(installed, 'status')).toBeUndefined();
@@ -264,7 +273,7 @@ describe('installed agents sidebar', () => {
   test('setup refuses relabelled sources and unlisted releases before changing installed files', async () => {
     const h = harness!, app = join(h.root, 'app-selection');
     const original = await readFile(app, 'utf8');
-    const layout = join(h.directories.app, 'layouts/spider-glass.json');
+    const layout = join(h.directories.app, 'layouts/Spider.json');
     const before = await readFile(layout);
     await writeFile(app, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 'herdr-app 0.1.13'; else exec '${process.execPath}' '${join(h.root, 'app-selection.mjs')}' "$@"; fi\n`);
     try {

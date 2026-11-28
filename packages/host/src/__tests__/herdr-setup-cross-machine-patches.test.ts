@@ -56,7 +56,7 @@ test.each([
 for (const version of ['0.1.13', '0.1.16'] as const) {
   test(`${version} publishes complete mods before the layout can reference them`, async () => {
     const f = await fastRelease(version), mods = join(f.h.directories.app, 'mods');
-    const layout = join(f.h.directories.app, 'layouts/spider-glass.json');
+    const layout = join(f.h.directories.app, 'layouts/Spider.json');
     const incomplete: string[] = [], published: string[] = [];
     const inspect = async (directory: string) => {
       const files = await readdir(directory).catch((): string[] => []);

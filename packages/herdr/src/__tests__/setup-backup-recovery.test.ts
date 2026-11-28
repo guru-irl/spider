@@ -67,9 +67,9 @@ test('B layout close ownership survives restart and preserves a later user close
   await writeFile(path, JSON.stringify(baseline)); const keys = JSON.parse(await readFile(new URL('../../assets/keys.json', import.meta.url), 'utf8')), install = f.parts.installFiles;
   f.parts.installFiles = async (request, context) => [...await install(request, context), { path, expected: hash(await readFile(path)), bytes: Buffer.alloc(0), keys }];
   await setupHerdr(f.request, f.parts); const installed = JSON.parse(await readFile(path, 'utf8'));
-  expect(installed['layout:spider-glass']['cmd-shift-w']).toBe('spider-pane.close'); installed['layout:spider-glass']['cmd-shift-w'] = 'my.close'; await writeFile(path, JSON.stringify(installed));
+  expect(installed['layout:Spider']['cmd-shift-w']).toBe('spider-pane.close'); installed['layout:Spider']['cmd-shift-w'] = 'my.close'; await writeFile(path, JSON.stringify(installed));
   await readJournal(f.request.journalRoot); await rollbackHerdr(f.request, f.parts);
-  const restored = JSON.parse(await readFile(path, 'utf8')); expect(restored.global).toEqual(baseline.global); expect(restored.terminal).toEqual(baseline.terminal); expect(restored['layout:spider-glass']).toEqual({ 'cmd-shift-w': 'my.close' });
+  const restored = JSON.parse(await readFile(path, 'utf8')); expect(restored.global).toEqual(baseline.global); expect(restored.terminal).toEqual(baseline.terminal); expect(restored['layout:Spider']).toEqual({ 'cmd-shift-w': 'my.close' });
 });
 
 test('rollback preserves an unproved remote owner after the display disappears', async () => {

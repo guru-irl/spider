@@ -43,7 +43,7 @@ it("doctor inspects the v0 control socket and points to the v0 service log", asy
   const root=fixture(), directory=join(root,"Library","LaunchAgents");
   mkdirSync(directory,{recursive:true});writeFileSync(hubServiceFile(root,directory,"v0"),"fixture definition");
   const unexpected=async()=>{throw new Error("doctor must not send a mutation request");};
-  const endpoint=await serveV0Control(root,{relocate:unexpected,setHome:unexpected});
+  const endpoint=await serveV0Control(root,{relocate:unexpected,setHome:unexpected,sync:unexpected});
   try {
     const state=await inspectHubService(root,async()=>({code:0,stdout:"state = running\npid = 123\n"}),directory);
     expect(state).toMatchObject({running:true,socketAvailable:true});

@@ -28,7 +28,8 @@ export function renderModels(entries: ModelEntry[], defaults: Record<string, str
       if (row.vision) badges.push(theme.fg("dim", "V"));
       const badge = badges.length ? ` ${badges.join("")}` : "";
       const dflt = row.isDefaultFor.length ? theme.fg("success", ` ${icon(theme.iconStyle, "modelDefault")} ${row.isDefaultFor.map(roleLabel).join(",")}`) : "";
-      body.push(trim(`${indent}${glyph} ${theme.fg("text", row.ref)}${badge}${dflt}`, width, ""));
+      const name = theme.modelName?.(row.ref)?.trim() || row.ref;
+      body.push(trim(`${indent}${glyph} ${theme.fg("text", name)}${badge}${dflt}`, width, ""));
       if (row.thinkingLevels.length) body.push(trim(theme.fg("dim", `${indent}  thinking: ${row.thinkingLevels.join(", ")}`), width, ""));
     }
   }

@@ -37,6 +37,7 @@ import { trackReloadActivity } from "./reload-activity.js";
 import { createTimeMath } from "./loop/time-math";
 import { registerUsage } from "./usage/mount.js";
 import { makeRunCostFormatter } from "./run-credits.js";
+import { modelName } from "./model-name.js";
 import { registerUsageDashboardCommand } from "./usage/dashboard-command.js";
 import { dispatch, registerAction as registerGlobalAction, clearActions, type ActionHandler, type ActionCtx, type SpiderArgs } from "./dispatch";
 import { registerSlashCommands } from "./slash";
@@ -1031,6 +1032,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   }, () => piLoadedSkills(pi), sessionId => accounting.factory(sessionId), ordinaryWorkAllowed);
   setForHost(organismRuntimes, organism);
   let currentContext: unknown;
+  const displayModel = (ref: string) => modelName((currentContext as ExtensionContext | undefined)?.modelRegistry, ref);
   const iconStyle = () => {
     try { return controlConfig("get", cwdOf(currentContext) ?? process.cwd(), "ui.icons") === "nerd" ? "nerd" as const : "text" as const; }
     catch { return "text" as const; } // A config read failure must not break TUI rendering.
@@ -1298,7 +1300,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
     parameters: SPIDER_PARAMETERS,
     renderCall: (args: any, theme: any, context: any) => flushLeft(renderSpiderCall(args, theme, { ...context, iconStyle: iconStyle() })),
     renderResult: (result: any, options: any, theme: any, context: any) => flushLeft(renderSpiderResult(result, options, theme,
-      { ...context, iconStyle: iconStyle(), formatRunCost: makeRunCostFormatter(() => usageServices.get(pi)?.snapshot()) })),
+      { ...context, iconStyle: iconStyle(), modelName: displayModel, formatRunCost: makeRunCostFormatter(() => usageServices.get(pi)?.snapshot()) })),
     async execute(toolCallId, args, signal, onUpdate, ctx) {
       if (!ordinaryWorkAllowed()) throw new Error("Session ownership is not available; run /spider roam doctor.");
       // Stream partial output the way pi's built-in bash tool does. The FIRST call is an
@@ -1369,13 +1371,13 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
 
   // Expand a completion card to see the full curated output.
   pi.registerMessageRenderer?.("spider.subagent_done", withClickExpansion((message, options, theme) =>
-    renderSubagentDone(message, options, theme, iconStyle()),
+    renderSubagentDone(message, options, theme, iconStyle(), displayModel),
   ));
 
   // Slash commands (/spider, /doctor, /stats, …) emit a spider.command message; render its
   // output lines themed in the transcript instead of an ephemeral toast.
   pi.registerMessageRenderer?.("spider.command", withClickExpansion((message, options, theme) =>
-    renderCommandOutput(message, options, theme, iconStyle()),
+    renderCommandOutput(message, options, theme, iconStyle(), displayModel),
   ));
 
   pi.registerEntryRenderer?.("spider.organism", (entry: unknown, options: any, theme: unknown) =>
@@ -1457,6 +1459,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
         admitted: ordinaryWorkAllowed,
         piVersion: ports.piVersion,
         formatRunCost: makeRunCostFormatter(() => usageServices.get(pi)?.snapshot()),
+        modelName: displayModel,
         dispatch: (action, args) => {
           if (!ordinaryWorkAllowed()) throw new Error("Session ownership is not available; run /spider roam doctor.");
           return dispatch({ action, ...args } as SpiderArgs, buildActionCtx(pi, { action, ...args } as SpiderArgs, sessionId, cwd, undefined, ctx.modelRegistry, undefined, parentModelOf(ctx)), ownedActions);

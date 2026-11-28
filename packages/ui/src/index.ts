@@ -6,7 +6,7 @@ import { fitResultLines } from "./renderers/types";
 import { icon, type IconStyle } from "./icons.js";
 export type { Component } from "./component";
 export { cachedLines } from "./component";
-export { ICON_STYLES, icon, isIconStyle, type IconStyle, type IconRole } from "./icons.js";
+export { ICON_STYLES, REPLY_FRAME, icon, isIconStyle, type IconStyle, type IconRole } from "./icons.js";
 export { formatRunUsage, formatCompactionCount } from "./agents/usage";
 
 // Phase 0 kept a static ANSI token table; that is gone. Colour is NEVER hardcoded here —

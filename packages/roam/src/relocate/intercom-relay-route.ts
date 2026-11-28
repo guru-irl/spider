@@ -1,6 +1,6 @@
 import { listV0RelayLinks, submitV0Relay } from "@spider/intercom/broker/roam-relay-client";
 import type { RelayLinkView, RelaySubmit } from "@spider/intercom/relay-protocol";
-import type { V0RouteResult } from "@spider/intercom/roam-v0";
+import { V0_INTERCOM_MS, type V0RouteResult } from "@spider/intercom/roam-v0";
 import type { V0Routes } from "./intercom-routes";
 
 export async function configuredRelayLinks(routes: V0Routes, signal?: AbortSignal): Promise<readonly RelayLinkView[]> {
@@ -9,10 +9,13 @@ export async function configuredRelayLinks(routes: V0Routes, signal?: AbortSigna
 }
 
 export async function routeV0Relay(routes: V0Routes, localMachineId: string, targetLabel: string, submit: RelaySubmit, signal?: AbortSignal): Promise<V0RouteResult> {
-  const links = await configuredRelayLinks(routes, signal);
-  const relaySkips: NonNullable<V0RouteResult["relaySkips"]>[number][] = [];
+  const deadline = performance.now() + V0_INTERCOM_MS;
+  const budget = AbortSignal.timeout(V0_INTERCOM_MS);
+  const routeSignal = signal ? AbortSignal.any([signal, budget]) : budget;
+  const links = await configuredRelayLinks(routes, routeSignal);
+  type Skip = NonNullable<V0RouteResult["relaySkips"]>[number];
+  const relaySkips: Skip[] = [];
   const details = { targetMachine: targetLabel, relaySkips };
-  let anyUp = false;
   for (const id of routes.relays) {
     if (id === localMachineId) continue;
     const link = links.find(view => view.relay.machineId === id);
@@ -22,21 +25,25 @@ export async function routeV0Relay(routes: V0Routes, localMachineId: string, tar
       relaySkips.push({ relay: alias, reason: "down" });
       continue;
     }
-    anyUp = true;
     if (!link.reach.some(peer => peer.machineId === submit.target.machineId)) {
       relaySkips.push({ relay: alias, reason: "cannot reach the target" });
       continue;
     }
-    const { outcome } = await submitV0Relay(routes.agentDir, id, submit, signal);
-    if (outcome.kind === "refused" && outcome.code === "relay-busy") {
-      relaySkips.push({ relay: alias, reason: "busy" });
-      return { kind: "refused", code: "relay-busy", ...details };
-    }
-    // Do not retry a submission here. In particular, unknown is final.
+    if (routeSignal.aborted || performance.now() >= deadline) return { kind: "refused", code: "unreachable", ...details };
+    const { attempted, outcome } = await submitV0Relay(routes.agentDir, id, submit, routeSignal);
     const routed = { ...details, path: `relay ${alias}` as const };
-    if (outcome.kind === "refused")
-      return { kind: "refused", code: outcome.code === "relay-stopping" ? "unreachable" : outcome.code, ...routed };
-    return { ...outcome, ...routed };
+    // A reply lost after hand-off is unknown. Neither it nor a target refusal can be retried.
+    if (attempted !== false) return { ...outcome, ...routed };
+    let reason: Skip["reason"];
+    switch (outcome.code) {
+      case "relay-busy": reason = "busy"; break;
+      case "relay-stopping": reason = "down"; break;
+      case "unreachable": reason = "cannot reach the target"; break;
+      default: return { ...outcome, ...routed };
+    }
+    relaySkips.push({ relay: alias, reason });
   }
-  return { kind: "refused", code: anyUp ? "relay-unreachable" : "no-relay", ...details };
+  const code = relaySkips.some(skip => skip.reason === "busy") ? "relay-busy"
+    : relaySkips.some(skip => skip.reason === "cannot reach the target") ? "relay-unreachable" : "no-relay";
+  return { kind: "refused", code, ...details };
 }

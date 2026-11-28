@@ -92,7 +92,7 @@ export { AgentStore, projectRow, applyEvent } from "./agents/store";
 export { FrameScheduler } from "./agents/coalesce";
 export { diffLines, hasChanges } from "./agents/diff";
 export { buildFooterModel } from "./agents/footer-model";
-export { AgentFooter, formatDuration, formatAgentLine } from "./agents/footer";
+export { AgentFooter, formatDuration, formatAgentLine, shortModel } from "./agents/footer";
 export { AgentList } from "./agents/agent-list";
 export { renderGridCell } from "./agents/grid-cell";
 export { AgentDetail } from "./agents/agent-detail";

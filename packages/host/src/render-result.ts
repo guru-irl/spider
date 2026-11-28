@@ -5,7 +5,7 @@
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth, stripTerminalSequences, type Component as PiComponent } from "@earendil-works/pi-tui";
 import { icon, reopenBackground, type Component, type IconStyle } from "@spider/ui";
-import { isAgentModelRole, cachedLines, formatRunUsage, renderErrorResult, renderExecCall, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, statusIcon, fitResultLines, cardDetailIndent, flushLeft, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
+import { isAgentModelRole, cachedLines, shortModel, formatRunUsage, renderErrorResult, renderExecCall, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, statusIcon, fitResultLines, cardDetailIndent, flushLeft, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -22,7 +22,7 @@ import { toToolResult } from "./result";
 import { makeRunCostFormatter } from "./run-credits";
 import { restoreExecDetails } from "./exec-session-storage";
 
-interface T { fg(tok: string, s: string): string; bold(s: string): string; italic(s: string): string; bg(tok: string, s: string): string; iconStyle?: IconStyle; }
+interface T { fg(tok: string, s: string): string; bold(s: string): string; italic(s: string): string; bg(tok: string, s: string): string; iconStyle?: IconStyle; modelName?: (model: string) => string | undefined; }
 function mkTheme(theme: any, iconStyle?: IconStyle): T {
   // Theme.fg/bg THROW on a token the active theme lacks; swallow it so one unknown token never
   // aborts a whole render (pi's CustomMessageComponent would silently fall back to raw content).
@@ -51,7 +51,6 @@ function restoreCardBackground(lines: string[], theme: any, background: string):
 }
 
 function clip(s: string, w: number): string { return visibleWidth(s) > w ? truncateToWidth(s, w, "…") : s; }
-function shortModel(m?: string | null): string { if (!m) return "—"; return (m.split("/").pop() ?? m).replace(/^claude-/, ""); }
 function nonblankLines(text: string): string[] { return text.split(/\r?\n/u).filter(line => stripTerminalSequences(line).trim()); }
 function textComponent(result: any, expanded = false): Component {
   const blocks: any[] = Array.isArray(result?.content) ? result.content : [];
@@ -87,7 +86,7 @@ function runBlock(t: T, r: RunLike, width: number, expanded: boolean, formatRunC
     if (r.name && r.name !== agent) segments.push(t.bold(r.name));
     segments.push(t.italic(t.fg("toolTitle", agent)));
   }
-  segments.push(t.fg("muted", shortModel(r.model)));
+  segments.push(t.fg("muted", shortModel(r.model, t.modelName)));
   if (r.thinking) segments.push(t.fg("muted", r.thinking));
   if (["done", "failed", "cancelled"].includes(status) && ((r.token_count ?? 0) > 0 || (r.compactionCount ?? 0) > 0)) {
     segments.push(t.fg("dim", formatRunUsage(r.token_count ?? 0, r.cost, r.compactionCount, r.costText ?? (r.usageCosts ? formatRunCost(r.usageCosts) : undefined))));
@@ -147,7 +146,7 @@ function wrapBespoke(c: Component): Component {
 
 /** Build a ThemeAdapter (fg/bg/bold/glyph) for the pure @spider/ui renderers from the host `T`. */
 function adaptTheme(t: T): ThemeAdapter {
-  return { fg: (tok, s) => t.fg(tok, s), bg: (tok, s) => t.bg(tok, s), bold: (s) => t.bold(s), italic: (s) => t.italic(s), glyph: icon(t.iconStyle, "agent"), iconStyle: t.iconStyle };
+  return { fg: (tok, s) => t.fg(tok, s), bg: (tok, s) => t.bg(tok, s), bold: (s) => t.bold(s), italic: (s) => t.italic(s), glyph: icon(t.iconStyle, "agent"), iconStyle: t.iconStyle, modelName: t.modelName };
 }
 
 const SEARCH_GLYPH = { memory: "active", content: "content", todo: "todo", message: "message" } as const;
@@ -606,7 +605,7 @@ function renderSpiderResultBody(
   theme: any,
   context: any,
 ): Component {
-  const t = mkTheme(theme, context?.iconStyle);
+  const t = { ...mkTheme(theme, context?.iconStyle), modelName: context?.modelName };
   const expanded = options?.expanded === true;
   const action = String(context?.args?.action ?? "");
   const sub = String(context?.args?.sub ?? context?.args?.command ?? "");
@@ -757,8 +756,8 @@ export function renderSpiderResult(result: any, options: any, theme: any, contex
   const liveCosts = runs.flatMap(r => ["done", "failed", "cancelled"].includes(r.status ?? "running")
     && ((r.token_count ?? 0) > 0 || (r.compactionCount ?? 0) > 0) && r.costText == null && r.usageCosts ? [r.usageCosts] : []);
   // Completed run costs use the footer's live calibration, not just stored result details.
-  const contentKey = liveCosts.length && typeof context?.formatRunCost === "function"
-    ? () => JSON.stringify(liveCosts.map(costs => context.formatRunCost(costs))) : undefined;
+  const contentKey = (liveCosts.length && typeof context?.formatRunCost === "function") || (runs.length && typeof context?.modelName === "function")
+    ? () => JSON.stringify([liveCosts.map(costs => context.formatRunCost?.(costs)), runs.map(run => run.model ? context.modelName?.(run.model) : undefined)]) : undefined;
   let body: Component | undefined;
   return cachedLines(width => {
     body ??= renderSpiderResultBody(result, options, theme, context);
@@ -827,13 +826,13 @@ function runTitleDetails(name: unknown, agent: unknown): { text: string; agent: 
   return details.length ? details : [{ text: "subagent", agent: false }];
 }
 
-export function renderSubagentDone(message: any, options: NotificationOptions, theme: any, iconStyle?: IconStyle): PiComponent {
+export function renderSubagentDone(message: any, options: NotificationOptions, theme: any, iconStyle?: IconStyle, modelName?: T["modelName"]): PiComponent {
   const d = message?.details ?? {};
   // C-LOW: a malformed completion event without status is not proof of `done`.
   const status = String(d.status ?? "unknown");
   const background = status === "failed" ? "toolErrorBg" : status === "done" ? "toolSuccessBg" : "toolPendingBg";
   const expanded = options?.expanded === true;
-  const t = mkTheme(theme, iconStyle);
+  const t = { ...mkTheme(theme, iconStyle), modelName };
   const run: RunLike = { name: d.name, agent: d.agent, model: d.model, thinking: d.thinking, status, result: d.output, token_count: d.tokenCount, cost: d.cost, costText: d.costText, compactionCount: d.compactionCount };
   const detail = renderRun(t, { run }, expanded, undefined, false);
   const box = createHalfBox(options.outputPad ?? 1, text => t.bg(background, text));
@@ -852,7 +851,8 @@ export function renderSubagentDone(message: any, options: NotificationOptions, t
     },
     invalidate: () => detail.invalidate?.(),
   }));
-  return cachedLines(width => box.render(width), () => box.invalidate());
+  return cachedLines(width => box.render(width), () => box.invalidate(),
+    modelName && run.model ? () => modelName(run.model!) : undefined);
 }
 
 /** Transcript renderer for the `spider.command` message a slash command emits. Renders the
@@ -860,7 +860,7 @@ export function renderSubagentDone(message: any, options: NotificationOptions, t
  *  the dispatch result normalized via toToolResult (so control's {ok,lines}/{details} shapes both
  *  populate result.details) — wrapped in the tool box, so /spider, /stats, /doctor look
  *  identical to the tool result. ctrl+o (options.expanded) expands. */
-export function renderCommandOutput(message: any, options: NotificationOptions, theme: any, iconStyle?: IconStyle): PiComponent {
+export function renderCommandOutput(message: any, options: NotificationOptions, theme: any, iconStyle?: IconStyle, modelName?: T["modelName"]): PiComponent {
   const d = message?.details;
   const args = d?.args ?? { action: "command" };
   const result = d?.result ?? {};
@@ -871,7 +871,7 @@ export function renderCommandOutput(message: any, options: NotificationOptions, 
     ["queued", "child-accepted", "accepted but not confirmed", "no reply yet, delivery unknown"].includes(details?.delivery ?? "")
     || details?.delivery === "broker-accepted" && details.recipientAcknowledged !== true
   );
-  const context = { args, expanded, isError: normalized.isError, isPartial: !normalized.isError && (Boolean(details?.warning) || pendingMessage), iconStyle };
+  const context = { args, expanded, isError: normalized.isError, isPartial: !normalized.isError && (Boolean(details?.warning) || pendingMessage), iconStyle, modelName };
   const background = cardBackground(context);
   const box = createHalfBox(options.outputPad ?? 1, text => mkTheme(theme).bg(background, text));
   const titleArgs = args.action ? args : { action: args.command ?? "command" };
@@ -892,7 +892,11 @@ export function renderCommandOutput(message: any, options: NotificationOptions, 
   } else {
     box.addChild(flushLeft(renderSpiderResult(normalized, { expanded }, theme, context)));
   }
-  return cachedLines(width => box.render(width), () => box.invalidate());
+  const runDetails = normalized.details as { runs?: RunLike[]; run?: RunLike } | undefined;
+  const runs: RunLike[] = args.action === "run" ? Array.isArray(runDetails?.runs) ? runDetails.runs
+    : runDetails?.run ? [runDetails.run] : [] : [];
+  return cachedLines(width => box.render(width), () => box.invalidate(),
+    modelName && runs.length ? () => JSON.stringify(runs.map(run => run.model ? modelName(run.model) : undefined)) : undefined);
 }
 
 /** TUI-only receipt: proposed knowledge stays pending and never masquerades as completed user work. */

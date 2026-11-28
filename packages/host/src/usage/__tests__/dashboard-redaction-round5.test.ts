@@ -142,9 +142,10 @@ it("short slash tokens inside a multi-word path do not expose its hidden middle"
   expect(dashboardLabel("role", "/srv/private/middle/x y z/a", home)).toBe("…/x y z/a");
 });
 
-// Repeated whole-input home searches become superlinear if the form count or
-// a per-character lookahead grows with input. Medians and paired measurements
-// tolerate ambient load; this is a scaling guard, not an absolute time limit.
+// Count input code units passed to case folding and whole-string searches.
+// This catches repeated prefix folding or a growing number of home searches
+// without measuring scheduler delays. The inputs contain no home-form matches,
+// so indexOf must search the remaining string for each form.
 it("expanding Unicode folds scale linearly when input doubles", () => {
   const base = "/HzSynthQ5/Hzôme ÜQ5";
   vi.stubEnv("HOME", base.normalize("NFD") + "/");
@@ -152,17 +153,35 @@ it("expanding Unicode folds scale linearly when input doubles", () => {
   try {
     Object.defineProperty(process, "platform", { ...descriptor, value: "darwin" });
     const small = "İ".repeat(2048), large = "İ".repeat(4096);
-    for (let i = 0; i < 30; i++) { dashboardLabel("role", small, base); dashboardLabel("role", large, base); }
+    // Populate the home-form cache before counting either size.
+    dashboardLabel("role", small, base);
+    dashboardLabel("role", large, base);
     const measure = (input: string) => {
-      const start = performance.now();
-      for (let i = 0; i < 40; i++) dashboardLabel("role", input, base);
-      return performance.now() - start;
+      let folded = 0, searched = 0;
+      const toLowerCase = String.prototype.toLowerCase;
+      const indexOf = String.prototype.indexOf;
+      try {
+        String.prototype.toLowerCase = function (this: string) {
+          folded += this.length;
+          return toLowerCase.call(this);
+        };
+        String.prototype.indexOf = function (this: string, search: string, position?: number) {
+          searched += Math.max(0, this.length - (position ?? 0));
+          return indexOf.call(this, search, position);
+        };
+        dashboardLabel("role", input, base);
+      } finally {
+        String.prototype.toLowerCase = toLowerCase;
+        String.prototype.indexOf = indexOf;
+      }
+      return { folded, searched };
     };
-    const ratios = Array.from({ length: 7 }, (_, i) => {
-      if (i % 2) { const big = measure(large); return big / measure(small); }
-      const little = measure(small); return measure(large) / little;
-    }).sort((a, b) => a - b);
-    console.info(`expanding-fold doubling ratios: ${ratios.map(r => r.toFixed(3)).join(", ")}`);
-    expect(ratios[3]).toBeLessThan(3);
+    const little = measure(small), big = measure(large);
+    console.info(`expanding-fold work: ${JSON.stringify({ little, big })}`);
+    expect(little.folded).toBeGreaterThan(0);
+    expect(little.searched).toBeGreaterThan(0);
+    // Two passes over doubled input approach 2x; quadratic work approaches 4x.
+    expect(big.folded / little.folded).toBeLessThan(3);
+    expect(big.searched / little.searched).toBeLessThan(3);
   } finally { Object.defineProperty(process, "platform", descriptor); }
 });

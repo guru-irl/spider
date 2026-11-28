@@ -34,7 +34,7 @@ it("mounts the configured icon style without changing any config", () => {
     bold: (text: string) => text, italic: (text: string) => text };
   const db = openDb(scratchDbPath("icons-mount"));
   migrate(db, "project");
-  db.prepare("INSERT INTO runs (id, session_id, agent, name, status, step_count, token_count, started_at) VALUES ('r1','s','worker','scribe','running',1,0,0)").run();
+  db.prepare("INSERT INTO runs (id, session_id, agent, name, status, model, thinking, step_count, token_count, started_at) VALUES ('r1','s','worker','scribe','running','provider/claude-opus-5.5','xhigh',1,0,0)").run();
   try {
     for (const [style, patched, expected] of [
       ["text", true, /◇ worker scribe/u], ["nerd", undefined, /\u{F167A} {2}worker scribe/u],
@@ -45,9 +45,11 @@ it("mounts the configured icon style without changing any config", () => {
       const ui = { setWidget: (_key: string, value: unknown) => { if (typeof value === "function") factory = value as typeof factory; },
         custom: async () => undefined, notify: () => {} };
       const pi = { registerShortcut: () => {}, registerCommand: () => {} };
-      const dispose = mountAgentsUI(pi, { ui } as never, { db, sessionId: "s", cwd });
+      const dispose = mountAgentsUI(pi, { ui } as never, { db, sessionId: "s", cwd,
+        modelName: model => model === "provider/claude-opus-5.5" ? "Claude Opus 5.5" : undefined });
       const widget = factory!({ requestRender() {} }, theme);
       expect(widget.render(100).join("\n")).toMatch(expected);
+      expect(widget.render(100).join("\n")).toContain("Claude Opus 5.5 · xhigh");
       widget.dispose(); dispose();
     }
   } finally { db.close(); }

@@ -104,11 +104,15 @@ export interface DoctorRuntimeAvailability {
   shouldSkip(machine: MachineName): boolean;
   deferOnConnectivityFailure(machine: MachineName, error: unknown): boolean;
 }
+export interface RuntimeInventory {
+  unreachable: readonly MachineName[];
+  missing: readonly MachineName[];
+}
 export interface DoctorParts {
   globalRoot?: string;
   placementRepairInspection?(): Promise<PlacementRepairInspection>;
   targets(request: DoctorRequest): Promise<readonly ProbeTarget[]>;
-  unreachableRuntimeMachines?(request: DoctorRequest): Promise<readonly MachineName[]>;
+  runtimeInventory?(request: DoctorRequest): Promise<RuntimeInventory>;
   inspect(item: DoctorItem, request: DoctorRequest, runtimeAvailability?: DoctorRuntimeAvailability): Promise<{
     failures: readonly DoctorFailure[];
     warnings?: readonly DoctorFailure[];
@@ -179,17 +183,23 @@ export async function doctorHerdr(request: DoctorRequest, parts: DoctorParts, se
   let passed = 0;
   const fail = (item: string, code: string, message: string, repair: string) => failures.push({ item, code, message, repair });
   const deferredRuntimes = new Set(setupDeferredRuntimes);
+  const missingRuntimes = new Set<MachineName>();
   if (!setupDeferredRuntimes && request.config.machines.length) {
     try {
+      const inventory = await parts.runtimeInventory?.(request);
+      for (const machine of inventory?.missing ?? []) {
+        missingRuntimes.add(machine);
+        fail('runtime-availability', 'machine-not-found', `Machine ${machine} has no unique entry in the local core inventory.`, 'Correct the machine name in the setup configuration or the local Herdr core, then rerun doctor.');
+      }
+      for (const machine of inventory?.unreachable ?? []) deferredRuntimes.add(machine);
       const pending = new Set((await readJournal(request.journalRoot)).pendingRuntimes);
-      for (const machine of request.config.machines) if (pending.has(machine.name)) deferredRuntimes.add(machine.name);
-      for (const machine of await parts.unreachableRuntimeMachines?.(request) ?? []) deferredRuntimes.add(machine);
+      for (const machine of request.config.machines) if (pending.has(machine.name) && !missingRuntimes.has(machine.name)) deferredRuntimes.add(machine.name);
     } catch (error) {
       fail('runtime-availability', 'doctor-inspection-failed', error instanceof Error ? error.message : String(error), 'Check the setup journal and the local Herdr core, then rerun doctor.');
     }
   }
   const runtimeAvailability: DoctorRuntimeAvailability = {
-    shouldSkip: machine => deferredRuntimes.has(machine),
+    shouldSkip: machine => deferredRuntimes.has(machine) || missingRuntimes.has(machine),
     deferOnConnectivityFailure: (machine, error) => {
       if (!isHerdrConnectivityFailure(error)) return false;
       deferredRuntimes.add(machine);

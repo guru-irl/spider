@@ -7,7 +7,7 @@ import { HerdrError } from '../client/parse.js';
 import { isHerdrConnectivityFailure } from '../client/availability.js';
 import { VIEW_ON_MAC_MESSAGE } from '../notices.js';
 import { digest, snapshot, atomicWrite, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, prepareModDirectories, rollbackModDirectories, discardModStages, unpublishNewMods, applyFiles, rejectSymlinks, mergeTheme, mergeKeys, mergeTerminalKeys, disableRootNotes, rollbackFiles, managedProjection, assertGlobalRoot, missingKeyMapMessage, type KeyBinding, type KeyFields, type KeySections, type ManagedPart, type FileAction, type SetupJournal } from './backup.js';
-import { probeLaunch, type DoctorReport } from './doctor.js';
+import { probeLaunch, type DoctorReport, type RuntimeInventory } from './doctor.js';
 import { checkRemoteNodeVersion, REMOTE_NODE_MINIMUM } from '../remote/node-version.js';
 import { shellQuote } from '../sessions/resume.js';
 import { chmod, lstat, mkdir } from 'node:fs/promises';
@@ -176,7 +176,7 @@ export interface SetupParts {
   paneEndpointPlan?(request: SetupRequest): Promise<{ paths: readonly string[]; changed: boolean; files?: readonly InstallFile[] }>;
   /** Explicit setup may stage only this machine’s owned installed endpoint. */
   stagePaneEndpoint?(request: SetupRequest): Promise<readonly string[]>;
-  unreachableRuntimeMachines?(request: SetupRequest): Promise<readonly MachineName[]>;
+  runtimeInventory?(request: SetupRequest): Promise<RuntimeInventory>;
   ensureRuntime(request: SetupRequest, context: SetupContext): Promise<readonly RuntimeFile[]>;
   bootstrapRuntime(request: SetupRequest, context: SetupContext, runtimes: readonly RuntimeFile[]): Promise<void>;
   runtimeRootsHealthy?(request: SetupRequest, runtimes: readonly RuntimeFile[]): Promise<boolean>;
@@ -449,7 +449,10 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
       const cutover = [...(cutoverNeeded ? preflight.cutoverActions ?? ['Recheck recorded sessions and open only closed selections'] : []), ...(needsAppSelection ? ['Select the installed layout and theme'] : [])];
       return { plan: { files: fileActions, cutover }, writes: [], probes: [], cutover: journal.cutover, doctor: { failures: [], warnings: [], probes: [] } };
     }
-    const deferred = new Set(await parts.unreachableRuntimeMachines?.(request));
+    const inventory = await parts.runtimeInventory?.(request);
+    if (inventory?.missing.length)
+      throw new HerdrError('machine-not-found', `No unique entry in the local core inventory for: ${inventory.missing.join(', ')}`);
+    const deferred = new Set(inventory?.unreachable);
     const priorPending = new Set(journal.pendingRuntimes);
     const onMachine = async (machine: MachineName, work: () => Promise<void>, explain?: (error: unknown) => HerdrError) => {
       if (deferred.has(machine)) return;

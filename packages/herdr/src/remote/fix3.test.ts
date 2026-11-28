@@ -48,7 +48,7 @@ async function fixture(nodeVersion?: string) {
   const production = createProductionHerdrCliPorts(request.packageRoot, { ...process.env, HC_SESSION: 'isolated', HC_SOCKET: owner.terminal.socket, HC_TERMINAL_SOCKET: owner.terminal.socket, XDG_STATE_HOME: root, XDG_CONFIG_HOME: join(root, 'config') });
   const runtimeParts = await production.setupParts(request);
   const parts: SetupParts = { ...runtimeParts, hc,
-    unreachableRuntimeMachines: async () => [],
+    runtimeInventory: async () => ({ unreachable: [], missing: [] }),
     preflight: async () => ({ fingerprint: 'runtime-only', coreIdentity: owner.terminal, mods: [], targets: nodeVersion ? [{ machine: on, nodePath: process.execPath, coreStartedAt: 'start' }] : [], retiredTerminals: [], layoutExport: true }),
     stageLook: async () => [], installFiles: async () => [], generateTemplates: async () => [], installResume: async () => [],
     probeMachineNode: async () => nodeVersion ?? process.version,

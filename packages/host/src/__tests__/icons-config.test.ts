@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { paths } from "@spider/db-core";
@@ -47,6 +47,22 @@ describe("icon style configuration", () => {
     expect(() => controlConfig("set", project, "ui.icons", "emoji")).toThrow();
     controlConfig("set", project, "ui.icons", "nerd");
     expect(controlConfig("get", project, "ui.icons")).toBe("nerd");
+  });
+
+  it.each([["ui.inputBand", true], ["ui.spiderGlyphs", false]] as const)("rejects non-boolean %s values on read and write", (key, fallback) => {
+    const localFile = join(project, "config.json"), globalFile = join(global, "config.json");
+    const set = (file: string, value: unknown) => writeFileSync(file, JSON.stringify({ [key]: value }));
+    set(localFile, "false"); set(globalFile, "false");
+    const invalid = configValues(project, project, global);
+    expect(invalid.errors).toEqual([`invalid ${key} in ${globalFile}: expected a boolean`, `invalid ${key} in ${localFile}: expected a boolean`]);
+    expect(invalid.config[key]).toBe(fallback);
+    expect(invalid.sources[key]).toBe("default");
+    set(globalFile, true);
+    expect(configValues(project, project, global)).toMatchObject({ config: { [key]: true }, sources: { [key]: "global" } });
+    set(localFile, false);
+    expect(configValues(project, project, global)).toMatchObject({ config: { [key]: false }, sources: { [key]: "local" }, errors: [] });
+    expect(() => controlConfig("set", project, key, "false", "global")).toThrow(`${key} must be a boolean`);
+    expect(JSON.parse(readFileSync(globalFile, "utf8"))).toEqual({ [key]: true });
   });
 
   it("uses valid local and global values and reports invalid file values", () => {

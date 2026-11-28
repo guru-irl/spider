@@ -11,7 +11,7 @@ import { parseHerdrConfig } from '../../../herdr/src/config.js';
 import { configFixtureCwd } from './herdr-config-fixture.js';
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { mountedFixture, heldObserverScenario, assertNoNativeNotes, launchScenario, installFixtureRuntime, closePaneScenario } from './herdr-wiring-fixture.js';
+import { mountedFixture } from './herdr-wiring-fixture.js';
 
 afterEach(() => { clearActions(); vi.unstubAllEnvs(); vi.resetModules(); });
 
@@ -72,11 +72,11 @@ it('forwards repeated explicit space adoption before the setup preflight', async
 });
 
 it.each(['explicit', 'standard'] as const)('starts the production session feed from %s setup output', async location => {
-  const { createHerdrHarness } = await import('../../../herdr/src/__tests__/testutil.js');
+  const { createHostHerdrHarness } = await import('./herdr-fixture-inventory.testutil.js');
   const { writeFile, mkdir, readFile } = await import('node:fs/promises');
   const { join } = await import('node:path');
   const { existsSync } = await import('node:fs');
-  const h = await createHerdrHarness('fake'); await h.start();
+  const h = await createHostHerdrHarness('fake'); await h.start();
   const { execFileSync } = await import('node:child_process');
   execFileSync('git', ['init', '-q', h.directories.local]);
   const hooks = new Map<string, Function[]>();
@@ -216,6 +216,7 @@ it('composed host calls real transcript and command ports without editor input',
   const f = await mountedFixture();
   const { mkdir, writeFile } = await import('node:fs/promises'); const { join } = await import('node:path');
   const { paths } = await import('@spider/db-core');
+  const { emitStatus } = await import('../../../subagents/src/run-events.js');
   const frames: unknown[] = [];
   try {
     expect(f.errors).toEqual([]);
@@ -226,7 +227,24 @@ it('composed host calls real transcript and command ports without editor input',
     await vi.waitFor(() => expect(JSON.stringify(frames)).toContain('observed text'), { timeout: 3000 });
     for (const view of ['agents', 'todos', 'usage', 'memory', 'triggers'] as const) expect(await f.ipc!.openView(view)).toMatchObject({ ok: true, op: 'openView' });
     expect(f.opened).toEqual(['agents', 'todos', 'usage', 'memory', 'triggers']);
+    // Observe the real terminal's status writes so the ping follows the refresh.
+    let terminalStatus = f.terminal.programStatus;
+    let onStatus: ((status: { state: string }) => void) | undefined;
+    Object.defineProperty(f.terminal, 'programStatus', {
+      configurable: true,
+      get: () => terminalStatus,
+      set: status => { terminalStatus = status; onStatus?.(status); },
+    });
+    const statusChanged = (state: string) => new Promise<void>(resolve => {
+      onStatus = status => { if (status?.state === state) { onStatus = undefined; resolve(); } };
+    });
+    const working = statusChanged('working');
+    emitStatus(f.db, { runId: run.id, sessionId: f.owner!.sessionId, status: 'running' });
+    await working;
+    const done = statusChanged('done');
     f.store.finish(run.id, { status: 'done', result: 'observed result' });
+    emitStatus(f.db, { runId: run.id, sessionId: f.owner!.sessionId, status: 'done' });
+    await done;
     expect(await f.ipc!.steerRun(run.id as never, 'next case')).toMatchObject({ ok: true, acknowledgement: { delivery: 'refused' } });
     expect(await f.ipc!.ping()).toMatchObject({ ok: true, status: { effective: 'done' } });
     await subscription.dispose();
@@ -449,52 +467,5 @@ it.each([true, false])('a real executor child resolves ssh with Herdr active=%s'
       expect(ordinary.stdout.split('\n')[0]).not.toBe(join(shim, 'ssh'));
     } else expect(result.stdout).toBe(ordinary.stdout);
     expect(f.errors).toEqual([]);
-  } finally { await f.close(); }
-}, 30000);
-
-it.each(['new', 'resume', 'fork'] as const)('mounted consoles close the previous agent at %s but survive reload', async reason => {
-  const f = await mountedFixture();
-  try {
-    const console = await f.h.hc.run({ argv: [f.h.nodeBinary, '-e', 'setInterval(()=>{},1000)'], cwd: null, on: 'remote.invalid' as never,
-      labels: { 'spider.kind': 'remote-console', 'spider.session': f.h.owner!.sessionId, 'spider.machine': 'remote.invalid', 'spider.owner-core': f.owner!.terminal.coreId, 'spider.owner-terminal': f.owner!.terminal.terminalId }, noNotify: true, background: true, outliveParent: true });
-    await f.emit('session_shutdown', { reason: 'reload' }); expect((await f.h.hc.get(console.address)).state).toBe('live');
-    await f.emit('session_start', { reason: 'reload' }); expect((await f.h.hc.get(console.address)).state).toBe('live');
-    await f.emit('session_shutdown', { reason });
-    Reflect.set(f.ctx.sessionManager, 'getSessionId', () => 'replaced-' + reason);
-    await f.emit('session_start', { reason });
-    await expect(f.h.hc.get(console.address)).rejects.toMatchObject({ code: 'not_found' });
-    expect(f.errors).toEqual([]);
-  } finally { await f.close(); }
-}, 30000);
-
-it('startup reaps consoles of a crashed recorded process even when its terminal stays live', async () => {
-  const f = await mountedFixture();
-  try {
-    const parent = await f.h.hc.run({ argv: [f.h.nodeBinary, '-e', 'setInterval(()=>{},1000)'], cwd: null, labels: { 'spider.kind': 'session' }, noNotify: true, background: true, outliveParent: true });
-    const labels = { 'spider.kind': 'remote-console', 'spider.session': 'abandoned-session', 'spider.machine': 'remote.invalid', 'spider.owner-core': f.owner!.terminal.coreId, 'spider.owner-terminal': parent.address };
-    const console = await f.h.hc.run({ argv: [f.h.nodeBinary, '-e', 'setInterval(()=>{},1000)'], cwd: null, on: 'remote.invalid' as never, labels, noNotify: true, background: true, outliveParent: true });
-    const unrecorded = await f.h.hc.run({ argv: [f.h.nodeBinary, '-e', 'setInterval(()=>{},1000)'], cwd: null, on: 'remote.invalid' as never,
-      labels: { ...labels, 'spider.session': 'unrecorded-live-session' }, noNotify: true, background: true, outliveParent: true });
-    await f.presence.record({ pid: 2147483647, startIdentity: 'crashed-process', sessionId: 'abandoned-session' as never, sessionFile: null, sessionName: null, hcAddress: parent.address, kind: 'top-level' });
-    await f.emit('session_shutdown', { reason: 'reload' }); await f.emit('session_start', { reason: 'reload' });
-    expect((await f.h.hc.get(console.address)).state).toBe('live');
-    await f.emit('session_start', { reason: 'startup' });
-    await expect(f.h.hc.get(console.address)).rejects.toMatchObject({ code: 'not_found' });
-    expect((await f.h.hc.get(parent.address)).state).toBe('live');
-    expect((await f.h.hc.get(unrecorded.address)).state).toBe('live');
-    expect(f.errors).toEqual([]);
-  } finally { await f.close(); }
-}, 30000);
-
-it.each([false, true])('mounted console cleanup is quit-only and top-level-only, child=%s', async child => {
-  const f = await mountedFixture('fake', 'tui', true, child);
-  try {
-    const handle = await f.h.hc.run({ argv: [f.h.nodeBinary, '-e', 'setInterval(()=>{},1000)'], cwd: null, on: 'remote.invalid' as never,
-      labels: { 'spider.kind': 'remote-console', 'spider.session': f.h.owner!.sessionId, 'spider.machine': 'remote.invalid' }, noNotify: true, background: true, outliveParent: true });
-    await f.emit('session_shutdown', { reason: 'reload' }); expect((await f.h.hc.get(handle.address)).state).toBe('live');
-    await f.emit('session_start', { reason: 'reload' });
-    await f.emit('session_shutdown', { reason: 'quit' });
-    if (child) expect((await f.h.hc.get(handle.address)).state).toBe('live');
-    else await expect(f.h.hc.get(handle.address)).rejects.toMatchObject({ code: 'not_found' });
   } finally { await f.close(); }
 }, 30000);

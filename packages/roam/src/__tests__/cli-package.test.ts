@@ -14,11 +14,16 @@ import { scratchDbPath } from "@spider/db-core/testutil";
 import { build } from "vite";
 import { assertRoamBundle } from "../../../../scripts/check-roam-bundle.mjs";
 import roamEntries from "../../../../scripts/roam-entries.json" with { type: "json" };
-import { buildRoamEntries } from "../../../../scripts/build-roam.mjs";
 import { main } from "../cli";
 import { loadConfig } from "../config";
 import { DEFAULT_LIMITS } from "../contracts";
 
+// npm's prepare step builds these once for the package, including in CI.
+const builtRoamEntries = resolve("dist/roam");
+function copyBuiltRoamEntries(source: string, destination: string): void {
+  if (!existsSync(source)) throw new Error(`${source}: run npm run build:roam`);
+  cpSync(source, destination, { recursive: true });
+}
 const roots: string[] = [];
 function fixture(): string {
   const root = mkdtempSync(join(dirname(scratchDbPath("roam-cli")), "roam-cli-"));
@@ -360,6 +365,11 @@ it("the package gate refuses a missing roaming executable or link script", () =>
   }
 }, 5000);
 
+it("explains how to build missing roaming entries", () => {
+  const root = fixture(), missing = join(root, "dist/roam");
+  expect(() => copyBuiltRoamEntries(missing, join(root, "copy"))).toThrow(`${missing}: run npm run build:roam`);
+}, 5000);
+
 it("the packaged roaming doctor reads actual loaded builds and leaves stores unchanged", async () => {
   const root = fixture(), globalRoot = join(root, "global"), bundleRoot = join(root, "built"), bin = join(root, "bin");
   mkdirSync(globalRoot, { recursive: true });
@@ -377,7 +387,7 @@ it("the packaged roaming doctor reads actual loaded builds and leaves stores unc
     kind: "top-level" as const, hcAddress: null, capabilities: { roamSchema: 14 } };
   await presence.record({ ...live, build: { sha: "1234567", builtAt: "2026-01-02T03:04:05.000Z", version: "1.0.0", dirty: false } });
   writeFileSync(join(bin, "sqlite3"), "#!/bin/sh\nprintf '3.37.9\\n'\n", { mode: 0o700 });
-  await buildRoamEntries(join(bundleRoot, "roam"));
+  copyBuiltRoamEntries(builtRoamEntries, join(bundleRoot, "roam"));
   writeFileSync(join(bundleRoot, "extension.js"), "// SPIDER_BUILD_ID=abcdef1@2026-01-02T03:04:05.000Z v1.0.0\n");
   const snapshot = (directory: string): Array<[string, string]> => readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
     const path = join(directory, entry.name);
@@ -418,15 +428,12 @@ it("the packaged roaming doctor reads actual loaded builds and leaves stores unc
 
 it("packed entries have no pi imports", async () => {
   const root = fixture();
-  const cwd = resolve(".");
   const env = { ...process.env, HOME: root, TMPDIR: root };
-  const buildOut = join(root, "built", "roam");
-  await buildRoamEntries(buildOut);
   const packageRoot = join(root, "package"), unpacked = join(root, "unpacked"), archive = join(root, "fixture.tgz");
   mkdirSync(join(packageRoot, "dist"), { recursive: true });
   mkdirSync(unpacked);
-  cpSync(buildOut, join(packageRoot, "dist", "roam"), { recursive: true });
-  cpSync(join(cwd, "package.json"), join(packageRoot, "package.json"));
+  copyBuiltRoamEntries(builtRoamEntries, join(packageRoot, "dist", "roam"));
+  cpSync(resolve("package.json"), join(packageRoot, "package.json"));
   execFileSync("tar", ["-czf", archive, "-C", root, "package"], { timeout: 2000 });
   const paths = execFileSync("tar", ["-tzf", archive], { encoding: "utf8", timeout: 2000 }).split("\n");
   execFileSync("tar", ["-xzf", archive, "-C", unpacked], { timeout: 2000 });
@@ -440,7 +447,7 @@ it("packed entries have no pi imports", async () => {
     const source = readFileSync(entry, "utf8");
     expect(source).not.toMatch(/(?:from\s*|import\s*\(|require\s*\()\s*["']@earendil-works\/pi-/);
     expect(source.startsWith("#!/usr/bin/env node\n")).toBe(true);
-    if (process.platform !== "win32") expect(statSync(join(buildOut, file.split("/").at(-1)!)).mode & 0o777).toBe(0o700);
+    if (process.platform !== "win32") expect(statSync(join(builtRoamEntries, file.split("/").at(-1)!)).mode & 0o777).toBe(0o700);
     const result = spawnSync(process.execPath, [entry, "--help"], { cwd: root, env: { ...env, SPIDER_GLOBAL_ROOT: join(root, "global") }, encoding: "utf8", timeout: 2000 });
     expect(result.status).toBe(0);
     expect(result.stdout).toMatch(/usage:/i);

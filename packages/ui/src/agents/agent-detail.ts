@@ -11,7 +11,7 @@ import { detailViewport } from "./detail-viewport";
 import type { DetailViewport } from "./detail-viewport";
 import { formatDuration, shortModel } from "./footer";
 import { formatRunUsage } from "./usage";
-import { agentGlyph, statusGlyph, statusToken } from "./types";
+import { agentGlyph, renderRoleAccent, statusGlyph, statusToken } from "./types";
 import type { AgentSnapshot, RunCostFormatter, StoredRunEvent, ThemeAdapter } from "./types";
 
 export type DetailRead =
@@ -255,8 +255,11 @@ export class AgentDetail implements Component {
     const statusWidth = visibleWidth(status);
     const name = truncateToWidth(` ${agentGlyph(this.theme)} ${this.run?.name ?? "agent"}`, Math.max(0, inner - statusWidth - 1), "…");
     const gap = "─".repeat(Math.max(0, inner - visibleWidth(name) - statusWidth));
+    const coloredStatus = this.run?.status === "running"
+      ? renderRoleAccent(this.theme, this.run.role ?? this.run.agent, status)
+      : this.theme.fg(this.run ? statusToken(this.run.status) : "muted", status);
     return this.theme.fg("muted", "╭") + this.theme.fg("toolTitle", name) + this.theme.fg("muted", gap) +
-      this.theme.fg(this.run ? statusToken(this.run.status) : "muted", status) + this.theme.fg("muted", "╮");
+      coloredStatus + this.theme.fg("muted", "╮");
   }
 
   private controls(width: number): string {
@@ -324,19 +327,19 @@ export class AgentDetail implements Component {
     try { if (a?.usageCosts && this.opts.formatRunCost) costText = this.opts.formatRunCost(a.usageCosts); }
     catch { /* retain the last formatted value */ }
     const role = a?.role ?? a?.agent;
-    const roleLabel = role ? this.theme.italic?.(role) ?? role : "unknown";
+    const roleLabel = role ? renderRoleAccent(this.theme, role, this.theme.italic?.(role) ?? role) : this.theme.fg("dim", "unknown");
     const header = [
-      `${model} · ${roleLabel} · ${a?.thinking ?? "unknown"} · ${turns}`,
-      `${formatRunUsage(a?.tokenCount ?? 0, a?.cost ?? 0, a?.compactionCount, costText)} · ${formatDuration(elapsed)}`,
-      `Run: ${this.runId}`,
-      `Instructions: ${instructions}`,
+      this.theme.fg("dim", `${model} · `) + roleLabel + this.theme.fg("dim", ` · ${a?.thinking ?? "unknown"} · ${turns}`),
+      this.theme.fg("dim", `${formatRunUsage(a?.tokenCount ?? 0, a?.cost ?? 0, a?.compactionCount, costText)} · ${formatDuration(elapsed)}`),
+      this.theme.fg("dim", `Run: ${this.runId}`),
+      this.theme.fg("dim", `Instructions: ${instructions}`),
     ];
     const visible = this.rows.slice(this.follow.offset, this.follow.offset + view.conversationRows).map(row => row.text);
     while (visible.length < view.conversationRows) visible.push("");
     const border = (s: string) => this.theme.fg("muted", s);
     return [
       this.top(view.width),
-      ...header.map(line => this.frameRow(this.theme.fg("dim", line), view.width)),
+      ...header.map(line => this.frameRow(line, view.width)),
       border(`├${"─".repeat(view.width - 2)}┤`),
       ...visible.map(line => this.frameRow(line, view.width)),
       this.frameRow(this.controls(view.textWidth), view.width),

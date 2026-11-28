@@ -194,6 +194,7 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
         return {
           render: (width: number) => footer.render(width),
           invalidate: () => footer.invalidate(),
+          handleMouse: (event: TuiMouseEvent) => footer.handleMouse(event),
           dispose: () => { stop(); if (footerTui === widgetTui) footerTui = undefined; },
         };
       }, { placement: "aboveEditor" });

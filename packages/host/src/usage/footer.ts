@@ -134,7 +134,7 @@ function stats(input: FooterInput, width: number, theme?: Theme): string {
   const contextText = `${percentText}/${window}${input.autoCompaction === true ? " (auto)" : ""}`;
   const calibration = input.calibration ?? calibrationFallback();
   const display = toAicDisplay(totals.aic, totals.unpricedEntries, calibration);
-  const items = [contextText, `${credits(display.primaryAic ?? 0)} credits`];
+  const items = [contextText, `${credits(display.primaryAic ?? 0)} AIC`];
   if ((totals.cacheRead > 0 || totals.cacheWrite > 0) && totals.latestCacheHitRate !== null) {
     items.push(`CH${totals.latestCacheHitRate.toFixed(1)}%`);
   }

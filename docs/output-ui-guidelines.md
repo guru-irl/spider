@@ -4,10 +4,12 @@
 
 Draw the editor and sent messages on the theme's `userMessageBg`. In
 `dracula-plus-glass` it is `#060607`, darker than the surrounding Herdr glass.
-Use `▄` and `▀` in the same color for the half-row edges, with no background
-behind the unfilled half. The editor has a flush `▗`, `▐`, `▝` bar in
-`accent` (`#82aaff`) or `bashMode`, regardless of thinking level. Scrolled
-edges show a dim hidden-line count. Keep Pi's cursor, completion menu, and keys.
+Use `▄` and `▀` for the half-row edges, with no background behind the
+unfilled half. Draw a one-cell bar in column zero for the full band height:
+`▄` on the top edge, `█` on text rows, and `▀` on the bottom edge. The bar
+uses `accent` (`#82aaff`) or `bashMode`, regardless of thinking level. The
+remaining edge cells use the strip color. Scrolled edges show a dim hidden-line
+count beside the full-cell bar. Keep Pi's cursor, completion menu, and keys.
 
 Sent messages have no bar. Place the accent `❯` before the first text row and
 align wrapped text under that row's text. Keep Pi's Markdown and OSC 133
@@ -20,10 +22,12 @@ label's one-space pad and let Pi handle clicks outside the actions.
 ## Card layout
 
 1. Pi owns the transcript spacer and the default tool box. Notification renderers
-   return their box without another spacer. Use Pi's `outputPad` when supplied.
-   The fallback is one column. Replace blank top and bottom padding with half
-   edges; remove blank content rows next to the edges. Keep one cell of fill on
-   each side by default, with no outline.
+   return their box without another spacer. Consecutive tool cards with half
+   edges have no blank row between them. Keep the spacer between a tool card and
+   other content. Use Pi's `outputPad` when supplied. The fallback is one column.
+   Replace blank top and bottom padding with half edges; remove blank content
+   rows next to the edges. Keep one cell of fill on each side by default, with
+   no outline.
 2. A title is `<logo> <bold command>[ · details]`. Do not add `spider` to the
    title. Italics identify agent roles only, including roles in rows and overlays.
 3. Align status markers under the logo. Align detail rows under the title text,
@@ -48,7 +52,8 @@ Fit every line to the available display width. Respect Ctrl+O expansion without
 repeating call details in the result. In fullscreen, click an incoming intercom,
 run completion, or slash command card to toggle that card. Ctrl+O resets the
 card to Pi's global expansion state. Escalations always show the full summary
-and do not claim clicks. Pi owns clicks on tool results.
+and do not claim clicks. Pi owns clicks on tool results. Spider mouse handlers
+claim only their own targets and return `{ handled: true }` only there.
 
 ### Exec example
 
@@ -83,11 +88,12 @@ configured machine alias. A collapsed message shows a one-line preview aligned
 with the title text. An expanded message wraps the body at the same indent and
 adds dim details. Reply details do not show message IDs.
 
-### Intercom ask results
+### Intercom route results
 
-An intercom ask sent through a relay shows `asked via <relay>` and any skipped
-relays in dim rows below the result. Those rows describe the question's route,
-not the reply's route. Direct and local asks have no route row.
+A relayed ask, send, or reply shows its route and any skipped relays in dim rows
+below the result when its route footer can be removed. Failed operations show
+`tried via <relay>`. An ask's route describes the question, not the reply.
+Direct and local routes have no route row.
 
 ## Icon sets
 
@@ -138,7 +144,8 @@ stay the same.
 
 ## Activity marks
 
-The usage footer shows the moon two spaces before context usage. It cycles
+The usage footer labels session credits as `AIC`. It shows the moon two spaces
+before context usage. The moon cycles
 once a second in the accent color while Pi works and rests on a dim new moon
 when idle. The Nerd set uses every other one of the 28 moon phases, so the
 footer redraws 14 times a second: each redraw makes Pi rescan the whole
@@ -146,11 +153,20 @@ transcript. The text set uses
 `◐ ◓ ◑ ◒` when working and `○` when idle. Pi still handles Esc and shows its
 compaction and retry notices.
 
-An agent row has one mark: a robot while running, or a colored status icon after
-it finishes. In Nerd mode the stock robot pulses from dim to accent and back in
-1.8 seconds. With `ui.spiderGlyphs` enabled, a patched font shows eyes looking
-left and right, then blinking. Run IDs stagger the motion. Text mode uses a
-pulsing `◇` while running. See [Patched Nerd Fonts](guide/configuration.md#patched-nerd-fonts).
+An agent footer row shows `<mark> <italic role> <bold name> · model · thinking · turns · elapsed`.
+Omit missing model and thinking fields. Do not show activity in the footer.
+With up to three agents, show one row per agent. With four or more, show two
+agent rows and a summary row with status totals and the number of hidden
+agents. In fullscreen mode, the mouse wheel over the footer scrolls its agent
+rows. In `/agents`, the up and down keys move the selection in display order
+and reveal hidden rows. The summary stays visible as the rows scroll.
+The `/agents` views use the same role colors: worker `#82aaff`, reviewer
+`#ffb86c`, scout `#8be9fd`, planner `#c792ea`, watcher `#ff92df`, and all
+other roles `#d6acff`. The role word and running mark use that color; finished
+marks keep their status colors. The stock robot pulses from dim to the role
+color and back in 1.8 seconds. With `ui.spiderGlyphs` enabled, a patched font
+shows eyes looking left and right, then blinking. Run IDs stagger the motion.
+Text mode uses a pulsing `◇` while running. See [Patched Nerd Fonts](guide/configuration.md#patched-nerd-fonts).
 
 ## Overlays
 

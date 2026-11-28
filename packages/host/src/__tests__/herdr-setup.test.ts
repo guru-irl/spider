@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { setupHerdr, rollbackHerdr } from '../../../herdr/src/setup/installer.js';
 import { readJournal, rootNotesValue } from '../../../herdr/src/setup/backup.js';
 import { cleanup, fixture } from './herdr-setup-fixture.js';
+import { focusedSetupFixture } from './herdr-setup-focused-fixture.js';
 
 // An isolated fixture has no selected pi processes. Do not inventory unrelated host sessions.
 vi.mock('node:child_process', async importOriginal => {
@@ -11,7 +12,7 @@ vi.mock('node:child_process', async importOriginal => {
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
-const fastFixture = () => fixture('fake', false, { coreTransport: 'socket' });
+const fastFixture = () => focusedSetupFixture();
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 const exists = (path: string) => readFile(path).then(() => true, () => false);
@@ -54,7 +55,7 @@ async function expectEditsKept(f: Fixture, notesBefore: boolean | null) {
 const notesValue = async (f: Fixture) => rootNotesValue(await readFile(f.request.config.core.config).catch(() => null));
 
 test('user edits made after setup survive rollback in every managed file kind after an upgrade re-runs setup', async () => {
-  const f = await fixture(); const notesBefore = await notesValue(f);
+  const f = await focusedSetupFixture({ coreTransport: 'process' }); const notesBefore = await notesValue(f);
   await setupHerdr(f.request, f.parts);
   await editEveryKind(f);
   await upgradeMods(f);
@@ -64,7 +65,7 @@ test('user edits made after setup survive rollback in every managed file kind af
 });
 
 test('user edits survive setup, rollback, setup, rollback in every managed file kind', async () => {
-  const f = await fastFixture(); const notesBefore = await notesValue(f);
+  const f = await focusedSetupFixture({ coreTransport: 'socket' }); const notesBefore = await notesValue(f);
   await setupHerdr(f.request, f.parts);
   await rollbackHerdr(f.request, f.parts);
   await editEveryKind(f);
@@ -74,7 +75,7 @@ test('user edits survive setup, rollback, setup, rollback in every managed file 
 });
 
 test('setup verification reuses the root probe that bootstrap just ran', async () => {
-  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
+  const f = await focusedSetupFixture({ coreTransport: 'socket' }); await setupHerdr(f.request, f.parts);
   const probes = (await f.h.calls()).filter(call => call.argv[0] === 'run' && call.argv.includes('--probe'));
   expect(probes).toHaveLength(f.request.config.machines.length);
 });
@@ -159,7 +160,7 @@ test('setup after rollback and an upgrade takes a fresh baseline instead of refu
 });
 
 test('rollback keeps journal entries only for files it could not restore', async () => {
-  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
+  const f = await focusedSetupFixture({ coreTransport: 'socket' }); await setupHerdr(f.request, f.parts);
   f.parts.warn = () => {};
   await writeFile(join(f.h.directories.agent, 'settings.json'), '{"theme":"user-theme"}');
   await rollbackHerdr(f.request, f.parts);
@@ -168,7 +169,7 @@ test('rollback keeps journal entries only for files it could not restore', async
 });
 
 test('a rollback that fails after closing tabs can be retried without closing them again', async () => {
-  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
+  const f = await focusedSetupFixture({ coreTransport: 'socket' }); await setupHerdr(f.request, f.parts);
   const settings = join(f.h.directories.agent, 'settings.json');
   const entry = (await readJournal(f.request.journalRoot)).entries.find(e => e.path === settings)!;
   const backup = await readFile(entry.backup!);

@@ -361,11 +361,12 @@ const artifactEvidence = () => ({ version: 1, artifacts: [
 
 function artifactFixture({ evidence = artifactEvidence(), input = headInput, changes = [changed(input)],
   viewerRecord = row({ ranBundle: true }), ...options } = {}) {
-  const inventory = [a, b, d, viewerReader, packReader, bundleReader];
+  const inventory = [a, b, c, d, viewerReader, packReader, bundleReader];
   return fixture({ inventory, changes,
     map: map([], Object.fromEntries(inventory.map(file => [file, file === viewerReader ? viewerRecord : row()])),
       { bundleRouting: evidence }),
-    resolveRelated: async seeds => seeds.includes(headInput) ? [b, brokerEntry] : seeds.includes(viewerReader) ? [d] : [],
+    resolveRelated: async seeds => seeds.includes(headInput) ? [b, brokerEntry] : seeds.includes(brokerEntry) ? [c]
+      : seeds.includes(viewerReader) ? [d] : [],
     bundleContracts: new Map([[viewerReader, { outputs: [viewerOutput], blobs: { [viewerReader]: readerBlob } }]]),
     bundleBlobs: () => new Map([[viewerReader, readerBlob]]),
     artifactDigest: file => file === viewerOutput ? viewerHash : null,
@@ -382,7 +383,8 @@ test('routes affected bundle readers and retains static importers, legacy consum
 test('selects recorded readers of a tree-shaken build input even when the head graph has no edge', async () => {
   const result = await artifactFixture({ input: shakenInput });
   assert.equal(result.mode, 'scoped');
-  assertSelected(result, a, d, packReader, bundleReader);
+  assertSelected(result, a, c, d, packReader, bundleReader);
+  assert.ok(result.selected[c].includes('static import graph'));
 });
 
 test('a legacy or malformed map does not replace the blanket rule', async () => {
@@ -420,7 +422,7 @@ test('keeps blanket coverage when an artifact identity or the consumer contract 
 
 test('keeps all bundle readers and executors when build configuration changes', async () => {
   const result = await artifactFixture({ changes: [changed('scripts/build-herdr.mjs')] });
-  assertSelected(result, a, d, viewerReader, packReader, bundleReader);
+  assertSelected(result, a, c, d, viewerReader, packReader, bundleReader);
 });
 
 test('selects the compatibility guards and bundle executors for a Roam build manifest edit', async () => {

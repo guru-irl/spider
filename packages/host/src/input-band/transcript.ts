@@ -96,15 +96,34 @@ export function installTranscriptBands(host: InputBandHost, options: Options): (
     const mouseChildren: { component: Component; height: number }[] = [];
     let offset = 0;
     let previousTool = false;
+    let pending: { row: number; mouse: number } | undefined;
     for (const entry of entries) {
       const part = rows.slice(offset, offset + entry.height);
       offset += entry.height;
       const isTool = entry.component instanceof host.ToolExecutionComponent;
+      // Hold blank assistant rows until another boxed tool follows. Only strip
+      // reset sequences: colors, underlines, images and other controls can draw.
+      const blankAssistant = previousTool && host.AssistantMessageComponent && entry.component instanceof host.AssistantMessageComponent &&
+        part.every(row => /^[ \t]*$/u.test(row.replace(/\x1b\[(?:(?:0|22|23|24|27|29|39|49)(?:;|(?=m)))*m/gu, "")));
+      if (blankAssistant) {
+        pending ??= { row: output.length, mouse: mouseChildren.length };
+        output.push(...part);
+        mouseChildren.push(entry);
+        continue;
+      }
+      if (pending && part.length === 0) {
+        mouseChildren.push(entry);
+        continue;
+      }
       const leading = isTool ? (entry.component as Container).children?.[0] : undefined;
-      const join = previousTool && isTool && leading instanceof Spacer && field(leading, "lines") === 1 && part.length > 1 && part[0] === "" &&
+      const join = previousTool && isTool && leading instanceof (host.Spacer ?? Spacer) && field(leading, "lines") === 1 && part.length > 1 && part[0] === "" &&
         stripTerminalSequences(part[1]) === "▄".repeat(width);
       const component = entry.component;
       if (join) {
+        if (pending) {
+          output.length = pending.row;
+          for (let i = pending.mouse; i < mouseChildren.length; i++) mouseChildren[i] = { ...mouseChildren[i], height: 0 };
+        }
         output.push(...part.slice(1));
         // Forward the same click to Pi at its original local coordinates.
         const mouse: Component = {
@@ -117,7 +136,8 @@ export function installTranscriptBands(host: InputBandHost, options: Options): (
         output.push(...part);
         mouseChildren.push(entry);
       }
-      if (part.length) previousTool = isTool && stripTerminalSequences(part.at(-1)!) === "▀".repeat(width);
+      if (part.length || pending) previousTool = isTool && part.length > 0 && stripTerminalSequences(part.at(-1)!) === "▀".repeat(width);
+      pending = undefined;
     }
     layout.children = mouseChildren;
     return output;

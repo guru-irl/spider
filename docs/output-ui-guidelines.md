@@ -3,7 +3,7 @@
 ## Input, transcript, and replies
 
 Draw the editor and sent messages on the theme's `userMessageBg`. In
-`dracula-plus-glass` it is `#060607`, darker than the surrounding Herdr glass.
+`dracula-plus-glass` it is `#101012`, darker than the surrounding Herdr glass.
 Use `▄` and `▀` for the half-row edges, with no background behind the
 unfilled half. Draw the bar in the left half of column zero for the full band
 height: `▖` on the top edge, `▌` on text rows, and `▘` on the bottom edge.
@@ -16,6 +16,10 @@ Keep Pi's cursor, completion menu, and keys.
 Sent messages have no bar. Place the accent `❯` before the first text row and
 align wrapped text under that row's text. Keep Pi's Markdown and OSC 133
 markers. `ui.inputBand: false` restores Pi's editor and message styling.
+
+Queued steering and follow-up messages use the same strip and half-cell bar as
+input, with a dim bar and hourglass in place of the sent-message caret. Keep
+Pi's queue ordering, truncation, spacer, and edit hint below the bands.
 
 When copy buttons are enabled in fullscreen, sent messages and replies use a
 hover frame with rounded lines in `borderMuted`, without fill. Keep the local timestamp at the left of the
@@ -135,6 +139,7 @@ stay the same.
 | todoFailed | × U+00D7 | 󰅚 U+F015A |
 | todoPending | ○ U+25CB | 󰝦 U+F0766 |
 | prompt | ❯ U+276F | ❯ U+276F |
+| pending | >< | 󰔟 U+F051F |
 | task | → U+2192 | 󰘍 U+F060D |
 | result | ↑ U+2191 | 󰁜 U+F005C |
 | message | → U+2192 | 󰇰 U+F01F0 |

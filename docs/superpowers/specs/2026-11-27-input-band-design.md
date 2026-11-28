@@ -1,6 +1,6 @@
 # Input band, sent-message caret and activity icons
 
-Date: 2026-11-27. Status: approved choices, design for review.
+Date: 2026-11-27. Status: approved by the user on 2026-11-27 after the final mock (chat-mock6-final).
 
 ## Goal
 

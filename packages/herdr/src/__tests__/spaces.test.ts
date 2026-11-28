@@ -456,6 +456,101 @@ it('a legacy journal adopts the same thirteen terminals merged into four named t
   expect((await setupSpaces(config, ports)).launched).toEqual(initial.launched);
 });
 
+it('keeps hand-reorganised tabs in a mixed layout across setup runs', async () => {
+  const groups = [['Tools', 4], ['Desk', 3], ['Projects', 3], ['Notes', 3]] as const;
+  config.spaces = [{ name: 'placeholder', sessions: [] }];
+  for (const [name, count] of groups) {
+    const sessions = [];
+    for (let index = 0; index < count; index++) sessions.push({ file: await addSession(`${name}-${index}`, `${name} ${index}`) });
+    config.spaces.push({ name, sessions });
+  }
+  config.spaces.shift();
+  const initial = await setupSpaces(config, ports);
+  const path = join(ports.journalRoot, 'spaces.json');
+  const journal = JSON.parse(await readFile(path, 'utf8'));
+  // Two of the original journal groups already shared a tab before the hand edits.
+  for (const [first, second, name] of [[7, 8, 'Main'], [10, 12, 'Notes']] as const) {
+    journal.tabs[first].name = name;
+    journal.tabs[first].sessions.push(...journal.tabs[second].sessions);
+  }
+  journal.tabs = journal.tabs.filter((_: unknown, index: number) => index !== 8 && index !== 12);
+  await writeFile(path, JSON.stringify(journal));
+
+  const terminal = (index: number) => initial.tabs[index].terminal;
+  type Tab = LayoutSnapshot['spaces'][number]['tabs'][number];
+  // Like app ls, the layout knows terminal addresses, not session identities.
+  const tab = (id: TabId, name: string, rows: string[]): Tab => ({
+    id, name, ownerSessionId: null, terminal: rows[0] as TerminalAddress,
+    terminals: rows.map(value => ({ terminal: value as TerminalAddress })),
+  });
+  const [tools, desk, projects, notesSpace] = layout.spaces;
+  tools.name = 'workshop';
+  tools.tabs = [tab(initial.tabs[0].tab, 'Toolbox', [terminal(0), 'shell-1', terminal(1), terminal(2), terminal(3)]), tab('tool-extra' as TabId, 'Extra', ['shell-2'])];
+  desk.tabs = [tab(initial.tabs[4].tab, 'Desk', [terminal(4), 'shell-3', 'shell-4', terminal(5), 'shell-5']), tab('desk-extra' as TabId, 'Activity', ['shell-6', terminal(6)])];
+  projects.name = 'projects'; projects.tabs = [tab(initial.tabs[7].tab, 'Main', [terminal(7), 'shell-7', 'shell-8', terminal(8)])];
+  notesSpace.name = 'notes'; notesSpace.tabs = [tab(initial.tabs[10].tab, 'Notes', [terminal(12), 'shell-9', 'shell-10', 'shell-11'])];
+  for (const index of [9, 10, 11]) probes.set(initial.launched[index].pid, { kind: 'absent' });
+  await confirmOwners(initial);
+  config.layout = 'panes';
+
+  const before = structuredClone(layout);
+  const notices: string[] = []; ports.reportLayout = message => notices.push(message);
+  const commands = vi.fn(ports.app.command); ports.app.command = commands;
+  const mutatingProtectedTabs = () => commands.mock.calls.filter(([, args]) => [args.id, args.tab, args.terminal, args.pane].some(value =>
+    before.spaces.slice(0, 3).some(space => space.tabs.some(tab => value === tab.id || tab.terminals?.some(row => value === row.terminal || value === `pane-${row.terminal}`))),
+  ));
+
+  const result = await setupSpaces(config, ports);
+  expect(result.launched.map(row => row.sessionId)).toEqual([
+    'Tools-0', 'Tools-1', 'Tools-2', 'Tools-3', 'Desk-0', 'Desk-1', 'Desk-2', 'Projects-0', 'Projects-1', 'Notes-0', 'Notes-2',
+  ]);
+  expect(writers.slice(13)).toEqual(['Notes-0']); // Ordinary missing pane, not a closed tab.
+  expect(mutatingProtectedTabs()).toEqual([]);
+  expect(layout.spaces.slice(0, 3)).toEqual(before.spaces.slice(0, 3));
+  expect(result.tabs.slice(0, 7).map(row => row.tab)).toEqual([
+    tools.tabs[0].id, tools.tabs[0].id, tools.tabs[0].id, tools.tabs[0].id, desk.tabs[0].id, desk.tabs[0].id, desk.tabs[1].id,
+  ]);
+  expect(notices.filter(message => message.includes('reorganised by hand')).sort()).toEqual([
+    'Tab "Activity" in space "Desk" was reorganised by hand. Setup kept it as it is.',
+    'Tab "Desk" in space "Desk" was reorganised by hand. Setup kept it as it is.',
+    'Tab "Toolbox" in space "workshop" was reorganised by hand. Setup kept it as it is.',
+  ]);
+  expect(notices.filter(message => message.includes('closed by hand')).sort()).toEqual([
+    'Tab "Notes 1" in space "notes" was closed by hand. Setup left it closed.',
+    'Tab "Projects 2" in space "projects" was closed by hand. Setup left it closed.',
+  ]);
+  expect((await readCutoverRecovery(ports.journalRoot)).createdTabs).toEqual(expect.arrayContaining(result.tabs.slice(0, 7)));
+
+  const persisted = await readFile(path, 'utf8');
+  await confirmOwners(result);
+  notices.length = 0; commands.mockClear();
+  expect(await spaceSetup.planSpaceCutover(config, ports)).toEqual([]);
+  expect(await setupSpaces(config, ports)).toEqual(result);
+  expect(commands).not.toHaveBeenCalled();
+  expect(notices.filter(message => message.includes('by hand'))).toEqual([]);
+  expect(await readFile(path, 'utf8')).toBe(persisted);
+});
+
+it.each(['two tabs', 'two panes', 'another owner'] as const)('refuses to adopt a renamed tab with %s for its terminal', async conflict => {
+  await addSession('one', 'First'); await addSession('two', 'Second');
+  await setupSpaces(config, ports);
+  const [first, second] = layout.spaces[0].tabs;
+  first.name = 'Edited';
+  const row = first.terminals![0];
+  if (conflict === 'two tabs') second.terminals!.push({ ...row });
+  else if (conflict === 'two panes') first.terminals!.push({ ...row });
+  else row.ownerSessionId = 'different-session';
+  const path = join(ports.journalRoot, 'spaces.json');
+  const before = await readFile(path, 'utf8');
+  const notices: string[] = []; ports.reportLayout = message => notices.push(message);
+  const commands = vi.fn(ports.app.command); ports.app.command = commands;
+
+  await expect(setupSpaces(config, ports)).rejects.toMatchObject({ code: 'tab-owner-conflict' });
+  expect(await readFile(path, 'utf8')).toBe(before);
+  expect(commands).not.toHaveBeenCalled();
+  expect(notices).toEqual([]);
+});
+
 it('adopts a merged tab containing spider viewer, observer and console panes without restarting sessions', async () => {
   await addSession('one', 'First'); await addSession('two', 'Second');
   const initial = await setupSpaces(config, ports), recovery = await readCutoverRecovery(ports.journalRoot);

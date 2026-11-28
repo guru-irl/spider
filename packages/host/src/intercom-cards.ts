@@ -1,5 +1,6 @@
 import { hostname } from "node:os";
 import { createHalfBox } from "./input-band/box.js";
+import { withClickExpansion } from "./message-click-expansion.js";
 import type { ExtensionAPI, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import type { Message, SessionInfo } from "@spider/intercom/types";
@@ -170,13 +171,13 @@ export function withIntercomCards(pi: ExtensionAPI, iconStyle: () => IconStyle, 
     };
     if (key === "registerMessageRenderer") return (name: string, renderer: MessageRenderer) => {
       if (name !== "intercom_message") return target.registerMessageRenderer(name, renderer);
-      return target.registerMessageRenderer(name, (message, options, theme) => {
+      return target.registerMessageRenderer(name, withClickExpansion((message, options, theme) => {
         const details = message.details as IncomingDetails | undefined;
         if (!details) return undefined;
         const box = createHalfBox(options.outputPad ?? 1, text => theme.bg("customMessageBg", text));
         box.addChild(new IncomingIntercomCard(details, theme, !options.expanded, iconStyle(), localMachineName));
         return box;
-      });
+      }));
     };
     const value = Reflect.get(target, key, target);
     return typeof value === "function" ? value.bind(target) : value;

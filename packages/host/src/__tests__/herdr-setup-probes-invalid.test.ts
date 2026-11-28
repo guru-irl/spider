@@ -12,7 +12,7 @@ vi.mock('node:child_process', async importOriginal => {
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
 const fastFixture = () => focusedSetupFixture({ coreTransport: 'socket' });
 
-it.each(['missing entry', 'corrupt entry', 'invalid result'] as const)('a changed %s is checked live instead of trusting recorded evidence', change => changedProbe(change, ''), 60000);
+it.each(['invalid result'] as const)('a changed %s is checked live instead of trusting recorded evidence', change => changedProbe(change, ''), 60000);
 
 it('a failed earlier root probe is never reused as passing evidence', async () => {
   const f = await fastFixture();

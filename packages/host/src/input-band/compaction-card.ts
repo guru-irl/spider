@@ -2,8 +2,7 @@ import { estimateTokens, type Theme } from "@earendil-works/pi-coding-agent";
 import {
   stripTerminalSequences, truncateToWidth, visibleWidth, type Component, type Container, type MarkdownOptions, type MarkdownTheme,
 } from "@earendil-works/pi-tui";
-import { ACTIVITY_FRAMES, type IconStyle } from "@spider/ui";
-import { bindHalfBox } from "./box.js";
+import { ACTIVITY_FRAMES, bindHalfBox, type IconStyle } from "@spider/ui";
 import { renderCompactionBars, type CompactionBill } from "./compaction-metrics.js";
 import type { InputBandHost } from "./index.js";
 

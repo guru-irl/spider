@@ -7,8 +7,8 @@ import { parseHerdrConfig } from '../config.js';
 import type { CoreId } from '../contracts.js';
 import { doctorHerdr, type DoctorParts } from '../setup/doctor.js';
 import { runHerdrCli } from '../setup/cli.js';
-import { applyFiles, prepareBackups, readJournal, saveJournal } from '../setup/backup.js';
-import { setupHerdr, type SetupContext, type SetupParts, type SetupRequest } from '../setup/installer.js';
+import { applyFiles, prepareBackups, readJournal, saveJournal, snapshot } from '../setup/backup.js';
+import { setupHerdr, type SetupParts, type SetupRequest } from '../setup/installer.js';
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -43,8 +43,8 @@ async function fixture() {
     installFiles: async () => [], generateTemplates: async () => [], installResume: async () => [],
     probeMachineNode: doctor.probeMachineNode, ensureRuntime: async () => [], bootstrapRuntime: async () => {},
     hc: { fileRead: async () => { throw new Error('No remote read expected'); }, fileWrite: async () => { throw new Error('No remote write expected'); } },
-    cutover: async (req, context) => {
-      if ((context as SetupContext & { appSelection?: unknown }).appSelection) await parts.selectApp!(req);
+    cutover: async (_, context) => {
+      await context.selectApp?.();
       return owners;
     },
     selectApp, verify: async req => doctorHerdr(req, doctor), rollback: async () => {}, warn: () => {},
@@ -102,6 +102,16 @@ test('upgrades the old selected layout once, keeps shared mod data, and does not
   expect(f.selections).toEqual(['Spider']);
 });
 
+test('an unrelated shared-state write during setup does not block the migration', async () => {
+  const f = await fixture(); await f.upgrade('spider-glass');
+  f.parts.runtimeRootsHealthy = async () => {
+    await writeFile(f.shared, '{"layout":"spider-glass","user.mod":"changed during setup"}');
+    return true;
+  };
+  await setupHerdr(f.request, f.parts);
+  expect(JSON.parse(await readFile(f.shared, 'utf8'))).toEqual({ layout: 'Spider', 'user.mod': 'changed during setup' });
+});
+
 test('upgrade and its repeat keep a different layout selected', async () => {
   const f = await fixture(); await f.upgrade('personal');
   const before = await readFile(f.shared);
@@ -148,10 +158,27 @@ test('rollback --undo-upgrade restores the old file, exact bytes and mode, and p
   expect(await readFile(f.journalPath)).toEqual(journal);
 });
 
+test('undo restores the exact legacy file even if setup had to recompose invalid JSON', async () => {
+  const f = await fixture(); await f.upgrade('personal');
+  const old = 'broken layout\n'; await writeFile(f.legacy, old);
+  await setupHerdr(f.request, f.parts);
+  await f.undo();
+  expect(await readdir(f.layouts)).toEqual(['spider-glass.json']);
+  expect(await readFile(f.legacy, 'utf8')).toBe(old);
+});
+
+test('setup does not remove a differently cased legacy-looking user layout', async () => {
+  const f = await fixture(), custom = join(f.layouts, 'SPIDER-GLASS.json');
+  await writeFile(custom, '{"user":"keep"}');
+  await setupHerdr(f.request, f.parts);
+  expect((await readdir(f.layouts)).sort()).toEqual(['SPIDER-GLASS.json', 'Spider.json']);
+  expect(await readFile(custom, 'utf8')).toBe('{"user":"keep"}');
+});
+
 test('interrupted migration retains the old file and can be undone if both names exist', async () => {
   const f = await fixture(); await f.upgrade('spider-glass');
   const select = f.parts.selectApp!;
-  f.parts.selectApp = async req => { await select(req); throw new Error('selection interrupted'); };
+  f.parts.selectApp = async (req, mode) => { await select(req, mode); throw new Error('selection interrupted'); };
   await expect(setupHerdr(f.request, f.parts)).rejects.toThrow('selection interrupted');
   expect((await readdir(f.layouts)).sort()).toEqual(['Spider.json', 'spider-glass.json']);
   expect(await readFile(f.legacy)).toEqual(oldLook);
@@ -159,6 +186,35 @@ test('interrupted migration retains the old file and can be undone if both names
   await f.undo();
   expect(await readdir(f.layouts)).toEqual(['spider-glass.json']);
   expect(JSON.parse(await readFile(f.shared, 'utf8')).layout).toBe('spider-glass');
+});
+
+async function withLegacyKeys(f: Awaited<ReturnType<typeof fixture>>, current: object) {
+  const path = join(f.request.config.app.home, 'keys.json');
+  await writeFile(path, JSON.stringify(current));
+  f.parts.installFiles = async () => [{ path, expected: (await snapshot(path)).hash, bytes: Buffer.alloc(0),
+    keys: { 'layout:Spider': { 'cmd-shift-e': 'spider-pane.park' } }, collision: 'key' }];
+  return path;
+}
+
+test('moves layout-scoped keys and restores their old section on upgrade undo', async () => {
+  const f = await fixture(); await f.upgrade('spider-glass');
+  const bindings = { 'cmd-shift-e': 'spider-pane.park', 'cmd-alt-x': { command: 'layout.show', args: { id: 'tools' } } };
+  const path = await withLegacyKeys(f, { global: {}, 'layout:spider-glass': bindings });
+  await setupHerdr(f.request, f.parts);
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ global: {}, 'layout:Spider': bindings });
+  expect(await setupHerdr(f.request, f.parts)).toMatchObject({ writes: [], journalChanged: false });
+  await writeFile(path, JSON.stringify({ global: { 'cmd-alt-a': 'user.action' }, 'layout:Spider': bindings }));
+  await f.undo();
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ global: { 'cmd-alt-a': 'user.action' }, 'layout:spider-glass': bindings });
+});
+
+test('refuses to merge competing user keys across the two layout sections', async () => {
+  const f = await fixture(); await f.upgrade('spider-glass');
+  const path = await withLegacyKeys(f, { 'layout:spider-glass': { 'cmd-k': 'old.action' }, 'layout:Spider': { 'cmd-k': 'new.action' } });
+  const before = await readFile(path);
+  await expect(setupHerdr({ ...f.request, overwriteUnownedKeys: true }, f.parts)).rejects.toMatchObject({ code: 'key-binding-conflict', message: expect.stringContaining('cmd-k') });
+  expect(await readFile(path)).toEqual(before);
+  expect(await readdir(f.layouts)).toEqual(['spider-glass.json']);
 });
 
 test('doctor reports both a leftover legacy file and the stale Herdr selection', async () => {

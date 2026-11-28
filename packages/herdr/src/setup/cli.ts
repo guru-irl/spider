@@ -223,7 +223,7 @@ export async function runHerdrCli(argv: readonly string[], ports?: HerdrCliPorts
     }
     if (nativeKeys === undefined) {
       const pending = await parts.pendingNativeKeys?.(fullRequest) ?? {};
-      const labels = Object.values(pending).flatMap(bindings => Object.entries(bindings).map(([key, binding]) => `${key.startsWith('cmd-') ? `Cmd-${key.slice(4).toUpperCase()}` : key} (${typeof binding === 'string' ? binding : binding.command})`));
+      const labels = Object.values(pending).flatMap(bindings => Object.entries(bindings).flatMap(([key, binding]) => binding === null ? [] : [`${key.startsWith('cmd-') ? `Cmd-${key.slice(4).toUpperCase()}` : key} (${typeof binding === 'string' ? binding : binding.command})`]));
       if (labels.length) stdout(`Offer: merge ${labels.join(', ')} with --merge-native-keys, or refuse with --decline-native-keys. Existing user bindings are preserved. No optional keys are changed by default.\n`);
     }
     const result = await setupHerdr(fullRequest, parts);

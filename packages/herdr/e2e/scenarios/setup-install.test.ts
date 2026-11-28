@@ -31,6 +31,7 @@ async function absent(path: string) {
 }
 async function assertNoInstalled(suite: Suite) {
   for (const name of ['agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome', 'machines']) await absent(join(suite.directories.HERDR_APP_HOME, 'mods', `spider-${name}`));
+  await absent(join(suite.directories.HERDR_APP_HOME, 'layouts/Spider.json'));
   await absent(join(suite.directories.HERDR_APP_HOME, 'layouts/spider-glass.json'));
   if (suite.options.tier !== 'remote') await absent(join(suite.root, 'r'));
 }
@@ -57,9 +58,11 @@ export const scenarios: readonly ScenarioDefinition[] = [{
       assert.equal(check.exitCode, 0, `${name}: ${check.stderr}`);
     }
     const status = await app.status() as { layout: string };
-    await suite.evidence('selected-app-status.json', status); assert.equal(status.layout, 'spider-glass');
+    await suite.evidence('selected-app-status.json', status); assert.equal(status.layout, 'Spider');
+    assert.equal(JSON.parse(await readFile(join(config.app.home, 'shared.json'), 'utf8')).layout, 'Spider');
     assert.equal(JSON.parse(await readFile(join(config.app.home, 'settings.json'), 'utf8')).theme, 'spider-glass');
     const keys = JSON.parse(await readFile(join(config.app.home, 'keys.json'), 'utf8'));
+    assert.equal(keys['layout:Spider']['cmd-shift-e'], 'spider-pane.park');
     for (const letter of ['a', 'o', 'u', 'm', 'k']) assert.equal(keys.terminal[`cmd-shift-${letter}`], `send:\u001b[${letter.charCodeAt(0)};6u`, `wrong merged shortcut for ${letter}`);
     assert.equal(JSON.parse(await readFile(join(config.agentDirectory, 'settings.json'), 'utf8')).theme, 'dracula-plus-glass');
     const rc = await readFile(config.shellRc, 'utf8'); assert.equal(rc.split('# spider:resume:start').length - 1, 1);

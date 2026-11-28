@@ -135,7 +135,7 @@ Setup accepts these flags:
 
 Stock Herdr 0.1.13 already binds Cmd-F, and stock 0.1.16 and 0.1.18 bind all three keys. Setup prints no offer when no supported key is missing. Herdr 0.1.12 has no optional key offer.
 
-A custom binding on these four keys stops setup even with `--overwrite-unowned-keys`: global Cmd-T, Cmd-D, and Cmd-Shift-D, and `spider-glass` Cmd-Shift-W. Restore the stock binding first.
+A custom binding on these four keys stops setup even with `--overwrite-unowned-keys`: global Cmd-T, Cmd-D, and Cmd-Shift-D, and Cmd-Shift-W in the `Spider` layout. Restore the stock binding first.
 
 ### What setup changes
 
@@ -143,8 +143,8 @@ Setup backs up every file it replaces before the first write and records each st
 
 1. The `herdr.config` entry in spider's global settings, only when you pass a configuration file outside the standard location.
 2. The spider panel mod and picker, plus clones of Herdr's current `agents`, `spaces`, `pane`, `tabs`, and `workspace-chrome` mods with spider's patches applied. On Herdr 0.1.13, 0.1.16, and 0.1.18, setup also installs Spaces B's cross-machine picker, `spider-menu`, and `spider-new-menu`. On Herdr 0.1.16 and 0.1.18, the layout selects a release-specific `spider-toast`. Herdr 0.1.13 uses the stock toast.
-3. The `spider-glass` layout and Herdr theme. The layout places macOS traffic lights off-window and uses the `spider-chrome` clone for the brand row. The sidebar footer keeps `workspace-chrome`. Only `theme`, `layout` and `sounds.enabled` in the app's settings change. Custom sound paths remain unchanged. A later explicit sound opt-in releases that preference from setup ownership.
-4. Five terminal sequences, Cmd-P for Go to, Cmd-N for a local space, and the layout-scoped Cmd-Shift-E Send back action. On 0.1.13, 0.1.16, and 0.1.18, Cmd-T opens the machine picker for a new tab, Cmd-D for a split right, and Cmd-Shift-D for a split down. In `spider-glass`, Cmd-Shift-W uses spider's close confirmation for cross-machine panes. Other layouts keep native close, and Ctrl-V image paste stays unchanged. Supported native keys are offered when absent and never changed automatically. Herdr 0.1.12 keeps the native creation bindings and does not install the machine picker entry mods.
+3. The `Spider` layout and its `spider-glass` theme. The layout places macOS traffic lights off-window and uses the `spider-chrome` clone for the brand row. The sidebar footer keeps `workspace-chrome`. On a fresh install, setup selects `Spider` in Herdr. Herdr saves the selected name under `layout` in `<app-home>/shared.json`. Setup disables native sounds in `settings.json` without changing custom sound paths. A later sound opt-in releases that preference from setup ownership.
+4. Five terminal sequences, Cmd-P for Go to, Cmd-N for a local space, and the layout-scoped Cmd-Shift-E Send back action. On 0.1.13, 0.1.16, and 0.1.18, Cmd-T opens the machine picker for a new tab, Cmd-D for a split right, and Cmd-Shift-D for a split down. In `Spider`, Cmd-Shift-W uses spider's close confirmation for cross-machine panes. Other layouts keep native close, and Ctrl-V image paste stays unchanged. Supported native keys are offered when absent and never changed automatically. Herdr 0.1.12 keeps the native creation bindings and does not install the machine picker entry mods.
 5. The `dracula-plus-glass` pi theme. Only the `theme` field of the agent directory's settings file changes.
 6. Role templates generated from your global model settings.
 7. `notes = false` in the core's `config.toml`. Only the root `notes` key changes.
@@ -164,6 +164,10 @@ A second run with nothing changed writes nothing, makes no backup, changes no fo
 ### Upgrade
 
 After you update spider, run setup again with the same configuration file. Each runtime version is installed under a file name derived from its content, so a new version goes next to the old one instead of replacing it. Setup probes Node again on a machine whose runtime changed. When only spider's installed files change, setup does not close and reopen your sessions. Then run the doctor.
+
+Setup upgrades `layouts/spider-glass.json` to `layouts/Spider.json` and moves the layout's keys to `layout:Spider` in Herdr's `keys.json`. If `spider-glass` was selected, setup switches to `Spider`. If another layout was selected, setup leaves it active. Setup saves the old layout in the upgrade checkpoint before removing it. The theme is still named `spider-glass`.
+
+If setup reports `layout-name-conflict`, move the conflicting file out of `layouts` or give it a different name. On a case-insensitive file system, `spider.json` also conflicts with `Spider.json`. If an interrupted upgrade left both layouts in place, run `rollback --undo-upgrade` before trying setup again. Neither replacement flag bypasses this conflict. Doctor reports a leftover old file or saved selection.
 
 On Herdr 0.1.12, setup refuses previously owned machine picker files or bindings and prints the rollback command. Run rollback first, then restore stock bindings or remove any remaining custom picker shortcuts before running setup again.
 
@@ -219,7 +223,9 @@ A repeat that changes only the setup journal, cutover metadata, probe records, r
 
 Undo restores installed artifacts, including files an older spider install already owned. In shared files, it restores only setup's parts: the theme field, resume block, root notes setting, app preferences, and managed key sections. Later aliases, key bindings, and unrelated settings stay. Session moves in `spaces.json` stay. Changed runtime instructions and mod store copies stay, including copies changed during an interrupted undo. Undo prints `Runtime store retained: <path>` for a changed store copy. Unchanged copies created by the upgrade are removed.
 
-Undo reverses setup's layout changes in attempt order. It restores mod references and release metadata while preserving unrelated layout edits, including pane sizes and custom entries. It never completes with a layout reference to a mod it removed.
+For changes to an existing layout, undo reverses setup's edits in attempt order. It restores mod references and release metadata while preserving unrelated edits, including pane sizes and custom entries. It never completes with a layout reference to a mod it removed.
+
+Undoing the rename restores `layouts/spider-glass.json`, the layout's key section, and the saved selection. It removes the replacement `Spider.json`. If you edited the new layout after setup, move it to a `.kept` file before undo. If Herdr is still open, select the restored layout in the picker to update the running window.
 
 Close the pi sessions that the upgrade created before undo. Undo removes only those new owners, not tabs or sessions that existed before the upgrade. In a shared tab, it removes only the new panes. New mod directories disappear through a verified rename before their files are deleted. Generated app files are removed with them; unrelated user files stay.
 
@@ -230,7 +236,7 @@ For `upgrade-layout-reference`, copy the named mod to a custom mod directory and
 For either `upgrade-layout-reference` or `upgrade-layout-ambiguous`, you can preserve the customized layout before retrying:
 
 ```sh
-mv "<app-home>/layouts/spider-glass.json" "<app-home>/layouts/spider-glass.json.kept"
+mv "<app-home>/layouts/Spider.json" "<app-home>/layouts/Spider.json.kept"
 node <installed-package>/dist/herdr/cli.mjs rollback --undo-upgrade --replace-changed --config <absolute-config-file>
 ```
 
@@ -631,7 +637,7 @@ The panel does not post Herdr toasts for feed notices. There are no budget, suba
 
 ## The look
 
-Setup installs a layout named `spider-glass` and a pi theme named `dracula-plus-glass`:
+Setup installs the `Spider` layout, the `spider-glass` Herdr theme, and the `dracula-plus-glass` pi theme:
 
 - Hover, selected, and raised fills are white at 7, 8, and 11 percent.
 - Panes have a 12-pixel radius, an 8-pixel gap, and a 1-pixel `#38383a` border. The focused pane uses the light grey accent for its border. The panel has the same radius and neutral border.
@@ -648,7 +654,7 @@ Herdr 0.1.18 uses a 176-degree gradient from `#18181ab3` to `#22201eb3`, about 7
 
 Setup enables window blur by default on Herdr 0.1.16 and 0.1.18. Set `"look": { "windowBlur": false }` to turn off blur without changing the paints.
 
-The layout defaults `cell_background_opacity` to `0.6`. Setup keeps a numeric value from an existing `spider-glass` layout. Patched Herdr builds use the key for explicit terminal cell backgrounds. Stock Herdr 0.1.18 ignores it.
+The layout defaults `cell_background_opacity` to `0.6`. Setup keeps a numeric value from the previous layout, including an old `spider-glass.json` on upgrade. Patched Herdr builds use the key for explicit terminal cell backgrounds. Stock Herdr 0.1.18 ignores it.
 
 ## Shortcuts
 

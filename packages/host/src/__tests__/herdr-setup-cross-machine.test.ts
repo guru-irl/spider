@@ -92,7 +92,7 @@ test('0.1.12 preserves native creation keys and does not install machine pickers
   await setupHerdr(f.request, f.parts);
   const keys = JSON.parse(await readFile(path, 'utf8'));
   for (const key of ['cmd-t', 'cmd-d', 'cmd-shift-d']) expect(keys.global[key]).toBe(before.global[key]);
-  expect(keys['layout:spider-glass']?.['cmd-shift-w']).toBeUndefined();
+  expect(keys['layout:Spider']?.['cmd-shift-w']).toBeUndefined();
   for (const name of ['spider-machine-picker', 'spider-machine-picker-right', 'spider-machine-picker-down']) {
     await expect(stat(join(home, 'mods', name))).rejects.toMatchObject({ code: 'ENOENT' });
   }
@@ -106,10 +106,10 @@ test('0.1.12 refuses previously owned pickers until rollback restores stock keys
   const stock = JSON.parse(await readFile(path, 'utf8'));
   Object.assign(stock.global, { 'cmd-t': 'tab.new', 'cmd-d': 'pane.split:right', 'cmd-shift-d': 'pane.split:down' });
   const baseline = Buffer.from(JSON.stringify(stock)); await writeFile(path, baseline);
-  const keys = { global: { 'cmd-t': 'mod.open:spider-machine-picker', 'cmd-d': 'mod.open:spider-machine-picker-right', 'cmd-shift-d': 'mod.open:spider-machine-picker-down' }, 'layout:spider-glass': { 'cmd-shift-w': 'spider-pane.close' } };
+  const keys = { global: { 'cmd-t': 'mod.open:spider-machine-picker', 'cmd-d': 'mod.open:spider-machine-picker-right', 'cmd-shift-d': 'mod.open:spider-machine-picker-down' }, 'layout:Spider': { 'cmd-shift-w': 'spider-pane.close' } };
   const picker = join(home, 'mods/spider-machine-picker/main.js');
   const plans: InstallFile[] = [
-    { path, expected: digest(baseline), bytes: mergeKeys(baseline, keys, {}, false), keys, managed: { kind: 'keys', sections: { global: ['cmd-t', 'cmd-d', 'cmd-shift-d'], 'layout:spider-glass': ['cmd-shift-w'] } } },
+    { path, expected: digest(baseline), bytes: mergeKeys(baseline, keys, {}, false), keys, managed: { kind: 'keys', sections: { global: ['cmd-t', 'cmd-d', 'cmd-shift-d'], 'layout:Spider': ['cmd-shift-w'] } } },
     { path: picker, expected: null, bytes: Buffer.from('// old owned picker\n') },
   ];
   const journal = await readJournal(f.request.journalRoot);

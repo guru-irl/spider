@@ -84,7 +84,7 @@ for (const version of ['0.1.13', '0.1.16', '0.1.18'] as const) {
         expect(manifest.capabilities).toEqual({ clipboard: { write: true } });
       }
     }
-    const layout = JSON.parse(await readFile(join(home, 'layouts/spider-glass.json'), 'utf8'));
+    const layout = JSON.parse(await readFile(join(home, 'layouts/Spider.json'), 'utf8'));
     expect(layout.terminal_menu).toBe('spider-menu');
     const hasNativeToast = version !== '0.1.13';
     expect(layout.toast).toBe(hasNativeToast ? 'spider-toast' : undefined);
@@ -99,17 +99,17 @@ for (const version of ['0.1.13', '0.1.16', '0.1.18'] as const) {
     const doctor = await f.ports.doctorParts(f.request);
     for (const item of ['mods', 'clones', 'patch-version', 'layout-theme'] as const) expect((await doctor.inspect(item, f.request)).failures).toEqual([]);
     layout.window_blur = !hasNativeToast;
-    await writeFile(join(home, 'layouts/spider-glass.json'), JSON.stringify(layout));
+    await writeFile(join(home, 'layouts/Spider.json'), JSON.stringify(layout));
     expect((await doctor.inspect('layout-theme', f.request)).failures).toContainEqual(expect.objectContaining({ code: 'window-blur-mismatch' }));
     if (hasNativeToast) layout.window_blur = true;
     else delete layout.window_blur;
-    await writeFile(join(home, 'layouts/spider-glass.json'), JSON.stringify(layout, null, 2));
+    await writeFile(join(home, 'layouts/Spider.json'), JSON.stringify(layout, null, 2));
     const before = await readFile(join(home, 'mods/spider-menu/main.js'));
     const off = { ...f.request, config: { ...f.request.config, look: { autoHideTabs: f.request.config.look?.autoHideTabs ?? true, windowBlur: false } } };
     await setupHerdr(off, { ...await f.ports.setupParts(off), verify: verifyItem(f.ports, 'layout-theme') });
     // Identical-repeat idempotency is covered by the B setup case in herdr-setup-cross-machine.test.ts.
     expect(await readFile(join(home, 'mods/spider-menu/main.js'))).toEqual(before);
-    expect(JSON.parse(await readFile(join(home, 'layouts/spider-glass.json'), 'utf8'))).not.toHaveProperty('window_blur');
+    expect(JSON.parse(await readFile(join(home, 'layouts/Spider.json'), 'utf8'))).not.toHaveProperty('window_blur');
     expect((await (await f.ports.doctorParts(off)).inspect('layout-theme', off)).failures).toEqual([]);
     await writeFile(join(home, 'mods/spider-menu/main.js'), '// changed');
     expect((await doctor.inspect('clones', f.request)).failures).toContainEqual(expect.objectContaining({ code: 'installed-artifact-changed' }));

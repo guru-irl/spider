@@ -404,7 +404,7 @@ describe("v0 local runtime",()=>{
   expect(f.signalled).toEqual([42]);
   expect(f.launches).toEqual([]);
   expect(await local.observeStopped(stopped)).toMatchObject({evidence:{kind:"pending",blockers:expect.arrayContaining([
-   {kind:"check",reason:"The local session placement could not be read."},
+   {kind:"check",reason:`unreadable-stop-record:${JSON.stringify({kind:"relocate-managed",sessionId:id})}`},
   ])}});
  });
  it.each(["before", "during"] as const)("a generic supervisor tick does not signal if a stopped row arrives %s process inspection", async when => {

@@ -5,6 +5,7 @@ import { CustomEditor, CustomMessageComponent, ToolExecutionComponent, UserMessa
 import { Box, Markdown, Text, stripTerminalSequences, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerInputBand } from "./index.js";
+import { registerEditWriteOverrides } from "../routing/overrides.js";
 import glass from "../../../herdr/assets/themes/dracula-plus-glass.json" with { type: "json" };
 
 const host = { CustomEditor, CustomMessageComponent, ToolExecutionComponent, UserMessageComponent, Box, Markdown, Text };
@@ -16,7 +17,16 @@ const INK = "\x1b[38;2;6;6;7m";
 const START = "\x1b]133;A\x07";
 const END = "\x1b]133;B\x07\x1b]133;C\x07";
 const plain = (rows: string[]) => rows.map(stripTerminalSequences).map(row => row.trimEnd());
-const editTool = () => new ToolExecutionComponent("edit", "call", { path: "guide.md", oldText: "old", newText: "new" }, {}, createEditToolDefinition("/project"), tui, "/project");
+const editTool = () => {
+  const overrides = new Map<string, NonNullable<ConstructorParameters<typeof ToolExecutionComponent>[4]>>();
+  registerEditWriteOverrides({ registerTool: (tool: { name: string }) => overrides.set(tool.name, tool) }, {
+    db: null as never, getCwd: () => "/project", getSessionId: () => "test",
+  });
+  const { renderCall, renderResult } = createEditToolDefinition("/project");
+  // Match Pi's withBuiltInRenderers: inherit the renderers, not renderShell.
+  return new ToolExecutionComponent("edit", "call", { path: "guide.md", edits: [{ oldText: "old", newText: "new" }] },
+    {}, { ...overrides.get("edit"), renderCall, renderResult }, tui, "/project");
+};
 const custom = () => new CustomMessageComponent({ role: "custom", customType: "notice", content: "Check the manifest", display: true, timestamp: 0 }, undefined);
 
 beforeAll(() => {
@@ -87,7 +97,7 @@ it("uses one caret after reload and restores stock when disabled", () => {
   verifyEdges(custom().render(40).slice(1), 40);
 });
 
-it("changes Pi's edit tool and default custom message padding into half rows", () => {
+it("changes the registered edit override and default custom message padding into half rows", () => {
   stop = activate();
   const edit = editTool();
   edit.updateResult({ content: [{ type: "text", text: "Applied the edit" }], details: { diff: "- old\n+ new" }, isError: false });
@@ -99,6 +109,14 @@ it("changes Pi's edit tool and default custom message padding into half rows", (
     expect(rows[1].startsWith(`${BG} `)).toBe(true);
     expect(plain(rows).at(-2)).not.toBe("");
   }
+});
+
+it("keeps just Pi's intentional separator before an edit error", () => {
+  stop = activate();
+  const edit = editTool();
+  edit.updateResult({ content: [{ type: "text", text: "Could not edit guide.md" }], isError: true });
+  const rows = plain(edit.render(64));
+  expect(rows).toEqual(["", "▄".repeat(64), " edit guide.md", "▀".repeat(64), "", " Could not edit guide.md"]);
 });
 
 it("removes only outer blank content rows and keeps Pi's mouse dispatch", () => {

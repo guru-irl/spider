@@ -360,6 +360,16 @@ describe("run status rows", () => {
     expect(render("reviewer")).toContain("\x1b[38;2;255;184;108mreviewer");
   });
 
+  it("colors the role in the completion card title like the agent rows", () => {
+    const colorTheme = { fg: (_: string, value: string) => value, bg: (_: string, value: string) => value, bold: (value: string) => value,
+      italic: (value: string) => `\x1b[3m${value}\x1b[23m`, colors: { dim: { r: 0, g: 0, b: 0 } }, getColorMode: () => "truecolor" };
+    const title = (agent: string) => renderSubagentDone({ details: { name: "rcard", agent, status: "done" } }, {}, colorTheme)
+      .render(120).find(line => stripTerminalSequences(line).includes("run · rcard"))!;
+    expect(title("worker")).toContain("\x1b[38;2;130;170;255mworker");
+    expect(title("reviewer")).toContain("\x1b[38;2;255;184;108mreviewer");
+    expect(stripTerminalSequences(title("worker"))).toContain("run · rcard · worker");
+  });
+
   it.each([72, 120])("right-aligns running and done metadata at %i columns", width => {
     const running = renderRow("running", width);
     const done = renderRow("done", width);

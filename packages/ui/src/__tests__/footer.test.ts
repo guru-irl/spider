@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { AgentFooter } from "../agents/footer";
 import { AgentStore } from "../agents/store";
 import type { RunRow, RunSource, RunEvent, ThemeAdapter } from "../agents/types";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 
 const id: ThemeAdapter = { fg: (_t, s) => s, bg: (_t, s) => s, bold: (s) => s, glyph: "🕸" };
 function row(o: Partial<RunRow>): RunRow {
@@ -56,7 +56,7 @@ describe("AgentFooter", () => {
     expect(noThinking).toMatch(/GPT-6\.1 Terra$/);
     expect(noThinking).not.toContain("high");
     const short = f.render(24)[0]!;
-    expect(short).toMatch(/^◇ worker pimo +GPT-6\.1 T…$/);
+    expect(stripTerminalSequences(short)).toMatch(/^◇ worker pimo +GPT-6\.1 T…$/);
     for (const width of [24, 30, 38, 48, 80]) expect(visibleWidth(f.render(width)[0]!)).toBe(width);
     store.stop();
   });
@@ -66,7 +66,7 @@ describe("AgentFooter", () => {
     const store = new AgentStore(src); store.start(); store.togglePin("r4");
     const footer = new AgentFooter(store, id, { now: () => 5000 });
     const normal = footer.render(72);
-    expect(normal[0]).toMatch(/agent-4 .+ · 3 turns · 5s +model · high$/);
+    expect(normal[0]).toMatch(/agent-4 † · 3 turns · 5s +model · high$/);
     expect(normal[2]).toContain("4 running · +2 more");
     expect(normal.slice(0, 2).every(line => visibleWidth(line) === 72 && line.endsWith("model · high"))).toBe(true);
     store.beginSelect();

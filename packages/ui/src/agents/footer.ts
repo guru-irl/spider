@@ -56,11 +56,27 @@ export class AgentFooter implements Component {
   }
 
   private agentLine(a: AgentSnapshot, width: number, selecting: boolean, selected?: string): string {
-    const cursor = selecting ? (a.runId === selected ? this.theme.fg("accent", `${icon(this.theme.iconStyle, "select")} `) : "  ") : "";
-    const cw = visibleWidth(cursor);
-    const pin = this.store.isPinned(a.runId) ? ` ${icon(this.theme.iconStyle, "pin")}` : "";
-    const line = formatAgentLine(this.theme, a, Math.max(4, width - visibleWidth(pin) - cw), this.now());
-    return cursor + (pin ? line + this.theme.fg("warning", pin) : line);
+    const t = this.theme;
+    const now = this.now();
+    const cursor = selecting ? (a.runId === selected ? t.fg("accent", `${icon(t.iconStyle, "select")} `) : "  ") : "";
+    const role = renderRoleAccent(t, a.role ?? a.agent, a.role ?? a.agent);
+    const pin = this.store.isPinned(a.runId) ? t.fg("warning", ` ${icon(t.iconStyle, "pin")}`) : "";
+    const base = `${cursor}${renderAgentStatus(t, a, now)} ${t.italic ? t.italic(role) : role} ${t.fg("toolTitle", t.bold(a.name))}${pin}`;
+    const sep = t.fg("dim", " · ");
+    const turns = `${sep}${t.fg("dim", a.stepCount === 1 ? "1 turn" : `${a.stepCount} turns`)}`;
+    const elapsed = `${sep}${t.fg("muted", formatDuration(a.startedAt === undefined ? 0 : (a.endedAt ?? now) - a.startedAt))}`;
+    const label = shortModel(a.model, t.modelName);
+    const model = label === "—" ? "" : t.fg("muted", label);
+    const thinking = a.thinking ? (model ? sep : "") + t.fg("dim", a.thinking) : "";
+    let left = base + turns + elapsed;
+    let right = model + thinking;
+    const fits = () => visibleWidth(left) + (right ? 1 + visibleWidth(right) : 0) <= width;
+    if (!fits()) left = base + elapsed;
+    if (!fits()) left = base;
+    if (!fits()) right = model;
+    if (!fits()) right = truncateToWidth(model, Math.max(0, width - visibleWidth(base) - 1), "…");
+    if (!right) return truncateToWidth(left, width, "…");
+    return left + " ".repeat(Math.max(1, width - visibleWidth(left) - visibleWidth(right))) + right;
   }
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {

@@ -2819,7 +2819,7 @@ Usage:
                 try { pi.appendEntry("intercom_sent", { to: plan.label, message: { text: message }, messageId: result.id, timestamp: Date.now() }); }
                 catch { transcriptWarning = V0_TRANSCRIPT_SAVE_FAILURE; }
                 return { content: [{ type: "text", text: v0RouteText(`Sent to ${plan.label} (broker accepted the message).`, route) + transcriptWarning }],
-                  details: { delivered: true, delivery: "socket_delivered", messageId: result.id, ...route } };
+                  details: { delivered: true, delivery: "socket_delivered", messageId: result.id, path: "direct", ...route } };
               }
             }
             if (confirmSend && cwd && openProjectPaneIfMissing) {

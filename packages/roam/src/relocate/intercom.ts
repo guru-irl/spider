@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import { openRoamPathReadOnly } from "@spider/db-core/roam/reads";
+import { isHerdrConnectivityFailure } from "@spider/herdr/client/availability";
 import { HerdrError } from "@spider/herdr/client/parse";
 import { requestV0Broker } from "@spider/intercom/broker/roam-v0-client";
 import { relayRefused, relayUnknown, type RelayResult, type RelaySubmit, type RelayTarget } from "@spider/intercom/relay-protocol";
@@ -20,6 +21,7 @@ import { createHomeStore } from "./home";
 import { localHerdrConnection } from "./local";
 import { isV0Alias, readV0Routes, type V0Routes } from "./intercom-routes";
 import { configuredRelayLinks, routeV0Relay } from "./intercom-relay-route";
+import { observeV0HerdrRoutes } from "./relay-poll";
 import type { RelocateHome, SessionId } from "./types";
 
 export interface V0IntercomDeps {
@@ -135,7 +137,7 @@ function createV0PeerCaller(root: string, deps: V0IntercomDeps) {
     deliveryDeadline: number, signal?: AbortSignal, onDeliveryHandOff?: () => void, onRouteUnavailable?: () => void): Promise<V0Reply> {
     const request = wire.version === 2 ? parseV0RelayAgentRequest(wire)?.request : parseV0AgentRequest(wire);
     if (!request) return refused("invalid");
-    let invoked = false;
+    let invoked = false, resolved = false;
     try {
       return await bounded(deadline, signal, async callSignal => {
         const transport = deps.transport?.(configured.sendTo) ?? createTransport({ ...localHerdrConnection(root), enrolled: configured.sendTo });
@@ -143,6 +145,7 @@ function createV0PeerCaller(root: string, deps: V0IntercomDeps) {
         if (resolveMs <= 0) throw new Error("Intercom delivery deadline expired");
         const target = await bounded(Math.min(deadline, deliveryDeadline), callSignal,
           resolveSignal => transport.resolve(peer, { timeoutMs: resolveMs, signal: resolveSignal }));
+        resolved = true;
         if ((wire.version === 2 || onRouteUnavailable) && !samePeer(peer, target)) return refused("changed");
         if (callSignal.aborted || performance.now() >= deliveryDeadline) throw new Error("Intercom delivery deadline expired");
         const remaining = Math.floor(deadline - performance.now());
@@ -189,8 +192,18 @@ function createV0PeerCaller(root: string, deps: V0IntercomDeps) {
       });
     } catch (error) {
       if (request.kind !== "lookup" && invoked) return { kind: "unknown", id: request.message.id };
-      if (!signal?.aborted && performance.now() < deliveryDeadline &&
-          (error instanceof DirectRouteUnavailable || error instanceof HerdrError && error.code === "machine-not-found")) onRouteUnavailable?.();
+      if (onRouteUnavailable && !signal?.aborted && performance.now() < deliveryDeadline) {
+        if (error instanceof DirectRouteUnavailable || error instanceof HerdrError && error.code === "machine-not-found") onRouteUnavailable();
+        else if (!resolved && isHerdrConnectivityFailure(error)) {
+          // A failed dial alone says nothing about enrollment, trust, or the peer's identity.
+          try {
+            const states = await bounded(deliveryDeadline, signal,
+              s => observeV0HerdrRoutes(localHerdrConnection(root), [peer], s));
+            const state = states.get(peer.machineId);
+            if (state === "missing" || state === "disconnected") onRouteUnavailable();
+          } catch { /* No positive route observation. Preserve the refusal. */ }
+        }
+      }
       return refused(error instanceof HerdrError && (error.code === "machine-not-found" || error.code === "machine-ambiguous")
         ? "invalid-config" : "unreachable");
     }
@@ -238,7 +251,7 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
     const senderHome = byId(from.address?.sessionId ?? from.id);
     const qualifiedPeer = selector.kind === "qualified" ? configured.sendTo.find(peer => peer.alias.toLowerCase() === selector.machine.toLowerCase()) : undefined;
     const qualifiedHome = selector.kind === "qualified" ? byId(selector.value) : null;
-    let qualifiedMachine = qualifiedPeer?.machineId as string | undefined;
+    let qualifiedMachine: string | undefined = qualifiedPeer?.machineId;
     let exactHome = unqualifiedHome ?? (qualifiedPeer && qualifiedHome?.machineId === qualifiedPeer.machineId ? qualifiedHome : null);
     const macQualified = selector.kind === "qualified" && configured.acceptFrom.some(peer =>
       peer.machineId === hubMachineId && peer.alias.toLowerCase() === selector.machine.toLowerCase());
@@ -338,7 +351,7 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
       incomplete = true;
     }
     if (candidates.length > 1) return refused("ambiguous");
-    if (incomplete && useRelays || !candidates.length) return refused(incomplete ? "incomplete" : exactHome ? "offline" : "no-match");
+    if ((incomplete && useRelays) || !candidates.length) return refused(incomplete ? "incomplete" : exactHome ? "offline" : "no-match");
     const { peer, endpoint } = candidates[0];
     if (endpoint.address.sessionId === source.address.sessionId) return refused("self");
     const pinnedPeer = { ...peer }, pinnedTarget = { ...endpoint, address: { ...endpoint.address } };

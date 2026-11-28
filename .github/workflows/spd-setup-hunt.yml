@@ -46,8 +46,16 @@ jobs:
           export TMPDIR="$PWD/.spider/scratch/tmp"
           export NODE_OPTIONS="--require=$PWD/scripts/spd-setup-process.cjs"
           unset XDG_RUNTIME_DIR
-          for file in packages/host/src/__tests__/"$TEST_FILE".test.ts packages/host/src/__tests__/"$TEST_FILE".part-*.test.ts; do
-            [[ -f "$file" ]] || continue
+          stem="packages/host/src/__tests__/$TEST_FILE"
+          files=("$stem.test.ts")
+          case "$TEST_FILE" in
+            herdr-setup-cross-machine|herdr-setup-production-install|herdr-setup-production-rollback|herdr-setup-selection)
+              shopt -s nullglob
+              files+=("$stem"-*.test.ts)
+              ;;
+          esac
+          for file in "${files[@]}"; do
+            test -f "$file"
             name=$(basename "$file" .test.ts)
             export SETUP_FILE="$name"
             printf '%s\t%s\t%s\n' START "$name" "$GITHUB_SHA" | tee -a "$SETUP_PROCESS_LOG"

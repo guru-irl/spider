@@ -581,7 +581,7 @@ function keyBaseline(bytes: Buffer | null, section: string, key: string): KeyBas
   const values = object(json[section] ?? {});
   return Object.hasOwn(values, key) ? { present: true, value: values[key] } : { present: false };
 }
-async function verifiedBackup(root: string, backup: string | null, before: string | null): Promise<Buffer | null> {
+export async function verifiedBackup(root: string, backup: string | null, before: string | null): Promise<Buffer | null> {
   if (backup === null) {
     if (before !== null) throw new HerdrError('backup-verification-failed', 'A recorded backup is missing');
     return null;

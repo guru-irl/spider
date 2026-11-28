@@ -1,7 +1,5 @@
-import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { foregroundFromBackground } from "../ansi.js";
-import { icon } from "../icons.js";
-import { halfEdge, stripRow } from "../tool-card-edge.js";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { BAND_GLYPHS, icon } from "../icons.js";
 import { compactCount, introDuration, type IntroTheme } from "./intro-header.js";
 import { dockedHinge, HINGE_WIDTH } from "./hinge.js";
 
@@ -55,17 +53,19 @@ export function renderDocked(width: number, theme: IntroTheme, facts: DockedFact
     }
   }
   if (available) lines.push(...wrapTextWithAnsi(dim(usage.unpricedCalls ? "Cached usage · some calls unpriced" : "Cached usage"), textWidth));
-  const art = strip >= HINGE_WIDTH ? dockedHinge(theme) : [];
-  const image = art.map(line => " ".repeat(artLeft) + line);
+  const bg = theme.colors.customMessageBg;
+  const tint = (text: string, width: number) => theme.style(truncateToWidth(text, width, "", true), { bg });
+  const art = strip >= HINGE_WIDTH ? dockedHinge(theme, bg) : [];
+  const image = art.map(line => tint("", artLeft) + line);
   const content = side ? lines.map((line, i) => {
     const imageRow = image[i - Math.floor((lines.length - image.length) / 2)] ?? "";
-    return imageRow + " ".repeat(textLeft - visibleWidth(imageRow)) + line;
-  }) : [...image, ...lines.map(line => " ".repeat(textLeft) + line)];
-  const indent = " ".repeat(margin), bg = theme.getBgAnsi("customMessageBg");
-  const ink = foregroundFromBackground(bg);
-  return [
-    ...(ink ? [indent + halfEdge(ink, strip, "top")] : []),
-    ...content.map(line => indent + stripRow(line, bg, strip)),
-    ...(ink ? [indent + halfEdge(ink, strip, "bottom")] : []),
+    const painted = visibleWidth(imageRow);
+    return imageRow + tint(" ".repeat(textLeft - painted) + line, strip - painted);
+  }) : [
+    ...image.map(line => line + tint("", strip - visibleWidth(line))),
+    ...lines.map(line => tint(" ".repeat(textLeft) + line, strip)),
   ];
+  const edge = (glyph: string) => theme.style(glyph.repeat(strip), { fg: bg });
+  const indent = " ".repeat(margin);
+  return [edge(BAND_GLYPHS.top), ...content, edge(BAND_GLYPHS.bottom)].map(line => indent + line);
 }

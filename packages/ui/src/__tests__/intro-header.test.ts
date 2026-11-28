@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { stripTerminalSequences, styleText, visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { parseColor, stripTerminalSequences, styleText, visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import * as ui from "../index.js";
 import type { IntroTheme, StartupFacts } from "../components/intro-header.js";
 
 const theme: IntroTheme = {
   fg: (_role, text) => text,
   bold: text => text,
-  getBgAnsi: () => "\x1b[48;2;32;32;34m",
+  colors: { customMessageBg: parseColor("#202022") },
   style: (text, options) => styleText(text, options, "truecolor"),
 };
 const facts: StartupFacts = {

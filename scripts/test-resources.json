@@ -343,7 +343,7 @@
       "packages/host/src/__tests__/herdr-setup-rollback-exit.test.ts",
       "packages/host/src/__tests__/herdr-sidebar.test.ts",
       "packages/host/src/__tests__/herdr-ssh.test.ts",
-      "packages/host/src/__tests__/herdr-viewer-layout.test.ts",
+      "packages/host/src/__tests__/herdr-viewer-layout-fixture.testutil.ts",
       "packages/host/src/__tests__/herdr-viewer-quit.test.ts",
       "packages/host/src/__tests__/herdr-viewer-replace.test.ts",
       "packages/host/src/__tests__/herdr-viewers.test.ts",

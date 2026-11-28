@@ -278,7 +278,6 @@ function largeArtifactRamRoot(): string | undefined {
 describe.each(["agent", "session"] as const)("artifact above 64 MiB (%s)", kind => {
   let files: ReturnType<typeof newFixture>;
   let expected: string;
-  let manifest: Awaited<ReturnType<typeof stageArtifact>>;
   let scratch: string | undefined;
   aroundAll(async runSuite => {
     const checkout = process.env.SPIDER_TEST_FIXTURE_CHECKOUT;
@@ -317,17 +316,14 @@ describe.each(["agent", "session"] as const)("artifact above 64 MiB (%s)", kind 
       }
     } finally { closeSync(out); }
     expected = sourceHash.digest("hex");
-    manifest = await stageArtifact(files.source, kind, DEFAULT_LIMITS, { root: files.staging });
   }, 5000);
   afterAll(() => { if (files) rmSync(files.root, { recursive: true, force: true }); });
 
-  it("stages the full payload with its source digest", () => {
+  it.each([kind])("streams a binary and session artifact above 64 MiB (%s)", async () => {
+    const { root, source, staging } = files;
+    const manifest = await stageArtifact(source, kind, DEFAULT_LIMITS, { root: staging });
     expect(manifest.byteLength).toBeGreaterThan(64 * 1024 * 1024);
     expect(manifest.sha256).toBe(expected);
-  }, 5000);
-
-  it("streams and installs byte-exact data within wire limits", async () => {
-    const { root, staging } = files;
     const remote = link(root, DEFAULT_LIMITS, true);
     try {
       const result = await transferArtifact(remote.peer, manifest,

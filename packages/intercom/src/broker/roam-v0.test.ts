@@ -15,6 +15,7 @@ import {
   parseV0AgentRequest,
   parseV0BrokerReply,
   parseV0BrokerRequest,
+  parseV0RelayAgentRequest,
   V0_INTERCOM_FEATURE,
   type V0Endpoint,
 } from "../roam-v0.js";
@@ -78,6 +79,22 @@ describe("roaming intercom envelopes", () => {
     expect(parseV0BrokerReply(matches)).toEqual(matches);
     const refusal = { version: 1, requestId: "delivery-1", machineId: "machine-2", kind: "refused", code: "moving" };
     expect(parseV0AgentReply(refusal)).toEqual(refusal);
+  });
+
+  it("accepts routed text threads without changing the version 1 delivery envelope", () => {
+    const { timeoutMs, ...base } = agentAsk;
+    const request = { ...base, kind: "deliver" };
+    const ask = { version: 2, relayId: "relay.invalid", request, thread: { kind: "ask", timeoutMs } };
+    const reply = { version: 2, relayId: null, request, thread: { kind: "reply", replyTo: "prior-ask" } };
+    expect(parseV0RelayAgentRequest(ask)).toEqual(ask);
+    expect(parseV0RelayAgentRequest(reply)).toEqual(reply);
+    expect(parseV0RelayAgentRequest({ ...reply, relayId: "relay.invalid" })).not.toBeNull();
+    expect(parseV0RelayAgentRequest({ ...ask, relayId: null })).toBeNull();
+    expect(parseV0RelayAgentRequest({ version: 2, relayId: null, request })).toBeNull();
+    expect(parseV0RelayAgentRequest({ ...ask, thread: { kind: "ask", timeoutMs: 540_001 } })).toBeNull();
+    expect(parseV0RelayAgentRequest({ ...reply, thread: { kind: "reply", replyTo: "" } })).toBeNull();
+    expect(parseV0AgentRequest({ ...request, thread: reply.thread })).toBeNull();
+    expect(parseV0RelayAgentRequest({ ...reply, request: agentAsk })).toBeNull();
   });
 
   it("rejects extra fields and local-only handles in a remote sender", () => {

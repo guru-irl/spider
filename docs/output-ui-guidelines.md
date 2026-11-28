@@ -45,8 +45,10 @@ label's one-space pad and let Pi handle clicks outside the actions.
 8. Use `sectionRule` only when the body has more than one group.
 
 Fit every line to the available display width. Respect Ctrl+O expansion without
-repeating call details in the result. Escalations show the full summary even when
-collapsed. Do not claim off-target clicks: Pi owns click-to-expand.
+repeating call details in the result. In fullscreen, click an incoming intercom,
+run completion, or slash command card to toggle that card. Ctrl+O resets the
+card to Pi's global expansion state. Escalations always show the full summary
+and do not claim clicks. Pi owns clicks on tool results.
 
 ### Exec example
 
@@ -80,6 +82,12 @@ sender uses the short hostname, retaining its case. A remote sender uses the
 configured machine alias. A collapsed message shows a one-line preview aligned
 with the title text. An expanded message wraps the body at the same indent and
 adds dim details. Reply details do not show message IDs.
+
+### Intercom ask results
+
+An intercom ask sent through a relay shows `asked via <relay>` and any skipped
+relays in dim rows below the result. Those rows describe the question's route,
+not the reply's route. Direct and local asks have no route row.
 
 ## Icon sets
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -55,6 +55,7 @@ function fixture({ short = false, chunkBytes = DEFAULT_LIMITS.chunkBytes, spawnC
   const launchState = { loseReply: false, dropBefore: 0, terminalOnly: false, prelude: "" }, terminalFile = join(root, "release-terminals.json"), coreLists = join(root, "core-lists");
   const fakeCore = `#!${process.execPath}\nimport fs from 'node:fs';
 const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(join(root, "core-spawns"))}, JSON.stringify(args) + '\\n');
 if (args[0] === 'server') console.log(JSON.stringify({core:{id:'fixture-core'},pid:4321,version:'0.1.16'}));
 else {
   const file = ${JSON.stringify(terminalFile)};
@@ -214,6 +215,7 @@ it("installs a non-writable tree under umask 002 that inventory can read", async
     expect(lstatSync(join(f.npmPrefix, "spider-releases", f.input.sha256)).mode & 0o777).toBe(0o700);
     expect(lstatSync(join(f.globalRoot, "roam", "provision", "op-1")).mode & 0o777).toBe(0o700);
     expect(installedInventory(f)).toMatchObject({ pi: f.peer.pi, piVersion: "1.2.0", spider: { installed: true } });
+    expect(readFileSync(join(f.root, "core-spawns"), "utf8")).toMatch(/\["ls"/);
     const bin = join(f.npmPrefix, "bin"), before = lstatSync(bin).mode & 0o777;
     chmodSync(bin, before | 0o020);
     expect(installedInventory(f)).toMatchObject({ pi: f.peer.pi, piVersion: "1.2.0", spider: { installed: true } });
@@ -868,6 +870,7 @@ it("relaunches the same operation only after receipt and terminal evidence are b
   expect(f.launches[0]).toBe(f.launches[1]);
   expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(2);
   expect(f.requests.filter(item => item.action === "release-prepare")).toHaveLength(1);
+  expect(readFileSync(join(f.root, "core-spawns"), "utf8")).toMatch(/\["ls"/);
 }, 5000);
 
 it("does not retry a release launch that is definitely refused", async () => {
@@ -1010,6 +1013,7 @@ it("abandons an old prepared release only after its deadline and an absent termi
   f.remote.launchRelease = delayedLaunch; const log = releaseNpm(f);
   expect(await second.installRelease(f.peer, f.input)).toEqual({ pi: f.peer.pi, cli: f.peer.cli, supervisor: f.destination.supervisor });
   expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(2);
+  expect(readFileSync(join(f.root, "core-spawns"), "utf8")).toMatch(/\["ls"/);
 }, 5000);
 
 it("retains an expired prepared release when a labelled terminal or its core evidence is uncertain", async () => {
@@ -1600,12 +1604,18 @@ it.each([false, true])("recognizes the packaged entry and detects a second Spide
   });
 }, 5000);
 
-it("proves unique settings, a drained legacy broker and federation through real remote verification", async () => {
-  const f = fixture({ short: true }); readyIntercomDeclarations(f);
-  await withReadinessBroker(f, ["intercom-exchange-v1", "federation-v1"], async () => {
-    expect(await create!(f.options).verifyPeer()).toMatchObject({ intercomUnique: true, legacyDrained: true, federation: true });
-  });
-}, 5000);
+describe("real remote readiness verification", () => {
+  let result: Awaited<ReturnType<ReturnType<Factory>["verifyPeer"]>>;
+  beforeAll(async () => {
+    const f = fixture({ short: true }); readyIntercomDeclarations(f);
+    result = await withReadinessBroker(f, ["intercom-exchange-v1", "federation-v1"], () => create!(f.options).verifyPeer());
+  }, 5000);
+  it.each([
+    ["settings-unique", "intercomUnique"], ["legacy broker drained", "legacyDrained"], ["federation-v1", "federation"],
+  ] as const)("proves %s through real remote verification", (_label, key) => {
+    expect(result[key]).toBe(true);
+  }, 5000);
+});
 
 it.each([
   ["legacy declaration", "intercomUnique", "settings", "legacy-extension-declared"],

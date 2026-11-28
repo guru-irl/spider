@@ -43,7 +43,7 @@ export async function routeV0Relay(routes: V0Routes, localMachineId: string, tar
       case "handoff-expired":
       case "relay-stopping": reason = "down"; break;
       case "unreachable": reason = "cannot reach the target"; break;
-      default: return { ...outcome, ...routed };
+      default: return { kind: "refused", code: outcome.code, ...routed };
     }
     relaySkips.push({ relay: alias, reason });
   }

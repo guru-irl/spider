@@ -14,8 +14,10 @@ color. Scrolled edges show a dim hidden-line count beside the half-cell bar.
 Keep Pi's cursor, completion menu, and keys.
 
 Sent messages have no bar. Place the accent `❯` before the first text row and
-align wrapped text under that row's text. Keep Pi's Markdown and OSC 133
-markers. `ui.inputBand: false` restores Pi's editor and sent messages.
+align wrapped text under that row's text. Show the message's local timestamp
+at the right of that row in dim text. Wrap Markdown before the timestamp and
+omit the timestamp if the terminal is too narrow. Keep Pi's Markdown and OSC
+133 markers. `ui.inputBand: false` restores Pi's editor and sent messages.
 
 The hover frame around replies uses rounded lines in `borderMuted`, without
 fill. Copy actions and the timestamp stay on the bottom edge. Keep the copy

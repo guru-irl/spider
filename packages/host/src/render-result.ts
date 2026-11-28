@@ -4,8 +4,8 @@
 // renderResult renders only the BODY. `options.expanded` reflects the in-chat Ctrl+O toggle;
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth, stripTerminalSequences, type Component as PiComponent } from "@earendil-works/pi-tui";
-import { icon, reopenBackground, type Component, type IconStyle } from "@spider/ui";
-import { isAgentModelRole, cachedLines, shortModel, formatRunUsage, renderErrorResult, renderExecCall, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, statusIcon, fitResultLines, cardDetailIndent, flushLeft, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
+import { icon, type Component, type IconStyle } from "@spider/ui";
+import { isAgentModelRole, cachedLines, shortModel, renderRoleAccent, formatRunUsage, renderErrorResult, renderExecCall, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, statusIcon, fitResultLines, cardDetailIndent, flushLeft, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -18,11 +18,13 @@ import type { ModelEntry } from "@spider/models";
 import { renderSkillList, renderSkillView, renderDistill, renderCurateResult, type DrainReport, type SkillRow } from "@spider/organism";
 import { UI_CONFIG_SCHEMA, modelThinkingDisplay } from "./ui-thinking";
 import { createHalfBox } from "./input-band/box.js";
+import { reopenBackground } from "./input-band/ansi.js";
 import { toToolResult } from "./result";
 import { makeRunCostFormatter } from "./run-credits";
 import { restoreExecDetails } from "./exec-session-storage";
+import { piTheme } from "./agents/theme-adapter";
 
-interface T { fg(tok: string, s: string): string; bold(s: string): string; italic(s: string): string; bg(tok: string, s: string): string; iconStyle?: IconStyle; modelName?: (model: string) => string | undefined; }
+interface T { fg(tok: string, s: string): string; bold(s: string): string; italic(s: string): string; bg(tok: string, s: string): string; iconStyle?: IconStyle; modelName?: (model: string) => string | undefined; roleTint?: ThemeAdapter["roleTint"]; }
 function mkTheme(theme: any, iconStyle?: IconStyle): T {
   // Theme.fg/bg THROW on a token the active theme lacks; swallow it so one unknown token never
   // aborts a whole render (pi's CustomMessageComponent would silently fall back to raw content).
@@ -30,8 +32,10 @@ function mkTheme(theme: any, iconStyle?: IconStyle): T {
     if (typeof fn !== "function") return s;
     try { return fn(tok, s); } catch { return s; }
   };
+  const roleTint = typeof theme?.fg === "function" ? piTheme(theme, iconStyle).roleTint : undefined;
   return {
     iconStyle,
+    roleTint: roleTint ? (hex, s, strength) => { try { return roleTint(hex, s, strength); } catch { return guard(theme?.fg?.bind(theme), "accent", s); } } : undefined,
     fg: (tok, s) => guard(theme?.fg?.bind(theme), tok, s),
     bold: (s) => { try { return typeof theme?.bold === "function" ? theme.bold(s) : s; } catch { return s; } },
     italic: (s) => { try { return typeof theme?.italic === "function" ? theme.italic(s) : s; } catch { return s; } },
@@ -77,21 +81,31 @@ function cardRow(prefix: string, text: string, width: number, expanded: boolean)
 
 function runBlock(t: T, r: RunLike, width: number, expanded: boolean, formatRunCost: RunCostFormatter, includeSubject: boolean): string[] {
   const status = r.status ?? "running";
-  const glyph = t.fg("toolTitle", status === "failed" ? icon(t.iconStyle, "failure")
-    : status === "cancelled" ? icon(t.iconStyle, "warning")
-    : icon(t.iconStyle, status === "done" ? "success" : status === "running" ? "running" : "open"));
+  const glyph = t.fg(status === "failed" ? "error" : status === "cancelled" ? "warning" : status === "done" ? "success" : "toolTitle",
+    status === "failed" ? icon(t.iconStyle, "failure")
+      : status === "cancelled" ? icon(t.iconStyle, "warning")
+      : icon(t.iconStyle, status === "done" ? "success" : status === "running" ? "running" : "open"));
   const agent = r.agent ?? "worker";
-  const segments = [status];
+  const sep = ` ${t.fg("dim", "·")} `;
+  const subjects: string[] = [];
   if (includeSubject) {
-    if (r.name && r.name !== agent) segments.push(t.bold(r.name));
-    segments.push(t.italic(t.fg("toolTitle", agent)));
+    if (r.name && r.name !== agent) subjects.push(t.bold(r.name));
+    subjects.push(t.italic(renderRoleAccent(adaptTheme(t), agent, agent)));
   }
-  segments.push(t.fg("muted", shortModel(r.model, t.modelName)));
-  if (r.thinking) segments.push(t.fg("muted", r.thinking));
-  if (["done", "failed", "cancelled"].includes(status) && ((r.token_count ?? 0) > 0 || (r.compactionCount ?? 0) > 0)) {
-    segments.push(t.fg("dim", formatRunUsage(r.token_count ?? 0, r.cost, r.compactionCount, r.costText ?? (r.usageCosts ? formatRunCost(r.usageCosts) : undefined))));
-  }
-  const lines = cardRow(` ${glyph} `, segments.join(` ${t.fg("dim", "·")} `), width, expanded);
+  // Unlike the indented detail rows, this full-width row gets its lead cell from the box.
+  const base = glyph + (subjects.length ? ` ${subjects.join(sep)}` : "");
+  const usage = ["done", "failed", "cancelled"].includes(status) && ((r.token_count ?? 0) > 0 || (r.compactionCount ?? 0) > 0)
+    ? (subjects.length ? sep : " ") + t.fg("dim", formatRunUsage(r.token_count ?? 0, r.cost, r.compactionCount, r.costText ?? (r.usageCosts ? formatRunCost(r.usageCosts) : undefined)))
+    : "";
+  const model = t.fg("muted", shortModel(r.model, t.modelName));
+  let left = base + usage;
+  let right = model + (r.thinking ? sep + t.fg("muted", r.thinking) : "");
+  const fits = () => visibleWidth(left) + 1 + visibleWidth(right) <= width;
+  if (!fits()) left = base;
+  if (!fits()) right = model;
+  if (!fits()) right = truncateToWidth(model, Math.max(0, width - visibleWidth(base) - 1), "…");
+  const header = right ? left + " ".repeat(Math.max(1, width - visibleWidth(left) - visibleWidth(right))) + right : left;
+  const lines = cardRow("", header, width, expanded);
   const taskLines = nonblankLines((r.task ?? "").trim());
   if (taskLines.length) {
     const [first, ...rest] = taskLines;
@@ -146,7 +160,7 @@ function wrapBespoke(c: Component): Component {
 
 /** Build a ThemeAdapter (fg/bg/bold/glyph) for the pure @spider/ui renderers from the host `T`. */
 function adaptTheme(t: T): ThemeAdapter {
-  return { fg: (tok, s) => t.fg(tok, s), bg: (tok, s) => t.bg(tok, s), bold: (s) => t.bold(s), italic: (s) => t.italic(s), glyph: icon(t.iconStyle, "agent"), iconStyle: t.iconStyle, modelName: t.modelName };
+  return { fg: (tok, s) => t.fg(tok, s), bg: (tok, s) => t.bg(tok, s), bold: (s) => t.bold(s), italic: (s) => t.italic(s), glyph: icon(t.iconStyle, "agent"), iconStyle: t.iconStyle, modelName: t.modelName, roleTint: t.roleTint };
 }
 
 const SEARCH_GLYPH = { memory: "active", content: "content", todo: "todo", message: "message" } as const;

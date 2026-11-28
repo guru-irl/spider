@@ -42,14 +42,20 @@ jobs:
             "$p"/production-cutover-app-shim*.test.ts "$p"/spaces-a-install*.test.ts
             "$p"/setup-backup-recovery*.test.ts "$p"/setup-installation*.test.ts
             "$p"/setup-checkpoint.test.ts "$p"/setup-checkpoint-part*.test.ts "$p"/acceptance.test.ts
+            "$p"/acceptance-setup*.test.ts "$p"/packaging*.test.ts "$p"/child-remote-integration*.test.ts
+            "$p"/spaces.test.ts "$p"/pane-roaming-handoff.test.ts
             "$p"/agent-consoles*.test.ts "$p"/ssh-core-restart.test.ts "$p"/console-upgrade.test.ts)
           test "${#files[@]}" -gt 0
           for file in "${files[@]}"; do test -f "$file" || { echo "Missing $file"; exit 1; }; done
+          node --test scripts/wpkg-speed/summarize.test.mjs
+          export NODE_OPTIONS="--require=$PWD/scripts/wpkg-speed/process.cjs"
+          export WPKG_PROFILE_LOG="$dir/instrument-check.ndjson"
+          VITEST_WORKER_ID=probe node -e ''
+          node -e "const events = require('node:fs').readFileSync(process.env.WPKG_PROFILE_LOG, 'utf8').trim().split('\\n').map(JSON.parse); if (events.map(e => e.type).join(',') !== 'start,exit') process.exit(1)"
           status=0
           for file in "${files[@]}"; do
             name="${file##*/}"
             export WPKG_PROFILE_LOG="$dir/$name.ndjson"
-            export NODE_OPTIONS="--require=$PWD/scripts/wpkg-speed/process.cjs"
             export TMPDIR="$PWD/.spider/scratch/tmp"
             export SPIDER_TEST_SEED=182
             unset XDG_RUNTIME_DIR PI_SUBAGENT_CHILD PI_SUBAGENT_RUN_ID PI_SPIDER_DB_PATH PI_SPIDER_SESSION_ID SPIDER_HERDR_E2E SPIDER_HERDR_APP_TESTS SPIDER_HERDR_APP_E2E
@@ -57,7 +63,7 @@ jobs:
             /usr/bin/time -f 'real %e\nuser %U\nsys %S' -o "$dir/$name.time" node node_modules/vitest/vitest.mjs run "$file" --maxWorkers=1 --reporter=json --outputFile="$dir/$name.json" >"$dir/$name.log" 2>&1 || { status=1; tail -100 "$dir/$name.log"; }
           done
           unset NODE_OPTIONS
-          node scripts/wpkg-speed/summarize.mjs "$dir"
+          node scripts/wpkg-speed/summarize.mjs "$dir" "${files[@]}"
           exit "$status"
       - uses: actions/upload-artifact@v4
         if: always()

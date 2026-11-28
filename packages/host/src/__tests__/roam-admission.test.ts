@@ -59,6 +59,18 @@ function fixture(initial = snapshot(), id = sessionId) {
   };
 }
 
+it.each(["stopped-local", "stopped-foreign", "moving", "unavailable"] as const)("v0 admission guidance for %s does not bypass home checks", async kind => {
+  const f = fixture();
+  const row = { sessionId: sessionId as never, machineId: kind === "stopped-foreign" ? "other.invalid" : local,
+    epoch: 3, moveId: null, updatedAt: 1, state: "stopped" as const, destination: null };
+  f.ports.v0Lookup = async () => kind === "unavailable" ? { kind: "unavailable" } : { kind: "managed", home: kind === "moving" ? { ...row, state: "moving", moveId: "v0-11111111-1111-4111-8111-111111111111" as never, destination: "other.invalid" } : row };
+  await f.emit("session_start", { reason: "startup" });
+  expect(f.gate.inspect().kind).toBe("blocked");
+  const detail = f.gate.inspect().blockers[0].detail;
+  if (kind === "stopped-local") expect(detail).toContain("spider roam start session-1");
+  else expect(detail).not.toContain("spider roam start");
+});
+
 it("a never-homed session starts normally with one warning when move setup fails", async () => {
   const f = fixture(snapshot({ home: null, states: [], origin: null, participating: false }));
   f.ports.lockUntracked = () => true;
@@ -748,6 +760,6 @@ it.each(["prepare", "load", "ownership", "lock", "readiness"] as const)("names t
   expect(f.gate.inspect().kind).toBe("blocked");
   const detail = f.gate.inspect().blockers[0].detail;
   expect(detail).toContain(`admission-${stage}-failed`); expect(detail).not.toContain(privateDetail);
-  if (stage === "readiness") { expect(detail).toContain("participant-stopped"); expect(detail).toContain("spider roam resume session-1"); }
+  if (stage === "readiness") { expect(detail).toContain("participant-stopped"); expect(detail).toContain("roaming-upgrade.md#settle-old-work-only-after-approval"); expect(detail).not.toContain("spider roam start"); }
   expect(await f.emit("input", { text: "continue" })).toEqual({ action: "handled" });
 }, 5000);

@@ -122,8 +122,7 @@ async function pendingLegacyLaunchWarnings(root: string, config: RoamConfig, tra
     .map(row => {
       const session = /^Session ([A-Za-z0-9._-]{1,96}): exact launch /.exec(row.reason)?.[1];
       const reason = `exact-launch:${machine}${session ? `:${session}` : ""}`;
-      const repair = row.repairCommand && /^spider roam stop [A-Za-z0-9._-]+$/.test(row.repairCommand) ? row.repairCommand : doctor;
-      return warning(reason, `${label}: ${row.reason}`, repair);
+      return warning(reason, `${label}: ${row.reason}`, doctor);
     });
   const issues = pending(config.machineId, "Local machine", "spider roam doctor", await localPendingLaunchDiagnostics({ root, machineId: config.machineId }));
   try {

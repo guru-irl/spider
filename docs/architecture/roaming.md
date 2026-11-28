@@ -634,14 +634,18 @@ a warning; sign in to the affected tool separately if it is needed. Provisioning
 installs the pinned runtime at the configured pi path, replacing an existing installation there.
 Use `--no-settings` to omit the local `settings.json` from the copy.
 
-Use `spider roam stop <session>` on the hub to persist a stopped intent. A
-session quit also stops it. `spider roam resume <session>` runs doctor first and
-refuses if blocking diagnostics remain. Doctor reports resource repairs, such as
-file limits and inotify settings, for an administrator to apply; provisioning
-does not make those repairs or restart the core. A core restart kills its
-terminals. The supervisor restores an eligible running session from its exact
-file, while a deliberate stop remains stopped. Repeated crashes suspend the
-session until a successful doctor and resume.
+For a managed v0 session, run `spider roam stop <session>` on the Mac hub.
+Add `--now` to skip graceful shutdown. Stop saves a stopped home, but is pending
+until the home machine confirms that the session and its owned work have exited.
+A quit does not save Stop. Check cached `spider roam status`, then use
+`spider roam start <session>` after confirmation. A lost action reply is unknown;
+check status before retrying. Neither command repairs legacy intent. For legacy
+work, follow the [upgrade procedure](../guide/roaming-upgrade.md#settle-old-work-only-after-approval).
+
+Doctor reports resource repairs, such as file limits and inotify settings, for
+an administrator to apply. Provisioning does not make those repairs or restart
+the core. The legacy supervisor restores eligible running sessions from their
+exact files. Repeated legacy crashes suspend the session.
 
 A launch exception after three consecutive failed hosting checks produces a
 hosting warning. It includes an allowlisted error code or `launch-unavailable`.
@@ -662,10 +666,9 @@ to succeed. This boundary prevents new invoking reservations without handoff
 evidence when a prerequisite fails.
 
 A pending exact launch blocks doctor and enable even when roaming is disabled.
-Doctor names the launch operation. For a reservation that has not reached the
-`invoking` phase and has no ID lock, doctor offers `spider roam stop <session>`
-on the hub. Stop clears that reservation to idle without a restart proof,
-because the launch never began. An invoking reservation with no ID lock is not
+Doctor names the launch operation and points to the legacy upgrade procedure.
+The private legacy stop operation clears an uninvoked reservation with no ID
+lock without a restart proof. An invoking reservation with no ID lock is not
 proof that its adopted owner exited.
 
 If a released adoption record names the session and launch operation, stop can
@@ -693,10 +696,9 @@ inspection before retrying. If adoption evidence is missing, doctor checks the
 actual pin and core and names the missing evidence. It prescribes core startup
 or pin repair when needed, not another doctor command.
 
-For a pending handoff, doctor offers `spider roam stop <session>` on the hub,
-not provision. Box doctor explicitly names the Mac hub as where to run that
-repair command. Stop preserves the stopped intent and never relaunches the
-session. Stop refuses to settle a handoff whose operation differs from the
+For a pending legacy handoff, doctor points to the upgrade procedure, not the
+v0 Stop command. The private legacy stop preserves the stopped intent and never
+relaunches the session. It refuses to settle a handoff whose operation differs from the
 session's launch reservation, including a move's launch. It releases the pending
 ID lock, launch handoff, and file lease only when both checks succeed:
 
@@ -753,23 +755,22 @@ rather than an unavailable identity. A probe still distinguishes an unavailable 
 Do not delete ownership files or launch another copy to repair it.
 Reconciliation waits at most 60 seconds while holding the session ID lock.
 Timeout preserves pending ownership and returns a doctor repair command.
-After stop settles the handoff, retry doctor and enable, then resume the session.
+After the private legacy stop settles the handoff, follow the upgrade procedure.
 A repeated stop also finishes a cleanup interrupted after the lease or handoff
 was released. The launch journal retains the failed outcome. Stop records the
 existing restart proof before clearing an invoked reservation, so a later resume
 uses a new launch operation rather than reusing the completed one.
 Stop re-reads the intent version after settlement. If another intent update
-still races with that write, stop returns `intent-reconciliation-required` with
-`spider roam stop <session>` as the repair command.
+still races with that write, the private stop returns `intent-reconciliation-required`
+and points to `spider roam doctor`.
 
 A stopped box-local origin remains stopped even if a replacement native process
 has a different PID or core. A local home does not grant that replacement launch
 authority. If the origin has no assigned home yet, first run
 `spider roam sync <machine>` on the hub to assign its initial home.
-Close the blocked copy, then run `spider roam resume <session>` on the hub.
-Resume verifies the exact file and doctor checks before it creates running
-intent and wakes the supervisor. It does not change the home or bypass a live or
-uncertain owner.
+Close the blocked copy and follow the legacy upgrade procedure. The private
+legacy resume verifies the exact file and doctor checks before it creates
+running intent. It does not change the home or bypass a live or uncertain owner.
 
 Move setup failures retain a safe stage and cause in admission and doctor.
 The stages are `preparation`, `ownership`, `move-bindings`, `live-freeze`, and
@@ -792,11 +793,10 @@ session header reports `participant-header-invalid` or
 
 Initial admission failures name the stage, such as
 `admission-readiness-failed`, and an allowlisted participant reason when available.
-`participant-stopped` and `participant-hub-intent-required` name the resume
-command. A refused resume includes the blocking doctor diagnostics in text and
-JSON, plus `spider roam doctor <machine>` as the next command. Fix those
-prerequisites and retry resume. Restarting services does not clear a deliberate
-stop. This follows the stopped-intent and doctor requirements in the
+`participant-stopped` and `participant-hub-intent-required` point to the legacy
+upgrade procedure. A refused private legacy resume includes the blocking doctor
+diagnostics and `spider roam doctor <machine>`. Restarting services does not
+clear a deliberate stop. This follows the stopped-intent and doctor requirements in the
 [supervisor design](../superpowers/specs/2026-11-11-roaming-agents-design.md#supervisor-and-availability).
 
 Windows updates can silently restart WSL. After a WSL restart, the supervisor

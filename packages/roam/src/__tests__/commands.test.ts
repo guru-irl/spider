@@ -14,7 +14,7 @@ const controls = [
   ["status", ["roam", "status"]], ["sync", ["roam", "sync"]], ["enable", ["roam", "enable"]], ["disable", ["roam", "disable"]],
   ["provision", ["roam", "provision", "box-1.invalid"]], ["doctor", ["roam", "doctor"]], ["recover", ["roam", "recover", "move-a"]],
   ["cancel", ["roam", "cancel", "move-a"]], ["forget", ["roam", "forget", "box-1.invalid", "--confirm", `destroyed ${BOX}`]],
-  ["stop", ["roam", "stop", "session-a"]], ["resume", ["roam", "resume", "session-a"]],
+  ["stop", ["roam", "stop", "session-a"]], ["start", ["roam", "start", "session-a"]],
   ["repo map", ["roam", "repo", "map", "repo-a", "/fixture/repo"]], ["claim", ["roam", "claim", "session-a", "mac"]],
   ["memory tag", ["roam", "memory", "tag", "global", "memory-a", "all"]],
 ] as const;
@@ -28,7 +28,7 @@ it.each(controls)("parses %s with and without JSON", (_name, argv) => {
   expect(parsePublicControl([...argv, "--json"])).toEqual(parsePublicControl(argv));
 });
 it.each(controls)("disabled %s follows the amended user-control policy", (name, argv) => {
-  const allowed = ["status", "doctor", "enable", "disable", "provision", "forget", "stop"].includes(name);
+  const allowed = ["status", "doctor", "enable", "disable", "provision", "forget"].includes(name);
   expect(controlRefusal(parsePublicControl(argv)!, config(false))).toBe(allowed ? null : "roaming-disabled");
 });
 it.each(controls)("box %s follows the local-only policy", (name, argv) => {
@@ -39,7 +39,7 @@ it.each([
   ["move", "session-a"], ["move", "session-a", "mac", "extra"], ["roam", "claim", "session-a"],
   ["roam", "forget", "box-1.invalid"], ["roam", "repo", "map", "repo-a", "relative"],
   ["roam", "memory", "tag", "worktree:repo-a:workspace-a", "memory-a", "all"],
-  ["roam", "provision", "box-1.invalid", "--consent"], ["roam", "enable", "extra"], ["roam", "recover", "--bad"],
+  ["roam", "provision", "box-1.invalid", "--consent"], ["roam", "enable", "extra"], ["roam", "recover", "--bad"], ["roam", "resume", "session-a"],
 ])("rejects invalid arguments %j", (...argv) => expect(parsePublicControl(argv)).toBeNull());
 
 it("parses an explicit core-pin replacement once", () => {
@@ -93,6 +93,21 @@ it.each([
   }
   expect(safeControlOutcome({ ...base, value: { issues: [{ ...issue, reason: "preflight-failed:peer.invalid:other" }] } }).value)
     .toEqual({ issues: [{ reason: "preflight-failed:peer.invalid:other", repairCommand: issue.repairCommand }] });
+});
+
+it("never relays a legacy intent repair as a public session action", () => {
+  const base = { code: 3 as const, reason: "intent-reconciliation-required", operationId: "op-1", home: null, epoch: null, value: null };
+  for (const repairCommand of ["spider roam stop session-a", "spider roam start session-a", "spider roam resume session-a"])
+    expect(safeControlOutcome({ ...base, repairCommand }).repairCommand).toBeNull();
+  expect(safeControlOutcome({ ...base, repairCommand: "spider roam doctor" }).repairCommand).toBe("spider roam doctor");
+});
+
+it("keeps the legacy guide without exposing arbitrary launch detail", () => {
+  const result = safeControlOutcome({ code: 0, reason: "roaming-enabled", operationId: "", home: null, epoch: null, repairCommand: null,
+    value: { issues: [{ severity: "warning", reason: `exact-launch:${BOX}:session-a`, repairCommand: "spider roam doctor",
+      detail: "PRIVATE-CONTENT docs/guide/roaming-upgrade.md#settle-old-work-only-after-approval" }] } });
+  expect(JSON.stringify(result)).toContain("roaming-upgrade.md#settle-old-work-only-after-approval");
+  expect(JSON.stringify(result)).not.toContain("PRIVATE-CONTENT");
 });
 
 it("retains only shell-safe destination permission repair commands", () => {

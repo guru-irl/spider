@@ -43,6 +43,9 @@ import { formatRevocationGates } from "./cause-codes";
 import { inspectIntercomReadiness, intercomReadinessDiagnostics, validIntercomReadiness, type IntercomReadiness } from "./intercom-readiness";
 import { readPrivateBytes } from "./selected-files";
 import { readV0Routes, type V0Routes } from "./relocate/intercom-routes";
+import { readManagedHome } from "./relocate/home";
+import { readCachedSessionStatus } from "./relocate/session-stop-store";
+import type { SessionId } from "./relocate/types";
 
 function missing(error: unknown): boolean { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
 type SupervisorAutostart = "enabled" | "disabled" | "missing" | "unknown";
@@ -68,10 +71,7 @@ export async function inspectSupervisorAutostart(): Promise<SupervisorAutostart>
     });
   });
 }
-function sessionCommand(id: string, action: "resume" | "stop" = "resume"): string {
-  const argument = /^[A-Za-z0-9_][A-Za-z0-9._:-]*$/.test(id) ? id : `'${id.replaceAll("'", "'\\''")}'`;
-  return `spider roam ${action} ${id.startsWith("-") ? "-- " : ""}${argument}`;
-}
+const legacyRepairGuide = "docs/guide/roaming-upgrade.md#settle-old-work-only-after-approval";
 function snapshotProblem(error: unknown): string {
   if (error instanceof StoreInventoryError) return snapshotProblem(error.cause);
   if ((error as NodeJS.ErrnoException)?.code === "diagnostic-snapshot-wal-index-missing") return " The WAL index is missing; the store may be opening or closing. Retry inspection.";
@@ -449,7 +449,7 @@ export async function localPendingLaunchDiagnostics(input: {
       } catch { /* Missing process evidence remains blocking. */ }
       reportedHandoffs.add(`${handoff.sessionId}\0${handoff.operationId}`);
       inventory.push({ severity: "block", reason: `Session ${safe(handoff.sessionId)}: exact launch ${safe(handoff.operationId)} is pending; ${detail}; ${launcher}. Inspect the launcher PID and boot ID and the operation-labelled terminal on the destination; stop retries only after exit is proved.`,
-        repairCommand: sessionCommand(handoff.sessionId, "stop") });
+        repairCommand: "spider roam doctor" });
     }
   } catch { inventory.push({ severity, reason: "Cannot inspect pending exact-launch handoffs.", repairCommand: null }); }
   try {
@@ -461,24 +461,23 @@ export async function localPendingLaunchDiagnostics(input: {
       const owner = await inspectAdoptedOwner({ root: join(root, "herdr"), sessionId: reservation.sessionId, operationId: reservation.operationId,
         file: reservation.file, leases: createSessionLeases(join(root, "herdr")), ...recovery });
       const session = `Session ${safe(reservation.sessionId)}: exact launch ${safe(reservation.operationId)}`;
-      const stop = sessionCommand(reservation.sessionId, "stop");
       switch (owner.kind) {
         case "exited":
           inventory.push({ severity: "warning", reason: `${session} exited before readiness was recorded.`,
-            repairCommand: owner.released ? stop : sessionCommand(reservation.sessionId) });
+            repairCommand: "spider roam doctor" });
           break;
         case "live":
-          inventory.push({ severity, reason: `${session} is pending; the adopted owner is still running. Close that session through its supported shutdown path, then run ${stop}.`, repairCommand: null });
+          inventory.push({ severity, reason: `${session} is pending; the adopted owner is still running. Close that session through its supported shutdown path.`, repairCommand: null });
           break;
         case "lease-live":
-          inventory.push({ severity, reason: `${session} is pending; the file lease is still held by a live process. Close its session through its supported shutdown path, then run ${stop}.`, repairCommand: null });
+          inventory.push({ severity, reason: `${session} is pending; the file lease is still held by a live process. Close its session through its supported shutdown path.`, repairCommand: null });
           break;
         case "unavailable":
-          inventory.push({ severity, reason: `${session} is pending; the owner's status is unavailable. Restore local process and boot identity inspection, then run ${stop}.`, repairCommand: null });
+          inventory.push({ severity, reason: `${session} is pending; the owner's status is unavailable. Restore local process and boot identity inspection.`, repairCommand: null });
           break;
         case "missing": {
           if (reservation.phase === "reserved") {
-            inventory.push({ severity, reason: `${session} is pending; the launch has not been invoked. Stop cancels this reservation without launching.`, repairCommand: stop });
+            inventory.push({ severity, reason: `${session} is pending; the launch has not been invoked.`, repairCommand: "spider roam doctor" });
             break;
           }
           pinStatus ??= inspectSupervisorCorePin(root, process.env);
@@ -497,8 +496,7 @@ export async function localPendingLaunchDiagnostics(input: {
       }
     }
   } catch { inventory.push({ severity, reason: "Cannot inspect pending launch reservations.", repairCommand: null }); }
-  return inventory.map(row => row.repairCommand?.startsWith("spider roam stop ")
-    ? { ...row, reason: `${row.reason} Run this repair command on the Mac hub.` } : row);
+  return inventory.map(row => ({ ...row, reason: `${row.reason} For legacy work, see ${legacyRepairGuide}.` }));
 }
 
 export function localHubServiceDiagnostics(root: string, launchd?: Pick<LaunchdPorts, "plistDir" | "serviceHome">): Diagnostic[] {
@@ -687,7 +685,7 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
     for (const suspended of await inspectSuspendedIntents(root)) {
       const safe = (value: string) => value.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 256);
       const id = suspended.sessionId;
-      inventory.push({ severity: "warning", reason: `Session ${safe(id)} is suspended: ${safe(suspended.reason)}.`, repairCommand: sessionCommand(id) });
+      inventory.push({ severity: "warning", reason: `Session ${safe(id)} is suspended: ${safe(suspended.reason)}. For legacy work, see ${legacyRepairGuide}.`, repairCommand: "spider roam doctor" });
     }
   } catch { inventory.push({ severity, reason: "Cannot inspect suspended hosting intents.", repairCommand: null }); }
   try {
@@ -810,6 +808,23 @@ export function runLocalStatus(input: { root: string; now?: number }): RoamStatu
     const status = readStatus(local.config, { globalDb, stores: usable, journalDb: journal ?? null, now, observations,
       inventoryComplete: local.inventory.length === 0, journalAvailable });
     status.diagnostics.push(...local.inventory);
+    if (globalDb) {
+      const sessions: import("./relocate/session-stop-types").SessionStatus[] = [];
+      try {
+        const rows = globalDb.prepare("SELECT session_id FROM session_homes ORDER BY session_id").all() as { session_id: SessionId }[];
+        for (const row of rows) try {
+          if (readManagedHome(globalDb, row.session_id)) sessions.push(readCachedSessionStatus(globalDb, row.session_id, now));
+        } catch {
+          status.complete = false;
+          const id = typeof row.session_id === "string" ? row.session_id.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 256) : "unknown";
+          status.diagnostics.push({ severity: "warning", repairCommand: "spider roam doctor", reason: `Cannot read cached status for session ${id}.` });
+        }
+      } catch {
+        status.complete = false;
+        status.diagnostics.push({ severity: "warning", repairCommand: "spider roam doctor", reason: "Cannot read all managed session statuses." });
+      }
+      status.sessions = sessions;
+    }
     if (globalDb) try {
       const safe = (value: string) => value.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 256);
       for (const {key,value} of localEntries<Partial<V0Refusal> | null>(globalDb, "relocate-supervisor-refusal")) {

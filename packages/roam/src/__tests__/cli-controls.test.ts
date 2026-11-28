@@ -348,63 +348,55 @@ it("help explains recovery, JSON, non-interactive consent and the forget warning
   expect(help).toMatch(/disabled.*not.*(hosting|enable)/i);
 }, 5000);
 
-it.each(["stop", "resume"])("%s sends a hub-issued operation to the current box home", async action => {
-  const f = await fixture();
-  const db = { prepare() { return { get() { return { machine_id: BOX, epoch: 3 }; } }; } };
-  vi.spyOn(localRuntime, "openLocalCore").mockReturnValue({ root: f.root, db, config: localRuntime.readLocalIdentity(f.root), close() {} } as never);
-  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
-  const operations: any[] = [];
-  vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: any) { return peer; }, async exec(peer: any, argv: string[]) {
-    const operation = JSON.parse(argv[2]); operations.push(operation);
-    expect(peer.machineId).toBe(BOX);
-    return Buffer.from(JSON.stringify({ code: 0, reason: "intent-updated", operationId: operation.id, home: null, epoch: 3, repairCommand: null, value: null }));
-  } } as never);
-  expect(await f.invoke(["roam", action, "s-1"])).toBe(0);
-  expect(operations).toEqual([expect.objectContaining({ kind: `session-${action}`, machineId: BOX, expectedEpoch: 3, args: { sourceMachine: HUB, sessionId: "s-1" } })]);
+async function sessionActionFixture() {
+  const f = await fixture(), db = openDb(join(f.root, "spider.db"));
+  migrate(db, "global", { machineId: HUB, globalRoot: f.root });
+  db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state,destination) VALUES ('s-1',?,3,NULL,1,'running',NULL)").run(BOX);
+  return { ...f, db };
+}
+
+it.each(["stop", "start"] as const)("%s sends a v0 operation pinned to the current home", async action => {
+  const f = await sessionActionFixture(), requests: unknown[] = [];
+  const unexpected = async () => { throw new Error("unexpected"); };
+  const execute = async (request: any) => { requests.push(request); return { sessionId: request.sessionId, machineId: BOX,
+    homeEpoch: action === "stop" ? 4 : 3, homeState: action === "stop" ? "stopped" : "running", status: action === "stop" ? "stopped" : "running",
+    observedAt: 1, outcome: "complete", reason: null, operationId: request.operationId } as any; };
+  sockets.push(await serveV0Control(f.root, { sync: unexpected, relocate: unexpected, setHome: unexpected, stop: execute, start: execute, sessionStatus: unexpected }));
+  try {
+    expect(await f.invoke(["roam", action, "s-1"])).toBe(0);
+    expect(requests).toEqual([expect.objectContaining({ sessionId: "s-1", machineId: BOX, homeEpoch: 3, ...(action === "stop" ? { mode: "graceful" } : {}) })]);
+  } finally { f.db.close(); }
 }, 5000);
 
-it("disabled stop controls only a session and does not permit resume", async () => {
+it("disabled hub refuses Stop and Start and rejects Resume", async () => {
   const f = await fixture(), file = join(f.root, "roam/config.json"), config = JSON.parse(readFileSync(file, "utf8"));
   config.enabled = false; writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
-  const db = { prepare() { return { get(id: string) { return id === "session-a" ? { machine_id: BOX, epoch: 3 } : undefined; } }; } };
-  vi.spyOn(localRuntime, "openLocalCore").mockReturnValue({ root: f.root, db, config: localRuntime.readLocalIdentity(f.root), close() {} } as never);
-  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
-  const operations: any[] = [];
-  vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: unknown) { return peer; }, async exec(_peer: unknown, argv: string[]) {
-    const op = JSON.parse(argv[2]); operations.push(op);
-    return Buffer.from(JSON.stringify({ code: 0, reason: "stopped", operationId: op.id, home: null, epoch: 3, repairCommand: null, value: null }));
-  } } as never);
-  expect(await f.invoke(["roam", "stop", "session-a"])).toBe(0);
-  expect(await f.invoke(["roam", "resume", "session-a"])).toBe(1);
-  expect(await f.invoke(["roam", "stop", BOX])).toBe(1);
-  expect(operations).toEqual([expect.objectContaining({ kind: "session-stop", args: { sourceMachine: HUB, sessionId: "session-a" } })]);
+  expect(await f.invoke(["roam", "stop", "session-a"])).toBe(1);
+  expect(await f.invoke(["roam", "start", "session-a"])).toBe(1);
+  expect(await f.invoke(["roam", "resume", "session-a"])).toBe(2);
 }, 5000);
 
-it("stop JSON returns the production participant refusal and its actual home and epoch", async () => {
-  const f = await fixture(), db = { prepare() { return { get() { return { machine_id: BOX, epoch: 3 }; } }; } };
-  vi.spyOn(localRuntime, "openLocalCore").mockReturnValue({ root: f.root, db, config: localRuntime.readLocalIdentity(f.root), close() {} } as never);
-  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
-  const home = { sessionId: "s-1", machineId: BOX, epoch: 5, moveId: null, updatedAt: 123 };
-  let operationId = "";
-  vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: unknown) { return peer; }, async exec(_peer: unknown, argv: string[]) {
-    operationId = JSON.parse(argv[2]).id;
-    return Buffer.from(JSON.stringify({ code: 1, reason: "participant-home-mismatch", operationId, home, epoch: 5, repairCommand: "spider roam doctor", value: null }));
-  } } as never);
-  expect(await f.invoke(["roam", "stop", "s-1", "--json"])).toBe(1);
-  expect(JSON.parse(f.out.join(""))).toMatchObject({ code: 1, reason: "participant-home-mismatch", operationId, home, epoch: 5, repairCommand: "spider roam doctor" });
-  expect(operationId).not.toBe("");
+it("stop JSON returns the v0 refusal and its actual home and epoch", async () => {
+  const f = await sessionActionFixture(), unexpected = async () => { throw new Error("unexpected"); };
+  sockets.push(await serveV0Control(f.root, { sync: unexpected, relocate: unexpected, setHome: unexpected, start: unexpected, sessionStatus: unexpected,
+    stop: async request => ({ sessionId: request.sessionId, operationId: request.operationId, machineId: BOX, homeEpoch: 5, homeState: "running", status: null, observedAt: null, outcome: "refused", reason: "home-mismatch" }) }));
+  try {
+    expect(await f.invoke(["roam", "stop", "s-1", "--json"])).toBe(1);
+    expect(JSON.parse(f.out.join(""))).toMatchObject({ code: 1, reason: "home-mismatch", machineId: BOX, homeEpoch: 5 });
+  } finally { f.db.close(); }
 }, 5000);
 
-it.each(["0", false, null])("refuses a control reply with nonnumeric code %s", async code => {
-  const f = await fixture(), db = { prepare() { return { get() { return { machine_id: BOX, epoch: 3 }; } }; } };
-  vi.spyOn(localRuntime, "openLocalCore").mockReturnValue({ root: f.root, db, config: localRuntime.readLocalIdentity(f.root), close() {} } as never);
-  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
-  vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: unknown) { return peer; }, async exec(_peer: unknown, argv: string[]) {
-    const operation = JSON.parse(argv[2]); return Buffer.from(JSON.stringify({ code, reason: "forged success", operationId: operation.id }));
-  } } as never);
-  expect(await f.invoke(["roam", "stop", "s-1"])).toBe(1);
-  expect(f.out).toEqual([]); expect(f.err.join("")).toContain("Participant control is unavailable");
-  expect(f.err.join("")).not.toContain("forged success");
+it.each(["0", false, null])("rejects malformed v0 outcome %s as unknown after submission", async outcome => {
+  const f = await sessionActionFixture(), file = join(f.root, "roam", "relocate.sock");
+  const server = createServer(socket => socket.once("data", bytes => {
+    const request = JSON.parse(String(bytes)).request;
+    socket.end(`${JSON.stringify({ version: 1, kind: "stop", result: { sessionId: "s-1", operationId: request.operationId, machineId: BOX, homeEpoch: 4, homeState: "stopped", status: "stopped", observedAt: 1, outcome, reason: null } })}\n`);
+  }));
+  await new Promise<void>(done => server.listen(file, done)); chmodSync(file, 0o600);
+  try {
+    expect(await f.invoke(["roam", "stop", "s-1"])).toBe(3);
+    expect(f.err.join("")).toMatch(/unknown.*status/i);
+  } finally { await new Promise<void>(done => server.close(() => done())); f.db.close(); }
 }, 5000);
 
 it("prints and serializes the exact validated blockers and explanation from a real move refusal", async () => {

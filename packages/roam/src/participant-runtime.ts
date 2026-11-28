@@ -120,10 +120,10 @@ export async function handleSessionOperation(operation: Operation, ports: AgentP
       const reserved = !lock && current?.value.supervision.kind === "launching" && current.value.supervision.phase === "reserved";
       if (current && (released || reserved)) {
         const intent = await authority.get(id), operationId = authority.operationId(id);
-        if (!intent || !operationId) return { ...result(3, "intent-reconciliation-required"), repairCommand: `spider roam stop ${id}` };
+        if (!intent || !operationId) return { ...result(3, "intent-reconciliation-required"), repairCommand: "spider roam doctor" };
         if (released) recordParticipantRestart(ports.journal, pinned.machineId, intent, operationId, current.value.supervision);
         if ((await intents.update(id, current.version, { intent, failures: [], supervision: { kind: "idle", nextAttemptAt: null } })).kind !== "updated")
-          return { ...result(3, "intent-reconciliation-required"), repairCommand: `spider roam stop ${id}` };
+          return { ...result(3, "intent-reconciliation-required"), repairCommand: "spider roam doctor" };
       }
     } else {
       const intents = createIntentStore(root), current = await intents.get(id);

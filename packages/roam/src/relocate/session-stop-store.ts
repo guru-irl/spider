@@ -203,8 +203,20 @@ export function readCachedSessionStatus(db: Db, sessionId: SessionId, now: numbe
   })();
 }
 
-function describeBlocker(blocker: StopBlocker): string {
-  if (blocker.kind === "check") return "Exit checks could not verify absence.";
+function describeBlocker(blocker: StopBlocker, sessionId: SessionId, machineId: MachineId): string {
+  if (blocker.kind === "check") {
+    const prefix = "unreadable-stop-record:";
+    if (blocker.reason.startsWith(prefix)) try {
+      const record = JSON.parse(blocker.reason.slice(prefix.length)) as Record<string, unknown>;
+      if (["relocate-stop-proof", "relocate-stop-mode", "relocate-managed"].includes(String(record.kind)) &&
+          (record.sessionId === null || typeof record.sessionId === "string" && !!record.sessionId.trim() && record.sessionId.length <= 1024 && !/[\u0000-\u001f\u007f]/.test(record.sessionId))) {
+        const name = record.sessionId === null ? "an unknown session" : `session ${JSON.stringify(record.sessionId)}`;
+        const target = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(sessionId) ? sessionId : "<session>";
+        return `Unreadable ${record.kind} record for ${name} on ${machineId}. The session's home stays stopped; enforcement continues. Stop stays pending until the record can be read. Run spider roam doctor ${machineId}; once it reads, rerun spider roam stop ${target}.`;
+      }
+    } catch { /* Do not expose malformed peer data. */ }
+    return "Exit checks could not verify absence.";
+  }
   const job = `Job ${JSON.stringify(blocker.id)} is still running or unverified.`;
   return blocker.cancelFromOwner ? `${job} Run \`spider kill id:${JSON.stringify(blocker.id)}\` from the owning session.` : job;
 }
@@ -252,7 +264,7 @@ export function projectSessionStatus(home: RelocateHome | null, record: SessionT
     const evidence = exact(machine)?.evidence;
     if (evidence?.kind !== "pending") continue;
     if (!evidence.blockers.length) reasons.add("Exit checks could not verify absence.");
-    for (const blocker of evidence.blockers) reasons.add(describeBlocker(blocker));
+    for (const blocker of evidence.blockers) reasons.add(describeBlocker(blocker, id, machine));
   }
   if (matching.contactReason !== null) reasons.add(matching.contactReason);
   if (observation && !local) reasons.add(observation.home === null ? "The stopped replica is missing." : "The replica does not match the stopped home.");

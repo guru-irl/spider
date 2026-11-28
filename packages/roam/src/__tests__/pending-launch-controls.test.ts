@@ -129,7 +129,7 @@ it.each(["live", "unknown", "probe-unavailable", "pid-reused", "different-boot"]
   expect(rows[0]).toMatchObject({ severity: "block", repairCommand: null });
   expect(rows[0].reason).toMatch(state === "live" ? /adopted owner is still running/i : /owner's status is unavailable/i);
   expect(rows[0].reason).not.toMatch(/core.*unavailable|spider roam doctor/i);
-  expect(rows[0].reason).toMatch(state === "live" ? /supported shutdown path.*spider roam stop session-1/i : /process.*boot.*inspection.*spider roam stop session-1/i);
+  expect(rows[0].reason).toMatch(state === "live" ? /supported shutdown path.*roaming-upgrade\.md#settle-old-work-only-after-approval/i : /process.*boot.*inspection.*roaming-upgrade\.md#settle-old-work-only-after-approval/i);
   expect((await f.intents.get("session-1"))?.value.supervision.kind).toBe("launching");
   expect(f.journal.read("launch-1").some(row => row.action === "exact-launch-settled")).toBe(false);
 });
@@ -142,7 +142,7 @@ it.each(["live", "unknown", "absent"] as const)("disabled doctor retains the rel
   expect(report.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({
     severity: state === "absent" ? "warning" : "block",
     reason: expect.stringMatching(state === "live" ? /adopted owner is still running/i : state === "unknown" ? /owner's status is unavailable/i : /exited before readiness/i),
-    repairCommand: state === "absent" ? "spider roam stop session-1" : null,
+    repairCommand: state === "absent" ? "spider roam doctor" : null,
   })]));
   expect(f.journal.read("launch-1")).toEqual(history);
 });
@@ -156,24 +156,24 @@ it.each(["live", "pid-reused", "unknown"] as const)("doctor reports the file lea
       : { kind: "live", startIdentity: state === "live" ? "lease-start" : "reused-start" },
   } });
   expect(rows).toEqual([expect.objectContaining({ severity: "block", reason: expect.stringMatching(state === "live"
-    ? /file lease.*live process.*supported shutdown path.*stop session-1/i : /owner's status is unavailable.*restore local process and boot identity inspection/i), repairCommand: null })]);
+    ? /file lease.*live process.*supported shutdown path.*roaming-upgrade\.md#settle-old-work-only-after-approval/i : /owner's status is unavailable.*restore local process and boot identity inspection/i), repairCommand: null })]);
   expect(rows[0].reason).not.toMatch(/adopted owner is still running|core.*unavailable/i);
 });
 
-it("doctor offers stop for an uninvoked reservation without consulting core or inventing an owner", async () => {
+it("doctor gives legacy guidance for an uninvoked reservation without consulting core or inventing an owner", async () => {
   const f = await releasedControlsFixture();
   rmSync(join(f.stateRoot, "id-lock-releases"), { recursive: true });
   const current = (await f.intents.get("session-1"))!;
   await f.intents.update("session-1", current.version, { ...current.value, supervision: { kind: "launching", phase: "reserved", operationId: "launch-1" } });
   const rows = await localPendingLaunchDiagnostics({ root: f.remote, machineId: BOX, currentCore: async () => { throw new Error("uninvoked reservation needs no core check"); } });
-  expect(rows).toEqual([expect.objectContaining({ severity: "block", reason: expect.stringMatching(/launch has not been invoked/i), repairCommand: "spider roam stop session-1" })]);
+  expect(rows).toEqual([expect.objectContaining({ severity: "block", reason: expect.stringMatching(/launch has not been invoked.*roaming-upgrade\.md#settle-old-work-only-after-approval/i), repairCommand: "spider roam doctor" })]);
 });
 
-it("doctor offers stop when a released adopted owner has positively exited", async () => {
+it("doctor gives legacy guidance when a released adopted owner has positively exited", async () => {
   const f = await releasedControlsFixture();
   expect(await localPendingLaunchDiagnostics({ root: f.remote, machineId: BOX, currentCore: async () => "core-1",
     launchRecovery: { bootId: async () => "boot-1", probe: async () => ({ kind: "absent" }) } })).toEqual([
-    expect.objectContaining({ severity: "warning", reason: expect.stringMatching(/exited before readiness/i), repairCommand: "spider roam stop session-1" }),
+    expect.objectContaining({ severity: "warning", reason: expect.stringMatching(/exited before readiness.*roaming-upgrade\.md#settle-old-work-only-after-approval/i), repairCommand: "spider roam doctor" }),
   ]);
 });
 
@@ -196,15 +196,15 @@ it.each(["core-unavailable", "pin-required", "core-available"] as const)(
   }
 });
 
-it("disabled remote doctor and enable agree on the pending launch and its stop repair", async () => {
+it("disabled remote doctor and enable agree on the pending legacy launch repair", async () => {
   const f = await fixture();
   const doctor = await f.invoke(["roam", "doctor", "box-1.invalid", "--json"]);
   expect(doctor.code).toBe(1);
   expect(doctor.value.value).toMatchObject({ enabled: false, consumers: [] });
-  expect(doctor.value.value.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "block", reason: expect.stringMatching(/session-1.*launch-1.*pending/i), repairCommand: "spider roam stop session-1" })]));
+  expect(doctor.value.value.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "block", reason: expect.stringMatching(/session-1.*launch-1.*pending/i), repairCommand: "spider roam doctor" })]));
   const enable = await f.invoke(["roam", "enable", "--json"]);
   expect(enable.code).toBe(0);
-  expect(enable.value.value.issues).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "warning", reason: expect.stringContaining("exact-launch"), repairCommand: "spider roam stop session-1" })]));
+  expect(enable.value.value.issues).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "warning", reason: expect.stringContaining("exact-launch"), repairCommand: `spider roam doctor ${BOX}` })]));
   expect(JSON.stringify(enable.value)).not.toContain("spider roam provision");
 });
 
@@ -259,10 +259,10 @@ it("doctor and enable clear the missing started terminal block after stop settle
   expect((await intents.get("session-1"))?.value).toMatchObject({ intent: { desired: "stopped" }, supervision: { kind: "idle" } });
 });
 
-it("enable prescribes stop rather than provision for the persisted pending launch", async () => {
+it("enable prescribes doctor rather than provision for the persisted pending launch", async () => {
   const f = await fixture(), enable = await f.invoke(["roam", "enable", "--json"]);
   expect(enable.code).toBe(0);
-  expect(enable.value.value.issues).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "warning", reason: expect.stringContaining("exact-launch"), repairCommand: "spider roam stop session-1" })]));
+  expect(enable.value.value.issues).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "warning", reason: expect.stringContaining("exact-launch"), repairCommand: `spider roam doctor ${BOX}` })]));
   expect(JSON.stringify(enable.value)).not.toContain("spider roam provision");
 });
 
@@ -271,13 +271,13 @@ it("disabled local box doctor still returns a pending-launch block", async () =>
   const doctor = await f.invoke(["roam", "doctor", "--json"]);
   expect(doctor.code).toBe(1);
   expect(doctor.value.reason).toBe("doctor-blocked");
-  expect(doctor.value.value.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "block", reason: expect.stringMatching(/session-1.*launch-1.*pending/i), repairCommand: "spider roam stop session-1" })]));
+  expect(doctor.value.value.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "block", reason: expect.stringMatching(/session-1.*launch-1.*pending/i), repairCommand: "spider roam doctor" })]));
 });
 
-it("local box doctor directs pending-launch stop repairs to the Mac hub", async () => {
+it("local box doctor directs pending legacy launch repairs to the upgrade guide", async () => {
   const f = await fixture(); vi.stubEnv("SPIDER_GLOBAL_ROOT", f.remote);
   const doctor = await f.invoke(["roam", "doctor", "--json"]);
-  const issue = doctor.value.value.diagnostics.find((row: { repairCommand: string | null }) => row.repairCommand === "spider roam stop session-1");
-  expect(issue).toMatchObject({ severity: "block", repairCommand: "spider roam stop session-1" });
-  expect(issue.reason).toContain("Run this repair command on the Mac hub.");
+  const issue = doctor.value.value.diagnostics.find((row: { repairCommand: string | null }) => row.repairCommand === "spider roam doctor");
+  expect(issue).toMatchObject({ severity: "block", repairCommand: "spider roam doctor" });
+  expect(issue.reason).toContain("roaming-upgrade.md#settle-old-work-only-after-approval");
 });

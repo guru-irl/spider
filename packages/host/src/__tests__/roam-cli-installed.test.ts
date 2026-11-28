@@ -66,6 +66,20 @@ it("installed spider help is side-effect free", () => {
   expect(existsSync(f.globalRoot)).toBe(false);
 }, 5000);
 
+it.each([
+  ["Stop", /spider roam stop <session>/, true],
+  ["--now", /spider roam stop <session> \[--now\]/, true],
+  ["Start", /spider roam start <session>/, true],
+  ["missing Resume", /spider roam (?:stop\|)?resume\b/, false],
+] as const)("installed help: %s", (_label, pattern, present) => {
+  const f = fixture();
+  expect(f.link("link").status).toBe(0);
+  const result = spawnSync(f.executable, ["roam", "--help"], { cwd: f.root, env: f.env, encoding: "utf8", timeout: 3000 });
+  expect(result.status, result.stderr).toBe(0);
+  expect(pattern.test(result.stdout)).toBe(present);
+  expect(existsSync(f.globalRoot)).toBe(false);
+}, 5000);
+
 it.each(["link", "dev-link"])("%s unlink removes only the command it installed", script => {
   const f = fixture();
   expect(f.link(script).status).toBe(0);

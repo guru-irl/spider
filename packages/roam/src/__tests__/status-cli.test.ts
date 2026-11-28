@@ -399,7 +399,7 @@ it.each([true, false])("shows non-stopping hosting warnings in doctor and text a
 });
 
 
-it("shows safe inspection causes and cancellation advice in doctor and cached status", async () => {
+it("shows safe inspection causes and legacy guidance in doctor and cached status", async () => {
   const root = fixture(); configure(root, false);
   const global = openDb(join(root, "spider.db"));
   try {
@@ -414,9 +414,9 @@ it("shows safe inspection causes and cancellation advice in doctor and cached st
       await main(["roam", command, "--json"], { out: text => out.push(text), err() {} });
       const parsed = JSON.parse(out.join("")), diagnostics = command === "doctor" ? parsed.value.diagnostics : parsed.diagnostics;
       expect(diagnostics).toContainEqual(expect.objectContaining({ code: "supervisor-hosting-error", severity: "warning",
-        reason: expect.stringMatching(/session-local.*inspection.*EACCES.*cancel hosting.*on the hub/), repairCommand: "spider roam stop session-local" }));
+        reason: expect.stringMatching(/session-local.*inspection.*EACCES.*roaming-upgrade\.md#settle-old-work-only-after-approval/), repairCommand: "spider roam doctor" }));
       if (command === "status") expect(diagnostics).toContainEqual(expect.objectContaining({ code: "supervisor-hosting-error",
-        reason: expect.stringMatching(/session-remote.*participant-capture-uninitialized/), repairCommand: "spider roam stop session-remote" }));
+        reason: expect.stringMatching(/session-remote.*participant-capture-uninitialized.*roaming-upgrade\.md#settle-old-work-only-after-approval/), repairCommand: "spider roam doctor" }));
       expect(snapshot(root)).toEqual(before);
     }
   } finally { global.close(); }

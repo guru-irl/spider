@@ -81,9 +81,8 @@ function initialAdmissionFailure(stage: string, error: unknown, sessionId: strin
   const cause = moveSetupFailure("ownership", error).causeCode;
   const code = cause === "setup-unavailable" ? null : cause;
   const resume = code && ["participant-stopped", "participant-hub-intent-required", "participant-launch-provenance-unavailable"].includes(code);
-  const session = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(sessionId) ? sessionId : "<session>";
   return `admission-${stage}-failed. ${code ? `${code}. ` : ""}${resume
-    ? `Close this copy, then run spider roam resume ${session} on the hub. Resume runs doctor before starting the exact session.` : admissionFailure(error)}`;
+    ? "Close this copy. For legacy work, see docs/guide/roaming-upgrade.md#settle-old-work-only-after-approval." : admissionFailure(error)}`;
 }
 
 /** A blocked send must be distinguishable from a delivered message. */
@@ -240,7 +239,9 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
               const machine = await ports.localMachine();
               if (!home || home.state !== "running" || home.sessionId !== id || home.machineId !== machine ||
                   launch && launch.machineId !== machine || expectedEpoch !== null && expectedEpoch !== home.epoch || !file || !isAbsolute(file)) {
-                await release(); publishResult("blocked", home, v0Message); return;
+                const stopped = home?.state === "stopped" && home.sessionId === id && home.machineId === machine;
+                const detail = stopped ? `This session has a stopped home. Check spider roam status on the Mac; after Stop is confirmed, run spider roam start ${arg}.` : v0Message;
+                await release(); publishResult("blocked", home, detail); return;
               }
               if (!held) held = { sessionId: id, file, release: await ports.lock(id, file), valid: true };
               if (ticket !== generation) { await release(); return; }

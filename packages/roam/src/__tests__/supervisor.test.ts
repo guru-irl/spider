@@ -841,8 +841,8 @@ it.each([["ENOENT", "ENOENT"], ["private-code", "inspection-unavailable"], [unde
     }]);
     const doctor = localHostingWarningDiagnostics(root);
     expect(doctor).toEqual([expect.objectContaining({ severity: "warning", reason: expect.stringContaining(causeCode!),
-      repairCommand: "spider roam stop session-1" })]);
-    expect(doctor[0].reason).toContain("cancel hosting");
+      repairCommand: "spider roam doctor" })]);
+    expect(doctor[0].reason).toContain("roaming-upgrade.md#settle-old-work-only-after-approval");
     expect(JSON.stringify({ warning, doctor, journal: log.mock.calls })).not.toMatch(/private contents|private-code|\/private\//);
     expect(f.launches).toEqual([]);
     f.ports.inspect = inspect;

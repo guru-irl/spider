@@ -47,8 +47,8 @@ exec '${f.h.hcBinary}' "\${args[@]}"
   f.request = await f.ports.request(f.request.configPath);
   f.parts = await f.ports.setupParts(f.request);
   const verify = f.parts.verify;
-  f.parts.verify = async request => {
-    const report = await verify(request);
+  f.parts.verify = async (...args) => {
+    const report = await verify(...args);
     expect(report.failures, JSON.stringify(report.failures)).toEqual([]);
     return report;
   };

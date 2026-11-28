@@ -8,8 +8,9 @@ Use `▄` and `▀` for the half-row edges, with no background behind the
 unfilled half. Draw the bar in the left half of column zero for the full band
 height: `▖` on the top edge, `▌` on text rows, and `▘` on the bottom edge.
 The rest of column zero uses the default background, leaving a half-cell gap
-before the strip starts in column one. The bar uses `accent` (`#82aaff`) or
-`bashMode`, regardless of thinking level. The remaining edge cells use the strip
+before the strip starts in column one. The bar uses the current `accent` or
+`bashMode`, regardless of thinking level. Spider blue (`#82aaff`) is the default
+accent in `dracula-plus-glass`. The remaining edge cells use the strip
 color. Scrolled edges show a dim hidden-line count beside the half-cell bar.
 Keep Pi's cursor, completion menu, and keys.
 
@@ -104,6 +105,22 @@ configured machine alias. A collapsed message shows a one-line preview aligned
 with the title text. An expanded message wraps the body at the same indent and
 adds dim details. Reply details do not show message IDs.
 
+### Compaction cards
+
+Use the moon in place of the spider logo. Show the context before compaction
+and Pi's estimate for the summary alone as two bars on the same scale. Round to
+an eighth of a cell so a small summary does not fill a whole cell. The summary
+estimate does not include the retained conversation. Show billing in a dim row
+when Pi has a bill to show.
+
+Click `open ↗` in fullscreen mode to read that compaction in tabs. Run
+`/compaction` to open the latest compaction on the current branch. The reader
+shows an overview, one tab per summary section, and the full summary. When the
+summary has no section headings, the reader uses a single Summary tab beside
+the overview. Use Tab to switch sections and Esc to close. When content
+scrolls, the reader shows Pi's auto-hiding track and draggable thumb. Pi still
+owns Ctrl+O and clicks elsewhere on the card.
+
 ### Intercom route results
 
 A relayed ask, send, or reply shows its route and any skipped relays in dim rows
@@ -193,6 +210,12 @@ Text mode uses a pulsing `◇` while running. See [Patched Nerd Fonts](guide/con
 Full screens and overlays such as `/todos` and pickers use the active theme, a
 subtle heading rule, spacing between groups, a context line, and a footer with
 key hints. The `card()` frame is for standalone views only.
+
+`/color` previews the accent in a full-height left overlay. Use an `██` swatch,
+name, and hex value on each row. Highlight the selected row with 8% white over
+`#161618`. Use Pi's `│` track and `┃` thumb when the palette needs to scroll.
+The picker changes `accent`, `borderAccent`, and `customMessageLabel`. Status,
+thinking, role, syntax, and neutral background colors stay unchanged.
 
 ## Tests
 

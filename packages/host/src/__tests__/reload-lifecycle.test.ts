@@ -77,16 +77,21 @@ afterEach(async () => {
 const host = () => { const pi = fakePi(); hosts.push(pi); spiderExtension(withPiEvents(pi as never), hostUnitPorts); return pi; };
 const toolCtx = (id: string) => ({ cwd: scratch, sessionManager: { getSessionId: () => `${scratch}:${id}` } });
 
-it.each([false, true])("registers every command, shortcut, tool, renderer and handler on both factory calls with roaming %s", async enabled => {
+it.each([
+  { enabled: false, child: true }, { enabled: true, child: true },
+  { enabled: false, child: false }, { enabled: true, child: false },
+])("registers each extension entry point on both factory calls (roaming $enabled, child $child)", async ({ enabled, child }) => {
   writeEnabledConfig(scratch, { enabled });
+  vi.stubEnv("PI_SUBAGENT_CHILD", child ? "1" : undefined);
   const first = host();
   await first.emit("session_shutdown");
   const second = host();
-  const expectedCommands = ["agents", "bind", "doctor", "exec-enforce", "herdr-setup", "insights", "learn", "loop", "memory", "search", "spider", "stats", "todos", "usage"];
+  const expectedCommands = ["agents", "bind", "color", "compaction", "doctor", "exec-enforce", "herdr-setup", "insights", "learn", "loop", "memory", "search", "spider", "stats", "todos", "usage"];
+  const expectedShortcuts = ["alt+shift+up"];
+  if (!child) { expectedCommands.push("resources", "spider-reload"); expectedShortcuts.push("alt+o"); }
   for (const pi of [first, second]) {
-    expect([...pi.commands.keys()].sort()).toEqual(expectedCommands);
-    expect(pi.commands.has("spider-reload")).toBe(false);
-    expect([...pi.shortcuts.keys()]).toEqual(["alt+shift+up"]);
+    expect([...pi.commands.keys()].sort()).toEqual(expectedCommands.sort());
+    expect([...pi.shortcuts.keys()].sort()).toEqual(expectedShortcuts.sort());
   }
   expect([...second.tools.keys()]).toEqual([...first.tools.keys()]);
   expect(second.renderers).toEqual(first.renderers);

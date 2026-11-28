@@ -17,6 +17,26 @@ function tokens(text) {
   return JSON.stringify(result);
 }
 
+// These two forms check the same subprocess failure in the packaging test.
+function packageValidatorAssertion(node, path, source) {
+  if (path !== `${testDirectory}packaging.test.ts` || !ts.isCallExpression(node) ||
+      !ts.isPropertyAccessExpression(node.expression) || node.expression.name.text !== 'toThrow' ||
+      node.arguments.length !== 1) return;
+  let expectation = node.expression.expression;
+  const asynchronous = ts.isPropertyAccessExpression(expectation) && expectation.name.text === 'rejects';
+  if (asynchronous) {
+    if (!ts.isAwaitExpression(node.parent)) return;
+    expectation = expectation.expression;
+  }
+  if (!ts.isCallExpression(expectation) || !ts.isIdentifier(expectation.expression) ||
+      expectation.expression.text !== 'expect' || expectation.arguments.length !== 1) return;
+  const received = expectation.arguments[0];
+  const invocation = asynchronous ? received : ts.isArrowFunction(received) && received.parameters.length === 0 ? received.body : undefined;
+  if (!invocation || !ts.isCallExpression(invocation) || !ts.isIdentifier(invocation.expression) ||
+      invocation.expression.text !== (asynchronous ? 'runAsync' : 'run') || invocation.arguments.length !== 1) return;
+  return JSON.stringify(['packaging-validator-error', tokens(invocation.arguments[0].getText(source)), tokens(node.arguments[0].getText(source))]);
+}
+
 function assertions(files) {
   const found = new Map();
   for (const { path, text } of files) {
@@ -32,7 +52,7 @@ function assertions(files) {
           if ((ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent) || ts.isCallExpression(parent)) && parent.expression === outer) outer = parent;
           else break;
         }
-        const expression = outer.getText(source), key = tokens(expression);
+        const expression = outer.getText(source), key = packageValidatorAssertion(outer, path, source) ?? tokens(expression);
         const row = found.get(key) ?? { text: expression, path, count: 0 };
         row.count++;
         found.set(key, row);

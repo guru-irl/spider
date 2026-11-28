@@ -1,6 +1,6 @@
 import { icon as uiIcon } from "../icons.js";
 import type { ThemeAdapter } from "../agents/types.js";
-import { cardDetailIndent, sectionRule, fitResultLines, resultTrimmer } from "../renderers/types.js";
+import { sectionRule, fitResultLines, resultTrimmer } from "../renderers/types.js";
 
 /** The learning-graph shape produced by @spider/organism `buildLearningGraph`
  *  (nodes = learned skills / active memories, edges = skill↔skill or memory→skill). */
@@ -19,7 +19,7 @@ export function renderInsights(g: InsightGraphView, theme: ThemeAdapter, width: 
   const trim = resultTrimmer(expanded);
   const body: string[] = [];
   const indent = transcript ? " " : "";
-  const detailIndent = transcript ? cardDetailIndent(theme.iconStyle) : "  ";
+  const detailIndent = `${indent}  `; // One badge cell and one space before the label.
   const nodes = g.nodes ?? [];
   const edges = g.edges ?? [];
   const manyGroups = nodes.length > 0 && edges.length > 0;

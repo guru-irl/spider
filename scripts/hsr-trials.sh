@@ -34,16 +34,21 @@ trial() {
   node - "$output.json" <<'NODE'
 const fs = require('node:fs');
 const result = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-let exceeded = false;
-for (const suite of result.testResults) {
-  for (const test of suite.assertionResults) {
-    if (typeof test.duration === 'number' && test.duration >= 15000) {
-      console.error(`STOP: ${suite.name}: ${test.fullName}: ${test.duration} ms`);
-      exceeded = true;
-    }
+const target = result.testResults.find(suite => suite.name.endsWith('/herdr-setup-releases.test.ts'));
+if (!target || target.assertionResults.length !== 31) throw new Error('Expected all 31 release cases');
+for (const test of target.assertionResults) {
+  if (test.status !== 'passed' || !Number.isFinite(test.duration)) throw new Error(`Missing passing duration: ${test.fullName}`);
+  if (test.duration >= 15000) {
+    console.error(`STOP: ${target.name}: ${test.fullName}: ${test.duration} ms`);
+    process.exitCode = 1;
   }
 }
-if (exceeded) process.exit(1);
+for (const suite of result.testResults) {
+  const timed = suite.assertionResults.filter(test => Number.isFinite(test.duration));
+  if (!timed.length) throw new Error(`Missing timed cases: ${suite.name}`);
+  const slowest = timed.reduce((a, b) => a.duration >= b.duration ? a : b);
+  console.log(`SLOWEST: ${suite.name}: ${slowest.fullName}: ${slowest.duration} ms`);
+}
 NODE
 }
 

@@ -325,10 +325,10 @@ test('a symlink destination or parent refuses before any target replacement', as
 
 test('an unowned clone and unavailable role refuse before writes without replacing usable artifacts', async () => {
   const f = await fixture();
-  await mkdir(join(f.request.config.app.home, 'layouts'));
-  await writeFile(f.paths.layout, 'local-clone');
+  await mkdir(dirname(f.paths.spider), { recursive: true });
+  await writeFile(f.paths.spider, 'local-clone');
   await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'unowned-clone-collision' });
-  expect(await readFile(f.paths.layout, 'utf8')).toBe('local-clone');
+  expect(await readFile(f.paths.spider, 'utf8')).toBe('local-clone');
   const g = await fixture();
   g.parts.generateTemplates = async () => { throw Object.assign(new Error('Configured role unavailable'), { code: 'role-unresolved' }); };
   await expect(setupHerdr(g.request, g.parts)).rejects.toMatchObject({ code: 'role-unresolved' });

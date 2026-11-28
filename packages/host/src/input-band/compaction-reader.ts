@@ -46,6 +46,14 @@ function summarySections(markdown: string): Section[] {
   return sections.length ? [...sections, ...files, { label: "Full summary", markdown }] : [{ label: "Summary", markdown }];
 }
 
+// Pi prefixes level-three and deeper headings with hashes. Use its level-two
+// heading rendering for subsections, leaving code and other tokens untouched.
+function readerMarkdown(markdown: string): string {
+  return (Lexer.lex(markdown) as MarkedToken[]).map(token => token.type === "heading" && token.depth >= 3
+    ? token.raw.replace(/^( {0,3})#{3,6}(?=[ \t]|$)/u, "$1##")
+    : token.raw).join("");
+}
+
 // The native bundle and Pi's extension shim can load separate module instances.
 // Bind Markdown to the factory's live Theme rather than the native singleton.
 function markdownTheme(theme: Theme): MarkdownTheme {
@@ -113,7 +121,7 @@ export function openCompactionReader(ui: Pick<ExtensionUIContext, "custom">, rec
     const sections = summarySections(stripTerminalSequences(record.summary));
     return new TabbedReader({ title: "Compaction", tabs: [overview(record, theme), ...sections.map(section => ({
       label: section.label, count: section.count,
-      content: new Markdown(section.markdown.trim() ? section.markdown : "No text in this section.", 0, 0, mdTheme),
+      content: new Markdown(section.markdown.trim() ? readerMarkdown(section.markdown) : "No text in this section.", 0, 0, mdTheme),
     }))] }, {
       theme, height: () => tui.terminal.rows, requestRender: () => tui.requestRender(), close: () => done(),
     });

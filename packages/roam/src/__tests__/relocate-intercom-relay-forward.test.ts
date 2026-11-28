@@ -356,7 +356,7 @@ describe("roaming v0 relay forwarding", () => {
     expect(await f.received()).toEqual([]);
 
     expect(await forwardFrame({ ...f.submit("unmatched-reply"), kind: "reply", replyTo: "previous" }))
-      .toEqual(refusal("unmatched-reply", "changed", true));
+      .toEqual(refusal("unmatched-reply", "asker-no-longer-waiting", true));
     expect(await f.received()).toEqual([]);
   });
 

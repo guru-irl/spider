@@ -23,7 +23,9 @@ function assertions(files) {
     const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
     if (source.parseDiagnostics.length) throw new Error(`Could not parse ${path}`);
     const visit = node => {
-      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'expect') {
+      let root = ts.isCallExpression(node) ? node.expression : undefined;
+      while (root && (ts.isPropertyAccessExpression(root) || ts.isElementAccessExpression(root))) root = root.expression;
+      if (root && ts.isIdentifier(root) && (root.text === 'assert' || (root.text === 'expect' && root === node.expression))) {
         let outer = node;
         for (;;) {
           const parent = outer.parent;

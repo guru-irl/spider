@@ -20,6 +20,15 @@ test('detects a weakened assertion and a missing duplicate', () => {
   assert.equal(missing.find(row => row.text.includes('not.toBe'))?.count, 1);
 });
 
+test('detects weakened or deleted Node assertion calls', () => {
+  const before = [source('old.ts', "assert(value); assert.equal(actual, 3); assert.deepEqual(result, ['x']);")];
+  const after = [source('new.ts', "assert(value); assert.equal(actual, 4);")];
+  const missing = missingAssertions(before, after);
+  assert.equal(missing.length, 2);
+  assert.ok(missing.some(row => row.text === 'assert.equal(actual, 3)'));
+  assert.ok(missing.some(row => row.text === "assert.deepEqual(result, ['x'])"));
+});
+
 test('detects deleted and newly skipped cases while allowing extra cases', () => {
   const before = [{ name: 'case a', status: 'passed' }, { name: 'case b', status: 'skipped' }, { name: 'case c', status: 'passed' }];
   const after = [{ name: 'case a', status: 'skipped' }, { name: 'case b', status: 'skipped' }, { name: 'new case', status: 'passed' }];

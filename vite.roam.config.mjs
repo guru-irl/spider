@@ -1,19 +1,14 @@
 import { defineConfig } from "vite";
 import { builtinModules } from "node:module";
+import entries from "./scripts/roam-entries.json" with { type: "json" };
 import { archiveMaps, sourcemap } from "./scripts/selection/build-maps.mjs";
 
-const entries = {
-  cli: "packages/roam/src/cli-entry.ts",
-  "cli-main": "packages/host/src/roam/cli-main.ts",
-  "intercom-helper": "packages/roam/src/intercom-helper.ts",
-  supervisor: "packages/roam/src/supervisor-main.ts",
-};
 const builtins = new Set(builtinModules.flatMap(name => [name, `node:${name}`]));
 const native = ["better-sqlite3", "sqlite-vec"];
 
 export default defineConfig(({ mode }) => {
+  if (!Object.hasOwn(entries, mode)) throw new Error("Unknown roaming build entry");
   const entry = entries[mode];
-  if (!entry) throw new Error("Unknown roaming build entry");
   return {
     define: { "import.meta.spiderIntercomBrokerRelative": JSON.stringify("../intercom/broker.mjs") },
     plugins: [{

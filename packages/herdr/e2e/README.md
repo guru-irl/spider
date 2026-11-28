@@ -28,6 +28,8 @@ The workflow sets an absolute runner deadline twenty seconds before the job limi
 
 The workflow exercises the packed extension and real, isolated local cores without a display. It does not certify the native app, native windows, SSH, or real remote machines. R02 covers app placement with a fixture owner and is outside the default set. R14local needs separately supplied local fixtures.
 
+R19 is a Linux-only opt-in story for delivery through one relay, refusal while it is stopped, and a fresh delivery after it restarts. Run it with `-f stories=R19`. It uses one worker and the five-minute unmeasured timeout. It is excluded from the default CI matrix, the headless profile, and `--task roam`. The delivery assertion remains red until relay routing is implemented.
+
 The workflow sets an absolute overall runner deadline before checkout. It reserves 20 seconds from the job limit for cleanup and failure uploads. When that deadline expires, the runner writes `deadline.json` in the failure archive and marks the selected stories failed. A step or job timeout can still stop the process before it writes those files.
 
 To shorten a manual run without increasing its limit, pass `-f deadline-seconds=30` with the dispatch command. The input must be a positive number no greater than the computed runner allowance. Story-specific waits do not extend the overall deadline.

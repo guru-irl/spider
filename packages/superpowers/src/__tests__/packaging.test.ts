@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { testScratchPath } from "./testutil.js";
 import { herdrPackageAssets } from "../../../../scripts/test-herdr-package-assets.js";
+import roamEntries from "../../../../scripts/roam-entries.json" with { type: "json" };
 
 const root = resolve(import.meta.dirname, "../../../..");
 const skillDirs = ["packages/superpowers/skills", "packages/pstack/skills", "packages/intercom/skills"];
@@ -36,7 +37,7 @@ describe("npm skill packaging", () => {
 });
 
 describe("release tarball check", () => {
-  const base = ["dist/intercom/broker.mjs", "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md", "scripts/intercom-switchover.mjs", "dist/extension.js", "dist/extension.js.ready", "dist/dashboard/index.html", "dist/dashboard/assets/index-abcdefgh.js", "dist/dashboard/assets/index-abcdefgh.css", "dist/roam/cli.mjs", "dist/roam/cli-main.mjs", "dist/roam/intercom-helper.mjs", "dist/roam/supervisor.mjs", "packages/herdr/assets/shared/presentations.js", "scripts/link.mjs", "scripts/dev-link.mjs", "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/package-extension.ts", "scripts/pi-agent-dir.mjs", "README.md", "LICENSE", "NOTICE.md", "packages/context/LICENSE", "packages/pstack/LICENSE", ...herdrPackageAssets];
+  const base = ["dist/intercom/broker.mjs", "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md", "scripts/intercom-switchover.mjs", "dist/extension.js", "dist/extension.js.ready", "dist/dashboard/index.html", "dist/dashboard/assets/index-abcdefgh.js", "dist/dashboard/assets/index-abcdefgh.css", ...Object.keys(roamEntries).map(mode => `dist/roam/${mode}.mjs`), "packages/herdr/assets/shared/presentations.js", "scripts/link.mjs", "scripts/dev-link.mjs", "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/package-extension.ts", "scripts/pi-agent-dir.mjs", "README.md", "LICENSE", "NOTICE.md", "packages/context/LICENSE", "packages/pstack/LICENSE", ...herdrPackageAssets];
   function check(files: string[]) {
     const workflow = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
     const code = workflow.match(/npm pack --json --ignore-scripts \| node -e "([\s\S]*?)"\n/)?.[1];

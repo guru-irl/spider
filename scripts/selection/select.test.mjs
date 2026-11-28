@@ -197,6 +197,19 @@ test('runs bundle policy readers when a changed input reaches a bundle entry', a
     records: { [a]: row({ reads: [0] }) }, unmapped: { [file]: [bundleEntry] } }), a, bundleReader);
 });
 
+test('selects the compatibility guards and bundle executors for a Roam build manifest edit', async () => {
+  const result = await fixture({ changes: [changed('scripts/roam-entries.json')],
+    records: { [b]: row({ ranBundle: true }) } });
+  assertSelected(result, b, bundleReader, selectorTest, guard, docGuard);
+});
+
+test('selects bundle readers when the relay-soak entry is affected', async () => {
+  const soak = 'packages/roam/src/relocate/relay-soak.ts';
+  const result = await fixture({ changes: [changed(soak)], unmapped: { [soak]: [soak] } });
+  assert.equal(result.mode, 'scoped');
+  assertSelected(result, bundleReader);
+});
+
 test('runs possible unresolved fixture bundle users for non-doc source changes', async () => {
   const records = { [b]: row({ unresolved: ['<tmp>/made-by-test/cli.mjs'] }) };
   const file = 'packages/one/src/fixture-input.ts';

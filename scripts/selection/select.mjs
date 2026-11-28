@@ -12,6 +12,7 @@ const commitId = /^[\da-f]{40}$/;
 const code = /\.[cm]?[jt]sx?$/;
 const knownResult = new Set(['passed', 'failed', 'skipped']);
 const policyURL = new URL('../test-resources.json', import.meta.url);
+const roamEntriesURL = new URL('../roam-entries.json', import.meta.url);
 const fallbackDurationsURL = new URL('../test-durations.json', import.meta.url);
 const read = file => JSON.parse(readFileSync(file, 'utf8'));
 
@@ -66,6 +67,11 @@ function readPolicy() {
   if (policy.version !== 1 || !Array.isArray(policy.rules) || !strings(policy.bundles?.entries) || !strings(policy.bundles?.consumers)
       || !policy.rules.every(rule => strings(rule.inputs) && strings(rule.tests) && strings(rule.related)
         && typeof rule.id === 'string' && typeof rule.reason === 'string')) throw new Error('invalid resource policy');
+  const roam = read(roamEntriesURL);
+  if (!roam || typeof roam !== 'object' || Array.isArray(roam)) throw new Error('invalid Roam entry manifest');
+  const roamEntries = Object.values(roam);
+  if (!strings(roamEntries) || !roamEntries.every(safePath)) throw new Error('invalid Roam bundle entry');
+  policy.bundles.entries = sorted([...policy.bundles.entries, ...roamEntries]);
   return policy;
 }
 

@@ -25,6 +25,7 @@
       "inputs": [
         "scripts/selection/**",
         "scripts/test-resources.json",
+        "scripts/roam-entries.json",
         "scripts/vitest-sequencer.ts",
         "scripts/test-shards.ts",
         "scripts/test-durations.json",
@@ -54,6 +55,7 @@
         "scripts/package-extension.ts",
         "scripts/extension-shim.mjs",
         "scripts/generate-roam-sql.mjs",
+        "scripts/roam-entries.json",
         "**/vite.config.*",
         "**/vite.*.config.*",
         "scripts/selection/build-maps.*"
@@ -211,7 +213,9 @@
         "packages/**/__tests__/**/*.{ts,mts,js,mjs}",
         "packages/**/*.{test,spec}.{ts,mts,js,mjs}"
       ],
-      "tests": ["packages/herdr/src/__tests__/reserved-machines.test.ts"],
+      "tests": [
+        "packages/herdr/src/__tests__/reserved-machines.test.ts"
+      ],
       "related": [],
       "reason": "The reserved-machine guard scans test source and helpers, including Herdr e2e."
     },
@@ -221,7 +225,9 @@
         "packages/*/src/**/__tests__/**/*.{ts,mjs}",
         "packages/*/src/**/*test*.{ts,mjs}"
       ],
-      "tests": ["packages/host/src/__tests__/bundle-readers.test.ts"],
+      "tests": [
+        "packages/host/src/__tests__/bundle-readers.test.ts"
+      ],
       "related": [],
       "reason": "The bundle reader guard inventories literal dependencies on ignored build output."
     },
@@ -264,10 +270,6 @@
   "bundles": {
     "entries": [
       "packages/host/src/extension.ts",
-      "packages/roam/src/cli-entry.ts",
-      "packages/host/src/roam/cli-main.ts",
-      "packages/roam/src/intercom-helper.ts",
-      "packages/roam/src/supervisor-main.ts",
       "packages/herdr/src/bin/cli.ts",
       "packages/host/src/herdr/bin/pane-endpoint-main.ts",
       "packages/herdr/src/bin/feed-reader.ts",
@@ -383,6 +385,7 @@
       "packages/intercom/src/broker/helper-socket.test.ts",
       "packages/intercom/src/broker/receipt-queue.test.ts",
       "packages/intercom/src/broker/receipt-replay.test.ts",
+      "packages/intercom/src/broker/relay-links.test.ts",
       "packages/intercom/src/broker/roam-v0.test.ts",
       "packages/intercom/src/broker/spawn.test.ts",
       "packages/intercom/src/broker/versions.test.ts",
@@ -412,6 +415,7 @@
       "packages/roam/src/__tests__/provision-prefix-modes.test.ts",
       "packages/roam/src/__tests__/provision-private-modes.test.ts",
       "packages/roam/src/__tests__/provision.test.ts",
+      "packages/roam/src/__tests__/relay-soak.test.ts",
       "packages/roam/src/__tests__/session-control.test.ts",
       "packages/subagents/src/__tests__/durable-child.test.ts",
       "packages/subagents/src/__tests__/fork-launch-real.test.ts",

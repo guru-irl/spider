@@ -343,10 +343,20 @@ export async function model(steps: readonly Step[], checkPrefixes = true): Promi
   }
 }
 
-export function registerCheckpointModelSeed(seed: number): void {
+export type CheckpointModelShard = 0 | 1 | 2 | 3;
+
+export function checkpointModelCases(seed: number, shard: CheckpointModelShard): { sequence: number; steps: Step[] }[] {
   const next = random(seed);
+  const cases: { sequence: number; steps: Step[] }[] = [];
   for (let sequence = 0; sequence < 32; sequence++) {
     const steps: Step[] = ['setup', ...Array.from({ length: 3 + next() % 3 }, () => commands[next() % commands.length]!)];
+    if (sequence % 4 === shard) cases.push({ sequence, steps });
+  }
+  return cases;
+}
+
+export function registerCheckpointModelSeed(seed: number, shard: CheckpointModelShard): void {
+  for (const { sequence, steps } of checkpointModelCases(seed, shard)) {
     test(`model seed=${seed} sequence=${sequence}: ${steps.join(',')}`, () => model(steps));
   }
 }

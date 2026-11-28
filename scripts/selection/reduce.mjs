@@ -107,8 +107,8 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
   };
   const group = file => {
     if (!groups.has(file)) groups.set(file, { reads: new Set(), unresolved: new Set(), workerPids: new Set(), ranBundle: false,
-      processes: new Map(), threads: new Set(), observedThreads: new Set(), launches: new Set(), observedLaunches: new Set(),
-      versionProbes: new Set(), probeExits: new Set() });
+      processes: new Map(), threads: new Set(), observedThreads: new Set(), readyThreads: new Map(), threadExits: new Set(),
+      launches: new Set(), observedLaunches: new Set(), versionProbes: new Set(), probeExits: new Set() });
     return groups.get(file);
   };
   const launches = join(rawDir, 'launches.ndjson');
@@ -123,8 +123,10 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
       else if (launch.kind === 'process-intent' && launch.launchId && ['node', 'node-version'].includes(launch.argvClass)) {
         if (launch.argvClass === 'node-version') entry.versionProbes.add(launch.launchId);
       } else if (launch.kind === 'probe-exit' && launch.launchId) entry.probeExits.add(launch.launchId);
-      else if (launch.kind === 'thread' && launch.processId && launch.threadId > 0) {
-        entry.threads.add(`${launch.processId}:${launch.threadId}`);
+      else if (['thread', 'thread-exit'].includes(launch.kind) && launch.processId && launch.threadId > 0) {
+        const thread = `${launch.processId}:${launch.threadId}`;
+        if (launch.kind === 'thread') entry.threads.add(thread);
+        else entry.threadExits.add(thread);
       } else stats.malformedSnapshots++;
     }
   }
@@ -153,6 +155,7 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
       const thread = `${processId}:${proc.threadId}`;
       entry.threads.add(thread);
       if (proc.ended) entry.observedThreads.add(thread);
+      if (proc.captureReady) entry.readyThreads.set(thread, proc.pid);
     }
     for (const line of input.split('\n').filter(Boolean)) {
       let script;
@@ -220,13 +223,17 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
       for (const read of native.reads) entry.reads.add(read);
       for (const tree of native.trees) for (const read of treeInputs(tree)) entry.reads.add(read);
     }
-    const kernelGaps = trace ? native ? [...native.gaps].sort() : [trace.error ?? 'unobserved Vitest fork'] : [];
+    const kernelGaps = native ? [...native.gaps].sort() : trace ? [trace.error ?? 'unobserved Vitest fork'] : [];
+    const confirmedExit = pid => !kernelGaps.length && native?.exited.has(pid);
     const missingStartup = missingLaunches.filter(id => !entry.versionProbes.has(id) || !entry.probeExits.has(id)).length;
-    const missingFinal = unfinishedProcesses.filter(proc => !proc.captureReady || !native?.exited.has(proc.pid) || kernelGaps.length).length;
-    const missingThreads = entry.threads.size - entry.observedThreads.size;
+    const missingFinal = unfinishedProcesses.filter(proc => !proc.captureReady || !confirmedExit(proc.pid)).length;
+    const unfinishedThreads = [...entry.threads].filter(thread => !entry.observedThreads.has(thread));
+    const missingThreads = unfinishedThreads.filter(thread => !entry.threadExits.has(thread) ||
+      !confirmedExit(entry.readyThreads.get(thread))).length;
     const incomplete = missingStartup > 0 || missingFinal > 0 || missingThreads > 0 || kernelGaps.length > 0;
     const capture = { missingStartup, missingFinal, missingThreads, kernelGaps,
-      versionProbes: missingLaunches.length - missingStartup, tracedExits: unfinishedProcesses.length - missingFinal };
+      versionProbes: missingLaunches.length - missingStartup, tracedExits: unfinishedProcesses.length - missingFinal,
+      tracedThreads: unfinishedThreads.length - missingThreads };
     records[file] = { reads: [...entry.reads].sort(), unresolved: [...entry.unresolved].sort(), workerPids: [...entry.workerPids],
       ranBundle: entry.ranBundle, incomplete, capture, ms, result, processes, cpuMs: unknownCpu ? null : knownCpuMs, knownCpuMs, unknownCpu, missingCpu };
   }

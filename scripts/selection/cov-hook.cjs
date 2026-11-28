@@ -43,7 +43,6 @@ if (dir) {
   let worker = false;
   let finished = false;
   let collect;
-  const channelName = threadId => `spider.selection:${process.pid}:${threadId}`;
 
   function note(where, error) {
     try { appendFileSync(join(dir, 'hook-errors.ndjson'), JSON.stringify({ where, code: error?.code }) + '\n'); }
@@ -209,41 +208,14 @@ if (dir) {
     threads.Worker = new Proxy(BaseWorker, {
       construct(target, [entry, options], newTarget) {
         const limit = options?.resourceLimits?.maxOldGenerationSizeMb;
-        // An inspector session prevents Node from recovering a worker-local
-        // OOM in deliberately heap-starved fixtures. Leave them unrecorded.
-        if (limit > 0 && limit <= 64) {
-          const worker = Reflect.construct(target, [entry, options], newTarget);
-          recordLaunch({ kind: 'thread', processId, threadId: worker.threadId });
-          return worker;
-        }
-        const execArgv = [...(options?.execArgv ?? process.execArgv), workerPreload];
-        const worker = Reflect.construct(target, [entry, { ...options, execArgv }], newTarget);
-        recordLaunch({ kind: 'thread', processId, threadId: worker.threadId });
-        const name = channelName(worker.threadId);
-        const terminate = worker.terminate;
-        let pending;
-        worker.terminate = () => {
-          if (worker.threadId === -1) return terminate.call(worker);
-          pending ??= new Promise(resolve => {
-            // Node's forced thread termination does not run JS exit hooks.
-            // Use an out-of-band channel so the worker protocol is unchanged.
-            const channel = new threads.BroadcastChannel(name);
-            let done = false;
-            const close = () => {
-              if (done) return;
-              done = true;
-              clearTimeout(timer);
-              channel.close();
-              worker.off('exit', close);
-              resolve();
-            };
-            const timer = setTimeout(close, 50);
-            worker.once('exit', close);
-            channel.onmessage = close;
-            channel.postMessage('flush');
-          }).then(() => terminate.call(worker));
-          return pending;
-        };
+        // Attaching the inspector changes recoverable OOM behavior in tiny
+        // workers. Their exit can be observed, but their inputs are not proven.
+        const capture = !(limit > 0 && limit <= 64);
+        const opts = capture ? { ...options, execArgv: [...(options?.execArgv ?? process.execArgv), workerPreload] } : options;
+        const worker = Reflect.construct(target, [entry, opts], newTarget);
+        const threadId = worker.threadId;
+        recordLaunch({ kind: 'thread', processId, threadId });
+        worker.once('exit', () => recordLaunch({ kind: 'thread-exit', processId, threadId }));
         return worker;
       },
     });
@@ -335,29 +307,6 @@ if (dir) {
       };
       setInterval(flush, 2_000).unref();
       process.on('exit', () => flush(true));
-      if (threads.isMainThread && process.platform !== 'win32') {
-        const kill = process.kill;
-        const emit = process.emit;
-        const codes = require('node:os').constants.signals;
-        const signals = new Set(['SIGINT', 'SIGTERM', 'SIGHUP']);
-        const fatal = new Set([...signals, 'SIGKILL'].flatMap(name => [name, codes[name]]));
-        // Installing a JS signal listener replaces the native default. A
-        // blocked program would then survive TERM/HUP until JS can run. Flush
-        // existing handler dispatches and self-signals without adding listeners.
-        process.emit = function (name) {
-          if (signals.has(name)) flush();
-          return Reflect.apply(emit, this, arguments);
-        };
-        process.kill = function (pid, signal) {
-          if (pid === process.pid && fatal.has(signal ?? 'SIGTERM')) flush();
-          return Reflect.apply(kill, this, arguments);
-        };
-      }
-      if (threadContext) {
-        const channel = new threads.BroadcastChannel(channelName(threads.threadId));
-        channel.onmessage = () => { flush(true); channel.postMessage('flushed'); };
-        channel.unref();
-      }
       installWorkerCapture();
       captureReady = true;
       flush();

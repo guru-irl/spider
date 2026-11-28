@@ -93,6 +93,7 @@ import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import * as path from "node:path";
 import { openSessionHistoryDb, openSessionRunDb } from "./session-run-db";
+import { registerIntro } from "./intro/index.js";
 export { openSessionRunDb } from "./session-run-db";
 import { mountAgentsUI } from "./agents/mount";
 import { registerAgentsUI } from "./agents/agents-ui";
@@ -1030,8 +1031,8 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   setForHost(organismRuntimes, organism);
   let currentContext: unknown;
   const displayModel = (ref: string) => modelName((currentContext as ExtensionContext | undefined)?.modelRegistry, ref);
-  const iconStyle = () => {
-    try { return controlConfig("get", cwdOf(currentContext) ?? process.cwd(), "ui.icons") === "nerd" ? "nerd" as const : "text" as const; }
+  const iconStyle = (cwd?: string) => {
+    try { return controlConfig("get", cwd ?? cwdOf(currentContext) ?? process.cwd(), "ui.icons") === "nerd" ? "nerd" as const : "text" as const; }
     catch { return "text" as const; } // A config read failure must not break TUI rendering.
   };
   let currentSessionId = "";
@@ -1404,6 +1405,13 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
     registerStructuredTools(pi, spiderTool as AdapterTool, (args, callCtx) =>
       readRoutingConfig(String(args.cwd ?? cwdOf(callCtx) ?? process.cwd())));
     structuredToolsRegistered = true;
+  });
+  // Read the cached visit before the next shutdown hook stops the usage worker.
+  registerIntro(pi as unknown as ExtensionAPI, { admitted: ordinaryWorkAllowed, piVersion: ports.piVersion, iconStyle,
+    readVisitUsage: async (id, from, to) => {
+      const visit = await usageService.readVisit(id, from, to);
+      return visit ? { credits: visit.credits, calls: visit.calls, unpricedCalls: visit.unpricedCalls, ...visit.tokens } : undefined;
+    },
   });
   const usageCommand = registerUsageDashboardCommand(pi as unknown as ExtensionAPI, loadedBundle.url);
   const usageService = registerUsage(pi as unknown as ExtensionAPI, loadedBundle.url, ordinaryWorkAllowed);

@@ -177,7 +177,13 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
 }
 
 /** Registration is inert. The parent session lifecycle owns the worker and config watcher. */
-export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL, admitted: () => boolean = () => true): { reload(): void; pause(): Promise<void>; resume(): Promise<void>; snapshot(): ReturnType<UsageRuntime["snapshot"]> | undefined; readPanel(now: number, sessionId: string, budget?: number): ReturnType<UsageRuntime['readPanel']>; doctor(): Promise<ReturnType<typeof usageDoctorLines>> } {
+export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL, admitted: () => boolean = () => true): {
+  reload(): void; pause(): Promise<void>; resume(): Promise<void>;
+  snapshot(): ReturnType<UsageRuntime["snapshot"]> | undefined;
+  readPanel: UsageRuntime["readPanel"];
+  readVisit: UsageRuntime["readVisit"];
+  doctor(): Promise<ReturnType<typeof usageDoctorLines>>;
+} {
   let current: ExtensionContext | undefined;
   let runtime: UsageRuntime | undefined;
   let mounted: ReturnType<typeof mountUsage> | undefined;
@@ -234,13 +240,17 @@ export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL, admitte
     resuming = task.finally(() => { resuming = undefined; });
     return resuming;
   };
-  return { reload, pause, resume, snapshot: () => runtime?.snapshot(), readPanel: (now, sessionId, budget) => runtime?.readPanel(now, sessionId, budget) ?? Promise.resolve(null), doctor: async () => {
-    const registry = current?.modelRegistry;
-    if (process.env.PI_SUBAGENT_CHILD === "1") return { ok: true, lines: ["- usage worker: not started (child session)"] };
-    const crashes = await Promise.all(["usage-server", "usage-server-failures"].map(dir => readUsageServerCrashDiagnostics(join(paths.globalRoot, dir))));
-    const snapshot = runtime?.snapshot() ?? { health: null, counter: null, backfill: "pending" as const, reconciliation: null, errorCode: null };
-    return usageDoctorLines(snapshot, config, { sourceErrors: snapshot.sourceErrorDiagnostics?.rows ?? [],
-      truncated: snapshot.sourceErrorDiagnostics?.truncated ?? false, serverFailures: crashes.flatMap(crash => crash?.failures ?? []), now: Date.now(),
-      dashboardAssets: await dashboardAssetsStatus(bundleUrl) }, registry);
-  } };
+  return { reload, pause, resume, snapshot: () => runtime?.snapshot(),
+    readPanel: (now, sessionId, budget) => runtime?.readPanel(now, sessionId, budget) ?? Promise.resolve(null),
+    readVisit: (sessionId, from, to) => runtime?.readVisit(sessionId, from, to) ?? Promise.resolve(null),
+    doctor: async () => {
+      const registry = current?.modelRegistry;
+      if (process.env.PI_SUBAGENT_CHILD === "1") return { ok: true, lines: ["- usage worker: not started (child session)"] };
+      const crashes = await Promise.all(["usage-server", "usage-server-failures"].map(dir => readUsageServerCrashDiagnostics(join(paths.globalRoot, dir))));
+      const snapshot = runtime?.snapshot() ?? { health: null, counter: null, backfill: "pending" as const, reconciliation: null, errorCode: null };
+      return usageDoctorLines(snapshot, config, { sourceErrors: snapshot.sourceErrorDiagnostics?.rows ?? [],
+        truncated: snapshot.sourceErrorDiagnostics?.truncated ?? false, serverFailures: crashes.flatMap(crash => crash?.failures ?? []), now: Date.now(),
+        dashboardAssets: await dashboardAssetsStatus(bundleUrl) }, registry);
+    },
+  };
 }

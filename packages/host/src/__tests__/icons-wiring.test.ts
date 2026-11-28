@@ -34,15 +34,18 @@ it("mounts the configured icon style without changing any config", () => {
   migrate(db, "project");
   db.prepare("INSERT INTO runs (id, session_id, agent, name, status, step_count, token_count, started_at) VALUES ('r1','s','worker','scribe','running',1,0,0)").run();
   try {
-    for (const [style, expected] of [["text", "◇"], ["nerd", "\u{F167A} "]] as const) {
-      writeFileSync(file, JSON.stringify({ "ui.icons": style }));
+    for (const [style, patched, expected] of [
+      ["text", true, /◇ scribe/u], ["nerd", undefined, /\u{F167A} {2}scribe/u],
+      ["nerd", true, /[\u{F2120}-\u{F2123}] {2}scribe/u],
+    ] as const) {
+      writeFileSync(file, JSON.stringify({ "ui.icons": style, "ui.spiderGlyphs": patched }));
       let factory: ((tui: unknown, theme: unknown) => { render(width: number): string[]; dispose(): void }) | undefined;
       const ui = { setWidget: (_key: string, value: unknown) => { if (typeof value === "function") factory = value as typeof factory; },
         custom: async () => undefined, notify: () => {} };
       const pi = { registerShortcut: () => {}, registerCommand: () => {} };
       const dispose = mountAgentsUI(pi, { ui } as never, { db, sessionId: "s", cwd });
       const widget = factory!({ requestRender() {} }, theme);
-      expect(widget.render(100).join("\n")).toContain(`${expected} scribe`);
+      expect(widget.render(100).join("\n")).toMatch(expected);
       widget.dispose(); dispose();
     }
   } finally { db.close(); }

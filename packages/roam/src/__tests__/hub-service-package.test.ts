@@ -5,6 +5,8 @@ import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { buildRoamEntries } from "../../../../scripts/build-roam.mjs";
 import { assertRoamBundle } from "../../../../scripts/check-roam-bundle.mjs";
+import roamEntries from "../../../../scripts/roam-entries.json" with { type: "json" };
+const entryFiles = Object.keys(roamEntries).map(mode => `${mode}.mjs`);
 import { openDb, migrate } from "@spider/db-core";
 import { build } from "vite";
 
@@ -122,7 +124,7 @@ it("the dedicated packaged remote runtime still installs and probes a fixture di
   expect(consoleUsage.status).toBe(127); expect(consoleUsage.stderr).toContain("Invalid console view arguments");
 });
 
-it.each(["cli-main.mjs", "cli.mjs", "intercom-helper.mjs", "supervisor.mjs"])("the bundle check rejects a remote main body in %s", entry => {
+it.each(entryFiles)("the bundle check rejects a remote main body in %s", entry => {
   const file = join(packageRoot, "dist/roam", entry), original = readFileSync(file, "utf8");
   expect(() => assertRoamBundle(packageRoot)).not.toThrow();
   try {
@@ -131,7 +133,7 @@ it.each(["cli-main.mjs", "cli.mjs", "intercom-helper.mjs", "supervisor.mjs"])("t
   } finally { writeFileSync(file, original); }
 });
 
-it.each(["cli-main.mjs", "cli.mjs", "intercom-helper.mjs", "supervisor.mjs"])("the bundle check rejects a pane main body in %s", entry => {
+it.each(entryFiles)("the bundle check rejects a pane main body in %s", entry => {
   const file = join(packageRoot, "dist/roam", entry), original = readFileSync(file, "utf8");
   expect(() => assertRoamBundle(packageRoot)).not.toThrow();
   try {

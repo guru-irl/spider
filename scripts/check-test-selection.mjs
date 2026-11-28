@@ -41,6 +41,7 @@ function probeExecution(root, directory) {
     const resources = JSON.parse(readFileSync(join(checkout, 'scripts/test-resources.json'), 'utf8'));
     resources.bundles.entries = []; resources.bundles.consumers = [];
     put('scripts/test-resources.json', JSON.stringify(resources) + '\n');
+    put('scripts/roam-entries.json', '{}\n');
     put('vitest.config.mjs', 'export default { test: { include: ["packages/*/src/*.test.ts"], globalSetup: ["./global-setup.mjs"] } };\n');
     put('global-setup.mjs', 'export default function () { if (process.env.TEST !== "true" || process.env.VITEST !== "true" || process.env.NODE_ENV !== "test") throw new Error("runner environment was not prepared"); }\n');
     put('packages/a/src/value.ts', 'export const value = 1;\n');

@@ -21,7 +21,7 @@ interface PrivateBroker {
   socketIno: number;
 }
 
-function privateBroker(agentDir: string): PrivateBroker | null {
+export function privateBroker(agentDir: string): PrivateBroker | null {
   if (!isAbsolute(agentDir) || resolve(agentDir) !== agentDir || realpathSync(agentDir) !== agentDir) return null;
   const agent = lstatSync(agentDir);
   const directoryPath = join(agentDir, "intercom");
@@ -34,6 +34,19 @@ function privateBroker(agentDir: string): PrivateBroker | null {
       !owned(directory.uid) || (directory.mode & 0o7777) !== 0o700 ||
       !socket.isSocket() || socket.isSymbolicLink() || !owned(socket.uid) || (socket.mode & 0o7777) !== 0o600) return null;
   return { path: socketPath, directoryDev: directory.dev, directoryIno: directory.ino, socketDev: socket.dev, socketIno: socket.ino };
+}
+
+export function samePrivateBroker(expected: PrivateBroker, current: PrivateBroker | null): boolean {
+  return current !== null && current.directoryDev === expected.directoryDev && current.directoryIno === expected.directoryIno &&
+    current.socketDev === expected.socketDev && current.socketIno === expected.socketIno;
+}
+
+export function isPrivateBrokerHealth(value: unknown, requestId: string, feature: string): boolean {
+  if (!value || typeof value !== "object") return false;
+  const health = value as Record<string, unknown>;
+  return health.type === "health_ok" && health.requestId === requestId && health.protocol === INTERCOM_PROTOCOL_NAME &&
+    health.version === INTERCOM_PROTOCOL_VERSION && health.implementation === "spider" &&
+    Array.isArray(health.features) && health.features.includes(feature);
 }
 
 /** Never starts a broker or retries an operation whose delivery might have happened. */
@@ -73,9 +86,7 @@ export async function requestV0Broker(agentDir: string, op: V0BrokerOp, signal?:
     socket.on("close", () => finish(failure()));
     socket.on("connect", () => {
       try {
-        const current = privateBroker(agentDir);
-        if (!current || current.directoryDev !== broker.directoryDev || current.directoryIno !== broker.directoryIno ||
-            current.socketDev !== broker.socketDev || current.socketIno !== broker.socketIno) {
+        if (!samePrivateBroker(broker, privateBroker(agentDir))) {
           finish({ kind: "refused", code: "unauthorized" }); return;
         }
         writeMessage(socket, { type: "health", requestId: healthId });
@@ -83,10 +94,7 @@ export async function requestV0Broker(agentDir: string, op: V0BrokerOp, signal?:
     });
     socket.on("data", createMessageReader(value => {
       if (!sent) {
-        const health = value as Record<string, unknown> | null;
-        if (!health || health.type !== "health_ok" || health.requestId !== healthId ||
-            health.protocol !== INTERCOM_PROTOCOL_NAME || health.version !== INTERCOM_PROTOCOL_VERSION ||
-            health.implementation !== "spider" || !Array.isArray(health.features) || !health.features.includes(V0_INTERCOM_FEATURE)) {
+        if (!isPrivateBrokerHealth(value, healthId, V0_INTERCOM_FEATURE)) {
           finish({ kind: "refused", code: "unsupported" }); return;
         }
         let outbound: V0BrokerRequest = request;
@@ -105,7 +113,7 @@ export async function requestV0Broker(agentDir: string, op: V0BrokerOp, signal?:
         try { writeMessage(socket, outbound); } catch { finish(failure()); }
         return;
       }
-      const response = parseV0BrokerReply(value);
+      const response = parseV0BrokerReply(value, op.kind === "deliver" && op.thread?.kind === "reply");
       if (!response || response.requestId !== requestId) { finish(failure()); return; }
       const { type: _type, requestId: _requestId, ...result } = response;
       if (result.kind === "refused") { finish(result); return; }

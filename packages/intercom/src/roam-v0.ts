@@ -1,10 +1,12 @@
 import type { SessionAddress } from "./protocol.js";
 import type { LocalSessionInfo, RemoteSessionInfo } from "./types.js";
 import { isRemoteSessionInfo } from "./broker/protocol.js";
+import type { RelayTarget } from "./relay-protocol.js";
 
 export const V0_INTERCOM_BYTES: number = 256 * 1024;
 export const V0_TEXT_BYTES: number = V0_INTERCOM_BYTES - 8 * 1024;
 export const V0_INTERCOM_MS = 20_000;
+export const V0_INTERCOM_POST_CHECK_MS = 2000;
 export const V0_ASK_MAX_MS: number = 9 * 60_000;
 export const V0_INTERCOM_FEATURE = "roam-intercom-v0";
 
@@ -22,7 +24,8 @@ export interface V0Text {
 }
 export type V0Code = "moving" | "offline" | "no-match" | "ambiguous" | "incomplete"
   | "changed" | "unreachable" | "not-configured" | "unauthorized"
-  | "unsupported" | "invalid" | "self" | "reply-only" | "invalid-config" | "home-unreadable";
+  | "unsupported" | "invalid" | "self" | "reply-only" | "invalid-config" | "home-unreadable"
+  | "asker-no-longer-waiting";
 export type V0Refused = { kind: "refused"; code: V0Code };
 export type V0Delivery = V0Refused
   | { kind: "socket_delivered"; id: string }
@@ -32,7 +35,7 @@ export type V0Delivery = V0Refused
 export type V0Reply = V0Delivery | { kind: "matches"; targets: V0Endpoint[] };
 export type V0BrokerOp =
   | { kind: "lookup"; scopeId: SessionAddress["scopeId"]; selector: V0Selector }
-  | { kind: "deliver"; from: RemoteSessionInfo; target: V0Endpoint; message: V0Text }
+  | { kind: "deliver"; from: RemoteSessionInfo; target: V0Endpoint; message: V0Text; thread?: V0RelayThread }
   | { kind: "ask"; from: RemoteSessionInfo; target: V0Endpoint; message: V0Text; timeoutMs: number };
 export type V0AgentRequest = {
   version: 1;
@@ -44,16 +47,37 @@ export type V0AgentRequest = {
   | { kind: "deliver"; target: V0Endpoint; message: V0Text }
   | { kind: "ask"; target: V0Endpoint; message: V0Text; timeoutMs: number }
 );
+export type V0RelayThread = { kind: "ask"; timeoutMs: number } | { kind: "reply"; replyTo: string };
+type AgentDelivery = Extract<V0AgentRequest, { kind: "deliver" }>;
+export type V0RelayAgentRequest = { version: 2 } & (
+  | { relayId: string; request: Extract<V0AgentRequest, { kind: "lookup" | "deliver" }>; thread?: never }
+  | { relayId: string; request: AgentDelivery; thread: Extract<V0RelayThread, { kind: "ask" }> }
+  | { relayId: string | null; request: AgentDelivery; thread: Extract<V0RelayThread, { kind: "reply" }> }
+);
+export type V0RelayAskInput = { from: V0AgentRequest["from"]; target: RelayTarget; askId: string; timeoutMs: number };
+export type V0RelayReplyAuthorization = { asker: V0AgentRequest["from"]; remainingMs: number } | V0Refused;
+export type V0RelayAskBrokerRequest = { type: "roam_v0_relay_ask"; requestId: string } & (
+  | ({ kind: "begin" } & V0RelayAskInput)
+  | { kind: "authorize"; from: V0Endpoint; askId: string }
+);
 export type V0AgentReply = { version: 1; requestId: string; machineId: string } & V0Reply;
 export type V0BrokerRequest = { type: "roam_v0"; requestId: string } & V0BrokerOp;
 export type V0BrokerReply = { type: "roam_v0_result"; requestId: string } & V0Reply;
+export type V0RouteRefusal = V0Code | "no-relay" | "relay-unreachable" | "relay-busy" | "ask-timeout-too-short";
+export interface V0RouteDetails {
+  path?: "local" | "direct" | `relay ${string}`;
+  targetMachine?: string;
+  relaySkips?: readonly { relay: string; reason: "down" | "cannot reach the target" | "busy" }[];
+}
+export type V0RouteResult = (Exclude<V0Delivery, V0Refused> | { kind: "refused"; code: V0RouteRefusal }) & V0RouteDetails;
+
 export type V0SendPlan = V0Refused | { kind: "legacy" }
   | { kind: "local"; target: { id: string; endpointEpoch: string } }
   | {
       kind: "remote";
       label: string;
-      send(message: V0Text, signal?: AbortSignal): Promise<V0Delivery>;
-      ask(message: V0Text, timeoutMs: number, signal?: AbortSignal): Promise<V0Delivery>;
+      send(message: V0Text, signal?: AbortSignal): Promise<V0RouteResult>;
+      ask(message: V0Text, timeoutMs: number, signal?: AbortSignal): Promise<V0RouteResult>;
     };
 export type V0Prepare = (input: {
   to: string;
@@ -61,9 +85,16 @@ export type V0Prepare = (input: {
   locals: readonly LocalSessionInfo[];
   signal?: AbortSignal;
 }) => Promise<V0SendPlan>;
+export type V0PrepareReply = (input: {
+  from: LocalSessionInfo;
+  askId: string;
+  message: V0Text;
+  signal?: AbortSignal;
+}) => Promise<V0RouteResult>;
 export interface V0ToolOptions {
   homeEpoch(sessionId: string): number | undefined;
   prepare: V0Prepare;
+  prepareReply?: V0PrepareReply;
 }
 
 const MAX_PEER_ALIAS_CHARS = 255;
@@ -157,10 +188,17 @@ function withinLimit(value: unknown, extraBytes = 0): boolean {
   }
 }
 
-function reply(value: Record<string, unknown>, prefix: readonly string[]): boolean {
+function relayThread(value: unknown): value is V0RelayThread {
+  return record(value) && (value.kind === "ask" && fields(value, ["kind", "timeoutMs"]) &&
+    epoch(value.timeoutMs) && value.timeoutMs <= V0_ASK_MAX_MS ||
+    value.kind === "reply" && fields(value, ["kind", "replyTo"]) && identifier(value.replyTo));
+}
+
+function reply(value: Record<string, unknown>, prefix: readonly string[], allowEndedAsk = false): boolean {
   switch (value.kind) {
     case "refused":
-      return fields(value, [...prefix, "kind", "code"]) && typeof value.code === "string" && codes.has(value.code);
+      return fields(value, [...prefix, "kind", "code"]) && typeof value.code === "string" &&
+        (codes.has(value.code) || allowEndedAsk && value.code === "asker-no-longer-waiting");
     case "matches":
       return fields(value, [...prefix, "kind", "targets"]) && Array.isArray(value.targets) && value.targets.every(endpoint);
     case "socket_delivered":
@@ -180,16 +218,44 @@ export function parseV0BrokerRequest(value: unknown): V0BrokerRequest | null {
   const prefix = ["type", "requestId", "kind"];
   if (value.kind === "lookup" && fields(value, [...prefix, "scopeId", "selector"])
       && scope(value.scopeId) && selector(value.selector)) return value as V0BrokerRequest;
+  const extra = value.kind === "ask" ? ["timeoutMs"] : Object.hasOwn(value, "thread") ? ["thread"] : [];
   if ((value.kind === "deliver" || value.kind === "ask")
-      && fields(value, [...prefix, "from", "target", "message", ...(value.kind === "ask" ? ["timeoutMs"] : [])])
+      && fields(value, [...prefix, "from", "target", "message", ...extra])
       && remote(value.from) && endpoint(value.target) && text(value.message)
-      && (value.kind !== "ask" || epoch(value.timeoutMs))) return value as V0BrokerRequest;
+      && (value.kind === "ask" ? epoch(value.timeoutMs) : !extra.length || relayThread(value.thread))) return value as V0BrokerRequest;
   return null;
 }
 
-export function parseV0BrokerReply(value: unknown): V0BrokerReply | null {
+export function parseV0BrokerReply(value: unknown, allowEndedAsk = false): V0BrokerReply | null {
   return record(value) && withinLimit(value) && value.type === "roam_v0_result" && identifier(value.requestId)
-    && reply(value, ["type", "requestId"]) ? value as V0BrokerReply : null;
+    && reply(value, ["type", "requestId"], allowEndedAsk) ? value as V0BrokerReply : null;
+}
+
+export function parseV0RelayAskBrokerRequest(value: unknown): V0RelayAskBrokerRequest | null {
+  if (!record(value) || !withinLimit(value) || value.type !== "roam_v0_relay_ask" ||
+      !identifier(value.requestId) || !identifier(value.askId)) return null;
+  const prefix = ["type", "requestId", "kind", "from", "askId"];
+  if (value.kind === "authorize" && fields(value, prefix) && endpoint(value.from)) return value as V0RelayAskBrokerRequest;
+  if (value.kind !== "begin" || !fields(value, [...prefix, "target", "timeoutMs"]) || !agentEndpoint(value.from) ||
+      !epoch(value.timeoutMs) || !record(value.target)) return null;
+  const target = value.target;
+  const hasEpoch = Object.hasOwn(target, "homeEpoch");
+  return fields(target, ["machineId", "selector", ...(hasEpoch ? ["homeEpoch"] : [])]) && identifier(target.machineId) &&
+    selector(target.selector) && (!hasEpoch || epoch(target.homeEpoch)) ? value as V0RelayAskBrokerRequest : null;
+}
+
+export function parseV0RelayReplyAuthorization(value: unknown): V0RelayReplyAuthorization | null {
+  if (!record(value)) return null;
+  if (value.kind === "refused" && reply(value, [])) return value as V0Refused;
+  return fields(value, ["asker", "remainingMs"]) && agentEndpoint(value.asker) && epoch(value.remainingMs) && value.remainingMs <= V0_ASK_MAX_MS
+    ? value as V0RelayReplyAuthorization : null;
+}
+
+function brokerDeliveryFits(request: Exclude<V0AgentRequest, { kind: "lookup" }>, thread?: V0RelayThread): boolean {
+  const { version, toMachineId, requestId, from, ...operation } = request;
+  const projected = { type: "roam_v0", requestId: "0".repeat(36), from: v0BrokerOrigin(from, ""), ...operation, ...(thread && { thread }) };
+  // The receiving machine supplies the alias, with up to six escaped bytes per code unit.
+  return withinLimit(projected, 6 * MAX_PEER_ALIAS_CHARS);
 }
 
 export function parseV0AgentRequest(value: unknown): V0AgentRequest | null {
@@ -201,16 +267,25 @@ export function parseV0AgentRequest(value: unknown): V0AgentRequest | null {
       && fields(value, [...prefix, "target", "message", ...(value.kind === "ask" ? ["timeoutMs"] : [])])
       && endpoint(value.target) && text(value.message) && (value.kind !== "ask" || epoch(value.timeoutMs))) {
     const request = value as Exclude<V0AgentRequest, { kind: "lookup" }>;
-    const { version, toMachineId, requestId, from, ...operation } = request;
-    const projected = { type: "roam_v0", requestId: "0".repeat(36), from: v0BrokerOrigin(from, ""), ...operation };
-    // The receiving machine supplies the alias. JSON can escape each code
-    // unit as six bytes, so reserve that space before the first hop.
-    if (withinLimit(projected, 6 * MAX_PEER_ALIAS_CHARS)) return request;
+    if (brokerDeliveryFits(request)) return request;
   }
   return null;
 }
 
-export function parseV0AgentReply(value: unknown): V0AgentReply | null {
+export function parseV0RelayAgentRequest(value: unknown): V0RelayAgentRequest | null {
+  if (!record(value) || value.version !== 2 || !withinLimit(value)) return null;
+  const prefix = ["version", "relayId", "request"];
+  const { relayId, thread } = value;
+  const request = parseV0AgentRequest(value.request);
+  if (!request || request.kind === "ask") return null;
+  if (fields(value, prefix) && identifier(relayId)) return { version: 2, relayId, request };
+  if (!fields(value, [...prefix, "thread"]) || request.kind !== "deliver" || !relayThread(thread) ||
+      !brokerDeliveryFits(request, thread)) return null;
+  if (thread.kind === "ask") return identifier(relayId) ? { version: 2, relayId, request, thread } : null;
+  return relayId === null || identifier(relayId) ? { version: 2, relayId, request, thread } : null;
+}
+
+export function parseV0AgentReply(value: unknown, allowEndedAsk = false): V0AgentReply | null {
   return record(value) && withinLimit(value) && value.version === 1 && identifier(value.requestId) && identifier(value.machineId)
-    && reply(value, ["version", "requestId", "machineId"]) ? value as V0AgentReply : null;
+    && reply(value, ["version", "requestId", "machineId"], allowEndedAsk) ? value as V0AgentReply : null;
 }

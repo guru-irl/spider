@@ -45,8 +45,8 @@ async function fixture(initialStyle: "text" | "nerd") {
 const lines = (component: any) => component.render(160).map((line: string) => line.trimEnd());
 const messageLines = (component: any) => lines(component).slice(1, -1);
 const call = (tool: any, args: object, theme = plain) => lines(tool.renderCall(args, theme, {})).join("\n");
-const result = (tool: any, value: object, action: string, expanded = false, partial = false) =>
-  lines(tool.renderResult(value, { isPartial: partial, expanded }, plain, { args: { action }, isError: false, expanded })).join("\n");
+const result = (tool: any, value: object, action: string, expanded = false, partial = false, theme = plain) =>
+  lines(tool.renderResult(value, { isPartial: partial, expanded }, theme, { args: { action }, isError: false, expanded })).join("\n");
 
 const local = { id: "local-session", name: "ben", cwd: "/project", model: "m", pid: 1, startedAt: 0, lastActivity: 0 };
 const remote = { remote: true, id: "remote-session", address: { sessionId: "remote-session", scopeId: null }, machineId: "m", machineAlias: "peer", homeEpoch: 1, activationEpoch: "a", endpointEpoch: "e", name: "ben", cwd: "/remote", model: "m", startedAt: 0, lastActivity: 0 };
@@ -155,6 +155,61 @@ describe.each(["text", "nerd"] as const)("registered intercom cards in %s style"
     expect(collapsed).toContain("Unnamed session (cafe1234)");
     expect(result(tool, value, "list", true)).toContain("alice (f00dbabe)");
     expect(value).toEqual(before);
+  });
+
+  it("separates a relayed ask's route from its multiline reply", async () => {
+    const h = await fixture(style);
+    const tool = h.tools.find(tool => tool.name === "intercom");
+    const value = {
+      content: [{ type: "text", text: "**Reply from Alex:**\nFirst reply line\nSecond reply line\nPath: relay ridge.\nsummit: busy." }],
+      details: { delivery: "replied", path: "relay ridge", targetMachine: "desk", relaySkips: [{ relay: "summit", reason: "busy" }] },
+    };
+    const before = structuredClone(value);
+    const dim = (text: string) => `\x1b[2m${text}\x1b[22m`;
+    const theme = { ...plain, fg: (role: string, text: string) => role === "dim" ? dim(text) : text };
+    for (const expanded of [false, true]) {
+      expect(result(tool, value, "ask", expanded, false, theme).split("\n")).toEqual([
+        `${success}Reply from Alex:`,
+        `${toolIndent}First reply line`,
+        `${toolIndent}Second reply line`,
+        `${toolIndent}${dim("→ asked via ridge")}`,
+        `${toolIndent}${dim("summit skipped: busy")}`,
+      ]);
+    }
+    expect(value).toEqual(before);
+  });
+
+  it("keeps route-like reply lines when the raw suffix is not an exact match", async () => {
+    const h = await fixture(style);
+    const tool = h.tools.find(tool => tool.name === "intercom");
+    const details = { delivery: "replied", path: "relay ridge", relaySkips: [{ relay: "summit", reason: "busy" }] };
+    for (const body of [
+      "Path: **relay ridge**.\nsummit: busy.",
+      "Path: relay ridge.\nsummit: down.",
+      "Path: relay ridge.\nsummit: busy.\nFinal reply line.",
+    ]) {
+      const output = result(tool, { content: [{ type: "text", text: `Reply from Alex:\n${body}` }], details }, "ask");
+      for (const line of body.replaceAll("**", "").split("\n")) expect(output).toContain(`${toolIndent}${line}\n`);
+      expect(output).toContain("asked via ridge");
+    }
+  });
+
+  it.each(["local", "direct"])("does not draw a route row for a %s ask", async path => {
+    const h = await fixture(style);
+    const tool = h.tools.find(tool => tool.name === "intercom");
+    const value = {
+      content: [{ type: "text", text: `Reply from Alex:\nNo updates.\nPath: ${path}.` }],
+      details: { delivery: "replied", path },
+    };
+    expect(result(tool, value, "ask")).toBe(`${success}Reply from Alex:\n${toolIndent}No updates.`);
+  });
+
+  it("shows a too-short relay ask timeout as an error without a route row", async () => {
+    const h = await fixture(style);
+    const tool = h.tools.find(tool => tool.name === "intercom");
+    const text = "The ask timeout is too short for a relay. At least 4001 ms must remain. Nothing was queued.";
+    const value = { content: [{ type: "text", text }], details: { error: true, code: "ask-timeout-too-short" } };
+    expect(result(tool, value, "ask")).toBe(`${failure}${text}`);
   });
 
   it("hides message IDs only in collapsed display without altering results", async () => {

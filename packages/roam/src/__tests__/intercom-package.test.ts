@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { buildRoamEntries } from "../../../../scripts/build-roam.mjs";
 import { assertRoamBundle } from "../../../../scripts/check-roam-bundle.mjs";
+import roamEntries from "../../../../scripts/roam-entries.json" with { type: "json" };
 
 let root: string, helper: string, original: string;
 beforeAll(async () => {
@@ -49,7 +50,7 @@ it("the release file-list gate rejects either missing helper entry", () => {
     readdirSync(dir, { recursive: true, encoding: "utf8" }).filter(file => file === "SKILL.md" || file.endsWith("/SKILL.md")).map(file => `${dir}/${file}`));
   const files = ["dist/extension.js", "dist/intercom/broker.mjs", "dist/dashboard/index.html", "dist/dashboard/assets/app-aaaaaaaa.js", "dist/dashboard/assets/app-aaaaaaaa.css",
     "README.md", "LICENSE", "NOTICE.md", "packages/context/LICENSE", "packages/pstack/LICENSE", "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md", ...skills,
-    "dist/roam/cli.mjs", "dist/roam/cli-main.mjs", "dist/roam/intercom-helper.mjs", "dist/roam/supervisor.mjs", "scripts/link.mjs", "scripts/dev-link.mjs",
+    ...Object.keys(roamEntries).map(mode => `dist/roam/${mode}.mjs`), "scripts/link.mjs", "scripts/dev-link.mjs",
     "scripts/intercom-switchover.mjs", "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/package-extension.ts", "scripts/pi-agent-dir.mjs"];
   for (const missing of ["dist/roam/cli-main.mjs", "dist/roam/intercom-helper.mjs"]) {
     const result = spawnSync(process.execPath, ["scripts/check-package-files.cjs"], { input: JSON.stringify([{ files: files.filter(file => file !== missing).map(path => ({ path })) }]), encoding: "utf8", timeout: 2000 });

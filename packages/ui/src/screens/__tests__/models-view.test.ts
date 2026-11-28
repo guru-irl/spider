@@ -26,7 +26,7 @@ describe("renderModels", () => {
     expect(out).toMatch(/standard/);
     expect(out).toContain("●"); // available
     expect(out).toContain("○"); // unavailable
-    expect(out).toMatch(/⟵.*worker/);
+    expect(out).toContain("← worker");
     for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(60);
   });
 
@@ -42,7 +42,22 @@ describe("renderModels", () => {
       { sources: { worker: "default" }, global: {} }, false,
       { levelsByRef: {}, baseDefaults: { worker: "copilot/claude-sonnet-5" } });
     expect(lines.join("\n")).toContain("worker: copilot/claude-sonnet-5:high (default)");
-    expect(lines.join("\n")).toMatch(/claude-sonnet-5.*⟵.*worker/);
+    expect(lines.join("\n")).toMatch(/claude-sonnet-5.*← worker/);
+  });
+
+  it("italicizes agent roles but not non-agent model defaults", () => {
+    const styled = { ...id, italic: (value: string) => `<i>${value}</i>` };
+    const selected = {
+      worker: "copilot/claude-sonnet-5", watcher: "copilot/claude-sonnet-5",
+      digest: "copilot/claude-sonnet-5", self_name: "copilot/claude-sonnet-5", upstream_watch: "copilot/claude-sonnet-5",
+    };
+    const out = renderModels(entries, selected, styled, 200, { sources: {}, global: {} }, true).join("\n");
+    expect(out).toContain("← <i>worker</i>,<i>watcher</i>,digest,self_name,upstream_watch");
+    expect(out).toContain("<i>worker</i>: copilot/claude-sonnet-5");
+    for (const role of ["digest", "self_name", "upstream_watch"]) {
+      expect(out).toContain(`${role}: copilot/claude-sonnet-5`);
+      expect(out).not.toContain(`<i>${role}</i>`);
+    }
   });
 
   it("never throws on empty input (empty body — tool shell still shows the header)", () => {
@@ -73,5 +88,5 @@ it("shows max capability and associates a suffix default with its base model", (
   const model = E({ provider: "acme", id: "reasoner", thinking: true, thinkingLevelMap: { max: "maximum" } } as any);
   const lines = renderModels([model], { worker: "acme/reasoner:max" }, id, 200, undefined, false, { levelsByRef: { "acme/reasoner": ["off", "minimal", "low", "medium", "high", "max"] }, baseDefaults: { worker: "acme/reasoner" } }).join("\n");
   expect(lines).toMatch(/thinking.*max/);
-  expect(lines).toMatch(/⟵.*worker/);
+  expect(lines).toContain("← worker");
 });

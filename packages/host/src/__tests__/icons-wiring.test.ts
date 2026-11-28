@@ -34,7 +34,7 @@ it("mounts the configured icon style without changing any config", () => {
   migrate(db, "project");
   db.prepare("INSERT INTO runs (id, session_id, agent, name, status, step_count, token_count, started_at) VALUES ('r1','s','worker','scribe','running',1,0,0)").run();
   try {
-    for (const [style, expected] of [["text", "\u{1F916}"], ["nerd", "\u{F167A} "]] as const) {
+    for (const [style, expected] of [["text", "◇"], ["nerd", "\u{F167A} "]] as const) {
       writeFileSync(file, JSON.stringify({ "ui.icons": style }));
       let factory: ((tui: unknown, theme: unknown) => { render(width: number): string[]; dispose(): void }) | undefined;
       const ui = { setWidget: (_key: string, value: unknown) => { if (typeof value === "function") factory = value as typeof factory; },
@@ -73,13 +73,13 @@ it("uses the configured style for registered tool and notice renderers", () => {
     bold: (text: string) => text, italic: (text: string) => text };
   expect(commands.get("spider")?.description).toContain("\u{F0BCA}");
   expect(commands.get("todos")?.description).toContain("\u{F0BCA}");
-  expect(tool.label).toBe("\u{F0BCA}  spider");
-  expect(tool.renderCall({ action: "run" }, theme, {}).render(100).join("\n")).toContain("\u{F0BCA}  spider");
+  expect(tool.label).toBe("spider");
+  expect(tool.renderCall({ action: "run" }, theme, {}).render(100).join("\n")).toContain("\u{F0BCA}  run");
   const result = { details: { run: { name: "scribe", status: "failed" } } };
   expect(tool.renderResult(result, {}, theme, { args: { action: "run" } }).render(100).join("\n")).toContain("\u{F0156}  failed · scribe");
   expect(messages.get("spider.subagent_done")!({ details: { name: "scribe", status: "cancelled" } }, {}, theme).render(100).join("\n")).toContain("\u{F002A}  cancelled");
   expect(entry!({ data: { status: "failed", errors: [], memoryStaged: 0, skillsStaged: 0, todosAdded: 0 } }, {}, theme).render(100).join("\n")).toContain("\u{F0156}  failed");
   writeFileSync(join(global, "config.json"), JSON.stringify({ "ui.icons": "text" }));
-  expect(tool.renderCall({ action: "run" }, theme, {}).render(100).join("\n")).toContain("\u{1F578}\uFE0F spider");
+  expect(tool.renderCall({ action: "run" }, theme, {}).render(100).join("\n")).toContain("◆ run");
   expect(commands.get("spider")?.description).toContain("\u{F0BCA}");
 });

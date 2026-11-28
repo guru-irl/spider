@@ -5,15 +5,14 @@ import type { MessageDetails, RenderCtx } from "./types.js";
 
 function arrow(verb: MessageDetails["verb"], theme: RenderCtx["theme"]): string {
   switch (verb) {
-    case "send": return "→";
-    case "ask": return "→?";
+    case "send": return uiIcon(theme.iconStyle, "message");
+    case "ask": return `${uiIcon(theme.iconStyle, "message").trimEnd()}?`;
     case "reply": return uiIcon(theme.iconStyle, "reply");
     case "broadcast": return uiIcon(theme.iconStyle, "broadcast");
   }
 }
 
-/** RESULT body (no header — the spider call line already shows `🕸 spider · message`).
- *  The status starts directly under the title. */
+/** RESULT body. The call line supplies the title; the status starts directly beneath it. */
 export function renderMessageResult(details: MessageDetails, ctx: RenderCtx): string[] {
   const { theme, width } = ctx;
   const expanded = ctx.expanded === true;

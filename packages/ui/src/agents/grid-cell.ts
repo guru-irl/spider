@@ -34,7 +34,7 @@ export function renderGridCell(
 ): string[] {
   const { agent: a, width, height, focused, pinned, now, spinner } = opts;
   const glyph = a.status === "running" ? spinner.frame(now) : statusGlyph(theme, a.status);
-  const marker = focused ? "▸ " : "  ";
+  const marker = focused ? `${icon(theme.iconStyle, "select")} ` : "  ";
   const pin = pinned ? ` ${icon(theme.iconStyle, "pin")}` : "";
   const elapsedMs = a.startedAt === undefined ? 0 : (a.endedAt ?? now) - a.startedAt;
   const turns = a.stepCount === 1 ? "1 turn" : `${a.stepCount} turns`;
@@ -42,7 +42,8 @@ export function renderGridCell(
   // line 0 — spinner/status glyph, spider, NAME.
   const header = fit(`${marker}${theme.fg(statusToken(a.status), glyph)} ${agentGlyph(theme)} ${theme.bold(a.name)}${pin}`, width);
   // line 1 — type · model · turns · elapsed (status is conveyed by the glyph colour).
-  const meta = fit("  " + theme.fg("dim", `${a.role ?? a.agent} · ${shortModel(a.model)} · ${turns} · ${formatDuration(elapsedMs)}`), width);
+  const role = a.role ?? a.agent;
+  const meta = fit("  " + theme.fg("dim", `${theme.italic?.(role) ?? role} · ${shortModel(a.model)} · ${turns} · ${formatDuration(elapsedMs)}`), width);
 
   const bodyRows = Math.max(0, height - 2); // header, meta
   const body: string[] = [];

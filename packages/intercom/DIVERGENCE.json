@@ -89,7 +89,7 @@
     {
       "path": "local.ts",
       "task": "3.6f",
-      "reason": "Integrate admitted epochs, reconciliation, reply threads and named ask failures, and release session observers on shutdown. Poll the owning admission gate and promptly advertise null-to-initial-epoch formalization without changing activation. Keep registration recovery active across failed retries and stale contexts, fence old connection attempts, and warn once per outage, and expose pending asks to the reload gate. Observe durably persisted idle entries without waiting for a turn. Normalize optional tool IDs at the boundary. Render failure and warning icons using the host's configured icon style.",
+      "reason": "Integrate admitted epochs, reconciliation, reply threads and named ask failures, and release session observers on shutdown. Poll the owning admission gate and promptly advertise null-to-initial-epoch formalization without changing activation. Keep registration recovery active across failed retries and stale contexts, fence old connection attempts, and warn once per outage, and expose pending asks to the reload gate. Observe durably persisted idle entries without waiting for a turn. Normalize optional tool IDs at the boundary. Retain upstream-compatible failure and warning markers; the host supplies its own card presentation.",
       "upstreamHash": "b99325cd8cb80b4ed41ac4f1427791eb1df916a303ba5ce5b35197eba8972f1c"
     },
     {
@@ -125,9 +125,9 @@
     {
       "path": "single-instance.ts",
       "task": "3.6-0",
-      "reason": "Fence duplicate extension registrations during rolling adoption and expose the active registration's pending-ask query. Forward the host's icon style and roaming options through the same duplicate guard.",
+      "reason": "Fence duplicate extension registrations during rolling adoption and expose the active registration's pending-ask query. Forward roaming options through the same duplicate guard; the host owns card presentation.",
       "upstreamHash": null,
-      "forkSha256": "8b24b3585df1266a4785f414a9cec404947dba482e52130ee056299670936408"
+      "forkSha256": "0ab2f134edea6742424df70675036a6031bcf574e915d503c0249c62ebef268e"
     },
     {
       "path": "test-support.ts",

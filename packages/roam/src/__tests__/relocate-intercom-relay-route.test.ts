@@ -103,7 +103,7 @@ async function startTool(m: Machine, intercom: ReturnType<typeof createV0Interco
     hasPendingMessages: () => false, ui: { notify() {}, getEditorText: () => "" } };
   const emit = async (name: string) => { for (const hook of hooks.get(name) ?? []) await hook({ reason: "startup" }, ctx); };
   vi.stubEnv("PI_CODING_AGENT_DIR", m.agentDir);
-  registerIntercomOnce(pi as never, undefined, undefined, { prepare: intercom.prepare, homeEpoch: id => id === "source" ? 1 : undefined });
+  registerIntercomOnce(pi as never, undefined, { prepare: intercom.prepare, homeEpoch: id => id === "source" ? 1 : undefined });
   cleanups.push(() => emit("session_shutdown"));
   await emit("session_start");
   const tool = tools.find(item => item.name === "intercom")!;

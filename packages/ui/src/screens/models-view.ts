@@ -1,13 +1,11 @@
 import type { ThemeAdapter } from "../agents/types.js";
 import { icon } from "../icons.js";
 import type { ModelEntry } from "@spider/models";
-import { catalogRows, type ModelThinkingDisplay } from "./models-model.js";
+import { catalogRows, isAgentModelRole, type ModelThinkingDisplay } from "./models-model.js";
 import { sectionRule, fitResultLines, resultTrimmer } from "../renderers/types.js";
 
-/** Pure: the copilot model catalog grouped by tier, framed as a 🕸 models card. Each tier is
- *  an accent `── <tier> ──` rule; each model is an availability glyph (● available / ○ not),
- *  its `provider/id` ref, dim R/V capability badges (thinking / vision), and a success
- *  ` ⟵ role1,role2` marker for configured or shipped role defaults. Every line is width-guarded. */
+/** Model catalog grouped by tier. Each row shows availability, the model reference,
+ *  capability badges, and a marker for role defaults. Every line is width-guarded. */
 export interface ModelDefaultOrigins {
   sources: Record<string, "default" | "local" | "global">;
   global: Record<string, string>;
@@ -20,15 +18,16 @@ export function renderModels(entries: ModelEntry[], defaults: Record<string, str
   const roles = origins ? Object.entries(defaults) : [];
   const manyGroups = groups.length + Number(roles.length > 0) > 1;
   const indent = transcript ? " " : "";
+  const roleLabel = (role: string) => isAgentModelRole(role) ? theme.italic?.(role) ?? role : role;
   for (const group of groups) {
     if (!transcript || manyGroups) body.push(indent + sectionRule(theme, group.tier, width - indent.length));
     for (const row of group.rows) {
-      const glyph = row.available ? theme.fg("accent", "●") : theme.fg("muted", "○");
+      const glyph = theme.fg(row.available ? "accent" : "muted", icon(theme.iconStyle, row.available ? "running" : "open"));
       const badges: string[] = [];
       if (row.thinking) badges.push(theme.fg("dim", "R"));
       if (row.vision) badges.push(theme.fg("dim", "V"));
       const badge = badges.length ? ` ${badges.join("")}` : "";
-      const dflt = row.isDefaultFor.length ? theme.fg("success", ` ${icon(theme.iconStyle, "modelDefault")} ${row.isDefaultFor.join(",")}`) : "";
+      const dflt = row.isDefaultFor.length ? theme.fg("success", ` ${icon(theme.iconStyle, "modelDefault")} ${row.isDefaultFor.map(roleLabel).join(",")}`) : "";
       body.push(trim(`${indent}${glyph} ${theme.fg("text", row.ref)}${badge}${dflt}`, width, ""));
       if (row.thinkingLevels.length) body.push(trim(theme.fg("dim", `${indent}  thinking: ${row.thinkingLevels.join(", ")}`), width, ""));
     }
@@ -39,7 +38,7 @@ export function renderModels(entries: ModelEntry[], defaults: Record<string, str
       const source = origins.sources[role] ?? "global";
       const shadow = source === "local" && origins.global[role] !== undefined
         ? `; shadows global ${origins.global[role]}` : "";
-      body.push(trim(`${indent}${role}: ${ref} (${source}${shadow})`, width, ""));
+      body.push(trim(`${indent}${roleLabel(role)}: ${ref} (${source}${shadow})`, width, ""));
     }
   }
   if (transcript && !body.length) body.push(" (no models)");

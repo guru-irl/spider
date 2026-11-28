@@ -449,12 +449,20 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
 
   test(`${version} rollback removes created mod directories but preserves existing and populated directories`, async () => {
     const f = await fastRelease(version), mods = join(f.h.directories.app, 'mods');
+    const keys = join(f.h.directories.app, 'keys.json');
+    const originalKeys = version === '0.1.13' ? await readFile(keys) : undefined;
+    if (version === '0.1.13') {
+      expect(JSON.parse(originalKeys!.toString('utf8')).global).not.toHaveProperty('cmd-m');
+      f.request.nativeKeys = 'accept';
+    }
     const existing = join(mods, 'spider-new-menu'), shared = join(existing, 'shared');
     await mkdir(shared, { recursive: true });
     await setupHerdr(f.request, f.parts);
+    if (version === '0.1.13') expect(JSON.parse(await readFile(keys, 'utf8')).global['cmd-m']).toBe('window.minimize');
     const userFile = join(mods, 'spider-machine-picker-down', 'user.txt');
     await writeFile(userFile, 'keep this');
     await rollbackHerdr(f.request, f.parts);
+    if (version === '0.1.13') expect(await readFile(keys)).toEqual(originalKeys);
     for (const name of ['spider-machine-picker', 'spider-machine-picker-right', 'spider-pane-waiting']) await expect(stat(join(mods, name))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(stat(join(existing, 'machines'))).rejects.toMatchObject({ code: 'ENOENT' });
     expect((await stat(existing)).isDirectory()).toBe(true);

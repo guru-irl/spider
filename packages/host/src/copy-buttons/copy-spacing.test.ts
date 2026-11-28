@@ -87,7 +87,7 @@ describe("fullscreen reply seams", () => {
     expect(after).toHaveLength(before.length);
     expect(after[top]).toBe(`🭽${"▔".repeat(58)}🭾`);
     expect(after[top + 1]).toBe(`▏Reply${" ".repeat(53)}▕`);
-    expect(after[top + 2]).toMatch(/^🭼Jan 3 08:15▁+⧉ text▁▁▁⧉ md🭿$/u);
+    expect(after[top + 2]).toMatch(/^🭼Jan 3 08:15▁+□ text▁▁▁□ md🭿$/u);
     expect(after.slice(top + 3)).toEqual(belowBody);
   });
 
@@ -217,7 +217,7 @@ describe("fullscreen reply seams", () => {
     const after = plain(app.chat);
     expect(after).toHaveLength(before.length);
     expect(after[i + 1]).toMatch(/^🭽▔+🭾$/u);
-    expect(after[i + 3]).toMatch(/^🭼Jan 3 08:15▁+⧉ text▁▁▁⧉ md🭿$/u);
+    expect(after[i + 3]).toMatch(/^🭼Jan 3 08:15▁+□ text▁▁▁□ md🭿$/u);
     expect(after[i + 4]).toContain("Next");
   });
 
@@ -233,7 +233,7 @@ describe("fullscreen reply seams", () => {
     app.move("Reply"); app.screen();
     const after = plain(app.chat);
     expect(after).toHaveLength(before.length);
-    expect(after[reply + 1]).toMatch(/^🭼Jan 3 08:15▁+⧉ text▁▁▁⧉ md🭿$/u);
+    expect(after[reply + 1]).toMatch(/^🭼Jan 3 08:15▁+□ text▁▁▁□ md🭿$/u);
     expect(after.slice(reply + 2)).toEqual(plain(user));
   });
 
@@ -267,7 +267,7 @@ describe("fullscreen reply seams", () => {
     app.move("Reply"); app.screen();
     const firstHover = plain(app.chat);
     expect(firstHover).toHaveLength(before.length);
-    expect(firstHover[first + 1]).toMatch(/^🭼Jan 3 08:15▁+⧉ text▁▁▁⧉ md🭿$/u);
+    expect(firstHover[first + 1]).toMatch(/^🭼Jan 3 08:15▁+□ text▁▁▁□ md🭿$/u);
     app.move("Next reply"); app.screen();
     const nextHover = plain(app.chat);
     expect(nextHover).toHaveLength(before.length);
@@ -288,7 +288,7 @@ describe("fullscreen reply seams", () => {
       expect(next - fence).toBe(2);
       expect(before[next - 1]).toBe(" ".repeat(width));
       expect(after[next - 1]).toMatch(/^🭼.*🭿$/u);
-      expect(after[next - 1].match(/⧉ text/g)).toHaveLength(pairs);
+      expect(after[next - 1].match(/□ text/g)).toHaveLength(pairs);
       expect(after[next - 1].includes("Jan 3 08:15")).toBe(time);
       expect(visibleWidth(after[next - 1])).toBe(width);
       expect(after.findIndex(line => line.includes("Next"))).toBe(before.findIndex(line => line.includes("Next")));
@@ -301,18 +301,18 @@ describe("fullscreen reply seams", () => {
     app.assistant.updateContent(message(source), false);
     app.chat.addChild(app.assistant); app.chat.addChild(new Text("Next", 0, 0));
     app.move("abcdefgh");
-    const row = app.screen().find(line => line.includes("⧉ text"))!;
-    expect(row).toMatch(/^🭼.*⧉ text▁▁▁⧉ md▁▁▁⧉ text▁▁▁⧉ md🭿$/u);
-    app.click("⧉ md", 4, 0); await Promise.resolve();
+    const row = app.screen().find(line => line.includes("□ text"))!;
+    expect(row).toMatch(/^🭼.*□ text▁▁▁□ md▁▁▁□ text▁▁▁□ md🭿$/u);
+    app.click("□ md", 4, 0); await Promise.resolve();
     expect(app.copied).toEqual([]);
-    app.click("⧉ md", 0, 0); await Promise.resolve();
+    app.click("□ md", 0, 0); await Promise.resolve();
     expect(app.copied).toEqual(["```js\nabcdefghijklm\n```"]);
     expect(app.screen().join("\n")).toContain("✓ md");
-    app.click("⧉ md", 0, 0); await Promise.resolve();
+    app.click("□ md", 0, 0); await Promise.resolve();
     expect(app.copied).toEqual(["```js\nabcdefghijklm\n```", source]);
-    app.click("⧉ text", 0, 0); await Promise.resolve();
+    app.click("□ text", 0, 0); await Promise.resolve();
     expect(app.copied.at(-1)).toBe("abcdefghijklm");
-    app.click("⧉ text", 0, 0); await Promise.resolve();
+    app.click("□ text", 0, 0); await Promise.resolve();
     expect(app.copied.at(-1)).toBe("Intro\n\nabcdefghijklm");
   });
 
@@ -322,7 +322,7 @@ describe("fullscreen reply seams", () => {
     app.assistant.updateContent(message(source), false);
     app.chat.addChild(app.assistant); app.chat.addChild(new Text("Next", 0, 0));
     app.move("abcdefgh");
-    app.click("⧉ md"); await Promise.resolve();
+    app.click("□ md"); await Promise.resolve();
     expect(app.copied).toEqual([source]);
   });
 
@@ -334,16 +334,16 @@ describe("fullscreen reply seams", () => {
     const after = app.screen();
     const reply = after.findIndex(line => line.includes("Reply"));
     expect(after[reply - 1]).toMatch(/^🭽▔+🭾$/u);
-    expect(after[reply + 1]).toMatch(/^🭼▁+⧉ text▁▁▁⧉ md🭿$/u);
+    expect(after[reply + 1]).toMatch(/^🭼▁+□ text▁▁▁□ md🭿$/u);
     expect(after[reply + 1]).not.toContain("08:15");
     expect(visibleWidth(after[reply + 1])).toBe(26);
     expect(after.findIndex(line => line.includes("Next"))).toBe(before.findIndex(line => line.includes("Next")));
-    app.click("⧉ text", 6); await Promise.resolve();
+    app.click("□ text", 6); await Promise.resolve();
     expect(app.copied).toEqual([]);
-    app.click("⧉ text"); await Promise.resolve();
+    app.click("□ text"); await Promise.resolve();
     expect(app.copied).toEqual(["Reply"]);
     expect(app.screen()[reply + 1]).toContain("✓ text");
-    app.click("⧉ md"); await Promise.resolve();
+    app.click("□ md"); await Promise.resolve();
     expect(app.copied).toEqual(["Reply", "**Reply**"]);
   });
 });

@@ -30,7 +30,7 @@ describe("renderKillResult", () => {
     const text = lines.join("\n");
     expect(text).toContain("no active run matches");
     expect(text).toContain("ghost");
-    expect(text).toContain("❌");
+    expect(text).toContain("×");
   });
 
   it("renders benign outcomes (already-finished, no-process) with warn glyph, not fail", () => {
@@ -44,8 +44,8 @@ describe("renderKillResult", () => {
     // Should contain warn icons, not fail icons
     expect(out).toContain("already-finished");
     expect(out).toContain("no-process");
-    expect(out).toContain("⚠\uFE0F");
-    expect(out).not.toContain("❌");
+    expect(out).toContain("▲");
+    expect(out).not.toContain("×");
   });
 
   it("renders killed outcome with success glyph", () => {
@@ -71,6 +71,6 @@ describe("renderKillResult", () => {
     const mainLine = lines.find(l => l.includes("alpha"));
     expect(mainLine).toBeTruthy();
     expect(mainLine).toMatch(/·\s+failed/);
-    expect(out).toContain("❌");
+    expect(out).toContain("×");
   });
 });

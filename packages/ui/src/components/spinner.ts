@@ -1,11 +1,12 @@
 // packages/ui/src/components/spinner.ts
-export const BRAILLE_FRAMES: string[] = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
+import { SPINNER_FRAMES, type IconStyle } from "../icons.js";
+export const BRAILLE_FRAMES: string[] = [...SPINNER_FRAMES.nerd];
 
 export class Spinner {
-  private frames: string[];
+  private frames: readonly string[];
   private intervalMs: number;
-  constructor(opts: { frames?: string[]; intervalMs?: number } = {}) {
-    this.frames = opts.frames ?? BRAILLE_FRAMES;
+  constructor(opts: { frames?: string[]; intervalMs?: number; iconStyle?: IconStyle } = {}) {
+    this.frames = opts.frames ?? SPINNER_FRAMES[opts.iconStyle ?? "text"];
     this.intervalMs = opts.intervalMs ?? 100;
   }
   frame(now: number = Date.now()): string {

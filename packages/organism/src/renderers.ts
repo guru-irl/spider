@@ -14,7 +14,7 @@ function skillLine(s: SkillInventoryEntry): string {
 /** Render the `skill list` result. */
 export function renderSkillList(rows: SkillInventoryEntry[]): string {
   if (rows.length === 0) return "No skills.";
-  return ["## skills \u{1F578}\uFE0F", ...rows.map(skillLine)].join("\n");
+  return ["## skills", ...rows.map(skillLine)].join("\n");
 }
 
 /** Render a single `skill view` result. */
@@ -33,7 +33,7 @@ export function renderDistill(prompt: string): string {
 /** Render the `control skill curate` decay result. */
 export function renderCurateResult(r: DecayResult & { consolidated?: boolean; consolidateRequested?: boolean; skipReason?: "disabled" | "paused" | "interval" }): string {
   const lines = [
-    "## curator 🧹",
+    "## curator",
     `- stale: ${r.toStale.length}`,
     `- archived: ${r.toArchived.length}`,
     `- skipped (pinned/protected): ${r.skipped.length}`,
@@ -57,7 +57,7 @@ function nodeLine(n: GraphNode): string {
 
 /** Render the `control insights` learning graph. */
 export function renderInsights(g: LearningGraph): string {
-  const head = `## insights \u{1F578}\uFE0F — ${g.stats.nodes} nodes · ${g.stats.edges} edges · ${Math.round(g.stats.linkedPct)}% linked`;
+  const head = `## insights — ${g.stats.nodes} nodes · ${g.stats.edges} edges · ${Math.round(g.stats.linkedPct)}% linked`;
   const preview = g.nodes.slice(0, 20).map(nodeLine);
   return [head, ...preview].join("\n");
 }

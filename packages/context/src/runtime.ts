@@ -562,7 +562,7 @@ export function getRuntimeSummary(runtimes: RuntimeMap): string {
 
   if (runtimes.javascript) {
     lines.push(
-      `  JavaScript: ${runtimes.javascript} (${getVersion(runtimes.javascript)})${bunPreferred ? " ⚡" : ""}`,
+      `  JavaScript: ${runtimes.javascript} (${getVersion(runtimes.javascript)})${bunPreferred ? " (preferred)" : ""}`,
     );
   } else {
     // #731: host binary (opencode/kilo) AND no PATH-resolvable node.

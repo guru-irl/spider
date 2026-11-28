@@ -4,8 +4,7 @@ import type { StatsSummary } from "./stats-collect.js";
 import { renderTable } from "../components/table.js";
 import { sectionRule, fitResultLines, resultTrimmer } from "../renderers/types.js";
 
-/** Pure: token-savings + row-counts + per-model table as a body-only stats view (NO 🕸 header —
- *  the spider tool shell already shows `🕸 spider · control`; see docs/output-ui-guidelines.md). */
+/** Render token savings, row counts, and per-model data. The call line supplies the title. */
 export function renderStats(s: StatsSummary, theme: ThemeAdapter, width: number, expanded = false, transcript = false): string[] {
   const trim = resultTrimmer(expanded);
   const body: string[] = [];

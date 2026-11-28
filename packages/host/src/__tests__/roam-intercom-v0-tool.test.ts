@@ -75,7 +75,7 @@ async function fixture(v0?: V0ToolOptions, options: { confirm?: () => Promise<bo
     isIdle: () => true, hasPendingMessages: () => false, abort() {},
     ui: { notify() {}, getEditorText: () => "", confirm: options.confirm ?? (async () => true) },
   };
-  registerIntercomOnce(pi as never, undefined, undefined, v0);
+  registerIntercomOnce(pi as never, undefined, v0);
   const emit = async (name: string, event: unknown = {}) => { for (const handler of hooks.get(name) ?? []) await handler(event, ctx); };
   await emit("session_start", { reason: "startup" });
   await vi.waitFor(async () => {

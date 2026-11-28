@@ -52,7 +52,9 @@ type Patch = {
 const PATCH = Symbol.for("spider.copy-buttons.updateContent");
 type PatchedProto = AssistantInternals & { [PATCH]?: Patch };
 
-const labels = (style?: IconStyle): Record<Format, string> => ({ text: `${icon(style, "copy")} text`, md: `${icon(style, "copy")} md` });
+// Copy labels share the Nerd icon's pad cell with the separator so hit columns stay fixed.
+const COPY_BUTTON_SEPARATOR = " ";
+const labels = (style?: IconStyle): Record<Format, string> => ({ text: `${icon(style, "copy").trimEnd()}${COPY_BUTTON_SEPARATOR}text`, md: `${icon(style, "copy").trimEnd()}${COPY_BUTTON_SEPARATOR}md` });
 const FRAME = { left: "▏", right: "▕", top: "▔", bottom: "▁", topLeft: "🭽", topRight: "🭾", bottomLeft: "🭼", bottomRight: "🭿" } as const;
 const dim = (text: string) => `\x1b[2m${text}\x1b[22m`;
 
@@ -224,8 +226,8 @@ function decorate(layout: BlockLayout, copied: Copied | undefined, width: number
       const mdStart = x + textWidth + gap.length;
       hits.push({ row: lines.length + (omitTop ? 0 : 1), start: x + 1, end: x + textWidth + 1, target: item, format: "text" });
       hits.push({ row: lines.length + (omitTop ? 0 : 1), start: mdStart + 1, end: mdStart + mdWidth + 1, target: item, format: "md" });
-      const text = copied?.target === item && copied.format === "text" ? `${icon(iconStyle, "copied")} text` : LABELS.text;
-      const md = copied?.target === item && copied.format === "md" ? `${icon(iconStyle, "copied")} md` : LABELS.md;
+      const text = copied?.target === item && copied.format === "text" ? `${icon(iconStyle, "copied").trimEnd()}${COPY_BUTTON_SEPARATOR}text` : LABELS.text;
+      const md = copied?.target === item && copied.format === "md" ? `${icon(iconStyle, "copied").trimEnd()}${COPY_BUTTON_SEPARATOR}md` : LABELS.md;
       return `${dim(text)}${fill(gap.length)}${dim(md)}`;
     });
     return `${fill(inset)}${dim(timeText)}${fill(start - inset - visibleWidth(timeText))}${groups.join(fill(gap.length))}${fill(inset)}`;

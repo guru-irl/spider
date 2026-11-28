@@ -20,9 +20,8 @@ export function formatDuration(ms: number): string {
 /** Short model label (drop provider prefix + redundant 'claude-'). */
 export function shortModel(m?: string | null): string { if (!m) return "—"; return (m.split("/").pop() ?? m).replace(/^claude-/, ""); }
 
-/** Shared one-line agent summary used by BOTH the footer and the grid list:
- *  `<lead> 🕸  name · type · model · turns · dur · activity`. `lead` is the caller's status
- *  marker (animated spinner while running, terminal glyph otherwise), coloured by status. */
+/** Shared one-line agent summary: `<status> <agent glyph> name · role · model · turns · duration · activity`.
+ *  The caller's status marker is a spinner while running and a terminal glyph otherwise. */
 export function formatAgentLine(t: ThemeAdapter, a: AgentSnapshot, width: number, now: number, lead: string): string {
   const ital = (s: string) => (t.italic ? t.italic(s) : s);
   const elapsedMs = a.startedAt === undefined ? 0 : (a.endedAt ?? now) - a.startedAt;
@@ -55,12 +54,12 @@ export class AgentFooter implements Component {
     this.theme = theme;
     this.maxVisible = opts.maxVisible ?? 4;
     this.now = opts.now ?? Date.now;
-    this.spinner = opts.spinner ?? new Spinner();
+    this.spinner = opts.spinner ?? new Spinner({ iconStyle: theme.iconStyle });
   }
 
   private agentLine(a: AgentSnapshot, width: number): string {
     const selecting = this.store.isSelecting();
-    const cursor = selecting ? (a.runId === this.store.selectedRunId() ? this.theme.fg("accent", "▸ ") : "  ") : "";
+    const cursor = selecting ? (a.runId === this.store.selectedRunId() ? this.theme.fg("accent", `${icon(this.theme.iconStyle, "select")} `) : "  ") : "";
     const cw = visibleWidth(cursor);
     const lead = a.status === "running" ? this.spinner.frame(this.now()) : statusGlyph(this.theme, a.status);
     const pin = this.store.isPinned(a.runId) ? ` ${icon(this.theme.iconStyle, "pin")}` : "";
@@ -83,7 +82,7 @@ export class AgentFooter implements Component {
       if (o.failed) seg.push(`${o.failed} failed`);
       if (o.cancelled) seg.push(`${o.cancelled} cancelled`);
       seg.push(`+${o.hidden} more`);
-      lines.push(truncateToWidth(this.theme.fg("muted", `${agentGlyph(this.theme)} ▸ ` + seg.join(" · ")), width, "…"));
+      lines.push(truncateToWidth(this.theme.fg("muted", `${agentGlyph(this.theme)} ${icon(this.theme.iconStyle, "select")} ` + seg.join(" · ")), width, "…"));
     }
     return lines.map((l) => (visibleWidth(l) > width ? truncateToWidth(l, width, "…") : l));
   }

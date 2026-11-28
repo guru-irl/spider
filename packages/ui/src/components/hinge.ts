@@ -68,16 +68,17 @@ function pixel(x: number, y: number, blink: boolean): Color | undefined {
 }
 
 function draw(theme: ColorCells, width: number, height: number, center: number, top: number,
-  blink: boolean, line?: Map<number, number>): string[] {
+  blink: boolean, line?: Map<number, number>, background?: Color): string[] {
   const left = center - Math.floor(HINGE_WIDTH / 2);
   return Array.from({ length: height }, (_, y) => Array.from({ length: width }, (_, x) => {
     const upper = pixel(x - left, 2 * y - top, blink);
     const lower = pixel(x - left, 2 * y + 1 - top, blink);
     if (upper && upper === lower) return theme.style(" ", { bg: upper });
-    if (upper) return theme.style(BAND_GLYPHS.bottom, { fg: upper, bg: lower });
-    if (lower) return theme.style(BAND_GLYPHS.top, { fg: lower });
+    if (upper) return theme.style(BAND_GLYPHS.bottom, { fg: upper, bg: lower ?? background });
+    if (lower) return theme.style(BAND_GLYPHS.top, { fg: lower, bg: background });
     const dots = line?.get(y * width + x);
-    return dots ? theme.style(String.fromCodePoint(0x2800 + dots), { fg: y === 0 ? ANCHOR : THREAD }) : " ";
+    if (dots) return theme.style(String.fromCodePoint(0x2800 + dots), { fg: y === 0 ? ANCHOR : THREAD });
+    return background ? theme.style(" ", { bg: background }) : " ";
   }).join(""));
 }
 
@@ -88,6 +89,6 @@ export function hangingHinge(theme: ColorCells, width: number, index: number): s
   return draw(theme, width, HINGE_RIG_HEIGHT, center, pose.top, "blink" in pose, dragline(width, anchor, center, pose.top));
 }
 
-export function dockedHinge(theme: ColorCells): string[] {
-  return draw(theme, HINGE_WIDTH, 8, Math.floor(HINGE_WIDTH / 2), 2, false);
+export function dockedHinge(theme: ColorCells, background: Color): string[] {
+  return draw(theme, HINGE_WIDTH, 8, Math.floor(HINGE_WIDTH / 2), 2, false, undefined, background);
 }

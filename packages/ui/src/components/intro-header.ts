@@ -1,12 +1,11 @@
-import { truncateToWidth, visibleWidth, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, type Color, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { icon, REPLY_FRAME, type IconStyle } from "../icons.js";
-import { stripRow } from "../tool-card-edge.js";
 import { COUNTERWEIGHT, hangingHinge, HINGE_RIG_HEIGHT, REST_POSE, type ColorCells } from "./hinge.js";
 
 export interface IntroTheme extends ColorCells {
   fg(role: "accent" | "borderMuted" | "dim" | "muted" | "text" | "toolTitle" | "success" | "error", text: string): string;
   bold(text: string): string;
-  getBgAnsi(role: "customMessageBg"): string;
+  colors: Readonly<{ customMessageBg: Color }>;
 }
 
 export interface StartupSessionStats {
@@ -126,10 +125,11 @@ function renderResources(width: number, theme: IntroTheme, facts: StartupFacts):
   const actionWidth = visibleWidth(action);
   const summary = theme.bold(title) + (visibleCounts ? " ".repeat(pad) + fg("muted", visibleCounts) : "");
   const row = " ".repeat(pad) + fit(summary, Math.max(0, inner - pad - endPad - actionWidth - 1)) + " " + fg("accent", theme.bold(action)) + " ".repeat(endPad);
-  const bg = theme.getBgAnsi("customMessageBg");
   const { topLeft, topRight, bottomLeft, bottomRight, top, left, right } = REPLY_FRAME;
   const border = (text: string) => fg("borderMuted", text);
-  return [border(topLeft + top.repeat(inner) + topRight), border(left) + stripRow(row, bg, inner) + border(right), border(bottomLeft + top.repeat(inner) + bottomRight)];
+  return [border(topLeft + top.repeat(inner) + topRight),
+    border(left) + theme.style(truncateToWidth(row, inner, "", true), { bg: theme.colors.customMessageBg }) + border(right),
+    border(bottomLeft + top.repeat(inner) + bottomRight)];
 }
 
 export class StartupHeader implements Component {

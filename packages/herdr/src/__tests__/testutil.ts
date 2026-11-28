@@ -68,7 +68,6 @@ export async function createClientFixture(): Promise<ClientFixture> {
 }
 export interface ByteDaemonFixture {
   binary: string; env: NodeJS.ProcessEnv;
-  transportTarget: { root: string; hcBinary: string; localSocket: string; remoteSocket: string; directories: { local: string; remote: string } };
   writeRemoteFile(path: string, bytes: Buffer): Promise<void>;
   readRemoteFile(path: string): Promise<Buffer>;
   configureRemote(value: Record<string, unknown>): Promise<void>;
@@ -124,8 +123,6 @@ export async function createByteDaemonFixture(): Promise<ByteDaemonFixture> {
     const remoteFile = (path: string) => join(remoteRoot, 'files', Buffer.from(path).toString('hex'));
     return {
       binary: fixture.hcBinary, env, calls: fixture.calls,
-      transportTarget: { root: fixture.root, hcBinary: fixture.hcBinary, localSocket: fixture.localSocket, remoteSocket,
-        directories: { local: fixture.root, remote: remoteRoot } },
       writeRemoteFile: async (path, bytes) => { const file = remoteFile(path); await mkdir(dirname(file), { recursive: true }); await writeFile(file, bytes); },
       readRemoteFile: path => readFile(remoteFile(path)),
       configureRemote: value => writeFile(join(remoteRoot, 'scenario.json'), JSON.stringify(value)),

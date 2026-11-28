@@ -3,8 +3,8 @@ export const SPIDER_BLOCK_END = "<!-- spider:end -->";
 
 export const SPIDER_BLOCK_BODY = `# spider (managed — do not edit inside the markers)
 
-This block is written and updated by the **spider** pi extension. Edits between
-the markers are overwritten on upgrade. Put your own notes outside the markers.
+The **spider** pi extension overwrites this block on upgrade. Put your own
+notes outside the markers.
 
 **spider is the single unified extension** — subagents, memory, unified search,
 todos, sandboxed exec, and web fetch on one shared SQLite DB. It **replaces** the

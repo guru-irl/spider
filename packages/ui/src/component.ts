@@ -5,7 +5,7 @@ export interface Component {
 }
 
 /** Retain only the latest layout until its width, optional live key or content changes. */
-export function cachedLines(compute: (width: number) => string[], invalidate?: () => void, contentKey?: () => unknown): Component {
+export function cachedLines(compute: (width: number) => string[], invalidate?: () => void, contentKey?: () => unknown): Component & { invalidate(): void } {
   let cachedWidth: number | undefined;
   let cachedKey: unknown;
   let lines: string[] | undefined;

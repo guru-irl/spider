@@ -53,11 +53,10 @@ export async function createAcceptanceHarness(mode: AcceptanceMode): Promise<Her
   if (mode === 'fake') {
     const h = await createHerdrHarness(mode);
     const log = join(h.root, 'acceptance-calls.jsonl'); await writeFile(log, '');
-    const logger = join(h.root, 'record-acceptance.mjs');
-    await writeFile(logger, `import { appendFileSync } from 'node:fs';\nappendFileSync(process.argv[2], JSON.stringify({ argv: process.argv.slice(3), env: { HC_SESSION: process.env.HC_SESSION, HC_TERMINAL_ID: process.env.HC_TERMINAL_ID, HC_TERMINAL_SOCKET: process.env.HC_TERMINAL_SOCKET, HERDR_ACCEPTANCE_CLIENT: process.env.HERDR_ACCEPTANCE_CLIENT } })+'\\n');\n`);
-    const original = await readFile(h.hcBinary, 'utf8');
+    const logger = fileURLToPath(new URL('./acceptance-call-log.mjs', import.meta.url));
+    const fake = fileURLToPath(new URL('./fake-hc.mjs', import.meta.url));
     const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
-    await writeFile(h.hcBinary, `#!/bin/sh\n${quote(process.execPath)} ${quote(logger)} ${quote(log)} "$@" || exit $?\n` + original.replace(/^#![^\n]*\n/, ''));
+    await writeFile(h.hcBinary, `#!/bin/sh\nexec ${quote(process.execPath)} --import ${quote(logger)} ${quote(fake)} "$@"\n`);
     h.calls = async (side = 'local') => (await readFile(log, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line) as { argv: string[]; env: NodeJS.ProcessEnv }).filter(call => call.env.HC_SESSION === (side === 'local' ? 'l' : 'r'));
     return h;
   }

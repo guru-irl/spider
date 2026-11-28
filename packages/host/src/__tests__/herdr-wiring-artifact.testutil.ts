@@ -34,7 +34,7 @@ async function buildArtifacts(): Promise<ReadonlyMap<string, string | Uint8Array
 
 /** Each fixture still runs its own copies of the real CLI and viewer. */
 export async function writeWiringArtifacts(directory: string): Promise<void> {
-  const files = await (artifacts ??= buildArtifacts());
+  const files = await (artifacts ??= buildArtifacts().catch(error => { artifacts = undefined; throw error; }));
   await Promise.all([...files].map(async ([name, bytes]) => {
     const path = join(directory, name);
     await mkdir(dirname(path), { recursive: true });

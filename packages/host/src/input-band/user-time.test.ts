@@ -68,6 +68,46 @@ it("keeps a timestamp bound to a skill's displayed user text", () => {
   expect(rows(message, 48)[1]).toMatch(/^ ❯ Review this\s+Jan 3 03:15 $/u);
 });
 
+it("omits an unavailable or invalid time rather than inventing one", () => {
+  activate({ bad: { type: "message", message: user("Bad time", Number.NaN) } });
+  expect(rows(new UserMessageComponent("No event"), 48)[1]).not.toMatch(/\d\d:\d\d/u);
+  expect(rows(restored("Bad time", "bad"), 48)[1]).not.toMatch(/\d\d:\d\d/u);
+});
+
+it("keeps narrow messages readable and drops the time when there is no room", () => {
+  const emit = activate();
+  emit("message_start", { message: user("Long example") });
+  const message = new UserMessageComponent("Long example");
+  emit("message_end", { message: user("Long example") });
+  for (let width = 1; width <= 30; width++) {
+    expect(rows(message, width).every(row => visibleWidth(row) <= width), `${width} columns`).toBe(true);
+  }
+  expect(rows(message, 12).join("\n")).not.toContain("Jan 3");
+});
+
+it("keeps Pi's Markdown and OSC markers while rendering the dim time on the strip", () => {
+  const emit = activate();
+  const text = "**Bold** and `code`";
+  emit("message_start", { message: user(text) });
+  const message = new UserMessageComponent(text);
+  emit("message_end", { message: user(text) });
+  const output = message.render(48);
+  expect(stripTerminalSequences(output[1])).toMatch(/^ ❯ Bold and code\s+Jan 3 03:15 $/u);
+  expect(output[0]).toContain("\x1b]133;A\x07");
+  expect(output.at(-1)).toContain("\x1b]133;B\x07\x1b]133;C\x07");
+  expect(output[1]).toContain("\x1b[2mJan 3 03:15\x1b[22m");
+});
+
+it("retains live timestamps on existing components after reload", () => {
+  const emit = activate();
+  emit("message_start", { message: user("Before reload") });
+  const message = new UserMessageComponent("Before reload");
+  emit("message_end", { message: user("Before reload") });
+  stop?.();
+  activate();
+  expect(rows(message, 48)[1]).toContain("Jan 3 03:15");
+});
+
 it("reformats the same timestamp after a time-zone change", () => {
   activate({ original: { type: "message", message: user("Hello") } });
   const message = restored("Hello", "original");

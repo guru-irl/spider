@@ -245,7 +245,7 @@ export const SPIDER_PARAMETERS = {
     task: { type: "string", description: "SINGLE-mode task text for action 'run'." },
     tasks: {
       type: "array",
-      description: "PARALLEL-mode: subagents to run concurrently. Use one or two words that describe the job (e.g. fresh-weights), or a creative name (e.g. spiderman); never cryptic abbreviations (e.g. whst).",
+      description: "PARALLEL-mode: subagents to run concurrently. Give each a `name`. Use one or two words that describe the job (e.g. fresh-weights), or a creative name (e.g. spiderman); never cryptic abbreviations (e.g. whst).",
       items: {
         type: "object",
         properties: {

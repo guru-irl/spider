@@ -232,9 +232,10 @@ describe("interactive intro lifecycle", () => {
     expect(f.printed).toHaveLength(1);
     const text = stripTerminalSequences(f.printed[0]!);
     expect(text).toMatch(/Changes\s+\+3 −1/);
-    expect(text).toMatch(/AI credits\s+~1\.53/);
-    expect(text).toMatch(/Tokens in\s+↑ 60 \(20 cached, 30 written\)/);
-    expect(text).toMatch(/Tokens out\s+↓ 9/);
+    expect(text).toMatch(/AI credits\s+~1\.53 \(\d+s, cached\)/);
+    expect(text).toMatch(/Tokens in\s+60 \(20 cached, 30 written\)/);
+    expect(text).toMatch(/Tokens out\s+9/);
+    expect(text).not.toMatch(/[↑↓]/u);
     expect(text).not.toContain("reasoning");
     expect(text).toMatch(/Compactions\s+1/);
     expect(text).not.toMatch(/pi --session/);

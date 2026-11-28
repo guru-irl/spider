@@ -1,5 +1,6 @@
 import type { RunEvent } from "@spider/db-core";
 import { icon, type IconStyle } from "../icons.js";
+import { robotFrame, robotPulse } from "../components/spinner.js";
 
 export type AgentStatus = "queued" | "running" | "paused" | "done" | "failed" | "cancelled";
 
@@ -51,6 +52,8 @@ export interface ThemeAdapter {
   italic?(s: string): string;
   glyph: string;
   iconStyle?: IconStyle;
+  spiderGlyphs?: boolean;
+  activityTint?(text: string, strength: number): string;
 }
 
 export function agentGlyph(theme: ThemeAdapter): string {
@@ -93,6 +96,15 @@ export function statusToken(status: AgentStatus): string {
     case "running": return "accent";
     default: return "muted"; // queued | paused
   }
+}
+
+export function renderAgentStatus(theme: ThemeAdapter, agent: AgentSnapshot, now: number): string {
+  if (agent.status !== "running") return theme.fg(statusToken(agent.status), statusGlyph(theme, agent.status));
+  const elapsed = Math.max(0, now - (agent.startedAt ?? 0));
+  if (theme.iconStyle === "nerd" && theme.spiderGlyphs) return theme.fg("accent", robotFrame(agent.runId, elapsed));
+  const glyph = agentGlyph(theme);
+  const strength = robotPulse(agent.runId, elapsed);
+  return theme.activityTint?.(glyph, strength) ?? theme.fg(strength < 0.5 ? "dim" : "accent", glyph);
 }
 
 export type { RunEvent };

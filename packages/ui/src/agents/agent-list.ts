@@ -1,8 +1,6 @@
 import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Component } from "../component";
-import { Spinner } from "../components/spinner";
 import { formatAgentLine } from "./footer";
-import { statusGlyph } from "./types";
 import { icon } from "../icons.js";
 import type { AgentSnapshot, ThemeAdapter } from "./types";
 import type { AgentStore } from "./store";
@@ -10,15 +8,13 @@ import type { AgentStore } from "./store";
 /** Frame-less, focusable footer-format selector: one row per agent, arrow keys + Enter/Esc. */
 export class AgentList implements Component {
   private focus = 0;
-  private spinner: Spinner;
   private now: () => number;
   private drill?: (runId: string) => void;
   private close?: () => void;
 
   constructor(private store: AgentStore, private theme: ThemeAdapter,
-    opts?: { now?: () => number; spinner?: Spinner }) {
+    opts?: { now?: () => number }) {
     this.now = opts?.now ?? Date.now;
-    this.spinner = opts?.spinner ?? new Spinner({ iconStyle: theme.iconStyle });
   }
 
   onDrill(fn: (runId: string) => void): void { this.drill = fn; }
@@ -46,11 +42,10 @@ export class AgentList implements Component {
     this.clampFocus(all.length);
     const body: string[] = [];
     all.forEach((a, i) => {
-      const lead = a.status === "running" ? this.spinner.frame(this.now()) : statusGlyph(t, a.status);
       const marker = i === this.focus ? `${icon(t.iconStyle, "select")} ` : "  ";
       const pin = this.store.isPinned(a.runId) ? ` ${icon(t.iconStyle, "pin")}` : "";
       const lineW = Math.max(4, width - visibleWidth(marker) - visibleWidth(pin));
-      const line = formatAgentLine(t, a, lineW, this.now(), lead);
+      const line = formatAgentLine(t, a, lineW, this.now());
       body.push(truncateToWidth(`${t.fg("accent", marker)}${line}${pin ? t.fg("warning", pin) : ""}`, width, "…"));
     });
     body.push(t.fg("dim", `${icon(t.iconStyle, "arrowUp")}${icon(t.iconStyle, "arrowDown")} focus · enter · esc`));

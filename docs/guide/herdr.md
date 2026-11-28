@@ -157,7 +157,7 @@ On Herdr 0.1.13, 0.1.16, and 0.1.18, setup verifies the release's complete Space
 
 Setup owns only these parts of each file. Edits you make elsewhere in the same files are kept when setup runs again. Setup compares the parts it owns by value, so a file that was saved again with different formatting but the same values is not rewritten. If you change a part that setup owns, such as the pi theme field or the resume block, setup stops with `managed-artifact-changed` and names the recorded value. Restore that value, then run setup again.
 
-Setup finishes local changes when a remote machine is unreachable. It lists the skipped machines in one warning and installs each pending runtime the next time you run setup while that machine is reachable. Doctor reports pending or unreachable runtimes as warnings.
+Setup finishes local changes when a remote machine is unreachable. It lists the skipped machines in one warning and installs each pending runtime the next time you run setup while that machine is reachable. `setup --dry-run` lists machines the local core shows as disconnected without probing them. Doctor reports pending or unreachable runtimes as warnings. A configured machine missing from the local core inventory is an error, not a skipped runtime.
 
 A second run with nothing changed writes nothing, makes no backup, changes no focus, and opens no duplicate session. It still checks each reachable machine's runtime directory, and it installs the runtime again if that directory was deleted. If setup stops partway, run it again. It resumes at the first unfinished step. If a target file changed since setup checked it, setup stops instead of overwriting your edit.
 

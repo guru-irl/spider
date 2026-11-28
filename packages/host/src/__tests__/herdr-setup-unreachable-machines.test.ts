@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { setupHerdr, undoHerdrUpgrade } from '../../../herdr/src/setup/installer.js';
 import { doctorHerdr } from '../../../herdr/src/setup/doctor.js';
 import { readJournal } from '../../../herdr/src/setup/backup.js';
+import { runHerdrCli } from '../../../herdr/src/setup/cli.js';
 import { cleanup, type SetupFixture } from './herdr-setup-fixture.js';
 import { focusedSetupFixture } from './herdr-setup-focused-fixture.js';
 
@@ -59,6 +60,18 @@ test('doctor reports a failure for a configured machine missing from the core in
   const report = await doctorHerdr(f.request, await f.ports.doctorParts(f.request));
   expect(report.failures).toEqual(expect.arrayContaining([expect.objectContaining({ message: expect.stringContaining(remote) })]));
   expect(report.warnings.filter(row => row.code === 'runtime-unavailable')).toEqual([]);
+});
+
+test('setup dry-run lists a disconnected machine without touching its runtime', async () => {
+  const f = await fixture(), output: string[] = [], errors: string[] = [];
+  await sleep(f);
+  const start = (await f.h.calls()).length;
+  const exit = await runHerdrCli(['setup', '--dry-run', '--config', f.request.configPath], {
+    ...f.ports, stdout: text => output.push(text), stderr: text => errors.push(text),
+  });
+  expect(exit, errors.join('')).toBe(0);
+  expect(output.join('')).toMatch(/skip runtime on remote\.invalid.*disconnected/i);
+  expect(await remoteCalls(f, start)).toEqual([]);
 });
 
 test('setup skips a disconnected machine and still installs the local look, keys and mods', async () => {

@@ -50,7 +50,7 @@ function fixture(contentRows = 31, width = 78, height = 16) {
   const click = (x: number, y: number) => { mouse(0, x, y); mouse(0, x, y, true); };
   const firstEntry = () => /Entry (\d+)/u.exec(text())?.[1];
   const track = () => screen().flatMap((line, y) => {
-    const glyph = line.trimEnd().at(-1);
+    const glyph = line.at(terminal.columns - 1);
     return glyph && "│┃█".includes(glyph) ? [{ y, glyph }] : [];
   });
   return { tui, reader, background, terminal, text, screen, send: (data: string) => input(data), mouse, click, firstEntry, track };
@@ -178,4 +178,7 @@ it("keeps the active tab and content visible on a short, narrow terminal", () =>
   expect(rows.every(row => visibleWidth(row) === 24)).toBe(true);
   expect(rows.map(stripTerminalSequences).join("\n")).toContain("Entry 1");
   expect(rows.map(stripTerminalSequences).join("\n")).toContain("Entries");
+  for (const width of [1, 2, 3]) {
+    expect(app.reader.render(width).every(row => visibleWidth(row) === width)).toBe(true);
+  }
 });

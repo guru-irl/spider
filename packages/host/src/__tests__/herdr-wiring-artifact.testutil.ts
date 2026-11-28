@@ -1,5 +1,5 @@
 import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 let artifacts: Promise<ReadonlyMap<string, string | Uint8Array>> | undefined;
@@ -35,6 +35,9 @@ async function buildArtifacts(): Promise<ReadonlyMap<string, string | Uint8Array
 /** Each fixture still runs its own copies of the real CLI and viewer. */
 export async function writeWiringArtifacts(directory: string): Promise<void> {
   const files = await (artifacts ??= buildArtifacts());
-  await mkdir(directory, { recursive: true });
-  await Promise.all([...files].map(([name, bytes]) => writeFile(join(directory, name), bytes)));
+  await Promise.all([...files].map(async ([name, bytes]) => {
+    const path = join(directory, name);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, bytes);
+  }));
 }

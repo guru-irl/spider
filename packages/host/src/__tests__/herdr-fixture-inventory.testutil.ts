@@ -1,5 +1,5 @@
 import { connect } from 'node:net';
-import { createHerdrHarness, proveSocketPaths } from '../../../herdr/src/__tests__/isolated.js';
+import { createHerdrHarness, proveSocketPaths, type HerdrHarness } from '../../../herdr/src/__tests__/isolated.js';
 import { HerdrError } from '../../../herdr/src/client/parse.js';
 
 function readInventory(socketPath: string, argv: string[], env: NodeJS.ProcessEnv): Promise<unknown> {
@@ -34,7 +34,7 @@ function readInventory(socketPath: string, argv: string[], env: NodeJS.ProcessEn
 
 /** Only the fixture's own inventory reads bypass its executable. Test calls,
  * launch and cleanup mutations, and real-hc mode still use their original CLI. */
-export async function createHostHerdrHarness(mode: 'fake' | 'hc') {
+export async function createHostHerdrHarness(mode: 'fake' | 'hc'): Promise<HerdrHarness> {
   const h = await createHerdrHarness(mode);
   if (mode !== 'fake') return h;
   const cli = h.cli;

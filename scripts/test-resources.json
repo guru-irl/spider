@@ -122,6 +122,7 @@
       "inputs": [
         "docs/**",
         "README.md",
+        "CONTRIBUTING.md",
         "packages/*/README.md",
         "assets/**"
       ],

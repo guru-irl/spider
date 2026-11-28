@@ -134,6 +134,7 @@ export interface SetupPreflight {
   /** Existing terminals moved into a shared tab and need a journal-only recheck. */
   cutoverNeedsRecheck?: boolean;
   cutoverActions?: readonly string[];
+  cutoverNotices?: readonly string[];
   fingerprint: string;
   coreIdentity: CoreIdentity;
   mods: readonly ModCopy[];
@@ -550,6 +551,8 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
         journal.cutover = await observeWrites([join(request.config.globalRoot, 'herdr/spaces/spaces.json')], () => parts.persistCutover!(request));
         context.priorCutover = journal.cutover;
         cutoverMetadataChanged = previousCutover !== JSON.stringify([journal.cutover, journal.cutoverFingerprint]);
+      } else if (runningInPlace) {
+        for (const notice of preflight.cutoverNotices ?? []) parts.warn(notice);
       }
       await ensureSessionFeedDirectory(request.config.globalRoot);
       const endpointWrites = await observeWrites([join(request.config.globalRoot, 'herdr/installation.json'), ...(endpointPlan?.paths ?? [])], async () => await parts.stagePaneEndpoint?.(request) ?? []);

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { stripVTControlCharacters } from "node:util";
 import { AgentFooter } from "../agents/footer";
 import { AgentStore } from "../agents/store";
 import type { RunRow, RunSource, RunEvent, ThemeAdapter } from "../agents/types";
@@ -152,7 +153,7 @@ describe("AgentFooter selection cursor", () => {
     lines = footer.render(40);
     expect(lines[1]).toContain("agent-1");
     expect(lines[2]).toBe(`↑ view more · 4/4${" ".repeat(12)}4 subagents`);
-    expect(footer.render(16)[2]).toBe("↑ view more · 4…");
+    expect(stripVTControlCharacters(footer.render(16)[2])).toBe("↑ view more · 4…");
     for (let width = 1; width <= 30; width++) {
       expect(footer.render(width).every(line => visibleWidth(line) <= width), `${width} columns`).toBe(true);
     }
@@ -205,6 +206,9 @@ describe("AgentFooter selection cursor", () => {
     expect(summary).toContain("\x1b[90m·\x1b[39m");
     expect(summary).toContain("\x1b[37m 1/4");
     expect(visibleWidth(summary)).toBe(40);
+    const narrow = footer.render(16)[2];
+    expect(stripVTControlCharacters(narrow)).toBe("↓ view more · 1…");
+    expect(visibleWidth(narrow)).toBe(16);
   });
 
   it("renders a ▸ cursor on the selected row while the store is selecting", () => {

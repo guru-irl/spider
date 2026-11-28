@@ -206,7 +206,7 @@ export async function selectTests({ head, inventory, changes, map, fallback = nu
           if (record.ranBundle || record.unresolved.length) bundleExecutors.push(file);
           for (const index of record.reads) readers.get(inputs[index]).push(file);
         }
-        const graphSeeds = new Set(), bundleSeeds = new Set(), fixtureSeeds = new Set();
+        const graphSeeds = new Set(), fixtureSeeds = new Set();
         let buildChanged = false;
         for (const { file, status, rules: matching } of rules) {
           const ids = new Set(matching.map(rule => rule.id));
@@ -230,9 +230,9 @@ export async function selectTests({ head, inventory, changes, map, fallback = nu
             for (const test of namedBy(file)) add(test, `names ${file}`);
           }
           if (isBuild) buildChanged = true;
-          const graphInput = !removed && !isDoc && !isTest && !isBuild && !isPolicy;
-          if (!removed && (graphInput && !readers.has(file) || isScript || isHerdrE2e)) graphSeeds.add(file);
-          if (graphInput && code.test(file)) bundleSeeds.add(file);
+          // A recording cannot rule out a lazy import on a branch the test did not take.
+          const graphInput = code.test(file) || (!isDoc && !isBuild && !isPolicy) || isScript || isHerdrE2e;
+          if (!removed && graphInput) graphSeeds.add(file);
           const owner = file.match(/^packages\/([^/]+)\//)?.[1];
           for (const rule of matching) {
             if (rule.id === 'source-text' && (isTest || file.includes('/__tests__/'))) continue;
@@ -256,9 +256,7 @@ export async function selectTests({ head, inventory, changes, map, fallback = nu
             }
           }
         }
-        const knownSeeds = sorted([...bundleSeeds].filter(file => !graphSeeds.has(file)));
-        const bundleAffected = buildChanged || related.some(file => policy.bundles.entries.includes(file))
-          || (knownSeeds.length && (await resolveRelated(knownSeeds, policy.bundles.entries)).some(file => policy.bundles.entries.includes(file)));
+        const bundleAffected = buildChanged || related.some(file => policy.bundles.entries.includes(file));
         if (bundleAffected) {
           for (const test of policy.bundles.consumers) add(test, 'bundle reader policy');
           for (const test of await resolveRelated(policy.bundles.consumers)) add(test, 'imports a bundle reader');

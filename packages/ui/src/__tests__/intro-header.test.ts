@@ -107,6 +107,23 @@ describe("Hinge startup header", () => {
     expect(view.render(120)).toEqual(rest);
   });
 
+  it("does not read resources or claim clicks if Pi redraws the retired header", () => {
+    const openResources = vi.fn();
+    let retired = false;
+    const view = new ui.StartupHeader(theme, facts, { requestRender() {}, openResources, reducedMotion: true,
+      readResources: () => {
+        if (retired) throw new Error("Pi has retired this extension context");
+        return { ...facts.resources, skills: 61 };
+      },
+    });
+    expect(plain(view.render(120)).join("\n")).toContain("Skills 61");
+    view.dispose();
+    retired = true;
+    expect(plain(view.render(80)).join("\n")).toContain("Skills 61");
+    expect(view.handleMouse(click(10, 16, { width: 80 }))).toBeUndefined();
+    expect(openResources).not.toHaveBeenCalled();
+  });
+
   it("clears the pending animation on disposal and schedules none in reduced motion", () => {
     vi.useFakeTimers();
     const { view, requestRender } = makeHeader({ reducedMotion: false });

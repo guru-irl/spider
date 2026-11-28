@@ -9,7 +9,7 @@ import { modelName } from "../model-name.js";
 import { openSessionHistoryDb } from "../session-run-db.js";
 import { beginChange, finishChange, newVisitChanges, summarizeChanges } from "./changes.js";
 import { countVisitCompactions, readIntroStats, readSpiderStats } from "./stats.js";
-import { observeResources, resourceCounts, resourcesDocument } from "./resources.js";
+import { createResourceCountReader, observeResources, resourcesDocument } from "./resources.js";
 export { readIntroStats } from "./stats.js";
 
 interface QuitTerminal {
@@ -88,7 +88,6 @@ export function registerIntro(pi: ExtensionAPI, options: IntroOptions): void {
     current.readingResources = true;
     try {
       const snapshot = observeResources(pi, ctx);
-      update(current, { resources: resourceCounts(snapshot) });
       await ctx.ui.custom<void>((tui, theme, _keys, done) => {
         current.closeResources = done;
         return new TabbedReader(resourcesDocument(snapshot, theme), {
@@ -128,10 +127,11 @@ export function registerIntro(pi: ExtensionAPI, options: IntroOptions): void {
     const visits = processState[visitsKey] ??= new Map();
     const visit = (event?.reason === "reload" && visits.get(sessionId)) || { sessionId, from: now, openedAt: performance.now(), changes: newVisitChanges() };
     visits.set(sessionId, visit);
+    const readResources = createResourceCountReader(pi, ctx);
     const facts: StartupFacts = {
       version: options.piVersion ?? VERSION,
       iconStyle: options.iconStyle?.(ctx.cwd), cwd: oneLine(shortCwd(ctx.cwd)), ...identity(ctx),
-      session: readIntroStats(ctx.sessionManager, now), resources: resourceCounts(observeResources(pi, ctx)),
+      session: readIntroStats(ctx.sessionManager, now), resources: readResources(),
     };
     const current: Mount = { visit, context: ctx, facts };
     mount = current;
@@ -140,7 +140,7 @@ export function registerIntro(pi: ExtensionAPI, options: IntroOptions): void {
       const reducedMotion = process.env.PI_REDUCED_MOTION === "1" || process.env.NO_ANIMATION === "1"
         || ("reducedMotion" in tui.terminal && tui.terminal.reducedMotion === true);
       return current.header = new StartupHeader(theme, current.facts, {
-        requestRender: () => tui.requestRender(), openResources: () => { void openResources(current.context); }, reducedMotion,
+        requestRender: () => tui.requestRender(), openResources: () => { void openResources(current.context); }, reducedMotion, readResources,
       });
     });
     readDbLater(current);

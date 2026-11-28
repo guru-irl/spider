@@ -28,34 +28,64 @@ function item(name: string, source: SourceInfo): ResourceItem {
   return { name: literal(name), scope: source.scope, path: displayedPath(source.path, source.baseDir) };
 }
 
-export function observeResources(pi: ExtensionAPI, ctx: ExtensionContext): Resources {
-  const commands = pi.getCommands?.() ?? [];
-  const skills: ResourceItem[] = [], prompts: ResourceItem[] = [];
-  const extensions = new Map<string, ResourceItem>();
+type InventoryKind = "skills" | "prompts" | "extensions";
+type PromptSnapshot = Pick<Resources, "prompt" | "contexts">;
+
+function readInventory(pi: ExtensionAPI, add?: (kind: InventoryKind, name: string, source: SourceInfo) => void): Record<InventoryKind, number> {
+  let skills = 0, prompts = 0;
+  const extensions = new Set<string>();
   const extension = (source?: SourceInfo) => {
     if (!source?.path || source.path.startsWith("builtin:") || extensions.has(source.path)) return;
-    extensions.set(source.path, item("", source));
+    extensions.add(source.path);
+    add?.("extensions", "", source);
   };
-  for (const command of commands) {
+  for (const command of pi.getCommands?.() ?? []) {
     if (!command.sourceInfo?.path) continue;
     if (command.source === "extension") extension(command.sourceInfo);
-    else if (command.source === "skill") skills.push(item(command.name.replace(/^skill:/u, ""), command.sourceInfo));
-    else if (command.source === "prompt") prompts.push(item(command.name, command.sourceInfo));
+    else if (command.source === "skill") { skills++; add?.("skills", command.name.replace(/^skill:/u, ""), command.sourceInfo); }
+    else if (command.source === "prompt") { prompts++; add?.("prompts", command.name, command.sourceInfo); }
   }
   for (const tool of pi.getAllTools?.() ?? []) extension(tool.sourceInfo);
+  return { skills, prompts, extensions: extensions.size };
+}
 
-  const text = ctx.getSystemPrompt?.();
+function observePrompt(text: string | undefined, cwd: string): PromptSnapshot {
+  if (text === undefined) return {};
   // The host exposes the effective prompt here, not the resource loader. Use
   // the stable project instructions section instead of reading AGENTS files again.
-  const project = text?.match(/(?:^|\n)<project_context>\n([\s\S]*?)\n<\/project_context>(?:\n|$)/u)?.[1];
-  const contexts = text === undefined ? undefined : [...new Set([...(project ?? "").matchAll(/^<project_instructions path="(.*)">$/gmu)]
-    .map(match => displayedPath(match[1]!, ctx.cwd)))];
-  return { prompt: text === undefined ? undefined : literal(text), contexts, skills, prompts, extensions: [...extensions.values()] };
+  const project = text.match(/(?:^|\n)<project_context>\n([\s\S]*?)\n<\/project_context>(?:\n|$)/u)?.[1];
+  const contexts = [...new Set([...(project ?? "").matchAll(/^<project_instructions path="(.*)">$/gmu)]
+    .map(match => displayedPath(match[1]!, cwd)))];
+  return { prompt: literal(text), contexts };
+}
+
+function promptCounts({ contexts, prompt }: PromptSnapshot): Pick<StartupResourceCounts, "context" | "promptTokens"> {
+  return { context: contexts?.length, promptTokens: prompt === undefined ? undefined : Math.ceil(prompt.length / 4) };
+}
+
+export function observeResources(pi: ExtensionAPI, ctx: ExtensionContext): Resources {
+  const inventory: Record<InventoryKind, ResourceItem[]> = { skills: [], prompts: [], extensions: [] };
+  readInventory(pi, (kind, name, source) => inventory[kind].push(item(name, source)));
+  return { ...inventory, ...observePrompt(ctx.getSystemPrompt?.(), ctx.cwd) };
 }
 
 export function resourceCounts(resources: Resources): StartupResourceCounts {
-  return { context: resources.contexts?.length, skills: resources.skills.length, prompts: resources.prompts.length,
-    extensions: resources.extensions.length, promptTokens: resources.prompt === undefined ? undefined : Math.ceil(resources.prompt.length / 4) };
+  return { skills: resources.skills.length, prompts: resources.prompts.length, extensions: resources.extensions.length, ...promptCounts(resources) };
+}
+
+export function createResourceCountReader(pi: ExtensionAPI, ctx: ExtensionContext): () => StartupResourceCounts {
+  let lastPrompt: string | undefined, previous: StartupResourceCounts | undefined;
+  let prompt = promptCounts({});
+  return () => {
+    // Pi applies resources_discover after session_start, and templates can
+    // change without changing the prompt. Read the in-memory inventory on draw.
+    const inventory = readInventory(pi);
+    const text = ctx.getSystemPrompt?.();
+    if (text === lastPrompt && previous && previous.skills === inventory.skills && previous.prompts === inventory.prompts
+      && previous.extensions === inventory.extensions) return previous;
+    if (text !== lastPrompt) prompt = promptCounts(observePrompt(lastPrompt = text, ctx.cwd));
+    return previous = { ...inventory, ...prompt };
+  };
 }
 
 function tabsList(items: ResourceItem[], theme: ResourceTheme): string[] {

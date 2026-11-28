@@ -4,9 +4,10 @@
 
 Draw the editor and sent messages on the theme's `userMessageBg`. In
 `dracula-plus-glass` it is `#060607`, darker than the surrounding Herdr glass.
-Use `▄` and `▀` in the same color for the half-row edges, with no background
-behind the unfilled half. The editor has a flush `▗`, `▐`, `▝` bar in
-`accent` (`#82aaff`) or `bashMode`, regardless of thinking level. Scrolled
+Use `▄` and `▀` in the same color across the full width for the half-row
+edges, with no background behind the unfilled half. On text rows, draw a `▌`
+bar in `accent` (`#82aaff`) or `bashMode` on the strip background, regardless
+of thinking level. This keeps the strip flush at both pane edges. Scrolled
 edges show a dim hidden-line count. Keep Pi's cursor, completion menu, and keys.
 
 Sent messages have no bar. Place the accent `❯` before the first text row and
@@ -148,11 +149,15 @@ transcript. The text set uses
 `◐ ◓ ◑ ◒` when working and `○` when idle. Pi still handles Esc and shows its
 compaction and retry notices.
 
-An agent row has one mark: a robot while running, or a colored status icon after
-it finishes. In Nerd mode the stock robot pulses from dim to accent and back in
-1.8 seconds. With `ui.spiderGlyphs` enabled, a patched font shows eyes looking
-left and right, then blinking. Run IDs stagger the motion. Text mode uses a
-pulsing `◇` while running. See [Patched Nerd Fonts](guide/configuration.md#patched-nerd-fonts).
+An agent footer row shows `<mark> <italic role> <bold name> · model · thinking · turns · elapsed`.
+Omit missing model and thinking fields. Do not show activity in the footer.
+The `/agents` views use the same role colors: worker `#82aaff`, reviewer
+`#ffb86c`, scout `#8be9fd`, planner `#c792ea`, watcher `#ff92df`, and all
+other roles `#d6acff`. The role word and running mark use that color; finished
+marks keep their status colors. The stock robot pulses from dim to the role
+color and back in 1.8 seconds. With `ui.spiderGlyphs` enabled, a patched font
+shows eyes looking left and right, then blinking. Run IDs stagger the motion.
+Text mode uses a pulsing `◇` while running. See [Patched Nerd Fonts](guide/configuration.md#patched-nerd-fonts).
 
 ## Overlays
 

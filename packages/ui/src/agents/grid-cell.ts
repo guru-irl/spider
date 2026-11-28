@@ -1,6 +1,6 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { formatDuration, shortModel } from "./footer";
-import { activityText, renderAgentStatus } from "./types";
+import { activityText, renderAgentStatus, renderRoleAccent } from "./types";
 import { icon } from "../icons.js";
 import type { AgentSnapshot, ThemeAdapter } from "./types";
 
@@ -41,7 +41,8 @@ export function renderGridCell(
   const header = fit(`${marker}${renderAgentStatus(theme, a, now)} ${theme.bold(a.name)}${pin}`, width);
   // line 1 — type · model · turns · elapsed (status is conveyed by the glyph colour).
   const role = a.role ?? a.agent;
-  const meta = fit("  " + theme.fg("dim", `${theme.italic?.(role) ?? role} · ${shortModel(a.model)} · ${turns} · ${formatDuration(elapsedMs)}`), width);
+  const roleLabel = renderRoleAccent(theme, role, theme.italic?.(role) ?? role);
+  const meta = fit("  " + roleLabel + theme.fg("dim", ` · ${shortModel(a.model)} · ${turns} · ${formatDuration(elapsedMs)}`), width);
 
   const bodyRows = Math.max(0, height - 2); // header, meta
   const body: string[] = [];

@@ -1,7 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
-import { BAND_GLYPHS, icon, type IconStyle } from "@spider/ui";
-import { foregroundFromBackground, reopenBackground } from "./ansi.js";
+import { BAND_GLYPHS, foregroundFromBackground, icon, reopenBackground, type IconStyle } from "@spider/ui";
 import type { InputBandHost } from "./index.js";
 
 const PATCH = Symbol.for("spider.pending.bands");

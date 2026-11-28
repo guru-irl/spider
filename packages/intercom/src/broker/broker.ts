@@ -1,6 +1,9 @@
 import { createFederation } from "./federation.js";
-import { parseV0BrokerReply, parseV0BrokerRequest, v0ExplicitName, v0TextFits, V0_ASK_MAX_MS, V0_INTERCOM_FEATURE, type V0Delivery, type V0Endpoint } from "../roam-v0.js";
-import { parseRelayBrokerRequest, relayRefused, RELAY_BROKER_FEATURE, type RelayBrokerRequest } from "../relay-protocol.js";
+import {
+  parseV0BrokerReply, parseV0BrokerRequest, parseV0RelayAskBrokerRequest, v0ExplicitName, v0TextFits, V0_ASK_MAX_MS, V0_INTERCOM_FEATURE,
+  type V0AgentRequest, type V0Delivery, type V0Endpoint, type V0RelayAskBrokerRequest,
+} from "../roam-v0.js";
+import { parseRelayBrokerRequest, relayRefused, RELAY_BROKER_FEATURE, type RelayBrokerRequest, type RelayTarget } from "../relay-protocol.js";
 import { createRelayLinks } from "./relay-links.js";
 import { MOVE_FENCE_FEATURE, type IntercomIntakeAction, type IntercomIntakeFence } from "../protocol.js";
 import { isIntercomIntakeAction, isIntercomIntakeFence } from "./protocol.js";
@@ -140,6 +143,23 @@ type V0AskRoute = {
   | { state: "waiting"; socket: net.Socket; targetSocket: net.Socket; requestId: string; timer: NodeJS.Timeout }
   | { state: "closed"; closedAt: number }
 );
+
+interface V0RelayAskWaiter {
+  asker: ConnectedSession;
+  from: V0AgentRequest["from"];
+  target: RelayTarget;
+  socket: net.Socket;
+  requestId: string;
+  deadline: number;
+  timer: NodeJS.Timeout;
+}
+
+interface V0RelayReplyGrant {
+  asker: V0AgentRequest["from"];
+  receiver: V0Endpoint;
+  receiverKey: string;
+  deadline: number;
+}
 
 interface PendingAskRecord {
   askId: string;
@@ -295,6 +315,8 @@ class IntercomBroker {
     return () => clearTimeout(timer);
   } });
   private v0Asks = new Map<string, V0AskRoute>();
+  private v0RelayAskWaiters = new Map<string, V0RelayAskWaiter>();
+  private v0RelayReplyGrants = new Map<string, V0RelayReplyGrant>();
   private helpers = new Set<net.Socket>();
   private helperPending = new Map<string, { socket: net.Socket; requestId: string; timer: NodeJS.Timeout }>();
   private remoteRoutes = new Map<string, { createdAt: number; from: SessionAddress; to: RemoteSessionInfo }>();
@@ -439,6 +461,7 @@ class IntercomBroker {
         if (ask.socket === socket) this.finishV0Ask(id);
         else if (ask.targetSocket === socket) this.finishV0Ask(id, { kind: "no_reply", id });
       }
+      this.closeV0RelayAsks(socket);
       this.helpers.delete(socket);
       for (const [id, pending] of this.noticePending) {
         if (pending.bridge !== socket && pending.receiver !== socket) continue;
@@ -534,6 +557,85 @@ class IntercomBroker {
       fail("The asker is no longer waiting.");
     }
     return true;
+  }
+
+  private isLiveV0Endpoint(session: ConnectedSession, endpoint: V0Endpoint): boolean {
+    const { info, socket } = session;
+    return this.sessions.get(session.key) === session && !socket.destroyed && !socket.writableEnded && socket.writable &&
+      !!info.address && addressKey(info.address) === addressKey(endpoint.address) &&
+      info.endpointEpoch === endpoint.endpointEpoch && info.v0HomeEpoch === endpoint.homeEpoch && v0ExplicitName(info) === endpoint.name;
+  }
+
+  private findLiveV0Endpoint(endpoint: V0Endpoint): ConnectedSession | undefined {
+    return [...this.sessions.values()].find(session => this.isLiveV0Endpoint(session, endpoint));
+  }
+
+  private v0RelayReplyGrant(askId: string, receiver: ConnectedSession) {
+    const grant = this.v0RelayReplyGrants.get(askId);
+    if (!grant || grant.receiverKey !== receiver.key || !this.isLiveV0Endpoint(receiver, grant.receiver)) return;
+    const remainingMs = Math.floor(grant.deadline - performance.now());
+    if (remainingMs > 0) return { asker: grant.asker, remainingMs };
+  }
+
+  private finishV0RelayAsk(id: string, result?: V0Delivery): boolean {
+    const waiter = this.v0RelayAskWaiters.get(id);
+    if (!waiter) return false;
+    this.v0RelayAskWaiters.delete(id);
+    clearTimeout(waiter.timer);
+    const { socket, requestId } = waiter;
+    if (!result || socket.destroyed || !socket.writable || socket.writableEnded) { socket.destroy(); return false; }
+    try {
+      writeMessage(socket, { type: "roam_v0_result", requestId, ...result });
+      socket.end();
+      return true;
+    } catch { socket.destroy(); return false; }
+  }
+
+  private closeV0RelayAsks(socket: net.Socket): void {
+    for (const [id, waiter] of this.v0RelayAskWaiters) {
+      if (waiter.socket === socket) this.finishV0RelayAsk(id);
+      else if (waiter.asker.socket === socket) this.finishV0RelayAsk(id, { kind: "unknown", id });
+    }
+  }
+
+  private handleV0RelayAsk(socket: net.Socket, request: V0RelayAskBrokerRequest): void {
+    const { requestId, askId, from } = request;
+    const asker = this.findLiveV0Endpoint(from);
+    if (request.kind === "authorize") {
+      const grant = asker && this.v0RelayReplyGrant(askId, asker);
+      writeMessage(socket, { type: "roam_v0_relay_reply_authorization", requestId,
+        authorization: grant ?? { kind: "refused", code: "changed" } });
+      socket.end();
+      return;
+    }
+    if (!asker || this.v0RelayAskWaiters.has(askId) || this.v0RelayAskWaiters.size >= MAX_UNREGISTERED_CONNECTIONS) {
+      writeMessage(socket, { type: "roam_v0_result", requestId, kind: "refused", code: "unreachable" });
+      socket.end();
+      return;
+    }
+    const timeoutMs = Math.min(request.timeoutMs, V0_ASK_MAX_MS);
+    const deadline = performance.now() + timeoutMs;
+    const timer = setTimeout(() => this.finishV0RelayAsk(askId, { kind: "no_reply", id: askId }), timeoutMs);
+    timer.unref();
+    this.v0RelayAskWaiters.set(askId, { asker, from: request.from, target: request.target, socket, requestId, timer, deadline });
+    writeMessage(socket, { type: "roam_v0_relay_ask_ready", requestId });
+  }
+
+  private deliverV0RelayReply(target: ConnectedSession, from: RemoteSessionInfo, askId: string, message: { id: string; text: string }): V0Delivery {
+    const waiter = this.v0RelayAskWaiters.get(askId);
+    if (!waiter || target !== waiter.asker || !this.isLiveV0Endpoint(target, waiter.from)) return { kind: "refused", code: "changed" };
+    if (performance.now() >= waiter.deadline) {
+      this.finishV0RelayAsk(askId, { kind: "no_reply", id: askId });
+      return { kind: "refused", code: "changed" };
+    }
+    const { machineId, selector, homeEpoch } = waiter.target;
+    if (from.machineId !== machineId || from.address.scopeId !== waiter.from.address.scopeId ||
+        (homeEpoch !== undefined && from.homeEpoch !== homeEpoch) ||
+        (selector.by === "id" ? from.address.sessionId !== selector.value : from.name?.toLowerCase() !== selector.value.toLowerCase()))
+      return { kind: "refused", code: "unauthorized" };
+    const result = { kind: "replied" as const, id: askId, replyId: message.id, text: message.text };
+    if (!parseV0BrokerReply({ type: "roam_v0_result", requestId: waiter.requestId, ...result })) return { kind: "refused", code: "invalid" };
+    return this.finishV0RelayAsk(askId, result) ? { kind: "socket_delivered", id: message.id } : { kind: "refused", code: "offline" };
   }
 
   private unknownBridgeResult(): FederationDispatchResult {
@@ -656,7 +758,8 @@ class IntercomBroker {
         return;
       }
       case "federation_deliver": {
-        if (typeof message.requestId !== "string" || !isRemoteSessionInfo(message.from) || !isMessage(message.message) || !isSessionEndpoint(message.to)) throw new Error("invalid-federation-delivery");
+        if (typeof message.requestId !== "string" || !isRemoteSessionInfo(message.from) || !isMessage(message.message) ||
+            message.message.v0RelayAsk || !isSessionEndpoint(message.to)) throw new Error("invalid-federation-delivery");
         const to = message.to;
         const target = this.localForAddress(to.address);
         let result: FederationDispatchResult;
@@ -791,12 +894,24 @@ class IntercomBroker {
         return;
       }
       case "submit": {
-        const { from, message } = request.submit;
-        const live = [...this.sessions.values()].some(session => session.info.address &&
-          addressKey(session.info.address) === addressKey(from.address) && session.info.endpointEpoch === from.endpointEpoch &&
-          session.info.v0HomeEpoch === from.homeEpoch && v0ExplicitName(session.info) === from.name &&
-          !session.socket.destroyed && !session.socket.writableEnded && session.socket.writable);
-        const result = live ? await this.relayLinks.submit(request.relayId, request.submit, signal, request.remainingMs)
+        const submit = request.submit;
+        const { from, target, message } = submit;
+        const live = this.findLiveV0Endpoint(from);
+        let allowed = !!live;
+        let remainingMs = request.remainingMs;
+        if (live && submit.kind === "ask") {
+          const waiter = this.v0RelayAskWaiters.get(message.id);
+          allowed = !!waiter && live === waiter.asker && from.machineId === waiter.from.machineId &&
+            target.machineId === waiter.target.machineId && target.homeEpoch === waiter.target.homeEpoch &&
+            target.selector.by === waiter.target.selector.by && target.selector.value === waiter.target.selector.value;
+          if (waiter) remainingMs = Math.min(remainingMs, Math.floor(waiter.deadline - performance.now()));
+        } else if (live && submit.kind === "reply") {
+          const grant = this.v0RelayReplyGrant(submit.replyTo, live);
+          allowed = !!grant && target.machineId === grant.asker.machineId && target.homeEpoch === grant.asker.homeEpoch &&
+            target.selector.by === "id" && target.selector.value === grant.asker.address.sessionId;
+          if (grant) remainingMs = Math.min(remainingMs, grant.remainingMs);
+        }
+        const result = allowed ? await this.relayLinks.submit(request.relayId, submit, signal, remainingMs)
           : relayRefused(message.id, "unauthorized");
         await writeRelayFrames(socket, signal, [{ type: "roam_v0_relay_result", requestId, result }]);
         return;
@@ -827,6 +942,15 @@ class IntercomBroker {
       const request = parseRelayBrokerRequest(msg);
       if (!request) throw new Error("invalid-roam-v0-relay-request");
       void this.handleRelay(socket, request, holdRelayConnection()).catch(() => socket.destroy());
+      return;
+    }
+    if (clientMessage.type === "roam_v0_relay_ask") {
+      if (typeof LISTEN_TARGET !== "string" || currentKey !== null || !this.helperNegotiated.has(socket)) throw new Error("roam-v0-relay-private-socket-required");
+      this.v0Requests.add(socket);
+      const request = parseV0RelayAskBrokerRequest(msg);
+      if (!request) throw new Error("invalid-roam-v0-relay-ask-request");
+      holdV0Connection();
+      this.handleV0RelayAsk(socket, request);
       return;
     }
     if (clientMessage.type === "roam_v0") {
@@ -869,6 +993,22 @@ class IntercomBroker {
       if (target.socket.destroyed || target.socket.writableEnded || !target.socket.writable) {
         respond({ kind: "refused", code: "offline" }); return;
       }
+      const thread = request.kind === "deliver" ? request.thread : undefined;
+      if (thread?.kind === "reply") {
+        respond(this.deliverV0RelayReply(target, request.from, thread.replyTo, request.message));
+        return;
+      }
+      if (thread?.kind === "ask") {
+        const now = performance.now(), id = request.message.id;
+        for (const [priorId, grant] of this.v0RelayReplyGrants) if (now >= grant.deadline) this.v0RelayReplyGrants.delete(priorId);
+        if (this.v0RelayReplyGrants.has(id) || this.v0Asks.has(id) || this.askEdges.has(id)) {
+          respond({ kind: "refused", code: "invalid" }); return;
+        }
+        if (this.v0RelayReplyGrants.size >= MAX_DELIVERY_RECORDS) { respond({ kind: "refused", code: "unreachable" }); return; }
+        const { address, name, machineId, homeEpoch, endpointEpoch } = request.from;
+        this.v0RelayReplyGrants.set(id, { asker: { address, name: name ?? null, machineId, homeEpoch: homeEpoch!, endpointEpoch },
+          receiver: request.target, receiverKey: target.key, deadline: now + thread.timeoutMs });
+      }
       if (request.kind === "ask") {
         this.pruneV0Asks();
         if (this.v0Asks.has(request.message.id) || this.askEdges.has(request.message.id)) {
@@ -888,6 +1028,7 @@ class IntercomBroker {
         writeMessage(target.socket, { type: "message", from: request.from, message: {
           id: request.message.id, timestamp: request.message.timestamp, content: { text: request.message.text },
           ...(request.kind === "ask" ? { expectsReply: true, remainingMs: Math.min(request.timeoutMs, V0_ASK_MAX_MS) } : {}),
+          ...(thread?.kind === "ask" ? { expectsReply: true, remainingMs: thread.timeoutMs, v0RelayAsk: true } : {}),
           brokerReceivedAt: Date.now(), brokerDeliveredAt: Date.now(),
         } });
         if (request.kind === "deliver") respond({ kind: "socket_delivered", id: request.message.id });
@@ -1023,6 +1164,7 @@ class IntercomBroker {
           break;
         }
         if (previous) {
+          this.closeV0RelayAsks(previous.socket);
           this.clearMessageReceiptRoutesForSession(key);
           previous.socket.end();
         }
@@ -1108,6 +1250,7 @@ class IntercomBroker {
         }
         const existing = this.sessions.get(currentKey);
         if (existing?.socket === socket) {
+          this.closeV0RelayAsks(socket);
           this.rememberDisconnectedSession(existing);
           this.sessions.delete(currentKey);
           this.clearMessageReceiptRoutesForSession(currentKey);
@@ -1191,7 +1334,7 @@ class IntercomBroker {
         const message = clientMessage.message;
         const messageId = isMessage(message) ? message.id : "unknown";
 
-        if (typeof clientMessage.to !== "string" || !isMessage(message)) {
+        if (typeof clientMessage.to !== "string" || !isMessage(message) || message.v0RelayAsk) {
           this.writeDeliveryFailure(socket, messageId, "Invalid message format", "E_INVALID_MESSAGE");
           break;
         }

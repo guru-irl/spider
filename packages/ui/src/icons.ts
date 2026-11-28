@@ -6,7 +6,7 @@ export const REPLY_FRAME = {
   topLeft: "╭", topRight: "╮", bottomLeft: "╰", bottomRight: "╯",
 } as const;
 
-export const BAND_GLYPHS = { top: "▄", bottom: "▀", bar: "▌" } as const;
+export const BAND_GLYPHS = { top: "▄", bottom: "▀", bar: "█" } as const;
 
 const NEW_MOON = "\uE3E3";
 // Every other Weather Icons phase (new, then U+E3C9 to U+E3E1 in steps of two, full at index 7). Each frame

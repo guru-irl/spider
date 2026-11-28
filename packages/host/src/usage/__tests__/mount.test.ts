@@ -55,7 +55,7 @@ function mount(f: ReturnType<typeof fixture>) { return mounted = mountUsage(f.pi
 describe("public usage footer mount", () => {
   it("sets AIC footer on parent TUI startup and keeps model/thinking at 40 columns", () => {
     const f = fixture(); mount(f);
-    expect(f.render().join("\n")).toMatch(/credits/g); expect(f.render().join("\n")).not.toMatch(/\$/);
+    expect(f.render().join("\n")).toMatch(/AIC/g); expect(f.render().join("\n")).not.toMatch(/\$/);
     expect(f.render(40)[0]).toMatch(/gpt-6.1-sol.*high/);
   });
   it("takes over Pi's working row once and renders only at activity-frame boundaries", () => {
@@ -146,11 +146,11 @@ describe("public usage footer mount", () => {
     const f = fixture(); mount(f); mounted!.configure({ ...config, footer: false });
     expect(f.setFooter).toHaveBeenLastCalledWith(undefined); expect(f.unsubBranch).toHaveBeenCalledTimes(1);
     expect(f.ctx.ui.setWidget).not.toHaveBeenCalled();
-    mounted!.configure(config); expect(f.render()[1]).toMatch(/credits/g);
+    mounted!.configure(config); expect(f.render()[1]).toMatch(/AIC/g);
   });
   it("poll changes hot-apply separately from footer and alerts", () => {
     const f = fixture(); mount(f); mounted!.configure({ ...config, counterPoll: false, alertsSessionCredits: 10 });
-    expect(f.runtime.configure).toHaveBeenLastCalledWith(false, "auto"); expect(f.render()[1]).toMatch(/credits/g);
+    expect(f.runtime.configure).toHaveBeenLastCalledWith(false, "auto"); expect(f.render()[1]).toMatch(/AIC/g);
   });
   it("reads public thinking name context and subscription flag and omits unknown auto state", () => {
     const f = fixture(); mount(f);
@@ -253,17 +253,17 @@ describe("public usage footer mount", () => {
     vi.stubEnv("PI_SUBAGENT_CHILD", "1"); const f = fixture(); mount(f); expect(f.setFooter).not.toHaveBeenCalled(); expect(f.runtime.configure).not.toHaveBeenCalled();
   });
   it("worker error does not uninstall a working footer", () => {
-    const f = fixture(); mount(f); f.failWorker(); mounted!.refresh(); expect(f.render()[1]).toMatch(/credits/g); expect(f.setFooter).toHaveBeenCalledTimes(1);
+    const f = fixture(); mount(f); f.failWorker(); mounted!.refresh(); expect(f.render()[1]).toMatch(/AIC/g); expect(f.setFooter).toHaveBeenCalledTimes(1);
   });
 });
 
 it("calibration reload changes footer without repricing tokens", () => {
   const f = fixture(); f.replace([assistant("a", 1000000)]); f.calibrate();
   const price = vi.spyOn(pricing, "priceCall"); mount(f);
-  expect(f.render()[1]).toContain("200 credits");
+  expect(f.render()[1]).toContain("200 AIC");
   mounted!.configure({ ...config, calibration: "off" });
   expect(f.runtime.configure).toHaveBeenLastCalledWith(true, "off");
-  expect(f.render()[1]).toContain("400 credits");
+  expect(f.render()[1]).toContain("400 AIC");
   expect(f.render()[1]).toContain("↑1.0M ↓10");
   expect(price).toHaveBeenCalledTimes(1);
 });

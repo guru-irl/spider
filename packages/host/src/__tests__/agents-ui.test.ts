@@ -230,7 +230,7 @@ it("keeps the footer mounted while the selector is open (footer stays static, no
 it("enter opens one real detail without changing footer rows or dock positions", async () => {
   const db = seededDb("aui-detail");
   const h = realCustomHarness(db);
-  await h.start(); await h.send("\x1b[B");
+  await h.start();
   const footer = h.ui.widgets.get("spider-agents")!;
   const beforeRows = footer.render(120).length;
   const beforeDock = h.view.markerPositions();
@@ -763,11 +763,11 @@ it.each(incompatibleHosts)("keeps the list usable and refuses detail on $name", 
   expect(selector).not.toBe(h.view.editor);
   expect(h.focuses).toEqual(["selector"]);
   const selectedLine = () => h.ui.widgets.get("spider-agents")!.render(120).find(line => line.startsWith("▸ "));
-  expect(selectedLine()).toContain("one");
-  await h.send("\x1b[B");
   expect(selectedLine()).toContain("two");
-  await h.send("\x1b[A");
+  await h.send("\x1b[B");
   expect(selectedLine()).toContain("one");
+  await h.send("\x1b[A");
+  expect(selectedLine()).toContain("two");
   await h.send("\r");
   expect(h.ui.custom).toHaveBeenCalledTimes(1);
   expect(h.ui.notify).toHaveBeenCalledExactlyOnceWith(reason, "info");
@@ -1014,7 +1014,7 @@ it("kills the captured run after the selector list is reordered", async () => {
   const pending = deferred(), kill = vi.fn(() => pending.promise);
   const db = seededDb("aui-kill-captured", 2);
   const h = realCustomHarness(db, { actions: actions(kill) });
-  await h.start(); await h.send("\x1b[B"); await h.send("\r");
+  await h.start(); await h.send("\r");
   db.prepare("UPDATE runs SET status = 'done', ended_at = ? WHERE id = 'r1'").run(Date.now() - 20_000);
   bus.emit({ sessionId: "s", runId: "r1", ts: Date.now(), type: "status" });
   await h.settle(); await h.send("k"); await h.send("k");

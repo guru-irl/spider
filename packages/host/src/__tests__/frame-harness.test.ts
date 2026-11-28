@@ -1,11 +1,11 @@
 // TUI frame-snapshot harness driven over a real scratch DB:
-// raw DB writes -> appendRunEvent/bus -> AgentStore -> footer and detail frames.
-// The footer shows the agent name and status; the detail shows live activity.
+// raw DB writes -> appendRunEvent/bus -> AgentStore -> footer, grid and detail.
+// The footer shows the agent name and status; the grid and detail show activity.
 // An identity theme keeps the rendered text ANSI-free for the assertions.
 import { afterAll, describe, expect, it } from "vitest";
 import { openDb, migrate, appendRunEvent, type Db } from "@spider/db-core";
 import { scratchDbPath, cleanupScratch } from "@spider/db-core/testutil";
-import { AgentStore, AgentFooter, AgentDetail, type ThemeAdapter } from "@spider/ui";
+import { AgentStore, AgentFooter, AgentDetail, renderGridCell, type ThemeAdapter } from "@spider/ui";
 import { createRunSource } from "../agents/run-source";
 
 const ANSI = /\x1b\[[0-9;]*m/g;
@@ -33,6 +33,11 @@ describe("TUI frame-snapshot harness (store -> footer render)", () => {
       footer.invalidate(); // render() caches per width; force a rebuild each call
       return strip(footer.render(120).join("\n"));
     };
+    const cell = (): string => {
+      const agent = store.snapshot().find((a) => a.runId === runId);
+      expect(agent).toBeDefined();
+      return strip(renderGridCell(idTheme, { agent: agent!, width: 120, height: 4, focused: false, pinned: false, now: Date.now() }).join("\n"));
+    };
 
     // --- lifecycle: start (running) ---
     db.prepare(
@@ -46,8 +51,9 @@ describe("TUI frame-snapshot harness (store -> footer render)", () => {
     appendRunEvent(db, { runId, sessionId, ts: now + 5, type: "tool_intent", tool: "grep", summary: "grepping repo for RunEventTailer" });
 
     const runningFrame = frame();
-    // The footer shows the name. Activity is visible in the detail view.
+    // The footer shows the name; the grid and detail show live activity.
     expect(runningFrame).toContain("scout-alpha");
+    expect(cell()).toContain("grepping repo for RunEventTailer");
     const detail = new AgentDetail(runId, idTheme, { viewport: () => ({ safeHeight: 18 }), requestRender: () => {} });
     detail.update({ kind: "loaded", run: store.getById(runId), events: [] });
     const detailFrame = strip(detail.render(120).join("\n"));

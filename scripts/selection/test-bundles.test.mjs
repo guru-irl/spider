@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: MIT
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { bundleDigest } from './bundle-keys.mjs';
 import { buildSelectionMap } from './map.mjs';
 import { reduce } from './reduce.mjs';
+import { selectTests } from './select.mjs';
 
 const builders = new Map([
   ['vite', new Set(['build', 'createBuilder'])],
@@ -61,15 +63,17 @@ const { rolldown } = require('rolldown');`;
   ]);
 });
 
-test('publishes pre-tree-shake inputs, direct reads, and renamed executable bytes from real recording', t => {
+test('publishes pre-tree-shake inputs, direct reads, and renamed executable bytes from real recording', async t => {
   const root = mkdtempSync(join(tmpdir(), 'selection-bundle-'));
   t.after(() => rmSync(root, { force: true, recursive: true }));
+  execFileSync('git', ['init', '-q'], { cwd: root });
   const raw = join(root, 'raw'), maps = join(root, 'maps');
   const bundleTools = name => fileURLToPath(new URL(name, import.meta.url));
   const run = (script, env = {}) => execFileSync(process.execPath, ['--input-type=module', '-e', script],
     { cwd: root, env: { ...process.env, NODE_OPTIONS: '', ...env }, encoding: 'utf8' });
   const entry = 'packages/one/src/main.mjs', testFile = 'packages/one/src/build.test.ts';
-  const aliasTest = 'packages/one/src/alias.test.ts', inventoryTest = 'packages/one/src/inventory.test.ts';
+  const aliasTest = 'packages/herdr/src/__tests__/herdr-viewer-warning.test.ts';
+  const inventoryTest = 'packages/one/src/inventory.test.ts';
   const removed = 'packages/one/src/shaken.js';
   for (const [file, text] of Object.entries({
     [entry]: 'import { unused } from "./shaken.js"; export const marker = "main";',
@@ -134,6 +138,22 @@ test('publishes pre-tree-shake inputs, direct reads, and renamed executable byte
     ambiguous: false, hashes: [artifacts.find(artifact => artifact.path === 'dist/other.mjs').sha256],
   });
   assert.deepEqual(map.bundleRouting.tests[inventoryTest], { ambiguous: true, hashes });
+
+  const blob = 'b'.repeat(40);
+  const options = { head: 'c'.repeat(40), inventory, map, changes: [{ file: removed, status: 'M' }],
+    bundleContracts: new Map([[aliasTest, { outputs: ['dist/other.mjs'], blobs: { [aliasTest]: blob } }]]),
+    bundleBlobs: () => new Map([[aliasTest, blob]]), artifactDigest: file => bundleDigest(root, file),
+  };
+  const unchanged = await selectTests(options);
+  assert.deepEqual(Object.keys(unchanged.selected), [testFile, inventoryTest]);
+  const other = join(root, 'dist/other.mjs');
+  writeFileSync(other, 'export const marker = "new";');
+  const changed = await selectTests(options);
+  assert.deepEqual(Object.keys(changed.selected), [aliasTest, testFile, inventoryTest]);
+  rmSync(other);
+  symlinkSync('../.spider/scratch/renamed.mjs', other);
+  const relocated = await selectTests(options);
+  assert.deepEqual(Object.keys(relocated.selected), [aliasTest, testFile, inventoryTest]);
 });
 
 test('all test code and fixtures use recorder-aware bundle helpers', () => {

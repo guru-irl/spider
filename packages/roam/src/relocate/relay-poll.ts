@@ -1,11 +1,14 @@
 import { randomUUID } from "node:crypto";
+import { invokeCli, machineAliases } from "@spider/herdr/client/hc";
+import { HerdrError, object, text } from "@spider/herdr/client/parse";
+import { recordRelayMismatch, relayVersionMismatch } from "@spider/intercom/broker/relay-observations";
 import { pollV0RelayBroker } from "@spider/intercom/broker/roam-relay-client";
 import {
   RELAY_HOLD_MS, RELAY_MAX_SLOTS, RELAY_POLL_CALL_MS, RELAY_POLL_MAX_BYTES, RELAY_POLL_REMOTE_MS, RELAY_PROTOCOL_VERSION,
   correlatesRelayReady, decodeRelayPoll, decodeRelayPollReply, encodeRelayPoll, encodeRelayPollReply, isRelayResult,
   relayReady, relayRefused, relayUnknown, type RelayLinkView, type RelayPeer, type RelayPoll, type RelayReady, type RelayResult, type RelaySubmit,
 } from "@spider/intercom/relay-protocol";
-import type { Clock, Peer, Transport } from "../contracts";
+import { DEFAULT_LIMITS, type Clock, type Peer, type Transport } from "../contracts";
 import { readLocalIdentity } from "../runtime";
 import { readV0Routes } from "./intercom-routes";
 
@@ -21,8 +24,11 @@ export async function runV0LinkOnce(root: string, input: Buffer, holdMs: RelayPo
     routes = readV0Routes(root, config);
   } catch { return refuse("invalid-config"); }
   if (!routes.relays.includes(hello.relay.machineId)) return refuse("unauthorized");
-  if (hello.version !== RELAY_PROTOCOL_VERSION) return refuse("version-mismatch");
-  return encodeRelayPollReply(await pollV0RelayBroker(routes.agentDir, poll, signal));
+  const reply = await pollV0RelayBroker(routes.agentDir, poll, signal);
+  if (hello.version === RELAY_PROTOCOL_VERSION) return encodeRelayPollReply(reply);
+  if (!signal?.aborted && (reply.ready.ok || reply.ready.code !== "version-mismatch"))
+    recordRelayMismatch(root, hello.relay, hello.version, Date.now(), undefined, true);
+  return refuse("version-mismatch");
 }
 
 export interface RelayPollLoopOptions {
@@ -37,6 +43,34 @@ export interface RelayPollLoopOptions {
 }
 
 class PollFailure extends Error {}
+
+function pollError(error: unknown): string {
+  if (error instanceof PollFailure) return error.message;
+  if (error instanceof HerdrError) {
+    if (error.code === "machine-not-found") return "route-missing";
+    if (error.code === "cli-timeout") return "poll-timeout";
+    if (error.code === "core-unavailable") return "core-unavailable";
+  }
+  return "unreachable";
+}
+
+/** A successful read of the selected core's route table, not a destination identity check. */
+export async function observeV0HerdrRoutes(connection: { binary: string; env: NodeJS.ProcessEnv }, peers: readonly Peer[], signal?: AbortSignal) {
+  const raw = object(await invokeCli(connection.binary, ["machine", "ls", "--json"], connection.env, DEFAULT_LIMITS.replyBytes,
+    undefined, { timeoutMs: DEFAULT_LIMITS.controlMs, signal }));
+  if (!Array.isArray(raw.machines)) throw new HerdrError("invalid-reply", "Expected a machine list");
+  const rows = raw.machines.map(value => {
+    const row = object(value);
+    // Validate the route inventory before using the absence of an entry as evidence.
+    return { name: text(row.name), state: text(row.state), aliases: machineAliases(row) };
+  });
+  return new Map(peers.map(peer => {
+    const exact = rows.filter(row => row.name === peer.alias);
+    const matches = exact.length ? exact : rows.filter(row => row.aliases.includes(peer.alias.toLowerCase().replace(/\.$/, "")));
+    const state = matches.length === 0 ? "missing" : matches.length > 1 ? "unknown" : matches[0].state;
+    return [peer.machineId, state] as const;
+  }));
+}
 
 function wait(clock: Clock, ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.resolve();
@@ -100,7 +134,8 @@ export async function runRelayPollLoop(options: RelayPollLoopOptions): Promise<v
         const poll: RelayPoll = { holdMs, hello: { type: "hello", version: RELAY_PROTOCOL_VERSION, relay,
           toMachineId: peer.machineId, linkId, pollId: randomUUID() }, reach: { type: "reach", peers: reach() }, results };
         const stdin = encodeRelayPoll(poll);
-        update({ lastCallMs: clock.now(), reach: poll.reach.peers });
+        const startedMs = clock.now();
+        update({ reach: poll.reach.peers });
         if (active.aborted) return;
         const bytes = await transport.exec(resolved, ["roam", "agent", "--v0", "link", "--hold-ms", String(holdMs)], {
           stdin, signal: active, timeoutMs: RELAY_POLL_CALL_MS, postReserveMs: 2000,
@@ -112,14 +147,14 @@ export async function runRelayPollLoop(options: RelayPollLoopOptions): Promise<v
         const { ready, submissions } = reply;
         if (!correlatesRelayReady(ready, poll.hello)) throw new PollFailure("protocol-error");
         if (ready.version !== RELAY_PROTOCOL_VERSION || !ready.ok && ready.code === "version-mismatch") {
-          throw new PollFailure(`version-mismatch (local ${RELAY_PROTOCOL_VERSION}, peer ${ready.version})`);
+          throw new PollFailure(relayVersionMismatch(ready.version));
         }
         if (!ready.ok) throw new PollFailure(ready.code);
         if (slots.size + submissions.length > RELAY_MAX_SLOTS || submissions.some(s => slots.has(s.message.id)))
           throw new PollFailure("protocol-error");
         backoffMs = 1000;
         update({ state: "up", sinceMs: view.state === "up" ? view.sinceMs : clock.now(), lastError: null,
-          messagesCarried: view.messagesCarried + results.filter(result => result.outcome.kind === "socket_delivered").length });
+          lastCallMs: Math.max(view.lastCallMs ?? 0, startedMs), messagesCarried: view.messagesCarried + results.filter(result => result.outcome.kind === "socket_delivered").length });
         for (const submission of submissions) {
           if (active.aborted) break;
           slots.set(submission.message.id, null);
@@ -128,7 +163,7 @@ export async function runRelayPollLoop(options: RelayPollLoopOptions): Promise<v
           void delivery.then(() => deliveries.delete(delivery));
         }
       } catch (error) {
-        fail(error instanceof PollFailure ? error.message : "unreachable");
+        fail(pollError(error));
       }
     }
 
@@ -161,7 +196,7 @@ export async function runRelayPollLoop(options: RelayPollLoopOptions): Promise<v
           await Promise.all(workers);
         }
       }
-    } catch (error) { fail(error instanceof PollFailure ? error.message : "unreachable"); }
+    } catch (error) { fail(pollError(error)); }
     finally {
       generation.abort();
       wakeResults?.();

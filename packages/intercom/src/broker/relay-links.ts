@@ -1,6 +1,7 @@
+import { brokerRelayObserver } from "./relay-observations.js";
 import { V0_INTERCOM_MS } from "../roam-v0.js";
 import {
-  RELAY_HOLD_MS, RELAY_MAX_LINKS, RELAY_MAX_SLOTS, RELAY_POLL_CALL_MS, RELAY_PROTOCOL_VERSION,
+  RELAY_HOLD_MS, RELAY_MAX_LINKS, RELAY_MAX_SLOTS, RELAY_POLL_CALL_MS, RELAY_POLL_REMOTE_MS, RELAY_PROTOCOL_VERSION,
   relayReady, relayRefused, relayUnknown, type RelayLinkView, type RelayPoll, type RelayPollReply, type RelayReady,
   type RelayResult, type RelaySubmit,
 } from "../relay-protocol.js";
@@ -35,6 +36,7 @@ interface Pending {
 }
 interface ActiveCall {
   pollId: string;
+  deadlineMs: number;
   wake: (() => void) | null;
   cancel(): void;
 }
@@ -53,7 +55,15 @@ interface KnownRelay {
 
 export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkView) => void): RelayLinks {
   const relays = new Map<string, KnownRelay>();
+  const observations = brokerRelayObserver();
   let closed = false;
+
+  function record(link: Link): void {
+    const wallNow = clock.wallNow();
+    const deadline = link.calls.size ? Math.min(...[...link.calls.values()].map(call => call.deadlineMs)) : link.grace?.untilMs;
+    const expiresAt = link.view.state === "up" && deadline !== undefined ? wallNow + Math.ceil(deadline - clock.now()) : null;
+    observations.link(link.toMachineId, link.view, expiresAt, wallNow);
+  }
 
   function clearGrace(link: Link): void {
     link.grace?.cancel();
@@ -66,6 +76,7 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
     for (const call of link.calls.values()) call.cancel();
     for (const pending of link.pending.values()) pending?.fail(failure);
     link.pending.clear();
+    record(link);
     observe?.(link.view);
   }
   function expireGrace(link: Link, untilMs: number): void {
@@ -106,10 +117,12 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
       return reply;
     }
     if (closed || signal?.aborted) return refuse("unreachable");
-    if (hello.version !== RELAY_PROTOCOL_VERSION) return refuse("version-mismatch");
-
     const relayId = hello.relay.machineId;
     let known = relays.get(relayId);
+    if (hello.version !== RELAY_PROTOCOL_VERSION) {
+      observations.mismatch(hello.toMachineId, hello.relay, hello.version, clock.wallNow(), known?.current.view);
+      return refuse("version-mismatch");
+    }
     if (known) refresh(known.current);
     const now = clock.now(), wallNow = clock.wallNow();
     if (!known || known.current.view.linkId !== hello.linkId) {
@@ -142,11 +155,15 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
         cancelHold();
         signal?.removeEventListener("abort", abort);
         link.calls.delete(holdMs);
-        if (normal && link.calls.size === 0) startGrace(link);
+        if (normal) {
+          if (link.calls.size === 0) startGrace(link);
+          record(link);
+        }
         resolve(reply);
       };
       const abort = () => down(link, "poll-closed");
-      const call: ActiveCall = { pollId: hello.pollId, wake: null, cancel: () => finish(refused("unreachable"), false) };
+      const call: ActiveCall = { pollId: hello.pollId, deadlineMs: now + RELAY_POLL_REMOTE_MS, wake: null,
+        cancel: () => finish(refused("unreachable"), false) };
       const reply = (submissions: readonly RelaySubmit[]) => {
         call.wake = null;
         cancelHold();
@@ -165,14 +182,13 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
       for (const result of results) {
         const pending = link.pending.get(result.messageId);
         if (pending === undefined || pending?.stage.kind === "waiting") continue;
-        if (pending && !expire(pending, now)) {
-          pending.finish(result);
-          if (result.outcome.kind === "socket_delivered") carried++;
-        }
+        if (pending && !expire(pending, now)) pending.finish(result);
+        if (result.outcome.kind === "socket_delivered") carried++;
         link.pending.delete(result.messageId);
       }
       link.view = { ...link.view, relay: hello.relay, reach: reach.peers, lastCallMs: wallNow,
         messagesCarried: link.view.messagesCarried + carried };
+      record(link);
       observe?.(link.view);
       if (link.calls.get(holdMs) !== call) return;
 

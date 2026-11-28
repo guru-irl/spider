@@ -4,6 +4,7 @@ import * as childProcess from "node:child_process";
 import { once } from "node:events";
 import * as handoff from "@spider/herdr/jobs/handoff";
 import * as hcApi from "@spider/herdr/client/hc";
+import { claimIdLock, inspectIdLock, localBootId } from "@spider/herdr/sessions/id-lock";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -134,6 +135,46 @@ describe("v0 real transfer",()=>{
    {action: "relocate-install-error", result: {name: "TypeError", code: "EACCES", message: expected, lastCompleted: "session-staged"}},
   ]);
   expect(f.options.journal.read(f.plan.moveId).some(row => row.action === "relocate-install-error")).toBe(false);
+ });
+ it("installs while the destination supervisor checks an already empty session", async () => {
+  const f = transferFixture();
+  const captured = await captureLocalSession(f.plan, f.options, async () => ({kind: "free"}));
+  if (!captured.ok) throw new Error(JSON.stringify(captured));
+  for (const manifest of [captured.value.transcriptArtifact, captured.value.bundleArtifact]) {
+   await receiveArtifactLocally(manifest, f.options, f.destination);
+  }
+  const root = join(f.destination.root, "herdr");
+  const checking = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  const waitForInstall = async () => { checking.resolve(); await finish.promise; };
+  const stopIo: LocalIO = {
+   ...stopFixture().io,
+   inspect: sessionId => inspectIdLock(root, sessionId),
+   terminals: async () => [],
+   writerBlockers: async () => { await waitForInstall(); return []; },
+   async claimFree(sessionId) {
+    // The test shares a pid. A distinct identity models the other local process.
+    const held = await claimIdLock(root, sessionId, {pid: process.pid, startIdentity: "supervisor"}, probeLocalProcess, {bootId: localBootId});
+    try { await waitForInstall(); } finally { await held.release(); }
+   },
+  };
+  let stop: ReturnType<typeof stopLocalSession> | undefined;
+  const run = f.destination.workspaceImport.run;
+  f.destination.workspaceImport.run = async (cwd, argv, options) => {
+   if (argv.join(" ") === "git rev-parse --abbrev-ref HEAD") {
+    stop = stopLocalSession(id, null, stopIo, f.destination.clock, 30);
+    await Promise.race([checking.promise, stop]);
+   }
+   return run(cwd, argv, options);
+  };
+  try {
+   const installed = await installLocalSession(f.plan, captured.value, f.home, f.destination, undefined, async () => ({kind: "free"}));
+   const diagnostic = f.destination.journal.read(f.plan.moveId).find(row => row.action === "relocate-install-error");
+   expect(installed, JSON.stringify(diagnostic?.result)).toMatchObject({ok: true});
+   expect(readFileSync(f.plan.destinationPlacement.file, "utf8")).toContain("synthetic");
+  } finally {
+   finish.resolve();
+   await expect(stop).resolves.toEqual({ok: true, value: undefined});
+  }
  });
  it.each([false,true])("install rewrites only the header and preserves the exact body (linked=%s)",async(linked)=>{
   const f=transferFixture(linked),captured=await captureLocalSession(f.plan,f.options,async()=>({kind:"free"}));if(!captured.ok)throw new Error(JSON.stringify(captured));

@@ -124,10 +124,14 @@ if (isUsageServerMain(import.meta.url)) {
         writeFileSync(lease, "synthetic-lease"); let stops = 0;
         if (process.env.SPIDER_FIXTURE_REPLACE_GUARD) writeFileSync(`${record.options.lockFile}.guard`, JSON.stringify({ version: 1, instanceId: "b".repeat(32), pid: process.pid, createdAt: Date.now() }), { mode: 0o600 });
         return { snapshot: () => ({ role: "standby", lastIngestAt: null, backfill: "pending", errorCode: null }),
-          stop: async () => { stops++; await writeFile(stopped, String(stops)); await rm(lease, { force: true });
+          stop: async () => {
+            // Measure the simulated stop from entry, not after filesystem bookkeeping.
+            const delay = process.env.SPIDER_FIXTURE_STOP_DELAY;
+            const waitForStop = delay ? new Promise(resolve => setTimeout(resolve, Number(delay))) : undefined;
+            stops++; await writeFile(stopped, String(stops)); await rm(lease, { force: true });
             if (process.env.SPIDER_FIXTURE_HANG_STOP) await new Promise(() => {});
-            if (process.env.SPIDER_FIXTURE_STOP_DELAY) await new Promise(resolve => setTimeout(resolve, Number(process.env.SPIDER_FIXTURE_STOP_DELAY)));
-            await writeFile(join(dirnameFixture(process.env.SPIDER_FIXTURE_OBSERVED), "participant-stop-finished"), "1");
+            if (waitForStop) await waitForStop;
+            writeFileSync(join(dirnameFixture(process.env.SPIDER_FIXTURE_OBSERVED), "participant-stop-finished"), "1");
             clearInterval(keepAlive);
           } };
       } });

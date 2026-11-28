@@ -46,6 +46,8 @@ export const DEFAULTS: Readonly<Record<string, unknown>> = {
   "skills.reviewer.thinking": "xhigh",
 };
 
+const INPUT_APPEARANCE_BOOLEAN_KEYS: readonly string[] = ["ui.inputBand", "ui.spiderGlyphs"];
+
 export const GLOBAL_ONLY_CONFIG_KEYS: readonly string[] = Object.freeze([
   "subagents.extensions", "subagents.profiles.reviewer.excludeTools", "herdr.config", "herdr.enabled",
 ]);
@@ -116,6 +118,11 @@ function configLayers(cwd: string, localRoot = paths.projectRoot(cwd), globalRoo
     }
     if (Object.hasOwn(layer.config, "ui.icons") && !isIconStyle(layer.config["ui.icons"])) {
       errors.push(`invalid ui.icons in ${file}: expected text or nerd`);
+    }
+    for (const key of INPUT_APPEARANCE_BOOLEAN_KEYS) {
+      if (Object.hasOwn(layer.config, key) && typeof layer.config[key] !== "boolean") {
+        errors.push(`invalid ${key} in ${file}: expected a boolean`);
+      }
     }
     if (Object.hasOwn(layer.config, "exec.enforce") && typeof layer.config["exec.enforce"] !== "boolean") {
       errors.push(`invalid value for exec.enforce in ${file}: expected a boolean`);
@@ -206,6 +213,11 @@ export function configValues(cwd: string, localRoot?: string, globalRoot: string
   const globalIcons = isIconStyle(g["ui.icons"]);
   all["ui.icons"] = localIcons ? p["ui.icons"] : globalIcons ? g["ui.icons"] : DEFAULTS["ui.icons"];
   sources["ui.icons"] = localIcons ? "local" : globalIcons ? "global" : "default";
+  for (const key of INPUT_APPEARANCE_BOOLEAN_KEYS) {
+    const localValid = typeof p[key] === "boolean", globalValid = typeof g[key] === "boolean";
+    all[key] = localValid ? p[key] : globalValid ? g[key] : DEFAULTS[key];
+    sources[key] = localValid ? "local" : globalValid ? "global" : "default";
+  }
   const usage = readUsageConfig(g, p).value;
   for (const [key, value] of Object.entries({
     "usage.calibration": usage.calibration, "usage.footer": usage.footer, "usage.counter.poll": usage.counterPoll,
@@ -272,7 +284,7 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
   if (op === "set" && key === "subagents.profiles.reviewer.excludeTools" && !isToolSelectorList(value)) {
     throw new Error(`${key} must be a JSON array of nonempty tool selectors without whitespace or commas`);
   }
-  if (op === "set" && (key === "ui.inputBand" || key === "ui.spiderGlyphs") && typeof value !== "boolean") {
+  if (op === "set" && INPUT_APPEARANCE_BOOLEAN_KEYS.includes(key) && typeof value !== "boolean") {
     throw new Error(`${key} must be a boolean`);
   }
   if (op === "set" && key === "ui.icons" && !isIconStyle(value)) {

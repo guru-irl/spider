@@ -41,6 +41,8 @@ export async function createHostHerdrHarness(mode: 'fake' | 'hc'): Promise<Herdr
   const start = h.start;
   const close = h.close;
   const housekeeping = async (operation: () => Promise<void>) => {
+    // A test that replaced h.cli must see every cleanup read through its own wrapper.
+    if (h.cli !== cli) return operation();
     const previous = h.cli;
     h.cli = (argv, side = 'local') => {
       const command = argv.join(' ');

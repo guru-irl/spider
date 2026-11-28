@@ -54,6 +54,46 @@ test('0.1.18 upgrades owned 0.1.13 clones and backs up the old tabs bytes', asyn
   expect(await upgradeCheckpoint.checkpointBytes(f.request.journalRoot, saved!)).toEqual(previous);
 });
 
+test.each([0, 0.42])('0.1.18 layout upgrade keeps a user cell background opacity of %s', async opacity => {
+  const f = await lookRelease('0.1.18');
+  const path = join(f.h.directories.app, 'layouts/spider-glass.json');
+  const verify = verifyItem(f.ports, 'layout-theme');
+  await setupHerdr(f.request, { ...f.parts, verify });
+  const layout = JSON.parse(await readFile(path, 'utf8'));
+  expect(layout.cell_background_opacity).toBe(0.6);
+
+  // Simulate the old look with a user opacity edit in the installed layout.
+  const edited = JSON.stringify({ ...layout, background: '#16161800', cell_background_opacity: opacity }, null, 2);
+  await writeFile(path, edited);
+  const preview = { ...f.request, dryRun: true };
+  const plan = await setupHerdr(preview, await f.ports.setupParts(preview));
+  expect(plan.plan?.files.find(file => file.path === path)).toMatchObject({ action: 'replace', refusal: { code: 'unowned-clone-collision' } });
+  expect(await readFile(path, 'utf8')).toBe(edited);
+
+  const upgrade = { ...f.request, replaceChanged: true };
+  await setupHerdr(upgrade, { ...await f.ports.setupParts(upgrade), verify });
+  const updated = JSON.parse(await readFile(path, 'utf8'));
+  expect(updated.background).toEqual({ gradient: ['#18181ab3', '#22201eb3'], angle: 176 });
+  expect(updated.cell_background_opacity).toBe(opacity);
+});
+
+test('0.1.18 refuses to replace a layout edited after reading the user opacity', async () => {
+  const f = await lookRelease('0.1.18');
+  const path = join(f.h.directories.app, 'layouts/spider-glass.json');
+  await writeFile(path, JSON.stringify({ cell_background_opacity: 0.2 }));
+  const request = { ...f.request, dryRun: true, replaceChanged: true };
+  const parts = await f.ports.setupParts(request);
+  const edit = JSON.stringify({ cell_background_opacity: 0.4 });
+  await expect(setupHerdr(request, {
+    ...parts,
+    finalizeLook: async (request, context, staged) => {
+      await writeFile(path, edit);
+      return await parts.finalizeLook?.(request, context, staged) ?? staged;
+    },
+  })).rejects.toMatchObject({ code: 'concurrent-settings-edit' });
+  expect(await readFile(path, 'utf8')).toBe(edit);
+});
+
 for (const version of ['0.1.13', '0.1.16', '0.1.18'] as const) {
   test(`${version} production setup stages the complete A and B result and doctor checks its release`, async () => {
     const f = await lookRelease(version), home = f.h.directories.app;

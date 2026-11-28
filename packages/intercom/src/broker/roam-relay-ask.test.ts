@@ -63,8 +63,8 @@ async function register(agentDir: string, machineId: string, id: string, scope: 
   return { client, endpoint, from: { ...endpoint, machineId }, async received() { await client.listSessions(); return inbox; } };
 }
 
-async function fixture(fakeTime = false) {
-  const origin = await startBroker(fakeTime), recipient = await startBroker();
+async function fixture({ fakeOriginTime = false, fakeRecipientTime = false } = {}) {
+  const origin = await startBroker(fakeOriginTime), recipient = await startBroker(fakeRecipientTime);
   const asker = await register(origin.agentDir, originMachine, "asker", scopeId, 2);
   const replier = await register(recipient.agentDir, recipientMachine, "receiver");
   const target: RelayTarget = { machineId: recipientMachine, selector: { by: "id", value: "receiver" }, homeEpoch: 3 };
@@ -73,9 +73,9 @@ async function fixture(fakeTime = false) {
     cleanups.push(waiter.close);
     return waiter;
   };
-  const question = (id: string) => requestV0Broker(recipient.agentDir, {
+  const question = (id: string, timeoutMs = 20_000) => requestV0Broker(recipient.agentDir, {
     kind: "deliver", from: v0BrokerOrigin(asker.from, originMachine), target: replier.endpoint,
-    message: text(id, "one question"), thread: { kind: "ask", timeoutMs: 20_000 },
+    message: text(id, "one question"), thread: { kind: "ask", timeoutMs },
   });
   const reply = (askId: string, from: V0AgentRequest["from"] = replier.from, to = asker.endpoint, value = "answer") =>
     requestV0Broker(origin.agentDir, { kind: "deliver", from: v0BrokerOrigin(from, recipientMachine),
@@ -95,6 +95,28 @@ it("delivers a routed question once and authorizes only the live receiving endpo
   for (const endpoint of [f.replier.endpoint, replacement.endpoint])
     expect(await authorizeV0RelayReply(f.recipient.agentDir, endpoint, "ask-once")).toMatchObject(refused);
   expect(await replacement.received()).toEqual([]);
+});
+
+it("refuses to authorize a routed reply when its grant expires", async () => {
+  const f = await fixture({ fakeRecipientTime: true });
+  expect(await f.question("short-grant", 1000)).toEqual({ kind: "socket_delivered", id: "short-grant" });
+  expect(await authorizeV0RelayReply(f.recipient.agentDir, f.replier.endpoint, "short-grant"))
+    .toEqual({ asker: f.asker.from, remainingMs: 1000 });
+  await f.recipient.advance(1000);
+
+  // Read the broker response before the client can reject a zero-duration grant.
+  const socket = net.connect(join(f.recipient.agentDir, "intercom", "broker.sock"));
+  cleanups.push(() => { socket.destroy(); });
+  const frames: unknown[] = [];
+  socket.on("data", createMessageReader(frame => frames.push(frame), error => socket.destroy(error)));
+  socket.on("error", () => {});
+  writeMessage(socket, { type: "health", requestId: "health" });
+  await vi.waitFor(() => expect(frames).toMatchObject([{ type: "health_ok", requestId: "health" }]));
+  writeMessage(socket, { type: "roam_v0_relay_ask", requestId: "authorize", kind: "authorize",
+    from: f.replier.endpoint, askId: "short-grant" });
+  await vi.waitFor(() => expect(frames).toHaveLength(2));
+  expect(frames[1]).toEqual({ type: "roam_v0_relay_reply_authorization", requestId: "authorize",
+    authorization: { kind: "refused", code: "changed" } });
 });
 
 it("refuses late and mismatched replies without injecting a message", async () => {
@@ -140,7 +162,7 @@ it.each(["abort", "disconnect"] as const)("closes the waiter after the local ask
 });
 
 it("caps the broker waiter at exactly 540000 ms of fake time", async () => {
-  const f = await fixture(true);
+  const f = await fixture({ fakeOriginTime: true });
   const socket = net.connect(join(f.origin.agentDir, "intercom", "broker.sock"));
   cleanups.push(() => { socket.destroy(); });
   const frames: Record<string, unknown>[] = [];

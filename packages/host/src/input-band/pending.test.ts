@@ -44,12 +44,12 @@ it("draws steering and follow-up bands with a gray bar and hourglass, then Pi's 
   instance.updatePendingMessagesDisplay();
   const rows = instance.pendingMessagesContainer.render(32) as string[];
   expect(plain(rows)).toEqual([
-    "", `▗${"▄".repeat(31)}`, "▐ \u{F051F}  Check the result", `▝${"▀".repeat(31)}`,
-    `▗${"▄".repeat(31)}`, "▐ \u{F051F}  Summarize it", `▝${"▀".repeat(31)}`,
+    "", `▖${"▄".repeat(31)}`, "▌ \u{F051F}  Check the result", `▘${"▀".repeat(31)}`,
+    `▖${"▄".repeat(31)}`, "▌ \u{F051F}  Summarize it", `▘${"▀".repeat(31)}`,
     " ↳ Option+Up to edit all que...",
   ]);
-  expect(rows[1]).toContain(`${dim}▗`);
-  expect(rows[2]).toContain(`${dim}▐`);
+  expect(rows[1]).toContain(`${dim}▖`);
+  expect(rows[2]).toContain(`${dim}▌`);
   expect(rows[2]).toContain(`${dim}\u{F051F} `);
   expect(rows[2]).toContain(strip);
   expect(rows.every(row => visibleWidth(row) <= 32)).toBe(true);
@@ -107,7 +107,7 @@ it("includes compaction messages and keeps the editor opt-out", () => {
   instance.compactionQueuedMessages = [{ mode: "steer", text: "During compaction" }];
   stop = activate();
   instance.updatePendingMessagesDisplay();
-  expect(plain(instance.pendingMessagesContainer.render(60)).join("\n")).toContain("▐ >< During compaction");
+  expect(plain(instance.pendingMessagesContainer.render(60)).join("\n")).toContain("▌ >< During compaction");
   stop();
   stop = activate({ "ui.inputBand": false });
   instance.updatePendingMessagesDisplay();

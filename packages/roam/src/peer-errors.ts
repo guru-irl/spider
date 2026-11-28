@@ -76,6 +76,11 @@ export function peerFailureReason(error: unknown): string | null {
   return null;
 }
 
+/** Keep an answered replication refusal distinct from an uncertain artifact transfer. */
+export function syncArtifactFailureReason(reason: string, fallback: string): string {
+  return reason === "roaming-disabled" || isPeerFailureReason(reason) ? reason : fallback;
+}
+
 /** Raw network failures can reach session mirroring without the command adapter. */
 export function isPeerConnectivityError(error: unknown): boolean {
   return error instanceof Error && "code" in error && typeof error.code === "string" &&

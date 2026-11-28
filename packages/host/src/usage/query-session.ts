@@ -216,6 +216,18 @@ export function scopedRange<T extends SessionUsageScope>(scope: T, range: Sessio
     sql: `${scope.sql.replace(", session_candidates AS MATERIALIZED (", ", whole_session_candidates AS MATERIALIZED (")},
       session_candidates AS MATERIALIZED (SELECT * FROM whole_session_candidates WHERE ts>=@from AND ts<@to)` };
 }
+export function queryVisitUsage(ctx: DashboardQueryContext, id: string, from: number, to: number): Value | null {
+  if (!safeTimestamp(from) || !safeTimestamp(to) || from >= to) return null;
+  try {
+    const scope = scopedRange(scopeFor(ctx, id), { from, to });
+    const { total } = readSessionUsageCube(ctx, { start: from, end: to }, scope);
+    return total.calls ? total : null;
+  } catch (error) {
+    if (error instanceof DashboardQueryError && error.code === "not-found") return null;
+    throw error;
+  }
+}
+
 function defaultSessionRange(ctx: DashboardQueryContext, scope: Scope, span: Period | null, current: SessionRange, tz: string): SessionRange {
   if (!span) return current;
   const selected = scopedRange(scope, current);

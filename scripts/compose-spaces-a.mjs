@@ -13,7 +13,7 @@ const args = process.argv.slice(2);
 const check = args.includes('--check');
 const through = args.filter(arg => arg !== '--check')[0] ?? 'full';
 if (!['agents', 'spaces', 'full'].includes(through)) throw new Error('Expected agents, spaces, or full');
-for (const version of ['0.1.13', '0.1.16']) {
+for (const version of ['0.1.13', '0.1.16', '0.1.18']) {
   const fragments = {};
   for (const mod of through === 'agents' ? ['agents'] : ['agents', 'spaces']) {
     fragments[mod] = JSON.parse(readFileSync(new URL(`../packages/herdr/assets/look/spaces-a-sidebar/${mod}-${version}.json`, import.meta.url), 'utf8'));
@@ -28,15 +28,17 @@ for (const version of ['0.1.13', '0.1.16']) {
       { ...park, replacement: park.anchor + '\n          if (command === "park" && p?.focused && props()?.labelContract) parkFocusedTerminal(herdrApi.focused(), herdrApi.terminals(), props().labelContract, run, title => herdrApi.notify({ title, level: "warning" }));' },
     ];
     fragments.menu = JSON.parse(readFileSync(new URL(`../packages/herdr/assets/look/spaces-a-goto/menu-${version}.json`, import.meta.url), 'utf8'));
+    if (version === '0.1.18') fragments.tabs = JSON.parse(readFileSync(new URL(`../packages/herdr/assets/look/spaces-a-sidebar/tabs-${version}.json`, import.meta.url), 'utf8'));
   }
   const derived = [];
   if (through === 'full') {
-    for (const [mod, asset, sourceMod] of [['spider-picker', 'picker', 'picker'], ...(version === '0.1.16' ? [['spider-toast', 'toast', 'toast']] : [])]) {
+    for (const [mod, asset, sourceMod] of [['spider-picker', 'picker', 'picker'], ...(version !== '0.1.13' ? [['spider-toast', 'toast', 'toast']] : [])]) {
       for (const file of ['main.js', 'mod.json']) {
-        const contents = readFileSync(new URL(`../packages/herdr/assets/${asset}/${file}`, import.meta.url), 'utf8');
+        const assetFile = `${asset}/${version === '0.1.18' && asset === 'toast' && file === 'main.js' ? 'main-0.1.18.js' : file}`;
+        const contents = readFileSync(new URL(`../packages/herdr/assets/${assetFile}`, import.meta.url), 'utf8');
         const hashes = JSON.parse(readFileSync(new URL(`../packages/herdr/src/__tests__/fixtures/herdr-${version}/source-hashes.json`, import.meta.url), 'utf8'));
         const { createHash } = await import('node:crypto');
-        derived.push({ mod, file, sourceMod, sourceFile: file, sourceHash: hashes[`mods/${sourceMod}/${file}`], contents, outputHash: createHash('sha256').update(contents).digest('hex'), asset: `${asset}/${file}` });
+        derived.push({ mod, file, sourceMod, sourceFile: file, sourceHash: hashes[`mods/${sourceMod}/${file}`], contents, outputHash: createHash('sha256').update(contents).digest('hex'), asset: assetFile });
       }
     }
     const contents = readFileSync(new URL('../packages/herdr/assets/look/spaces-a-sidebar/agents-mod.json', import.meta.url), 'utf8');

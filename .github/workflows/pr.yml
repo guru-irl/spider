@@ -78,7 +78,117 @@ jobs:
           TARBALL=$(node -e "process.stdout.write(JSON.parse(require('node:fs').readFileSync('.spider/scratch/packaging/pack.json', 'utf8'))[0].filename)")
           node scripts/assert-bundle.mjs --package ".spider/scratch/packaging/$TARBALL" --commit "$(git rev-parse --short HEAD)"
 
+  select:
+    name: select tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      manifest: ${{ steps.selection.outputs.manifest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.4.0'
+          cache: npm
+
+      - name: Check for base selector
+        id: base-selector
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if git cat-file -e "$BASE_SHA:scripts/selection/select.mjs" 2>/dev/null; then
+            echo 'available=yes' >> "$GITHUB_OUTPUT"
+          fi
+
+      # The base selector resolves the head's imports without running tests.
+      - name: Install selection dependencies
+        if: steps.base-selector.outputs.available == 'yes'
+        run: npm ci --ignore-scripts
+
+      - name: Prepare selection directory
+        run: mkdir -p .spider/scratch/test-results
+
+      - name: Select affected tests
+        id: selection
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          git cat-file -e "$BASE_SHA^{commit}"
+          base_dir=$(mktemp -d "$RUNNER_TEMP/selection-base.XXXXXX")
+          trap 'rm -rf -- "$base_dir"' EXIT
+          output=.spider/scratch/test-results/test-selection.json
+          # Leave room under Linux's per-variable limit when a shard reads
+          # the output. Full selections store one short reason per test.
+          pack_selection() { gzip -c "$output" | base64 | tr -d '\n'; }
+          max_packed_bytes=$((96 * 1024))
+          weights=(scripts/test-shards.ts scripts/test-durations.json)
+          fallback='base commit has no selector'
+          if git cat-file -e "$BASE_SHA:scripts/selection/select.mjs" 2>/dev/null; then
+            # Stage both outputs so a selector that exits nonzero cannot leave
+            # a scoped manifest or summary behind.
+            if git archive "$BASE_SHA" scripts/selection scripts/test-resources.json scripts/roam-entries.json "${weights[@]}" |
+                tar -xf - -C "$base_dir" &&
+              ln -s "$PWD/node_modules" "$base_dir/node_modules" &&
+              GITHUB_STEP_SUMMARY="$base_dir/summary" node "$base_dir/scripts/selection/select.mjs" "$BASE_SHA" "$base_dir/selection.json" &&
+              mv "$base_dir/selection.json" "$output"; then
+              packed=$(pack_selection)
+              if (( ${#packed} <= max_packed_bytes )); then
+                printf 'manifest=%s\n' "$packed" >> "$GITHUB_OUTPUT"
+                if [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -f "$base_dir/summary" ]; then
+                  cat "$base_dir/summary" >> "$GITHUB_STEP_SUMMARY"
+                fi
+                exit 0
+              fi
+              fallback='selection exceeds the job output limit'
+              echo '::warning::Selection exceeds the job output limit. Running the full root test suite.'
+            else
+              fallback='base selector failed'
+              echo '::warning::Base selector failed. Running the full root test suite.'
+            fi
+          fi
+          # Build a full manifest without executing the selector again or
+          # reading policy from the head.
+          mkdir "$base_dir/full"
+          git archive "$BASE_SHA" "${weights[@]}" | tar -xf - -C "$base_dir/full"
+          node --input-type=module - "$base_dir/full" "$output" "$fallback" <<'JS'
+          import { execFileSync } from 'node:child_process';
+          import { createHash } from 'node:crypto';
+          import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          import { pathToFileURL } from 'node:url';
+          const [baseDir, output, fallback] = process.argv.slice(2);
+          const { partitionFiles } = await import(pathToFileURL(join(baseDir, 'scripts/test-shards.ts')));
+          const durations = JSON.parse(readFileSync(join(baseDir, 'scripts/test-durations.json'), 'utf8'));
+          const git = (...args) => execFileSync('git', args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+          const head = git('rev-parse', 'HEAD').trim();
+          const files = git('ls-tree', '-r', '-z', '--name-only', head, '--', 'packages').split('\0')
+            .filter(file => /^packages\/[^/]+\/src\/.+\.test\.ts$/.test(file)).sort();
+          if (!files.length) throw new Error('Empty root test inventory');
+          const selected = Object.fromEntries(files.map(file => [file, [`full fallback: ${fallback}`]]));
+          const groups = partitionFiles(files, durations, 4);
+          const selection = { version: 1, head, mode: 'full', fallback, mapRunId: null, mapCommit: null,
+            changedFiles: [], selected, groups };
+          const selectionHash = createHash('sha256').update(JSON.stringify(selection)).digest('hex');
+          writeFileSync(output, `${JSON.stringify({ ...selection, selectionHash }, null, 2)}\n`);
+          const summary = `Selection: ${files.length} of ${files.length} files (${fallback}).\n\nGroups: ${groups.map(group => group.length).join(', ')}.\n\nHash: ${selectionHash}\n`;
+          console.log(summary);
+          if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
+          JS
+          packed=$(pack_selection)
+          if (( ${#packed} > max_packed_bytes )); then
+            echo '::error::Even the full selection exceeds the job output limit.'
+            exit 1
+          fi
+          printf 'manifest=%s\n' "$packed" >> "$GITHUB_OUTPUT"
+
   tests:
+    needs: [select]
     name: tests ${{ matrix.group }}/4
     strategy:
       fail-fast: false
@@ -117,73 +227,14 @@ jobs:
           test ! -e "$rundir"
           echo "XDG_RUNTIME_DIR=" >> "$GITHUB_ENV"
 
-      - name: Select affected tests
+      - &restore_selection
+        name: Restore shared test selection
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          GH_TOKEN: ${{ github.token }}
+          SELECTION: ${{ needs.select.outputs.manifest }}
+        shell: bash
         run: |
-          set -o pipefail
-          git cat-file -e "$BASE_SHA^{commit}"
-          base_dir=$(mktemp -d "$RUNNER_TEMP/selection-base.XXXXXX")
-          trap 'rm -rf -- "$base_dir"' EXIT
-          output=.spider/scratch/test-results/test-selection.json
-          weights=(scripts/test-shards.ts scripts/test-durations.json)
-          fallback='base commit has no selector'
-          if git cat-file -e "$BASE_SHA:scripts/selection/select.mjs" 2>/dev/null; then
-            # Stage both outputs so a selector that exits nonzero cannot leave
-            # a scoped manifest or summary behind.
-            if git archive "$BASE_SHA" scripts/selection scripts/test-resources.json scripts/roam-entries.json "${weights[@]}" |
-                tar -xf - -C "$base_dir" &&
-              ln -s "$PWD/node_modules" "$base_dir/node_modules" &&
-              GITHUB_STEP_SUMMARY="$base_dir/summary" node "$base_dir/scripts/selection/select.mjs" "$BASE_SHA" "$base_dir/selection.json" &&
-              mv "$base_dir/selection.json" "$output"; then
-              if [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -f "$base_dir/summary" ]; then
-                cat "$base_dir/summary" >> "$GITHUB_STEP_SUMMARY"
-              fi
-              exit 0
-            fi
-            fallback='base selector failed'
-            echo '::warning::Base selector failed. Running the full root test suite.'
-          fi
-          # Build a full manifest without executing the selector again or
-          # reading policy from the head.
-          mkdir "$base_dir/full"
-          git archive "$BASE_SHA" "${weights[@]}" | tar -xf - -C "$base_dir/full"
-          node --input-type=module - "$base_dir/full" "$output" "$fallback" <<'JS'
-          import { execFileSync } from 'node:child_process';
-          import { createHash } from 'node:crypto';
-          import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
-          import { join } from 'node:path';
-          import { pathToFileURL } from 'node:url';
-          const [baseDir, output, fallback] = process.argv.slice(2);
-          const { partitionFiles } = await import(pathToFileURL(join(baseDir, 'scripts/test-shards.ts')));
-          const durations = JSON.parse(readFileSync(join(baseDir, 'scripts/test-durations.json'), 'utf8'));
-          const git = (...args) => execFileSync('git', args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
-          const head = git('rev-parse', 'HEAD').trim();
-          const files = git('ls-tree', '-r', '-z', '--name-only', head, '--', 'packages').split('\0')
-            .filter(file => /^packages\/[^/]+\/src\/.+\.test\.ts$/.test(file)).sort();
-          if (!files.length) throw new Error('Empty root test inventory');
-          const selected = Object.fromEntries(files.map(file => [file, [`full fallback: ${fallback}`]]));
-          const groups = partitionFiles(files, durations, 4);
-          const selection = { version: 1, head, mode: 'full', fallback, mapRunId: null, mapCommit: null,
-            changedFiles: [], selected, groups };
-          const selectionHash = createHash('sha256').update(JSON.stringify(selection)).digest('hex');
-          writeFileSync(output, `${JSON.stringify({ ...selection, selectionHash }, null, 2)}\n`);
-          const summary = `Selection: ${files.length} of ${files.length} files (${fallback}).\n\nGroups: ${groups.map(group => group.length).join(', ')}.\n\nHash: ${selectionHash}\n`;
-          console.log(summary);
-          if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
-          JS
-
-      - name: Save test selection
-        if: matrix.group == 1
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-selection
-          path: .spider/scratch/test-results/test-selection.json
-          include-hidden-files: true
-          if-no-files-found: error
-          overwrite: true
-          retention-days: 30
+          mkdir -p .spider/scratch/test-results
+          printf '%s' "$SELECTION" | base64 --decode | gzip -d > .spider/scratch/test-results/test-selection.json
 
       - name: Test selected group
         env:
@@ -203,50 +254,35 @@ jobs:
             node "$judge_dir/scripts/selection/run.mjs" .spider/scratch/test-results/test-selection.json ${{ matrix.group }} \
             .spider/scratch/test-results/group-${{ matrix.group }}.json .spider/scratch/test-results/hash-${{ matrix.group }}.json
 
-      - name: Attest the completed selection
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-selection-hash-${{ matrix.group }}
-          path: .spider/scratch/test-results/hash-${{ matrix.group }}.json
-          include-hidden-files: true
-          if-no-files-found: error
-          overwrite: true
-          retention-days: 30
-
   checks:
     name: typecheck · test · build
-    needs: [compile, tests]
+    needs: [compile, select, tests]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '26.4.0'
-      - name: Download PR selection and runner attestations
-        uses: actions/download-artifact@v4
-        with:
-          pattern: test-selection*
-          path: .spider/scratch/selections
-          merge-multiple: true
-      - name: Require identical PR selections
+      - name: Require selection, compile and tests to pass
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           NEEDS_JSON: ${{ toJSON(needs) }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          set -o pipefail
-          git cat-file -e "$BASE_SHA^{commit}"
-          judge=$BASE_SHA
-          if ! git cat-file -e "$BASE_SHA:scripts/selection/manifest.mjs" 2>/dev/null; then
-            judge=$SELECTION_BOOTSTRAP_SHA
+          if ! jq -e 'all(.compile, .select, .tests; .result == "success")' <<< "$NEEDS_JSON"; then
+            echo '::error::Selection, compile and every test runner must succeed.'
+            exit 1
           fi
-          judge_dir=$(mktemp -d "$RUNNER_TEMP/selection-judge.XXXXXX")
-          trap 'rm -rf -- "$judge_dir"' EXIT
-          git archive "$judge" scripts/selection | tar -xf - -C "$judge_dir"
-          node "$judge_dir/scripts/selection/aggregate.mjs" .spider/scratch/selections "$HEAD_SHA"
+
+  save-selection:
+    name: save selection for main audit
+    needs: [select, tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - *restore_selection
+      - name: Save test selection
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-selection
+          path: .spider/scratch/test-results/test-selection.json
+          include-hidden-files: true
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30

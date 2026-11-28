@@ -73,7 +73,7 @@ describe('look patches across Herdr releases', () => {
     expect(() => selectLookPatches(shippedPatches as LookPatchSet, '0.1.17')).toThrow();
   });
 
-  for (const version of ['0.1.13', '0.1.16'] as const) {
+  for (const version of ['0.1.13', '0.1.16', '0.1.18'] as const) {
     it(`${version} patches the complete real inventory including menu`, async () => {
       const selected = selectLookPatches(shippedPatches as LookPatchSet, version);
       const source = {} as HerdrClones;

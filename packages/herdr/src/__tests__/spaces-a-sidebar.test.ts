@@ -311,6 +311,16 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   });
 }
 
+it('0.1.18: the collapsed rail shows a 32px shape button without a second status glyph', () => {
+  const fixture = renderFixture('0.1.18', { width: 76, checking: true, published: true, spaces: [{ ...localA, status: 'blocked' }] });
+  const rendered = all(fixture.view.render());
+  const button = rendered.find(node => node.id === 'space-s1')!;
+  expect(button.calls).toContainEqual(['h', [32]]);
+  expect(button.calls).toContainEqual(['tooltip', ['Branch A']]);
+  expect(button.items).toHaveLength(1);
+  expect(button.items.flatMap(all).map(node => node.svg)).toEqual(['mods/spider-agents/space-octagon.svg']);
+});
+
 it('0.1.16: cancels an obsolete local git watch when its space disappears', () => {
   const fixture = renderFixture('0.1.16');
   const gitKey = JSON.stringify([null, '/fixture/gone']);

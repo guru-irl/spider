@@ -24,7 +24,7 @@ async function connectedClient() {
         writeMessage(peer, { type: "registered", sessionId: "disconnect-test", features: [] });
       }
       if ((message as { type: string }).type === "unregister") peer.end();
-    }));
+    }, error => { throw error; }));
     accept(peer);
   });
   server.listen(socketPath);

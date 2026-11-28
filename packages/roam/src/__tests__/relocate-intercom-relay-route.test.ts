@@ -1,16 +1,17 @@
 import { EventEmitter, once } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { openDbAt } from "@spider/db-core";
 import * as hc from "@spider/herdr/client/hc";
 import { HerdrError } from "@spider/herdr/client/parse";
 import { IntercomClient } from "@spider/intercom/broker/client";
 import * as relayBroker from "@spider/intercom/broker/roam-relay-client";
-import { listV0RelayLinks, pollV0RelayBroker, submitV0Relay } from "@spider/intercom/broker/roam-relay-client";
+import { beginV0RelayAsk, listV0RelayLinks, pollV0RelayBroker, submitV0Relay } from "@spider/intercom/broker/roam-relay-client";
 import { requestV0Broker } from "@spider/intercom/broker/roam-v0-client";
 import { decodeRelayPoll, relayRefused, type RelayPeer, type RelayPoll, type RelayPollReply, type RelayResult, type RelaySubmit } from "@spider/intercom/relay-protocol";
-import type { V0RouteResult } from "@spider/intercom/roam-v0";
+import type { V0Endpoint, V0RouteResult } from "@spider/intercom/roam-v0";
 import { registerIntercomOnce } from "@spider/intercom/single-instance";
 import { startTestBroker, stopTestBroker, testBrokerEnv, testTmpDir } from "@spider/intercom/test-support";
 import type { LocalSessionInfo } from "@spider/intercom/types";
@@ -73,13 +74,43 @@ function machine(identity: RelayPeer) {
 }
 type Machine = ReturnType<typeof machine>;
 
-async function startBroker(m: Machine) {
-  const broker = startTestBroker(process.execPath, [join(brokerBuild, "broker.mjs")], {
-    env: { ...testBrokerEnv(), SPIDER_GLOBAL_ROOT: m.root, PI_CODING_AGENT_DIR: m.agentDir }, stdio: ["pipe", "pipe", "pipe"],
+async function startBroker(m: Machine, fakeTime = false) {
+  const file = join(brokerBuild, "broker.mjs");
+  const clock = `import { mock } from "node:test";
+    mock.timers.enable({ apis: ["setTimeout"] });
+    let now = 0;
+    Object.defineProperty(globalThis.performance, "now", { value: () => now });
+    process.on("message", ms => { now += ms; mock.timers.tick(ms); process.send(now); });
+    await import(${JSON.stringify(pathToFileURL(file).href)});`;
+  const broker = startTestBroker(process.execPath, fakeTime ? ["--input-type=module", "-e", clock] : [file], {
+    env: { ...testBrokerEnv(), SPIDER_GLOBAL_ROOT: m.root, PI_CODING_AGENT_DIR: m.agentDir },
+    stdio: ["ignore", "pipe", "pipe", ...(fakeTime ? ["ipc" as const] : [])],
   });
   cleanups.push(() => stopTestBroker(broker));
   const [output] = await once(broker.stdout!, "data");
   expect(String(output)).toContain("Intercom broker started");
+  return async (ms: number) => { const advanced = once(broker, "message"); broker.send(ms); await advanced; };
+}
+
+function openLink(m: Machine, relay: RelayPeer, defaultReach: readonly RelayPeer[]) {
+  const abort = new AbortController();
+  let pollId = 0;
+  const calls: Promise<RelayPollReply>[] = [];
+  cleanups.push(async () => { abort.abort(); await Promise.all(calls); });
+  return { abort, poll(holdMs: RelayPoll["holdMs"], results: readonly RelayResult[] = [], peers = defaultReach) {
+    const call = pollV0RelayBroker(m.agentDir, { holdMs,
+      hello: { type: "hello", version: 1, relay, toMachineId: m.peer.machineId, linkId: "fixture-link", pollId: `poll-${++pollId}` },
+      reach: { type: "reach", peers }, results,
+    }, abort.signal);
+    calls.push(call);
+    return call;
+  } };
+}
+
+async function liveEndpoint(m: Machine, id: string): Promise<V0Endpoint> {
+  const result = await requestV0Broker(m.agentDir, { kind: "lookup", scopeId: SCOPE, selector: { by: "id", value: id } });
+  if (result.kind !== "matches" || result.targets.length !== 1) throw new Error(`Missing live endpoint ${id}`);
+  return result.targets[0];
 }
 
 async function register(m: Machine, sessionId: string, name: string, epoch: number) {
@@ -94,7 +125,7 @@ async function register(m: Machine, sessionId: string, name: string, epoch: numb
   return { client, async received() { await client.listSessions(); return inbox; } };
 }
 
-async function startTool(m: Machine, intercom: ReturnType<typeof createV0Intercom>) {
+async function startTool(m: Machine, intercom: ReturnType<typeof createV0Intercom>, session = { id: "source", epoch: 1, idle: true }) {
   const hooks = new Map<string, ((event: unknown, ctx: unknown) => unknown)[]>();
   const tools: ToolDefinition[] = [];
   const bus = new EventEmitter();
@@ -102,28 +133,30 @@ async function startTool(m: Machine, intercom: ReturnType<typeof createV0Interco
     events: { on(name: string, handler: (value: unknown) => void) { bus.on(name, handler); return () => bus.off(name, handler); },
       emit(name: string, value: unknown) { bus.emit(name, value); } },
     on(name: string, handler: (event: unknown, ctx: unknown) => unknown) { hooks.set(name, [...(hooks.get(name) ?? []), handler]); },
-    getSessionName: () => "source", setSessionName() {}, registerMessageRenderer() {}, registerShortcut() {}, registerCommand() {},
-    appendEntry() {}, registerTool(tool: ToolDefinition) { tools.push(tool); }, getAllTools: () => tools,
+    getSessionName: () => session.id, setSessionName() {}, registerMessageRenderer() {}, registerShortcut() {}, registerCommand() {},
+    appendEntry() {}, sendMessage() {}, registerTool(tool: ToolDefinition) { tools.push(tool); }, getAllTools: () => tools,
     getActiveTools: () => tools.map(tool => tool.name), setActiveTools() {},
   };
   const ctx = { cwd: m.root, mode: "rpc", model: { id: "fixture" }, hasUI: false,
-    sessionManager: { getSessionId: () => "source", getEntries: () => [] }, isIdle: () => true,
+    sessionManager: { getSessionId: () => session.id, getEntries: () => [] }, isIdle: () => session.idle,
     hasPendingMessages: () => false, ui: { notify() {}, getEditorText: () => "" } };
   const emit = async (name: string) => { for (const hook of hooks.get(name) ?? []) await hook({ reason: "startup" }, ctx); };
   vi.stubEnv("PI_CODING_AGENT_DIR", m.agentDir);
-  registerIntercomOnce(pi as never, undefined, { prepare: intercom.prepare, homeEpoch: id => id === "source" ? 1 : undefined });
+  registerIntercomOnce(pi as never, undefined, { prepare: intercom.prepare, prepareReply: intercom.prepareReply,
+    homeEpoch: id => id === session.id ? session.epoch : undefined });
   cleanups.push(() => emit("session_shutdown"));
   await emit("session_start");
   const tool = tools.find(item => item.name === "intercom")!;
-  return async (to: string, action: "send" | "ask" = "send") => {
-    const { content, details } = await tool.execute("route-fixture", { action, to, message: "fixture message" },
+  return async (to: string, action: "send" | "ask" | "reply" = "send", message = "fixture message") => {
+    const { content, details } = await tool.execute("route-fixture", { action, ...(action === "reply" ? { replyTo: to } : { to }), message },
       undefined, undefined, ctx as unknown as ExtensionToolContext);
     if (content[0]?.type !== "text" || !details || typeof details !== "object") throw new Error("Missing intercom tool result");
     return { content: [content[0]], details: details as Record<string, unknown> };
   };
 }
 
-async function fixture(options: { direct?: boolean; reached?: readonly RelayPeer[]; link?: boolean; targetGrant?: boolean; secondRelay?: boolean } = {}) {
+async function fixture(options: { direct?: boolean; reached?: readonly RelayPeer[]; link?: boolean; targetGrant?: boolean;
+  secondRelay?: boolean; fakeTime?: boolean } = {}) {
   vi.stubEnv("PI_SUBAGENT_CHILD", "0");
   vi.stubEnv("PI_INTERCOM_SCOPE_ID", SCOPE);
   const sender = machine(origin), receiver = machine(target), carrier = machine(relay);
@@ -132,14 +165,14 @@ async function fixture(options: { direct?: boolean; reached?: readonly RelayPeer
   receiver.configure({ acceptFrom: options.targetGrant === false ? [] : [origin], relays });
   const configureCarrier = (machine: Machine) => machine.configure({ sendTo: [sender.peer, receiver.peer], linkTo: [ORIGIN], relays });
   configureCarrier(carrier);
-  await startBroker(sender);
+  const advance = await startBroker(sender, options.fakeTime);
   await startBroker(receiver);
   const local = await register(sender, "local-recipient", "local", 2);
   const remote = await register(receiver, "remote-recipient", "recipient", 3);
 
   const faults = { lost: false, lostRoute: false, routeMissing: false, disconnected: false, badPin: false, resolveFailed: false,
     targetRefusesDelivery: false, lookupFailureMachineId: "" };
-  const targetIntercom = createV0Intercom(receiver.root, { broker: async (agentDir, op, signal) => {
+  const targetIntercom = createV0Intercom(receiver.root, { transport: () => transport(), broker: async (agentDir, op, signal) => {
     if (faults.targetRefusesDelivery && op.kind === "deliver") return { kind: "refused", code: "unreachable" };
     return requestV0Broker(agentDir, op, signal);
   } });
@@ -156,12 +189,13 @@ async function fixture(options: { direct?: boolean; reached?: readonly RelayPeer
         lookupPeers.push(p.machineId);
         if (p.machineId === faults.lookupFailureMachineId) throw new Error("Fixture lookup failed");
       }
-      expect(p).toEqual(receiver.peer);
+      const destination = p.machineId === ORIGIN ? intercom : targetIntercom;
+      expect(p).toEqual(p.machineId === ORIGIN ? sender.peer : receiver.peer);
       expect(argv).toEqual(["roam", "agent", "--v0", "intercom"]);
       request.onConnected?.(!faults.disconnected);
       const bytes = request.stdin ?? request.stdinForTimeout?.(request.timeoutMs - 2000);
       if (!bytes) throw new Error("Missing request");
-      const reply = await targetIntercom.handle(JSON.parse(bytes.toString("utf8")));
+      const reply = await destination.handle(JSON.parse(bytes.toString("utf8")));
       if (faults.lost && request.stdinForTimeout) throw new Error("Fixture lost the delivery acknowledgement");
       if (faults.lostRoute && request.stdinForTimeout) throw new HerdrError("machine-not-found", "fixture lost the route after delivery");
       return Buffer.from(JSON.stringify(reply));
@@ -176,20 +210,7 @@ async function fixture(options: { direct?: boolean; reached?: readonly RelayPeer
     return { from, locals };
   }
   try { await vi.waitFor(roster); } finally { vi.stubEnv("PI_CODING_AGENT_DIR", undefined); }
-  function link(peer: RelayPeer, defaultReach: readonly RelayPeer[] = [peer, target]) {
-    const abort = new AbortController();
-    let pollId = 0;
-    const calls: Promise<RelayPollReply>[] = [];
-    cleanups.push(async () => { abort.abort(); await Promise.all(calls); });
-    return { abort, poll(holdMs: RelayPoll["holdMs"], results: readonly RelayResult[] = [], peers = defaultReach) {
-      const call = pollV0RelayBroker(sender.agentDir, { holdMs,
-        hello: { type: "hello", version: 1, relay: peer, toMachineId: ORIGIN, linkId: "fixture-link", pollId: `poll-${++pollId}` },
-        reach: { type: "reach", peers }, results,
-      }, abort.signal);
-      calls.push(call);
-      return call;
-    } };
-  }
+  function link(peer: RelayPeer, defaultReach: readonly RelayPeer[] = [peer, target]) { return openLink(sender, peer, defaultReach); }
   const primary = link(relay, options.reached);
   const held = options.link === false ? null : primary.poll(20_000);
   if (held) await vi.waitFor(async () => expect(await listV0RelayLinks(sender.agentDir)).toMatchObject([{ state: "up" }]));
@@ -198,7 +219,7 @@ async function fixture(options: { direct?: boolean; reached?: readonly RelayPeer
     configureCarrier(secondary);
     return { ...link(backupRelay), forward: createV0RelayForwarder(secondary.root, { transport }) };
   })() : undefined;
-  return { sender, receiver, carrier, local, remote, intercom, tool, roster, faults, lookupPeers, link, ...primary, held, backup,
+  return { sender, receiver, carrier, local, remote, intercom, targetIntercom, tool, roster, faults, lookupPeers, link, advance, ...primary, held, backup,
     forward: createV0RelayForwarder(carrier.root, { transport }) };
 }
 
@@ -363,11 +384,10 @@ it.each(["peer-pin", "trust"] as const)("does not relay on a failed %s check", a
   expect(await f.remote.received()).toEqual([]);
 });
 
-it("refuses an ask without offering any text to a relay", async () => {
-  const f = await fixture();
-  expect((await f.tool("remote-recipient", "ask")).details).toMatchObject({ code: "unsupported" });
-  f.abort.abort();
-  expect((await f.held!).submissions).toEqual([]);
+it("refuses an ask without queuing it when no relay is reachable", async () => {
+  const f = await fixture({ link: false });
+  expect((await f.tool("remote-recipient", "ask")).details).toMatchObject({ code: "no-relay" });
+  expect(await f.remote.received()).toEqual([]);
 });
 
 it("reports when no relay is reachable without queuing a send", async () => {
@@ -620,4 +640,171 @@ it.each([{ elapsed: 19_999, withinBudget: true }, { elapsed: 20_001, withinBudge
     expect(result).toMatchObject({ kind: "refused", code: "unreachable" });
     expect(offers).toEqual([RELAY]);
   }
+});
+
+async function takeOffer(held: Promise<RelayPollReply>, pending: Promise<unknown>, id: string, kind: RelaySubmit["kind"]) {
+  const next = await Promise.race([held, pending]);
+  expect(next).toHaveProperty("submissions");
+  const { submissions } = next as RelayPollReply;
+  expect(submissions).toMatchObject([{ kind, message: { id } }]);
+  return submissions[0];
+}
+
+async function askPlan(f: Fixture, to = "remote-recipient") {
+  const plan = await f.intercom.prepare({ to, ...await f.roster() });
+  if (plan.kind !== "remote") throw new Error("Missing remote ask plan");
+  return plan.ask;
+}
+
+async function replier(f: Fixture) {
+  const session = (await f.remote.client.listSessions()).find((entry): entry is LocalSessionInfo =>
+    !entry.remote && entry.address?.sessionId === "remote-recipient");
+  if (!session) throw new Error("Missing live replier");
+  return session;
+}
+
+async function stopPrimary(f: Fixture) {
+  const current = async () => (await listV0RelayLinks(f.sender.agentDir)).find(link => link.relay.machineId === RELAY);
+  const previous = (await current())?.lastCallMs ?? 0;
+  const held = f.poll(20_000);
+  await vi.waitFor(async () => expect((await current())?.lastCallMs).toBeGreaterThan(previous));
+  f.abort.abort();
+  await held;
+  await vi.waitFor(async () => expect(await current()).toMatchObject({ state: "down", lastError: "poll-closed" }));
+}
+
+it("settles a delivered ask once through the backup after the original relay stops", async () => {
+  const f = await twoRelays();
+  const reverse = openLink(f.receiver, backupRelay, [backupRelay, origin]);
+  expect((await f.poll(0)).ready.ok).toBe(true);
+  expect((await reverse.poll(0)).ready.ok).toBe(true);
+  const firstHeld = f.poll(20_000), replyHeld = reverse.poll(20_000);
+  const ask = await askPlan(f, "target.invalid/recipient");
+  const outcomes: V0RouteResult[] = [];
+  const pending = ask(marker("ask-1"), 60_000).then(result => { outcomes.push(result); return result; });
+  const offer = await takeOffer(firstHeld, pending, "ask-1", "ask");
+  const delivered = await f.forward(offer);
+  expect(delivered).toEqual({ type: "result", messageId: "ask-1", attempted: true, outcome: { kind: "socket_delivered", id: "ask-1" } });
+  await f.poll(0, [delivered]);
+  expect((await listV0RelayLinks(f.sender.agentDir))[0]).toMatchObject({ messagesCarried: 1 });
+  expect(await f.remote.received()).toEqual(["ask-1"]);
+  await stopPrimary(f);
+  expect(outcomes).toEqual([]);
+
+  const from = await replier(f);
+  const reply = f.targetIntercom.prepareReply({ from, askId: "ask-1", message: { ...marker("answer-1"), text: "answer" } });
+  const replyOffer = await takeOffer(replyHeld, reply, "answer-1", "reply");
+  await reverse.poll(0, [await f.backup.forward(replyOffer)]);
+  expect(await reply).toMatchObject({ kind: "socket_delivered", path: "relay relay-2.invalid" });
+  expect(await pending).toMatchObject({ kind: "replied", id: "ask-1", text: "answer", path: "relay relay-1.invalid" });
+  expect(outcomes).toHaveLength(1);
+  // The receiving broker rejects a second reply and does not inject it as a new message.
+  const duplicateHeld = reverse.poll(20_000);
+  const duplicate = f.targetIntercom.prepareReply({ from, askId: "ask-1", message: marker("answer-2") });
+  const next = await Promise.race([duplicateHeld, duplicate]);
+  if ("submissions" in next) await reverse.poll(0, await Promise.all(next.submissions.map(value => f.backup.forward(value))));
+  expect(await duplicate).toMatchObject({ kind: "refused" });
+  expect(await f.remote.received()).toEqual(["ask-1"]);
+});
+
+it.each([false, true])("never resends an ask after a lost acknowledgement (reply: %s)", async replyArrives => {
+  const f = await fixture({ link: false, secondRelay: true, fakeTime: true });
+  const backup = f.backup!;
+  expect((await f.poll(0)).ready.ok).toBe(true);
+  expect((await backup.poll(0)).ready.ok).toBe(true);
+  const primaryHeld = f.poll(20_000), backupHeld = backup.poll(20_000);
+  const submit = relayBroker.submitV0Relay;
+  const ret = Promise.withResolvers<RelayResult>();
+  const offers: string[] = [];
+  vi.spyOn(relayBroker, "submitV0Relay").mockImplementation(async (...args) => {
+    offers.push(args[1]);
+    const result = await submit(...args);
+    if (args[1] === RELAY) ret.resolve(result);
+    return result;
+  });
+  const ask = await askPlan(f);
+  const pending = ask(marker("ask-lost"), 540_000);
+  const taken = await takeOffer(primaryHeld, pending, "ask-lost", "ask");
+  expect(await f.forward(taken)).toMatchObject({ attempted: true, outcome: { kind: "socket_delivered", id: "ask-lost" } });
+  // The real recipient has the question, but the hold-0 result never reaches the origin.
+  await stopPrimary(f);
+  expect(await ret.promise).toMatchObject({ attempted: true, outcome: { kind: "unknown", id: "ask-lost" } });
+  const links = await listV0RelayLinks(f.sender.agentDir);
+  expect(links.find(link => link.relay.machineId === RELAY)).toMatchObject({ messagesCarried: 0 });
+  expect(offers).toEqual([RELAY]);
+  if (replyArrives) {
+    f.receiver.configure({ sendTo: [f.sender.peer], acceptFrom: [origin], relays: [RELAY, BACKUP] });
+    const reply = await f.targetIntercom.prepareReply({ from: await replier(f), askId: "ask-lost", message: marker("late-ack-answer") });
+    expect(reply).toMatchObject({ kind: "socket_delivered", path: "direct" });
+    expect(await pending).toMatchObject({ kind: "replied", id: "ask-lost", text: "late-ack-answer" });
+  } else {
+    await f.advance(540_000);
+    expect(await pending).toMatchObject({ kind: "unknown", id: "ask-lost" });
+  }
+  backup.abort.abort();
+  const offersAfterLostAskAck = [...(await backupHeld).submissions];
+  expect(offersAfterLostAskAck).toHaveLength(0);
+  expect(await f.remote.received()).toEqual(["ask-lost"]);
+});
+
+it("uses the routed reply for a busy non-interactive recipient", async () => {
+  const f = await fixture();
+  await f.remote.client.disconnect();
+  f.receiver.configure({ sendTo: [f.sender.peer], acceptFrom: [origin] });
+  await startTool(f.receiver, f.targetIntercom, { id: "remote-recipient", epoch: 3, idle: false });
+  await vi.waitFor(() => liveEndpoint(f.receiver, "remote-recipient"));
+  vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+  const ask = await askPlan(f);
+  const pending = ask(marker("ask-busy"), 60_000);
+  const question = await takeOffer(f.held!, pending, "ask-busy", "ask");
+  const result = await f.forward(question);
+  await f.poll(0, [result]);
+  expect(result).toMatchObject({ outcome: { kind: "socket_delivered" } });
+  expect(await pending).toMatchObject({ kind: "replied", id: "ask-busy", text: expect.stringContaining("non-interactive mode") });
+});
+
+it("accepts a reply locally on an undialable hub but no unsolicited message or remote reply", async () => {
+  vi.stubEnv("PI_INTERCOM_SCOPE_ID", SCOPE);
+  vi.stubEnv("PI_CODING_AGENT_DIR", undefined);
+  const hub = machine(relay), box = machine(target);
+  for (const m of [hub, box]) {
+    const db = openDbAt(join(m.root, "spider.db"), "global");
+    try { db.prepare("INSERT INTO session_homes (session_id,machine_id,epoch,updated_at,state) VALUES ('hub-asker',?,2,1,'running')").run(RELAY); }
+    finally { db.close(); }
+  }
+  hub.configure({ sendTo: [box.peer], acceptFrom: [target], linkTo: [TARGET] });
+  box.configure({ acceptFrom: [relay] });
+  await startBroker(hub);
+  await startBroker(box);
+  const asker = await register(hub, "hub-asker", "hub", 2);
+  const receiver = await register(box, "remote-recipient", "recipient", 3);
+  const to = await liveEndpoint(hub, "hub-asker"), from = await liveEndpoint(box, "remote-recipient");
+  const hubWire = { ...to, machineId: RELAY }, boxWire = { ...from, machineId: TARGET };
+  const boxIntercom = createV0Intercom(box.root), hubIntercom = createV0Intercom(hub.root);
+  const waiter = await beginV0RelayAsk(hub.agentDir, { from: hubWire, askId: "hub-ask", timeoutMs: 60_000,
+    target: { machineId: TARGET, selector: { by: "id", value: "remote-recipient" }, homeEpoch: 3 } });
+  cleanups.push(async () => { waiter.close(); await waiter.result; });
+  const outbound = { version: 1, requestId: "hub-ask", toMachineId: TARGET, from: hubWire, kind: "deliver", target: from, message: marker("hub-ask") };
+  expect(await boxIntercom.handle({ version: 2, relayId: RELAY, request: outbound, thread: { kind: "ask", timeoutMs: 60_000 } }))
+    .toMatchObject({ kind: "socket_delivered" });
+  expect(await receiver.received()).toEqual(["hub-ask"]);
+  const unsolicited = { version: 1, requestId: "unsolicited", toMachineId: RELAY, from: boxWire, kind: "deliver", target: to, message: marker("unsolicited") };
+  expect(await hubIntercom.handle({ version: 2, relayId: RELAY, request: unsolicited })).toMatchObject({ kind: "refused", code: "reply-only" });
+  for (const relayId of [null, RELAY])
+    expect(await hubIntercom.handle({ version: 2, relayId, request: unsolicited, thread: { kind: "reply", replyTo: "hub-ask" } }))
+      .toMatchObject({ kind: "refused", code: "reply-only" });
+  const locals = (await receiver.client.listSessions()).filter((value): value is LocalSessionInfo => !value.remote);
+  const localFrom = locals.find(value => value.address?.sessionId === "remote-recipient")!;
+  expect(await boxIntercom.prepare({ to: "hub-asker", from: localFrom, locals })).toEqual({ kind: "refused", code: "reply-only" });
+  const link = openLink(box, relay, [relay]);
+  expect((await link.poll(0)).ready.ok).toBe(true);
+  const held = link.poll(20_000);
+  const reply = boxIntercom.prepareReply({ from: localFrom, askId: "hub-ask", message: marker("hub-answer") });
+  const offer = await takeOffer(held, reply, "hub-answer", "reply");
+  const forward = createV0RelayForwarder(hub.root, { transport: () => { throw new Error("Hub reply must not dial the hub"); } });
+  expect(await forward({ ...offer, kind: "send" })).toMatchObject({ attempted: false, outcome: { kind: "refused", code: "reply-only" } });
+  await link.poll(0, [await forward(offer)]);
+  expect(await reply).toMatchObject({ kind: "socket_delivered", path: "relay relay-1.invalid" });
+  expect(await waiter.result).toMatchObject({ kind: "replied", id: "hub-ask", text: "hub-answer" });
+  expect(await asker.received()).toEqual([]);
 });

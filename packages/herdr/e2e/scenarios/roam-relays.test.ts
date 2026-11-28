@@ -17,7 +17,7 @@ import type { Suite } from '../harness/suite.js';
 import { deadline, waitFor } from '../harness/wait.js';
 
 interface ToolResult { content: { text: string }[]; details: Record<string, unknown> }
-interface PhysicalEntry { type?: string; customType?: string; details?: { message?: { id?: string; content?: { text?: string } } } }
+interface PhysicalEntry { type?: string; customType?: string; details?: { message?: { id?: string; v0RelayAsk?: true; content?: { text?: string } } } }
 const firstText = 'first relay delivery';
 const stoppedText = 'relay stopped, this must not arrive';
 const restartedText = 'fresh relay delivery after restart';
@@ -25,6 +25,8 @@ const preferredText = 'use the first configured relay when both are up';
 const switchedText = 'use the backup after the first relay stops';
 const noReachText = 'the open link cannot reach the target, this must not arrive';
 const recoveredText = 'use the first configured relay again after recovery';
+const questionText = 'can the backup relay carry the answer?';
+const answerText = 'yes, through the backup relay';
 
 function sendTurn(id: string, to: string, message: string): ScriptTurn[] {
   return parentTurns({ steps: [{ tool: { id, name: 'intercom', arguments: { action: 'send', to, message } } }] });
@@ -33,6 +35,10 @@ function sendTurn(id: string, to: string, message: string): ScriptTurn[] {
 async function send(pi: RpcDriver, marker: string): Promise<{ event: object; result: ToolResult }> {
   const settled = await pi.prompt(mark(marker));
   expect(settled.type).toBe('agent_settled');
+  return toolResult(pi, marker);
+}
+
+async function toolResult(pi: RpcDriver, marker: string): Promise<{ event: object; result: ToolResult }> {
   const event = await pi.toolResult(marker, deadline(30_000));
   expect(event.type).toBe('tool_execution_end');
   expect(event.toolCallId).toBe(marker);
@@ -50,7 +56,7 @@ async function relayDelivery(suite: Suite): Promise<void> {
     .filter(entry => entry.type === 'custom_message' && entry.customType === 'intercom_message');
   const receivedWithId = async (id: string): Promise<PhysicalEntry[]> => (await entries()).filter(entry => entry.details?.message?.id === id);
   const receivedWithText = async (text: string): Promise<PhysicalEntry[]> => (await entries()).filter(entry => entry.details?.message?.content?.text === text);
-  const backupAlias = 'relay-2.invalid';
+  const primaryAlias = 'relay-1.invalid', backupAlias = 'relay-2.invalid';
   const links = () => listV0RelayLinks(fixture.sender.agent);
   async function waitForBackup(reachesTarget: boolean, after?: RelayLinkView): Promise<RelayLinkView> {
     const matching = (link: RelayLinkView) => link.relay.alias === backupAlias && link.state === 'up' &&
@@ -69,16 +75,20 @@ async function relayDelivery(suite: Suite): Promise<void> {
     expect(receipts).toHaveLength(1);
     return id;
   }
+  const scripts: Record<string, ScriptTurn[]> = {
+    'relay-first': sendTurn('relay-first', fixture.target.id, firstText),
+    'relay-stopped': sendTurn('relay-stopped', fixture.target.id, stoppedText),
+    'relay-restarted': sendTurn('relay-restarted', fixture.target.id, restartedText),
+    'preferred': sendTurn('preferred', fixture.target.id, preferredText),
+    'switched': sendTurn('switched', fixture.target.id, switchedText),
+    'no-reach': sendTurn('no-reach', fixture.target.id, noReachText),
+    'recovered': sendTurn('recovered', fixture.target.id, recoveredText),
+    'relay-ask': parentTurns({ steps: [{ tool: { id: 'relay-ask', name: 'intercom', arguments: {
+      action: 'ask', to: fixture.target.id, message: questionText,
+    } } }] }),
+  };
   try {
-    await writeScript(suite.pi.scriptPath, { story: suite.story, scripts: {
-      'relay-first': sendTurn('relay-first', fixture.target.id, firstText),
-      'relay-stopped': sendTurn('relay-stopped', fixture.target.id, stoppedText),
-      'relay-restarted': sendTurn('relay-restarted', fixture.target.id, restartedText),
-      'preferred': sendTurn('preferred', fixture.target.id, preferredText),
-      'switched': sendTurn('switched', fixture.target.id, switchedText),
-      'no-reach': sendTurn('no-reach', fixture.target.id, noReachText),
-      'recovered': sendTurn('recovered', fixture.target.id, recoveredText),
-    } });
+    await writeScript(suite.pi.scriptPath, { story: suite.story, scripts });
     await fixture.startRelay(0);
     expect(fixture.relayStart).toBeDefined();
     await suite.evidence('R19-before-send.json', { ...fixture.controls, relayStart: fixture.relayStart,
@@ -159,10 +169,60 @@ async function relayDelivery(suite: Suite): Promise<void> {
     expect(noReachReceipts).toHaveLength(0);
     await suite.evidence('R19-failover-receipts.json', { ids, receipts, stoppedReceipts, noReachReceipts });
     console.log(`R19 ordered paths: relay-1.invalid, relay-2.invalid, relay-1.invalid; physical receipts: ${receipts.map(group => group.length).join(', ')}; refused receipts: ${stoppedReceipts.length}, ${noReachReceipts.length}`);
+
+    const firstLink = async () => (await links()).find(view => view.relay.alias === primaryAlias);
+    const beforeAsk = await firstLink();
+    expect(beforeAsk).toMatchObject({ state: 'up' });
+    const targetIdle = async () => {
+      const state = (await fixture.target.pi.rpc({ type: 'get_state' })).data as { isStreaming?: boolean };
+      return state.isStreaming === false;
+    };
+    await waitFor('target idle before the question', targetIdle, Boolean, deadline(30_000));
+    const askResults = async () => (await fixture.sender.pi.events())
+      .filter(event => event.type === 'tool_execution_end' && event.toolCallId === 'relay-ask');
+    const askTurn = fixture.sender.pi.prompt(mark('relay-ask'));
+    void askTurn.catch(() => {});
+    const physical = await waitFor('one physical question before stopping the relay', async () => {
+      const early = await askResults();
+      if (early.length) throw new Error(`ask settled before receiving a question: ${JSON.stringify(early)}`);
+      return receivedWithText(questionText);
+    }, found => found.length > 0, deadline(30_000));
+    expect(physical).toHaveLength(1);
+    const askId = physical[0].details?.message?.id;
+    expect(typeof askId).toBe('string');
+    expect(physical[0].details?.message).toMatchObject({ v0RelayAsk: true });
+    const confirmed = await waitFor('hold-0 confirms the question on the first link', firstLink,
+      view => view?.messagesCarried === beforeAsk!.messagesCarried + 1, deadline(30_000));
+    await fixture.stopRelay(0);
+    const stoppedBeforeReply = await fixture.waitForDown();
+    const askSettledBeforeReply = (await askResults()).length !== 0;
+    expect(askSettledBeforeReply).toBe(false);
+    expect(await receivedWithId(askId!)).toHaveLength(1);
+
+    await waitFor('target idle before the scripted reply', targetIdle, Boolean, deadline(30_000));
+    scripts['relay-answer'] = parentTurns({ steps: [{ tool: { id: 'relay-answer', name: 'intercom', arguments: {
+      action: 'reply', replyTo: askId!, message: answerText,
+    } } }] });
+    await writeScript(suite.pi.scriptPath, { story: suite.story, scripts });
+    const { result: replyLeg } = await send(fixture.target.pi, 'relay-answer');
+    expect(replyLeg.details).toMatchObject({ delivered: true, replyTo: askId, path: 'relay relay-2.invalid' });
+    expect((await askTurn).type).toBe('agent_settled');
+    const { result: askResult } = await toolResult(fixture.sender.pi, 'relay-ask');
+    expect(askResult.details).toMatchObject({ delivery: 'replied', messageId: askId, replyId: replyLeg.details.messageId });
+    expect(askResult.content[0].text).toContain(answerText);
+    const [completed, physicalQuestions] = await Promise.all([askResults(), receivedWithId(askId!)]);
+    expect(completed).toHaveLength(1);
+    expect(physicalQuestions).toHaveLength(1);
+    expect(await receivedWithText(questionText)).toHaveLength(1);
+    await suite.evidence('R19-ask-and-backup-reply.json', { beforeAsk, confirmed, stoppedBeforeReply, askSettledBeforeReply,
+      physicalQuestions, replyLeg, askResult, completed });
+    console.log(`R19 ask: ${physicalQuestions.length} physical question; hold-0 count +1; pending after relay stop; reply via relay-2.invalid; ${completed.length} completed ask`);
   } finally {
     try { await suite.keepEvidence(fixture.target.file, 'R19-target.jsonl'); }
     finally { await fixture.close(); }
   }
+  for (const endpoint of [fixture.sender, fixture.target]) expect(existsSync(join(endpoint.agent, 'intercom', 'broker.sock'))).toBe(false);
+  console.log('R19 cleanup: both private broker sockets are gone');
 }
 
 async function relayPoll(suite: Suite): Promise<void> {

@@ -261,32 +261,36 @@ describe("usage footer layout", () => {
 });
 
 describe("public usage footer component", () => {
-  function themed(variant: FooterInput) {
+  function themed(variant: FooterInput, requestRender: () => void = () => {}) {
     const provider: ReadonlyFooterDataProvider = { getGitBranch: () => variant.branch,
       getExtensionStatuses: () => variant.statuses, getAvailableProviderCount: () => 1,
       onBranchChange: () => () => {} };
     const theme = { fg: (key: string, text: string) =>
       `${key === "warning" ? "\x1b[33m" : key === "error" ? "\x1b[31m" : key === "accent" ? "\x1b[34m" : "\x1b[2m"}${text}\x1b[0m` } as Theme;
-    return createUsageFooter(() => variant, theme, provider, () => {});
+    return createUsageFooter(() => variant, theme, provider, requestRender);
   }
 
-  it("draws the 28-phase moon in the same column at rest and over a full second", () => {
+  it("draws the 14-frame moon in the same column at rest and over a full second", () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
-    const component = themed(input({ iconStyle: "nerd" }));
+    const renders = vi.fn();
+    const component = themed(input({ iconStyle: "nerd" }), renders);
     const row = () => component.render(120)[1];
     try {
       expect(row()).toMatch(/^\x1b\[2m\uE3E3\x1b\[0m {2}/u);
       component.setWorking(Date.now());
-      const frames = Array.from({ length: 28 }, (_, phase) => {
-        vi.advanceTimersByTime(Math.ceil(phase * 1000 / 28) - Date.now());
+      renders.mockClear();
+      const frames = Array.from({ length: 14 }, (_, phase) => {
+        vi.advanceTimersByTime(Math.ceil(phase * 1000 / 14) - Date.now());
         expect(row()).toMatch(/^\x1b\[34m/u);
         expect(stripTerminalSequences(row()).slice(1)).toMatch(/^ {2}14.6%\/1.0M/u);
         return stripTerminalSequences(row())[0];
       });
-      expect(frames).toEqual(["\uE3E3", ...Array.from({ length: 27 }, (_, i) => String.fromCodePoint(0xE3C8 + i))]);
-      expect([frames[7], frames[14]]).toEqual(["\uE3CE", "\uE3D5"]);
+      // Every other of the 28 Weather Icons phases: 14 redraws a second instead of 28 (user, 2026-11-28).
+      expect(frames).toEqual(["\uE3E3", ...Array.from({ length: 13 }, (_, i) => String.fromCodePoint(0xE3C9 + 2 * i))]);
+      expect(frames[7]).toBe("\uE3D5");
       vi.advanceTimersByTime(1000 - Date.now());
+      expect(renders).toHaveBeenCalledTimes(14); // One redraw per frame; Pi rescans the transcript on each.
       expect(stripTerminalSequences(row())[0]).toBe("\uE3E3");
       component.setWorking();
       expect(row()).toMatch(/^\x1b\[2m\uE3E3/u);

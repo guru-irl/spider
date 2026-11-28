@@ -132,7 +132,9 @@ stay the same.
 
 The usage footer shows the moon two spaces before context usage. It cycles
 once a second in the accent color while Pi works and rests on a dim new moon
-when idle. The Nerd set uses all 28 moon phases. The text set uses
+when idle. The Nerd set uses every other one of the 28 moon phases, so the
+footer redraws 14 times a second: each redraw makes Pi rescan the whole
+transcript. The text set uses
 `◐ ◓ ◑ ◒` when working and `○` when idle. Pi still handles Esc and shows its
 compaction and retry notices.
 

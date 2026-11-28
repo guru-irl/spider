@@ -9,9 +9,11 @@ export const REPLY_FRAME = {
 export const BAND_GLYPHS = { top: "▄", bottom: "▀", barTop: "▗", bar: "▐", barBottom: "▝" } as const;
 
 const NEW_MOON = "\uE3E3";
+// Every other Weather Icons phase (new, then U+E3C9 to U+E3E1 in steps of two, full at index 7). Each frame
+// makes Pi rescan the whole transcript, so 14 a second halves the cost of all 28 (user, 2026-11-28).
 export const ACTIVITY_FRAMES: Readonly<Record<IconStyle, { readonly idle: string; readonly working: readonly string[] }>> = {
   text: { idle: "○", working: ["◐", "◓", "◑", "◒"] },
-  nerd: { idle: NEW_MOON, working: [NEW_MOON, ...Array.from({ length: 27 }, (_, i) => String.fromCodePoint(0xE3C8 + i))] },
+  nerd: { idle: NEW_MOON, working: [NEW_MOON, ...Array.from({ length: 13 }, (_, i) => String.fromCodePoint(0xE3C9 + 2 * i))] },
 } as const;
 
 // These four frames exist only in fonts patched by Spider. The pad is for non-Mono Nerd Fonts.

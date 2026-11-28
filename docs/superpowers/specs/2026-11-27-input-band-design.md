@@ -17,7 +17,8 @@ below the input, and sent messages on a lighter grey (`#262628`) without a caret
 4. Sent messages start with a `❯` caret.
 5. The working spinner moves into the footer as a permanent icon, left of the context usage. It animates while
    the agent works and rests when idle.
-6. That spinner is the moon: 28 phases, one cycle per second (the user's pick, m1d).
+6. That spinner is the moon, one cycle per second (the user's pick, m1d). It shows every other one of the 28
+   phases, 14 frames a second: at 28, a 10,000-row session cost about a third of a CPU core (user, 11-28).
 7. Running subagents show an animated robot instead of a spinner: it looks left, then right, then blinks.
 8. The custom spider spinners (a spider walking the web, the web spun as rings or as a spiral) were rejected:
    too small to read as a spinner.
@@ -118,10 +119,11 @@ Herdr’s app theme, `spider-glass.json`, keeps its neutral chrome accent (`#d9d
   the context usage. The icon is always there, so the footer never shifts.
 - Frames: the Weather Icons moon phases in every Nerd Font, in order: new `U+E3E3`, waxing crescent
   `U+E3C8`-`E3CD`, first quarter `U+E3CE`, waxing gibbous `U+E3CF`-`E3D4`, full `U+E3D5`, waning gibbous
-  `U+E3D6`-`E3DB`, third quarter `U+E3DC`, waning crescent `U+E3DD`-`E3E2`. Working: accent colour, one cycle
+  `U+E3D6`-`E3DB`, third quarter `U+E3DC`, waning crescent `U+E3DD`-`E3E2`. Working: every other phase (new,
+  then `U+E3C9` to `U+E3E1` in steps of two), 14 frames in the accent colour, one cycle
   per `MOON_CYCLE_MS` (1000). Idle: the new-moon frame in the dim colour.
 - Working means the agent is running: from `agent_start` to `agent_end`. While working, the footer asks for a
-  render once per frame (about 36 ms) and stops its timer when idle, on shutdown and on reload.
+  render once per frame (about 71 ms) and stops its timer when idle, on shutdown and on reload.
 - Spider calls `ctx.ui.setWorkingVisible(false)`, which hides only pi's default working row. Pi's compaction,
   retry and branch-summary rows are separate indicators and still show. The row's "(esc to interrupt)" hint goes
   away; Esc still interrupts.
@@ -216,6 +218,6 @@ Herdr’s app theme, `spider-glass.json`, keeps its neutral chrome accent (`#d9d
 - Herdr draws cells with an explicit background opaque over its glass, which is what makes the strip read as solid.
 - Custom glyphs: a terminal without the patched font draws boxes for `U+F2120`-`F2123`, which is why
   `ui.spiderGlyphs` defaults to off. Herdr loads fonts only at start, so the patch needs a Herdr restart.
-- Render cost: the Nerd moon requests 28 frames a second while the agent works, up from 12.5 for Pi’s
+- Render cost: the Nerd moon requests 14 frames a second while the agent works, near the 12.5 of Pi’s
   default working row. Text mode requests four. Unchanged boxes reuse their painted rows, but Pi still walks
   the transcript each frame. In main-screen mode it also scans and diffs every row.

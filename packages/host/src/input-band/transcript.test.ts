@@ -2,7 +2,7 @@ import { copyFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BranchSummaryMessageComponent, CompactionSummaryMessageComponent, SkillInvocationMessageComponent, CustomEditor, CustomMessageComponent, ToolExecutionComponent, UserMessageComponent, Theme, createEditToolDefinition, getAgentDir, initTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Box, Markdown, Text, stripTerminalSequences, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { Box, Container, Markdown, Text, stripTerminalSequences, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerInputBand } from "./index.js";
 import { createHalfBox } from "./box.js";
@@ -34,6 +34,27 @@ const editTool = () => {
     {}, definition, tui, "/project");
 };
 const custom = () => new CustomMessageComponent({ role: "custom", customType: "notice", content: "Check the manifest", display: true, timestamp: 0 }, undefined);
+const card = (name: string, self = false) => new ToolExecutionComponent(name, name, {}, {}, {
+  ...(self ? { renderShell: "self" as const } : {}),
+  renderCall: () => {
+    if (!self) return new Text(name, 0, 0);
+    const box = createHalfBox(1, text => theme.bg("toolSuccessBg", text));
+    box.addChild(new Text(name, 0, 0));
+    return box;
+  },
+  renderResult: (_result, { expanded }) => {
+    const text = new Text(expanded ? `${name} expanded` : `${name} collapsed`, 0, 0);
+    if (!self) return text;
+    const box = createHalfBox(1, value => theme.bg("toolSuccessBg", value));
+    box.addChild(text);
+    return box;
+  },
+}, tui, "/project");
+const chat = (...children: Component[]) => {
+  const root = new Container();
+  for (const child of children) root.addChild(child);
+  return root;
+};
 
 beforeAll(() => {
   const themes = join(getAgentDir(), "themes");
@@ -217,6 +238,95 @@ it("trims box-colored padding without dropping outer swatches painted in other b
   expect(rows[1]).toContain("\x1b[1;48;5;4m");
   expect(rows[3]).toContain("\x1b[48:2::9:8:7m");
   expect(rows[4]).toContain("\x1b[44m");
+});
+
+it.each([false, true])("places consecutive default and self-shell cards together with expanded=%s", expanded => {
+  stop = activate();
+  const first = card("first");
+  const second = card("second", true);
+  for (const tool of [first, second]) {
+    tool.updateResult({ content: [], isError: false });
+    tool.setExpanded(expanded);
+  }
+  const rows = plain(chat(first, second, card("third")).render(24));
+  expect(rows).toEqual([
+    "", "▄".repeat(24), " first", expanded ? " first expanded" : " first collapsed", "▀".repeat(24),
+    "▄".repeat(24), " second", "▀".repeat(24), "▄".repeat(24),
+    expanded ? " second expanded" : " second collapsed", "▀".repeat(24),
+    "▄".repeat(24), " third", "▀".repeat(24),
+  ]);
+});
+
+it("keeps spacing around non-tool and hidden tool components", () => {
+  stop = activate();
+  const hidden = card("hidden");
+  Object.assign(hidden, { hideComponent: true });
+  const empty = new ToolExecutionComponent("empty", "empty", {}, {}, {
+    renderShell: "self", renderCall: () => new Container(),
+  }, tui, "/project");
+  const rows = plain(chat(card("first"), hidden, empty, card("second"), custom(), card("third")).render(24));
+  expect(rows.slice(0, 7)).toEqual(["", "▄".repeat(24), " first", "▀".repeat(24), "▄".repeat(24), " second", "▀".repeat(24)]);
+  expect(rows.slice(7, 10)).toEqual(["", "▄".repeat(24), " [notice]"]);
+  const last = rows.indexOf(" third");
+  expect(rows.slice(last - 2, last)).toEqual(["", "▄".repeat(24)]);
+});
+
+it("retains one separator after non-tool text when an intervening tool is hidden", () => {
+  stop = activate();
+  const hidden = card("hidden");
+  Object.assign(hidden, { hideComponent: true });
+  const root = chat(card("first"), new Text("Assistant reply", 0, 0), hidden, card("second"));
+  const rows = plain(root.render(24));
+  const reply = rows.indexOf("Assistant reply");
+  expect(rows.slice(reply, reply + 4)).toEqual(["Assistant reply", "", "▄".repeat(24), " second"]);
+});
+
+it.each(["first", "second"])("joins the native self-shell edit as the %s card", position => {
+  stop = activate();
+  const edit = editTool();
+  const other = card("other");
+  const root = position === "first" ? chat(edit, other) : chat(other, edit);
+  const rows = plain(root.render(32));
+  const boundary = rows.indexOf("▀".repeat(32));
+  expect(rows[boundary + 1]).toBe("▄".repeat(32));
+});
+
+it("leaves a tool with an unknown leading component unchanged", () => {
+  stop = activate();
+  const second = card("second");
+  second.children[0] = { render: () => [""], invalidate() {} };
+  const rows = plain(chat(card("first"), second).render(24));
+  expect(rows.slice(3, 6)).toEqual(["▀".repeat(24), "", "▄".repeat(24)]);
+});
+
+it("retains stock spacing if a self-shell lacks half edges", () => {
+  stop = activate();
+  const raw = new ToolExecutionComponent("raw", "raw", {}, {}, { renderShell: "self", renderCall: () => new Text("raw", 0, 0) }, tui, "/project");
+  const rows = plain(chat(card("first"), raw, card("last")).render(24));
+  expect(rows).toEqual(["", "▄".repeat(24), " first", "▀".repeat(24), "", "raw", "", "▄".repeat(24), " last", "▀".repeat(24)]);
+});
+
+it("restores stock spacing when the transcript patch is disabled", () => {
+  const root = chat(card("first"), card("second"));
+  const stock = root.render(24);
+  stop = activate();
+  expect(plain(root.render(24))[4]).toBe("▄".repeat(24));
+  stop();
+  stop = undefined;
+  expect(root.render(24)).toEqual(stock);
+});
+
+it.each([false, true])("keeps Pi's click expansion on the second adjacent tool (self=%s)", self => {
+  stop = activate();
+  const first = card("first");
+  const second = card("second", self);
+  second.updateResult({ content: [], isError: false });
+  const root = chat(first, second);
+  const width = 24;
+  const rows = plain(root.render(width));
+  const y = rows.indexOf(" second collapsed");
+  expect(root.handleMouse({ type: "click", button: "left", x: 2, y, width, height: rows.length, screenX: 2, screenY: y, shift: false, alt: false, ctrl: false })).toMatchObject({ handled: true });
+  expect(plain(root.render(width))).toContain(" second expanded");
 });
 
 it("leaves Pi's self-rendered tool shell and a box without padding unchanged", () => {

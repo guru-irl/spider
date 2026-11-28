@@ -1,9 +1,9 @@
 import { unexpectedBootstrapProbe } from "./transport-fixture";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, aroundAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { chmodSync, closeSync, createReadStream, existsSync, lstatSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { chmodSync, closeSync, createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statfsSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
+import { dirname, join, relative, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import { createReplica, scratchDbPath } from "@spider/db-core/testutil";
 import { applyBatch } from "@spider/db-core/roam/apply";
@@ -16,8 +16,8 @@ import * as stagingApi from "../staging";
 import { createManifestPages, handleArtifactRequest, pullArtifact, readManifestPages, stageArtifact, transferArtifact } from "../artifacts";
 
 const roots: string[] = [];
-function newFixture(): { root: string; source: string; staging: string } {
-  const root = mkdtempSync(join(dirname(scratchDbPath("artifact")), "artifact-"));
+function newFixture(scratch = dirname(scratchDbPath("artifact"))): { root: string; source: string; staging: string } {
+  const root = mkdtempSync(join(scratch, "artifact-"));
   return { root, source: join(root, "source"), staging: join(root, "staging") };
 }
 function fixture(): ReturnType<typeof newFixture> {
@@ -264,12 +264,43 @@ it("a pending transfer resumes after sender and receiver lower their layout limi
     expect(remote.sent).not.toContain(0);
   } finally { remote.close(); }
 }, 5000);
+function largeArtifactRamRoot(): string | undefined {
+  if (process.platform !== "linux") return;
+  try {
+    const fs = statfsSync("/dev/shm");
+    // One source, two sets of chunks, and one assembled file are live at once.
+    if (fs.type === 0x01021994 && fs.bavail * fs.bsize >= 320 * 1024 * 1024) {
+      return mkdtempSync("/dev/shm/spider-artifact-");
+    }
+  } catch { /* No writable tmpfs. Use ordinary test scratch. */ }
+}
+
 describe.each(["agent", "session"] as const)("artifact above 64 MiB (%s)", kind => {
   let files: ReturnType<typeof newFixture>;
   let expected: string;
   let manifest: Awaited<ReturnType<typeof stageArtifact>>;
+  let scratch: string | undefined;
+  aroundAll(async runSuite => {
+    const checkout = process.env.SPIDER_TEST_FIXTURE_CHECKOUT;
+    if (!checkout) return await runSuite();
+    const scratchPath = relative(checkout, dirname(scratchDbPath("artifact")));
+    if (scratchPath === ".." || scratchPath.startsWith(`..${sep}`)) return await runSuite();
+    const ramRoot = largeArtifactRamRoot();
+    if (!ramRoot) return await runSuite();
+    try {
+      // Keep every real staging, SQLite, and fsync call. The byte and wire
+      // checks should not depend on disk flush latency at this payload size.
+      scratch = join(ramRoot, scratchPath);
+      mkdirSync(scratch, { recursive: true, mode: 0o700 });
+      process.env.SPIDER_TEST_FIXTURE_CHECKOUT = ramRoot;
+      await runSuite();
+    } finally {
+      process.env.SPIDER_TEST_FIXTURE_CHECKOUT = checkout;
+      rmSync(ramRoot, { recursive: true, force: true });
+    }
+  });
   beforeAll(async () => {
-    files = newFixture();
+    files = newFixture(scratch);
     const out = openSync(files.source, "w", 0o600);
     const sourceHash = createHash("sha256");
     let length = 0, index = 0;

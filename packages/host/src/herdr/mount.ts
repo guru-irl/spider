@@ -60,6 +60,7 @@ import { createHerdrViews } from './views.js';
 import { openSessionHistoryDb } from '../session-run-db.js';
 import { loadedBuildPresence } from '../roam/build-presence.js';
 import { controlConfig, configValues, modelDefaultLayers } from '../control.js';
+import { modelName } from '../model-name.js';
 import { mountChildHerdr } from './child.js';
 import { coreStartedAt, disabledHerdrEnvironment, verifiedHerdrFile, readAppLayout, createHostHerdrPorts, createProcessInventory, explicitExtensionArguments, readJobJournal, openRunView, type HostHerdrOptions, type HostHerdrPorts } from './ports.js';
 
@@ -526,8 +527,11 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
       await installSshShim(shimOptions); environment = createExecutionEnvironmentPolicy(shimOptions);
       remoteFiles = createRemoteFileResolver(hc, config.machines, { manager: ctx.sessionManager ?? ctx, id: owner.sessionId });
       output = createHostHerdrPorts({ hc, config, runtimeBytes: Buffer.alloc(0), runtimePath: on => runtimePath(on) });
+      const appearance = configValues(ctx.cwd).config;
       transcript = createRunTranscriptSource({ owner: () => owner, resolveDb: bindDb, openBindingDb: openGlobalReadOnly, transcriptRoots: o => [paths.scratch('project', o.cwd)].filter(root => existsSync(root)),
-        modelContextWindow: model => { const slash = model.indexOf('/'); return slash < 0 ? undefined : ctx.modelRegistry?.find(model.slice(0, slash), model.slice(slash + 1))?.contextWindow; } });
+        modelContextWindow: model => { const slash = model.indexOf('/'); return slash < 0 ? undefined : ctx.modelRegistry?.find(model.slice(0, slash), model.slice(slash + 1))?.contextWindow; },
+        modelName: model => modelName(ctx.modelRegistry, model), iconStyle: appearance['ui.icons'] === 'nerd' ? 'nerd' : 'text',
+        inputBand: appearance['ui.inputBand'] !== false, creditFactor: () => options.viewerCreditFactor?.() ?? null });
       inactiveNotice(ctx, false, 'activation-problem');
       stopped = false; activationEnv = env;
       const activeOwner = owner;

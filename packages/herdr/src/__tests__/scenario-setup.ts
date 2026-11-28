@@ -197,9 +197,9 @@ setInterval(()=>{},1000);
       } finally { await h.hc.kill(terminal.address).catch(() => {}); await h.hc.rm(terminal.address); }
     },
     ensureRuntime: async (request, context) => { if (runtimeSetup) installedRuntimes = await runtimeSetup.parts.ensureRuntime(request, context); return installedRuntimes; },
-    bootstrapRuntime: async (request, context) => {
+    bootstrapRuntime: async (request, context, runtimes) => {
       if (runtimeSetup) {
-        await runtimeSetup.parts.bootstrapRuntime(request, context);
+        await runtimeSetup.parts.bootstrapRuntime(request, context, runtimes);
       } else { await h.hc.fileRead('remote.invalid' as MachineName, runtimePath); }
     }, hc: h.hc,
     cutover: async (_request, context) => {

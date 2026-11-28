@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { visibleWidth } from "@earendil-works/pi-tui";
-import { formatAgentLine, renderGridCell, AgentDetail } from "@spider/ui";
+import { Container, visibleWidth } from "@earendil-works/pi-tui";
+import { formatAgentLine, renderGridCell, AgentDetail, AgentFooter, AgentStore } from "@spider/ui";
 import type { AgentSnapshot, ThemeAdapter } from "@spider/ui";
 import { renderSpiderResult, renderSubagentDone } from "../render-result.js";
 import { renderUsageFooter, type FooterInput } from "../usage/footer.js";
@@ -18,21 +18,47 @@ const footer: FooterInput = { cwd: "~/src/demo", branch: "main", sessionName: "m
   counter: { availability: "disabled", snapshot: null }, statuses: new Map() } as FooterInput;
 
 describe("model display names", () => {
-  it("resolves qualified and bare IDs using the provider catalog, and ignores empty or ambiguous names", () => {
+  it("resolves qualified and bare IDs using the provider catalog, and ignores empty names", () => {
     const models = [
       { provider: "copilot", id: "claude-opus-5.5", name: "Claude Opus 5.5" },
       { provider: "other", id: "claude-opus-5.5", name: "Another Opus" },
       { provider: "router", id: "company/gpt-6", name: "GPT 6" },
       { provider: "copilot", id: "nameless", name: "  " },
     ];
-    const registry = { getAll: () => models, find: (provider: string, id: string) => models.find(m => m.provider === provider && m.id === id) } as unknown as ExtensionContext["modelRegistry"];
+    const registry = { getAll: () => models, getAvailable: () => [], find: (provider: string, id: string) => models.find(m => m.provider === provider && m.id === id) } as unknown as ExtensionContext["modelRegistry"];
     expect(modelName(registry, "copilot/claude-opus-5.5")).toBe("Claude Opus 5.5");
     expect(modelName(registry, "router/company/gpt-6")).toBe("GPT 6");
     expect(modelName(registry, "company/gpt-6")).toBe("GPT 6");
-    expect(modelName(registry, "claude-opus-5.5")).toBeUndefined();
+    expect(modelName(registry, "claude-opus-5.5")).toBe("Claude Opus 5.5");
     expect(modelName(registry, "copilot/nameless")).toBeUndefined();
     expect(modelName(registry, "copilot/not-found")).toBeUndefined();
     expect(modelName(undefined, "copilot/not-found")).toBeUndefined();
+  });
+  it("prefers available catalog names for conflicting bare model IDs", () => {
+    const models = [
+      { provider: "radius", id: "gpt-6.1-terra", name: "GPT 6.1 Terra" },
+      { provider: "github-copilot", id: "gpt-6.1-terra", name: "GPT-6.1 Terra" },
+    ];
+    const registry = { getAll: () => models, getAvailable: () => [models[1]],
+      find: (provider: string, id: string) => models.find(m => m.provider === provider && m.id === id) } as unknown as ExtensionContext["modelRegistry"];
+    expect(modelName(registry, "gpt-6.1-terra")).toBe("GPT-6.1 Terra");
+    expect(modelName(registry, "radius/gpt-6.1-terra")).toBe("GPT 6.1 Terra");
+    expect(modelName(registry, "not-in-catalog")).toBeUndefined();
+  });
+  it.each([72, 120])("aligns agent and usage footer model sides at %i columns", (width) => {
+    const source = { listActive: () => [{ id: "r1", session_id: "s", agent: "reviewer", name: "review", status: "running" as const,
+      model: agent.model, thinking: "xhigh", step_count: 2, token_count: 0, started_at: 0 }],
+      getRun: () => undefined, subscribe: () => () => {} };
+    const store = new AgentStore(source); store.start();
+    const rows = new Container();
+    rows.addChild(new AgentFooter(store, theme, { now: () => 0 }));
+    rows.addChild({ render: (w: number) => renderUsageFooter(footer, w), invalidate() {} });
+    const [row, heading] = rows.render(width);
+    expect(row).toMatch(/Claude Opus 5\.5 · xhigh$/);
+    expect(heading).toMatch(/Claude Opus 5\.5 · xhigh$/);
+    expect(visibleWidth(row!)).toBe(width);
+    expect(visibleWidth(heading!)).toBe(width);
+    store.stop();
   });
   it("shows the display name and thinking in agent rows, grid and detail", () => {
     expect(formatAgentLine(theme, agent, 120, 0)).toContain("Claude Opus 5.5 · xhigh");

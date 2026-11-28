@@ -315,6 +315,29 @@ describe("public usage footer component", () => {
     } finally { component.dispose(); vi.useRealTimers(); }
   });
 
+  it.each([[false, 14.6], [false, 75], [false, 91], [true, 14.6], [true, 75], [true, 91]] as const)
+    ("dims every separator in pane mode %s at %s percent", (inPane, percent) => {
+    const variant = input({ inPane, context: { percent, contextWindow: 1000000 } });
+    const component = themed(variant);
+    try {
+      const lines = component.render(200);
+      const separatorIsDim: boolean[] = [];
+      for (const line of lines) {
+        let dim = false;
+        for (const token of line.matchAll(/\x1b\[([\d;]*)m|·/g)) {
+          if (token[1] !== undefined) {
+            for (const code of (token[1] || "0").split(";")) {
+              if (code === "0" || code === "22") dim = false;
+              else if (code === "2") dim = true;
+            }
+          } else separatorIsDim.push(dim);
+        }
+      }
+      expect(lines.map(stripTerminalSequences)).toEqual(renderUsageFooter(variant, 200));
+      expect(separatorIsDim).toEqual([true, true, true, true, true, true]);
+    } finally { component.dispose(); }
+  });
+
   it("keeps model and thinking dim after name or model truncation", () => {
     const component = themed(input({ cwd: "~/src/some/deep/project", sessionName: "my long session name here" }));
     try {

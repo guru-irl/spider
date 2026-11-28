@@ -36,9 +36,9 @@ describe('glass themes and fonts', () => {
   it('draws the blue accent and dark Pi panels without recoloring the logo', async () => {
     const theme = await loadPiTheme();
     const { backgrounds, rows } = checkThemeContrast(theme);
-    expect(theme.vars?.strip).toBe('#060607');
+    expect(theme.vars?.strip).toBe('#101012');
     for (const token of ['userMessageBg', 'customMessageBg', 'toolPendingBg', 'toolSuccessBg', 'toolErrorBg']) {
-      expect(backgrounds[token], token).toBe('#060607');
+      expect(backgrounds[token], token).toBe('#101012');
     }
     for (const token of ['accent', 'borderAccent', 'customMessageLabel']) {
       expect(rows.find(row => row.token === token)?.foreground, token).toBe('#82aaff');
@@ -53,7 +53,7 @@ describe('glass themes and fonts', () => {
     expect(herdr.ansi).toEqual(palette);
     const report = checkThemeContrast(theme);
     expect(report.failures).toEqual([]); expect(report.rows.length).toBeGreaterThan(40);
-    expect(Object.values(report.backgrounds).sort()).toEqual(['#161618', '#161618', '#202022', '#29292a', '#29292a', '#303031', ...Array(5).fill('#060607')].sort());
+    expect(Object.values(report.backgrounds).sort()).toEqual(['#161618', '#161618', '#202022', '#29292a', '#29292a', '#303031', ...Array(5).fill('#101012')].sort());
     const fonts = await prepareFonts({}, { readFile, bundledRoot: join(assets, 'fonts') });
     expect(Object.values(fonts.families)).toEqual(expect.arrayContaining(['Google Sans Flex', 'Glass Label']));
     expect(fonts.families.paths).toBe('JetBrains Mono');

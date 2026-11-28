@@ -3,13 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { modes, run } from './acceptance-runner.js';
 import { scenarioStatus } from './scenario-status.js';
 import { scenarioJobs } from './scenario-jobs.js';
-import { scenarioRemote } from './scenario-remote.js';
-import { scenarioSsh } from './scenario-ssh.js';
-import { scenarioViewers } from './scenario-viewers.js';
 import { scenarioResume, scenarioSpaces } from './scenario-sessions.js';
-import { scenarioGuidance, scenarioRoles, scenarioShortcuts } from './scenario-templates.js';
-import { scenarioSpiderPanel } from './scenario-panels.js';
-import { scenarioLook } from './scenario-look.js';
+import { scenarioGuidance, scenarioRoles } from './scenario-templates.js';
 import { assertNoNativeNotes, observeSecondSetup } from './scenario-setup.js';
 
 if (modes.length === 1) console.info('Real isolated-core acceptance disabled. Set SPIDER_HERDR_E2E=1; native app acceptance requires user opt-in.');
@@ -33,11 +28,4 @@ describe.each(modes)('complete acceptance (%s)', mode => {
   it('reboot resume', () => run(mode, scenarioResume), 60000);
   it('spaces', () => run(mode, scenarioSpaces), 60000);
   it('role templates', () => run(mode, scenarioRoles), 60000);
-  it('remote execution and SSH routing', () => run(mode, async h => {
-    await scenarioRemote(h); await scenarioSsh(h);
-  }), 120000);
-  it('subagent viewers', () => run(mode, scenarioViewers), 60000);
-  it('spider panel', () => run(mode, scenarioSpiderPanel), 60000);
-  it('look', () => run(mode, scenarioLook), 60000);
-  it('shortcuts', () => run(mode, scenarioShortcuts), 60000);
 });

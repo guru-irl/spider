@@ -99,8 +99,11 @@ export { AgentDetail } from "./agents/agent-detail";
 export type { DetailRead, DetailBackTarget, DetailOptions } from "./agents/agent-detail";
 export { MOON_CYCLE_MS, moonFrame } from "./components/spinner";
 export { renderProgressBar } from "./components/progress-bar";
+export { FULLSCREEN_READER_OVERLAY, TabbedReader, type ReaderDocument, type ReaderTab } from "./components/reader.js";
 export { renderDiffView } from "./components/diff-view";
 export { renderTable } from "./components/table";
+export { StartupHeader, type IntroTheme, type StartupFacts, type StartupResourceCounts, type StartupSessionStats } from "./components/intro-header.js";
+export { renderDocked, type DockedFacts, type DockedUsage } from "./components/docked.js";
 
 // ---- Phase 8: per-action renderers ----
 export type {

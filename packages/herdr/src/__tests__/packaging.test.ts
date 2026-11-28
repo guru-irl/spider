@@ -7,6 +7,8 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, cpSync, writeFileSync, sy
 import { delimiter, join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHerdrHarness } from './testutil.js';
+import { replacePackageFile, snapshotPackage } from './packaging-copy.js';
+import { createProcessRunners } from './packaging-process.js';
 import { releaseRemoteJob } from '../jobs/observer.js';
 import { PANE_ENDPOINT_BOOTSTRAP } from '../../../host/src/herdr/pane-installation.js';
 import type { JobRecord, JobId } from '../contracts.js';
@@ -18,7 +20,7 @@ const builtins = new Set(builtinModules.flatMap(name => [name, `node:${name}`]))
 let packedRoot: string;
 let files: string[];
 let tarball: string;
-const run = (args: string[], cwd = root) => execFileSync(process.execPath, args, { cwd, env, encoding: 'utf8', timeout: 180_000, stdio: 'pipe' });
+const { run, runAsync } = createProcessRunners(root, env);
 const npm = (args: string[]) => execFileSync('npm', args, { cwd: root, env, encoding: 'utf8', timeout: 180_000 });
 
 // A missing build entry or package allowlist entry must fail through npm's real artifact.
@@ -57,10 +59,10 @@ function packageWithIdentity(sha: string, missingViewer = false): string {
   if (existing) return existing;
   const directory = mkdtempSync(join(packedRoot, 'identity-'));
   try {
-    cpSync(join(packedRoot, 'package'), join(directory, 'package'), { recursive: true });
+    snapshotPackage(join(packedRoot, 'package'), join(directory, 'package'));
     const extension = join(directory, 'package/dist/extension.js');
     for (const file of [extension, `${extension}.ready`]) {
-      writeFileSync(file, readFileSync(file, 'utf8').replace(/SPIDER_BUILD_ID=(?:unknown|[0-9a-f]{7,40})(?:-dirty)?@/, `SPIDER_BUILD_ID=${sha}@`));
+      replacePackageFile(file, readFileSync(file, 'utf8').replace(/SPIDER_BUILD_ID=(?:unknown|[0-9a-f]{7,40})(?:-dirty)?@/, `SPIDER_BUILD_ID=${sha}@`));
     }
     if (missingViewer) rmSync(join(directory, 'package/dist/herdr/viewer.mjs'));
     const artifact = join(directory, 'artifact.tgz');
@@ -309,25 +311,25 @@ console.log(JSON.stringify([Object.keys(file).sort(),Object.keys(data).sort()]))
     } finally { await core.close(); }
   });
 
-  it.each(['missing entry', 'missing asset', 'missing parent icon', 'missing unreachable icon', 'Node mod API', 'Node mod global', 'external remote import', 'invalid runtime syntax', 'extra runtime', 'frozen built-in mod', 'truncated licence'])('rejects a broken artifact: %s', kind => {
+  it.concurrent.for(['missing entry', 'missing asset', 'missing parent icon', 'missing unreachable icon', 'Node mod API', 'Node mod global', 'external remote import', 'invalid runtime syntax', 'extra runtime', 'frozen built-in mod', 'truncated licence'])('rejects a broken artifact: %s', async (kind, { expect }) => {
     const copy = mkdtempSync(join(scratch, 'broken-'));
     try {
-      cpSync(join(packedRoot, 'package'), copy, { recursive: true });
+      snapshotPackage(join(packedRoot, 'package'), copy);
       if (kind === 'missing entry') rmSync(join(copy, 'dist/herdr/viewer.mjs'));
-      if (kind === 'truncated licence') writeFileSync(join(copy, 'licenses/herdr-apache-2.0.txt'), 'Apache License\n');
+      if (kind === 'truncated licence') replacePackageFile(join(copy, 'licenses/herdr-apache-2.0.txt'), 'Apache License\n');
       if (kind === 'missing asset') rmSync(join(copy, 'packages/herdr/assets/shared/feed.js'));
       if (kind === 'missing parent icon') rmSync(join(copy, 'packages/herdr/assets/agents/corner-up-left.svg'), { force: true });
       if (kind === 'missing unreachable icon') rmSync(join(copy, 'packages/herdr/assets/agents/unreachable.svg'), { force: true });
-      if (kind === 'Node mod global') writeFileSync(join(copy, 'packages/herdr/assets/mods/spider/data.js'), 'export const bad = globalThis["process"];\n');
-      if (kind === 'invalid runtime syntax') writeFileSync(join(copy, 'dist/herdr/remote-runtime.mjs'), 'export {\n');
+      if (kind === 'Node mod global') replacePackageFile(join(copy, 'packages/herdr/assets/mods/spider/data.js'), 'export const bad = globalThis["process"];\n');
+      if (kind === 'invalid runtime syntax') replacePackageFile(join(copy, 'dist/herdr/remote-runtime.mjs'), 'export {\n');
       if (kind === 'frozen built-in mod') {
         mkdirSync(join(copy, 'packages/herdr/assets/mods/agents'), { recursive: true });
-        writeFileSync(join(copy, 'packages/herdr/assets/mods/agents/main.js'), 'export {};\n');
+        replacePackageFile(join(copy, 'packages/herdr/assets/mods/agents/main.js'), 'export {};\n');
       }
-      if (kind === 'Node mod API') writeFileSync(join(copy, 'packages/herdr/assets/mods/spider/data.js'), 'import fs from "node:fs";\nexport const bad = fs;\n');
-      if (kind === 'external remote import') writeFileSync(join(copy, 'dist/herdr/remote-runtime.mjs'), 'import "@spider/context";\n');
-      if (kind === 'extra runtime') writeFileSync(join(copy, 'dist/herdr/metrics-runtime.mjs'), 'export {};\n');
-      expect(() => run(['scripts/assert-bundle.mjs', '--root', copy])).toThrow(new RegExp(kind.startsWith('Node mod') ? 'Node API' : kind === 'external remote import' ? 'non-builtin' : kind === 'missing asset' ? 'feed.js' : kind === 'missing parent icon' ? 'corner-up-left.svg' : kind === 'missing unreachable icon' ? 'unreachable.svg' : 'Herdr'));
+      if (kind === 'Node mod API') replacePackageFile(join(copy, 'packages/herdr/assets/mods/spider/data.js'), 'import fs from "node:fs";\nexport const bad = fs;\n');
+      if (kind === 'external remote import') replacePackageFile(join(copy, 'dist/herdr/remote-runtime.mjs'), 'import "@spider/context";\n');
+      if (kind === 'extra runtime') replacePackageFile(join(copy, 'dist/herdr/metrics-runtime.mjs'), 'export {};\n');
+      await expect(runAsync(['scripts/assert-bundle.mjs', '--root', copy])).rejects.toThrow(new RegExp(kind.startsWith('Node mod') ? 'Node API' : kind === 'external remote import' ? 'non-builtin' : kind === 'missing asset' ? 'feed.js' : kind === 'missing parent icon' ? 'corner-up-left.svg' : kind === 'missing unreachable icon' ? 'unreachable.svg' : 'Herdr'));
     } finally { rmSync(copy, { recursive: true, force: true }); }
   });
 });

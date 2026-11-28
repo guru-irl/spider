@@ -38,11 +38,11 @@ import { inspectHerdrShortcutCollisions } from '@spider/herdr/shortcuts/register
 import { HerdrLabelContract, HERDR_KINDS, HERDR_LABELS } from '@spider/herdr';
 import { readLayer, configValues } from '../control.js';
 import { paths } from '@spider/db-core';
-import { doctorHerdr, checkNodeVersion, paneCoreVersionSupported, inspectPaneCommands, inspectPaneServiceState, checkManagedKeyBindings, probeLaunch, type DoctorParts, type DoctorItem, type DoctorFailure, type DoctorInformation } from '@spider/herdr/setup/doctor';
+import { doctorHerdr, checkNodeVersion, paneCoreVersionSupported, inspectPaneCommands, inspectPaneServiceState, checkManagedKeyBindings, probeLaunch, type DoctorParts, type DoctorItem, type DoctorFailure, type DoctorInformation, type RuntimeInventory } from '@spider/herdr/setup/doctor';
 import { feedWriterLiveness } from '@spider/herdr/feed/writer';
 import { sessionFeedIsFresh } from '@spider/herdr/feed/freshness';
 import { snapshot, digest, managedProjection, rootNotesValue, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, applyFiles, missingKeyMapMessage, type KeyBinding, type KeyFields, type KeySections } from '@spider/herdr/setup/backup';
-import { CoreOnlySetupError, runtimeInstallPath, standardHerdrConfigPath, type SetupRequest, type SetupParts, type SetupContext, type InstallFile, type RuntimeFile, type RuntimeRootObservation } from '@spider/herdr/setup/installer';
+import { CoreOnlySetupError, runtimeInstallPath, standardHerdrConfigPath, type SetupRequest, type SetupParts, type SetupContext, type InstallFile, type RuntimeRootObservation } from '@spider/herdr/setup/installer';
 import { planToastFiles } from '@spider/herdr/setup/toast';
 import type { HerdrCliPorts } from '@spider/herdr/setup/cli';
 import type { CoreId, CoreIdentity, TerminalHandle, TerminalIdentity, TerminalAddress, MachineName, HcRunRequest } from '@spider/herdr';
@@ -343,6 +343,8 @@ async function assetFiles(root: string): Promise<{ relative: string; bytes: Buff
 import { relativeImports, rewriteImportPrefix } from './imports.js';
 export { rewriteImportPrefix } from './imports.js';
 
+type StagedFile = Pick<InstallFile, 'path' | 'bytes' | 'mode' | 'terminalKeys' | 'keys' | 'observedTargetHash'>;
+
 const nativeKeyCandidates: Readonly<Record<string, KeySections>> = {
   '0.1.13': { terminal: { 'cmd-f': 'terminal.search' }, global: { 'cmd-m': 'window.minimize' } },
   '0.1.16': { terminal: { 'cmd-f': 'terminal.search', 'cmd-a': 'terminal.select_all' }, global: { 'cmd-m': 'window.minimize' } },
@@ -388,7 +390,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     ...auxiliaryModIds(selected).map(name => name.slice('spider-'.length)),
     ...(hasToast ? ['toast'] : []),
   ];
-  const filesFor = async (files: readonly { path: string; bytes: Buffer; mode?: number; terminalKeys?: Readonly<Record<string, string>>; keys?: KeySections }[], context: SetupContext): Promise<InstallFile[]> => Promise.all(files.map(async file => ({ ...file, expected: file.terminalKeys || file.keys ? (await snapshot(file.path)).hash : context.installed[file.path] ?? null, collision: file.terminalKeys || file.keys ? 'key' as const : 'clone' as const })));
+  const filesFor = async (files: readonly StagedFile[], context: SetupContext): Promise<InstallFile[]> => Promise.all(files.map(async file => ({ ...file, expected: file.terminalKeys || file.keys ? (await snapshot(file.path)).hash : context.installed[file.path] ?? null, collision: file.terminalKeys || file.keys ? 'key' as const : 'clone' as const })));
   const panelFiles = async (release?: string, paneEnabled = false) => {
     const assets = join(packageRoot, 'packages/herdr/assets');
     const files = await assetFiles(join(assets, 'mods/spider'));
@@ -457,6 +459,18 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       if (!target.startsWith(root + sep) || !available.has(target)) throw new HerdrError('picker-import-unresolved', `Unresolved installed import: ${reference.specifier}`);
     }
     return files;
+  };
+  const runtimeInventory = async (request: SetupRequest): Promise<RuntimeInventory> => {
+    const unreachable: MachineName[] = [], missing: MachineName[] = [];
+    if (request.config.machines.length) {
+      const inventory = await client(request).machines();
+      for (const { name } of request.config.machines) {
+        const matches = inventory.filter(row => row.name === name || String(row.id) === String(name));
+        if (matches.length !== 1) missing.push(name);
+        else if (matches[0].state !== 'connected') unreachable.push(name);
+      }
+    }
+    return { unreachable, missing };
   };
   const targets = async (request: SetupRequest) => {
     const identity = await client(request).identity(); const epoch = await coreStartedAt(request.config.core.binary, env);
@@ -683,7 +697,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       patched = await applyLookPatches(patched, { version: 1, upstreamVersion: appVersion, mods: { agents: notificationAgentPatches, spaces: [], pane: [], tabs: [] } });
     }
     const fonts = await prepareFonts(request.config.fonts ?? {}, { bundledRoot: join(assets, 'fonts'), readFile });
-    const files: { path: string; bytes: Buffer; mode?: number }[] = [];
+    const files: StagedFile[] = [];
     for (const kind of kinds) for (const [name, source] of Object.entries(patched[kind]!.files)) files.push({ path: join(request.config.app.home, 'mods', patched[kind]!.name, name), bytes: Buffer.from(name === 'mod.json' ? JSON.stringify({ ...JSON.parse(source), clonedFrom: patched[kind]!.clonedFrom, patchState: patched[kind]!.patchState }) : source) });
     for (const file of await assetFiles(join(assets, 'agents'))) if (file.relative !== 'children.js') files.push({ path: join(request.config.app.home, 'mods/spider-agents', file.relative), bytes: file.bytes });
     files.push({ path: join(request.config.app.home, 'mods/spider-agents/sound.js'), bytes: await readFile(join(assets, 'mods/spider/sound.js')) });
@@ -704,7 +718,18 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       }];
     }));
     const current = JSON.parse(await readFile(join(request.config.app.home, 'layouts/main.json'), 'utf8'));
-    files.push({ path: join(request.config.app.home, 'layouts/spider-glass.json'), bytes: Buffer.from(JSON.stringify(buildGlassLayout(current, { release: appVersion, menu: patched.menu?.name, windowBlur: request.config.look?.windowBlur, agents: 'spider-agents', spaces: 'spider-spaces', pane: 'spider-pane', tabs: 'spider-tabs', spider: 'spider-panel', chrome: 'spider-chrome', toast: toast.length ? 'spider-toast' : undefined, bodyFont: fonts.families.body, autoHideTabs: request.config.look?.autoHideTabs, props: { ...props, spider: props.panel } }), null, 2)) });
+    const layoutPath = join(request.config.app.home, 'layouts/spider-glass.json');
+    const installedLayout = await snapshot(layoutPath);
+    let previous: unknown;
+    if (installedLayout.bytes) {
+      try { previous = JSON.parse(installedLayout.bytes.toString('utf8')); }
+      catch (error) {
+        // A malformed layout has no value to carry forward. The replace guard still applies.
+        if (!(error instanceof SyntaxError)) throw error;
+      }
+    }
+    const layout = buildGlassLayout(current, { release: appVersion, menu: patched.menu?.name, windowBlur: request.config.look?.windowBlur, agents: 'spider-agents', spaces: 'spider-spaces', pane: 'spider-pane', tabs: 'spider-tabs', spider: 'spider-panel', chrome: 'spider-chrome', toast: toast.length ? 'spider-toast' : undefined, bodyFont: fonts.families.body, autoHideTabs: request.config.look?.autoHideTabs, props: { ...props, spider: props.panel } }, previous);
+    files.push({ path: layoutPath, bytes: Buffer.from(JSON.stringify(layout, null, 2)), observedTargetHash: installedLayout.hash });
     for (const font of fonts.files) files.push({ path: join(request.config.app.home, 'fonts', font.fileName), bytes: font.bytes });
     for (const copy of context.modProps.filter(copy => copy.props.modId !== 'spider-toast')) for (const name of ['feed.js', 'look.js', 'open-failure.js', 'presentations.js', ...(patches.crossMachine && ['spider-agents', 'spider-panel', 'spider-picker'].includes(copy.props.modId) ? ['pane-service-state.js'] : [])]) files.push({ path: join(copy.directory, 'shared', name), bytes: await readFile(join(assets, 'shared', name)) });
     const mods = join(request.config.app.home, 'mods');
@@ -767,7 +792,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     return filesFor(files.map(file => ({ path: file.path, bytes: Buffer.from(file.content) })), context);
   };
   type FallbackLook = { selection: Awaited<ReturnType<typeof releaseLook>>; files: readonly InstallFile[]; skipped: ReadonlySet<string> };
-  const doctorParts = async (request: SetupRequest, fallback?: FallbackLook): Promise<DoctorParts> => ({ globalRoot, targets: () => targets(request),
+  const doctorParts = async (request: SetupRequest, fallback?: FallbackLook): Promise<DoctorParts> => ({ globalRoot, targets: () => targets(request), runtimeInventory,
     placementRepairInspection: async () => {
       const hc = client(request), identity = await hc.identity();
       const app = createAppClient({ binary: request.config.app.binary, env: appEnv(request) });
@@ -799,7 +824,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     } finally { stream.dispose(); await hc.dispose(); }
   }, probeMachineNode: (_target, launch) => probe(request, launch),
     probeRuntimeRoot: (_target, launch) => probe(request, launch),
-    inspect: async item => {
+    inspect: async (item, _request, runtimeAvailability) => {
       const failure = (code: string, message: string, repair = 'Run setup from a plain shell with the selected configuration.') => ({ failures: [{ item, code, message, repair }] });
       if (item === 'pane-core') {
         const status = object(await invokeCli(request.config.core.binary, ['server', 'status', '--json'], env));
@@ -829,18 +854,30 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         const bytes = await readFile(join(packageRoot, 'dist/herdr/pane-endpoint.mjs')).catch(() => null);
         if (!bytes) return local;
         const buildDigest = sha256(bytes), hc = client(request), transport = createArgvClient({ binary: request.config.core.binary, env });
+        const diagnosticCore = async (configured: (typeof request.config.machines)[number], coreId?: CoreId) => {
+          const matches = (await hc.machines()).filter(machine => (!coreId || machine.id === coreId) &&
+            (machine.name === configured.name || machine.aliases.includes(configured.name) || configured.aliases.includes(machine.name)));
+          const connected = matches.filter(machine => machine.state === 'connected');
+          if (!connected.length && matches.length === 1) throw new HerdrError('unavailable', `Machine ${configured.name} disconnected during verification`);
+          if (connected.length !== 1 || !connected[0].id) throw new HerdrError('machine-changed', 'Endpoint diagnostic route is unavailable');
+          return connected[0].id;
+        };
         const inspectRemote = createPaneRemoteRequest({ buildDigest, exec: transport.exec, resolveMachine: async destination => {
           const configured = request.config.machines.find(machine => machine.name === destination.alias);
-          const matches = (await hc.machines()).filter(machine => machine.id === destination.coreId && machine.state === 'connected' && configured && (machine.name === configured.name || machine.aliases.includes(configured.name) || configured.aliases.includes(machine.name)));
-          if (matches.length !== 1 || !configured?.nodePath) throw new HerdrError('machine-changed', 'Endpoint diagnostic route is unavailable');
-          return { on: matches[0].id!, coreId: matches[0].id!, nodePath: configured.nodePath };
+          if (!configured?.nodePath) throw new HerdrError('machine-changed', 'Endpoint diagnostic route is unavailable');
+          const coreId = await diagnosticCore(configured, destination.coreId);
+          return { on: coreId, coreId, nodePath: configured.nodePath };
         } });
         const failures = [...local.failures], warnings = [...local.warnings ?? []];
         for (const configured of request.config.machines) {
+          if (runtimeAvailability?.shouldSkip(configured.name)) continue;
           const result = await inspectPaneInstallation(configured.name, async () => {
-            const matches = (await hc.machines()).filter(machine => machine.state === 'connected' && (machine.name === configured.name || machine.aliases.includes(configured.name) || configured.aliases.includes(machine.name)));
-            if (matches.length !== 1 || !matches[0].id) throw new HerdrError('machine-changed', 'Endpoint diagnostic route is unavailable');
-            await inspectRemote({ coreId: matches[0].id, alias: configured.name, machineId: null }, { version: 1, op: 'handshake', protocol: 1, buildDigest });
+            try {
+              const coreId = await diagnosticCore(configured);
+              await inspectRemote({ coreId, alias: configured.name, machineId: null }, { version: 1, op: 'handshake', protocol: 1, buildDigest });
+            } catch (error) {
+              if (!runtimeAvailability?.deferOnConnectivityFailure(configured.name, error)) throw error;
+            }
           });
           failures.push(...result.failures); warnings.push(...result.warnings ?? []);
         }
@@ -996,11 +1033,17 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       }
       if (item === 'runtime-digest') {
         const bytes = await readFile(join(packageRoot, 'dist/herdr/remote-runtime.mjs')), hash = digest(bytes);
+        const failures: DoctorFailure[] = [];
         for (const machine of request.config.machines) {
+          if (runtimeAvailability?.shouldSkip(machine.name)) continue;
           const path = runtimeInstallPath(machine.runtime.directory, bytes), recorded = journal.runtimes.find(runtime => runtime.machine === machine.name && runtime.path === path);
-          if (recorded?.after !== hash || !(await client(request).fileRead(machine.name, path)).equals(bytes)) return failure('runtime-digest-mismatch', `Installed runtime on ${machine.name} does not match this package`);
+          try {
+            if (recorded?.after !== hash || !(await client(request).fileRead(machine.name, path)).equals(bytes)) failures.push(...failure('runtime-digest-mismatch', `Installed runtime on ${machine.name} does not match this package`).failures);
+          } catch (error) {
+            if (!runtimeAvailability?.deferOnConnectivityFailure(machine.name, error)) throw error;
+          }
         }
-        return { failures: [] };
+        return { failures };
       }
       if (item === 'jobs') {
         const root = jobJournalRoot(request.config.globalRoot), information: DoctorInformation[] = [];
@@ -1106,7 +1149,6 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     async setupParts(request) {
       let preparedSpaces: SpaceSetupPorts | undefined;
       const getSpaces = () => preparedSpaces ??= spacePorts(request);
-      let runtimes: readonly RuntimeFile[] = [];
       const stagedVersions = new WeakMap<SetupContext, Awaited<ReturnType<typeof releaseLook>>>();
       let fallbackContext: SetupContext | undefined, fallbackLook: FallbackLook | undefined;
       // Root probes made during this setup run. Verification reuses them instead of launching another per machine.
@@ -1242,21 +1284,31 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         probeMachineNode: (_target, launch) => probe(request, launch),
         paneEndpointPlan: request => planPaneEndpointInstallation(request.config.globalRoot, packageRoot),
         stagePaneEndpoint: request => stagePaneEndpointInstallation(request.config.globalRoot, packageRoot),
-        ensureRuntime: async request => { const bytes = await readFile(join(packageRoot, 'dist/herdr/remote-runtime.mjs')); runtimes = request.config.machines.map(machine => ({ machine: machine.name, path: runtimeInstallPath(machine.runtime.directory, bytes), bytes, sha256: sha256(bytes) })); return runtimes; },
+        runtimeInventory,
+        ensureRuntime: async request => {
+          const bytes = await readFile(join(packageRoot, 'dist/herdr/remote-runtime.mjs')), hash = sha256(bytes);
+          return request.config.machines.map(machine => ({ machine: machine.name, path: runtimeInstallPath(machine.runtime.directory, bytes), bytes, sha256: hash }));
+        },
         runtimeRootsHealthy: async (request, runtimes) => {
           for (const runtime of runtimes) {
             const machine = request.config.machines.find(machine => machine.name === runtime.machine);
             if (!machine) return false;
             const target = { machine: runtime.machine, nodePath: machine.nodePath ?? 'node', coreStartedAt: '' };
             const launch = { ...probeLaunch(target), argv: [target.nodePath, runtime.path, '--probe', machine.runtime.directory] };
-            try {
-              const value: unknown = JSON.parse(await probeRoot(launch));
-              if (!isRuntimeRootProbe(value, machine.runtime.directory)) return false;
-            } catch { return false; }
+            let output: string;
+            try { output = await probeRoot(launch); }
+            catch (error) {
+              // Retry a failed or slow health check through bootstrap. Transport
+              // failures must reach setup so it can defer or fail the machine.
+              if (error instanceof HerdrError && (error.code === 'probe-failed' || error.code === 'probe-timeout')) return false;
+              throw error;
+            }
+            try { if (!isRuntimeRootProbe(JSON.parse(output), machine.runtime.directory)) return false; }
+            catch { return false; }
           }
           return true;
         },
-        runtimeRootProbes: request => runtimes.flatMap((runtime): RuntimeRootObservation[] => {
+        runtimeRootProbes: (request, runtimes) => runtimes.flatMap((runtime): RuntimeRootObservation[] => {
           const machine = request.config.machines.find(machine => machine.name === runtime.machine);
           if (!machine) return [];
           const nodePath = machine.nodePath ?? 'node';
@@ -1267,7 +1319,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
               result: { directory: result.directory, uid: result.uid, mode: result.mode, nodeVersion: result.nodeVersion, nodePath: result.nodePath } }] : [];
           } catch { return []; }
         }),
-        bootstrapRuntime: async (request: SetupRequest, _context: SetupContext) => {
+        bootstrapRuntime: async (request, _context, runtimes) => {
           for (const runtime of runtimes) {
             const machine = request.config.machines.find(machine => machine.name === runtime.machine);
             if (!machine) throw new HerdrError('machine-unconfigured', 'Runtime destination is not configured');
@@ -1286,7 +1338,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           if (!result) throw new HerdrError('cutover-reconciliation-required', 'No confirmed session owners remain');
           return { terminals: result.tabs.map(tab => tab.terminal), identities: Object.fromEntries(result.launched.map(owner => [owner.sessionId, owner.startIdentity])) };
         },
-        verify: async request => doctorHerdr(request, { ...await doctorParts(request, fallbackLook), probeRuntimeRoot: async (_target, launch) => rootProbes.get(rootKey(launch)) ?? probe(request, launch), cachedNodeObservations: async () => (await readJournal(request.journalRoot)).probes }),
+        verify: async (request, deferredRuntimes) => doctorHerdr(request, { ...await doctorParts(request, fallbackLook), probeRuntimeRoot: async (_target, launch) => rootProbes.get(rootKey(launch)) ?? probe(request, launch), cachedNodeObservations: async () => (await readJournal(request.journalRoot)).probes }, deferredRuntimes),
         rollback: async (result, options) => {
           const spaces = getSpaces();
           const recovery = await readCutoverRecovery(spaces.journalRoot, await spaces.layoutSnapshot());

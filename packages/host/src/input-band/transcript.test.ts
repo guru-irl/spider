@@ -1,21 +1,22 @@
-import { copyFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { BranchSummaryMessageComponent, CompactionSummaryMessageComponent, SkillInvocationMessageComponent, CustomEditor, CustomMessageComponent, ToolExecutionComponent, UserMessageComponent, Theme, createEditToolDefinition, getAgentDir, initTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Box, Container, Markdown, Text, stripTerminalSequences, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { copyFileSync, mkdirSync, readdirSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { AssistantMessageComponent, BranchSummaryMessageComponent, CompactionSummaryMessageComponent, SkillInvocationMessageComponent, CustomEditor, CustomMessageComponent, ToolExecutionComponent, UserMessageComponent, Theme, createEditToolDefinition, createReadToolDefinition, getAgentDir, initTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Box, Container, Markdown, Spacer, Text, stripTerminalSequences, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerInputBand } from "./index.js";
 import { createHalfBox } from "./box.js";
 import { registerEditWriteOverrides } from "../routing/overrides.js";
 import glass from "../../../herdr/assets/themes/dracula-plus-glass.json" with { type: "json" };
 
-const host = { CustomEditor, CustomMessageComponent, ToolExecutionComponent, UserMessageComponent, Box, Markdown, Text,
+const host = { AssistantMessageComponent, CustomEditor, CustomMessageComponent, ToolExecutionComponent, UserMessageComponent, Box, Markdown, Spacer, Text,
   BranchSummaryMessageComponent, CompactionSummaryMessageComponent, SkillInvocationMessageComponent };
 const tui = { requestRender() {} } as unknown as TUI;
 const colors = Object.fromEntries(Object.entries(glass.colors).map(([role, value]) => [role, glass.vars[value as keyof typeof glass.vars] ?? value]));
 const theme = new Theme(colors as ConstructorParameters<typeof Theme>[0], colors as ConstructorParameters<typeof Theme>[1], "truecolor");
-const BG = "\x1b[48;2;6;6;7m";
-const INK = "\x1b[38;2;6;6;7m";
+const BG = "\x1b[48;2;16;16;18m";
+const INK = "\x1b[38;2;16;16;18m";
 const START = "\x1b]133;A\x07";
 const END = "\x1b]133;B\x07\x1b]133;C\x07";
 const plain = (rows: string[]) => rows.map(stripTerminalSequences).map(row => row.trimEnd());
@@ -222,8 +223,8 @@ it("trims box-colored padding without dropping outer swatches painted in other b
   const box = createHalfBox(1, text => theme.bg("toolSuccessBg", text));
   box.addChild({
     render: () => [
-      "\x1b[1;48;2;6;6;7;38;5;48m  \x1b[0m", // The box color, with unrelated text attributes.
-      "\x1b[48:2::6:6:7m  \x1b[49m", // The same color with colon-delimited SGR.
+      "\x1b[1;48;2;16;16;18;38;5;48m  \x1b[0m", // The box color, with unrelated text attributes.
+      "\x1b[48:2::16:16:18m  \x1b[49m", // The same color with colon-delimited SGR.
       "\x1b[1;48;5;4m   \x1b[49m", // An index-color swatch.
       "Label",
       "\x1b[48:2::9:8:7m   \x1b[49m", // A truecolor swatch.
@@ -255,6 +256,149 @@ it.each([false, true])("places consecutive default and self-shell cards together
     expanded ? " second expanded" : " second collapsed", "▀".repeat(24),
     "▄".repeat(24), " third", "▀".repeat(24),
   ]);
+});
+
+const response = (content: AssistantMessage["content"], stopReason: AssistantMessage["stopReason"] = "toolUse"): AssistantMessage => ({
+  role: "assistant", content, api: "openai-completions", provider: "test", model: "test",
+  usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+  stopReason, timestamp: 0,
+});
+const toolCall = { type: "toolCall" as const, id: "second", name: "second", arguments: {} };
+const assistant = (message: AssistantMessage, hidden = false, label = "") =>
+  new AssistantMessageComponent(message, hidden, undefined, label, 0);
+// Some host renderers/extensions leave blank rows even with no visible content.
+const withBlankRows = (message: AssistantMessage, hidden = false) => {
+  const component = assistant(message, hidden);
+  component.addChild(new Spacer(2));
+  return component;
+};
+
+it.each([
+  ["tool-call-only", response([toolCall]), false],
+  ["hidden thinking", response([{ type: "thinking", thinking: "Private reasoning" }, toolCall]), true],
+] as const)("joins separate boxed turns across a blank %s message and preserves mouse clicks", (_name, message, hidden) => {
+  stop = activate();
+  const first = card("first");
+  const second = card("second");
+  second.updateResult({ content: [], isError: false });
+  const root = chat(first, withBlankRows(message, hidden), second);
+  const width = 24;
+  const rows = plain(root.render(width));
+  expect(rows).toEqual(["", "▄".repeat(width), " first", "▀".repeat(width),
+    "▄".repeat(width), " second", " second collapsed", "▀".repeat(width)]);
+  const layout = (root as unknown as { mouseLayout: { children: { height: number }[] } }).mouseLayout;
+  expect(layout.children.reduce((sum, entry) => sum + entry.height, 0)).toBe(rows.length);
+  const y = rows.indexOf(" second collapsed");
+  expect(root.handleMouse({ type: "click", button: "left", x: 2, y, width, height: rows.length, screenX: 2, screenY: y, shift: false, alt: false, ctrl: false })).toMatchObject({ handled: true });
+  expect(plain(root.render(width))).toContain(" second expanded");
+});
+
+it("keeps joining across a hidden tool after a blank assistant", () => {
+  stop = activate();
+  const hidden = card("hidden");
+  Object.assign(hidden, { hideComponent: true });
+  const rows = plain(chat(card("first"), withBlankRows(response([toolCall])), hidden, card("second")).render(24));
+  const end = rows.indexOf("▀".repeat(24));
+  expect(rows[end + 1]).toBe("▄".repeat(24));
+});
+
+it("restores assistant rows as streaming content becomes visible", () => {
+  stop = activate();
+  const middle = assistant(response([toolCall]));
+  const root = chat(card("first"), middle, card("second"));
+  const initial = plain(root.render(24));
+  const end = initial.indexOf("▀".repeat(24));
+  expect(initial[end + 1]).toBe("▄".repeat(24));
+  middle.updateContent(response([{ type: "text", text: "Now visible" }, toolCall]));
+  const updated = plain(root.render(24));
+  expect(updated.slice(end + 1, end + 4)).toEqual(["", "Now visible", ""]);
+});
+
+it.each([
+  ["text", response([{ type: "text", text: "Visible reply" }, toolCall]), false, "Visible reply"],
+  ["visible thinking", response([{ type: "thinking", thinking: "Visible reasoning" }, toolCall]), false, "Visible reasoning"],
+  ["thinking label", response([{ type: "thinking", thinking: "Reasoning" }, toolCall]), true, "Thinking..."],
+  ["error", response([], "error"), false, "Error:"],
+] as const)("keeps spacing around assistant %s", (_name, message, hidden, text) => {
+  stop = activate();
+  const middle = assistant(message, hidden, text === "Thinking..." ? text : "");
+  const first = card("first"), second = card("second");
+  const root = chat(first, middle, second);
+  const rows = plain(root.render(32));
+  expect(rows).toEqual([...plain(first.render(32)), ...plain(middle.render(32)), ...plain(second.render(32))]);
+  expect(rows.join("\n")).toContain(text);
+});
+
+it("joins Pi's built-in read when its default shell has half edges", () => {
+  stop = activate();
+  const read = new ToolExecutionComponent("read", "read", { path: "guide.md" }, {}, createReadToolDefinition("/project"), tui, "/project");
+  read.updateResult({ content: [{ type: "text", text: "Guide" }], isError: false });
+  const rows = plain(chat(card("first"), assistant(response([toolCall])), read).render(32));
+  const end = rows.indexOf("▀".repeat(32));
+  expect(rows[end + 1]).toBe("▄".repeat(32));
+  expect(rows[end + 2]).toContain("read");
+});
+
+it("does not remove blank assistant rows when the next tool is unboxed", () => {
+  stop = activate();
+  const middle = withBlankRows(response([toolCall]));
+  const raw = new ToolExecutionComponent("raw", "raw", {}, {}, { renderShell: "self", renderCall: () => new Text("raw", 0, 0) }, tui, "/project");
+  const first = card("first");
+  expect(plain(chat(first, middle, raw).render(24))).toEqual([...plain(first.render(24)), ...plain(middle.render(24)), ...plain(raw.render(24))]);
+});
+
+it.each([
+  ["painted background", "\x1b[44m    \x1b[49m"],
+  ["inverse video", "\x1b[7m    \x1b[27m"],
+  ["underlined spaces", "\x1b[4m    \x1b[24m"],
+  ["terminal image", "\x1b_Gf=100;AAAA\x1b\\"],
+] as const)("keeps a visually meaningful %s row in an assistant", (_name, row) => {
+  stop = activate();
+  const middle = assistant(response([toolCall]));
+  middle.addChild({ render: () => [row], invalidate() {} });
+  const first = card("first"), second = card("second");
+  expect(chat(first, middle, second).render(24)).toEqual([...first.render(24), ...middle.render(24), ...second.render(24)]);
+});
+
+it("retains blank assistant rows when no boxed tool follows", () => {
+  stop = activate();
+  const first = card("first"), middle = withBlankRows(response([toolCall]));
+  const text = new Text("Next reply", 0, 0);
+  expect(chat(first, middle, text).render(24)).toEqual([...first.render(24), ...middle.render(24), ...text.render(24)]);
+});
+
+it("joins cards using the active bundled Pi Spacer class", async () => {
+  const chunks = resolve("node_modules/@earendil-works/pi-coding-agent/dist/bundle/chunks");
+  const name = readdirSync(chunks).find(file => file.startsWith("virtual-modules-") && file.endsWith(".js"))!;
+  const virtual = await import(/* @vite-ignore */ pathToFileURL(resolve(chunks, name)).href);
+  const pi = virtual.VIRTUAL_MODULES["@earendil-works/pi-coding-agent"] as typeof import("@earendil-works/pi-coding-agent");
+  const pt = virtual.VIRTUAL_MODULES["@earendil-works/pi-tui"] as typeof import("@earendil-works/pi-tui");
+  expect(pt.Spacer).not.toBe(Spacer);
+  pi.initTheme("dark", false);
+  const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
+  registerInputBand({ on: (name: string, handler: (event: unknown, ctx: unknown) => void) => handlers.set(name, handler) } as never,
+    { ...pi, ...pt }, () => ({}));
+  const ctx = { cwd: "/project", mode: "tui", hasUI: true, ui: { theme, setEditorComponent() {}, getEditorComponent: () => undefined } };
+  handlers.get("session_start")?.({}, ctx);
+  stop = () => handlers.get("session_shutdown")?.({}, ctx);
+  const first = new pi.ToolExecutionComponent("first", "first", {}, {}, undefined, tui, "/project");
+  const middle = new pi.AssistantMessageComponent(response([toolCall]), false, undefined, "", 0);
+  const second = new pi.ToolExecutionComponent("second", "second", {}, {}, {
+    renderCall: () => new pt.Text("second", 0, 0),
+    renderResult: (_result, { expanded }) => new pt.Text(expanded ? "expanded" : "collapsed", 0, 0),
+  }, tui, "/project");
+  second.updateResult({ content: [], isError: false });
+  const root = new pt.Container();
+  root.addChild(first); root.addChild(middle); root.addChild(second);
+  const width = 24;
+  const rows = plain(root.render(width));
+  const end = rows.indexOf("▀".repeat(width));
+  expect(end).toBeGreaterThan(0);
+  expect(rows[end + 1]).toBe("▄".repeat(width));
+  const y = rows.indexOf(" collapsed");
+  expect(y).toBeGreaterThan(end);
+  expect(root.handleMouse({ type: "click", button: "left", x: 2, y, width, height: rows.length, screenX: 2, screenY: y, shift: false, alt: false, ctrl: false })).toMatchObject({ handled: true });
+  expect(plain(root.render(width))).toContain(" expanded");
 });
 
 it("keeps spacing around non-tool and hidden tool components", () => {

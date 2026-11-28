@@ -302,7 +302,8 @@ describe("icon styles in rendered rows", () => {
     const text = render("text"), nerd = render("nerd");
     for (const [i, detail] of ["was: reading", "1 chunks", "… 2 more"].entries()) {
       expect(text[i].split("\n").find(row => row.includes(detail))).toMatch(/^ {3}\S/u);
-      expect(nerd[i].split("\n").find(row => row.includes(detail))).toMatch(/^ {4}\S/u);
+      const nerdIndent = detail === "… 2 more" ? /^ {3}\S/u : /^ {4}\S/u;
+      expect(nerd[i].split("\n").find(row => row.includes(detail))).toMatch(nerdIndent);
       expect(text[i].split("\n").every(line => visibleWidth(line) <= 100)).toBe(true);
       expect(nerd[i].split("\n").every(line => visibleWidth(line) <= 100)).toBe(true);
     }

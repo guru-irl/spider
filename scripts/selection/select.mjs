@@ -145,10 +145,8 @@ export async function createGraphResolver(root, inventory, entries) {
     if ([...inventory, ...entries].some(file => !discovered.has(file))) throw new Error('Vitest graph omitted a tracked test or bundle entry');
   } catch (error) { await ctx.close(); throw error; }
   let importers;
-  const included = new Set([...inventory, ...entries]);
   return {
     async resolveRelated(seeds, targets) {
-      if (targets?.some(file => !included.has(file))) throw new Error('Missing fixture or bundle graph target');
       importers ??= await staticImporters(root);
       const reached = importers(seeds);
       const candidates = targets ?? [...inventory, ...entries];
@@ -310,6 +308,7 @@ async function main(base, output) {
   const mergeBase = git(root, 'merge-base', base, head).trim();
   const inventory = testInventory(root, head);
   const lookup = await lookupMainMap({ root, mergeBase, repo: process.env.GITHUB_REPOSITORY, workflowRun: process.env.GITHUB_RUN_ID });
+  const availableFixtures = new Set(fixtureEntries.filter(file => existsSync(resolve(root, file))));
   let changes = [], graph;
   try { changes = changedBetween(root, lookup.map?.commit ?? mergeBase, head); }
   catch { lookup.fallback = 'could not read map-to-head changed files'; }
@@ -317,7 +316,9 @@ async function main(base, output) {
     namedBy: file => namedByTests(root, head, file),
     fixtureBlobs: commit => fixtureBlobsAtCommit(root, commit),
     async resolveRelated(seeds, targets) {
-      const availableFixtures = fixtureEntries.filter(file => existsSync(resolve(root, file)));
+      if (targets?.some(file => fixtureEntries.includes(file) && !availableFixtures.has(file))) {
+        throw new Error('Missing fixture graph entry');
+      }
       graph ??= await createGraphResolver(root, inventory, sorted([...readPolicy().bundles.entries, ...availableFixtures]));
       return graph.resolveRelated(seeds, targets);
     },

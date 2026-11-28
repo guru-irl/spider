@@ -8,7 +8,7 @@ import { observeJobIdentity } from './identity.js';
 import type { HcClient, JobId, Owner, RunId, TerminalAddress } from '../contracts.js';
 import { closeAgentConsoles as closeRunConsoles } from '../remote/console.js';
 import { HerdrError } from '../client/parse.js';
-import { createJobStore, type JobJournal } from './store.js';
+import { createJobStore, ensurePrivateDirectory, type JobJournal } from './store.js';
 import { needsFailedCleanup } from './cleanup.js';
 
 export interface ChildJobWriter { id: RunId; pid: number; startIdentity: string }
@@ -75,22 +75,41 @@ function cacheSettled(path: string, journal: JobJournal): void {
   if (settledJournals.size >= 256) settledJournals.delete(settledJournals.keys().next().value!);
   settledJournals.set(path, journal);
 }
-export async function readChildJobJournals(root: string, owner: Owner, reportError?: (error: unknown, runId: RunId) => void): Promise<JobJournal[]> {
-  const directory = join(root, 'sessions', owner.sessionId, 'runs');
+export async function readChildJobJournals(
+  root: string, owner: Pick<Owner, 'sessionId'>, reportError?: (error: unknown, runId: RunId) => void,
+  { strict = false }: { strict?: boolean } = {},
+): Promise<JobJournal[]> {
+  const directory = strict ? join(createJobStore(root, owner.sessionId).directory, 'runs') : join(root, 'sessions', owner.sessionId, 'runs');
+  if (strict) {
+    try { await ensurePrivateDirectory(directory, true); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
+  }
   let entries;
   try { entries = await readdir(directory, { withFileTypes: true }); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
+  catch (error) { if (!strict && (error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
   const journals: JobJournal[] = [];
   for (const entry of entries) {
-    if (!entry.isDirectory() || !/^[a-zA-Z0-9_-]{1,160}$/.test(entry.name)) continue;
+    if (!/^[a-zA-Z0-9_-]{1,160}$/.test(entry.name) || !strict && !entry.isDirectory()) continue;
     const runId = entry.name as RunId, store = createJobStore(root, owner.sessionId, runId);
     try {
-      const cached = settledJournals.get(store.path);
-      if (!cached && await hasNoJournal(store.directory)) continue;
+      if (strict) {
+        if (!entry.isDirectory()) throw new HerdrError('unsafe-journal-path', 'A child journal needs a real run directory');
+        // Stop cannot use a cached settled journal or a cached empty directory.
+        if (!(await readdir(store.directory)).includes('jobs.json')) continue;
+      }
+      const cached = strict ? undefined : settledJournals.get(store.path);
+      if (!strict && !cached && await hasNoJournal(store.directory)) continue;
       const journal = cached ?? await store.read();
-      if (journal.child?.id !== entry.name) continue;
-      cacheSettled(store.path, journal); journals.push(journal);
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') reportError?.(error, runId); }
+      if (journal.child?.id !== runId) {
+        if (strict) throw new HerdrError('invalid-journal', 'Child journal identity is missing or changed');
+        continue;
+      }
+      if (!strict) cacheSettled(store.path, journal);
+      journals.push(journal);
+    } catch (error) {
+      if (strict && !reportError) throw error;
+      if (strict || (error as NodeJS.ErrnoException).code !== 'ENOENT') reportError?.(error, runId);
+    }
   }
   return journals;
 }

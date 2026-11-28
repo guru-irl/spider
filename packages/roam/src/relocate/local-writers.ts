@@ -5,6 +5,7 @@ import { openRoamPathReadOnly, roamStorePath } from "@spider/db-core/roam/reads"
 import type { StoreKey } from "@spider/db-core/roam/types";
 import { groupHasLiveMembers, readManifestSafe, readReceiptSafe } from "../../../context/src/background-job";
 import { processStartIdentity } from "@spider/herdr/jobs/handoff";
+import { ensurePrivateDirectory } from "@spider/herdr/jobs/store";
 import type { RelocateAdapterOptions, SessionId } from "./types";
 
 export async function localWriterBlockers(id: SessionId, checkout: string, stores: readonly StoreKey[], options: RelocateAdapterOptions): Promise<readonly string[]> {
@@ -19,7 +20,7 @@ export async function localWriterBlockers(id: SessionId, checkout: string, store
       for (const row of rows) blockers.push(row.pid ? `PID ${row.pid} (pi)` : `subagent run ${safeName(row.id)} (pi; no PID yet)`);
     } finally { db.close(); }
   }
-  blockers.push(...await backgroundBlockers(id, checkout));
+  blockers.push(...(await inspectLocalBackgroundJobs(id, checkout)).map(job => job.description));
   return [...new Set(blockers)];
 }
 
@@ -35,34 +36,60 @@ async function boundedRecord(file: string): Promise<boolean> {
     return true;
   } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
 }
-async function backgroundBlockers(id: SessionId, checkout: string): Promise<readonly string[]> {
+interface BackgroundJobEvidence {
+  id: string;
+  description: string;
+  excludedRoots: readonly number[];
+  complete: boolean;
+}
+
+/** Only live or unverified jobs. Their PIDs can exclude trees, never identify a signal target. */
+export async function inspectLocalBackgroundJobs(id: SessionId, checkout: string, strict = false): Promise<readonly BackgroundJobEvidence[]> {
   const directory = join(checkout, ".spider", "scratch", "bg");
+  if (strict) {
+    try { await ensurePrivateDirectory(directory, true); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
+  }
   let entries;
   try {
     const stat = await lstat(directory);
     if (!stat.isDirectory() || await realpath(directory) !== directory) throw new Error("Invalid background job directory");
     entries = await readdir(directory, {withFileTypes: true});
-  } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
-  const blockers: string[] = [];
+  } catch (error) { if (!strict && (error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
+  const blockers: BackgroundJobEvidence[] = [];
   for (const entry of entries) {
-    if (!entry.isDirectory()) throw new Error("Invalid background job entry");
-    const manifestFile = join(directory, entry.name, "job.json"), receiptFile = join(directory, entry.name, "exit.json");
-    const manifest = await boundedRecord(manifestFile) ? readManifestSafe(manifestFile) : undefined;
-    if (!manifest || manifest.schema !== 1 || manifest.id !== entry.name) {
-      // A job without readable ownership cannot be ruled out for this session.
-      blockers.push(`background job ${safeName(entry.name)} (owner unavailable)`);
-      continue;
+    const name = safeName(entry.name);
+    const unreadable: BackgroundJobEvidence = { id: name, description: `background job ${name} (owner unavailable)`, excludedRoots: [], complete: false };
+    try {
+      if (!entry.isDirectory()) throw new Error("Invalid background job entry");
+      const manifestFile = join(directory, entry.name, "job.json"), receiptFile = join(directory, entry.name, "exit.json");
+      const manifest = await boundedRecord(manifestFile) ? readManifestSafe(manifestFile) : undefined;
+      if (!manifest || manifest.schema !== 1 || manifest.id !== entry.name) {
+        // A job without readable ownership cannot be ruled out for this session.
+        blockers.push(unreadable);
+        continue;
+      }
+      if (typeof manifest.ownerSessionId === "string" && manifest.ownerSessionId && manifest.ownerSessionId !== id) continue;
+      const receiptExists = await boundedRecord(receiptFile);
+      const receipt = receiptExists ? readReceiptSafe(receiptFile) : undefined;
+      const supervisor = pid(manifest.supervisorPid) ?? pid(receipt?.supervisorPid);
+      const child = pid(manifest.childPid) ?? pid(receipt?.childPid);
+      const pids = [manifest.supervisorPid, receipt?.supervisorPid, manifest.childPid, receipt?.childPid];
+      const conflict = pids.some(value => value !== undefined && pid(value) === undefined)
+        || (manifest.supervisorPid && receipt?.supervisorPid && manifest.supervisorPid !== receipt.supervisorPid)
+        || (manifest.childPid && receipt?.childPid && manifest.childPid !== receipt.childPid);
+      const unreadableReceipt = strict && receiptExists && !receipt;
+      if (!unreadableReceipt && !conflict && !(supervisor && groupHasLiveMembers(supervisor) !== false) && !(child && alive(child)) && (receipt || supervisor)) continue;
+      const executable = Array.isArray(manifest.argv) && typeof manifest.argv[0] === "string" ? safeName(basename(manifest.argv[0])) : "shell";
+      blockers.push({ id: name,
+        description: supervisor || child ? `PID ${child ?? supervisor} (${executable}; background job ${name})` : `background job ${name} (${executable}; PID unavailable)`,
+        excludedRoots: [...new Set(pids.flatMap(value => pid(value) ?? []))],
+        complete: Boolean(manifest.ownerSessionId === id && !unreadableReceipt && !conflict && (supervisor || child)),
+      });
+    } catch (error) {
+      if (!strict) throw error;
+      blockers.push(unreadable);
     }
-    if (typeof manifest.ownerSessionId === "string" && manifest.ownerSessionId && manifest.ownerSessionId !== id) continue;
-    const receipt = await boundedRecord(receiptFile) ? readReceiptSafe(receiptFile) : undefined;
-    const supervisor = pid(manifest.supervisorPid) ?? pid(receipt?.supervisorPid);
-    const child = pid(manifest.childPid) ?? pid(receipt?.childPid);
-    const conflict = [manifest.supervisorPid, receipt?.supervisorPid, manifest.childPid, receipt?.childPid].some(value => value !== undefined && pid(value) === undefined)
-      || (manifest.supervisorPid && receipt?.supervisorPid && manifest.supervisorPid !== receipt.supervisorPid)
-      || (manifest.childPid && receipt?.childPid && manifest.childPid !== receipt.childPid);
-    if (!conflict && !(supervisor && groupHasLiveMembers(supervisor) !== false) && !(child && alive(child)) && (receipt || supervisor)) continue;
-    const executable = Array.isArray(manifest.argv) && typeof manifest.argv[0] === "string" ? safeName(basename(manifest.argv[0])) : "shell";
-    blockers.push(supervisor || child ? `PID ${child ?? supervisor} (${executable}; background job ${safeName(entry.name)})` : `background job ${safeName(entry.name)} (${executable}; PID unavailable)`);
   }
   return blockers;
 }

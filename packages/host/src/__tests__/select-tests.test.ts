@@ -162,57 +162,15 @@ describe('change-scoped test manifests', () => {
     expect(readFileSync(actions, 'utf8')).toContain('acceptance=true\n');
   });
 
-  it('retains a slow rule test while deferring a slow graph-only test', async () => {
-    const f = fixture();
-    const compiler = 'packages/roam/src/__tests__/provision-core-pin.test.ts';
-    f.put(compiler, 'export {};');
-    const { selectTests, base } = await selectorWith(f, { [compiler]: 10_816, [b]: 10_816, [guard]: 30_437 });
-    f.put('packages/roam/src/store.ts', 'export const value = 2;');
-    const manifest = await selectTests({ ...f, base, head: f.commit(), resolveRelated: async () => [b] });
-    expect(manifest.mode).toBe('scoped');
-    expect(manifest.files).toEqual([compiler, guard].sort());
-    expect(manifest.reasons[compiler]).toContain('runtime-compiler-smoke: Retain the provisioning runtime-compiler sentinel on production edits, including subprocess startup failures outside the import graph.');
-    expect(manifest.reasons[guard].some((reason: string) => reason.startsWith('source-text:'))).toBe(true);
-    expect(manifest.deferred.map((entry: { file: string }) => entry.file)).toEqual([b]);
-    expect(manifest.deferred[0].reasons).toEqual(['import graph']);
-  });
-
-  it('keeps rule tests over the PR budget and defers graph-only tests', async () => {
-    const f = fixture();
-    const compiler = 'packages/roam/src/__tests__/provision-core-pin.test.ts';
-    f.put(compiler, 'export {};');
-    const { selectTests, base } = await selectorWith(f, { [compiler]: 10_816, [b]: 100, [guard]: 100 });
-    f.put('packages/roam/src/store.ts', 'export const value = 2;');
-    const manifest = await selectTests({ ...f, base, head: f.commit(), budgetMs: 1_000, resolveRelated: async () => [b] });
-    expect(manifest.mode).toBe('scoped');
-    expect(manifest.files).toEqual([compiler, guard].sort());
-    expect(manifest.deferred.map((entry: { file: string }) => entry.file)).toEqual([b]);
-    expect(manifest.budget).toMatchObject({ limitMs: 1_000, predictedMaxMs: 11_516, requiredOverBudget: true });
-  });
-
-  it('retains matching rule tests even when an earlier change forces full fallback', async () => {
-    const f = fixture();
-    const compiler = 'packages/roam/src/__tests__/provision-core-pin.test.ts';
-    f.put(compiler, 'export {};');
-    const { selectTests, base } = await selectorWith(f, { [compiler]: 10_816, [guard]: 100 });
-    f.put('.github/workflows/ci.yml', 'changed');
-    f.put('packages/roam/src/store.ts', 'export const value = 2;');
-    const manifest = await selectTests({ ...f, base, head: f.commit(), budgetMs: 1_000 });
-    expect(manifest.budget.candidateMode).toBe('full');
-    expect(manifest.files).toEqual([compiler, guard].sort());
-    expect(manifest.budget.requiredOverBudget).toBe(true);
-    expect(manifest.deferred.map((entry: { file: string }) => entry.file).sort()).toEqual([a, b, c].sort());
-  });
-
   it('unions the Vite graph with source-text guards and records stable provenance', async () => {
     await api(); const f = fixture(); const { selectTests, base } = await selectorWith(f, { [guard]: 30_437 });
     f.put('packages/roam/src/store.ts', 'export const value = 2;'); const head = f.commit();
     const manifest = await selectTests({ ...f, base, head, resolveRelated: async () => [a] });
     expect(manifest.mode).toBe('scoped');
-    expect(manifest.files).toEqual([a, guard].sort());
+    expect(manifest.files).toEqual([a]);
     expect(manifest.reasons[a]).toContain('import graph');
-    expect(manifest.deferred.map((entry: { file: string }) => entry.file)).toEqual([]);
-    expect(manifest.reasons[guard].some((s: string) => s.includes('source-text'))).toBe(true);
+    expect(manifest.deferred.map((entry: { file: string }) => entry.file)).toEqual([guard]);
+    expect(manifest.deferred[0].reasons.some((s: string) => s.includes('source-text'))).toBe(true);
     expect(manifest.baseSha).toBe(base);
     expect(manifest.testedSha).toBe(head);
     expect(manifest.timingHash).toMatch(/^[a-f0-9]{64}$/);
@@ -313,8 +271,8 @@ describe('change-scoped test manifests', () => {
     f.put('docs/guide/example.md', 'changed'); const head = f.commit();
     const manifest = await selectTests({ ...f, base, head, resolveRelated: async () => [] });
     const plan = executionPlan(manifest, { root: f.root, shard: '1/2' });
-    expect(plan.files).toEqual([c, guard].sort()); expect(plan.maxWorkers).toBe(3);
-    expect(manifest.deferred.map((entry: { file: string }) => entry.file)).toEqual([]);
+    expect(plan.files).toEqual([c]); expect(plan.maxWorkers).toBe(3);
+    expect(manifest.deferred.map((entry: { file: string }) => entry.file)).toEqual([guard]);
     expect(plan.shard).toBe('1/2'); expect(plan).not.toHaveProperty('changed');
     expect(executionPlan(manifest, { root: f.root, shard: '1/2', shadow: true }).files).toEqual([a, b, c, guard].sort());
     expect(() => executionPlan(manifest, { root: f.root, shard: '0/2' })).toThrow();

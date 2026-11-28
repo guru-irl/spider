@@ -192,7 +192,7 @@ function createV0PeerCaller(root: string, deps: V0IntercomDeps) {
       });
     } catch (error) {
       if (request.kind !== "lookup" && invoked) return { kind: "unknown", id: request.message.id };
-      if (onRouteUnavailable && !signal?.aborted && performance.now() < deliveryDeadline) {
+      if (!invoked && onRouteUnavailable && !signal?.aborted && performance.now() < deliveryDeadline) {
         if (error instanceof DirectRouteUnavailable || error instanceof HerdrError && error.code === "machine-not-found") onRouteUnavailable();
         else if (!resolved && isHerdrConnectivityFailure(error)) {
           // A failed dial alone says nothing about enrollment, trust, or the peer's identity.

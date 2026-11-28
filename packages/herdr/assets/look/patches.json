@@ -373,7 +373,7 @@
       {
         "id": "moon-working",
         "anchor": "svg(\"mods/workspace-chrome/spinner.svg\").size(12).mx(1).flex_none().text_color(t.working).spin(900)",
-        "replacement": "div().size(12).mx(1).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3C9\", \"\\uE3CB\", \"\\uE3CD\", \"\\uE3CF\", \"\\uE3D1\", \"\\uE3D3\", \"\\uE3D5\", \"\\uE3D7\", \"\\uE3D9\", \"\\uE3DB\", \"\\uE3DD\", \"\\uE3DF\", \"\\uE3E1\"], 1000 / 14)"
+        "replacement": "div().size(12).mx(1).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3E1\", \"\\uE3DF\", \"\\uE3DD\", \"\\uE3DB\", \"\\uE3D9\", \"\\uE3D7\", \"\\uE3D5\", \"\\uE3D3\", \"\\uE3D1\", \"\\uE3CF\", \"\\uE3CD\", \"\\uE3CB\", \"\\uE3C9\"], 1000 / 14)"
       }
     ],
     "spaces": [
@@ -562,7 +562,7 @@
       {
         "id": "moon-working",
         "anchor": "svg(\"mods/workspace-chrome/spinner.svg\").size(12).flex_none().text_color(t.working).spin(900)",
-        "replacement": "div().size(12).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3C9\", \"\\uE3CB\", \"\\uE3CD\", \"\\uE3CF\", \"\\uE3D1\", \"\\uE3D3\", \"\\uE3D5\", \"\\uE3D7\", \"\\uE3D9\", \"\\uE3DB\", \"\\uE3DD\", \"\\uE3DF\", \"\\uE3E1\"], 1000 / 14)"
+        "replacement": "div().size(12).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3E1\", \"\\uE3DF\", \"\\uE3DD\", \"\\uE3DB\", \"\\uE3D9\", \"\\uE3D7\", \"\\uE3D5\", \"\\uE3D3\", \"\\uE3D1\", \"\\uE3CF\", \"\\uE3CD\", \"\\uE3CB\", \"\\uE3C9\"], 1000 / 14)"
       }
     ],
     "tabs": [
@@ -644,7 +644,7 @@
       {
         "id": "moon-working",
         "anchor": "svg(\"mods/workspace-chrome/spinner.svg\").size(12).flex_none().text_color(t.working).spin(900)",
-        "replacement": "div().size(12).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3C9\", \"\\uE3CB\", \"\\uE3CD\", \"\\uE3CF\", \"\\uE3D1\", \"\\uE3D3\", \"\\uE3D5\", \"\\uE3D7\", \"\\uE3D9\", \"\\uE3DB\", \"\\uE3DD\", \"\\uE3DF\", \"\\uE3E1\"], 1000 / 14)"
+        "replacement": "div().size(12).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3E1\", \"\\uE3DF\", \"\\uE3DD\", \"\\uE3DB\", \"\\uE3D9\", \"\\uE3D7\", \"\\uE3D5\", \"\\uE3D3\", \"\\uE3D1\", \"\\uE3CF\", \"\\uE3CD\", \"\\uE3CB\", \"\\uE3C9\"], 1000 / 14)"
       }
     ],
     "workspace-chrome": [
@@ -1166,7 +1166,7 @@
           {
             "id": "moon-working",
             "anchor": "svg(\"mods/workspace-chrome/spinner.svg\").size(12).mx(1).flex_none().text_color(t.working).spin(900)",
-            "replacement": "div().size(12).mx(1).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3C9\", \"\\uE3CB\", \"\\uE3CD\", \"\\uE3CF\", \"\\uE3D1\", \"\\uE3D3\", \"\\uE3D5\", \"\\uE3D7\", \"\\uE3D9\", \"\\uE3DB\", \"\\uE3DD\", \"\\uE3DF\", \"\\uE3E1\"], 1000 / 14)",
+            "replacement": "div().size(12).mx(1).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3E1\", \"\\uE3DF\", \"\\uE3DD\", \"\\uE3DB\", \"\\uE3D9\", \"\\uE3D7\", \"\\uE3D5\", \"\\uE3D3\", \"\\uE3D1\", \"\\uE3CF\", \"\\uE3CD\", \"\\uE3CB\", \"\\uE3C9\"], 1000 / 14)",
             "file": "main.js"
           },
           {
@@ -1620,7 +1620,7 @@
           {
             "id": "moon-working",
             "anchor": "svg(\"mods/workspace-chrome/spinner.svg\").size(12).flex_none().text_color(t.working).spin(900)",
-            "replacement": "div().size(12).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3C9\", \"\\uE3CB\", \"\\uE3CD\", \"\\uE3CF\", \"\\uE3D1\", \"\\uE3D3\", \"\\uE3D5\", \"\\uE3D7\", \"\\uE3D9\", \"\\uE3DB\", \"\\uE3DD\", \"\\uE3DF\", \"\\uE3E1\"], 1000 / 14)",
+            "replacement": "div().size(12).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3E1\", \"\\uE3DF\", \"\\uE3DD\", \"\\uE3DB\", \"\\uE3D9\", \"\\uE3D7\", \"\\uE3D5\", \"\\uE3D3\", \"\\uE3D1\", \"\\uE3CF\", \"\\uE3CD\", \"\\uE3CB\", \"\\uE3C9\"], 1000 / 14)",
             "file": "main.js"
           },
           {
@@ -1730,7 +1730,7 @@
           {
             "id": "moon-working",
             "anchor": "svg(\"mods/workspace-chrome/spinner.svg\").size(12).flex_none().text_color(t.working).spin(900)",
-            "replacement": "div().size(12).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3C9\", \"\\uE3CB\", \"\\uE3CD\", \"\\uE3CF\", \"\\uE3D1\", \"\\uE3D3\", \"\\uE3D5\", \"\\uE3D7\", \"\\uE3D9\", \"\\uE3DB\", \"\\uE3DD\", \"\\uE3DF\", \"\\uE3E1\"], 1000 / 14)",
+            "replacement": "div().size(12).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3E1\", \"\\uE3DF\", \"\\uE3DD\", \"\\uE3DB\", \"\\uE3D9\", \"\\uE3D7\", \"\\uE3D5\", \"\\uE3D3\", \"\\uE3D1\", \"\\uE3CF\", \"\\uE3CD\", \"\\uE3CB\", \"\\uE3C9\"], 1000 / 14)",
             "file": "main.js"
           }
         ],
@@ -1823,14 +1823,14 @@
         }
       ],
       "outputHashes": {
-        "agents/main.js": "d664be85fec719a08d26a6ce256f5ab4ce3755c6ae616077b06bbba22cf38027",
+        "agents/main.js": "580fa28b3c10891b74109b249361b34e84da24b48a5bec8d511c8d03ca5626f6",
         "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
         "menu/main.js": "f9c0799068984fe289df2b8aa50231435977c7269ee15cea4544d52f31d3bd25",
         "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
         "new-menu/main.js": "394ec4218f24263735083b90dc7a7c5f607ab58f9a7a74b823707509e806cb1a",
         "new-menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
         "pane/close.svg": "532eb25ce41976594b69b3735e1e2f892f18f39288da7e420832b9ee66dc4ff6",
-        "pane/main.js": "4bd20b4289885eceb25c14ac78d02af24fd29b080eca26c3cdd30f02a4691dac",
+        "pane/main.js": "3e82fe68d773e2c4e018c67f02fc6d9c1b272bcaafd157e148027b9b91c810a4",
         "pane/mod.json": "a10f79e972a197d0d51b37009180ac0e5518add50d601844b73cfb06539e2989",
         "pane/split-down.svg": "a9cbd394b0fe8bbb1881480dfb84072c2493f85e335b0b4c7de94b53d4a10d69",
         "pane/split-right.svg": "55b7bb600aad8463103f8848219ca8bcdc4cc620cdcb52325dde007f8275a637",
@@ -1840,7 +1840,7 @@
         "picker/mod.json": "ca186ee1f13241f1f9b8facf092138214ca840a6a4d2865618a21934ffcda34d",
         "spaces/main.js": "9b98593e5bce40df013bef3c05bb2b567f1d5f80b55a7dffe0890943e73f24e9",
         "spaces/mod.json": "8357ce89d375376872b6db414b9555b26936b2e9d61e44275dc2e2bfe2a5783e",
-        "tabs/main.js": "ab05847da89853a7ef198687d59479f6cd254c1d226549e93d8520e518f0f663",
+        "tabs/main.js": "3d4c39cd0b76d0bc989e2df1ed2c2e3deb031cfed3e7de7e73a95d89ee71b141",
         "tabs/mod.json": "bd2a09edf56933dd318e75ce134b2c48aed56010b825f3c936f92a995e686c4d",
         "tabs/win-close.svg": "bc46f314ea68818459856618e10f694e53cccd947b3069286f1988927e8a1fac",
         "tabs/win-max.svg": "d8f2df2b1c3b3416ab765be0ad0b6f453f4c89e0c01ac01e4e10bd12e01b109a",
@@ -2645,7 +2645,7 @@
           {
             "id": "moon-working",
             "anchor": "svg(\"mods/workspace-chrome/spinner.svg\").size(12).mx(1).flex_none().text_color(t.working).spin(900)",
-            "replacement": "div().size(12).mx(1).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3C9\", \"\\uE3CB\", \"\\uE3CD\", \"\\uE3CF\", \"\\uE3D1\", \"\\uE3D3\", \"\\uE3D5\", \"\\uE3D7\", \"\\uE3D9\", \"\\uE3DB\", \"\\uE3DD\", \"\\uE3DF\", \"\\uE3E1\"], 1000 / 14)",
+            "replacement": "div().size(12).mx(1).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3E1\", \"\\uE3DF\", \"\\uE3DD\", \"\\uE3DB\", \"\\uE3D9\", \"\\uE3D7\", \"\\uE3D5\", \"\\uE3D3\", \"\\uE3D1\", \"\\uE3CF\", \"\\uE3CD\", \"\\uE3CB\", \"\\uE3C9\"], 1000 / 14)",
             "file": "main.js"
           },
           {
@@ -3111,7 +3111,7 @@
           {
             "id": "moon-working",
             "anchor": "svg(\"mods/workspace-chrome/spinner.svg\").size(12).flex_none().text_color(t.working).spin(900)",
-            "replacement": "div().size(12).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3C9\", \"\\uE3CB\", \"\\uE3CD\", \"\\uE3CF\", \"\\uE3D1\", \"\\uE3D3\", \"\\uE3D5\", \"\\uE3D7\", \"\\uE3D9\", \"\\uE3DB\", \"\\uE3DD\", \"\\uE3DF\", \"\\uE3E1\"], 1000 / 14)",
+            "replacement": "div().size(12).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3E1\", \"\\uE3DF\", \"\\uE3DD\", \"\\uE3DB\", \"\\uE3D9\", \"\\uE3D7\", \"\\uE3D5\", \"\\uE3D3\", \"\\uE3D1\", \"\\uE3CF\", \"\\uE3CD\", \"\\uE3CB\", \"\\uE3C9\"], 1000 / 14)",
             "file": "main.js"
           },
           {
@@ -3221,7 +3221,7 @@
           {
             "id": "moon-working",
             "anchor": "svg(\"mods/workspace-chrome/spinner.svg\").size(12).flex_none().text_color(t.working).spin(900)",
-            "replacement": "div().size(12).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3C9\", \"\\uE3CB\", \"\\uE3CD\", \"\\uE3CF\", \"\\uE3D1\", \"\\uE3D3\", \"\\uE3D5\", \"\\uE3D7\", \"\\uE3D9\", \"\\uE3DB\", \"\\uE3DD\", \"\\uE3DF\", \"\\uE3E1\"], 1000 / 14)",
+            "replacement": "div().size(12).flex_none().font_family(\"CaskaydiaCove Nerd Font\").text_size(12).line_height(1).text_color(t.working).frames([\"\\uE3E3\", \"\\uE3E1\", \"\\uE3DF\", \"\\uE3DD\", \"\\uE3DB\", \"\\uE3D9\", \"\\uE3D7\", \"\\uE3D5\", \"\\uE3D3\", \"\\uE3D1\", \"\\uE3CF\", \"\\uE3CD\", \"\\uE3CB\", \"\\uE3C9\"], 1000 / 14)",
             "file": "main.js"
           }
         ],
@@ -3332,14 +3332,14 @@
         }
       ],
       "outputHashes": {
-        "agents/main.js": "b510b65c6527d4dffb57c4ff16fc1e3779a2bf6882ae72b1db93957198bbcd69",
+        "agents/main.js": "55e1db25d8942e177d218d7bb34bd49961aca518088548de5046cce3a2cf6e58",
         "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
         "menu/main.js": "1c27a92ca6378feb166a34adef317aaa2a4f4ee0e969d2fd3737cc3850ac84eb",
         "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
         "new-menu/main.js": "2fcc80ed1486c35816f662db2a619cdee1ec1d82997991ca4feb64c1212d2688",
         "new-menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
         "pane/close.svg": "532eb25ce41976594b69b3735e1e2f892f18f39288da7e420832b9ee66dc4ff6",
-        "pane/main.js": "96b293184ca1255854af28161eff2d14af8882bccf67c21422584d1eef43f2e1",
+        "pane/main.js": "f7fe044cc4da0d0338e1c1e0867c6b3a2d12b276343b1c4dbbb39c715aa8ff60",
         "pane/mod.json": "a10f79e972a197d0d51b37009180ac0e5518add50d601844b73cfb06539e2989",
         "pane/split-down.svg": "a9cbd394b0fe8bbb1881480dfb84072c2493f85e335b0b4c7de94b53d4a10d69",
         "pane/split-right.svg": "55b7bb600aad8463103f8848219ca8bcdc4cc620cdcb52325dde007f8275a637",
@@ -3349,7 +3349,7 @@
         "picker/mod.json": "ca186ee1f13241f1f9b8facf092138214ca840a6a4d2865618a21934ffcda34d",
         "spaces/main.js": "32bc0ab27d6006eb2c2a9aef9a04ba5a619475cbeaf5e22961a5777f37c0c470",
         "spaces/mod.json": "8357ce89d375376872b6db414b9555b26936b2e9d61e44275dc2e2bfe2a5783e",
-        "tabs/main.js": "2645093387811b16230b5997dc59be3c08caf4f01d3a1125bf8d2caf2fa8a560",
+        "tabs/main.js": "18dc46fdd7e4d28032d1c3fee6bfb170b9f04ceba3e3064152ce6f8ae88f455a",
         "tabs/mod.json": "bd2a09edf56933dd318e75ce134b2c48aed56010b825f3c936f92a995e686c4d",
         "tabs/win-close.svg": "bc46f314ea68818459856618e10f694e53cccd947b3069286f1988927e8a1fac",
         "tabs/win-max.svg": "d8f2df2b1c3b3416ab765be0ad0b6f453f4c89e0c01ac01e4e10bd12e01b109a",

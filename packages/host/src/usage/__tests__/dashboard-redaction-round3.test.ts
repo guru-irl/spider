@@ -123,6 +123,21 @@ it.each(["/", "", "C:", "C:\\\\", "C:/", "//"])("raw home root %j never creates 
 function random(seed: number) {
   return () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return (seed >>> 0) / 2 ** 32; };
 }
+it.each(["darwin", "linux", "win32"])("keeps mapped file URL roots out of the authority on %s", platform => {
+  const configured = "/PrivacyRootQ7/Home UserQ7";
+  vi.stubEnv("HOME", configured);
+  vi.stubEnv("USERPROFILE", configured);
+  const input = ",file://%5CPrivacyRootQ7%5CHome+UserQ7/üHidden5dq0q0/aHidden5dq0q1/b/tail" +
+    String.raw`“prefix\PrivacyRootQ7\Home UserQ7=./src/index.ts“C:/\Root5dq3\Private DocsHidden5dq1q0\proj ectHidden5dq1q1\proj ect\tail`;
+  const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+  try {
+    Object.defineProperty(process, "platform", { ...descriptor, value: platform });
+    const result = dashboardLabel("runName", input, configured)!;
+    expect(labelLeaks(result, [configured], ["Hidden5dq", "Root5dq3"], input)).toEqual([]);
+    expect(result).toMatch(/\/proj ect\/tail$/);
+  } finally { Object.defineProperty(process, "platform", descriptor); }
+});
+
 // Removing a root detection or truncating only the first of glued paths leaves a unique root marker behind.
 const RUN = Number(process.env.GITHUB_RUN_ID ?? Math.floor(Date.now() / 86400000));
 const SEED = Number(process.env.SPIDER_TEST_SEED ?? (RUN % 2 === 0 ? 0 : RUN)) >>> 0;

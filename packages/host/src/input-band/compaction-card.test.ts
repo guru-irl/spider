@@ -281,6 +281,31 @@ it("opens the latest compaction on the branch with billing, section counts, and 
   expect(view()).toContain("src/index.ts");
 });
 
+it("renders nested headings without hash marks while preserving code examples", async () => {
+  const latest = { ...entry, summary: [
+    "## Progress", "", "### Level three", "", "#### Level four", "",
+    "##### Level five", "", "###### Level six", "",
+    "```text", "### Literal code", "```",
+  ].join("\n") };
+  const app = activate(latest, {}, [latest]);
+  await app.commands.get("compaction")!("", app.ctx);
+  const reader = app.overlays[0].component;
+  reader.handleInput?.("\t");
+  for (const tab of ["Progress", "Full summary"]) {
+    const rows = reader.render(width);
+    const text = plain(rows).join("\n");
+    expect(text).toContain(`Compaction / ${tab}`);
+    for (const [hashes, label] of [["###", "Level three"], ["####", "Level four"],
+      ["#####", "Level five"], ["######", "Level six"]]) {
+      expect(text).toContain(label);
+      expect(text).not.toContain(`${hashes} ${label}`);
+      expect(rows.join("\n")).toContain(theme.fg("mdHeading", label));
+    }
+    expect(text).toContain("### Literal code");
+    reader.handleInput?.("\t");
+  }
+});
+
 it("uses one Summary tab when no level-two heading exists", async () => {
   const latest = { ...entry, summary: "One paragraph.\n\n### Detail\n\nKeep this too." };
   const app = activate(latest, {}, [latest]);

@@ -48,6 +48,10 @@ test('0.1.16 pane header is filled only while focused', () => {
   expect(render('0.1.16', { p: { focused: false } }).styles.bg).toEqual(['#00000000']);
 });
 
+test.each([true, false])('0.1.18 pane leaves the header fill transparent with focused=%s', focused => {
+  expect(render('0.1.18', { p: { focused } }).styles.bg).toEqual(['#00000000']);
+});
+
 test('0.1.18 pane keeps the coloured session pill and separate machine label', () => {
   const root = render('0.1.18');
   expect(texts(root).slice(0, 3)).toEqual(['Planner', 'box-1.invalid', '/home/example/work']);

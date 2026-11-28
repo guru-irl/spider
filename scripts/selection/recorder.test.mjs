@@ -41,7 +41,7 @@ function records(raw) {
   });
 }
 
-function fixtureRecords(t, { snapshots = [], results = [], hookErrors = '', launches = [], kernelTrace, trackedInputs = [] } = {}) {
+function fixtureRecords(t, { snapshots = [], results = [], hookErrors = '', launches = [], kernelTrace, ringEvents, trackedInputs = [] } = {}) {
   const { root, raw, maps, workspace } = fixture(t);
   writeFileSync(join(root, 'dist/reference.mjs'), 'export {};');
   writeFileSync(join(maps, 'reference.mjs.map'), JSON.stringify({ version: 3, sources: [], names: [], mappings: '' }));
@@ -63,6 +63,7 @@ function fixtureRecords(t, { snapshots = [], results = [], hookErrors = '', laun
     if (trackedInputs.length) execFileSync('git', ['add', '--', ...trackedInputs], { cwd: root });
     writeFileSync(join(raw, 'kernel-mode'), 'linux-strace-v2\n');
     writeFileSync(`${raw}.linux-trace`, kernelTrace.replaceAll('$ROOT', root));
+    if (ringEvents) writeFileSync(`${raw}.io-uring`, ringEvents);
   }
   if (launches.length) writeFileSync(join(raw, 'launches.ndjson'), launches.map(row => JSON.stringify(row)).join('\n') + '\n');
   return reduce({ root, tmpRoot: join(root, '.spider/scratch/tmp'), rawDir: raw, mapsDir: maps, reportFile });
@@ -724,6 +725,30 @@ for (const [label, flags, submissions, complete] of [
 `,
     });
     assert.equal(records[id].incomplete, !complete);
+  });
+}
+
+for (const [label, pid, opcode, written, complete] of [
+  ['the submitting thread only used epoll', 3, 'EPOLL_CTL', 1, true],
+  ['the event describes an unobserved file open', 3, 'OPENAT', 1, false],
+  ['the trace buffer lost events', 3, 'EPOLL_CTL', 2, false],
+  ['the epoll operation belongs to an unrelated thread', 7, 'EPOLL_CTL', 1, false],
+]) {
+  test(`matches io_uring operations to known submissions: ${label}`, t => {
+    const result = fixtureRecords(t, {
+      results: [{ name: id }],
+      snapshots: [{ test: id, worker: true, pid: 3, processId: 'parent', cpuMs: 100, ended: true, paths: [] }],
+      kernelTrace: `1 clone(child_stack=NULL, flags=SIGCHLD) = 3
+3 io_uring_setup(256, {flags=IORING_SETUP_NO_SQARRAY, sq_thread_cpu=0}) = 10
+3 io_uring_enter(10<anon_inode:[io_uring]>, 1, 1, IORING_ENTER_GETEVENTS, NULL, 0) = 1
+3 +++ exited with 0 +++
+1 +++ exited with 0 +++
+`,
+      ringEvents: `# entries-in-buffer/entries-written: 1/${written}   #P:4
+ node-${pid} [001] .... 22.91180: io_uring_submit_req: ring abc, req def, user_data 0x0, opcode ${opcode}, flags 0x0, sq_thread 0
+`,
+    });
+    assert.equal(result.records[id].incomplete, !complete);
   });
 }
 

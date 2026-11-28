@@ -155,6 +155,11 @@ compaction and retry notices.
 
 An agent footer row shows `<mark> <italic role> <bold name> · model · thinking · turns · elapsed`.
 Omit missing model and thinking fields. Do not show activity in the footer.
+With up to three agents, show one row per agent. With four or more, show two
+agent rows and a summary row with status totals and the number of hidden
+agents. In fullscreen mode, the mouse wheel over the footer scrolls its agent
+rows. In `/agents`, the up and down keys move the selection in display order
+and reveal hidden rows. The summary stays visible as the rows scroll.
 The `/agents` views use the same role colors: worker `#82aaff`, reviewer
 `#ffb86c`, scout `#8be9fd`, planner `#c792ea`, watcher `#ff92df`, and all
 other roles `#d6acff`. The role word and running mark use that color; finished

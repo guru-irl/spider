@@ -9,12 +9,12 @@ import { scratchDbPath, cleanupScratch } from '@spider/db-core/testutil';
 import { RunStore } from '../../../subagents/src/run-store.js';
 import { emitToolResult } from '../../../subagents/src/run-events.js';
 import { publishLiveRunEvent } from '../../../subagents/src/live-events.js';
-import { createRunTranscriptSource } from '../../../host/src/herdr/run-transcript.js';
+import { createRunTranscriptSource, type RunTranscriptSourceOptions } from '../../../host/src/herdr/run-transcript.js';
 import type { Owner, RunId, RunViewFrame } from '../contracts.js';
 
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); vi.useRealTimers(); cleanupScratch(); });
-function fixture(accent?: () => string | undefined) {
+function fixture(accent?: () => string | undefined, overrides: Partial<RunTranscriptSourceOptions> = {}) {
   const root = resolve('.spider/scratch/hl', randomUUID()); mkdirSync(root, { recursive: true });
   const dbPath = scratchDbPath('viewer-live'); const db = openDbAt(dbPath, 'worktree'); const store = new RunStore(db);
   const owner = { sessionId: 'live-owner', generation: 'activation', cwd: root } as Owner;
@@ -22,7 +22,7 @@ function fixture(accent?: () => string | undefined) {
   const source = createRunTranscriptSource({ owner: () => owner, pollMs: 50, resolveDb: () => ({ db: openDbAt(dbPath, 'worktree'), dbPath }), transcriptRoots: () => [root],
     modelContextWindow: model => model === 'example/model-one' ? 200000 : undefined,
     modelName: model => model === 'example/model-one' ? 'Model One' : undefined,
-    iconStyle: 'nerd', inputBand: false, creditFactor: () => 0.5, accent });
+    iconStyle: 'nerd', inputBand: false, creditFactor: () => 0.5, accent, ...overrides });
   cleanups.push(() => { source.dispose(); db.close(); rmSync(root, { recursive: true, force: true }); });
   return { source, id, store, root, db };
 }
@@ -69,6 +69,33 @@ test('viewer snapshots follow changes to the owner accent', async () => {
   accent = 'pink';
   await vi.advanceTimersByTimeAsync(50);
   expect(frames.at(-1)).toMatchObject({ kind: 'snapshot', data: { view: { accent: 'pink' } } });
+});
+
+test('viewer snapshots follow changed input-band and icon settings', async () => {
+  vi.useFakeTimers();
+  let band = false; let icons: 'text' | 'nerd' = 'text';
+  const f = fixture(undefined, { inputBand: (() => band) as never, iconStyle: (() => icons) as never });
+  const frames: RunViewFrame[] = [];
+  f.source.subscribe(f.id, null, frame => frames.push(frame), { view: 2 });
+  expect(frames.find(frame => frame.kind === 'snapshot')).toMatchObject({ data: { view: { inputBand: false, iconStyle: 'text' } } });
+  band = true; icons = 'nerd';
+  await vi.advanceTimersByTimeAsync(50);
+  expect(frames.at(-1)).toMatchObject({ kind: 'snapshot', data: { view: { inputBand: true, iconStyle: 'nerd' } } });
+});
+
+test.each(['accent', 'modelName', 'modelContextWindow', 'creditFactor'] as const)('a failed %s lookup leaves the snapshot and other metadata available', field => {
+  const f = fixture(() => 'green', { [field]: () => { throw new Error('stale context'); } });
+  const frames: RunViewFrame[] = [];
+  f.source.subscribe(f.id, null, frame => frames.push(frame), { view: 2 });
+  const snapshot = frames.find(frame => frame.kind === 'snapshot');
+  expect(snapshot?.kind).toBe('snapshot');
+  if (snapshot?.kind !== 'snapshot') throw new Error('missing snapshot');
+  expect(snapshot.data.view).toMatchObject({ iconStyle: 'nerd', inputBand: false,
+    modelName: field === 'modelName' ? null : 'Model One',
+    contextWindow: field === 'modelContextWindow' ? null : 200000,
+    creditFactor: field === 'creditFactor' ? null : 0.5 });
+  expect(snapshot.data.view?.accent).toBe(field === 'accent' ? undefined : 'green');
+  expect(frames.some(frame => frame.kind === 'gap' && frame.data.reason === 'transcript-unavailable')).toBe(false);
 });
 
 test.each([['agent_start', true], ['agent_end', false]] as const)('a new viewer sees prior %s activity', (type, working) => {

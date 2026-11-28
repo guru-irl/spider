@@ -125,11 +125,6 @@ async function bounded<T>(deadline: number, signal: AbortSignal | undefined, wor
   });
 }
 
-function routeUntil(routes: V0Routes, machineId: string, label: string, submit: RelaySubmit, deadline: number, signal?: AbortSignal) {
-  const budget = AbortSignal.timeout(Math.max(0, Math.floor(deadline - performance.now())));
-  return routeV0Relay(routes, machineId, label, submit, signal ? AbortSignal.any([signal, budget]) : budget);
-}
-
 type V0WireRequest = V0AgentRequest | V0RelayAgentRequest;
 class DirectRouteUnavailable extends Error {}
 
@@ -387,7 +382,8 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
     }
 
     function submit(current: V0Routes, target: RelayTarget, message: V0Text, deadline: number, abort?: AbortSignal) {
-      return routeUntil(current, machineId, machineLabel(target.machineId), { type: "submit", kind: "send", from: sourceWire, target, message }, deadline, abort);
+      return routeV0Relay(current, machineId, machineLabel(target.machineId),
+        { type: "submit", kind: "send", from: sourceWire, target, message }, abort, deadline);
     }
 
     async function relayAsk(current: V0Routes, target: RelayTarget, message: V0Text, deadline: number, deliveryDeadline: number, abort?: AbortSignal): Promise<V0RouteResult> {
@@ -400,8 +396,8 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
       try {
         const remainingMs = Math.floor(deadline - performance.now());
         if (remainingMs <= 0 || performance.now() >= deliveryDeadline || abort?.aborted) return { ...refused("unreachable"), targetMachine };
-        const delivery: V0RouteResult = await routeUntil(current, machineId, targetMachine,
-          { type: "submit", kind: "ask", from: sourceWire, target, message, timeoutMs: remainingMs }, deliveryDeadline, abort)
+        const delivery: V0RouteResult = await routeV0Relay(current, machineId, targetMachine,
+          { type: "submit", kind: "ask", from: sourceWire, target, message, timeoutMs: remainingMs }, abort, deliveryDeadline)
           .catch(() => ({ kind: "unknown" as const, id: message.id, targetMachine }));
         if (delivery.kind === "refused") return delivery;
         // A delivery result releases the poll slot, not the waiter. Lost results cannot trigger a resend.
@@ -515,8 +511,8 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
       if (!absent) return { ...(result.kind === "matches" ? unknown : result), path: "direct", targetMachine: peer.alias };
     }
     const label = peer?.alias ?? [...routes.acceptFrom, ...config.peers].find(entry => entry.machineId === targetMachineId)?.alias ?? targetMachineId;
-    return routeUntil(routes, machineId, label, { type: "submit", kind: "reply", replyTo: askId, from: fromWire, message,
-      target: { machineId: targetMachineId, selector: { by: "id", value: target.address.sessionId }, homeEpoch: target.homeEpoch } }, deliveryDeadline, signal);
+    return routeV0Relay(routes, machineId, label, { type: "submit", kind: "reply", replyTo: askId, from: fromWire, message,
+      target: { machineId: targetMachineId, selector: { by: "id", value: target.address.sessionId }, homeEpoch: target.homeEpoch } }, signal, deliveryDeadline);
   };
 
   async function handle(raw: unknown): Promise<V0AgentReply | null> {

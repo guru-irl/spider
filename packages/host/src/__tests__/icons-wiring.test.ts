@@ -1,4 +1,5 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
+import { CustomEditor } from "@earendil-works/pi-coding-agent";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
@@ -6,6 +7,7 @@ import { migrate, openDb, paths } from "@spider/db-core";
 import { scratchDbPath, cleanupScratch } from "@spider/db-core/testutil";
 import { mountAgentsUI } from "../agents/mount.js";
 import spiderExtension from "../extension.js";
+import * as inputBand from "../input-band/index.js";
 import { withPiEvents, hostUnitPorts } from "./fixtures/pi-events.js";
 
 const base = resolve(".spider/scratch/icons-wiring");
@@ -58,7 +60,7 @@ it("uses the configured style for registered tool and notice renderers", () => {
   mkdirSync(global); mkdirSync(cwd);
   execFileSync("git", ["init", "-q", cwd]);
   paths.globalRoot = global;
-  writeFileSync(join(global, "config.json"), JSON.stringify({ "ui.icons": "nerd" }));
+  writeFileSync(join(global, "config.json"), JSON.stringify({ "ui.icons": "nerd", "ui.inputBand": false }));
   process.chdir(cwd);
   let tool: any;
   const messages = new Map<string, (...args: any[]) => any>();
@@ -71,7 +73,16 @@ it("uses the configured style for registered tool and notice renderers", () => {
     registerMessageRenderer: (name: string, value: (...args: any[]) => any) => messages.set(name, value),
     registerEntryRenderer: (_name: string, value: (...args: any[]) => any) => { entry = value; },
   });
-  spiderExtension(pi as never, hostUnitPorts);
+  const registerBand = vi.spyOn(inputBand, "registerInputBand").mockImplementation(() => {});
+  try {
+    spiderExtension(pi as never, { ...hostUnitPorts, inputBand: { CustomEditor } });
+    const readConfig = registerBand.mock.calls[0]![2]; // The session_start handler's config read.
+    const resolveRoot = vi.spyOn(paths, "projectRoot");
+    try {
+      expect(readConfig(cwd)).toMatchObject({ "ui.inputBand": false, "ui.icons": "nerd" });
+      expect(resolveRoot).toHaveBeenCalledExactlyOnceWith(cwd);
+    } finally { resolveRoot.mockRestore(); }
+  } finally { registerBand.mockRestore(); }
   const theme = { fg: (_: string, text: string) => text, bg: (_: string, text: string) => text,
     bold: (text: string) => text, italic: (text: string) => text };
   expect(commands.get("spider")?.description).toContain("\u{F0BCA}");

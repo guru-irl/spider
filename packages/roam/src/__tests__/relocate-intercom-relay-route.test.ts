@@ -186,7 +186,12 @@ it("reports a pinned live local send without taking its available relay", async 
 
 it("prefers a live direct route even when a relay advertises the same home", async () => {
   const f = await fixture({ direct: true });
-  const direct = await f.tool("remote-recipient");
+  const pending = f.tool("remote-recipient");
+  const first = await Promise.race([f.held!, pending]);
+  // Settle an unexpected relay offer so a regression reports its actual path.
+  if ("submissions" in first && first.submissions.length)
+    await f.poll(0, await Promise.all(first.submissions.map(offer => f.forward(offer))));
+  const direct = await pending;
   expect(direct.details).toMatchObject({ delivered: true, path: "direct" });
   expect(direct.content[0]).toMatchObject({ text: expect.stringContaining("direct") });
   expect(await f.remote.received()).toEqual([direct.details.messageId]);

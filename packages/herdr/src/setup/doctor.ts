@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { activePlacementRepairs, placementRepairPath, readPlacementRepairs, type PlacementRepairInspection } from '../jobs/placement-repairs.js';
-import { HERDR_LABELS, HERDR_KINDS, type HcRunRequest } from '../contracts.js';
+import { HERDR_LABELS, HERDR_KINDS, type HcRunRequest, type MachineName } from '../contracts.js';
+import { isHerdrConnectivityFailure } from '../client/availability.js';
 import { readAppPaneCapabilities } from '../panes/capabilities.js';
 import { paneAddress, paneId, paneText } from '../panes/codec.js';
 import { readPrivateJson } from '../sessions/registry.js';
@@ -29,6 +30,7 @@ export interface DoctorReport {
   warnings: readonly DoctorFailure[];
   probes: readonly NodeObservation[];
   passed?: number;
+  deferredRuntimes?: readonly MachineName[];
 }
 export function checkManagedKeyBindings(bytes: Buffer | null, desired: KeySections, options: { ignoredKeys?: KeyFields } = {}): { failures: DoctorFailure[]; warnings: DoctorFailure[] } {
   if (bytes === null) return { failures: [{ item: 'keys', code: 'keys-defaults-missing', message: missingKeyMapMessage, repair: missingKeyMapMessage }], warnings: [] };
@@ -98,11 +100,16 @@ export async function inspectPaneServiceState(root: string, probe: (claim: PaneS
   } catch { return unavailable('pane-helper-unavailable', 'Presentation helper could not be inspected; no repair was attempted.'); }
 }
 export type DoctorRequest = SetupRequest;
+export interface DoctorRuntimeAvailability {
+  shouldSkip(machine: MachineName): boolean;
+  deferOnConnectivityFailure(machine: MachineName, error: unknown): boolean;
+}
 export interface DoctorParts {
   globalRoot?: string;
   placementRepairInspection?(): Promise<PlacementRepairInspection>;
   targets(request: DoctorRequest): Promise<readonly ProbeTarget[]>;
-  inspect(item: DoctorItem, request: DoctorRequest): Promise<{
+  unreachableRuntimeMachines?(request: DoctorRequest): Promise<readonly MachineName[]>;
+  inspect(item: DoctorItem, request: DoctorRequest, runtimeAvailability?: DoctorRuntimeAvailability): Promise<{
     failures: readonly DoctorFailure[];
     warnings?: readonly DoctorFailure[];
     information?: readonly DoctorInformation[];
@@ -162,7 +169,7 @@ async function pinnedNodePaths(request: DoctorRequest): Promise<Map<string, stri
   }
   return paths;
 }
-export async function doctorHerdr(request: DoctorRequest, parts: DoctorParts): Promise<DoctorReport> {
+export async function doctorHerdr(request: DoctorRequest, parts: DoctorParts, setupDeferredRuntimes?: ReadonlySet<MachineName>): Promise<DoctorReport> {
   try { await assertGlobalRoot(request.config.globalRoot, parts.globalRoot); }
   catch (error) { return { failures: [{ item: 'global-root', code: 'global-root-mismatch', message: error instanceof Error ? error.message : String(error), repair: `Set globalRoot to ${parts.globalRoot} in ${request.configPath}, then rerun setup or doctor.` }], warnings: [], probes: [], passed: 0 }; }
   const failures: DoctorFailure[] = [];
@@ -171,6 +178,24 @@ export async function doctorHerdr(request: DoctorRequest, parts: DoctorParts): P
   const probes: NodeObservation[] = [];
   let passed = 0;
   const fail = (item: string, code: string, message: string, repair: string) => failures.push({ item, code, message, repair });
+  const deferredRuntimes = new Set(setupDeferredRuntimes);
+  if (!setupDeferredRuntimes && request.config.machines.length) {
+    try {
+      const pending = new Set((await readJournal(request.journalRoot)).pendingRuntimes);
+      for (const machine of request.config.machines) if (pending.has(machine.name)) deferredRuntimes.add(machine.name);
+      for (const machine of await parts.unreachableRuntimeMachines?.(request) ?? []) deferredRuntimes.add(machine);
+    } catch (error) {
+      fail('runtime-availability', 'doctor-inspection-failed', error instanceof Error ? error.message : String(error), 'Check the setup journal and the local Herdr core, then rerun doctor.');
+    }
+  }
+  const runtimeAvailability: DoctorRuntimeAvailability = {
+    shouldSkip: machine => deferredRuntimes.has(machine),
+    deferOnConnectivityFailure: (machine, error) => {
+      if (!isHerdrConnectivityFailure(error)) return false;
+      deferredRuntimes.add(machine);
+      return true;
+    },
+  };
   const repairRoot = join(request.config.globalRoot, 'herdr/panes');
   let repairFiles: string[] = [];
   try {
@@ -185,7 +210,7 @@ export async function doctorHerdr(request: DoctorRequest, parts: DoctorParts): P
   } catch (error) { fail('pane-repairs', 'pane-repair-inspection-failed', String(error), `Inspect the pane repair records at ${repairFiles.length ? repairFiles.join(', ') : repairRoot} and rerun doctor.`); }
   for (const item of DOCTOR_ITEMS) {
     try {
-      const result = await parts.inspect(item, request);
+      const result = await parts.inspect(item, request, runtimeAvailability);
       if (!result.failures.length && !result.warnings?.length) passed++;
       failures.push(...result.failures);
       warnings.push(...result.warnings ?? []);
@@ -233,6 +258,7 @@ export async function doctorHerdr(request: DoctorRequest, parts: DoctorParts): P
   try {
     const cached = await parts.cachedNodeObservations?.(request) ?? [];
     for (const target of await parts.targets(request)) {
+      if (runtimeAvailability.shouldSkip(target.machine)) continue;
       try {
         const observation = cached.find(p => p.machine === target.machine && p.nodePath === target.nodePath && p.coreStartedAt === target.coreStartedAt);
         const version = (observation?.version ?? await parts.probeMachineNode(target, probeLaunch(target))).trim();
@@ -242,6 +268,7 @@ export async function doctorHerdr(request: DoctorRequest, parts: DoctorParts): P
         passed++;
       }
       catch (e) {
+        if (runtimeAvailability.deferOnConnectivityFailure(target.machine, e)) continue;
         fail('remote-node', 'remote-node-unavailable', `Machine ${target.machine}: ${e instanceof Error ? e.message : String(e)}`, `Configure an absolute nodePath for ${target.machine}, or install Node >=${REMOTE_NODE_MINIMUM} on its PATH`);
       }
     }
@@ -250,6 +277,7 @@ export async function doctorHerdr(request: DoctorRequest, parts: DoctorParts): P
     fail('remote-node', 'remote-node-unavailable', e instanceof Error ? e.message : String(e), 'Repair the machine configuration and rerun doctor');
   }
   if (parts.probeRuntimeRoot) for (const machine of request.config.machines) {
+    if (runtimeAvailability.shouldSkip(machine.name)) continue;
     try {
       const bytes = (await snapshot(join(request.packageRoot, 'dist/herdr/remote-runtime.mjs'))).bytes;
       if (!bytes) throw new Error('The packaged remote runtime is missing');
@@ -258,8 +286,12 @@ export async function doctorHerdr(request: DoctorRequest, parts: DoctorParts): P
       if (!isRuntimeRootProbe(value, machine.runtime.directory)) throw new Error('Runtime root ownership, mode or Node version is invalid');
       passed++;
     } catch (error) {
+      if (runtimeAvailability.deferOnConnectivityFailure(machine.name, error)) continue;
       fail('runtime-root', 'runtime-root-invalid', `Machine ${machine.name}: ${error instanceof Error ? error.message : String(error)}`, 'Repair the runtime directory ownership and mode, then rerun spider herdr setup');
     }
   }
-  return { failures, warnings, probes, passed, ...(information.length ? { information } : {}) };
+  for (const machine of deferredRuntimes) warnings.push({ item: 'runtime', code: 'runtime-unavailable',
+    message: `Runtime on ${machine} could not be verified because the machine is unreachable or its setup is pending.`,
+    repair: `Run setup while ${machine} is reachable.` });
+  return { failures, warnings, probes, passed, ...(information.length ? { information } : {}), ...(deferredRuntimes.size ? { deferredRuntimes: [...deferredRuntimes] } : {}) };
 }

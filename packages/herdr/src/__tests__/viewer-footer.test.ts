@@ -129,6 +129,19 @@ test('viewer labels missing transcript history rather than claiming the tail is 
   expect(footer).toContain('? AIC');
 });
 
+test('a newly opened idle RPC child starts with the idle moon', () => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  try {
+    const view = make();
+    view.setRunInfo({ protocol: 2, working: false } as never);
+    view.setState({ status: 'running', steerable: true, reachable: true, readOnlyReason: null });
+    expect(view.footerLines(100).map(stripTerminalSequences).join('\n')).toMatch(/○/);
+    view.live({ type: 'agent_start' });
+    expect(view.footerLines(100).map(stripTerminalSequences).join('\n')).toMatch(/◐/);
+    view.dispose();
+  } finally { vi.useRealTimers(); }
+});
+
 test('viewer moon advances while working and stops on agent end, stale state and disposal', () => {
   vi.useFakeTimers();
   vi.setSystemTime(0);

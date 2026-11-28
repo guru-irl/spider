@@ -65,7 +65,7 @@ test('user edits made after setup survive rollback in every managed file kind af
 });
 
 test('user edits survive setup, rollback, setup, rollback in every managed file kind', async () => {
-  const f = await fastFixture(); const notesBefore = await notesValue(f);
+  const f = await focusedSetupFixture({ coreTransport: 'socket' }); const notesBefore = await notesValue(f);
   await setupHerdr(f.request, f.parts);
   await rollbackHerdr(f.request, f.parts);
   await editEveryKind(f);
@@ -160,7 +160,7 @@ test('setup after rollback and an upgrade takes a fresh baseline instead of refu
 });
 
 test('rollback keeps journal entries only for files it could not restore', async () => {
-  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
+  const f = await focusedSetupFixture({ coreTransport: 'socket' }); await setupHerdr(f.request, f.parts);
   f.parts.warn = () => {};
   await writeFile(join(f.h.directories.agent, 'settings.json'), '{"theme":"user-theme"}');
   await rollbackHerdr(f.request, f.parts);
@@ -169,7 +169,7 @@ test('rollback keeps journal entries only for files it could not restore', async
 });
 
 test('a rollback that fails after closing tabs can be retried without closing them again', async () => {
-  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
+  const f = await focusedSetupFixture({ coreTransport: 'socket' }); await setupHerdr(f.request, f.parts);
   const settings = join(f.h.directories.agent, 'settings.json');
   const entry = (await readJournal(f.request.journalRoot)).entries.find(e => e.path === settings)!;
   const backup = await readFile(entry.backup!);

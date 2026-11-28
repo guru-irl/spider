@@ -6,7 +6,7 @@ import { HerdrLabelContract } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
 import { isHerdrConnectivityFailure } from '../client/availability.js';
 import { VIEW_ON_MAC_MESSAGE } from '../notices.js';
-import { digest, snapshot, atomicWrite, removeFile, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, prepareModDirectories, rollbackModDirectories, discardModStages, unpublishNewMods, applyFiles, rejectSymlinks, mergeTheme, mergeKeys, mergeTerminalKeys, disableRootNotes, rollbackFiles, managedProjection, stageLayoutKeyRename, assertGlobalRoot, missingKeyMapMessage, type KeyBinding, type KeyFields, type KeySections, type ManagedPart, type FileAction, type SetupJournal } from './backup.js';
+import { digest, snapshot, atomicWrite, removeFile, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, prepareModDirectories, rollbackModDirectories, discardModStages, unpublishNewMods, applyFiles, rejectSymlinks, mergeTheme, mergeKeys, mergeTerminalKeys, disableRootNotes, rollbackFiles, managedProjection, stageLayoutKeyRename, retainedLayoutSwitches, assertGlobalRoot, missingKeyMapMessage, type KeyBinding, type KeyFields, type KeySections, type ManagedPart, type FileAction, type SetupJournal } from './backup.js';
 import { probeLaunch, type DoctorReport, type RuntimeInventory } from './doctor.js';
 import { checkRemoteNodeVersion, REMOTE_NODE_MINIMUM } from '../remote/node-version.js';
 import { shellQuote } from '../sessions/resume.js';
@@ -256,10 +256,11 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
   await assertGlobalRoot(request.config.globalRoot, parts.globalRoot);
   await parts.validateSelections?.(request);
   const work = async (): Promise<SetupResult> => {
-    await assertSetupNotUndoing(request.journalRoot);
     const journal = await readJournal(request.journalRoot);
+    const legacy = await readLegacyLayout(request.config.app.home, request.journalRoot, journal, request.replaceChanged);
+    await assertSetupNotUndoing(request.journalRoot);
     const layoutPath = spiderLayoutPath(request.config.app.home), legacyPath = legacySpiderLayoutPath(request.config.app.home);
-    const layoutTargets = await readLayoutTargets(request.config.app.home, request.journalRoot, journal, request.replaceChanged);
+    const layoutTargets = await readLayoutTargets(request.config.app.home, request.journalRoot, journal, legacy);
     if (!request.dryRun) await collectCheckpointBlobs(request.journalRoot);
     let checkpoint: UpgradeCheckpoint | undefined, completed = false, setupError: unknown;
     const recordWrites = async (paths: readonly string[]) => { if (checkpoint) await recordCheckpointWrites(request.journalRoot, checkpoint, paths); };
@@ -409,6 +410,8 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
           }
         }
         if (plan.path === keysPath) {
+          for (const [section, bindings] of Object.entries(retainedLayoutSwitches(prior, desired)))
+            retained = { ...retained, [section]: { ...bindings, ...retained?.[section] } };
           const retired = Object.entries(prior?.keys?.[LEGACY_SPIDER_LAYOUT_KEYS] ?? {})
             .filter(([key, value]) => value === null && !Object.hasOwn(desired[LEGACY_SPIDER_LAYOUT_KEYS] ?? {}, key));
           if (retired.length) {

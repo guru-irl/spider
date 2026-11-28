@@ -107,10 +107,13 @@ export class AgentFooter implements Component {
     const lines = model.visible.map((a) => this.agentLine(a, width, selecting, selected));
     if (model.overflow && selecting) {
       const direction = this.offset + visibleCount < agents.length ? "arrowDown" : "arrowUp";
-      const left = `${icon(this.theme.iconStyle, direction)} view more`;
+      const index = selected ? orderFooterAgents(agents).findIndex(a => a.runId === selected) : -1;
+      const left = this.theme.fg("muted", `${icon(this.theme.iconStyle, direction)} view more`)
+        + (index < 0 ? "" : this.theme.fg("muted", " ") + this.theme.fg("dim", "·")
+          + this.theme.fg("muted", ` ${index + 1}/${agents.length}`));
       const right = `${agents.length} subagents`;
       const padding = " ".repeat(Math.max(1, width - visibleWidth(left) - visibleWidth(right)));
-      lines.push(truncateToWidth(this.theme.fg("muted", left + padding + right), width, "…"));
+      lines.push(truncateToWidth(left + this.theme.fg("muted", padding + right), width, "…"));
     } else if (model.overflow) {
       const o = model.overflow;
       const seg: string[] = [];

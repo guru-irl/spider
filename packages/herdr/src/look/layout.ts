@@ -56,9 +56,9 @@ export function buildGlassLayout(currentMain: unknown, names: CloneNames): Glass
     colors: { ...object(root.colors ?? {}), ...edits.root.colors },
   });
   delete root.window_blur;
-  if (isSpacesALookVersion(names.release)) {
-    const release = edits.spacesA[names.release];
-    Object.assign(root, release.root);
+  const release = isSpacesALookVersion(names.release) ? edits.spacesA[names.release] : undefined;
+  if (release) {
+    Object.assign(root, structuredClone(release.root));
     // Native Settings shares the popover backing with other framed overlays.
     if ('colors' in release) Object.assign(object(root.colors), release.colors);
   }
@@ -69,14 +69,15 @@ export function buildGlassLayout(currentMain: unknown, names: CloneNames): Glass
   Object.assign(pane, structuredClone(edits.pane)); delete pane.shadow;
   headerContent.mod = names.pane; headerContent.props = { ...object(headerContent.props ?? {}), ...names.props?.pane };
   Object.assign(panel, structuredClone(edits.dock));
-  if (hasNativeLookFeatures(names.release)) {
-    if (names.windowBlur !== false) root.window_blur = true;
+  if (hasNativeLookFeatures(names.release) && names.windowBlur !== false) root.window_blur = true;
+  if (names.release === '0.1.16') {
     root.background = edits.blur.background;
     Object.assign(object(root.colors), edits.blur.colors);
     sidebar.background = edits.blur.sidebar;
     one('tabs').background = edits.blur.panel;
     panel.background = pane.background = edits.blur.panel;
   }
+  if (release && 'paneBackground' in release) panel.background = pane.background = release.paneBackground;
   body.children.push({ id: 'spider', type: 'block', content: { mod: names.spider, props: { ...names.props?.spider } } });
   return root;
 }

@@ -28,6 +28,7 @@ for (const version of ['0.1.13', '0.1.16', '0.1.18']) {
       { ...park, replacement: park.anchor + '\n          if (command === "park" && p?.focused && props()?.labelContract) parkFocusedTerminal(herdrApi.focused(), herdrApi.terminals(), props().labelContract, run, title => herdrApi.notify({ title, level: "warning" }));' },
     ];
     fragments.menu = JSON.parse(readFileSync(new URL(`../packages/herdr/assets/look/spaces-a-goto/menu-${version}.json`, import.meta.url), 'utf8'));
+    if (version === '0.1.18') fragments.tabs = JSON.parse(readFileSync(new URL(`../packages/herdr/assets/look/spaces-a-sidebar/tabs-${version}.json`, import.meta.url), 'utf8'));
   }
   const derived = [];
   if (through === 'full') {

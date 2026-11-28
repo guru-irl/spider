@@ -11,7 +11,8 @@ below the input, and sent messages on a lighter grey (`#262628`) without a caret
 ## Decisions (user, 2026-11-27)
 
 1. Shape A: a strip two rows tall, with half-row gaps above and below, like Copilot.
-2. The left bar shows the thinking level, the signal pi's rules carry today (and bash mode's colour).
+2. The left bar is always the accent colour, except in bash mode, where it keeps bash mode's green. It does not
+   show the thinking level (the user doesn't need it).
 3. Sent messages use the same dark strip.
 4. Sent messages start with a `❯` caret.
 5. The working spinner moves into the footer as a permanent icon, left of the context usage. It animates while
@@ -25,6 +26,13 @@ below the input, and sent messages on a lighter grey (`#262628`) without a caret
     didn't read as darker.
 11. The bar is half a cell wide, sits flush against the strip, and runs the strip's full height, half rows
     included (b1).
+12. When a subagent finishes, its status icon takes the robot's place; it doesn't appear beside the robot.
+13. The spider logo stays white (`toolTitle`), not the accent.
+14. Tool boxes (spider's and pi's built-in tools such as edit) and message boxes use the strip colour, with half
+    a row of fill above and below and one cell left and right. No outline.
+15. The hover frame around a reply (copy buttons) becomes a rounded light outline, like Copilot's boxes, with no
+    fill.
+16. Cards drop the `└` gutter glyph: detail rows line up under the title text (g7).
 
 Not in scope: Copilot's context lines above the input (folder, branch, machine) and its status line below.
 
@@ -45,7 +53,8 @@ A spider editor, `BandEditor extends CustomEditor`, replaces pi's editor through
 - The editor lays text out at `width - 2`, so the bar and one space fit in front of each row.
 - Strip colour: the theme's `userMessageBg`, so the input and sent messages always match. The half rows draw `▄`
   and `▀` with that colour as the foreground, derived from `theme.getBgAnsi("userMessageBg")`.
-- Bar: drawn with `this.borderColor`, which pi already updates for the thinking level and bash mode. Column 1
+- Bar: the theme's `accent` colour, or `bashMode` while the input is a shell command. Pi's `borderColor` (the
+  thinking level) is not used. Column 1
   holds the bar only, with no strip background: `▗` (U+2597) on the top half row, `▐` (U+2590) on text rows and
   `▝` (U+259D) on the bottom half row. Each uses the right half of the cell, so the bar touches the strip and
   covers its full height. A thinner bar can't reach into the half rows, because one cell can't show three
@@ -63,10 +72,11 @@ A spider editor, `BandEditor extends CustomEditor`, replaces pi's editor through
 In `packages/herdr/assets/themes/dracula-plus-glass.json` and `spider-glass.json`:
 
 - New var `strip` = `#060607`. `userMessageBg` uses it.
-- `accent`, `borderAccent` and `customMessageLabel` move from `purple` to `blue` (`#82aaff`).
-- The thinking colours stay distinct from each other. Off and minimal are unchanged (dim, muted), and so are low
-  (cyan `#8be9fd`), xhigh (pink `#ff92df`) and max (bright red `#ff6e6e`). High becomes blue, the accent,
-  because it is the user's usual level. Medium, which was blue, becomes lavender `brightPurple` (`#d6acff`).
+- `accent`, `borderAccent` and `customMessageLabel` move from `purple` to `blue` (`#82aaff`). `toolTitle` stays
+  `fg`, so the spider logo stays white.
+- `toolPendingBg`, `toolSuccessBg`, `toolErrorBg` and `customMessageBg` use `strip` too. Errors still show
+  through the red status icon and pi's error text.
+- The thinking colours don't change: the bar no longer shows them.
 - Purple stays in the palette for anything that names it directly, but nothing uses it as the accent.
 - The installed copy in `~/.pi/agent/themes/` follows through Herdr setup's normal theme install.
 
@@ -125,7 +135,8 @@ In `packages/herdr/assets/themes/dracula-plus-glass.json` and `spider-glass.json
 
 - Running agents in the agents footer, the agent list and the grid cells (`packages/ui/src/agents/footer.ts`,
   `agent-list.ts`, `grid-cell.ts`) show the animated robot where they show the braille spinner and the robot
-  today. Finished agents keep today's still robot and status icon.
+  today. A finished agent shows its status icon (success, failure, cancelled) in the robot's place, in the status
+  colour.
 - Sequence (seconds): centre 0.7, left 0.35, centre 0.2, right 0.35, centre 0.7, blink 0.12, centre 0.25,
   blink 0.12, then repeat (2.79 s). Each agent starts at an offset derived from its run id, so rows don't blink
   in step.
@@ -138,6 +149,37 @@ In `packages/herdr/assets/themes/dracula-plus-glass.json` and `spider-glass.json
   (fontTools). It adds the robot frames and redraws `U+F0BCA` as spider's web logo in an installed CaskaydiaCove
   Nerd Font, keeping a backup of each file. Spider ships no font files.
 
+## Boxes, hover frame and gutters
+
+### Tool and message boxes
+
+```
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄   half row of fill
+ 󰯊  exec                                       one cell of fill, then the content
+    gh workflow run ci.yml --ref ci/selection
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀   half row of fill
+```
+
+- Pi draws tool executions and custom messages in a `Box` with one row and one cell of padding. Spider keeps the
+  one-cell sides and replaces the top and bottom padding rows with half rows: `▄` and `▀` in the box colour on
+  the glass. A cell is about twice as tall as it is wide, so half a row and one cell look the same size.
+- Blank rows at the start and end of the box content are dropped, so content starts right after the half row.
+  This fixes the extra space above pi's edit tool.
+- This applies to every tool, spider's own and pi's built-ins (edit, read, write, bash), and to custom messages.
+  The wrapper feature-detects pi's padding rows and leaves the box as pi drew it if they aren't there.
+
+### Hover frame
+
+- The copy-buttons frame (`packages/host/src/copy-buttons/index.ts`, `FRAME`) uses rounded box drawing:
+  `╭ ─ ╮ │ ╰ ╯`, in `borderMuted` (`#49494b`). The lines sit at cell centres, so the reply text has half a
+  cell of space inside the frame. The copy actions and time stay on the bottom edge, and the copy labels keep
+  their one-space pad so the clickable columns don't move.
+
+### Gutters
+
+- The `gutter` role (`└`) goes. Detail rows under a card title start at the title's text column (three cells in
+  from the icon), with no glyph. `docs/output-ui-guidelines.md` changes to match.
+
 ## Tests
 
 - Strip: one line, several lines, scrolled up and down, bash mode, a thinking-level change, autocomplete open,
@@ -147,8 +189,14 @@ In `packages/herdr/assets/themes/dracula-plus-glass.json` and `spider-glass.json
 - Caret: one line, a wrapped line, a message starting with a heading, a list and a code fence, OSC markers kept,
   half-row edges replace pi's padding rows, reload installs the wrapper once, wrapper inert when pi's component
   changes shape.
-- Theme assets: `strip` is `#060607` and `userMessageBg` uses it; `accent`, `borderAccent` and
-  `customMessageLabel` are blue; the seven thinking colours are pairwise distinct; both theme files agree.
+- Theme assets: `strip` is `#060607`; `userMessageBg`, the three tool backgrounds and `customMessageBg` use it;
+  `accent`, `borderAccent` and `customMessageLabel` are blue; `toolTitle` is unchanged; both theme files agree.
+- Bar colour: accent at every thinking level, bash mode green.
+- Boxes: half rows replace the padding rows at the box colour, one-cell sides kept, leading and trailing blank
+  content rows dropped, pi's built-in edit tool included, untouched when pi's padding rows are missing.
+- Hover frame: rounded glyphs and colour, copy-button hit columns unchanged.
+- Gutters: no `└` in any card; detail rows start at the title text column.
+- Robot: a finished agent shows only its status icon.
 - Footer moon: frame at given times (start, mid-cycle, wrap), idle frame and colour, the icon column constant
   between working and idle, the timer stops on `agent_end`, shutdown and reload, `setWorkingVisible(false)` is
   called once, text style frames.

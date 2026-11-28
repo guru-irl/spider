@@ -24,6 +24,7 @@ export const DEFAULTS: Readonly<Record<string, unknown>> = {
   "ui.footer": true,
   "ui.icons": "text",
   "ui.inputBand": true,
+  "ui.spiderGlyphs": false,
   "copyButtons.enabled": true,
   "reload.auto": true,
   "tools.structured": false,
@@ -271,8 +272,8 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
   if (op === "set" && key === "subagents.profiles.reviewer.excludeTools" && !isToolSelectorList(value)) {
     throw new Error(`${key} must be a JSON array of nonempty tool selectors without whitespace or commas`);
   }
-  if (op === "set" && key === "ui.inputBand" && typeof value !== "boolean") {
-    throw new Error("ui.inputBand must be a boolean");
+  if (op === "set" && (key === "ui.inputBand" || key === "ui.spiderGlyphs") && typeof value !== "boolean") {
+    throw new Error(`${key} must be a boolean`);
   }
   if (op === "set" && key === "ui.icons" && !isIconStyle(value)) {
     throw new Error("ui.icons must be text or nerd");

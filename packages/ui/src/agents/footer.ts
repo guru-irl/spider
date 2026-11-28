@@ -3,8 +3,7 @@ import { icon } from "../icons.js";
 import type { Component } from "../component";
 import { buildFooterModel } from "./footer-model";
 import { diffLines, hasChanges } from "./diff";
-import { Spinner } from "../components/spinner";
-import { activityText, agentGlyph, statusGlyph, statusToken } from "./types";
+import { activityText, agentGlyph, renderAgentStatus } from "./types";
 import type { AgentSnapshot, ThemeAdapter } from "./types";
 import type { AgentStore } from "./store";
 
@@ -20,9 +19,8 @@ export function formatDuration(ms: number): string {
 /** Short model label (drop provider prefix + redundant 'claude-'). */
 export function shortModel(m?: string | null): string { if (!m) return "—"; return (m.split("/").pop() ?? m).replace(/^claude-/, ""); }
 
-/** Shared one-line agent summary: `<status> <agent glyph> name · role · model · turns · duration · activity`.
- *  The caller's status marker is a spinner while running and a terminal glyph otherwise. */
-export function formatAgentLine(t: ThemeAdapter, a: AgentSnapshot, width: number, now: number, lead: string): string {
+/** Shared one-line summary with a single leading activity or status mark. */
+export function formatAgentLine(t: ThemeAdapter, a: AgentSnapshot, width: number, now: number): string {
   const ital = (s: string) => (t.italic ? t.italic(s) : s);
   const elapsedMs = a.startedAt === undefined ? 0 : (a.endedAt ?? now) - a.startedAt;
   const turns = a.stepCount === 1 ? "1 turn" : `${a.stepCount} turns`;
@@ -36,34 +34,29 @@ export function formatAgentLine(t: ThemeAdapter, a: AgentSnapshot, width: number
   if (a.thinking) parts.push(sep, t.fg("dim", a.thinking));
   parts.push(sep, t.fg("dim", turns), sep, t.fg("muted", formatDuration(elapsedMs)));
   if (a.activity) parts.push(sep, t.fg("dim", activityText(t, a.activity, a.activityIsError)));
-  // ONLY the leading status marker (spinner while running, glyph otherwise) is status-coloured;
-  // the name/text stay a constant tool-title colour (no green-on-success noise).
-  return truncateToWidth(`${t.fg(statusToken(a.status), lead)} ${t.fg("toolTitle", agentGlyph(t))} ${parts.join(" ")}`, width, "…");
+  return truncateToWidth(`${renderAgentStatus(t, a, now)} ${parts.join(" ")}`, width, "…");
 }
 
 export class AgentFooter implements Component {
   private theme: ThemeAdapter;
   private maxVisible: number;
   private now: () => number;
-  private spinner: Spinner;
   private cachedWidth?: number;
   private cachedLines: string[] = [];
 
   constructor(private store: AgentStore, theme: ThemeAdapter,
-    opts: { maxVisible?: number; now?: () => number; spinner?: Spinner } = {}) {
+    opts: { maxVisible?: number; now?: () => number } = {}) {
     this.theme = theme;
     this.maxVisible = opts.maxVisible ?? 4;
     this.now = opts.now ?? Date.now;
-    this.spinner = opts.spinner ?? new Spinner({ iconStyle: theme.iconStyle });
   }
 
   private agentLine(a: AgentSnapshot, width: number): string {
     const selecting = this.store.isSelecting();
     const cursor = selecting ? (a.runId === this.store.selectedRunId() ? this.theme.fg("accent", `${icon(this.theme.iconStyle, "select")} `) : "  ") : "";
     const cw = visibleWidth(cursor);
-    const lead = a.status === "running" ? this.spinner.frame(this.now()) : statusGlyph(this.theme, a.status);
     const pin = this.store.isPinned(a.runId) ? ` ${icon(this.theme.iconStyle, "pin")}` : "";
-    const line = formatAgentLine(this.theme, a, Math.max(4, width - visibleWidth(pin) - cw), this.now(), lead);
+    const line = formatAgentLine(this.theme, a, Math.max(4, width - visibleWidth(pin) - cw), this.now());
     return cursor + (pin ? line + this.theme.fg("warning", pin) : line);
   }
 
@@ -97,7 +90,7 @@ export class AgentFooter implements Component {
   }
 
   render(width: number): string[] {
-    // Always rebuild: the spinner/elapsed are time-derived, and pi may re-create the
+    // Always rebuild: the activity mark and elapsed time are time-derived, and pi may re-create the
     // widget instance (e.g. after an overlay closes) — a cached short-circuit would
     // then freeze the animation permanently. Rebuilding a few lines each paint is cheap.
     this.cachedLines = this.build(width);

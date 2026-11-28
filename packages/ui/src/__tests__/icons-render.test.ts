@@ -12,7 +12,6 @@ import { renderExecCall, renderExecResult } from "../renderers/exec.js";
 import { renderGridCell } from "../agents/grid-cell.js";
 import { AgentDetail } from "../agents/agent-detail.js";
 import { applyEvent } from "../agents/store.js";
-import { Spinner } from "../components/spinner.js";
 import { renderModels } from "../screens/models-view.js";
 import { renderConfig } from "../screens/config-view.js";
 import type { AgentSnapshot, ThemeAdapter } from "../agents/types.js";
@@ -28,7 +27,7 @@ const agent: AgentSnapshot = {
 describe("icon styles in rendered rows", () => {
   it("italicizes the agent role in both grid and detail", () => {
     const styled: ThemeAdapter = { ...theme("text"), italic: text => `<i>${text}</i>` };
-    const opts = { agent, width: 100, height: 2, focused: false, pinned: false, now: 0, spinner: new Spinner() };
+    const opts = { agent, width: 100, height: 2, focused: false, pinned: false, now: 0 };
     expect(renderGridCell(styled, opts).join("\n")).toContain("<i>worker</i>");
     const detail = new AgentDetail("one", styled, { viewport: () => ({ safeHeight: 15 }), requestRender: () => {} });
     try {
@@ -61,16 +60,16 @@ describe("icon styles in rendered rows", () => {
   });
   it("uses the text icon for an adapter without an icon style", () => {
     const custom: ThemeAdapter = { ...theme("text"), glyph: "🕸", iconStyle: undefined };
-    expect(formatAgentLine(custom, agent, 100, 0, "○")).toContain("○ ◇ scribe");
-    const opts = { agent, width: 100, height: 2, focused: false, pinned: false, now: 0, spinner: new Spinner() };
+    expect(formatAgentLine(custom, agent, 100, 0)).toContain("◇ scribe");
+    const opts = { agent, width: 100, height: 2, focused: false, pinned: false, now: 0 };
     expect(renderGridCell(custom, opts)[0]).toContain("◇ scribe");
   });
 
   it("keeps the agent marker and its following spaces aligned", () => {
-    const text = formatAgentLine(theme("text"), agent, 100, 0, "◆");
-    const nerd = formatAgentLine(theme("nerd"), agent, 100, 0, "◆");
-    expect(text).toContain("◆ ◇ scribe");
-    expect(nerd).toContain("◆ \u{F167A}  scribe");
+    const text = formatAgentLine(theme("text"), agent, 100, 0);
+    const nerd = formatAgentLine(theme("nerd"), agent, 100, 0);
+    expect(text).toContain("◇ scribe");
+    expect(nerd).toContain("\u{F167A}  scribe");
     expect(visibleWidth(nerd)).toBe(visibleWidth(text) + 1);
   });
 
@@ -107,7 +106,7 @@ describe("icon styles in rendered rows", () => {
     expect(text[0]).toMatch(/^ ◆ exec/u);
     expect(nerd[0]).toMatch(/^ \u{F0BCA}  exec/u);
     expect(visibleWidth(nerd[0])).toBe(visibleWidth(text[0]) + 1);
-    expect(formatAgentLine(theme("nerd"), agent, 100, 0, "◆")).toContain("◆ \u{F167A}  scribe");
+    expect(formatAgentLine(theme("nerd"), agent, 100, 0)).toContain("\u{F167A}  scribe");
   });
 
   it("aligns message details in both icon styles", () => {
@@ -153,14 +152,14 @@ describe("icon styles in rendered rows", () => {
 
   it("keeps pinned agent rows aligned and replaces task and failure markers", () => {
     const opts = { agent: { ...agent, status: "failed" as const, task: "read files" }, width: 100, height: 3,
-      focused: false, pinned: true, now: 0, spinner: new Spinner() };
+      focused: false, pinned: true, now: 0 };
     const text = renderGridCell(theme("text"), opts);
     const nerd = renderGridCell(theme("nerd"), opts);
-    expect(text[0]).toContain("× ◇ scribe †");
-    expect(nerd[0]).toContain("\u{F0156}  \u{F167A}  scribe \u{F0931} ");
+    expect(text[0]).toContain("× scribe †");
+    expect(nerd[0]).toContain("\u{F0156}  scribe \u{F0931} ");
     expect(text[2]).toContain("→ read files");
     expect(nerd[2]).toContain("\u{F060D}  read files");
-    expect(visibleWidth(nerd[0])).toBe(visibleWidth(text[0]) + 3);
+    expect(visibleWidth(nerd[0])).toBe(visibleWidth(text[0]) + 2);
     expect(visibleWidth(nerd[2])).toBe(visibleWidth(text[2]) + 1);
   });
 
@@ -168,17 +167,17 @@ describe("icon styles in rendered rows", () => {
     const event = { runId: "one", sessionId: "s", ts: 1, type: "tool_result" as const,
       summary: "✗ read — failed", payload: { isError: true } };
     const snapshot = applyEvent(agent, event);
-    const text = formatAgentLine(theme("text"), snapshot, 100, 0, "◆");
-    const nerd = formatAgentLine(theme("nerd"), snapshot, 100, 0, "◆");
+    const text = formatAgentLine(theme("text"), snapshot, 100, 0);
+    const nerd = formatAgentLine(theme("nerd"), snapshot, 100, 0);
     expect(text).toContain("× read — failed");
     expect(nerd).toContain("\u{F0156}  read — failed");
     const current = applyEvent(agent, { ...event, summary: "\u274C read — failed" });
-    expect(formatAgentLine(theme("nerd"), current, 100, 0, "◆")).toContain("\u{F0156}  read — failed");
+    expect(formatAgentLine(theme("nerd"), current, 100, 0)).toContain("\u{F0156}  read — failed");
     expect(visibleWidth(nerd)).toBe(visibleWidth(text) + 2);
-    const opts = { agent: snapshot, width: 100, height: 3, focused: false, pinned: false, now: 0, spinner: new Spinner() };
+    const opts = { agent: snapshot, width: 100, height: 3, focused: false, pinned: false, now: 0 };
     expect(renderGridCell(theme("nerd"), opts).join("\n")).toContain("\u{F0156}  read — failed");
     const log = applyEvent(agent, { ...event, type: "log", summary: "✗ user text" });
-    expect(formatAgentLine(theme("nerd"), log, 100, 0, "◆")).toContain("✗ user text");
+    expect(formatAgentLine(theme("nerd"), log, 100, 0)).toContain("✗ user text");
     const detail = new AgentDetail("one", theme("nerd"), { viewport: () => ({ safeHeight: 15 }), requestRender: () => {} });
     detail.update({ kind: "loaded", run: agent, events: [{ ...event, id: 1 }] });
     try { expect(detail.render(100).join("\n")).toContain("\u{F0156}  read — failed"); }
@@ -189,15 +188,15 @@ describe("icon styles in rendered rows", () => {
     const event = { runId: "one", sessionId: "s", ts: 1, type: "tool_result" as const,
       summary: "✓ read — done", payload: { isError: false } };
     const snapshot = applyEvent(agent, event);
-    expect(formatAgentLine(theme("nerd"), snapshot, 100, 0, "◆")).toContain("\u{F012C}  read — done");
-    const opts = { agent: snapshot, width: 100, height: 3, focused: false, pinned: false, now: 0, spinner: new Spinner() };
+    expect(formatAgentLine(theme("nerd"), snapshot, 100, 0)).toContain("\u{F012C}  read — done");
+    const opts = { agent: snapshot, width: 100, height: 3, focused: false, pinned: false, now: 0 };
     expect(renderGridCell(theme("nerd"), opts).join("\n")).toContain("\u{F012C}  read — done");
     const detail = new AgentDetail("one", theme("nerd"), { viewport: () => ({ safeHeight: 15 }), requestRender: () => {} });
     detail.update({ kind: "loaded", run: agent, events: [{ ...event, id: 1 }] });
     try { expect(detail.render(100).join("\n")).toContain("\u{F012C}  read — done"); }
     finally { detail.dispose(); }
     const log = applyEvent(agent, { ...event, type: "log", summary: "✓ user text" });
-    expect(formatAgentLine(theme("nerd"), log, 100, 0, "◆")).toContain("✓ user text");
+    expect(formatAgentLine(theme("nerd"), log, 100, 0)).toContain("✓ user text");
   });
 
   it("keeps failed-tool provenance aligned when the activity tail rolls over", () => {
@@ -211,7 +210,7 @@ describe("icon styles in rendered rows", () => {
     expect(snapshot.recentActivityErrors?.slice(0, -1).every(value => value === undefined)).toBe(true);
     expect(snapshot.recentActivityErrors?.at(-1)).toBe(true);
     snapshot = applyEvent(snapshot, { runId: "one", sessionId: "s", ts: 23, type: "log", summary: "✗ user text" });
-    expect(formatAgentLine(theme("nerd"), snapshot, 100, 0, "◆")).toContain("✗ user text");
+    expect(formatAgentLine(theme("nerd"), snapshot, 100, 0)).toContain("✗ user text");
     expect(snapshot.recentActivityErrors?.at(-2)).toBe(true);
     expect(snapshot.recentActivityErrors?.at(-1)).toBeUndefined();
   });

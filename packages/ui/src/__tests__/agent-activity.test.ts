@@ -4,7 +4,6 @@ import { AgentFooter } from "../agents/footer.js";
 import { renderGridCell } from "../agents/grid-cell.js";
 import { AgentStore } from "../agents/store.js";
 import type { RunRow, ThemeAdapter } from "../agents/types.js";
-import { Spinner } from "../components/spinner.js";
 
 const theme: ThemeAdapter & { spiderGlyphs: boolean; activityTint(text: string, strength: number): string } = {
   fg: (token, text) => `[${token}]${text}`,
@@ -25,7 +24,7 @@ function surfaces(runId: string, status: RunRow["status"], now: number, style = 
     const width = 100;
     return [new AgentFooter(store, style, { now: () => now }).render(width)[0],
       new AgentList(store, style, { now: () => now }).render(width)[0],
-      renderGridCell(style, { agent, width, height: 2, pinned: false, focused: false, now, spinner: new Spinner() })[0]];
+      renderGridCell(style, { agent, width, height: 2, pinned: false, focused: false, now })[0]];
   } finally { store.stop(); }
 }
 const privateGlyphs = (row: string) => row.match(/\p{Co}/gu) ?? [];
@@ -40,7 +39,7 @@ describe("agent activity marks", () => {
     for (const [first, last, frame] of beats) for (const time of [first, last]) {
       for (const line of surfaces(id, "running", time)) {
         expect(privateGlyphs(line), `at ${time} ms: ${line}`).toEqual([frame]);
-        expect(line).toContain(`[accent]${frame}  `);
+        expect(line).toMatch(new RegExp(`^(?: {2}|\\[accent\\]▸ )?\\[accent\\]${frame} {2}`));
       }
     }
   });
@@ -55,7 +54,7 @@ describe("agent activity marks", () => {
     for (const [ms, tint] of [[0, "0.00"], [450, "0.50"], [900, "1.00"], [1350, "0.50"], [1800, "0.00"]] as const) {
       for (const line of surfaces("stock-3023", "running", ms, style)) {
         expect(privateGlyphs(line)).toEqual(["\u{F167A}"]);
-        expect(line).toContain(`[${tint}]\u{F167A}  `);
+        expect(line).toMatch(new RegExp(`^(?: {2}|\\[accent\\]▸ )?\\[${tint}\\]\u{F167A} {2}`, "u"));
       }
     }
   });

@@ -23,7 +23,7 @@ describe("AgentFooter", () => {
     const f = new AgentFooter(store, id, { now: () => 1000 });
     expect(f.render(40)).toEqual([]);
   });
-  it("renders one agent line with the spider glyph, name, turns, within width", () => {
+  it("renders one agent line with the activity marker, name, turns, within width", () => {
     const src = new Src(); src.rows.set("r1", row({ name: "scribe" }));
     const store = new AgentStore(src); store.start();
     const f = new AgentFooter(store, id, { now: () => 5000 });

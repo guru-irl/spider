@@ -19,6 +19,11 @@ export const ACTIVITY_FRAMES = {
   nerd: { idle: NEW_MOON, working: [NEW_MOON, ...Array.from({ length: 27 }, (_, i) => String.fromCodePoint(0xE3C8 + i))] },
 } as const;
 
+// These four frames exist only in fonts patched by Spider. The pad is for non-Mono Nerd Fonts.
+export const ROBOT_FRAMES = {
+  center: "\u{F2120} ", left: "\u{F2121} ", right: "\u{F2122} ", closed: "\u{F2123} ",
+} as const;
+
 export function isIconStyle(value: unknown): value is IconStyle {
   return ICON_STYLES.some(style => style === value);
 }

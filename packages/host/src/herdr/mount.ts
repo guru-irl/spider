@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { resolvePiPackageRoot } from '../../../subagents/src/pi-spawn.js';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { createBashTool, createLocalBashOperations, getAgentDir } from '@earendil-works/pi-coding-agent';
+import { colorToHex } from '@earendil-works/pi-tui';
 import { bus, openGlobal, openGlobalReadOnly, openRepo, resolveProject, paths } from '@spider/db-core';
 import { RunStore, makeKillHandler, makeMessageHandler, teardownSessionAsync } from '@spider/subagents';
 import { processStartTime } from '../../../subagents/src/process-identity.js';
@@ -61,6 +62,7 @@ import { openSessionHistoryDb } from '../session-run-db.js';
 import { loadedBuildPresence } from '../roam/build-presence.js';
 import { controlConfig, configValues, modelDefaultLayers } from '../control.js';
 import { modelContextWindow, modelName } from '../model-name.js';
+import { ACCENTS, storedAccent } from '../accent/palette.js';
 import { mountChildHerdr } from './child.js';
 import { coreStartedAt, disabledHerdrEnvironment, verifiedHerdrFile, readAppLayout, createHostHerdrPorts, createProcessInventory, explicitExtensionArguments, readJobJournal, openRunView, type HostHerdrOptions, type HostHerdrPorts } from './ports.js';
 
@@ -531,7 +533,11 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
       transcript = createRunTranscriptSource({ owner: () => owner, resolveDb: bindDb, openBindingDb: openGlobalReadOnly, transcriptRoots: o => [paths.scratch('project', o.cwd)].filter(root => existsSync(root)),
         modelContextWindow: model => modelContextWindow(ctx.modelRegistry, model),
         modelName: model => modelName(ctx.modelRegistry, model), iconStyle: appearance['ui.icons'] === 'nerd' ? 'nerd' : 'text',
-        inputBand: appearance['ui.inputBand'] !== false, creditFactor: () => options.viewerCreditFactor?.() ?? null });
+        inputBand: appearance['ui.inputBand'] !== false, creditFactor: () => options.viewerCreditFactor?.() ?? null,
+        accent: () => {
+          const color = ctx.mode === 'tui' && ctx.hasUI ? ctx.ui.theme?.colors?.accent : undefined;
+          return color ? ACCENTS.find(accent => accent.hex === colorToHex(color))?.id : storedAccent(appearance['ui.accent'])?.id;
+        } });
       inactiveNotice(ctx, false, 'activation-problem');
       stopped = false; activationEnv = env;
       const activeOwner = owner;

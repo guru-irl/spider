@@ -1,0 +1,80 @@
+name: host Herdr wiring process hunt
+on:
+  push:
+    branches: [ci/spd-wiring-hunt]
+permissions:
+  contents: read
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ONNXRUNTIME_NODE_INSTALL: skip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+      - run: sudo apt-get update && sudo apt-get install -y sqlite3 strace
+      - run: npm ci
+      - name: Fence fixture sockets
+        run: |
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+          mkdir -p .spider/scratch/{tmp,wiring-traces}
+      - name: Trace each file
+        shell: bash
+        run: |
+          export results="$PWD/.spider/scratch/wiring-traces"
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          unset XDG_RUNTIME_DIR
+          trace() {
+            local file="$1" name="${1##*/}" rc=0 start elapsed
+            start=$(date +%s%3N)
+            strace -f -qq -s 512 -e trace=clone,clone3,fork,vfork,execve -o "$results/$name.trace" \
+              node node_modules/vitest/vitest.mjs run "$file" --maxWorkers=1 --reporter=verbose \
+              >"$results/$name.log" 2>&1 || rc=$?
+            elapsed=$(( $(date +%s%3N) - start ))
+            python3 - "$results" "$name" "$rc" "$elapsed" <<'PY'
+          import json, pathlib, re, sys
+          from collections import Counter
+          root, name, rc, elapsed = sys.argv[1:]
+          p = pathlib.Path(root)
+          children, execs, pending = set(), Counter(), {}
+          with (p / f'{name}.trace').open(errors='replace') as trace:
+              for line in trace:
+                  pid, _, call = line.rstrip().partition(' ')
+                  call = call.lstrip()
+                  if call.endswith(' <unfinished ...>'):
+                      pending[pid] = call.removesuffix(' <unfinished ...>')
+                      continue
+                  if call.startswith('<... ') and ' resumed>' in call:
+                      call = pending.pop(pid, '') + call.split(' resumed>', 1)[1]
+                  if call.startswith('execve(') and call.endswith(' = 0'):
+                      program, *args = re.findall(r'"([^"\n]*)"', call.split('], ', 1)[0])
+                      category = pathlib.Path(program).name
+                      if category == 'node' and len(args) > 1:
+                          category += ':' + pathlib.Path(args[1]).name
+                      execs[category] += 1
+                  if re.match(r'^(?:clone3?|v?fork)\(', call) and 'CLONE_THREAD' not in call:
+                      match = re.search(r' = (\d+)$', call)
+                      if match and int(match[1]) > 0:
+                          children.add(int(match[1]))
+          summary = {'file': name, 'exit': int(rc), 'tracedCommandMs': int(elapsed), 'childProcesses': len(children), 'execs': execs}
+          text = json.dumps(summary, sort_keys=True)
+          print(text)
+          (p / f'{name}.json').write_text(text + '\n')
+          PY
+            return "$rc"
+          }
+          export -f trace
+          printf '%s\n' packages/host/src/__tests__/herdr-{wiring-remote,wiring-mount,wiring-lifecycle,viewer-layout,copy,kill-job,child,remote-file,unavailable}.test.ts |
+            xargs -P 3 -n 1 bash -c 'trace "$1"' _
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wiring-process-traces
+          path: .spider/scratch/wiring-traces/
+          include-hidden-files: true

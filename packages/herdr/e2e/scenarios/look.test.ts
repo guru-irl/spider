@@ -47,7 +47,7 @@ export const scenarios: readonly ScenarioDefinition[] = [{
     }
     const bad = suite.ownPath(join(suite.root, 'bad-installed-look'));
     await mkdir(bad, { mode: 0o700 });
-    const badFile = join(bad, 'spider-glass.json');
+    const badFile = join(bad, 'Spider.json');
     await writeFile(badFile, JSON.stringify({ ...observations.appTheme, background: '#282a36' }));
     await expect(async () => validateInstalledLook({ ...observations, appTheme: await readJson(badFile) })).rejects.toThrow(/installed-look: app background/);
     await suite.evidence('installed-look-control.json', { result: 'caught', copy: badFile, mutation: 'tinted app background', assertion: 'installed-look: app background' });

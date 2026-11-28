@@ -133,7 +133,8 @@ test('a fresh app home without settings.json sets up and rolls back to no settin
   await unlink(settings);
   const result = await setupHerdr(f.request, f.parts);
   expect(result.doctor.failures).toEqual([]);
-  expect(await json(settings)).toMatchObject({ theme: 'spider-glass', layout: 'spider-glass' });
+  expect(await json(settings)).toMatchObject({ theme: 'spider-glass' });
+  expect(await json(join(f.h.directories.app, 'shared.json'))).toMatchObject({ layout: 'Spider' });
   await rollbackHerdr(f.request, f.parts);
   expect(await exists(settings)).toBe(false);
 });

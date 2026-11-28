@@ -8,7 +8,7 @@ import { HERDR_KINDS, type MachineName } from '../contracts.js';
 import { setupHerdr, type SetupParts, type SetupRequest } from '../setup/installer.js';
 import { doctorHerdr } from '../setup/doctor.js';
 import { runHerdrCli, type HerdrCliPorts } from '../setup/cli.js';
-import { readJournal } from '../setup/backup.js';
+import { applyFiles, prepareBackups, readJournal } from '../setup/backup.js';
 import { fixture as processFixture, hash, realFs, registerSetupCleanup } from './setup-fixture.js';
 import { createInProcessHerdrHarness } from './setup-inprocess-harness.js';
 
@@ -22,13 +22,11 @@ registerSetupCleanup();
 
 test('CLI plan mode lists every file without a journal, probes or cutover', async () => {
   const f = await fixture(), output: string[] = [], errors: string[] = [];
-  await mkdir(dirname(f.paths.layout), { recursive: true });
-  await writeFile(f.paths.layout, '{"name":"spider-glass"}');
   await mkdir(dirname(f.paths.font), { recursive: true }); await writeFile(f.paths.font, 'user font');
   const before = await f.h.calls();
   const ports: HerdrCliPorts = { request: async () => f.request, setupParts: async () => f.parts, doctorParts: async () => f.doctorParts, stdout: text => output.push(text), stderr: text => errors.push(text) };
   expect(await runHerdrCli(['setup', '--dry-run'], ports)).toBe(1);
-  expect(output.join('')).toContain(`adopt ${f.paths.layout}`);
+  expect(output.join('')).toContain(`write ${f.paths.layout}`);
   expect(output.join('')).toContain(`replace ${f.paths.font}`);
   expect(output.join('')).toContain(`write ${f.paths.spider}`);
   expect(output.join('')).toContain('cutover');
@@ -38,6 +36,26 @@ test('CLI plan mode lists every file without a journal, probes or cutover', asyn
   expect(await readFile(f.paths.font, 'utf8')).toBe('user font');
   expect(f.cutovers()).toBe(0);
   expect(await runHerdrCli(['setup', '--dry-run', '--replace-changed'], ports)).toBe(0);
+});
+
+test('CLI dry run plans to write Spider and remove the recorded legacy layout without applying', async () => {
+  const f = await fixture(), output: string[] = [], errors: string[] = [];
+  const legacy = join(dirname(f.paths.layout), 'spider-glass.json');
+  const journal = await readJournal(f.request.journalRoot), journalPath = join(f.request.journalRoot, 'journal.json');
+  const bytes = Buffer.from('{"theme":"spider-glass"}\n');
+  const install = [{ path: legacy, expected: null, bytes }];
+  await prepareBackups(f.request.journalRoot, install, journal);
+  await applyFiles(f.request.journalRoot, install, journal);
+  const before = await readFile(journalPath);
+  const ports: HerdrCliPorts = { request: async () => f.request, setupParts: async () => f.parts, doctorParts: async () => f.doctorParts, stdout: text => output.push(text), stderr: text => errors.push(text) };
+  expect(await runHerdrCli(['setup', '--dry-run'], ports), errors.join('')).toBe(0);
+  expect(output.join('')).toContain(`write ${f.paths.layout}\n`);
+  expect(output.join('')).toContain(`remove ${legacy}\n`);
+  expect(await readFile(legacy)).toEqual(bytes);
+  expect(await readFile(journalPath)).toEqual(before);
+  await expect(realFs.stat(f.paths.layout)).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(realFs.stat(join(f.request.journalRoot, 'checkpoint.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(f.cutovers()).toBe(0);
 });
 
 test('proved running sessions bypass cutover after a core restart and terminal replacement', async () => {

@@ -29,7 +29,7 @@ test('unreadable app version skips picker keys while install and doctor remain a
   expect(keyPlan.keys?.global).not.toHaveProperty('cmd-t');
   expect(keyPlan.keys?.global).not.toHaveProperty('cmd-d');
   expect(keyPlan.keys?.global).not.toHaveProperty('cmd-shift-d');
-  expect(keyPlan.keys?.['layout:spider-glass']).not.toHaveProperty('cmd-shift-w');
+  expect(keyPlan.keys?.['layout:Spider']).not.toHaveProperty('cmd-shift-w');
   const merged = mergeKeys(Buffer.from(JSON.stringify(before)), keyPlan.keys!, {}, false);
   await writeFile(keyPath, merged);
   const doctor = await f.ports.doctorParts(request), result = await doctor.inspect('keys', request);
@@ -45,10 +45,10 @@ test('unreadable app version leaves existing picker files and bindings alone', a
   const f = await bareFixture(), home = f.h.directories.app;
   const request = { ...f.request, config: { ...f.request.config, app: { ...f.request.config.app, binary: join(f.h.root, 'missing-app') } } };
   const keyPath = join(home, 'keys.json'), before = await readFile(keyPath);
-  const keys = { global: { 'cmd-t': 'mod.open:spider-machine-picker' }, 'layout:spider-glass': { 'cmd-shift-w': 'spider-pane.close' } };
+  const keys = { global: { 'cmd-t': 'mod.open:spider-machine-picker' }, 'layout:Spider': { 'cmd-shift-w': 'spider-pane.close' } };
   const picker = join(home, 'mods/spider-machine-picker/main.js');
   const plans: InstallFile[] = [
-    { path: keyPath, expected: digest(before), bytes: mergeKeys(before, keys, {}, false), keys, managed: { kind: 'keys', sections: { global: ['cmd-t'], 'layout:spider-glass': ['cmd-shift-w'] } } },
+    { path: keyPath, expected: digest(before), bytes: mergeKeys(before, keys, {}, false), keys, managed: { kind: 'keys', sections: { global: ['cmd-t'], 'layout:Spider': ['cmd-shift-w'] } } },
     { path: picker, expected: null, bytes: Buffer.from('// installed picker\n') },
   ];
   const journal = await readJournal(request.journalRoot);
@@ -58,7 +58,7 @@ test('unreadable app version leaves existing picker files and bindings alone', a
   expect(files.some(file => file.path === picker)).toBe(false);
   expect(files.find(file => file.path === keyPath)?.keys?.global).not.toHaveProperty('cmd-t');
   expect(files.find(file => file.path === keyPath)?.retainedKeys?.global['cmd-t']).toBe('mod.open:spider-machine-picker');
-  expect(files.find(file => file.path === keyPath)?.retainedKeys?.['layout:spider-glass']['cmd-shift-w']).toBe('spider-pane.close');
+  expect(files.find(file => file.path === keyPath)?.retainedKeys?.['layout:Spider']['cmd-shift-w']).toBe('spider-pane.close');
   expect(await readFile(keyPath)).toEqual(installed);
   expect(await readFile(picker, 'utf8')).toBe('// installed picker\n');
   expect(await readFile(join(request.journalRoot, 'journal.json'))).toEqual(journalBefore);

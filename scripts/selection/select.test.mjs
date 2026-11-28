@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import * as selector from './select.mjs';
 import * as manifest from './manifest.mjs';
 
@@ -275,6 +276,90 @@ test('runs tests naming a changed or removed resource even if another test recor
   }
 });
 
+test('a live base tip resolves to the tested merge first parent', t => {
+  const root = mkdtempSync(join(tmpdir(), 'selection-live-base-'));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const git = (...args) => selector.git(root, '-c', 'user.name=Fixture',
+    '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', ...args).trim();
+  const put = (file, text) => {
+    mkdirSync(dirname(join(root, file)), { recursive: true });
+    writeFileSync(join(root, file), text);
+  };
+  const commit = file => { git('add', '--', file); git('commit', '-qm', file); return git('rev-parse', 'HEAD'); };
+  git('init', '-qb', 'main');
+  put(a, 'export {};');
+  const opened = commit(a);
+  git('checkout', '-qb', 'topic');
+  put(b, 'export {};');
+  commit(b);
+  git('checkout', '-q', 'main');
+  put('only-base.txt', 'changed after the PR opened');
+  const firstParent = commit('only-base.txt');
+  git('checkout', '-qb', 'tested');
+  git('merge', '--no-ff', '-qm', 'Tested merge', 'topic');
+  const tested = git('rev-parse', 'HEAD');
+  git('checkout', '-q', 'main');
+  put('later-base.txt', 'changed after the tested merge');
+  const liveTip = commit('later-base.txt');
+  git('checkout', '-q', 'tested');
+  assert.equal(git('rev-parse', 'HEAD^1'), firstParent);
+  put('bin/gh', `#!/bin/sh
+case "$2" in
+  */actions/runs/99) echo '{"created_at":"2026-11-27T13:00:00Z"}' ;;
+  */actions/workflows/selection-map.yml/runs*) echo '[{"workflow_runs":[]}]' ;;
+  *) exit 64 ;;
+esac
+`);
+  chmodSync(join(root, 'bin/gh'), 0o700);
+  const run = sha => {
+    execFileSync(process.execPath, [fileURLToPath(new URL('./select.mjs', import.meta.url)), sha, 'selection.json'], {
+      cwd: root, env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, GITHUB_STEP_SUMMARY: '',
+        GITHUB_REPOSITORY: 'example/spider', GITHUB_RUN_ID: '99' },
+    });
+    return JSON.parse(readFileSync(join(root, 'selection.json'), 'utf8'));
+  };
+  const live = run(liveTip);
+  assert.equal(live.head, tested);
+  assert.deepEqual(live.changedFiles, [changed(b, 'A')]);
+  assert.deepEqual(run(opened).changedFiles, [changed('only-base.txt', 'A'), changed(b, 'A')]);
+});
+
+test('keeps stale map coverage without reporting base changes as PR changes', async () => {
+  const baseOnly = 'packages/one/src/base-only.json';
+  const prOnly = 'packages/one/src/pr-only.json';
+  const result = await fixture({ changes: [changed(prOnly)], mapChanges: [changed(baseOnly)],
+    files: [baseOnly, prOnly], records: { [a]: row({ reads: [0] }), [b]: row({ reads: [1] }) } });
+  assert.equal(result.mode, 'scoped');
+  assert.deepEqual(result.changedFiles, [changed(prOnly)]);
+  assertSelected(result, a, b);
+});
+
+test('classifies CONTRIBUTING.md as documentation without a full fallback', async () => {
+  const result = await fixture({ changes: [changed('CONTRIBUTING.md')] });
+  assert.equal(result.mode, 'scoped');
+  assert.equal(result.fallback, null);
+  assertSelected(result, docGuard);
+  assert.deepEqual(result.groups.flat(), [docGuard]);
+});
+
+test('assigns every matched required sentinel to a shard even at high recorded cost', async () => {
+  const compiler = 'packages/roam/src/__tests__/provision-core-pin.test.ts';
+  const parity = 'packages/intercom/src/__tests__/upstream-parity.test.ts';
+  const intercom = 'packages/host/src/__tests__/intercom-upstream-inventory.test.ts';
+  const tests = [a, compiler, parity, intercom];
+  for (const [file, sentinels] of [
+    ['packages/one/src/product.ts', [compiler]],
+    ['packages/intercom/DIVERGENCE.json', [parity, intercom]],
+    ['scripts/check-intercom-parity.mjs', [parity]],
+  ]) {
+    const result = await fixture({ inventory: tests, changes: [changed(file)],
+      records: Object.fromEntries(tests.map(test => [test, row({ ms: 1_000_000 })])) });
+    assert.equal(result.mode, 'scoped', file);
+    assertSelected(result, ...sentinels);
+    assert.deepEqual(result.groups.flat().sort(), sentinels.sort(), file);
+  }
+});
+
 test('runs doc guards and tests naming or reading a README', async () => {
   const file = 'packages/one/README.md';
   assertSelected(await fixture({ changes: [changed(file)], names: { [file]: [b] },
@@ -387,6 +472,13 @@ test('selects recorded readers of a tree-shaken build input even when the head g
   assert.ok(result.selected[c].includes('static import graph'));
 });
 
+test('routes artifact readers for changes since an older map without attributing them to the PR', async () => {
+  const result = await artifactFixture({ changes: [], mapChanges: [changed(shakenInput)] });
+  assert.equal(result.mode, 'scoped');
+  assert.deepEqual(result.changedFiles, []);
+  assertSelected(result, a, c, d, packReader, bundleReader);
+});
+
 test('a legacy or malformed map does not replace the blanket rule', async () => {
   const malformed = artifactEvidence();
   malformed.artifacts[0].inputs = ['../out-of-checkout'];
@@ -404,6 +496,7 @@ test('keeps blanket coverage when an artifact identity or the consumer contract 
     { viewerRecord: row({ ranBundle: true, unresolved: ['<tmp>/unknown.mjs'] }) },
     { changes: [changed(headInput), changed(viewerReader)] },
     { changes: [changed(headInput), changed('packages/one/src/deleted.ts', 'D')] },
+    { mapChanges: [changed('packages/one/src/deleted.ts', 'D')] },
   ];
   for (const fields of [{ ambiguous: true }, { hashes: [] }, { hashes: [brokerHash, viewerHash] }]) {
     const evidence = artifactEvidence();

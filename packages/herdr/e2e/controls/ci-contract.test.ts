@@ -349,8 +349,9 @@ describe('CI acceptance contract', () => {
     expect(main.if).toBe("github.event_name == 'push' && github.ref == 'refs/heads/main'");
     const compile = workflow('pr').jobs.compile!;
     const pr = step(compile, 'Check named test inputs');
-    expect(pr?.env?.BASE_SHA).toBe('${{ github.event.pull_request.base.sha }}');
-    expect(compile.steps.find(item => item.uses === 'actions/checkout@v4')?.with?.['fetch-depth']).toBe(0);
+    expect(compile.steps.find(item => item.uses === 'actions/checkout@v4')?.with).toMatchObject({
+      ref: '${{ github.sha }}', 'fetch-depth': 0, 'persist-credentials': false,
+    });
 
     const scratch = join(process.cwd(), '.spider/scratch');
     mkdirSync(scratch, { recursive: true });
@@ -364,9 +365,16 @@ describe('CI acceptance contract', () => {
         gitAt(root, 'commit', '-qm', 'Fixture change');
         return gitAt(root, 'rev-parse', 'HEAD');
       };
-      const run = (base: string, exit = '0') => spawnSync('bash', ['-e', '-o', 'pipefail', '-c', pr.run!], {
-        cwd: root, env: { ...process.env, BASE_SHA: base, SWEEP_EXIT: exit }, encoding: 'utf8',
-      });
+      const run = (base: string, exit = '0') => {
+        const head = gitAt(root, 'rev-parse', 'HEAD');
+        const merge = gitAt(root, 'commit-tree', `${head}^{tree}`, '-p', base, '-p', head, '-m', 'Tested merge');
+        gitAt(root, 'checkout', '-q', '--detach', merge);
+        try {
+          return spawnSync('bash', ['-e', '-o', 'pipefail', '-c', pr.run!], {
+            cwd: root, env: { ...process.env, BASE_SHA: base, SWEEP_EXIT: exit }, encoding: 'utf8',
+          });
+        } finally { gitAt(root, 'checkout', '-q', '--detach', head); }
+      };
       const initial = commit();
       writeFileSync(join(root, 'unrelated.txt'), 'unrelated');
       const product = commit();
@@ -385,13 +393,17 @@ describe('CI acceptance contract', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it('selects from the base commit and runs the full head inventory if the base has no selector', () => {
-    const selection = workflow('pr').jobs.select!;
-    const select = step(selection, 'Select affected tests');
-    const headCheckout = selection.steps.find(item => item.uses === 'actions/checkout@v4');
-    expect(headCheckout?.with).toMatchObject({ ref: '${{ github.event.pull_request.head.sha }}',
-      'fetch-depth': 0, 'persist-credentials': false });
-    expect(select.env?.BASE_SHA).toBe('${{ github.event.pull_request.base.sha }}');
+  it('selects and tests the event merge commit without using the stale event base SHA', () => {
+    const pr = workflow('pr');
+    for (const job of [pr.jobs.select!, pr.jobs.tests!]) {
+      const checkout = job.steps.find(item => item.uses === 'actions/checkout@v4');
+      expect(checkout?.with).toMatchObject({ ref: '${{ github.sha }}', 'fetch-depth': 0, 'persist-credentials': false });
+    }
+    expect(source('pr')).not.toContain('github.event.pull_request.base.sha');
+  });
+
+  it('loads the selector from the tested merge first parent or runs the full inventory when it is absent', () => {
+    const select = step(workflow('pr').jobs.select!, 'Select affected tests');
 
     const scratch = join(process.cwd(), '.spider/scratch');
     mkdirSync(scratch, { recursive: true });
@@ -415,6 +427,8 @@ describe('CI acceptance contract', () => {
         return gitAt(root, 'rev-parse', 'HEAD');
       };
       const legacy = commit();
+      gitAt(root, 'checkout', '-qb', 'base');
+      write('packages/example/only-in-base.txt', 'Changed on the base branch');
       write('scripts/test-resources.json', '{"label":"base policy"}');
       write('scripts/roam-entries.json', '{"label":"base entries"}');
       write('scripts/selection/sidecar.mjs', 'export const marker = "base selector";');
@@ -429,25 +443,34 @@ const changes = execFileSync('git', ['diff', '--name-only', base, head], { encod
 writeFileSync(output, JSON.stringify({ marker, base, head, changes, policy: read('test-resources.json'), entries: read('roam-entries.json') }));
 `);
       const base = commit();
+      gitAt(root, 'checkout', '-qb', 'topic');
       write('scripts/selection/select.mjs', `import { writeFileSync } from 'node:fs'; writeFileSync(process.argv[3], '{"marker":"head selector"}');`);
       write('scripts/test-resources.json', '{"label":"head policy"}');
       write('scripts/roam-entries.json', '{"label":"head entries"}');
       write('scripts/test-shards.ts', 'throw new Error("Used head partitioner");');
       write(newTest, 'export {};');
       write('packages/example/skip.test.ts', 'export {};');
-      const head = commit();
+      const topic = commit();
+      gitAt(root, 'checkout', '-q', 'base');
+      write('packages/example/after-merge.txt', 'Changed after the tested merge was made');
+      gitAt(root, 'update-ref', 'refs/remotes/origin/main', commit());
       mkdirSync(join(root, 'node_modules'));
       mkdirSync(join(root, '.spider/scratch/test-results'), { recursive: true });
-      const run = (baseSha: string): Record<string, unknown> => {
+      const run = (firstParent: string): [string, Record<string, unknown>] => {
+        const merge = gitAt(root, 'commit-tree', `${topic}^{tree}`, '-p', firstParent, '-p', topic, '-m', 'Tested merge');
+        gitAt(root, 'checkout', '-q', '--detach', merge);
         const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', select.run!], { cwd: root,
-          env: { ...process.env, RUNNER_TEMP: temp, BASE_SHA: baseSha, GITHUB_OUTPUT: join(directory, 'output'), GITHUB_STEP_SUMMARY: join(directory, 'summary') }, encoding: 'utf8' });
+          env: { ...process.env, RUNNER_TEMP: temp, BASE_SHA: legacy, GITHUB_OUTPUT: join(directory, 'output'), GITHUB_STEP_SUMMARY: join(directory, 'summary') }, encoding: 'utf8' });
         expect(result.status, result.stderr).toBe(0);
-        return JSON.parse(readFileSync(output, 'utf8')) as Record<string, unknown>;
+        return [merge, JSON.parse(readFileSync(output, 'utf8')) as Record<string, unknown>];
       };
-      expect(run(base)).toMatchObject({ marker: 'base selector', base, head, policy: 'base policy', entries: 'base entries',
+      const [head, selected] = run(base);
+      expect(selected).toMatchObject({ marker: 'base selector', base, head, policy: 'base policy', entries: 'base entries',
         changes: expect.arrayContaining([newTest, 'scripts/selection/select.mjs']) });
-      const { selectionHash, ...manifest } = run(legacy);
-      expect(manifest).toMatchObject({ version: 1, head, mode: 'full', mapRunId: null, mapCommit: null,
+      expect(selected.changes).not.toContain('packages/example/only-in-base.txt');
+      expect(selected.changes).not.toContain('packages/example/after-merge.txt');
+      const [legacyMerge, { selectionHash, ...manifest }] = run(legacy);
+      expect(manifest).toMatchObject({ version: 1, head: legacyMerge, mode: 'full', mapRunId: null, mapCommit: null,
         fallback: 'base commit has no selector', groups: [[firstTest], [newTest], [], []] });
       expect(Object.keys(manifest.selected as object)).toEqual([firstTest, newTest]);
       expect(selectionHash).toBe(createHash('sha256').update(JSON.stringify(manifest)).digest('hex'));

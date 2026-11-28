@@ -62,7 +62,7 @@ test('production layout passes selected font families and retention to the consu
   await writeFile(f.request.configPath, JSON.stringify(config));
   const request = await f.ports.request(f.request.configPath);
   await setupHerdr(request, f.parts);
-  const layout = JSON.parse(await readFile(join(f.h.directories.app, 'layouts/spider-glass.json'), 'utf8'));
+  const layout = JSON.parse(await readFile(join(f.h.directories.app, 'layouts/Spider.json'), 'utf8'));
   const contents: any[] = [];
   const visit = (node: any) => { if (node?.content?.mod) contents.push(node.content); if (node?.content?.pane?.header) visit(node.content.pane.header); for (const child of node?.children ?? []) visit(child); };
   visit(layout);

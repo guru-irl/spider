@@ -27,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -48,10 +48,9 @@ jobs:
         run: npm ci
 
       - name: Check named test inputs
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          if ! git diff --quiet "$BASE_SHA...HEAD" -- scripts/selection/ scripts/test-resources.json; then
+          base_sha=$(git rev-parse --verify HEAD^1)
+          if ! git diff --quiet "$base_sha" HEAD -- scripts/selection/ scripts/test-resources.json; then
             node scripts/selection/sweep.mjs
           fi
 
@@ -87,7 +86,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -97,10 +96,9 @@ jobs:
 
       - name: Check for base selector
         id: base-selector
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          if git cat-file -e "$BASE_SHA:scripts/selection/select.mjs" 2>/dev/null; then
+          base_sha=$(git rev-parse --verify HEAD^1)
+          if git cat-file -e "$base_sha:scripts/selection/select.mjs" 2>/dev/null; then
             echo 'available=yes' >> "$GITHUB_OUTPUT"
           fi
 
@@ -115,11 +113,12 @@ jobs:
       - name: Select affected tests
         id: selection
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -o pipefail
-          git cat-file -e "$BASE_SHA^{commit}"
+          # The merge's first parent pins the live base used to build this
+          # checkout, even if the base branch moves before this job runs.
+          base_sha=$(git rev-parse --verify HEAD^1)
           base_dir=$(mktemp -d "$RUNNER_TEMP/selection-base.XXXXXX")
           trap 'rm -rf -- "$base_dir"' EXIT
           output=.spider/scratch/test-results/test-selection.json
@@ -129,13 +128,13 @@ jobs:
           max_packed_bytes=$((96 * 1024))
           weights=(scripts/test-shards.ts scripts/test-durations.json)
           fallback='base commit has no selector'
-          if git cat-file -e "$BASE_SHA:scripts/selection/select.mjs" 2>/dev/null; then
+          if git cat-file -e "$base_sha:scripts/selection/select.mjs" 2>/dev/null; then
             # Stage both outputs so a selector that exits nonzero cannot leave
             # a scoped manifest or summary behind.
-            if git archive "$BASE_SHA" scripts/selection scripts/test-resources.json scripts/roam-entries.json "${weights[@]}" |
+            if git archive "$base_sha" scripts/selection scripts/test-resources.json scripts/roam-entries.json "${weights[@]}" |
                 tar -xf - -C "$base_dir" &&
               ln -s "$PWD/node_modules" "$base_dir/node_modules" &&
-              GITHUB_STEP_SUMMARY="$base_dir/summary" node "$base_dir/scripts/selection/select.mjs" "$BASE_SHA" "$base_dir/selection.json" &&
+              GITHUB_STEP_SUMMARY="$base_dir/summary" node "$base_dir/scripts/selection/select.mjs" "$base_sha" "$base_dir/selection.json" &&
               mv "$base_dir/selection.json" "$output"; then
               packed=$(pack_selection)
               if (( ${#packed} <= max_packed_bytes )); then
@@ -155,7 +154,7 @@ jobs:
           # Build a full manifest without executing the selector again or
           # reading policy from the head.
           mkdir "$base_dir/full"
-          git archive "$BASE_SHA" "${weights[@]}" | tar -xf - -C "$base_dir/full"
+          git archive "$base_sha" "${weights[@]}" | tar -xf - -C "$base_dir/full"
           node --input-type=module - "$base_dir/full" "$output" "$fallback" <<'JS'
           import { execFileSync } from 'node:child_process';
           import { createHash } from 'node:crypto';
@@ -199,7 +198,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -237,13 +236,10 @@ jobs:
           printf '%s' "$SELECTION" | base64 --decode | gzip -d > .spider/scratch/test-results/test-selection.json
 
       - name: Test selected group
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -o pipefail
-          git cat-file -e "$BASE_SHA^{commit}"
-          judge=$BASE_SHA
-          if ! git cat-file -e "$BASE_SHA:scripts/selection/manifest.mjs" 2>/dev/null; then
+          judge=$(git rev-parse --verify HEAD^1)
+          if ! git cat-file -e "$judge:scripts/selection/manifest.mjs" 2>/dev/null; then
             judge=$SELECTION_BOOTSTRAP_SHA
           fi
           judge_dir=$(mktemp -d "$RUNNER_TEMP/selection-judge.XXXXXX")

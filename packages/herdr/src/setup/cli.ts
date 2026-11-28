@@ -4,6 +4,7 @@ import { encodePaneServiceReply, encodeRemotePaneReply, paneId, parsePaneService
 import type { PaneServiceRequest, PaneServiceReply, RemotePaneRequest, RemotePaneReply } from '../panes/types.js';
 import type { PaneProxyInput } from '../panes/proxy.js';
 import { isAbsolute } from 'node:path';
+import { LEGACY_SPIDER_LAYOUT, layoutSelectionPath, legacySpiderLayoutPath } from '../look/names.js';
 import { setupHerdr, rollbackHerdr, undoHerdrUpgrade, assertPlainShell, CoreOnlySetupError, type SetupParts, type SetupRequest } from './installer.js';
 import { readJournal } from './backup.js';
 import { doctorHerdr, type DoctorParts, type DoctorFailure } from './doctor.js';
@@ -217,13 +218,17 @@ export async function runHerdrCli(argv: readonly string[], ports?: HerdrCliPorts
       const undo = undoUpgrade ? await undoHerdrUpgrade(fullRequest, parts) : null;
       const restored = undo?.restored ?? await rollbackHerdr(fullRequest, parts);
       stdout(`${undoUpgrade ? 'Upgrade undo' : 'Rollback'} restored ${restored.length} matching files\n`);
+      if (undo?.restored.includes(layoutSelectionPath(fullRequest.config.app.home))) {
+        const name = restored.includes(legacySpiderLayoutPath(fullRequest.config.app.home)) ? LEGACY_SPIDER_LAYOUT : 'the restored layout';
+        stderr(`If Herdr is open, select ${name} in the layout picker.\n`);
+      }
       for (const file of undo?.remoteNotRestored ?? []) stdout(`Remote file not restored: ${file.machine} ${file.path}\n`);
       // Only owned parts that could not be restored remain in the journal.
       return !undoUpgrade && (await readJournal(request.journalRoot)).entries.length ? 3 : 0;
     }
     if (nativeKeys === undefined) {
       const pending = await parts.pendingNativeKeys?.(fullRequest) ?? {};
-      const labels = Object.values(pending).flatMap(bindings => Object.entries(bindings).map(([key, binding]) => `${key.startsWith('cmd-') ? `Cmd-${key.slice(4).toUpperCase()}` : key} (${typeof binding === 'string' ? binding : binding.command})`));
+      const labels = Object.values(pending).flatMap(bindings => Object.entries(bindings).flatMap(([key, binding]) => binding === null ? [] : [`${key.startsWith('cmd-') ? `Cmd-${key.slice(4).toUpperCase()}` : key} (${typeof binding === 'string' ? binding : binding.command})`]));
       if (labels.length) stdout(`Offer: merge ${labels.join(', ')} with --merge-native-keys, or refuse with --decline-native-keys. Existing user bindings are preserved. No optional keys are changed by default.\n`);
     }
     const result = await setupHerdr(fullRequest, parts);

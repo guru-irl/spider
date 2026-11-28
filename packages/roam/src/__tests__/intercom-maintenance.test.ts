@@ -1,4 +1,11 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+
+const lockSync = vi.hoisted(() => ({ enabled: false }));
+vi.mock("node:fs/promises", async importOriginal => {
+  const real = await importOriginal<typeof import("node:fs/promises")>();
+  const { fixtureLockOpen } = await import("./fixture-lock-sync");
+  return { ...real, open: fixtureLockOpen(real.open, () => lockSync.enabled) };
+});
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseConfig } from "../config";
@@ -7,8 +14,10 @@ import { provisionIntercomEnrollment, revokeIntercomPair } from "../intercom-enr
 import { createIntercomRegistry } from "../intercom-registry";
 import { scenario, cleanupPairScenarios } from "./intercom-pair-fixture";
 const HUB = "00000000-0000-4000-8000-000000000001", A = "00000000-0000-4000-8000-000000000002", B = "00000000-0000-4000-8000-000000000003";
-afterEach(cleanupPairScenarios);
-it("a dropped pair path stays unconfirmed until B-local enforcement and hub management recovery converge", async () => {
+const droppedPairCase = "a dropped pair path stays unconfirmed until B-local enforcement and hub management recovery converge";
+beforeEach(context => { lockSync.enabled = context.task.name === droppedPairCase; });
+afterEach(() => { lockSync.enabled = false; cleanupPairScenarios(); });
+it(droppedPairCase, async () => {
   const f = await scenario(); expect((await provisionIntercomEnrollment(f.request, f.enrollment)).code).toBe(0);
   const config = parseConfig(JSON.parse(readFileSync(join(f.source.globalRoot, "roam", "config.json"), "utf8"))), queue = f.queues.get(A)!;
   const maintenance = createProductionIntercomMaintenance({ root: f.source.globalRoot, config, binary: "/fixture/hc", env: {}, localPorts: f.locals.get(A), transport: f.transport,

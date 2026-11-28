@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { afterAll, expect, it } from 'vitest';
-import { mkdir, mkdtemp, rm, writeFile, readFile, chmod, copyFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile, readFile, chmod, cp } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { spawn, execFileSync } from 'node:child_process';
@@ -22,13 +22,13 @@ export async function until(read: () => Promise<boolean>, timeout = 15000): Prom
   throw new Error('Isolated fixture did not reach the required state');
 }
 // Each test file builds once, but every case gets its own runtime files and core.
-let cliBuild: Promise<string> | undefined;
-let cliBuildRoot: string | undefined;
-async function buildFixtureCli(): Promise<string> {
+let fixturePrograms: Promise<string> | undefined;
+let fixtureBuildRoot: string | undefined;
+async function buildFixturePrograms(): Promise<string> {
   const scratch = resolve('.spider/scratch');
   await mkdir(scratch, { recursive: true });
-  const root = cliBuildRoot = await mkdtemp(join(scratch, 'cutover-build-'));
-  const source = join(root, 'entry.ts');
+  const root = fixtureBuildRoot = await mkdtemp(join(scratch, 'cutover-build-'));
+  const source = join(root, 'entry.ts'), out = join(root, 'programs');
   const module = (path: string) => JSON.stringify(fileURLToPath(new URL(path, import.meta.url)));
   // The generated entry uses the real composition. Only the external app and pi are substituted.
   await writeFile(source, `
@@ -36,15 +36,10 @@ import {readFile,writeFile,appendFile,access} from 'node:fs/promises';
 import {dirname,join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
-import {createProductionHerdrCliPorts,coreStartedAt,createProcessInventory} from ${module('../../../host/src/herdr/ports.ts')};
-import {runHerdrCli} from ${module('../setup/cli.ts')};
-import {setupHerdr,rollbackHerdr} from ${module('../setup/installer.ts')};
-import {setupSpaces} from ${module('../spaces/setup.ts')};
+// Load only the code for this role. In particular, layout and version probes
+// spawn this entry many times and must not initialize the setup CLI.
 import {createHcClient} from ${module('../client/hc.ts')};
-import {registerHerdrSessions} from ${module('../sessions/register.ts')};
-import {createTerminalRegistry,writePrivateJson} from ${module('../sessions/registry.ts')};
-import {publishSessionFeed} from ${module('../feed/publisher.ts')};
-import {processStartTime} from ${module('../../../subagents/src/process-identity.ts')};
+import {writePrivateJson} from ${module('../sessions/registry.ts')};
 const cliDirectory=dirname(process.argv[1]);
 const fixtureRoot=cliDirectory.endsWith('/dist/herdr')?dirname(dirname(cliDirectory)):cliDirectory;
 const configPath=join(fixtureRoot,'config.json');
@@ -73,6 +68,13 @@ if(a[0]==='terminal-shell') {
   }
 } else if(a[0]==='pi-stub') {
   const options=await settings(); if(options.earlyExit)process.exit(23);
+  const [{createProcessInventory}, {registerHerdrSessions}, {createTerminalRegistry}, {publishSessionFeed}, {processStartTime}] = await Promise.all([
+    import(${module('../../../host/src/herdr/process-inventory.ts')}),
+    import(${module('../sessions/register.ts')}),
+    import(${module('../sessions/registry.ts')}),
+    import(${module('../feed/publisher.ts')}),
+    import(${module('../../../subagents/src/process-identity.ts')}),
+  ]);
   await delay(options.activationDelay??250);
   const file=a[a.indexOf('--session')+1], header=JSON.parse((await readFile(file,'utf8')).split('\\n')[0]);
   const hc=createHcClient({binary:c.core.binary,env:process.env}), terminal=await hc.caller(process.env);
@@ -107,15 +109,22 @@ if(a[0]==='terminal-shell') {
   if((await settings()).lostReply && ['space.new','tab.new'].includes(command)){const v=await settings();delete v.lostReply;await writePrivateJson(controlPath,v);process.kill(process.ppid,'SIGKILL');await delay(50);process.exit(1);}
   console.log(JSON.stringify(reply));
 } else {
+  const {createProductionHerdrCliPorts}=await import(${module('../../../host/src/herdr/ports.ts')});
   const ports=createProductionHerdrCliPorts(fixtureRoot,process.env);
   try {
     const request=await ports.request(configPath);
-    if(a[0]==='spaces') {const result=await setupSpaces(c,ports.spacePorts(request));console.log(JSON.stringify(result));}
-    else if(a[0]==='setup-cutover') {
+    if(a[0]==='spaces') {
+      const {setupSpaces}=await import(${module('../spaces/setup.ts')});
+      const result=await setupSpaces(c,ports.spacePorts(request)); console.log(JSON.stringify(result));
+    } else if(a[0]==='setup-cutover') {
+      const {setupHerdr}=await import(${module('../setup/installer.ts')});
       const parts=await ports.setupParts(request);
       // Installation plans are not under test; real settings/notes, transaction, preflight and cutover remain.
       await setupHerdr(request,{...parts,stageLook:async()=>[],installFiles:async()=>[],generateTemplates:async()=>[],installResume:async()=>[],ensureRuntime:async()=>[],verify:async()=>({checks:[],failures:[],warnings:[]})});
-    } else process.exitCode=await runHerdrCli(a,ports);
+    } else {
+      const {runHerdrCli}=await import(${module('../setup/cli.ts')});
+      process.exitCode=await runHerdrCli(a,ports);
+    }
   } finally {await ports.dispose();}
 }
 `);
@@ -139,11 +148,11 @@ if(a[0]==='terminal-shell') {
       if (!site.test(code)) throw new Error('Installer journal fault site not found');
       return code.replace(site, match => match + fault.replace('__KIND__', "'installer'"));
     }
-  } }], build: { ssr: source, outDir: root, emptyOutDir: false, rollupOptions: { external: id => id.startsWith('node:') || ['@earendil-works/', 'better-sqlite3', 'sqlite-vec', 'onnxruntime-', 'fastembed', '@huggingface/', '@xenova/', 'turndown', 'typebox'].some(prefix => id.startsWith(prefix)), output: { entryFileNames: 'cli.mjs' } } } });
-  return join(root, 'cli.mjs');
+  } }], build: { ssr: source, outDir: out, emptyOutDir: false, rollupOptions: { external: id => id.startsWith('node:') || ['@earendil-works/', 'better-sqlite3', 'sqlite-vec', 'onnxruntime-', 'fastembed', '@huggingface/', '@xenova/', 'turndown', 'typebox'].some(prefix => id.startsWith(prefix)), output: { entryFileNames: 'cli.mjs' } } } });
+  return out;
 }
-function sharedFixtureCli(): Promise<string> { return cliBuild ??= buildFixtureCli(); }
-afterAll(async () => { if (cliBuildRoot) await rm(cliBuildRoot, { recursive: true, force: true }); });
+function sharedFixturePrograms(): Promise<string> { return fixturePrograms ??= buildFixturePrograms(); }
+afterAll(async () => { if (fixtureBuildRoot) await rm(fixtureBuildRoot, { recursive: true, force: true }); });
 
 export async function fixture(mode: 'fake' | 'hc', terminalShell = false): Promise<{
     h: import("./isolated.js").HerdrHarness;
@@ -172,11 +181,13 @@ export async function fixture(mode: 'fake' | 'hc', terminalShell = false): Promi
   const h = await createHerdrHarness(mode), root = h.root, bin = join(root, 'bin'); await mkdir(bin);
   execFileSync('git', ['init', '-q', root]);
   const configPath = join(root, 'config.json'), control = join(root, 'control.json');
-  await copyFile(await sharedFixtureCli(), join(root, 'cli.mjs'));
+  const programs = await sharedFixturePrograms();
+  await cp(programs, root, { recursive: true });
+  // Production session launches enter through dist/herdr/cli.mjs.
+  await cp(programs, join(root, 'dist/herdr'), { recursive: true });
   await writeFile(control, '{}');
   await writeFixturePaneEndpoint(root);
   const cli = join(root, 'cli.mjs'), app = join(bin, 'app');
-  await mkdir(join(root, 'dist/herdr'), { recursive: true }); await copyFile(cli, join(root, 'dist/herdr/cli.mjs'));
   for (const [name, command] of [['pi', 'pi-stub'], ['app', 'app']] as const) { await writeFile(join(bin, name), `#!/bin/sh\nexec ${shellQuote(h.nodeBinary)} ${shellQuote(cli)} ${command} "$@"\n`); await chmod(join(bin, name), 0o700); }
   await writeFile(join(bin, 'ps'), '#!/bin/sh\nif [ "$1" = -U ]; then exit 0; fi\nexec /bin/ps "$@"\n'); await chmod(join(bin, 'ps'), 0o700);
   h.localEnv.PATH = bin + ':' + h.localEnv.PATH; h.remoteEnv.PATH = bin + ':' + h.remoteEnv.PATH;

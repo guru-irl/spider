@@ -5,12 +5,13 @@
 Draw the editor and sent messages on the theme's `userMessageBg`. In
 `dracula-plus-glass` it is `#101012`, darker than the surrounding Herdr glass.
 Use `▄` and `▀` for the half-row edges, with no background behind the
-unfilled half. Draw a half-cell bar against the strip in column zero for the
-full band height: `▗` on the top edge, `▐` on text rows, and `▝` on the bottom
-edge. The bar uses `accent` (`#82aaff`) or `bashMode`, regardless of thinking
-level. The remaining edge cells use the strip color. Scrolled edges show a dim
-hidden-line count beside the half-cell bar. Keep Pi's cursor, completion menu,
-and keys.
+unfilled half. Draw the bar in the left half of column zero for the full band
+height: `▖` on the top edge, `▌` on text rows, and `▘` on the bottom edge.
+The rest of column zero uses the default background, leaving a half-cell gap
+before the strip starts in column one. The bar uses `accent` (`#82aaff`) or
+`bashMode`, regardless of thinking level. The remaining edge cells use the strip
+color. Scrolled edges show a dim hidden-line count beside the half-cell bar.
+Keep Pi's cursor, completion menu, and keys.
 
 Sent messages have no bar. Place the accent `❯` before the first text row and
 align wrapped text under that row's text. Show the message's local timestamp
@@ -162,6 +163,7 @@ transcript. The text set uses
 compaction and retry notices.
 
 An agent footer row shows `<mark> <italic role> <bold name> · model · thinking · turns · elapsed`.
+Use Pi's model display name when the registry has one. Otherwise, show the short model ID.
 Omit missing model and thinking fields. Do not show activity in the footer.
 With up to three agents, show one row per agent. With four or more, show two
 agent rows and a summary row with status totals and the number of hidden

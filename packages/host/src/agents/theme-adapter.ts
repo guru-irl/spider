@@ -3,7 +3,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { mixColors, parseColor, styleText } from "@earendil-works/pi-tui";
 import { icon, type IconStyle, type ThemeAdapter } from "@spider/ui";
 
-export function piTheme(theme: Theme, iconStyle: IconStyle = "text", spiderGlyphs = false): ThemeAdapter {
+export function piTheme(theme: Theme, iconStyle: IconStyle = "text", spiderGlyphs = false, modelName?: ThemeAdapter["modelName"]): ThemeAdapter {
   const roleColors = new Map<string, ReturnType<typeof parseColor>>();
   return {
     fg: (token, s) => theme.fg(token as never, s),
@@ -13,6 +13,7 @@ export function piTheme(theme: Theme, iconStyle: IconStyle = "text", spiderGlyph
     glyph: icon(iconStyle, "agent"),
     iconStyle,
     spiderGlyphs,
+    modelName,
     roleTint(hex, text, strength) {
       if (!theme.colors || typeof theme.getColorMode !== "function") {
         return theme.fg(strength < 0.5 ? "dim" : "accent", text);

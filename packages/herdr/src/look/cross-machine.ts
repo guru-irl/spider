@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { createHash } from 'node:crypto';
 import { HerdrError } from '../client/parse.js';
-import { applyModPatches, type LookPatch } from './patches.js';
+import { applyModPatches, isSpacesALookVersion, type LookPatch } from './patches.js';
 
 export const crossMachineKinds = ['pane', 'tabs', 'menu', 'new-menu', 'agents'] as const;
 export const crossMachineHelpers = ['pane/actions.js', 'pane/machine.js', 'machines/actions.js', 'machines/picker.js'] as const;
@@ -29,7 +29,7 @@ function hashes(value: unknown): Readonly<Record<string, string>> {
 /** Parse packaged records once at the asset boundary; missing releases never mean no B. */
 export function selectCrossMachinePatches(value: unknown, version: string): CrossMachineLookRecipe {
   const manifest = record(value);
-  if (manifest.version !== 1 || !['0.1.13', '0.1.16'].includes(version)) return fail('Unsupported cross-machine recipe version');
+  if (manifest.version !== 1 || !isSpacesALookVersion(version)) return fail('Unsupported cross-machine recipe version');
   const mods = record(record(manifest.versions)[version]);
   if (Object.keys(mods).length !== crossMachineKinds.length || crossMachineKinds.some(kind => !Array.isArray(mods[kind]) || !(mods[kind] as unknown[]).length)) return fail('Incomplete cross-machine records');
   const checks = record(record(manifest.checks)[version]);

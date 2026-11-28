@@ -26,7 +26,7 @@ Setup also writes `hc` templates that start visible worker, reviewer, and watche
 
 - Node.js `>=22.19.0` on the local machine, and Node.js `>=22.18.0` on every remote machine you use with `on`.
 - Pi `1.2.0`.
-- `hc` `0.1.16` and `0.1.17`, with `herdr-app` `0.1.12`, `0.1.13` or `0.1.16`. Setup verifies the complete built-in mod sources against that release's inventory. A matching version string alone does not admit an edited or relabelled app.
+- `hc` `0.1.16` and `0.1.17`, with `herdr-app` `0.1.12`, `0.1.13`, `0.1.16`, or `0.1.18`. Setup verifies the complete built-in mod sources against that release's inventory. A matching version string alone does not admit an edited or relabelled app.
 - macOS or Linux. A Linux machine reached from macOS is supported. On other platforms, the doctor reports a failure instead of falling back to local execution.
 
 The automated app stories use `hc` 0.1.16. Compatibility tests cover the 0.1.17 event snapshot and notification policy.
@@ -128,12 +128,12 @@ Setup accepts these flags:
 | --- | --- |
 | `--config <absolute-file>` | The configuration file. The path must be absolute. Without it, setup uses the standard location. |
 | `--overwrite-unowned-keys` | Replaces Herdr key bindings that spider does not own, after a backup. Without it, a conflicting key stops setup with `key-binding-conflict`. |
-| `--merge-native-keys` | Accepts a pending native-key offer. Herdr 0.1.13 supports Cmd-F search and Cmd-M minimize. Herdr 0.1.16 also supports Cmd-A select all. Setup skips a key bound in any section. |
+| `--merge-native-keys` | Accepts a pending native-key offer. Herdr 0.1.13 supports Cmd-F search and Cmd-M minimize. Herdr 0.1.16 and 0.1.18 also support Cmd-A select all. Setup skips a key bound in any section. |
 | `--decline-native-keys` | Declines the offer. This is the default when neither flag is passed. It does not remove keys accepted earlier. |
 | `--allow-staging-app` | Allows setup to open a second app window when it has to clone Herdr's built-in layout and mods in a separate staging home. Setup says so before it opens the window. |
 | `--adopt-existing-space <name>` | Lets setup add tabs to an existing space with this name that spider does not own. Repeat it for each space. Without it, the name conflict stops setup with `space-name-conflict`. |
 
-Stock Herdr 0.1.13 already binds Cmd-F, and stock 0.1.16 binds all three keys. Setup prints no offer when no supported key is missing. Herdr 0.1.12 has no optional key offer.
+Stock Herdr 0.1.13 already binds Cmd-F, and stock 0.1.16 and 0.1.18 bind all three keys. Setup prints no offer when no supported key is missing. Herdr 0.1.12 has no optional key offer.
 
 A custom binding on these four keys stops setup even with `--overwrite-unowned-keys`: global Cmd-T, Cmd-D, and Cmd-Shift-D, and `spider-glass` Cmd-Shift-W. Restore the stock binding first.
 
@@ -142,9 +142,9 @@ A custom binding on these four keys stops setup even with `--overwrite-unowned-k
 Setup backs up every file it replaces before the first write and records each step in a journal under `<globalRoot>/herdr/setup`. It changes these things:
 
 1. The `herdr.config` entry in spider's global settings, only when you pass a configuration file outside the standard location.
-2. The spider panel mod and picker, plus clones of Herdr's current `agents`, `spaces`, `pane`, `tabs`, and `workspace-chrome` mods with spider's patches applied. Herdr 0.1.13 and 0.1.16 also install Spaces B's cross-machine picker, `spider-menu`, and `spider-new-menu`. Herdr 0.1.16 uses one derived `spider-toast`; 0.1.13 leaves the stock toast untouched.
+2. The spider panel mod and picker, plus clones of Herdr's current `agents`, `spaces`, `pane`, `tabs`, and `workspace-chrome` mods with spider's patches applied. On Herdr 0.1.13, 0.1.16, and 0.1.18, setup also installs Spaces B's cross-machine picker, `spider-menu`, and `spider-new-menu`. On Herdr 0.1.16 and 0.1.18, the layout selects a release-specific `spider-toast`. Herdr 0.1.13 uses the stock toast.
 3. The `spider-glass` layout and Herdr theme. The layout places macOS traffic lights off-window and uses the `spider-chrome` clone for the brand row. The sidebar footer keeps `workspace-chrome`. Only `theme`, `layout` and `sounds.enabled` in the app's settings change. Custom sound paths remain unchanged. A later explicit sound opt-in releases that preference from setup ownership.
-4. Five terminal sequences, Cmd-P for Go to, Cmd-N for a local space, and the layout-scoped Cmd-Shift-E Send back action. On 0.1.13 and 0.1.16, Cmd-T opens the machine picker for a new tab, Cmd-D for a split right, and Cmd-Shift-D for a split down. In `spider-glass`, Cmd-Shift-W uses spider's close confirmation for cross-machine panes. Other layouts keep native close, and Ctrl-V image paste stays unchanged. Supported native keys are offered when absent and never changed automatically. Herdr 0.1.12 keeps the native creation bindings and does not install the machine picker entry mods.
+4. Five terminal sequences, Cmd-P for Go to, Cmd-N for a local space, and the layout-scoped Cmd-Shift-E Send back action. On 0.1.13, 0.1.16, and 0.1.18, Cmd-T opens the machine picker for a new tab, Cmd-D for a split right, and Cmd-Shift-D for a split down. In `spider-glass`, Cmd-Shift-W uses spider's close confirmation for cross-machine panes. Other layouts keep native close, and Ctrl-V image paste stays unchanged. Supported native keys are offered when absent and never changed automatically. Herdr 0.1.12 keeps the native creation bindings and does not install the machine picker entry mods.
 5. The `dracula-plus-glass` pi theme. Only the `theme` field of the agent directory's settings file changes.
 6. Role templates generated from your global model settings.
 7. `notes = false` in the core's `config.toml`. Only the root `notes` key changes.
@@ -153,7 +153,7 @@ Setup backs up every file it replaces before the first write and records each st
 10. The spaces and tabs for your sessions.
 11. A private `herdr/sessions` folder under `<globalRoot>`, where each session publishes the state that the panel and the sidebar read. Rollback leaves this folder in place.
 
-On Herdr 0.1.13 and 0.1.16, setup verifies the release's complete Spaces A result, applies all B records, and then adds notification hooks. It checks B's input, output, and record digests before writing any files or keys. A stale source, changed output, or missing record stops setup rather than installing a partial picker. The pane split controls, tab `+`, terminal context-menu split actions, and new-menu terminal and agent choices all use the machine picker. `--decline-native-keys` does not disable B or its Cmd-T, Cmd-D, and Cmd-Shift-D bindings.
+On Herdr 0.1.13, 0.1.16, and 0.1.18, setup verifies the release's complete Spaces A result, applies all B records, and then adds notification hooks. It checks B's input, output, and record digests before writing any files or keys. A stale source, changed output, or missing record stops setup rather than installing a partial picker. The pane split controls, tab `+`, terminal context-menu split actions, and new-menu terminal and agent choices all use the machine picker. `--decline-native-keys` does not disable B or its Cmd-T, Cmd-D, and Cmd-Shift-D bindings.
 
 Setup owns only these parts of each file. Edits you make elsewhere in the same files are kept when setup runs again. Setup compares the parts it owns by value, so a file that was saved again with different formatting but the same values is not rewritten. If you change a part that setup owns, such as the pi theme field or the resume block, setup stops with `managed-artifact-changed` and names the recorded value. Restore that value, then run setup again.
 
@@ -637,9 +637,9 @@ Setup installs a layout named `spider-glass` and a pi theme named `dracula-plus-
 
 Herdr 0.1.13 uses an opaque window with a 176-degree gradient from `#18181a` to `#22201e`. Its chrome and sidebar are transparent over that gradient.
 
-Verified Herdr 0.1.16 enables neutral window blur by default. Its root and canvas are transparent neutral black, with alpha rising where text sits. Bare chrome uses about 0.6 alpha, menus about 0.94, and text-heavy surfaces use higher alpha to preserve contrast over bright backdrops. The existing dividers and card edges stay unchanged; blur adds no new edges or shadows. Terminal colors remain Dracula+ over neutral black, never its purple-grey background.
+Spider enables neutral window blur by default on Herdr 0.1.16 and 0.1.18. The layout root and canvas are transparent neutral black, with alpha rising where text sits. Bare chrome uses about 0.6 alpha, menus about 0.94, and text-heavy surfaces use higher alpha to preserve contrast over bright backdrops. The existing dividers and card edges stay unchanged; blur adds no new edges or shadows. Terminal colors remain Dracula+ over neutral black, never its purple-grey background.
 
-Set `"look": { "windowBlur": false }` to disable blur without changing those surface colors. With blur off, the theme background shows behind the transparent `#16161800` root and canvas. The 0.1.16 sidebar is `#161618fa`, not transparent. Herdr 0.1.13 never receives `window_blur`.
+Set `"look": { "windowBlur": false }` to disable blur without changing those surface colors. With blur off, the theme background shows behind the transparent `#16161800` root and canvas. On Herdr 0.1.16 and 0.1.18, the sidebar is `#161618fa`, not transparent. Herdr 0.1.13 never receives `window_blur`.
 
 ## Shortcuts
 

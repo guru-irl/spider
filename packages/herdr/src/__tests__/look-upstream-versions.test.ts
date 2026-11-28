@@ -77,8 +77,7 @@ describe('look patches across Herdr releases', () => {
     it(`${version} patches the complete real inventory including menu`, async () => {
       const selected = selectLookPatches(shippedPatches as LookPatchSet, version);
       const source = {} as HerdrClones;
-      for (const kind of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome', 'menu', 'new-menu'] as const) {
-        if (kind === 'new-menu' && !selected.mods['new-menu']) continue;
+      for (const kind of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome', 'menu'] as const) {
         source[kind] = { name: `spider-${kind}`, clonedFrom: { name: kind, version }, files: Object.fromEntries(await Promise.all(Object.keys(selected.sourceHashes![kind]!).map(async file => [file, await readFile(new URL(`./fixtures/herdr-${version}/mods/${kind}/${file}`, import.meta.url), 'utf8')])))};
       }
       const result = await applyLookPatches(source, selected, { requireCompleteSources: true });

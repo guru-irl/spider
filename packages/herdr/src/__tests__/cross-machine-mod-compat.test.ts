@@ -55,6 +55,7 @@ function view(source: string, className: string, ports: any, context: any = cx) 
 test.each(['{', 'null', '[]'])('0.1.18 tabs render and switch tabs with invalid saved panels %s', saved => {
   const h = environment();
   h.ports.localStorage.getItem = (key: string) => key === 'panels' ? saved : null;
+  h.ports.layout = () => ({ id: 'root', children: [{ id: 'panel', hidden: true, children: [{ id: 'panel-body' }] }] });
   const output = replaySpacesBRecipe('0.1.18', loadSpacesAFiles('0.1.18'), fragments('0.1.18'));
   const root = view(output.tabs!['main.js']!, 'Tabs', h.ports, inertCx).render(inertCx);
   expect(byId(root, 'tab-tab-1')).toBeDefined();

@@ -6,7 +6,8 @@ import { lstat, realpath, stat } from "node:fs/promises";
 import { mapWorkspace } from "@spider/db-core/roam/repo-map";
 import { discoverOrdinarySource } from "./ordinary-source";
 import { parseLocationStores, recordLocation } from "@spider/db-core/roam/catalog";
-import { localEntries, readLocal, writeLocal } from "@spider/db-core/roam/local-state";
+import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
+import { localRecordRows } from "./local-records";
 import { openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
 import { inspectSession } from "../session-file";
 import { seedSession, enableMemoryCapture } from "@spider/db-core/roam/seed";
@@ -719,10 +720,13 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
   async function entries(): Promise<readonly SupervisorEntry[]> {
     const homes=await options.homes.list(), byId=new Map(homes.map(home=>[home.sessionId,home]));
     const placements = new Map<SessionId, SessionPlacement | null>();
-    for (const {key,value} of localEntries<unknown>(options.globalDb,"relocate-managed")) {
+    const rows = localRecordRows(options.globalDb, "relocate-managed");
+    const unknownPlacement = rows.some(row => !row.valid && row.key === null);
+    for (const {key,value,valid} of rows) {
+      if (key === null) continue;
       const id = key as SessionId;
       let placement: SessionPlacement | null = null;
-      if (!placements.has(id)) {
+      if (valid && !placements.has(id)) {
         try {
           const parsed = parsePlacement(value);
           if (parsed.sessionId === id && parsed.machineId === options.config.machineId) placement = parsed;
@@ -744,7 +748,7 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
         continue;
       }
       const saved = placements.get(sessionId);
-      if (saved === null) {
+      if (saved === null || saved === undefined && unknownPlacement) {
         result.push({sessionId,home,placement:null,placementRefusal:{code:"destination-copy-missing",
           message:"The saved placement for this session is invalid.",nextStep:"Restore this session's local placement before trying again."}});
         continue;

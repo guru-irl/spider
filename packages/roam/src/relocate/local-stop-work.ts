@@ -3,7 +3,6 @@ import { constants as osConstants } from "node:os";
 import { dirname, isAbsolute, join, posix } from "node:path";
 import { openDb, openDbReadOnly, type Db } from "@spider/db-core";
 import { parseLocationStores } from "@spider/db-core/roam/catalog";
-import { readLocal } from "@spider/db-core/roam/local-state";
 import { localRunPredicate } from "@spider/db-core/roam/run-origin";
 import { openRoamPathReadOnly, roamReplicaPath, roamStorePath } from "@spider/db-core/roam/reads";
 import type { StoreKey } from "@spider/db-core/roam/types";
@@ -19,7 +18,7 @@ import { parseRuntimeReceipt, type RemoteLogLocation } from "@spider/herdr/remot
 import { reapStoppedSessionRuns } from "../../../subagents/src/reaper";
 import type { RunRow } from "../../../subagents/src/run-store";
 import { loadHerdrConfig } from "../host-config";
-import { parsePlacement } from "./journal";
+import { readStopPlacement } from "./local-records";
 import { toolPath } from "./launch-environment";
 import { insideDirectory } from "./local-process";
 import { inspectLocalBackgroundJobs } from "./local-writers";
@@ -84,9 +83,8 @@ async function sessionWorkLocations(id: SessionId, options: RelocateAdapterOptio
     } catch { blockers.push(check("A recorded session checkout could not be inspected.")); }
   };
   try {
-    const saved = readLocal<unknown>(globalDb, "relocate-managed", id);
-    const placement = saved === undefined ? undefined : parsePlacement(saved);
-    if (placement && (placement.sessionId !== id || placement.machineId !== options.config.machineId)) throw new Error("Foreign placement");
+    const { placement, corrupt } = readStopPlacement(globalDb, id, options.config.machineId);
+    if (corrupt) blockers.push(check("The local session placement could not be read."));
     const row = globalDb.prepare("SELECT cwd, stores_json FROM roam_locations WHERE session_id=?").get(id) as { cwd: string | null; stores_json: string } | undefined;
     const stores = new Set([...(placement?.stores ?? []), ...(row ? parseLocationStores(JSON.parse(row.stores_json), { allowEmpty: true }) : [])]);
     for (const key of stores) {

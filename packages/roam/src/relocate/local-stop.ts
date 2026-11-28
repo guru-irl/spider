@@ -10,7 +10,8 @@ import { isDeepStrictEqual } from "node:util";
 import { birthlessTerminalEnd } from "../../../subagents/src/reaper";
 import type { Clock } from "../contracts";
 import { decodeManagedHome, readManagedHome, sameManagedHome } from "./home";
-import { object, parsePlacement } from "./journal";
+import { object } from "./journal";
+import { readLocalRecord, readStopPlacement, writeLocalRecord } from "./local-records";
 import type { LocalIO, LocalRuntime } from "./local";
 import { createStopWork } from "./local-stop-work";
 import type { OwnerGeneration, StopBlocker, StopMode, StopObservation } from "./session-stop-types";
@@ -67,14 +68,26 @@ function readProof(db: Db, home: StoppedHome, bootId: string, scope: "exact" | "
   return { ...proof, home: savedHome };
 }
 
+function readMode(db: Db, home: StoppedHome): { hard: boolean; corrupt: boolean } {
+  const row = readLocalRecord(db, modeState, home.sessionId);
+  if (row.value === undefined) return { hard: false, corrupt: row.corrupt };
+  try {
+    const record = object(row.value);
+    if (record.mode !== "hard" && record.mode !== "graceful") throw new Error("Invalid stop mode");
+    const savedHome = decodeManagedHome(object(record.home));
+    if (savedHome.state !== "stopped" || savedHome.sessionId !== home.sessionId) throw new Error("Invalid stop home");
+    return { hard: record.mode === "hard" && sameManagedHome(savedHome, home), corrupt: row.corrupt };
+  } catch { return { hard: false, corrupt: true }; }
+}
+
 /** This transaction does not take the session lock, so it can upgrade a wait in progress. */
 export function queueStopMode(db: Db, home: StoppedHome, mode: StopMode): void {
   db.raw.transaction(() => {
     const actual = readManagedHome(db, home.sessionId);
     if (actual?.state !== "stopped" || !sameManagedHome(actual, home)) return;
-    const prior = readLocal<ModeRecord>(db, modeState, home.sessionId);
-    if (prior?.mode === "hard" && sameManagedHome(prior.home, home)) return;
-    writeLocal(db, modeState, home.sessionId, { home, mode });
+    const prior = readMode(db, home);
+    if (prior.hard) return;
+    writeLocalRecord(db, modeState, home.sessionId, { home, mode } satisfies ModeRecord);
   }).immediate();
 }
 
@@ -90,9 +103,7 @@ function openMembership(db: Db, key: StoreKey, options: RelocateAdapterOptions):
 
 function locateRecords(options: RelocateAdapterOptions, id: SessionId, displaced: boolean): Location {
   const db = options.globalDb;
-  const value = readLocal<unknown>(db, "relocate-managed", id);
-  const placement = value === undefined ? null : parsePlacement(value);
-  if (placement && (placement.sessionId !== id || placement.machineId !== options.config.machineId)) throw new StopCheck(unavailable);
+  const { placement } = readStopPlacement(db, id, options.config.machineId);
   const row = db.prepare("SELECT file,cwd,stores_json FROM roam_locations WHERE session_id=?").get(id) as
     { file: string | null; cwd: string | null; stores_json: string } | undefined;
   const stores = [...new Set([...(placement?.stores ?? []), ...(row ? parseLocationStores(JSON.parse(row.stores_json), { allowEmpty: true }) : [])])]
@@ -189,6 +200,10 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
         home = readManagedHome(db, id);
         requireStoppedHome();
         if (!bootId) throw new StopCheck("The local boot identity is unavailable.");
+        if (evidence.kind === "confirmed") {
+          const blockers = localRecordBlockers();
+          if (blockers.length) evidence = pending("Local session records could not be verified.", blockers);
+        }
         // Keep unreadable survivor evidence unless a fresh owner supplied a
         // capture. Malformed storage can prevent even that replacement, but
         // must not prevent enforcement of the exact stopped home.
@@ -200,9 +215,12 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
       }).immediate();
       return observation(evidence, at);
     }
-    const hard = () => {
-      const record = readLocal<ModeRecord>(db, modeState, id);
-      return record?.mode === "hard" && sameManagedHome(record.home, expected);
+    const hard = () => readMode(db, expected).hard;
+    const localRecordBlockers = (): StopBlocker[] => {
+      const blockers: StopBlocker[] = [];
+      if (readMode(db, expected).corrupt) blockers.push(check("The local stop mode could not be read."));
+      if (readStopPlacement(db, id, machineId).corrupt) blockers.push(check("The local session placement could not be read."));
+      return blockers;
     };
     const probe = (pid: number, until?: number) => time.read(() => io.probe(pid), until);
     const inspect = () => time.read(() => io.inspect(id));
@@ -421,6 +439,7 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
       const recordBlockers: StopBlocker[] = [];
       try {
         await readInitialState();
+        recordBlockers.push(...localRecordBlockers());
         let prior: Proof | null = null;
         try { prior = readProof(db, expected, bootId!, "include-earlier"); }
         catch {
@@ -428,8 +447,10 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
           recordBlockers.push(check("The local stop proof could not be read."));
         }
         const exact = prior && sameManagedHome(prior.home, expected);
-        if (prior?.evidence.kind === "confirmed" && exact && await shortCheck().catch(() => false))
-          return observation(prior.evidence, prior.observedAt);
+        if (prior?.evidence.kind === "confirmed" && exact && !recordBlockers.length && await shortCheck().catch(() => false)) {
+          recordBlockers.push(...localRecordBlockers());
+          if (!recordBlockers.length) return observation(prior.evidence, prior.observedAt);
+        }
         carried = prior?.carried ?? [];
         if (prior?.capture && prior.evidence.kind !== "confirmed") {
           if (exact) capture = prior.capture;
@@ -487,6 +508,7 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
           save({ kind: "checking" });
           await signalTargets("SIGKILL", location);
         }
+        recordBlockers.push(...localRecordBlockers());
         return await proveAbsence(location, recordBlockers);
       } catch (error) {
         const evidence = pending(error instanceof StopCheck ? error.message : unavailable, recordBlockers);
@@ -499,11 +521,15 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
     async function observe(): Promise<StopObservation> {
       try {
         await readInitialState();
+        const blockers = localRecordBlockers();
+        if (blockers.length) return observation(pending("Local session records could not be verified.", blockers));
         const prior = readProof(db, expected, bootId!);
         if (!prior) return observation(pending("No stop proof is recorded for this home and boot."));
         if (prior.evidence.kind === "confirmed") {
           if (!await shortCheck() || !isDeepStrictEqual(prior, readProof(db, expected, bootId!)))
             return observation(pending("New local evidence invalidates the stop confirmation."));
+          const blockers = localRecordBlockers();
+          if (blockers.length) return observation(pending("Local session records could not be verified.", blockers));
         }
         return observation(prior.evidence, prior.observedAt);
       } catch (error) { return observation(pending(error instanceof StopCheck ? error.message : unavailable)); }

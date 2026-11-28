@@ -22,7 +22,7 @@ function fixture() {
   const source = createRunTranscriptSource({ owner: () => owner, pollMs: 50, resolveDb: () => ({ db: openDbAt(dbPath, 'worktree'), dbPath }), transcriptRoots: () => [root],
     modelContextWindow: model => model === 'example/model-one' ? 200000 : undefined,
     modelName: model => model === 'example/model-one' ? 'Model One' : undefined,
-    iconStyle: 'nerd', inputBand: false, creditFactor: () => 0.5 } as never);
+    iconStyle: 'nerd', inputBand: false, creditFactor: () => 0.5 });
   cleanups.push(() => { source.dispose(); db.close(); rmSync(root, { recursive: true, force: true }); });
   return { source, id, store, root, db };
 }
@@ -58,6 +58,13 @@ test('the owner supplies model, appearance and calibration metadata in pi snapsh
   f.source.subscribe(f.id, null, frame => frames.push(frame), { view: 2 });
   expect(frames.find(frame => frame.kind === 'snapshot')).toMatchObject({ data: { view: { model: 'example/model-one', modelName: 'Model One',
     thinking: 'high', contextWindow: 200000, iconStyle: 'nerd', inputBand: false, creditFactor: 0.5 } } });
+});
+
+test.each([['agent_start', true], ['agent_end', false]] as const)('a new viewer sees prior %s activity', (type, working) => {
+  const f = fixture(); const frames: RunViewFrame[] = [];
+  publishLiveRunEvent(f.id, { type });
+  f.source.subscribe(f.id, null, frame => frames.push(frame), { view: 2 });
+  expect(frames.find(frame => frame.kind === 'snapshot')).toMatchObject({ data: { view: { working } } });
 });
 
 test('agent working transitions reach the matching rich viewer without the completed message list', () => {

@@ -17,14 +17,17 @@ export function formatDuration(ms: number): string {
 }
 
 /** Short model label (drop provider prefix + redundant 'claude-'). */
-export function shortModel(m?: string | null): string { if (!m) return "—"; return (m.split("/").pop() ?? m).replace(/^claude-/, ""); }
+export function shortModel(m?: string | null, modelName?: ThemeAdapter["modelName"]): string {
+  if (!m) return "—";
+  return modelName?.(m)?.trim() || (m.split("/").pop() ?? m).replace(/^claude-/, "");
+}
 
 /** Shared one-line summary with a single leading activity or status mark. */
 export function formatAgentLine(t: ThemeAdapter, a: AgentSnapshot, width: number, now: number): string {
   const ital = (s: string) => (t.italic ? t.italic(s) : s);
   const elapsedMs = a.startedAt === undefined ? 0 : (a.endedAt ?? now) - a.startedAt;
   const turns = a.stepCount === 1 ? "1 turn" : `${a.stepCount} turns`;
-  const model = shortModel(a.model);
+  const model = shortModel(a.model, t.modelName);
   const sep = t.fg("dim", "·");
   const parts = [
     ital(renderRoleAccent(t, a.role ?? a.agent, a.role ?? a.agent)),
@@ -84,8 +87,15 @@ export class AgentFooter implements Component {
     }
     this.lastSelectedRunId = selected;
     const model = buildFooterModel(agents, visibleCount, this.offset);
-    const lines = model.visible.map((a) => this.agentLine(a, width, this.store.isSelecting(), selected));
-    if (model.overflow) {
+    const selecting = this.store.isSelecting();
+    const lines = model.visible.map((a) => this.agentLine(a, width, selecting, selected));
+    if (model.overflow && selecting) {
+      const direction = this.offset + visibleCount < agents.length ? "arrowDown" : "arrowUp";
+      const left = `${icon(this.theme.iconStyle, direction)} view more`;
+      const right = `${agents.length} subagents`;
+      const padding = " ".repeat(Math.max(1, width - visibleWidth(left) - visibleWidth(right)));
+      lines.push(truncateToWidth(this.theme.fg("muted", left + padding + right), width, "…"));
+    } else if (model.overflow) {
       const o = model.overflow;
       const seg: string[] = [];
       if (o.running) seg.push(`${o.running} running`);

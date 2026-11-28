@@ -16,6 +16,7 @@ export type FooterInput = {
   branch: string | null;
   sessionName: string | null;
   modelId: string | null;
+  modelName?: string | null;
   /** Caller supplies off for non-reasoning models; the footer always shows it. */
   thinking: string;
   context: { percent: number | null; contextWindow: number } | null;
@@ -91,7 +92,7 @@ function modelSide(input: FooterInput, width: number, theme?: Theme): string {
   const shorten = (text: string, budget: number) => truncateToWidth(dim(text), budget, dim("..."));
   const thinking = label(input.thinking) || "off";
   const suffix = ` · ${thinking}`;
-  const model = label(input.modelId ?? "no-model");
+  const model = label(input.modelName || input.modelId || "no-model");
   // Even an unexpectedly long model must leave its thinking level visible.
   return visibleWidth(suffix) < width
     ? shorten(model, width - visibleWidth(suffix)) + dim(suffix)
@@ -101,7 +102,10 @@ function modelSide(input: FooterInput, width: number, theme?: Theme): string {
 function heading(input: FooterInput, width: number, theme?: Theme): string {
   const dim = (text: string) => theme ? theme.fg("dim", text) : text;
   const shorten = (text: string, budget: number) => truncateToWidth(dim(text), budget, dim("..."));
-  const right = modelSide(input, width, theme);
+  const leftReserve = input.sessionName || input.cwd ? Math.min(12, Math.floor(width / 3)) : 0;
+  const fullRight = modelSide(input, width, theme);
+  const right = visibleWidth(fullRight) + leftReserve + 1 > width
+    ? modelSide(input, Math.max(0, width - leftReserve - 1), theme) : fullRight;
   const budget = width - visibleWidth(right) - 1;
   if (budget <= 0) return right;
 
@@ -170,7 +174,11 @@ function statsWithMoon(input: FooterInput, width: number, moon: string, theme?: 
 function paneLine(input: FooterInput, width: number, moon: string, theme?: Theme): string {
   const moonWidth = visibleWidth(moon);
   if (width <= moonWidth) return truncateToWidth(moon, width, "");
-  const right = modelSide(input, width - moonWidth - 1, theme);
+  const rightBudget = width - moonWidth - 1;
+  const fullRight = modelSide(input, rightBudget, theme);
+  const reserve = input.modelName ? Math.min(16, Math.floor(width * 0.4)) : moonWidth;
+  const right = visibleWidth(fullRight) + reserve + 1 > width
+    ? modelSide(input, Math.max(0, width - reserve - 1), theme) : fullRight;
   const left = statsWithMoon(input, width - visibleWidth(right) - 1, moon, theme);
   return left + " ".repeat(width - visibleWidth(left) - visibleWidth(right)) + right;
 }

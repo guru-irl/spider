@@ -4,8 +4,10 @@ import base from '../../assets/look/patches.json' with { type: 'json' };
 import retained from './fixtures/spaces-a-retained.json' with { type: 'json' };
 import hashes13 from './fixtures/herdr-0.1.13/source-hashes.json' with { type: 'json' };
 import hashes16 from './fixtures/herdr-0.1.16/source-hashes.json' with { type: 'json' };
+import hashes18 from './fixtures/herdr-0.1.18/source-hashes.json' with { type: 'json' };
+import type { SpacesALookVersion } from '../look/patches.js';
 
-export type SpacesAVersion = '0.1.13' | '0.1.16';
+export type SpacesAVersion = SpacesALookVersion;
 export type SpacesAFiles = Record<string, Record<string, string>>;
 export type SpacesAPatch = { id: string; file: string; anchor: string; replacement: string };
 export type SpacesAFragments = Record<string, readonly SpacesAPatch[]>;
@@ -23,7 +25,7 @@ export type SpacesARecipe = {
   markers: Record<string, string[]>;
 };
 
-const sourceHashes: Record<SpacesAVersion, Record<string, string>> = { '0.1.13': hashes13, '0.1.16': hashes16 };
+const sourceHashes: Record<SpacesAVersion, Record<string, string>> = { '0.1.13': hashes13, '0.1.16': hashes16, '0.1.18': hashes18 };
 const digest = (text: string): string => createHash('sha256').update(text).digest('hex');
 const markerIds = (text: string): string[] => [...text.matchAll(/\/\* spider-look:([a-z0-9-]+) \*\//g)].map(m => m[1]!);
 
@@ -138,6 +140,7 @@ export function loadPublishedSpacesARecipe(version: SpacesAVersion): SpacesAReci
 export const spacesARecipes: Record<SpacesAVersion, SpacesARecipe> = {
   '0.1.13': composeSpacesARecipe('0.1.13'),
   '0.1.16': composeSpacesARecipe('0.1.16'),
+  '0.1.18': composeSpacesARecipe('0.1.18'),
 };
 
 /** Reconstruct expected bytes from clean fixtures instead of reusing consumed anchors. */

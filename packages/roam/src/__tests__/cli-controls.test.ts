@@ -4,7 +4,8 @@ import * as staging from "../staging";
 import { migrate, openDb } from "@spider/db-core";
 import { localEntries, writeLocal } from "@spider/db-core/roam/local-state";
 import { HerdrError, selectedSocket } from "@spider/herdr/client/parse";
-import { disabledIntercom } from "../contracts";
+import type { ApplyReceipt } from "@spider/db-core/roam/types";
+import { disabledIntercom, type Outcome } from "../contracts";
 import * as remoteObservations from "../remote-observations";
 import * as diagnostics from "../diagnostics";
 import * as launchd from "../launchd";
@@ -14,6 +15,7 @@ import { isRevoked } from "../revocation";
 import { afterEach, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import { main } from "../cli";
 import { disableRoaming, enableRoaming } from "../production-controls";
@@ -21,6 +23,8 @@ import { roamingCliEntry } from "../package-layout";
 import { controlText, safeControlOutcome } from "../commands";
 import { requestHubControl, startHubControl, type HubControlReply, type HubControlRequest } from "../control-socket";
 import * as productionHub from "../production-hub";
+import * as v0Runtime from "../relocate/runtime";
+import { serveV0Control } from "../relocate/service";
 import * as localRuntime from "../runtime";
 import * as agent from "../agent";
 import * as transportModule from "../transport";
@@ -76,6 +80,20 @@ async function fixture(identity = HUB, reply?: HubControlReply, withSocket = tru
   };
   return { root, calls, out, err, invoke: (args: string[], options?: Parameters<typeof main>[2]) =>
     args[0] === "roam" && ["enable", "disable"].includes(args[1]) ? invokeLegacyLifecycle(args) : main(args, io, options) };
+}
+
+type SyncRow = Pick<Outcome<ApplyReceipt>, "code" | "reason"> & Partial<Omit<Outcome<ApplyReceipt>, "operationKind">> & { operationKind?: string };
+async function syncFixture(code: 0 | 1 | 2 | 3 = 0, rows: SyncRow[] = [], identity = HUB) {
+  const f = await fixture(identity, undefined, false);
+  const unexpected = async () => { throw new Error("Sync must not send a home control request"); };
+  const sync = vi.fn(async (_request: { machineId?: string }) => ({
+    code, reason: code === 0 ? "Synchronization complete" : "Synchronization needs attention", operationId: "", home: null,
+    epoch: null, repairCommand: null, value: { outcomes: rows.map(row => ({ operationId: "", home: null, epoch: null,
+      repairCommand: null, value: null, ...row }) as Outcome<ApplyReceipt>) },
+  }));
+  const services = { relocate: unexpected, setHome: unexpected, sync };
+  sockets.push(await serveV0Control(f.root, services));
+  return { ...f, sync, configPath: join(f.root, "roam", "config.json") };
 }
 
 it.each([true, false])("public doctor reports installed core drift when enabled=%s", async enabled => {
@@ -485,11 +503,11 @@ it.each([
 
 it("sync JSON retains the real per-peer typed outcomes and receipts", async () => {
   const receipt = { batchId: "batch-a", stream: "stream-a", through: 7, sha256: "a".repeat(64), applyMs: 42 };
-  const rows = [
+  const rows: SyncRow[] = [
     { code: 0, reason: "pushed", operationId: "push-a", home: null, epoch: null, repairCommand: null, value: receipt },
     { code: 1, reason: "Peer store is quarantined", operationId: "pull-a", home: null, epoch: null, repairCommand: null, value: null },
   ];
-  const f = await fixture(HUB, { code: 1, reason: "Synchronization needs attention", value: { outcomes: rows } });
+  const f = await syncFixture(1, rows);
   expect(await f.invoke(["roam", "sync", "--json"])).toBe(1);
   expect(JSON.parse(f.out.join(""))).toMatchObject({ reason: "Synchronization needs attention", value: { outcomes: rows } });
 }, 5000);
@@ -504,10 +522,10 @@ it("the private legacy forget reply retains its recovered homes and presentation
 }, 5000);
 
 it("sync prints the bounded agent cause without exposing an unrecognized code", async () => {
-  const f = await fixture(HUB, { code: 1, reason: "Synchronization needs attention", value: {
-    outcomes: [{ code: 1, reason: "agent-operation-failed", operationId: "op-a", home: null, epoch: null, repairCommand: null, value: null, causeCode: "ENOENT" },
-      { code: 1, reason: "agent-operation-failed", operationId: "op-b", home: null, epoch: null, repairCommand: null, value: null, causeCode: "private-secret" }],
-  } });
+  const f = await syncFixture(1, [
+    { code: 1, reason: "agent-operation-failed", operationId: "op-a", causeCode: "ENOENT" },
+    { code: 1, reason: "agent-operation-failed", operationId: "op-b", causeCode: "private-secret" },
+  ]);
   expect(await f.invoke(["roam", "sync"])).toBe(1);
   expect(f.err.join("")).toContain("ENOENT");
   expect(f.err.join("")).not.toContain("private-secret");
@@ -519,11 +537,11 @@ it("sync prints the bounded agent cause without exposing an unrecognized code", 
 }, 5000);
 
 it("sync shows the failed operation kind and answered refusal without untrusted identifiers", async () => {
-  const f = await fixture(HUB, { code: 1, reason: "Synchronization needs attention", value: { outcomes: [
+  const f = await syncFixture(1, [
     { code: 1, reason: "agent-operation-failed", operationId: "op-a", operationKind: "stores", causeCode: "ENOENT" },
     { code: 1, reason: "roaming-disabled", operationId: "op-b", operationKind: "mirror-export" },
     { code: 1, reason: "agent-operation-failed", operationId: "op-c", operationKind: "private-secret", causeCode: "private-secret" },
-  ] } });
+  ]);
   expect(await f.invoke(["roam", "sync"])).toBe(1);
   expect(f.err.join("")).toContain("stores: agent-operation-failed [ENOENT]");
   expect(f.err.join("")).toContain("mirror-export: roaming-disabled");
@@ -538,9 +556,7 @@ it("sync shows the failed operation kind and answered refusal without untrusted 
 }, 5000);
 
 it("sync prints a named peer process failure from the hub outcome", async () => {
-  const f = await fixture(HUB, { code: 1, reason: "Synchronization needs attention", value: {
-    outcomes: [{ code: 1, reason: "Peer command failed (spawn_failed)" }],
-  } });
+  const f = await syncFixture(1, [{ code: 1, reason: "Peer command failed (spawn_failed)" }]);
   expect(await f.invoke(["roam", "sync", "--", "-box-1.invalid"])).toBe(1);
   expect(f.err.join("")).toContain("spawn_failed");
 }, 5000);
@@ -618,33 +634,64 @@ it("the Mac hub refuses core-only mode before starting placement", async () => {
   expect(close).toHaveBeenCalledOnce();
 }, 5000);
 
-it("sync accepts a leading-dash alias after the end-of-options marker", async () => {
-  const f = await fixture();
-  expect(await f.invoke(["roam", "sync", "--", "-box-1.invalid"])).toBe(0);
-  expect(f.calls).toEqual([{ op: "sync", machine: BOX }]);
+it.each(["--", "--machine"])("sync accepts a leading-dash alias with %s and prints success", async flag => {
+  const f = await syncFixture();
+  expect(await f.invoke(["roam", "sync", flag, "-box-1.invalid"])).toBe(0);
+  expect(f.sync).toHaveBeenCalledExactlyOnceWith({ machineId: BOX });
+  expect(f.out).toEqual(["Synchronization complete\n"]);
   expect(f.err).toEqual([]);
 }, 5000);
 
-it("sync accepts a leading-dash alias as the explicit machine value", async () => {
-  const f = await fixture();
-  expect(await f.invoke(["roam", "sync", "--machine", "-box-1.invalid"])).toBe(0);
-  expect(f.calls).toEqual([{ op: "sync", machine: BOX }]);
-  expect(f.err).toEqual([]);
+it.each([
+  ["disabled Mac", "roaming-disabled"], ["box caller", "mac-hub-required"],
+  ["invalid config", "roaming-config-unavailable"], ["identity mismatch", "roaming-config-unavailable"],
+] as const)("sync refuses a %s before socket dispatch", async (scenario, reason) => {
+  const f = await syncFixture(0, [], ["box caller", "identity mismatch"].includes(scenario) ? BOX : HUB);
+  const config = JSON.parse(readFileSync(f.configPath, "utf8"));
+  if (scenario === "disabled Mac") config.enabled = false;
+  if (scenario === "box caller") Object.assign(config, { role: "box", machineId: BOX, peers: [] });
+  writeFileSync(f.configPath, scenario === "invalid config" ? "not JSON" : JSON.stringify(config));
+  expect(await f.invoke(["roam", "sync", "--json"])).toBe(1);
+  expect(JSON.parse(f.out.join(""))).toMatchObject({ code: 1, reason });
+  expect(f.sync).not.toHaveBeenCalled();
 }, 5000);
 
-it("sync refuses a mismatched local identity before socket dispatch", async () => {
-  const f = await fixture(BOX);
-  expect(await f.invoke(["roam", "sync", "--", "-box-1.invalid"])).toBe(1);
-  expect(f.calls).toEqual([]);
-}, 5000);
-
-it("unknown machines and malformed options cannot dispatch a sync", async () => {
-  const f = await fixture();
-  expect(await f.invoke(["roam", "sync", "--machine", "missing.invalid"])).toBe(2);
+it("unknown or ambiguous machines and malformed options cannot dispatch a sync", async () => {
+  const f = await syncFixture();
+  const config = JSON.parse(readFileSync(f.configPath, "utf8"));
+  // Enrolled aliases and IDs are unique separately, but an alias can match a different peer's UUID.
+  config.peers.push({ ...config.peers[0], machineId: "00000000-0000-4000-8000-000000000003", alias: BOX });
+  writeFileSync(f.configPath, JSON.stringify(config));
+  for (const selector of ["missing.invalid", BOX, "mac", HUB]) {
+    f.out.length = 0;
+    expect(await f.invoke(["roam", "sync", "--machine", selector, "--json"])).toBe(2);
+    expect(JSON.parse(f.out.join(""))).toMatchObject({ code: 2, reason: "machine-not-enrolled" });
+  }
   expect(await f.invoke(["roam", "sync", "--machine"])).toBe(2);
   expect(await f.invoke(["roam", "sync", "--bogus"])).toBe(2);
   expect(await f.invoke(["roam", "sync", "--", "-box-1.invalid", "extra"])).toBe(2);
-  expect(f.calls).toEqual([]);
+  expect(f.sync).not.toHaveBeenCalled();
+}, 5000);
+
+it("sync refuses when only the old hub socket exists without connecting or starting a service", async () => {
+  const f = await fixture(HUB, undefined, false);
+  const contacted = vi.fn();
+  const decoy = createServer(socket => {
+    contacted(); socket.on("error", () => {});
+    socket.once("data", () => socket.end('{"code":0,"reason":"Synchronization complete","value":{"outcomes":[]}}\n'));
+  });
+  const oldSocket = join(f.root, "roam", "hub.sock");
+  await new Promise<void>((ready, reject) => { decoy.once("error", reject); decoy.listen(oldSocket, ready); });
+  chmodSync(oldSocket, 0o600);
+  sockets.push({ close: () => new Promise<void>(done => decoy.close(() => done())) });
+  const unexpected = async () => { throw new Error("The CLI must not start a service"); };
+  const startV0 = vi.spyOn(v0Runtime, "startV0Hub").mockImplementation(unexpected);
+  const startOld = vi.spyOn(productionHub, "startProductionHub").mockImplementation(unexpected);
+  expect(await f.invoke(["roam", "sync", "--json"])).toBe(1);
+  expect(JSON.parse(f.out.join(""))).toMatchObject({ code: 1, reason: "hub-unavailable" });
+  expect(contacted).not.toHaveBeenCalled();
+  expect(startV0).not.toHaveBeenCalled(); expect(startOld).not.toHaveBeenCalled();
+  expect(existsSync(join(f.root, "roam", "relocate.sock"))).toBe(false);
 }, 5000);
 
 it("disabled local doctor prints status and upgrade readiness without inspecting move bindings", async () => {

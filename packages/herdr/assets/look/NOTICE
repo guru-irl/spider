@@ -1,8 +1,8 @@
 This directory's patches.json contains modified portions of Herdr's built-in
 mods under Apache-2.0.
 
-Portions of packages/herdr/assets/look/patches.json are derived from the
-built-in mods of Herdr 0.1.12 by the Herdr authors, licensed under the Apache
+Portions of patches.json are derived from the built-in mods of Herdr 0.1.12,
+0.1.13, 0.1.16, and 0.1.18 by the Herdr authors, licensed under the Apache
 License, Version 2.0, and were modified for spider.
 
 packages/herdr/assets/tabs/autohide.js also adapts menu choices and shortcut
@@ -10,6 +10,7 @@ labels from Herdr 0.1.12 under the same licence, modified for spider.
 
 The complete licence is shipped at licenses/herdr-apache-2.0.txt at the root of the spider package.
 
-packages/herdr/assets/look/cross-machine-patches.json contains modified
-portions of the built-in mods of Herdr 0.1.13 and 0.1.16 under the same
-Apache-2.0 licence, modified for spider.
+cross-machine-patches.json and the versioned records in spaces-a-sidebar
+and spaces-a-goto contain modified portions of the built-in mods of Herdr
+0.1.13, 0.1.16, and 0.1.18 under the same Apache-2.0 licence.
+Herdr 0.1.18 source: https://github.com/herdrdev/herdr-app/tree/v0.1.18/defaults/mods

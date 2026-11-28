@@ -14,8 +14,9 @@ vi.mock('node:child_process', async importOriginal => {
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
 
-async function pickerFixture() {
-  const f = await fixture(), picker = join(f.root, 'packages/herdr/assets/picker');
+// Keep process transport in the install and missing-source cases.
+async function pickerFixture(coreTransport: 'process' | 'socket' = 'socket') {
+  const f = await fixture('fake', false, { coreTransport }), picker = join(f.root, 'packages/herdr/assets/picker');
   await mkdir(picker, { recursive: true });
   await writeFile(join(picker, 'main.js'), "import '../shared/navigation.js';\nimport './model.js';\n// import '../shared/comment.js';\nexport const literal = '../shared/not-an-import.js';\nexport async function lazy() { return import('../shared/look.js'); }\n");
   await writeFile(join(picker, 'mod.json'), '{"place":"none"}\n');
@@ -48,7 +49,7 @@ async function unresolvedImports(mods: string, files: readonly string[]): Promis
 }
 
 test('installs a standalone picker with private config and resolved helper imports', async () => {
-  const f = await pickerFixture();
+  const f = await pickerFixture('process');
   await setupHerdr(f.request, f.parts);
   const mods = join(f.h.directories.app, 'mods'), picker = join(mods, 'spider-picker');
   const configPath = join(picker, 'config.json'), config = JSON.parse(await readFile(configPath, 'utf8'));
@@ -86,7 +87,7 @@ test('installs a standalone picker with private config and resolved helper impor
 });
 
 test('installs the packaged picker View and manifest with resolvable imports', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await fixture('fake', false, { coreTransport: 'socket' }); await setupHerdr(f.request, f.parts);
   const mods = join(f.h.directories.app, 'mods'), root = join(mods, 'spider-picker');
   const main = await readFile(join(root, 'main.js'), 'utf8');
   expect(main).toContain("from './shared/navigation.js'");
@@ -154,7 +155,7 @@ test('doctor verifies native key commands or reports that inspection is unavaila
 });
 
 test('refuses incomplete picker sources before making installation changes', async () => {
-  const f = await pickerFixture(), settings = join(f.h.directories.app, 'settings.json');
+  const f = await pickerFixture('process'), settings = join(f.h.directories.app, 'settings.json');
   const before = await readFile(settings);
   await unlink(join(f.root, 'packages/herdr/assets/picker/main.js'));
   await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'picker-assets-missing' });
@@ -193,7 +194,7 @@ test('refuses a skipped import after a quote-containing regex and names its sour
 }, 60_000);
 
 test('all installed shipped mod JavaScript imports resolve inside their own mod', async () => {
-  const f = await fixture();
+  const f = await fixture('fake', false, { coreTransport: 'socket' });
   await setupHerdr(f.request, f.parts);
   const mods = join(f.h.directories.app, 'mods'), files: string[] = [];
   const walk = async (directory: string) => {

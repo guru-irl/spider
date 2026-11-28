@@ -235,11 +235,12 @@ export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL, admitte
     return resuming;
   };
   return { reload, pause, resume, snapshot: () => runtime?.snapshot(), readPanel: (now, sessionId, budget) => runtime?.readPanel(now, sessionId, budget) ?? Promise.resolve(null), doctor: async () => {
+    const registry = current?.modelRegistry;
     if (process.env.PI_SUBAGENT_CHILD === "1") return { ok: true, lines: ["- usage worker: not started (child session)"] };
     const crashes = await Promise.all(["usage-server", "usage-server-failures"].map(dir => readUsageServerCrashDiagnostics(join(paths.globalRoot, dir))));
     const snapshot = runtime?.snapshot() ?? { health: null, counter: null, backfill: "pending" as const, reconciliation: null, errorCode: null };
     return usageDoctorLines(snapshot, config, { sourceErrors: snapshot.sourceErrorDiagnostics?.rows ?? [],
       truncated: snapshot.sourceErrorDiagnostics?.truncated ?? false, serverFailures: crashes.flatMap(crash => crash?.failures ?? []), now: Date.now(),
-      dashboardAssets: await dashboardAssetsStatus(bundleUrl) });
+      dashboardAssets: await dashboardAssetsStatus(bundleUrl) }, registry);
   } };
 }

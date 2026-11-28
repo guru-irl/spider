@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { Theme, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type ExtensionUIContext, type SessionStartEvent } from "@earendil-works/pi-coding-agent";
-import { colorToHex, KeybindingsManager, stripTerminalSequences, TUI_KEYBINDINGS, TuiAltScreen, visibleWidth, type Terminal } from "@earendil-works/pi-tui";
+import { Theme, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type ExtensionUIContext, type KeybindingsManager as PiKeybindingsManager, type SessionStartEvent } from "@earendil-works/pi-coding-agent";
+import { colorToHex, KeybindingsManager, stripTerminalSequences, TUI_KEYBINDINGS, TuiAltScreen, truncateToWidth, visibleWidth, type Terminal } from "@earendil-works/pi-tui";
 import { paths } from "@spider/db-core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { registerAccentPicker } from "./index.js";
@@ -18,6 +18,7 @@ const sessions: Array<() => void> = [];
 beforeEach(() => {
   mkdirSync(originalRoot, { recursive: true });
   paths.globalRoot = mkdtempSync(join(originalRoot, "color-"));
+  vi.stubEnv("GIT_CEILING_DIRECTORIES", originalRoot);
   writeFileSync(file(), '{"ui.icons":"nerd"}');
 });
 afterEach(() => {
@@ -36,7 +37,8 @@ function session(initial = shippedTheme(), { columns = 100, rows = 10, cwd = pat
     clearLine: noop, clearFromCursor: noop, clearScreen: noop, setTitle: noop, setProgress: noop, setProgramStatus: noop,
   };
   const tui = new TuiAltScreen(terminal, false);
-  const keys = new KeybindingsManager(TUI_KEYBINDINGS);
+  // The picker uses the inherited TUI keybindings, not Pi's settings file.
+  const keys = new KeybindingsManager(TUI_KEYBINDINGS) as PiKeybindingsManager;
   let theme = initial;
   // Pi gives extensions a live proxy, not a snapshot of the Theme instance.
   const themeProxy = new Proxy({} as Theme, { get: (_target, key) => Reflect.get(theme, key, theme) });
@@ -50,16 +52,17 @@ function session(initial = shippedTheme(), { columns = 100, rows = 10, cwd = pat
       tui.requestRender();
       return { success: true };
     },
-    async custom(factory, options) {
+    custom: (factory, options) => new Promise((resolve, reject) => {
       expect(options?.overlay).toBe(true);
-      let finish!: (value: Awaited<ReturnType<typeof ui.custom>>) => void;
-      const answer = new Promise(resolve => { finish = resolve; });
-      const picker = await factory(tui, themeProxy, keys, finish);
-      const handle = tui.showOverlay(picker, options?.overlayOptions);
-      options?.onHandle?.(handle);
-      try { return await answer as never; }
-      finally { handle.hide(); picker.dispose?.(); }
-    },
+      let close: (() => void) | undefined;
+      const component = factory(tui, themeProxy, keys, value => { close?.(); resolve(value); });
+      void Promise.resolve(component).then(picker => {
+        const overlay = options?.overlayOptions;
+        const handle = tui.showOverlay(picker, typeof overlay === "function" ? overlay() : overlay);
+        close = () => { handle.hide(); picker.dispose?.(); };
+        options?.onHandle?.(handle);
+      }).catch(reject);
+    }),
   };
   const ctx = { cwd, mode: "tui", hasUI: true, ui } as ExtensionCommandContext;
   const start: Array<(event: SessionStartEvent, ctx: ExtensionContext) => unknown> = [];
@@ -70,7 +73,7 @@ function session(initial = shippedTheme(), { columns = 100, rows = 10, cwd = pat
   } as Pick<ExtensionAPI, "on" | "registerCommand">);
   tui.addChild({
     invalidate() {},
-    render: () => [`${" ".repeat(45)}${theme.fg("accent", "Transcript stays visible")}`],
+    render: width => [truncateToWidth(`${" ".repeat(45)}${theme.fg("accent", "Transcript stays visible")}`, width, "")],
   });
   tui.start();
   sessions.push(() => tui.stop());
@@ -187,7 +190,7 @@ it("accepts named colors regardless of case, rejects unknown colors, and resets 
   expect(other.color()).toBe("#82aaff");
 });
 
-it.each<SessionStartEvent["reason"]>(["startup", "new", "resume", "reload", "fork"])("reapplies the saved accent on %s after the installed theme is refreshed", async reason => {
+it.each(["startup", "new", "resume", "reload", "fork"] as const)("reapplies the saved accent on %s after the installed theme is refreshed", async reason => {
   const original = session();
   await original.command("green");
   vi.stubEnv("PI_SUBAGENT_CHILD", "1");

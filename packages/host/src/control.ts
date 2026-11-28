@@ -14,6 +14,7 @@ import { isUsageConfigKey, readUsageConfig, USAGE_DEFAULTS, usageConfigError } f
 import { usageDoctorLines } from "./usage/doctor.js";
 import { COMPACTION_DEFAULTS, compactionConfigError } from "./compaction/config.js";
 import { legacyCompactionPath, legacyCompactionWarning } from "./compaction/legacy.js";
+import { ACCENT_KEY, storedAccent } from "./accent/palette.js";
 
 export { controlMigrate } from "./control/migrate-cmd";
 
@@ -49,7 +50,7 @@ export const DEFAULTS: Readonly<Record<string, unknown>> = {
 const INPUT_APPEARANCE_BOOLEAN_KEYS: readonly string[] = ["ui.inputBand", "ui.spiderGlyphs"];
 
 export const GLOBAL_ONLY_CONFIG_KEYS: readonly string[] = Object.freeze([
-  "subagents.extensions", "subagents.profiles.reviewer.excludeTools", "herdr.config", "herdr.enabled",
+  "subagents.extensions", "subagents.profiles.reviewer.excludeTools", "herdr.config", "herdr.enabled", ACCENT_KEY,
 ]);
 
 function configFile(scopeRoot: string): string {
@@ -127,6 +128,9 @@ function configLayers(cwd: string, localRoot = paths.projectRoot(cwd), globalRoo
     if (Object.hasOwn(layer.config, "exec.enforce") && typeof layer.config["exec.enforce"] !== "boolean") {
       errors.push(`invalid value for exec.enforce in ${file}: expected a boolean`);
     }
+  }
+  if (Object.hasOwn(global.config, ACCENT_KEY) && !storedAccent(global.config[ACCENT_KEY])) {
+    errors.push(`invalid ${ACCENT_KEY} in ${globalFile}: expected a /color palette name`);
   }
   errors.push(...readUsageConfig(global.config, local.config).errors);
   const warnings = [...readUsageConfig({}, local.config).errors];
@@ -253,6 +257,9 @@ export function controlConfig(op: "get" | "set" | "unset", cwd: string, key?: st
   if (key === undefined) throw new Error(`control config ${op}: key required`);
   if (op === "set" && GLOBAL_ONLY_CONFIG_KEYS.includes(key) && scope !== "global") {
     throw new Error(`${key} is global-only; use scope:"global"`);
+  }
+  if (op === "set" && key === ACCENT_KEY && !storedAccent(value)) {
+    throw new Error(`${ACCENT_KEY} must be a /color palette name`);
   }
   if (isUsageConfigKey(key)) {
     if (op === "set" && scope !== "global") throw new Error(`${key} is global-only; use scope:"global"`);

@@ -13,7 +13,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-it.each([undefined, "/abs/x", "/abs/x/", "~", "~/x", "file:///x", "rel/x"])(
+it.each([undefined, "", "/abs/x", "/abs/x/", "~", "~/x", "file:///x", "rel/x"])(
   "matches pi's getAgentDir for %s",
   async input => {
     if (input === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -51,20 +51,20 @@ function runFixture(root: string, dir: string | undefined, invoke = true) {
     : `import './pi-agent-dir.mjs';`], { cwd: root, env, encoding: "utf8", timeout: 10000 });
 }
 
-it.each([undefined, ...(process.platform === "win32" ? [] : ["/abs/x/"])])(
+it.each([undefined, "", ...(process.platform === "win32" ? [] : ["/abs/x/"])])(
   "does not evaluate pi for fast-path input %s",
   dir => {
     const root = fixture("./index.mjs");
     const result = runFixture(root, dir);
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout.trim()).toBe(dir ?? join(root, ".pi", "agent"));
+    expect(result.stdout.trim()).toBe(dir || join(root, ".pi", "agent"));
     expect(existsSync(join(root, "loaded"))).toBe(false);
   },
 );
 
-it("loads pi for paths that need its normalization", () => {
+it.each(["~", "~/x", "file:///x", "rel/x"])("loads pi for %s", dir => {
   const root = fixture("./index.mjs");
-  const result = runFixture(root, "~/x");
+  const result = runFixture(root, dir);
   expect(result.status, result.stderr).toBe(0);
   expect(result.stdout.trim()).toBe("fallback");
   expect(existsSync(join(root, "loaded"))).toBe(true);

@@ -5,6 +5,7 @@ import { CustomEditor, CustomMessageComponent, ToolExecutionComponent, UserMessa
 import { Box, Markdown, Text, stripTerminalSequences, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerInputBand } from "./index.js";
+import { createHalfBox } from "./box.js";
 import { registerEditWriteOverrides } from "../routing/overrides.js";
 import glass from "../../../herdr/assets/themes/dracula-plus-glass.json" with { type: "json" };
 
@@ -51,6 +52,31 @@ function verifyEdges(rows: string[], width: number, start = "", end = "") {
   expect(rows.at(-1)).toBe(`${end}${INK}${"▀".repeat(width)}\x1b[39m`);
   expect(rows.every(row => visibleWidth(row) <= width)).toBe(true);
 }
+
+it("reuses unchanged half-box rows, rebuilding when the width or content changes", () => {
+  const box = createHalfBox(1, text => theme.bg("toolSuccessBg", text));
+  const content = new Text("Old", 0, 0);
+  box.addChild(content);
+  const first = box.render(32);
+  expect(box.render(32)).toBe(first);
+  const resized = box.render(24);
+  verifyEdges(resized, 24);
+  expect(box.render(24)).toBe(resized);
+  content.setText("New");
+  expect(plain(box.render(24))).toContain(" New");
+});
+
+it("reuses sent-message rows until Pi's Markdown changes", () => {
+  stop = activate();
+  const message = new UserMessageComponent("Old");
+  const first = message.render(32);
+  expect(message.render(32)).toBe(first);
+  const resized = message.render(24);
+  verifyEdges(resized, 24, START, END);
+  expect(message.render(24)).toBe(resized);
+  (message.children[0] as Markdown).setText("New");
+  expect(plain(message.render(24))).toContain(" ❯ New");
+});
 
 it("uses the strip color in a sent message and keeps its OSC zones", () => {
   stop = activate({ "ui.icons": "nerd" });

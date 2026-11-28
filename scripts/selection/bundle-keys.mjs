@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: MIT
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const digestBytes = bytes => createHash('sha256').update(bytes).digest('hex');
 
 export function bundleDigest(root, path) {
-  try { return digestBytes(readFileSync(resolve(root, path))); }
-  catch { return null; }
+  try {
+    const file = resolve(realpathSync(root), path);
+    // Relative runtime imports resolve from the real location, not the link.
+    return realpathSync(file) === file ? digestBytes(readFileSync(file)) : null;
+  } catch { return null; }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

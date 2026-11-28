@@ -273,7 +273,12 @@ export async function selectTests({ head, inventory, changes, map, fallback = nu
         for (const [test, outputs] of router?.selected ?? []) {
           for (const path of outputs) add(test, `recorded bundle artifact: ${path}`);
         }
-        const bundleAffected = buildChanged || router?.affected || related.some(file => policy.bundles.entries.includes(file));
+        const reached = new Set(related);
+        const artifactSeeds = router?.affectedEntries.filter(entry => !reached.has(entry)) ?? [];
+        if (artifactSeeds.length) {
+          for (const test of await resolveRelated(artifactSeeds)) add(test, 'static import graph');
+        }
+        const bundleAffected = buildChanged || router?.affectedEntries.length || related.some(file => policy.bundles.entries.includes(file));
         if (bundleAffected) {
           const proofs = new Map();
           const addBundleReader = (test, reason) => {

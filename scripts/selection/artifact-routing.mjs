@@ -38,16 +38,17 @@ export function createArtifactRouter({ evidence, mapTests, changes, related, bui
   const changed = new Set(changes.map(({ file }) => file));
   const reached = new Set(related);
   const affected = new Set(evidence.artifacts.filter(artifact => buildChanged || changed.has(artifact.path)
-    || changed.has(artifact.entry) || reached.has(artifact.entry) || artifact.inputs.some(input => changed.has(input))));
+    || changed.has(artifact.entry) || reached.has(artifact.entry) || artifact.inputs.some(input => changed.has(input)))
+    .map(artifact => artifact.path));
   const selected = new Map();
   for (const [test, observation] of Object.entries(evidence.tests)) {
-    const paths = sorted(observation.hashes.flatMap(hash => byHash.get(hash).filter(artifact => affected.has(artifact)).map(artifact => artifact.path)));
+    const paths = sorted(observation.hashes.flatMap(hash => byHash.get(hash).map(artifact => artifact.path)).filter(path => affected.has(path)));
     if (paths.length) selected.set(test, paths);
   }
   const outputs = new Map();
   let blobs;
   return {
-    affected: affected.size > 0,
+    affectedEntries: sorted(evidence.artifacts.filter(artifact => affected.has(artifact.path)).map(artifact => artifact.entry)),
     selected,
     exclusion(test) {
       const contract = contracts.get(test), observation = evidence.tests[test], record = mapTests[test];

@@ -353,8 +353,11 @@ test('native registration uses the same local viewer for automatic and explicit 
   try {
     await hooks.get('session_start')!();
     await vi.waitFor(() => expect(native.launcher).toHaveBeenCalledTimes(1));
-    const visible = [...f.layout.keys()].find(address => f.terminals.get(address)?.labels['spider.run'] === run1);
-    expect(visible).toBeDefined();
+    const visible = await vi.waitFor(() => {
+      const address = [...f.layout.keys()].find(address => f.terminals.get(address)?.labels['spider.run'] === run1);
+      expect(address).toBeDefined();
+      return address;
+    });
     expect((await registration.peek(run1))?.address).toBe(visible);
     expect(vi.mocked(f.hc.run).mock.calls.filter(([request]) => request.labels['spider.kind'] === 'subagent-viewer')).toHaveLength(1);
     expect(connect).not.toHaveBeenCalled();

@@ -1,4 +1,5 @@
 import type { AgentSnapshot, HandoffEdge, RunEvent, RunRow, RunSource, RunCostFormatter, StoredRunEvent } from "./types";
+import { orderFooterAgents } from "./footer-model";
 
 const RETENTION_MS = 10_000;
 const TAIL_CAP = 20;
@@ -104,7 +105,7 @@ export class AgentStore {
 
   /** Footer selection (/agents or alt+shift+up): the footer widget itself renders a ▸ cursor on the
    *  selected row while a key-capturing overlay drives the index — so the footer stays put
-   *  (the chat/editor never move). Selection runs over the current snapshot() order. */
+   *  (the chat/editor never move). Selection follows the footer's display order. */
   beginSelect(): void { const n = this.snapshot().length; if (n === 0) return; this.selecting = true; if (this.sel < 0 || this.sel >= n) this.sel = 0; this.emit(); }
   endSelect(): void { this.selecting = false; this.emit(); }
   isSelecting(): boolean { return this.selecting; }
@@ -112,11 +113,17 @@ export class AgentStore {
     if (!this.selecting) return;
     const n = this.snapshot().length;
     if (n === 0) { this.sel = 0; return; }
+    this.sel = Math.min(this.sel, n - 1);
     // Wrap around: up from the top row lands on the bottom, and vice-versa.
     this.sel = (((this.sel + delta) % n) + n) % n;
     this.emit();
   }
-  selectedRunId(): string | undefined { if (!this.selecting) return undefined; return this.snapshot()[this.sel]?.runId; }
+  selectedRunId(): string | undefined {
+    if (!this.selecting) return undefined;
+    const agents = orderFooterAgents(this.snapshot());
+    this.sel = Math.max(0, Math.min(this.sel, agents.length - 1));
+    return agents[this.sel]?.runId;
+  }
 
   /** Full chronological event log for one run (assistant text + tool calls/results). */
   events(runId: string): StoredRunEvent[] { return this.src.listEvents?.(runId) ?? []; }

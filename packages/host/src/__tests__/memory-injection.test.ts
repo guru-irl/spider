@@ -10,6 +10,7 @@ import spiderExtension from "../extension";
 import { controlConfig } from "../control";
 import { addMemory, approvePending, getMemory, listActive, listPending, searchMemoryFts, setStatus } from "@spider/memory";
 import { controlBind, controlUnbind } from "../control-bind";
+import * as routing from "../routing/index";
 
 const root = join(process.cwd(), ".spider", "scratch", `memory-hook-${process.pid}`);
 afterEach(() => {
@@ -414,13 +415,14 @@ describe("production memory injection", () => {
       let tool: any;
       const commands: Record<string, any> = {};
       const messages: any[] = [];
-      let toolCallRegistrations = 0;
-      spiderExtension(withPiEvents({
-        registerTool(t: any) { if (t.name === "spider") tool = t; },
-        on(name: string) { if (name === "tool_call" && ++toolCallRegistrations === 3) throw new Error("routing registration failed"); },
-        registerCommand(name: string, command: any) { commands[name] = command; },
-        sendMessage(message: any) { messages.push(message); }, registerMessageRenderer() {},
-      } as any), hostUnitPorts);
+      const failRouting = vi.spyOn(routing, "registerRouting").mockImplementationOnce(() => { throw new Error("routing registration failed"); });
+      try {
+        spiderExtension(withPiEvents({
+          registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {},
+          registerCommand(name: string, command: any) { commands[name] = command; },
+          sendMessage(message: any) { messages.push(message); }, registerMessageRenderer() {},
+        } as any), hostUnitPorts);
+      } finally { failRouting.mockRestore(); }
       const context = { cwd: f.cwd, sessionManager: { getSessionId: () => "absent-routing-session" } };
       const report = entry === "tool"
         ? (await tool.execute("absent-routing", { action: "control", command: "doctor" }, undefined, undefined, context)).details as { lines: string[]; ok: boolean }

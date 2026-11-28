@@ -80,8 +80,8 @@ it("uses Pi's bundled spacers and tool components for one line around a reply", 
   app.move("Reply"); app.screen();
   const after = plain(app.chat);
   expect(after).toHaveLength(before.length);
-  expect(after[reasoning + 1]).toMatch(/^🭽▔+🭾$/u);
-  expect(after[reasoning + 3]).toMatch(/^🭼Jan 3 08:15▁+□ text▁▁▁□ md🭿$/u);
+  expect(after[reasoning + 1]).toMatch(/^╭─+╮$/u);
+  expect(after[reasoning + 3]).toMatch(/^╰Jan 3 08:15─+□ text───□ md╯$/u);
 });
 
 it("uses the reply seam before bundled reasoning and a truncation notice", () => {
@@ -101,7 +101,7 @@ it("uses the reply seam before bundled reasoning and a truncation notice", () =>
   app.move("Later reply");
   const after = app.screen();
   expect(after).toHaveLength(before.length);
-  expect(after[laterReply + 1]).toMatch(/^🭼.*🭿$/u);
+  expect(after[laterReply + 1]).toMatch(/^╰.*╯$/u);
   expect(after[laterReply + 2]).toContain("Response was truncated");
 });
 

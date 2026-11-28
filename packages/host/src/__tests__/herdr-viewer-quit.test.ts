@@ -3,8 +3,8 @@ import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, test, vi } from 'vitest';
 import { PassThrough } from 'node:stream';
-import { mkdir, cp, writeFile, readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { ProcessTerminal } from '@earendil-works/pi-tui';
@@ -12,13 +12,13 @@ import { openGlobal, setGlobalDbPathForTests } from '@spider/db-core';
 import { cleanupScratch } from '@spider/db-core/testutil';
 import { registerChild, teardownAll } from '../../../subagents/src/coordinators.js';
 import { RunStore } from '../../../subagents/src/run-store.js';
-import { createHerdrHarness } from '../../../herdr/src/__tests__/testutil.js';
-import { setupHerdr, standardHerdrConfigPath, type SetupRequest } from '../../../herdr/src/setup/installer.js';
+import { createHostHerdrHarness } from './herdr-fixture-inventory.testutil.js';
+import { createViewerCaseTracker, useViewerCoreReads } from './herdr-viewer-read.testutil.js';
+import { standardHerdrConfigPath } from '../../../herdr/src/setup/installer.js';
 import { parseHerdrConfig } from '../../../herdr/src/config.js';
 import { createSessionIpcClient } from '../../../herdr/src/feed/ipc-client.js';
 import { createViewerFeedSource, runViewer } from '../../../herdr/src/viewers/program.js';
 import type { RunId, RunViewFrame, SessionId } from '../../../herdr/src/contracts.js';
-import { createProductionHerdrCliPorts } from '../herdr/ports.js';
 import { openSessionRunDb } from '../session-run-db.js';
 import spiderExtension from '../extension.js';
 import * as mountModule from '../herdr/mount.js';
@@ -27,7 +27,12 @@ import { clearActions } from '../dispatch.js';
 const realMount = mountModule.mountHerdr;
 const realStartEndpoint = endpointModule.startSessionEndpoint;
 const cleanups: (() => void | Promise<void>)[] = [];
-afterEach(async () => { teardownAll(); clearActions(); for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks(); vi.unstubAllEnvs(); setGlobalDbPathForTests(null); cleanupScratch(); });
+const caseTracker = createViewerCaseTracker();
+afterEach(async () => {
+  // Vitest can time out while the case is still using its fake core and env.
+  await caseTracker.drain();
+  teardownAll(); clearActions(); for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks(); vi.unstubAllEnvs(); setGlobalDbPathForTests(null); cleanupScratch();
+});
 
 async function fixture(failQuitDisposal: boolean) {
   if (failQuitDisposal) {
@@ -40,7 +45,8 @@ async function fixture(failQuitDisposal: boolean) {
       } };
     });
   }
-  const h = await createHerdrHarness('fake'); cleanups.push(() => h.close()); await h.start();
+  const h = await createHostHerdrHarness('fake'); cleanups.push(() => h.close()); await h.start();
+  useViewerCoreReads(h);
   const manager = SessionManager.create(h.directories.local, join(h.root, 'sessions'));
   manager.appendMessage({ role: 'user', content: 'Fork this task', timestamp: Date.now() });
   manager.appendMessage({ role: 'assistant', content: [], api: 'fixture', provider: 'fixture', model: 'fixture', usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: 'stop', timestamp: Date.now() } as never);
@@ -48,24 +54,12 @@ async function fixture(failQuitDisposal: boolean) {
   for (const [name, value] of Object.entries(h.localEnv)) if (value !== undefined && /^(HC_|XDG_|HERDR_)/.test(name)) vi.stubEnv(name, value);
   vi.stubEnv('PI_SUBAGENT_CHILD', '0'); vi.stubEnv('PI_CODING_AGENT_DIR', h.directories.agent); vi.stubEnv('SPIDER_GLOBAL_ROOT', h.directories.global);
   const configPath = standardHerdrConfigPath(h.directories.global);
-  const request: SetupRequest = { config: parseHerdrConfig({ enabled: true, app: { binary: h.appBinary, home: h.directories.app },
+  // These lifecycle cases do not launch viewers or exercise installation.
+  // Keep the real fake-core processes, but provide only the configuration the mount reads.
+  const config = parseHerdrConfig({ enabled: true, app: { binary: h.appBinary, home: h.directories.app },
     core: { binary: h.hcBinary, config: join(h.localEnv.XDG_CONFIG_HOME!, 'herdr-core/config.toml') },
-    agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [{ name: 'remote.invalid', nodePath: process.execPath, runtime: { directory: join(h.directories.remote, 'programs'), cwd: null, commands: {} } }] }),
-    configPath, packageRoot: h.root, journalRoot: join(h.directories.global, 'herdr/setup') };
-  await mkdir(join(h.root, 'packages/herdr'), { recursive: true });
-  await cp(resolve('packages/herdr/assets'), join(h.root, 'packages/herdr/assets'), { recursive: true });
-  await cp(resolve('dist/herdr'), join(h.root, 'dist/herdr'), { recursive: true });
-  await mkdir(join(configPath, '..'), { recursive: true }); await writeFile(configPath, JSON.stringify(request.config));
-  await writeFile(join(h.directories.app, 'settings.json'), '{}');
-  const cli = createProductionHerdrCliPorts(h.root, h.localEnv); cleanups.push(() => cli.dispose());
-  const production = await cli.setupParts(request);
-  // Layout inspection and a doctor result are external ports. Install files,
-  // config registration, resume hook and runtime planning use production code.
-  await setupHerdr(request, { ...production,
-    preflight: async () => ({ fingerprint: 'viewer-fixture', coreIdentity: await h.hc.identity(), layoutExport: true, targets: [], retiredTerminals: [],
-      mods: ['spider-panel', 'spider-machines'].map(name => ({ directory: join(h.directories.app, 'mods', name) })) }),
-    stageLook: async () => [], generateTemplates: async () => [], cutover: async () => ({ terminals: [], identities: {} }), verify: async () => ({ failures: [], warnings: [], probes: [] }),
-  });
+    agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [{ name: 'remote.invalid', nodePath: process.execPath, runtime: { directory: join(h.directories.remote, 'programs'), cwd: null, commands: {} } }] });
+  await mkdir(join(configPath, '..'), { recursive: true }); await writeFile(configPath, JSON.stringify(config));
   execFileSync('git', ['init', '-q', h.directories.local]);
   setGlobalDbPathForTests(join(h.directories.global, 'global.db')); const global = openGlobal();
   const opened = openSessionRunDb(h.directories.local, h.owner!.sessionId); const store = new RunStore(opened.db);
@@ -82,12 +76,26 @@ async function fixture(failQuitDisposal: boolean) {
   await emit('session_start');
   const feed = JSON.parse(await readFile(join(h.directories.global, 'herdr/sessions', h.owner!.sessionId, 'session.json'), 'utf8'));
   const ipc = createSessionIpcClient({ version: 1, sessionId: feed.sessionId, generation: feed.generation, ...feed.ipc });
-  return { h, manager, ctx, store, ipc, emit, feed, hooks, notices, async close() { ipc.dispose(); await emit('session_shutdown', { reason: 'quit' }); opened.db.close(); global.close(); await cli.dispose(); await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); } };
+  return { h, manager, ctx, store, ipc, emit, feed, hooks, notices, async close() { ipc.dispose(); await emit('session_shutdown', { reason: 'quit' }); opened.db.close(); global.close(); await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); } };
 }
+
+test('waits for unfinished viewer case work before fixture cleanup', async () => {
+  const tracker = createViewerCaseTracker();
+  let release!: () => void, finished = false, drained = false;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const work = tracker.run(async () => { await gate; finished = true; });
+  const draining = tracker.drain().then(() => { drained = true; });
+  try {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(drained).toBe(false);
+  } finally { release(); await Promise.all([work, draining]); }
+  expect(finished).toBe(true);
+  expect(drained).toBe(true);
+});
 
 // Quit must end the endpoint before child cancellation can emit a normal run finish.
 // A mount-only test omits the earlier registered subagent teardown and misses this race.
-test.each([false, true])('quit hands off the stream before cancellation and retains the viewer, cleanup failure: %s', async failQuitDisposal => {
+async function quitCase(failQuitDisposal: boolean) {
   const f = await fixture(failQuitDisposal); const abort = new AbortController(); const input = new PassThrough(); const output = new PassThrough();
   let text = '', viewerExited = false;
   output.on('data', bytes => { text += bytes.toString(); });
@@ -123,4 +131,7 @@ test.each([false, true])('quit hands off the stream before cancellation and reta
     expect(f.notices.filter(message => message.startsWith("Spider's Herdr features hit a problem in this session."))).toHaveLength(failQuitDisposal ? 1 : 0);
     expect(f.notices.join('\n')).not.toContain('Fixture endpoint cleanup failed');
   } finally { abort.abort(); await viewer; await subscription.dispose(); await f.close(); }
-}, 30000);
+}
+
+test.each([false, true])('quit hands off the stream before cancellation and retains the viewer, cleanup failure: %s',
+  failQuitDisposal => caseTracker.run(() => quitCase(failQuitDisposal)), 30000);

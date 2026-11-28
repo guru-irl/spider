@@ -815,7 +815,7 @@ export function renderSpiderCall(args: any, theme: any, context: any): Component
     }
     if (context?.titleDetails?.length) {
       for (const detail of context.titleDetails as { text: string; agent: boolean }[]) {
-        suffix += t.fg("toolTitle", " · ") + (detail.agent ? t.italic(t.fg("toolTitle", detail.text)) : t.fg("toolTitle", detail.text));
+        suffix += t.fg("toolTitle", " · ") + (detail.agent ? t.italic(renderRoleAccent(adaptTheme(t), detail.text, detail.text)) : t.fg("toolTitle", detail.text));
       }
     }
     const line = ` ${t.fg("toolTitle", icon(t.iconStyle, "spider"))} ${suffix}`;

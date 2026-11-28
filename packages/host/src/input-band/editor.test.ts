@@ -152,6 +152,10 @@ describe("input band", () => {
     expect(option).toBeGreaterThan(2);
     expect(rows[option].startsWith("  ")).toBe(true);
     expect(rows[option]).not.toContain(STRIP);
+    expect(e.handleMouse(click(0, option, 40, rows.length))).toBeUndefined();
+    expect(e.getText()).toBe("/te");
+    expect(e.handleMouse(click(0, 1, 40, rows.length))).toMatchObject({ focus: true });
+    expect(e.getCursor()).toEqual({ line: 0, col: 0 });
     e.handleMouse(click(4, option, 40, rows.length));
     expect(e.getText()).toBe("/temp");
   });

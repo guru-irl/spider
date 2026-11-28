@@ -70,9 +70,17 @@ export async function readLayoutSelection(path: string): Promise<FileSnapshot & 
 export async function awaitSpiderSelection(path: string): Promise<void> {
   // Herdr acknowledges layout.switch before its shared-store writer flushes.
   const deadline = Date.now() + 5000;
+  let invalid: HerdrError | undefined;
   do {
-    if ((await readLayoutSelection(path)).layout === SPIDER_LAYOUT) return;
+    try {
+      if ((await readLayoutSelection(path)).layout === SPIDER_LAYOUT) return;
+      invalid = undefined;
+    } catch (error) {
+      if (!(error instanceof HerdrError) || error.code !== 'invalid-layout-selection') throw error;
+      invalid = error;
+    }
     await new Promise(resolve => setTimeout(resolve, 25));
   } while (Date.now() < deadline);
+  if (invalid) throw invalid;
   throw new HerdrError('layout-selection-not-saved', `Herdr did not save ${SPIDER_LAYOUT} in ${path}. Check the active Herdr layout and retry.`);
 }

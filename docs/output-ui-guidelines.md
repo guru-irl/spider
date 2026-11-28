@@ -108,7 +108,7 @@ stay the same.
 | todoDone | ✓ U+2713 | 󰗡 U+F05E1 |
 | todoFailed | × U+00D7 | 󰅚 U+F015A |
 | todoPending | ○ U+25CB | 󰝦 U+F0766 |
-| gutter |   U+2514 |   U+2514, padded |
+| prompt | ❯ U+276F | ❯ U+276F |
 | task | → U+2192 | 󰘍 U+F060D |
 | result | ↑ U+2191 | 󰁜 U+F005C |
 | message | → U+2192 | 󰇰 U+F01F0 |

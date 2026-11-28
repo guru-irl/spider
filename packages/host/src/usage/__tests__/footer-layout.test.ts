@@ -287,7 +287,10 @@ describe("public usage footer component", () => {
         return stripTerminalSequences(row())[0];
       });
       // Every other of the 28 Weather Icons phases: 14 redraws a second instead of 28 (user, 2026-11-28).
-      expect(frames).toEqual(["\uE3E3", ...Array.from({ length: 13 }, (_, i) => String.fromCodePoint(0xE3C9 + 2 * i))]);
+      expect(frames).toEqual([
+        "\uE3E3", "\uE3E1", "\uE3DF", "\uE3DD", "\uE3DB", "\uE3D9", "\uE3D7",
+        "\uE3D5", "\uE3D3", "\uE3D1", "\uE3CF", "\uE3CD", "\uE3CB", "\uE3C9",
+      ]);
       expect(frames[7]).toBe("\uE3D5");
       vi.advanceTimersByTime(1000 - Date.now());
       expect(renders).toHaveBeenCalledTimes(14); // One redraw per frame; Pi rescans the transcript on each.

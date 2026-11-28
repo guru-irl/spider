@@ -320,7 +320,7 @@ export class AgentDetail implements Component {
     this.ensureLayout(view);
     const a = this.run;
     const turns = a?.stepCount === 1 ? "1 turn" : `${a?.stepCount ?? 0} turns`;
-    const model = a?.model ? shortModel(a.model) : "unknown";
+    const model = a?.model ? shortModel(a.model, this.theme.modelName) : "unknown";
     const elapsed = a?.startedAt === undefined ? 0 : (a.endedAt ?? this.now()) - a.startedAt;
     const instructions = (a?.task ?? "").trim().replace(/\s+/g, " ") || "No instructions";
     let costText = a?.costText;
@@ -329,7 +329,7 @@ export class AgentDetail implements Component {
     const role = a?.role ?? a?.agent;
     const roleLabel = role ? renderRoleAccent(this.theme, role, this.theme.italic?.(role) ?? role) : this.theme.fg("dim", "unknown");
     const header = [
-      this.theme.fg("dim", `${model} · `) + roleLabel + this.theme.fg("dim", ` · ${a?.thinking ?? "unknown"} · ${turns}`),
+      this.theme.fg("dim", `${model} · ${a?.thinking ?? "unknown"} · `) + roleLabel + this.theme.fg("dim", ` · ${turns}`),
       this.theme.fg("dim", `${formatRunUsage(a?.tokenCount ?? 0, a?.cost ?? 0, a?.compactionCount, costText)} · ${formatDuration(elapsed)}`),
       this.theme.fg("dim", `Run: ${this.runId}`),
       this.theme.fg("dim", `Instructions: ${instructions}`),

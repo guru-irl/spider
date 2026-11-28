@@ -110,7 +110,7 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
     input = {
       iconStyle: appearance.iconStyle,
       cwd: displayCwd(current.cwd), branch: null, statuses: new Map(), sessionName: pi.getSessionName() ?? null, inPane: appearance.inPane,
-      modelId: model?.id ?? null, thinking: model?.reasoning ? (pi.getThinkingLevel?.() ?? current.thinkingLevel ?? "off") : "off",
+      modelId: model?.id ?? null, modelName: model?.name?.trim() || null, thinking: model?.reasoning ? (pi.getThinkingLevel?.() ?? current.thinkingLevel ?? "off") : "off",
       context: current.getContextUsage() ?? { percent: 0, contextWindow: model?.contextWindow ?? 0 },
       subscription, totals: totals.snapshot(), monthlyBudget: settings.monthlyBudget, monthUsed: pace.used,
       calibration: settings.calibration === "off" ? calibrationFallback("off") : runtimeSnapshot.calibration ?? calibrationFallback(),

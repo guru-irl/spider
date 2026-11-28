@@ -53,6 +53,7 @@ export interface ThemeAdapter {
   glyph: string;
   iconStyle?: IconStyle;
   spiderGlyphs?: boolean;
+  modelName?(model: string): string | undefined;
   activityTint?(text: string, strength: number): string;
   roleTint?(hex: string, text: string, strength: number): string;
 }

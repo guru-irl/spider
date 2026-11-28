@@ -27,7 +27,7 @@ export function renderStats(s: StatsSummary, theme: ThemeAdapter, width: number,
       { header: "model" }, { header: "calls", align: "right" as const }, { header: "ok%", align: "right" as const },
       { header: "avgms", align: "right" as const }, { header: "tok", align: "right" as const },
     ];
-    let rows = s.models.map((m) => [m.model, String(m.calls), `${Math.round(m.okRate * 100)}`, String(m.avgMs), String(m.tokens)]);
+    let rows = s.models.map((m) => [theme.modelName?.(m.model)?.trim() || m.model, String(m.calls), `${Math.round(m.okRate * 100)}`, String(m.avgMs), String(m.tokens)]);
     if (transcript) {
       const metricsWidth = columns.slice(1).reduce((sum, column, index) =>
         sum + Math.max(visibleWidth(column.header), ...rows.map(row => visibleWidth(row[index + 1]))), 0);

@@ -6,6 +6,8 @@ import { fixture, type FixtureOptions, type SetupFixture } from './herdr-setup-f
 // Keep actual app subprocess calls. Static reads need no Node startup, while
 // selections still use the same fake that writes settings and checks backups.
 // A null version leaves version queries to tests that change the fake's reply.
+// The static case answers --version, ls and commands before the fake's script
+// runs, so a test that edits those replies in the script must use fixture().
 export async function useStaticSetupApp(f: SetupFixture, version: '0.1.12' | '0.1.13' | '0.1.16' | null = '0.1.12'): Promise<SetupFixture> {
   const binary = f.request.config.app.binary;
   const wrapper = await readFile(binary, 'utf8');

@@ -23,7 +23,6 @@ import { inspectRoamPlacement } from "@spider/herdr/roam-placement";
 import { bootIdChanged, inspectIdLock, listPendingIdLocks, localBootId } from "@spider/herdr/sessions/id-lock";
 import { createSessionLeases } from "@spider/herdr/sessions/lease";
 import { readRelayObservation } from "@spider/intercom/broker/relay-observations";
-import { privateBroker } from "@spider/intercom/broker/roam-v0-client";
 import type { ProcessProbe } from "@spider/herdr/sessions/lease";
 import { parseBuildId } from "../../../scripts/build-id.mjs";
 import { loadConfig } from "./config";
@@ -532,12 +531,6 @@ export function localRelayDiagnostics(root: string, config: RoamConfig, nowMs: n
       : "intercom-relay-config-invalid: Inspect roam/intercom-v0.json, its configured sendTo routes, and the local agent directory." }];
   }
   if (routes.version !== 2) return [];
-  let brokerPresent: boolean | undefined;
-  function haveBroker() {
-    if (brokerPresent === undefined) try { brokerPresent = privateBroker(routes.agentDir) !== null; }
-    catch { brokerPresent = false; }
-    return brokerPresent;
-  }
   const known = [...routes.sendTo, ...routes.acceptFrom, ...config.peers];
   const age = (time: number) => `${Math.max(0, nowMs - time)}ms`;
   function link(direction: "in" | "out", id: string): Diagnostic {
@@ -548,8 +541,8 @@ export function localRelayDiagnostics(root: string, config: RoamConfig, nowMs: n
     const since = stale ? observed.expiresAtMs! : observed?.sinceMs ?? nowMs;
     const lastCall = observed?.lastCallMs == null ? "never" : age(observed.lastCallMs);
     const error = stale ? "poll-expired" : observed ? observed.lastError ?? "none"
-      : direction === "out" ? "service-missing" : haveBroker() ? "no-poll" : "broker-missing";
-    return { severity: state === "down" ? "warning" : "info", repairCommand: null,
+      : direction === "out" ? "service-missing" : "no-poll";
+    return { severity: state === "down" && (direction === "out" || observed !== null) ? "warning" : "info", repairCommand: null,
       reason: `intercom-link: ${alias} ${state}; state age ${age(since)}; last call age ${lastCall}; last error ${error}; messages carried ${observed?.messagesCarried ?? 0}` };
   }
   return [...routes.relays.filter(id => id !== config.machineId).map(id => link("in", id)), ...routes.linkTo.map(id => link("out", id))];

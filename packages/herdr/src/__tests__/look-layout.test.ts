@@ -25,15 +25,25 @@ describe('generated glass layout', () => {
     expect(buildGlassLayout(layout, { ...names, release: '0.1.18' }).cell_background_opacity).toBe(0);
   });
 
-  it('makes 0.1.18 popovers opaque without changing the glass surfaces', async () => {
+  it('gives 0.1.18 Settings an opaque popover without making the surface token opaque', async () => {
     const input = await source();
-    const current = buildGlassLayout(input, { ...names, release: '0.1.18' });
-    const previous = buildGlassLayout(input, { ...names, release: '0.1.16' });
-    expect(previous.colors).toMatchObject({ popover: '#161618f0', surface: '#161618f0' });
-    expect(current.colors).toEqual({ ...(previous.colors as object), popover: '#161618' });
-    expect(current.background).toBe(previous.background);
-    expect(current.children).toEqual(previous.children);
-    expect(current.window_blur).toBe(true);
+    expect(buildGlassLayout(input, { ...names, release: '0.1.16' }).colors).toMatchObject({ popover: '#161618f0', surface: '#161618f0' });
+    expect(buildGlassLayout(input, { ...names, release: '0.1.18' }).colors).toMatchObject({ popover: '#161618', surface: '#161618f0' });
+  });
+
+  it.each([true, false])('uses the 0.1.18 shared glass gradient and keeps pane outlines with blur=%s', async windowBlur => {
+    const input = JSON.parse(await readFile(new URL('./fixtures/herdr-0.1.18/layouts/main.json', import.meta.url), 'utf8'));
+    const result = buildGlassLayout(input, { ...names, release: '0.1.18', windowBlur });
+    expect.soft(result.window_blur).toBe(windowBlur ? true : undefined);
+    expect.soft(result.background).toEqual({ gradient: ['#18181ab3', '#22201eb3'], angle: 176 });
+    expect.soft(result.colors).toMatchObject({ background: '#00000000', canvas: '#00000000', chrome: '#00000000', hover: '#ffffff12', selected: '#ffffff14', raised: '#ffffff1c' });
+    expect.soft(result.terminal_opacity).toBe(0);
+    expect.soft(nodes(result).find(node => node.id === 'sidebar').background).toBe('#00000000');
+    expect.soft(nodes(result).find(node => node.id === 'tabs')).not.toHaveProperty('background');
+    const border = { width: 1, color: '#38383a' };
+    expect.soft(nodes(result).find(node => node.id === 'panel')).toMatchObject({ background: '#16161833', border });
+    expect.soft(nodes(result).find(node => node.content?.tab === 'active').content.pane)
+      .toMatchObject({ background: '#16161833', border, focus: { width: 1, color: 'accent' } });
   });
 
   it('defaults to neutral window blur only for 0.1.16 and retains readable translucent chrome', async () => {

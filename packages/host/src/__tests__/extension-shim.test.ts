@@ -88,6 +88,7 @@ it("passes pi's renderer and spacing classes and clipboard into the native bundl
 it("forwards the active host exports for the transcript even without copy buttons", async () => {
   const f = fixture();
   const host = { CustomEditor: class CustomEditor {}, InteractiveMode: class InteractiveMode {}, UserMessageComponent: class UserMessageComponent {},
+    AssistantMessageComponent: f.context.piHost.AssistantMessageComponent,
     CustomMessageComponent: class CustomMessageComponent {}, ToolExecutionComponent: f.context.piHost.ToolExecutionComponent,
     CompactionSummaryMessageComponent: class CompactionSummaryMessageComponent {},
     BranchSummaryMessageComponent: class BranchSummaryMessageComponent {},

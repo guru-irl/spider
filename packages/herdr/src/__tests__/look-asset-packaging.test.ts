@@ -9,6 +9,7 @@ it('packs the native, pane-enabled, and 0.1.18 look assets', () => {
   const required = [
     'packages/herdr/assets/look/spaces-a-sidebar/agents-0.1.18.json',
     'packages/herdr/assets/look/spaces-a-sidebar/spaces-0.1.18.json',
+    'packages/herdr/assets/look/spaces-a-sidebar/tabs-0.1.18.json',
     'packages/herdr/assets/look/spaces-a-goto/menu-0.1.18.json',
     'packages/herdr/assets/toast/main-0.1.18.js',
     'packages/herdr/assets/look/native-navigation-0.1.16.json',

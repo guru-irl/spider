@@ -5,6 +5,7 @@ import type { FooterTotals } from "./footer-state.js";
 import type { CalibrationResult } from "./dashboard-contract.js";
 import { calibrationFallback } from "./calibration.js";
 import { toAicDisplay } from "./aic-display.js";
+import { FOOTER_SNAPSHOT, type FooterSnapshot } from "./footer-snapshot.js";
 
 export type CounterSnapshotView = { creditsUsed: number; entitlement?: number; ts: number };
 export type CounterStateView = {
@@ -160,7 +161,7 @@ function stats(input: FooterInput, width: number, theme?: Theme): string {
       return theme.fg(percent > 90 ? "error" : "warning", item);
     }
     return theme.fg("dim", item);
-  }).join(" · ");
+  }).join(theme ? theme.fg("dim", " · ") : " · ");
 }
 
 function statsWithMoon(input: FooterInput, width: number, moon: string, theme?: Theme): string {
@@ -208,10 +209,11 @@ export function createUsageFooter(
   footerData: ReadonlyFooterDataProvider,
   requestRender: () => void,
   onDispose?: () => void,
-): Component & { refresh(): void; setWorking(since?: number): void; dispose(): void } {
+): Component & FooterSnapshot & { refresh(): void; setWorking(since?: number): void; dispose(): void } {
   let disposed = false, pending = false;
   let lastWidth: number | undefined;
   let lastLines: string[] | undefined;
+  let snapshot: string[] | undefined;
   let workingSince: number | undefined;
   let frameTimer: ReturnType<typeof setTimeout> | undefined;
   const elapsed = () => workingSince === undefined ? undefined : Math.max(0, Date.now() - workingSince);
@@ -254,8 +256,17 @@ export function createUsageFooter(
     },
     render(width) {
       lastWidth = width; pending = false;
-      return lastLines = linesAt(width);
+      const time = elapsed();
+      const data = { ...getInput(), branch: footerData.getGitBranch(), statuses: footerData.getExtensionStatuses() };
+      lastLines = render(data, width, theme, time);
+      snapshot = [...lastLines];
+      const moonRow = data.inPane ? 0 : 1;
+      const glyph = moonFrame(data.iconStyle ?? "text", time);
+      if (snapshot[moonRow] !== undefined) snapshot[moonRow] = snapshot[moonRow].replace(
+        theme.fg(time === undefined ? "dim" : "accent", glyph), theme.fg("dim", glyph));
+      return lastLines;
     },
+    [FOOTER_SNAPSHOT]: () => snapshot && [...snapshot],
     // Saved lines only gate refresh requests; every render uses live inputs, without history work.
     invalidate() {},
     dispose() {

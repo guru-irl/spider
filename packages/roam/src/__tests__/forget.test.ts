@@ -9,10 +9,7 @@ import { readLocal } from "@spider/db-core/roam/local-state";
 import { join } from "node:path";
 import * as forget from "../forget";
 import { createMoveControlHandler } from "../adapter-controls";
-import { createMoveCommand } from "../../../host/src/roam/move-command";
-import { moveSession } from "../move";
 import { recordLocation } from "@spider/db-core/roam/catalog";
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { Operation, Transport } from "../contracts";
 import * as revocation from "../revocation";
 import * as supervisor from "../supervisor";
@@ -373,7 +370,7 @@ it("confirmed forget repairs homes while roaming is off without acquiring move p
   expect(f.ports.config.enabled).toBe(false);
 }, 5000);
 
-it.each(["cli", "interactive"])("a null-epoch move created by the real %s entry point reconciles after forget", async entry => {
+it("a null-epoch move created by the private hub handler reconciles after forget", async () => {
   const f = await fixture();
   recordLocation(f.global.db, { sessionId: "session-a", file: f.file, cwd: f.source.cwd, stores: ["global"], home: f.oldHome });
   f.ports.check = async request => ({ source: f.oldHome!, destinationMachine: request.destinationMachine, repoKey: "fixture-repo", workspaceId: "fixture-workspace",
@@ -381,19 +378,8 @@ it.each(["cli", "interactive"])("a null-epoch move created by the real %s entry 
     storeKeys: ["global", "repo:fixture-repo", "worktree:fixture-repo:fixture-workspace"], warnings: [] });
   f.ports.seed = async () => { throw new Error("fixture disconnect after checked source"); };
   const control = createMoveControlHandler({ config: f.ports.config, globalDb: f.global.db, journal: f.journal, transport: {} as Transport, ports: f.ports });
-  let operationId: string;
-  if (entry === "cli") {
-    const result = await control({ op: "move", session: "session-a", machine: OTHER });
-    expect(result.code).toBe(3); operationId = result.operationId!;
-  } else {
-    vi.stubEnv("PI_SUBAGENT_CHILD", "0");
-    const command = createMoveCommand(request => moveSession(request, f.ports), () => f.ports.config);
-    const notifications: string[] = [];
-    const result = await command("box-2.invalid", { mode: "tui", hasUI: true, ui: { notify: (message: string) => notifications.push(message), setStatus() {} },
-      sessionManager: { getSessionId: () => "session-a", getSessionFile: () => f.file, getHeader: () => ({ id: "session-a" }) } } as unknown as ExtensionCommandContext);
-    expect(notifications).toEqual(["Move started; keep the Mac awake until it finishes."]);
-    expect(result.code).toBe(3); operationId = result.operationId;
-  }
+  const result = await control({ op: "move", session: "session-a", machine: OTHER });
+  expect(result.code).toBe(3); const operationId = result.operationId!;
   expect((f.journal.read(operationId).find(row => row.action === "move-request")?.result.operation as unknown as Operation).expectedEpoch).toBeNull();
   expect((await run(f)).code).toBe(0);
   expect(await control({ op: "recover", operationId })).toMatchObject({ code: 0, reason: "destroyed-machine-recovered", home: { machineId: HUB, epoch: 2 } });

@@ -96,7 +96,7 @@ test.each(['saved', 'live'])('the %s viewer keeps an edit error outside the edit
   const rows = view.render(64).map(row => plain([row]).trimEnd());
   const title = rows.findIndex(row => row.includes('edit guide.md'));
   expect(title).toBeGreaterThanOrEqual(0);
-  expect(rows.slice(title, title + 4)).toEqual([' edit guide.md', '', '', ' Could not edit guide.md']);
+  expect(rows.slice(title, title + 4)).toEqual([' edit guide.md', '▀'.repeat(64), '', ' Could not edit guide.md']);
 });
 
 test('the live viewer renders a pending edit with one cell of padding', () => {

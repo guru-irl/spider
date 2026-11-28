@@ -653,6 +653,8 @@ export async function validateFiles(files: readonly InstallFile[], journal: Setu
       throw new HerdrError('duplicate-install-path', `Repeated target: ${f.path}`);
     seen.add(f.path);
     const current = await snapshot(f.path);
+    if (f.observedTargetHash !== undefined && current.hash !== f.observedTargetHash)
+      throw new HerdrError('concurrent-settings-edit', `Changed after staging: ${f.path}`);
     if (f.copyFrom) { actions.push({ path: f.path, action: current.bytes === null ? 'write' : 'unchanged' }); continue; }
     const prior = journal.entries.find(e => e.path === f.path);
     const identical = current.hash === digest(f.bytes);

@@ -24,6 +24,7 @@ import {
 
 import { SUMMARY_SECTION_NAMES, readCompactionConfig } from './config.js';
 import { legacyCompactionPath, legacyCompactionWarning } from './legacy.js';
+import { modelName } from '../model-name.js';
 
 function warn(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
@@ -501,7 +502,8 @@ export function registerCompaction(pi: ExtensionAPI, deps: CompactionDeps): void
       // recomputes file lists from its own preparation and drops our earlier capped
       // lists because it ignores hook file details. Accepted: preserving them needs a pi change.
       const reason = error instanceof Error ? error.message : String(error);
-      const message = `spider-compaction: ${SUMMARY_MODEL} summary failed (${reason}); using default compaction`;
+      const label = modelName(ctx.modelRegistry, SUMMARY_MODEL) ?? SUMMARY_MODEL;
+      const message = `spider-compaction: ${label} summary failed (${reason}); using default compaction`;
       if (ctx.hasUI) ctx.ui.notify(message, "warning");
       else warn(message.replace(/^spider-compaction: /, ""));
       return;
@@ -523,9 +525,11 @@ export function registerCompaction(pi: ExtensionAPI, deps: CompactionDeps): void
     if (inactive(ctx)) return;
 
     compacting = true;
+    const registry = ctx.modelRegistry;
+    const sessionLabel = modelName(registry, `${model.provider}/${model.id}`) ?? model.id;
     if (ctx.hasUI) {
       ctx.ui.notify(
-        `Auto-compacting ${model.id} at ${usage.percent.toFixed(1)}% (threshold ${threshold}%)`,
+        `Auto-compacting ${sessionLabel} at ${usage.percent.toFixed(1)}% (threshold ${threshold}%)`,
         "info",
       );
     }
@@ -543,7 +547,9 @@ export function registerCompaction(pi: ExtensionAPI, deps: CompactionDeps): void
         compacting = false;
         const details = result.details as { summaryModel?: unknown } | undefined;
         const summarizer = typeof details?.summaryModel === "string" ? details.summaryModel : undefined;
-        const label = summarizer ? `summary by ${summarizer.slice(summarizer.indexOf("/") + 1)}` : model.id;
+        const label = summarizer
+          ? `summary by ${modelName(registry, summarizer) ?? summarizer.slice(summarizer.indexOf("/") + 1)}`
+          : sessionLabel;
         notifyLater(`Compaction complete (${label})`, "info");
       },
       onError: (error) => {

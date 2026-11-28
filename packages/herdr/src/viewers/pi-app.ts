@@ -8,7 +8,8 @@ import {
   SettingsManager, SkillInvocationMessageComponent, ToolExecutionComponent, UserMessageComponent,
   getMarkdownTheme, getSelectListTheme, initTheme, parseSkillBlock, sessionEntryToContextMessages, type Theme,
 } from '@earendil-works/pi-coding-agent';
-import { Container, Editor, Spacer, Text, TruncatedText, truncateToWidth, visibleWidth, type Component, type TUI } from '@earendil-works/pi-tui';
+import { Box, Container, Editor, Spacer, Text, TruncatedText, truncateToWidth, visibleWidth, type Component, type TUI } from '@earendil-works/pi-tui';
+import { bindToolCardShell, isHalfEdge, joinToolCards } from '@spider/ui';
 import { renderSpiderCall, renderSpiderResult } from '../../../host/src/render-result.js';
 import { restoreExecDetails } from '../../../host/src/exec-session-storage.js';
 import type { SteerReply, RunViewInfo } from '../contracts.js';
@@ -107,6 +108,11 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
   const ui = options.ui;
 
   const chat = new Container(); const pending = new Container(); const editorSlot = new Container();
+  const renderChat = chat.render;
+  chat.render = function (width) {
+    const rows = renderChat.call(this, width);
+    return joinToolCards(this, rows, width, child => child instanceof ToolExecutionComponent, isHalfEdge);
+  };
   const hiddenNotice = new Text('', 1, 0); let hidden = 0;
   const tools = new Map<string, ToolExecutionComponent>();
   const streaming = new Map<string, AssistantMessageComponent>();
@@ -141,10 +147,20 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
     }
     if (removed) hiddenNotice.setText(theme.fg('dim', `Earlier messages are not shown (${hidden} hidden).`));
   }
+  const padded = (value: unknown): value is Component => {
+    if (!(value instanceof Box) && !(value instanceof Text)) return false;
+    const shell = value as unknown as { paddingY: unknown; paddingX: unknown };
+    return shell.paddingY === 1 && typeof shell.paddingX === 'number';
+  };
   const toolComponent = (id: string, name: string, args: unknown): ToolExecutionComponent => {
     let component = tools.get(id);
     if (!component) {
       component = new ToolExecutionComponent(name, id, args, toolOptions, definition(name) as never, ui, cwd ?? process.cwd());
+      const render = component.render;
+      component.render = function (width) {
+        bindToolCardShell(this, padded, () => true);
+        return render.call(this, width);
+      };
       component.setExpanded(expanded);
       tools.set(id, component); add(component);
     }

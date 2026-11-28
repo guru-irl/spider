@@ -13,7 +13,7 @@ import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { mountedFixture } from './herdr-wiring-fixture.js';
 
-afterEach(() => { clearActions(); vi.unstubAllEnvs(); vi.resetModules(); });
+afterEach(() => { clearActions(); vi.unstubAllEnvs(); vi.restoreAllMocks(); vi.resetModules(); });
 
 it.each(['argument', 'effective', 'default'] as const)('prints a shell-safe setup hint for the %s config without launching a session', async selection => {
   vi.stubEnv('PI_SUBAGENT_CHILD', '1');
@@ -76,7 +76,9 @@ it.each(['explicit', 'standard'] as const)('starts the production session feed f
   const { writeFile, mkdir, readFile } = await import('node:fs/promises');
   const { join } = await import('node:path');
   const { existsSync } = await import('node:fs');
-  const h = await createHostHerdrHarness('fake'); await h.start();
+  const h = await createHostHerdrHarness('fake');
+  const { installFastCoreTransport } = await import('./herdr-setup-fast-core.js');
+  installFastCoreTransport(h); await h.start();
   const { execFileSync } = await import('node:child_process');
   execFileSync('git', ['init', '-q', h.directories.local]);
   const hooks = new Map<string, Function[]>();

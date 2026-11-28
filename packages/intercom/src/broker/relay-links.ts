@@ -1,16 +1,15 @@
 import { brokerRelayObserver } from "./relay-observations.js";
 import { V0_INTERCOM_MS } from "../roam-v0.js";
 import {
-  RELAY_HOLD_MS, RELAY_MAX_LINKS, RELAY_MAX_SLOTS, RELAY_POLL_CALL_MS, RELAY_POLL_REMOTE_MS, RELAY_PROTOCOL_VERSION, RELAY_RESULT_RESERVE_MS,
+  RELAY_HANDOFF_MS, RELAY_HOLD_MS, RELAY_MAX_LINKS, RELAY_MAX_SLOTS, RELAY_POLL_CALL_MS, RELAY_POLL_REMOTE_MS, RELAY_PROTOCOL_VERSION, RELAY_RESULT_RESERVE_MS,
   relayReady, relayRefused, relayUnknown, type RelayLinkView, type RelayPoll, type RelayPollReply, type RelayReady,
   type RelayResult, type RelaySubmit,
 } from "../relay-protocol.js";
 
-const HAND_OFF_MS = 2000;
 const LIVENESS_GRACE_MS = 10_000;
 type Hold = RelayPoll["holdMs"];
 type ReadyCode = Extract<RelayReady, { ok: false }>["code"];
-type WaitFailure = "unreachable" | "relay-stopping";
+type WaitFailure = "handoff-expired" | "relay-stopping";
 
 export interface RelayClock {
   /** Monotonic milliseconds, used only for elapsed-time comparisons. */
@@ -69,12 +68,12 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
     link.grace?.cancel();
     link.grace = null;
   }
-  function down(link: Link, error: string, sinceMs = clock.wallNow(), failure: WaitFailure = "unreachable"): void {
+  function down(link: Link, error: string, sinceMs = clock.wallNow()): void {
     if (link.view.state === "down") return;
     link.view = { ...link.view, state: "down", sinceMs, lastError: error };
     clearGrace(link);
     for (const call of link.calls.values()) call.cancel();
-    for (const pending of link.pending.values()) pending?.fail(failure);
+    for (const pending of link.pending.values()) pending?.fail("relay-stopping");
     link.pending.clear();
     record(link);
     observe?.(link.view);
@@ -93,7 +92,7 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
   function expire(pending: Pending, now: number): boolean {
     const until = pending.stage.kind === "waiting" ? pending.stage.untilMs : pending.deadlineMs;
     if (now < until) return false;
-    pending.fail("unreachable");
+    pending.fail("handoff-expired");
     return true;
   }
   function claim(link: Link): RelaySubmit[] {
@@ -211,8 +210,8 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
     if (closed) return Promise.resolve(relayRefused(id, "relay-stopping"));
     const link = relays.get(relayId)?.current;
     if (link) refresh(link);
-    if (!link || link.view.state !== "up" || signal?.aborted || remainingMs <= RELAY_RESULT_RESERVE_MS)
-      return Promise.resolve(relayRefused(id, "unreachable"));
+    if (!link || link.view.state !== "up" || signal?.aborted) return Promise.resolve(relayRefused(id, "relay-stopping"));
+    if (remainingMs <= RELAY_RESULT_RESERVE_MS) return Promise.resolve(relayRefused(id, "handoff-expired"));
     const now = clock.now();
     for (const pending of link.pending.values()) if (pending) expire(pending, now);
     if (link.pending.has(id)) return Promise.resolve(relayRefused(id, "invalid"));
@@ -222,8 +221,8 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
       let cancelTimer = () => {};
       const deadlineMs = now + Math.min(remainingMs, V0_INTERCOM_MS);
       // Leave time to return a proved refusal over the private socket.
-      const untilMs = Math.min(now + HAND_OFF_MS, deadlineMs - RELAY_RESULT_RESERVE_MS);
-      const abort = () => pending.fail("unreachable");
+      const untilMs = Math.min(now + RELAY_HANDOFF_MS, deadlineMs - RELAY_RESULT_RESERVE_MS);
+      const abort = () => pending.fail("relay-stopping");
       const pending: Pending = {
         stage: { kind: "waiting", submit, untilMs }, deadlineMs,
         finish(result) {
@@ -242,7 +241,7 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
         },
         arm(until) {
           cancelTimer();
-          cancelTimer = clock.later(Math.max(0, Math.ceil(until - clock.now())), () => pending.fail("unreachable"));
+          cancelTimer = clock.later(Math.max(0, Math.ceil(until - clock.now())), () => pending.fail("handoff-expired"));
         },
       };
       link.pending.set(id, pending);
@@ -260,7 +259,7 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
     },
     close() {
       closed = true;
-      for (const { current } of relays.values()) down(current, "relay-stopping", clock.wallNow(), "relay-stopping");
+      for (const { current } of relays.values()) down(current, "relay-stopping");
     },
   };
 }

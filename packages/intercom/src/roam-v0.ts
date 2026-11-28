@@ -6,6 +6,7 @@ import type { RelayTarget } from "./relay-protocol.js";
 export const V0_INTERCOM_BYTES: number = 256 * 1024;
 export const V0_TEXT_BYTES: number = V0_INTERCOM_BYTES - 8 * 1024;
 export const V0_INTERCOM_MS = 20_000;
+export const V0_INTERCOM_POST_CHECK_MS = 2000;
 export const V0_ASK_MAX_MS: number = 9 * 60_000;
 export const V0_INTERCOM_FEATURE = "roam-intercom-v0";
 
@@ -61,7 +62,7 @@ export type V0RelayAskBrokerRequest = { type: "roam_v0_relay_ask"; requestId: st
 export type V0AgentReply = { version: 1; requestId: string; machineId: string } & V0Reply;
 export type V0BrokerRequest = { type: "roam_v0"; requestId: string } & V0BrokerOp;
 export type V0BrokerReply = { type: "roam_v0_result"; requestId: string } & V0Reply;
-export type V0RouteRefusal = V0Code | "no-relay" | "relay-unreachable" | "relay-busy";
+export type V0RouteRefusal = V0Code | "no-relay" | "relay-unreachable" | "relay-busy" | "ask-timeout-too-short";
 export interface V0RouteDetails {
   path?: "local" | "direct" | `relay ${string}`;
   targetMachine?: string;

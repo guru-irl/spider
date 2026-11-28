@@ -2,12 +2,12 @@ name: selection map
 
 on:
   push:
-    branches: [main]
+    branches: [ci/selection-record-trace]
   workflow_dispatch:
 
 concurrency:
   group: selection-map-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -37,7 +37,7 @@ jobs:
         run: mkdir -p "$PWD/.spider/scratch/tmp" "$SELECTION_WORK/raw" "$SELECTION_WORK/maps" "$SELECTION_WORK/results"
 
       - name: Install SQLite CLI
-        run: sudo apt-get update && sudo apt-get install -y sqlite3
+        run: sudo apt-get update && sudo apt-get install -y sqlite3 strace
 
       - name: Install and build with source maps
         env:
@@ -73,6 +73,7 @@ jobs:
         run: |
           code=0
           bash scripts/selection/with-recorder.sh "$SELECTION_WORK/raw" \
+            strace -f -qq -e trace=execve,execveat,open,openat,openat2 -s 256 -o "$SELECTION_WORK/trace.log" \
             npx vitest run --shard=${{ matrix.shard }}/6 --maxWorkers=2 \
             --reporter=default --reporter=json --outputFile="$SELECTION_WORK/vitest.json" || code=$?
           if [ "$code" -ne 0 ]; then
@@ -100,45 +101,15 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  selection-map:
-    name: selection map
-    needs: record
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '26.4.0'
-
-      - name: Download shard records
-        uses: actions/download-artifact@v4
-        with:
-          pattern: selection-records-*
-          path: .spider/scratch/selection/records
-          merge-multiple: true
-
-      - name: Build and verify selection-map.json
+      - name: Save trace and raw process records
         if: always()
-        env:
-          RECORD_RESULT: ${{ needs.record.result }}
-        run: |
-          records=.spider/scratch/selection/records
-          node scripts/selection/map.mjs selection-map.json "$records/inventory.json" "$records"/record-{1..6}.json
-          test "$RECORD_RESULT" = success
-
-      - name: Build scoreboard
-        run: |
-          node scripts/selection/scoreboard.mjs selection-map.json > scoreboard.md
-          cat scoreboard.md >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Publish selection map
         uses: actions/upload-artifact@v4
         with:
-          name: selection-map
+          name: selection-process-trace
           path: |
-            selection-map.json
-            scoreboard.md
-          if-no-files-found: error
-          retention-days: 30
+            ${{ env.SELECTION_WORK }}/trace.log
+            ${{ env.SELECTION_WORK }}/raw/*.json
+            ${{ env.SELECTION_WORK }}/raw/launches.ndjson
+          include-hidden-files: true
+          retention-days: 7
+

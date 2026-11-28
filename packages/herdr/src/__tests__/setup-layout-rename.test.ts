@@ -65,6 +65,7 @@ async function fixture() {
       stdout: () => {}, stderr: text => errors.push(text),
     });
     expect(result, errors.join('')).toBe(0);
+    return errors.join('');
   };
   return { request, parts, doctor, layouts, legacy, spider, shared, checkpoint, journalPath, selections, upgrade, rollback,
     undo: () => rollback(['--undo-upgrade']) };
@@ -116,6 +117,24 @@ test('an unrelated shared-state write during setup does not block the migration'
   expect(JSON.parse(await readFile(f.shared, 'utf8'))).toEqual({ layout: 'Spider', 'user.mod': 'changed during setup' });
 });
 
+test('setup waits through a partial shared-state read during selection', async () => {
+  const f = await fixture(); await f.upgrade('spider-glass');
+  const partial = '{"layout":';
+  f.parts.selectApp = async () => { await writeFile(f.shared, partial); };
+  const readSnapshot = setupBackup.snapshot;
+  const read = vi.spyOn(setupBackup, 'snapshot').mockImplementation(async path => {
+    const saved = await readSnapshot(path);
+    if (path === f.shared && saved.bytes?.toString() === partial) {
+      await writeFile(f.shared, '{"layout":"Spider","user.mod":"keep"}');
+    }
+    return saved;
+  });
+  try { await setupHerdr(f.request, f.parts); }
+  finally { read.mockRestore(); }
+  expect(await readdir(f.layouts)).toEqual(['Spider.json']);
+  expect(JSON.parse(await readFile(f.shared, 'utf8'))).toEqual({ layout: 'Spider', 'user.mod': 'keep' });
+});
+
 test('upgrade and its repeat keep a different layout selected', async () => {
   const f = await fixture(); await f.upgrade('personal');
   const before = await readFile(f.shared);
@@ -154,7 +173,7 @@ test('rollback --undo-upgrade restores the old file, exact bytes and mode, and p
   expect(await readdir(f.layouts)).toEqual(['Spider.json']);
   // Another mod owns this key and may write it even between setup and undo.
   await writeFile(f.shared, JSON.stringify({ ...JSON.parse(await readFile(f.shared, 'utf8')), 'later.mod': 3 }));
-  await f.undo();
+  expect(await f.undo()).toContain('If Herdr is open, select spider-glass in the layout picker.');
   expect(await readdir(f.layouts)).toEqual(['spider-glass.json']);
   expect(await readFile(f.legacy)).toEqual(oldLook);
   expect((await stat(f.legacy)).mode & 0o777).toBe(0o644);
@@ -185,7 +204,8 @@ test.each(['undo', 'rollback'] as const)('%s restores the exact edited layout af
   const old = 'broken layout\n'; await writeFile(f.legacy, old); await chmod(f.legacy, 0o644);
   await setupHerdr({ ...f.request, replaceChanged: true }, f.parts);
   expect(await readdir(f.layouts)).toEqual(['Spider.json']);
-  await f[command]();
+  const warnings = await f[command]();
+  expect(warnings).not.toContain('layout picker'); // The personal layout was never switched.
   expect(await readdir(f.layouts)).toEqual(['spider-glass.json']);
   expect(await readFile(f.legacy, 'utf8')).toBe(old);
   expect((await stat(f.legacy)).mode & 0o777).toBe(0o644);

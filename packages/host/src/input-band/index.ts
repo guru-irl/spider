@@ -29,9 +29,9 @@ export function registerInputBand(pi: Pick<ExtensionAPI, "on">, host: InputBandH
     if (!inputBand || typeof ctx.ui.getEditorComponent !== "function" || ctx.ui.getEditorComponent() !== undefined) return;
     const factory: NonNullable<Parameters<ExtensionUIContext["setEditorComponent"]>[0]> = (tui, theme, keys) => {
       const editor = new BandEditor(tui, theme, keys, () => ctx.ui.theme);
-      // On session switches Pi seeds its default editor before extensions bind.
-      // At first startup Pi instead seeds the band itself after binding.
-      if (event.reason === "resume" || event.reason === "fork") {
+      // On session switches (new, resume, fork) Pi seeds its default editor before extensions bind.
+      // At first startup Pi instead seeds the band itself after binding, and a reload keeps the shared history.
+      if (event.reason !== "startup" && event.reason !== "reload") {
         for (const entry of ctx.sessionManager.buildContextEntries()) {
           if (entry.type !== "message" || entry.message.role !== "user") continue;
           const { content } = entry.message;

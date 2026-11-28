@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
@@ -11,6 +11,9 @@ type Workflow = { on: Record<string, unknown>; permissions?: Record<string, stri
 const source = (name: string): string => readFileSync(join(process.cwd(), '.github/workflows', `${name}.yml`), 'utf8');
 const workflow = (name: string): Workflow => parse(source(name)) as Workflow;
 const step = (job: Job, name: string): Step => job.steps.find(item => item.name === name)!;
+const gitAt = (cwd: string, ...args: string[]): string => execFileSync('git', [
+  '-c', 'user.name=Workflow Fixture', '-c', 'user.email=workflow@example.invalid', '-c', 'commit.gpgsign=false', ...args,
+], { cwd, encoding: 'utf8' }).trim();
 
 describe('package installation contract', () => {
   it('skips the unbundled GPU runtime download in every workflow that installs packages', () => {
@@ -336,6 +339,48 @@ describe('CI acceptance contract', () => {
       expect(item.run ?? '').not.toMatch(/npm run (?:-s )?(?:test:e2e|test:herdr:e2e:ci)/);
       if (item.name !== 'Check workflow contract') expect(item.run ?? '').not.toContain('--config packages/herdr/e2e/vitest.config.ts');
     }
+  });
+
+  it('runs the named-input sweep on main pushes and for PR selection or policy changes', () => {
+    const main = step(workflow('ci').jobs.compile!, 'Check named test inputs');
+    expect(main?.run).toBe('node scripts/selection/sweep.mjs');
+    expect(main.if).toBe("github.event_name == 'push' && github.ref == 'refs/heads/main'");
+    const compile = workflow('pr').jobs.compile!;
+    const pr = step(compile, 'Check named test inputs');
+    expect(pr?.env?.BASE_SHA).toBe('${{ github.event.pull_request.base.sha }}');
+    expect(compile.steps.find(item => item.uses === 'actions/checkout@v4')?.with?.['fetch-depth']).toBe(0);
+
+    const scratch = join(process.cwd(), '.spider/scratch');
+    mkdirSync(scratch, { recursive: true });
+    const root = mkdtempSync(join(scratch, 'sweep-contract-'));
+    try {
+      mkdirSync(join(root, 'scripts/selection'), { recursive: true });
+      writeFileSync(join(root, 'scripts/selection/sweep.mjs'), 'console.log("ran named-input sweep"); process.exitCode = Number(process.env.SWEEP_EXIT);');
+      gitAt(root, 'init', '-q');
+      const commit = (): string => {
+        gitAt(root, 'add', '--', '.');
+        gitAt(root, 'commit', '-qm', 'Fixture change');
+        return gitAt(root, 'rev-parse', 'HEAD');
+      };
+      const run = (base: string, exit = '0') => spawnSync('bash', ['-e', '-o', 'pipefail', '-c', pr.run!], {
+        cwd: root, env: { ...process.env, BASE_SHA: base, SWEEP_EXIT: exit }, encoding: 'utf8',
+      });
+      const initial = commit();
+      writeFileSync(join(root, 'unrelated.txt'), 'unrelated');
+      const product = commit();
+      const unneeded = run(initial);
+      expect(unneeded.status, unneeded.stderr).toBe(0);
+      expect(unneeded.stdout).not.toContain('ran named-input sweep');
+      writeFileSync(join(root, 'scripts/test-resources.json'), '{}');
+      const policy = commit();
+      expect(run(product).stdout).toContain('ran named-input sweep');
+      expect(run(product, '17').status).toBe(17);
+      writeFileSync(join(root, 'scripts/selection/select.mjs'), 'export {};');
+      commit();
+      const selection = run(policy);
+      expect(selection.status, selection.stderr).toBe(0);
+      expect(selection.stdout).toContain('ran named-input sweep');
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it('sets explicit timeouts for every runner job', () => {

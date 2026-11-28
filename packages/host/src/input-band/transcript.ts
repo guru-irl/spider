@@ -1,7 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
-import { icon, joinToolCards, type IconStyle } from "@spider/ui";
-import { bindHalfBox, edgeInk, halfEdge, isImageRow, stripRow } from "./box.js";
+import { bindHalfBox, bindToolCardShell, edgeInk, halfEdge, icon, isHalfEdge, isImageRow, joinToolCards, stripRow, type IconStyle } from "@spider/ui";
 import type { InputBandHost } from "./index.js";
 import { formatMessageTime } from "../message-time.js";
 
@@ -61,20 +60,7 @@ export function installTranscriptBands(host: InputBandHost, options: Options): (
   }
   const tool = host.ToolExecutionComponent?.prototype;
   off.push(patch(tool, options, function (render, width) {
-    const box = field(this, "contentBox");
-    const text = field(this, "contentText");
-    const child = this.children?.[1];
-    let shell: unknown;
-    if (child === box) shell = box;
-    else if (child === field(this, "contentTextRegion") && field(child, "child") === text) shell = text;
-    else if (field(this, "toolName") === "edit" && field(field(this, "toolDefinition"), "renderShell") === "self"
-      && child === field(this, "selfRenderContainer")) {
-      // Native edit owns its shell; only its known, padded header Box is changed.
-      const call = field(this, "callRendererComponent");
-      const shellChildren = field(child, "children");
-      if (Array.isArray(shellChildren) && shellChildren.some(region => field(region, "child") === call)) shell = call;
-    }
-    if (padded(shell)) bindHalfBox(shell, () => active(tool) && field(shell, "paddingY") === 1);
+    bindToolCardShell(this, padded, () => active(tool));
     return render.call(this, width);
   }));
   // Pi's chat container owns the layout and its mouse hit map. Work on its
@@ -85,8 +71,7 @@ export function installTranscriptBands(host: InputBandHost, options: Options): (
     const rows = render.call(this, width);
     const Tool = host.ToolExecutionComponent;
     if (!Tool) return rows;
-    return joinToolCards(this, rows, width, child => child instanceof Tool,
-      (row, edge, columns) => stripTerminalSequences(row) === (edge === "top" ? "▄" : "▀").repeat(columns));
+    return joinToolCards(this, rows, width, child => child instanceof Tool, isHalfEdge);
   }));
   // Pi passes entry metadata on restore, but live components only receive text.
   // Its message_start event precedes the synchronous component construction.

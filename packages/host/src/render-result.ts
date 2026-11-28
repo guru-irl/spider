@@ -4,7 +4,7 @@
 // renderResult renders only the BODY. `options.expanded` reflects the in-chat Ctrl+O toggle;
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth, stripTerminalSequences, type Component as PiComponent } from "@earendil-works/pi-tui";
-import { icon, type Component, type IconStyle } from "@spider/ui";
+import { icon, reopenBackground, type Component, type IconStyle } from "@spider/ui";
 import { isAgentModelRole, cachedLines, formatRunUsage, renderErrorResult, renderExecCall, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, statusIcon, fitResultLines, cardDetailIndent, flushLeft, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
 import {
   renderRememberResult,
@@ -18,7 +18,6 @@ import type { ModelEntry } from "@spider/models";
 import { renderSkillList, renderSkillView, renderDistill, renderCurateResult, type DrainReport, type SkillRow } from "@spider/organism";
 import { UI_CONFIG_SCHEMA, modelThinkingDisplay } from "./ui-thinking";
 import { createHalfBox } from "./input-band/box.js";
-import { reopenBackground } from "./input-band/ansi.js";
 import { toToolResult } from "./result";
 import { makeRunCostFormatter } from "./run-credits";
 import { restoreExecDetails } from "./exec-session-storage";

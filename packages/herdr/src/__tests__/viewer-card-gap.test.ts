@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, test } from 'vitest';
 import { Container, Text, stripTerminalSequences, type TuiMouseEvent } from '@earendil-works/pi-tui';
+import { createEditToolDefinition } from '@earendil-works/pi-coding-agent';
 import { createPiRunView, type PiRunView } from '../viewers/pi-app.js';
 
 const views: PiRunView[] = [];
@@ -43,6 +44,24 @@ test.each([false, true])('adjacent viewer cards have chat half-edges with hidden
   }
 });
 
+test('generic fallback and native edit headers use half-edges', () => {
+  const nativeEdit = createEditToolDefinition('/work/project');
+  const view = createPiRunView({
+    ui: { requestRender() {} } as never, runName: 'test', ownerName: null, cwd: '/work/project', themeName: 'dark',
+    builtInRenderers: name => name === 'edit' ? { ...nativeEdit, renderShell: 'self' } : undefined,
+  });
+  views.push(view);
+  view.live({ type: 'tool_execution_start', toolCallId: 'generic', toolName: 'unknown', args: {} });
+  view.live({ type: 'tool_execution_end', toolCallId: 'generic', toolName: 'unknown', result: { content: [{ type: 'text', text: 'result' }] }, isError: false });
+  view.live({ type: 'tool_execution_start', toolCallId: 'edit', toolName: 'edit', args: { path: 'a.txt', edits: [{ oldText: 'old', newText: 'new' }] } });
+  const rows = plain(view.render(40));
+  const edit = rows.findIndex(row => row.includes('edit a.txt'));
+  expect(edit).toBeGreaterThan(1);
+  expect(rows[edit - 2]).toBe('▀'.repeat(40));
+  expect(rows[edit - 1]).toBe('▄'.repeat(40));
+  expect(rows[edit + 1]).toBe('▀'.repeat(40));
+});
+
 test('clicking the joined second card expands that card, not the first', () => {
   const view = viewer(true);
   const rows = plain(view.render(40));
@@ -63,7 +82,7 @@ test('visible non-tool content keeps its separator before the next tool', () => 
   const note = rows.findIndex(row => row.includes('Status update'));
   const third = rows.indexOf(' third');
   expect(note).toBeGreaterThanOrEqual(0);
-  expect(rows.slice(note + 1, third)).toEqual(['', '']);
+  expect(rows.slice(note + 1, third)).toEqual(['', '▄'.repeat(40)]);
 });
 
 test('a self-rendered tool without card edges keeps its separators', () => {
@@ -78,7 +97,7 @@ test('a self-rendered tool without card edges keeps its separators', () => {
   const rows = plain(view.render(40));
   const raw = rows.indexOf('raw output');
   expect(raw).toBeGreaterThanOrEqual(0);
-  expect(rows.slice(raw - 2, raw + 4)).toEqual(['', '', 'raw output', '', '', ' last']);
+  expect(rows.slice(raw - 2, raw + 4)).toEqual(['▀'.repeat(40), '', 'raw output', '', '▄'.repeat(40), ' last']);
 });
 
 test('joined cards forward child clicks at original coordinates and leave off-target clicks to Pi', () => {

@@ -1,7 +1,6 @@
 import type { CustomEditor, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type EditorTheme, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import { BAND_GLYPHS, icon } from "@spider/ui";
-import { foregroundFromBackground, reopenBackground } from "./ansi.js";
+import { BAND_GLYPHS, foregroundFromBackground, icon, reopenBackground } from "@spider/ui";
 
 type Edge = { original: string; hidden: number };
 const INSET = 2;

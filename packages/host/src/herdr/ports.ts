@@ -344,6 +344,8 @@ async function assetFiles(root: string): Promise<{ relative: string; bytes: Buff
 import { relativeImports, rewriteImportPrefix } from './imports.js';
 export { rewriteImportPrefix } from './imports.js';
 
+type StagedFile = Pick<InstallFile, 'path' | 'bytes' | 'mode' | 'terminalKeys' | 'keys' | 'observedTargetHash'>;
+
 const nativeKeyCandidates: Readonly<Record<string, KeySections>> = {
   '0.1.13': { terminal: { 'cmd-f': 'terminal.search' }, global: { 'cmd-m': 'window.minimize' } },
   '0.1.16': { terminal: { 'cmd-f': 'terminal.search', 'cmd-a': 'terminal.select_all' }, global: { 'cmd-m': 'window.minimize' } },
@@ -389,7 +391,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     ...auxiliaryModIds(selected).map(name => name.slice('spider-'.length)),
     ...(hasToast ? ['toast'] : []),
   ];
-  const filesFor = async (files: readonly { path: string; bytes: Buffer; mode?: number; terminalKeys?: Readonly<Record<string, string>>; keys?: KeySections }[], context: SetupContext): Promise<InstallFile[]> => Promise.all(files.map(async file => ({ ...file, expected: file.terminalKeys || file.keys ? (await snapshot(file.path)).hash : context.installed[file.path] ?? null, collision: file.terminalKeys || file.keys ? 'key' as const : 'clone' as const })));
+  const filesFor = async (files: readonly StagedFile[], context: SetupContext): Promise<InstallFile[]> => Promise.all(files.map(async file => ({ ...file, expected: file.terminalKeys || file.keys ? (await snapshot(file.path)).hash : context.installed[file.path] ?? null, collision: file.terminalKeys || file.keys ? 'key' as const : 'clone' as const })));
   const panelFiles = async (release?: string, paneEnabled = false) => {
     const assets = join(packageRoot, 'packages/herdr/assets');
     const files = await assetFiles(join(assets, 'mods/spider'));
@@ -684,7 +686,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       patched = await applyLookPatches(patched, { version: 1, upstreamVersion: appVersion, mods: { agents: notificationAgentPatches, spaces: [], pane: [], tabs: [] } });
     }
     const fonts = await prepareFonts(request.config.fonts ?? {}, { bundledRoot: join(assets, 'fonts'), readFile });
-    const files: { path: string; bytes: Buffer; mode?: number }[] = [];
+    const files: StagedFile[] = [];
     for (const kind of kinds) for (const [name, source] of Object.entries(patched[kind]!.files)) files.push({ path: join(request.config.app.home, 'mods', patched[kind]!.name, name), bytes: Buffer.from(name === 'mod.json' ? JSON.stringify({ ...JSON.parse(source), clonedFrom: patched[kind]!.clonedFrom, patchState: patched[kind]!.patchState }) : source) });
     for (const file of await assetFiles(join(assets, 'agents'))) if (file.relative !== 'children.js') files.push({ path: join(request.config.app.home, 'mods/spider-agents', file.relative), bytes: file.bytes });
     files.push({ path: join(request.config.app.home, 'mods/spider-agents/sound.js'), bytes: await readFile(join(assets, 'mods/spider/sound.js')) });
@@ -705,7 +707,18 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       }];
     }));
     const current = JSON.parse(await readFile(join(request.config.app.home, 'layouts/main.json'), 'utf8'));
-    files.push({ path: join(request.config.app.home, 'layouts/spider-glass.json'), bytes: Buffer.from(JSON.stringify(buildGlassLayout(current, { release: appVersion, menu: patched.menu?.name, windowBlur: request.config.look?.windowBlur, agents: 'spider-agents', spaces: 'spider-spaces', pane: 'spider-pane', tabs: 'spider-tabs', spider: 'spider-panel', chrome: 'spider-chrome', toast: toast.length ? 'spider-toast' : undefined, bodyFont: fonts.families.body, autoHideTabs: request.config.look?.autoHideTabs, props: { ...props, spider: props.panel } }), null, 2)) });
+    const layoutPath = join(request.config.app.home, 'layouts/spider-glass.json');
+    const installedLayout = await snapshot(layoutPath);
+    let previous: unknown;
+    if (installedLayout.bytes) {
+      try { previous = JSON.parse(installedLayout.bytes.toString('utf8')); }
+      catch (error) {
+        // A malformed layout has no value to carry forward. The replace guard still applies.
+        if (!(error instanceof SyntaxError)) throw error;
+      }
+    }
+    const layout = buildGlassLayout(current, { release: appVersion, menu: patched.menu?.name, windowBlur: request.config.look?.windowBlur, agents: 'spider-agents', spaces: 'spider-spaces', pane: 'spider-pane', tabs: 'spider-tabs', spider: 'spider-panel', chrome: 'spider-chrome', toast: toast.length ? 'spider-toast' : undefined, bodyFont: fonts.families.body, autoHideTabs: request.config.look?.autoHideTabs, props: { ...props, spider: props.panel } }, previous);
+    files.push({ path: layoutPath, bytes: Buffer.from(JSON.stringify(layout, null, 2)), observedTargetHash: installedLayout.hash });
     for (const font of fonts.files) files.push({ path: join(request.config.app.home, 'fonts', font.fileName), bytes: font.bytes });
     for (const copy of context.modProps.filter(copy => copy.props.modId !== 'spider-toast')) for (const name of ['feed.js', 'look.js', 'open-failure.js', 'presentations.js', ...(patches.crossMachine && ['spider-agents', 'spider-panel', 'spider-picker'].includes(copy.props.modId) ? ['pane-service-state.js'] : [])]) files.push({ path: join(copy.directory, 'shared', name), bytes: await readFile(join(assets, 'shared', name)) });
     const mods = join(request.config.app.home, 'mods');

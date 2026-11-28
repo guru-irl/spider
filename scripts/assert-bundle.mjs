@@ -173,6 +173,7 @@ try {
     'picker/main.js', 'picker/mod.json', 'picker/NOTICE', 'mods/spider/sound.js', 'toast/main.js', 'toast/main-0.1.18.js', 'toast/mod.json', 'toast/filter.js', 'toast/NOTICE',
     'look/spaces-a-sidebar/agents-0.1.13.json', 'look/spaces-a-sidebar/agents-0.1.16.json', 'look/spaces-a-sidebar/agents-0.1.18.json',
     'look/spaces-a-sidebar/spaces-0.1.13.json', 'look/spaces-a-sidebar/spaces-0.1.16.json', 'look/spaces-a-sidebar/spaces-0.1.18.json',
+    'look/spaces-a-sidebar/tabs-0.1.18.json',
     'look/spaces-a-goto/menu-0.1.13.json', 'look/spaces-a-goto/menu-0.1.16.json', 'look/spaces-a-goto/menu-0.1.18.json',
     'look/native-navigation-0.1.16.json', 'look/native-panel-0.1.16.json', 'look/native-picker-0.1.16.json',
     'look/pane-navigation-b.json', 'look/pane-panel-b.json', 'look/pane-picker-b.json', 'shared/pane-service-state.js',

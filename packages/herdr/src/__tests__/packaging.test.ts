@@ -50,16 +50,24 @@ beforeAll(() => {
 });
 afterAll(() => { rmSync(packedRoot, { recursive: true, force: true }); });
 
-function packageWithIdentity(sha: string): { directory: string; artifact: string } {
-  const directory = mkdtempSync(join(scratch, 'identity-'));
-  cpSync(join(packedRoot, 'package'), join(directory, 'package'), { recursive: true });
-  const extension = join(directory, 'package/dist/extension.js');
-  writeFileSync(extension, readFileSync(extension, 'utf8').replace(/SPIDER_BUILD_ID=(?:unknown|[0-9a-f]{7,40})(?:-dirty)?@/, `SPIDER_BUILD_ID=${sha}@`));
-  const stamp = `${extension}.ready`;
-  writeFileSync(stamp, readFileSync(stamp, 'utf8').replace(/SPIDER_BUILD_ID=(?:unknown|[0-9a-f]{7,40})(?:-dirty)?@/, `SPIDER_BUILD_ID=${sha}@`));
-  const artifact = join(directory, 'artifact.tgz');
-  execFileSync('tar', ['-czf', artifact, '-C', directory, 'package'], { env });
-  return { directory, artifact };
+const identityArtifacts = new Map<string, string>();
+function packageWithIdentity(sha: string, missingViewer = false): string {
+  const key = JSON.stringify([sha, missingViewer]);
+  const existing = identityArtifacts.get(key);
+  if (existing) return existing;
+  const directory = mkdtempSync(join(packedRoot, 'identity-'));
+  try {
+    cpSync(join(packedRoot, 'package'), join(directory, 'package'), { recursive: true });
+    const extension = join(directory, 'package/dist/extension.js');
+    for (const file of [extension, `${extension}.ready`]) {
+      writeFileSync(file, readFileSync(file, 'utf8').replace(/SPIDER_BUILD_ID=(?:unknown|[0-9a-f]{7,40})(?:-dirty)?@/, `SPIDER_BUILD_ID=${sha}@`));
+    }
+    if (missingViewer) rmSync(join(directory, 'package/dist/herdr/viewer.mjs'));
+    const artifact = join(directory, 'artifact.tgz');
+    execFileSync('tar', ['-czf', artifact, '-C', directory, 'package'], { env });
+    identityArtifacts.set(key, artifact);
+    return artifact;
+  } finally { rmSync(join(directory, 'package'), { recursive: true, force: true }); }
 }
 
 function publishCommands(): string {
@@ -192,23 +200,17 @@ describe.sequential('published Herdr artifact', () => {
   it.each(['clean commit', 'different commit', 'dirty build', 'unknown build'])('checks packed build identity: %s', kind => {
     const commit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
     const sha = kind === 'different commit' ? '0000000' : kind === 'dirty build' ? `${commit}-dirty` : kind === 'unknown build' ? 'unknown' : commit;
-    const copy = packageWithIdentity(sha);
-    try {
-      const result = spawnSync(process.execPath, ['scripts/assert-bundle.mjs', '--package', copy.artifact, '--commit', commit], { cwd: root, env, encoding: 'utf8', timeout: 30_000 });
-      expect(result.status, result.stderr).toBe(kind === 'clean commit' ? 0 : 1);
-      if (kind !== 'clean commit') expect(result.stderr).toContain('packed build identity does not match clean commit');
-    } finally { rmSync(copy.directory, { recursive: true, force: true }); }
+    const artifact = packageWithIdentity(sha);
+    const result = spawnSync(process.execPath, ['scripts/assert-bundle.mjs', '--package', artifact, '--commit', commit], { cwd: root, env, encoding: 'utf8', timeout: 30_000 });
+    expect(result.status, result.stderr).toBe(kind === 'clean commit' ? 0 : 1);
+    if (kind !== 'clean commit') expect(result.stderr).toContain('packed build identity does not match clean commit');
   });
 
   it.each(['clean commit', 'different commit', 'dirty build', 'missing runtime'])('publish verifies its exact tarball before uploading: %s', kind => {
     const commit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
-    const copy = packageWithIdentity(kind === 'different commit' ? '0000000' : kind === 'dirty build' ? `${commit}-dirty` : commit);
+    const artifact = packageWithIdentity(kind === 'different commit' ? '0000000' : kind === 'dirty build' ? `${commit}-dirty` : commit, kind === 'missing runtime');
+    const checkout = mkdtempSync(join(packedRoot, 'publish-'));
     try {
-      if (kind === 'missing runtime') {
-        rmSync(join(copy.directory, 'package/dist/herdr/viewer.mjs'));
-        execFileSync('tar', ['-czf', copy.artifact, '-C', copy.directory, 'package'], { env });
-      }
-      const checkout = join(copy.directory, 'publish');
       mkdirSync(join(checkout, 'scripts'), { recursive: true });
       mkdirSync(join(checkout, 'bin'), { recursive: true });
       for (const file of ['assert-bundle.mjs', 'build-id.mjs', 'check-package-files.cjs', 'check-roam-bundle.mjs']) cpSync(join(root, 'scripts', file), join(checkout, 'scripts', file));
@@ -226,12 +228,12 @@ if (args[0] === 'pack') {
 } else if (args[0] === 'publish' && args[1] && fs.existsSync(args[1])) event('publish', args[1]);
 else { console.error('Publish requires a checked tarball path'); process.exit(1); }\n`);
       chmodSync(npmPath, 0o755);
-      const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', publishCommands()], { cwd: checkout, env: { ...env, PATH: `${join(checkout, 'bin')}${delimiter}${process.env.PATH}`, PACK_RECORD: recorder, PACK_ARTIFACT: copy.artifact, PACK_FILES: JSON.stringify(files) }, encoding: 'utf8', timeout: 30_000 });
+      const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', publishCommands()], { cwd: checkout, env: { ...env, PATH: `${join(checkout, 'bin')}${delimiter}${process.env.PATH}`, PACK_RECORD: recorder, PACK_ARTIFACT: artifact, PACK_FILES: JSON.stringify(files) }, encoding: 'utf8', timeout: 30_000 });
       const events = existsSync(recorder) ? readFileSync(recorder, 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [];
       expect(result.status, result.stderr).toBe(kind === 'clean commit' ? 0 : 1);
       expect(events.map(event => event.kind)).toEqual(kind === 'clean commit' ? ['pack', 'publish'] : ['pack']);
       if (kind === 'clean commit') expect(events[1]).toEqual({ ...events[0], kind: 'publish' });
-    } finally { rmSync(copy.directory, { recursive: true, force: true }); }
+    } finally { rmSync(checkout, { recursive: true, force: true }); }
   });
 
   it('the standalone remote runtime runs without a workspace or dependencies', () => {

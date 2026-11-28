@@ -27,11 +27,11 @@ vi.mock("node:child_process", async importOriginal => {
 });
 const id="33333333-3333-4333-8333-333333333333" as SessionId;
 function stopFixture() {
- let now=0, exits=false, probes=0;
+ let now=0, exits=false, reclaimed=false, probes=0;
  const owner={identity:{pid:42,startIdentity:"pi-42"},bootId:"boot",pendingOperationId:null,pendingFile:null,pendingCoreId:null,operationId:null};
  const signals:number[]=[];
  const events:string[]=[];
- const io:LocalIO={inspect:async()=>exits?null:owner,probe:async()=>{probes++;return exits?{kind:"absent"}:{kind:"live",startIdentity:"pi-42",pi:true};},claimFree:async()=>{events.push("lock-free");},signal:async pid=>{signals.push(pid);events.push("signal");},shutdown:async()=>{events.push("shutdown");return false;},pause:async()=>{events.push("wait");now+=10;if(now>=20)exits=true;},terminals:async()=>exits?[]:[{terminal:"t",state:"live",pid:42,owned:true}],tree:async()=>({descendants:[],groups:[]}),groupBlockers:async()=>[],writerBlockers:async()=>[],launch:async()=>({terminal:"t"})};
+ const io:LocalIO={inspect:async()=>reclaimed?null:owner,probe:async()=>{probes++;return exits?{kind:"absent"}:{kind:"live",startIdentity:"pi-42",pi:true};},claimFree:async()=>{reclaimed=true;events.push("lock-free");},signal:async pid=>{signals.push(pid);events.push("signal");},shutdown:async()=>{events.push("shutdown");return false;},pause:async()=>{events.push("wait");now+=10;if(now>=20)exits=true;},terminals:async()=>exits?[]:[{terminal:"t",state:"live",pid:42,owned:true}],tree:async()=>({descendants:[],groups:[]}),groupBlockers:async()=>[],writerBlockers:async()=>[],launch:async()=>({terminal:"t"})};
  return {io,signals,events,clock:{now:()=>now,later:()=>()=>{}},owner,get probes(){return probes;}};
 }
 const fixtures: {close():void}[]=[];
@@ -160,7 +160,7 @@ describe("v0 real transfer",()=>{
   let stop: ReturnType<typeof stopLocalSession> | undefined;
   const run = f.destination.workspaceImport.run;
   f.destination.workspaceImport.run = async (cwd, argv, options) => {
-   if (argv.join(" ") === "git rev-parse --abbrev-ref HEAD") {
+   if (!stop && argv.join(" ") === "git rev-parse --abbrev-ref HEAD") {
     stop = stopLocalSession(id, null, stopIo, f.destination.clock, 30);
     await Promise.race([checking.promise, stop]);
    }
@@ -301,7 +301,6 @@ describe("v0 transfer stop boundary",()=>{
    if (exited) { f.events.push("root-absent"); return {kind: "absent"}; }
    return probe(pid);
   };
-  f.io.inspect = async () => exited ? null : f.owner;
   f.io.terminals = async () => exited ? [] : [{terminal: "t", state: "live", pid: 42, owned: true}];
   f.io.signal = async pid => {
    f.signals.push(pid);

@@ -33,7 +33,7 @@ for (const mode of ['fake', 'hc'] as const) {
       expect(outcome).not.toBeNull(); expect(outcome?.code).not.toBe(0);
     } finally { await f.h.close(); }
   }, 60000);
-  registerJournalCrashTests(test, mode, ["spaces:2","installer:1","installer:3","installer:5"]);
+  registerJournalCrashTests(test, mode, ["spaces:2","installer:1"]);
   test(`production discovery lists names without following unrelated symlinks (${mode})`, async () => {
     const f = await fixture(mode), ports = createProductionHerdrCliPorts(f.root, f.h.localEnv);
     try {

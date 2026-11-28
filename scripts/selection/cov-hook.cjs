@@ -287,9 +287,15 @@ if (dir) {
       captureFsReads();
       globalThis[Symbol.for('spider.selection.bundle-inputs')] = ids => {
         record('build');
-        for (const file of ids) {
-          if (isAbsolute(file) && isRepoInput(file) && existsSync(file)) recordRead(file);
+        const files = new Set();
+        for (const id of ids) {
+          if (!isAbsolute(id) || !isRepoInput(id)) continue;
+          const file = existsSync(id) ? id : id.split(/[?#]/, 1)[0];
+          if (!existsSync(file)) continue;
+          recordRead(file);
+          files.add(file);
         }
+        return [...files].sort();
       };
       setInterval(flush, 2_000).unref();
       process.on('exit', () => flush(true));

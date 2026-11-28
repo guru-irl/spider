@@ -519,6 +519,26 @@ test('records all inputs of an in-memory bundle even when no output script runs'
   assert.equal(record.ranBundle, true);
 });
 
+test('resolves a renamed in-memory fixture output run from dist', t => {
+  const paths = fixture(t);
+  const { root, raw } = paths;
+  writeFileSync(join(root, 'fixture-source.mjs'), 'export const original = 42;');
+  const result = runNode(['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import { writeFileSync } from 'node:fs';
+    import { buildViteFixture } from './scripts/test-bundle.ts';
+    const output = await buildViteFixture({ configFile: false, logLevel: 'silent',
+      build: { ssr: ${JSON.stringify(join(root, 'fixture-source.mjs'))}, write: false } });
+    const copied = ${JSON.stringify(join(root, 'dist/renamed.mjs'))};
+    writeFileSync(copied, output.output[0].code);
+    assert.equal((await import(copied)).original, 42);
+  `], { env: { ...recorderEnv(root, raw), SPIDER_SELECTION_BUNDLE_KEYS: '1:unmatched' } });
+  assert.equal(result.status, 0, result.stderr);
+  const record = reduceProbe(paths);
+  assert.deepEqual(record.unresolved, []);
+  assert.ok(record.reads.includes('fixture-source.mjs'));
+});
+
 test('an intentionally tiny Worker keeps recoverable OOM behavior', t => {
   const { root, raw } = fixture(t);
   const result = runNode(['--input-type=module', '-e', `

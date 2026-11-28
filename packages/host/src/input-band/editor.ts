@@ -9,6 +9,26 @@ const HISTORY_KEY = Symbol.for("spider.inputBand.history");
 const processState = globalThis as typeof globalThis & { [HISTORY_KEY]?: string[] };
 const history = processState[HISTORY_KEY] ??= []; // Oldest first, as when Pi replays a session.
 
+/** Draw the same strip for the editor and non-interactive content. */
+export function renderInputBand(theme: Theme, width: number, rows: string[], color: "accent" | "bashMode" = "accent",
+  hiddenTop = 0, hiddenBottom = 0): string[] | undefined {
+  const bg = theme.getBgAnsi("userMessageBg");
+  const fg = foregroundFromBackground(bg);
+  const inner = width - INSET;
+  if (!fg || inner < 3) return undefined;
+  const bar = theme.fg(color, BAND_GLYPHS.bar);
+  const bandRow = (text: string) => {
+    const line = truncateToWidth(text, inner, "");
+    const pad = " ".repeat(Math.max(0, inner - visibleWidth(line)));
+    return `${bar}${bg} ${reopenBackground(line, bg)}${pad}\x1b[49m`;
+  };
+  const edge = (top: boolean, hidden: number) => hidden > 0
+    ? bandRow(theme.fg("dim", `${icon("text", top ? "arrowUp" : "arrowDown")} ${hidden} more`))
+    : theme.fg(color, top ? BAND_GLYPHS.barTop : BAND_GLYPHS.barBottom)
+      + fg + (top ? BAND_GLYPHS.top : BAND_GLYPHS.bottom).repeat(width - 1) + "\x1b[39m";
+  return [edge(true, hiddenTop), ...rows.map(bandRow), edge(false, hiddenBottom)];
+}
+
 // The shim supplies the running Pi's class, not the native bundle's other copy.
 export function createBandEditor(Base: typeof CustomEditor): new (
   tui: TUI, theme: EditorTheme, keys: KeybindingsManager, readTheme: () => Theme,
@@ -83,18 +103,8 @@ export function createBandEditor(Base: typeof CustomEditor): new (
       this.menuRows = bottom + 1 < rows.length ? { start: bottom + 1, end: rows.length } : undefined;
 
       const color = this.getText().trimStart().startsWith("!") ? "bashMode" : "accent";
-      const bar = theme.fg(color, BAND_GLYPHS.bar);
-      const bandRow = (text: string) => {
-        const line = truncateToWidth(text, inner, "");
-        const pad = " ".repeat(Math.max(0, inner - visibleWidth(line)));
-        return `${bar}${bg} ${reopenBackground(line, bg)}${pad}\x1b[49m`;
-      };
-      const edge = (top: boolean, hidden: number) => hidden > 0
-        ? bandRow(theme.fg("dim", `${icon("text", top ? "arrowUp" : "arrowDown")} ${hidden} more`))
-        : theme.fg(color, top ? BAND_GLYPHS.barTop : BAND_GLYPHS.barBottom)
-          + fg + (top ? BAND_GLYPHS.top : BAND_GLYPHS.bottom).repeat(width - 1) + "\x1b[39m";
-      return [edge(true, edges.top.hidden), ...rows.slice(1, bottom).map(bandRow), edge(false, edges.bottom.hidden),
-        ...rows.slice(bottom + 1).map(row => truncateToWidth("  " + row, width, ""))];
+      const band = renderInputBand(theme, width, rows.slice(1, bottom), color, edges.top.hidden, edges.bottom.hidden);
+      return [...band!, ...rows.slice(bottom + 1).map(row => truncateToWidth("  " + row, width, ""))];
     }
 
     override handleMouse(event: TuiMouseEvent) {

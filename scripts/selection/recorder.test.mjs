@@ -420,6 +420,99 @@ test('a native signal can kill a Node process blocked inside Atomics.wait', { sk
   assert.equal(result.status, 0, result.stderr);
 });
 
+function reduceProbe({ root, raw, maps, workspace }) {
+  writeFileSync(join(root, 'dist/reference.mjs'), 'export {};');
+  writeFileSync(join(maps, 'reference.mjs.map'), JSON.stringify({ version: 3, sources: [], names: [], mappings: '' }));
+  const reportFile = join(workspace, 'vitest.json');
+  writeFileSync(reportFile, JSON.stringify({ testResults: [{ name: join(root, id), status: 'passed', startTime: 0, endTime: 1 }] }));
+  return reduce({ root, rawDir: raw, mapsDir: maps, reportFile }).records[id];
+}
+
+test('keeps scripts loaded by an externally killed child and marks its record incomplete', { skip: process.platform === 'win32' }, t => {
+  const paths = fixture(t);
+  const { root, raw } = paths;
+  writeFileSync(join(root, 'dependency.mjs'), 'export const value = 42;');
+  writeFileSync(join(root, 'child.mjs'), `
+    import { value } from './dependency.mjs';
+    process.stdout.write(String(value));
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+  `);
+  const result = runNode(['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import { spawn } from 'node:child_process';
+    import { once } from 'node:events';
+    const child = spawn(process.execPath, ['child.mjs']);
+    const exited = once(child, 'close');
+    const [ready] = await once(child.stdout, 'data');
+    child.kill('SIGKILL');
+    assert.deepEqual(await exited, [null, 'SIGKILL']);
+    assert.equal(String(ready), '42');
+  `], { cwd: root, env: recorderEnv(root, raw), timeout: 5000 });
+  assert.equal(result.status, 0, result.stderr);
+  const record = reduceProbe(paths);
+  assert.deepEqual(record.reads, ['child.mjs', 'dependency.mjs']);
+  assert.equal(record.incomplete, true);
+  assert.equal(record.cpuMs, null);
+});
+
+test('records non-code file reads through Node fs APIs in a child with a replacement environment', t => {
+  const paths = fixture(t);
+  const { root, raw, workspace, installed } = paths;
+  for (const name of ['callback.json', 'handle.html', 'open.sql', 'openSync.txt', 'promise.css', 'stream.svg', 'sync.yaml', 'output.txt']) {
+    writeFileSync(join(root, name), name);
+  }
+  writeFileSync(join(workspace, 'outside.txt'), 'outside');
+  writeFileSync(join(installed, 'dependency.txt'), 'dependency');
+  writeFileSync(join(root, 'data-child.mjs'), `
+    import assert from 'node:assert/strict';
+    import { createReadStream, open, openSync, close, readFile, readFileSync, closeSync } from 'node:fs';
+    import { open as openPromise, readFile as readPromise } from 'node:fs/promises';
+    import { promisify } from 'node:util';
+    assert.equal(readFileSync(new URL('./sync.yaml', import.meta.url), 'utf8'), 'sync.yaml');
+    assert.equal(await promisify(readFile)(Buffer.from('callback.json'), 'utf8'), 'callback.json');
+    assert.equal(await readPromise('promise.css', 'utf8'), 'promise.css');
+    closeSync(await promisify(open)('open.sql', 'r'));
+    closeSync(openSync('openSync.txt', 'r'));
+    const handle = await openPromise('handle.html', 'r');
+    assert.equal(await handle.readFile('utf8'), 'handle.html');
+    await handle.close();
+    let body = '';
+    for await (const chunk of createReadStream('stream.svg')) body += chunk;
+    assert.equal(body, 'stream.svg');
+    closeSync(openSync('output.txt', 'w'));
+    readFileSync('../outside.txt');
+    readFileSync(${JSON.stringify(join(installed, 'dependency.txt'))});
+  `);
+  const result = runNode(['--input-type=module', '-e', `
+    import { execFileSync } from 'node:child_process';
+    execFileSync(process.execPath, ['data-child.mjs'], { env: {} });
+  `], { cwd: root, env: recorderEnv(root, raw) });
+  assert.equal(result.status, 0, result.stderr);
+  const record = reduceProbe(paths);
+  assert.deepEqual(record.reads, ['callback.json', 'data-child.mjs', 'handle.html', 'open.sql', 'openSync.txt',
+    'promise.css', 'stream.svg', 'sync.yaml']);
+  assert.equal(record.incomplete, false);
+});
+
+test('records all inputs of an in-memory bundle even when no output script runs', t => {
+  const paths = fixture(t);
+  const { root, raw } = paths;
+  writeFileSync(join(root, 'entry.mjs'), "import { unused } from './elided.mjs'; export const live = 42;");
+  writeFileSync(join(root, 'elided.mjs'), 'export const unused = 10;');
+  const result = runNode(['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import { build } from 'vite';
+    const output = await build({ configFile: false, logLevel: 'silent',
+      build: { ssr: ${JSON.stringify(join(root, 'entry.mjs'))}, write: false } });
+    assert.match(output.output[0].code, /live = 42/);
+    assert.doesNotMatch(output.output[0].code, /unused/);
+  `], { env: recorderEnv(root, raw) });
+  assert.equal(result.status, 0, result.stderr);
+  const record = reduceProbe(paths);
+  assert.deepEqual(record.reads, ['elided.mjs', 'entry.mjs']);
+  assert.equal(record.ranBundle, true);
+});
+
 test('an intentionally tiny Worker keeps recoverable OOM behavior', t => {
   const { root, raw } = fixture(t);
   const result = runNode(['--input-type=module', '-e', `

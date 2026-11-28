@@ -21,6 +21,15 @@ import { createRelocateAdapters } from "../relocate/adapters";
 import type { RelocateAdapterOptions, RelocateId, RelocatePlan, RunningHome } from "../relocate/types";
 import { createLocalIO, createLocalRuntime, probeLocalProcess, stopLocalSession, type LocalIO } from "../relocate/local";
 import type { SessionId } from "../relocate/types";
+const lockRead = vi.hoisted(() => ({after: undefined as undefined | ((path: string) => Promise<void>)}));
+vi.mock("@spider/herdr/sessions/registry", async importOriginal => {
+ const actual = await importOriginal<typeof import("@spider/herdr/sessions/registry")>();
+ return {...actual, async readPrivateJson(...args: Parameters<typeof actual.readPrivateJson>) {
+  const value = await actual.readPrivateJson(...args);
+  await lockRead.after?.(args[0]);
+  return value;
+ }};
+});
 vi.mock("node:child_process", async importOriginal => {
  const original = await importOriginal<typeof import("node:child_process")>();
  return {...original, execFileSync: vi.fn(original.execFileSync)};
@@ -35,7 +44,7 @@ function stopFixture() {
  return {io,signals,events,clock:{now:()=>now,later:()=>()=>{}},owner,get probes(){return probes;}};
 }
 const fixtures: {close():void}[]=[];
-afterEach(()=>{vi.restoreAllMocks();for(const f of fixtures.splice(0).reverse())f.close();});
+afterEach(()=>{lockRead.after=undefined;vi.restoreAllMocks();for(const f of fixtures.splice(0).reverse())f.close();});
 const hub="11111111-1111-4111-8111-111111111111",box="22222222-2222-4222-8222-222222222222";
 function transferFixture(linked=false) {
  const global=createReplica("global",hub),target=createReplica("global",box);fixtures.push(global,target);
@@ -296,6 +305,34 @@ describe("local process probe", () => {
  });
 });
 describe("v0 transfer stop boundary",()=>{
+ it("finishes a move when Pi releases its ID lock during the first exit check", async () => {
+  const f = stopFixture();
+  const replica = createReplica("global", hub);
+  fixtures.push(replica);
+  const root = join(replica.root, "herdr");
+  const moving = {sessionId: id, machineId: hub, epoch: 2, state: "moving" as const, destination: box, moveId: "v0-lock-release" as RelocateId, updatedAt: 1};
+  const held = await claimIdLock(root, id, f.owner.identity, f.io.probe, {bootId: async () => f.owner.bootId});
+  let exited = false;
+  const liveProbe = f.io.probe;
+  f.io.inspect = () => inspectIdLock(root, id);
+  f.io.probe = pid => exited ? Promise.resolve({kind: "absent" as const}) : liveProbe(pid);
+  f.io.terminals = async () => exited ? [] : [{terminal: "t", state: "live", pid: 42, owned: true}];
+  f.io.claimFree = async () => { throw new Error("Pi already released its lock"); };
+  f.io.writerBlockers = vi.fn(async () => []);
+  f.io.signal = async pid => {
+   f.signals.push(pid);
+   lockRead.after = async path => {
+    if (!path.includes("/id-locks/")) return;
+    lockRead.after = undefined;
+    await held.release();
+    exited = true;
+   };
+  };
+  expect(await stopLocalSession(id, moving, f.io, f.clock, 30)).toEqual({ok: true, value: undefined});
+  expect(f.signals).toEqual([42]);
+  expect(f.io.writerBlockers).toHaveBeenCalledOnce();
+  expect(f.clock.now()).toBe(0);
+ });
  it("accepts pi exiting between its ownership check and signal", async () => {
   const f = stopFixture();
   const moving = {sessionId: id, machineId: hub, epoch: 2, state: "moving" as const, destination: box, moveId: "v0-test" as RelocateId, updatedAt: 1};

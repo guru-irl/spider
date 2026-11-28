@@ -6,10 +6,10 @@ import { isHerdrConnectivityFailure } from "@spider/herdr/client/availability";
 import { HerdrError } from "@spider/herdr/client/parse";
 import { requestV0Broker } from "@spider/intercom/broker/roam-v0-client";
 import { authorizeV0RelayReply, beginV0RelayAsk } from "@spider/intercom/broker/roam-relay-client";
-import { relayRefused, relayUnknown, type RelayResult, type RelaySubmit, type RelayTarget } from "@spider/intercom/relay-protocol";
+import { RELAY_ASK_MIN_MS, relayRefused, relayUnknown, type RelayResult, type RelaySubmit, type RelayTarget } from "@spider/intercom/relay-protocol";
 import {
   parseV0AgentReply, parseV0AgentRequest, parseV0RelayAgentRequest, v0BrokerOrigin, v0ExplicitName,
-  V0_ASK_MAX_MS, V0_INTERCOM_BYTES, V0_INTERCOM_MS,
+  V0_ASK_MAX_MS, V0_INTERCOM_BYTES, V0_INTERCOM_MS, V0_INTERCOM_POST_CHECK_MS as POST_CHECK_MS,
   type V0AgentReply, type V0AgentRequest, type V0Code, type V0Endpoint, type V0Prepare, type V0PrepareReply, type V0Refused,
   type V0RelayAgentRequest, type V0Reply, type V0RouteResult, type V0SendPlan, type V0Text,
 } from "@spider/intercom/roam-v0";
@@ -30,7 +30,6 @@ export interface V0IntercomDeps {
   transport?: (peers: readonly Peer[]) => Pick<Transport, "resolve" | "exec">;
 }
 
-const POST_CHECK_MS = 2000;
 const ASK_REPLY_RESERVE_MS = 10_000;
 const REMOTE_ASK_STARTUP_MS = 9500;
 
@@ -364,6 +363,7 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
       return { kind: "remote", label: `${encodeURIComponent(targetMachine)}/${encodeURIComponent(target.selector.value)}`,
         async ask(message, timeoutMs, abort) {
           if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) return refused("invalid");
+          if (timeoutMs < RELAY_ASK_MIN_MS) return { kind: "refused", code: "ask-timeout-too-short", targetMachine };
           const started = performance.now();
           const deadline = started + Math.min(timeoutMs, V0_ASK_MAX_MS);
           const deliveryDeadline = Math.min(deadline, started + V0_INTERCOM_MS);
@@ -389,7 +389,8 @@ export function createV0Intercom(root: string, deps: V0IntercomDeps = {}): {
     async function relayAsk(current: V0Routes, target: RelayTarget, message: V0Text, deadline: number, deliveryDeadline: number, abort?: AbortSignal): Promise<V0RouteResult> {
       const targetMachine = machineLabel(target.machineId);
       const timeoutMs = Math.floor(deadline - performance.now());
-      if (timeoutMs <= 0 || performance.now() >= deliveryDeadline || abort?.aborted) return { ...refused("unreachable"), targetMachine };
+      if (performance.now() >= deliveryDeadline || abort?.aborted) return { ...refused("unreachable"), targetMachine };
+      if (timeoutMs < RELAY_ASK_MIN_MS) return { kind: "refused", code: "ask-timeout-too-short", targetMachine };
       let waiter;
       try { waiter = await beginV0RelayAsk(current.agentDir, { from: sourceWire, target, askId: message.id, timeoutMs }, abort); }
       catch { return { ...refused("unreachable"), targetMachine }; }

@@ -16,6 +16,7 @@ import { getAskTimeoutMs, loadConfig, type IntercomConfig } from "./config.js";
 import { EXTENSION_BUS_FEATURE } from "./types.js";
 import type { Attachment, BrokerMessage, LocalSessionInfo, Message, MessageControl, MessageReceipt, MessageReceiptStatus, SessionInfo, SessionRegistration } from "./types.js";
 import { v0TextFits, V0_ASK_MAX_MS, V0_TEXT_BYTES, type V0Code, type V0RouteDetails, type V0RouteResult, type V0Text, type V0ToolOptions } from "./roam-v0.js";
+import { RELAY_ASK_MIN_MS } from "./relay-protocol.js";
 import {
   INTERCOM_EXTENSION_REGISTER_EVENT,
   INTERCOM_EXTENSION_REGISTRY_READY_EVENT,
@@ -74,7 +75,9 @@ function v0RouteRefusal(result: Extract<V0RouteResult, { kind: "refused" }>) {
   const { code, targetMachine } = result;
   const summary = code === "no-relay" ? "No relay is reachable. Nothing was queued."
     : code === "relay-unreachable" ? `${targetMachine ?? "The target machine"} is not reachable through any relay right now. Nothing was queued.`
-    : code === "relay-busy" ? "Relay busy. Nothing was queued." : V0_REFUSAL_TEXT[code];
+    : code === "relay-busy" ? "Relay busy. Nothing was queued."
+    : code === "ask-timeout-too-short" ? `The ask timeout is too short for a relay. At least ${RELAY_ASK_MIN_MS} ms must remain. Nothing was queued.`
+    : V0_REFUSAL_TEXT[code];
   return { content: [{ type: "text" as const, text: v0RouteText(summary, result) }],
     details: { error: true, code, ...v0RouteDetails(result) } };
 }

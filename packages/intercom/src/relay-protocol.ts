@@ -1,5 +1,5 @@
 import {
-  parseV0AgentRequest, parseV0BrokerReply, v0TextFits, V0_ASK_MAX_MS, V0_INTERCOM_BYTES, V0_INTERCOM_MS,
+  parseV0AgentRequest, parseV0BrokerReply, v0TextFits, V0_ASK_MAX_MS, V0_INTERCOM_BYTES, V0_INTERCOM_MS, V0_INTERCOM_POST_CHECK_MS,
   type V0AgentRequest, type V0Delivery, type V0Refused, type V0Selector, type V0Text,
 } from "./roam-v0.js";
 
@@ -7,7 +7,9 @@ export const RELAY_PROTOCOL_VERSION = 1;
 export const RELAY_HOLD_MS = 20_000;
 export const RELAY_POLL_REMOTE_MS = 25_000;
 export const RELAY_POLL_CALL_MS = 30_000;
+export const RELAY_HANDOFF_MS = 2000;
 export const RELAY_RESULT_RESERVE_MS = 250;
+export const RELAY_ASK_MIN_MS = RELAY_HANDOFF_MS + V0_INTERCOM_POST_CHECK_MS + 1;
 export const RELAY_POLL_MAX_BYTES: number = 18 * V0_INTERCOM_BYTES;
 export const RELAY_MAX_SLOTS = 16;
 // A 64 KiB config cannot name this many distinct UUIDs.
@@ -19,7 +21,9 @@ export interface RelayTarget { machineId: string; selector: V0Selector; homeEpoc
 export type RelaySubmit = { type: "submit"; from: V0AgentRequest["from"]; target: RelayTarget; message: V0Text } & (
   | { kind: "send" } | { kind: "ask"; timeoutMs: number } | { kind: "reply"; replyTo: string }
 );
-type RelayNotAttempted = V0Refused | { kind: "refused"; code: "relay-busy" | "relay-stopping" };
+const relayRefusalCodes = ["relay-busy", "relay-stopping", "handoff-expired", "ask-timeout-too-short"] as const;
+const relayRefusals: ReadonlySet<unknown> = new Set(relayRefusalCodes);
+type RelayNotAttempted = { kind: "refused"; code: V0Refused["code"] | typeof relayRefusalCodes[number] };
 export type RelayResult = { type: "result"; messageId: string } & (
   | { attempted: true; outcome: Extract<V0Delivery, { kind: "socket_delivered" | "refused" | "unknown" }> }
   | { attempted: false; outcome: RelayNotAttempted }
@@ -101,7 +105,7 @@ export function isRelayResult(value: unknown): value is RelayResult {
       typeof value.attempted !== "boolean" || !identifier(value.messageId) || !record(value.outcome)) return false;
   const { outcome, messageId, attempted } = value;
   if (outcome.kind === "refused" && fields(outcome, ["kind", "code"])) {
-    return (!attempted && (outcome.code === "relay-busy" || outcome.code === "relay-stopping")) ||
+    return (!attempted && relayRefusals.has(outcome.code)) ||
       parseV0BrokerReply({ type: "roam_v0_result", requestId: messageId, ...outcome }) !== null;
   }
   return attempted && fields(outcome, ["kind", "id"]) && outcome.id === messageId &&
@@ -166,7 +170,7 @@ export function correlatesRelayReady(ready: RelayReady, hello: RelayHello): bool
   return ready.machineId === hello.toMachineId && ready.linkId === hello.linkId && ready.pollId === hello.pollId;
 }
 export function relayRefused(messageId: string, code: RelayNotAttempted["code"]): RelayResult {
-  return { type: "result", messageId, attempted: false, outcome: { kind: "refused", code } as RelayNotAttempted };
+  return { type: "result", messageId, attempted: false, outcome: { kind: "refused", code } };
 }
 export function relayUnknown(messageId: string): RelayResult {
   return { type: "result", messageId, attempted: true, outcome: { kind: "unknown", id: messageId } };

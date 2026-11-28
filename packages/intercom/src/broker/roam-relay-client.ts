@@ -187,5 +187,7 @@ export async function submitV0Relay(agentDir: string, relayId: string, submit: R
       if (frame.type !== "roam_v0_relay_result" || !isRelayResult(frame.result) || frame.result.messageId !== messageId) throw invalid();
       return frame.result;
     });
-  return response.ok ? response.value : response.sent ? relayUnknown(messageId) : relayRefused(messageId, response.code);
+  if (response.ok) return response.value;
+  if (response.sent) return relayUnknown(messageId);
+  return relayRefused(messageId, response.code === "unreachable" ? "relay-stopping" : response.code);
 }

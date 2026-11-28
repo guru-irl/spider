@@ -40,6 +40,7 @@ export async function routeV0Relay(routes: V0Routes, localMachineId: string, tar
     let reason: Skip["reason"];
     switch (outcome.code) {
       case "relay-busy": reason = "busy"; break;
+      case "handoff-expired":
       case "relay-stopping": reason = "down"; break;
       case "unreachable": reason = "cannot reach the target"; break;
       default: return { ...outcome, ...routed };

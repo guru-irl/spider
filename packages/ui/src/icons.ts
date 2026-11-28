@@ -56,6 +56,7 @@ const ICONS = {
   select: { text: "▸", nerd: "▸" },
   arrowLeft: { text: "←", nerd: "←" },
   prompt: { text: "❯", nerd: "❯" },
+  pending: { text: "><", nerd: "\u{F051F} " },
   arrowRight: { text: "→", nerd: "→" },
   arrowUp: { text: "↑", nerd: "↑" },
   arrowDown: { text: "↓", nerd: "↓" },

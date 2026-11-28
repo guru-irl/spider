@@ -2,13 +2,20 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { expect } from 'vitest';
 import { migrate, openDb } from '@spider/db-core';
+import { createExportPolicy } from '@spider/db-core/roam/event-policy';
+import { exportBatch } from '@spider/db-core/roam/export';
 import { writeLocal } from '@spider/db-core/roam/local-state';
+import { mapWorkspace } from '@spider/db-core/roam/repo-map';
+import { seedSession } from '@spider/db-core/roam/seed';
+import { DEFAULT_LIMITS } from '@spider/roam/contracts';
 import { createHomeStore } from '@spider/roam/relocate/home';
 import type { RelocateId, RunningHome, SessionId, SessionPlacement } from '@spider/roam/relocate/types';
+import { readLocalIdentity } from '@spider/roam/runtime';
+import { createStorePort } from '@spider/roam/stores';
 import { inspectIdLock } from '../../src/sessions/id-lock.js';
 import { createSessionLeases } from '../../src/sessions/lease.js';
 import { mark, text } from '../fixtures/child-scripts.js';
@@ -20,6 +27,7 @@ const HUB = '00000000-0000-4000-8000-000000000001';
 const BOX = '00000000-0000-4000-8000-000000000002';
 const REPO = '00000000-0000-4000-8000-000000000003';
 const WORKSPACE = '00000000-0000-4000-8000-000000000004';
+const WORKTREE = `worktree:${REPO}:${WORKSPACE}` as const;
 
 async function copiedFile(suite: Suite): Promise<void> {
   const hub = suite.directories.SPIDER_GLOBAL_ROOT, hubAgent = suite.directories.PI_CODING_AGENT_DIR;
@@ -43,9 +51,6 @@ async function copiedFile(suite: Suite): Promise<void> {
   await copyFile(join(hub, 'config.json'), join(box, 'config.json'));
   const hubProject = join(hubCwd, '.spider', 'project.db');
   await mkdir(join(hubCwd, '.spider'), { mode: 0o700 });
-  const project = openDb(hubProject);
-  try { migrate(project, 'worktree', { machineId: HUB, globalRoot: hub }); }
-  finally { project.close(); }
 
   const file = join(boxAgent, 'sessions', `${sessionId}.jsonl`);
   await writeFile(file, [
@@ -66,10 +71,26 @@ async function copiedFile(suite: Suite): Promise<void> {
   } finally { hubDb.close(); }
   const boxDb = openDb(join(box, 'spider.db'));
   try {
+    // The box receives the worktree batch, then maps the replica into its checkout.
+    const source = openDb(hubProject);
+    try {
+      migrate(source, 'worktree', { machineId: HUB, globalRoot: hub });
+      // Stand in for the source Pi's startup row (packages/host/src/hooks.ts:149).
+      source.prepare('INSERT INTO sessions(id,started_at) VALUES (?,1)').run(sessionId);
+      seedSession(source, sessionId, 1, WORKTREE, DEFAULT_LIMITS.hardBatchBytes);
+      const batch = await exportBatch(source, { after: 0, targetBytes: DEFAULT_LIMITS.targetBatchBytes, batchId: randomUUID() },
+        createExportPolicy((_file, machineId) => ({ machineId, reference: 'unavailable' })));
+      try {
+        const incoming = createStorePort(readLocalIdentity(box), boxDb, { unmappedWorktree: WORKTREE });
+        try { await incoming.accept(WORKTREE, batch); }
+        finally { incoming.close(); }
+      } finally { await unlink(batch.file); }
+    } finally { source.close(); }
+    await mapWorkspace(boxDb, { repoKey: REPO, workspaceId: WORKSPACE, path: boxCwd });
     boxDb.prepare('INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at,state,destination) VALUES (?,?,?,?,?,?,?)')
       .run(sessionId, BOX, away.epoch, moveId, away.updatedAt, away.state, away.destination);
     const placement: SessionPlacement = { sessionId, machineId: BOX, historyMachine: HUB, repoKey: REPO,
-      workspaceId: WORKSPACE, repository: boxCwd, cwd: boxCwd, file, stores: ['global'] };
+      workspaceId: WORKSPACE, repository: boxCwd, cwd: boxCwd, file, stores: ['global', WORKTREE] };
     writeLocal(boxDb, 'relocate-managed', sessionId, placement);
   } finally { boxDb.close(); }
 

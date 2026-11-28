@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import { openDb, migrate, paths, setGlobalDbPathForTests } from "@spider/db-core";
 import { scratchDbPath } from "@spider/db-core/testutil";
 import type { HomeStore } from "@spider/roam/relocate/types";
@@ -162,6 +163,35 @@ it("a foreign replica cannot offer a local managed home without a fence", async 
     expect(await loadRelocateAdmission(id, f.root)).toEqual({ kind: "unavailable" });
     expect(db.prepare("SELECT * FROM session_homes WHERE session_id=?").get(id)).toEqual(before);
   } finally { db.close(); f.close(); }
+});
+
+it("a never-moved session admits ordinary input from an unmapped repo", async () => {
+  const f = createReplica("global", local), cwd = join(f.root, "checkout"), file = join(cwd, "session.jsonl");
+  mkdirSync(cwd);
+  mkdirSync(join(f.root, "roam"), { mode: 0o700 });
+  execFileSync("git", ["init", "-q", cwd]);
+  writeFileSync(join(f.root, "roam", "machine.json"), JSON.stringify({ machineId: local }), { mode: 0o600 });
+  writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify({
+    enabled: true, role: "hub", machineId: local, hubMachineId: local, peers: [], coreUnit: "fixture.service",
+  }), { mode: 0o600 });
+  writeFileSync(file, JSON.stringify({ type: "session", version: 3, id, cwd }) + "\n", { mode: 0o600 });
+  paths.globalRoot = f.root;
+  setGlobalDbPathForTests(f.db.raw.name);
+  vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root);
+  vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  const homes = createHomeStore({ db: f.db, hubMachineId: local, localMachineId: local });
+  const host = createHostSessionFixture({ cwd, sessionId: id, sessionFile: file });
+  const gate = registerAdmission(host.pi as unknown as ExtensionAPI, createAdmissionPorts());
+  try {
+    const original = await homes.initialize(id, local);
+    for (const handler of host.hooks.get("session_start") ?? []) await handler({}, host.ctx);
+
+    expect(gate.inspect().kind).toBe("ordinary");
+    for (const handler of host.hooks.get("input") ?? []) {
+      expect(await handler({ text: "ordinary work" }, host.ctx)).toBeUndefined();
+    }
+    expect(await homes.read(id)).toEqual(original);
+  } finally { await gate.close(); f.close(); }
 });
 
 it.each(["pending", "conflict"] as const)("manual relocate admission refuses a %s row before Pi writes", async state => {

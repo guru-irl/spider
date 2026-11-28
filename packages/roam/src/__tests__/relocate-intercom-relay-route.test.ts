@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { openDbAt } from "@spider/db-core";
+import * as hc from "@spider/herdr/client/hc";
 import { HerdrError } from "@spider/herdr/client/parse";
 import { IntercomClient } from "@spider/intercom/broker/client";
 import { listV0RelayLinks, pollV0RelayBroker, submitV0Relay } from "@spider/intercom/broker/roam-relay-client";
@@ -31,6 +32,7 @@ afterAll(() => rmSync(brokerBuild, { recursive: true, force: true }));
 afterEach(async () => {
   try { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); }
   finally {
+    vi.restoreAllMocks();
     vi.unstubAllEnvs();
     for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true });
   }
@@ -121,11 +123,12 @@ async function fixture(options: { direct?: boolean; reached?: readonly RelayPeer
   const local = await register(sender, "local-recipient", "local", 2);
   const remote = await register(receiver, "remote-recipient", "recipient", 3);
 
-  const faults = { lost: false, routeMissing: false, disconnected: false, badPin: false };
+  const faults = { lost: false, routeMissing: false, disconnected: false, badPin: false, resolveFailed: false };
   const transport = (): Pick<Transport, "resolve" | "exec"> => ({
     async resolve(p) {
       if (faults.routeMissing) throw new HerdrError("machine-not-found", "fixture has no direct route");
       if (faults.badPin) throw new HerdrError("machine-mismatch", "fixture pin mismatch");
+      if (faults.resolveFailed) throw new HerdrError("cli-exit", "The remote host is unreachable");
       return p;
     },
     async exec(p, argv, request) {
@@ -219,6 +222,38 @@ it.each(["no-enrollment", "missing-route", "disconnected"] as const)("relays an 
   expect(sent.details).toMatchObject({ delivered: true, path: "relay relay-1.invalid" });
   expect(sent.content[0]).toMatchObject({ text: expect.stringContaining("relay-1.invalid") });
   expect(await f.remote.received()).toEqual([sent.details.messageId]);
+});
+
+it.each(["disconnected", "connected"] as const)("only relays a resolve connection error when Herdr observes the route %s", async state => {
+  const f = await fixture({ direct: true });
+  vi.stubEnv("HC_SOCKET", join(f.sender.root, "hc.sock"));
+  vi.stubEnv("HC_SESSION", "relay-fixture");
+  const observe = vi.spyOn(hc, "invokeCli").mockImplementation(async (_binary, argv, env) => {
+    expect(argv).toEqual(["machine", "ls", "--json"]);
+    expect(env.HC_SOCKET).toBe(join(f.sender.root, "hc.sock"));
+    return { machines: [{ id: "target-core", name: target.alias, host: target.alias, target: target.alias, state }] };
+  });
+  f.faults.resolveFailed = true;
+  const pending = f.tool("remote-recipient");
+  if (state === "disconnected") {
+    const taken = await Promise.race([f.held!, pending]);
+    f.faults.resolveFailed = false;
+    expect(taken).toHaveProperty("submissions");
+    expect((await carry(f, pending)).sent.details).toMatchObject({ delivered: true, path: "relay relay-1.invalid" });
+  } else {
+    expect((await pending).details).toMatchObject({ code: "unreachable" });
+    f.abort.abort();
+    expect((await f.held!).submissions).toEqual([]);
+  }
+  expect(observe).toHaveBeenCalledTimes(1);
+});
+
+it("reports a version 1 direct send as direct without changing its confirmation text", async () => {
+  const f = await fixture({ direct: true });
+  f.sender.configure({ version: 1, sendTo: [f.receiver.peer], relays: undefined });
+  const result = await f.tool("remote-recipient");
+  expect(result.content[0]).toMatchObject({ text: "Sent to target.invalid/recipient (broker accepted the message)." });
+  expect(result.details).toMatchObject({ delivered: true, path: "direct" });
 });
 
 it("uses advertised reach to resolve a qualified name without local enrollment", async () => {

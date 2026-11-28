@@ -4,7 +4,7 @@ set -euo pipefail
 lane=$1
 phase=$2
 dir=packages/host/src/__tests__
-files=(herdr-setup-fixture.ts herdr-setup-releases.test.ts)
+files=(herdr-setup-fixture.ts herdr-setup-releases.test.ts herdr-setup-cross-machine.test.ts)
 snapshots=.spider/scratch/hsr-snapshots
 export TMPDIR="$PWD/.spider/scratch/tmp"
 unset XDG_RUNTIME_DIR
@@ -28,7 +28,8 @@ trial() {
   npx vitest run --maxWorkers=3 --reporter=default --reporter=json \
     --outputFile="$output.json" "$dir/herdr-setup-releases.test.ts" \
     "$dir/herdr-setup-production-install.test.ts" \
-    "$dir/herdr-setup-production-rollback.test.ts" 2>&1 | tee "$output.log" || rc=$?
+    "$dir/herdr-setup-production-rollback.test.ts" \
+    "$dir/herdr-setup-cross-machine.test.ts" 2>&1 | tee "$output.log" || rc=$?
   printf '%s\n' "$rc" > "$output.exit"
   if (( rc != 0 )); then return "$rc"; fi
   node - "$output.json" <<'NODE'
@@ -36,11 +37,21 @@ const fs = require('node:fs');
 const result = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 const target = result.testResults.find(suite => suite.name.endsWith('/herdr-setup-releases.test.ts'));
 if (!target || target.assertionResults.length !== 31) throw new Error('Expected all 31 release cases');
-for (const test of target.assertionResults) {
-  if (test.status !== 'passed' || !Number.isFinite(test.duration)) throw new Error(`Missing passing duration: ${test.fullName}`);
-  if (test.duration >= 15000) {
-    console.error(`STOP: ${target.name}: ${test.fullName}: ${test.duration} ms`);
-    process.exitCode = 1;
+const cross = result.testResults.find(suite => suite.name.endsWith('/herdr-setup-cross-machine.test.ts'));
+if (!cross) throw new Error('Missing cross-machine suite');
+const crossNames = ['0.1.13', '0.1.16'].map(version => `${version} rollback removes created mod directories but preserves existing and populated directories`);
+const crossCases = crossNames.map(name => {
+  const test = cross.assertionResults.find(item => item.fullName === name);
+  if (!test) throw new Error(`Missing changed cross-machine case: ${name}`);
+  return test;
+});
+for (const [suite, tests] of [[target, target.assertionResults], [cross, crossCases]]) {
+  for (const test of tests) {
+    if (test.status !== 'passed' || !Number.isFinite(test.duration)) throw new Error(`Missing passing duration: ${test.fullName}`);
+    if (test.duration >= 15000) {
+      console.error(`STOP: ${suite.name}: ${test.fullName}: ${test.duration} ms`);
+      process.exitCode = 1;
+    }
   }
 }
 for (const suite of result.testResults) {

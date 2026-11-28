@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 
+import { buildSelectionMap } from './map.mjs';
 import { reduce } from './reduce.mjs';
 import { selectTests } from './select.mjs';
 
@@ -461,12 +462,64 @@ test('a native signal can kill a Node process blocked inside Atomics.wait', { sk
   assert.equal(result.status, 0, result.stderr);
 });
 
-function reduceProbe({ root, raw, maps, workspace }) {
+function probeShard({ root, raw, maps, workspace }) {
   writeFileSync(join(root, 'dist/reference.mjs'), 'export {};');
   writeFileSync(join(maps, 'reference.mjs.map'), JSON.stringify({ version: 3, sources: [], names: [], mappings: '' }));
   const reportFile = join(workspace, 'vitest.json');
   writeFileSync(reportFile, JSON.stringify({ testResults: [{ name: join(root, id), status: 'passed', startTime: 0, endTime: 1 }] }));
-  return reduce({ root, rawDir: raw, mapsDir: maps, reportFile }).records[id];
+  return reduce({ root, rawDir: raw, mapsDir: maps, reportFile });
+}
+
+const reduceProbe = paths => probeShard(paths).records[id];
+
+test('publishes the dependencies of exact Node version probes without inventing CPU samples', t => {
+  const paths = fixture(t);
+  const { root, raw } = paths;
+  const result = runNode(['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import { spawn, spawnSync, execFile, execFileSync } from 'node:child_process';
+    import { once } from 'node:events';
+    import { promisify } from 'node:util';
+    globalThis[Symbol.for('spider.selection.tag')](${JSON.stringify(id)});
+    const options = { env: {}, encoding: 'utf8' };
+    const args = ['--version'];
+    const expected = process.version + '\\n';
+    const child = spawn(process.execPath, args, { env: {}, stdio: 'ignore' });
+    assert.deepEqual(await once(child, 'exit'), [0, null]);
+    assert.equal(spawnSync(process.execPath, args, options).stdout, expected);
+    assert.equal(execFileSync(process.execPath, args, options), expected);
+    assert.equal((await promisify(execFile)(process.execPath, args, options)).stdout, expected);
+  `], { cwd: root, env: recorderEnv(root, raw) });
+  assert.equal(result.status, 0, result.stderr);
+  const shard = probeShard(paths);
+  const { map, problems } = buildSelectionMap({ shards: [shard], expectedFiles: [id] });
+  assert.deepEqual(problems, []);
+  const record = map.tests[id];
+  assert.equal(record.incomplete, false);
+  assert.equal(record.processes, 5);
+  assert.equal(record.missingCpu, 4);
+  assert.equal(record.unknownCpu, 4);
+  assert.equal(record.cpuMs, null);
+});
+
+for (const [label, invocation] of [
+  ['a PATH wrapper named node', `spawnSync('node', ['--version'], { env: { PATH: process.cwd() } })`],
+  ['extra arguments', `spawnSync(process.execPath, ['--version', 'config.toml'], { env: {} })`],
+  ['unverified startup options', `spawnSync(process.execPath, ['--version'], { env: { NODE_OPTIONS: '--no-warnings' } })`],
+]) {
+  test(`keeps the startup gap for ${label}`, { skip: process.platform === 'win32' }, t => {
+    const paths = fixture(t);
+    const { root, raw } = paths;
+    writeFileSync(join(root, 'config.toml'), 'fixture\n');
+    writeFileSync(join(root, 'node'), '#!/bin/sh\nread value < config.toml || exit 1\nprintf "%s" "$value"\n', { mode: 0o700 });
+    const result = runNode(['--input-type=module', '-e', `
+      import assert from 'node:assert/strict';
+      import { spawnSync } from 'node:child_process';
+      assert.equal((${invocation}).status, 0);
+    `], { cwd: root, env: recorderEnv(root, raw) });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(reduceProbe(paths).incomplete, true);
+  });
 }
 
 test('keeps scripts loaded by an externally killed child and marks its record incomplete', { skip: process.platform === 'win32' }, t => {

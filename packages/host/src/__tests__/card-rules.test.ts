@@ -8,10 +8,10 @@ const fixtures = cardFixtures();
 const styles = ["text", "nerd"] as const satisfies readonly IconStyle[];
 type Fixture = ReturnType<typeof cardFixtures>[number];
 
-/** Validate blank rows and markers after stripping the shell's padding. */
+/** Validate blank rows and markers at their displayed columns. */
 function bodyViolations(body: string[], fixture: Pick<Fixture, "name" | "verb" | "groups" | "callDetails" | "itemBoundary" | "taskStarts">, style: IconStyle): Array<[string, string]> {
   const failures: Array<[string, string]> = [];
-  const statusGlyphs = (["success", "question", "open", "running", "active", "warning", "failure", "gutter"] as const)
+  const statusGlyphs = (["success", "question", "open", "running", "active", "warning", "failure"] as const)
     .flatMap(role => [icon("text", role), icon(style, role)]).map(glyph => glyph.trimEnd());
   for (const [i, line] of body.entries()) {
     if (!line) {
@@ -24,7 +24,6 @@ function bodyViolations(body: string[], fixture: Pick<Fixture, "name" | "verb" |
     const columns = style === "nerd" ? /^ {1}(?:\S| {2}\S| {3}\S)/u : /^ {1}(?:\S| {2}\S)/u;
     if (!columns.test(line)) failures.push(["columns", line]);
     const marker = line.trimStart();
-    // Nerd task and gutter share a glyph. Only the fixture's actual task text is exempt.
     const taskText = marker.startsWith(icon(style, "task")) ? marker.slice(icon(style, "task").length).trimStart().replace(/…$/u, "").trimEnd() : "";
     const nerdTask = fixture.verb === "run" && style === "nerd" && taskText && fixture.taskStarts?.some(task => task.startsWith(taskText));
     const restartAnnotation = fixture.name === "control config list" && marker.startsWith(`${icon(style, "warning")}restart`);
@@ -44,7 +43,7 @@ if (galleryPath) {
 test("layout checks reject misplaced glyphs and invalid blank rows", () => {
   const single = { name: "probe", verb: "run", groups: 1, callDetails: false };
   for (const style of styles) {
-    for (const glyph of ["✓", icon(style, "warning"), icon(style, "failure"), icon(style, "gutter")]) {
+    for (const glyph of ["✓", icon(style, "warning"), icon(style, "failure")]) {
       expect(bodyViolations([`   ${glyph} misplaced`], single, style)).toContainEqual(["glyph column", `   ${glyph} misplaced`]);
     }
   }
@@ -60,11 +59,11 @@ test("layout checks reject misplaced glyphs and invalid blank rows", () => {
   expect(bodyViolations([" ⚠ warning", "", "   paragraph"], { ...single, verb: "escalation" }, "text")).toEqual([]);
 });
 
-test("gutter icons and their text align with the title in both styles", () => {
+test("command details align with the title without a marker in both styles", () => {
   const fixture = fixtures.find(f => f.name === "exec")!;
   for (const style of styles) {
     const [title, detail] = fixture.render(120, false, style).map(stripTerminalSequences);
-    expect(visibleWidth(title.slice(0, title.indexOf(icon(style, "spider"))))).toBe(visibleWidth(detail.slice(0, detail.indexOf("└"))));
+    expect(detail).not.toContain("└");
     expect(visibleWidth(title.slice(0, title.indexOf("exec")))).toBe(visibleWidth(detail.slice(0, detail.indexOf("sqlite3"))));
   }
 });
@@ -141,9 +140,9 @@ for (const fixture of fixtures) {
           const rendered = fixture.render(width, expanded, style);
           for (const line of rendered) check("width", visibleWidth(line) <= width, stripTerminalSequences(line));
           const plain = rendered.map(line => stripTerminalSequences(line).trimEnd());
-          const titleIndex = plain.findIndex(Boolean);
-          const pad = fixture.notification ? 1 : 0;
-          const title = plain[titleIndex]?.slice(pad + 1) ?? "";
+          const titleIndex = fixture.notification ? 1 : plain.findIndex(Boolean);
+          // Raw tool fixtures use their own lead cell; notifications get it from the box.
+          const title = plain[titleIndex]?.slice(1) ?? "";
           const titlePrefix = `${icon(style, "spider")} ${fixture.verb}`;
           // The full escalation title cannot fit in 20 columns even without its subject.
           if (width >= 30) {
@@ -158,19 +157,23 @@ for (const fixture of fixtures) {
               check("only agent roles italic", /^(worker|reviewer|scout)$/u.test(italic), italic);
             }
           }
-          if (fixture.notification) check("one-spacer", titleIndex === 1, `${titleIndex} blank rows`);
+          if (fixture.notification) {
+            check("half edges", plain[0] === "▄".repeat(width) && plain.at(-1) === "▀".repeat(width));
+            check("title follows top edge", Boolean(title));
+          }
           else check("title starts at top", titleIndex === 0, `${titleIndex} blank rows`);
-          const body = plain.slice(titleIndex + 1, fixture.notification ? -1 : undefined).map(line => line.slice(pad));
+          const body = plain.slice(titleIndex + 1, fixture.notification ? -1 : undefined);
           if (!fixture.callDetails && !fixture.callOnly) check("blank-under-title", Boolean(body[0]));
           if (fixture.callDetails) {
             const gap = body.indexOf("");
             check("call separator", fixture.callOnly ? gap === -1 : gap > 0 && Boolean(body[gap + 1]));
             const commandRows = gap === -1 ? body : body.slice(0, gap);
-            check("command gutter", commandRows[0]?.startsWith(` ${icon(style, "gutter")}`) === true, commandRows[0]);
+            check("command indent", commandRows[0]?.startsWith(" ".repeat(visibleWidth(` ${icon(style, "spider")} `))) === true, commandRows[0]);
           }
           for (const [rule, sample] of bodyViolations(body, fixture, style)) check(rule, false, sample);
           for (const line of plain) {
             check("no-bar", !line.includes("│"), line);
+            check("no-gutter", !line.includes("└"), line);
             for (const id of fixture.runIds) check("no-ids", !line.includes(id) && !line.includes(id.slice(0, 8)), line);
             if (fixture.groups === 1) check("no-single-rule", !line.includes("──"), line);
           }

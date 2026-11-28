@@ -1,10 +1,25 @@
 export const ICON_STYLES = ["text", "nerd"] as const;
 export type IconStyle = typeof ICON_STYLES[number];
 
-export const SPINNER_FRAMES: Record<IconStyle, readonly string[]> = {
-  text: ["|", "/", "-", "\\"],
-  nerd: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
-};
+export const REPLY_FRAME = {
+  left: "│", right: "│", top: "─", bottom: "─",
+  topLeft: "╭", topRight: "╮", bottomLeft: "╰", bottomRight: "╯",
+} as const;
+
+export const BAND_GLYPHS = { top: "▄", bottom: "▀", barTop: "▗", bar: "▐", barBottom: "▝" } as const;
+
+const NEW_MOON = "\uE3E3";
+// Every other Weather Icons phase (new, then U+E3C9 to U+E3E1 in steps of two, full at index 7). Each frame
+// makes Pi rescan the whole transcript, so 14 a second halves the cost of all 28 (user, 2026-11-28).
+export const ACTIVITY_FRAMES: Readonly<Record<IconStyle, { readonly idle: string; readonly working: readonly string[] }>> = {
+  text: { idle: "○", working: ["◐", "◓", "◑", "◒"] },
+  nerd: { idle: NEW_MOON, working: [NEW_MOON, ...Array.from({ length: 13 }, (_, i) => String.fromCodePoint(0xE3C9 + 2 * i))] },
+} as const;
+
+// These four frames exist only in fonts patched by Spider. The pad is for non-Mono Nerd Fonts.
+export const ROBOT_FRAMES = {
+  center: "\u{F2120} ", left: "\u{F2121} ", right: "\u{F2122} ", closed: "\u{F2123} ",
+} as const;
 
 export function isIconStyle(value: unknown): value is IconStyle {
   return ICON_STYLES.some(style => style === value);
@@ -25,7 +40,6 @@ const ICONS = {
   todoDone: { text: "✓", nerd: "\u{F05E1} " },
   todoFailed: { text: "×", nerd: "\u{F015A} " },
   todoPending: { text: "○", nerd: "\u{F0766} " },
-  gutter: { text: "└", nerd: "└ " },
   task: { text: "→", nerd: "\u{F060D} " },
   result: { text: "↑", nerd: "\u{F005C} " },
   message: { text: "→", nerd: "\u{F01F0} " },
@@ -41,6 +55,7 @@ const ICONS = {
   bullet: { text: "•", nerd: "•" },
   select: { text: "▸", nerd: "▸" },
   arrowLeft: { text: "←", nerd: "←" },
+  prompt: { text: "❯", nerd: "❯" },
   arrowRight: { text: "→", nerd: "→" },
   arrowUp: { text: "↑", nerd: "↑" },
   arrowDown: { text: "↓", nerd: "↓" },

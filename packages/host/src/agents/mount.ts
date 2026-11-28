@@ -50,6 +50,7 @@ export function mountAgentsUI(
     sessionId,
     showFooter: controlConfig("get", opts.cwd, "ui.footer") !== false,
     iconStyle: controlConfig("get", opts.cwd, "ui.icons") === "nerd" ? "nerd" : "text",
+    spiderGlyphs: controlConfig("get", opts.cwd, "ui.spiderGlyphs") === true,
     registration: opts.registration,
     formatRunCost: opts.formatRunCost,
     piVersion: opts.piVersion,

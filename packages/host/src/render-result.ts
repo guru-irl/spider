@@ -1,11 +1,11 @@
 // packages/host/src/render-result.ts
 // pi `ToolDefinition.renderResult` for the spider tool. With renderShell:"default"
-// pi paints the standard green/red tool shell and renderCall supplies its title, so
+// pi paints the standard tool shell and renderCall supplies its title, so
 // renderResult renders only the BODY. `options.expanded` reflects the in-chat Ctrl+O toggle;
 // `context.args` are the call params; `result.details` is the structured payload.
-import { truncateToWidth, visibleWidth, stripTerminalSequences, Box } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, stripTerminalSequences } from "@earendil-works/pi-tui";
 import { icon, type Component, type IconStyle } from "@spider/ui";
-import { isAgentModelRole, cachedLines, formatRunUsage, renderErrorResult, renderExecCall, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, statusIcon, fitResultLines, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
+import { isAgentModelRole, cachedLines, formatRunUsage, renderErrorResult, renderExecCall, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, statusIcon, fitResultLines, cardDetailIndent, flushLeft, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -17,6 +17,8 @@ import { renderImportResult, isKnownFailureOutcome, foregroundTimedOut, isExecEr
 import type { ModelEntry } from "@spider/models";
 import { renderSkillList, renderSkillView, renderDistill, renderCurateResult, type DrainReport, type SkillRow } from "@spider/organism";
 import { UI_CONFIG_SCHEMA, modelThinkingDisplay } from "./ui-thinking";
+import { createHalfBox } from "./input-band/box.js";
+import { reopenBackground } from "./input-band/ansi.js";
 import { toToolResult } from "./result";
 import { makeRunCostFormatter } from "./run-credits";
 import { restoreExecDetails } from "./exec-session-storage";
@@ -46,22 +48,7 @@ function restoreCardBackground(lines: string[], theme: any, background: string):
   const marker = "\0";
   const sample = mkTheme(theme).bg(background, marker);
   const open = sample.slice(0, sample.indexOf(marker));
-  if (!open) return lines;
-  return lines.map(line => line.replace(/\x1b\[([0-9;]*)m/g, (sequence, parameters: string) => {
-    const codes = parameters.split(";").map(part => Number(part || 0));
-    let restore = false;
-    for (let i = 0; i < codes.length; i++) {
-      const code = codes[i];
-      if (code === 0 || code === 49) restore = true;
-      else if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107)) restore = false;
-      else if (code === 38 || code === 48 || code === 58) {
-        if (code === 48) restore = false;
-        if (codes[i + 1] === 5) i += 2;
-        else if (codes[i + 1] === 2) i += 4;
-      }
-    }
-    return restore ? sequence + open : sequence;
-  }));
+  return open ? lines.map(line => reopenBackground(line, open)) : lines;
 }
 
 function clip(s: string, w: number): string { return visibleWidth(s) > w ? truncateToWidth(s, w, "…") : s; }
@@ -174,7 +161,7 @@ function renderSearch(t: T, rows: any, expanded: boolean): Component {
       if (!list.length) return fitResultLines([t.fg("muted", " (no results)")], width, expanded, 3);
       const sep = t.fg("dim", "·");
       const lines = [t.fg("muted", ` ${list.length} result${list.length === 1 ? "" : "s"}`)];
-      const gutter = ` ${t.fg("dim", icon(t.iconStyle, "gutter"))} `;
+      const indent = cardDetailIndent(t.iconStyle);
       for (const [i, hit] of list.entries()) {
         if (i > 0) lines.push("");
         const role = SEARCH_GLYPH[String(hit?.kind) as keyof typeof SEARCH_GLYPH] ?? "bullet";
@@ -184,7 +171,7 @@ function renderSearch(t: T, rows: any, expanded: boolean): Component {
         const source = hit?.source ? ` ${sep} ${t.fg("muted", String(hit.source))}` : "";
         lines.push(` ${t.fg("dim", `${i + 1}.`)} ${glyph} ${title} ${sep} ${kind}${source}`);
         const snippet = nonblankLines(String(hit?.snippet ?? "")).join("\n");
-        if (snippet) lines.push(gutter + t.fg("dim", expanded ? snippet : snippet.replace(/\s+/gu, " ").trim()));
+        if (snippet) lines.push(indent + t.fg("dim", expanded ? snippet : snippet.replace(/\s+/gu, " ").trim()));
       }
       if (!expanded && list.some(hit => hit?.snippet)) lines.push(t.fg("dim", " ctrl+o to expand"));
       return fitResultLines(lines, width, expanded, 3);
@@ -194,7 +181,7 @@ function renderSearch(t: T, rows: any, expanded: boolean): Component {
 }
 
 /** Health-check output for `control doctor`. The call line supplies the title; this
- *  renders the status and checks with a gutter, without markdown headings or bullets. */
+ *  renders the status and checks under the title, without markdown headings or bullets. */
 function renderDoctor(t: T, details: any, expanded: boolean): Component {
   // C-LOW: absence of evidence is neither a passing check nor a failure. Preserve an
   // explicit boolean and render a third, neutral state when malformed/empty input has
@@ -216,9 +203,9 @@ function renderDoctor(t: T, details: any, expanded: boolean): Component {
         if (idx > 0) {
           const label = t.bold(c.slice(0, idx));
           const rest = t.fg("muted", c.slice(idx + 1).trim());
-          out.push(clipDoctor(` ${t.fg("dim", `${icon(t.iconStyle, "gutter")} `)}${label}${t.fg("dim", ":")} ${rest}`, width));
+          out.push(clipDoctor(`${cardDetailIndent(t.iconStyle)}${label}${t.fg("dim", ":")} ${rest}`, width));
         } else {
-          out.push(clipDoctor(` ${t.fg("dim", `${icon(t.iconStyle, "gutter")} `)}${t.fg("muted", c)}`, width));
+          out.push(clipDoctor(`${cardDetailIndent(t.iconStyle)}${t.fg("muted", c)}`, width));
         }
       }
       return fitResultLines(out, width, expanded, 3);
@@ -269,7 +256,7 @@ function renderControlModels(t: T, details: any, expanded: boolean): Component {
 }
 
 function detailRow(t: T, text: string, color = "toolOutput"): string {
-  return ` ${t.fg("dim", icon(t.iconStyle, "gutter"))} ${t.fg(color, text)}`;
+  return `${cardDetailIndent(t.iconStyle)}${t.fg(color, text)}`;
 }
 
 function renderConfigErrors(t: T, details: any): string[] {
@@ -850,22 +837,22 @@ export function renderSubagentDone(message: any, options: NotificationOptions, t
   const t = mkTheme(theme, iconStyle);
   const run: RunLike = { name: d.name, agent: d.agent, model: d.model, thinking: d.thinking, status, result: d.output, token_count: d.tokenCount, cost: d.cost, costText: d.costText, compactionCount: d.compactionCount };
   const detail = renderRun(t, { run }, expanded, undefined, false);
-  const box = new Box(options.outputPad ?? 1, 1, text => t.bg(background, text));
-  box.addChild(renderSpiderCall({ action: "run" }, theme, {
+  const box = createHalfBox(options.outputPad ?? 1, text => t.bg(background, text));
+  box.addChild(flushLeft(renderSpiderCall({ action: "run" }, theme, {
     cardBackground: background, iconStyle, titleDetails: runTitleDetails(d.name, d.agent),
-  }) as any);
-  box.addChild({
+  })));
+  box.addChild(flushLeft({
     render: (width: number) => {
       const lines = detail.render(width);
       if (d.chain?.outcome === "complete" || d.chain?.outcome === "stopped") {
         const headline = d.chain.outcome === "complete" ? "chain complete"
           : `chain stopped at step ${d.chain.step} of ${d.chain.total}: ${d.chain.cause}`;
-        lines.push(...cardRow(` ${t.fg("dim", icon(iconStyle, "gutter"))} `, t.fg("toolTitle", headline), width, expanded));
+        lines.push(...cardRow(cardDetailIndent(iconStyle), t.fg("toolTitle", headline), width, expanded));
       }
       return restoreCardBackground(lines, theme, background);
     },
     invalidate: () => detail.invalidate?.(),
-  });
+  }));
   return cachedLines(width => box.render(width), () => box.invalidate());
 }
 
@@ -887,24 +874,24 @@ export function renderCommandOutput(message: any, options: NotificationOptions, 
   );
   const context = { args, expanded, isError: normalized.isError, isPartial: !normalized.isError && (Boolean(details?.warning) || pendingMessage), iconStyle };
   const background = cardBackground(context);
-  const box = new Box(options.outputPad ?? 1, 1, text => mkTheme(theme).bg(background, text));
+  const box = createHalfBox(options.outputPad ?? 1, text => mkTheme(theme).bg(background, text));
   const titleArgs = args.action ? args : { action: args.command ?? "command" };
-  box.addChild(renderSpiderCall(titleArgs, theme, context) as any);
+  box.addChild(flushLeft(renderSpiderCall(titleArgs, theme, context)));
   if (d == null || (!args.action && typeof result.text === "string")) {
     const content = d == null ? message?.content : result.text;
     const text = typeof content === "string" ? content : Array.isArray(content)
       ? content.filter(block => block?.type === "text" && typeof block.text === "string").map(block => block.text).join("\n") : "";
     const lines = nonblankLines(text).map(line => ` ${line.trim()}`);
-    box.addChild({
+    box.addChild(flushLeft({
       render: (width: number) => {
         const shown = expanded ? lines : lines.slice(0, 5);
         const remaining = lines.length - shown.length;
         return restoreCardBackground(fitResultLines([...shown, ...(remaining ? [` … ${remaining} more line${remaining === 1 ? "" : "s"}`] : [])], width, expanded, 3), theme, background);
       },
       invalidate() {},
-    });
+    }));
   } else {
-    box.addChild(renderSpiderResult(normalized, { expanded }, theme, context) as any);
+    box.addChild(flushLeft(renderSpiderResult(normalized, { expanded }, theme, context)));
   }
   return cachedLines(width => box.render(width), () => box.invalidate());
 }
@@ -916,15 +903,15 @@ export function renderOrganismEntry(entry: unknown, options: NotificationOptions
   const failed = state === "failed";
   const completed = state === "completed";
   const background = failed ? "toolErrorBg" : completed ? "toolSuccessBg" : "toolPendingBg";
-  const box = new Box(options.outputPad ?? 1, 1, text => mkTheme(theme).bg(background, text));
-  box.addChild(renderSpiderCall({ action: "organism" }, theme, { cardBackground: background, iconStyle }) as any);
-  box.addChild({
+  const box = createHalfBox(options.outputPad ?? 1, text => mkTheme(theme).bg(background, text));
+  box.addChild(flushLeft(renderSpiderCall({ action: "organism" }, theme, { cardBackground: background, iconStyle })));
+  box.addChild(flushLeft({
     render: (width: number) => {
       const t = mkTheme(theme);
       const marker = icon(iconStyle, failed ? "failure" : state === "partial" ? "warning" : completed ? "success" : "open");
       const color = failed ? "error" : state === "partial" ? "warning" : completed ? "success" : "muted";
       const lines = [` ${t.fg(color, marker)} ${state}`];
-      const detail = (text: string) => ` ${t.fg("dim", icon(iconStyle, "gutter"))} ${t.fg("toolOutput", text)}`;
+      const detail = (text: string) => `${cardDetailIndent(iconStyle)}${t.fg("toolOutput", text)}`;
       if (report) {
         lines.push(detail(`${report.memoryStaged} memories · ${report.skillsQueued === undefined && report.skillsStaged > 0 ? `${report.skillsStaged} skills staged` : `${report.skillsQueued ?? 0} skills queued`} · ${report.todosAdded} todos`));
         if (report.skipReason) lines.push(detail(report.skipReason));
@@ -938,7 +925,7 @@ export function renderOrganismEntry(entry: unknown, options: NotificationOptions
       return restoreCardBackground(fitResultLines(lines, width, options?.expanded === true, 3), theme, background);
     },
     invalidate() {},
-  });
+  }));
   return cachedLines(width => box.render(width), () => box.invalidate());
 }
 
@@ -949,13 +936,13 @@ export function renderEscalationMessage(message: any, options: NotificationOptio
   const escalationDetails: EscalationDetails = { severity, summary: typeof d.summary === "string" ? d.summary : "Escalation" };
   const background = severity === "blocked" ? "toolErrorBg" : "toolPendingBg";
   const th = adaptTheme(mkTheme(theme, iconStyle));
-  const box = new Box(options.outputPad ?? 1, 1, text => th.bg(background, text));
-  box.addChild(renderSpiderCall({ action: "escalation" }, theme, {
+  const box = createHalfBox(options.outputPad ?? 1, text => th.bg(background, text));
+  box.addChild(flushLeft(renderSpiderCall({ action: "escalation" }, theme, {
     iconStyle, cardBackground: background, titleDetails: runTitleDetails(d.name, d.agent),
-  }) as any);
-  box.addChild({
+  })));
+  box.addChild(flushLeft({
     render: (w: number) => restoreCardBackground(renderEscalation(escalationDetails, { theme: th, width: w }), theme, background),
     invalidate() {},
-  });
+  }));
   return cachedLines(width => box.render(width), () => box.invalidate());
 }

@@ -22,8 +22,8 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     const args = { action: "exec", code: commands.join("\n") };
     const call = renderSpiderCall(args, theme, { expanded }).render(80);
     const result = renderSpiderResult({ details: { stdout: "ready", exitCode: 0 } }, { expanded }, theme, { args }).render(80);
-    const callRows = expanded ? commands.map(command => ` └ ${command}`) : [" └ echo line 1", " └ echo line 2", " └ … +6 more lines"];
-    expect([...call, ...result]).toEqual([" ◆ exec", ...callRows, "", " ✓ exit 0 · 1 lines", " └ ready"]);
+    const callRows = expanded ? commands.map(command => `   ${command}`) : ["   echo line 1", "   echo line 2", "   … +6 more lines"];
+    expect([...call, ...result]).toEqual([" ◆ exec", ...callRows, "", " ✓ exit 0 · 1 lines", "   ready"]);
   });
 
   it("puts the result directly below a call with no command details", () => {
@@ -33,9 +33,9 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     expect([...call, ...result]).toEqual([" ◆ batch", " ● no commands · 0 lines"]);
   });
 
-  it("uses the L-shaped gutter for memory content", () => {
+  it("aligns details under the title for memory content", () => {
     const rows = lines("control", { usage: 8, entries: [{ category: "convention", uuid: "entry-id", content: "Check the manifest" }] }, { command: "memory", sub: "status" });
-    expect(rows).toContain(" └ Check the manifest");
+    expect(rows).toContain("   Check the manifest");
     expect(rows.join("\n")).not.toContain("│");
   });
 
@@ -73,16 +73,16 @@ describe("render-result exec/index wiring (Phase 8)", () => {
       "   ↑ " + "x".repeat(74) + "…",
     ]);
     expect(fallback.map(visible)).toEqual([" " + "x".repeat(78) + "…"]);
-    expect(visible(memory.at(-1) ?? "")).toBe(" └ " + "x".repeat(76) + "…");
+    expect(visible(memory.at(-1) ?? "")).toBe("   " + "x".repeat(76) + "…");
   });
 
   it.each([
     ["models set", { ok: true, role: "worker", ref: "x".repeat(200) }, { command: "models" }, " ✓ set worker → "],
     ["models cleared", { ok: true, cleared: true, role: "x".repeat(200) }, { command: "models" }, " ✓ clear "],
-    ["models shadow", { ok: true, role: "worker", ref: "ok", shadowedBy: { ref: "x".repeat(200), file: "local" } }, { command: "models" }, " └ This worktree overrides it with "],
+    ["models shadow", { ok: true, role: "worker", ref: "ok", shadowedBy: { ref: "x".repeat(200), file: "local" } }, { command: "models" }, "   This worktree overrides it with "],
     ["config set", { ok: true, key: "option", value: "x".repeat(200) }, { command: "config" }, " ✓ set option → "],
-    ["config errors", { config: {}, errors: ["x".repeat(200)] }, { command: "config" }, " └ x"],
-    ["memory status content", { entries: [{ category: "insight", content: "x".repeat(200) }] }, { command: "memory", sub: "status" }, " └ x"],
+    ["config errors", { config: {}, errors: ["x".repeat(200)] }, { command: "config" }, "   x"],
+    ["memory status content", { entries: [{ category: "insight", content: "x".repeat(200) }] }, { command: "memory", sub: "status" }, "   x"],
   ] as const)("collapsed %s ends at width 80 with an ellipsis", (_name, details, args, prefix) => {
     const rows = renderSpiderResult({ details }, { expanded: false }, theme,
       { args: { action: "control", ...args } }).render(80);
@@ -202,14 +202,14 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     expect(out).toMatch(/ping/);
   });
 
-  it("hangs continuation rows after one exec gutter without losing a long word", () => {
+  it("hangs continuation rows at the exec detail column without losing a long word", () => {
     const payload = "x".repeat(500);
     const rows = lines("exec", { stdout: payload, exitCode: 0 }, { code: "run" });
-    const start = rows.findIndex((row) => row.startsWith(" └ x"));
+    const start = rows.findIndex((row) => row.startsWith("   x"));
     expect(start).toBeGreaterThanOrEqual(0);
     const output = rows.slice(start);
     expect(output.length).toBeGreaterThan(1);
-    expect(output[0].startsWith(" └ x")).toBe(true);
+    expect(output[0].startsWith("   x")).toBe(true);
     expect(output.slice(1).every((row) => row.startsWith("   x") && !row.includes("└"))).toBe(true);
     expect(output.map((row) => row.slice(3)).join("")).toBe(payload);
   });
@@ -249,7 +249,7 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     const dimTheme = { ...theme, fg: (token: string, text: string) => token === "dim" ? `\x1b[2m${text}\x1b[22m` : text };
     const rows = renderSpiderResult({ details: [{ kind: "content", title: "item", snippet: "x".repeat(180) }] },
       { expanded: true }, dimTheme, { args: { action: "search" } }).render(30);
-    const snippet = rows.filter(row => /^ (?:└ |  x)/u.test(row.replace(/\x1b\[[0-9;]*m/g, "")));
+    const snippet = rows.filter(row => /^   x/u.test(row.replace(/\x1b\[[0-9;]*m/g, "")));
     expect(snippet.length).toBeGreaterThan(1);
     expect(snippet.every((row) => row.includes("\x1b[2m"))).toBe(true);
     expect(snippet.slice(1).every((row) => row.replace(/\x1b\[[0-9;]*m/g, "").startsWith("   x"))).toBe(true);
@@ -301,8 +301,8 @@ describe("render-result exec/index wiring (Phase 8)", () => {
 
   it("labels stderr-only output as a detail without drawing a section rule", () => {
     const rows = lines("exec", { stdout: "", stderr: "Only an error", exitCode: 1 }, { code: "run" });
-    expect(rows).toContain(" └ stderr:");
-    expect(rows).toContain(" └ Only an error");
+    expect(rows).toContain("   stderr:");
+    expect(rows).toContain("   Only an error");
     expect(rows.join("\n")).not.toContain("──");
   });
 
@@ -319,7 +319,7 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     const rows = renderSpiderResult({ details: { stdout: "stderr", stderr: "stderr", exitCode: 1 } },
       { expanded: true }, styled, { args: { action: "exec", code: "run" } }).render(80);
     expect(rows.filter((row) => row.includes("stderr"))).toEqual([
-      " └ stderr", " └ \x1b[2mstderr:\x1b[22m", " └ stderr",
+      "   stderr", "   \x1b[2mstderr:\x1b[22m", "   stderr",
     ]);
   });
 
@@ -329,12 +329,12 @@ describe("render-result exec/index wiring (Phase 8)", () => {
       { stdout: "out-2", stderr: "err-2", exitCode: 0 },
       { stdout: "out-3", stderr: "", exitCode: 0 },
     ]).filter((row) => /(?:out-|err-|stderr:)/.test(row));
-    expect(rows).toEqual([" └ out-1", " └ stderr:", " └ err-1", " └ out-2", " └ stderr:", " └ err-2", " └ out-3"]);
+    expect(rows).toEqual(["   out-1", "   stderr:", "   err-1", "   out-2", "   stderr:", "   err-2", "   out-3"]);
   });
 
   it("discloses when the last exec line is a partial UTF-8 tail", () => {
     const rows = lines("exec", { stdout: "earlier\n" + "界".repeat(20_000), exitCode: 0 }, { code: "run" });
-    const output = rows.filter((row) => row.startsWith(" └ 界") || row.startsWith("   界"));
+    const output = rows.filter((row) => row.startsWith("   界"));
     const text = output.map((row) => row.slice(3)).join("");
     expect(rows.some((row) => row.includes("1 earlier output line hidden"))).toBe(true);
     expect(text).not.toContain("�");
@@ -360,7 +360,7 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     // Exactly 984 fit, so changing either the cap or newline accounting changes 16.
     const byBytes = render(Array.from({ length: 1000 }, (_, i) => `${"x".repeat(48)}${String(i).padStart(3, "0")}`).join("\n"));
     expect(byBytes.find((row) => row.includes("earlier output lines hidden"))).toContain("16 earlier output lines hidden");
-    const output = byBytes.filter((row) => /^ └ x/.test(row));
+    const output = byBytes.filter((row) => /^   x/.test(row));
     expect(output).toHaveLength(984);
     expect(output[0]).toContain("016");
     expect(output.at(-1)).toContain("999");
@@ -386,8 +386,8 @@ describe("render-result exec/index wiring (Phase 8)", () => {
     const rendered = renderSpiderResult({ details: { stdout, exitCode: 0 } }, { expanded: true }, theme,
       { args: { action: "exec", code: "print" } }).render(80);
     expect(rendered.join("\n")).not.toContain("earlier output lines hidden");
-    expect(rendered.filter((row) => row.startsWith(" └ line"))).toEqual(
-      Array.from({ length: 100 }, (_, i) => ` └ line${i}`),
+    expect(rendered.filter((row) => row.startsWith("   line"))).toEqual(
+      Array.from({ length: 100 }, (_, i) => `   line${i}`),
     );
   });
 

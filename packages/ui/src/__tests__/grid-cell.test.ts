@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import { renderGridCell } from "../agents/grid-cell";
-import { Spinner } from "../components/spinner";
 import type { AgentSnapshot, ThemeAdapter } from "../agents/types";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
@@ -12,20 +11,20 @@ const agent: AgentSnapshot = {
 
 describe("renderGridCell", () => {
   it("emits exactly `height` lines, each within width", () => {
-    const lines = renderGridCell(id, { agent, width: 30, height: 5, focused: false, pinned: false, now: 1000, spinner: new Spinner() });
+    const lines = renderGridCell(id, { agent, width: 30, height: 5, focused: false, pinned: false, now: 1000 });
     expect(lines).toHaveLength(5);
     for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(30);
     expect(lines[0]).toContain("worker");
     expect(lines[0]).toContain("◇");
   });
   it("marks a focused cell", () => {
-    const lines = renderGridCell(id, { agent, width: 30, height: 4, focused: true, pinned: false, now: 1000, spinner: new Spinner() });
+    const lines = renderGridCell(id, { agent, width: 30, height: 4, focused: true, pinned: false, now: 1000 });
     expect(lines[0]).toContain("▸");
   });
 
   it("shows a type/model/turns meta line and a truncated instructions preview", () => {
     const a: AgentSnapshot = { ...agent, task: "read every file under packages and summarize each one" };
-    const lines = renderGridCell(id, { agent: a, width: 44, height: 6, focused: false, pinned: false, now: 1000, spinner: new Spinner() });
+    const lines = renderGridCell(id, { agent: a, width: 44, height: 6, focused: false, pinned: false, now: 1000 });
     const joined = lines.join("\n");
     expect(lines[0]).toContain("worker");        // name is the heading
     expect(joined).toContain("turns");           // type/model/turns meta line

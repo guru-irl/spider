@@ -85,6 +85,20 @@ it("passes pi's renderer and spacing classes and clipboard into the native bundl
   }, copy: f.context.piHost.copyToClipboard } });
 });
 
+it("forwards the active host exports for the transcript even without copy buttons", async () => {
+  const f = fixture();
+  const host = { CustomEditor: class CustomEditor {}, UserMessageComponent: class UserMessageComponent {},
+    CustomMessageComponent: class CustomMessageComponent {}, ToolExecutionComponent: f.context.piHost.ToolExecutionComponent,
+    CompactionSummaryMessageComponent: class CompactionSummaryMessageComponent {},
+    BranchSummaryMessageComponent: class BranchSummaryMessageComponent {},
+    SkillInvocationMessageComponent: class SkillInvocationMessageComponent {} };
+  const tui = { Box: class Box {}, Text: class Text {}, Markdown: f.context.piTui.Markdown };
+  Object.assign(f.context.piHost, host, { copyToClipboard: undefined });
+  Object.assign(f.context.piTui, tui);
+  expect(await f.context.load()).toBe("native");
+  expect(f.received()).toEqual({ inputBand: { ...host, ...tui } });
+});
+
 it.each(["1.2.0", "1.2.1"])("passes running pi version %s into the native bundle", async version => {
   const f = fixture();
   (f.context.piHost as { VERSION?: unknown }).VERSION = version;

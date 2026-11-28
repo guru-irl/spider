@@ -3,7 +3,7 @@
 // @spider/memory's renderers.ts: they take a handler's structured `details` and return
 // an @spider/ui Component (Panel). The host renderResult dispatcher wraps them to add
 // pi's required invalidate(). REAL ANSI is emitted by @spider/ui.
-import { Panel, fitResultLines, icon, type Component, type IconStyle } from "@spider/ui";
+import { Panel, cardDetailIndent, fitResultLines, icon, type Component, type IconStyle } from "@spider/ui";
 import type { SearchResultRow } from "./search";
 import type { ImportSummary } from "./import";
 
@@ -30,7 +30,7 @@ export function renderImportResult(s: ImportSummary, expanded = false, iconStyle
   ];
   for (const [i, session] of (summary.perSession ?? []).entries()) {
     const name = "name" in session && typeof session.name === "string" && session.name ? session.name : `Session ${i + 1}`;
-    rows.push(` ${icon(iconStyle, "gutter")} ${name}: ${session.status} (${session.candidates} candidates, ${session.chunks} chunks)`);
+    rows.push(`${cardDetailIndent(iconStyle)}${name}: ${session.status} (${session.candidates} candidates, ${session.chunks} chunks)`);
   }
   return { render: width => fitResultLines(rows, width, expanded, 3) };
 }

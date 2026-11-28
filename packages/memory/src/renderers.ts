@@ -1,4 +1,4 @@
-import { fitResultLines, icon, renderErrorResult, statusIcon, type Component, type ThemeAdapter } from "@spider/ui";
+import { cardDetailIndent, fitResultLines, icon, renderErrorResult, statusIcon, type Component, type ThemeAdapter } from "@spider/ui";
 import type { MemoryRecord } from "./types";
 import type { StageResult } from "./staging";
 
@@ -20,16 +20,16 @@ export function renderRememberResult(
   if (r.reason && !r.message) meta.push(`reason: ${r.reason.replace(uuid, "memory entry")}`);
   const status = r.status === "active" ? "ok" : r.status === "staged" ? "off" : "warn";
   const body = [` ${statusIcon(theme, status)} ${theme.fg("muted", meta.join(" · "))}`];
-  const gutter = ` ${theme.fg("dim", icon(theme.iconStyle, "gutter"))} `;
+  const indent = cardDetailIndent(theme.iconStyle);
   if (r.content) {
     const preview = r.content.trim().replace(/\s+/gu, " ");
-    body.push(gutter + theme.fg("toolOutput", expanded ? r.content : preview.length > 160 ? preview.slice(0, 159) + "…" : preview));
+    body.push(indent + theme.fg("toolOutput", expanded ? r.content : preview.length > 160 ? preview.slice(0, 159) + "…" : preview));
   }
   if (r.message) {
     // The agent keeps the reviewed-write diagnostic verbatim, including its UUIDs.
     const note = r.message.replace(/(?: as |; uuid: )(?=[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}\b)[\da-f-]+/giu, "")
       .replace(uuid, "memory entry");
-    body.push(gutter + theme.fg("muted", note));
+    body.push(indent + theme.fg("muted", note));
   }
   return { render: width => fitResultLines(body, width, expanded, 3) };
 }

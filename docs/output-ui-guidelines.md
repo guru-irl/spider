@@ -1,17 +1,33 @@
-# Spider tool card guidelines
+# Spider terminal UI guidelines
 
-These rules apply to tool results and transcript notifications for run completion,
-escalations, slash commands, and organism reports.
+## Input, transcript, and replies
+
+Draw the editor and sent messages on the theme's `userMessageBg`. In
+`dracula-plus-glass` it is `#060607`, darker than the surrounding Herdr glass.
+Use `▄` and `▀` in the same color for the half-row edges, with no background
+behind the unfilled half. The editor has a flush `▗`, `▐`, `▝` bar in
+`accent` (`#82aaff`) or `bashMode`, regardless of thinking level. Scrolled
+edges show a dim hidden-line count. Keep Pi's cursor, completion menu, and keys.
+
+Sent messages have no bar. Place the accent `❯` before the first text row and
+align wrapped text under that row's text. Keep Pi's Markdown and OSC 133
+markers. `ui.inputBand: false` restores Pi's editor and sent messages.
+
+The hover frame around replies uses rounded lines in `borderMuted`, without
+fill. Copy actions and the timestamp stay on the bottom edge. Keep the copy
+label's one-space pad and let Pi handle clicks outside the actions.
 
 ## Card layout
 
 1. Pi owns the transcript spacer and the default tool box. Notification renderers
    return their box without another spacer. Use Pi's `outputPad` when supplied.
-   The fallback is one column.
+   The fallback is one column. Replace blank top and bottom padding with half
+   edges; remove blank content rows next to the edges. Keep one cell of fill on
+   each side by default, with no outline.
 2. A title is `<logo> <bold command>[ · details]`. Do not add `spider` to the
    title. Italics identify agent roles only, including roles in rows and overlays.
-3. Align status and gutter markers under the logo. Use `└` for detail gutters.
-   Align gutter text with the command text, including the Nerd Font pad cell.
+3. Align status markers under the logo. Align detail rows under the title text,
+   including the Nerd Font pad cell. Do not draw a gutter glyph.
 4. Start the body on the next line after a bare title. If the call has detail
    rows, put one blank line between those rows and the result. Separate
    multi-item blocks such as parallel runs with one blank line.
@@ -22,7 +38,10 @@ escalations, slash commands, and organism reports.
    todos. Other success, failure, and warning markers use the plain status icons.
 7. Use `toolErrorBg` for failures and blocked escalations. Use `toolPendingBg`
    for warnings, questions, and running work. Use `toolSuccessBg` for success.
-   Pi chooses the background for default tool shells.
+   Pi chooses the background for default tool shells. These tokens and
+   `customMessageBg` share the strip color in `dracula-plus-glass`. Status and
+   error text still carry their colors. The spider logo uses `toolTitle`, not
+   `accent`.
 8. Use `sectionRule` only when the body has more than one group.
 
 Fit every line to the available display width. Respect Ctrl+O expansion without
@@ -35,13 +54,13 @@ The following example uses text icons. The command is bold in the UI.
 
 ```text
  ◆ exec
- └ sqlite3 project.db 'SELECT seq, done, text FROM todos'
- └ date '+%H:%M:%S'
- └ … +6 more lines
+   sqlite3 project.db 'SELECT seq, done, text FROM todos'
+   date '+%H:%M:%S'
+   … +6 more lines
 
  ✓ exit 0 · 4 lines
- └ 935|0|Check the packaging job with a fresh build directory.
- └ … 3 more
+   935|0|Check the packaging job with a fresh build directory.
+   … 3 more
 ```
 
 ### Escalation example
@@ -56,11 +75,11 @@ The command is bold and `worker` is italic in the UI.
 
 ### Received intercom messages
 
-A received message has a borderless title with the sender name and machine. A
-local sender uses the short hostname, retaining its case. A remote sender uses
-the configured machine alias. A collapsed message has a one-line gutter preview. An expanded message
-shows the wrapped body aligned with the title text, followed by dim details.
-Reply details do not show message IDs.
+A received message has a title with the sender name and machine. A local
+sender uses the short hostname, retaining its case. A remote sender uses the
+configured machine alias. A collapsed message shows a one-line preview aligned
+with the title text. An expanded message wraps the body at the same indent and
+adds dim details. Reply details do not show message IDs.
 
 ## Icon sets
 
@@ -69,10 +88,9 @@ monochrome default. Its glyphs are present in Menlo, DejaVu Sans Mono, and
 Cascadia Code. The `nerd` set uses Nerd Font glyphs where listed below.
 
 Nerd Font private-use icons include one pad cell. A following separator adds a
-second space. The Nerd gutter also includes one pad cell so its text aligns
-with the title. Shared Unicode direction and status symbols do not have a pad
-cell unless shown below. Copy buttons use the Nerd pad as their separator, so
-those action labels keep one space and their clickable columns do not move.
+second space. Shared Unicode glyphs and the footer moon do not add a pad cell.
+Copy buttons use the Nerd pad as the separator, so their clickable columns
+stay the same.
 
 | Role | Text | Nerd |
 | --- | --- | --- |
@@ -90,7 +108,7 @@ those action labels keep one space and their clickable columns do not move.
 | todoDone | ✓ U+2713 | 󰗡 U+F05E1 |
 | todoFailed | × U+00D7 | 󰅚 U+F015A |
 | todoPending | ○ U+25CB | 󰝦 U+F0766 |
-| gutter | └ U+2514 | └ U+2514, padded |
+| prompt | ❯ U+276F | ❯ U+276F |
 | task | → U+2192 | 󰘍 U+F060D |
 | result | ↑ U+2191 | 󰁜 U+F005C |
 | message | → U+2192 | 󰇰 U+F01F0 |
@@ -110,8 +128,21 @@ those action labels keep one space and their clickable columns do not move.
 | arrowUp | ↑ U+2191 | ↑ U+2191 |
 | arrowDown | ↓ U+2193 | ↓ U+2193 |
 
-The text spinner uses `|`, `/`, `-`, and `\`. The Nerd Font spinner uses
-`⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏`.
+## Activity marks
+
+The usage footer shows the moon two spaces before context usage. It cycles
+once a second in the accent color while Pi works and rests on a dim new moon
+when idle. The Nerd set uses every other one of the 28 moon phases, so the
+footer redraws 14 times a second: each redraw makes Pi rescan the whole
+transcript. The text set uses
+`◐ ◓ ◑ ◒` when working and `○` when idle. Pi still handles Esc and shows its
+compaction and retry notices.
+
+An agent row has one mark: a robot while running, or a colored status icon after
+it finishes. In Nerd mode the stock robot pulses from dim to accent and back in
+1.8 seconds. With `ui.spiderGlyphs` enabled, a patched font shows eyes looking
+left and right, then blinking. Run IDs stagger the motion. Text mode uses a
+pulsing `◇` while running. See [Patched Nerd Fonts](guide/configuration.md#patched-nerd-fonts).
 
 ## Overlays
 

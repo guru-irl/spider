@@ -24,7 +24,7 @@ import { reviewerThinkingDiagnostic } from "./reviewer-thinking";
 import { skillReviewOptions, piLoadedSkills } from "./skill-reviewer";
 import { persistReviewError, scrubSecrets } from "@spider/memory";
 import { commandEnv, THINKING_LEVELS } from "@spider/db-core";
-import { icon, isAbsolutePathList, isToolSelectorList } from "@spider/ui";
+import { flushLeft, icon, isAbsolutePathList, isToolSelectorList } from "@spider/ui";
 // packages/host/src/extension.ts
 // THE single spider pi extension entry. Composes the whole surface:
 // one `spider` tool + control routing + every contract hook. Later phases
@@ -43,6 +43,7 @@ import { removeLegacyTools } from "./legacy-removal";
 import { registerHooks } from "./hooks";
 import { registerCompaction } from "./compaction/index.js";
 import { registerCopyButtons, type CopyButtonsHost } from "./copy-buttons/index.js";
+import { registerInputBand, type InputBandHost } from "./input-band/index.js";
 import { HostOrganismRuntime } from "./organism-runtime";
 import { HostEmbeddingRuntime } from "./embedding-runtime";
 import { UsageAccounting } from "./usage-accounting";
@@ -900,7 +901,7 @@ async function dispatchWithDoctorSnapshot(
 
 type V0IntercomFactory = { hasConfig(root: string): boolean; create(root: string): { prepare: V0Prepare; prepareReply?: V0PrepareReply } };
 
-export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBroker?: IntercomBrokerPort; bootId?: () => Promise<string>; copyButtons?: { host: CopyButtonsHost; copy: (text: string) => Promise<void> }; piVersion?: string; v0Intercom?: V0IntercomFactory } = {}): void {
+export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBroker?: IntercomBrokerPort; bootId?: () => Promise<string>; copyButtons?: { host: CopyButtonsHost; copy: (text: string) => Promise<void> }; inputBand?: InputBandHost; piVersion?: string; v0Intercom?: V0IntercomFactory } = {}): void {
   // Admission must be the first session_start registration, before any producer opens a writer.
   const admissionPorts = createAdmissionPorts(ports.bootId ? { bootId: ports.bootId } : {});
   let activationContext: ExtensionContext | undefined;
@@ -932,6 +933,10 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   const ordinaryWorkAllowed = () => isOrdinaryWorkAllowed(admission.inspect());
   const activity = trackReloadActivity(hostPi as unknown as ExtensionAPI);
   const pi = protectAdmissionApi(activity.pi, admission) as unknown as PiToolAPI;
+  if (ports.inputBand) registerInputBand(pi as unknown as ExtensionAPI, ports.inputBand, cwd => {
+    const values = configValues(cwd);
+    return { "ui.inputBand": values.config["ui.inputBand"], "ui.icons": values.config["ui.icons"] };
+  });
   if (ports.copyButtons) registerCopyButtons(pi as unknown as ExtensionAPI, ports.copyButtons.host,
     cwd => {
       const values = configValues(cwd);
@@ -1290,9 +1295,9 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
     description:
       "spider: unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; exec→{on,copy:{direction,local,remote}} for file transfer; remember→content+category+required justification, optional supersedes:[uuid or unique prefix] for atomic same-scope replacement with cap credit (foreground only; reviewer still checks durability, usefulness and scope and may skip storage, change scope or archive replaced entries); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message} (owned RPC run: delivered only after observed conversation entry, otherwise accepted but not confirmed, no reply yet with delivery unknown, or refused; slash-prefixed steers are refused); notify→{message,urgency?} only when a person must act, never for completion; kill→{id} for an owned remote job or subagent; loop→{name?,interval?|cron?,tz?,prompt} (no definition lists all triggers), schedule→{name?,delaySeconds|at,prompt,reason?,noop?}; independent names replace only themselves (defaults loop and wakeup); stop:true affects only the named kind; exact named self-paced re-arms retain origin; loop/schedule wait on external work (CI, deploys, timers), not for polling subagents or remote spider jobs whose completion notices arrive automatically; top-level persistent sessions only; triggers survive /reload and same-session resume, new and fork start empty; cron uses a captured IANA zone and has no immediate first prompt; nothing fires while closed or asleep; todo→op:add/list/toggle/remove/clear/sessions/view(+text, id or session); control→command('doctor'|'config'|'memory'|'bind'|'unbind'). Every `run` needs a concrete `task` string; never call run without one.",
     parameters: SPIDER_PARAMETERS,
-    renderCall: (args: any, theme: any, context: any) => renderSpiderCall(args, theme, { ...context, iconStyle: iconStyle() }),
-    renderResult: (result: any, options: any, theme: any, context: any) => renderSpiderResult(result, options, theme,
-      { ...context, iconStyle: iconStyle(), formatRunCost: makeRunCostFormatter(() => usageServices.get(pi)?.snapshot()) }),
+    renderCall: (args: any, theme: any, context: any) => flushLeft(renderSpiderCall(args, theme, { ...context, iconStyle: iconStyle() })),
+    renderResult: (result: any, options: any, theme: any, context: any) => flushLeft(renderSpiderResult(result, options, theme,
+      { ...context, iconStyle: iconStyle(), formatRunCost: makeRunCostFormatter(() => usageServices.get(pi)?.snapshot()) })),
     async execute(toolCallId, args, signal, onUpdate, ctx) {
       if (!ordinaryWorkAllowed()) throw new Error("Session ownership is not available; run /spider roam doctor.");
       // Stream partial output the way pi's built-in bash tool does. The FIRST call is an

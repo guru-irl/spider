@@ -6,7 +6,7 @@
 import type { ToolExecutionComponent, AssistantMessageComponent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Spacer, type Component, type Markdown, type TUI, type TuiMouseEvent, type TuiMouseEventResult, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import type { Token } from "marked";
-import { icon, type IconStyle } from "@spider/ui";
+import { icon, REPLY_FRAME as FRAME, type IconStyle } from "@spider/ui";
 import { layoutBlocks, markBlockEnd, replyTarget, sourceBoundaries, stripBlockMarkers, type BlockLayout, type CopyTarget } from "./block-layout.js";
 
 type Format = "text" | "md";
@@ -55,7 +55,6 @@ type PatchedProto = AssistantInternals & { [PATCH]?: Patch };
 // Copy labels share the Nerd icon's pad cell with the separator so hit columns stay fixed.
 const COPY_BUTTON_SEPARATOR = " ";
 const labels = (style?: IconStyle): Record<Format, string> => ({ text: `${icon(style, "copy").trimEnd()}${COPY_BUTTON_SEPARATOR}text`, md: `${icon(style, "copy").trimEnd()}${COPY_BUTTON_SEPARATOR}md` });
-const FRAME = { left: "▏", right: "▕", top: "▔", bottom: "▁", topLeft: "🭽", topRight: "🭾", bottomLeft: "🭼", bottomRight: "🭿" } as const;
 const dim = (text: string) => `\x1b[2m${text}\x1b[22m`;
 
 function formatTime(date: Date): string {

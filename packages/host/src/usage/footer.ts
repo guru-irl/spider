@@ -1,5 +1,5 @@
 import type { ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent";
-import { icon } from "@spider/ui";
+import { ACTIVITY_FRAMES, MOON_CYCLE_MS, icon, moonFrame, type IconStyle } from "@spider/ui";
 import { sliceByColumn, stripTerminalSequences, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import type { FooterTotals } from "./footer-state.js";
 import type { CalibrationResult } from "./dashboard-contract.js";
@@ -28,6 +28,7 @@ export type FooterInput = {
   calibration?: CalibrationResult;
   counter: CounterStateView;
   statuses: ReadonlyMap<string, string>;
+  iconStyle?: IconStyle;
   /**
    * Inside a Herdr pane, whose header shows the folder and session name and whose sidebar shows
    * the branch. The footer then leaves them out and puts the model on the stats line.
@@ -158,18 +159,28 @@ function stats(input: FooterInput, width: number, theme?: Theme): string {
   }).join(" · ");
 }
 
-/** One line: the stats, dropping their lowest-priority items first, then the model. */
-function paneLine(input: FooterInput, width: number, theme?: Theme): string {
-  const right = modelSide(input, width, theme);
-  const budget = width - visibleWidth(right) - 1;
-  if (budget <= 0) return right;
-  const left = stats(input, budget, theme);
+function statsWithMoon(input: FooterInput, width: number, moon: string, theme?: Theme): string {
+  const moonWidth = visibleWidth(moon);
+  if (width < moonWidth) return "";
+  const rest = stats(input, width - moonWidth - 2, theme);
+  return rest ? `${moon}  ${rest}` : moon;
+}
+
+/** Retain the activity icon and model; drop lower-priority stats first. */
+function paneLine(input: FooterInput, width: number, moon: string, theme?: Theme): string {
+  const moonWidth = visibleWidth(moon);
+  if (width <= moonWidth) return truncateToWidth(moon, width, "");
+  const right = modelSide(input, width - moonWidth - 1, theme);
+  const left = statsWithMoon(input, width - visibleWidth(right) - 1, moon, theme);
   return left + " ".repeat(width - visibleWidth(left) - visibleWidth(right)) + right;
 }
 
-function render(input: FooterInput, width: number, theme?: Theme): string[] {
+function render(input: FooterInput, width: number, theme?: Theme, elapsed?: number): string[] {
   const columns = Number.isFinite(width) ? Math.max(0, Math.floor(width)) : 0;
-  const lines = input.inPane ? [paneLine(input, columns, theme)] : [heading(input, columns, theme), stats(input, columns, theme)];
+  const glyph = moonFrame(input.iconStyle ?? "text", elapsed);
+  const moon = theme ? theme.fg(elapsed === undefined ? "dim" : "accent", glyph) : glyph;
+  const lines = input.inPane ? [paneLine(input, columns, moon, theme)]
+    : [heading(input, columns, theme), statsWithMoon(input, columns, moon, theme)];
   if (input.statuses.size > 0) {
     const status = Array.from(input.statuses.entries()).sort(([a], [b]) => a.localeCompare(b))
       .map(([, text]) => singleLine(text)).join(" ");
@@ -188,12 +199,16 @@ export function createUsageFooter(
   theme: Theme,
   footerData: ReadonlyFooterDataProvider,
   requestRender: () => void,
-): Component & { refresh(): void; dispose(): void } {
+  onDispose?: () => void,
+): Component & { refresh(): void; setWorking(since?: number): void; dispose(): void } {
   let disposed = false, pending = false;
   let lastWidth: number | undefined;
   let lastLines: string[] | undefined;
+  let workingSince: number | undefined;
+  let frameTimer: ReturnType<typeof setTimeout> | undefined;
+  const elapsed = () => workingSince === undefined ? undefined : Math.max(0, Date.now() - workingSince);
   const linesAt = (width: number) => render({ ...getInput(), branch: footerData.getGitBranch(),
-    statuses: footerData.getExtensionStatuses() }, width, theme);
+    statuses: footerData.getExtensionStatuses() }, width, theme, elapsed());
   function refresh(): void {
     if (disposed) return;
     if (lastWidth === undefined) {
@@ -206,9 +221,29 @@ export function createUsageFooter(
       lastLines = lines;
     }
   }
+  function scheduleFrame(): void {
+    const time = elapsed();
+    if (disposed || time === undefined) return;
+    const frames = ACTIVITY_FRAMES[getInput().iconStyle ?? "text"].working.length;
+    const next = Math.floor(time * frames / MOON_CYCLE_MS) + 1;
+    const delay = Math.max(1, Math.ceil(next * MOON_CYCLE_MS / frames) - time);
+    frameTimer = setTimeout(() => { refresh(); scheduleFrame(); }, delay);
+    frameTimer.unref?.();
+  }
+  function clearFrame(): void {
+    clearTimeout(frameTimer);
+    frameTimer = undefined;
+  }
   const unsubscribe = footerData.onBranchChange(refresh);
   return {
     refresh,
+    setWorking(since) {
+      if (disposed || since === workingSince) return;
+      clearFrame();
+      workingSince = since;
+      refresh();
+      scheduleFrame();
+    },
     render(width) {
       lastWidth = width; pending = false;
       return lastLines = linesAt(width);
@@ -218,7 +253,9 @@ export function createUsageFooter(
     dispose() {
       if (disposed) return;
       disposed = true;
+      clearFrame();
       unsubscribe();
+      onDispose?.();
     },
   };
 }

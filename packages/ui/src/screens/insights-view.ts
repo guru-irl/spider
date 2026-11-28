@@ -19,6 +19,7 @@ export function renderInsights(g: InsightGraphView, theme: ThemeAdapter, width: 
   const trim = resultTrimmer(expanded);
   const body: string[] = [];
   const indent = transcript ? " " : "";
+  const detailIndent = `${indent}  `; // One badge cell and one space before the label.
   const nodes = g.nodes ?? [];
   const edges = g.edges ?? [];
   const manyGroups = nodes.length > 0 && edges.length > 0;
@@ -33,7 +34,7 @@ export function renderInsights(g: InsightGraphView, theme: ThemeAdapter, width: 
     body.push(trim(`${indent}${badge} ${theme.fg("text", n.label)}${cat}`, width, ""));
   }
   if (!expanded && nodes.length > shownNodes.length) {
-    body.push(trim(theme.fg("muted", `${indent}${uiIcon(theme.iconStyle, "gutter")} … ${nodes.length - shownNodes.length} more`), width, ""));
+    body.push(trim(theme.fg("muted", `${detailIndent}… ${nodes.length - shownNodes.length} more`), width, ""));
   }
 
   if (edges.length) {
@@ -46,7 +47,7 @@ export function renderInsights(g: InsightGraphView, theme: ThemeAdapter, width: 
       body.push(trim(`${indent}${theme.fg("text", label(e.source))} ${theme.fg("dim", uiIcon(theme.iconStyle, "arrowRight"))} ${theme.fg("text", label(e.target))}`, width, ""));
     }
     if (!expanded && edges.length > shownEdges.length) {
-      body.push(trim(theme.fg("muted", `${indent}${uiIcon(theme.iconStyle, "gutter")} … ${edges.length - shownEdges.length} more`), width, ""));
+      body.push(trim(theme.fg("muted", `${detailIndent}… ${edges.length - shownEdges.length} more`), width, ""));
     }
   }
   return fitResultLines(body, width, expanded, transcript ? 3 : undefined);

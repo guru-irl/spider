@@ -155,7 +155,7 @@ it.each(["queued", "broker-accepted"])("keeps %s message notes neutral through h
   const out = body({ action: "message", to: "peer", message: "ping" }, {
     details: { delivered: false, delivery, queued: true, error: "Recipient offline. Retry later." }, content: [],
   }, false, colored);
-  expect(out).toContain("└ Recipient offline. Retry later.");
+  expect(out).toContain("   Recipient offline. Retry later.");
   expect(out).not.toContain("×");
   expect(out).not.toContain("\x1b[31m");
 });
@@ -165,7 +165,7 @@ it.each([false, true])("keeps a legacy queued note neutral through host dispatch
   const out = body({ action: "message", to: "peer", message: "ping" }, {
     details: { delivered: false, queued: true, error: "Recipient offline. Retry later." }, content: [],
   }, expanded, colored);
-  expect(out).toContain("└ Recipient offline. Retry later.");
+  expect(out).toContain("   Recipient offline. Retry later.");
   expect(out).not.toContain("\x1b[31mRecipient offline.");
   expect(out).toContain("peer");
   expect(out).toContain("ping");

@@ -41,7 +41,8 @@ function cells(line: string): Array<{ text: string; bg: string | undefined }> {
 function checkCard(rows: string[], width: number, background = BG) {
   for (const row of rows) {
     expect(visibleWidth(row)).toBe(width);
-    expect(cells(row).map((cell) => cell.bg)).toEqual(Array(width).fill(background));
+    const halfEdge = /^[▄▀]+$/u.test(stripTerminalSequences(row));
+    expect(cells(row).map((cell) => cell.bg)).toEqual(Array(width).fill(halfEdge ? undefined : background));
   }
 }
 
@@ -109,6 +110,8 @@ describe("card background through the right edge", () => {
       checkCard(rows, 30, backgrounds[token]);
     }
     const failed = renderCommandOutput({ details: { args: { action: "unknown" }, result: { isError: true, details: { error: "failure\x1b[0m " + "details ".repeat(20) } } } }, {}, distinct).render(30);
+    expect(failed[0]).toBe(`\x1b[38;5;162m${"▄".repeat(30)}\x1b[39m`);
+    expect(failed.at(-1)).toBe(`\x1b[38;5;162m${"▀".repeat(30)}\x1b[39m`);
     checkCard(failed, 30, backgrounds.toolErrorBg);
     for (const [severity, marker, token] of [
       ["blocked", "× blocked", "toolErrorBg"],
@@ -120,8 +123,8 @@ describe("card background through the right edge", () => {
       const rows = renderEscalationMessage(message, {}, distinct).render(80);
       checkCard(rows, 80, backgrounds[token]);
       const plain = rows.map(row => stripTerminalSequences(row).trimEnd());
-      expect(plain[1]).toBe("  ◆ escalation · tia-3 · worker");
-      expect(plain[2]).toBe(`  ${marker} · short`);
+      expect(plain[1]).toBe(" ◆ escalation · tia-3 · worker");
+      expect(plain[2]).toBe(` ${marker} · short`);
       expect(plain.join("\n")).not.toContain("beb58fc6");
     }
     const pending = renderCommandOutput({ details: { args: { action: "message", to: "peer" }, result: { details: { delivered: false, queued: true, delivery: "queued" } } } }, {}, distinct).render(60);
@@ -152,8 +155,8 @@ describe("card background through the right edge", () => {
     for (const component of renderers) {
       const rows = component.render(60);
       checkCard(rows, 60);
-      const firstText = rows.map(stripTerminalSequences).find(line => line.trim())!;
-      expect(firstText.match(/^ */)?.[0].length).toBe(outputPad + 1);
+      const firstText = rows.slice(1, -1).map(stripTerminalSequences).find(line => line.trim())!;
+      expect(firstText.match(/^ */)?.[0].length).toBe(outputPad);
     }
   });
 

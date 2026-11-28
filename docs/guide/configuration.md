@@ -162,7 +162,9 @@ The live footer shows corrected credits without basis markers, then the cache hi
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `ui.footer` | `true` | Footer and run selector. Takes effect next session. |
-| `ui.icons` | `"text"` | `"text"` uses emoji for the spider web on spider's own headings, the robot on subagent rows, and warnings and failures. Other markers, such as arrows, stay plain text. `"nerd"` uses the matching Nerd Font icons. New messages use the setting immediately. The agents footer and copy buttons update next session or after `/reload`. Command descriptions update after `/reload`. |
+| `ui.inputBand` | `true` | Draw the editor strip and sent-message caret. If another extension owns the editor slot, Pi keeps that editor. Changes apply after `/reload`. |
+| `ui.icons` | `"text"` | `"text"` uses monochrome Unicode. `"nerd"` uses Nerd Font glyphs. |
+| `ui.spiderGlyphs` | `false` | Animate the robot's eyes in Nerd mode when the terminal uses a font patched by Spider. Takes effect in the next session or after `/reload`. |
 | `copyButtons.enabled` | `true` | Copy buttons for finished replies in fullscreen mode. Takes effect after `/reload`. |
 | `reload.auto` | `true` | Reload idle interactive parent sessions after a verified build, once active work and prompts are clear. Changes apply live. |
 | `usage.footer` | `true` | Global-only. Footer with corrected credits in parent TUI sessions. Changes apply live. |
@@ -205,12 +207,41 @@ The live footer shows corrected credits without basis markers, then the cache hi
 - `auxiliary.background_review.provider` and `.model` default to empty overrides. [Background learning](memory-and-learning.md#background-learning) documents the learner default they resolve to.
 - The known editable fields are in `packages/ui/src/screens/config-schema.ts`. Consumer defaults are also in `packages/host/src/control.ts` and `packages/organism/src/config.ts`.
 
+## Patched Nerd Fonts
+
+The stock CaskaydiaCove Nerd Font works with `ui.icons: "nerd"`. To redraw the
+spider web and enable the robot's moving eyes, patch the static `.ttf` files you
+use, including any bold or italic faces your terminal selects:
+
+```sh
+python3 scripts/fonts/patch-spider-glyphs.py /path/to/CaskaydiaCoveNerdFont-Regular.ttf
+```
+
+Run the command from a Spider checkout with Python 3.10 or later and
+[`fontTools`](https://pypi.org/project/fonttools/) installed. It modifies only the
+named files and keeps the first copy of each as `FONT.ttf.spider-original`.
+Spider does not distribute patched fonts or change installed fonts on startup.
+If the script reports an occupied code point, reinstall the stock font before
+running the script again.
+
+1. Select the patched CaskaydiaCove Nerd Font in your terminal settings.
+2. Restart Herdr or the terminal so it reloads the font.
+3. Set `ui.icons` to `"nerd"` and `ui.spiderGlyphs` to `true`. Start a new
+   session or run `/reload`.
+
+If the robot shows empty boxes, turn `ui.spiderGlyphs` off and reload Spider. To
+undo the patch, quit the terminal and restore each font from its backup before
+restarting it.
+
 ## When changes take effect
 
 - Config readers use the merged layers for live action and routing settings. The reloader in `packages/host/src/config-reload.ts` rereads the same flat map.
 - The organism rereads configuration each time it resolves its runtime for a request or drain.
-- The agents UI reads `ui.footer` and `ui.icons` when it mounts at session start, not during a running session. New tool and notice renderers read `ui.icons` when they are created.
-- `copyButtons.enabled` changes need `/reload`.
+- The agents UI reads `ui.footer`, `ui.icons`, and `ui.spiderGlyphs` when it
+  mounts: in the next session or after `/reload`. The usage footer also reads
+  `ui.icons` at session start. New tool and notice renderers read `ui.icons`
+  when they are created.
+- `ui.inputBand` and `copyButtons.enabled` changes need `/reload`.
 - `tools.structured` changes need `/reload`. The setting does not change the interactive `spider` tool.
 - `reload.auto` applies live. Set it to `false` to stop automatic reloads.
 - `usage.footer`, `usage.counter.poll`, `usage.calibration` and `usage.monthlyBudget` apply live. The usage alert thresholds are registered but do nothing yet.

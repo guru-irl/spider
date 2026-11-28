@@ -114,7 +114,7 @@ it("guide matches controls, units, budget, footer and the dashboard development 
     counter: { availability: "available", snapshot: { creditsUsed: 24, entitlement: 100, ts: DASHBOARD_NOW } }, statuses: new Map() };
   const format = renderUsageFooter(input, 1000)[1]!
     .replace(/\d+\.\d+%\/\w+/, "context%/window")
-    .replace(/[\d.]+ credits/, "credits").replace(/CH[\d.]+%/, "CH%")
+    .replace(/[\d.]+ AIC/, "AIC").replace(/CH[\d.]+%/, "CH%")
     .replace(/month \d+%/, "month %").replace(/↑\w+ ↓\w+/, "↑input ↓output").replace(/R\w+ W\w+/, "Rread Wwrite");
   expect(text).toContain(`\`${format}\``);
   expect(text).toContain("Items are separated by middle dots");
@@ -129,7 +129,8 @@ it("guide matches controls, units, budget, footer and the dashboard development 
   expect(text).toContain("earlier spider builds cannot open the ledger");
   expect(text).toContain("~/.pi/agent/spider/usage.db");
   expect(text).not.toMatch(/^## (?:Cache|Context|Run|Detail|Rates)\b/m);
-  expect(text).not.toMatch(/Explorer|Reconciliation|\bAIC\b|\bcal\b|\best\b|—|\/Users\//);
+  expect(text).not.toMatch(/Explorer|Reconciliation|\bcal\b|\best\b|—|\/Users\//);
+  expect(text.replace(/## Terminal footer[\s\S]*?(?=## Collection)/, "")).not.toMatch(/\bAIC\b/);
 });
 it("public README usage links describe the replacement dashboard and footer", () => {
   for (const file of ["README.md", "docs/README.md"]) {

@@ -731,7 +731,7 @@ for (const [label, flags, submissions, complete] of [
 }
 
 for (const [label, pid, opcode, written, complete] of [
-  ['the submitting thread only used epoll', 3, 'EPOLL_CTL', 1, true],
+  ['the submitting thread only used epoll', 3, 'EPOLL', 1, true],
   ['the event describes an unobserved file open', 3, 'OPENAT', 1, false],
   ['the trace buffer lost events', 3, 'EPOLL_CTL', 2, false],
   ['the epoll operation belongs to an unrelated thread', 7, 'EPOLL_CTL', 1, false],

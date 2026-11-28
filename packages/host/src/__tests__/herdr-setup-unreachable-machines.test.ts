@@ -19,12 +19,12 @@ const remote = 'remote.invalid';
 const unreachable = { stderr: { error: { kind: 'unavailable', message: `cannot reach ${remote}: the connection closed` } }, exitCode: 1 };
 const fixture = () => focusedSetupFixture({ coreTransport: 'socket' });
 
-async function sleep(f: SetupFixture) {
+async function sleep(f: SetupFixture, { blockRemoteCalls = true } = {}) {
   const machines = (await f.h.cli(['machine', 'ls', '--json']) as { machines: { name: string; state: string }[] }).machines;
   cleanup.push(() => f.h.scenario({}));
   await f.h.scenario({ steps: [
     { argvPrefix: ['machine', 'ls'], reply: { machines: machines.map(row => row.name === remote ? { ...row, state: 'disconnected' } : row) } },
-    { argvIncludes: ['--on', remote], ...unreachable },
+    ...(blockRemoteCalls ? [{ argvIncludes: ['--on', remote], ...unreachable }] : []),
   ] });
 }
 
@@ -40,6 +40,7 @@ async function remoteCalls(f: SetupFixture, start: number) {
 
 async function omitRemote(f: SetupFixture) {
   const { machines } = await f.h.cli(['machine', 'ls', '--json']) as { machines: { name: string }[] };
+  cleanup.push(() => f.h.scenario({}));
   await f.h.scenario({ steps: [{ argvPrefix: ['machine', 'ls'], reply: { machines: machines.filter(row => row.name !== remote) } }] });
 }
 
@@ -159,6 +160,23 @@ test('setup rejects an unsupported remote Node version', async () => {
   const f = await fixture();
   await f.h.scenario({ steps: [{ argvPrefix: ['read'], reply: { text: 'v16.20.2', complete: true, how: 'history' }, once: true }] });
   await expect(apply(f)).rejects.toMatchObject({ code: 'remote-node-unavailable', message: expect.stringContaining('Unsupported or missing Node version') });
+});
+
+test('setup defers a machine that disconnects at final pane verification', async () => {
+  const f = await fixture();
+  const parts = await f.ports.setupParts(f.request), warnings: string[] = [];
+  parts.warn = message => warnings.push(message);
+  const verify = parts.verify;
+  parts.verify = async (...args) => {
+    // Leave cached file routes readable so the fresh pane inventory sees the loss first.
+    await sleep(f, { blockRemoteCalls: false });
+    return verify(...args);
+  };
+  const result = await setupHerdr(f.request, parts);
+  expect(result.doctor.failures).toEqual([]);
+  expect(result.doctor.deferredRuntimes).toEqual([remote]);
+  expect(warnings).toEqual([expect.stringContaining(remote)]);
+  expect(await readJournal(f.request.journalRoot)).toMatchObject({ verified: true, pendingRuntimes: [remote], runtimes: [] });
 });
 
 test('a later setup installs the deferred runtime without repeating local cutover', async () => {

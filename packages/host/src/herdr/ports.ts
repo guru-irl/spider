@@ -854,19 +854,30 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         const bytes = await readFile(join(packageRoot, 'dist/herdr/pane-endpoint.mjs')).catch(() => null);
         if (!bytes) return local;
         const buildDigest = sha256(bytes), hc = client(request), transport = createArgvClient({ binary: request.config.core.binary, env });
+        const diagnosticCore = async (configured: (typeof request.config.machines)[number], coreId?: CoreId) => {
+          const matches = (await hc.machines()).filter(machine => (!coreId || machine.id === coreId) &&
+            (machine.name === configured.name || machine.aliases.includes(configured.name) || configured.aliases.includes(machine.name)));
+          const connected = matches.filter(machine => machine.state === 'connected');
+          if (!connected.length && matches.length === 1) throw new HerdrError('unavailable', `Machine ${configured.name} disconnected during verification`);
+          if (connected.length !== 1 || !connected[0].id) throw new HerdrError('machine-changed', 'Endpoint diagnostic route is unavailable');
+          return connected[0].id;
+        };
         const inspectRemote = createPaneRemoteRequest({ buildDigest, exec: transport.exec, resolveMachine: async destination => {
           const configured = request.config.machines.find(machine => machine.name === destination.alias);
-          const matches = (await hc.machines()).filter(machine => machine.id === destination.coreId && machine.state === 'connected' && configured && (machine.name === configured.name || machine.aliases.includes(configured.name) || configured.aliases.includes(machine.name)));
-          if (matches.length !== 1 || !configured?.nodePath) throw new HerdrError('machine-changed', 'Endpoint diagnostic route is unavailable');
-          return { on: matches[0].id!, coreId: matches[0].id!, nodePath: configured.nodePath };
+          if (!configured?.nodePath) throw new HerdrError('machine-changed', 'Endpoint diagnostic route is unavailable');
+          const coreId = await diagnosticCore(configured, destination.coreId);
+          return { on: coreId, coreId, nodePath: configured.nodePath };
         } });
         const failures = [...local.failures], warnings = [...local.warnings ?? []];
         for (const configured of request.config.machines) {
           if (runtimeAvailability?.shouldSkip(configured.name)) continue;
           const result = await inspectPaneInstallation(configured.name, async () => {
-            const matches = (await hc.machines()).filter(machine => machine.state === 'connected' && (machine.name === configured.name || machine.aliases.includes(configured.name) || configured.aliases.includes(machine.name)));
-            if (matches.length !== 1 || !matches[0].id) throw new HerdrError('machine-changed', 'Endpoint diagnostic route is unavailable');
-            await inspectRemote({ coreId: matches[0].id, alias: configured.name, machineId: null }, { version: 1, op: 'handshake', protocol: 1, buildDigest });
+            try {
+              const coreId = await diagnosticCore(configured);
+              await inspectRemote({ coreId, alias: configured.name, machineId: null }, { version: 1, op: 'handshake', protocol: 1, buildDigest });
+            } catch (error) {
+              if (!runtimeAvailability?.deferOnConnectivityFailure(configured.name, error)) throw error;
+            }
           });
           failures.push(...result.failures); warnings.push(...result.warnings ?? []);
         }

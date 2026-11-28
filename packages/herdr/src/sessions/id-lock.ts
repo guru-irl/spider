@@ -68,10 +68,19 @@ async function checkPrivate(path: string, directory: boolean): Promise<void> {
 
 async function checkPrivateFile(handle: FileHandle): Promise<void> {
   const info = await handle.stat();
-  if (info.isSymbolicLink() || !info.isFile() ||
+  if (!info.isFile() ||
       process.platform !== 'win32' && ((info.mode & 0o777) !== 0o600 || info.uid !== process.getuid?.())) {
     throw new HerdrError('unsafe-state-path', 'Session ownership requires private, locally owned state');
   }
+}
+
+async function readIdLockJson(file: string, inspect = checkPrivateFile): Promise<unknown | null> {
+  // Windows has no O_NOFOLLOW; Herdr and roaming do not run there.
+  if (process.platform === 'win32') {
+    try { await checkPrivate(file, false); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
+  }
+  return readPrivateJson(file, inspect);
 }
 
 const operationIdValid = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
@@ -95,7 +104,7 @@ export async function inspectIdLock(root: string, sessionId: string): Promise<Id
   const stateRoot = resolve(root), directory = join(stateRoot, 'id-locks'), file = join(directory, `${hash(sessionId)}.json`);
   try { await checkPrivate(stateRoot, true); await checkPrivate(directory, true); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
-  const value = await readPrivateJson(file, checkPrivateFile);
+  const value = await readIdLockJson(file);
   if (value === null) return null;
   const record = parseRecord(value, sessionId);
   return { identity: { ...record.identity }, bootId: record.bootId, pendingOperationId: record.handoff?.operationId ?? null,
@@ -110,7 +119,7 @@ export async function inspectReleasedIdLock(root: string, sessionId: string, ope
   const stateRoot = resolve(root), directory = join(stateRoot, 'id-lock-releases'), file = join(directory, `${hash(sessionId)}.json`);
   try { await checkPrivate(stateRoot, true); await checkPrivate(directory, true); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
-  const value = await readPrivateJson(file, checkPrivateFile) as (ReleasedIdLock & { version: number }) | null;
+  const value = await readIdLockJson(file) as (ReleasedIdLock & { version: number }) | null;
   if (value === null) return null;
   if (value.version !== 1 || value.sessionId !== sessionId || !operationIdValid(value.operationId) || !validIdentity(value.identity) ||
       typeof value.bootId !== 'string' || !value.bootId || value.bootId !== value.bootId.trim()) {
@@ -126,7 +135,13 @@ export async function listPendingIdLocks(root: string): Promise<Array<{ sessionI
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
   const pending: Array<{ sessionId: string; operationId: string; coreId: string | null }> = [];
   for (const file of await jsonFiles(directory)) {
-    const value = await readPrivateJson(file, checkPrivateFile) as { sessionId?: unknown } | null;
+    // readPrivateJson returns null for both a missing file and JSON null.
+    let opened = false;
+    const value = await readIdLockJson(file, async handle => {
+      opened = true;
+      await checkPrivateFile(handle);
+    }) as { sessionId?: unknown } | null;
+    if (value === null && !opened) continue;
     if (!value || typeof value.sessionId !== 'string' || !value.sessionId || value.sessionId.includes('\0') || file !== join(directory, `${hash(value.sessionId)}.json`)) {
       throw new HerdrError('invalid-session-id-lock', 'Session ID ownership record is invalid');
     }
@@ -195,7 +210,7 @@ export async function claimIdLock(root: string, sessionId: string, identity: Pro
     }, { reclaimReusedOwner: true });
   }
   async function read(): Promise<IdLockRecord | null> {
-    const value = await readPrivateJson(file, checkPrivateFile);
+    const value = await readIdLockJson(file);
     if (value === null) return null;
     return parseRecord(value, sessionId);
   }

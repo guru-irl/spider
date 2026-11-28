@@ -91,6 +91,55 @@ it('uses the opened lock when it disappears during a claim check', async () => {
   expect(await held.isHeldByClaim!()).toBe(false);
 });
 
+it('skips a pending lock removed after listing and keeps the remaining handoff', async () => {
+  const removed = await claimIdLock(root, 'session-1', firstIdentity, probe);
+  const remaining = await claimIdLock(root, 'session-2', nextIdentity, probe);
+  await removed.prepareHandoff('move-1');
+  await remaining.prepareHandoff('move-2');
+  const file = join(root, 'id-locks', `${hash('session-1')}.json`);
+  readHooks.before = async path => {
+    if (path !== file) return;
+    readHooks.before = undefined;
+    await rm(file);
+  };
+  await expect(listPendingIdLocks(root)).resolves.toEqual([
+    { sessionId: 'session-2', operationId: 'move-2', coreId: null },
+  ]);
+});
+
+it('rejects a symlinked lock on Windows before opening it', async () => {
+  await claimIdLock(root, 'session-1', firstIdentity, probe);
+  const { file } = await record();
+  const target = join(root, 'target');
+  await writeFile(target, await readFile(file), { mode: 0o600 });
+  await rm(file);
+  await symlink(target, file);
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  try {
+    Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
+    await expect(inspectIdLock(root, 'session-1')).rejects.toMatchObject({ code: 'unsafe-state-path' });
+  } finally {
+    Object.defineProperty(process, 'platform', platform);
+  }
+});
+
+it('propagates other pending lock read errors', async () => {
+  const held = await claimIdLock(root, 'session-1', firstIdentity, probe);
+  await held.prepareHandoff('move-1');
+  const { file } = await record();
+  readHooks.before = async path => {
+    if (path === file) throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+  };
+  await expect(listPendingIdLocks(root)).rejects.toMatchObject({ code: 'EACCES' });
+});
+
+it('rejects a pending lock containing JSON null', async () => {
+  await claimIdLock(root, 'session-1', firstIdentity, probe);
+  const { file } = await record();
+  await writeFile(file, 'null');
+  await expect(listPendingIdLocks(root)).rejects.toMatchObject({ code: 'invalid-session-id-lock' });
+});
+
 it.skipIf(process.platform === 'win32')('rejects a pending lock whose mode changes before it opens', async () => {
   const held = await claimIdLock(root, 'session-1', firstIdentity, probe);
   await held.prepareHandoff('move-1');
@@ -100,7 +149,7 @@ it.skipIf(process.platform === 'win32')('rejects a pending lock whose mode chang
     readHooks.before = undefined;
     await chmod(file, 0o400);
   };
-  await expect(listPendingIdLocks(root)).rejects.toThrow();
+  await expect(listPendingIdLocks(root)).rejects.toMatchObject({ code: 'unsafe-state-path' });
 });
 
 it('rejects a symlinked lock during inspection', async () => {
@@ -110,14 +159,14 @@ it('rejects a symlinked lock during inspection', async () => {
   await writeFile(target, await readFile(file), { mode: 0o600 });
   await rm(file);
   await symlink(target, file);
-  await expect(inspectIdLock(root, 'session-1')).rejects.toThrow();
+  await expect(inspectIdLock(root, 'session-1')).rejects.toMatchObject({ code: process.platform === 'win32' ? 'unsafe-state-path' : 'ELOOP' });
 });
 
 it.skipIf(process.platform === 'win32')('rejects a lock with owner-read-only mode', async () => {
   await claimIdLock(root, 'session-1', firstIdentity, probe);
   const { file } = await record();
   await chmod(file, 0o400);
-  await expect(inspectIdLock(root, 'session-1')).rejects.toThrow();
+  await expect(inspectIdLock(root, 'session-1')).rejects.toMatchObject({ code: 'unsafe-state-path' });
 });
 
 it.skipIf(process.platform === 'win32')('rejects a lock owned by a different user', async () => {

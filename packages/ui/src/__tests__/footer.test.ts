@@ -35,6 +35,47 @@ describe("AgentFooter", () => {
     expect(lines.join("\n")).not.toContain("#"); // the useless run-id hash is gone
     for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(60);
   });
+  it("right-aligns model and thinking while progressively dropping lower-priority fields", () => {
+    const src = new Src();
+    src.rows.set("r1", row({ name: "pimo", model: "github-copilot/gpt-6.1-terra", thinking: "high", step_count: 8 }));
+    const theme: ThemeAdapter = { ...id, modelName: () => "GPT-6.1 Terra" };
+    const store = new AgentStore(src); store.start();
+    const f = new AgentFooter(store, theme, { now: () => 60_000 });
+    const wide = f.render(80)[0]!;
+    expect(wide).toMatch(/^◇ worker pimo · 8 turns · 1m0s +GPT-6\.1 Terra · high$/);
+    expect(visibleWidth(wide)).toBe(80);
+    const noTurns = f.render(48)[0]!;
+    expect(noTurns).not.toContain("turns");
+    expect(noTurns).toContain("1m0s");
+    expect(noTurns).toMatch(/GPT-6\.1 Terra · high$/);
+    const noElapsed = f.render(38)[0]!;
+    expect(noElapsed).not.toContain("turns");
+    expect(noElapsed).not.toContain("1m0s");
+    expect(noElapsed).toMatch(/GPT-6\.1 Terra · high$/);
+    const noThinking = f.render(30)[0]!;
+    expect(noThinking).toMatch(/GPT-6\.1 Terra$/);
+    expect(noThinking).not.toContain("high");
+    const short = f.render(24)[0]!;
+    expect(short).toMatch(/^◇ worker pimo +GPT-6\.1 T…$/);
+    for (const width of [24, 30, 38, 48, 80]) expect(visibleWidth(f.render(width)[0]!)).toBe(width);
+    store.stop();
+  });
+  it("keeps pinned and selected models right-aligned without losing the summary", () => {
+    const src = new Src();
+    for (let i = 1; i <= 4; i++) src.rows.set(`r${i}`, row({ id: `r${i}`, name: `agent-${i}`, model: "p/model", thinking: "high" }));
+    const store = new AgentStore(src); store.start(); store.togglePin("r4");
+    const footer = new AgentFooter(store, id, { now: () => 5000 });
+    const normal = footer.render(72);
+    expect(normal[0]).toMatch(/agent-4 .+ · 3 turns · 5s +model · high$/);
+    expect(normal[2]).toContain("4 running · +2 more");
+    expect(normal.slice(0, 2).every(line => visibleWidth(line) === 72 && line.endsWith("model · high"))).toBe(true);
+    store.beginSelect();
+    const selected = footer.render(72);
+    expect(selected[0]).toMatch(/^▸ .*agent-4/);
+    expect(selected.slice(0, 2).every(line => visibleWidth(line) === 72 && line.endsWith("model · high"))).toBe(true);
+    expect(selected[2]).toMatch(/view more +4 subagents$/);
+    store.stop();
+  });
   it("hasVisibleChange is false when nothing changed between frames", () => {
     const src = new Src(); src.rows.set("r1", row({ name: "scribe" }));
     const store = new AgentStore(src); store.start();

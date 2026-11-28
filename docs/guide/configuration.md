@@ -164,7 +164,7 @@ The live footer shows corrected credits without basis markers, then the cache hi
 | `ui.footer` | `true` | Footer and run selector. Takes effect next session. |
 | `ui.inputBand` | `true` | Draw the editor strip and sent-message caret. If another extension owns the editor slot, Pi keeps that editor. Changes apply after `/reload`. |
 | `ui.icons` | `"text"` | `"text"` uses monochrome Unicode. `"nerd"` uses Nerd Font glyphs. |
-| `ui.spiderGlyphs` | `false` | Animate the robot's eyes in Nerd mode when the terminal uses a font patched by Spider. Takes effect next session. |
+| `ui.spiderGlyphs` | `false` | Animate the robot's eyes in Nerd mode when the terminal uses a font patched by Spider. Takes effect in the next session or after `/reload`. |
 | `copyButtons.enabled` | `true` | Copy buttons for finished replies in fullscreen mode. Takes effect after `/reload`. |
 | `reload.auto` | `true` | Reload idle interactive parent sessions after a verified build, once active work and prompts are clear. Changes apply live. |
 | `usage.footer` | `true` | Global-only. Footer with corrected credits in parent TUI sessions. Changes apply live. |
@@ -238,8 +238,9 @@ restarting it.
 - Config readers use the merged layers for live action and routing settings. The reloader in `packages/host/src/config-reload.ts` rereads the same flat map.
 - The organism rereads configuration each time it resolves its runtime for a request or drain.
 - The agents UI reads `ui.footer`, `ui.icons`, and `ui.spiderGlyphs` when it
-  mounts. The usage footer also reads `ui.icons` at session start. New tool and
-  notice renderers read `ui.icons` when they are created.
+  mounts: in the next session or after `/reload`. The usage footer also reads
+  `ui.icons` at session start. New tool and notice renderers read `ui.icons`
+  when they are created.
 - `ui.inputBand` and `copyButtons.enabled` changes need `/reload`.
 - `tools.structured` changes need `/reload`. The setting does not change the interactive `spider` tool.
 - `reload.auto` applies live. Set it to `false` to stop automatic reloads.

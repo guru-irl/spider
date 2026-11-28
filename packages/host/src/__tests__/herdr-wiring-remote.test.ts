@@ -1,14 +1,8 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import spiderExtension from '../extension.js';
-import { clearActions, getAction, type SpiderArgs } from '../dispatch.js';
-import { paths } from '@spider/db-core';
-import { globalConfigForTest } from '../../../db-core/src/__tests__/global-config.testutil.js';
-import { runHerdrCli } from '../../../herdr/src/setup/cli.js';
-import { configFixtureCwd } from './herdr-config-fixture.js';
 import { resolve, join } from 'node:path';
 import { mountedFixture, heldObserverScenario, assertNoNativeNotes, launchScenario, installFixtureRuntime, closePaneScenario } from './herdr-wiring-fixture.js';
 
-afterEach(() => { clearActions(); vi.unstubAllEnvs(); vi.resetModules(); });
+afterEach(() => { vi.unstubAllEnvs(); vi.resetModules(); });
 
 it('a missing initial index is empty output, while a malformed published index still fails', async () => {
   const f = await mountedFixture();
@@ -94,7 +88,7 @@ it.each(['observer', 'console'] as const)('closing a %s pane leaves the real pay
 
 it.skipIf(process.env.SPIDER_HERDR_E2E !== '1').each(['observer', 'console'] as const)('real isolated hc: closing a %s pane leaves the payload running; requires SPIDER_HERDR_E2E=1', pane => closePaneScenario('hc', pane), 60000);
 
-it('explicit openJob through IPC opens the production remote observer', () => launchScenario('fake'), 60_000);
+it('explicit openJob opens the production observer and every composed hc run disables native notes', () => launchScenario('fake'), 60_000);
 
 it('the production release writer binds the request checksum and the runtime waits for a correct publication', async () => {
   const f = await mountedFixture('fake', 'tui', true, false, true, true);
@@ -131,7 +125,5 @@ const child=spawn(${JSON.stringify(original)},process.argv.slice(2),{stdio:['pip
     throw error;
   } finally { captureAbort.abort(); await f.close(); }
 }, 60000);
-
-it('every composed spider hc run disables native notes', () => launchScenario('fake'), 60_000);
 
 it.skipIf(process.env.SPIDER_HERDR_E2E !== '1')('real isolated-hc host wiring (no app window)', () => launchScenario('hc'), 60_000);

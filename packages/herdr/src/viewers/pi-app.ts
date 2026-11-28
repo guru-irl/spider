@@ -8,7 +8,8 @@ import {
   SettingsManager, SkillInvocationMessageComponent, ToolExecutionComponent, UserMessageComponent,
   getMarkdownTheme, getSelectListTheme, initTheme, parseSkillBlock, sessionEntryToContextMessages, type Theme,
 } from '@earendil-works/pi-coding-agent';
-import { Container, Editor, Spacer, Text, TruncatedText, truncateToWidth, visibleWidth, type Component, type TUI } from '@earendil-works/pi-tui';
+import { Container, Editor, Spacer, Text, TruncatedText, stripTerminalSequences, truncateToWidth, visibleWidth, type Component, type TUI } from '@earendil-works/pi-tui';
+import { joinToolCards } from '@spider/ui';
 import { renderSpiderCall, renderSpiderResult } from '../../../host/src/render-result.js';
 import { restoreExecDetails } from '../../../host/src/exec-session-storage.js';
 import type { SteerReply, RunViewInfo } from '../contracts.js';
@@ -107,6 +108,14 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
   const ui = options.ui;
 
   const chat = new Container(); const pending = new Container(); const editorSlot = new Container();
+  const renderChat = chat.render;
+  chat.render = function (width) {
+    const rows = renderChat.call(this, width);
+    // Unlike the chat, the viewer uses Pi's full-height painted padding rows.
+    return joinToolCards(this, rows, width, child => child instanceof ToolExecutionComponent, (row, _edge, columns) =>
+      stripTerminalSequences(row) === ' '.repeat(columns) &&
+      (row === ' '.repeat(columns) || /^\x1b\[(?:48;2;\d+;\d+;\d+|48;5;\d+|4[0-7]|10[0-7])m *\x1b\[49m$/.test(row)));
+  };
   const hiddenNotice = new Text('', 1, 0); let hidden = 0;
   const tools = new Map<string, ToolExecutionComponent>();
   const streaming = new Map<string, AssistantMessageComponent>();

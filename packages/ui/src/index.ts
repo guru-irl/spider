@@ -6,6 +6,7 @@ import { fitResultLines } from "./renderers/types";
 import { icon, type IconStyle } from "./icons.js";
 export type { Component } from "./component";
 export { cachedLines } from "./component";
+export { joinToolCards } from "./tool-card-join.js";
 export { ICON_STYLES, ACTIVITY_FRAMES, BAND_GLYPHS, REPLY_FRAME, icon, isIconStyle, type IconStyle, type IconRole } from "./icons.js";
 export { formatRunUsage, formatCompactionCount } from "./agents/usage";
 

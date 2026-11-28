@@ -1,7 +1,7 @@
 import { copyFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BranchSummaryMessageComponent, CompactionSummaryMessageComponent, SkillInvocationMessageComponent, CustomEditor, CustomMessageComponent, ToolExecutionComponent, UserMessageComponent, Theme, createEditToolDefinition, getAgentDir, initTheme } from "@earendil-works/pi-coding-agent";
+import { BranchSummaryMessageComponent, CompactionSummaryMessageComponent, SkillInvocationMessageComponent, CustomEditor, CustomMessageComponent, ToolExecutionComponent, UserMessageComponent, Theme, createEditToolDefinition, getAgentDir, initTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Text, stripTerminalSequences, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerInputBand } from "./index.js";
@@ -20,14 +20,18 @@ const START = "\x1b]133;A\x07";
 const END = "\x1b]133;B\x07\x1b]133;C\x07";
 const plain = (rows: string[]) => rows.map(stripTerminalSequences).map(row => row.trimEnd());
 const editTool = () => {
-  const overrides = new Map<string, NonNullable<ConstructorParameters<typeof ToolExecutionComponent>[4]>>();
-  registerEditWriteOverrides({ registerTool: (tool: { name: string }) => overrides.set(tool.name, tool) }, {
+  type RegisteredTool = Parameters<ExtensionAPI["registerTool"]>[0];
+  const overrides = new Map<string, RegisteredTool>();
+  registerEditWriteOverrides({ registerTool: (tool: RegisteredTool) => overrides.set(tool.name, tool) }, {
     db: null as never, getCwd: () => "/project", getSessionId: () => "test",
   });
-  const { renderCall, renderResult } = createEditToolDefinition("/project");
-  // Match Pi's withBuiltInRenderers: inherit the renderers, not renderShell.
+  const native = createEditToolDefinition("/project");
+  const { renderCall, renderResult } = native;
+  // Pi's withBuiltInRenderers uses these native callbacks with the registered
+  // edit schema. Both schemas agree on the path and edits the callbacks read.
+  const definition = { ...overrides.get("edit")!, renderCall, renderResult } as typeof native;
   return new ToolExecutionComponent("edit", "call", { path: "guide.md", edits: [{ oldText: "old", newText: "new" }] },
-    {}, { ...overrides.get("edit"), renderCall, renderResult }, tui, "/project");
+    {}, definition, tui, "/project");
 };
 const custom = () => new CustomMessageComponent({ role: "custom", customType: "notice", content: "Check the manifest", display: true, timestamp: 0 }, undefined);
 

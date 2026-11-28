@@ -43,27 +43,29 @@ async function connectedClient() {
   };
 }
 
-test("disconnect after broker FIN does not write or emit a client error", async () => {
-  const fixture = await connectedClient();
-  const errors: Error[] = [];
-  fixture.client.on("error", error => errors.push(error));
-  try {
-    let writes: ReturnType<typeof vi.spyOn>;
-    const disconnected = new Promise<void>((resolve, reject) => {
-      fixture.socket.once("end", () => {
-        fixture.socket.end();
-        writes = vi.spyOn(fixture.socket, "write");
-        fixture.client.disconnect().then(resolve, reject);
+for (const endWritable of [false, true]) {
+  test(`disconnect after broker FIN does not write or emit a client error (writable ended: ${endWritable})`, async () => {
+    const fixture = await connectedClient();
+    const errors: Error[] = [];
+    fixture.client.on("error", error => errors.push(error));
+    try {
+      let writes: ReturnType<typeof vi.spyOn>;
+      const disconnected = new Promise<void>((resolve, reject) => {
+        fixture.socket.once("end", () => {
+          if (endWritable) fixture.socket.end();
+          writes = vi.spyOn(fixture.socket, "write");
+          fixture.client.disconnect().then(resolve, reject);
+        });
       });
-    });
-    fixture.peer.end();
-    await disconnected;
-    assert.deepEqual(errors.map(error => (error as NodeJS.ErrnoException).code), []);
-    assert.equal(writes!.mock.calls.length, 0, "no unregister write after FIN");
-  } finally {
-    await fixture.cleanup();
-  }
-});
+      fixture.peer.end();
+      await disconnected;
+      assert.deepEqual(errors.map(error => (error as NodeJS.ErrnoException).code), []);
+      assert.equal(writes!.mock.calls.length, 0, "no unregister write after FIN");
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+}
 
 for (const code of ["EPIPE", "ECONNRESET"]) {
   test(`disconnect does not emit expected ${code} socket errors`, async () => {
@@ -80,6 +82,21 @@ for (const code of ["EPIPE", "ECONNRESET"]) {
     }
   });
 }
+
+test("an EPIPE outside disconnect still emits a client error", async () => {
+  const fixture = await connectedClient();
+  const errors: Error[] = [];
+  fixture.client.on("error", error => errors.push(error));
+  try {
+    const closed = new Promise<void>(resolve => fixture.socket.once("close", () => resolve()));
+    const error = Object.assign(new Error("broken pipe"), { code: "EPIPE" });
+    fixture.socket.emit("error", error);
+    await closed;
+    assert.deepEqual(errors, [error]);
+  } finally {
+    await fixture.cleanup();
+  }
+});
 
 test("disconnect still emits unexpected socket errors", async () => {
   const fixture = await connectedClient();

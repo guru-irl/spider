@@ -105,6 +105,22 @@ configured machine alias. A collapsed message shows a one-line preview aligned
 with the title text. An expanded message wraps the body at the same indent and
 adds dim details. Reply details do not show message IDs.
 
+### Compaction cards
+
+Use the moon in place of the spider logo. Show the context before compaction
+and Pi's estimate for the summary alone as two bars on the same scale. Round to
+an eighth of a cell so a small summary does not fill a whole cell. The summary
+estimate does not include the retained conversation. Show billing in a dim row
+when Pi has a bill to show.
+
+Click `open ↗` in fullscreen mode to read that compaction in tabs. Run
+`/compaction` to open the latest compaction on the current branch. The reader
+shows an overview, one tab per summary section, and the full summary. When the
+summary has no section headings, the reader uses a single Summary tab beside
+the overview. Use Tab to switch sections and Esc to close. When content
+scrolls, the reader shows Pi's auto-hiding track and draggable thumb. Pi still
+owns Ctrl+O and clicks elsewhere on the card.
+
 ### Intercom route results
 
 A relayed ask, send, or reply shows its route and any skipped relays in dim rows

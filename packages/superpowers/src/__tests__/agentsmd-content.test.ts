@@ -40,8 +40,9 @@ superpowers skills above; they replace none of them.
       "## Skills first", "## pstack skills", "## The spider tool",
     ]);
   });
-  it("stays within the token budget (≤ 8500 chars)", () => {
-    expect(SPIDER_BLOCK_BODY.length).toBeLessThanOrEqual(8500);
+  it("stays within the token budget (≤ 8500 chars, markers included)", () => {
+    // Herdr's guidance story measures the whole generated block, markers and all.
+    expect(buildSpiderBlock().length).toBeLessThanOrEqual(8500);
   });
   it("buildSpiderBlock wraps the body in the delimiters exactly once", () => {
     const b = buildSpiderBlock();

@@ -1,6 +1,6 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { ThemeAdapter } from "../agents/types.js";
-import { icon, type IconRole } from "../icons.js";
+import { icon, type IconRole, type IconStyle } from "../icons.js";
 
 /** Active SGR at the end of a marker; closed attributes must not leak into its text. */
 function sgrCodes(marker: string): string {
@@ -32,10 +32,15 @@ function sgrCodes(marker: string): string {
 // Both icon styles participate in wrapping. Match glyphs as alternatives, and keep the
 // bare ✗ and ⚠ for legacy output.
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\\-]/g, "\\$&");
-const markerGlyphs = (["spider", "gutter", "task", "result", "failure", "warning", "success", "question", "running", "open", "paused", "active", "todoDone", "todoFailed", "todoPending", "content", "todo", "bullet", "message"] as const)
+const markerGlyphs = (["spider", "task", "result", "failure", "warning", "success", "question", "running", "open", "paused", "active", "todoDone", "todoFailed", "todoPending", "content", "todo", "bullet", "message"] as const)
   .flatMap(role => [icon("text", role), icon("nerd", role).trimEnd()]).map(escapeRegExp).join("|");
 const messageChars = [icon("text", "message"), icon("nerd", "message")].join("").replace(/[\\\]\-^]/g, "\\$&");
 const resultPrefix = new RegExp(`^([ \\t]*(?:(?:\\d+\\.[ \\t]+)?(?:[│✓✗⚠●○■◆▪▣•·\\-*]|${markerGlyphs})(?:[ \\t]*[→◆▪▣${messageChars}])?[ \\t]+|\\[[^\\]\\n]+\\][ \\t]+|\\d+\\.[ \\t]+|[ \\t]+))`, "u");
+
+/** Detail rows start at the title text, after the logo and its separator. */
+export function cardDetailIndent(style: IconStyle | undefined): string {
+  return " ".repeat(visibleWidth(` ${icon(style, "spider")} `));
+}
 
 /** Fit result rows at the final render boundary, preserving ANSI state across wraps. */
 export function fitResultLines(lines: readonly string[], width: number, expanded: boolean, hangingIndent?: number): string[] {
@@ -52,7 +57,7 @@ export function fitResultLines(lines: readonly string[], width: number, expanded
     }
     const prefixWidth = prefix ? visibleWidth(prefix) : 0;
     const indentWidth = hangingIndent === undefined ? prefixWidth
-      : prefix?.trimStart().startsWith(icon("text", "gutter")) ? Math.max(hangingIndent, prefixWidth) : hangingIndent;
+      : Math.max(hangingIndent, visibleWidth(/^[ \t]*/u.exec(plain)![0]));
     const reserved = Math.max(prefix ? visibleWidth(prefix) : 0, indentWidth);
     if (prefix && reserved < w) {
       let end = 0;

@@ -1,6 +1,6 @@
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { icon as uiIcon } from "../icons.js";
-import { fitResultLines, resultTrimmer, statusIcon } from "./types.js";
+import { cardDetailIndent, fitResultLines, resultTrimmer, statusIcon } from "./types.js";
 import type { ExecDetails, RenderCtx } from "./types.js";
 
 const CALL_CAP = 2;
@@ -12,15 +12,15 @@ function formatSize(bytes: number): string {
 
 function outputRows(details: ExecDetails, ctx: RenderCtx, collapsed: string[]): string[] {
   const { theme, width } = ctx;
+  const indent = cardDetailIndent(theme.iconStyle);
   const full = ctx.expanded ? details.expandedOutput : undefined;
-  if (!full) return collapsed.map((p) => truncateToWidth(` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("toolOutput", p)}`, width, ""));
+  if (!full) return collapsed.map((p) => truncateToWidth(`${indent}${theme.fg("toolOutput", p)}`, width, ""));
   const rows: string[] = [];
-  if (full.hidden) rows.push(` ${theme.fg("muted", `${uiIcon(theme.iconStyle, "gutter")} … ${full.hidden} earlier output line${full.hidden === 1 ? "" : "s"} hidden`)}`);
-  const gutter = ` ${theme.fg("dim", uiIcon(theme.iconStyle, "gutter"))} `;
+  if (full.hidden) rows.push(`${indent}${theme.fg("muted", `… ${full.hidden} earlier output line${full.hidden === 1 ? "" : "s"} hidden`)}`);
   let stream: "stdout" | "stderr" | undefined;
   for (const entry of full.rows) {
-    if (entry.stream === "stderr" && stream !== "stderr") rows.push(gutter + theme.fg("muted", "stderr:"));
-    rows.push(gutter + theme.fg("toolOutput", entry.text));
+    if (entry.stream === "stderr" && stream !== "stderr") rows.push(indent + theme.fg("muted", "stderr:"));
+    rows.push(indent + theme.fg("toolOutput", entry.text));
     stream = entry.stream;
   }
   if (full.partial) {
@@ -41,10 +41,10 @@ export function renderExecCall(
   const all = (details.commands ?? []).flatMap(command => command.split(/\r?\n/u));
   const preview = all.filter(command => command.trim());
   const shown = expanded && preview.length ? all : preview.slice(0, CALL_CAP);
-  const gutter = ` ${theme.fg("dim", uiIcon(theme.iconStyle, "gutter"))} `;
-  const body = shown.map(command => gutter + theme.fg("toolOutput", command));
+  const indent = cardDetailIndent(theme.iconStyle);
+  const body = shown.map(command => indent + theme.fg("toolOutput", command));
   const extra = preview.length - shown.length;
-  if (extra > 0) body.push(gutter + theme.fg("dim", `… +${extra} more line${extra === 1 ? "" : "s"}`));
+  if (extra > 0) body.push(indent + theme.fg("dim", `… +${extra} more line${extra === 1 ? "" : "s"}`));
   return [truncateToWidth(head, width, "…"), ...fitResultLines(body, width, expanded, 3)];
 }
 
@@ -62,7 +62,7 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
   if (details.running) {
     out.push(trim(` ${theme.fg("muted", `${uiIcon(theme.iconStyle, "running")} running…`)}`, width, ""));
     for (const p of details.preview ?? []) {
-      out.push(trim(` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("toolOutput", p)}`, width, ""));
+      out.push(trim(`${cardDetailIndent(theme.iconStyle)}${theme.fg("toolOutput", p)}`, width, ""));
     }
     return fitResultLines(out, width, expanded, 3);
   }
@@ -84,7 +84,7 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
     const shown = expanded ? preview : preview.slice(0, 1);
     out.push(...outputRows(details, ctx, shown));
     const rest = preview.length - shown.length;
-    if (rest > 0) out.push(trim(` ${theme.fg("muted", `${uiIcon(theme.iconStyle, "gutter")} … ${rest} more`)}`, width, ""));
+    if (rest > 0) out.push(trim(`${cardDetailIndent(theme.iconStyle)}${theme.fg("muted", `… ${rest} more`)}`, width, ""));
     return fitResultLines(out, width, expanded, 3);
   }
 
@@ -103,7 +103,7 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
         ? ` ${statusIcon(theme, "on")} ${theme.fg("muted", `${timeoutLabel("outcome unknown")} · ${details.outLines} lines`)}`
         : ` ${statusIcon(theme, "on")} ${theme.fg("muted", `detached · pid ${d.pid ?? "?"} · exit unknown · ${details.outLines} lines so far`)}`,
       width, ""));
-    if (d.jobDir) out.push(trim(` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("muted", `logs: ${d.jobDir}`)}`, width, ""));
+    if (d.jobDir) out.push(trim(`${cardDetailIndent(theme.iconStyle)}${theme.fg("muted", `logs: ${d.jobDir}`)}`, width, ""));
     // m-1: both sinks now word this row's receipt disclosure identically —
     // the model-facing text (actions/exec.ts's `shape()`) already says
     // "receipt: <path>  (recorded outcome when available)" for BOTH the
@@ -111,7 +111,7 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
     // different ("status: <path> (appears when it exits)") for `timeout`
     // only, even though the underlying uncertainty is the same shape.
     if (d.receipt) out.push(trim(
-      ` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("muted", `receipt: ${d.receipt}  (recorded outcome when available)`)}`,
+      `${cardDetailIndent(theme.iconStyle)}${theme.fg("muted", `receipt: ${d.receipt}  (recorded outcome when available)`)}`,
       width, ""));
     const preview = details.preview ?? [];
     const shown = expanded ? preview : preview.slice(-1);
@@ -137,18 +137,18 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
     meta.push("logs retained");
     out.push(trim(` ${icon} ${theme.fg("muted", meta.join(" · "))}`, width, ""));
     out.push(trim(
-      ` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("muted", `job dir: ${details.retained.jobDir}${details.retained.reason ? ` — ${details.retained.reason}` : ""}`)}`,
+      `${cardDetailIndent(theme.iconStyle)}${theme.fg("muted", `job dir: ${details.retained.jobDir}${details.retained.reason ? ` — ${details.retained.reason}` : ""}`)}`,
       width, ""));
     if (details.retained.receipt) {
       out.push(trim(
-        ` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("muted", `receipt: ${details.retained.receipt}  (recorded outcome when available)`)}`,
+        `${cardDetailIndent(theme.iconStyle)}${theme.fg("muted", `receipt: ${details.retained.receipt}  (recorded outcome when available)`)}`,
         width, ""));
     }
     const preview = details.preview ?? [];
     const shown = expanded ? preview : preview.slice(0, 1);
     out.push(...outputRows(details, ctx, shown));
     const rest = preview.length - shown.length;
-    if (rest > 0) out.push(trim(` ${theme.fg("muted", `${uiIcon(theme.iconStyle, "gutter")} … ${rest} more`)}`, width, ""));
+    if (rest > 0) out.push(trim(`${cardDetailIndent(theme.iconStyle)}${theme.fg("muted", `… ${rest} more`)}`, width, ""));
     return fitResultLines(out, width, expanded, 3);
   }
 
@@ -198,10 +198,10 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
   const shown = expanded ? preview : preview.slice(0, 1);
   out.push(...outputRows(details, ctx, shown));
   const rest = preview.length - shown.length;
-  if (rest > 0) out.push(trim(` ${theme.fg("muted", `${uiIcon(theme.iconStyle, "gutter")} … ${rest} more`)}`, width, ""));
+  if (rest > 0) out.push(trim(`${cardDetailIndent(theme.iconStyle)}${theme.fg("muted", `… ${rest} more`)}`, width, ""));
   if (details.indexed) {
     out.push(trim(
-      ` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("muted", `indexed ${uiIcon(theme.iconStyle, "arrowRight")} ${details.indexed.source} (${details.indexed.chunks} chunks)`)}`,
+      `${cardDetailIndent(theme.iconStyle)}${theme.fg("muted", `indexed ${uiIcon(theme.iconStyle, "arrowRight")} ${details.indexed.source} (${details.indexed.chunks} chunks)`)}`,
       width, ""));
   }
   return fitResultLines(out, width, expanded, 3);

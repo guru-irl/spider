@@ -30,7 +30,6 @@ const ICONS = {
   todoDone: { text: "✓", nerd: "\u{F05E1} " },
   todoFailed: { text: "×", nerd: "\u{F015A} " },
   todoPending: { text: "○", nerd: "\u{F0766} " },
-  gutter: { text: "└", nerd: "└ " },
   task: { text: "→", nerd: "\u{F060D} " },
   result: { text: "↑", nerd: "\u{F005C} " },
   message: { text: "→", nerd: "\u{F01F0} " },

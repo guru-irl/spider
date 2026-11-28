@@ -1,10 +1,10 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SessionManager, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { stripTerminalSequences } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { openDb, WORKTREE_SCHEMA } from "@spider/db-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { IntroTheme } from "@spider/ui";
+import { TabbedReader, type IntroTheme } from "@spider/ui";
 import { testScratchPath } from "./testutil.js";
 
 import { readIntroStats, registerIntro } from "../intro/index.js";
@@ -63,17 +63,34 @@ function fixture(options: { cwd?: string; session?: SessionManager; mode?: Exten
   const cwd = options.cwd ?? temporaryCwd();
   const session = options.session ?? SessionManager.inMemory(cwd);
   const handlers = new Map<string, Handler>(), printed: string[] = [];
+  const commands = new Map<string, Handler>(), shortcuts = new Map<string, (ctx: ExtensionContext) => unknown>();
   const tui = { terminal: { columns: 120, rows: 24, reducedMotion: true }, requestRender() {} };
+  const source = (path: string) => ({ path, source: "local", scope: "project", origin: "top-level", baseDir: cwd });
+  let overlay: { reader: TabbedReader; options: unknown } | undefined;
+  let prompt = "Fixture prompt";
   let component: ReturnType<NonNullable<Parameters<ExtensionUIContext["setHeader"]>[0]>> | undefined;
   const pi = {
     on: (name: string, handler: Handler) => { handlers.set(name, handler); },
-    getCommands: () => [], getAllTools: () => [],
-    registerCommand() {}, registerShortcut() {},
+    getCommands: () => [
+      { name: "resources", source: "extension", sourceInfo: source(join(cwd, "ext.ts")) },
+      { name: "other-command", source: "extension", sourceInfo: source(join(cwd, "ext.ts")) },
+      { name: "skill:example", source: "skill", sourceInfo: source(join(cwd, "skills/example/SKILL.md")) },
+      { name: "template", source: "prompt", sourceInfo: source(join(cwd, "prompts/template.md")) },
+    ],
+    getAllTools: () => [
+      { sourceInfo: source(join(cwd, "tools-only.ts")) }, { sourceInfo: source("builtin:read") },
+    ],
+    registerCommand: (name: string, value: { handler: Handler }) => commands.set(name, value.handler),
+    registerShortcut: (key: string, value: { handler: (ctx: ExtensionContext) => unknown }) => shortcuts.set(key, value.handler),
   } as unknown as ExtensionAPI;
   const ctx = {
     mode: options.mode ?? "tui", cwd, hasUI: options.mode !== "print" && options.mode !== "json", sessionManager: session,
-    thinkingLevel: "high", getSystemPrompt: () => "Fixture prompt",
-    ui: { setHeader: (factory: (tui: unknown, theme: IntroTheme) => NonNullable<typeof component>) => { component = factory(tui, theme); } },
+    thinkingLevel: "high", getSystemPrompt: () => prompt,
+    ui: {
+      setHeader: (factory: (tui: unknown, theme: IntroTheme) => NonNullable<typeof component>) => { component = factory(tui, theme); },
+      custom: (factory: (tui: unknown, theme: IntroTheme, keys: unknown, done: () => void) => TabbedReader, options: unknown) =>
+        new Promise<void>(resolve => { overlay = { reader: factory(tui, theme, {}, () => { overlay?.reader.dispose(); overlay = undefined; resolve(); }), options }; }),
+    },
   } as unknown as ExtensionContext;
   const terminal = { restored: false, width: () => 120, isRestored: () => terminal.restored, write: (text: string) => printed.push(text) };
   const readVisitUsage = vi.fn(async () => ({ credits: 1.53, calls: 2, unpricedCalls: 0,
@@ -88,7 +105,12 @@ function fixture(options: { cwd?: string; session?: SessionManager; mode?: Exten
     if (!isError) writeFileSync(join(cwd, path), content);
     await emit("tool_result", { toolName, toolCallId, input, isError });
   }
-  return { cwd, session, terminal, printed, readVisitUsage, get header() { return component; }, start, shutdown, change };
+  return { cwd, session, terminal, printed, readVisitUsage, commands, shortcuts,
+    get header() { return component; }, get overlay() { return overlay; }, start, shutdown, change,
+    setPrompt(value: string) { prompt = value; },
+    runResources: () => commands.get("resources")?.("", ctx),
+    pressResources: () => shortcuts.get("alt+o")?.(ctx),
+  };
 }
 
 describe("interactive intro lifecycle", () => {
@@ -104,8 +126,62 @@ describe("interactive intro lifecycle", () => {
     const f = fixture({ mode: kind === "child" || kind === "unadmitted" ? "tui" : kind, admitted: kind !== "unadmitted" });
     await f.start(); f.terminal.restored = true; await f.shutdown();
     expect(f.header).toBeUndefined();
+    await f.runResources(); await f.pressResources();
+    expect(f.overlay).toBeUndefined();
+    if (kind === "child") { expect(f.commands.has("resources")).toBe(false); expect(f.shortcuts.has("alt+o")).toBe(false); }
     expect(f.printed).toEqual([]);
     expect(f.readVisitUsage).not.toHaveBeenCalled();
+  });
+
+  it("opens the shared reader from the box, Alt+O and /resources without taking Ctrl+O", async () => {
+    const f = fixture();
+    f.setPrompt(`Original prompt\n<project_context>\nProject-specific instructions and guidelines:\n\n<project_instructions path="${join(f.cwd, "AGENTS.md")}">\nProject text\n</project_instructions>\n</project_context>\n`);
+    await f.start();
+    const header = f.header!, headerText = header.render(120).map(stripTerminalSequences).join("\n");
+    expect(headerText).toMatch(/Context 1 · Skills 1 · Extensions ≥2 · Prompts 1 · System prompt ~\d+ tokens/);
+    const click: TuiMouseEvent = { type: "click", button: "left", x: 5, y: 16, screenX: 5, screenY: 16,
+      width: 120, height: 18, shift: false, alt: false, ctrl: false };
+    expect(header.handleMouse?.({ ...click, y: 1 })).toBeUndefined();
+    expect(f.overlay).toBeUndefined();
+    expect(header.handleMouse?.(click)).toEqual({ handled: true });
+    const first = f.overlay!;
+    expect(first?.reader).toBeInstanceOf(TabbedReader);
+    expect(first.options).toMatchObject({ overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0 } });
+    const render = (reader: TabbedReader, width = 120) => {
+      const rows = reader.render(width);
+      expect(rows).toHaveLength(24);
+      expect(rows.every(row => visibleWidth(row) <= width)).toBe(true);
+      return rows.map(stripTerminalSequences).join("\n");
+    };
+    expect(render(first.reader)).toContain("Original prompt");
+    for (const [tab, body] of [["Context files", "AGENTS.md"], ["Skills", "skills/example/SKILL.md"],
+      ["Extensions", "tools-only.ts"], ["Prompt templates", "prompts/template.md"]]) {
+      first.reader.handleInput("\t");
+      expect(render(first.reader)).toContain(`Loaded resources / ${tab}`);
+      expect(render(first.reader)).toContain(body);
+    }
+    await f.runResources(); // A second entry point does not stack a reader over the first.
+    expect(f.overlay).toBe(first);
+    first.reader.handleInput("\x1b");
+    expect(f.overlay).toBeUndefined();
+    await Promise.resolve();
+    f.setPrompt("**Literal** \x1b[31mred\x1b[0m\x07 text");
+    const shortcut = f.pressResources();
+    const second = f.overlay?.reader;
+    expect(second).toBeInstanceOf(TabbedReader);
+    const ansi = second!.render(60).join("\n");
+    expect(ansi).toContain("**Literal** red text");
+    expect(ansi).not.toContain("\x1b[31m");
+    expect(ansi).not.toContain("\x07");
+    second!.handleInput("\x1b"); await shortcut;
+    const command = f.runResources();
+    const third = f.overlay?.reader;
+    expect(third).toBeInstanceOf(TabbedReader);
+    expect(render(third!)).toContain("**Literal** red text");
+    third!.handleInput("\x1b"); await command;
+    expect(f.overlay).toBeUndefined();
+    expect(f.shortcuts.has("ctrl+o")).toBe(false);
+    await f.shutdown("new");
   });
 
   it.each(["signal", "new", "resume", "reload", "fork"])("does not print or query usage for %s shutdown", async reason => {

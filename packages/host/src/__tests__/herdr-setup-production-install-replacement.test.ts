@@ -18,8 +18,9 @@ const fullFixture = (requireAppBackup = false) => focusedSetupFixture({ coreTran
 
 test.each([false, true])('replacement re-applies app selections without repeating session setup with running-in-place %s', async runningInPlace => {
   const f = await focusedSetupFixture({ coreTransport: 'socket', localOnly: runningInPlace }, true); await setupHerdr(f.request, f.parts);
-  const settings = join(f.h.directories.app, 'settings.json');
-  const choice = '{"zoom":1.5,"theme":"nord","layout":"personal"}'; await writeFile(settings, choice);
+  const settings = join(f.h.directories.app, 'settings.json'), shared = join(f.h.directories.app, 'shared.json');
+  const selection = await readFile(shared);
+  const choice = '{"zoom":1.5,"theme":"nord","custom":"personal"}'; await writeFile(settings, choice);
   const output: string[] = [], errors: string[] = [];
   const ports = { ...f.ports, stdout: (text: string) => output.push(text), stderr: (text: string) => errors.push(text) };
   expect(await runHerdrCli(['setup', '--config', f.request.configPath], ports)).toBe(1);
@@ -32,7 +33,9 @@ test.each([false, true])('replacement re-applies app selections without repeatin
   f.parts.cutover = async () => { throw new Error('Selection repair must not repeat session setup'); };
   f.parts.reconcileCutover = f.parts.cutover;
   expect(await setupHerdr({ ...f.request, replaceChanged: true }, f.parts).then(result => result.doctor.failures)).toEqual([]);
-  expect(JSON.parse(await readFile(settings, 'utf8'))).toEqual({ zoom: 1.5, theme: 'spider-glass', layout: 'spider-glass', sounds: { enabled: false } });
+  expect(JSON.parse(await readFile(settings, 'utf8'))).toEqual({ zoom: 1.5, theme: 'spider-glass', custom: 'personal', sounds: { enabled: false } });
+  expect(JSON.parse(selection.toString())).toEqual({ layout: 'Spider', 'fixture.mod': 'keep' });
+  expect(await readFile(shared)).toEqual(selection);
   const entry = (await readJournal(f.request.journalRoot)).entries.find(entry => entry.path === settings)!;
   expect(await readFile(entry.backup!, 'utf8')).toBe(choice);
   expect((await setupHerdr(f.request, f.parts)).writes).toEqual([]);

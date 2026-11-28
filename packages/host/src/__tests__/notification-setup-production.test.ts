@@ -16,7 +16,7 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 test.each(['0.1.13', '0.1.16'] as const)('%s production setup wires arrival sounds and selects the supported toast', async version => {
   const f = await releaseFixture(version);
   try { await setupHerdr(f.request, f.parts); } catch (error: any) { throw new Error(JSON.stringify(error.details ?? error.message)); }
-  const layout = JSON.parse(await readFile(join(f.h.directories.app, 'layouts/spider-glass.json'), 'utf8'));
+  const layout = JSON.parse(await readFile(join(f.h.directories.app, 'layouts/Spider.json'), 'utf8'));
   expect(layout.toast).toBe(version === '0.1.16' ? 'spider-toast' : undefined);
   const agents = await readFile(join(f.h.directories.app, 'mods/spider-agents/main.js'), 'utf8');
   expect(agents).toContain('spider-look:a-notification-arrival');
@@ -34,7 +34,7 @@ test.each(['0.1.13', '0.1.16'] as const)('%s production setup wires arrival soun
 test('setup forwards an explicit sound opt-out to Agents and the panel', async () => {
   const f = await fixture(); f.request.config.notifications = { sound: false };
   await setupHerdr(f.request, f.parts);
-  const layout = JSON.parse(await readFile(join(f.h.directories.app, 'layouts/spider-glass.json'), 'utf8'));
+  const layout = JSON.parse(await readFile(join(f.h.directories.app, 'layouts/Spider.json'), 'utf8'));
   const contents: any[] = [];
   const visit = (node: any) => { if (node?.content?.mod) contents.push(node.content); for (const child of node?.children ?? []) visit(child); };
   visit(layout);

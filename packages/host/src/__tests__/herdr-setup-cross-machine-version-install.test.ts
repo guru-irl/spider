@@ -39,7 +39,7 @@ test.each(['0.1.13', '0.1.16'] as const)('a lost version after staging installs 
   }
   const keys = JSON.parse(await readFile(join(home, 'keys.json'), 'utf8'));
   for (const key of ['cmd-t', 'cmd-d', 'cmd-shift-d']) expect(keys.global[key]).toEqual(stockKeys.global[key]);
-  expect(keys['layout:spider-glass']?.['cmd-shift-w']).toBeUndefined();
+  expect(keys['layout:Spider']?.['cmd-shift-w']).toBeUndefined();
   const parkAsset = join(f.root, 'packages/herdr/assets/pane/park.js'), updatedPark = Buffer.concat([await readFile(parkAsset), Buffer.from('\n// updated pane asset\n')]);
   await writeFile(parkAsset, updatedPark);
   await writeFile(app, (await readFile(app, 'utf8')).replace('process.exit(1)', `console.log('herdr-app ${version}')`));

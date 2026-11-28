@@ -77,7 +77,7 @@ export async function prepareInstallInputs(original: Suite, options: InstallOpti
 export async function installFresh(suite: Suite, options: InstallOptions = {}): Promise<FreshInstallation> {
   const inputs = await prepareInstallInputs(suite, { ...await remoteInstallOptions(suite), ...options });
   const absent = ['agents', 'spaces', 'pane', 'tabs', 'panel', 'machines'].map(name => join(inputs.config.app.home, 'mods', `spider-${name}`));
-  absent.push(join(inputs.config.app.home, 'layouts/spider-glass.json'), join(suite.root, 'r'));
+  absent.push(join(inputs.config.app.home, 'layouts/Spider.json'), join(suite.root, 'r'));
   for (const path of absent) {
     const info = await lstat(path).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
     if (info) throw new HarnessError('installation-not-fresh', path);

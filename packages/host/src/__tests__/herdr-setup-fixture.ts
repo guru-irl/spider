@@ -51,6 +51,7 @@ export async function fixture(mode: 'fake' | 'hc' = 'fake', requireAppBackup = f
       { id: 'panel', children: [{ id: 'panel-body', type: 'stack', children: [{ id: 'files' }, { id: 'changes' }] }] } ] },
   ] }));
   await writeFile(join(h.directories.app, 'settings.json'), '{"zoom":1.25,"theme":"stock"}\n');
+  await writeFile(join(h.directories.app, 'shared.json'), '{"layout":"main","fixture.mod":"keep"}\n');
   await writeFile(join(h.directories.app, 'keys.json'), JSON.stringify({
     global: { 'cmd-p': 'mod.open:picker', 'cmd-n': 'space.new', 'cmd-shift-w': 'pane.close' },
     terminal: { 'ctrl-v': 'terminal.paste_image' },
@@ -59,12 +60,19 @@ export async function fixture(mode: 'fake' | 'hc' = 'fake', requireAppBackup = f
   const configPath = join(h.root, 'config.json');
   const config = { app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.localEnv.XDG_CONFIG_HOME!, 'herdr-core/config.toml') }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: options.localOnly ? [] : [{ name: 'remote.invalid', nodePath: process.execPath, runtime: { directory: join(h.directories.remote, 'programs'), cwd: null, commands: {} } }] };
   // The real core is used without any app process. This CLI double only models selection persistence,
-  // including a fresh app home where the first selection creates settings.json.
+  // including app homes where the first selection creates its state file.
   const script = join(h.root, 'app-selection.mjs');
   await writeFile(script, `import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-const a = process.argv.slice(2), p = process.env.HERDR_APP_HOME + '/settings.json';
+const a = process.argv.slice(2);
 if (a[0] === '--version') console.log('herdr-app 0.1.12');
-else if (a[0] === 'do') { if (${requireAppBackup}) { const j = JSON.parse(readFileSync(${JSON.stringify(join(h.directories.global, 'herdr/setup/journal.json'))}, 'utf8')); const entry = j.entries.find(e => e.path === p); if (!entry?.backup || !readFileSync(entry.backup).length) throw new Error('App settings backup missing before selection'); } const s = existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : {}; if (a[1] === 'layout.switch') s.layout = a[a.indexOf('--name') + 1]; if (a[1] === 'app.theme') s.theme = a[a.indexOf('--name') + 1]; writeFileSync(p, JSON.stringify(s)); console.log('{}'); }
+else if (a[0] === 'do' && ['layout.switch', 'app.theme'].includes(a[1])) {
+  const layout = a[1] === 'layout.switch', p = process.env.HERDR_APP_HOME + (layout ? '/shared.json' : '/settings.json');
+  if (${requireAppBackup}) { const j = JSON.parse(readFileSync(${JSON.stringify(join(h.directories.global, 'herdr/setup/journal.json'))}, 'utf8')); const entry = j.entries.find(e => e.path === p); if (!entry?.backup || !readFileSync(entry.backup).length) throw new Error('App selection backup missing before selection'); }
+  const s = existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : {}, key = layout ? 'layout' : 'theme', choice = a[a.indexOf('--name') + 1];
+  if (s[key] !== choice) writeFileSync(p, JSON.stringify({ ...s, [key]: choice }));
+  console.log('{}');
+}
+else if (a[0] === 'do') console.log('{}');
 else console.log(JSON.stringify({spaces:[]}));\n`);
   const app = join(h.root, 'app-selection'); await writeFile(app, `#!/bin/sh\nexec '${process.execPath}' '${script}' "$@"\n`); await chmod(app, 0o700); config.app.binary = app;
   await writeFile(configPath, JSON.stringify(config));

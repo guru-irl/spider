@@ -176,9 +176,12 @@ jobs:
       - name: Select affected tests
         id: selection
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
-          node scripts/select-tests.mjs --base "$BASE_SHA" --head "$(git rev-parse HEAD)" --budget-ms 65000 --output ".spider/scratch/test-results/selection-${{ matrix.shard }}.json"
+          # The event's base SHA stays at the base tip from when the PR opened.
+          # The selector diffs from the merge base of the live base branch and
+          # the tested merge commit, which is the merge commit's first parent.
+          node scripts/select-tests.mjs --base "origin/$BASE_REF" --head "$(git rev-parse HEAD)" --budget-ms 65000 --output ".spider/scratch/test-results/selection-${{ matrix.shard }}.json"
           node scripts/test-shard-budget.mjs --manifest ".spider/scratch/test-results/selection-${{ matrix.shard }}.json" --limit-ms 65000 > ".spider/scratch/test-results/budget-${{ matrix.shard }}.json"
 
       - name: Test selected shard

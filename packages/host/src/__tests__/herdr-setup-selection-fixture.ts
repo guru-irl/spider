@@ -8,10 +8,11 @@ import type { SetupFixture } from './herdr-setup-fixture.js';
 import { focusedSetupFixture } from './herdr-setup-focused-fixture.js';
 
 export async function interruptSelection(command: 'layout.switch' | 'app.theme', coreTransport: 'process' | 'socket' = 'socket'): Promise<{
-  f: SetupFixture; settings: string; original: Buffer;
+  f: SetupFixture; settings: string; original: Buffer; shared: string; originalShared: Buffer;
 }> {
   const f = await focusedSetupFixture({ coreTransport, localOnly: true }), settings = join(f.request.config.app.home, 'settings.json');
-  const original = await readFile(settings);
+  const shared = join(f.request.config.app.home, 'shared.json');
+  const original = await readFile(settings), originalShared = await readFile(shared);
   const script = join(f.h.root, 'app-selection.mjs'), marker = join(f.h.root, 'interrupt-selection');
   const journal = join(f.request.journalRoot, 'journal.json'), interruptedJournal = join(f.h.root, 'interrupted-journal.json');
   await writeFile(marker, 'once');
@@ -25,7 +26,7 @@ if (process.argv[2] === 'do' && process.argv[3] === ${JSON.stringify(command)} &
   await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'selection-interrupted' });
   // SIGKILL cannot run the installer's finally block. Restore its actual pre-acknowledgement journal.
   await writeFile(journal, await readFile(interruptedJournal));
-  return { f, settings, original };
+  return { f, settings, original, shared, originalShared };
 }
 
 export async function fingerprint(f: SetupFixture): Promise<{ path: string; bytes: string; mtime: number }[]> {

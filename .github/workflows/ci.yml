@@ -13,8 +13,10 @@ on:
     branches: [main]
 
 concurrency:
-  group: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ci-main' || format('ci-{0}', github.run_id) }}
-  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+  # Main's full-suite audit must run for each push, even during map recording.
+  group: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ci-CI-refs/heads/main' || format('ci-{0}', github.run_id) }}
+  cancel-in-progress: false
+  queue: max
 
 permissions:
   contents: read

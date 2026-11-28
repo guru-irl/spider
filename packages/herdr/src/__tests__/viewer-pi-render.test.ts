@@ -65,6 +65,47 @@ test('session entries render with pi components: task, thinking, markdown, built
   expect(text.indexOf('Fix the flaky retry test')).toBeLessThan(text.indexOf('All green now.'));
 });
 
+test.each(['saved', 'live'])('the %s viewer renders an edit result with one cell of padding', source => {
+  const view = make();
+  const args = { path: 'guide.md', edits: [{ oldText: 'old', newText: 'new' }] };
+  const call = assistant([{ type: 'toolCall', id: 'edit-1', name: 'edit', arguments: args }], 12);
+  const result = { ...toolResult('edit-1', 'edit', 'Applied the edit', 13),
+    message: { ...toolResult('edit-1', 'edit', 'Applied the edit', 13).message, details: { diff: '-1 old\n+1 new' } } };
+  if (source === 'saved') view.addEntries([call, result]);
+  else {
+    view.live({ type: 'message_end', message: call.message });
+    view.live({ type: 'tool_execution_end', toolCallId: 'edit-1', toolName: 'edit', result: result.message, isError: false });
+  }
+  const rows = view.render(64).map(row => plain([row]).trimEnd());
+  const title = rows.findIndex(row => row.includes('edit guide.md'));
+  expect(title).toBeGreaterThanOrEqual(0);
+  expect(rows.slice(title, title + 4)).toEqual([' edit guide.md', '', ' -1 old', ' +1 new']);
+});
+
+test.each(['saved', 'live'])('the %s viewer keeps an edit error outside the edit header', source => {
+  const view = make();
+  const args = { path: 'guide.md', edits: [{ oldText: 'old', newText: 'new' }] };
+  const call = assistant([{ type: 'toolCall', id: 'edit-error', name: 'edit', arguments: args }], 14);
+  const result = { ...toolResult('edit-error', 'edit', 'Could not edit guide.md', 15),
+    message: { ...toolResult('edit-error', 'edit', 'Could not edit guide.md', 15).message, isError: true } };
+  if (source === 'saved') view.addEntries([call, result]);
+  else {
+    view.live({ type: 'message_end', message: call.message });
+    view.live({ type: 'tool_execution_end', toolCallId: 'edit-error', toolName: 'edit', result: result.message, isError: true });
+  }
+  const rows = view.render(64).map(row => plain([row]).trimEnd());
+  const title = rows.findIndex(row => row.includes('edit guide.md'));
+  expect(title).toBeGreaterThanOrEqual(0);
+  expect(rows.slice(title, title + 4)).toEqual([' edit guide.md', '', '', ' Could not edit guide.md']);
+});
+
+test('the live viewer renders a pending edit with one cell of padding', () => {
+  const view = make();
+  view.live({ type: 'tool_execution_start', toolCallId: 'edit-pending', toolName: 'edit', args: { path: 'guide.md' } });
+  const rows = view.render(64).map(row => plain([row]).trimEnd());
+  expect(rows).toContain(' edit guide.md');
+});
+
 test('live events stream text, show a pending tool, finish it, and the saved entry does not duplicate them', () => {
   const view = make();
   const partial = { role: 'assistant', content: [{ type: 'text', text: 'Streaming the first half' }], provider: 'example', model: 'model-one', usage, stopReason: 'stop', timestamp: at(20), api: 'x' };

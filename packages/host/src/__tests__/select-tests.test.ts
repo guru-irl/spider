@@ -178,6 +178,73 @@ describe('change-scoped test manifests', () => {
     expect(stale.changedPaths).toEqual(['docs/guide/example.md', 'packages/roam/src/store.ts']);
   });
 
+  it('keeps the slow compiler sentinel while deferring the slow source-text guard', async () => {
+    const f = fixture();
+    const compiler = 'packages/roam/src/__tests__/provision-core-pin.test.ts';
+    f.put(compiler, 'export {};');
+    const { selectTests, base } = await selectorWith(f, { [compiler]: 10_816, [guard]: 30_437 });
+    f.put('packages/roam/src/store.ts', 'export const value = 2;');
+    const head = f.commit();
+    const manifest = await selectTests({ ...f, base, head, resolveRelated: async () => [a] });
+    expect(manifest.mode).toBe('scoped');
+    expect(manifest.files).toEqual([a, compiler].sort());
+    expect(manifest.deferred.map((entry: { file: string }) => entry.file)).toEqual([guard]);
+    expect(manifest.reasons[compiler].some((reason: string) => reason.startsWith('runtime-compiler-smoke:'))).toBe(true);
+    const budgeted = await selectTests({ ...f, base, head, budgetMs: 1_000, resolveRelated: async () => [a] });
+    expect(budgeted.files).toEqual([compiler]);
+    expect(budgeted.deferred.map((entry: { file: string }) => entry.file)).toEqual([a, guard].sort());
+    expect(budgeted.budget).toMatchObject({ predictedMaxMs: 11_516, requiredOverBudget: true });
+  });
+
+  it('keeps required files after an earlier path triggers full fallback', async () => {
+    const f = fixture();
+    const compiler = 'packages/roam/src/__tests__/provision-core-pin.test.ts';
+    f.put(compiler, 'export {};');
+    const { selectTests, base } = await selectorWith(f, { [compiler]: 10_816, [guard]: 100 });
+    f.put('.github/workflows/ci.yml', 'changed');
+    f.put('packages/roam/src/store.ts', 'export const value = 2;');
+    const manifest = await selectTests({ ...f, base, head: f.commit(), budgetMs: 1_000 });
+    expect(manifest.budget.candidateMode).toBe('full');
+    expect(manifest.files).toEqual([compiler]);
+    expect(manifest.budget.requiredOverBudget).toBe(true);
+    expect(manifest.deferred.map((entry: { file: string }) => entry.file)).toEqual([a, b, c, guard].sort());
+  });
+
+  it.each([
+    ['packages/intercom/src/protocol.ts', ['packages/intercom/src/__tests__/upstream-parity.test.ts', 'packages/host/src/__tests__/intercom-upstream-inventory.test.ts']],
+    ['scripts/check-intercom-parity.mjs', ['packages/intercom/src/__tests__/upstream-parity.test.ts']],
+  ])('keeps required parity tests for %s', async (changed, required) => {
+    const f = fixture();
+    for (const file of required) f.put(file, 'export {};');
+    const { selectTests, base } = await selectorWith(f, Object.fromEntries(required.map(file => [file, 10_816])));
+    f.put(changed, 'export const value = 2;');
+    const head = f.commit();
+    for (const budgetMs of [undefined, 1_000]) {
+      const manifest = await selectTests({ ...f, base, head, budgetMs, resolveRelated: async () => [] });
+      for (const file of required) {
+        expect(manifest.files).toContain(file);
+        expect(manifest.deferred.map((entry: { file: string }) => entry.file)).not.toContain(file);
+      }
+    }
+  });
+
+  it.each(['yes', 1, null])('rejects a non-boolean required policy value %s', async required => {
+    const f = fixture();
+    f.put('scripts/select-tests.mjs', readFileSync('scripts/select-tests.mjs', 'utf8'));
+    const policy = JSON.parse(readFileSync('scripts/test-resources.json', 'utf8'));
+    policy.rules.find((rule: { id: string }) => rule.id === 'runtime-compiler-smoke').required = required;
+    f.put('scripts/test-resources.json', JSON.stringify(policy));
+    f.put('scripts/test-durations.json', '{}');
+    const base = f.commit();
+    f.put('packages/roam/src/store.ts', 'changed');
+    const head = f.commit();
+    const { selectTests } = await import(/* @vite-ignore */ join(f.root, 'scripts/select-tests.mjs'));
+    const result = await selectTests({ ...f, base, head, resolveRelated: async () => [a] });
+    expect(result.mode).toBe('full');
+    expect(result.fallback).toMatch(/policy/);
+    expect(result.files).toEqual([a, b, c, guard].sort());
+  });
+
   it('unions the Vite graph with source-text guards and records stable provenance', async () => {
     await api(); const f = fixture(); const { selectTests, base } = await selectorWith(f, { [guard]: 30_437 });
     f.put('packages/roam/src/store.ts', 'export const value = 2;'); const head = f.commit();

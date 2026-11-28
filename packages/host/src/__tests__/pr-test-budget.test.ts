@@ -1,3 +1,7 @@
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 async function api() {
@@ -34,6 +38,59 @@ describe('PR test budget', () => {
     expect(result.files).toEqual(['z-neighbor']);
     expect(result.deferred.map((entry: { file: string }) => entry.file)).toEqual(['a-importer', 'oversized']);
     expect(result.deferred.every((entry: { rule: string }) => /budget/.test(entry.rule))).toBe(true);
+  });
+
+  it('reserves required files before filling the remaining budget', async () => {
+    const { cutToBudget } = await api();
+    const result = cutToBudget({ files: ['a-priority', 'z-required', 'b-small'], requiredFiles: ['z-required'],
+      priorities: { 'a-priority': 0, 'b-small': 2, 'z-required': 2 },
+      durations: { 'a-priority': 6, 'z-required': 7, 'b-small': 3 },
+      machines: 1, workerCount: 1, limitMs: 10 });
+    expect(result.files).toEqual(['b-small', 'z-required']);
+    expect(result.deferred.map((entry: { file: string }) => entry.file)).toEqual(['a-priority']);
+    expect(result.budget).toMatchObject({ predictedMaxMs: 10, aggregateMs: 10, requiredOverBudget: false });
+  });
+
+  it('reports when required files alone exceed the budget', async () => {
+    const { cutToBudget, selectionSummary } = await api();
+    const result = cutToBudget({ files: ['required', 'other'], requiredFiles: ['required'],
+      durations: { required: 11, other: 1 }, machines: 1, workerCount: 1, limitMs: 10 });
+    expect(result.files).toEqual(['required']);
+    expect(result.deferred.map((entry: { file: string }) => entry.file)).toEqual(['other']);
+    expect(result.budget).toMatchObject({ predictedMaxMs: 11, aggregateMs: 11, requiredOverBudget: true });
+    expect(selectionSummary({ ...result, optional: {} })).toMatch(/required files alone exceed the.*budget/i);
+  });
+
+  it('allows the CLI limit to be exceeded only for a required-over-budget manifest', async () => {
+    const root = mkdtempSync(resolve('.spider/scratch/budget-cli-'));
+    try {
+      const put = (file: string, value: string) => {
+        mkdirSync(dirname(join(root, file)), { recursive: true });
+        writeFileSync(join(root, file), value);
+      };
+      for (const file of ['scripts/select-tests.mjs', 'scripts/test-shard-budget.mjs', 'scripts/test-shards.ts', 'scripts/test-resources.json', 'scripts/roam-entries.json']) {
+        put(file, readFileSync(file, 'utf8'));
+      }
+      const test = 'packages/roam/src/example.test.ts';
+      put(test, 'export {};');
+      put('scripts/test-durations.json', JSON.stringify({ [test]: 11 }));
+      const git = (...args: string[]) => execFileSync('git', args, { cwd: root, stdio: 'pipe' });
+      git('init', '-q'); git('config', 'user.name', 'Test Author'); git('config', 'user.email', 'test@example.invalid');
+      git('add', '.'); git('commit', '-qm', 'test: fixture');
+      const { selectTests } = await import(/* @vite-ignore */ join(root, 'scripts/select-tests.mjs'));
+      const manifest = await selectTests({ root, base: 'missing' });
+      const file = join(root, 'selection.json');
+      for (const requiredOverBudget of [true, false, undefined]) {
+        manifest.budget = { importMs: 0, requiredOverBudget };
+        const { selectionHash: _hash, selectionMs: _time, ...payload } = manifest;
+        manifest.selectionHash = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+        writeFileSync(file, JSON.stringify(manifest));
+        const run = spawnSync(process.execPath, [join(root, 'scripts/test-shard-budget.mjs'), '--manifest', file, '--limit-ms', '10'], { cwd: root, encoding: 'utf8' });
+        expect(run.stderr).toBe('');
+        expect(JSON.parse(run.stdout).predictedMaxMs).toBe(11);
+        expect(run.status).toBe(requiredOverBudget === true ? 0 : 1);
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it('reserves import time on the same workers instead of treating imports as free', async () => {

@@ -336,10 +336,11 @@ export async function closePaneScenario(mode: 'fake' | 'hc', pane: 'observer' | 
   const { writeFile, access } = await import('node:fs/promises');
   const gate = join(f.h.directories.remote, 'finish-payload');
   const started = join(f.h.directories.remote, 'payload-started');
+  const abort = new AbortController();
   const installed = installFixtureRuntime(f);
   const executing = (async () => {
     await installed;
-    return f.mount.execution().remote!.execute({ owner: f.owner!, on: 'remote.invalid' as never,
+    return f.mount.execution().remote!.execute({ owner: f.owner!, on: 'remote.invalid' as never, signal: abort.signal,
       source: { kind: 'code', language: 'shell', code: `printf 'started\\n'; printf yes > '${started}'; ${waitForGateFile(gate)}; printf 'completed\\n'; exit 23` } });
   })();
   void executing.catch(() => {});
@@ -387,7 +388,14 @@ export async function closePaneScenario(mode: 'fake' | 'hc', pane: 'observer' | 
     expect((await f.calls()).filter(c => c.argv[0] === 'kill' && c.argv[1] === original.address)).toEqual([]);
     await writeFile(gate, 'finish');
     expect(await executing).toMatchObject({ outcome: 'exited', exitCode: 23, stdout: 'started\ncompleted\n' });
-  } finally { await writeFile(gate, 'finish').catch(() => {}); await f.close(); await executing.catch(() => {}); }
+  } catch (error) {
+    // Cancellation needs the job monitor and cores to stay up until execution settles.
+    abort.abort();
+    await executing.catch(() => {});
+    await f.close().catch(() => {}); // Preserve the first scenario error.
+    throw error;
+  }
+  await f.close();
   expect(await f.h.remainingOwnedResources()).toEqual([]);
   expect(f.h.cleanupProof).toMatchObject({ remaining: [], defaultCoreUnchanged: true });
 }

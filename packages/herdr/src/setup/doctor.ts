@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { activePlacementRepairs, placementRepairPath, readPlacementRepairs, type PlacementRepairInspection } from '../jobs/placement-repairs.js';
-import { HERDR_LABELS, HERDR_KINDS, type HcRunRequest } from '../contracts.js';
+import { HERDR_LABELS, HERDR_KINDS, type HcRunRequest, type MachineName } from '../contracts.js';
+import { isHerdrConnectivityFailure } from '../client/availability.js';
 import { readAppPaneCapabilities } from '../panes/capabilities.js';
 import { paneAddress, paneId, paneText } from '../panes/codec.js';
 import { readPrivateJson } from '../sessions/registry.js';
@@ -14,6 +15,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { isAbsolute, join } from 'node:path';
 import { checkRemoteNodeVersion, REMOTE_NODE_MINIMUM, isRuntimeRootProbe } from '../remote/node-version.js';
+import { LEGACY_SPIDER_LAYOUT, SPIDER_LAYOUT, SPIDER_LAYOUT_KEYS, layoutSelectionPath, legacySpiderLayoutPath, spiderLayoutPath } from '../look/names.js';
+import { hasLegacyLayout, readLayoutSelection } from './layout-rename.js';
 export const DOCTOR_ITEMS = ['baseline', 'core-identity', 'hc-json', 'status-instance', 'feed-permissions', 'feed-freshness', 'ipc-authentication', 'jobs', 'observers', 'runtime-digest', 'ssh-cache', 'bypass-stripping', 'mods', 'clones', 'patch-version', 'layout-theme', 'fonts', 'pi-schema-contrast', 'keys', 'roles', 'resume', 'presence', 'mappings-leases', 'spaces-tabs', 'measurements', 'lock-adapters', 'pane-core', 'pane-capabilities', 'pane-helper', 'pane-installation'] as const;
 export type DoctorItem = typeof DOCTOR_ITEMS[number];
 export interface DoctorFailure {
@@ -29,6 +32,7 @@ export interface DoctorReport {
   warnings: readonly DoctorFailure[];
   probes: readonly NodeObservation[];
   passed?: number;
+  deferredRuntimes?: readonly MachineName[];
 }
 export function checkManagedKeyBindings(bytes: Buffer | null, desired: KeySections, options: { ignoredKeys?: KeyFields } = {}): { failures: DoctorFailure[]; warnings: DoctorFailure[] } {
   if (bytes === null) return { failures: [{ item: 'keys', code: 'keys-defaults-missing', message: missingKeyMapMessage, repair: missingKeyMapMessage }], warnings: [] };
@@ -49,12 +53,12 @@ export function checkManagedKeyBindings(bytes: Buffer | null, desired: KeySectio
       for (const [key, value] of Object.entries(bindings))
         if (!options.ignoredKeys?.[name]?.includes(key) && !isDeepStrictEqual(actual[key], value)) failures.push(issue(`Managed key differs: ${name}.${key}`));
     }
-    if (desired['layout:spider-glass']?.['cmd-shift-e'] !== undefined) {
-      const global = section('global'), terminal = section('terminal'), layout = section('layout:spider-glass');
+    if (desired[SPIDER_LAYOUT_KEYS]?.['cmd-shift-e'] !== undefined) {
+      const global = section('global'), terminal = section('terminal'), layout = section(SPIDER_LAYOUT_KEYS);
       for (const [name, values] of [['global', global], ['terminal', terminal]] as const)
         if (!options.ignoredKeys?.[name]?.includes('cmd-shift-e') && values['cmd-shift-e'] !== undefined) failures.push(issue(`Competing key: ${name}.cmd-shift-e`));
-      for (const [name, values] of [['global', global], ['terminal', terminal], ['layout:spider-glass', layout]] as const)
-        if (!options.ignoredKeys?.[name]?.includes('cmd-shift-w') && values['cmd-shift-w'] !== undefined && values['cmd-shift-w'] !== 'pane.close' && !(name === 'layout:spider-glass' && desired[name]?.['cmd-shift-w'] === 'spider-pane.close' && values['cmd-shift-w'] === 'spider-pane.close')) failures.push(issue(`Pane close differs: ${name}.cmd-shift-w`));
+      for (const [name, values] of [['global', global], ['terminal', terminal], [SPIDER_LAYOUT_KEYS, layout]] as const)
+        if (!options.ignoredKeys?.[name]?.includes('cmd-shift-w') && values['cmd-shift-w'] !== undefined && values['cmd-shift-w'] !== 'pane.close' && !(name === SPIDER_LAYOUT_KEYS && desired[name]?.['cmd-shift-w'] === 'spider-pane.close' && values['cmd-shift-w'] === 'spider-pane.close')) failures.push(issue(`Pane close differs: ${name}.cmd-shift-w`));
       if (global['cmd-shift-w'] === undefined) warnings.push({ item: 'keys', code: 'inspection-unavailable', message: 'The effective global.cmd-shift-w default is not recorded in keys.json', repair: 'Check the active app key binding before relying on pane close.' });
     }
   } catch (error) {
@@ -98,11 +102,20 @@ export async function inspectPaneServiceState(root: string, probe: (claim: PaneS
   } catch { return unavailable('pane-helper-unavailable', 'Presentation helper could not be inspected; no repair was attempted.'); }
 }
 export type DoctorRequest = SetupRequest;
+export interface DoctorRuntimeAvailability {
+  shouldSkip(machine: MachineName): boolean;
+  deferOnConnectivityFailure(machine: MachineName, error: unknown): boolean;
+}
+export interface RuntimeInventory {
+  unreachable: readonly MachineName[];
+  missing: readonly MachineName[];
+}
 export interface DoctorParts {
   globalRoot?: string;
   placementRepairInspection?(): Promise<PlacementRepairInspection>;
   targets(request: DoctorRequest): Promise<readonly ProbeTarget[]>;
-  inspect(item: DoctorItem, request: DoctorRequest): Promise<{
+  runtimeInventory?(request: DoctorRequest): Promise<RuntimeInventory>;
+  inspect(item: DoctorItem, request: DoctorRequest, runtimeAvailability?: DoctorRuntimeAvailability): Promise<{
     failures: readonly DoctorFailure[];
     warnings?: readonly DoctorFailure[];
     information?: readonly DoctorInformation[];
@@ -147,7 +160,7 @@ async function pinnedNodePaths(request: DoctorRequest): Promise<Map<string, stri
   const rc = managedProjection((await snapshot(request.config.shellRc)).bytes, { kind: 'resume' });
   const source = /^\s*\.\s+(.+)$/m.exec(rc);
   if (source) { const args = shellWords(source[1]); if (args[1]) add(args[1], 'shell resume block'); }
-  const layout = (await snapshot(join(request.config.app.home, 'layouts/spider-glass.json'))).bytes;
+  const layout = (await snapshot(spiderLayoutPath(request.config.app.home))).bytes;
   if (layout) {
     const walk = (value: unknown): void => {
       if (!value || typeof value !== 'object') return;
@@ -162,7 +175,7 @@ async function pinnedNodePaths(request: DoctorRequest): Promise<Map<string, stri
   }
   return paths;
 }
-export async function doctorHerdr(request: DoctorRequest, parts: DoctorParts): Promise<DoctorReport> {
+export async function doctorHerdr(request: DoctorRequest, parts: DoctorParts, setupDeferredRuntimes?: ReadonlySet<MachineName>): Promise<DoctorReport> {
   try { await assertGlobalRoot(request.config.globalRoot, parts.globalRoot); }
   catch (error) { return { failures: [{ item: 'global-root', code: 'global-root-mismatch', message: error instanceof Error ? error.message : String(error), repair: `Set globalRoot to ${parts.globalRoot} in ${request.configPath}, then rerun setup or doctor.` }], warnings: [], probes: [], passed: 0 }; }
   const failures: DoctorFailure[] = [];
@@ -171,6 +184,30 @@ export async function doctorHerdr(request: DoctorRequest, parts: DoctorParts): P
   const probes: NodeObservation[] = [];
   let passed = 0;
   const fail = (item: string, code: string, message: string, repair: string) => failures.push({ item, code, message, repair });
+  const deferredRuntimes = new Set(setupDeferredRuntimes);
+  const missingRuntimes = new Set<MachineName>();
+  if (!setupDeferredRuntimes && request.config.machines.length) {
+    try {
+      const inventory = await parts.runtimeInventory?.(request);
+      for (const machine of inventory?.missing ?? []) {
+        missingRuntimes.add(machine);
+        fail('runtime-availability', 'machine-not-found', `Machine ${machine} has no unique entry in the local core inventory.`, 'Correct the machine name in the setup configuration or the local Herdr core, then rerun doctor.');
+      }
+      for (const machine of inventory?.unreachable ?? []) deferredRuntimes.add(machine);
+      const pending = new Set((await readJournal(request.journalRoot)).pendingRuntimes);
+      for (const machine of request.config.machines) if (pending.has(machine.name) && !missingRuntimes.has(machine.name)) deferredRuntimes.add(machine.name);
+    } catch (error) {
+      fail('runtime-availability', 'doctor-inspection-failed', error instanceof Error ? error.message : String(error), 'Check the setup journal and the local Herdr core, then rerun doctor.');
+    }
+  }
+  const runtimeAvailability: DoctorRuntimeAvailability = {
+    shouldSkip: machine => deferredRuntimes.has(machine) || missingRuntimes.has(machine),
+    deferOnConnectivityFailure: (machine, error) => {
+      if (!isHerdrConnectivityFailure(error)) return false;
+      deferredRuntimes.add(machine);
+      return true;
+    },
+  };
   const repairRoot = join(request.config.globalRoot, 'herdr/panes');
   let repairFiles: string[] = [];
   try {
@@ -185,7 +222,7 @@ export async function doctorHerdr(request: DoctorRequest, parts: DoctorParts): P
   } catch (error) { fail('pane-repairs', 'pane-repair-inspection-failed', String(error), `Inspect the pane repair records at ${repairFiles.length ? repairFiles.join(', ') : repairRoot} and rerun doctor.`); }
   for (const item of DOCTOR_ITEMS) {
     try {
-      const result = await parts.inspect(item, request);
+      const result = await parts.inspect(item, request, runtimeAvailability);
       if (!result.failures.length && !result.warnings?.length) passed++;
       failures.push(...result.failures);
       warnings.push(...result.warnings ?? []);
@@ -195,6 +232,15 @@ export async function doctorHerdr(request: DoctorRequest, parts: DoctorParts): P
       fail(item, 'doctor-inspection-failed', e instanceof Error ? e.message : String(e), `Repair ${item} and rerun doctor --config ${request.configPath}`);
     }
   }
+  const legacy = legacySpiderLayoutPath(request.config.app.home), shared = layoutSelectionPath(request.config.app.home);
+  try {
+    if (await hasLegacyLayout(request.config.app.home))
+      fail('layout-theme', 'legacy-layout-present', `The old layout file is still present: ${legacy}`, 'Run setup to migrate it. If both layouts are present after an interrupted upgrade, use rollback --undo-upgrade first.');
+  } catch (error) { fail('layout-theme', 'legacy-layout-inspection-failed', String(error), `Inspect ${legacy}.`); }
+  try {
+    if ((await readLayoutSelection(shared)).layout === LEGACY_SPIDER_LAYOUT)
+      fail('layout-theme', 'legacy-layout-selected', `Herdr still has ${LEGACY_SPIDER_LAYOUT} selected in ${shared}`, `Run setup to migrate the layout, or select ${SPIDER_LAYOUT} in Herdr if it is already installed.`);
+  } catch (error) { fail('layout-theme', 'layout-selection-inspection-failed', String(error), `Inspect ${shared}.`); }
   try {
     for (const [path, sources] of await pinnedNodePaths(request)) {
       try {
@@ -233,6 +279,7 @@ export async function doctorHerdr(request: DoctorRequest, parts: DoctorParts): P
   try {
     const cached = await parts.cachedNodeObservations?.(request) ?? [];
     for (const target of await parts.targets(request)) {
+      if (runtimeAvailability.shouldSkip(target.machine)) continue;
       try {
         const observation = cached.find(p => p.machine === target.machine && p.nodePath === target.nodePath && p.coreStartedAt === target.coreStartedAt);
         const version = (observation?.version ?? await parts.probeMachineNode(target, probeLaunch(target))).trim();
@@ -242,6 +289,7 @@ export async function doctorHerdr(request: DoctorRequest, parts: DoctorParts): P
         passed++;
       }
       catch (e) {
+        if (runtimeAvailability.deferOnConnectivityFailure(target.machine, e)) continue;
         fail('remote-node', 'remote-node-unavailable', `Machine ${target.machine}: ${e instanceof Error ? e.message : String(e)}`, `Configure an absolute nodePath for ${target.machine}, or install Node >=${REMOTE_NODE_MINIMUM} on its PATH`);
       }
     }
@@ -250,6 +298,7 @@ export async function doctorHerdr(request: DoctorRequest, parts: DoctorParts): P
     fail('remote-node', 'remote-node-unavailable', e instanceof Error ? e.message : String(e), 'Repair the machine configuration and rerun doctor');
   }
   if (parts.probeRuntimeRoot) for (const machine of request.config.machines) {
+    if (runtimeAvailability.shouldSkip(machine.name)) continue;
     try {
       const bytes = (await snapshot(join(request.packageRoot, 'dist/herdr/remote-runtime.mjs'))).bytes;
       if (!bytes) throw new Error('The packaged remote runtime is missing');
@@ -258,8 +307,12 @@ export async function doctorHerdr(request: DoctorRequest, parts: DoctorParts): P
       if (!isRuntimeRootProbe(value, machine.runtime.directory)) throw new Error('Runtime root ownership, mode or Node version is invalid');
       passed++;
     } catch (error) {
+      if (runtimeAvailability.deferOnConnectivityFailure(machine.name, error)) continue;
       fail('runtime-root', 'runtime-root-invalid', `Machine ${machine.name}: ${error instanceof Error ? error.message : String(error)}`, 'Repair the runtime directory ownership and mode, then rerun spider herdr setup');
     }
   }
-  return { failures, warnings, probes, passed, ...(information.length ? { information } : {}) };
+  for (const machine of deferredRuntimes) warnings.push({ item: 'runtime', code: 'runtime-unavailable',
+    message: `Runtime on ${machine} could not be verified because the machine is unreachable or its setup is pending.`,
+    repair: `Run setup while ${machine} is reachable.` });
+  return { failures, warnings, probes, passed, ...(information.length ? { information } : {}), ...(deferredRuntimes.size ? { deferredRuntimes: [...deferredRuntimes] } : {}) };
 }

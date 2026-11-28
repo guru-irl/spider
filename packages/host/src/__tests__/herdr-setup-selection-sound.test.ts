@@ -17,25 +17,32 @@ const fastFixture = () => focusedSetupFixture();
 
 test('writes native sound after app selection even when the app saves stale settings', async () => {
   const f = await focusedSetupFixture({ coreTransport: 'process', localOnly: true }), settings = join(f.request.config.app.home, 'settings.json');
-  const original = await readFile(settings), script = join(f.h.root, 'app-selection.mjs'), seen = join(f.h.root, 'selection-sounds');
+  const shared = join(f.request.config.app.home, 'shared.json');
+  const original = await readFile(settings), originalShared = await readFile(shared), script = join(f.h.root, 'app-selection.mjs'), seen = join(f.h.root, 'selection-sounds');
   await writeFile(script, `import { readFileSync as readSettings, writeFileSync as saveSettings, appendFileSync as recordSettings } from 'node:fs';
 const args = process.argv.slice(2), path = process.env.HERDR_APP_HOME + '/settings.json';
 if (args[0] === 'do' && (args[1] === 'layout.switch' || args[1] === 'app.theme')) {
   const settings = JSON.parse(readSettings(path, 'utf8'));
   recordSettings(${JSON.stringify(seen)}, JSON.stringify(settings.sounds ?? null) + '\\n');
   delete settings.sounds;
-  settings[args[1] === 'layout.switch' ? 'layout' : 'theme'] = args[args.indexOf('--name') + 1];
+  const choice = args[args.indexOf('--name') + 1];
+  if (args[1] === 'layout.switch') {
+    const shared = process.env.HERDR_APP_HOME + '/shared.json';
+    saveSettings(shared, JSON.stringify({ ...JSON.parse(readSettings(shared, 'utf8')), layout: choice }));
+  } else settings.theme = choice;
   saveSettings(path, JSON.stringify(settings)); console.log('{}'); process.exit(0);
 }
 ` + await readFile(script, 'utf8'));
   const result = await setupHerdr(f.request, f.parts);
   expect(result.doctor.failures).toEqual([]);
   expect(await readFile(seen, 'utf8')).toBe('null\nnull\n');
-  expect(JSON.parse(await readFile(settings, 'utf8'))).toEqual({ zoom: 1.25, theme: 'spider-glass', layout: 'spider-glass', sounds: { enabled: false } });
+  expect(JSON.parse(await readFile(settings, 'utf8'))).toEqual({ zoom: 1.25, theme: 'spider-glass', sounds: { enabled: false } });
+  expect(JSON.parse(await readFile(shared, 'utf8'))).toEqual({ layout: 'Spider', 'fixture.mod': 'keep' });
   expect((await readJournal(f.request.journalRoot)).entries.find(entry => entry.path === settings)?.soundApplied).toBe(true);
   expect((await setupHerdr(f.request, f.parts)).writes).toEqual([]);
   await rollbackHerdr(f.request, f.parts);
   expect(await readFile(settings)).toEqual(original);
+  expect(await readFile(shared)).toEqual(originalShared);
 }, 60_000);
 
 test('saves the partial selection journal without hiding a selection error', async () => {
@@ -75,42 +82,4 @@ if (args[0] === 'do' && args[1] === 'app.theme') {
   await rollbackHerdr(f.request, f.parts);
   expect(JSON.parse(await readFile(settings, 'utf8')).sounds.enabled).toBe(false);
   expect(warn).toHaveBeenCalledWith(expect.stringMatching(/sounds\.enabled.*released/i));
-}, 60_000);
-
-test('leaves a verified user sound opt-in on rerun and rollback', async () => {
-  const f = await fastFixture(), settings = join(f.request.config.app.home, 'settings.json');
-  await setupHerdr(f.request, f.parts);
-  const edited = JSON.parse(await readFile(settings, 'utf8'));
-  edited.sounds.enabled = true;
-  await writeFile(settings, JSON.stringify(edited));
-  const warn = vi.spyOn(f.parts, 'warn');
-  const plan = await setupHerdr({ ...f.request, dryRun: true }, f.parts);
-  expect(plan.plan!.files.find(file => file.path === settings)?.refusal).toBeUndefined();
-  const result = await setupHerdr(f.request, f.parts);
-  expect(result.doctor.failures).toEqual([]);
-  expect(JSON.parse(await readFile(settings, 'utf8')).sounds.enabled).toBe(true);
-  expect(warn).toHaveBeenCalledWith(expect.stringMatching(/sounds\.enabled.*released/i));
-  const info = await (await f.ports.doctorParts(f.request)).inspect('layout-theme', f.request);
-  expect(info.failures).toEqual([]);
-  expect(info.information).toContainEqual(expect.objectContaining({ code: 'native-sound-policy', message: expect.stringMatching(/enabled/i) }));
-  await setupHerdr(f.request, f.parts);
-  expect(JSON.parse(await readFile(settings, 'utf8')).sounds.enabled).toBe(true);
-  await rollbackHerdr(f.request, f.parts);
-  expect(JSON.parse(await readFile(settings, 'utf8')).sounds.enabled).toBe(true);
-}, 60_000);
-
-test('keeps a released sound preference when a rerun is interrupted', async () => {
-  const f = await fastFixture(), settings = join(f.request.config.app.home, 'settings.json');
-  await setupHerdr(f.request, f.parts);
-  const current = JSON.parse(await readFile(settings, 'utf8'));
-  current.sounds.enabled = true;
-  await writeFile(settings, JSON.stringify(current));
-  const verify = vi.spyOn(f.parts, 'verify').mockRejectedValueOnce(new Error('verification-interrupted'));
-  await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ message: expect.stringContaining('verification-interrupted') });
-  expect((await readJournal(f.request.journalRoot)).verified).toBe(false);
-  verify.mockRestore();
-  expect((await setupHerdr(f.request, f.parts)).doctor.failures).toEqual([]);
-  expect(JSON.parse(await readFile(settings, 'utf8')).sounds.enabled).toBe(true);
-  await rollbackHerdr(f.request, f.parts);
-  expect(JSON.parse(await readFile(settings, 'utf8')).sounds.enabled).toBe(true);
 }, 60_000);

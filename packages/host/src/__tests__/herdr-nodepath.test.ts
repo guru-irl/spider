@@ -47,8 +47,8 @@ exec '${f.h.hcBinary}' "\${args[@]}"
   f.request = await f.ports.request(f.request.configPath);
   f.parts = await f.ports.setupParts(f.request);
   const verify = f.parts.verify;
-  f.parts.verify = async request => {
-    const report = await verify(request);
+  f.parts.verify = async (...args) => {
+    const report = await verify(...args);
     expect(report.failures, JSON.stringify(report.failures)).toEqual([]);
     return report;
   };
@@ -75,7 +75,7 @@ test('setup checks an absolute machine Node path only on that machine', async ()
 test('doctor still rejects a missing local mod launcher beside an absolute remote Node path', async () => {
   const f = await remoteNodeFixture();
   await setupHerdr(f.request, f.parts);
-  const path = join(f.h.directories.app, 'layouts/spider-glass.json');
+  const path = join(f.h.directories.app, 'layouts/Spider.json');
   const layout = JSON.parse(await readFile(path, 'utf8'));
   // This is the sidebar written by the production installer, including its
   // separate local launcher pin and nested remote machine configuration.

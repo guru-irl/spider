@@ -4,22 +4,29 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { openDbAt } from '@spider/db-core';
+import { openDbAt, paths } from '@spider/db-core';
+import { execFileSync } from 'node:child_process';
+import { rgbColor, stripTerminalSequences, type TUI } from '@earendil-works/pi-tui';
 import { scratchDbPath, cleanupScratch } from '@spider/db-core/testutil';
 import { RunStore } from '../../../subagents/src/run-store.js';
 import { emitToolResult } from '../../../subagents/src/run-events.js';
 import { publishLiveRunEvent } from '../../../subagents/src/live-events.js';
-import { createRunTranscriptSource } from '../../../host/src/herdr/run-transcript.js';
+import { createRunTranscriptSource, type RunTranscriptSourceOptions } from '../../../host/src/herdr/run-transcript.js';
 import type { Owner, RunId, RunViewFrame } from '../contracts.js';
+import { createPiRunView } from '../viewers/pi-app.js';
+import * as mount from '../../../host/src/herdr/mount.js';
 
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); vi.useRealTimers(); cleanupScratch(); });
-function fixture() {
+function fixture(accent?: () => string | undefined, overrides: Partial<RunTranscriptSourceOptions> = {}) {
   const root = resolve('.spider/scratch/hl', randomUUID()); mkdirSync(root, { recursive: true });
   const dbPath = scratchDbPath('viewer-live'); const db = openDbAt(dbPath, 'worktree'); const store = new RunStore(db);
   const owner = { sessionId: 'live-owner', generation: 'activation', cwd: root } as Owner;
   const id = store.create({ sessionId: owner.sessionId, agent: 'worker', model: 'example/model-one', thinking: 'high' }).id as RunId; store.start(id);
-  const source = createRunTranscriptSource({ owner: () => owner, pollMs: 50, resolveDb: () => ({ db: openDbAt(dbPath, 'worktree'), dbPath }), transcriptRoots: () => [root], modelContextWindow: model => model === 'example/model-one' ? 200000 : undefined });
+  const source = createRunTranscriptSource({ owner: () => owner, pollMs: 50, resolveDb: () => ({ db: openDbAt(dbPath, 'worktree'), dbPath }), transcriptRoots: () => [root],
+    modelContextWindow: model => model === 'example/model-one' ? 200000 : undefined,
+    modelName: model => model === 'example/model-one' ? 'Model One' : undefined,
+    iconStyle: () => 'nerd', inputBand: () => false, creditFactor: () => 0.5, accent, ...overrides });
   cleanups.push(() => { source.dispose(); db.close(); rmSync(root, { recursive: true, force: true }); });
   return { source, id, store, root, db };
 }
@@ -50,10 +57,102 @@ test('the pi snapshot identifies the saved session file, even for a finished run
   expect(frames.at(-1)).toMatchObject({ kind: 'end', data: { reason: 'finished' } });
 });
 
-test('the owner supplies model, thinking and context-window metadata in pi snapshots', () => {
+test('the owner supplies model, appearance and calibration metadata in pi snapshots', () => {
   const f = fixture(); const frames: RunViewFrame[] = [];
   f.source.subscribe(f.id, null, frame => frames.push(frame), { view: 2 });
-  expect(frames.find(frame => frame.kind === 'snapshot')).toMatchObject({ data: { view: { model: 'example/model-one', thinking: 'high', contextWindow: 200000 } } });
+  expect(frames.find(frame => frame.kind === 'snapshot')).toMatchObject({ data: { view: { model: 'example/model-one', modelName: 'Model One',
+    thinking: 'high', contextWindow: 200000, iconStyle: 'nerd', inputBand: false, creditFactor: 0.5 } } });
+});
+
+test('viewer snapshots follow changes to the owner accent', async () => {
+  vi.useFakeTimers();
+  let accent = 'green';
+  const f = fixture(() => accent); const frames: RunViewFrame[] = [];
+  f.source.subscribe(f.id, null, frame => frames.push(frame), { view: 2 });
+  expect(frames.find(frame => frame.kind === 'snapshot')).toMatchObject({ data: { view: { accent: 'green' } } });
+  accent = 'pink';
+  await vi.advanceTimersByTimeAsync(50);
+  expect(frames.at(-1)).toMatchObject({ kind: 'snapshot', data: { view: { accent: 'pink' } } });
+});
+
+test('viewer snapshots follow changed input-band and icon settings', async () => {
+  vi.useFakeTimers();
+  let band = false; let icons: 'text' | 'nerd' = 'text';
+  const f = fixture(undefined, { inputBand: () => band, iconStyle: () => icons });
+  const frames: RunViewFrame[] = [];
+  f.source.subscribe(f.id, null, frame => frames.push(frame), { view: 2 });
+  expect(frames.find(frame => frame.kind === 'snapshot')).toMatchObject({ data: { view: { inputBand: false, iconStyle: 'text' } } });
+  band = true; icons = 'nerd';
+  await vi.advanceTimersByTimeAsync(50);
+  expect(frames.at(-1)).toMatchObject({ kind: 'snapshot', data: { view: { inputBand: true, iconStyle: 'nerd' } } });
+});
+
+test('owner config updates flow through snapshots to the editor without losing the draft', async () => {
+  const makeAppearance = mount.viewerAppearance;
+  const root = resolve('.spider/scratch/hl', randomUUID()); mkdirSync(root, { recursive: true });
+  execFileSync('git', ['init', '-q', root]);
+  const global = resolve(root, 'global'); mkdirSync(global);
+  const previous = paths.globalRoot; paths.globalRoot = global;
+  cleanups.push(() => { paths.globalRoot = previous; rmSync(root, { recursive: true, force: true }); });
+  const config = resolve(global, 'config.json');
+  writeFileSync(config, JSON.stringify({ 'ui.inputBand': false, 'ui.icons': 'text', 'ui.accent': 'green' }));
+  const appearance = makeAppearance({ cwd: root, mode: 'rpc', hasUI: false } as never);
+  vi.useFakeTimers();
+  const f = fixture(undefined, appearance);
+  const view = createPiRunView({ ui: { requestRender() {}, setFocus() {}, terminal: { columns: 80, rows: 24 } } as unknown as TUI,
+    runName: 'run', ownerName: 'owner', cwd: root, themeName: 'dark' });
+  cleanups.push(() => view.dispose());
+  view.setState({ status: 'running', steerable: true, reachable: true, readOnlyReason: null });
+  const frames: RunViewFrame[] = [];
+  f.source.subscribe(f.id, null, frame => { frames.push(frame); if (frame.kind === 'snapshot' && frame.data.view) view.setRunInfo(frame.data.view); }, { view: 2 });
+  view.editor!.setText('Unsent draft');
+  expect(view.render(40).map(stripTerminalSequences).some(row => row.startsWith('─'))).toBe(true);
+  expect(frames.find(frame => frame.kind === 'snapshot')).toMatchObject({ data: { view: { inputBand: false, iconStyle: 'text', accent: 'green' } } });
+  writeFileSync(config, JSON.stringify({ 'ui.inputBand': true, 'ui.icons': 'nerd', 'ui.accent': 'pink' }));
+  await vi.advanceTimersByTimeAsync(50);
+  expect(frames.at(-1)).toMatchObject({ kind: 'snapshot', data: { view: { inputBand: true, iconStyle: 'nerd', accent: 'pink' } } });
+  expect(view.editor!.getText()).toBe('Unsent draft');
+  expect(view.render(40).map(stripTerminalSequences).some(row => row.startsWith('▖'))).toBe(true);
+});
+
+test('owner theme palette colors map to accent names and unknown colors use the base theme', () => {
+  const makeAppearance = mount.viewerAppearance;
+  const ctx = { cwd: '.', mode: 'tui', hasUI: true, ui: { theme: { colors: { accent: rgbColor(80, 250, 123) } } } };
+  const appearance = makeAppearance(ctx as never);
+  expect(appearance.accent()).toBe('green');
+  ctx.ui.theme.colors.accent = rgbColor(1, 2, 3);
+  expect(appearance.accent()).toBeUndefined();
+});
+
+test.each(['accent', 'modelName', 'modelContextWindow', 'creditFactor'] as const)('a failed %s lookup leaves the snapshot and other metadata available', field => {
+  const f = fixture(() => 'green', { [field]: () => { throw new Error('stale context'); } });
+  const frames: RunViewFrame[] = [];
+  f.source.subscribe(f.id, null, frame => frames.push(frame), { view: 2 });
+  const snapshot = frames.find(frame => frame.kind === 'snapshot');
+  expect(snapshot?.kind).toBe('snapshot');
+  if (snapshot?.kind !== 'snapshot') throw new Error('missing snapshot');
+  expect(snapshot.data.view).toMatchObject({ iconStyle: 'nerd', inputBand: false,
+    modelName: field === 'modelName' ? null : 'Model One',
+    contextWindow: field === 'modelContextWindow' ? null : 200000,
+    creditFactor: field === 'creditFactor' ? null : 0.5 });
+  expect(snapshot.data.view?.accent).toBe(field === 'accent' ? undefined : 'green');
+  expect(frames.some(frame => frame.kind === 'gap' && frame.data.reason === 'transcript-unavailable')).toBe(false);
+});
+
+test.each([['agent_start', true], ['agent_end', false]] as const)('a new viewer sees prior %s activity', (type, working) => {
+  const f = fixture(); const frames: RunViewFrame[] = [];
+  publishLiveRunEvent(f.id, { type });
+  f.source.subscribe(f.id, null, frame => frames.push(frame), { view: 2 });
+  expect(frames.find(frame => frame.kind === 'snapshot')).toMatchObject({ data: { view: { working } } });
+});
+
+test('agent working transitions reach the matching rich viewer without the completed message list', () => {
+  const f = fixture(); const frames: RunViewFrame[] = [];
+  f.source.subscribe(f.id, null, frame => frames.push(frame), { view: 2 });
+  publishLiveRunEvent(f.id, { type: 'agent_start' });
+  publishLiveRunEvent(f.id, { type: 'agent_end', messages: [{ secret: 'not sent' }] });
+  expect(frames.flatMap(frame => frame.kind === 'live' ? [frame.data.event] : []))
+    .toEqual([{ type: 'agent_start' }, { type: 'agent_end' }]);
 });
 
 test('a pi viewer without a saved file still receives recorded fallback events', () => {

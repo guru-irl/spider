@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { readFileSync, appendFileSync, watchFile, unwatchFile, writeFileSync, mkdirSync, existsSync, renameSync, openSync, closeSync, unlinkSync, realpathSync } from 'node:fs';
+import { readFileSync, appendFileSync, statSync, watchFile, unwatchFile, writeFileSync, mkdirSync, existsSync, renameSync, openSync, closeSync, unlinkSync, realpathSync } from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
 import { spawn } from 'node:child_process';
 import { createServer, connect } from 'node:net';
@@ -180,13 +180,17 @@ if (config.rawReplyBase64 !== undefined) {
 } else if (argv[0] === 'machine' && argv[1] === 'ls') {
   console.log(JSON.stringify({ machines: config.machines }));
 } else if (argv[0] === 'events') {
-  let offset = readFileSync(`${root}/events.jsonl`).length;
-  watchFile(`${root}/events.jsonl`, { interval: 10 }, () => {
-    const bytes = readFileSync(`${root}/events.jsonl`);
+  const eventPath = `${root}/events.jsonl`;
+  let offset = readFileSync(eventPath).length;
+  // Use the byte offset captured before the snapshot. watchFile can take its
+  // first stat after an append and treat the new bytes as its baseline.
+  const poll = setInterval(() => {
+    if (statSync(eventPath).size === offset) return;
+    const bytes = readFileSync(eventPath);
     process.stdout.write(bytes.subarray(offset)); offset = bytes.length;
-  });
+  }, 10);
   console.log(JSON.stringify({ channel: null, seq: config.seq || 0, terminals: config.terminals }));
-  process.on('SIGTERM', () => { unwatchFile(`${root}/events.jsonl`); process.exit(0); });
+  process.on('SIGTERM', () => { clearInterval(poll); process.exit(0); });
  } else if (argv[0] === 'run') {
   const end = argv.indexOf('--'), flags = end < 0 ? argv : argv.slice(0, end);
   const on = flags.includes('--on') ? flags[flags.indexOf('--on') + 1] : flags.find(arg => arg.startsWith('--on='))?.slice(5) ?? null;

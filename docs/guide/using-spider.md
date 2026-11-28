@@ -96,6 +96,16 @@ spider todo op:"remove" id:"2"
 - Changes are rejected for `session:"all"`, for selectors that match no session or more than one, and for missing or unknown IDs.
 - `/todos` opens the live overlay.
 
+## Change the accent color
+
+Open `/color` in an interactive Pi terminal. Press ↑ or ↓ to preview a color.
+In fullscreen mode, you can also click a row or use the mouse wheel. Press
+Enter to save the color or Esc to restore the previous color.
+
+Use `/color pink` to skip the picker or `/color reset` to restore Spider blue.
+The saved color applies in new, resumed, and reloaded sessions on this machine.
+See [`ui.accent`](configuration.md#common-defaults) for where Spider saves it.
+
 ## Subagents
 
 - Use parallel tasks for independent work, chains for steps that must run in order, and pipelines when each step should continue in a fresh child.

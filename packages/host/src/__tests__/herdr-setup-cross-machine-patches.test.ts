@@ -8,6 +8,8 @@ import { readJournal } from '../../../herdr/src/setup/backup.js';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { cleanup } from './herdr-setup-fixture.js';
 import { fastRelease, tree } from './herdr-setup-cross-machine-fixture.js';
+import { releaseFixture } from './herdr-setup-release-fixture.js';
+import { useStaticSetupApp } from './herdr-setup-focused-fixture.js';
 import * as lookPatches from '@spider/herdr/look/patches';
 
 vi.mock('node:fs/promises', async importOriginal => {
@@ -15,11 +17,39 @@ vi.mock('node:fs/promises', async importOriginal => {
   return { ...actual, rename: vi.fn(actual.rename), link: vi.fn(actual.link), mkdir: vi.fn(actual.mkdir) };
 });
 const realFs = await vi.importActual<typeof fs>('node:fs/promises');
+// Vitest otherwise compares each byte of large staged files as an object key.
+// Let Vitest handle augmented buffers and subclasses to preserve its equality semantics.
+expect.addEqualityTesters([(left: unknown, right: unknown) => {
+  if (!Buffer.isBuffer(left) || !Buffer.isBuffer(right)
+    || Object.getPrototypeOf(left) !== Buffer.prototype || Object.getPrototypeOf(right) !== Buffer.prototype
+    || left.constructor !== Buffer || right.constructor !== Buffer
+    || left[Symbol.iterator] !== Buffer.prototype[Symbol.iterator] || right[Symbol.iterator] !== Buffer.prototype[Symbol.iterator]
+    || Object.keys(left).length !== left.length || Object.keys(right).length !== right.length
+    || Object.getOwnPropertySymbols(left).length || Object.getOwnPropertySymbols(right).length) return undefined;
+  return Buffer.prototype.equals.call(left, right);
+}]);
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); for (const name of ['rename', 'link', 'mkdir'] as const) vi.mocked(fs[name]).mockImplementation(realFs[name] as never); });
+
+const stageOnlyRelease = async (version: Parameters<typeof releaseFixture>[0]) =>
+  useStaticSetupApp(await releaseFixture(version, { startCores: false, localOnly: true }), version);
+
+test('staged-file equality checks bytes, length, and metadata', () => {
+  const file = { path: 'example.js', bytes: Buffer.from([1, 2]) };
+  expect([{ ...file, bytes: Buffer.from([1, 2]) }]).toEqual([file]);
+  expect([{ ...file, bytes: Buffer.from([1, 3]) }]).not.toEqual([file]);
+  expect([{ ...file, bytes: Buffer.from([1, 2, 0]) }]).not.toEqual([file]);
+  expect([{ ...file, path: 'other.js' }]).not.toEqual([file]);
+  const left = Object.assign(Buffer.from([1, 2]), { tag: 'left' });
+  const right = Object.assign(Buffer.from([1, 2]), { tag: 'right' });
+  expect(left).not.toEqual(right);
+  const customIterator = Buffer.from([1, 2]);
+  Object.defineProperty(customIterator, Symbol.iterator, { value: function* () { yield 1; yield 3; } });
+  expect(customIterator).not.toEqual(Buffer.from([1, 2]));
+});
 
 test('cross-machine helper digests affect the setup fingerprint', async () => {
   const f = await fastRelease('0.1.16'), path = join(f.root, 'packages/herdr/assets/look/cross-machine-patches.json');
@@ -31,7 +61,7 @@ test('cross-machine helper digests affect the setup fingerprint', async () => {
 });
 
 test.each(['pane/actions.js', 'pane/machine.js', 'machines/actions.js', 'machines/picker.js'])('B refuses altered helper %s before staging', async helper => {
-  const f = await fastRelease('0.1.16'), path = join(f.root, 'packages/herdr/assets', helper);
+  const f = await stageOnlyRelease('0.1.16'), path = join(f.root, 'packages/herdr/assets', helper);
   await writeFile(path, Buffer.concat([await readFile(path), Buffer.from('\n// altered helper\n')]));
   const context = { ...f.context, modProps: [...f.context.modProps, ...['picker', 'toast'].map(name => ({ directory: join(f.h.directories.app, 'mods', `spider-${name}`), props: { ...f.context.modProps[0]!.props, modId: `spider-${name}` } }))] };
   await expect(f.parts.stageLook(f.request, context, 'export')).rejects.toMatchObject({ code: 'cross-machine-helper-mismatch', message: expect.stringContaining(helper) });
@@ -43,7 +73,7 @@ test.each([
   ['0.1.16', 'recipe'], ['0.1.16', 'menu'],
   ['0.1.18', 'recipe'], ['0.1.18', 'menu'],
 ] as const)('%s B refuses a missing A %s before staging', async (version, missing) => {
-  const f = await fastRelease(version), select = lookPatches.selectLookPatches;
+  const f = await stageOnlyRelease(version), select = lookPatches.selectLookPatches;
   vi.spyOn(lookPatches, 'selectLookPatches').mockImplementation((manifest, version) => {
     const selected = select(manifest, version);
     if (missing === 'recipe') return { ...selected, recipe: undefined };
@@ -56,7 +86,7 @@ test.each([
 for (const version of ['0.1.13', '0.1.16'] as const) {
   test(`${version} publishes complete mods before the layout can reference them`, async () => {
     const f = await fastRelease(version), mods = join(f.h.directories.app, 'mods');
-    const layout = join(f.h.directories.app, 'layouts/spider-glass.json');
+    const layout = join(f.h.directories.app, 'layouts/Spider.json');
     const incomplete: string[] = [], published: string[] = [];
     const inspect = async (directory: string) => {
       const files = await readdir(directory).catch((): string[] => []);

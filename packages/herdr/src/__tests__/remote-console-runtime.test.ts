@@ -20,7 +20,7 @@ async function fixture() {
   const start = () => {
     const run = (runtime as unknown as { runRemoteConsole: (directory: string, options: { signal: AbortSignal; pollMs: number; write: (text: string) => void }) => Promise<void> }).runRemoteConsole;
     expect(run).toBeTypeOf('function');
-    const done = run(directory, { signal: abort.signal, pollMs: 5, write: text => { output += text; } }); runs.push(done);
+    const done = run(directory, { signal: abort.signal, pollMs: 5, write: text => { output += text; } }); runs.push(done); return done;
   };
   const job = async (id: string, index: number, command: string) => {
     const dir = join(root, id); await mkdir(dir);
@@ -150,11 +150,13 @@ it.each([
 it('updates the console heartbeat and removes a job hold only after reading its receipt', async () => {
   const f = await fixture(); const job = await f.job('one', 0, 'finish');
   await writeFile(join(job.dir, '.spider-console-hold'), JSON.stringify({ version: 1, consoleDirectory: f.directory, createdAt: Date.now() }));
-  f.start(); await f.until('finish');
+  const done = f.start(); await f.until('finish');
   await expect(access(join(f.directory, 'heartbeat.json'))).resolves.toBeUndefined();
   const heartbeat = JSON.parse(await readFile(join(f.directory, 'heartbeat.json'), 'utf8')); expect(heartbeat.at).toBeGreaterThan(Date.now() - 2000);
   await expect(access(join(job.dir, '.spider-console-hold'))).resolves.toBeUndefined();
   await job.receipt(0, 0, 23); await f.until('✗ exit 23');
+  // The final row precedes hold release; finish the in-flight iteration.
+  f.abort.abort(); await done;
   await expect(access(join(job.dir, '.spider-console-hold'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
 it('does not follow a symlink job directory or read an oversized descriptor', async () => {

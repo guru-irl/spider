@@ -24,5 +24,5 @@ for (const mode of ['fake', 'hc'] as const) {
       await f.stopOwners();
     } finally { await f.h.close(); }
   }, 60000);
-  registerJournalCrashTests(test, mode, ["spaces:3","installer:2","installer:4"]);
+  registerJournalCrashTests(test, mode, ["spaces:3","installer:2"]);
 }

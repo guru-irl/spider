@@ -135,7 +135,7 @@ Setup accepts these flags:
 
 Stock Herdr 0.1.13 already binds Cmd-F, and stock 0.1.16 and 0.1.18 bind all three keys. Setup prints no offer when no supported key is missing. Herdr 0.1.12 has no optional key offer.
 
-A custom binding on these four keys stops setup even with `--overwrite-unowned-keys`: global Cmd-T, Cmd-D, and Cmd-Shift-D, and `spider-glass` Cmd-Shift-W. Restore the stock binding first.
+A custom binding on these four keys stops setup even with `--overwrite-unowned-keys`: global Cmd-T, Cmd-D, and Cmd-Shift-D, and Cmd-Shift-W in the `Spider` layout. Restore the stock binding first.
 
 ### What setup changes
 
@@ -143,13 +143,13 @@ Setup backs up every file it replaces before the first write and records each st
 
 1. The `herdr.config` entry in spider's global settings, only when you pass a configuration file outside the standard location.
 2. The spider panel mod and picker, plus clones of Herdr's current `agents`, `spaces`, `pane`, `tabs`, and `workspace-chrome` mods with spider's patches applied. On Herdr 0.1.13, 0.1.16, and 0.1.18, setup also installs Spaces B's cross-machine picker, `spider-menu`, and `spider-new-menu`. On Herdr 0.1.16 and 0.1.18, the layout selects a release-specific `spider-toast`. Herdr 0.1.13 uses the stock toast.
-3. The `spider-glass` layout and Herdr theme. The layout places macOS traffic lights off-window and uses the `spider-chrome` clone for the brand row. The sidebar footer keeps `workspace-chrome`. Only `theme`, `layout` and `sounds.enabled` in the app's settings change. Custom sound paths remain unchanged. A later explicit sound opt-in releases that preference from setup ownership.
-4. Five terminal sequences, Cmd-P for Go to, Cmd-N for a local space, and the layout-scoped Cmd-Shift-E Send back action. On 0.1.13, 0.1.16, and 0.1.18, Cmd-T opens the machine picker for a new tab, Cmd-D for a split right, and Cmd-Shift-D for a split down. In `spider-glass`, Cmd-Shift-W uses spider's close confirmation for cross-machine panes. Other layouts keep native close, and Ctrl-V image paste stays unchanged. Supported native keys are offered when absent and never changed automatically. Herdr 0.1.12 keeps the native creation bindings and does not install the machine picker entry mods.
+3. The `Spider` layout and its `spider-glass` theme. The layout places macOS traffic lights off-window and uses the `spider-chrome` clone for the brand row. The sidebar footer keeps `workspace-chrome`. On a fresh install, setup selects `Spider` in Herdr. Herdr saves the selected name under `layout` in `<app-home>/shared.json`. Setup disables native sounds in `settings.json` without changing custom sound paths. A later sound opt-in releases that preference from setup ownership.
+4. Five terminal sequences, Cmd-P for Go to, Cmd-N for a local space, and the layout-scoped Cmd-Shift-E Send back action. On 0.1.13, 0.1.16, and 0.1.18, Cmd-T opens the machine picker for a new tab, Cmd-D for a split right, and Cmd-Shift-D for a split down. In `Spider`, Cmd-Shift-W uses spider's close confirmation for cross-machine panes. Other layouts keep native close, and Ctrl-V image paste stays unchanged. Supported native keys are offered when absent and never changed automatically. Herdr 0.1.12 keeps the native creation bindings and does not install the machine picker entry mods.
 5. The `dracula-plus-glass` pi theme. Only the `theme` field of the agent directory's settings file changes.
 6. Role templates generated from your global model settings.
 7. `notes = false` in the core's `config.toml`. Only the root `notes` key changes.
 8. A marked resume block in your shell rc file.
-9. The remote runtime on each configured machine. Setup checks each machine's Node version with a visible probe.
+9. The remote runtime on each reachable configured machine. Setup checks its Node version with a visible probe.
 10. The spaces and tabs for your sessions.
 11. A private `herdr/sessions` folder under `<globalRoot>`, where each session publishes the state that the panel and the sidebar read. Rollback leaves this folder in place.
 
@@ -157,11 +157,21 @@ On Herdr 0.1.13, 0.1.16, and 0.1.18, setup verifies the release's complete Space
 
 Setup owns only these parts of each file. Edits you make elsewhere in the same files are kept when setup runs again. Setup compares the parts it owns by value, so a file that was saved again with different formatting but the same values is not rewritten. If you change a part that setup owns, such as the pi theme field or the resume block, setup stops with `managed-artifact-changed` and names the recorded value. Restore that value, then run setup again.
 
-A second run with nothing changed writes nothing, makes no backup, changes no focus, and opens no duplicate session. It still checks each machine's runtime directory, and it installs the runtime again if that directory was deleted. If setup stops partway, run it again. It resumes at the first unfinished step. If a target file changed since setup checked it, setup stops instead of overwriting your edit.
+Setup finishes local changes when a remote machine is unreachable. It lists the skipped machines in one warning and installs each pending runtime the next time you run setup while that machine is reachable. `setup --dry-run` lists machines the local core shows as disconnected without probing them. Doctor reports pending or unreachable runtimes as warnings. A configured machine missing from the local core inventory is an error, not a skipped runtime.
+
+A second run with nothing changed writes nothing, makes no backup, changes no focus, and opens no duplicate session. It still checks each reachable machine's runtime directory, and it installs the runtime again if that directory was deleted. If setup stops partway, run it again. It resumes at the first unfinished step. If a target file changed since setup checked it, setup stops instead of overwriting your edit.
 
 ### Upgrade
 
 After you update spider, run setup again with the same configuration file. Each runtime version is installed under a file name derived from its content, so a new version goes next to the old one instead of replacing it. Setup probes Node again on a machine whose runtime changed. When only spider's installed files change, setup does not close and reopen your sessions. Then run the doctor.
+
+Setup upgrades `layouts/spider-glass.json` to `layouts/Spider.json` and moves the layout's keys to `layout:Spider` in Herdr's `keys.json`. It also updates `layout.switch` bindings that name `spider-glass`. If `spider-glass` was selected, setup switches to `Spider`. If another layout was selected, setup leaves it active. Setup saves the old layout in the upgrade checkpoint before removing it. The theme is still named `spider-glass`.
+
+Setup refuses to remove an unowned or edited `spider-glass.json`. If setup recorded a backup for the edited file, `--replace-changed` saves the edited bytes for full rollback before removing the file. Otherwise, move your file out of `layouts` before running setup again.
+
+If an interruption leaves both layouts in place, run setup again. Setup resumes only if the journal still matches `Spider.json` and the checkpoint still matches the old layout. If setup reports `layout-name-conflict`, inspect both files. Undo the interrupted upgrade or move the conflicting file out of `layouts` before retrying. On a case-insensitive file system, `spider.json` also conflicts with `Spider.json`. Neither replacement flag bypasses this conflict.
+
+Doctor reports a leftover old file or saved selection. It still checks the installed theme file and the Spider layout's theme reference. It does not require the active Herdr theme to match because you may be using another layout or theme.
 
 On Herdr 0.1.12, setup refuses previously owned machine picker files or bindings and prints the rollback command. Run rollback first, then restore stock bindings or remove any remaining custom picker shortcuts before running setup again.
 
@@ -182,9 +192,11 @@ A session that was started with explicit `--extension` arguments cannot be opene
 
 A new tab can briefly show a temporary name until pi starts in it. For pane layouts, setup verifies each new terminal, then parks and keeps it beside the recorded pane. It records the move first, so a retry resumes the same terminal even if an app reply was lost. If setup loses track of a session it was opening, it stops with `cutover-reconciliation-required` and does not open the session again. Do not open it by hand. Run setup again.
 
-Setup identifies a live session by its session ID, current feed and heartbeat, and live pi process. It adopts the session's current terminal, even if the core restarted or the terminal changed. If no live terminal holds the session, setup can reopen it. If two terminals hold the same session ID, setup names both panes and leaves them alone. It continues with the other sessions, then reports `duplicate-live-session`.
+Setup identifies a live session by its session ID, current feed and heartbeat, and live pi process. It adopts the session's current terminal, even if the core restarted or the terminal changed. If two terminals hold the same session ID, setup names both panes and leaves them alone. It continues with the other sessions, then reports `duplicate-live-session`.
 
-Setup adopts recorded sessions that you merged into one tab. It keeps the names you chose for the space and tab. Other panes stay in place and are not recorded as owned. Rollback refuses to close a tab containing those panes.
+If you rename a recorded tab or move its sessions into another tab, setup keeps the new placement and reports the change once per tab. It refuses to adopt a terminal that belongs to a different session. If a recorded terminal has finished or is open without pi, setup reports the stopped session and leaves the terminal where you put it, even if it is parked. Unrelated panes stay in place and are not recorded as owned.
+
+After setup finishes placing a session, it treats the session as closed by hand when its terminal is gone and no pane shows it. The rule also applies when the tab still exists. Setup does not reopen the session. It reports the closure on each run while the spaces config selects that session. Remove the selection from the spaces config or reopen the session yourself. An interrupted allocation still uses its recorded session file and placement to resume setup.
 
 ### Exact roaming sessions
 
@@ -215,7 +227,11 @@ A repeat that changes only the setup journal, cutover metadata, probe records, r
 
 Undo restores installed artifacts, including files an older spider install already owned. In shared files, it restores only setup's parts: the theme field, resume block, root notes setting, app preferences, and managed key sections. Later aliases, key bindings, and unrelated settings stay. Session moves in `spaces.json` stay. Changed runtime instructions and mod store copies stay, including copies changed during an interrupted undo. Undo prints `Runtime store retained: <path>` for a changed store copy. Unchanged copies created by the upgrade are removed.
 
-Undo reverses setup's layout changes in attempt order. It restores mod references and release metadata while preserving unrelated layout edits, including pane sizes and custom entries. It never completes with a layout reference to a mod it removed.
+For changes to an existing layout, undo reverses setup's edits in attempt order. It restores mod references and release metadata while preserving unrelated edits, including pane sizes and custom entries. It never completes with a layout reference to a mod it removed.
+
+Undoing the rename restores `layouts/spider-glass.json`, the layout's key section, its named switch bindings, and the saved selection. It removes the replacement `Spider.json`. If you edited the new layout after setup, move it to a `.kept` file before undo. If Herdr is still open, select the restored layout in the picker to update the running window.
+
+Before downgrading to a spider version from before the rename, undo the rename with your current spider version. If a later upgrade replaced the rename checkpoint, use full rollback with the current version instead. Older versions can reject the journal with `setup-journal-invalid` because it records the removed layout. Do not edit the journal to bypass that refusal.
 
 Close the pi sessions that the upgrade created before undo. Undo removes only those new owners, not tabs or sessions that existed before the upgrade. In a shared tab, it removes only the new panes. New mod directories disappear through a verified rename before their files are deleted. Generated app files are removed with them; unrelated user files stay.
 
@@ -226,7 +242,7 @@ For `upgrade-layout-reference`, copy the named mod to a custom mod directory and
 For either `upgrade-layout-reference` or `upgrade-layout-ambiguous`, you can preserve the customized layout before retrying:
 
 ```sh
-mv "<app-home>/layouts/spider-glass.json" "<app-home>/layouts/spider-glass.json.kept"
+mv "<app-home>/layouts/Spider.json" "<app-home>/layouts/Spider.json.kept"
 node <installed-package>/dist/herdr/cli.mjs rollback --undo-upgrade --replace-changed --config <absolute-config-file>
 ```
 
@@ -248,7 +264,9 @@ node <installed-package>/dist/herdr/cli.mjs rollback --config <absolute-config-f
 
 Rollback exits with 0 when it restored everything, 3 when some parts stay unrestored, 1 for any other failure, and 2 for a usage error. Setup and the doctor use the same codes, except 3. Rollback undoes only the parts that setup owns, and closes the tabs that setup created. Edits you made elsewhere in the same files stay. If you changed a part that setup owns, rollback leaves that file as it is and prints `<file> not restored:` with the reason. Repair that part, then run rollback again. To preserve a customized setup-owned file intact, move it to a `.kept` file before retrying rollback. Close the pi sessions in the tabs first, or rollback stops with `cutover-owner-live`. It never closes a terminal it did not create. It prints `Rollback restored <n> matching files`.
 
-Full rollback restores the state before the first setup that owned each file, not the most recent upgrade checkpoint. Full rollback keeps the remote runtime file because any install with the same digest can share it. It removes the endpoint registry, including one created by an older installation without a checkpoint or restored by upgrade undo. Full rollback retires the upgrade checkpoint, so a later setup cannot merge with the old sequence. Keep the checkpoint and backups until recovery is complete. If the original bindings were stock, rollback restores Cmd-T to `tab.new` and both split bindings to stock, and removes spider's Cmd-Shift-W binding. Bindings that were originally absent become absent again.
+If you merge or move setup panes by hand, close the moved panes before full rollback. Rollback refuses to close the merged tab even if you have not run setup since moving the panes. It also refuses to close a tab that contains unrelated panes.
+
+Full rollback clears the records of hand-closed and hand-placed sessions. A later setup treats the selections as new. Full rollback restores the state before the first setup that owned each file, not the most recent upgrade checkpoint. Full rollback keeps the remote runtime file because any install with the same digest can share it. It removes the endpoint registry, including one created by an older installation without a checkpoint or restored by upgrade undo. Full rollback retires the upgrade checkpoint, so a later setup cannot merge with the old sequence. Keep the checkpoint and backups until recovery is complete. If the original bindings were stock, rollback restores Cmd-T to `tab.new` and both split bindings to stock, and removes spider's Cmd-Shift-W binding. Bindings that were originally absent become absent again.
 
 Like setup, rollback stops with `agent-directory-mismatch` when the configured `agentDirectory` differs from the shell's pi agent directory. It also stops with `global-root-mismatch` when the configured `globalRoot` differs from pi's.
 
@@ -334,11 +352,11 @@ spider exec language:"shell" on:"build-box" code:"make test"
 
 `build-box` stands for one of your configured machine names. Without `on`, execution is local and unchanged.
 
-The first time setup runs, it installs a small Node runtime on each machine. Every remote command starts through that runtime as its own `hc` job. No pane opens for it, and the command does not wait for free space in the tab. Before the runtime releases the command, spider confirms that the job's labelled terminal exists. If that takes more than 10 seconds, spider removes the job without running it.
+Setup installs a small Node runtime the first time it reaches each machine. Every remote command starts through that runtime as its own `hc` job. No pane opens for it, and the command does not wait for free space in the tab. Before the runtime releases the command, spider confirms that the job's labelled terminal exists. If that takes more than 10 seconds, spider removes the job without running it.
 
 The packaged `dist/herdr/remote-runtime.mjs` executable starts jobs and agent consoles, including when invoked through a symlink. It also exports the runtime library API, including `installRuntimeDirectory` and `runRemoteRuntime`. Importing either the packaged artifact or its source library does not consume command-line arguments or start a remote job.
 
-Before each launch, spider checks that the machine has the runtime that matches this version of spider. If the runtime is missing or outdated, the call fails with `runtime-not-installed` before anything runs. Run setup again to install it.
+Before each launch, spider checks that the machine has the runtime that matches this version of spider. If the runtime is missing or outdated, the call fails with `runtime-not-installed` before anything runs. Run setup again while the machine is reachable to install it.
 
 These rules apply to `on`:
 
@@ -625,7 +643,7 @@ The panel does not post Herdr toasts for feed notices. There are no budget, suba
 
 ## The look
 
-Setup installs a layout named `spider-glass` and a pi theme named `dracula-plus-glass`:
+Setup installs the `Spider` layout, the `spider-glass` Herdr theme, and the `dracula-plus-glass` pi theme:
 
 - Hover, selected, and raised fills are white at 7, 8, and 11 percent.
 - Panes have a 12-pixel radius, an 8-pixel gap, and a 1-pixel `#38383a` border. The focused pane uses the light grey accent for its border. The panel has the same radius and neutral border.
@@ -642,7 +660,7 @@ Herdr 0.1.18 uses a 176-degree gradient from `#18181ab3` to `#22201eb3`, about 7
 
 Setup enables window blur by default on Herdr 0.1.16 and 0.1.18. Set `"look": { "windowBlur": false }` to turn off blur without changing the paints.
 
-The layout defaults `cell_background_opacity` to `0.6`. Setup keeps a numeric value from an existing `spider-glass` layout. Patched Herdr builds use the key for explicit terminal cell backgrounds. Stock Herdr 0.1.18 ignores it.
+The layout defaults `cell_background_opacity` to `0.6`. Setup keeps a numeric value from the previous layout, including an old `spider-glass.json` on upgrade. Patched Herdr builds use the key for explicit terminal cell backgrounds. Stock Herdr 0.1.18 ignores it.
 
 ## Shortcuts
 

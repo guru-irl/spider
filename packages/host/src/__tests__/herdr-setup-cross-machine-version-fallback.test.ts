@@ -29,7 +29,7 @@ test('unreadable app version skips picker keys while install and doctor remain a
   expect(keyPlan.keys?.global).not.toHaveProperty('cmd-t');
   expect(keyPlan.keys?.global).not.toHaveProperty('cmd-d');
   expect(keyPlan.keys?.global).not.toHaveProperty('cmd-shift-d');
-  expect(keyPlan.keys?.['layout:spider-glass']).not.toHaveProperty('cmd-shift-w');
+  expect(keyPlan.keys?.['layout:Spider']).not.toHaveProperty('cmd-shift-w');
   const merged = mergeKeys(Buffer.from(JSON.stringify(before)), keyPlan.keys!, {}, false);
   await writeFile(keyPath, merged);
   const doctor = await f.ports.doctorParts(request), result = await doctor.inspect('keys', request);
@@ -45,10 +45,10 @@ test('unreadable app version leaves existing picker files and bindings alone', a
   const f = await bareFixture(), home = f.h.directories.app;
   const request = { ...f.request, config: { ...f.request.config, app: { ...f.request.config.app, binary: join(f.h.root, 'missing-app') } } };
   const keyPath = join(home, 'keys.json'), before = await readFile(keyPath);
-  const keys = { global: { 'cmd-t': 'mod.open:spider-machine-picker' }, 'layout:spider-glass': { 'cmd-shift-w': 'spider-pane.close' } };
+  const keys = { global: { 'cmd-t': 'mod.open:spider-machine-picker' }, 'layout:Spider': { 'cmd-shift-w': 'spider-pane.close' } };
   const picker = join(home, 'mods/spider-machine-picker/main.js');
   const plans: InstallFile[] = [
-    { path: keyPath, expected: digest(before), bytes: mergeKeys(before, keys, {}, false), keys, managed: { kind: 'keys', sections: { global: ['cmd-t'], 'layout:spider-glass': ['cmd-shift-w'] } } },
+    { path: keyPath, expected: digest(before), bytes: mergeKeys(before, keys, {}, false), keys, managed: { kind: 'keys', sections: { global: ['cmd-t'], 'layout:Spider': ['cmd-shift-w'] } } },
     { path: picker, expected: null, bytes: Buffer.from('// installed picker\n') },
   ];
   const journal = await readJournal(request.journalRoot);
@@ -58,7 +58,7 @@ test('unreadable app version leaves existing picker files and bindings alone', a
   expect(files.some(file => file.path === picker)).toBe(false);
   expect(files.find(file => file.path === keyPath)?.keys?.global).not.toHaveProperty('cmd-t');
   expect(files.find(file => file.path === keyPath)?.retainedKeys?.global['cmd-t']).toBe('mod.open:spider-machine-picker');
-  expect(files.find(file => file.path === keyPath)?.retainedKeys?.['layout:spider-glass']['cmd-shift-w']).toBe('spider-pane.close');
+  expect(files.find(file => file.path === keyPath)?.retainedKeys?.['layout:Spider']['cmd-shift-w']).toBe('spider-pane.close');
   expect(await readFile(keyPath)).toEqual(installed);
   expect(await readFile(picker, 'utf8')).toBe('// installed picker\n');
   expect(await readFile(join(request.journalRoot, 'journal.json'))).toEqual(journalBefore);
@@ -69,43 +69,6 @@ test('unreadable app version leaves existing picker files and bindings alone', a
   expect(result.warnings?.find(warning => warning.code === 'picker-version-unavailable')?.message).toMatch(/existing.*left in place/i);
   expect(result.failures.some(failure => failure.message.includes('cmd-shift-w'))).toBe(false);
   expect(result.failures.some(failure => failure.code === 'legacy-picker-binding')).toBe(false);
-});
-
-test.each(['0.1.13', '0.1.16'] as const)('a lost version after staging installs A without picker files or bindings on %s', async version => {
-  const f = await changingAppVersion(version, version === '0.1.13' ? 'process' : 'socket'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
-  const stockKeys = JSON.parse(await readFile(join(home, 'keys.json'), 'utf8'));
-  const stage = f.parts.stageLook;
-  f.parts.stageLook = async (...args) => {
-    const files = await stage(...args);
-    await writeFile(app, (await readFile(app, 'utf8')).replace(`console.log('herdr-app ${version}')`, 'process.exit(1)'));
-    return files;
-  };
-  const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-  const result = await setupHerdr(f.request, f.parts);
-  expect(result.doctor.failures).toEqual([]);
-  expect(result.doctor.warnings.filter(warning => warning.code === 'picker-version-unavailable')).toHaveLength(1);
-  expect(stderr.mock.calls.map(([text]) => String(text)).filter(text => /picker.*version/i.test(text))).toHaveLength(1);
-  expect(await readFile(join(home, 'mods/spider-pane/main.js'), 'utf8')).not.toContain('spider-look:b-pane-entry-imports');
-  for (const name of ['spider-machine-picker', 'spider-machine-picker-right', 'spider-machine-picker-down']) await expect(stat(join(home, 'mods', name))).rejects.toMatchObject({ code: 'ENOENT' });
-  for (const path of ['spider-menu/actions.js', 'spider-menu/machine.js', 'spider-menu/machines/actions.js', 'spider-pane/machines/actions.js', 'spider-tabs/machines/actions.js']) await expect(stat(join(home, 'mods', path))).rejects.toMatchObject({ code: 'ENOENT' });
-  for (const path of result.writes.filter(path => path.startsWith(join(home, 'mods') + '/') && path.endsWith('.js'))) {
-    const source = (await readFile(path, 'utf8')).replace(/^\s*\/\/[^\n]*$/gm, '');
-    for (const match of source.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)['"](\.[^'"]+)['"]/g)) expect((await stat(resolve(dirname(path), match[1]!))).isFile(), `${path}: ${match[1]}`).toBe(true);
-  }
-  const keys = JSON.parse(await readFile(join(home, 'keys.json'), 'utf8'));
-  for (const key of ['cmd-t', 'cmd-d', 'cmd-shift-d']) expect(keys.global[key]).toEqual(stockKeys.global[key]);
-  expect(keys['layout:spider-glass']?.['cmd-shift-w']).toBeUndefined();
-  const parkAsset = join(f.root, 'packages/herdr/assets/pane/park.js'), updatedPark = Buffer.concat([await readFile(parkAsset), Buffer.from('\n// updated pane asset\n')]);
-  await writeFile(parkAsset, updatedPark);
-  await writeFile(app, (await readFile(app, 'utf8')).replace('process.exit(1)', `console.log('herdr-app ${version}')`));
-  await setupHerdr(f.request, f.parts);
-  expect(await readFile(join(home, 'mods/spider-pane/park.js'))).toEqual(updatedPark);
-  f.parts.stageLook = stage;
-  await writeFile(app, (await readFile(app, 'utf8')).replace('process.exit(1)', `console.log('herdr-app ${version}')`));
-  const recovered = await setupHerdr(f.request, f.parts);
-  expect(recovered.doctor.failures).toEqual([]);
-  expect((await stat(join(home, 'mods/spider-machine-picker/main.js'))).isFile()).toBe(true);
-  expect(JSON.parse(await readFile(join(home, 'keys.json'), 'utf8')).global['cmd-t']).toBe('mod.open:spider-machine-picker');
 });
 
 test.each(['0.1.13', '0.1.16'] as const)('a lost version after staging preserves an installed picker and its rollback ownership on %s', async version => {

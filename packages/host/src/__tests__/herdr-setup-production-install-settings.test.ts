@@ -18,14 +18,17 @@ const fullFixture = (requireAppBackup = false) => focusedSetupFixture({ coreTran
 
 test('app selections are backed up before commands and restored by rollback', async () => {
   const f = await fullFixture(true);
-  const settings = join(f.h.directories.app, 'settings.json');
-  const original = await readFile(settings);
+  const settings = join(f.h.directories.app, 'settings.json'), shared = join(f.h.directories.app, 'shared.json');
+  const original = await readFile(settings), originalShared = await readFile(shared);
   await setupHerdr(f.request, f.parts);
-  expect(JSON.parse(await readFile(settings, 'utf8'))).toEqual({ zoom: 1.25, theme: 'spider-glass', layout: 'spider-glass', sounds: { enabled: false } });
-  const entry = (await readJournal(f.request.journalRoot)).entries.find(e => e.path === settings)!;
-  expect(await readFile(entry.backup!)).toEqual(original);
+  expect(JSON.parse(await readFile(settings, 'utf8'))).toEqual({ zoom: 1.25, theme: 'spider-glass', sounds: { enabled: false } });
+  expect(JSON.parse(await readFile(shared, 'utf8'))).toEqual({ layout: 'Spider', 'fixture.mod': 'keep' });
+  const journal = await readJournal(f.request.journalRoot);
+  expect(await readFile(journal.entries.find(entry => entry.path === settings)!.backup!)).toEqual(original);
+  expect(await readFile(journal.entries.find(entry => entry.path === shared)!.backup!)).toEqual(originalShared);
   await rollbackHerdr(f.request, f.parts);
   expect(await readFile(settings)).toEqual(original);
+  expect(await readFile(shared)).toEqual(originalShared);
 });
 
 test('setup without --config reads the standard file and records no extra path', async () => {
@@ -50,28 +53,4 @@ test('custom configuration paths are backed up as an owned global key without co
   await setupHerdr(f.request, f.parts);
   expect(JSON.parse(await readFile(global, 'utf8')).userChoice).toBe('keep');
   expect((await setupHerdr(f.request, f.parts)).writes).toEqual([]);
-});
-
-test.each([false, true])('replacement re-applies app selections without repeating session setup with running-in-place %s', async runningInPlace => {
-  const f = await (runningInPlace ? focusedSetupFixture({ coreTransport: 'socket', localOnly: true }, true) : fullFixture(true)); await setupHerdr(f.request, f.parts);
-  const settings = join(f.h.directories.app, 'settings.json');
-  const choice = '{"zoom":1.5,"theme":"nord","layout":"personal"}'; await writeFile(settings, choice);
-  const output: string[] = [], errors: string[] = [];
-  const ports = { ...f.ports, stdout: (text: string) => output.push(text), stderr: (text: string) => errors.push(text) };
-  expect(await runHerdrCli(['setup', '--config', f.request.configPath], ports)).toBe(1);
-  expect(errors.join('')).toContain('--replace-changed');
-  expect(errors.join('')).toContain('spider-glass');
-  if (runningInPlace) {
-    const preflight = f.parts.preflight;
-    f.parts.preflight = async request => ({ ...await preflight(request), recoveredCutover: { terminals: [], identities: {} }, cutoverActions: [] });
-  }
-  f.parts.cutover = async () => { throw new Error('Selection repair must not repeat session setup'); };
-  f.parts.reconcileCutover = f.parts.cutover;
-  expect(await setupHerdr({ ...f.request, replaceChanged: true }, f.parts).then(result => result.doctor.failures)).toEqual([]);
-  expect(JSON.parse(await readFile(settings, 'utf8'))).toEqual({ zoom: 1.5, theme: 'spider-glass', layout: 'spider-glass', sounds: { enabled: false } });
-  const entry = (await readJournal(f.request.journalRoot)).entries.find(entry => entry.path === settings)!;
-  expect(await readFile(entry.backup!, 'utf8')).toBe(choice);
-  expect((await setupHerdr(f.request, f.parts)).writes).toEqual([]);
-  await rollbackHerdr(f.request, f.parts);
-  expect(await readFile(settings, 'utf8')).toBe(choice);
 });

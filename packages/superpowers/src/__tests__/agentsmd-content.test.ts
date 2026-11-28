@@ -40,8 +40,9 @@ superpowers skills above; they replace none of them.
       "## Skills first", "## pstack skills", "## The spider tool",
     ]);
   });
-  it("stays within the token budget (≤ 8500 chars)", () => {
-    expect(SPIDER_BLOCK_BODY.length).toBeLessThanOrEqual(8500);
+  it("stays within the token budget (≤ 8500 chars, markers included)", () => {
+    // Herdr's guidance story measures the whole generated block, markers and all.
+    expect(buildSpiderBlock().length).toBeLessThanOrEqual(8500);
   });
   it("buildSpiderBlock wraps the body in the delimiters exactly once", () => {
     const b = buildSpiderBlock();
@@ -49,6 +50,11 @@ superpowers skills above; they replace none of them.
     expect(b.trimEnd().endsWith(SPIDER_BLOCK_END)).toBe(true);
     expect(b.match(/<!-- spider:start -->/g)!.length).toBe(1);
     expect(b.match(/<!-- spider:end -->/g)!.length).toBe(1);
+  });
+
+  it("guides subagent names in the managed run instructions", () => {
+    const runBullet = buildSpiderBlock().split("- `spider run`")[1].split("- `spider todo`")[0].replace(/\s+/g, " ");
+    expect(runBullet).toContain("Use one or two words that describe the job (e.g. fresh-weights), or a creative name (e.g. spiderman); never cryptic abbreviations (e.g. whst).");
   });
 
   it("reserves notify for a person who must act, not completion", () => {

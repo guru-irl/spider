@@ -125,6 +125,14 @@ it("shows metadata backfill state and its own progress on one doctor line", () =
   expect(usageDoctorLines(fixture(), config).lines).toContain("- usage metadata backfill=pending progress=unavailable");
 });
 
+it("doctor shows display names for known unpriced models and IDs for unknown ones", () => {
+  const s = fixture();
+  s.health!.unpricedBillingPeriod = { models: ["fixture-provider/alpha", "unknown"], withoutModel: 0 };
+  const registry = { find: (provider: string, id: string) => provider === "fixture-provider" && id === "alpha" ? { name: "Alpha Model" } : undefined, getAll: () => [] } as any;
+  expect(usageDoctorLines(s, config, undefined, registry).lines).toContain(
+    "- usage unpriced (this billing period): 2 models, 0 calls without a model; Alpha Model, unknown");
+});
+
 it("doctor shows reprice progress and only published billing-period unpriced counts", () => {
   const s = fixture();
   Object.assign(s.health!, { reprice: { state: "running", processed: 2000, total: 5000, repriced: 1500 }, unpricedBillingPeriod: { models: ["current-a", "current-b"], withoutModel: 58 } });

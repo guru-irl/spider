@@ -175,7 +175,7 @@ export async function remoteStory(original: Suite, options: { secondMachine?: bo
     config.machines.push({ ...primary, name: second, aliases: [], runtime: { ...runtime, directory: destinationPath(suite, join(destinationRoot(suite), 'runtime-second')) } });
   }
   const absent = ['agents', 'spaces', 'pane', 'tabs', 'panel', 'machines'].map(name => join(config.app.home, 'mods', `spider-${name}`));
-  absent.push(join(config.app.home, 'layouts/spider-glass.json'));
+  absent.push(join(config.app.home, 'layouts/Spider.json'));
   if (suite.options.tier !== 'remote') absent.push(...config.machines.map(machine => machine.runtime.directory));
   else for (const machine of config.machines) {
     const path = join(machine.runtime.directory, `spider-remote-runtime-${suite.packed.digests['dist/herdr/remote-runtime.mjs'].slice(0, 16)}.mjs`);

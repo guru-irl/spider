@@ -21,7 +21,8 @@ export async function startV0Relay(root: string): Promise<{ stop(): Promise<void
   if (routes.version !== 2 || !routes.relays.includes(config.machineId)) throw new Error("This machine is not a configured relay");
   const connection = localHerdrConnection(root);
   const controller = new AbortController(), { signal } = controller;
-  const { promise: started, resolve: ready, reject: rejectReady } = Promise.withResolvers<{ stop(): Promise<void> }>();
+  let ready!: (service: { stop(): Promise<void> }) => void, rejectReady!: (error: unknown) => void;
+  const started = new Promise<{ stop(): Promise<void> }>((resolve, reject) => { ready = resolve; rejectReady = reject; });
   const lifetime = withProcessLock(join(root, "roam"), "roam-relay-v0", async () => {
     let alias = config.intercom.machineAlias;
     if (!isV0Alias(alias)) {

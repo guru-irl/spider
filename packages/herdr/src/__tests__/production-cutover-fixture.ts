@@ -21,6 +21,10 @@ export async function until(read: () => Promise<boolean>, timeout = 15000): Prom
   while (Date.now() < deadline) { if (await read()) return; await delay(25); }
   throw new Error('Isolated fixture did not reach the required state');
 }
+
+export function cutoverAppScript(node: string, cli: string, layout: string): string {
+  return `#!/bin/sh\ncase "$1" in\n  --version) printf '%s\\n' 'herdr-app 0.1.12' ;;\n  ls) exec /bin/cat ${shellQuote(layout)} ;;\n  *) exec ${shellQuote(node)} ${shellQuote(cli)} app "$@" ;;\nesac\n`;
+}
 // Each test file builds once, but every case gets its own runtime files and core.
 let fixturePrograms: Promise<string> | undefined;
 let fixtureBuildRoot: string | undefined;
@@ -188,7 +192,8 @@ export async function fixture(mode: 'fake' | 'hc', terminalShell = false): Promi
   await writeFile(control, '{}');
   await writeFixturePaneEndpoint(root);
   const cli = join(root, 'cli.mjs'), app = join(bin, 'app');
-  for (const [name, command] of [['pi', 'pi-stub'], ['app', 'app']] as const) { await writeFile(join(bin, name), `#!/bin/sh\nexec ${shellQuote(h.nodeBinary)} ${shellQuote(cli)} ${command} "$@"\n`); await chmod(join(bin, name), 0o700); }
+  await writeFile(join(bin, 'pi'), `#!/bin/sh\nexec ${shellQuote(h.nodeBinary)} ${shellQuote(cli)} pi-stub "$@"\n`); await chmod(join(bin, 'pi'), 0o700);
+  await writeFile(app, cutoverAppScript(h.nodeBinary, cli, join(root, 'layout.json'))); await chmod(app, 0o700);
   await writeFile(join(bin, 'ps'), '#!/bin/sh\nif [ "$1" = -U ]; then exit 0; fi\nexec /bin/ps "$@"\n'); await chmod(join(bin, 'ps'), 0o700);
   h.localEnv.PATH = bin + ':' + h.localEnv.PATH; h.remoteEnv.PATH = bin + ':' + h.remoteEnv.PATH;
   const file = join(root, 'selected.jsonl'); await writeFile(file, JSON.stringify({ type: 'session', version: 3, id: 'selected', cwd: root }) + '\n' + JSON.stringify({ type: 'session_info', name: 'Selected' }) + '\n');

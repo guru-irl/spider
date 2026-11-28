@@ -6,8 +6,11 @@ import { openDbAt } from "@spider/db-core";
 import * as hc from "@spider/herdr/client/hc";
 import { HerdrError } from "@spider/herdr/client/parse";
 import { IntercomClient } from "@spider/intercom/broker/client";
+import * as relayBroker from "@spider/intercom/broker/roam-relay-client";
 import { listV0RelayLinks, pollV0RelayBroker, submitV0Relay } from "@spider/intercom/broker/roam-relay-client";
-import { type RelayPeer, type RelayPoll, type RelayResult, type RelaySubmit } from "@spider/intercom/relay-protocol";
+import { requestV0Broker } from "@spider/intercom/broker/roam-v0-client";
+import { decodeRelayPoll, relayRefused, type RelayPeer, type RelayPoll, type RelayPollReply, type RelayResult, type RelaySubmit } from "@spider/intercom/relay-protocol";
+import type { V0RouteResult } from "@spider/intercom/roam-v0";
 import { registerIntercomOnce } from "@spider/intercom/single-instance";
 import { startTestBroker, stopTestBroker, testBrokerEnv, testTmpDir } from "@spider/intercom/test-support";
 import type { LocalSessionInfo } from "@spider/intercom/types";
@@ -15,12 +18,16 @@ import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import { buildIntercom } from "../../../../scripts/build-intercom.mjs";
 import type { Peer, Transport } from "../contracts";
 import { createV0Intercom, createV0RelayForwarder } from "../relocate/intercom";
+import { routeV0Relay } from "../relocate/intercom-relay-route";
+import { runRelayPollLoop, runV0LinkOnce } from "../relocate/relay-poll";
 
 const RELAY = "11111111-1111-4111-8111-111111111111";
+const BACKUP = "55555555-5555-4555-8555-555555555555";
 const ORIGIN = "22222222-2222-4222-8222-222222222222";
 const TARGET = "33333333-3333-4333-8333-333333333333";
 const SCOPE = "fixture-scope";
 const relay: RelayPeer = { machineId: RELAY, alias: "relay-1.invalid" };
+const backupRelay: RelayPeer = { machineId: BACKUP, alias: "relay-2.invalid" };
 const origin: RelayPeer = { machineId: ORIGIN, alias: "sender.invalid" };
 const target: RelayPeer = { machineId: TARGET, alias: "target.invalid" };
 const roots: string[] = [];
@@ -33,6 +40,7 @@ afterEach(async () => {
   try { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); }
   finally {
     vi.restoreAllMocks();
+    vi.useRealTimers();
     vi.unstubAllEnvs();
     for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true });
   }
@@ -115,20 +123,26 @@ async function startTool(m: Machine, intercom: ReturnType<typeof createV0Interco
   };
 }
 
-async function fixture(options: { direct?: boolean; reached?: readonly RelayPeer[]; link?: boolean; targetGrant?: boolean } = {}) {
+async function fixture(options: { direct?: boolean; reached?: readonly RelayPeer[]; link?: boolean; targetGrant?: boolean; secondRelay?: boolean } = {}) {
   vi.stubEnv("PI_SUBAGENT_CHILD", "0");
   vi.stubEnv("PI_INTERCOM_SCOPE_ID", SCOPE);
   const sender = machine(origin), receiver = machine(target), carrier = machine(relay);
-  sender.configure({ sendTo: options.direct ? [receiver.peer] : [], acceptFrom: [target] });
-  receiver.configure({ acceptFrom: options.targetGrant === false ? [] : [origin] });
-  carrier.configure({ sendTo: [sender.peer, receiver.peer], linkTo: [ORIGIN] });
+  const relays = options.secondRelay ? [RELAY, BACKUP] : [RELAY];
+  sender.configure({ sendTo: options.direct ? [receiver.peer] : [], acceptFrom: [target], relays });
+  receiver.configure({ acceptFrom: options.targetGrant === false ? [] : [origin], relays });
+  const configureCarrier = (machine: Machine) => machine.configure({ sendTo: [sender.peer, receiver.peer], linkTo: [ORIGIN], relays });
+  configureCarrier(carrier);
   await startBroker(sender);
   await startBroker(receiver);
   const local = await register(sender, "local-recipient", "local", 2);
   const remote = await register(receiver, "remote-recipient", "recipient", 3);
 
   const faults = { lost: false, lostRoute: false, routeMissing: false, disconnected: false, badPin: false, resolveFailed: false,
-    lookupFailureMachineId: "" };
+    targetRefusesDelivery: false, lookupFailureMachineId: "" };
+  const targetIntercom = createV0Intercom(receiver.root, { broker: async (agentDir, op, signal) => {
+    if (faults.targetRefusesDelivery && op.kind === "deliver") return { kind: "refused", code: "unreachable" };
+    return requestV0Broker(agentDir, op, signal);
+  } });
   const lookupPeers: string[] = [];
   const transport = (): Pick<Transport, "resolve" | "exec"> => ({
     async resolve(p) {
@@ -147,7 +161,7 @@ async function fixture(options: { direct?: boolean; reached?: readonly RelayPeer
       request.onConnected?.(!faults.disconnected);
       const bytes = request.stdin ?? request.stdinForTimeout?.(request.timeoutMs - 2000);
       if (!bytes) throw new Error("Missing request");
-      const reply = await createV0Intercom(receiver.root).handle(JSON.parse(bytes.toString("utf8")));
+      const reply = await targetIntercom.handle(JSON.parse(bytes.toString("utf8")));
       if (faults.lost && request.stdinForTimeout) throw new Error("Fixture lost the delivery acknowledgement");
       if (faults.lostRoute && request.stdinForTimeout) throw new HerdrError("machine-not-found", "fixture lost the route after delivery");
       return Buffer.from(JSON.stringify(reply));
@@ -162,16 +176,29 @@ async function fixture(options: { direct?: boolean; reached?: readonly RelayPeer
     return { from, locals };
   }
   try { await vi.waitFor(roster); } finally { vi.stubEnv("PI_CODING_AGENT_DIR", undefined); }
-  const reach = { type: "reach", peers: options.reached ?? [relay, target] } as const;
-  const abort = new AbortController();
-  let pollId = 0;
-  const poll = (holdMs: RelayPoll["holdMs"], results: readonly RelayResult[] = []) => pollV0RelayBroker(sender.agentDir, {
-    holdMs, hello: { type: "hello", version: 1, relay, toMachineId: ORIGIN, linkId: "fixture-link", pollId: `poll-${++pollId}` }, reach, results,
-  }, abort.signal);
-  const held = options.link === false ? null : poll(20_000);
-  cleanups.push(async () => { abort.abort(); await held; });
+  function link(peer: RelayPeer, defaultReach: readonly RelayPeer[] = [peer, target]) {
+    const abort = new AbortController();
+    let pollId = 0;
+    const calls: Promise<RelayPollReply>[] = [];
+    cleanups.push(async () => { abort.abort(); await Promise.all(calls); });
+    return { abort, poll(holdMs: RelayPoll["holdMs"], results: readonly RelayResult[] = [], peers = defaultReach) {
+      const call = pollV0RelayBroker(sender.agentDir, { holdMs,
+        hello: { type: "hello", version: 1, relay: peer, toMachineId: ORIGIN, linkId: "fixture-link", pollId: `poll-${++pollId}` },
+        reach: { type: "reach", peers }, results,
+      }, abort.signal);
+      calls.push(call);
+      return call;
+    } };
+  }
+  const primary = link(relay, options.reached);
+  const held = options.link === false ? null : primary.poll(20_000);
   if (held) await vi.waitFor(async () => expect(await listV0RelayLinks(sender.agentDir)).toMatchObject([{ state: "up" }]));
-  return { sender, receiver, local, remote, intercom, tool, roster, faults, lookupPeers, poll, held, abort,
+  const backup = options.secondRelay ? (() => {
+    const secondary = machine(backupRelay);
+    configureCarrier(secondary);
+    return { ...link(backupRelay), forward: createV0RelayForwarder(secondary.root, { transport }) };
+  })() : undefined;
+  return { sender, receiver, carrier, local, remote, intercom, tool, roster, faults, lookupPeers, link, ...primary, held, backup,
     forward: createV0RelayForwarder(carrier.root, { transport }) };
 }
 
@@ -369,9 +396,8 @@ it("names the unreachable home and why the live relay was skipped", async () => 
   expect((await f.tool("remote-recipient")).content[0].text.split("\n")[0]).toBe(`${TARGET} is not reachable through any relay right now. Nothing was queued.`);
 });
 
-it("reports relay busy without taking a seventeenth submission", async () => {
-  const f = await fixture({ link: false });
-  await f.poll(0);
+async function fillPrimary(f: Fixture) {
+  expect((await f.poll(0)).ready.ok).toBe(true);
   const { from } = await f.roster();
   const submissions = Array.from({ length: 16 }, (_, i): RelaySubmit => ({ type: "submit", kind: "send",
     from: { machineId: ORIGIN, address: from.address!, name: from.name!, homeEpoch: 1, endpointEpoch: from.endpointEpoch! },
@@ -381,8 +407,217 @@ it("reports relay busy without taking a seventeenth submission", async () => {
   cleanups.push(async () => { f.abort.abort(); await Promise.all(inflight); });
   const taken: RelaySubmit[] = [];
   await vi.waitFor(async () => { taken.push(...(await f.poll(0)).submissions); expect(taken).toHaveLength(16); });
+}
+
+it("reports relay busy without taking a seventeenth submission", async () => {
+  const f = await fixture({ link: false });
+  await fillPrimary(f);
   const refused = await f.tool("remote-recipient");
   expect(refused.content[0].text.split("\n")[0]).toBe("Relay busy. Nothing was queued.");
   expect(refused.details).toMatchObject({ code: "relay-busy", relaySkips: [{ relay: "relay-1.invalid", reason: "busy" }] });
   expect((await f.poll(0)).submissions).toEqual([]);
+});
+
+async function twoRelays() {
+  const f = await fixture({ link: false, secondRelay: true });
+  if (!f.backup) throw new Error("Missing backup relay fixture");
+  return { ...f, backup: f.backup };
+}
+
+async function sendPlan(f: Fixture) {
+  const plan = await f.intercom.prepare({ to: "remote-recipient", ...await f.roster() });
+  if (plan.kind !== "remote") throw new Error("Missing relay delivery plan");
+  return plan.send;
+}
+
+function marker(id: string) { return { id, text: id, timestamp: 1 }; }
+
+async function settleOffers(held: Promise<RelayPollReply>, send: Promise<V0RouteResult>,
+  complete: (submit: RelaySubmit) => Promise<unknown>): Promise<string[]> {
+  const reply = await Promise.race([held, send]);
+  if (!("submissions" in reply)) return [];
+  for (const submit of reply.submissions) await complete(submit);
+  return reply.submissions.map(submit => submit.message.id);
+}
+
+type TestLink = Pick<Fixture, "poll" | "forward">;
+const deliverOffer = (link: TestLink) => async (submit: RelaySubmit) => link.poll(0, [await link.forward(submit)]);
+
+it("uses configured order when links arrive in reverse order and their reach changes", async () => {
+  const f = await twoRelays();
+  expect((await f.backup.poll(0)).ready.ok).toBe(true);
+  expect((await f.poll(0)).ready.ok).toBe(true);
+  expect((await listV0RelayLinks(f.sender.agentDir)).map(link => link.relay.alias)).toEqual(["relay-2.invalid", "relay-1.invalid"]);
+  const send = await sendPlan(f);
+  let primaryHeld = f.poll(20_000), backupHeld = f.backup.poll(20_000);
+  async function deliver(id: string) {
+    const pending = send(marker(id));
+    const offers = await Promise.all([
+      settleOffers(primaryHeld, pending, deliverOffer(f)),
+      settleOffers(backupHeld, pending, deliverOffer(f.backup)),
+    ]);
+    expect(offers.flat()).toEqual([id]);
+    const result = await pending;
+    expect(result).toMatchObject({ kind: "socket_delivered", id });
+    return result;
+  }
+  const firstSelected = await deliver("preferred");
+  expect(firstSelected.path).toBe("relay relay-1.invalid");
+
+  primaryHeld = f.poll(20_000, [], [relay]);
+  await vi.waitFor(async () => expect(await listV0RelayLinks(f.sender.agentDir)).toMatchObject([
+    { relay: backupRelay, state: "up", reach: [backupRelay, target] },
+    { relay, state: "up", reach: [relay] },
+  ]));
+  const withoutReach = await deliver("reach-withdrawn");
+  expect(withoutReach).toMatchObject({ path: "relay relay-2.invalid",
+    relaySkips: [{ relay: "relay-1.invalid", reason: "cannot reach the target" }] });
+
+  expect((await f.poll(0)).ready.ok).toBe(true);
+  backupHeld = f.backup.poll(20_000);
+  const nextAfterPrimaryRecovers = await deliver("preferred-again");
+  expect(nextAfterPrimaryRecovers.path).toBe("relay relay-1.invalid");
+  expect(await f.remote.received()).toEqual(["preferred", "reach-withdrawn", "preferred-again"]);
+});
+
+it.each(["unreachable", "relay-stopping"] as const)("switches after an explicit pre-delivery %s refusal", async code => {
+  const f = await twoRelays();
+  // With no held call, the primary is still up but the broker must expire its offer before hand-off.
+  expect((await f.poll(0)).ready.ok).toBe(true);
+  expect((await f.backup.poll(0)).ready.ok).toBe(true);
+  const primaryHeld = code === "relay-stopping" ? f.poll(20_000) : undefined;
+  const backupHeld = f.backup.poll(20_000);
+  const send = await sendPlan(f);
+  const pending = send(marker("safe-refusal"));
+  const [backupOffers, stoppedOffers] = await Promise.all([
+    settleOffers(backupHeld, pending, deliverOffer(f.backup)),
+    primaryHeld ? settleOffers(primaryHeld, pending, submit => f.poll(0, [relayRefused(submit.message.id, code)])) : [],
+  ]);
+  const secondAfterSafeRefusal = await pending;
+  expect(secondAfterSafeRefusal).toMatchObject({ kind: "socket_delivered", id: "safe-refusal", path: "relay relay-2.invalid" });
+  expect(backupOffers).toEqual(["safe-refusal"]);
+  expect(stoppedOffers).toEqual(code === "relay-stopping" ? ["safe-refusal"] : []);
+  expect((await f.poll(0)).submissions).toEqual([]);
+  expect(await f.remote.received()).toEqual(["safe-refusal"]);
+});
+
+it("skips down, unreachable, and busy relays in configured order", async () => {
+  const f = await twoRelays();
+  const down = { machineId: "66666666-6666-4666-8666-666666666666", alias: "relay-down.invalid" };
+  const noTarget = { machineId: "77777777-7777-4777-8777-777777777777", alias: "relay-no-target.invalid" };
+  f.sender.configure({ relays: [down.machineId, noTarget.machineId, RELAY, BACKUP], acceptFrom: [target, down] });
+  expect((await f.link(noTarget, [noTarget]).poll(0)).ready.ok).toBe(true);
+  await fillPrimary(f);
+  expect((await f.backup.poll(0)).ready.ok).toBe(true);
+  const backupHeld = f.backup.poll(20_000);
+  const send = await sendPlan(f);
+  const pending = send(marker("after-busy"));
+  const backupOffers = await settleOffers(backupHeld, pending, deliverOffer(f.backup));
+  const result = await pending;
+  expect(result).toMatchObject({ kind: "socket_delivered", id: "after-busy", path: "relay relay-2.invalid" });
+  const skipReasons = result.relaySkips?.map(skip => skip.reason);
+  expect(skipReasons).toEqual(["down", "cannot reach the target", "busy"]);
+  expect(backupOffers).toEqual(["after-busy"]);
+  expect(await f.remote.received()).toEqual(["after-busy"]);
+});
+
+it.each(["unreachable", "unauthorized", "changed"] as const)("does not switch after a final %s refusal", async code => {
+  const f = await twoRelays();
+  expect((await f.poll(0)).ready.ok).toBe(true);
+  expect((await f.backup.poll(0)).ready.ok).toBe(true);
+  const primaryHeld = f.poll(20_000), backupHeld = f.backup.poll(20_000);
+  if (code === "changed") {
+    const db = openDbAt(join(f.carrier.root, "spider.db"), "global");
+    try { db.prepare("UPDATE session_homes SET epoch=4 WHERE session_id='remote-recipient'").run(); }
+    finally { db.close(); }
+  }
+  if (code === "unauthorized") f.receiver.configure({ acceptFrom: [], relays: [RELAY, BACKUP] });
+  f.faults.targetRefusesDelivery = code === "unreachable";
+  const send = await sendPlan(f);
+  const pending = send(marker("refused"));
+  const [firstOffers, backupOffers] = await Promise.all([
+    settleOffers(primaryHeld, pending, async submit => {
+      const result = await f.forward(submit);
+      f.faults.targetRefusesDelivery = false;
+      expect(result).toEqual({ type: "result", messageId: "refused", attempted: code === "unreachable", outcome: { kind: "refused", code } });
+      await f.poll(0, [result]);
+    }),
+    settleOffers(backupHeld, pending, deliverOffer(f.backup)),
+  ]);
+  expect(firstOffers).toEqual(["refused"]);
+  expect(backupOffers).toEqual([]);
+  expect(await pending).toMatchObject({ kind: "refused", code, path: "relay relay-1.invalid" });
+  expect(await f.remote.received()).toEqual([]);
+});
+
+it("does not switch after a lost result", async () => {
+  const f = await twoRelays();
+  const stop = new AbortController();
+  let firstCallMs = 0, lostResult: RelayResult | undefined, overlappingHold = false;
+  const running = runRelayPollLoop({ relay, peer: f.sender.peer, signal: stop.signal, reach: () => [relay, target],
+    clock: { now: Date.now, later(ms, fn) { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } },
+    forward: f.forward, observe() {}, transport: {
+      async resolve(peer) { return peer; },
+      async exec(_peer, argv, options) {
+        const holdMs = argv.at(-1) === "0" ? 0 : 20_000;
+        if (holdMs === 0) {
+          lostResult = decodeRelayPoll(options.stdin!, 0).results[0];
+          await vi.waitFor(async () => {
+            const first = (await listV0RelayLinks(f.sender.agentDir)).find(link => link.relay.machineId === RELAY);
+            expect(first).toMatchObject({ state: "up" });
+            expect(first?.lastCallMs).toBeGreaterThan(firstCallMs);
+          });
+          overlappingHold = true;
+          throw new Error("Fixture lost the hold-0 call before returning its result");
+        }
+        return runV0LinkOnce(f.sender.root, options.stdin!, holdMs, options.signal);
+      },
+    } });
+  cleanups.push(async () => { stop.abort(); await running; });
+  await vi.waitFor(async () => {
+    const [first] = await listV0RelayLinks(f.sender.agentDir);
+    expect(first).toMatchObject({ relay, state: "up", lastCallMs: expect.any(Number) });
+    firstCallMs = first.lastCallMs!;
+  });
+  expect((await f.backup.poll(0)).ready.ok).toBe(true);
+  const backupHeld = f.backup.poll(20_000);
+  const send = await sendPlan(f);
+  const pending = send(marker("lost"));
+  const backupOffers = await settleOffers(backupHeld, pending, deliverOffer(f.backup));
+  const lost = await pending;
+  expect(lostResult).toEqual({ type: "result", messageId: "lost", attempted: true, outcome: { kind: "socket_delivered", id: "lost" } });
+  expect(overlappingHold).toBe(true);
+  expect(backupOffers).toEqual([]);
+  expect(lost).toMatchObject({ kind: "unknown", id: "lost", path: "relay relay-1.invalid" });
+  expect(await f.remote.received()).toEqual(["lost"]);
+});
+
+it.each([{ elapsed: 19_999, withinBudget: true }, { elapsed: 20_001, withinBudget: false }])(
+"shares the v0 deadline across relay choices after $elapsed ms", async ({ elapsed, withinBudget }) => {
+  vi.useFakeTimers({ toFake: ["performance"] });
+  vi.spyOn(relayBroker, "listV0RelayLinks").mockResolvedValue([relay, backupRelay].map(carrier => ({
+    relay: carrier, reach: [carrier, target], state: "up", linkId: carrier.alias, sinceMs: 1, lastCallMs: 1,
+    lastError: null, messagesCarried: 0,
+  })));
+  const offers: string[] = [];
+  vi.spyOn(relayBroker, "submitV0Relay").mockImplementation(async (_agent, id, submit) => {
+    offers.push(id);
+    if (id === RELAY) {
+      vi.advanceTimersByTime(elapsed);
+      return relayRefused(submit.message.id, "unreachable");
+    }
+    return { type: "result", messageId: submit.message.id, attempted: true, outcome: { kind: "socket_delivered", id: submit.message.id } };
+  });
+  const result = await routeV0Relay({ version: 2, agentDir: "/fixture", sendTo: [], acceptFrom: [], relays: [RELAY, BACKUP], linkTo: [] },
+    ORIGIN, target.alias, { type: "submit", kind: "send", message: marker("budget"),
+      from: { machineId: ORIGIN, address: { sessionId: "source", scopeId: SCOPE }, name: "source", homeEpoch: 1, endpointEpoch: "live-source" },
+      target: { machineId: TARGET, selector: { by: "id", value: "remote-recipient" } },
+    });
+  if (withinBudget) {
+    expect(result).toMatchObject({ kind: "socket_delivered", id: "budget", path: "relay relay-2.invalid" });
+    expect(offers).toEqual([RELAY, BACKUP]);
+  } else {
+    expect(result).toMatchObject({ kind: "refused", code: "unreachable" });
+    expect(offers).toEqual([RELAY]);
+  }
 });

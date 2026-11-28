@@ -4,7 +4,7 @@ import { formatAgentLine, renderGridCell, AgentDetail, AgentFooter, AgentStore }
 import type { AgentSnapshot, ThemeAdapter } from "@spider/ui";
 import { renderSpiderResult, renderSubagentDone } from "../render-result.js";
 import { renderUsageFooter, type FooterInput } from "../usage/footer.js";
-import { modelName } from "../model-name.js";
+import { modelContextWindow, modelName } from "../model-name.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const resolve = (model: string) => model === "github-copilot/claude-opus-5.5" ? "Claude Opus 5.5" : "";
@@ -44,6 +44,19 @@ describe("model display names", () => {
     expect(modelName(registry, "gpt-6.1-terra")).toBe("GPT-6.1 Terra");
     expect(modelName(registry, "radius/gpt-6.1-terra")).toBe("GPT 6.1 Terra");
     expect(modelName(registry, "not-in-catalog")).toBeUndefined();
+  });
+  it("resolves context windows for qualified and bare model IDs", () => {
+    const models = [
+      { provider: "radius", id: "gpt-6.1-terra", name: "GPT 6.1 Terra", contextWindow: 200000 },
+      { provider: "github-copilot", id: "gpt-6.1-terra", name: "GPT-6.1 Terra", contextWindow: 1000000 },
+      { provider: "router", id: "company/gpt-6", name: "GPT 6", contextWindow: 128000 },
+    ];
+    const registry = { getAll: () => models, getAvailable: () => [models[1]],
+      find: (provider: string, id: string) => models.find(m => m.provider === provider && m.id === id) } as unknown as ExtensionContext["modelRegistry"];
+    expect(modelContextWindow(registry, "gpt-6.1-terra")).toBe(1000000);
+    expect(modelContextWindow(registry, "radius/gpt-6.1-terra")).toBe(200000);
+    expect(modelContextWindow(registry, "company/gpt-6")).toBe(128000);
+    expect(modelContextWindow(registry, "missing")).toBeUndefined();
   });
   it.each([72, 120])("aligns agent and usage footer model sides at %i columns", (width) => {
     const source = { listActive: () => [{ id: "r1", session_id: "s", agent: "reviewer", name: "review", status: "running" as const,

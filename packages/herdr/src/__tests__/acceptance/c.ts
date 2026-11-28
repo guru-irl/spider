@@ -92,11 +92,17 @@ export async function createRemoteTestFixture(h: HerdrHarness): Promise<RemoteTe
       },
       logSink: async (job, options) => {
         const sink = await createFileLogSink(job.localDirectory, options); const location = locations.get(job.id)!;
-        return { collect: async () => {
-          if (fixture.transportLost) throw Object.assign(new Error('Transport unavailable'), { code: 'transport-loss' });
-          const logs = await collectRemoteChunks(collectionClient, location, sink);
-          if (logs.receipt) await writeFile(join(job.localDirectory, 'receipt.json'), JSON.stringify(logs.receipt));
-          return logs;
+        // A timeout can leave a read in flight. Match the production collector's single writer.
+        let pending = Promise.resolve();
+        return { collect: () => {
+          const read = pending.then(async () => {
+            if (fixture.transportLost) throw Object.assign(new Error('Transport unavailable'), { code: 'transport-loss' });
+            const logs = await collectRemoteChunks(collectionClient, location, sink);
+            if (logs.receipt) await writeFile(join(job.localDirectory, 'receipt.json'), JSON.stringify(logs.receipt));
+            return logs;
+          });
+          pending = read.then(() => {}, () => {});
+          return read;
         }, dispose() {} };
       },
     },

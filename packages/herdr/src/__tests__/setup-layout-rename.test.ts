@@ -49,22 +49,24 @@ async function fixture() {
     },
     selectApp, verify: async req => doctorHerdr(req, doctor), rollback: async () => {}, warn: () => {},
   };
-  const upgrade = async (choice: string) => {
+  const upgrade = async (choice: string, withBackup = false) => {
     const journal = await readJournal(request.journalRoot);
-    const files = [{ path: legacy, expected: null, bytes: oldLook, mode: 0o640 }];
+    if (withBackup) await writeFile(legacy, '{"layout":"before setup"}\n', { mode: 0o640 });
+    const files = [{ path: legacy, expected: (await snapshot(legacy)).hash, bytes: oldLook, mode: 0o640 }];
     await prepareBackups(request.journalRoot, files, journal); await applyFiles(request.journalRoot, files, journal);
     journal.verified = true; journal.cutover = owners; await saveJournal(request.journalRoot, journal);
     await writeFile(shared, `{"layout":${JSON.stringify(choice)},"user.mod":"keep"}\n`);
   };
-  const undo = async () => {
+  const rollback = async (args: string[] = []) => {
     const errors: string[] = [];
-    const result = await runHerdrCli(['rollback', '--undo-upgrade'], {
+    const result = await runHerdrCli(['rollback', ...args], {
       request: async () => request, setupParts: async () => parts, doctorParts: async () => doctor,
       stdout: () => {}, stderr: text => errors.push(text),
     });
     expect(result, errors.join('')).toBe(0);
   };
-  return { request, parts, doctor, layouts, legacy, spider, shared, checkpoint, journalPath, selections, upgrade, undo };
+  return { request, parts, doctor, layouts, legacy, spider, shared, checkpoint, journalPath, selections, upgrade, rollback,
+    undo: () => rollback(['--undo-upgrade']) };
 }
 
 test('fresh setup selects the installed Spider layout in Herdr shared state', async () => {
@@ -159,13 +161,33 @@ test('rollback --undo-upgrade restores the old file, exact bytes and mode, and p
   expect(await readFile(f.journalPath)).toEqual(journal);
 });
 
-test('undo restores the exact legacy file even if setup had to recompose invalid JSON', async () => {
-  const f = await fixture(); await f.upgrade('personal');
+test.each([
+  { owned: true, withBackup: true, replaceChanged: false },
+  { owned: true, withBackup: false, replaceChanged: true },
+  { owned: false, withBackup: false, replaceChanged: true },
+])('refuses edited or unowned legacy bytes before setup writes (%j)', async ({ owned, withBackup, replaceChanged }) => {
+  const f = await fixture();
+  if (owned) await f.upgrade('personal', withBackup);
   const old = 'broken layout\n'; await writeFile(f.legacy, old);
-  await setupHerdr(f.request, f.parts);
-  await f.undo();
+  const before = await snapshot(f.journalPath);
+  await expect(setupHerdr({ ...f.request, replaceChanged }, f.parts)).rejects.toMatchObject({ code: 'unowned-clone-collision' });
   expect(await readdir(f.layouts)).toEqual(['spider-glass.json']);
   expect(await readFile(f.legacy, 'utf8')).toBe(old);
+  expect(await snapshot(f.journalPath)).toEqual(before);
+  await expect(stat(f.checkpoint)).rejects.toMatchObject({ code: 'ENOENT' });
+  if (!owned) await expect(stat(f.request.journalRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(f.selections).toEqual([]);
+});
+
+test.each(['undo', 'rollback'] as const)('%s restores the exact edited layout after authorized replacement', async (command) => {
+  const f = await fixture(); await f.upgrade('personal', true);
+  const old = 'broken layout\n'; await writeFile(f.legacy, old); await chmod(f.legacy, 0o644);
+  await setupHerdr({ ...f.request, replaceChanged: true }, f.parts);
+  expect(await readdir(f.layouts)).toEqual(['Spider.json']);
+  await f[command]();
+  expect(await readdir(f.layouts)).toEqual(['spider-glass.json']);
+  expect(await readFile(f.legacy, 'utf8')).toBe(old);
+  expect((await stat(f.legacy)).mode & 0o777).toBe(0o644);
 });
 
 test('setup does not remove a differently cased legacy-looking user layout', async () => {

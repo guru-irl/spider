@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, writeFile, rm, symlink, stat } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join, resolve } from 'node:path';
+import { build } from 'vite';
 import { checkSpiderPanel } from './panel-app-check.mjs';
 import { runPanelScene } from './acceptance/i.js';
 import type { SessionFeed, CoreId, TerminalId, TerminalAddress, SpaceId } from '../contracts.js';
@@ -27,7 +28,26 @@ function feed(id: string): SessionFeed {
 
 const scene = <T = string[]>(body: string) => runPanelScene<T>(body, feed('fixture'));
 
-const fileScene = (setup: string) => scene<{ids: string[]; errors: {message: string}[]}>(`api.nativeReader=true;props.cliPath=${JSON.stringify(resolve('dist/herdr/cli.mjs'))};props.nodePath=process.execPath; props.feedRoot=path.join(path.dirname(m.identifier),'feeds');
+let readerArtifact: Promise<string> | undefined;
+function buildReader(): Promise<string> {
+  return readerArtifact ??= (async () => {
+    const built = await build({ configFile: resolve('vite.herdr.config.mjs'), mode: 'feed-reader', logLevel: 'error',
+      build: { write: false, emptyOutDir: false } });
+    for (const output of Array.isArray(built) ? built : [built]) {
+      if (!('output' in output)) throw new Error('Feed reader build returned no output');
+      const entry = output.output.find(chunk => chunk.type === 'chunk' && chunk.isEntry);
+      if (entry?.type === 'chunk') return entry.code;
+    }
+    throw new Error('Feed reader build returned no entry');
+  })();
+}
+
+const nativeScene = async <T>(body: string): Promise<T> => scene<T>(`api.nativeReader=true;
+  props.cliPath=path.join(path.dirname(m.identifier),'cli.mjs');props.nodePath=process.execPath;
+  await fs.writeFile(path.join(path.dirname(m.identifier),'feed-reader.mjs'),${JSON.stringify(await buildReader())});
+  ${body}`);
+
+const fileScene = (setup: string) => nativeScene<{ids: string[]; errors: {message: string}[]}>(`props.feedRoot=path.join(path.dirname(m.identifier),'feeds');
   await fs.mkdir(path.join(props.feedRoot,'sessions','fixture'),{recursive:true});
   const file=path.join(props.feedRoot,'sessions','fixture','session.json'); ${setup}
   const {execFile}=await import('node:child_process'); api.exec=(cmd,args)=>new Promise(resolve=>execFile(cmd,args,{maxBuffer:8*1024*1024,env:{...process.env,TMPDIR:path.dirname(m.identifier)}},(error,stdout,stderr)=>resolve({code:error?Number(error.code)||1:0,stdout,stderr})));
@@ -159,7 +179,7 @@ describe('Spider panel', () => {
   });
   test('a working session shows no status spinner in the panel (the sidebar shows status), with no extra refresh timers', async () => {
     const output=await scene<{spinner: boolean; timers: number[]; deadlines: number[]}>(`const f=JSON.parse(files[0]);f.updatedAt=Date.now();f.status.effective='working';files[0]=JSON.stringify(f);initView(panel,cx);await tasks[0];
-      const spins=el=>Boolean(el?.styles?.spin)||(el?.items||[]).some(spins);
+      const spins=el=>Boolean(el?.styles?.spin||el?.styles?.frames)||(el?.items||[]).some(spins);
       console.log(JSON.stringify({spinner:spins(panel.render(cx)),timers:timers.filter(t=>!t.cancelled).map(t=>t.n),deadlines:timers.filter(t=>t.cancelled).map(t=>t.n)}));`);
     expect(output.spinner).toBe(false);expect(output.timers).toEqual([2000]);expect(output.deadlines).toEqual([10000,5000,5000]);
   });
@@ -289,7 +309,7 @@ describe('Spider panel', () => {
     expect(output.errors).toMatchObject([{message:expect.stringContaining('truncated')}]);
   });
   test('loads only validated feed-root files without SPIDER_GLOBAL_ROOT', async () => {
-    const output = await scene<{ids: string[]; text: string[]}>(`delete process.env.SPIDER_GLOBAL_ROOT; api.nativeReader=true;props.cliPath=${JSON.stringify(resolve('dist/herdr/cli.mjs'))};props.nodePath=process.execPath;
+    const output = await nativeScene<{ids: string[]; text: string[]}>(`delete process.env.SPIDER_GLOBAL_ROOT;
       props.feedRoot=path.join(path.dirname(m.identifier),'feeds'); await fs.mkdir(path.join(props.feedRoot,'sessions','fixture'),{recursive:true});
       await fs.writeFile(path.join(props.feedRoot,'sessions','fixture','session.json'),files[0]);
       const {execFile}=await import('node:child_process'); api.exec=(cmd,args)=>args.length?new Promise((resolve,reject)=>execFile(cmd,args,{maxBuffer:8*1024*1024,env:{...process.env,TMPDIR:path.dirname(m.identifier)}},(error,stdout,stderr)=>error?reject(error):resolve({code:0,stdout,stderr}))):Promise.resolve({code:0,stdout:'{"feeds":[],"errors":[]}',stderr:''});

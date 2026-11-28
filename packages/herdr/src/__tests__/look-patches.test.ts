@@ -148,6 +148,7 @@ function ui(): Element {
     if (key === 'on_mouse_down') return (button: string, fn: Function) => { o[`mouse_${button}`] = fn; return proxy; };
     if (key === 'bg') return (value: string) => { o.background = value; return proxy; };
     if (key === 'font_family') return (value: string) => { o.family = value; return proxy; };
+    if (key === 'frames') return (values: string[], ms: number) => { o.frames = [values, ms]; return proxy; };
     return () => proxy;
   } });
   uiData.set(proxy, target); return proxy;
@@ -237,7 +238,7 @@ describe.skipIf(!fixturePresent)('current built-ins (requires SPIDER_HERDR_MOD_F
     view.spiderFeeds = [{ ...feed([{ ...run(), viewer: null, startedAt: Date.now() - 1000 }]), updatedAt: Date.now() }]; view.listed = new Map();
     expect(view.tree(all, 't1').map((r: { t: { key: string } }) => r.t.key)).toEqual(['job-one', 'run-one']);
     const rendered = elements(view.render({})); expect(order).toEqual(['t1']);
-    expect(rendered.filter(el => el.family && el.family !== 'JetBrains Mono')).toEqual([]);
+    expect(rendered.filter(el => el.family && el.family !== 'JetBrains Mono' && !(el.family === 'CaskaydiaCove Nerd Font' && el.frames))).toEqual([]);
     const error = view.status({ ansi1: '#ff5555' }, { status: 'error' }, false);
     expect(elements(error).some(el => el.children.includes('Error'))).toBe(true);
   });

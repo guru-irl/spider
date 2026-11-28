@@ -328,7 +328,7 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
   const footerInput = (): FooterInput => {
     const snapshot = { ...totals.snapshot(), latestCacheHitRate };
     const modelRef = model ? `${model.provider}/${model.id}` : null;
-    const matchesInfo = modelRef !== null && runInfo?.model === modelRef;
+    const matchesInfo = modelRef !== null && (runInfo?.model === modelRef || runInfo?.model === model?.id);
     const window = model ? options.contextWindow?.(model.provider, model.id) ?? (matchesInfo ? runInfo?.contextWindow : undefined) : undefined;
     const factor = runInfo?.creditFactor;
     return {

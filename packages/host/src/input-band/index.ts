@@ -2,24 +2,18 @@ import { parseSkillBlock, type ExtensionAPI, type ExtensionUIContext } from "@ea
 import { isIconStyle } from "@spider/ui";
 import { createBandEditor } from "./editor.js";
 import { installTranscriptBands } from "./transcript.js";
-import { installPendingBands } from "./pending.js";
-import { installMoonStatus } from "./status.js";
-import { installReloadBand } from "./reload.js";
 
 type Pi = typeof import("@earendil-works/pi-coding-agent");
 type PiTui = typeof import("@earendil-works/pi-tui");
 export type InputBandHost = Pick<Pi, "CustomEditor"> & Partial<Pick<Pi,
-  "InteractiveMode" | "UserMessageComponent" | "ToolExecutionComponent" | "CustomMessageComponent" |
+  "UserMessageComponent" | "AssistantMessageComponent" | "ToolExecutionComponent" | "CustomMessageComponent" |
   "BranchSummaryMessageComponent" | "CompactionSummaryMessageComponent" | "SkillInvocationMessageComponent"> &
-  Pick<PiTui, "Box" | "Text" | "Markdown" | "Spacer" | "TruncatedText">>;
+  Pick<PiTui, "Box" | "Text" | "Markdown" | "Spacer">>;
 
 export function registerInputBand(pi: Pick<ExtensionAPI, "on">, host: InputBandHost, readConfig: (cwd: string) => Record<string, unknown>): void {
   const BandEditor = createBandEditor(host.CustomEditor);
   let releaseTranscript: (() => void) | undefined;
   let releaseEditor: (() => void) | undefined;
-  let releasePending: (() => void) | undefined;
-  let releaseStatus: (() => void) | undefined;
-  let releaseReload: (() => void) | undefined;
   const live: { pending?: { text: string; timestamp: number } } = {};
   pi.on("message_start", event => {
     live.pending = undefined;
@@ -36,17 +30,10 @@ export function registerInputBand(pi: Pick<ExtensionAPI, "on">, host: InputBandH
     releaseEditor = undefined;
     releaseTranscript?.();
     releaseTranscript = undefined;
-    releasePending?.();
-    releasePending = undefined;
-    releaseStatus?.();
-    releaseStatus = undefined;
-    releaseReload?.();
-    releaseReload = undefined;
     if (ctx.mode !== "tui" || !ctx.hasUI) return;
     const config = readConfig(ctx.cwd);
     const inputBand = config["ui.inputBand"] !== false;
     const style = config["ui.icons"];
-    releaseStatus = installMoonStatus(host, () => ctx.ui.theme, () => isIconStyle(style) ? style : "text");
     releaseTranscript = installTranscriptBands(host, {
       inputBand, theme: () => ctx.ui.theme, iconStyle: () => isIconStyle(style) ? style : "text", live,
       timestamp: id => {
@@ -54,10 +41,6 @@ export function registerInputBand(pi: Pick<ExtensionAPI, "on">, host: InputBandH
         return entry?.type === "message" && entry.message.role === "user" ? entry.message.timestamp : undefined;
       },
     });
-    if (inputBand) {
-      releasePending = installPendingBands(host, () => ctx.ui.theme, () => isIconStyle(style) ? style : "text");
-      releaseReload = installReloadBand(host, () => ctx.ui.theme, () => isIconStyle(style) ? style : "text");
-    }
     if (!inputBand || typeof ctx.ui.getEditorComponent !== "function" || ctx.ui.getEditorComponent() !== undefined) return;
     const factory: NonNullable<Parameters<ExtensionUIContext["setEditorComponent"]>[0]> = (tui, theme, keys) => {
       const editor = new BandEditor(tui, theme, keys, () => ctx.ui.theme);
@@ -83,8 +66,5 @@ export function registerInputBand(pi: Pick<ExtensionAPI, "on">, host: InputBandH
     live.pending = undefined;
     releaseEditor?.(); releaseEditor = undefined;
     releaseTranscript?.(); releaseTranscript = undefined;
-    releasePending?.(); releasePending = undefined;
-    releaseStatus?.(); releaseStatus = undefined;
-    releaseReload?.(); releaseReload = undefined;
   });
 }

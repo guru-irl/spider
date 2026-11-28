@@ -86,7 +86,7 @@ it.each([
   const first = host();
   await first.emit("session_shutdown");
   const second = host();
-  const expectedCommands = ["agents", "bind", "compaction", "doctor", "exec-enforce", "herdr-setup", "insights", "learn", "loop", "memory", "search", "spider", "stats", "todos", "usage"];
+  const expectedCommands = ["agents", "bind", "color", "compaction", "doctor", "exec-enforce", "herdr-setup", "insights", "learn", "loop", "memory", "search", "spider", "stats", "todos", "usage"];
   const expectedShortcuts = ["alt+shift+up"];
   if (!child) { expectedCommands.push("resources", "spider-reload"); expectedShortcuts.push("alt+o"); }
   for (const pi of [first, second]) {

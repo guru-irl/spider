@@ -185,6 +185,7 @@ The live footer shows corrected credits without basis markers, then the cache hi
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `ui.footer` | `true` | Footer and run selector. Takes effect next session. |
+| `ui.accent` | unset | Global-only. A `/color` palette ID, such as `pink` or `spider-blue`. If unset, Pi uses its theme's accent. |
 | `ui.inputBand` | `true` | Draw the editor strip and sent-message caret. If another extension owns the editor slot, Pi keeps that editor. Changes apply after `/reload`. |
 | `ui.icons` | `"text"` | `"text"` uses monochrome Unicode. `"nerd"` uses Nerd Font glyphs. |
 | `ui.spiderGlyphs` | `false` | Animate the robot's eyes in Nerd mode when the terminal uses a font patched by Spider. Takes effect in the next session or after `/reload`. |
@@ -264,6 +265,7 @@ restarting it.
   mounts: in the next session or after `/reload`. The usage footer also reads
   `ui.icons` at session start. New tool and notice renderers read `ui.icons`
   when they are created.
+- `/color` applies `ui.accent` immediately and saves it in `~/.pi/agent/spider/config.json`, or `config.json` under `SPIDER_GLOBAL_ROOT`. Spider reapplies the color when an interactive session starts or reloads. Reinstalling the theme does not change this setting.
 - `ui.inputBand` and `copyButtons.enabled` changes need `/reload`.
 - `tools.structured` changes need `/reload`. The setting does not change the interactive `spider` tool.
 - `reload.auto` applies live. Set it to `false` to stop automatic reloads.

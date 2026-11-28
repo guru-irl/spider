@@ -114,6 +114,27 @@ describe("v0 real transfer",()=>{
   expect(readFileSync(join(f.sourceRoot,"file.txt"),"utf8")).toBe("unstaged\n");expect(readFileSync(join(f.sourceRoot,"untracked.txt"),"utf8")).toBe("untracked\n");expect(readFileSync(f.file)).toEqual(body);
   expect(await captureLocalSession(f.plan,f.options,async()=>({kind:"free"}))).toEqual(result);
  });
+ const longInstallMessage = "The install lock rejected the session. ".repeat(20);
+ it.each([
+  {label: "bounded", message: longInstallMessage, expected: longInstallMessage.slice(0, 512)},
+  {label: "private", message: "Could not open '/outside roots/private.json'; password: 'synthetic secret'", expected: "[private error message omitted]"},
+ ])("records a $label destination install error without changing the public refusal", async ({message, expected}) => {
+  const f = transferFixture();
+  const captured = await captureLocalSession(f.plan, f.options, async () => ({kind: "free"}));
+  if (!captured.ok) throw new Error(JSON.stringify(captured));
+  for (const manifest of [captured.value.transcriptArtifact, captured.value.bundleArtifact]) {
+   await receiveArtifactLocally(manifest, f.options, f.destination);
+  }
+  const failLock = async () => { throw Object.assign(new TypeError(message), {code: "EACCES"}); };
+
+  expect(await installLocalSession(f.plan, captured.value, f.home, f.destination, failLock, async () => ({kind: "free"}))).toMatchObject({
+   ok: false, refusal: {code: "install-failed", message: "The verified destination files could not be installed."},
+  });
+  expect(f.destination.journal.read(f.plan.moveId).filter(row => row.action === "relocate-install-error")).toEqual([
+   {action: "relocate-install-error", result: {name: "TypeError", code: "EACCES", message: expected, lastCompleted: "session-staged"}},
+  ]);
+  expect(f.options.journal.read(f.plan.moveId).some(row => row.action === "relocate-install-error")).toBe(false);
+ });
  it.each([false,true])("install rewrites only the header and preserves the exact body (linked=%s)",async(linked)=>{
   const f=transferFixture(linked),captured=await captureLocalSession(f.plan,f.options,async()=>({kind:"free"}));if(!captured.ok)throw new Error(JSON.stringify(captured));
   for(const manifest of [captured.value.transcriptArtifact,captured.value.bundleArtifact])await receiveArtifactLocally(manifest,f.options,f.destination);

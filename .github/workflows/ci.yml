@@ -65,6 +65,10 @@ jobs:
       - name: Install
         run: npm ci
 
+      - name: Check named test inputs
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: node scripts/selection/sweep.mjs
+
       - name: Check generated roaming SQL
         run: npm run check:roam-sql
 

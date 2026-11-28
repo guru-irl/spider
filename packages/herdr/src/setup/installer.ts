@@ -407,8 +407,10 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
             const { [LEGACY_SPIDER_LAYOUT_KEYS]: _legacy, ...other } = retained;
             retained = other;
           }
-        } else if (plan.path === keysPath) {
-          const retired = Object.entries(prior?.keys?.[LEGACY_SPIDER_LAYOUT_KEYS] ?? {}).filter(([, value]) => value === null);
+        }
+        if (plan.path === keysPath) {
+          const retired = Object.entries(prior?.keys?.[LEGACY_SPIDER_LAYOUT_KEYS] ?? {})
+            .filter(([key, value]) => value === null && !Object.hasOwn(desired[LEGACY_SPIDER_LAYOUT_KEYS] ?? {}, key));
           if (retired.length) {
             // Copied user keys are not managed by the current recipe. Keep
             // their rollback records without changing the user bindings again.
@@ -749,7 +751,7 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
         if (!cutover) throw new HerdrError('cutover-reconciliation-required', 'No completed cutover was recorded');
         if (migration && checkpoint) {
           if ((await readLayoutSelection(sharedPath)).layout === LEGACY_SPIDER_LAYOUT)
-            throw new HerdrError('layout-selection-not-saved', `Herdr still has ${LEGACY_SPIDER_LAYOUT} selected in ${sharedPath}; the old layout was kept.`);
+            throw new HerdrError('layout-selection-not-saved', `Herdr still has ${LEGACY_SPIDER_LAYOUT} selected in ${sharedPath}. Retry setup with Herdr open, or run rollback --undo-upgrade.`);
           await recordCheckpointIntents(request.journalRoot, checkpoint, [{ path: legacyPath, bytes: null, expected: migration.hash }], journal);
           if (!await hasLegacyLayout(request.config.app.home)) throw new HerdrError('concurrent-settings-edit', `Layout name changed after backup: ${legacyPath}`);
           await removeFile(legacyPath, migration.hash!);

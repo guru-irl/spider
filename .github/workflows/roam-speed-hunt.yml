@@ -1,0 +1,108 @@
+name: roam speed hunt
+on:
+  push:
+    branches: [ci/spd-roam-hunt]
+permissions:
+  contents: read
+env:
+  ONNXRUNTIME_NODE_INSTALL: skip
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.4.0'
+          cache: npm
+      - run: sudo apt-get update && sudo apt-get install -y sqlite3 strace
+      - run: npm ci
+      - run: |
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+      - name: Run roam files with three workers
+        run: |
+          mkdir -p .spider/scratch/tmp .spider/scratch/roam-metrics
+          cat > .spider/scratch/roam-runner.mjs <<'EOF'
+          import { appendFileSync } from 'node:fs';
+          import { TestRunner } from 'vitest';
+          export default class RoamRunner extends TestRunner {
+            onBeforeCollect(files) {
+              if (files.length !== 1) throw new Error('need one file per fork');
+              appendFileSync(process.env.SPDR_WORKERS, JSON.stringify([process.pid, files[0]]) + '\n');
+            }
+          }
+          EOF
+          cat > .spider/scratch/roam-vitest.mts <<'EOF'
+          import config from '../../vitest.config';
+          export default { ...config, test: { ...config.test, runner: './.spider/scratch/roam-runner.mjs' } };
+          EOF
+          cat > .spider/scratch/roam-summary.py <<'PY'
+          import collections, json, re, sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          parent = {}
+          events = collections.defaultdict(collections.Counter)
+          fsyncs = collections.defaultdict(list)
+          pending = {}
+          for line in (root / 'trace').read_text().splitlines():
+              pid, body = line.split(maxsplit=1)
+              pid = int(pid)
+              if body.endswith('<unfinished ...>'):
+                  pending[pid] = body.removesuffix('<unfinished ...>')
+                  continue
+              if body.startswith('<... '):
+                  start = pending.pop(pid, '')
+                  body = start + body.partition(' resumed>')[2]
+              m = re.match(r'(?:clone3?|fork|vfork)\(.*\)\s+= (\d+)', body)
+              if m and 'CLONE_THREAD' not in body:
+                  parent[int(m[1])] = pid
+              m = re.match(r'execve\("([^"]+)", \[.*\)\s+= 0\b', body)
+              if m:
+                  cmd = Path(m[1]).name
+                  if cmd == 'node' and '"--input-type=module", "-e"' in body:
+                      cmd = 'node (module eval)'
+                  events[pid][cmd] += 1
+              m = re.match(r'(?:f|fdatas)sync\(.*<([\d.]+)>$', body)
+              if m:
+                  fsyncs[pid].append(float(m[1]))
+          workers = dict(json.loads(line) for line in (root / 'workers').read_text().splitlines())
+          def owner(pid):
+              while pid in parent and pid not in workers:
+                  pid = parent[pid]
+              return pid
+          for test in json.loads((root / 'vitest.json').read_text())['testResults']:
+              name = test['name']
+              pid, = [pid for pid, path in workers.items() if name == path]
+              children = [child for child in parent if child != pid and owner(child) == pid]
+              execs = sum((events[child] for child in children), collections.Counter())
+              syncs = [x for child in [pid, *children] for x in fsyncs[child]]
+              print(json.dumps(dict(file=Path(name).name, wall_ms=test['endTime'] - test['startTime'],
+                  process_count=1 + len(children), execs=execs, fsyncs=len(syncs), fsync_s=round(sum(syncs),3),
+                  status=test['status'], slow=[(t['title'],t.get('duration'),t['status']) for t in test['assertionResults'] if t.get('duration',0)>1000 or t['status']=='failed'])))
+          PY
+          status=0
+          for i in 1 2 3; do
+            echo "::group::Trial $i"
+            dir="$PWD/.spider/scratch/roam-metrics/$i"
+            mkdir -p "$dir"
+            export SPDR_WORKERS="$dir/workers" TMPDIR="$PWD/.spider/scratch/tmp"
+            tests=(packages/roam/src/__tests__/{artifacts,cli-package,provision-adapter,move}.test.ts)
+            if [ -f packages/roam/src/__tests__/provision-release.test.ts ]; then tests+=(packages/roam/src/__tests__/provision-release.test.ts); fi
+            env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u XDG_RUNTIME_DIR \
+              strace -f -qq -T -e trace=process,fsync,fdatasync -o "$dir/trace" \
+              node_modules/.bin/vitest run "${tests[@]}" --maxWorkers=3 --config ./.spider/scratch/roam-vitest.mts \
+              --reporter=default --reporter=json --outputFile="$dir/vitest.json" || status=1
+            python3 .spider/scratch/roam-summary.py "$dir" | tee "$dir/summary.ndjson"
+            echo '::endgroup::'
+          done
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: roam-metrics
+          path: .spider/scratch/roam-metrics/*/*
+          include-hidden-files: true
+          retention-days: 7

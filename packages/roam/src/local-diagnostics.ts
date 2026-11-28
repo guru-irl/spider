@@ -22,6 +22,8 @@ import { createProcessPresence, type PresenceBuild, type PresenceRecord } from "
 import { inspectRoamPlacement } from "@spider/herdr/roam-placement";
 import { bootIdChanged, inspectIdLock, listPendingIdLocks, localBootId } from "@spider/herdr/sessions/id-lock";
 import { createSessionLeases } from "@spider/herdr/sessions/lease";
+import { readRelayObservation } from "@spider/intercom/broker/relay-observations";
+import { privateBroker } from "@spider/intercom/broker/roam-v0-client";
 import type { ProcessProbe } from "@spider/herdr/sessions/lease";
 import { parseBuildId } from "../../../scripts/build-id.mjs";
 import { loadConfig } from "./config";
@@ -41,6 +43,7 @@ import { publicationDiagnostics } from "./intercom-publication";
 import { formatRevocationGates } from "./cause-codes";
 import { inspectIntercomReadiness, intercomReadinessDiagnostics, validIntercomReadiness, type IntercomReadiness } from "./intercom-readiness";
 import { readPrivateBytes } from "./selected-files";
+import { readV0Routes, type V0Routes } from "./relocate/intercom-routes";
 
 function missing(error: unknown): boolean { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
 type SupervisorAutostart = "enabled" | "disabled" | "missing" | "unknown";
@@ -517,6 +520,41 @@ export function localPendingMoveDiagnostics(root: string): Diagnostic[] {
   return inventory;
 }
 
+/** Relay diagnostics use only local, private observations. They never dial a peer. */
+export function localRelayDiagnostics(root: string, config: RoamConfig, nowMs = Date.now()): Diagnostic[] {
+  if (!config.enabled || config.intercom.enabled) return [];
+  let routes: V0Routes;
+  try { routes = readV0Routes(root, config); }
+  catch (error) {
+    const absent = missing(error) && !existsSync(join(root, "roam", "intercom-v0.json"));
+    return [{ severity: absent ? "info" : "warning", repairCommand: null, reason: absent
+      ? "intercom-relay-config-missing: No local roam/intercom-v0.json."
+      : "intercom-relay-config-invalid: Inspect roam/intercom-v0.json, its configured sendTo routes, and the local agent directory." }];
+  }
+  if (routes.version !== 2) return [];
+  let brokerPresent: boolean | undefined;
+  function haveBroker() {
+    if (brokerPresent === undefined) try { brokerPresent = privateBroker(routes.agentDir) !== null; }
+    catch { brokerPresent = false; }
+    return brokerPresent;
+  }
+  const known = [...routes.sendTo, ...routes.acceptFrom, ...config.peers];
+  const age = (time: number) => `${Math.max(0, nowMs - time)}ms`;
+  function link(direction: "in" | "out", id: string): Diagnostic {
+    const observed = readRelayObservation(root, direction, id);
+    const alias = known.find(peer => peer.machineId === id)?.alias ?? observed?.alias ?? id;
+    const stale = observed?.expiresAtMs != null && (nowMs >= observed.expiresAtMs || nowMs < observed.observedAtMs);
+    const state = stale ? "down" : observed?.state ?? "down";
+    const since = stale ? observed.expiresAtMs! : observed?.sinceMs ?? nowMs;
+    const lastCall = observed?.lastCallMs == null ? "never" : age(observed.lastCallMs);
+    const error = stale ? "poll-expired" : observed ? observed.lastError ?? "none"
+      : direction === "out" ? "service-missing" : haveBroker() ? "no-poll" : "broker-missing";
+    return { severity: state === "down" ? "warning" : "info", repairCommand: null,
+      reason: `intercom-link: ${alias} ${state}; state age ${age(since)}; last call age ${lastCall}; last error ${error}; messages carried ${observed?.messagesCarried ?? 0}` };
+  }
+  return [...routes.relays.filter(id => id !== config.machineId).map(id => link("in", id)), ...routes.linkTo.map(id => link("out", id))];
+}
+
 /** Inspect registered local stores without modifying them. */
 export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; currentCore?: () => Promise<string | null>; inspectIntercomDoctor?: boolean;
   inspectUpgrade?: boolean;
@@ -696,6 +734,7 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
   } catch { inventory.push({ severity: "warning", reason: "intercom-registry-unavailable: Pair enrollment state could not be inspected.", repairCommand: null }); }
   const ports = createLocalDiagnosticPorts(root, [], input.bundleUrl, config.role === "hub" ? input.hubLaunchd?.plistDir : null);
   const localDiagnostics = await doctorLocal(config, ports, consumers);
+  inventory.push(...localRelayDiagnostics(root, config));
   if (input.inspectIntercomDoctor && config.intercom.enabled) try {
     const inspect = input.intercomDoctor ?? inspectLocalIntercomDoctor;
     inventory.push(...await inspect({ root, config, agentDir: process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent") }));

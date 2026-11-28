@@ -117,6 +117,106 @@ ID. With no verified match and an unavailable peer, lookup returns
 `incomplete`. A live local alias takes precedence over a remote name, while
 a full persistent ID takes precedence over an alias.
 
+## Run an intercom relay
+
+Upgrade the relay and linked machines together. Enable roaming and leave legacy
+intercom federation disabled. Keep `roam/intercom-v0.json` private as described
+above, set `version` to `2`, and put the same ordered list of relay machine IDs
+in `relays` on every machine. For example, use the machine ID of
+`relay-1.invalid`, not its alias.
+
+On the relay, list the IDs of its linked machines in `linkTo`. Each must also
+have a provisioned `sendTo` entry and an existing Herdr route from the relay.
+The relay advertises its own ID and the `sendTo` entries with connected routes.
+The recipient must list the relay in `relays` and the sender in `acceptFrom`.
+The linked machine does not need a reverse Herdr route. A machine without an
+inbound route can receive through a relay only if it runs that relay itself.
+
+A live local or direct route takes precedence. If neither exists, a send can
+use a relay for a full session ID or a machine-qualified name such as
+`target.invalid/recipient`. A bare remote name needs a complete direct lookup.
+A relayed ask is not supported. Refused messages are not queued. If the result
+is unknown, check the recipient before sending again.
+
+Install the relay separately from `spider roam enable`. Do not change the hub
+or supervisor service. Run it as the user who owns the roaming files. In the
+examples, replace the paths with canonical absolute paths to the installed
+release, its Node executable, the roaming root, and the intended Herdr core.
+Use the socket and session of the same core. Do not copy a terminal's
+`HC_TERMINAL_ID` or a remote target into the service environment.
+
+### Linux: Install the systemd user unit
+
+Save this as `~/.config/systemd/user/spider-roam-relay-v0.service`, with mode
+`0600`. Use an existing user-owned unit directory that other users cannot
+write to.
+
+```ini
+[Unit]
+Description=Spider roaming intercom relay
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart="/path/to/node" "/path/to/spider/dist/roam/cli.mjs" roam agent --v0 relay
+Environment="SPIDER_GLOBAL_ROOT=/path/to/roaming-root"
+Environment="SPIDER_ROAM_HC=/path/to/hc"
+Environment="HC_SESSION=relay"
+Environment="HC_SOCKET=/path/to/relay.sock"
+Restart=on-failure
+RestartSec=10s
+UMask=0077
+
+[Install]
+WantedBy=default.target
+```
+
+Run `systemctl --user daemon-reload`, then
+`systemctl --user enable --now spider-roam-relay-v0.service`.
+
+### macOS: Install the launchd user agent
+
+Save this as `~/Library/LaunchAgents/com.spider.roam.relay-v0.plist`, with mode
+`0600`. Create the log directory under the same roaming root with mode `0700`.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.spider.roam.relay-v0</string>
+  <key>ProgramArguments</key><array>
+    <string>/path/to/node</string>
+    <string>/path/to/spider/dist/roam/cli.mjs</string>
+    <string>roam</string><string>agent</string><string>--v0</string><string>relay</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>SPIDER_GLOBAL_ROOT</key><string>/path/to/roaming-root</string>
+    <key>SPIDER_ROAM_HC</key><string>/path/to/hc</string>
+    <key>HC_SESSION</key><string>relay</string>
+    <key>HC_SOCKET</key><string>/path/to/relay.sock</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>WorkingDirectory</key><string>/path/to/roaming-root</string>
+  <key>StandardOutPath</key><string>/path/to/roaming-root/roam/logs/relay-v0.out.log</string>
+  <key>StandardErrorPath</key><string>/path/to/roaming-root/roam/logs/relay-v0.err.log</string>
+  <key>Umask</key><integer>63</integer>
+</dict></plist>
+```
+
+Run `launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.spider.roam.relay-v0.plist"`.
+
+### Check the link
+
+Run `spider roam doctor` on the relay and linked machine. Look for an
+`intercom-link` row with state `up`. A `route-missing` row means the selected
+Herdr core has no configured route for that peer. A `version-mismatch` row
+names both versions. Doctor does not start the relay or the broker.
+
+Find the local link snapshots and logs in `roam/relay/in` and `roam/relay/out`
+under the roaming root. Each link keeps its current log and one previous log,
+with at most 64 KiB each. They do not contain messages.
+
 ## Run a relay soak
 
 The opt-in `dist/roam/relay-soak.mjs` measures the held-poll carrier. It sends

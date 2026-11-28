@@ -1,6 +1,7 @@
 import { parseV0Control, runV0Control, readV0Confirmation } from "./relocate/cli";
 import { createV0Intercom } from "./relocate/intercom";
 import { runV0LinkOnce } from "./relocate/relay-poll";
+import { startV0Relay } from "./relocate/relay-service";
 import { RELAY_HOLD_MS, RELAY_POLL_MAX_BYTES } from "@spider/intercom/relay-protocol";
 import { parseV0AgentReply, parseV0AgentRequest, parseV0RelayAgentRequest, V0_INTERCOM_BYTES, type V0AgentReply } from "@spider/intercom/roam-v0";
 import { readPeerRevocation } from "./revocation";
@@ -180,6 +181,11 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       io.out((await runV0LinkOnce(root, input, holdMs)).toString("utf8"));
       return 0;
     } catch { io.err("Invalid or unavailable private relay poll.\n"); return 2; }
+  }
+  if (argv[0] === "roam" && argv[1] === "agent" && argv[2] === "--v0" && argv[3] === "relay") {
+    if (argv.length !== 4) { io.err("Invalid private relay arguments.\n"); return 2; }
+    try { await runV0Service(() => startV0Relay(root)); return 0; }
+    catch { io.err("The v0 relay could not start. Check its configuration, process lock, and selected Herdr core.\n"); return 1; }
   }
   if (argv[0] === "roam" && argv[1] === "agent" && argv[2] === "--v0") {
     if (argv.length !== 3) { io.out(`${JSON.stringify({ ok: false, refusal: { code: "invalid-arguments", message: "Invalid private v0 request.", nextStep: "Use the private v0 agent protocol." } })}\n`); return 2; }

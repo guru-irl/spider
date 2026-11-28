@@ -18,7 +18,7 @@ const footer: FooterInput = { cwd: "~/src/demo", branch: "main", sessionName: "m
   counter: { availability: "disabled", snapshot: null }, statuses: new Map() } as FooterInput;
 
 describe("model display names", () => {
-  it("resolves qualified and bare IDs using the provider catalog, and ignores empty or ambiguous names", () => {
+  it("resolves qualified and bare IDs using the provider catalog, and ignores empty names", () => {
     const models = [
       { provider: "copilot", id: "claude-opus-5.5", name: "Claude Opus 5.5" },
       { provider: "other", id: "claude-opus-5.5", name: "Another Opus" },
@@ -29,7 +29,7 @@ describe("model display names", () => {
     expect(modelName(registry, "copilot/claude-opus-5.5")).toBe("Claude Opus 5.5");
     expect(modelName(registry, "router/company/gpt-6")).toBe("GPT 6");
     expect(modelName(registry, "company/gpt-6")).toBe("GPT 6");
-    expect(modelName(registry, "claude-opus-5.5")).toBeUndefined();
+    expect(modelName(registry, "claude-opus-5.5")).toBe("Claude Opus 5.5");
     expect(modelName(registry, "copilot/nameless")).toBeUndefined();
     expect(modelName(registry, "copilot/not-found")).toBeUndefined();
     expect(modelName(undefined, "copilot/not-found")).toBeUndefined();

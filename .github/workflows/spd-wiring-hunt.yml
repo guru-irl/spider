@@ -37,7 +37,7 @@ jobs:
               node node_modules/vitest/vitest.mjs run "$file" --maxWorkers=1 --reporter=verbose \
               >"$results/$name.log" 2>&1 || rc=$?
             elapsed=$(( $(date +%s%3N) - start ))
-            python3 - "$results" "$name" "$rc" "$elapsed" <<'PY'
+            python3 - "$results" "$name" "$rc" "$elapsed" <<'PY' || return
           import json, pathlib, re, sys
           from collections import Counter
           root, name, rc, elapsed = sys.argv[1:]
@@ -70,7 +70,7 @@ jobs:
             return "$rc"
           }
           export -f trace
-          printf '%s\n' packages/host/src/__tests__/herdr-{wiring-remote,wiring-mount,wiring-lifecycle,viewer-layout,copy,kill-job,child,remote-file,unavailable}.test.ts |
+          printf '%s\n' packages/host/src/__tests__/herdr-{wiring-remote,wiring-mount,wiring-console,wiring-lifecycle,viewer-layout,viewer-reopen,copy,kill-job,child,remote-file,unavailable}.test.ts |
             xargs -P 3 -n 1 bash -c 'trace "$1"' _
       - uses: actions/upload-artifact@v4
         if: always()

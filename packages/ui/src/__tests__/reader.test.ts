@@ -167,6 +167,32 @@ it("jumps the thumb center to a track press and captures a thumb drag outside it
   expect(app.text()).toContain("100% scrolled");
 });
 
+it("does not jump when the auto scrollbar is hidden", () => {
+  const app = fixture();
+  app.text();
+  app.send("\t");
+  expect(app.firstEntry()).toBe("1");
+  app.click(77, 12);
+  expect(app.firstEntry()).toBe("1");
+  expect(app.track()).toEqual([]);
+});
+
+it("clears a drag without a release when mouse reporting resumes with no button held", () => {
+  vi.useFakeTimers();
+  const app = fixture();
+  app.text();
+  app.send("\t");
+  app.text();
+  app.mouse(35, 77, 4);
+  app.mouse(0, 77, 4);
+  expect(app.track().some(row => row.glyph === "█")).toBe(true);
+  app.send("\x1b[O"); // Pi drops mouse capture when the terminal loses focus.
+  app.mouse(35, 38, 6);
+  expect(app.track().some(row => row.glyph === "█")).toBe(false);
+  vi.advanceTimersByTime(1000);
+  expect(app.track()).toEqual([]);
+});
+
 it("keeps the active tab and content visible on a short, narrow terminal", () => {
   const app = fixture(40);
   app.text();

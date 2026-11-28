@@ -262,6 +262,7 @@ if (dir) {
 
     function startCollector() {
       if (collect) return;
+      let captureReady = false;
       const { Session } = require('node:inspector');
       const session = new Session();
       session.connect();
@@ -310,7 +311,8 @@ if (dir) {
         try {
           const cpu = process.cpuUsage();
           writeFileSync(`${dest}.tmp`, JSON.stringify({
-            pid: process.pid, processId, launchId, threadId: threads.threadId, test, argv: process.argv, worker, ended: finished,
+            pid: process.pid, processId, launchId, threadId: threads.threadId, test, argv: process.argv, worker,
+            captureReady, ended: finished,
             cpuMs: (cpu.user + cpu.system) / 1000,
           }), { mode: 0o600 });
           renameSync(`${dest}.tmp`, dest);
@@ -357,6 +359,8 @@ if (dir) {
         channel.unref();
       }
       installWorkerCapture();
+      captureReady = true;
+      flush();
     }
 
     if (test) startCollector();

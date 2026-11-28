@@ -5,6 +5,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { readKernelTrace } from './kernel-trace.mjs';
 
 const read = file => JSON.parse(readFileSync(file, 'utf8'));
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -76,17 +77,17 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
   const trees = new Map();
   const checkout = resolve(root);
   let tracked;
-  function treeInputs(url) {
-    const file = fileURLToPath(url);
-    const name = file === checkout ? '' : repoPath(root, file);
+  function trackedPaths() {
+    return tracked ??= execFileSync('git', ['ls-files', '-z'], { cwd: checkout, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
+      .split('\0').filter(Boolean);
+  }
+  function treeInputs(name) {
     if (name === null) return [];
     if (!trees.has(name)) {
-      tracked ??= execFileSync('git', ['ls-files', '-z'], { cwd: checkout, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
-        .split('\0').filter(Boolean);
       // A copy source may be a file. A listing of the checkout root reads
       // the entire tracked tree. Do not match siblings with the same prefix.
       const prefix = name ? `${name}/` : '';
-      trees.set(name, tracked.filter(path => path === name || path.startsWith(prefix)));
+      trees.set(name, trackedPaths().filter(path => path === name || path.startsWith(prefix)));
     }
     return trees.get(name);
   }
@@ -141,7 +142,11 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
     const processId = proc.processId ?? `pid:${proc.pid}`;
     const process = entry.processes.get(processId) ?? { cpuMs: null, ended: false };
     if (Number.isFinite(proc.cpuMs) && proc.cpuMs >= 0) process.cpuMs = Math.max(process.cpuMs ?? 0, proc.cpuMs);
-    if ((proc.threadId ?? 0) === 0 && proc.ended) process.ended = true;
+    if ((proc.threadId ?? 0) === 0) {
+      process.pid = proc.pid;
+      process.ended ||= proc.ended === true;
+      process.captureReady ||= proc.captureReady === true;
+    }
     entry.processes.set(processId, process);
     if (proc.launchId) entry.observedLaunches.add(proc.launchId);
     if (proc.threadId > 0) {
@@ -175,7 +180,8 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
           stats.unresolvedGroups[unresolved.group]++;
         }
       } else if (script.kind === 'tree') {
-        for (const source of treeInputs(script.url)) entry.reads.add(source);
+        const file = fileURLToPath(script.url);
+        for (const source of treeInputs(file === checkout ? '' : repoPath(root, file))) entry.reads.add(source);
       } else {
         const source = repoPath(root, modulePath(script.url));
         if (source) entry.reads.add(source);
@@ -184,6 +190,13 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
   }
   // A journal without its startup checkpoint cannot be attributed to a test.
   stats.malformedSnapshots += journals.size;
+  const traceFile = `${resolve(rawDir)}.linux-trace`;
+  let trace;
+  if (existsSync(traceFile)) {
+    const owners = new Map([...groups].flatMap(([file, entry]) => [...entry.workerPids].map(pid => [pid, file])));
+    trace = readKernelTrace(traceFile, { root: checkout, tracked: trackedPaths(), owners });
+    stats.kernelTrace = trace.error ?? 'observed';
+  }
   const reportedFiles = [...outcomes.keys()].sort();
   const failedFiles = [];
   const records = {};
@@ -202,10 +215,20 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
     const missingCpu = missingLaunches.length + processValues.filter(proc => proc.cpuMs === null).length;
     const unfinishedProcesses = processValues.filter(proc => proc.cpuMs === null || !proc.ended);
     const unknownCpu = missingLaunches.length + unfinishedProcesses.length;
-    const incomplete = missingLaunches.some(id => !entry.versionProbes.has(id) || !entry.probeExits.has(id)) ||
-      unfinishedProcesses.length > 0 || entry.threads.size !== entry.observedThreads.size;
+    const native = trace?.byTest?.get(file);
+    if (native) {
+      for (const read of native.reads) entry.reads.add(read);
+      for (const tree of native.trees) for (const read of treeInputs(tree)) entry.reads.add(read);
+    }
+    const kernelGaps = trace ? native ? [...native.gaps].sort() : [trace.error ?? 'unobserved Vitest fork'] : [];
+    const missingStartup = missingLaunches.filter(id => !entry.versionProbes.has(id) || !entry.probeExits.has(id)).length;
+    const missingFinal = unfinishedProcesses.filter(proc => !proc.captureReady || !native?.exited.has(proc.pid) || kernelGaps.length).length;
+    const missingThreads = entry.threads.size - entry.observedThreads.size;
+    const incomplete = missingStartup > 0 || missingFinal > 0 || missingThreads > 0 || kernelGaps.length > 0;
+    const capture = { missingStartup, missingFinal, missingThreads, kernelGaps,
+      versionProbes: missingLaunches.length - missingStartup, tracedExits: unfinishedProcesses.length - missingFinal };
     records[file] = { reads: [...entry.reads].sort(), unresolved: [...entry.unresolved].sort(), workerPids: [...entry.workerPids],
-      ranBundle: entry.ranBundle, incomplete, ms, result, processes, cpuMs: unknownCpu ? null : knownCpuMs, knownCpuMs, unknownCpu, missingCpu };
+      ranBundle: entry.ranBundle, incomplete, capture, ms, result, processes, cpuMs: unknownCpu ? null : knownCpuMs, knownCpuMs, unknownCpu, missingCpu };
   }
   return { reportedFiles, failedFiles, records, stats };
 }

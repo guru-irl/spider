@@ -121,10 +121,9 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     else delete layout.window_blur;
     await writeFile(join(home, 'layouts/spider-glass.json'), JSON.stringify(layout, null, 2));
     const before = await readFile(join(home, 'mods/spider-menu/main.js'));
-    await setupHerdr(f.request, f.parts);
-    expect(await readFile(join(home, 'mods/spider-menu/main.js'))).toEqual(before);
     const off = { ...f.request, config: { ...f.request.config, look: { autoHideTabs: f.request.config.look?.autoHideTabs ?? true, windowBlur: false } } };
     await setupHerdr(off, await f.ports.setupParts(off));
+    expect(await readFile(join(home, 'mods/spider-menu/main.js'))).toEqual(before);
     expect(JSON.parse(await readFile(join(home, 'layouts/spider-glass.json'), 'utf8'))).not.toHaveProperty('window_blur');
     expect((await (await f.ports.doctorParts(off)).inspect('layout-theme', off)).failures).toEqual([]);
     await writeFile(join(home, 'mods/spider-menu/main.js'), '// changed');

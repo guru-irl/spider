@@ -113,7 +113,7 @@ it("guide matches controls, units, budget, footer and the dashboard development 
     totals: { input: 10, output: 20, cacheRead: 30, cacheWrite: 40, piCost: 0, aic: 2, unpricedEntries: 0, aggregateEntries: 0, estimated: false, latestCacheHitRate: 75 },
     counter: { availability: "available", snapshot: { creditsUsed: 24, entitlement: 100, ts: DASHBOARD_NOW } }, statuses: new Map() };
   const format = renderUsageFooter(input, 1000)[1]!
-    .replace(/^\d+\.\d+%\/\w+/, "context%/window")
+    .replace(/\d+\.\d+%\/\w+/, "context%/window")
     .replace(/[\d.]+ credits/, "credits").replace(/CH[\d.]+%/, "CH%")
     .replace(/month \d+%/, "month %").replace(/↑\w+ ↓\w+/, "↑input ↓output").replace(/R\w+ W\w+/, "Rread Wwrite");
   expect(text).toContain(`\`${format}\``);

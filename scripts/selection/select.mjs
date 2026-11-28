@@ -4,6 +4,9 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { basename, dirname, matchesGlob, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { partitionFiles } from '../test-shards.ts';
+import { createArtifactRouter } from './artifact-routing.mjs';
+import { bundleDigest } from './bundle-keys.mjs';
+import { reviewedBundleConsumers } from './bundle-consumers.mjs';
 import { fixtureBuilders, fixtureEntries, fixtureScope } from './fixture-bundles.mjs';
 import { github } from './github.mjs';
 import { groupCount, rootTest, safePath, selectionHash, sorted } from './manifest.mjs';
@@ -158,9 +161,10 @@ export async function createGraphResolver(root, inventory, entries) {
   };
 }
 
-export function fixtureBlobsAtCommit(root, commit) {
+export function fixtureBlobsAtCommit(root, commit, files = fixtureBuilders) {
+  if (!files.length) return new Map();
   try {
-    return new Map(git(root, 'ls-tree', '-z', commit, '--', ...fixtureBuilders).split('\0').flatMap(line => {
+    return new Map(git(root, 'ls-tree', '-z', commit, '--', ...files).split('\0').flatMap(line => {
       const match = /^100(?:644|755) blob ([\da-f]{40})\t(.*)$/.exec(line);
       return match ? [[match[2], match[1]]] : [];
     }));
@@ -170,7 +174,9 @@ export function fixtureBlobsAtCommit(root, commit) {
 }
 
 export async function selectTests({ head, inventory, changes, mapChanges = [], map, fallback = null,
-  fallbackDurations = {}, namedBy = () => [], fixtureBlobs = () => new Map(), resolveRelated = async () => [] }) {
+  fallbackDurations = {}, namedBy = () => [], fixtureBlobs = () => new Map(), resolveRelated = async () => [],
+  bundleContracts = reviewedBundleConsumers, bundleBlobs = () => new Map(), artifactDigest = () => null,
+  reportBundleExclusion = () => {} }) {
   const reasons = new Map();
   const tests = new Set(inventory);
   const add = (file, reason) => {
@@ -261,10 +267,33 @@ export async function selectTests({ head, inventory, changes, mapChanges = [], m
             }
           }
         }
-        const bundleAffected = buildChanged || related.some(file => policy.bundles.entries.includes(file));
+        const router = createArtifactRouter({ evidence: map.bundleRouting, mapTests: map.tests, changes: affected,
+          related, buildChanged, contracts: bundleContracts, loadBlobs: paths => bundleBlobs(map.commit, paths),
+          readDigest: artifactDigest,
+          // Deletes, new files, assets and build changes can change a build's
+          // input inventory. Keep the existing blanket in those cases.
+          mayNarrow: !buildChanged && affected.every(({ file, status }) => status === 'M'
+            && file.startsWith('packages/') && code.test(file)),
+        });
+        for (const [test, outputs] of router?.selected ?? []) {
+          for (const path of outputs) add(test, `recorded bundle artifact: ${path}`);
+        }
+        const reached = new Set(related);
+        const artifactSeeds = router?.affectedEntries.filter(entry => !reached.has(entry)) ?? [];
+        if (artifactSeeds.length) {
+          for (const test of await resolveRelated(artifactSeeds)) add(test, 'static import graph');
+        }
+        const bundleAffected = buildChanged || router?.affectedEntries.length || related.some(file => policy.bundles.entries.includes(file));
         if (bundleAffected) {
-          for (const test of policy.bundles.consumers) add(test, 'bundle reader policy');
-          for (const test of await resolveRelated(policy.bundles.consumers)) add(test, 'imports a bundle reader');
+          const proofs = new Map();
+          const addBundleReader = (test, reason) => {
+            if (!tests.has(test)) return;
+            if (!proofs.has(test)) proofs.set(test, router?.exclusion(test));
+            if (!proofs.get(test)) add(test, reason);
+          };
+          for (const test of policy.bundles.consumers) addBundleReader(test, 'bundle reader policy');
+          for (const test of await resolveRelated(policy.bundles.consumers)) addBundleReader(test, 'imports a bundle reader');
+          for (const [test, proof] of proofs) if (proof && !reasons.has(test)) reportBundleExclusion(test, proof);
         }
       }
     } catch (error) {
@@ -324,6 +353,8 @@ async function main(base, output) {
   const selection = await selectTests({ head, inventory, changes, mapChanges, ...lookup, fallbackDurations: read(fallbackDurationsURL),
     namedBy: createNamedByTests(root, inventory),
     fixtureBlobs: commit => fixtureBlobsAtCommit(root, commit),
+    bundleBlobs: (commit, paths) => fixtureBlobsAtCommit(root, commit, paths),
+    artifactDigest: path => bundleDigest(root, path),
     async resolveRelated(seeds, targets) {
       if (targets?.some(file => fixtureEntries.includes(file) && !availableFixtures.has(file))) {
         throw new Error('Missing fixture graph entry');

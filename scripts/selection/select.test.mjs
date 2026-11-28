@@ -427,6 +427,97 @@ test('runs bundle policy readers when a changed input reaches a bundle entry', a
     records: { [a]: row({ reads: [0] }) }, unmapped: { [file]: [bundleEntry] } }), a, bundleReader);
 });
 
+const brokerEntry = 'packages/intercom/src/broker/broker.ts';
+const brokerOutput = 'dist/intercom/broker.mjs';
+const viewerOutput = 'dist/herdr/viewer.mjs';
+const viewerReader = 'packages/herdr/src/__tests__/viewer-entry.test.ts';
+const packReader = 'packages/herdr/src/__tests__/packaging.test.ts';
+const shakenInput = 'packages/one/src/shaken-from-broker.ts';
+const headInput = 'packages/one/src/new-broker-input.ts';
+const brokerHash = 'a'.repeat(64), viewerHash = 'b'.repeat(64), readerBlob = 'c'.repeat(40);
+const artifactEvidence = () => ({ version: 1, artifacts: [
+  { path: brokerOutput, entry: brokerEntry, sha256: brokerHash, inputs: [shakenInput] },
+  { path: viewerOutput, entry: 'packages/herdr/src/bin/viewer.ts', sha256: viewerHash, inputs: [] },
+], tests: {
+  [a]: { hashes: [brokerHash], ambiguous: false },
+  [viewerReader]: { hashes: [viewerHash], ambiguous: false },
+  [packReader]: { hashes: [viewerHash], ambiguous: false },
+} });
+
+function artifactFixture({ evidence = artifactEvidence(), input = headInput, changes = [changed(input)],
+  viewerRecord = row({ ranBundle: true }), ...options } = {}) {
+  const inventory = [a, b, c, d, viewerReader, packReader, bundleReader];
+  return fixture({ inventory, changes,
+    map: map([], Object.fromEntries(inventory.map(file => [file, file === viewerReader ? viewerRecord : row()])),
+      { bundleRouting: evidence }),
+    resolveRelated: async seeds => seeds.includes(headInput) ? [b, brokerEntry] : seeds.includes(brokerEntry) ? [c]
+      : seeds.includes(viewerReader) ? [d] : [],
+    bundleContracts: new Map([[viewerReader, { outputs: [viewerOutput], blobs: { [viewerReader]: readerBlob } }]]),
+    bundleBlobs: () => new Map([[viewerReader, readerBlob]]),
+    artifactDigest: file => file === viewerOutput ? viewerHash : null,
+    ...options });
+}
+
+test('routes affected bundle readers and retains static importers, legacy consumers, and package guards', async () => {
+  const result = await artifactFixture();
+  assert.equal(result.mode, 'scoped');
+  assertSelected(result, a, b, d, packReader, bundleReader);
+  assert.ok(result.selected[a].some(reason => reason.includes(brokerOutput)));
+});
+
+test('selects recorded readers of a tree-shaken build input even when the head graph has no edge', async () => {
+  const result = await artifactFixture({ input: shakenInput });
+  assert.equal(result.mode, 'scoped');
+  assertSelected(result, a, c, d, packReader, bundleReader);
+  assert.ok(result.selected[c].includes('static import graph'));
+});
+
+test('routes artifact readers for changes since an older map without attributing them to the PR', async () => {
+  const result = await artifactFixture({ changes: [], mapChanges: [changed(shakenInput)] });
+  assert.equal(result.mode, 'scoped');
+  assert.deepEqual(result.changedFiles, []);
+  assertSelected(result, a, c, d, packReader, bundleReader);
+});
+
+test('a legacy or malformed map does not replace the blanket rule', async () => {
+  const malformed = artifactEvidence();
+  malformed.artifacts[0].inputs = ['../out-of-checkout'];
+  for (const evidence of [null, malformed]) {
+    assertSelected(await artifactFixture({ evidence }), b, d, viewerReader, packReader, bundleReader);
+  }
+});
+
+test('keeps blanket coverage when an artifact identity or the consumer contract is uncertain', async t => {
+  const cases = [
+    { artifactDigest: () => null },
+    { artifactDigest: () => 'f'.repeat(64) },
+    { bundleBlobs: () => new Map() },
+    { viewerRecord: row({ ranBundle: true, incomplete: true }) },
+    { viewerRecord: row({ ranBundle: true, unresolved: ['<tmp>/unknown.mjs'] }) },
+    { changes: [changed(headInput), changed(viewerReader)] },
+    { changes: [changed(headInput), changed('packages/one/src/deleted.ts', 'D')] },
+    { mapChanges: [changed('packages/one/src/deleted.ts', 'D')] },
+  ];
+  for (const fields of [{ ambiguous: true }, { hashes: [] }, { hashes: [brokerHash, viewerHash] }]) {
+    const evidence = artifactEvidence();
+    Object.assign(evidence.tests[viewerReader], fields);
+    cases.push({ evidence });
+  }
+  const aliased = artifactEvidence();
+  aliased.artifacts[0].sha256 = viewerHash;
+  aliased.tests[a].hashes = [viewerHash];
+  cases.push({ evidence: aliased });
+  for (const [i, options] of cases.entries()) await t.test(`case ${i + 1}`, async () => {
+    const result = await artifactFixture(options);
+    assert.ok(result.selected[viewerReader]?.includes('bundle reader policy'));
+  });
+});
+
+test('keeps all bundle readers and executors when build configuration changes', async () => {
+  const result = await artifactFixture({ changes: [changed('scripts/build-herdr.mjs')] });
+  assertSelected(result, a, c, d, viewerReader, packReader, bundleReader);
+});
+
 test('selects the compatibility guards and bundle executors for a Roam build manifest edit', async () => {
   const result = await fixture({ changes: [changed('scripts/roam-entries.json')],
     records: { [b]: row({ ranBundle: true }) } });

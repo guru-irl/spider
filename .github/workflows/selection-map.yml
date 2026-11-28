@@ -127,6 +127,7 @@ jobs:
           shard="$SELECTION_WORK/results/record-${{ matrix.shard }}.json"
           node scripts/selection/reduce.mjs "$SELECTION_WORK/raw" "$SELECTION_WORK/maps" "$SELECTION_WORK/vitest.json" "$shard"
           node scripts/selection/map.mjs --check-shard "$shard"
+          node scripts/selection/bundle-observations.mjs "$SELECTION_WORK/raw" "$SELECTION_WORK/maps" "$shard"
 
       - name: Save per-test records
         if: always()

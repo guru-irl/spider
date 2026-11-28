@@ -4,20 +4,23 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { builtinModules } from 'node:module';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, cpSync, writeFileSync, symlinkSync, chmodSync, existsSync, statSync } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHerdrHarness } from './testutil.js';
 import { replacePackageFile, snapshotPackage } from './packaging-copy.js';
-import { env, root, run, runAsync } from './packaging-process.js';
+import { createProcessRunners } from './packaging-process.js';
 import { releaseRemoteJob } from '../jobs/observer.js';
 import { PANE_ENDPOINT_BOOTSTRAP } from '../../../host/src/herdr/pane-installation.js';
 import type { JobRecord, JobId } from '../contracts.js';
 
+const root = resolve('.');
 const scratch = join(root, '.spider/scratch/packaging');
+const env = { ...process.env, TMPDIR: join(root, '.spider/scratch/tmp'), COPYFILE_DISABLE: '1' };
 const builtins = new Set(builtinModules.flatMap(name => [name, `node:${name}`]));
 let packedRoot: string;
 let files: string[];
 let tarball: string;
+const { run, runAsync } = createProcessRunners(root, env);
 const npm = (args: string[]) => execFileSync('npm', args, { cwd: root, env, encoding: 'utf8', timeout: 180_000 });
 
 // A missing build entry or package allowlist entry must fail through npm's real artifact.

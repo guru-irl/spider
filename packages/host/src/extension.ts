@@ -1411,7 +1411,13 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
       readRoutingConfig(String(args.cwd ?? cwdOf(callCtx) ?? process.cwd())));
     structuredToolsRegistered = true;
   });
-  registerIntro(pi as unknown as ExtensionAPI, { admitted: ordinaryWorkAllowed, piVersion: ports.piVersion, iconStyle });
+  // Read the cached visit before the next shutdown hook stops the usage worker.
+  registerIntro(pi as unknown as ExtensionAPI, { admitted: ordinaryWorkAllowed, piVersion: ports.piVersion, iconStyle,
+    readVisitUsage: async (id, from, to) => {
+      const visit = await usageService.readVisit(id, from, to);
+      return visit ? { credits: visit.credits, calls: visit.calls, unpricedCalls: visit.unpricedCalls, ...visit.tokens } : undefined;
+    },
+  });
   const usageCommand = registerUsageDashboardCommand(pi as unknown as ExtensionAPI, loadedBundle.url);
   const usageService = registerUsage(pi as unknown as ExtensionAPI, loadedBundle.url, ordinaryWorkAllowed);
   setForHost(usageServices, usageService);

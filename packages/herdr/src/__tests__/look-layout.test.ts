@@ -25,6 +25,17 @@ describe('generated glass layout', () => {
     expect(buildGlassLayout(layout, { ...names, release: '0.1.18' }).cell_background_opacity).toBe(0);
   });
 
+  it('makes 0.1.18 popovers opaque without changing the glass surfaces', async () => {
+    const input = await source();
+    const current = buildGlassLayout(input, { ...names, release: '0.1.18' });
+    const previous = buildGlassLayout(input, { ...names, release: '0.1.16' });
+    expect(previous.colors).toMatchObject({ popover: '#161618f0', surface: '#161618f0' });
+    expect(current.colors).toEqual({ ...(previous.colors as object), popover: '#161618' });
+    expect(current.background).toBe(previous.background);
+    expect(current.children).toEqual(previous.children);
+    expect(current.window_blur).toBe(true);
+  });
+
   it('defaults to neutral window blur only for 0.1.16 and retains readable translucent chrome', async () => {
     const input = await source();
     const result = buildGlassLayout(input, { ...names, release: '0.1.16' });

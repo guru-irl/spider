@@ -17,17 +17,19 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 const fastFixture = () => focusedSetupFixture();
 
 test.each([false, true])('setup repairs an older unverified completed-cutover checkpoint (partial: %s)', async partial => {
-  const f = await fastFixture(), settings = join(f.request.config.app.home, 'settings.json');
-  const original = await readFile(settings);
+  const f = await fastFixture(), settings = join(f.request.config.app.home, 'settings.json'), shared = join(f.request.config.app.home, 'shared.json');
+  const original = await readFile(settings), originalShared = await readFile(shared);
   await setupHerdr(f.request, f.parts);
   // Older setup recorded cutover completion before selecting the app look.
   const journal = await readJournal(f.request.journalRoot);
   journal.verified = false;
   await saveJournal(f.request.journalRoot, journal);
-  await writeFile(settings, partial ? JSON.stringify({ ...JSON.parse(original.toString()), layout: 'spider-glass' }) : original);
+  await writeFile(settings, original);
+  if (!partial) await writeFile(shared, originalShared);
   const result = await setupHerdr(f.request, f.parts);
   expect(result.doctor.failures).toEqual([]);
-  expect(JSON.parse((await readFile(settings)).toString())).toEqual({ zoom: 1.25, theme: 'spider-glass', layout: 'spider-glass', sounds: { enabled: false } });
+  expect(JSON.parse((await readFile(settings)).toString())).toEqual({ zoom: 1.25, theme: 'spider-glass', sounds: { enabled: false } });
+  expect(JSON.parse(await readFile(shared, 'utf8')).layout).toBe('Spider');
 }, 60_000);
 
 test('partial-transition recovery never applies to other setup-managed fields', async () => {

@@ -88,6 +88,26 @@ test('matches the exact merged PR and obtains the newest usable successful selec
   assert.deepEqual(result.selection, upload);
 });
 
+test('audits a tested merge only when its PR parent and landed tree match', async () => {
+  const tree = 'd'.repeat(40), testedMerge = 'e'.repeat(40);
+  const mergedManifest = { ...selection, head: testedMerge };
+  mergedManifest.selectionHash = selectionHash(mergedManifest);
+  const attempt = (testedTree, testedTopic) => mergedSelection({
+    ...api({ runs: [run(54)] }),
+    artifact: async () => ({ read: () => mergedManifest }),
+    get: path => {
+      if (path === `git/commits/${newest}`) return { tree: { sha: tree } };
+      assert.equal(path, `git/commits/${testedMerge}`);
+      return { parents: [{ sha: mapCommit }, { sha: testedTopic }], tree: { sha: testedTree } };
+    },
+  }, newest);
+  const result = await attempt(tree, head);
+  assert.deepEqual(result.selection, mergedManifest);
+  assert.equal(result.runId, 54);
+  assert.match((await attempt(mapCommit, head)).unavailable, /artifact/);
+  assert.match((await attempt(tree, mapCommit)).unavailable, /artifact/);
+});
+
 test('does not silently attribute a direct push or an unavailable artifact to a previous PR', async () => {
   assert.match((await mergedSelection(api({ prs: [{ ...pr, merge_commit_sha: head }] }), newest)).unavailable, /merge commit/);
   assert.match((await mergedSelection(api({ runs: [run(55)] }), newest)).unavailable, /artifact/);

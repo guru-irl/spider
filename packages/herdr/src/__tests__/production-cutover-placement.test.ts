@@ -64,7 +64,7 @@ for (const mode of ['fake', 'hc'] as const) {
       expect((await readCutoverRecovery(spaces.journalRoot)).entries).toEqual([]);
     } finally { await ports.dispose(); await f.h.close(); }
   }, 60000);
-  test(`a removed recorded terminal and space do not wedge cutover reconciliation (${mode})`, async () => {
+  test(`cutover reconciliation keeps a removed tab and space closed (${mode})`, async () => {
     const f = await fixture(mode);
     try {
       const first = await f.run(['setup-cutover']).result; expect(first.code, first.stderr).toBe(0); await f.stopOwners();
@@ -73,7 +73,9 @@ for (const mode of ['fake', 'hc'] as const) {
       const journal = await readJournal(f.request.journalRoot); journal.cutoverPending = true; journal.verified = false; await saveJournal(f.request.journalRoot, journal);
       await writePrivateJson(f.control, {});
       const retry = await f.run(['setup-cutover']).result; expect(retry.code, retry.stderr).toBe(0);
-      expect((await readCutoverRecovery(join(f.request.config.globalRoot, 'herdr/spaces'))).createdTabs).toHaveLength(1); await f.stopOwners();
+      expect((await readCutoverRecovery(join(f.request.config.globalRoot, 'herdr/spaces'))).createdTabs).toEqual([]);
+      expect((await readJournal(f.request.journalRoot)).cutoverPending).toBe(false);
+      expect((await readFile(join(f.root, 'launches.jsonl'), 'utf8')).trim().split('\n')).toHaveLength(1);
     } finally { await f.h.close(); }
   }, 60000);
 }

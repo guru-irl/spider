@@ -22,6 +22,13 @@ async function fixture(): Promise<{ h: ClientFixture; client: ReturnType<typeof 
   const client = createHcClient({ binary: h.hcBinary, env: h.localEnv }); clients.push(client); const stream = client.events(); streams.push(stream); await stream.ready;
   return { h, client, stream };
 }
+function nextEvent(stream: HcEventStream, type: HcEvent['type'], seq: number): Promise<void> {
+  return new Promise(resolve => {
+    const unsubscribe = stream.subscribe(event => {
+      if (event.type === type && event.seq === seq) { unsubscribe(); resolve(); }
+    });
+  });
+}
 test('a subscriber before initialization receives the real snapshot exactly once', async () => {
   const h = await createClientFixture(); fixtures.push(h);
   const client = createHcClient({ binary: h.hcBinary, env: h.localEnv }); clients.push(client);
@@ -35,10 +42,12 @@ test('a subscriber before initialization receives the real snapshot exactly once
 
 test('a late subscriber replays current terminals on the next microtask', async () => {
   const { h, stream } = await fixture();
+  const removed = nextEvent(stream, 'removed', 2);
   await h.emitCore({ type: 'created', seq: 1, terminal: 't2', data: terminal('t2') });
   await h.emitCore({ type: 'removed', seq: 2, terminal: 't1' });
-  await expect.poll(() => stream.lookup(h.address('t2'))).toMatchObject({ address: 't2' });
-  await expect.poll(() => stream.lookup(h.address('t1'))).toBeNull();
+  await removed;
+  expect(await stream.lookup(h.address('t2'))).toMatchObject({ address: 't2' });
+  expect(await stream.lookup(h.address('t1'))).toBeNull();
   const seen: HcEvent[] = [];
   stream.subscribe(event => seen.push(event));
   expect(seen).toEqual([]);
@@ -49,13 +58,15 @@ test('a late subscriber replays current terminals on the next microtask', async 
 test('a replay precedes live events arriving in the same transport batch without duplicates', async () => {
   const { h, stream } = await fixture(); const seen: HcEvent[] = [];
   stream.subscribe(event => { if (event.type === 'created') stream.subscribe(event => seen.push(event)); });
+  const removed = nextEvent(stream, 'removed', 3);
   await h.emitCore([
     { type: 'created', seq: 1, terminal: 't2', data: terminal('t2') },
     { type: 'status', seq: 2, terminal: 't2', data: { status: { state: 'working' } } },
     { type: 'removed', seq: 3, terminal: 't1' },
     { type: 'removed', seq: 3, terminal: 't1' },
   ].map(event => JSON.stringify(event)).join('\n') + '\n');
-  await expect.poll(() => stream.lookup(h.address('t1'))).toBeNull();
+  await removed;
+  expect(await stream.lookup(h.address('t1'))).toBeNull();
   expect(seen.map(event => [event.type, event.seq])).toEqual([['snapshot', 1], ['status', 2], ['removed', 3]]);
   expect(seen[0]).toMatchObject({ terminals: [{ address: 't1' }, { address: 't2', status: null }] });
 });
@@ -66,8 +77,10 @@ test('disposing one view removes only its listeners and leaves another receiving
   first.subscribe(event => firstSeen.push(event)); second.subscribe(event => secondSeen.push(event));
   await Promise.resolve(); const before = firstSeen.slice();
   await first.dispose();
+  const status = nextEvent(second, 'status', 1);
   await h.emitCore({ type: 'status', seq: 1, terminal: 't1', data: { status: { state: 'working' } } });
-  await expect.poll(() => secondSeen.some(event => event.type === 'status')).toBe(true);
+  await status;
+  expect(secondSeen.some(event => event.type === 'status')).toBe(true);
   expect(firstSeen).toEqual(before);
   expect(await second.lookup(h.address('t1'))).toMatchObject({ status: { state: 'working' } });
 });
@@ -103,8 +116,10 @@ test('missed replaces the materialized list for all views and subsequent subscri
   const { h, client, stream } = await fixture(); const second = client.events(); streams.push(second);
   const firstSeen: HcEvent[] = [], secondSeen: HcEvent[] = [];
   stream.subscribe(event => firstSeen.push(event)); second.subscribe(event => secondSeen.push(event));
+  const missed = nextEvent(second, 'missed', 9);
   await h.emitCore({ type: 'missed', seq: 9, terminals: [h.finishedTerminal('t2', 23)] });
-  await expect.poll(() => second.lookup(h.address('t2'))).toMatchObject({ state: 'finished', exitCode: 23 });
+  await missed;
+  expect(await second.lookup(h.address('t2'))).toMatchObject({ state: 'finished', exitCode: 23 });
   expect(firstSeen.map(event => [event.type, event.seq])).toEqual([['snapshot', 0], ['missed', 9]]);
   expect(secondSeen).toEqual(firstSeen);
   const late: HcEvent[] = []; second.subscribe(event => late.push(event)); await Promise.resolve();
@@ -114,15 +129,19 @@ test('missed replaces the materialized list for all views and subsequent subscri
 
 test('a lost terminal retains loss metadata without inventing a completed command', async () => {
   const { h, stream } = await fixture();
+  const lost = nextEvent(stream, 'lost', 1);
   await h.emitCore({ type: 'lost', seq: 1, terminal: 't1', data: { exit_code: null, reason: 'signaled', signal: 9, finished_ms: null } });
-  await expect.poll(() => stream.lookup(h.address('t1'))).toMatchObject({ state: 'live', reason: 'signaled', signal: 9, exitCode: null, finishedAt: null });
+  await lost;
+  expect(await stream.lookup(h.address('t1'))).toMatchObject({ state: 'live', reason: 'signaled', signal: 9, exitCode: null, finishedAt: null });
 });
 
 test('recovers a missed finish without launching again', async () => {
   const { h, stream } = await fixture();
   const received: string[] = []; stream.subscribe(event => received.push(event.type));
+  const missed = nextEvent(stream, 'missed', 9);
   await h.emitCore({ type: 'missed', seq: 9, terminals: [h.finishedTerminal('remote.invalid/t2', 23)] });
-  await expect.poll(() => stream.lookup(h.address('remote.invalid/t2')), { timeout: 600 }).toMatchObject({ state: 'finished', exitCode: 23 });
+  await missed;
+  expect(await stream.lookup(h.address('remote.invalid/t2'))).toMatchObject({ state: 'finished', exitCode: 23 });
   expect(received).toEqual(['snapshot', 'missed']);
   expect(await h.remoteLaunches()).toHaveLength(0);
 });
@@ -131,35 +150,47 @@ test('recovers a missed finish without launching again', async () => {
 test('drops duplicate sequences and foreign generations', async () => {
   const { h, stream } = await fixture(); const received: number[] = []; stream.subscribe(e => received.push(e.seq));
   const event = (seq: number, state: string, generation?: string) => ({ jsonrpc: '2.0', method: 'event', params: { type: 'status', seq, generation, terminal: 't1', data: { status: { state } } } });
+  const working = nextEvent(stream, 'status', 2);
   await h.emitCore({ type: 'snapshot', seq: 1, generation: 'g1', terminals: [terminal('t1')] });
   await h.emitCore(event(2, 'working', 'g1'));
-  await expect.poll(() => stream.lookup(h.address('t1'))).toMatchObject({ status: { state: 'working' } });
+  await working;
+  expect(await stream.lookup(h.address('t1'))).toMatchObject({ status: { state: 'working' } });
+  const blocked = nextEvent(stream, 'status', 4);
   await h.emitCore(event(2, 'done', 'g1')); await h.emitCore(event(3, 'error', 'foreign')); await h.emitCore(event(4, 'blocked', 'g1'));
-  await expect.poll(() => stream.lookup(h.address('t1'))).toMatchObject({ status: { state: 'blocked' } });
+  await blocked;
+  expect(await stream.lookup(h.address('t1'))).toMatchObject({ status: { state: 'blocked' } });
   expect(received).toEqual([0, 1, 2, 4]);
 });
 test('a fast finished notification is retained before the launch reply', async () => {
   const { h, stream } = await fixture();
+  const finished = nextEvent(stream, 'finished', 2);
   await h.emitCore({ jsonrpc: '2.0', method: 'event', params: { type: 'created', seq: 1, terminal: 'remote.invalid/t2', data: terminal('remote.invalid/t2') } });
   await h.emitCore({ jsonrpc: '2.0', method: 'event', params: { type: 'finished', seq: 2, terminal: 'remote.invalid/t2', data: { exit_code: 23, reason: 'exited', signal: null, finished_ms: 4567 } } });
-  await expect.poll(() => stream.lookup(h.address('remote.invalid/t2')), { timeout: 500 }).toMatchObject({ state: 'finished', exitCode: 23, finishedAt: 4567 });
+  await finished;
+  expect(await stream.lookup(h.address('remote.invalid/t2'))).toMatchObject({ state: 'finished', exitCode: 23, finishedAt: 4567 });
 });
 test('lost, restarted, status and removal do not invent completion', async () => {
   const { h, stream } = await fixture(); const received: string[] = []; stream.subscribe(e => received.push(e.type));
+  const status = nextEvent(stream, 'status', 3);
   await h.emitCore({ jsonrpc: '2.0', method: 'event', params: { type: 'lost', seq: 1, terminal: 't1', data: { exit_code: null, reason: 'signaled', signal: 9, finished_ms: null } } });
   await h.emitCore({ jsonrpc: '2.0', method: 'event', params: { type: 'restarted', seq: 2, terminal: 't1', data: terminal('t1') } });
   await h.emitCore({ jsonrpc: '2.0', method: 'event', params: { type: 'status', seq: 3, terminal: 't1', data: { status: { state: 'done' } } } });
-  await expect.poll(() => stream.lookup(h.address('t1'))).toMatchObject({ state: 'live', exitCode: null });
-  await expect.poll(() => received).toEqual(['snapshot', 'lost', 'restarted', 'status']);
+  await status;
+  expect(await stream.lookup(h.address('t1'))).toMatchObject({ state: 'live', exitCode: null });
+  expect(received).toEqual(['snapshot', 'lost', 'restarted', 'status']);
+  const removed = nextEvent(stream, 'removed', 4);
   await h.emitCore({ jsonrpc: '2.0', method: 'event', params: { type: 'removed', seq: 4, terminal: 't1', data: {} } });
-  await expect.poll(() => stream.lookup(h.address('t1'))).toBeNull();
+  await removed;
+  expect(await stream.lookup(h.address('t1'))).toBeNull();
 });
 test('buffers partial event records until LF', async () => {
   const { h, stream } = await fixture();
   const line = JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'status', seq: 1, terminal: 't1', data: { status: { state: 'working', msg: 'α' } } } });
+  const status = nextEvent(stream, 'status', 1);
   await h.emitCore(line.slice(0, 12)); expect((await stream.lookup(h.address('t1')))?.status).toBeNull();
   await h.emitCore(line.slice(12) + '\n');
-  await expect.poll(() => stream.lookup(h.address('t1'))).toMatchObject({ status: { msg: 'α' } });
+  await status;
+  expect(await stream.lookup(h.address('t1'))).toMatchObject({ status: { msg: 'α' } });
 });
 test('steady fifteen-second heartbeats tolerate one second of delivery lag without respawning', async () => {
   vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
@@ -170,8 +201,10 @@ test('steady fifteen-second heartbeats tolerate one second of delivery lag witho
     // Give real child close/backoff I/O time to expose an erroneous respawn.
     await delay(400);
     expect((await h.calls()).filter(call => call.argv[0] === 'events')).toHaveLength(1);
+    const delivered = nextEvent(stream, 'heartbeat', 0);
     await h.emitCore({ jsonrpc: '2.0', method: 'heartbeat', params: { seq: 0 } });
-    await expect.poll(() => seen.filter(event => event.type === 'heartbeat').length).toBe(heartbeat);
+    await delivered;
+    expect(seen.filter(event => event.type === 'heartbeat').length).toBe(heartbeat);
     expect(await stream.lookup(h.address('t1'))).toMatchObject({ state: 'live' });
   }
   expect(seen.filter(event => event.type === 'snapshot')).toHaveLength(1);
@@ -181,11 +214,15 @@ test('heartbeat timeout resubscribes once and reconciles the replacement snapsho
   vi.useFakeTimers(); const { h, client, stream } = await fixture();
   const second = client.events(); streams.push(second);
   const firstSeen: HcEvent[] = [], secondSeen: HcEvent[] = [];
-  stream.subscribe(event => firstSeen.push(event)); second.subscribe(event => secondSeen.push(event));
+  let resolveReconnected!: () => void;
+  const reconnected = new Promise<void>(resolve => { resolveReconnected = resolve; });
+  stream.subscribe(event => { firstSeen.push(event); if (firstSeen.length === 2) resolveReconnected(); });
+  second.subscribe(event => secondSeen.push(event));
   await h.configure({ terminals: [h.finishedTerminal('t1', 17)] });
   await vi.advanceTimersByTimeAsync(31000); vi.useRealTimers();
-  await expect.poll(async () => (await h.calls()).filter(c => c.argv[0] === 'events').length, { timeout: 1000 }).toBe(2);
-  await expect.poll(() => stream.lookup(h.address('t1'))).toMatchObject({ state: 'finished', exitCode: 17 });
+  await reconnected;
+  expect((await h.calls()).filter(c => c.argv[0] === 'events').length).toBe(2);
+  expect(await stream.lookup(h.address('t1'))).toMatchObject({ state: 'finished', exitCode: 17 });
   expect(firstSeen.map(event => [event.type, event.seq])).toEqual([['snapshot', 0], ['snapshot', 0]]);
   expect(secondSeen).toEqual(firstSeen);
   const late: HcEvent[] = []; second.subscribe(event => late.push(event)); await Promise.resolve();

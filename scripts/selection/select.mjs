@@ -169,7 +169,7 @@ export function fixtureBlobsAtCommit(root, commit) {
   }
 }
 
-export async function selectTests({ head, inventory, changes, map, fallback = null,
+export async function selectTests({ head, inventory, changes, mapChanges = [], map, fallback = null,
   fallbackDurations = {}, namedBy = () => [], fixtureBlobs = () => new Map(), resolveRelated = async () => [] }) {
   const reasons = new Map();
   const tests = new Set(inventory);
@@ -179,14 +179,17 @@ export async function selectTests({ head, inventory, changes, map, fallback = nu
     reasons.get(file).add(reason);
   };
   const changedFiles = [...changes].sort((a, b) => a.file < b.file ? -1 : a.file > b.file ? 1 : 0);
+  // Use map-to-head changes to cover stale recordings. Keep PR-only changes
+  // too, including a PR edit that restores a file to its old mapped content.
+  const affected = [...new Map([...mapChanges, ...changedFiles].map(change => [change.file, change])).values()];
   if (!map && !fallback) fallback = 'no usable selection map';
-  const selectionChange = changedFiles.find(({ file }) => file.startsWith('scripts/selection/')
+  const selectionChange = affected.find(({ file }) => file.startsWith('scripts/selection/')
     || file.startsWith('.github/workflows/') || file === 'scripts/test-resources.json' || file === 'scripts/test-shards.ts');
   if (!fallback && selectionChange) fallback = `selection infrastructure changed: ${selectionChange.file}`;
   if (!fallback) {
     try {
       const policy = readPolicy();
-      const rules = changedFiles.map(change => ({ ...change, rules: policy.rules.filter(rule => matches(change.file, rule.inputs)) }));
+      const rules = affected.map(change => ({ ...change, rules: policy.rules.filter(rule => matches(change.file, rule.inputs)) }));
       const toolchain = rules.find(change => change.rules.some(rule => rule.full));
       if (toolchain) {
         fallback = `toolchain changed: ${toolchain.file}`;
@@ -234,6 +237,8 @@ export async function selectTests({ head, inventory, changes, map, fallback = nu
           const graphInput = code.test(file) || (!isDoc && !isBuild && !isPolicy) || isScript || isHerdrE2e;
           if (!removed && graphInput) graphSeeds.add(file);
           const owner = file.match(/^packages\/([^/]+)\//)?.[1];
+          // Include every rule match, including required sentinels. Sharding
+          // distributes all selected files and never applies a time budget.
           for (const rule of matching) {
             if (rule.id === 'source-text' && (isTest || file.includes('/__tests__/'))) continue;
             const patterns = rule.tests.filter(pattern => owner || !pattern.includes('$package')).map(pattern => pattern.replaceAll('$package', owner));
@@ -308,10 +313,15 @@ async function main(base, output) {
   const inventory = testInventory(root, head);
   const lookup = await lookupMainMap({ root, mergeBase, repo: process.env.GITHUB_REPOSITORY, workflowRun: process.env.GITHUB_RUN_ID });
   const availableFixtures = new Set(fixtureEntries.filter(file => existsSync(resolve(root, file))));
-  let changes = [], graph;
-  try { changes = changedBetween(root, lookup.map?.commit ?? mergeBase, head); }
-  catch { lookup.fallback = 'could not read map-to-head changed files'; }
-  const selection = await selectTests({ head, inventory, changes, ...lookup, fallbackDurations: read(fallbackDurationsURL),
+  let changes = [], mapChanges = [], graph;
+  try { changes = changedBetween(root, mergeBase, head); }
+  catch { lookup.fallback = 'could not read PR changed files'; }
+  const mapCommit = lookup.map?.commit ?? mergeBase;
+  if (!lookup.fallback && mapCommit !== mergeBase) {
+    try { mapChanges = changedBetween(root, mapCommit, head); }
+    catch { lookup.fallback = 'could not read map-to-head changed files'; }
+  }
+  const selection = await selectTests({ head, inventory, changes, mapChanges, ...lookup, fallbackDurations: read(fallbackDurationsURL),
     namedBy: createNamedByTests(root, inventory),
     fixtureBlobs: commit => fixtureBlobsAtCommit(root, commit),
     async resolveRelated(seeds, targets) {

@@ -1,4 +1,11 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+
+const lockSync = vi.hoisted(() => ({ enabled: false }));
+vi.mock("node:fs/promises", async importOriginal => {
+  const real = await importOriginal<typeof import("node:fs/promises")>();
+  const { fixtureLockOpen } = await import("./fixture-lock-sync");
+  return { ...real, open: fixtureLockOpen(real.open, () => lockSync.enabled) };
+});
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -9,7 +16,9 @@ import { createIntercomRegistry } from "../intercom-registry";
 import { pairResources } from "../intercom-pair-resources";
 import { cleanupPairScenarios, scenario } from "./intercom-pair-fixture";
 
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); cleanupPairScenarios(); });
+const predecessorFenceCase = "keeps a predecessor fence recoverable after revoke, re-enrollment, core change, and cancel";
+beforeEach(context => { lockSync.enabled = context.task.name === predecessorFenceCase; });
+afterEach(() => { lockSync.enabled = false; vi.restoreAllMocks(); vi.unstubAllEnvs(); cleanupPairScenarios(); });
 async function fixture() {
   const f = await scenario(), machineId = f.request.operation.machineId;
   mkdirSync(join(f.root, "roam"), { recursive: true, mode: 0o700 });
@@ -54,7 +63,7 @@ it("names revocation after a core change once the pair is bound", async () => {
   expect(await provisionIntercomEnrollment(f.request, f.enrollment)).toMatchObject({ reason: "core-changed", repairCommand: "spider roam intercom revoke pair-1" });
 }, 10000);
 
-it("keeps a predecessor fence recoverable after revoke, re-enrollment, core change, and cancel", async () => {
+it(predecessorFenceCase, async () => {
   const f = await fixture(), root = f.source.globalRoot, machineId = f.source.machineId;
   vi.stubEnv("SPIDER_GLOBAL_ROOT", root);
   const request = f.request;

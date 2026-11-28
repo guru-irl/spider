@@ -27,7 +27,7 @@ test.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('production setup installs ta
   const icon = await readFile(join(app, 'mods/spider-tabs/spider.svg'), 'utf8');
   expect(icon).toContain('viewBox="0 0 56 56"');
   expect(icon).toContain('stroke-width="3.5"');
-  expect(JSON.parse(await readFile(join(app, 'layouts/spider-glass.json'), 'utf8')).children.find((node: { id: string }) => node.id === 'tabs').content.mod).toBe('spider-tabs');
+  expect(JSON.parse(await readFile(join(app, 'layouts/Spider.json'), 'utf8')).children.find((node: { id: string }) => node.id === 'tabs').content.mod).toBe('spider-tabs');
   const manifest = JSON.parse(await readFile(join(app, 'mods/spider-tabs/mod.json'), 'utf8'));
   expect(manifest.clonedFrom).toEqual({ name: 'tabs', version: '0.1.12' });
   const doctor = await f.ports.doctorParts(f.request);

@@ -8,7 +8,7 @@ import type { TerminalAddress } from '../contracts.js';
 import type { InstallFile, NodeObservation, CutoverResult, RuntimeRootObservation } from './installer.js';
 import { changedSetupFilesNotice } from '../notices.js';
 import { isRuntimeRootProbe } from '../remote/node-version.js';
-import { LEGACY_SPIDER_LAYOUT_KEYS, SPIDER_LAYOUT_KEYS } from '../look/names.js';
+import { LEGACY_SPIDER_LAYOUT, LEGACY_SPIDER_LAYOUT_KEYS, SPIDER_LAYOUT, SPIDER_LAYOUT_KEYS } from '../look/names.js';
 
 export const digest = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 export interface FileSnapshot {
@@ -1290,7 +1290,26 @@ function isKeyBinding(value: unknown): value is KeyBinding {
     && typeof binding.command === 'string' && binding.command.length > 0 && !binding.command.includes('\0')
     && (binding.args === undefined || !!binding.args && typeof binding.args === 'object' && !Array.isArray(binding.args));
 }
-/** Merge the old layout section into the new one before applying the standard key guards. */
+function layoutSwitchRename(binding: unknown): { before: KeyBinding; after: KeyBinding } | undefined {
+  if (binding === `layout.switch:${LEGACY_SPIDER_LAYOUT}`) return { before: binding, after: `layout.switch:${SPIDER_LAYOUT}` };
+  if (isKeyBinding(binding) && typeof binding !== 'string' && binding.command === 'layout.switch' && binding.args?.name === LEGACY_SPIDER_LAYOUT)
+    return { before: binding, after: { ...binding, args: { ...binding.args, name: SPIDER_LAYOUT } } };
+}
+
+/** Keep rollback records for migrated commands outside the old layout section. */
+export function retainedLayoutSwitches(prior: BackupEntry | undefined, desired: KeySections): KeySections {
+  return Object.fromEntries(Object.entries(prior?.keysBefore ?? {}).flatMap(([section, baselines]) => {
+    const retained = Object.entries(baselines).flatMap(([key, baseline]) => {
+      const rename = baseline.present && layoutSwitchRename(baseline.value);
+      const recorded = prior?.keys?.[section]?.[key];
+      return rename && recorded != null && !Object.hasOwn(desired[section] ?? {}, key) && canonicalJson(rename.after) === canonicalJson(recorded)
+        ? [[key, recorded] as const] : [];
+    });
+    return retained.length ? [[section, Object.fromEntries(retained)] as const] : [];
+  }));
+}
+
+/** Rename layout-scoped and named bindings before applying the standard key guards. */
 export function stageLayoutKeyRename(bytes: Buffer, desired: KeySections, owned: KeySections): { bytes: Buffer; desired: KeySections; owned: KeySections } {
   let settings: Record<string, unknown>, legacy: Record<string, unknown>, target: Record<string, unknown>;
   try {
@@ -1305,12 +1324,21 @@ export function stageLayoutKeyRename(bytes: Buffer, desired: KeySections, owned:
       throw new HerdrError('key-binding-conflict', `Competing ${key} bindings in ${LEGACY_SPIDER_LAYOUT_KEYS} and ${SPIDER_LAYOUT_KEYS}. Resolve the conflict in keys.json before retrying setup.`);
     return [key, binding] as const;
   });
-  if (!moved.length) return { bytes, desired, owned };
-  return {
-    bytes: Buffer.from(JSON.stringify({ ...settings, [SPIDER_LAYOUT_KEYS]: { ...legacy, ...target } })),
-    desired: { ...desired, [SPIDER_LAYOUT_KEYS]: { ...Object.fromEntries(moved), ...desired[SPIDER_LAYOUT_KEYS] }, [LEGACY_SPIDER_LAYOUT_KEYS]: Object.fromEntries(moved.map(([key]) => [key, null])) },
-    owned: { ...owned, [SPIDER_LAYOUT_KEYS]: { ...owned[LEGACY_SPIDER_LAYOUT_KEYS], ...owned[SPIDER_LAYOUT_KEYS] }, [LEGACY_SPIDER_LAYOUT_KEYS]: Object.fromEntries(moved) },
-  };
+  const input = moved.length ? { ...settings, [SPIDER_LAYOUT_KEYS]: { ...legacy, ...target } } : settings;
+  const planned: Record<string, KeySections[string]> = moved.length ? { ...desired, [SPIDER_LAYOUT_KEYS]: { ...Object.fromEntries(moved), ...desired[SPIDER_LAYOUT_KEYS] }, [LEGACY_SPIDER_LAYOUT_KEYS]: Object.fromEntries(moved.map(([key]) => [key, null])) } : { ...desired };
+  const authorized: Record<string, KeySections[string]> = moved.length ? { ...owned, [SPIDER_LAYOUT_KEYS]: { ...owned[LEGACY_SPIDER_LAYOUT_KEYS], ...owned[SPIDER_LAYOUT_KEYS] }, [LEGACY_SPIDER_LAYOUT_KEYS]: Object.fromEntries(moved) } : { ...owned };
+  for (const [section, bindings] of Object.entries(input)) {
+    if (section === LEGACY_SPIDER_LAYOUT_KEYS || !bindings || typeof bindings !== 'object' || Array.isArray(bindings)) continue;
+    for (const [key, binding] of Object.entries(bindings)) {
+      const rename = layoutSwitchRename(binding);
+      if (!rename) continue;
+      journalKeyName(section); journalKeyName(key);
+      if (Object.hasOwn(planned[section] ?? {}, key) && canonicalJson(planned[section][key]) !== canonicalJson(rename.before)) continue;
+      planned[section] = { ...planned[section], [key]: rename.after };
+      authorized[section] = { ...authorized[section], [key]: rename.before };
+    }
+  }
+  return { bytes: moved.length ? Buffer.from(JSON.stringify(input)) : bytes, desired: planned, owned: authorized };
 }
 export function mergeKeys(bytes: Buffer | null, desiredSections: KeySections, ownedSections: KeySections, overwrite: boolean, options: { ignoredKeys?: KeyFields } = {}): Buffer {
   if (bytes === null) throw new HerdrError('keys-defaults-missing', missingKeyMapMessage);

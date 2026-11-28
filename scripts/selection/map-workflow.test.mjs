@@ -11,10 +11,15 @@ test('automatic maps wait for main CI, use its commit, and share its runner lock
   const ci = workflow('ci.yml');
   assert.equal(map.on.push, undefined);
   assert.deepEqual(map.on.workflow_run, { workflows: ['CI'], branches: ['main'], types: ['completed'] });
-  const mainLock = ci.concurrency.group.includes('ci-main') ? 'ci-main' : 'ci-CI-refs/heads/main';
-  assert.ok(map.concurrency.group.toLowerCase().includes(`'${mainLock.toLowerCase()}'`));
-  assert.equal(map.concurrency['cancel-in-progress'], false);
-  assert.equal(map.concurrency.queue, 'max');
+  const mainLock = 'ci-CI-refs/heads/main';
+  assert.equal(ci.concurrency.group,
+    `\${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && '${mainLock}' || format('ci-{0}', github.run_id) }}`);
+  assert.ok(map.concurrency.group.includes(`'${mainLock}'`));
+  for (const { concurrency } of [ci, map]) {
+    assert.equal(concurrency['cancel-in-progress'], false);
+    assert.equal(concurrency.queue, 'max');
+  }
+  assert.equal(workflow('pr.yml').concurrency['cancel-in-progress'], true);
   assert.match(map.jobs.eligible.if, /workflow_run\.event == 'push'/);
   assert.match(map.jobs.eligible.if, /workflow_run\.head_sha == github\.sha/);
   assert.equal(map.jobs.record.needs, 'eligible');

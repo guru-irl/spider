@@ -390,6 +390,18 @@ it("refuses an ask without queuing it when no relay is reachable", async () => {
   expect(await f.remote.received()).toEqual([]);
 });
 
+it("a refused relayed ask releases its waiter", async () => {
+  const f = await fixture({ link: false });
+  const ask = await askPlan(f);
+  expect(await ask(marker("ask-refused"), 60_000)).toMatchObject({ kind: "refused", code: "no-relay" });
+  const { from } = await f.roster();
+  const again = await vi.waitFor(() => beginV0RelayAsk(f.sender.agentDir, { askId: "ask-refused", timeoutMs: 1_000,
+    from: { machineId: ORIGIN, address: from.address!, name: from.name!, homeEpoch: 1, endpointEpoch: from.endpointEpoch! },
+    target: { machineId: TARGET, selector: { by: "id", value: "remote-recipient" } } }), { timeout: 3_000 });
+  again.close();
+  expect(await again.result).toMatchObject({ kind: "unknown", id: "ask-refused" });
+});
+
 it("refuses a short relayed ask before registering a waiter or making an offer", async () => {
   vi.stubEnv("PI_INTERCOM_ASK_TIMEOUT_MS", "2000");
   const f = await fixture();

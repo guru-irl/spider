@@ -254,6 +254,7 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
     const capture = { missingStartup, missingFinal, missingThreads, kernelGaps,
       versionProbes: missingLaunches.length - missingStartup, tracedExits: unfinishedProcesses.length - missingFinal,
       tracedThreads: unfinishedThreads.length - missingThreads };
+    if (native?.pathCounts.size) capture.kernelPaths = Object.fromEntries([...native.pathCounts].sort());
     records[file] = { reads: [...entry.reads].sort(), unresolved: [...entry.unresolved].sort(), workerPids: [...entry.workerPids],
       ranBundle: entry.ranBundle, incomplete, capture, ms, result, processes, cpuMs: unknownCpu ? null : knownCpuMs, knownCpuMs, unknownCpu, missingCpu };
   }

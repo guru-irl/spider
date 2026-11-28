@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { closeSync, openSync, readSync } from 'node:fs';
-import { basename, isAbsolute, relative, sep } from 'node:path';
+import { basename, isAbsolute, join, relative, sep } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
 // The trace can be hundreds of MB. Keep only the paths in the checkout
@@ -20,6 +20,8 @@ function* lines(file) {
   } finally { closeSync(fd); }
 }
 
+const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
 function decoded(text) {
   if (!text?.includes('\\')) return text;
   // strace -x uses hex byte escapes plus the usual quoted-string escapes.
@@ -32,7 +34,31 @@ function decoded(text) {
     else if (/^\\[abfnrtv]$/.test(piece)) chunks.push(Buffer.from([{ a: 7, b: 8, f: 12, n: 10, r: 13, t: 9, v: 11 }[piece[1]]]));
     else return null;
   }
-  return Buffer.concat(chunks).toString('utf8');
+  try { return utf8.decode(Buffer.concat(chunks)); }
+  catch { return null; }
+}
+
+const fdArgument = /^(AT_FDCWD|\d+)(?:<([^>]+)>)?\s*,\s*/;
+const quotedPath = /^"((?:[^"\\]|\\.)*)"(?=\s*,)/;
+const procAlias = /^\/(?:proc\/(?:self|thread-self|\d+)\/(?:task\/\d+\/)?(?:fd|cwd|exe|root)|dev\/(?:fd|std(?:in|out|err)))(?:\/|$)/;
+const anonymousFd = /^(?:(?:pipe|socket):\[\d+\]|anon_inode:\[[^\]]+\])$/;
+
+function pathname(args, at) {
+  const fd = at ? fdArgument.exec(args) : null;
+  const rest = args.slice(fd?.[0].length ?? 0);
+  const quoted = quotedPath.exec(rest);
+  const operand = decoded(quoted?.[1]);
+  const base = decoded(fd?.[2]);
+  const absolute = operand && isAbsolute(operand);
+  const anchored = base && isAbsolute(base) && !base.endsWith(' (deleted)');
+  const kind = !operand ? 'pathname unavailable' : absolute ? procAlias.test(operand) ? 'proc/dev fd' : 'absolute pathname'
+    : !anchored ? fd && fd[1] !== 'AT_FDCWD' ? 'unknown dirfd' : 'unknown cwd'
+    : fd[1] === 'AT_FDCWD' ? 'cwd-relative' : 'dirfd-relative';
+  // This is a lookup name, not a resolved target. In particular a symlink
+  // followed by .. need not end up at the lexically normalized path.
+  const candidate = operand && !operand.split('/').includes('..') &&
+    (absolute ? operand : anchored ? join(base, operand) : null);
+  return { operand, base, candidate, kind, tail: quoted ? rest.slice(quoted[0].length) : '' };
 }
 
 const creation = new Set(['clone', 'clone3', 'fork', 'vfork']);
@@ -82,11 +108,13 @@ export function readKernelTrace(file, { root, tracked, owners, ringFile }) {
       nodeStarts: 0, ringSubmissions: 0 });
     return tasks.get(pid);
   };
-  function input(row, path, tree = false) {
-    if (path && /^(?:pipe|socket):\[\d+\]$/.test(path)) return;
-    if (!path || !isAbsolute(path)) { row.gaps.add('unresolved path'); return; }
+  function checkoutPath(path) {
     const name = relative(root, path);
-    if (name === '..' || name.startsWith(`..${sep}`) || isAbsolute(name)) return;
+    return name === '..' || name.startsWith(`..${sep}`) || isAbsolute(name) ? null : name;
+  }
+  function input(row, path, tree = false) {
+    const name = checkoutPath(path);
+    if (name === null) return;
     const paths = name.endsWith(' (deleted)') ? [name, name.slice(0, -' (deleted)'.length)] : [name];
     for (const path of paths) {
       // Git can read source contents from an object rather than from its path.
@@ -95,6 +123,14 @@ export function readKernelTrace(file, { root, tracked, owners, ringFile }) {
       if (!tree && repoFiles.has(path)) row.reads.add(path);
       else if (!tree && path.startsWith('dist/')) row.artifacts.add(path);
     }
+  }
+  function notePath(row, kind) {
+    const counts = row.pathCounts ??= new Map();
+    counts.set(kind, (counts.get(kind) ?? 0) + 1);
+  }
+  function pathGap(row, kind) {
+    row.gaps.add('unresolved path');
+    notePath(row, `unresolved: ${kind}`);
   }
   let rootPid;
   for (const line of lines(file)) {
@@ -113,10 +149,13 @@ export function readKernelTrace(file, { root, tracked, owners, ringFile }) {
     }
     if (body.endsWith('<unfinished ...>')) {
       if (pending.has(pid)) return { error: 'overlapping syscalls' };
-      pending.set(pid, body.slice(0, -'<unfinished ...>'.length));
+      // The separator before <unfinished ...> is strace's, not a part of
+      // the syscall. A resumed getdents64 continues with a comma.
+      pending.set(pid, body.slice(0, -'<unfinished ...>'.length).trimEnd());
       continue;
     }
-    if (body.startsWith('<... ')) {
+    const split = body.startsWith('<... ');
+    if (split) {
       const resumed = /^<\.\.\. (\w+) resumed>(.*)$/.exec(body);
       const partial = pending.get(pid);
       if (!resumed || !partial?.startsWith(`${resumed[1]}(`)) return { error: 'unpaired syscall' };
@@ -146,19 +185,35 @@ export function readKernelTrace(file, { root, tracked, owners, ringFile }) {
       child.parent = pid;
       tracee.children.push(Number(status));
     } else if (fileOpen.has(name)) {
-      input(tracee, decoded(/^<(.*)>$/.exec(result)?.[1]));
+      const { candidate, kind } = pathname(args, name === 'openat' || name === 'openat2');
+      // Preserve a tracked lookup name even when it points outside the
+      // checkout. Do not use a lookup name to exclude an unproven target.
+      if (candidate) input(tracee, candidate);
+      const target = decoded(/^<([^>]+)>$/.exec(result)?.[1]);
+      if (target && isAbsolute(target)) {
+        input(tracee, target);
+        if (kind !== 'absolute pathname') notePath(tracee, `resolved: ${kind}`);
+      } else if (target && anonymousFd.test(target)) notePath(tracee, 'resolved: anonymous fd');
+      else pathGap(tracee, kind);
     } else if (directories.has(name)) {
-      input(tracee, decoded(/^\d+<(.*)>, /.exec(args)?.[1]), true);
+      const target = decoded(fdArgument.exec(args)?.[2]);
+      if (!target || !isAbsolute(target)) pathGap(tracee, 'getdents fd');
+      else {
+        input(tracee, target, true);
+        if (split) notePath(tracee, checkoutPath(target) === null ? 'resumed getdents outside checkout' : 'resumed getdents in checkout');
+      }
     } else if (exec.has(name)) {
-      const executable = /^(?:[^,]*, )?"((?:[^"\\]|\\.)*)"(?=, )/.exec(args);
-      const path = decoded(executable?.[1] || /^\d+<(.*)>, ""/.exec(args)?.[1]);
-      input(tracee, path);
+      const { operand, base, candidate, kind, tail } = pathname(args, name === 'execveat');
+      const fdExec = name === 'execveat' && operand === '' && /,\s*AT_EMPTY_PATH$/.test(tail);
+      const path = fdExec ? base : operand;
+      if (candidate) input(tracee, candidate);
+      if (!path || !isAbsolute(path) || procAlias.test(path)) pathGap(tracee, `exec ${kind}`);
+      else input(tracee, path);
       if (path && /^(node|nodejs)(\.exe)?$/i.test(basename(path))) {
-        // Unlike a guessed launch name, this is the executable named by a
-        // successful kernel exec. Anything except the exact early version
-        // path needs a Node recorder startup, even behind a clean shell.
-        const version = process.versions.node === '26.4.0' && path === process.execPath && executable &&
-          /^, \["(?:[^"\\]|\\.)*", "--version"\], /.test(args.slice(executable[0].length));
+        // Anything except the exact early version path needs a recorder
+        // startup, even behind a clean shell.
+        const version = process.versions.node === '26.4.0' && !fdExec && path === process.execPath &&
+          /^, \["(?:[^"\\]|\\.)*", "--version"\], /.test(tail);
         if (!version) tracee.nodeStarts++;
       }
     } else if (unsupported.has(name) || (descriptors.has(name) && args.includes('SCM_RIGHTS'))) {
@@ -178,7 +233,7 @@ export function readKernelTrace(file, { root, tracked, owners, ringFile }) {
     if (++visited > tasks.size) return { error: 'cyclic trace ancestry' };
     if (name) {
       if (!byTest.has(name)) byTest.set(name, { reads: new Set(), trees: new Set(), artifacts: new Set(),
-        exited: new Set(), gaps: new Set(), nodeStarts: new Map() });
+        exited: new Set(), gaps: new Set(), nodeStarts: new Map(), pathCounts: new Map() });
       const test = byTest.get(name);
       if (parent && name !== parent) {
         test.gaps.add('nested test fork');
@@ -188,6 +243,7 @@ export function readKernelTrace(file, { root, tracked, owners, ringFile }) {
       for (const path of tracee.trees) test.trees.add(path);
       for (const path of tracee.artifacts) test.artifacts.add(path);
       for (const gap of tracee.gaps) test.gaps.add(gap);
+      for (const [kind, count] of tracee.pathCounts ?? []) test.pathCounts.set(kind, (test.pathCounts.get(kind) ?? 0) + count);
       const ring = ringEvents?.get(pid);
       // A regular libuv loop submits EPOLL_CTL. Counting the opcodes is
       // evidence for those calls, not for other operations on the same ring.

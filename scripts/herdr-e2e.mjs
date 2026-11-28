@@ -4,14 +4,15 @@ import { randomBytes, createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, appendFileSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import roamEntries from './roam-entries.json' with { type: 'json' };
 
 export const storyIds = Array.from({ length: 56 }, (_, i) => `S${String(i + 1).padStart(2, '0')}`);
-export const roamStoryIds = ['R02', 'R04', 'R06', 'R07', 'R08', 'R10', 'R11', 'R12', 'R13', 'R14', 'R14local', 'R18'];
+export const roamStoryIds = ['R02', 'R04', 'R06', 'R07', 'R08', 'R10', 'R11', 'R12', 'R13', 'R14', 'R14local', 'R18', 'R19'];
 export const paneStoryIds = ['B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08'];
 const allStoryIds = [...storyIds, ...roamStoryIds, ...paneStoryIds];
 const validStoryId = id => typeof id === 'string' && (allStoryIds.includes(id) || id === 'B00' || /^H-[a-z0-9-]+$/.test(id));
 export const profileIds = {
-  headless: [...storyIds.filter(id => id !== 'S53'), ...roamStoryIds.filter(id => id !== 'R14local'), ...paneStoryIds],
+  headless: [...storyIds.filter(id => id !== 'S53'), ...roamStoryIds.filter(id => id !== 'R14local' && id !== 'R19'), ...paneStoryIds],
   ci: ['S03', 'S04', 'S14', 'S27', 'S45', 'S46', 'S47', 'S48', 'S49', 'S51', 'S55', 'S56'],
   remote: ['H-tier2-smoke', 'S05', 'S07', ...storyIds.slice(14, 26), 'S28', 'S36', 'S45', 'S48'],
   app: [...storyIds.slice(0, 3), ...storyIds.slice(4, 13), ...storyIds.slice(14, 23), 'S25', ...storyIds.slice(25, 44).filter(id => id !== 'S27'), 'S50', 'S51', ...storyIds.slice(51, 54), ...paneStoryIds],
@@ -167,7 +168,7 @@ export function storyWorkerEnvironment(fenced, caller, tier) {
 }
 export function storyWorkers(options) {
   if (options.ids?.some(id => paneStoryIds.includes(id))) return 1;
-  if (options.ids?.some(id => ['R04', 'R06', 'R07', 'R08', 'R10', 'R11', 'R12', 'R13', 'R18'].includes(id))) return 1;
+  if (options.ids?.some(id => ['R04', 'R06', 'R07', 'R08', 'R10', 'R11', 'R12', 'R13', 'R18', 'R19', 'H-relay-poll'].includes(id))) return 1;
   if (options.ids?.length === 1 && ['R14', 'R14local'].includes(options.ids[0])) return 1;
   return options.tier === 'app' ? 1 : 2;
 }
@@ -263,7 +264,8 @@ export async function packEntryDigests(checkout, root, pack) {
   if (result.code !== 0) throw new Error('pack failed');
   // npm 10 may rebuild dist during pack even with --ignore-scripts. Snapshot
   // the checkout as packed, including the new build id, not its pre-pack state.
-  const entries = ['extension.js', 'herdr/cli.mjs', 'herdr/viewer.mjs', 'herdr/feed-reader.mjs', 'herdr/pane-endpoint.mjs', 'herdr/remote-runtime.mjs', 'herdr/viewer-pi.mjs', 'herdr/subagent-supervisor.mjs', 'roam/cli.mjs', 'roam/cli-main.mjs', 'roam/intercom-helper.mjs', 'roam/supervisor.mjs', 'intercom/broker.mjs'];
+  const entries = ['extension.js', 'herdr/cli.mjs', 'herdr/viewer.mjs', 'herdr/feed-reader.mjs', 'herdr/pane-endpoint.mjs', 'herdr/remote-runtime.mjs', 'herdr/viewer-pi.mjs', 'herdr/subagent-supervisor.mjs',
+    ...Object.keys(roamEntries).map(mode => `roam/${mode}.mjs`), 'intercom/broker.mjs'];
   const digests = Object.fromEntries(entries.map(entry => [entry, createHash('sha256').update(readFileSync(path.join(checkout, 'dist', entry))).digest('hex')]));
   writeFileSync(path.join(root, 'entries.json'), JSON.stringify(digests, null, 2));
   return { entries, digests };

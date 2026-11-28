@@ -213,7 +213,9 @@ describe.sequential('published Herdr artifact', () => {
     try {
       mkdirSync(join(checkout, 'scripts'), { recursive: true });
       mkdirSync(join(checkout, 'bin'), { recursive: true });
-      for (const file of ['assert-bundle.mjs', 'build-id.mjs', 'check-package-files.cjs', 'check-roam-bundle.mjs']) cpSync(join(root, 'scripts', file), join(checkout, 'scripts', file));
+      for (const file of ['assert-bundle.mjs', 'build-id.mjs', 'check-package-files.cjs', 'check-roam-bundle.mjs', 'roam-entries.json']) {
+        cpSync(join(root, 'scripts', file), join(checkout, 'scripts', file));
+      }
       for (const collection of ['superpowers', 'pstack', 'intercom']) cpSync(join(root, `packages/${collection}/skills`), join(checkout, `packages/${collection}/skills`), { recursive: true });
       const recorder = join(checkout, 'npm-events.jsonl');
       const npmPath = join(checkout, 'bin/npm');

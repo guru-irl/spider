@@ -2,6 +2,11 @@ import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { builtinModules } from "node:module";
 import ts from "typescript";
+import roamEntries from "./roam-entries.json" with { type: "json" };
+
+const current = Object.keys(roamEntries).map(mode => `${mode}.mjs`).sort();
+const legacy = ["cli.mjs", "supervisor.mjs"];
+const sameEntries = (found, expected) => found.length === expected.length && found.every((name, i) => name === expected[i]);
 
 function checkImports(code, path) {
   const tree = ts.createSourceFile(path, code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
@@ -45,9 +50,8 @@ function checkHelper(code, path) {
 
 export function assertRoamBundle(root, options = {}) {
   const directory = join(root, "dist/roam");
-  const legacy = ["cli.mjs", "supervisor.mjs"], current = ["cli-main.mjs", "cli.mjs", "intercom-helper.mjs", "supervisor.mjs"];
-  const found = lstatSync(directory).isDirectory() ? readdirSync(directory).sort().join() : "";
-  const entries = found === current.join() ? current : !options.requireHelper && found === legacy.join() ? legacy : null;
+  const found = lstatSync(directory).isDirectory() ? readdirSync(directory).sort() : [];
+  const entries = sameEntries(found, current) ? current : !options.requireHelper && sameEntries(found, legacy) ? legacy : null;
   if (!entries) throw new Error("roaming entries missing or unexpected runtime chunk");
   for (const entry of entries) {
     const path = join(directory, entry);

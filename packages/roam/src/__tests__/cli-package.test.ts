@@ -13,6 +13,7 @@ import * as dbCore from "@spider/db-core";
 import { scratchDbPath } from "@spider/db-core/testutil";
 import { build } from "vite";
 import { assertRoamBundle } from "../../../../scripts/check-roam-bundle.mjs";
+import roamEntries from "../../../../scripts/roam-entries.json" with { type: "json" };
 import { buildRoamEntries } from "../../../../scripts/build-roam.mjs";
 import { main } from "../cli";
 import { loadConfig } from "../config";
@@ -158,6 +159,49 @@ it("does not leak secret-bearing values in config diagnostics", () => {
   try { loadConfig(file); } catch (error) { expect(String(error)).not.toContain(secret); }
 }, 5000);
 
+function strictRoamBundle(): { root: string; directory: string } {
+  const root = fixture(), directory = join(root, "dist/roam");
+  mkdirSync(directory, { recursive: true });
+  for (const mode of Object.keys(roamEntries)) {
+    const body = mode === "cli" ? 'import("./intercom-helper.mjs"); import("./cli-main.mjs");' : "export {};";
+    writeFileSync(join(directory, `${mode}.mjs`), `#!/usr/bin/env node\n${body}\n`);
+  }
+  return { root, directory };
+}
+const assertStrictRoamBundle = (root: string) =>
+  (assertRoamBundle as (root: string, options: { requireHelper: boolean }) => void)(root, { requireHelper: true });
+
+it("strict roaming bundle accepts the complete current set", () => {
+  const { root } = strictRoamBundle();
+  expect(() => assertStrictRoamBundle(root)).not.toThrow();
+}, 5000);
+
+it("strict roaming bundle rejects an extra runtime entry", () => {
+  const { root, directory } = strictRoamBundle();
+  expect(() => assertStrictRoamBundle(root)).not.toThrow();
+  writeFileSync(join(directory, "unexpected.mjs"), "#!/usr/bin/env node\nexport {};\n");
+  expect(() => assertStrictRoamBundle(root)).toThrow(/unexpected runtime chunk/i);
+}, 5000);
+
+it.each([
+  ["pi imports", 'import "@earendil-works/pi-tui";', /pi import/i],
+  ["remote runtime mains", 'console.error("A runtime request file is required");', /remote runtime main/i],
+  ["pane endpoint mains", "runPaneEndpointCli(process.argv.slice(2));", /pane endpoint main/i],
+  ["nonliteral imports", 'const name = "example"; import(name);', /nonliteral import/i],
+])("strict roaming bundle rejects %s in relay-soak.mjs", (_name, statement, error) => {
+  const { root, directory } = strictRoamBundle();
+  writeFileSync(join(directory, "relay-soak.mjs"), `#!/usr/bin/env node\n${statement}\n`);
+  expect(() => assertStrictRoamBundle(root)).toThrow(error);
+}, 5000);
+
+it("the legacy roaming bundle still works only when the helper is optional", () => {
+  const root = fixture(), directory = join(root, "dist/roam");
+  mkdirSync(directory, { recursive: true });
+  for (const entry of ["cli.mjs", "supervisor.mjs"]) writeFileSync(join(directory, entry), "#!/usr/bin/env node\nexport {};\n");
+  expect(() => assertRoamBundle(root)).not.toThrow();
+  expect(() => assertStrictRoamBundle(root)).toThrow(/roaming entries/i);
+}, 5000);
+
 it.each([
   ["side effect", "cli.mjs", 'import /* marker */ "@earendil-works/pi-tui";'],
   ["re-export", "supervisor.mjs", 'export { x } from "@earendil-works/pi-coding-agent";'],
@@ -298,15 +342,16 @@ it("workspace dependencies and lock metadata resolve the roaming package", () =>
 it("the package gate refuses a missing roaming executable or link script", () => {
   const skills = ["packages/superpowers/skills", "packages/pstack/skills", "packages/intercom/skills"].flatMap(dir =>
     readdirSync(dir, { recursive: true, encoding: "utf8" }).filter(file => file === "SKILL.md" || file.endsWith("/SKILL.md")).map(file => `${dir}/${file}`));
+  const roamFiles = Object.keys(roamEntries).map(mode => `dist/roam/${mode}.mjs`);
   const files = ["dist/extension.js", "dist/extension.js.ready", "dist/intercom/broker.mjs", "dist/dashboard/index.html", "dist/dashboard/assets/app-aaaaaaaa.js", "dist/dashboard/assets/app-aaaaaaaa.css",
     "README.md", "LICENSE", "NOTICE.md", "packages/context/LICENSE", "packages/pstack/LICENSE", "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md", ...skills,
-    "dist/roam/cli.mjs", "dist/roam/cli-main.mjs", "dist/roam/intercom-helper.mjs", "dist/roam/supervisor.mjs", "scripts/link.mjs", "scripts/dev-link.mjs", "scripts/intercom-switchover.mjs",
+    ...roamFiles, "scripts/link.mjs", "scripts/dev-link.mjs", "scripts/intercom-switchover.mjs",
     "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/package-extension.ts", "scripts/pi-agent-dir.mjs", "packages/herdr/assets/shared/presentations.js", ...herdrPackageAssets];
   const gate = (present: string[]) => spawnSync(process.execPath, ["scripts/check-package-files.cjs"], {
     input: JSON.stringify([{ files: present.map(path => ({ path })) }]), encoding: "utf8", timeout: 2000,
   });
   expect(gate(files).status).toBe(0);
-  for (const missing of ["dist/roam/cli.mjs", "dist/roam/cli-main.mjs", "dist/roam/intercom-helper.mjs", "dist/roam/supervisor.mjs", "scripts/link.mjs", "scripts/dev-link.mjs",
+  for (const missing of [...roamFiles, "scripts/link.mjs", "scripts/dev-link.mjs",
     "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/package-extension.ts", "scripts/pi-agent-dir.mjs", "dist/intercom/broker.mjs",
     "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md", "scripts/intercom-switchover.mjs", "packages/intercom/skills/pi-intercom/SKILL.md", "packages/herdr/assets/shared/presentations.js"]) {
     const result = gate(files.filter(file => file !== missing));

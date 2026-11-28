@@ -146,7 +146,7 @@ export function parseFederationBrokerMessage(value: unknown): import("../protoco
       return Array.isArray(value.sessions) && value.sessions.every(isLocalPresence) ? { type: value.type, sessions: value.sessions } : null;
     case "federation_dispatch": {
       const frame = value.dispatch;
-      return nonempty(value.requestId) && isRecord(frame) && isSessionAddress(frame.from) && isRemoteSessionInfo(frame.to) && isMessage(frame.message)
+      return nonempty(value.requestId) && isRecord(frame) && isSessionAddress(frame.from) && isRemoteSessionInfo(frame.to) && isMessage(frame.message) && !frame.message.v0RelayAsk
         ? { type: value.type, requestId: value.requestId, dispatch: { from: frame.from, to: frame.to, message: frame.message } } : null;
     }
     case "federation_receipt":
@@ -248,6 +248,9 @@ export function isMessage(value: unknown): value is Message {
   if (value.expectsReply !== undefined && typeof value.expectsReply !== "boolean") {
     return false;
   }
+
+  if (value.v0RelayAsk !== undefined && (value.v0RelayAsk !== true || value.expectsReply !== true ||
+      value.remainingMs === undefined || value.replyTo !== undefined)) return false;
 
   if (value.provenance !== undefined && !isMessageProvenance(value.provenance)) {
     return false;

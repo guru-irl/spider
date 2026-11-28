@@ -93,6 +93,8 @@ export interface Message {
   retryOf?: string;
   replyTo?: string;
   expectsReply?: boolean;
+  /** The broker authorized a reply on a separate route, not on the ask socket. */
+  v0RelayAsk?: true;
   /** Diminishing dispatch duration, never a remote wall-clock deadline. */
   remainingMs?: number;
   provenance?: MessageProvenance;

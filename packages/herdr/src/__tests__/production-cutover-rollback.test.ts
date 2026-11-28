@@ -32,6 +32,7 @@ it('rolls back a hand closure during pending cutover and permits a second rollba
     for (let attempt = 0; attempt < 2; attempt++) {
       const rolledBack = await f.run(['rollback', '--config', f.request.configPath]).result;
       expect(rolledBack.code, rolledBack.stderr).toBe(0);
+      expect(rolledBack.stderr).not.toContain('closed by hand');
       expect(await readJournal(f.request.journalRoot)).toMatchObject({ cutoverPending: false, cutover: null });
       expect((await readCutoverRecovery(spacesRoot)).createdTabs).toEqual([]);
       expect(JSON.parse(await readFile(file, 'utf8')).spaces[0].tabs).toEqual([]);
@@ -55,6 +56,14 @@ it('full rollback forgets a marked closure so the next setup opens the selection
       expect(mark.stderr.split('\n').filter(line => line.includes('closed by hand'))).toEqual([notice]);
     }
     expect((await readCutoverRecovery(spacesRoot)).closedEntries?.map(entry => entry.target.sessionId)).toEqual(['selected']);
+
+    const selectedConfig = await readFile(f.request.configPath, 'utf8');
+    const omitted = { ...f.request.config, spaces: f.request.config.spaces.map(space => ({ ...space, sessions: [] })) };
+    await writeFile(f.request.configPath, JSON.stringify(omitted));
+    const unselected = await f.run(['setup-cutover']).result;
+    expect(unselected.code, unselected.stderr).toBe(0);
+    expect(unselected.stderr).not.toContain('closed by hand');
+    await writeFile(f.request.configPath, selectedConfig);
 
     const rolledBack = await f.run(['rollback', '--config', f.request.configPath]).result;
     expect(rolledBack.code, rolledBack.stderr).toBe(0);

@@ -25,7 +25,7 @@ if (args.some(arg => !['--check', '--write'].includes(arg)) || new Set(args).siz
 const check = args.includes('--check');
 const manifestPath = new URL('../packages/herdr/assets/look/cross-machine-patches.json', import.meta.url);
 const original = check ? readFileSync(manifestPath, 'utf8') : null;
-const versions = ['0.1.13', '0.1.16'];
+const versions = ['0.1.13', '0.1.16', '0.1.18'];
 const agents = JSON.parse(readFileSync(new URL('./spaces-b-fragments/agents.json', import.meta.url), 'utf8'));
 const records = { version: 1, versions: Object.fromEntries(versions.map(version => {
   const { agents: agentAdditions = [], agentOverrides = {}, ...fragments } = JSON.parse(readFileSync(new URL(`./spaces-b-fragments/${version}.json`, import.meta.url), 'utf8'));

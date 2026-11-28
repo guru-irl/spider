@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import { createHash } from 'node:crypto';
 import { afterEach, expect, test, vi } from 'vitest';
-import { readFile, writeFile, rm } from 'node:fs/promises';
+import { cp, readFile, writeFile, rm } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { createProductionHerdrCliPorts } from '../herdr/ports.js';
 import { runHerdrCli, type HerdrCliPorts } from '../../../herdr/src/setup/cli.js';
@@ -90,13 +91,45 @@ async function seedUnboundNativeKeys(path: string) {
   return keys;
 }
 
-for (const version of ['0.1.13', '0.1.16'] as const) {
+test('0.1.18 upgrades owned 0.1.13 clones and backs up the old tabs bytes', async () => {
+  const f = await fastRelease('0.1.13'), home = f.h.directories.app;
+  const verify = verifyItem(f.ports, 'clones');
+  await setupHerdr(f.request, { ...f.parts, verify });
+  const tabSource = join(home, 'mods/spider-tabs/main.js');
+  const previous = await readFile(tabSource);
+  const checkpointPath = join(f.request.journalRoot, 'checkpoint.json');
+  const before = await readFile(checkpointPath);
+
+  // Simulate an app update: stock files change, but Spider's installed copies do not.
+  await cp(new URL('../../../herdr/src/__tests__/fixtures/herdr-0.1.18/mods/', import.meta.url), join(home, 'mods'), { recursive: true });
+  const binary = f.request.config.app.binary;
+  await writeFile(binary, (await readFile(binary, 'utf8')).replace('herdr-app 0.1.13', 'herdr-app 0.1.18'));
+
+  const preview = { ...f.request, dryRun: true };
+  const plan = await setupHerdr(preview, await f.ports.setupParts(preview));
+  expect(plan.plan?.files).toContainEqual({ path: tabSource, action: 'write' });
+  expect(plan.plan?.files.filter(file => file.refusal)).toEqual([]);
+  expect(plan.writes).toEqual([]);
+  expect(await readFile(tabSource)).toEqual(previous);
+  expect(await readFile(checkpointPath)).toEqual(before);
+
+  await setupHerdr(f.request, { ...await f.ports.setupParts(f.request), verify });
+  expect(JSON.parse(await readFile(join(home, 'mods/spider-tabs/mod.json'), 'utf8')).clonedFrom).toEqual({ name: 'tabs', version: '0.1.18' });
+  expect(await readFile(tabSource)).not.toEqual(previous);
+  const checkpoint = await upgradeCheckpoint.readCheckpoint(f.request.journalRoot);
+  expect(checkpoint?.state).toBe('complete');
+  const saved = upgradeCheckpoint.checkpointBaseline(checkpoint!).find(entry => entry.path === tabSource);
+  expect(saved).toBeDefined();
+  expect(await upgradeCheckpoint.checkpointBytes(f.request.journalRoot, saved!)).toEqual(previous);
+});
+
+for (const version of ['0.1.13', '0.1.16', '0.1.18'] as const) {
   test(`${version} production setup stages the complete A and B result and doctor checks its release`, async () => {
     const f = await lookRelease(version), home = f.h.directories.app;
+    const names = (await f.parts.preflight(f.request)).mods.map(copy => basename(copy.directory));
     const records = JSON.parse(await readFile(join(f.root, 'packages/herdr/assets/look/cross-machine-patches.json'), 'utf8')).versions[version];
     const expected = replaySpacesBRecipe(version, loadSpacesAFiles(version), records);
     const stockToast = await readFile(join(home, 'mods/toast/main.js'));
-    const names = (await f.parts.preflight(f.request)).mods.map(copy => basename(copy.directory));
     expect(names.filter(name => name === 'spider-menu')).toHaveLength(1);
     expect(names.filter(name => name === 'spider-new-menu')).toHaveLength(1);
     await setupHerdr(f.request, { ...f.parts, verify: verifyItem(f.ports, 'clones') });
@@ -105,26 +138,39 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       const clone = mod === 'workspace-chrome' ? 'spider-chrome' : `spider-${mod}`;
       const manifest = JSON.parse(await readFile(join(home, 'mods', clone, 'mod.json'), 'utf8'));
       expect(manifest.clonedFrom).toEqual({ name: mod, version });
-      if (mod !== 'agents') expect(await readFile(join(home, 'mods', clone, 'main.js'), 'utf8')).toBe(expected[mod]!['main.js']);
+      const main = await readFile(join(home, 'mods', clone, 'main.js'), 'utf8');
+      expect(manifest.patchState.version).toBe(1);
+      expect(Object.keys(manifest.patchState.files).sort()).toEqual(Object.keys(expected[mod]!).sort());
+      for (const [file, hash] of Object.entries(manifest.patchState.files)) {
+        // The serialized manifest also carries clone metadata, so hash the recipe manifest instead.
+        const bytes = file === 'mod.json' ? expected[mod]![file]! : await readFile(join(home, 'mods', clone, file));
+        expect(hash, `${mod}/${file}`).toBe(createHash('sha256').update(bytes).digest('hex'));
+      }
+      if (mod !== 'agents') expect(main).toBe(expected[mod]!['main.js']);
       else {
-        const agents = await readFile(join(home, 'mods', clone, 'main.js'), 'utf8');
-        expect(agents).toContain('spider-look:a-notification-arrival');
-        expect(agents).toContain('spider-look:a-notification-import');
+        expect(main).toContain('spider-look:a-notification-arrival');
+        expect(main).toContain('spider-look:a-notification-import');
         expect(manifest.capabilities).toEqual({ clipboard: { write: true } });
       }
     }
     const layout = JSON.parse(await readFile(join(home, 'layouts/spider-glass.json'), 'utf8'));
     expect(layout.terminal_menu).toBe('spider-menu');
-    expect(layout.toast).toBe(version === '0.1.16' ? 'spider-toast' : undefined);
-    expect(layout.window_blur).toBe(version === '0.1.16' ? true : undefined);
+    const hasNativeToast = version !== '0.1.13';
+    expect(layout.toast).toBe(hasNativeToast ? 'spider-toast' : undefined);
+    expect(layout.window_blur).toBe(hasNativeToast ? true : undefined);
+    const work = layout.children.find((node: { id: string }) => node.id === 'work');
+    const workBody = work.children.find((node: { id: string }) => node.id === 'work-body');
+    const pane = workBody.children.find((node: { content?: { tab?: string } }) => node.content?.tab === 'active').content.pane;
+    expect(pane.border).toMatchObject({ width: 1, color: '#38383a' });
+    expect(pane.focus).toMatchObject({ width: 1, color: 'accent' });
     expect(await readFile(join(home, 'mods/toast/main.js'))).toEqual(stockToast);
-    if (version === '0.1.16') expect(await readFile(join(home, 'mods/spider-toast/main.js'), 'utf8')).toBe(expected['spider-toast']!['main.js']);
+    if (hasNativeToast) expect(await readFile(join(home, 'mods/spider-toast/main.js'), 'utf8')).toBe(expected['spider-toast']!['main.js']);
     const doctor = await f.ports.doctorParts(f.request);
     for (const item of ['mods', 'clones', 'patch-version', 'layout-theme'] as const) expect((await doctor.inspect(item, f.request)).failures).toEqual([]);
-    layout.window_blur = version !== '0.1.16';
+    layout.window_blur = !hasNativeToast;
     await writeFile(join(home, 'layouts/spider-glass.json'), JSON.stringify(layout));
     expect((await doctor.inspect('layout-theme', f.request)).failures).toContainEqual(expect.objectContaining({ code: 'window-blur-mismatch' }));
-    if (version === '0.1.16') layout.window_blur = true;
+    if (hasNativeToast) layout.window_blur = true;
     else delete layout.window_blur;
     await writeFile(join(home, 'layouts/spider-glass.json'), JSON.stringify(layout, null, 2));
     const before = await readFile(join(home, 'mods/spider-menu/main.js'));
@@ -138,6 +184,9 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect((await doctor.inspect('clones', f.request)).failures).toContainEqual(expect.objectContaining({ code: 'installed-artifact-changed' }));
   });
 
+}
+
+for (const version of ['0.1.13', '0.1.16'] as const) {
   test(`${version} stages additional records only after the verified A result and replays them in doctor`, async () => {
     const f = await lookRelease(version), home = f.h.directories.app;
     const records = { [version]: {

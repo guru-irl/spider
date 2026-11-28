@@ -1,0 +1,14 @@
+[
+  {
+    "id": "a-menu-notify",
+    "file": "main.js",
+    "anchor": "import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, exec } from \"herdr\";",
+    "replacement": "import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, exec, notify } from \"herdr\";"
+  },
+  {
+    "id": "a-menu-remote-park",
+    "file": "main.js",
+    "anchor": "else run(it[1], it[2]);",
+    "replacement": "else if (it[1] === \"terminal.park\" && (it[2]?.terminal?.includes(\"/\") || terminals().find(t => t.address === it[2]?.terminal)?.labels?.[\"spider.kind\"] === \"roam-proxy\")) notify({ title: \"Send back works only for this computer's panes for now\", level: \"warning\" });\n    else run(it[1], it[2]);"
+  }
+]

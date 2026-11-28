@@ -210,8 +210,11 @@ test('all installed shipped mod JavaScript imports resolve inside their own mod'
   expect(await unresolvedImports(mods, files)).toEqual([]);
 }, 60_000);
 
-test('every shipped mod asset has a staged copy with in-root imports', async () => {
-  const f = await releaseFixture('0.1.16'), app = f.h.directories.app, assets = join(f.root, 'packages/herdr/assets');
+test.each([
+  ['0.1.16', 'toast/main.js', 'toast/main-0.1.18.js'],
+  ['0.1.18', 'toast/main-0.1.18.js', 'toast/main.js'],
+] as const)('%s stages every applicable mod asset with in-root imports', async (version, toast, otherToast) => {
+  const f = await releaseFixture(version), app = f.h.directories.app, assets = join(f.root, 'packages/herdr/assets');
   const base = f.context.modProps[0].props;
   f.context.modProps = [...f.context.modProps, ...['picker', 'toast'].map(name => ({ directory: join(app, 'mods', `spider-${name}`), props: { ...base, modId: `spider-${name}` } }))];
   const staged = [...await f.parts.stageLook(f.request, f.context, 'export'), ...await f.parts.installFiles(f.request, f.context)];
@@ -232,6 +235,7 @@ test('every shipped mod asset has a staged copy with in-root imports', async () 
   await walk(assets);
   const target = (source: string) => {
     const [group, ...rest] = source.split('/');
+    if (source === toast) return 'spider-toast/main.js';
     if (source === 'agents/children.js') return 'spider-agents/spider-children.js';
     if (group === 'machines') return `spider-machine-picker/${rest.join('/')}`;
     if (group === 'shared') return `spider-picker/shared/${rest.join('/')}`;
@@ -239,7 +243,9 @@ test('every shipped mod asset has a staged copy with in-root imports', async () 
     return `spider-${group === 'spaces' ? 'spaces' : group}/${rest.join('/')}`;
   };
   expect(sourceJs.length).toBeGreaterThan(10);
-  expect(sourceJs.filter(source => !stagedJs.includes(join(mods, target(source))))).toEqual([]);
+  expect(sourceJs.filter(source => source !== otherToast && !stagedJs.includes(join(mods, target(source))))).toEqual([]);
+  expect(await readFile(join(mods, 'spider-toast/main.js'))).toEqual(await readFile(join(assets, toast)));
+  expect(stagedJs).not.toContain(join(mods, 'spider-toast/main-0.1.18.js'));
   expect(await unresolvedImports(mods, stagedJs)).toEqual([]);
 }, 60_000);
 

@@ -8,21 +8,26 @@ export const lookCloneKinds = ['agents', 'spaces', 'pane', 'tabs', 'workspace-ch
 export interface HerdrClones { agents: CloneMod; spaces: CloneMod; pane: CloneMod; tabs: CloneMod; 'workspace-chrome': CloneMod; menu?: CloneMod; 'new-menu'?: CloneMod }
 export interface LookPatch { id: string; file?: string; anchor: string; replacement: string }
 export type LookModKind = keyof HerdrClones | 'picker';
-export type AdditionalLookPatches = Partial<Record<'0.1.13' | '0.1.16', Partial<Record<LookModKind, readonly LookPatch[]>>>>;
+export const spacesALookVersions = ['0.1.13', '0.1.16', '0.1.18'] as const;
+export type SpacesALookVersion = typeof spacesALookVersions[number];
+export const isSpacesALookVersion = (version: string | undefined): version is SpacesALookVersion => spacesALookVersions.some(release => release === version);
+// These releases support the blur field and the same native-view helpers.
+export const hasNativeLookFeatures = (version: string | undefined): version is '0.1.16' | '0.1.18' => version === '0.1.16' || version === '0.1.18';
+export type AdditionalLookPatches = Partial<Record<SpacesALookVersion, Partial<Record<LookModKind, readonly LookPatch[]>>>>;
 export interface DerivedLookFile { mod: string; file: string; sourceMod: string; sourceFile: string; sourceHash: string; outputHash: string; asset: string }
 export interface ReleaseLookRecipe { sourceHashes: Readonly<Record<string, string>>; mods: LookPatchSet['mods']; derivedFiles: readonly DerivedLookFile[]; outputHashes: Readonly<Record<string, string>> }
-export interface LookPatchSet { version: 1; upstreamVersion: string; sourceHashes?: Partial<Record<keyof HerdrClones, Readonly<Record<string, string>>>>; mods: { agents: readonly LookPatch[]; spaces: readonly LookPatch[]; pane: readonly LookPatch[]; tabs: readonly LookPatch[]; 'workspace-chrome'?: readonly LookPatch[]; menu?: readonly LookPatch[]; 'new-menu'?: readonly LookPatch[] }; spacesA?: Partial<Record<'0.1.13' | '0.1.16', ReleaseLookRecipe>>; recipe?: ReleaseLookRecipe }
+export interface LookPatchSet { version: 1; upstreamVersion: string; sourceHashes?: Partial<Record<keyof HerdrClones, Readonly<Record<string, string>>>>; mods: { agents: readonly LookPatch[]; spaces: readonly LookPatch[]; pane: readonly LookPatch[]; tabs: readonly LookPatch[]; 'workspace-chrome'?: readonly LookPatch[]; menu?: readonly LookPatch[]; 'new-menu'?: readonly LookPatch[] }; spacesA?: Partial<Record<SpacesALookVersion, ReleaseLookRecipe>>; recipe?: ReleaseLookRecipe }
 
 /** Selection is not admission: callers must verify the complete source inventory. */
 export function selectLookPatches(manifest: LookPatchSet, version: string): LookPatchSet {
-  if (version === '0.1.13' || version === '0.1.16') {
+  if (isSpacesALookVersion(version)) {
     const recipe = manifest.spacesA?.[version];
     if (!recipe) throw new HerdrError('upstream-version-mismatch', unsupportedHerdrVersionNotice(manifest.upstreamVersion));
     const kinds = [...lookCloneKinds, 'menu', 'new-menu'] as const;
     const sourceHashes = Object.fromEntries(kinds.map(kind => [kind, Object.fromEntries(Object.entries(recipe.sourceHashes).filter(([name]) => name.startsWith(`mods/${kind}/`)).map(([name, hash]) => [name.slice(`mods/${kind}/`.length), hash]))]));
     return { version: 1, upstreamVersion: version, mods: recipe.mods, sourceHashes, recipe };
   }
-  if (version !== manifest.upstreamVersion || version !== '0.1.12') throw new HerdrError('upstream-version-mismatch', unsupportedHerdrVersionNotice('0.1.12, 0.1.13 and 0.1.16'));
+  if (version !== manifest.upstreamVersion || version !== '0.1.12') throw new HerdrError('upstream-version-mismatch', unsupportedHerdrVersionNotice('0.1.12, 0.1.13, 0.1.16 and 0.1.18'));
   return manifest;
 }
 export type PatchedClones = HerdrClones;

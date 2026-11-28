@@ -182,8 +182,10 @@ export function createRelayLinks(clock: RelayClock, observe?: (view: RelayLinkVi
       for (const result of results) {
         const pending = link.pending.get(result.messageId);
         if (pending === undefined || pending?.stage.kind === "waiting") continue;
-        if (pending && !expire(pending, now)) pending.finish(result);
-        if (result.outcome.kind === "socket_delivered") carried++;
+        if (pending && !expire(pending, now)) {
+          pending.finish(result);
+          if (result.outcome.kind === "socket_delivered") carried++;
+        }
         link.pending.delete(result.messageId);
       }
       link.view = { ...link.view, relay: hello.relay, reach: reach.peers, lastCallMs: wallNow,

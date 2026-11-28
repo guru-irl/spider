@@ -1,5 +1,5 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { BAND_GLYPHS, icon } from "../icons.js";
+import { BAND_GLYPHS } from "../icons.js";
 import { compactCount, introDuration, type IntroTheme } from "./intro-header.js";
 import { dockedHinge, HINGE_WIDTH } from "./hinge.js";
 
@@ -38,9 +38,9 @@ export function renderDocked(width: number, theme: IntroTheme, facts: DockedFact
     ["Changes", fg("success", bold(`+${changes.added}`)) + " " + fg("error", bold(`−${changes.removed}`)), changes.partial ? "(partial)" : undefined],
     ["AI credits", available && usage.credits !== null ? bold(`~${usage.credits.toFixed(2)}`) : "unavailable",
       `(${introDuration(timeMs)}${available ? ", cached" : ""})${available && usage.unpricedCalls ? " · some calls unpriced" : ""}`],
-    ["Tokens in", available ? bold(`${icon(undefined, "arrowUp")} ${compactCount(usage.input + usage.cacheRead + usage.cacheWrite)}`) : "unavailable",
+    ["Tokens in", available ? bold(compactCount(usage.input + usage.cacheRead + usage.cacheWrite)) : "unavailable",
       available ? `(${compactCount(usage.cacheRead)} cached, ${compactCount(usage.cacheWrite)} written)` : undefined],
-    ["Tokens out", available ? bold(`${icon(undefined, "arrowDown")} ${compactCount(usage.output)}`) : "unavailable",
+    ["Tokens out", available ? bold(compactCount(usage.output)) : "unavailable",
       available && usage.reasoning !== null ? `(${compactCount(usage.reasoning)} reasoning)` : undefined],
     ["Compactions", fg("accent", bold(String(compactions)))],
   ];

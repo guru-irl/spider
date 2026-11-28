@@ -429,6 +429,7 @@ describe("spider extension entry", () => {
     ]) {
       expect(description, field).toContain(guidance);
     }
+    expect(props.tasks.description).toContain("`name`");
     expect(props.name.description).toContain("loop/schedule: case-sensitive trigger name (1 to 40 letters, digits, dots, underscores or hyphens; start with a letter or digit). Defaults: loop and wakeup. Replaces only that independent name; also the skill name for action='skill' (op add/view/approve/reject).");
   });
 

@@ -165,9 +165,13 @@ A second run with nothing changed writes nothing, makes no backup, changes no fo
 
 After you update spider, run setup again with the same configuration file. Each runtime version is installed under a file name derived from its content, so a new version goes next to the old one instead of replacing it. Setup probes Node again on a machine whose runtime changed. When only spider's installed files change, setup does not close and reopen your sessions. Then run the doctor.
 
-Setup upgrades `layouts/spider-glass.json` to `layouts/Spider.json` and moves the layout's keys to `layout:Spider` in Herdr's `keys.json`. If `spider-glass` was selected, setup switches to `Spider`. If another layout was selected, setup leaves it active. Setup saves the old layout in the upgrade checkpoint before removing it. The theme is still named `spider-glass`.
+Setup upgrades `layouts/spider-glass.json` to `layouts/Spider.json` and moves the layout's keys to `layout:Spider` in Herdr's `keys.json`. It also updates `layout.switch` bindings that name `spider-glass`. If `spider-glass` was selected, setup switches to `Spider`. If another layout was selected, setup leaves it active. Setup saves the old layout in the upgrade checkpoint before removing it. The theme is still named `spider-glass`.
 
-If setup reports `layout-name-conflict`, move the conflicting file out of `layouts` or give it a different name. On a case-insensitive file system, `spider.json` also conflicts with `Spider.json`. If an interrupted upgrade left both layouts in place, run `rollback --undo-upgrade` before trying setup again. Neither replacement flag bypasses this conflict. Doctor reports a leftover old file or saved selection.
+Setup refuses to remove an unowned or edited `spider-glass.json`. If setup recorded a backup for the edited file, `--replace-changed` saves the edited bytes for full rollback before removing the file. Otherwise, move your file out of `layouts` before running setup again.
+
+If an interruption leaves both layouts in place, run setup again. Setup resumes only if the journal still matches `Spider.json` and the checkpoint still matches the old layout. If setup reports `layout-name-conflict`, inspect both files. Undo the interrupted upgrade or move the conflicting file out of `layouts` before retrying. On a case-insensitive file system, `spider.json` also conflicts with `Spider.json`. Neither replacement flag bypasses this conflict.
+
+Doctor reports a leftover old file or saved selection. It still checks the installed theme file and the Spider layout's theme reference. It does not require the active Herdr theme to match because you may be using another layout or theme.
 
 On Herdr 0.1.12, setup refuses previously owned machine picker files or bindings and prints the rollback command. Run rollback first, then restore stock bindings or remove any remaining custom picker shortcuts before running setup again.
 
@@ -223,7 +227,9 @@ Undo restores installed artifacts, including files an older spider install alrea
 
 For changes to an existing layout, undo reverses setup's edits in attempt order. It restores mod references and release metadata while preserving unrelated edits, including pane sizes and custom entries. It never completes with a layout reference to a mod it removed.
 
-Undoing the rename restores `layouts/spider-glass.json`, the layout's key section, and the saved selection. It removes the replacement `Spider.json`. If you edited the new layout after setup, move it to a `.kept` file before undo. If Herdr is still open, select the restored layout in the picker to update the running window.
+Undoing the rename restores `layouts/spider-glass.json`, the layout's key section, its named switch bindings, and the saved selection. It removes the replacement `Spider.json`. If you edited the new layout after setup, move it to a `.kept` file before undo. If Herdr is still open, select the restored layout in the picker to update the running window.
+
+Before downgrading to a spider version from before the rename, undo the rename with your current spider version. If a later upgrade replaced the rename checkpoint, use full rollback with the current version instead. Older versions can reject the journal with `setup-journal-invalid` because it records the removed layout. Do not edit the journal to bypass that refusal.
 
 Close the pi sessions that the upgrade created before undo. Undo removes only those new owners, not tabs or sessions that existed before the upgrade. In a shared tab, it removes only the new panes. New mod directories disappear through a verified rename before their files are deleted. Generated app files are removed with them; unrelated user files stay.
 

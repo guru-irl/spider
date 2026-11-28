@@ -38,8 +38,12 @@ test.each(['pane/actions.js', 'pane/machine.js', 'machines/actions.js', 'machine
   expect((await readJournal(f.request.journalRoot)).entries).toEqual([]);
 });
 
-test.each(['recipe', 'menu'] as const)('B refuses a missing A %s before staging', async missing => {
-  const f = await fastRelease('0.1.16'), select = lookPatches.selectLookPatches;
+test.each([
+  ['0.1.13', 'recipe'], ['0.1.13', 'menu'],
+  ['0.1.16', 'recipe'], ['0.1.16', 'menu'],
+  ['0.1.18', 'recipe'], ['0.1.18', 'menu'],
+] as const)('%s B refuses a missing A %s before staging', async (version, missing) => {
+  const f = await fastRelease(version), select = lookPatches.selectLookPatches;
   vi.spyOn(lookPatches, 'selectLookPatches').mockImplementation((manifest, version) => {
     const selected = select(manifest, version);
     if (missing === 'recipe') return { ...selected, recipe: undefined };

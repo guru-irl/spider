@@ -27,8 +27,9 @@ label's one-space pad and let Pi handle clicks outside the actions.
 
 1. Pi owns the transcript spacer and the default tool box. Notification renderers
    return their box without another spacer. Consecutive tool cards with half
-   edges have no blank row between them. Keep the spacer between a tool card and
-   other content. Use Pi's `outputPad` when supplied. The fallback is one column.
+   edges have no blank row between them, including across empty assistant turns.
+   Keep the spacer between a tool card and visible or unboxed content. Use Pi's
+   `outputPad` when supplied. The fallback is one column.
    Replace blank top and bottom padding with half edges; remove blank content
    rows next to the edges. Keep one cell of fill on each side by default, with
    no outline.

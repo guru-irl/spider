@@ -1,12 +1,9 @@
-import { copyFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { AssistantMessageComponent, BranchSummaryMessageComponent, CompactionSummaryMessageComponent, SkillInvocationMessageComponent, CustomEditor, CustomMessageComponent, ToolExecutionComponent, UserMessageComponent, Theme, createEditToolDefinition, getAgentDir, initTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { copyFileSync, mkdirSync, readdirSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { AssistantMessageComponent, BranchSummaryMessageComponent, CompactionSummaryMessageComponent, SkillInvocationMessageComponent, CustomEditor, CustomMessageComponent, ToolExecutionComponent, UserMessageComponent, Theme, createEditToolDefinition, createReadToolDefinition, getAgentDir, initTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Markdown, Spacer, Text, stripTerminalSequences, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { readdirSync } from "node:fs";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerInputBand } from "./index.js";
 import { createHalfBox } from "./box.js";
@@ -296,6 +293,27 @@ it.each([
   expect(plain(root.render(width))).toContain(" second expanded");
 });
 
+it("keeps joining across a hidden tool after a blank assistant", () => {
+  stop = activate();
+  const hidden = card("hidden");
+  Object.assign(hidden, { hideComponent: true });
+  const rows = plain(chat(card("first"), withBlankRows(response([toolCall])), hidden, card("second")).render(24));
+  const end = rows.indexOf("▀".repeat(24));
+  expect(rows[end + 1]).toBe("▄".repeat(24));
+});
+
+it("restores assistant rows as streaming content becomes visible", () => {
+  stop = activate();
+  const middle = assistant(response([toolCall]));
+  const root = chat(card("first"), middle, card("second"));
+  const initial = plain(root.render(24));
+  const end = initial.indexOf("▀".repeat(24));
+  expect(initial[end + 1]).toBe("▄".repeat(24));
+  middle.updateContent(response([{ type: "text", text: "Now visible" }, toolCall]));
+  const updated = plain(root.render(24));
+  expect(updated.slice(end + 1, end + 4)).toEqual(["", "Now visible", ""]);
+});
+
 it.each([
   ["text", response([{ type: "text", text: "Visible reply" }, toolCall]), false, "Visible reply"],
   ["visible thinking", response([{ type: "thinking", thinking: "Visible reasoning" }, toolCall]), false, "Visible reasoning"],
@@ -311,6 +329,16 @@ it.each([
   expect(rows.join("\n")).toContain(text);
 });
 
+it("joins Pi's built-in read when its default shell has half edges", () => {
+  stop = activate();
+  const read = new ToolExecutionComponent("read", "read", { path: "guide.md" }, {}, createReadToolDefinition("/project"), tui, "/project");
+  read.updateResult({ content: [{ type: "text", text: "Guide" }], isError: false });
+  const rows = plain(chat(card("first"), assistant(response([toolCall])), read).render(32));
+  const end = rows.indexOf("▀".repeat(32));
+  expect(rows[end + 1]).toBe("▄".repeat(32));
+  expect(rows[end + 2]).toContain("read");
+});
+
 it("does not remove blank assistant rows when the next tool is unboxed", () => {
   stop = activate();
   const middle = withBlankRows(response([toolCall]));
@@ -321,6 +349,8 @@ it("does not remove blank assistant rows when the next tool is unboxed", () => {
 
 it.each([
   ["painted background", "\x1b[44m    \x1b[49m"],
+  ["inverse video", "\x1b[7m    \x1b[27m"],
+  ["underlined spaces", "\x1b[4m    \x1b[24m"],
   ["terminal image", "\x1b_Gf=100;AAAA\x1b\\"],
 ] as const)("keeps a visually meaningful %s row in an assistant", (_name, row) => {
   stop = activate();
@@ -353,13 +383,22 @@ it("joins cards using the active bundled Pi Spacer class", async () => {
   stop = () => handlers.get("session_shutdown")?.({}, ctx);
   const first = new pi.ToolExecutionComponent("first", "first", {}, {}, undefined, tui, "/project");
   const middle = new pi.AssistantMessageComponent(response([toolCall]), false, undefined, "", 0);
-  const second = new pi.ToolExecutionComponent("second", "second", {}, {}, undefined, tui, "/project");
+  const second = new pi.ToolExecutionComponent("second", "second", {}, {}, {
+    renderCall: () => new pt.Text("second", 0, 0),
+    renderResult: (_result, { expanded }) => new pt.Text(expanded ? "expanded" : "collapsed", 0, 0),
+  }, tui, "/project");
+  second.updateResult({ content: [], isError: false });
   const root = new pt.Container();
   root.addChild(first); root.addChild(middle); root.addChild(second);
-  const rows = plain(root.render(24));
-  const end = rows.indexOf("▀".repeat(24));
+  const width = 24;
+  const rows = plain(root.render(width));
+  const end = rows.indexOf("▀".repeat(width));
   expect(end).toBeGreaterThan(0);
-  expect(rows[end + 1]).toBe("▄".repeat(24));
+  expect(rows[end + 1]).toBe("▄".repeat(width));
+  const y = rows.indexOf(" collapsed");
+  expect(y).toBeGreaterThan(end);
+  expect(root.handleMouse({ type: "click", button: "left", x: 2, y, width, height: rows.length, screenX: 2, screenY: y, shift: false, alt: false, ctrl: false })).toMatchObject({ handled: true });
+  expect(plain(root.render(width))).toContain(" expanded");
 });
 
 it("keeps spacing around non-tool and hidden tool components", () => {

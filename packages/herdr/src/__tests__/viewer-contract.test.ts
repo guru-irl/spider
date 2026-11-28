@@ -27,10 +27,10 @@ const piSnapshot = (view: unknown) => JSON.stringify({ runId: 'run', cursor: 'on
 } });
 test('accepts old snapshots and the optional viewer presentation metadata', () => {
   expect(parseRunViewFrame(piSnapshot({ protocol: 2, sessionFile: null, model: 'example/model-one', thinking: 'high', contextWindow: 200000 }))).not.toBeNull();
-  expect(parseRunViewFrame(piSnapshot({ protocol: 2, modelName: 'Model One', iconStyle: 'nerd', inputBand: false, creditFactor: 0.5 }))).not.toBeNull();
+  expect(parseRunViewFrame(piSnapshot({ protocol: 2, modelName: 'Model One', iconStyle: 'nerd', inputBand: false, creditFactor: 0.5, working: false }))).not.toBeNull();
 });
 test.each([{ contextWindow: '200k' }, { contextWindow: -1 }, { contextWindow: 0 }, { model: [] }, { thinking: {} },
-  { modelName: [] }, { iconStyle: 'unknown' }, { inputBand: 'false' }, { creditFactor: -1 }, { creditFactor: '0.5' }])('invalid pi footer metadata is rejected, not rendered', invalid => {
+  { modelName: [] }, { iconStyle: 'unknown' }, { inputBand: 'false' }, { creditFactor: -1 }, { creditFactor: '0.5' }, { working: 'false' }])('invalid pi footer metadata is rejected, not rendered', invalid => {
   expect(parseRunViewFrame(piSnapshot({ protocol: 2, ...invalid }))).toBeNull();
 });
 

@@ -4,12 +4,14 @@ import { expect, it, vi } from "vitest";
 import { testTmpDir } from "@spider/intercom/test-support";
 import { openDb } from "@spider/db-core";
 import { writeLocal } from "@spider/db-core/roam/local-state";
+import type { ApplyReceipt } from "@spider/db-core/roam/types";
 import { createReplica } from "@spider/db-core/testutil";
 import { DEFAULT_LIMITS, disabledIntercom, type Clock, type Operation, type RoamConfig, type Transport } from "../contracts";
 import { readLocalIdentity } from "../runtime";
 import { openJournal } from "../journal";
 import { isRevoked, revokeMachine } from "../revocation";
 import { main } from "../cli";
+import { safeControlOutcome } from "../commands";
 import { createV0Runtime, startV0Hub } from "../relocate/runtime";
 import { requestV0Services } from "../relocate/service";
 import { handleRelocateAgent, type RelocateAgentRequest } from "../relocate/remote";
@@ -139,6 +141,31 @@ it.each(["box-0.invalid", box])("manual sync %s converges only the selected peer
       expect.objectContaining({ code: 0, reason: "pushed", value: { batchId: expect.any(String), stream: expect.any(String), through: expect.any(Number), sha256: expect.stringMatching(/^[a-f0-9]{64}$/), applyMs: expect.any(Number) } }),
     ] } });
     expect(f.calls.filter(call => call.machineId === other).map(call => call.kind)).toEqual(["stores"]);
+  } finally { await f.close(); }
+});
+
+it("keeps a fractional real receipt with whole milliseconds in public sync output", async () => {
+  const f = await manualSyncFixture([box]);
+  let received: ApplyReceipt | undefined;
+  try {
+    f.marker(mac, "fractional-receipt");
+    f.onReply((call, reply) => {
+      if (call.kind !== "import" || !reply.ok) return reply;
+      const wire = reply.value as { version: 1; outcome: { code: number; value: ApplyReceipt } };
+      expect(wire.outcome.code).toBe(0);
+      received = { ...wire.outcome.value, applyMs: 1.6 };
+      return { ...reply, value: { ...wire, outcome: { ...wire.outcome, value: received } } };
+    });
+    const result = await f.command(box);
+    expect(result.code).toBe(0);
+    expect(received).toBeDefined();
+    const row = { code: 0 as const, reason: "pushed", operationId: "", home: null, epoch: null, repairCommand: null, value: received! };
+    const sanitized = safeControlOutcome({ code: 0, reason: "Synchronization complete", operationId: "", home: null,
+      epoch: null, repairCommand: null, value: { outcomes: [row] } });
+    const expected = { ...received!, applyMs: 2 };
+    expect(sanitized.value).toMatchObject({ outcomes: [{ value: expected }] });
+    expect(result.result.value.outcomes).toContainEqual(expect.objectContaining({ reason: "pushed", value: expected }));
+    expect(f.markers(box)).toEqual(["fractional-receipt"]);
   } finally { await f.close(); }
 });
 
@@ -324,11 +351,11 @@ it("an unreachable peer is not a successful sync and its inventory cannot author
       expect.objectContaining({ code: 3, reason: "Peer operation is pending reconciliation" }),
     ]) } } });
     expect(f.markers(box)).toEqual(["on-box", "on-mac"]);
-    const firstHome = f.local.db.prepare("SELECT machine_id FROM session_homes WHERE session_id='unassigned'");
+    const firstHome = f.local.db.prepare("SELECT machine_id, epoch, move_id, state, destination FROM session_homes WHERE session_id='unassigned'");
     expect(firstHome.get()).toBeUndefined();
     f.unavailable.delete(other);
     expect(await f.command()).toMatchObject({ code: 0 });
-    expect(firstHome.get()).toEqual({ machine_id: mac });
+    expect(firstHome.get()).toEqual({ machine_id: mac, epoch: 1, move_id: null, state: null, destination: null });
   } finally { await f.close(); }
 });
 

@@ -56,7 +56,7 @@ function verifyItem(ports: HerdrCliPorts, item: DoctorItem): SetupParts['verify'
   };
 }
 
-async function nativeKeysFixture(version: Release, coreTransport: 'process' | 'socket' = 'process', fullSetup = false) {
+async function nativeKeysFixture(version: Release, coreTransport: 'process' | 'socket' = 'process') {
   const f = await localRelease(version, coreTransport);
   vi.stubEnv('PI_CODING_AGENT_DIR', f.h.directories.agent);
   const path = join(f.h.directories.app, 'keys.json');
@@ -67,7 +67,6 @@ async function nativeKeysFixture(version: Release, coreTransport: 'process' | 's
     stderr: text => errors.push(text),
     setupParts: async request => {
       const parts = await f.ports.setupParts(request);
-      if (fullSetup) return parts;
       // Keep production release detection, key planning, merge and rollback.
       // The A/B cases below cover publication and verification of the look files.
       const isKeyMap = (file: { path: string }) => file.path === path;
@@ -257,7 +256,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   });
 
   if (version === '0.1.13') test('accepted native keys are not reoffered or removed by decline', async () => {
-    const { path, out, errors, ports, configPath } = await nativeKeysFixture(version, 'process', true);
+    const { path, out, errors, ports, configPath } = await nativeKeysFixture(version);
     const original = await readFile(path);
     expect(await runHerdrCli(['setup', '--merge-native-keys', '--config', configPath], ports), errors.join('')).toBe(0);
     expect(JSON.parse(await readFile(path, 'utf8')).global['cmd-m']).toBe('window.minimize');

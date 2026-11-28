@@ -69,8 +69,19 @@ test('publishes pre-tree-shake inputs, direct reads, and renamed executable byte
   execFileSync('git', ['init', '-q'], { cwd: root });
   const raw = join(root, 'raw'), maps = join(root, 'maps');
   const bundleTools = name => fileURLToPath(new URL(name, import.meta.url));
-  const run = (script, env = {}) => execFileSync(process.execPath, ['--input-type=module', '-e', script],
-    { cwd: root, env: { ...process.env, NODE_OPTIONS: '', ...env }, encoding: 'utf8' });
+  const run = (script, env = {}) => {
+    const args = ['--input-type=module', '-e', script];
+    const fixture = { NODE_OPTIONS: '', SPIDER_SELECTION_DIR: '', SPIDER_SELECTION_TEST: '',
+      SPIDER_SELECTION_SAVED_NODE_OPTIONS: '', ...env };
+    const options = { cwd: root, encoding: 'utf8' };
+    if (process.env.SPIDER_SELECTION_DIR) {
+      // Set the synthetic context after the enclosing recorder wraps this
+      // launch. The child still uses the real hook for its own journal.
+      return execFileSync('env', [...Object.entries(fixture).map(([key, value]) => `${key}=${value}`),
+        process.execPath, ...args], options);
+    }
+    return execFileSync(process.execPath, args, { ...options, env: { ...process.env, ...fixture } });
+  };
   const entry = 'packages/one/src/main.mjs', testFile = 'packages/one/src/build.test.ts';
   const aliasTest = 'packages/herdr/src/__tests__/herdr-viewer-warning.test.ts';
   const inventoryTest = 'packages/one/src/inventory.test.ts';
@@ -86,9 +97,6 @@ test('publishes pre-tree-shake inputs, direct reads, and renamed executable byte
     writeFileSync(join(root, file), text);
   }
   run(`
-    // The outer capture wraps child launches. This build still needs the
-    // production archiver rather than the in-test fixture map writer.
-    delete process.env.SPIDER_SELECTION_DIR;
     const { build } = await import(${JSON.stringify(import.meta.resolve('vite'))});
     const { archiveMaps, sourcemap } = await import(${JSON.stringify(new URL('./build-maps.mjs', import.meta.url).href)});
     for (const name of ['main', 'other']) {

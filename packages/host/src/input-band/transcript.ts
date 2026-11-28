@@ -51,8 +51,9 @@ export function installTranscriptBands(host: InputBandHost, options: Options): (
     if (padded(shell) && this.children?.[1] === shell) bindHalfBox(shell, () => active(custom) && field(shell, "paddingY") === 1);
     return render.call(this, width);
   }));
-  for (const prototype of [host.CompactionSummaryMessageComponent?.prototype, host.BranchSummaryMessageComponent?.prototype,
-    host.SkillInvocationMessageComponent?.prototype]) {
+  // Older shims do not expose InteractiveMode, so keep their existing half-box.
+  for (const prototype of [host.InteractiveMode ? undefined : host.CompactionSummaryMessageComponent?.prototype,
+    host.BranchSummaryMessageComponent?.prototype, host.SkillInvocationMessageComponent?.prototype]) {
     off.push(patch(prototype, options, function (render, width) {
       if (host.Box && this instanceof host.Box && padded(this) &&
         bindHalfBox(this, () => active(prototype) && padded(this))) return this.render(width);

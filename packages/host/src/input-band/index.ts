@@ -3,6 +3,8 @@ import { isIconStyle } from "@spider/ui";
 import { createBandEditor } from "./editor.js";
 import { installTranscriptBands } from "./transcript.js";
 import { installPendingBands } from "./pending.js";
+import { installCompactionCard } from "./compaction-card.js";
+import { modelName } from "../model-name.js";
 
 type Pi = typeof import("@earendil-works/pi-coding-agent");
 type PiTui = typeof import("@earendil-works/pi-tui");
@@ -16,6 +18,7 @@ export function registerInputBand(pi: Pick<ExtensionAPI, "on">, host: InputBandH
   let releaseTranscript: (() => void) | undefined;
   let releaseEditor: (() => void) | undefined;
   let releasePending: (() => void) | undefined;
+  let releaseCompaction: (() => void) | undefined;
   const live: { pending?: { text: string; timestamp: number } } = {};
   pi.on("message_start", event => {
     live.pending = undefined;
@@ -34,18 +37,33 @@ export function registerInputBand(pi: Pick<ExtensionAPI, "on">, host: InputBandH
     releaseTranscript = undefined;
     releasePending?.();
     releasePending = undefined;
+    releaseCompaction?.();
+    releaseCompaction = undefined;
     if (ctx.mode !== "tui" || !ctx.hasUI) return;
     const config = readConfig(ctx.cwd);
     const inputBand = config["ui.inputBand"] !== false;
     const style = config["ui.icons"];
+    const iconStyle = () => isIconStyle(style) ? style : "text";
+    const theme = () => ctx.ui.theme;
+    releaseCompaction = installCompactionCard(host, {
+      theme, iconStyle,
+      model: (id, message) => {
+        // Live compaction cards do not have a message ID. Pi just placed the
+        // current compaction at the front of the active context.
+        const entry = id ? ctx.sessionManager?.getEntry(id) : ctx.sessionManager?.buildContextEntries()[0];
+        if (entry?.type !== "compaction" || entry.summary !== message.summary || entry.tokensBefore !== message.tokensBefore) return;
+        const ref = (entry.details as { summaryModel?: unknown } | undefined)?.summaryModel;
+        return typeof ref === "string" ? modelName(ctx.modelRegistry, ref) : undefined;
+      },
+    });
     releaseTranscript = installTranscriptBands(host, {
-      inputBand, theme: () => ctx.ui.theme, iconStyle: () => isIconStyle(style) ? style : "text", live,
+      inputBand, theme, iconStyle, live,
       timestamp: id => {
         const entry = ctx.sessionManager?.getEntry(id);
         return entry?.type === "message" && entry.message.role === "user" ? entry.message.timestamp : undefined;
       },
     });
-    if (inputBand) releasePending = installPendingBands(host, () => ctx.ui.theme, () => isIconStyle(style) ? style : "text");
+    if (inputBand) releasePending = installPendingBands(host, theme, iconStyle);
     if (!inputBand || typeof ctx.ui.getEditorComponent !== "function" || ctx.ui.getEditorComponent() !== undefined) return;
     const factory: NonNullable<Parameters<ExtensionUIContext["setEditorComponent"]>[0]> = (tui, theme, keys) => {
       const editor = new BandEditor(tui, theme, keys, () => ctx.ui.theme);
@@ -72,5 +90,6 @@ export function registerInputBand(pi: Pick<ExtensionAPI, "on">, host: InputBandH
     releaseEditor?.(); releaseEditor = undefined;
     releaseTranscript?.(); releaseTranscript = undefined;
     releasePending?.(); releasePending = undefined;
+    releaseCompaction?.(); releaseCompaction = undefined;
   });
 }

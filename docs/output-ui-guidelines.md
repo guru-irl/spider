@@ -96,6 +96,13 @@ configured machine alias. A collapsed message shows a one-line preview aligned
 with the title text. An expanded message wraps the body at the same indent and
 adds dim details. Reply details do not show message IDs.
 
+### Compaction cards
+
+Use the moon in place of the spider logo. The first count is Pi's context
+size before compaction. The second is Pi's estimate for the summary text alone,
+not the size of the retained context. Show billing in a dim row when Pi has a
+bill to show. Use Pi's existing click and Ctrl+O behavior to reveal the summary.
+
 ### Intercom route results
 
 A relayed ask, send, or reply shows its route and any skipped relays in dim rows

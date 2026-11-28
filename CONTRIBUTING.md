@@ -53,15 +53,17 @@ its manifest as a job output. Each runner validates the manifest and runs its
 assigned group with three fork workers. The required `typecheck · test · build`
 check requires successful selection, compile, and all four groups.
 
-The workflow uses `select.mjs`, `run.mjs`, and `manifest.mjs` from the PR
-base commit. Before main has the runner scripts, the workflow uses a
-pinned, reviewed revision of them instead of the PR head.
+The workflow tests the PR merge commit and uses its first parent as the
+base for `select.mjs`, `run.mjs`, and `manifest.mjs`. Before main has the
+runner scripts, the workflow uses a pinned, reviewed revision instead.
 
 The selector finds the newest usable main map whose commit is an ancestor
-of the PR merge base. It considers every change from the map commit to the
-PR head. The selector combines recorded reads, static imports, literal paths
-named by tests, and the base version of `scripts/test-resources.json`. It always
-runs tests that are new, failed, skipped, or incompletely recorded.
+of the tested merge's first parent. It reports the PR's changes against that
+parent. Selection also covers changes from the map commit to the tested merge
+so an older map cannot hide affected tests. The selector combines recorded
+reads, static imports, paths named by tests, and the base version of
+`scripts/test-resources.json`. It always runs new, failed, skipped, and
+incompletely recorded tests.
 
 CI runs the full root Vitest suite if the base selector is missing or fails,
 no map is usable, or the PR changes the toolchain or selection infrastructure.
@@ -69,7 +71,8 @@ A selector exit error, including a failed map API request, discards any
 partial selection and gives the fallback reason in the step summary. A fix
 for a broken base selector can pass after running the full suite. A selection
 that is too large for the job output also falls back to the full root suite.
-No selected tests are deferred.
+The workflow runs every selected test, including all matches of `required`
+policy rules. It does not defer tests or cut the list to a time budget.
 
 The `save selection for main audit` job uploads `test-selection.json` from the
 shared job output. An upload failure does not block the required check. The

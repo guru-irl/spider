@@ -40,12 +40,24 @@ export async function mergedSelection(api, commit) {
   const pr = prs.find(row => row.merge_commit_sha === commit && row.base.ref === 'main' && row.merged_at);
   if (!pr) return { unavailable: 'this main revision is not a PR merge commit' };
   const pages = await api.pages(`actions/workflows/pr.yml/runs?event=pull_request&status=success&head_sha=${pr.head.sha}&per_page=100`);
+  let landedTree;
   for (const run of pages.flatMap(page => page.workflow_runs)) {
     if (run.head_sha !== pr.head.sha || run.head_repository?.full_name !== pr.head.repo?.full_name
         || !(Date.parse(run.updated_at) <= Date.parse(pr.merged_at))) continue;
     try {
       const artifact = await api.artifact(run.id, 'test-selection', 'test-selection.json');
-      if (artifact && !artifact.expired) return { pr, runId: run.id, selection: validateSelection(artifact.read(), pr.head.sha) };
+      if (!artifact || artifact.expired) continue;
+      const selection = artifact.read();
+      if (selection?.head !== pr.head.sha) {
+        if (typeof selection?.head !== 'string' || !/^[\da-f]{40}$/.test(selection.head)) continue;
+        // Actions indexes PR runs by topic SHA, but the manifest identifies
+        // the tested merge. Require the exact topic and the landed tree.
+        const tested = await api.get(`git/commits/${selection.head}`);
+        landedTree ??= (await api.get(`git/commits/${commit}`)).tree.sha;
+        if (!landedTree || tested.parents?.length !== 2 || tested.parents[1].sha !== pr.head.sha
+            || tested.tree?.sha !== landedTree) continue;
+      }
+      return { pr, runId: run.id, selection: validateSelection(selection, selection.head) };
     } catch { /* Older successful runs of the same head may still have the artifact. */ }
   }
   return { unavailable: `no usable test-selection artifact for merged PR #${pr.number} at ${pr.head.sha}` };

@@ -2,7 +2,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { setGlobalDbPathForTests } from '@spider/db-core';
 import { mountedViewerFixture } from './herdr-viewer-layout-fixture.testutil.js';
-import { assertViewerRemainsPlaced } from './herdr-viewer-shutdown.testutil.js';
+import { assertViewerRemainsPlacedWithTransport } from './herdr-viewer-shutdown.testutil.js';
 import { createViewerFeedSource } from '../../../herdr/src/viewers/program.js';
 import type { RunId } from '../../../herdr/src/contracts.js';
 import { access, readFile, writeFile } from 'node:fs/promises';
@@ -11,7 +11,7 @@ import { join, resolve } from 'node:path';
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); setGlobalDbPathForTests(null); });
 
-it.each(['quit', 'reload', 'new'] as const)('mounted %s leaves a displayed viewer in its exact pane', assertViewerRemainsPlaced, 30000);
+it.each(['quit', 'reload', 'new'] as const)('mounted %s leaves a displayed viewer in its exact pane', reason => assertViewerRemainsPlacedWithTransport(reason, true), 30000);
 
 const binary = process.env.SPIDER_HERDR_HC_BINARY || join(homedir(), '.local/bin/hc');
 const real = process.env.SPIDER_HERDR_E2E === '1' && await access(binary).then(() => true, () => false);

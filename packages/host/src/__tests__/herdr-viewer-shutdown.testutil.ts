@@ -7,9 +7,13 @@ import type { RunId } from '../../../herdr/src/contracts.js';
 import { mountedViewerFixture } from './herdr-viewer-layout-fixture.testutil.js';
 
 export async function assertViewerRemainsPlaced(reason: 'quit' | 'reload' | 'new' | 'resume' | 'fork'): Promise<void> {
+  return assertViewerRemainsPlacedWithTransport(reason, false);
+}
+
+export async function assertViewerRemainsPlacedWithTransport(reason: 'quit' | 'reload' | 'new' | 'resume' | 'fork', fastCore: boolean): Promise<void> {
   // Catches pane-actor disposal parking; registration stop is tested separately.
   // Actor teardown runs first here, so later reservation release would be a no-op.
-  const f = await mountedViewerFixture('fake');
+  const f = await mountedViewerFixture('fake', false, false, fastCore);
   try {
     const { id } = f.store.create({ sessionId: f.feed.sessionId, agent: 'worker' }); f.store.start(id);
     const reply = await f.ipc.openRun(id as RunId);

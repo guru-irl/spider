@@ -32,7 +32,7 @@ it.each([{ gated: false }, { gated: true }])('reload does not move a viewer from
       } };
     });
   }
-  const f = await mountedViewerFixture('fake', gated, gated); let reloaded: ReturnType<typeof createSessionIpcClient> | undefined;
+  const f = await mountedViewerFixture('fake', gated, gated, true); let reloaded: ReturnType<typeof createSessionIpcClient> | undefined;
   try {
     const id = f.activeRun ?? f.store.create({ sessionId: f.feed.sessionId, agent: 'worker' }).id;
     if (!f.activeRun) f.store.start(id);
@@ -63,7 +63,7 @@ it.each([{ gated: false }, { gated: true }])('reload does not move a viewer from
 }, 30000);
 
 it('shutdown during an explicit reopen never hides or kills the already displayed viewer', async () => {
-  const f = await mountedViewerFixture('fake');
+  const f = await mountedViewerFixture('fake', false, false, true);
   try {
     const { id } = f.store.create({ sessionId: f.feed.sessionId, agent: 'worker' }); f.store.start(id);
     const first = await f.ipc.openRun(id as RunId);
@@ -91,7 +91,7 @@ it.each([false, true])('mounted automatic viewers follow automaticSubagentPanes=
   });
   vi.spyOn(paneModule, 'createAuxiliaryPanes').mockImplementation(options =>
     createPanes({ ...options, subagentViewer: async (...args) => { viewer = await options.subagentViewer(...args); return viewer; } }));
-  const f = await mountedViewerFixture('fake', true, automaticSubagentPanes);
+  const f = await mountedViewerFixture('fake', true, automaticSubagentPanes, true);
   try {
     await vi.waitFor(() => expect(settled).toBe(true), { timeout: 10000 });
     const owner = await f.app.ownerPlacement(f.h.owner!.terminal.address);

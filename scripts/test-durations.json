@@ -418,7 +418,7 @@
   "packages/host/src/__tests__/extension.test.ts": 8943,
   "packages/host/src/__tests__/fixture-safety.test.ts": 280,
   "packages/host/src/__tests__/fork-parent-context.test.ts": 475,
-  "packages/host/src/__tests__/frame-harness.test.ts": 64,
+  "packages/host/src/__tests__/frame-harness.test.ts": 66.74169921875,
   "packages/host/src/__tests__/herdr-abort-partial.test.ts": 13040,
   "packages/host/src/__tests__/herdr-action-cause.test.ts": 1430,
   "packages/host/src/__tests__/herdr-agent-launch-dir.test.ts": 3398,

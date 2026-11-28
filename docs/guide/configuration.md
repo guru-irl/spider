@@ -132,6 +132,29 @@ This setting does not turn on codemode, MCP or extra child tools. It takes effec
 
 `spider control command:"doctor"` reads pi's effective settings through `pi.getSettings()`. It reports the compaction values, cache warming, the codemode mode and inline budget, the TUI mode, and install telemetry. If the active model has a compaction override, the token values include it. The report leaves out credentials and unrelated settings. The codemode settings show the configuration, not which tools are active right now.
 
+## Startup header and quit summary
+
+Spider adds a header and a quit summary to interactive Pi sessions. Neither
+appears in print mode, RPC, or subagent sessions.
+
+To hide Pi's separate startup resource list, add `"quietStartup": "header"`
+to Pi's `~/.pi/agent/settings.json`. This keeps the Spider header visible.
+Spider does not change this setting. Pi's `--verbose` flag shows its list
+again. Set `PI_REDUCED_MOTION=1` in your environment to show Hinge at rest.
+
+Press **Alt+O** or run `/resources` to open the fullscreen reader. In Pi's
+fullscreen mode, you can also click **Loaded resources**. The reader shows the
+system prompt at the time you open it. Its token count is an estimate, not the
+context-window usage. Context paths come from the prompt's project instructions.
+The extension count is a lower bound: Pi only exposes paths for extensions
+that register commands or tools to this reader.
+
+On normal quit, **Docked** summarizes the current visit, including time across
+`/reload`. Changes count net text lines from successful `edit` and `write`
+calls, not changes made by shell commands or other sessions. Credits and tokens
+come from the cached local usage ledger and can be incomplete. Pi prints its
+own resume command for saved sessions.
+
 ## Monthly usage budget
 
 `usage.monthlyBudget` is unset by default. Set it to a positive finite number of credits per billing month. Positive fractions are valid. Zero does not mean unset. To clear the budget in the config screen, leave the field blank.
@@ -162,6 +185,7 @@ The live footer shows corrected credits without basis markers, then the cache hi
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `ui.footer` | `true` | Footer and run selector. Takes effect next session. |
+| `ui.accent` | unset | Global-only. A `/color` palette ID, such as `pink` or `spider-blue`. If unset, Pi uses its theme's accent. |
 | `ui.inputBand` | `true` | Draw the editor strip and sent-message caret. If another extension owns the editor slot, Pi keeps that editor. Changes apply after `/reload`. |
 | `ui.icons` | `"text"` | `"text"` uses monochrome Unicode. `"nerd"` uses Nerd Font glyphs. |
 | `ui.spiderGlyphs` | `false` | Animate the robot's eyes in Nerd mode when the terminal uses a font patched by Spider. Takes effect in the next session or after `/reload`. |
@@ -241,6 +265,7 @@ restarting it.
   mounts: in the next session or after `/reload`. The usage footer also reads
   `ui.icons` at session start. New tool and notice renderers read `ui.icons`
   when they are created.
+- `/color` applies `ui.accent` immediately and saves it in `~/.pi/agent/spider/config.json`, or `config.json` under `SPIDER_GLOBAL_ROOT`. Spider reapplies the color when an interactive session starts or reloads. Reinstalling the theme does not change this setting.
 - `ui.inputBand` and `copyButtons.enabled` changes need `/reload`.
 - `tools.structured` changes need `/reload`. The setting does not change the interactive `spider` tool.
 - `reload.auto` applies live. Set it to `false` to stop automatic reloads.

@@ -9,9 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { selectionHash } from './manifest.mjs';
 
 const runner = process.env.SELECTION_RUN_SCRIPT ?? fileURLToPath(new URL('./run.mjs', import.meta.url));
-const aggregate = process.env.SELECTION_AGGREGATE_SCRIPT ?? fileURLToPath(new URL('./aggregate.mjs', import.meta.url));
 const testFile = 'packages/one/src/example.test.ts';
-const needs = { compile: { result: 'success' }, tests: { result: 'success' } };
 
 function setup(t, body) {
   const root = mkdtempSync(join(tmpdir(), 'selection-run-'));
@@ -104,22 +102,4 @@ test('attests an empty group without running Vitest', t => {
   assert.match(result.stdout, /Group 2\/4 is empty/);
   assert.equal(JSON.parse(readFileSync(join(root, 'hash.json'), 'utf8')).group, 2);
   assert.equal(existsSync(join(root, 'report.json')), false);
-});
-
-test('aggregate rejects missing attestations and failed compile jobs', t => {
-  const { root, head } = setup(t, passing);
-  const selection = manifest(head, [testFile]);
-  writeFileSync(join(root, 'test-selection.json'), JSON.stringify(selection));
-  for (const group of [1, 2, 4]) writeFileSync(join(root, `hash-${group}.json`), JSON.stringify({ group, selectionHash: selection.selectionHash }));
-  const run = value => spawnSync(process.execPath, [aggregate, root, head], { encoding: 'utf8', env: { ...process.env, NEEDS_JSON: JSON.stringify(value) } });
-  const missing = run(needs);
-  assert.notEqual(missing.status, 0);
-  assert.match(missing.stderr, /hash-3\.json/);
-  writeFileSync(join(root, 'hash-3.json'), JSON.stringify({ group: 3, selectionHash: selection.selectionHash }));
-  assert.equal(run(needs).status, 0);
-  for (const state of ['failure', 'cancelled', 'skipped']) {
-    const result = run({ ...needs, compile: { result: state } });
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /Compile and every test runner must succeed/);
-  }
 });

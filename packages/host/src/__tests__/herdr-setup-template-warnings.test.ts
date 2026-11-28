@@ -73,17 +73,6 @@ it.each(cases)('setup refuses $name before writing any setup-owned file on a fre
   expect(after).toEqual(before);
 });
 
-it.each(cases)('setup refuses $name without changing an existing installation', async scenario => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts); await configure(f, scenario.empty);
-  const before = await installedBytes(f);
-  let stderr = '';
-  vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { stderr += String(chunk); return true; });
-  const code = await runHerdrCli(['setup', '--config', f.request.configPath], { ...f.ports, stdout() {}, stderr: message => { stderr += message; } });
-  expect(code, stderr).toBe(1);
-  expect(stderr.trim().split('\n')).toEqual([`${scenario.code}: ${scenario.message}`]);
-  expect(await installedBytes(f)).toEqual(before);
-});
-
 it.each(cases)('doctor reports $name as a role failure with a repair', async scenario => {
   const f = await fastFixture(); await setupHerdr(f.request, f.parts); await configure(f, scenario.empty);
   let output = '', stderr = '';

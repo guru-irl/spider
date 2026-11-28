@@ -7,7 +7,8 @@ import { resolveParticipantPi } from "../launcher";
 import { createLocalRuntime, inspectLocalSource, inspectLocalDestination, seedLocalPlacement, exactHome, SessionSeedBusy, seedBusyRefusal } from "./local";
 import { beginLocalMove, captureLocalSession, installLocalSession, stagingRoot } from "./transfer";
 import { json, parseCaptured, parseHome, parsePlan, parsePlacement } from "./journal";
-import type { Operation, Peer, Transport } from "../contracts";
+import type { Operation, Outcome, Peer, Transport } from "../contracts";
+import { artifactId } from "../staging";
 import { object, text } from "./journal";
 import { isMachineId } from "../machine-id";
 import { withV0HomeLifecycle } from "./home-lifecycle";
@@ -88,6 +89,9 @@ export async function handleRelocateAgent(input:unknown,options:RelocateAdapterO
   let r:RelocateAgentRequest;
   try {r=parseAgentRequest(input);}catch{return refusal("invalid-arguments","The private v0 request is invalid.");}
   const wrap=<T>(result:V0Result<T>,key?:string):V0Result<unknown>=>result.ok?{ok:true,value:key?{version:1,[key]:result.value}:{version:1,...(result.value && typeof result.value==="object"?result.value:{})}}:result;
+  const enrolledSender = (source: unknown) => isMachineId(source) && source !== options.config.machineId &&
+    (options.config.role === "box" ? source === options.config.hubMachineId : options.config.peers.some(peer => peer.machineId === source));
+  const boxReplicationDisabled = () => options.config.role === "box" && !options.config.enabled;
   const receive = (work: () => Promise<V0Result<unknown>>) => options.config.role !== "box" ? work()
     : withV0HomeLifecycle(options.root, options.limits.controlMs, async () => options.config.enabled ? work()
       : refusal("replication-disabled", "The destination box has disabled roaming.", "Run spider roam enable on the destination box, then retry relocate from the Mac."));
@@ -133,8 +137,21 @@ export async function handleRelocateAgent(input:unknown,options:RelocateAdapterO
         return {ok:true,value:{version:1}};
       });
       case "data":{
-        const op=r.operation;let expected:StoreKey|undefined;
-        if(op.args.storeKey!==undefined){storeScope(op.args.storeKey);const key=op.args.storeKey as StoreKey;if(!mappedKey(key,options)){if(!await incomingPlan(key,options))return refusal("repo-unmapped","This unmapped worktree is not authorized by the current move.");expected=key;}}
+        const op = r.operation, operationId = artifactId(op.id);
+        const dataRefusal = (code: 1 | 2, reason: string): V0Result<unknown> => ({ ok: true, value: { version: 1,
+          outcome: { code, reason, operationId, home: null, epoch: null, repairCommand: null, value: null } satisfies Outcome<JsonObject>,
+        } });
+        if (op.machineId !== options.config.machineId ||
+            ["assemble", "cursor", "receipt", "import"].includes(op.kind) && !enrolledSender(op.args.sourceMachine))
+          return dataRefusal(2, "Invalid agent operation");
+        const key = op.args.storeKey as StoreKey | undefined;
+        if (key !== undefined) storeScope(key);
+        if (boxReplicationDisabled()) return dataRefusal(1, "roaming-disabled");
+        let expected: StoreKey | undefined;
+        if (key !== undefined && !mappedKey(key, options)) {
+          if (!await incomingPlan(key, options)) return refusal("repo-unmapped", "This unmapped worktree is not authorized by the current move.");
+          expected = key;
+        }
         const stores=createStorePort(options.config,options.globalDb,{unmappedWorktree:expected});
         try {
           const agent=createAgentPorts({config:options.config,journal:options.journal,root:stagingRoot(options),openStore:key=>{
@@ -149,10 +166,15 @@ export async function handleRelocateAgent(input:unknown,options:RelocateAdapterO
         }finally{stores.close();}
       }
       case "artifact":{
-        const enrolled=options.config.role==="box"?r.sourceMachine===options.config.hubMachineId:options.config.peers.some(peer=>peer.machineId===r.sourceMachine);
-        if(!enrolled)return refusal("invalid-arguments","The artifact sender is not an enrolled v0 peer.");
-        const bytes=r.bytes===null?undefined:Buffer.from(r.bytes,"base64");
-        if(bytes && (bytes.length>options.limits.chunkBytes || bytes.toString("base64")!==r.bytes))return refusal("invalid-arguments","The artifact bytes exceed the private chunk boundary.");
+        if (!enrolledSender(r.sourceMachine)) return refusal("invalid-arguments", "The artifact sender is not an enrolled v0 peer.");
+        const bytes = r.bytes === null ? undefined : Buffer.from(r.bytes, "base64");
+        if (bytes && (bytes.length > options.limits.chunkBytes || bytes.toString("base64") !== r.bytes))
+          return refusal("invalid-arguments", "The artifact bytes exceed the private chunk boundary.");
+        const operation = object(object(r.input).operation);
+        if (operation.machineId !== options.config.machineId || operation.expectedEpoch !== null || operation.kind !== "artifact-transfer")
+          return { ok: true, value: { version: 1, wire: { code: 2, reason: "Invalid artifact operation" } } };
+        artifactId(operation.id);
+        if (boxReplicationDisabled()) return { ok: true, value: { version: 1, wire: { code: 1, reason: "roaming-disabled" } } };
         const stores=createStorePort(options.config,options.globalDb);
         try {
           const agent=createAgentPorts({config:options.config,journal:options.journal,root:stagingRoot(options),openStore:stores.openStore});

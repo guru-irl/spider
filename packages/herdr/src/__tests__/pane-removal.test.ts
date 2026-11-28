@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createClientFixture, terminal } from './testutil.js';
@@ -8,7 +8,7 @@ import { createHcClient } from '../client/hc.js';
 import { createAppClient } from '../client/app.js';
 import { createAuxiliaryPanes } from '../jobs/placement.js';
 import { HerdrError } from '../client/parse.js';
-import type { AppClient, JobId, Owner, OwnerPlacement, PaneReservation } from '../contracts.js';
+import type { AppClient, HcClient, JobId, Owner, OwnerPlacement, TerminalSummary } from '../contracts.js';
 
 async function fixture() {
   const f = await createClientFixture();
@@ -52,21 +52,47 @@ test.each(['missing-removal', 'stalled-layout', 'stalled-command'] as const)('%s
       return { pending: true, terminal: f.viewer };
     },
   };
-  const panes = createAuxiliaryPanes({ hc: f.hc, discardSubagentViewer: async (_id, _owner, viewer) => { await f.hc.kill(viewer); await f.hc.rm(viewer); }, app, subagentViewer: async () => f.viewer, appForSignal: value => { signal = value; return app; }, clock: () => 0, paneRemovalTimeoutMs: 300 });
-  let reservation: PaneReservation | undefined;
-  // Old code eventually finishes rather than leaving a never-ending failed test behind.
-  const late = setTimeout(() => { removed = true; lateReply?.(); }, 1500);
+  let viewerTerminal: TerminalSummary | undefined;
+  const hc: HcClient = {
+    ...f.hc,
+    get: (address, options) => address === f.viewer && viewerTerminal
+      ? Promise.resolve(viewerTerminal) : f.hc.get(address, options),
+  };
+  const panes = createAuxiliaryPanes({ hc, discardSubagentViewer: async (_id, _owner, viewer) => { await f.hc.kill(viewer); await f.hc.rm(viewer); }, app, subagentViewer: async () => f.viewer, appForSignal: value => { signal = value; return app; }, clock: () => 0, paneRemovalTimeoutMs: 300 });
   try {
     const slot = await panes.reserveRemote('job' as JobId, f.owner, { timeoutMs: 1000 });
-    reservation = await panes.display(slot, f.viewer, { timeoutMs: 1000 }); blocked = true;
-    await expect(panes.release(reservation)).rejects.toMatchObject({ code: 'pane-removal-timeout', message: expect.stringContaining('terminal.park did not remove t2') });
-    if (stage !== 'missing-removal') expect(signal?.aborted).toBe(true);
+    const reservation = await panes.display(slot, f.viewer, { timeoutMs: 1000 });
+    // Read the fake hc reply before either 300 ms budget starts.
+    viewerTerminal = await f.hc.get(f.viewer);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    blocked = true;
+    let outcome: unknown;
+    void panes.release(reservation).then(
+      () => { outcome = { status: 'resolved' }; },
+      (error: unknown) => { outcome = { status: 'rejected', error }; },
+    );
+    await vi.advanceTimersByTimeAsync(299);
+    expect(outcome).toBeUndefined();
+    expect(signal?.aborted).toBe(false);
+    if (stage !== 'missing-removal') expect(lateReply).toBeTypeOf('function');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(outcome).toEqual({
+      status: 'rejected',
+      error: expect.objectContaining({ code: 'pane-removal-timeout', details: { terminal: f.viewer, timeoutMs: 300 } }),
+    });
+    expect(signal?.aborted).toBe(true);
+
     removed = true; blocked = false; lateReply?.();
     await expect(panes.release(reservation)).resolves.toBeUndefined();
+    vi.useRealTimers();
     expect((await f.hc.get(f.viewer)).state).toBe('live');
   } finally {
-    clearTimeout(late); removed = true; blocked = false; lateReply?.();
-    if (reservation) await panes.release(reservation).catch(() => {});
-    await panes.dispose(); await f.hc.dispose(); await f.close();
+    removed = true; blocked = false; lateReply?.();
+    try {
+      if (vi.isFakeTimers()) await vi.runOnlyPendingTimersAsync();
+    } finally {
+      vi.useRealTimers();
+      try { await panes.dispose(); } finally { await f.hc.dispose(); await f.close(); }
+    }
   }
 }, 5000);

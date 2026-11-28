@@ -320,21 +320,23 @@ describe('CI acceptance contract', () => {
     }
   });
 
-  it('runs four PR test groups beside compile, then requires agreement', () => {
+  it('runs four PR test groups from a shared selection and keeps the audit upload out of the required check', () => {
     const pr = workflow('pr');
     expect(pr.on).toEqual({ pull_request: { branches: ['main'] } });
-    expect(Object.keys(pr.jobs).sort()).toEqual(['checks', 'compile', 'tests']);
+    expect(Object.keys(pr.jobs).sort()).toEqual(['checks', 'compile', 'save-selection', 'select', 'tests']);
     expect(pr.jobs.compile!.name).toBe('compile');
     expect(step(pr.jobs.compile!, 'Herdr acceptance typecheck')?.run ?? '').toContain('npm run typecheck:herdr:e2e');
     expect(step(pr.jobs.compile!, 'Check workflow contract')?.run ?? '').toContain('packages/herdr/e2e/controls/ci-contract.test.ts');
     expect(step(pr.jobs.compile!, 'Check workflow contract')?.run ?? '').toContain('--config packages/herdr/e2e/vitest.config.ts');
     expect(pr.jobs.tests!.strategy!.matrix.group).toEqual([1, 2, 3, 4]);
     expect(pr.jobs.tests!.if).toBeUndefined();
-    expect(pr.jobs.tests!.needs).toBeUndefined();
+    expect(pr.jobs.tests!.needs).toEqual(['select']);
     expect(pr.jobs.checks!.name).toBe('typecheck · test · build');
-    expect(pr.jobs.checks!.needs).toEqual(['compile', 'tests']);
+    expect(pr.jobs.checks!.needs).toEqual(['compile', 'select', 'tests']);
     expect(pr.jobs.checks!.if).toBe('always()');
-    expect(step(pr.jobs.checks!, 'Require identical PR selections').run).toContain('scripts/selection/aggregate.mjs');
+    expect(pr.jobs.checks!.steps).toHaveLength(1);
+    expect(pr.jobs.checks!.steps[0]!.uses).toBeUndefined();
+    expect(pr.jobs['save-selection']!.needs).toEqual(['select', 'tests']);
     for (const job of Object.values(pr.jobs)) for (const item of job.steps) {
       expect(item.run ?? '').not.toMatch(/npm run (?:-s )?(?:test:e2e|test:herdr:e2e:ci)/);
       if (item.name !== 'Check workflow contract') expect(item.run ?? '').not.toContain('--config packages/herdr/e2e/vitest.config.ts');
@@ -384,9 +386,9 @@ describe('CI acceptance contract', () => {
   });
 
   it('selects from the base commit and runs the full head inventory if the base has no selector', () => {
-    const tests = workflow('pr').jobs.tests!;
-    const select = step(tests, 'Select affected tests');
-    const headCheckout = tests.steps.find(item => item.uses === 'actions/checkout@v4');
+    const selection = workflow('pr').jobs.select!;
+    const select = step(selection, 'Select affected tests');
+    const headCheckout = selection.steps.find(item => item.uses === 'actions/checkout@v4');
     expect(headCheckout?.with).toMatchObject({ ref: '${{ github.event.pull_request.head.sha }}',
       'fetch-depth': 0, 'persist-credentials': false });
     expect(select.env?.BASE_SHA).toBe('${{ github.event.pull_request.base.sha }}');
@@ -438,7 +440,7 @@ writeFileSync(output, JSON.stringify({ marker, base, head, changes, policy: read
       mkdirSync(join(root, '.spider/scratch/test-results'), { recursive: true });
       const run = (baseSha: string): Record<string, unknown> => {
         const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', select.run!], { cwd: root,
-          env: { ...process.env, RUNNER_TEMP: temp, BASE_SHA: baseSha, GITHUB_STEP_SUMMARY: join(directory, 'summary') }, encoding: 'utf8' });
+          env: { ...process.env, RUNNER_TEMP: temp, BASE_SHA: baseSha, GITHUB_OUTPUT: join(directory, 'output'), GITHUB_STEP_SUMMARY: join(directory, 'summary') }, encoding: 'utf8' });
         expect(result.status, result.stderr).toBe(0);
         return JSON.parse(readFileSync(output, 'utf8')) as Record<string, unknown>;
       };
@@ -457,7 +459,7 @@ writeFileSync(output, JSON.stringify({ marker, base, head, changes, policy: read
       if (!job.uses) expect(job['timeout-minutes']).toBeGreaterThan(0);
     }
     const expected = { ci: { checks: 2, compile: 10, test: 25, 'herdr-acceptance': 10, chrome: 10, audit: 5 },
-      pr: { compile: 10, tests: 30, checks: 5 } };
+      pr: { compile: 10, select: 10, tests: 30, checks: 5, 'save-selection': 5 } };
     for (const [name, jobs] of Object.entries(expected)) for (const [id, timeout] of Object.entries(jobs)) {
       expect(workflow(name).jobs[id]!['timeout-minutes'], `${name}:${id}`).toBe(timeout);
     }

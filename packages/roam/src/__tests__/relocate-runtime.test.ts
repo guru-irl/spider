@@ -415,7 +415,7 @@ describe("v0 local runtime",()=>{
   recordLocation(f.options.globalDb,{sessionId:id,stores:placement.stores,home:moving,file:placement.file,cwd:placement.cwd});
   let entered!:()=>void,release!:()=>void;
   const stopping=new Promise<void>(done=>entered=done),gate=new Promise<void>(done=>release=done);
-  f.io.claimFree=async()=>{entered();await gate;};
+  f.io.writerBlockers=async()=>{entered();await gate;return [];};
   const installer=createLocalRuntime(f.options,f.io),supervisor=createLocalRuntime(f.options,f.io);
   const stop=supervisor.stop(id);await stopping;
   const activate=installer.activate(f.home,placement);

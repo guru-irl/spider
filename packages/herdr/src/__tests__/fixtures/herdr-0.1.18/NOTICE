@@ -1,0 +1,6 @@
+Built-in assets and Herdr declarations from Herdr 0.1.18 by the Herdr authors.
+Licensed under the Apache License, Version 2.0.
+The complete license is at licenses/herdr-apache-2.0.txt in the repository root.
+Source: https://github.com/herdrdev/herdr-app/tree/9a9ae13d998e6ed74c76e8eb13bdeb2e1420f50c/defaults
+The layout and macOS keys omit the trailing newline, as in the embedded defaults.
+SHA-256 digests are recorded in source-hashes.json.

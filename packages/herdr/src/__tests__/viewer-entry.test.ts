@@ -53,13 +53,15 @@ async function fixture() {
   return { launch, root, owner, id, endpoint, feed };
 }
 
-test('the actual viewer entry renders the saved task and markdown with a pi footer', async () => {
+test('the actual viewer entry renders the saved task and markdown with the spider footer', async () => {
   const f = await fixture(); const viewer = f.launch();
   await vi.waitFor(() => expect(viewer.output()).toContain('REPLAY_TASK'), { timeout: 5000 });
   expect(viewer.output()).toContain('REPLAY_MARKDOWN');
   expect(viewer.output()).not.toContain('**MARKDOWN**');
   expect(viewer.output()).toContain('repair retry'); expect(viewer.output()).toContain('planner');
-  expect(viewer.output()).toContain('↑1.2k'); expect(viewer.output()).toContain('model-one');
+  expect(viewer.output()).toContain('1.3k context'); expect(viewer.output()).toContain('? AIC');
+  expect(viewer.output()).toContain('model-one');
+  expect(viewer.output()).not.toContain('↑1.2k');
   expect(viewer.error()).toBe('');
 });
 

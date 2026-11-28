@@ -28,6 +28,7 @@ interface Deps {
   formatRunCost?: RunCostFormatter;
   iconStyle?: IconStyle;
   spiderGlyphs?: boolean;
+  modelName?: (model: string) => string | undefined;
   piVersion?: string;
 }
 
@@ -189,7 +190,7 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
       ctx.ui.setWidget(WIDGET, (tui: unknown, theme: unknown) => {
         const widgetTui = tui as TUI;
         footerTui = widgetTui;
-        const footer = new AgentFooter(store, piTheme(theme as never, deps.iconStyle, deps.spiderGlyphs));
+        const footer = new AgentFooter(store, piTheme(theme as never, deps.iconStyle, deps.spiderGlyphs, deps.modelName));
         const stop = selfTick(tui, store);
         return {
           render: (width: number) => footer.render(width),
@@ -348,7 +349,7 @@ export function installAgentsUI(pi: HostPi, ctx: { ui: HostUi }, deps: Deps): ()
         state.done = () => done();
         const terminal = tui as TUI;
         state.preFocus = previousFocus(terminal);
-        const view = new AgentDetail(runId, piTheme(theme as never, deps.iconStyle, deps.spiderGlyphs), {
+        const view = new AgentDetail(runId, piTheme(theme as never, deps.iconStyle, deps.spiderGlyphs, deps.modelName), {
           viewport: () => {
             const current = geometry?.read();
             return { safeHeight: current?.kind === "ready" ? current.safeHeight : 0 };

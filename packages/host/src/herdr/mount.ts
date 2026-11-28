@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { resolvePiPackageRoot } from '../../../subagents/src/pi-spawn.js';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { createBashTool, createLocalBashOperations, getAgentDir } from '@earendil-works/pi-coding-agent';
+import { colorToHex } from '@earendil-works/pi-tui';
 import { bus, openGlobal, openGlobalReadOnly, openRepo, resolveProject, paths } from '@spider/db-core';
 import { RunStore, makeKillHandler, makeMessageHandler, teardownSessionAsync } from '@spider/subagents';
 import { processStartTime } from '../../../subagents/src/process-identity.js';
@@ -60,6 +61,8 @@ import { createHerdrViews } from './views.js';
 import { openSessionHistoryDb } from '../session-run-db.js';
 import { loadedBuildPresence } from '../roam/build-presence.js';
 import { controlConfig, configValues, modelDefaultLayers } from '../control.js';
+import { modelContextWindow, modelName } from '../model-name.js';
+import { ACCENTS, storedAccent } from '../accent/palette.js';
 import { mountChildHerdr } from './child.js';
 import { coreStartedAt, disabledHerdrEnvironment, verifiedHerdrFile, readAppLayout, createHostHerdrPorts, createProcessInventory, explicitExtensionArguments, readJobJournal, openRunView, type HostHerdrOptions, type HostHerdrPorts } from './ports.js';
 
@@ -119,6 +122,23 @@ export function effectiveHerdrConfigPath(cwd: string, ctx?: ExtensionContext): s
   if (typeof configured === 'string' && configured) return resolve(paths.globalRoot, configured);
   const standard = standardHerdrConfigPath();
   return existsSync(standard) ? standard : null;
+}
+
+export function viewerAppearance(ctx: ExtensionContext) {
+  return {
+    iconStyle: (): 'text' | 'nerd' => {
+      try { return configValues(ctx.cwd).config['ui.icons'] === 'nerd' ? 'nerd' : 'text'; } catch { return 'text'; }
+    },
+    inputBand: (): boolean => {
+      try { return configValues(ctx.cwd).config['ui.inputBand'] !== false; } catch { return true; }
+    },
+    accent: (): string | undefined => {
+      try {
+        const color = ctx.mode === 'tui' && ctx.hasUI ? ctx.ui.theme?.colors?.accent : undefined;
+        return color ? ACCENTS.find(accent => accent.hex === colorToHex(color))?.id : storedAccent(configValues(ctx.cwd).config['ui.accent'])?.id;
+      } catch { return undefined; }
+    },
+  };
 }
 
 export async function resolveRealSshBinary(env: Readonly<NodeJS.ProcessEnv>, shimDirectory: string): Promise<string> {
@@ -527,7 +547,9 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
       remoteFiles = createRemoteFileResolver(hc, config.machines, { manager: ctx.sessionManager ?? ctx, id: owner.sessionId });
       output = createHostHerdrPorts({ hc, config, runtimeBytes: Buffer.alloc(0), runtimePath: on => runtimePath(on) });
       transcript = createRunTranscriptSource({ owner: () => owner, resolveDb: bindDb, openBindingDb: openGlobalReadOnly, transcriptRoots: o => [paths.scratch('project', o.cwd)].filter(root => existsSync(root)),
-        modelContextWindow: model => { const slash = model.indexOf('/'); return slash < 0 ? undefined : ctx.modelRegistry?.find(model.slice(0, slash), model.slice(slash + 1))?.contextWindow; } });
+        modelContextWindow: model => modelContextWindow(ctx.modelRegistry, model),
+        modelName: model => modelName(ctx.modelRegistry, model), creditFactor: () => options.viewerCreditFactor?.() ?? null,
+        ...viewerAppearance(ctx) });
       inactiveNotice(ctx, false, 'activation-problem');
       stopped = false; activationEnv = env;
       const activeOwner = owner;

@@ -87,12 +87,14 @@ it("passes pi's renderer and spacing classes and clipboard into the native bundl
 
 it("forwards the active host exports for the transcript even without copy buttons", async () => {
   const f = fixture();
-  const host = { CustomEditor: class CustomEditor {}, UserMessageComponent: class UserMessageComponent {},
+  const host = { CustomEditor: class CustomEditor {}, InteractiveMode: class InteractiveMode {}, UserMessageComponent: class UserMessageComponent {},
+    AssistantMessageComponent: f.context.piHost.AssistantMessageComponent,
     CustomMessageComponent: class CustomMessageComponent {}, ToolExecutionComponent: f.context.piHost.ToolExecutionComponent,
     CompactionSummaryMessageComponent: class CompactionSummaryMessageComponent {},
     BranchSummaryMessageComponent: class BranchSummaryMessageComponent {},
     SkillInvocationMessageComponent: class SkillInvocationMessageComponent {} };
-  const tui = { Box: class Box {}, Text: class Text {}, Markdown: f.context.piTui.Markdown };
+  const tui = { Box: class Box {}, Text: class Text {}, Markdown: f.context.piTui.Markdown,
+    Spacer: f.context.piTui.Spacer, TruncatedText: class TruncatedText {} };
   Object.assign(f.context.piHost, host, { copyToClipboard: undefined });
   Object.assign(f.context.piTui, tui);
   expect(await f.context.load()).toBe("native");

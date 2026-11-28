@@ -546,29 +546,11 @@ test('packs four groups longest first using the median recording for a new file'
   assert.equal((await fixture({ ...options, inventory: [...options.inventory].reverse() })).selectionHash, result.selectionHash);
 });
 
-test('requires successful compile and four numbered runners agreeing with the uploaded manifest', async () => {
+test('rejects selections changed after hashing or made for a different checkout', async () => {
   const result = await fixture({ changes: [changed(a)] });
-  const needs = { compile: { result: 'success' }, tests: { result: 'success' } };
-  const hashes = [1, 2, 3, 4].map(group => ({ group, selectionHash: result.selectionHash }));
-  assert.equal(manifest.requireAgreement({ needs, hashes, selection: result, head }), result.selectionHash);
-  for (const state of ['skipped', 'failure', 'cancelled']) {
-    assert.throws(() => manifest.requireAgreement({ needs: { ...needs, tests: { result: state } }, hashes, selection: result, head }));
-    assert.throws(() => manifest.requireAgreement({ needs: { ...needs, compile: { result: state } }, hashes, selection: result, head }));
-  }
-  assert.throws(() => manifest.requireAgreement({ needs, hashes: hashes.slice(1), selection: result, head }));
-  assert.throws(() => manifest.requireAgreement({ needs, hashes: [hashes[0], ...hashes.slice(0, 3)], selection: result, head }));
-  assert.throws(() => manifest.requireAgreement({ needs, hashes: [...hashes.slice(0, 3), { group: 4, selectionHash: 'wrong' }], selection: result, head }));
-  assert.throws(() => manifest.requireAgreement({ needs, hashes, selection: { ...result, changedFiles: [] }, head }));
-  assert.throws(() => manifest.requireAgreement({ needs, hashes, selection: result, head: base }));
-});
-
-test('reports the runner map and fallback when selections disagree', async () => {
-  const result = await fixture({ changes: [changed(a)] });
-  const needs = { compile: { result: 'success' }, tests: { result: 'success' } };
-  const hashes = [1, 2, 3, 4].map(group => ({ group, selectionHash: result.selectionHash, mapRunId: '44', fallback: null }));
-  hashes[2] = { group: 3, selectionHash: 'a'.repeat(64), mapRunId: null, fallback: 'selection-map lookup failed' };
-  assert.throws(() => manifest.requireAgreement({ needs, hashes, selection: result, head }),
-    /group 3.*selection-map lookup failed/);
+  assert.equal(manifest.validateSelection(result, head), result);
+  assert.throws(() => manifest.validateSelection({ ...result, changedFiles: [] }, head), /hash/);
+  assert.throws(() => manifest.validateSelection(result, base), /different checkout/);
 });
 
 test('rejects unsafe changed paths before they enter the audit summary', async () => {

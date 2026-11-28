@@ -287,8 +287,10 @@ export async function stopLocalSession(sessionId: SessionId, moving: MovingHome 
         await io.pause(Math.min(100,Math.max(1,deadline-clock.now())));
       }
     }
-    // claimIdLock handles dead owners and stale records; never unlink a lock.
-    await io.claimFree(sessionId);
+    // An empty stop check must not publish ownership of the session ID:
+    // an incoming install may need to claim it while the home is moving.
+    // Use the existing claim/release only to clear a remaining record.
+    if (await io.inspect(sessionId)) await io.claimFree(sessionId);
     for (;;) {
       const remaining = await liveTerminals();
       if (!remaining.length) break;

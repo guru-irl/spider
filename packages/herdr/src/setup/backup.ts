@@ -229,6 +229,7 @@ export interface SetupJournal {
   fingerprint: string | null;
   probes: NodeObservation[];
   runtimeRootProbes?: RuntimeRootObservation[];
+  pendingRuntimes?: NodeObservation['machine'][];
   cutover: CutoverResult | null;
   cutoverFingerprint?: string;
   launcherNodePath?: string;
@@ -534,7 +535,13 @@ export async function readJournal(root: string): Promise<SetupJournal> {
       return { path, destination, state: 'created', dev: stage.dev as number, ino: stage.ino as number, ...(stage.removing === true ? { removing: true } : {}) };
     });
   })();
-  return { version: 1, entries, probes, cutover, runtimes, ...(modStages === undefined ? {} : { modStages }), ...(modDirectories === undefined ? {} : { modDirectories }), ...(j.runtimeRootProbes === undefined ? {} : { runtimeRootProbes: runtimeRootObservations(j.runtimeRootProbes) }), ...(j.cutoverFingerprint === undefined ? {} : { cutoverFingerprint: text(j.cutoverFingerprint) }), ...(j.launcherNodePath === undefined ? {} : { launcherNodePath: text(j.launcherNodePath) }), fingerprint: j.fingerprint === null ? null : text(j.fingerprint), verified: j.verified, cutoverPending: j.cutoverPending, retiredTerminals: j.retiredTerminals.map(v => text(v) as TerminalAddress) };
+  const pendingRuntimes = j.pendingRuntimes === undefined ? undefined : (() => {
+    if (!Array.isArray(j.pendingRuntimes)) throw new HerdrError('setup-journal-invalid', 'Invalid pending runtimes');
+    const names = j.pendingRuntimes.map(value => text(value) as NodeObservation['machine']);
+    if (new Set(names).size !== names.length) throw new HerdrError('setup-journal-invalid', 'Duplicate pending runtime');
+    return names;
+  })();
+  return { version: 1, entries, probes, cutover, runtimes, ...(pendingRuntimes === undefined ? {} : { pendingRuntimes }), ...(modStages === undefined ? {} : { modStages }), ...(modDirectories === undefined ? {} : { modDirectories }), ...(j.runtimeRootProbes === undefined ? {} : { runtimeRootProbes: runtimeRootObservations(j.runtimeRootProbes) }), ...(j.cutoverFingerprint === undefined ? {} : { cutoverFingerprint: text(j.cutoverFingerprint) }), ...(j.launcherNodePath === undefined ? {} : { launcherNodePath: text(j.launcherNodePath) }), fingerprint: j.fingerprint === null ? null : text(j.fingerprint), verified: j.verified, cutoverPending: j.cutoverPending, retiredTerminals: j.retiredTerminals.map(v => text(v) as TerminalAddress) };
 }
 export async function saveJournal(root: string, journal: SetupJournal): Promise<void> {
   const path = join(root, 'journal.json');
@@ -653,6 +660,8 @@ export async function validateFiles(files: readonly InstallFile[], journal: Setu
       throw new HerdrError('duplicate-install-path', `Repeated target: ${f.path}`);
     seen.add(f.path);
     const current = await snapshot(f.path);
+    if (f.observedTargetHash !== undefined && current.hash !== f.observedTargetHash)
+      throw new HerdrError('concurrent-settings-edit', `Changed after staging: ${f.path}`);
     if (f.copyFrom) { actions.push({ path: f.path, action: current.bytes === null ? 'write' : 'unchanged' }); continue; }
     const prior = journal.entries.find(e => e.path === f.path);
     const identical = current.hash === digest(f.bytes);

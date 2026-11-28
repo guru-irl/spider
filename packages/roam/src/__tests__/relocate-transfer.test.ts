@@ -4,6 +4,7 @@ import * as childProcess from "node:child_process";
 import { once } from "node:events";
 import * as handoff from "@spider/herdr/jobs/handoff";
 import * as hcApi from "@spider/herdr/client/hc";
+import { claimIdLock, inspectIdLock, localBootId } from "@spider/herdr/sessions/id-lock";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -26,11 +27,11 @@ vi.mock("node:child_process", async importOriginal => {
 });
 const id="33333333-3333-4333-8333-333333333333" as SessionId;
 function stopFixture() {
- let now=0, exits=false, probes=0;
+ let now=0, exits=false, reclaimed=false, probes=0;
  const owner={identity:{pid:42,startIdentity:"pi-42"},bootId:"boot",pendingOperationId:null,pendingFile:null,pendingCoreId:null,operationId:null};
  const signals:number[]=[];
  const events:string[]=[];
- const io:LocalIO={inspect:async()=>exits?null:owner,probe:async()=>{probes++;return exits?{kind:"absent"}:{kind:"live",startIdentity:"pi-42",pi:true};},claimFree:async()=>{events.push("lock-free");},signal:async pid=>{signals.push(pid);events.push("signal");},shutdown:async()=>{events.push("shutdown");return false;},pause:async()=>{events.push("wait");now+=10;if(now>=20)exits=true;},terminals:async()=>exits?[]:[{terminal:"t",state:"live",pid:42,owned:true}],tree:async()=>({descendants:[],groups:[]}),groupBlockers:async()=>[],writerBlockers:async()=>[],launch:async()=>({terminal:"t"})};
+ const io:LocalIO={inspect:async()=>reclaimed?null:owner,probe:async()=>{probes++;return exits?{kind:"absent"}:{kind:"live",startIdentity:"pi-42",pi:true};},claimFree:async()=>{reclaimed=true;events.push("lock-free");},signal:async pid=>{signals.push(pid);events.push("signal");},shutdown:async()=>{events.push("shutdown");return false;},pause:async()=>{events.push("wait");now+=10;if(now>=20)exits=true;},terminals:async()=>exits?[]:[{terminal:"t",state:"live",pid:42,owned:true}],tree:async()=>({descendants:[],groups:[]}),groupBlockers:async()=>[],writerBlockers:async()=>[],launch:async()=>({terminal:"t"})};
  return {io,signals,events,clock:{now:()=>now,later:()=>()=>{}},owner,get probes(){return probes;}};
 }
 const fixtures: {close():void}[]=[];
@@ -113,6 +114,71 @@ describe("v0 real transfer",()=>{
   expect(f.git(f.sourceRoot,"rev-parse","HEAD")).toBe(head);expect(f.git(f.sourceRoot,"symbolic-ref","HEAD")).toBe(branch);expect(f.git(f.sourceRoot,"write-tree")).toBe(index);
   expect(readFileSync(join(f.sourceRoot,"file.txt"),"utf8")).toBe("unstaged\n");expect(readFileSync(join(f.sourceRoot,"untracked.txt"),"utf8")).toBe("untracked\n");expect(readFileSync(f.file)).toEqual(body);
   expect(await captureLocalSession(f.plan,f.options,async()=>({kind:"free"}))).toEqual(result);
+ });
+ const longInstallMessage = "The install lock rejected the session. ".repeat(20);
+ it.each([
+  {label: "bounded", message: longInstallMessage, expected: longInstallMessage.slice(0, 512)},
+  {label: "path-bearing", message: "Could not open '/outside roots/private.json'", expected: "[private error message omitted]"},
+  {label: "credential-bearing", message: "DATABASE_PASSWORD: fixture-phrase", expected: "[private error message omitted]"},
+  {label: "authorization-bearing", message: "Basic Zml4dHVyZTplbnRyeQ", expected: "[private error message omitted]"},
+ ])("records a $label destination install error without changing the public refusal", async ({message, expected}) => {
+  const f = transferFixture();
+  const captured = await captureLocalSession(f.plan, f.options, async () => ({kind: "free"}));
+  if (!captured.ok) throw new Error(JSON.stringify(captured));
+  for (const manifest of [captured.value.transcriptArtifact, captured.value.bundleArtifact]) {
+   await receiveArtifactLocally(manifest, f.options, f.destination);
+  }
+  const failLock = async () => { throw Object.assign(new TypeError(message), {code: "EACCES"}); };
+
+  expect(await installLocalSession(f.plan, captured.value, f.home, f.destination, failLock, async () => ({kind: "free"}))).toMatchObject({
+   ok: false, refusal: {code: "install-failed", message: "The verified destination files could not be installed."},
+  });
+  expect(f.destination.journal.read(f.plan.moveId).filter(row => row.action === "relocate-install-error")).toEqual([
+   {action: "relocate-install-error", result: {name: "TypeError", code: "EACCES", message: expected, lastCompleted: "session-staged"}},
+  ]);
+  expect(f.options.journal.read(f.plan.moveId).some(row => row.action === "relocate-install-error")).toBe(false);
+ });
+ it("installs while the destination supervisor checks an already empty session", async () => {
+  const f = transferFixture();
+  const captured = await captureLocalSession(f.plan, f.options, async () => ({kind: "free"}));
+  if (!captured.ok) throw new Error(JSON.stringify(captured));
+  for (const manifest of [captured.value.transcriptArtifact, captured.value.bundleArtifact]) {
+   await receiveArtifactLocally(manifest, f.options, f.destination);
+  }
+  const root = join(f.destination.root, "herdr");
+  let reachedCheck!: () => void, releaseStop!: () => void;
+  const checking = new Promise<void>(resolve => { reachedCheck = resolve; });
+  const finish = new Promise<void>(resolve => { releaseStop = resolve; });
+  const waitForInstall = async () => { reachedCheck(); await finish; };
+  const stopIo: LocalIO = {
+   ...stopFixture().io,
+   inspect: sessionId => inspectIdLock(root, sessionId),
+   terminals: async () => [],
+   writerBlockers: async () => { await waitForInstall(); return []; },
+   async claimFree(sessionId) {
+    // The test shares a pid. A distinct identity models the other local process.
+    const held = await claimIdLock(root, sessionId, {pid: process.pid, startIdentity: "supervisor"}, probeLocalProcess, {bootId: localBootId});
+    try { await waitForInstall(); } finally { await held.release(); }
+   },
+  };
+  let stop: ReturnType<typeof stopLocalSession> | undefined;
+  const run = f.destination.workspaceImport.run;
+  f.destination.workspaceImport.run = async (cwd, argv, options) => {
+   if (!stop && argv.join(" ") === "git rev-parse --abbrev-ref HEAD") {
+    stop = stopLocalSession(id, null, stopIo, f.destination.clock, 30);
+    await Promise.race([checking, stop]);
+   }
+   return run(cwd, argv, options);
+  };
+  try {
+   const installed = await installLocalSession(f.plan, captured.value, f.home, f.destination, undefined, async () => ({kind: "free"}));
+   const diagnostic = f.destination.journal.read(f.plan.moveId).find(row => row.action === "relocate-install-error");
+   expect(installed, JSON.stringify(diagnostic?.result)).toMatchObject({ok: true});
+   expect(readFileSync(f.plan.destinationPlacement.file, "utf8")).toContain("synthetic");
+  } finally {
+   releaseStop();
+   await expect(stop).resolves.toEqual({ok: true, value: undefined});
+  }
  });
  it.each([false,true])("install rewrites only the header and preserves the exact body (linked=%s)",async(linked)=>{
   const f=transferFixture(linked),captured=await captureLocalSession(f.plan,f.options,async()=>({kind:"free"}));if(!captured.ok)throw new Error(JSON.stringify(captured));
@@ -239,7 +305,6 @@ describe("v0 transfer stop boundary",()=>{
    if (exited) { f.events.push("root-absent"); return {kind: "absent"}; }
    return probe(pid);
   };
-  f.io.inspect = async () => exited ? null : f.owner;
   f.io.terminals = async () => exited ? [] : [{terminal: "t", state: "live", pid: 42, owned: true}];
   f.io.signal = async pid => {
    f.signals.push(pid);

@@ -47,6 +47,23 @@ it('reports the original sample time to pending and late subscribers', async () 
   reply(f.worker, 1, panelValue(at + 30000));
   expect(await next).toMatchObject({ sampledAt: at + 30000 });
 });
+it('bounds the quit usage read and accepts only its own worker reply', async () => {
+  const f = await panelFixture(), to = Date.now(), from = to - 90_000;
+  expect(f.runtime.readVisit).toBeTypeOf('function');
+  const pending = f.runtime.readVisit('human', from, to);
+  expect(f.worker.commands).toEqual([{ type: 'visit-usage', requestId: 1, sessionId: 'human', from, to }]);
+  f.worker.emit('message', { type: 'visit-usage', requestId: 99, data: { credits: -1 } });
+  const value = { credits: 5, calls: 1, unpricedCalls: 0, tokens: { input: 1, cacheRead: 2, cacheWrite: 3, output: 4, reasoning: null, cacheWrite1h: null, prompt: 6, total: 10 } };
+  f.worker.emit('message', { type: 'visit-usage', requestId: 1, data: value });
+  expect(await pending).toEqual(value);
+  const noReply = f.runtime.readVisit('human', from, to);
+  await vi.advanceTimersByTimeAsync(350);
+  expect(await noReply).toBeNull();
+  const goingAway = f.runtime.readVisit('human', from, to);
+  const shutdown = f.runtime.stop(); f.worker.emit('message', { type: 'stopped' });
+  await shutdown;
+  expect(await goingAway).toBeNull();
+});
 it('shares pending and completed panel work without sharing mutable results', async () => {
   const f = await panelFixture(), at = Date.now();
   const first = f.runtime.readPanel(at, 'human'), second = f.runtime.readPanel(at + 1, 'human');

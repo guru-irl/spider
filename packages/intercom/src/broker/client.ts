@@ -253,7 +253,10 @@ export class IntercomClient extends EventEmitter {
       const onSocketError = (err: Error) => {
         if (connectionEstablished) {
           this.disconnectError = err;
-          this.emit("error", err);
+          const code = (err as NodeJS.ErrnoException).code;
+          if (!this.disconnecting || (code !== "EPIPE" && code !== "ECONNRESET")) {
+            this.emit("error", err);
+          }
           // A socket error after registration means the connection is dead.
           // Destroy the socket so onClose fires and emits "disconnected",
           // driving the extension's reconnect path. Without this, a half-open
@@ -595,8 +598,12 @@ export class IntercomClient extends EventEmitter {
       socket.once("error", onError);
 
       try {
-        writeMessage(socket, { type: "unregister" });
-        socket.end();
+        if (socket.readableEnded || socket.destroyed || socket.writableEnded || !socket.writable) {
+          socket.destroy();
+        } else {
+          writeMessage(socket, { type: "unregister" });
+          socket.end();
+        }
       } catch {
         // Disconnect should still finish even if the unregister write fails.
         socket.destroy();

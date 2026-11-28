@@ -43,7 +43,8 @@ function records(raw) {
   });
 }
 
-function fixtureRecords(t, { snapshots = [], results = [], hookErrors = '', launches = [], kernelTrace, ringEvents, trackedInputs = [] } = {}) {
+function fixtureRecords(t, { snapshots = [], results = [], hookErrors = '', launches = [], kernelTrace,
+  kernelStatus, ringEvents, trackedInputs = [] } = {}) {
   const { root, raw, maps, workspace } = fixture(t);
   writeFileSync(join(root, 'dist/reference.mjs'), 'export {};');
   writeFileSync(join(maps, 'reference.mjs.map'), JSON.stringify({ version: 3, sources: [], names: [], mappings: '' }));
@@ -63,7 +64,8 @@ function fixtureRecords(t, { snapshots = [], results = [], hookErrors = '', laun
     execFileSync('git', ['init', '-q'], { cwd: root });
     for (const file of trackedInputs) writeFileSync(join(root, file), 'fixture');
     if (trackedInputs.length) execFileSync('git', ['add', '--', ...trackedInputs], { cwd: root });
-    writeFileSync(join(raw, 'kernel-mode'), 'linux-strace-v2\n');
+    writeFileSync(join(raw, 'kernel-mode'), kernelStatus === undefined ? 'linux-strace-v2\n' : 'linux-strace-v3\n');
+    if (kernelStatus !== undefined && kernelStatus !== null) writeFileSync(join(raw, 'kernel-status'), `${kernelStatus}\n`);
     writeFileSync(`${raw}.linux-trace`, kernelTrace.replaceAll('$ROOT', root));
     if (ringEvents) writeFileSync(`${raw}.io-uring`, ringEvents);
   }
@@ -678,6 +680,47 @@ ${extra}${exitLine}3 +++ exited with 0 +++
     assert.equal(record.incomplete, !complete);
     assert.equal(record.cpuMs, null);
     if (complete) assert.deepEqual(record.reads, ['native.txt']);
+  });
+}
+
+for (const [label, parent, rootExit, childExit, written, complete] of [
+  ['a lost syscall parent link', 3, true, true, 2, true],
+  ['a fork whose parent was not traced', 9, true, true, 2, false],
+  ['a missing root exit', 3, false, true, 2, false],
+  ['a child with no observed exit', 3, true, false, 2, false],
+  ['dropped kernel events', 3, true, true, 3, false],
+]) {
+  test(`joins independent fork evidence without excusing a missing exit: ${label}`, t => {
+    const { records } = fixtureRecords(t, {
+      results: [{ name: id }],
+      snapshots: [{ test: id, worker: true, pid: 3, cpuMs: 100, ended: true, paths: [] }],
+      trackedInputs: ['native.txt'],
+      kernelTrace: `1 clone(child_stack=NULL, flags=SIGCHLD) = 3
+4 openat(AT_FDCWD<$ROOT>, "native.txt", O_RDONLY) = 8<$ROOT/native.txt>
+${childExit ? '4 +++ exited with 0 +++\n' : ''}3 +++ exited with 0 +++
+${rootExit ? '1 +++ exited with 0 +++\n' : ''}`,
+      ringEvents: `# entries-in-buffer/entries-written: 2/${written}   #P:4
+ env-1 [001] .... 22.91180: sched_process_fork: comm=env pid=1 child_comm=env child_pid=3
+ node-${parent} [001] .... 22.92180: sched_process_fork: comm=node pid=${parent} child_comm=node child_pid=4
+`,
+    });
+    assert.equal(records[id].incomplete, !complete);
+    if (complete) assert.deepEqual(records[id].reads, ['native.txt']);
+  });
+}
+
+for (const [label, status] of [['no tracer status', null], ['inconsistent tracer status', 1]]) {
+  test(`keeps the fallback for a trace without matching completion evidence: ${label}`, t => {
+    const { records } = fixtureRecords(t, {
+      results: [{ name: id }],
+      snapshots: [{ test: id, worker: true, pid: 3, cpuMs: 100, ended: true, paths: [] }],
+      kernelStatus: status,
+      kernelTrace: `1 clone(child_stack=NULL, flags=SIGCHLD) = 3
+3 +++ exited with 0 +++
+1 +++ exited with 0 +++
+`,
+    });
+    assert.equal(records[id].incomplete, true);
   });
 }
 

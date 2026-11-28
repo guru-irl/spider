@@ -38,7 +38,7 @@ import { inspectHerdrShortcutCollisions } from '@spider/herdr/shortcuts/register
 import { HerdrLabelContract, HERDR_KINDS, HERDR_LABELS } from '@spider/herdr';
 import { readLayer, configValues } from '../control.js';
 import { paths } from '@spider/db-core';
-import { doctorHerdr, checkNodeVersion, paneCoreVersionSupported, inspectPaneCommands, inspectPaneServiceState, checkManagedKeyBindings, probeLaunch, type DoctorParts, type DoctorItem, type DoctorFailure, type DoctorInformation } from '@spider/herdr/setup/doctor';
+import { doctorHerdr, checkNodeVersion, paneCoreVersionSupported, inspectPaneCommands, inspectPaneServiceState, checkManagedKeyBindings, probeLaunch, type DoctorParts, type DoctorItem, type DoctorFailure, type DoctorInformation, type RuntimeInventory } from '@spider/herdr/setup/doctor';
 import { feedWriterLiveness } from '@spider/herdr/feed/writer';
 import { sessionFeedIsFresh } from '@spider/herdr/feed/freshness';
 import { snapshot, digest, managedProjection, rootNotesValue, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, applyFiles, missingKeyMapMessage, type KeyBinding, type KeyFields, type KeySections } from '@spider/herdr/setup/backup';
@@ -460,11 +460,17 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     }
     return files;
   };
-  const unreachableRuntimeMachines = async (request: SetupRequest): Promise<MachineName[]> => {
-    if (!request.config.machines.length) return [];
-    const inventory = await client(request).machines();
-    const connected = new Set(inventory.filter(machine => machine.state === 'connected').flatMap(machine => [machine.name, machine.id] as string[]));
-    return request.config.machines.filter(machine => !connected.has(machine.name)).map(machine => machine.name);
+  const runtimeInventory = async (request: SetupRequest): Promise<RuntimeInventory> => {
+    const unreachable: MachineName[] = [], missing: MachineName[] = [];
+    if (request.config.machines.length) {
+      const inventory = await client(request).machines();
+      for (const { name } of request.config.machines) {
+        const matches = inventory.filter(row => row.name === name || String(row.id) === String(name));
+        if (matches.length !== 1) missing.push(name);
+        else if (matches[0].state !== 'connected') unreachable.push(name);
+      }
+    }
+    return { unreachable, missing };
   };
   const targets = async (request: SetupRequest) => {
     const identity = await client(request).identity(); const epoch = await coreStartedAt(request.config.core.binary, env);
@@ -786,7 +792,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     return filesFor(files.map(file => ({ path: file.path, bytes: Buffer.from(file.content) })), context);
   };
   type FallbackLook = { selection: Awaited<ReturnType<typeof releaseLook>>; files: readonly InstallFile[]; skipped: ReadonlySet<string> };
-  const doctorParts = async (request: SetupRequest, fallback?: FallbackLook): Promise<DoctorParts> => ({ globalRoot, targets: () => targets(request), unreachableRuntimeMachines,
+  const doctorParts = async (request: SetupRequest, fallback?: FallbackLook): Promise<DoctorParts> => ({ globalRoot, targets: () => targets(request), runtimeInventory,
     placementRepairInspection: async () => {
       const hc = client(request), identity = await hc.identity();
       const app = createAppClient({ binary: request.config.app.binary, env: appEnv(request) });
@@ -1267,7 +1273,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         probeMachineNode: (_target, launch) => probe(request, launch),
         paneEndpointPlan: request => planPaneEndpointInstallation(request.config.globalRoot, packageRoot),
         stagePaneEndpoint: request => stagePaneEndpointInstallation(request.config.globalRoot, packageRoot),
-        unreachableRuntimeMachines,
+        runtimeInventory,
         ensureRuntime: async request => {
           const bytes = await readFile(join(packageRoot, 'dist/herdr/remote-runtime.mjs')), hash = sha256(bytes);
           return request.config.machines.map(machine => ({ machine: machine.name, path: runtimeInstallPath(machine.runtime.directory, bytes), bytes, sha256: hash }));

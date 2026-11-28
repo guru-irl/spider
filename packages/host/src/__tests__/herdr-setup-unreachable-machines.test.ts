@@ -38,6 +38,28 @@ async function remoteCalls(f: SetupFixture, start: number) {
   return (await f.h.calls()).slice(start).map(call => call.argv).filter(argv => argv.includes('--on') && argv.includes(remote));
 }
 
+async function omitRemote(f: SetupFixture) {
+  const { machines } = await f.h.cli(['machine', 'ls', '--json']) as { machines: { name: string }[] };
+  await f.h.scenario({ steps: [{ argvPrefix: ['machine', 'ls'], reply: { machines: machines.filter(row => row.name !== remote) } }] });
+}
+
+test('setup rejects a configured machine missing from the core inventory', async () => {
+  const f = await fixture();
+  await omitRemote(f);
+  await expect(apply(f)).rejects.toMatchObject({ code: 'machine-not-found' });
+});
+
+test('doctor reports a failure for a configured machine missing from the core inventory', async () => {
+  const f = await fixture();
+  await sleep(f);
+  await apply(f);
+  await f.h.scenario({});
+  await omitRemote(f);
+  const report = await doctorHerdr(f.request, await f.ports.doctorParts(f.request));
+  expect(report.failures).toEqual(expect.arrayContaining([expect.objectContaining({ message: expect.stringContaining(remote) })]));
+  expect(report.warnings.filter(row => row.code === 'runtime-unavailable')).toEqual([]);
+});
+
 test('setup skips a disconnected machine and still installs the local look, keys and mods', async () => {
   const f = await fixture();
   await sleep(f);

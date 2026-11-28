@@ -4,6 +4,7 @@ import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { HerdrError, object } from '../client/parse.js';
 import { rejectSymlinks, snapshot, verifiedBackup, type FileSnapshot, type SetupJournal } from './backup.js';
+import { checkpointBaseline, checkpointBytes, readCheckpoint } from './checkpoint.js';
 
 import { LEGACY_SPIDER_LAYOUT_FILE, SPIDER_LAYOUT, SPIDER_LAYOUT_FILE, legacySpiderLayoutPath, spiderLayoutPath } from '../look/names.js';
 
@@ -36,8 +37,6 @@ export async function readLegacyLayout(home: string, journalRoot: string, journa
 export async function readLayoutTargets(home: string, journalRoot: string, journal: SetupJournal, replaceChanged?: boolean) {
   const directory = join(home, 'layouts');
   const { aliases, legacy, replaceLegacy } = await readLegacyLayout(home, journalRoot, journal, replaceChanged);
-  if (legacy?.bytes && aliases.length)
-    throw new HerdrError('layout-name-conflict', `Both ${LEGACY_SPIDER_LAYOUT_FILE} and ${aliases.join(', ')} are in ${directory}. If setup was interrupted, run rollback --undo-upgrade. Otherwise move the conflicting ${SPIDER_LAYOUT_FILE} layout to a different name before retrying setup.`);
   const path = spiderLayoutPath(home);
   if (aliases.some(name => name !== SPIDER_LAYOUT_FILE) || aliases.length && !journal.entries.some(entry => entry.path === path && entry.after !== null))
     throw new HerdrError('layout-name-conflict', `Setup cannot use ${SPIDER_LAYOUT_FILE}: ${join(directory, aliases.join(', '))} is not a layout installed by setup. Move it out of layouts or rename it to a different stem, then rerun setup.`);
@@ -45,6 +44,15 @@ export async function readLayoutTargets(home: string, journalRoot: string, journ
   // Also check the pathname itself: a case-insensitive lookup can resolve an alias.
   if (target.bytes && !aliases.includes(SPIDER_LAYOUT_FILE))
     throw new HerdrError('layout-name-conflict', `Setup cannot use ${path}. Move the conflicting file out of layouts or rename it to a different stem, then rerun setup.`);
+  if (legacy && target.bytes) {
+    const owned = journal.entries.some(entry => entry.path === path && !entry.managed && entry.after === target.hash);
+    const checkpoint = owned ? await readCheckpoint(journalRoot) : null;
+    const before = checkpoint?.state === 'running' ? checkpointBaseline(checkpoint) : [];
+    const saved = before.find(file => file.path === legacySpiderLayoutPath(home));
+    if (!saved || saved.hash !== legacy.hash || saved.mode !== legacy.mode || !before.some(file => file.path === path && file.hash === null))
+      throw new HerdrError('layout-name-conflict', `Both ${LEGACY_SPIDER_LAYOUT_FILE} and ${SPIDER_LAYOUT_FILE} are in ${directory}, but setup cannot prove they are from the same interrupted migration. Inspect the files or run rollback --undo-upgrade before retrying setup.`);
+    await checkpointBytes(journalRoot, saved);
+  }
   return { legacy, target, replaceLegacy };
 }
 

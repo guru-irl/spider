@@ -5,6 +5,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { readKernelTrace } from './kernel-trace.mjs';
 
 const read = file => JSON.parse(readFileSync(file, 'utf8'));
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -76,17 +77,17 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
   const trees = new Map();
   const checkout = resolve(root);
   let tracked;
-  function treeInputs(url) {
-    const file = fileURLToPath(url);
-    const name = file === checkout ? '' : repoPath(root, file);
+  function trackedPaths() {
+    return tracked ??= execFileSync('git', ['ls-files', '-z'], { cwd: checkout, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
+      .split('\0').filter(Boolean);
+  }
+  function treeInputs(name) {
     if (name === null) return [];
     if (!trees.has(name)) {
-      tracked ??= execFileSync('git', ['ls-files', '-z'], { cwd: checkout, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
-        .split('\0').filter(Boolean);
       // A copy source may be a file. A listing of the checkout root reads
       // the entire tracked tree. Do not match siblings with the same prefix.
       const prefix = name ? `${name}/` : '';
-      trees.set(name, tracked.filter(path => path === name || path.startsWith(prefix)));
+      trees.set(name, trackedPaths().filter(path => path === name || path.startsWith(prefix)));
     }
     return trees.get(name);
   }
@@ -104,9 +105,17 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
     unresolvedBundles: 0,
     unresolvedGroups: { checkout: 0, temporary: 0, other: 0 },
   };
+  function unresolvedBundle(entry, url) {
+    const unresolved = unresolvedPath(root, tmpRoot, url);
+    entry.unresolved.add(unresolved.path);
+    stats.unresolvedBundles++;
+    stats.unresolvedGroups[unresolved.group]++;
+  }
   const group = file => {
-    if (!groups.has(file)) groups.set(file, { reads: new Set(), unresolved: new Set(), workerPids: new Set(), ranBundle: false,
-      processes: new Map(), threads: new Set(), observedThreads: new Set(), launches: new Set(), observedLaunches: new Set() });
+    if (!groups.has(file)) groups.set(file, { reads: new Set(), unresolved: new Set(), bundlePaths: new Set(),
+      workerPids: new Set(), ranBundle: false,
+      processes: new Map(), threads: new Set(), observedThreads: new Set(), readyThreads: new Map(), threadExits: new Set(),
+      launches: new Set(), observedLaunches: new Set(), versionProbes: new Set(), probeExits: new Set() });
     return groups.get(file);
   };
   const launches = join(rawDir, 'launches.ndjson');
@@ -118,8 +127,13 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
       if (!outcomes.has(launch.test)) continue;
       const entry = group(launch.test);
       if (launch.kind === 'process' && launch.launchId) entry.launches.add(launch.launchId);
-      else if (launch.kind === 'thread' && launch.processId && launch.threadId > 0) {
-        entry.threads.add(`${launch.processId}:${launch.threadId}`);
+      else if (launch.kind === 'process-intent' && launch.launchId && ['node', 'node-version'].includes(launch.argvClass)) {
+        if (launch.argvClass === 'node-version') entry.versionProbes.add(launch.launchId);
+      } else if (launch.kind === 'probe-exit' && launch.launchId) entry.probeExits.add(launch.launchId);
+      else if (['thread', 'thread-exit'].includes(launch.kind) && launch.processId && launch.threadId > 0) {
+        const thread = `${launch.processId}:${launch.threadId}`;
+        if (launch.kind === 'thread') entry.threads.add(thread);
+        else entry.threadExits.add(thread);
       } else stats.malformedSnapshots++;
     }
   }
@@ -137,13 +151,18 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
     const processId = proc.processId ?? `pid:${proc.pid}`;
     const process = entry.processes.get(processId) ?? { cpuMs: null, ended: false };
     if (Number.isFinite(proc.cpuMs) && proc.cpuMs >= 0) process.cpuMs = Math.max(process.cpuMs ?? 0, proc.cpuMs);
-    if ((proc.threadId ?? 0) === 0 && proc.ended) process.ended = true;
+    if ((proc.threadId ?? 0) === 0) {
+      process.pid = proc.pid;
+      process.ended ||= proc.ended === true;
+      process.captureReady ||= proc.captureReady === true;
+    }
     entry.processes.set(processId, process);
     if (proc.launchId) entry.observedLaunches.add(proc.launchId);
     if (proc.threadId > 0) {
       const thread = `${processId}:${proc.threadId}`;
       entry.threads.add(thread);
       if (proc.ended) entry.observedThreads.add(thread);
+      if (proc.captureReady) entry.readyThreads.set(thread, proc.pid);
     }
     for (const line of input.split('\n').filter(Boolean)) {
       let script;
@@ -156,6 +175,7 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
       }
       if (script.kind === 'bundle' || script.kind === 'fixture') {
         entry.ranBundle = true;
+        entry.bundlePaths.add(modulePath(script.url));
         if (script.sha256 && !maps.has(script.sha256) && !fixtures.has(script.sha256)) {
           const archive = join(rawDir, 'fixture-maps', `${script.sha256}.json`);
           const fixture = existsSync(archive) ? read(archive) : null;
@@ -164,14 +184,10 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
         const sources = maps.get(script.sha256) ?? fixtures.get(script.sha256);
         if (sources) {
           for (const source of sources) entry.reads.add(source);
-        } else {
-          const unresolved = unresolvedPath(root, tmpRoot, script.url);
-          entry.unresolved.add(unresolved.path);
-          stats.unresolvedBundles++;
-          stats.unresolvedGroups[unresolved.group]++;
-        }
+        } else unresolvedBundle(entry, script.url);
       } else if (script.kind === 'tree') {
-        for (const source of treeInputs(script.url)) entry.reads.add(source);
+        const file = fileURLToPath(script.url);
+        for (const source of treeInputs(file === checkout ? '' : repoPath(root, file))) entry.reads.add(source);
       } else {
         const source = repoPath(root, modulePath(script.url));
         if (source) entry.reads.add(source);
@@ -180,6 +196,29 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
   }
   // A journal without its startup checkpoint cannot be attributed to a test.
   stats.malformedSnapshots += journals.size;
+  const traceFile = `${resolve(rawDir)}.linux-trace`;
+  const traceMode = join(rawDir, 'kernel-mode');
+  let trace;
+  if (existsSync(traceMode)) {
+    const mode = readFileSync(traceMode, 'utf8').trim();
+    const statusPath = join(rawDir, 'kernel-status');
+    const status = mode === 'linux-strace-v3' && existsSync(statusPath) && readFileSync(statusPath, 'utf8').trim();
+    if (mode !== 'linux-strace-v2' && mode !== 'linux-strace-v3') trace = { error: 'unknown Linux trace format' };
+    else if (!existsSync(traceFile)) trace = { error: 'expected Linux trace missing' };
+    else if (mode === 'linux-strace-v3' && (!status || !/^[01]$/.test(status))) trace = { error: 'no successful tracer completion' };
+    else {
+      const owners = new Map();
+      for (const [file, entry] of groups) for (const pid of entry.workerPids) {
+        if (owners.has(pid)) trace = { error: 'ambiguous Vitest fork owner' };
+        owners.set(pid, file);
+      }
+      const ringFile = `${resolve(rawDir)}.io-uring`;
+      trace ??= readKernelTrace(traceFile, { root: checkout, tracked: trackedPaths(), owners,
+        ringFile: existsSync(ringFile) ? ringFile : undefined, tracerStatus: status ? Number(status) : undefined });
+    }
+    stats.kernelTrace = trace.error ?? 'observed';
+    if (trace.lifecycle) stats.kernelLifecycle = trace.lifecycle;
+  }
   const reportedFiles = [...outcomes.keys()].sort();
   const failedFiles = [];
   const records = {};
@@ -191,15 +230,42 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
     if (!entry) continue;
     const ms = report.endTime - report.startTime;
     if (!Number.isFinite(ms) || ms < 0) throw new Error(`Invalid Vitest duration for ${file}`);
-    const missingLaunches = [...entry.launches].filter(id => !entry.observedLaunches.has(id)).length;
+    const missingLaunches = [...entry.launches].filter(id => !entry.observedLaunches.has(id));
     const processValues = [...entry.processes.values()];
-    const processes = processValues.length + entry.threads.size + missingLaunches;
+    const processes = processValues.length + entry.threads.size + missingLaunches.length;
     const knownCpuMs = Math.round(processValues.reduce((sum, proc) => sum + (proc.cpuMs ?? 0), 0) * 1000) / 1000;
-    const missingCpu = missingLaunches + processValues.filter(proc => proc.cpuMs === null).length;
-    const unknownCpu = missingLaunches + processValues.filter(proc => proc.cpuMs === null || !proc.ended).length;
-    const incomplete = unknownCpu > 0 || entry.threads.size !== entry.observedThreads.size;
+    const missingCpu = missingLaunches.length + processValues.filter(proc => proc.cpuMs === null).length;
+    const unfinishedProcesses = processValues.filter(proc => proc.cpuMs === null || !proc.ended);
+    const unknownCpu = missingLaunches.length + unfinishedProcesses.length;
+    const native = trace?.byTest?.get(file);
+    if (native) {
+      for (const read of native.reads) entry.reads.add(read);
+      for (const tree of native.trees) for (const read of treeInputs(tree)) entry.reads.add(read);
+      for (const name of native.artifacts) {
+        entry.ranBundle = true;
+        const path = resolve(checkout, name);
+        if (!entry.bundlePaths.has(path)) unresolvedBundle(entry, path);
+      }
+      const starts = new Map();
+      for (const proc of processValues) if (proc.captureReady) starts.set(proc.pid, (starts.get(proc.pid) ?? 0) + 1);
+      for (const [pid, count] of native.nodeStarts) {
+        if ((starts.get(pid) ?? 0) < count) native.gaps.add('Node started without recorder evidence');
+      }
+    }
+    const kernelGaps = native ? [...native.gaps].sort() : trace ? [trace.error ?? 'unobserved Vitest fork'] : [];
+    const confirmedExit = pid => !kernelGaps.length && native?.exited.has(pid);
+    const missingStartup = missingLaunches.filter(id => !entry.versionProbes.has(id) || !entry.probeExits.has(id)).length;
+    const missingFinal = unfinishedProcesses.filter(proc => !proc.captureReady || !confirmedExit(proc.pid)).length;
+    const unfinishedThreads = [...entry.threads].filter(thread => !entry.observedThreads.has(thread));
+    const missingThreads = unfinishedThreads.filter(thread => !entry.threadExits.has(thread) ||
+      !confirmedExit(entry.readyThreads.get(thread))).length;
+    const incomplete = missingStartup > 0 || missingFinal > 0 || missingThreads > 0 || kernelGaps.length > 0;
+    const capture = { missingStartup, missingFinal, missingThreads, kernelGaps,
+      versionProbes: missingLaunches.length - missingStartup, tracedExits: unfinishedProcesses.length - missingFinal,
+      tracedThreads: unfinishedThreads.length - missingThreads };
+    if (native?.pathCounts.size) capture.kernelPaths = Object.fromEntries([...native.pathCounts].sort());
     records[file] = { reads: [...entry.reads].sort(), unresolved: [...entry.unresolved].sort(), workerPids: [...entry.workerPids],
-      ranBundle: entry.ranBundle, incomplete, ms, result, processes, cpuMs: unknownCpu ? null : knownCpuMs, knownCpuMs, unknownCpu, missingCpu };
+      ranBundle: entry.ranBundle, incomplete, capture, ms, result, processes, cpuMs: unknownCpu ? null : knownCpuMs, knownCpuMs, unknownCpu, missingCpu };
   }
   return { reportedFiles, failedFiles, records, stats };
 }

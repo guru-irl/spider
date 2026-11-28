@@ -43,18 +43,25 @@ if (dir) {
   let worker = false;
   let finished = false;
   let collect;
-  const channelName = threadId => `spider.selection:${process.pid}:${threadId}`;
 
   function note(where, error) {
-    try { appendFileSync(join(dir, 'hook-errors.ndjson'), JSON.stringify({ where, code: error?.code }) + '\n'); }
+    try { appendFileSync(join(dir, 'hook-errors.ndjson'), JSON.stringify({ where, code: error?.code, test, pid: process.pid }) + '\n'); }
     catch { /* The recorder must not change a child exit code or its streams. */ }
   }
 
-  function withEnv(args, hasArgv, childLaunchId) {
-    const index = hasArgv && (Array.isArray(args[1]) || (args[1] == null && args.length > 2)) ? 2 : 1;
+  function optionsIndex(args, hasArgv) {
+    return hasArgv && (Array.isArray(args[1]) || (args[1] == null && args.length > 2)) ? 2 : 1;
+  }
+
+  function withEnv(args, index, childLaunchId) {
     const options = args[index];
     if (options != null && typeof options !== 'function' && (typeof options !== 'object' || Array.isArray(options))) return args;
-    const env = { ...(options?.env ?? process.env) };
+    const explicit = options?.env;
+    // The recorder's own tests launch independent recordings. Do not mix the
+    // two journals or link the inner checkpoint to an outer launch ID.
+    if (explicit?.SPIDER_SELECTION_DIR && explicit.SPIDER_SELECTION_DIR !== dir && explicit.SPIDER_SELECTION_ROOT &&
+      String(explicit.NODE_OPTIONS ?? '').includes(preload)) return args;
+    const env = { ...(explicit ?? process.env) };
     const nodeOptions = String(env.NODE_OPTIONS ?? '');
     if (!nodeOptions.includes(preload)) {
       if (env.NODE_OPTIONS === undefined) delete env[savedOptions];
@@ -82,21 +89,47 @@ if (dir) {
     catch (error) { note('launch', error); }
   }
 
+  const recorderNode = process.execPath;
+  const nodeLocation = relative(root, recorderNode);
+  const trustedNodeVersion = process.versions.node === '26.4.0' &&
+    isAbsolute(recorderNode) && (nodeLocation.startsWith(`..${sep}`) || isAbsolute(nodeLocation));
+
+  function isVersionProbe(name, [file, argv], options) {
+    // Node 26.4 handles this exact command before preloads. Do not trust a
+    // PATH lookup, fixture executable, shell, or custom startup environment.
+    return trustedNodeVersion && name !== 'fork' && file === recorderNode &&
+      Array.isArray(argv) && argv.length === 1 && argv[0] === '--version' && options?.argv0 === undefined &&
+      (options?.shell === undefined || options.shell === false) && options?.env?.NODE_OPTIONS === preload &&
+      !Object.keys(options.env).some(key => /^(?:LD_|DYLD_|__XPC_DYLD_|NODE_|OPENSSL_|ICU_)/i.test(key) &&
+        key !== 'NODE_ENV' && key !== 'NODE_OPTIONS');
+  }
+
   function wrap(fn, hasArgv, name) {
     return function (...args) {
-      // Only direct Node executables can be identified without guessing what a shell runs.
       const direct = test && (name === 'fork' || (hasArgv && typeof args[0] === 'string'
         && /^(node|nodejs)(\.exe)?$/i.test(basename(args[0]))));
-      const childLaunchId = direct ? randomUUID() : null;
+      const launchId = direct ? randomUUID() : null;
+      const index = optionsIndex(args, hasArgv);
       try {
-        const result = Reflect.apply(fn, this, withEnv(args, hasArgv, childLaunchId));
+        const launchArgs = withEnv(args, index, launchId);
+        const versionProbe = direct && isVersionProbe(name, launchArgs, launchArgs[index]);
+        if (direct) recordLaunch({ kind: 'process-intent', launchId, argvClass: versionProbe ? 'node-version' : 'node' });
+        const result = Reflect.apply(fn, this, launchArgs);
         const child = result?.child ?? result;
         if (direct && (child?.pid > 0 || name === 'execFileSync')) {
-          recordLaunch({ kind: 'process', launchId: childLaunchId });
+          recordLaunch({ kind: 'process', launchId, pid: child?.pid ?? null });
+          if (versionProbe) {
+            const exited = (code, signal) => {
+              if (code === 0 && signal === null) recordLaunch({ kind: 'probe-exit', launchId });
+            };
+            if (name === 'execFileSync') exited(0, null);
+            else if (name === 'spawnSync') exited(child.status, child.signal);
+            else child.once('exit', exited);
+          }
         }
         return result;
       } catch (error) {
-        if (direct && error?.pid > 0) recordLaunch({ kind: 'process', launchId: childLaunchId });
+        if (direct && error?.pid > 0) recordLaunch({ kind: 'process', launchId, pid: error.pid });
         throw error;
       }
     };
@@ -180,41 +213,14 @@ if (dir) {
     threads.Worker = new Proxy(BaseWorker, {
       construct(target, [entry, options], newTarget) {
         const limit = options?.resourceLimits?.maxOldGenerationSizeMb;
-        // An inspector session prevents Node from recovering a worker-local
-        // OOM in deliberately heap-starved fixtures. Leave them unrecorded.
-        if (limit > 0 && limit <= 64) {
-          const worker = Reflect.construct(target, [entry, options], newTarget);
-          recordLaunch({ kind: 'thread', processId, threadId: worker.threadId });
-          return worker;
-        }
-        const execArgv = [...(options?.execArgv ?? process.execArgv), workerPreload];
-        const worker = Reflect.construct(target, [entry, { ...options, execArgv }], newTarget);
-        recordLaunch({ kind: 'thread', processId, threadId: worker.threadId });
-        const name = channelName(worker.threadId);
-        const terminate = worker.terminate;
-        let pending;
-        worker.terminate = () => {
-          if (worker.threadId === -1) return terminate.call(worker);
-          pending ??= new Promise(resolve => {
-            // Node's forced thread termination does not run JS exit hooks.
-            // Use an out-of-band channel so the worker protocol is unchanged.
-            const channel = new threads.BroadcastChannel(name);
-            let done = false;
-            const close = () => {
-              if (done) return;
-              done = true;
-              clearTimeout(timer);
-              channel.close();
-              worker.off('exit', close);
-              resolve();
-            };
-            const timer = setTimeout(close, 50);
-            worker.once('exit', close);
-            channel.onmessage = close;
-            channel.postMessage('flush');
-          }).then(() => terminate.call(worker));
-          return pending;
-        };
+        // Attaching the inspector changes recoverable OOM behavior in tiny
+        // workers. Their exit can be observed, but their inputs are not proven.
+        const capture = !(limit > 0 && limit <= 64);
+        const opts = capture ? { ...options, execArgv: [...(options?.execArgv ?? process.execArgv), workerPreload] } : options;
+        const worker = Reflect.construct(target, [entry, opts], newTarget);
+        const threadId = worker.threadId;
+        recordLaunch({ kind: 'thread', processId, threadId });
+        worker.once('exit', () => recordLaunch({ kind: 'thread-exit', processId, threadId }));
         return worker;
       },
     });
@@ -233,9 +239,16 @@ if (dir) {
 
     function startCollector() {
       if (collect) return;
+      let captureReady = false;
       const { Session } = require('node:inspector');
       const session = new Session();
-      session.connect();
+      try { session.connect(); }
+      catch (error) {
+        // Node's test supervisor can preload JS without a V8 inspector.
+        // Do not write a ready checkpoint for it. Its launch stays missing.
+        if (error === 'This Environment was initialized without a V8::Inspector' && process.execArgv.includes('--test')) return;
+        throw error;
+      }
       const post = (method, params, accept = () => {}) => session.post(method, params, (error, value) => {
         try { if (error) note(method, error); else accept(value); }
         catch (error) { note(method, error); }
@@ -281,7 +294,8 @@ if (dir) {
         try {
           const cpu = process.cpuUsage();
           writeFileSync(`${dest}.tmp`, JSON.stringify({
-            pid: process.pid, processId, launchId, threadId: threads.threadId, test, argv: process.argv, worker, ended: finished,
+            pid: process.pid, processId, launchId, threadId: threads.threadId, test, argv: process.argv, worker,
+            captureReady, ended: finished,
             cpuMs: (cpu.user + cpu.system) / 1000,
           }), { mode: 0o600 });
           renameSync(`${dest}.tmp`, dest);
@@ -304,30 +318,9 @@ if (dir) {
       };
       setInterval(flush, 2_000).unref();
       process.on('exit', () => flush(true));
-      if (threads.isMainThread && process.platform !== 'win32') {
-        const kill = process.kill;
-        const emit = process.emit;
-        const codes = require('node:os').constants.signals;
-        const signals = new Set(['SIGINT', 'SIGTERM', 'SIGHUP']);
-        const fatal = new Set([...signals, 'SIGKILL'].flatMap(name => [name, codes[name]]));
-        // Installing a JS signal listener replaces the native default. A
-        // blocked program would then survive TERM/HUP until JS can run. Flush
-        // existing handler dispatches and self-signals without adding listeners.
-        process.emit = function (name) {
-          if (signals.has(name)) flush();
-          return Reflect.apply(emit, this, arguments);
-        };
-        process.kill = function (pid, signal) {
-          if (pid === process.pid && fatal.has(signal ?? 'SIGTERM')) flush();
-          return Reflect.apply(kill, this, arguments);
-        };
-      }
-      if (threadContext) {
-        const channel = new threads.BroadcastChannel(channelName(threads.threadId));
-        channel.onmessage = () => { flush(true); channel.postMessage('flushed'); };
-        channel.unref();
-      }
       installWorkerCapture();
+      captureReady = true;
+      flush();
     }
 
     if (test) startCollector();

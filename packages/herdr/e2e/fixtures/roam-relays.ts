@@ -32,8 +32,7 @@ interface Core { side: string; namespace: string; socket: string; env: Record<st
 interface Machine { machineId: string; alias: string; core: Core; root: string; agent: string; cli: string; env: Record<string, string> }
 export interface RelayEndpoint { id: string; machineId: string; alias: string; pi: RpcDriver; root: string; agent: string; file: string }
 interface DoctorObservation { result: InvokeResult; diagnostics: { reason: string }[] }
-type RelayStart = { kind: 'up'; doctor: DoctorObservation; reason: string }
-  | { kind: 'unsupported'; exitCode: 2; reply: unknown; log: string };
+type RelayStart = { kind: 'up'; doctor: DoctorObservation; reason: string };
 export interface RelayFixture {
   sender: RelayEndpoint;
   target: RelayEndpoint;
@@ -273,15 +272,10 @@ export async function relayFixture(suite: Suite, options: { secondRelay?: boolea
       relay = spawnOwned(suite.ledger, { label: `R19-relay-${number}`, command: process.execPath,
         args: [relayMachine.cli, 'roam', 'agent', '--v0', 'relay'], env: relayMachine.env, cwd: suite.root, stdio: { log } });
       const relayProcess = relay;
-      relayStart = await waitFor('relay link is up or the base rejects the private command', async (): Promise<RelayStart | null> => {
+      relayStart = await waitFor('relay link is up', async (): Promise<RelayStart | null> => {
         if (relayProcess.child.exitCode !== null || relayProcess.child.signalCode !== null) {
           const exit = await relayProcess.exited, text = await readFile(log, 'utf8');
-          let reply: { ok?: unknown; refusal?: { code?: unknown } };
-          try { reply = JSON.parse(text); } catch { throw new Error(`relay exited without a private-command response: ${text}`); }
-          if (exit.code !== 2 || exit.signal !== null || reply.ok !== false || reply.refusal?.code !== 'invalid-arguments') {
-            throw new Error(`relay exited unexpectedly: ${JSON.stringify({ exit, reply })}`);
-          }
-          return { kind: 'unsupported', exitCode: 2, reply, log: text };
+          throw new Error(`relay exited before the link was up: ${JSON.stringify(exit)} ${text}`);
         }
         const observation = await doctor();
         const row = observation.diagnostics.find(item => typeof item.reason === 'string' && item.reason.startsWith(`intercom-link: ${RELAY_ALIAS} up;`));

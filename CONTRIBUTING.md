@@ -52,14 +52,16 @@ Build and test jobs use Node `26.4.0`. On a pull request, `pr.yml` runs
 `typecheck · test · build` check passes only when compile and all four runners
 pass and the runners agree on the selection hash.
 
-Each runner finds the newest successful main selection map whose commit is an
-ancestor of the PR merge base. It considers every change from the map commit
-to the PR head, not just files changed by the PR. The selector uses recorded
-reads and bundle execution, static imports, and the filesystem readers in
-`scripts/test-resources.json`. It always runs new, failed, and skipped test
-files. With no usable map, a toolchain change, or a selection infrastructure
-change, it runs the full root Vitest suite. A map API or download error fails
-the runner with the error instead of choosing a different map. No selected
+Each runner uses the selector and resource policy from the PR base commit.
+It finds the newest usable main selection map whose commit is an ancestor of
+the PR merge base. It considers every change from the map commit to the PR
+head. The selector combines recorded reads, static imports, literal paths
+named by tests, and `scripts/test-resources.json`. It always runs tests that
+are new, failed, skipped, or incompletely recorded.
+
+If the base has no selector, no map is usable, or the PR changes the toolchain
+or selection infrastructure, CI runs the full root Vitest suite. A map API or
+download error fails the runner instead of changing its selection. No selected
 tests are deferred.
 
 Download `test-selection.json` from the PR run's `test-selection` artifact.
@@ -70,11 +72,12 @@ main shard weights for the full fallback.
 
 `ci.yml` runs the full root suite in six shards with two fork workers each.
 It also runs Chrome, packed Herdr acceptance, and the default headless stories.
-A new push to `main` cancels a superseded run. Merging does not require a
-manual full run. The non-required `selection audit` compares main failures with
-the merged PR's selection. On a miss, the audit fails and writes the changed
-files, failed tests, and their records to the job summary and log. Chrome,
-acceptance, and stories are not part of PR selection.
+Main pushes use the same queue as map recording. A new push does not cancel
+an active or queued run. Merging does not require a manual full run.
+The non-required `selection audit` compares main failures with the merged PR's
+selection. On a miss, the audit fails and writes the changed files, failed
+tests, and their records to the job summary and log. Chrome, acceptance, and
+stories are not part of PR selection.
 
 To run full CI on a branch or commit explicitly, dispatch it:
 
@@ -100,18 +103,24 @@ time, which also includes setup and process startup.
 
 ### Selection map
 
-The `selection map` workflow runs separately on pushes to `main` and on manual
-dispatch. It records the root Vitest suite in six shards and maps loaded bundle
-code back to repository sources. Test failures appear in the run summary.
-Missing records or recorder errors prevent publication. Only successful push
-runs on `main` in the repository can supply maps to PRs.
+The `selection map` workflow starts after full CI completes for a push to
+`main`. It skips recording if that commit is no longer the tip of `main`.
+It records the root Vitest suite in six shards. Missing records or recorder
+errors prevent publication. Manual dispatch is available for branch canaries.
+PR selection accepts only successful map runs on `main` in this repository
+whose run SHA matches the map's commit.
 
 GitHub keeps `selection-map.json` in the `selection-map` artifact for 30 days.
-Each test record has a duration, a result, indices into the source path table,
-and unresolved bundle paths. New maps also record whether a test ran a bundle.
-For build configuration changes, a legacy map without that flag triggers the
-full suite. When an unresolved bundle's inputs cannot be identified, non-doc
-source changes also select its test.
+Schema v2 records the test result and duration, source indices, unresolved
+bundle paths, whether the test built or ran a bundle, and whether its record
+is incomplete. Maps without the completeness flag are unusable. When an
+unresolved bundle's inputs cannot be identified, non-doc source changes also
+select its test.
+
+`node scripts/selection/sweep.mjs` checks that changes to a tracked path select
+every test that names it, without relying on a recording. The `compile` job
+runs the sweep on main pushes and on PRs that edit the selector or resource
+policy.
 
 ## Package map and dependency rules
 

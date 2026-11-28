@@ -41,8 +41,21 @@ can change after a core restart, so do not treat them as persistent service name
 A missing recorded unit does not block provisioning when the core socket is
 owned by the user. Startup trusts the enrolled executable, identity, socket,
 namespace, and XDG directories in private `roam/core.json`, not the unit name.
-See [Roaming replication](../architecture/roaming.md#box-hosting-and-recovery)
-for startup behavior and explicit core-pin replacement.
+
+Provisioning installs and verifies the release without changing the roaming
+service. Reprovisioning a box set up by an older release leaves its legacy
+unit running the previous release; `spider roam enable` run locally on the
+destination replaces it. `installed`, `hostingReady`, and the `enabled` participation flag
+are not service status. Run `spider roam enable` locally on the destination
+when it is ready. Follow the [legacy upgrade procedure](roaming-upgrade.md)
+before replacing an old service.
+
+To replace a core pin, finish or undo moves and move homes off the box. Disable
+roaming on the hub and locally on the box. If an owned legacy supervisor is
+still active, follow the approved stop procedure in
+[Stop an owned legacy supervisor](roaming-upgrade.md#stop-an-owned-legacy-supervisor).
+Retry `spider roam provision <machine> --replace-core-pin` on the hub with the
+same authentication options. Re-enable v0 locally on the destination when ready.
 
 ## Results and unset behavior
 

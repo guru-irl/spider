@@ -7,11 +7,25 @@ operator commands and ownership contracts.
 
 ## Roaming v0 service controls
 
-Run `spider roam enable` on the Mac or box to replace its local legacy roaming
-service with the v0 service. Pending legacy launches are warnings with stop
-commands. `spider roam disable` removes the local v0 service. Pending legacy
-moves are warnings with cancel commands. Disable refuses if this machine is
-the source or destination of a moving v0 home it knows about.
+Run `spider roam enable` on the Mac to enable its local v0 hub service. Run it
+locally on each destination to enable that box's v0 supervisor. Read the
+[legacy upgrade procedure](../../docs/guide/roaming-upgrade.md) before replacing
+an old service. Enable refuses unfinished or unverified legacy work.
+`spider roam disable` removes the local v0 service. It refuses if this machine
+is the source or destination of a moving v0 home it knows about.
+
+Run `spider roam provision <machine>` from the hub to install and verify the
+release. Provisioning does not write, reload, or toggle a roaming service.
+`installed`, `hostingReady`, and the `enabled` participation flag do not report
+service status. To start hosting, run `spider roam enable` locally on the box
+when it is ready.
+
+To replace a core pin, finish or undo moves and move homes off the box first.
+Disable roaming on the hub and locally on the box. If an owned legacy supervisor
+is still active, follow the approved stop procedure before retrying
+`spider roam provision <machine> --replace-core-pin` on the hub with the same
+authentication options. See [Replace an enrolled core pin](../../docs/architecture/roaming.md#replace-an-enrolled-core-pin).
+Re-enable v0 locally on the box when ready.
 
 If a box disables roaming before it receives the Mac's moving home, relocate
 fails at the destination step and leaves the home `moving`. Re-enable the box

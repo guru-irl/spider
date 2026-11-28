@@ -9,13 +9,13 @@ function fixture() {
   const scratch = join(process.cwd(), ".spider", "scratch"); mkdirSync(scratch, { recursive: true });
   const root = mkdtempSync(join(scratch, "prefix-modes-")); roots.push(root);
   const home = join(root, "home"), globalRoot = join(home, "global"), parent = join(home, "install"), npmPrefix = join(parent, "prefix");
-  const agentDir = join(home, "agent"), unitDir = join(home, "units"), roam = join(globalRoot, "roam"), bin = join(npmPrefix, "bin");
-  for (const path of [home, globalRoot, parent, npmPrefix, agentDir, unitDir, roam, bin]) mkdirSync(path, { mode: 0o700 });
+  const agentDir = join(home, "agent"), roam = join(globalRoot, "roam"), bin = join(npmPrefix, "bin");
+  for (const path of [home, globalRoot, parent, npmPrefix, agentDir, roam, bin]) mkdirSync(path, { mode: 0o700 });
   const machineId = "11111111-1111-4111-8111-111111111111", sha256 = "a".repeat(64), core = join(home, "core");
   writeFileSync(join(roam, "machine.json"), JSON.stringify({ version: 1, machineId, label: "box-1.invalid" }), { mode: 0o600 });
   writeFileSync(core, `#!${process.execPath}\nconsole.log(JSON.stringify({core:{id:'fixture-core'},pid:4321,version:'0.1.16'}));\n`, { mode: 0o700 });
   const release = join(npmPrefix, "spider-releases", sha256, "node_modules", "@guru-irl", "spider");
-  const request = { action: "release-prepare", home, globalRoot, agentDir, npmPrefix, unitDir, machineId, operationId: "op-1", maximum: 1024,
+  const request = { action: "release-prepare", home, globalRoot, agentDir, npmPrefix, machineId, operationId: "op-1", maximum: 1024,
     chunkBytes: 32, core, coreId: "fixture-core", node: process.execPath, pi: join(bin, "pi"), cli: join(release, "dist/roam/cli.mjs"),
     supervisor: join(release, "dist/roam/supervisor.mjs"), sha256, piVersion: "1.2.0", timeout: 1000,
     chunks: [{ name: "release-" + "b".repeat(32) + "-0", size: 1, sha256: "c".repeat(64) }] };

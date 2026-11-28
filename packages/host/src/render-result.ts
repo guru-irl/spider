@@ -867,9 +867,9 @@ export function renderSubagentDone(message: any, options: NotificationOptions, t
  *  populate result.details) — wrapped in the tool box, so /spider, /stats, /doctor look
  *  identical to the tool result. ctrl+o (options.expanded) expands. */
 export function renderCommandOutput(message: any, options: NotificationOptions, theme: any, iconStyle?: IconStyle): Component {
-  const d = message?.details ?? {};
-  const args = d.args ?? { action: "control" };
-  const result = d.result ?? {};
+  const d = message?.details;
+  const args = d?.args ?? { action: "command" };
+  const result = d?.result ?? {};
   const expanded = options?.expanded === true;
   const normalized = toToolResult(result);
   const details = normalized.details as { warning?: string; delivery?: string; recipientAcknowledged?: boolean } | undefined;
@@ -880,8 +880,24 @@ export function renderCommandOutput(message: any, options: NotificationOptions, 
   const context = { args, expanded, isError: normalized.isError, isPartial: !normalized.isError && (Boolean(details?.warning) || pendingMessage), iconStyle };
   const background = cardBackground(context);
   const box = new Box(options.outputPad ?? 1, 1, text => mkTheme(theme).bg(background, text));
-  box.addChild(renderSpiderCall(args, theme, context) as any);
-  box.addChild(renderSpiderResult(normalized, { expanded }, theme, context) as any);
+  const titleArgs = args.action ? args : { action: args.command ?? "command" };
+  box.addChild(renderSpiderCall(titleArgs, theme, context) as any);
+  if (d == null || (!args.action && typeof result.text === "string")) {
+    const content = d == null ? message?.content : result.text;
+    const text = typeof content === "string" ? content : Array.isArray(content)
+      ? content.filter(block => block?.type === "text" && typeof block.text === "string").map(block => block.text).join("\n") : "";
+    const lines = nonblankLines(text).map(line => ` ${line.trim()}`);
+    box.addChild({
+      render: (width: number) => {
+        const shown = expanded ? lines : lines.slice(0, 5);
+        const remaining = lines.length - shown.length;
+        return restoreCardBackground(fitResultLines([...shown, ...(remaining ? [` … ${remaining} more line${remaining === 1 ? "" : "s"}`] : [])], width, expanded, 3), theme, background);
+      },
+      invalidate() {},
+    });
+  } else {
+    box.addChild(renderSpiderResult(normalized, { expanded }, theme, context) as any);
+  }
   return cachedLines(width => box.render(width), () => box.invalidate());
 }
 

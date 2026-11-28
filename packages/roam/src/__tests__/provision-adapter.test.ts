@@ -33,7 +33,6 @@ type Factory = (input: unknown) => {
   verifyPeer(): Promise<import("../provision-contracts").ProvisionVerification>;
   cleanupSecrets(peer: Peer): Promise<void>;
   permissionTightening(peer: Peer): Promise<number>;
-  systemd: { writeUnit(name: string, contents: string): Promise<void>; systemctl(argv: readonly string[]): Promise<void> };
 };
 const create = (adapterModule as { createHcProvisionAdapter?: Factory }).createHcProvisionAdapter;
 const remoteProgram = adapterModule.getProvisionRemoteScript();
@@ -143,7 +142,7 @@ fi
       return { terminal: "box-1.invalid/t1" };
     },
   };
-  const options = { peer, operationId: "op-1", destination, unitDir, limits: { ...DEFAULT_LIMITS, chunkBytes: 32 }, transport: remote,
+  const options = { peer, operationId: "op-1", destination, limits: { ...DEFAULT_LIMITS, chunkBytes: 32 }, transport: remote,
     piProviders: ["github-copilot"] };
   const input = { bytes: Buffer.from("fixture archive"), sha256: releaseSha, npmPrefix, globalRoot, pi: "1.2.0" as const, intercom: "spider-owned" as const };
   return { root, home, globalRoot, agentDir, npmPrefix, unitDir, bin, releaseRoot, peer, destination, calls, writes, requests, launches, launchIO, launchState, terminalFile, coreLists, remote, options, input };
@@ -398,7 +397,7 @@ it.each(["\u009b", "\u061c", "\u202e"])("does not report a display-spoofing path
   const f = fixture(), agentDir = join(f.home, `${control}agent`); mkdirSync(agentDir, { mode: 0o700 }); chmodSync(agentDir, 0o775);
   const options = { ...f.options, destination: { ...f.destination, agentDir } };
   const error = await f.remote.executeProvision(f.peer, { action: "install-files", operationId: "op-1", machineId: f.peer.machineId,
-    home: f.home, globalRoot: f.globalRoot, agentDir, npmPrefix: f.npmPrefix, unitDir: f.unitDir, maximum: 1024, chunkBytes: 32 })
+    home: f.home, globalRoot: f.globalRoot, agentDir, npmPrefix: f.npmPrefix, maximum: 1024, chunkBytes: 32 })
     .then(() => null, error => error);
   expect(error.code).toBe("destination-permissions-unsafe"); expect(error.details).toBeUndefined();
   await expect(create!(options).installFiles(f.peer, [{ path: "AGENTS.md", bytes: Buffer.from("sample"), mode: 0o600 }]))
@@ -820,11 +819,42 @@ it("reconciles a lost release-launch reply and never runs a duplicate installati
   expect(f.launches).toHaveLength(1);
   const requestFile = f.launches[0], saved = readFileSync(requestFile);
   await expect(f.remote.executeProvision(f.peer, { action: "prepare", operationId: "op-1", machineId: f.peer.machineId, home: f.home,
-    globalRoot: f.globalRoot, agentDir: f.agentDir, npmPrefix: f.npmPrefix, unitDir: f.unitDir, maximum: f.options.limits.agentBytes,
+    globalRoot: f.globalRoot, agentDir: f.agentDir, npmPrefix: f.npmPrefix, maximum: f.options.limits.agentBytes,
     chunkBytes: f.options.limits.chunkBytes, names: ["release-request"] })).rejects.toMatchObject({ code: "invalid-staging-name" });
   expect(readFileSync(requestFile)).toEqual(saved);
   await f.remote.launchRelease(f.peer, "op-1", requestFile);
   expect(f.launches).toHaveLength(2);
+  expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(2);
+}, 5000);
+
+it("resumes a prepared release and its short writes without sending a unit directory", async () => {
+  const f = fixture(), log = releaseNpm(f), hub = "00000000-0000-4000-8000-000000000001";
+  const adapter = create!(f.options);
+  f.launchState.emptyCore = true;
+  const legacy = (request: Record<string, unknown>) => Object.fromEntries(Object.entries(request).flatMap(([key, value]) =>
+    key === "unitDir" ? [] : key === "npmPrefix" ? [[key, value], ["unitDir", join(f.home, ".config/systemd/user")]] : [[key, value]]));
+  const execute = f.remote.executeProvision, launch = f.remote.launchRelease;
+  f.remote.executeProvision = (peer, request) => execute(peer, legacy(request));
+  f.remote.launchRelease = async () => { throw Object.assign(new Error("launch not sent"), { code: "consent-required" }); };
+  await adapter.enroll(f.peer, hub, "herdr-core.service");
+  await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "consent-required" });
+  const stage = join(f.globalRoot, "roam/provision/op-1"), requestFile = join(stage, "release-request");
+  // Use the immutable request shape written by the old program.
+  const old = JSON.stringify(legacy(JSON.parse(readFileSync(requestFile, "utf8"))));
+  writeFileSync(requestFile, old);
+  const originalDigest = releaseRequestDigest(JSON.parse(old)), uploads = f.writes.length;
+
+  const requests: Record<string, unknown>[] = [];
+  f.remote.executeProvision = (peer, request) => { requests.push(request); return execute(peer, request); };
+  f.remote.launchRelease = launch;
+  const retry = create!(f.options);
+  await retry.enroll(f.peer, hub, "herdr-core.service");
+  await expect(retry.installRelease(f.peer, f.input)).resolves.toEqual({ pi: f.peer.pi, cli: f.peer.cli, supervisor: f.destination.supervisor });
+  expect(requests.map(request => request.action)).toEqual(["enrollment", "release-observe", "release-observe"]);
+  expect(requests.every(request => !Object.hasOwn(request, "unitDir"))).toBe(true);
+  expect(readFileSync(requestFile, "utf8")).toBe(old);
+  expect(JSON.parse(readFileSync(join(stage, "release-receipt.json"), "utf8"))).toMatchObject({ state: "finished", digest: originalDigest });
+  expect(f.writes).toHaveLength(uploads);
   expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(2);
 }, 5000);
 
@@ -887,7 +917,7 @@ it("uses a fresh operation label with the same machine for every label-free obse
     "spider.operation": "op-1", "spider.machine": f.peer.machineId,
   } }] }));
   const request = { action: "release-observe", operationId: "op-1", machineId: f.peer.machineId, home: f.home,
-    globalRoot: f.globalRoot, agentDir: f.agentDir, npmPrefix: f.npmPrefix, unitDir: f.unitDir,
+    globalRoot: f.globalRoot, agentDir: f.agentDir, npmPrefix: f.npmPrefix,
     node: f.peer.node, pi: f.peer.pi, cli: f.peer.cli, supervisor: f.destination.supervisor,
     maximum: f.options.limits.agentBytes, chunkBytes: f.options.limits.chunkBytes, sha256: f.input.sha256, piVersion: "1.2.0" };
   expect(await f.remote.executeProvision(f.peer, request)).toEqual({ state: "started" });
@@ -1045,21 +1075,32 @@ it("waits for a live short writer before repeating the same operation", async ()
   const lockInput = { directory: intents, operationId: "op-1", digest: "a".repeat(64), owner };
   const lock = beginShortWrite(lockInput, () => "live");
   if (lock.kind !== "acquired") throw new Error("lock not acquired");
-  const adapter = create!(f.options), unit = "spider-roam-supervisor.service";
-  await expect(adapter.systemd.writeUnit(unit, "fixture unit")).rejects.toMatchObject({ code: "short-write-pending" });
-  expect(existsSync(join(f.unitDir, unit))).toBe(false);
+  const name = "public-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-0";
+  const staged = join(f.globalRoot, "roam/provision/op-1", name);
+  const prepare = () => f.remote.executeProvision(f.peer, { action: "prepare", operationId: "op-1", machineId: f.peer.machineId,
+    home: f.home, globalRoot: f.globalRoot, agentDir: f.agentDir, npmPrefix: f.npmPrefix,
+    maximum: f.options.limits.agentBytes, chunkBytes: f.options.limits.chunkBytes, names: [name] });
+  await expect(prepare()).rejects.toMatchObject({ code: "short-write-pending" });
+  expect(existsSync(staged)).toBe(false);
   endShortWrite(lockInput, lock.token);
-  await adapter.systemd.writeUnit(unit, "fixture unit");
-  expect(readFileSync(join(f.unitDir, unit), "utf8")).toBe("fixture unit");
+  await expect(prepare()).resolves.toBe(true);
+  expect(readFileSync(staged)).toHaveLength(0);
 }, 5000);
 
-it("the destination refuses a direct attempt to overwrite the core unit", async () => {
+it.each([
+  { action: "unit-write", unit: "spider-roam-supervisor.service", contents: "replacement" },
+  { action: "unit-write", unit: "herdr-core.service", contents: "replacement" },
+  { action: "systemctl", argv: ["--user", "daemon-reload"] },
+  { action: "systemctl", argv: ["--user", "enable", "spider-roam-supervisor.service"] },
+  { action: "systemctl", argv: ["--user", "disable", "herdr-core.service"] },
+])("the generated program refuses retired provisioning requests: $action $unit $argv", async request => {
   const f = fixture(), core = join(f.unitDir, "herdr-core.service"); writeFileSync(core, "original core unit", { mode: 0o600 });
-  await expect(f.remote.executeProvision(f.peer, { action: "unit-write", operationId: "op-1", machineId: f.peer.machineId,
+  await expect(f.remote.executeProvision(f.peer, { ...request, operationId: "op-1", machineId: f.peer.machineId,
     home: f.home, globalRoot: f.globalRoot, agentDir: f.agentDir, npmPrefix: f.npmPrefix, unitDir: f.unitDir,
-    maximum: f.options.limits.agentBytes, chunkBytes: f.options.limits.chunkBytes,
-    unit: "herdr-core.service", contents: "replacement" })).rejects.toMatchObject({ code: "invalid-unit" });
+    maximum: f.options.limits.agentBytes, chunkBytes: f.options.limits.chunkBytes })).rejects.toMatchObject({ code: "unknown-provision-action" });
   expect(readFileSync(core, "utf8")).toBe("original core unit");
+  expect(readdirSync(f.unitDir)).toEqual(["herdr-core.service"]);
+  expect(existsSync(f.calls)).toBe(false);
 }, 5000);
 
 it("ships JavaScript that needs no remote type stripping", () => {
@@ -1489,36 +1530,6 @@ it("sends auth only through private stdin staging and removes it", async () => {
     expect(readFileSync(join(intents, name), "utf8")).not.toContain("fixture-secret");
   }
   expect(lstatSync(join(f.agentDir, "auth.json")).mode & 0o777).toBe(0o600);
-}, 5000);
-
-it("disables only the supervisor autostart through the remote systemd adapter", async () => {
-  const f = fixture(), adapter = create!(f.options);
-  await expect(adapter.systemd.systemctl(["--user", "disable", "spider-roam-supervisor.service"])).resolves.toBeUndefined();
-  expect(readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line))).toEqual([
-    ["--user", "disable", "spider-roam-supervisor.service"],
-  ]);
-  await expect(adapter.systemd.systemctl(["--user", "disable", "herdr-core.service"])).rejects.toThrow();
-  await expect(adapter.systemd.systemctl(["--user", "disable", "--now", "spider-roam-supervisor.service"])).rejects.toThrow();
-  const request = { action: "systemctl", operationId: "op-1", machineId: f.peer.machineId, home: f.home, globalRoot: f.globalRoot,
-    agentDir: f.agentDir, npmPrefix: f.npmPrefix, unitDir: f.unitDir, pi: f.peer.pi, cli: f.peer.cli, node: f.peer.node,
-    supervisor: f.destination.supervisor, maximum: DEFAULT_LIMITS.agentBytes, chunkBytes: 32, timeout: DEFAULT_LIMITS.importMs };
-  for (const argv of [["--user", "disable", "herdr-core.service"], ["--user", "disable", "--now", "spider-roam-supervisor.service"]]) {
-    await expect(f.remote.executeProvision(f.peer, { ...request, argv })).rejects.toMatchObject({ code: "invalid-systemctl" });
-  }
-  expect(readFileSync(f.calls, "utf8").trim().split("\n")).toHaveLength(1);
-}, 5000);
-
-it("installs only a supervisor unit through a fake systemd port", async () => {
-  expect(create).toBeTypeOf("function"); expect(remoteProgram).toBeTypeOf("string");
-  const f = fixture(), adapter = create!(f.options), core = join(f.unitDir, "herdr-core.service");
-  writeFileSync(core, "original core", { mode: 0o600 }); chmodSync(f.unitDir, 0o755);
-  await adapter.systemd.writeUnit("spider-roam-supervisor.service", "fixture unit");
-  await adapter.systemd.systemctl(["--user", "daemon-reload"]);
-  await adapter.systemd.systemctl(["--user", "enable", "spider-roam-supervisor.service"]);
-  expect(readFileSync(core, "utf8")).toBe("original core");
-  expect(readFileSync(join(f.unitDir, "spider-roam-supervisor.service"), "utf8")).toBe("fixture unit");
-  expect(readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line))).toEqual([["--user", "daemon-reload"], ["--user", "enable", "spider-roam-supervisor.service"]]);
-  await expect(adapter.systemd.systemctl(["--user", "restart", "herdr-core.service"])).rejects.toThrow();
 }, 5000);
 
 function readyExecutables(f: ReturnType<typeof fixture>, wrongSession = false) {

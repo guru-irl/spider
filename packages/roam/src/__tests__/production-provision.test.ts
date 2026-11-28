@@ -1,6 +1,7 @@
 import { afterEach, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { openDb } from "@spider/db-core";
 import type { Journal, Transport } from "../contracts";
 import type { JsonObject } from "@spider/db-core/roam/types";
 import { DEFAULT_LIMITS } from "../contracts";
@@ -10,7 +11,7 @@ import * as composition from "../production-provision";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-it("composes target-fenced ports, peer locking and durable launcher configuration", async () => {
+function fixture() {
   const create = (composition as { createProductionProvisionPorts?: (input: unknown) => import("../provision-contracts").ProvisionPorts }).createProductionProvisionPorts;
   expect(create).toBeTypeOf("function");
   const scratch = join(process.cwd(), ".spider", "scratch"); mkdirSync(scratch, { recursive: true });
@@ -41,8 +42,13 @@ it("composes target-fenced ports, peer locking and durable launcher configuratio
   const ports = create!({ root, hubMachineId: machineId, peer: bootstrapPeer, operationId: "op-1", transport: port, journal, limits: DEFAULT_LIMITS,
     source: { agentRoot: root, releaseFile: join(root, "release.tgz"), piProviders: [] },
     destination: { home: "/home/fixture", agentDir: "/home/fixture/.pi/agent", npmPrefix: "/home/fixture/.local", supervisor: "/home/fixture/.local/supervisor.mjs" },
-    unitDir: "/home/fixture/.config/systemd/user", release: { pi: "1.2.0", intercom: "spider-owned", spiderSha256: "a".repeat(64), nodeRange: "22.23.4 || 26.4.0" },
+    release: { pi: "1.2.0", intercom: "spider-owned", spiderSha256: "a".repeat(64), nodeRange: "22.23.4 || 26.4.0" },
     present: async () => {}, confirm: async () => true, report: async () => {}, resources: async () => ({}), bootId: async () => "fixture", lockOptions: options });
+  return { root, roam, machineId, ports, transport, core, claims, participation, previews };
+}
+
+it("composes target-fenced ports, peer locking and durable launcher configuration", async () => {
+  const { root, roam, ports, transport, core, claims, participation, previews } = fixture();
   expect(ports.transport).toBe(transport);
   expect(ports.bootstrap.probeAgentDirectory).toBeTypeOf("function");
   expect(await ports.bootstrap.probeAgentDirectory(bootstrapPeer, "/home/fixture")).toEqual({ status: "default", core });
@@ -65,5 +71,36 @@ it("composes target-fenced ports, peer locking and durable launcher configuratio
   await ports.setParticipation(bootstrapPeer, true);
   await ports.setParticipation(bootstrapPeer, null);
   expect(participation).toEqual([false, false, true]);
-  expect(ports.systemd.unitDir).toBe("/home/fixture/.config/systemd/user");
 }, 5000);
+
+it.each([
+  ["incoming moving home", "moving", false, true],
+  ["home still assigned to the box", "stopped", true, true],
+  ["moving to a different box", "moving", false, false],
+  ["no homes in the pre-v0 layout", null, false, false],
+  ["enabled hub with no homes", null, false, true, true, false],
+  ["unreadable hub store", null, false, true, false, true],
+] as const)("checks authoritative homes before replacement: %s", async (_name, state, local, refused, enabled = false, corrupt = false) => {
+  const { root, roam, machineId, ports } = fixture();
+  if (enabled) {
+    const config = JSON.parse(readFileSync(join(roam, "config.json"), "utf8"));
+    writeFileSync(join(roam, "config.json"), JSON.stringify({ ...config, enabled: true }), { mode: 0o600 });
+  }
+  if (corrupt) writeFileSync(join(root, "spider.db"), "not a database", { mode: 0o600 });
+  else {
+    const db = openDb(join(root, "spider.db"));
+    try {
+      db.exec("PRAGMA user_version=14; CREATE TABLE roam_meta (id INTEGER, machine_id TEXT); CREATE TABLE session_homes (session_id TEXT PRIMARY KEY, machine_id TEXT NOT NULL, epoch INTEGER NOT NULL, move_id TEXT, updated_at INTEGER NOT NULL)");
+      db.prepare("INSERT INTO roam_meta VALUES (1, ?)").run(machineId);
+      if (state !== null) {
+        db.exec("ALTER TABLE session_homes ADD COLUMN state TEXT; ALTER TABLE session_homes ADD COLUMN destination TEXT");
+        db.prepare("INSERT INTO session_homes VALUES('fixture-session', ?, 1, 'fixture-move', 1, ?, ?)")
+          .run(local ? bootstrapPeer.machineId : machineId, state, state === "moving" ? (refused ? bootstrapPeer.machineId : "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb") : null);
+      }
+    } finally { db.close(); }
+  }
+  const check = ports.assertCorePinReplaceIdle(bootstrapPeer);
+  if (corrupt) await expect(check).rejects.toMatchObject({ code: "core-pin-check-unavailable", message: expect.stringMatching(/hub.*store.*spider roam doctor/i) });
+  else if (refused) await expect(check).rejects.toMatchObject({ code: "core-pin-in-use" });
+  else await expect(check).resolves.toBeUndefined();
+});

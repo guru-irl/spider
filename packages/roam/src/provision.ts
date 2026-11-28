@@ -10,10 +10,8 @@ import { isMachineId } from "./machine-id";
 import { doctorPeer } from "./resource-doctor";
 import { describeSelectedFiles, prepareSelectedFiles, readPrivateBytes, selectedSettingsDigests, SelectedFilesError } from "./selected-files";
 import type { PreparedFiles, SelectedFileMetadata } from "./selected-files";
-import { renderSupervisorUnit } from "./systemd";
 import { destinationPermissionPath, isPermissionTighteningCount, permissionRepairCommand, permissionTreeRoot, isAgentModeFailure, isInstallModeFailure, isAgentModeRepairs, agentModeRefusal } from "./provision-permissions";
 
-const unitName = "spider-roam-supervisor.service";
 function selectedFileDigests(selected: PreparedFiles) {
   return [...selected.files, ...selected.credentialFiles].map(file => ({ path: file.path, mode: file.mode,
     sha256: createHash("sha256").update(file.bytes).digest("hex") })).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
@@ -49,9 +47,8 @@ function validate(input: ProvisionRequest, ports: ProvisionPorts): void {
     throw new Error("invalid-provision-destination");
   }
   if (destination.agentDir !== (peer.agentDir ?? posix.join(home, ".pi/agent"))) throw new Error("custom-agent-directory-unsupported");
-  if (![destination.agentDir, destination.npmPrefix, destination.supervisor, peer.globalRoot, peer.pi, peer.cli, ports.systemd.unitDir].every(path => inside(home, path)) ||
-      !inside(destination.npmPrefix, peer.pi) || !inside(destination.npmPrefix, peer.cli) || !inside(destination.npmPrefix, destination.supervisor) ||
-      ports.systemd.unitDir !== posix.join(home, ".config/systemd/user")) {
+  if (![destination.agentDir, destination.npmPrefix, destination.supervisor, peer.globalRoot, peer.pi, peer.cli].every(path => inside(home, path)) ||
+      !inside(destination.npmPrefix, peer.pi) || !inside(destination.npmPrefix, peer.cli) || !inside(destination.npmPrefix, destination.supervisor)) {
     throw new Error("invalid-provision-destination");
   }
   if (!/^[a-f0-9]{64}$/.test(ports.release.spiderSha256) || ports.release.pi !== "1.2.0" || ports.release.intercom !== "spider-owned" ||
@@ -73,7 +70,7 @@ function safeReason(error: unknown): string {
       typeof details.blockingOperationId === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(details.blockingOperationId)) {
     return `release-in-progress (${details.blockingOperationId})`;
   }
-  const allowed = new Set(["missing-prerequisite","invalid-config", "core-pin-required", "core-pin-invalid", "core-pin-conflict", "core-pin-changed", "core-pin-in-use", "core-pin-busy",  "machine-mismatch", "unsafe-identity", "core-changed", "core-unavailable", "machine-not-found",
+  const allowed = new Set(["missing-prerequisite","invalid-config", "core-pin-required", "core-pin-invalid", "core-pin-conflict", "core-pin-changed", "core-pin-in-use", "core-pin-check-unavailable", "core-pin-busy",  "machine-mismatch", "unsafe-identity", "core-changed", "core-unavailable", "machine-not-found",
     "machine-ambiguous", "cli-timeout", "destination-auth-missing", "destination-auth-unsafe", "consent-required", "invalid-auth", "unsafe-auth", "provider-unavailable", "unsupported-credential-command",
     "auth-cleanup-pending", "auth-install-failed", "auth-preview-changed", "invalid-destination-settings", "settings-preview-changed", "settings-preview-failed", "invalid-settings-preview", "unsafe-destination",
     "release-digest-mismatch", "invalid-release-path", "core-unit-required", "peer-core-unit-required", "peer-core-unit-ambiguous", "provider-consent-required", "credential-file-requires-consent",
@@ -81,7 +78,7 @@ function safeReason(error: unknown): string {
     "release-pending", "release-launch-failed", "release-arguments-changed", "operation-arguments-changed", "short-write-pending", "release-evidence-unavailable", "release-evidence-unfiltered", "release-in-progress",
     "installer-interrupted", "release-abandoned", "release-install-failed", "command-failed", "npm-not-found", "npm-install-failed", "release-hash-mismatch", "incomplete-release", "pi-version-mismatch",
     "chunk-mismatch", "cli-aborted", "cli-exit", "invalid-chunk", "invalid-chunks", "invalid-file", "invalid-providers", "invalid-provision-reply",
-    "invalid-release-receipt", "invalid-request", "invalid-switchover-journal", "invalid-systemctl", "invalid-unit", "machine-not-enrolled", "missing-hc",
+    "invalid-release-receipt", "invalid-request", "invalid-switchover-journal", "machine-not-enrolled", "missing-hc",
     "missing-switchover-backup", "peer-invalidated", "process-identity-unavailable", "release-launch-uncertain", "reply-too-large", "selection-not-allowed",
     "spawn-error", "stdin-error", "too-large", "unresolved-peer", "unsafe-context", "unsafe-path", "unsafe-release", "unsafe-staging", "invalid-operation",
     "invalid-provision-options", "invalid-provision-request", "staging-cleanup-pending", "invalid-bootstrap-reply", "invalid-bootstrap-request", "invalid-bootstrap-kind",
@@ -240,15 +237,10 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
     }
     await ports.transfer.switchover(peer, operationId);
     await ports.persistPeer(peer);
-    const unit = renderSupervisorUnit({ node: peer.node, supervisor: ports.destination.supervisor, coreUnit, globalRoot: peer.globalRoot,
-      agentDir: ports.destination.agentDir, pi: peer.pi });
-    await ports.systemd.writeUnit(unitName, unit);
-    await ports.systemd.systemctl(["--user", "daemon-reload"]);
     const diagnostics = await doctorPeer(peer, ports);
     await ports.transfer.reconcilePairUnits(peer);
     await ports.report(diagnostics);
     const hostingReady = diagnostics.every(item => item.severity !== "block");
-    await ports.systemd.systemctl(["--user", hostingReady ? "enable" : "disable", unitName]);
     await ports.setParticipation(peer, hostingReady);
     const permissionTightenings = await ports.permissionTightening(peer).catch(() => null);
     const outcome = result(operationId, 0, hostingReady ? "installed" : "installed-hosting-disabled", { hostingReady, permissionTightenings, ...(privateModeRepairs !== undefined ? { privateModeRepairs } : {}) });

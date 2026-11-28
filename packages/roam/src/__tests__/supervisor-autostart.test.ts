@@ -61,63 +61,37 @@ it("queries the v0 supervisor autostart when both definitions remain", async () 
   expect(await inspectSupervisorAutostart()).toBe("enabled");
 });
 
-it("restores supervisor autostart when explicit enable follows a blocked provision", async () => {
+it("refuses a legacy autostart request before changing participation or systemd", async () => {
   const f = fixture();
-  await setEnrolledPeerEnabled({ ...f, enabled: false, transport: f.transport as never });
+  const before = readFileSync(join(f.roam, "config.json"));
+  await expect(f.transport.executeProvision(f.peer, { action: "roaming-enabled", machineId: BOX, hubMachineId: HUB,
+    globalRoot: f.box, enabled: true, restoreAutostart: true })).rejects.toMatchObject({ code: "invalid-request" });
+  expect(readFileSync(join(f.roam, "config.json"))).toEqual(before);
   expect(readFileSync(f.state, "utf8")).toBe("disabled");
-  await expect(setEnrolledPeerEnabled({ ...f, enabled: false, restoreAutostart: true, transport: f.transport as never })).rejects.toThrow();
-  expect(readFileSync(f.state, "utf8")).toBe("disabled");
-  await setEnrolledPeerEnabled({ ...f, enabled: true, restoreAutostart: true, transport: f.transport as never });
-  expect(readFileSync(f.state, "utf8")).toBe("enabled");
-  expect(JSON.parse(readFileSync(join(f.roam, "config.json"), "utf8")).enabled).toBe(true);
-});
-
-it("enables participation without a unit and restores autostart after provision", async () => {
-  const f = fixture(); rmSync(f.unit);
-  const enable = () => setEnrolledPeerEnabled({ ...f, enabled: true, restoreAutostart: true, transport: f.transport as never });
-  await expect(enable()).resolves.toBeUndefined();
-  expect(JSON.parse(readFileSync(join(f.roam, "config.json"), "utf8")).enabled).toBe(true);
-  expect(readFileSync(f.state, "utf8")).toBe("disabled");
-  vi.stubEnv("PATH", f.bin); vi.stubEnv("HOME", f.root);
-  const { inspectSupervisorAutostart } = await import("../local-diagnostics");
-  const report = await runLocalDoctor({ root: f.box, supervisorAutostart: inspectSupervisorAutostart });
-  expect(report.diagnostics).toContainEqual({ reason: "supervisor-autostart-unavailable: Supervisor autostart cannot be verified. Check the supervisor unit and systemd user service.",
-    severity: "warning", repairCommand: null });
   expect(existsSync(f.calls)).toBe(false);
-  writeFileSync(f.unit, "fixture unit");
-  await expect(enable()).resolves.toBeUndefined();
-  expect(readFileSync(f.state, "utf8")).toBe("enabled");
 });
 
-it.each(["blocked", "masked", "missing-systemctl"])("keeps participation enabled when autostart repair is %s", async failure => {
+it.each([true, false])("changes participation without a service command (unit present: %s)", async unitPresent => {
   const f = fixture();
-  if (failure === "missing-systemctl") rmSync(join(f.bin, "systemctl"));
-  else writeFileSync(f.state, failure);
-  const enable = () => setEnrolledPeerEnabled({ ...f, enabled: true, restoreAutostart: true, transport: f.transport as never });
-  await expect(enable()).resolves.toBeUndefined();
-  expect(JSON.parse(readFileSync(join(f.roam, "config.json"), "utf8")).enabled).toBe(true);
-  vi.stubEnv("PATH", f.bin); vi.stubEnv("HOME", f.root);
-  const { inspectSupervisorAutostart } = await import("../local-diagnostics");
-  const report = await runLocalDoctor({ root: f.box, supervisorAutostart: inspectSupervisorAutostart });
-  const finding = failure === "blocked" ? "supervisor-autostart-disabled:" : "supervisor-autostart-unavailable:";
-  expect(report.diagnostics.some(row => row.severity === "warning" && row.reason.startsWith(finding))).toBe(true);
-  if (failure === "missing-systemctl") return;
-  writeFileSync(f.state, "disabled");
-  await expect(enable()).resolves.toBeUndefined();
-  expect(readFileSync(f.state, "utf8")).toBe("enabled");
-  await expect(enable()).resolves.toBeUndefined();
-  expect(readFileSync(f.state, "utf8")).toBe("enabled");
+  if (!unitPresent) rmSync(f.unit);
+  for (const enabled of [true, false]) {
+    await setEnrolledPeerEnabled({ ...f, enabled, transport: f.transport as never });
+    expect(JSON.parse(readFileSync(join(f.roam, "config.json"), "utf8")).enabled).toBe(enabled);
+  }
+  expect(existsSync(f.calls)).toBe(false);
+  expect(readFileSync(f.state, "utf8")).toBe("disabled");
 });
 
-it("does not hide an enrollment conflict when autostart is unavailable", async () => {
+it("does not write participation on an enrollment conflict", async () => {
   const f = fixture(); rmSync(f.unit);
   writeFileSync(join(f.roam, "machine.json"), JSON.stringify({ machineId: HUB }), { mode: 0o600 });
-  await expect(setEnrolledPeerEnabled({ ...f, enabled: true, restoreAutostart: true, transport: f.transport as never }))
+  await expect(setEnrolledPeerEnabled({ ...f, enabled: true, transport: f.transport as never }))
     .rejects.toMatchObject({ code: "enrollment-conflict" });
   expect(JSON.parse(readFileSync(join(f.roam, "config.json"), "utf8")).enabled).toBe(false);
+  expect(existsSync(f.calls)).toBe(false);
 });
 
-it("restores autostart only after enable preflight succeeds", async () => {
+it("hub enable changes participation after preflight but never changes the box service", async () => {
   const f = fixture(), roam = join(f.root, "roam"); mkdirSync(roam, { mode: 0o700 });
   writeFileSync(join(roam, "machine.json"), JSON.stringify({ machineId: HUB }), { mode: 0o600 });
   writeFileSync(join(roam, "config.json"), JSON.stringify({ ...f.config, coreUnit: "fixture.service", discoveryRoots: [] }), { mode: 0o600 });
@@ -151,7 +125,8 @@ it("restores autostart only after enable preflight succeeds", async () => {
   startupBlocked = false;
   const ready = await enableRoaming(f.root, () => process.execPath);
   expect(ready, JSON.stringify(ready)).toMatchObject({ code: 3, reason: "enable-pending" });
-  expect(readFileSync(f.state, "utf8")).toBe("enabled");
+  expect(readFileSync(f.state, "utf8")).toBe("disabled");
+  expect(existsSync(f.calls)).toBe(false);
   expect(JSON.parse(readFileSync(join(f.roam, "config.json"), "utf8")).enabled).toBe(true);
 
   // Retry after the hub service failure and verify the fully successful path too.
@@ -161,7 +136,8 @@ it("restores autostart only after enable preflight succeeds", async () => {
   service.mockResolvedValue(undefined);
   vi.spyOn(controlSocket, "requestHubControl").mockResolvedValue({ code: 0, value: { enabled: true } } as never);
   expect(await enableRoaming(f.root, () => process.execPath)).toMatchObject({ code: 0, reason: "roaming-enabled" });
-  expect(readFileSync(f.state, "utf8")).toBe("enabled");
+  expect(readFileSync(f.state, "utf8")).toBe("disabled");
+  expect(existsSync(f.calls)).toBe(false);
   expect(JSON.parse(readFileSync(join(f.roam, "config.json"), "utf8")).enabled).toBe(true);
 });
 
@@ -176,13 +152,26 @@ it("observes persistent autostart through the systemctl result", async () => {
   expect(await inspectSupervisorAutostart()).toBe("unknown");
 });
 
+it("tells an enabled box to install a missing supervisor locally", async () => {
+  const f = fixture();
+  rmSync(f.unit);
+  vi.stubEnv("HOME", f.root); vi.stubEnv("XDG_CONFIG_HOME", join(f.root, ".config"));
+  writeFileSync(join(f.roam, "config.json"), JSON.stringify({ enabled: true, role: "box", machineId: BOX, hubMachineId: HUB,
+    peers: [], discoveryRoots: [], coreUnit: "fixture.service" }), { mode: 0o600 });
+  const { inspectSupervisorAutostart } = await import("../local-diagnostics");
+  const report = await runLocalDoctor({ root: f.box, supervisorAutostart: inspectSupervisorAutostart });
+  expect(report.diagnostics).toContainEqual({ severity: "warning", reason: "supervisor-not-installed: No roaming supervisor is installed. Run spider roam enable locally on this box.",
+    repairCommand: "spider roam enable" });
+  expect(existsSync(f.calls)).toBe(false);
+});
+
 it("warns when an enabled box has disabled supervisor autostart", async () => {
   const f = fixture();
   writeFileSync(join(f.roam, "config.json"), JSON.stringify({ enabled: true, role: "box", machineId: BOX, hubMachineId: HUB,
     peers: [], discoveryRoots: [], coreUnit: "fixture.service" }), { mode: 0o600 });
   const run = (state: "enabled" | "disabled" | "unknown") => runLocalDoctor({ root: f.box, supervisorAutostart: async () => state });
   const disabled = await run("disabled");
-  expect(disabled.diagnostics).toContainEqual({ reason: "supervisor-autostart-disabled: Supervisor autostart is disabled. Run spider roam enable on the hub.",
+  expect(disabled.diagnostics).toContainEqual({ reason: "supervisor-autostart-disabled: Supervisor autostart is disabled. Run spider roam enable locally on this box.",
     severity: "warning", repairCommand: "spider roam enable" });
   for (const state of ["enabled", "unknown"] as const) {
     const report = await run(state);

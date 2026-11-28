@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 
@@ -49,8 +49,23 @@ https.request = (_url, options, callback) => {
     response.emit('data', JSON.stringify({ data: [{ id: 'fixture-only-picker', model_picker_enabled: true, capabilities: { type: 'chat', supports: {}, limits: {} } }] })); response.emit('end');
   }); return req;
 };\n`);
+  const fakeBin = join(root, 'bin');
+  const piRoot = join(root, 'pi-install');
+  const executable = join(piRoot, 'dist', 'bundle', 'cli.js');
+  const catalogDir = join(piRoot, 'node_modules', '@earendil-works', 'pi-ai', 'dist', 'providers');
+  mkdirSync(fakeBin);
+  mkdirSync(join(piRoot, 'dist', 'bundle'), { recursive: true });
+  mkdirSync(join(piRoot, 'dist', 'core'), { recursive: true });
+  mkdirSync(catalogDir, { recursive: true });
+  writeFileSync(join(piRoot, 'package.json'), JSON.stringify({ name: '@earendil-works/pi-coding-agent', version: '1.0.0', type: 'module' }));
+  writeFileSync(join(piRoot, 'dist', 'core', 'model-config.js'), 'export const ModelsJsonSchemas = { modelOverride: { properties: { name: {} } } };\n');
+  writeFileSync(executable, '#!/usr/bin/env node\n');
+  chmodSync(executable, 0o755);
+  writeFileSync(join(catalogDir, 'github-copilot.models.js'), 'export const GITHUB_COPILOT_MODELS = [{ id: "fixture-builtin" }];\n');
+  symlinkSync(executable, join(fakeBin, 'pi'));
   for (const mode of ['unset', 'absolute', 'tilde'] as const) {
     const { agent, defaultAgent, env } = pathsFor(mode);
+    env.PATH = fakeBin;
     mkdirSync(agent, { recursive: true });
     writeFileSync(join(agent, 'auth.json'), JSON.stringify({ 'github-copilot': { access: 'fixture-token', availableModelIds: ['fixture-only-picker'] } }));
     const original = JSON.stringify({ providers: {}, marker: mode });
@@ -59,6 +74,7 @@ https.request = (_url, options, callback) => {
     const result = run('sync-copilot-models.mjs', env, ['--import', mock, '--']);
     // The --write argument is passed after the script name below in the dedicated invocation.
     expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).not.toContain('override support unavailable');
     expect(readFileSync(join(agent, 'models.json'), 'utf8')).toBe(original);
     const write = spawnSync(process.execPath, ['--import', mock, resolve('scripts/sync-copilot-models.mjs'), '--write'], { cwd: process.cwd(), env, encoding: 'utf8', timeout: 10000 });
     expect(write.status, write.stderr).toBe(0);

@@ -1,13 +1,10 @@
 import { isAbsolute, join, resolve } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Db } from "@spider/db-core";
-import type { ProcessIdentity, StoreKey } from "@spider/db-core/roam/types";
+import type { StoreKey } from "@spider/db-core/roam/types";
 import type { SessionAddress } from "@spider/intercom/protocol";
 import type { IntercomFederationClient } from "@spider/intercom/broker/client";
-import { inspectIdLock, localBootId } from "@spider/herdr/sessions/id-lock";
-import { createSessionLeases } from "@spider/herdr/sessions/lease";
 import { openFreezeJournal } from "@spider/roam/journal";
-import { processStartTime } from "../../../subagents/src/process-identity.js";
 import type { UsageRoots } from "../usage/discovery.js";
 import { resolveUsageRoots } from "../usage/mount.js";
 import type { AdmissionGate } from "./admission.js";
@@ -15,20 +12,11 @@ import type { BlockerActivity } from "./blockers.js";
 import { inspectBlockers } from "./blockers.js";
 import type { LiveFreezePorts } from "./control.js";
 import { createBlockerPorts } from "./evidence.js";
+import { inspectLiveOwner } from "./live-owner.js";
 import { createProducerDrain } from "./producers.js";
 import { createUsageIngestThrough } from "./usage-ingest.js";
 
-/** An acknowledgement may name the owner only while both ownership records match this process. */
-export async function inspectLiveOwner(root: string, sessionId: string, file: string, readBootId: () => Promise<string> = localBootId): Promise<ProcessIdentity> {
-  const [id, lease, bootId] = await Promise.all([
-    inspectIdLock(root, sessionId), createSessionLeases(root).get(file), readBootId(),
-  ]);
-  const start = processStartTime(process.pid);
-  if (!start || !bootId || !id || !lease || id.pendingOperationId !== null || id.bootId !== bootId ||
-      id.identity.pid !== process.pid || id.identity.startIdentity !== start || lease.pid !== process.pid || lease.startIdentity !== start ||
-      lease.bootId !== undefined && lease.bootId !== bootId) throw new Error("Participant ownership unavailable");
-  return { bootId, pid: process.pid, startTime: start };
-}
+export { inspectLiveOwner } from "./live-owner.js";
 
 type Producers = Parameters<typeof createProducerDrain>[0];
 type Evidence = Parameters<typeof createBlockerPorts>[0];

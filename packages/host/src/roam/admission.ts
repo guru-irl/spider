@@ -29,7 +29,7 @@ import { createV0Runtime } from "@spider/roam/relocate/runtime";
 import { createLocalSessionMachinePorts } from "@spider/roam/relocate/local";
 import { loadRelocateAdmission, prepareRelocateAdmission, type LocalHomeAdmission } from "./relocate-admission";
 import { serveRelocateShutdown } from "./relocate-control";
-import { inspectLiveOwner } from "./live";
+import { inspectLiveOwner } from "./live-owner";
 
 export interface Admission { kind: "pending" | "ordinary" | "control-only" | "blocked"; home: Home | null; blockers: readonly Blocker[]; setupFailure?: MoveSetupFailure }
 export interface AdmissionGate {

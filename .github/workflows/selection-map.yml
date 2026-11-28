@@ -128,10 +128,17 @@ jobs:
           node scripts/selection/map.mjs selection-map.json "$records/inventory.json" "$records"/record-{1..6}.json
           test "$RECORD_RESULT" = success
 
+      - name: Build scoreboard
+        run: |
+          node scripts/selection/scoreboard.mjs selection-map.json > scoreboard.md
+          cat scoreboard.md >> "$GITHUB_STEP_SUMMARY"
+
       - name: Publish selection map
         uses: actions/upload-artifact@v4
         with:
           name: selection-map
-          path: selection-map.json
+          path: |
+            selection-map.json
+            scoreboard.md
           if-no-files-found: error
           retention-days: 30

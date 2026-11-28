@@ -13,6 +13,16 @@ export interface SelectionMap {
     /** Whether the test ran a mapped or unmapped bundle. Absent in older version 1 maps. */
     ranBundle?: boolean;
     ms: number;
+    /** Observed Node processes and worker threads, including the test fork. */
+    processes: number;
+    /** Summed process CPU in milliseconds, or null if any observed process has incomplete CPU. */
+    cpuMs: number | null;
+    /** Sum of available process CPU checkpoints, a lower bound when CPU is incomplete. */
+    knownCpuMs: number;
+    /** Processes without a completed CPU measurement. */
+    unknownCpu: number;
+    /** Subset of unknownCpu without any CPU checkpoint. */
+    missingCpu: number;
     /** Failed or skipped tests are always selected because their records may be partial. */
     result: 'passed' | 'failed' | 'skipped';
   }>;

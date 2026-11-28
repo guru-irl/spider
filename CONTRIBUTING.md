@@ -109,6 +109,19 @@ For build configuration changes, a legacy map without that flag triggers the
 full suite. When an unresolved bundle's inputs cannot be identified, non-doc
 source changes also select its test.
 
+### Selection map
+
+The `selection map` workflow runs on pushes to `main` and on manual dispatch.
+It records the root Vitest suite in six shards and maps loaded bundle code back
+to repository sources. Test failures appear in the run summary. Missing test
+records or recorder errors prevent publication. The workflow does not change
+PR checks or the full CI run on `main`.
+
+Download `selection-map.json` from the run's `selection-map` artifact. GitHub
+keeps the artifact for 30 days. The file names the commit and run that produced
+it. Each test file has a duration, a result, and indices into the source file
+list in `files`.
+
 ## Package map and dependency rules
 
 | Package | Responsibility |

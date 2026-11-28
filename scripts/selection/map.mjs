@@ -29,6 +29,13 @@ export function shardProblems({ reportedFiles, records, stats }) {
     if (typeof record.ranBundle !== 'boolean' || (record.unresolved?.length && !record.ranBundle)) {
       problems.push(`Invalid bundle-use flag for ${file}`);
     }
+    const { processes, cpuMs, knownCpuMs, unknownCpu, missingCpu } = record;
+    if (!Number.isSafeInteger(processes) || processes < 1 || !Number.isSafeInteger(unknownCpu) ||
+        unknownCpu < 0 || unknownCpu > processes || !Number.isSafeInteger(missingCpu) || missingCpu < 0 ||
+        missingCpu > unknownCpu || !Number.isFinite(knownCpuMs) || knownCpuMs < 0 ||
+        (unknownCpu ? cpuMs !== null : cpuMs !== knownCpuMs)) {
+      problems.push(`Invalid process or CPU measurement for ${file}`);
+    }
   }
   return problems;
 }
@@ -68,8 +75,9 @@ export function buildSelectionMap({ shards, expectedFiles, commit, runId, create
   if (!problems.length) {
     const index = new Map(files.map((file, i) => [file, i]));
     const tests = Object.fromEntries([...records.keys()].sort().map(file => {
-      const { reads, unresolved, ranBundle, ms, result } = records.get(file);
-      return [file, { reads: [...new Set(reads)].map(path => index.get(path)).sort((a, b) => a - b), unresolved, ranBundle, ms, result }];
+      const { reads, unresolved, ranBundle, ms, result, processes, cpuMs, knownCpuMs, unknownCpu, missingCpu } = records.get(file);
+      return [file, { reads: [...new Set(reads)].map(path => index.get(path)).sort((a, b) => a - b),
+        unresolved, ranBundle, ms, result, processes, cpuMs, knownCpuMs, unknownCpu, missingCpu }];
     }));
     map = { version: 1, commit, runId, createdAt, files, tests };
   }

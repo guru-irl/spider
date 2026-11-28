@@ -81,14 +81,39 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
     unresolvedBundles: 0,
     unresolvedGroups: { checkout: 0, temporary: 0, other: 0 },
   };
+  const group = file => {
+    if (!groups.has(file)) groups.set(file, { reads: new Set(), unresolved: new Set(), ranBundle: false, workerPids: new Set(),
+      processes: new Map(), threads: new Set(), launches: new Set(), observedLaunches: new Set() });
+    return groups.get(file);
+  };
+  const launches = join(rawDir, 'launches.ndjson');
+  if (existsSync(launches)) {
+    for (const line of readFileSync(launches, 'utf8').split('\n').filter(Boolean)) {
+      let launch;
+      try { launch = JSON.parse(line); }
+      catch { stats.malformedSnapshots++; continue; }
+      if (!outcomes.has(launch.test)) continue;
+      const entry = group(launch.test);
+      if (launch.kind === 'process' && launch.launchId) entry.launches.add(launch.launchId);
+      else if (launch.kind === 'thread' && launch.processId && launch.threadId > 0) {
+        entry.threads.add(`${launch.processId}:${launch.threadId}`);
+      } else stats.malformedSnapshots++;
+    }
+  }
   for (const name of readdirSync(rawDir).filter(name => /^\d+-[a-f0-9-]+\.json$/.test(name))) {
     let proc;
     try { proc = read(join(rawDir, name)); }
     catch { stats.malformedSnapshots++; continue; }
     if (!outcomes.has(proc.test)) continue;
-    const entry = groups.get(proc.test) ?? { reads: new Set(), unresolved: new Set(), ranBundle: false, workerPids: new Set() };
-    groups.set(proc.test, entry);
+    const entry = group(proc.test);
     if (proc.worker) entry.workerPids.add(proc.pid);
+    const processId = proc.processId ?? `pid:${proc.pid}`;
+    const process = entry.processes.get(processId) ?? { cpuMs: null, ended: false };
+    if (Number.isFinite(proc.cpuMs) && proc.cpuMs >= 0) process.cpuMs = Math.max(process.cpuMs ?? 0, proc.cpuMs);
+    if ((proc.threadId ?? 0) === 0 && proc.ended) process.ended = true;
+    entry.processes.set(processId, process);
+    if (proc.launchId) entry.observedLaunches.add(proc.launchId);
+    if (proc.threadId > 0) entry.threads.add(`${processId}:${proc.threadId}`);
     for (const script of proc.scripts) {
       if (script.kind === 'bundle' || script.kind === 'fixture') {
         entry.ranBundle = true;
@@ -124,7 +149,14 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
     if (!entry) continue;
     const ms = report.endTime - report.startTime;
     if (!Number.isFinite(ms) || ms < 0) throw new Error(`Invalid Vitest duration for ${file}`);
-    records[file] = { reads: [...entry.reads].sort(), unresolved: [...entry.unresolved].sort(), ranBundle: entry.ranBundle, workerPids: [...entry.workerPids], ms, result };
+    const missingLaunches = [...entry.launches].filter(id => !entry.observedLaunches.has(id)).length;
+    const processValues = [...entry.processes.values()];
+    const processes = processValues.length + entry.threads.size + missingLaunches;
+    const knownCpuMs = Math.round(processValues.reduce((sum, proc) => sum + (proc.cpuMs ?? 0), 0) * 1000) / 1000;
+    const missingCpu = missingLaunches + processValues.filter(proc => proc.cpuMs === null).length;
+    const unknownCpu = missingLaunches + processValues.filter(proc => proc.cpuMs === null || !proc.ended).length;
+    records[file] = { reads: [...entry.reads].sort(), unresolved: [...entry.unresolved].sort(), ranBundle: entry.ranBundle, workerPids: [...entry.workerPids],
+      ms, result, processes, cpuMs: unknownCpu ? null : knownCpuMs, knownCpuMs, unknownCpu, missingCpu };
   }
   return { reportedFiles, failedFiles, records, stats };
 }

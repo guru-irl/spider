@@ -493,14 +493,17 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
         probes.set(target.machine, { ...target, version: version.trim() });
       }, error => new HerdrError('remote-node-unavailable', `${requirement}: ${error instanceof Error ? error.message : String(error)}`));
     }
-    const bootstrapError = (error: unknown) => new HerdrError('runtime-bootstrap-failed', `Destination runtime bootstrap failed; repair its directory permissions or Node configuration and rerun setup: ${error instanceof Error ? error.message : String(error)}`);
+    const bootstrapError = (machine: MachineName, error: unknown) => new HerdrError('runtime-bootstrap-failed',
+      error instanceof HerdrError && error.code === 'probe-timeout'
+        ? `Runtime bootstrap timed out on ${machine}; check that the machine is responsive, then rerun setup.`
+        : `Destination runtime bootstrap failed; repair its directory permissions or Node configuration and rerun setup: ${error instanceof Error ? error.message : String(error)}`);
     const bootstraps: RuntimeFile[] = [];
     for (const { runtime, before } of runtimePlans) await onMachine(runtime.machine, async () => {
       if (!journal.verified || priorPending.has(runtime.machine) || probes.has(runtime.machine) || !recordedRuntime(runtime) || before !== runtime.sha256 ||
           parts.runtimeRootsHealthy && !await parts.runtimeRootsHealthy(request, [runtime])) bootstraps.push(runtime);
-    }, bootstrapError);
+    }, error => bootstrapError(runtime.machine, error));
     const bootstrap = async () => {
-      for (const runtime of bootstraps) await onMachine(runtime.machine, () => parts.bootstrapRuntime(request, context, [runtime]), bootstrapError);
+      for (const runtime of bootstraps) await onMachine(runtime.machine, () => parts.bootstrapRuntime(request, context, [runtime]), error => bootstrapError(runtime.machine, error));
     };
     const activeProbes = () => [...probes.values()].filter(probe => !deferred.has(probe.machine));
     const runtimeJournalState = () => JSON.stringify([journal.runtimes, journal.probes, journal.runtimeRootProbes, journal.pendingRuntimes]);

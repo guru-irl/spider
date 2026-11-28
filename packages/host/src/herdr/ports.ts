@@ -1287,9 +1287,9 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
             let output: string;
             try { output = await probeRoot(launch); }
             catch (error) {
-              // A missing root makes the runtime probe exit nonzero. Transport
+              // Retry a failed or slow health check through bootstrap. Transport
               // failures must reach setup so it can defer or fail the machine.
-              if (error instanceof HerdrError && error.code === 'probe-failed') return false;
+              if (error instanceof HerdrError && (error.code === 'probe-failed' || error.code === 'probe-timeout')) return false;
               throw error;
             }
             try { if (!isRuntimeRootProbe(JSON.parse(output), machine.runtime.directory)) return false; }

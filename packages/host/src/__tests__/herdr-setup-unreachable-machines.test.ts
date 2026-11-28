@@ -107,6 +107,33 @@ test('setup reuses the visible Node check after a failed runtime bootstrap', asy
   expect(calls.filter(argv => argv[0] === 'run' && argv.includes('--install'))).toHaveLength(2);
 });
 
+const probeTimeout = { stderr: { error: { kind: 'probe-timeout', message: 'Destination Node probe did not finish' } }, exitCode: 1 };
+
+test('setup retries the runtime install after a root health probe times out', async () => {
+  const f = await fixture();
+  await apply(f);
+  await f.h.scenario({ steps: [{ argvPrefix: ['run'], argvIncludes: ['--on', remote, '--probe'], once: true, ...probeTimeout }] });
+  const start = (await f.h.calls()).length;
+  const { result, warnings } = await apply(f);
+  expect(warnings).toEqual([]);
+  expect(result.doctor.failures).toEqual([]);
+  expect((await remoteCalls(f, start)).filter(argv => argv.includes('--install'))).toHaveLength(1);
+});
+
+test('setup reports a bootstrap timeout without suggesting permission repair', async () => {
+  const f = await fixture();
+  await apply(f);
+  await f.h.scenario({ steps: [
+    { argvPrefix: ['run'], argvIncludes: ['--on', remote, '--probe'], once: true, ...probeTimeout },
+    { argvPrefix: ['run'], argvIncludes: ['--on', remote, '--install'], ...probeTimeout },
+  ] });
+  const start = (await f.h.calls()).length;
+  const retry = apply(f);
+  await expect(retry).rejects.toMatchObject({ code: 'runtime-bootstrap-failed', message: expect.stringMatching(/timed out.*remote\.invalid/i) });
+  await expect(retry).rejects.not.toMatchObject({ message: expect.stringMatching(/permission/i) });
+  expect((await remoteCalls(f, start)).filter(argv => argv.includes('--install'))).toHaveLength(1);
+});
+
 test('setup does not turn a permission error into a skipped runtime', async () => {
   const f = await fixture();
   await f.h.scenario({ steps: [{ argvPrefix: ['file', 'read'], argvIncludes: ['--on', remote],

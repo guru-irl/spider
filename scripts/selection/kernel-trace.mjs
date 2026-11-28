@@ -42,7 +42,34 @@ const directories = new Set(['getdents', 'getdents64']);
 const descriptors = new Set(['recvmsg', 'recvmmsg']);
 const unsupported = new Set(['unshare', 'setns', 'chroot', 'pivot_root', 'mount', 'umount2']);
 
-export function readKernelTrace(file, { root, tracked, owners }) {
+function readRingEvents(file) {
+  const events = new Map();
+  let expected;
+  let count = 0;
+  for (const line of lines(file)) {
+    if (line === null) return null;
+    if (!line || line.startsWith('#')) {
+      const header = /^# entries-in-buffer\/entries-written:\s*(\d+)\/(\d+)/.exec(line);
+      if (header) {
+        if (header[1] !== header[2] || expected !== undefined) return null;
+        expected = Number(header[1]);
+      }
+      continue;
+    }
+    const event = /-(\d+)\s+\[\d+\].*:\s+io_uring_submit_req:.*\bopcode (\w+),.*\bsq_thread (0|1)\s*$/.exec(line);
+    if (!event) return null;
+    const [, pid, opcode, polling] = event;
+    const entry = events.get(Number(pid)) ?? { count: 0, epollOnly: true };
+    entry.count++;
+    entry.epollOnly &&= opcode === 'EPOLL_CTL' && polling === '0';
+    events.set(Number(pid), entry);
+    count++;
+  }
+  return count === expected ? events : null;
+}
+
+export function readKernelTrace(file, { root, tracked, owners, ringFile }) {
+  const ringEvents = ringFile && readRingEvents(ringFile);
   const tasks = new Map();
   const pending = new Map();
   const repoFiles = new Set(tracked);
@@ -51,7 +78,8 @@ export function readKernelTrace(file, { root, tracked, owners }) {
     for (let i = path.lastIndexOf('/'); i >= 0; i = path.lastIndexOf('/', i - 1)) repoDirs.add(path.slice(0, i));
   }
   const task = pid => {
-    if (!tasks.has(pid)) tasks.set(pid, { children: [], reads: new Set(), trees: new Set(), artifacts: new Set(), gaps: new Set(), nodeStarts: 0 });
+    if (!tasks.has(pid)) tasks.set(pid, { children: [], reads: new Set(), trees: new Set(), artifacts: new Set(), gaps: new Set(),
+      nodeStarts: 0, ringSubmissions: 0 });
     return tasks.get(pid);
   };
   function input(row, path, tree = false) {
@@ -99,10 +127,10 @@ export function readKernelTrace(file, { root, tracked, owners }) {
     if (!call) { tracee.gaps.add('unrecognized syscall'); continue; }
     const [, name, args, status, result] = call;
     if (name === 'io_uring_enter') {
-      // Waiting for completions does not enqueue work. Neither strace nor the
-      // JS hook can identify an arbitrary operation enqueued in a native ring.
-      const submitted = /^\d+(?:<.*>)?, (\d+), /.exec(args)?.[1];
-      if (submitted !== '0') tracee.gaps.add('io_uring submission');
+      const requested = /^\d+(?:<.*>)?, (\d+), /.exec(args)?.[1];
+      if (requested === '0') continue;
+      if (requested && Number(status) > 0 && Number(status) <= Number(requested)) tracee.ringSubmissions += Number(status);
+      else tracee.gaps.add('unconfirmed io_uring submission');
       continue;
     }
     if (status === '?') { tracee.gaps.add('unknown syscall result'); continue; }
@@ -160,6 +188,12 @@ export function readKernelTrace(file, { root, tracked, owners }) {
       for (const path of tracee.trees) test.trees.add(path);
       for (const path of tracee.artifacts) test.artifacts.add(path);
       for (const gap of tracee.gaps) test.gaps.add(gap);
+      const ring = ringEvents?.get(pid);
+      // A regular libuv loop submits EPOLL_CTL. Counting the opcodes is
+      // evidence for those calls, not for other operations on the same ring.
+      if ((tracee.ringSubmissions || ring) && (!ring?.epollOnly || ring.count !== tracee.ringSubmissions)) {
+        test.gaps.add('io_uring submission');
+      }
       if (tracee.nodeStarts) test.nodeStarts.set(pid, tracee.nodeStarts);
       if (tracee.exited) test.exited.add(pid);
       else test.gaps.add('unobserved exit');

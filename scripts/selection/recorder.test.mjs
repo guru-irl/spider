@@ -14,7 +14,9 @@ import { selectTests } from './select.mjs';
 const hook = fileURLToPath(new URL('./cov-hook.cjs', import.meta.url));
 const id = 'packages/example/src/probe.test.ts';
 // The map workflow also runs this file before starting its outer strace.
-const canTrace = !process.env.SPIDER_SELECTION_DIR && process.platform === 'linux' && spawnSync('strace', ['--version']).status === 0;
+const canTrace = !process.env.SPIDER_SELECTION_DIR && process.platform === 'linux' &&
+  spawnSync('strace', ['--version']).status === 0 &&
+  spawnSync('sudo', ['-n', 'test', '-r', '/sys/kernel/tracing/events/io_uring/io_uring_submit_req/format']).status === 0;
 
 function fixture(t) {
   const scratch = resolve('.spider/scratch/selection');

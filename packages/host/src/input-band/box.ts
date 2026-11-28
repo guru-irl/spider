@@ -6,7 +6,7 @@ const BG_RESET = "\x1b[49m";
 const HALF_BOX = Symbol.for("spider.transcript.half-box");
 type Binding = { enabled: () => boolean };
 
-export function edgeInk(padding: string, width: number) {
+export function edgeInk(padding: string, width: number): { bg: string; ink: string } | undefined {
   const bg = /^\x1b\[[0-9;]+m/u.exec(padding)?.[0];
   const ink = bg && foregroundFromBackground(bg);
   return ink && padding === bg + " ".repeat(width) + BG_RESET ? { bg, ink } : undefined;

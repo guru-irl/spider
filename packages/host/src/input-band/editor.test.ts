@@ -13,7 +13,7 @@ const editorTheme: EditorTheme = { borderColor: identity, selectList: {
   selectedPrefix: identity, selectedText: identity, description: identity, scrollInfo: identity, noMatch: identity,
 } };
 const tui = { terminal: { rows: 15 }, requestRender() {} } as unknown as TUI;
-const keys = new KeybindingsManager({ ...TUI_KEYBINDINGS, "app.interrupt": { defaultKeys: "escape" } });
+const keys = new KeybindingsManager({ ...TUI_KEYBINDINGS, "app.interrupt": { defaultKeys: "escape" } }) as unknown as ConstructorParameters<typeof CustomEditor>[2];
 const stock = () => new CustomEditor(tui, editorTheme, keys);
 const plain = (rows: string[]) => rows.map(stripTerminalSequences);
 const BLUE = "\x1b[38;2;130;170;255m";

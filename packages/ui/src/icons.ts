@@ -14,7 +14,7 @@ export const SPINNER_FRAMES: Record<IconStyle, readonly string[]> = {
 };
 
 const NEW_MOON = "\uE3E3";
-export const ACTIVITY_FRAMES = {
+export const ACTIVITY_FRAMES: Readonly<Record<IconStyle, { readonly idle: string; readonly working: readonly string[] }>> = {
   text: { idle: "○", working: ["◐", "◓", "◑", "◒"] },
   nerd: { idle: NEW_MOON, working: [NEW_MOON, ...Array.from({ length: 27 }, (_, i) => String.fromCodePoint(0xE3C8 + i))] },
 } as const;

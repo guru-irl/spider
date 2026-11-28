@@ -67,10 +67,11 @@ describe("usage footer layout", () => {
     const items = ["14.6%/1.0M", "3.3k credits", "CH99.3%", "month 3%", "↑3.7M ↓4.0M", "R763M W65M"];
     for (let retained = items.length; retained > 0; retained--) {
       const expected = items.slice(0, retained).join(" · ");
-      expect(renderUsageFooter(variant, visibleWidth(expected))[1]).toBe(expected);
-      expect(renderUsageFooter(variant, visibleWidth(expected) - 1)[1]).toBe(items.slice(0, retained - 1).join(" · "));
+      expect(renderUsageFooter(variant, visibleWidth(expected) + 3)[1]).toBe(`○  ${expected}`);
+      const previous = items.slice(0, retained - 1).join(" · ");
+      expect(renderUsageFooter(variant, visibleWidth(expected) + 2)[1]).toBe(previous ? `○  ${previous}` : "○");
     }
-    expect(renderUsageFooter(variant, 1)[1]).toBe("");
+    expect(renderUsageFooter(variant, 1)[1]).toBe("○");
   });
 
   it("unknown auto state is not claimed", () => {
@@ -387,7 +388,7 @@ it.each([["calibrated",0.56,"1.8k"],["uncalibrated",null,"3.3k"],["implausible",
 
 it("context comes first and credit copy is plain with budget before allowance",()=>{
  const variant=input({context:{percent:45.2,contextWindow:200000},monthlyBudget:200,monthUsed:48});variant.totals.aic=1200;
- const line=renderUsageFooter(variant,200)[1]!;expect(line).toMatch(/^45.2%\/200k · 1.2k credits · CH99.3% · month 24% · ↑/);
+ const line=renderUsageFooter(variant,200)[1]!;expect(line).toMatch(/^○  45.2%\/200k · 1.2k credits · CH99.3% · month 24% · ↑/);
  expect(line.split(" · ")[1]).not.toMatch(/AIC|cal|est|[~+?]/);
  expect(renderUsageFooter({...variant,monthUsed:49},200)[1]).toContain("month 25%");
  expect(renderUsageFooter({...variant,monthlyBudget:undefined,counter:{availability:"available",snapshot:{creditsUsed:48,entitlement:400,ts:1}}},200)[1]).toContain("month 12%");
@@ -403,7 +404,10 @@ it.each([[999.96,"1.0k"],[9999.6,"10k"],[999500,"1.0M"],[999999,"1.0M"]])("credi
 describe("usage footer in a Herdr pane", () => {
   const items = ["14.6%/1.0M", "3.3k credits", "CH99.3%", "month 3%", "↑3.7M ↓4.0M", "R763M W65M"];
   const model = "model-alpha · high";
-  const line = (left: string, width: number) => left + " ".repeat(width - visibleWidth(left) - visibleWidth(model)) + model;
+  const line = (items: string, width: number) => {
+    const left = items ? `○  ${items}` : "○";
+    return left + " ".repeat(width - visibleWidth(left) - visibleWidth(model)) + model;
+  };
 
   it("puts the stats and the model on one line, without folder, branch or session name", () => {
     const lines = renderUsageFooter(input({ inPane: true }), 120);
@@ -414,8 +418,8 @@ describe("usage footer in a Herdr pane", () => {
   it("drops the lowest-priority stats before the model", () => {
     for (let retained = items.length; retained > 0; retained--) {
       const expected = items.slice(0, retained).join(" · ");
-      const width = visibleWidth(expected) + 1 + visibleWidth(model);
-      expect(renderUsageFooter(input({ inPane: true }), width)).toEqual([`${expected} ${model}`]);
+      const width = visibleWidth(expected) + 4 + visibleWidth(model);
+      expect(renderUsageFooter(input({ inPane: true }), width)).toEqual([`○  ${expected} ${model}`]);
       expect(renderUsageFooter(input({ inPane: true }), width - 1)).toEqual([line(items.slice(0, retained - 1).join(" · "), width - 1)]);
     }
   });

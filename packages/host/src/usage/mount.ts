@@ -48,6 +48,7 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
   let current = ctx;
   let settings = config;
   let disposed = false, ownsFooter = false;
+  let workingSince: number | undefined;
   let file: string | undefined, sessionId: string | undefined;
   let count = 0, cursor: string | undefined;
   let component: ReturnType<typeof createUsageFooter> | undefined;
@@ -55,21 +56,28 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
   const subscriptions: (() => void)[] = [];
   const totals = new FooterAccumulator();
   let input: FooterInput;
-  // herdr.enabled is read once per folder, not on every refresh tick.
-  let herdrPane: { cwd: string; inPane: boolean } | undefined;
+  // Appearance is read once per folder and session, not on refresh ticks.
+  let appearance: { cwd: string; inPane: boolean; iconStyle: NonNullable<FooterInput["iconStyle"]> } | undefined;
   const child = process.env.PI_SUBAGENT_CHILD === "1";
   const eligible = () => admitted() && !child && current.mode === "tui";
 
   function releaseFooter(): void {
     component?.dispose(); component = undefined;
-    if (ownsFooter) { ownsFooter = false; current.ui.setFooter(undefined); }
+    if (ownsFooter) {
+      ownsFooter = false;
+      current.ui.setFooter(undefined);
+      current.ui.setWorkingVisible?.(true);
+    }
   }
   function refresh(reset = false): void {
     if (disposed || !eligible() || !settings.footer) return;
     const manager = current.sessionManager;
     const nextFile = manager.getSessionFile(), nextId = manager.getSessionId();
     const replaced = file !== nextFile || sessionId !== nextId;
-    if (replaced && ownsFooter) releaseFooter();
+    if (replaced && (file !== undefined || sessionId !== undefined)) {
+      workingSince = undefined;
+      releaseFooter();
+    }
     // pi 0.87.x sums ALL getEntries(), including abandoned branches and summaries.
     // Tree navigation intentionally re-reduces that same list, not getBranch().
     const entries = manager.getEntries();
@@ -86,9 +94,14 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
     const sameMonth = runtimeSnapshot.monthPeriod?.start === period.start && runtimeSnapshot.monthPeriod.end === period.end;
     const pace = computePace({ now, snapshots: snapshot?.latest ? [snapshot.latest] : [], budget: settings.monthlyBudget,
       correctedMonth: sameMonth ? runtimeSnapshot.monthUsed ?? null : null, correctedWindow: null });
-    if (herdrPane?.cwd !== current.cwd) herdrPane = { cwd: current.cwd, inPane: Boolean(process.env.HC_TERMINAL_ID) && inHerdrPane(process.env, controlConfig("get", current.cwd, "herdr.enabled")) };
+    if (appearance?.cwd !== current.cwd) appearance = {
+      cwd: current.cwd,
+      inPane: Boolean(process.env.HC_TERMINAL_ID) && inHerdrPane(process.env, controlConfig("get", current.cwd, "herdr.enabled")),
+      iconStyle: controlConfig("get", current.cwd, "ui.icons") === "nerd" ? "nerd" : "text",
+    };
     input = {
-      cwd: displayCwd(current.cwd), branch: null, statuses: new Map(), sessionName: pi.getSessionName() ?? null, inPane: herdrPane.inPane,
+      iconStyle: appearance.iconStyle,
+      cwd: displayCwd(current.cwd), branch: null, statuses: new Map(), sessionName: pi.getSessionName() ?? null, inPane: appearance.inPane,
       modelId: model?.id ?? null, thinking: model?.reasoning ? (pi.getThinkingLevel?.() ?? current.thinkingLevel ?? "off") : "off",
       context: current.getContextUsage() ?? { percent: 0, contextWindow: model?.contextWindow ?? 0 },
       subscription, totals: totals.snapshot(), monthlyBudget: settings.monthlyBudget, monthUsed: pace.used,
@@ -100,8 +113,10 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
       current.ui.setFooter((tui, theme, footerData) => {
         component?.dispose();
         component = createUsageFooter(() => input, theme, footerData, () => tui.requestRender());
+        component.setWorking(workingSince);
         return component;
       });
+      current.ui.setWorkingVisible?.(false);
     }
     component?.refresh();
   }
@@ -127,11 +142,18 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
   }
   if (!child && current.mode === "tui") {
     const update = (_event: unknown, next: ExtensionContext) => { current = next; refresh(); };
-    subscriptions.push(pi.on("message_end", update), pi.on("turn_end", update), pi.on("agent_settled", update),
+    subscriptions.push(pi.on("agent_start", () => {
+      workingSince ??= Date.now();
+      component?.setWorking(workingSince);
+    }), pi.on("agent_end", () => {
+      workingSince = undefined;
+      component?.setWorking();
+    }), pi.on("message_end", update), pi.on("turn_end", update), pi.on("agent_settled", update),
       pi.on("session_compact", update), pi.on("session_info_changed", update), pi.on("model_select", update), pi.on("thinking_level_select", update),
       pi.on("session_tree", (_event, next) => { current = next; refresh(true); }),
       pi.on("session_start", (_event, next) => {
         // Same-instance hosts can replace contexts without a shutdown. Release the old UI first.
+        workingSince = undefined; appearance = undefined;
         releaseFooter(); current = next; refresh(true);
       }), pi.on("session_shutdown", dispose));
     configure(config);

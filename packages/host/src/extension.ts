@@ -371,7 +371,7 @@ function renderUpstreamReport(report: {
   }>;
   todosAdded: number;
 }): string {
-  const lines = [`\u{1F578}\uFE0F upstream-watch — ${report.packages.length} package(s) checked, ${report.todosAdded} new cherry-pick todo(s)`];
+  const lines = [`upstream-watch — ${report.packages.length} package(s) checked, ${report.todosAdded} new cherry-pick todo(s)`];
   for (const p of report.packages) {
     const head = p.head ? ` @ ${p.head.slice(0, 7)}` : "";
     const reason = (p.reason ?? "unknown reason").split("\n")[0];
@@ -650,7 +650,7 @@ async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnap
         try {
           const sha = await markReviewed(ctx.globalDb, pkg, ref, { git, mirrorRoot });
           return {
-            display: `\u{1F578}\uFE0F upstream-watch: marked ${pkg} reviewed @ ${sha}`,
+            display: `upstream-watch: marked ${pkg} reviewed @ ${sha}`,
             details: { ok: true, marked: { package: pkg, ref, sha } },
           };
         } catch (error) {
@@ -1285,7 +1285,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
     name: "spider",
     get label() { return `${icon(iconStyle(), "spider")} spider`; },
     description:
-      "spider 🕸: unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; exec→{on,copy:{direction,local,remote}} for file transfer; remember→content+category+required justification, optional supersedes:[uuid or unique prefix] for atomic same-scope replacement with cap credit (foreground only; reviewer still checks durability, usefulness and scope and may skip storage, change scope or archive replaced entries); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message} (owned RPC run: delivered only after observed conversation entry, otherwise accepted but not confirmed, no reply yet with delivery unknown, or refused; slash-prefixed steers are refused); notify→{message,urgency?} only when a person must act, never for completion; kill→{id} for an owned remote job or subagent; loop→{name?,interval?|cron?,tz?,prompt} (no definition lists all triggers), schedule→{name?,delaySeconds|at,prompt,reason?,noop?}; independent names replace only themselves (defaults loop and wakeup); stop:true affects only the named kind; exact named self-paced re-arms retain origin; loop/schedule wait on external work (CI, deploys, timers), not for polling subagents or remote spider jobs whose completion notices arrive automatically; top-level persistent sessions only; triggers survive /reload and same-session resume, new and fork start empty; cron uses a captured IANA zone and has no immediate first prompt; nothing fires while closed or asleep; todo→op:add/list/toggle/remove/clear/sessions/view(+text, id or session); control→command('doctor'|'config'|'memory'|'bind'|'unbind'). Every `run` needs a concrete `task` string; never call run without one.",
+      "spider: unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; exec→{on,copy:{direction,local,remote}} for file transfer; remember→content+category+required justification, optional supersedes:[uuid or unique prefix] for atomic same-scope replacement with cap credit (foreground only; reviewer still checks durability, usefulness and scope and may skip storage, change scope or archive replaced entries); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message} (owned RPC run: delivered only after observed conversation entry, otherwise accepted but not confirmed, no reply yet with delivery unknown, or refused; slash-prefixed steers are refused); notify→{message,urgency?} only when a person must act, never for completion; kill→{id} for an owned remote job or subagent; loop→{name?,interval?|cron?,tz?,prompt} (no definition lists all triggers), schedule→{name?,delaySeconds|at,prompt,reason?,noop?}; independent names replace only themselves (defaults loop and wakeup); stop:true affects only the named kind; exact named self-paced re-arms retain origin; loop/schedule wait on external work (CI, deploys, timers), not for polling subagents or remote spider jobs whose completion notices arrive automatically; top-level persistent sessions only; triggers survive /reload and same-session resume, new and fork start empty; cron uses a captured IANA zone and has no immediate first prompt; nothing fires while closed or asleep; todo→op:add/list/toggle/remove/clear/sessions/view(+text, id or session); control→command('doctor'|'config'|'memory'|'bind'|'unbind'). Every `run` needs a concrete `task` string; never call run without one.",
     parameters: SPIDER_PARAMETERS,
     renderCall: (args: any, theme: any, context: any) => renderSpiderCall(args, theme, { ...context, iconStyle: iconStyle() }),
     renderResult: (result: any, options: any, theme: any, context: any) => renderSpiderResult(result, options, theme,

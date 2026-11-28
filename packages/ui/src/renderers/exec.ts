@@ -36,8 +36,8 @@ export function renderExecCall(
   { theme, width, expanded = false }: RenderCtx,
   title?: string,
 ): string[] {
-  const verb = theme.fg("toolTitle", details.kind);
-  const head = title ?? `${theme.fg("toolTitle", uiIcon(theme.iconStyle, "spider"))} ${theme.fg("toolTitle", theme.bold("spider"))} ${theme.fg("toolTitle", "·")} ${theme.italic?.(verb) ?? verb}`;
+  const verb = theme.fg("toolTitle", theme.bold(details.kind));
+  const head = title ?? ` ${theme.fg("toolTitle", uiIcon(theme.iconStyle, "spider"))} ${verb}`;
   const all = (details.commands ?? []).flatMap(command => command.split(/\r?\n/u));
   const preview = all.filter(command => command.trim());
   const shown = expanded && preview.length ? all : preview.slice(0, CALL_CAP);
@@ -60,7 +60,7 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
   // looks like success. Show a running marker and every line streamed so far — the whole
   // point of streaming is watching it arrive, so the collapsed 1-line preview is wrong here.
   if (details.running) {
-    out.push(trim(` ${theme.fg("muted", "● running…")}`, width, ""));
+    out.push(trim(` ${theme.fg("muted", `${uiIcon(theme.iconStyle, "running")} running…`)}`, width, ""));
     for (const p of details.preview ?? []) {
       out.push(trim(` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("toolOutput", p)}`, width, ""));
     }
@@ -201,7 +201,7 @@ export function renderExecResult(details: ExecDetails, ctx: RenderCtx): string[]
   if (rest > 0) out.push(trim(` ${theme.fg("muted", `${uiIcon(theme.iconStyle, "gutter")} … ${rest} more`)}`, width, ""));
   if (details.indexed) {
     out.push(trim(
-      ` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("muted", `indexed → ${details.indexed.source} (${details.indexed.chunks} chunks)`)}`,
+      ` ${theme.fg("dim", `${uiIcon(theme.iconStyle, "gutter")} `)}${theme.fg("muted", `indexed ${uiIcon(theme.iconStyle, "arrowRight")} ${details.indexed.source} (${details.indexed.chunks} chunks)`)}`,
       width, ""));
   }
   return fitResultLines(out, width, expanded, 3);

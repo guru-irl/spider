@@ -1,4 +1,5 @@
 import type { ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent";
+import { icon } from "@spider/ui";
 import { sliceByColumn, stripTerminalSequences, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import type { FooterTotals } from "./footer-state.js";
 import type { CalibrationResult } from "./dashboard-contract.js";
@@ -144,7 +145,7 @@ function stats(input: FooterInput, width: number, theme?: Theme): string {
     const percent = 100 * (used / denominator);
     if (Number.isFinite(percent)) items.push(`month ${Math.round(percent)}%`);
   }
-  if (totals.input || totals.output) items.push(`↑${tokens(totals.input)} ↓${tokens(totals.output)}`);
+  if (totals.input || totals.output) items.push(`${icon("text", "arrowUp")}${tokens(totals.input)} ${icon("text", "arrowDown")}${tokens(totals.output)}`);
   if (totals.cacheRead || totals.cacheWrite) items.push(`R${tokens(totals.cacheRead)} W${tokens(totals.cacheWrite)}`);
   // Drop the entire lowest-priority item. Context alone can also be omitted.
   while (items.length && visibleWidth(items.join(" · ")) > width) items.pop();

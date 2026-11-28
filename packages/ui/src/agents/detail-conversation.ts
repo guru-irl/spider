@@ -30,7 +30,7 @@ export function projectConversation(
         break;
       }
       case "tool_intent":
-        text = theme.fg("accent", `→ ${event.summary ?? event.tool ?? "tool"}`);
+        text = theme.fg("accent", `${icon(theme.iconStyle, "message")} ${event.summary ?? event.tool ?? "tool"}`);
         break;
       case "tool_result":
         if (event.summary || time !== undefined) {
@@ -40,7 +40,13 @@ export function projectConversation(
         }
         break;
       case "handoff":
-        if (event.summary) text = theme.fg("accent", `${icon(theme.iconStyle, "handoff")} ${event.summary}`);
+        if (event.summary) {
+          const arrow = icon("text", "arrowRight");
+          const parts = event.summary.split(arrow);
+          const isRolePair = parts.length === 2 && parts[0] === (run.role ?? run.agent) && /^\S+$/.test(parts[1]!);
+          const summary = isRolePair && theme.italic ? `${theme.italic(parts[0]!)}${arrow}${theme.italic(parts[1]!)}` : event.summary;
+          text = theme.fg("accent", `${icon(theme.iconStyle, "handoff")} ${summary}`);
+        }
         break;
       case "warning":
         if (event.summary) text = theme.fg("warning", `${icon(theme.iconStyle, "warning")} ${event.summary}`);
@@ -51,7 +57,7 @@ export function projectConversation(
     }
   }
   if (run.status === "running" && run.activity) {
-    blocks.push({ key: "activity", text: theme.fg("accent", `▸ ${activityText(theme, run.activity, run.activityIsError)}`), assistantMessage: false });
+    blocks.push({ key: "activity", text: theme.fg("accent", `${icon(theme.iconStyle, "select")} ${activityText(theme, run.activity, run.activityIsError)}`), assistantMessage: false });
   }
   return blocks;
 }

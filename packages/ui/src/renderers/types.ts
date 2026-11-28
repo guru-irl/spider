@@ -1,6 +1,6 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { ThemeAdapter } from "../agents/types.js";
-import { icon } from "../icons.js";
+import { icon, type IconRole } from "../icons.js";
 
 /** Active SGR at the end of a marker; closed attributes must not leak into its text. */
 function sgrCodes(marker: string): string {
@@ -34,7 +34,7 @@ function sgrCodes(marker: string): string {
 // alternatives, not as members of a character class. The bare ✗ and ⚠ stay recognised
 // for text written before those icons became emoji.
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\\-]/g, "\\$&");
-const markerGlyphs = (["gutter", "task", "result", "failure", "warning", "message"] as const)
+const markerGlyphs = (["gutter", "task", "result", "failure", "warning", "success", "question", "running", "open", "paused", "active", "todoDone", "todoFailed", "todoPending", "content", "todo", "bullet", "message"] as const)
   .flatMap(role => [icon("text", role), icon("nerd", role).trimEnd()]).map(escapeRegExp).join("|");
 const messageChars = [icon("text", "message"), icon("nerd", "message")].join("").replace(/[\\\]\-^]/g, "\\$&");
 const resultPrefix = new RegExp(`^([ \\t]*(?:(?:\\d+\\.[ \\t]+)?(?:[│✓✗⚠●○■◆▪▣•·\\-*]|${markerGlyphs})(?:[ \\t]*[→◆▪▣${messageChars}])?[ \\t]+|\\[[^\\]\\n]+\\][ \\t]+|\\d+\\.[ \\t]+|[ \\t]+))`, "u");
@@ -52,7 +52,9 @@ export function fitResultLines(lines: readonly string[], width: number, expanded
     if (prefix && /^[ \t]*\[[^\]\n]+\][ \t]+$/u.test(prefix) && w - visibleWidth(prefix) < 20) {
       prefix = hangingIndent === undefined ? undefined : /^[ \t]+/u.exec(plain)?.[0];
     }
-    const indentWidth = hangingIndent ?? (prefix ? visibleWidth(prefix) : 0);
+    const prefixWidth = prefix ? visibleWidth(prefix) : 0;
+    const indentWidth = hangingIndent === undefined ? prefixWidth
+      : prefix?.trimStart().startsWith("└") ? Math.max(hangingIndent, prefixWidth) : hangingIndent;
     const reserved = Math.max(prefix ? visibleWidth(prefix) : 0, indentWidth);
     if (prefix && reserved < w) {
       let end = 0;
@@ -184,15 +186,15 @@ export interface MessageDetails {
 }
 
 type St = "ok" | "fail" | "warn" | "on" | "off" | "paused";
-const ICON: Record<St, { g: string; token: string }> = {
-  ok: { g: "✓", token: "success" }, fail: { g: icon("text", "failure"), token: "error" }, warn: { g: icon("text", "warning"), token: "warning" },
-  on: { g: "●", token: "accent" }, off: { g: "○", token: "muted" }, paused: { g: "■", token: "muted" },
+const ICON: Record<St, { role: IconRole; token: string }> = {
+  ok: { role: "success", token: "success" }, fail: { role: "failure", token: "error" }, warn: { role: "warning", token: "warning" },
+  on: { role: "running", token: "accent" }, off: { role: "open", token: "muted" }, paused: { role: "paused", token: "muted" },
 };
 
 /** Status glyph in its semantic color (glyph + color, never color-only). */
 export function statusIcon(theme: ThemeAdapter, status: St): string {
   const s = ICON[status];
-  return theme.fg(s.token, status === "warn" ? icon(theme.iconStyle, "warning") : status === "fail" ? icon(theme.iconStyle, "failure") : s.g);
+  return theme.fg(s.token, icon(theme.iconStyle, s.role));
 }
 
 /** `label value` on one line, width-guaranteed (value right-truncated). */

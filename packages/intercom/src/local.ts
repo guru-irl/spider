@@ -5,6 +5,7 @@ import { FEDERATION_FEATURE, createIntercomDeliveryObserver, receiptReleasesPayl
 import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "crypto";
 import { existsSync } from "node:fs";
+import { hostname } from "node:os";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import { icon, type IconStyle } from "@spider/ui";
@@ -611,9 +612,14 @@ function getNamePollMs(): number {
   }
   return 1000;
 }
+export function localMachineLabel(readHostname: () => string = hostname): string {
+  return readHostname().split(".")[0] || "(unknown machine)";
+}
+
 export type IntercomBrokerPort = (connect: () => Promise<void>) => Promise<void>;
 export interface IntercomRegistration { hasPendingInboundAsks(): boolean }
 export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: IntercomBrokerPort = connect => connect(), iconStyle: () => IconStyle = () => "text", v0?: V0ToolOptions): IntercomRegistration {
+  const localMachineName = localMachineLabel();
   let client: IntercomClient | null = null;
   const config: IntercomConfig = loadConfig();
   const askTimeoutMs = getAskTimeoutMs();
@@ -2200,7 +2206,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
   pi.registerMessageRenderer("intercom_message", (message, options, theme) => {
     const details = message.details as { from: SessionInfo; message: Message; replyCommand?: string; bodyText?: string } | undefined;
     if (!details) return undefined;
-    return new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText, !options.expanded);
+    return new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText, !options.expanded, iconStyle(), localMachineName);
   });
 
   pi.on("tool_result", (event) => {
@@ -2462,13 +2468,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
         const reason = typeof args.reason === "string" ? args.reason : "contact";
         const messagePreview = previewText(args.message, 96);
         const interview = args.interview && typeof args.interview === "object" ? args.interview as { title?: unknown } : undefined;
-        let text = theme.fg("toolTitle", theme.bold("contact_supervisor "));
-        text += theme.fg(reason === "need_decision" ? "warning" : reason === "progress_update" ? "muted" : "accent", reason);
-        if (typeof interview?.title === "string" && interview.title.trim()) {
-          text += " " + theme.fg("accent", interview.title.trim());
-        }
+        const target = childOrchestratorMetadata.orchestratorTarget;
+        const details = `${reason} ${icon("text", "message")} ${target}` + (typeof interview?.title === "string" && interview.title.trim() ? ` · ${interview.title.trim()}` : "");
+        let text = ` ${theme.fg("accent", icon(iconStyle(), "spider"))} ${theme.fg("toolTitle", theme.bold("contact_supervisor"))} · ${theme.fg("muted", details)}`;
         if (messagePreview) {
-          text += "\n  " + theme.fg("dim", messagePreview);
+          text += `\n ${theme.fg("dim", icon(iconStyle(), "gutter"))} ${theme.fg("dim", messagePreview)}`;
         }
         return new Text(text, 0, 0);
       },
@@ -2484,7 +2488,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
           ? theme.fg("error", `${icon(iconStyle(), "failure")} `)
           : parseWarning
             ? theme.fg("warning", `${icon(iconStyle(), "warning")} `)
-            : theme.fg("success", "✓ ");
+            : theme.fg("success", `${icon(iconStyle(), "success")} `);
         text += theme.fg(failed ? "error" : "text", textContent);
         if (parseWarning) {
           text += "\n" + theme.fg("warning", `Structured reply parse issue: ${details.structuredReplyParseError}`);
@@ -3250,16 +3254,13 @@ Usage:
       const target = typeof args.to === "string" && args.to.trim() ? args.to.trim() : undefined;
       const messagePreview = previewText(args.message, 96);
       const attachmentCount = Array.isArray(args.attachments) ? args.attachments.length : 0;
-      let text = theme.fg("toolTitle", theme.bold("intercom "));
-      text += theme.fg(action === "ask" ? "warning" : action === "reply" ? "success" : "accent", action);
-      if (target) {
-        text += " " + theme.fg("muted", "→") + " " + theme.fg("accent", target);
-      }
+      let details = action + (target ? ` ${icon("text", "message")} ${target}` : "");
       if (attachmentCount > 0) {
-        text += " " + theme.fg("dim", `(${attachmentCount} attachment${attachmentCount === 1 ? "" : "s"})`);
+        details += ` (${attachmentCount} attachment${attachmentCount === 1 ? "" : "s"})`;
       }
+      let text = ` ${theme.fg("accent", icon(iconStyle(), "spider"))} ${theme.fg("toolTitle", theme.bold("intercom"))} · ${theme.fg("muted", details)}`;
       if (messagePreview) {
-        text += "\n  " + theme.fg("dim", messagePreview);
+        text += `\n ${theme.fg("dim", icon(iconStyle(), "gutter"))} ${theme.fg("dim", messagePreview)}`;
       }
       return new Text(text, 0, 0);
     },
@@ -3269,11 +3270,11 @@ Usage:
       }
       const details = result.details as { delivered?: boolean; error?: boolean; messageId?: string; reason?: string } | undefined;
       const failed = Boolean(context.isError || details?.error === true || details?.delivered === false);
-      let text = failed ? theme.fg("error", `${icon(iconStyle(), "failure")} `) : theme.fg("success", "✓ ");
-      text += theme.fg(failed ? "error" : "text", firstTextContent(result));
-      if (details?.messageId && !context.expanded) {
-        text += theme.fg("dim", ` (${details.messageId.slice(0, 8)})`);
-      }
+      let text = failed ? theme.fg("error", `${icon(iconStyle(), "failure")} `) : theme.fg("success", `${icon(iconStyle(), "success")} `);
+      let content = firstTextContent(result);
+      if (!context.expanded && context.args?.action === "cancel" && details?.messageId) content = content.replaceAll(details.messageId, "message");
+      if (!context.expanded && context.args?.action === "pending") content = content.replace(/^(- .+?) · [^\s·]+ · (\d+s ago · )/gm, "$1 · $2");
+      text += theme.fg(failed ? "error" : "text", content);
       if (details?.reason && context.expanded) {
         text += "\n" + theme.fg("dim", `Reason: ${details.reason}`);
       }

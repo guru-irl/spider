@@ -21,8 +21,9 @@ export interface AgentSnapshot {
   runId: string; parentRunId?: string; name: string; agent: string; role?: string;
   status: AgentStatus; phase?: string; model?: string; thinking?: string; task?: string;
   startedAt?: number; endedAt?: number;
+  // isError is undefined for non-tool activity, false for successful tool results.
   activity?: string; activityTool?: string; activityIsError?: boolean;
-  stepCount: number; tokenCount: number; cost?: number; usageCosts?: RunUsageCosts; costText?: string; compactionCount?: number; recentActivity: string[]; recentActivityErrors?: boolean[];
+  stepCount: number; tokenCount: number; cost?: number; usageCosts?: RunUsageCosts; costText?: string; compactionCount?: number; recentActivity: string[]; recentActivityErrors?: (boolean | undefined)[];
 }
 
 export interface HandoffEdge { from: string; to: string; phase?: string; ts: number; }
@@ -53,15 +54,16 @@ export interface ThemeAdapter {
 }
 
 export function agentGlyph(theme: ThemeAdapter): string {
-  return theme.iconStyle === undefined ? theme.glyph : icon(theme.iconStyle, "agent");
+  return icon(theme.iconStyle, "agent");
 }
 
 /** Child reports mark failed tools with `✗` (stored in run events); older or current text icons may lead too. */
-const FAILURE_MARKERS = [...new Set(["✗", icon("text", "failure")])];
+const FAILURE_MARKERS = [...new Set(["✗", "\u{274C}", icon("text", "failure")])];
 
 export function activityText(theme: ThemeAdapter, text: string, isError: boolean | undefined): string {
-  const marker = isError ? FAILURE_MARKERS.find(m => text.startsWith(`${m} `)) : undefined;
-  return marker ? icon(theme.iconStyle, "failure") + text.slice(marker.length) : text;
+  if (isError === undefined) return text;
+  const marker = (isError ? FAILURE_MARKERS : [icon("text", "success")]).find(m => text.startsWith(`${m} `));
+  return marker ? icon(theme.iconStyle, isError ? "failure" : "success") + text.slice(marker.length) : text;
 }
 
 export interface FooterModel {
@@ -75,12 +77,12 @@ export interface LineChange { index: number; line: string; }
 export interface LineDiff { changed: LineChange[]; removedFrom?: number; lengthChanged: boolean; }
 
 export const STATUS_GLYPH: Record<AgentStatus, string> = {
-  queued: "○", running: "◆", paused: "■", done: "✓", failed: icon("text", "failure"), cancelled: icon("text", "warning"),
+  queued: icon("text", "queued"), running: icon("text", "active"), paused: icon("text", "paused"), done: icon("text", "success"), failed: icon("text", "failure"), cancelled: icon("text", "warning"),
 };
 
 export function statusGlyph(theme: ThemeAdapter, status: AgentStatus): string {
-  return status === "failed" ? icon(theme.iconStyle, "failure")
-    : status === "cancelled" ? icon(theme.iconStyle, "warning") : STATUS_GLYPH[status];
+  const role = { queued: "queued", running: "active", paused: "paused", done: "success", failed: "failure", cancelled: "warning" } as const;
+  return icon(theme.iconStyle, role[status]);
 }
 
 export function statusToken(status: AgentStatus): string {

@@ -1,9 +1,10 @@
+import { icon } from "../icons.js";
 import { fitResultLines, sectionRule } from "./types.js";
 import type { RenderCtx, TodoChecklistDetails, TodoItemView } from "./types.js";
 
 /** Render the rows below the spider todo title. */
 export function renderTodoChecklist(details: TodoChecklistDetails, { theme, width, expanded = false }: RenderCtx): string[] {
-  const glyph = (done: boolean) => done ? theme.fg("success", "✓") : theme.fg("muted", "○");
+  const glyph = (done: boolean) => theme.fg(done ? "success" : "muted", icon(theme.iconStyle, done ? "todoDone" : "todoPending"));
   const itemRow = (item: TodoItemView) =>
     ` ${glyph(item.done)} ${theme.fg("accent", `#${item.id}`)} ${theme.fg(item.done ? "dim" : "text", item.text)}`;
   const fit = (lines: string[]) => fitResultLines(lines, width, expanded, 3);

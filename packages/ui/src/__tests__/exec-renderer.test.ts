@@ -6,12 +6,12 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 const id: ThemeAdapter = { fg: (_t, s) => s, bg: (_t, s) => s, bold: (s) => s, glyph: "🕸" };
 
 describe("exec renderer", () => {
-  it.each([false, true])("puts the command in column 1, with a two-line collapsed preview (expanded=%s)", expanded => {
+  it.each([false, true])("aligns under the command title, with a two-line collapsed preview (expanded=%s)", expanded => {
     const commands = Array.from({ length: 8 }, (_, i) => `echo line ${i + 1}`);
     const lines = renderExecCall({ kind: "batch", commands }, { theme: id, width: 40, expanded });
     expect(lines[0]).toBe(" ◆ batch");
-    expect(lines.slice(1)).toEqual(expanded ? commands.map(command => ` └ ${command}`)
-      : [" └ echo line 1", " └ echo line 2", " └ … +6 more lines"]);
+    expect(lines.slice(1)).toEqual(expanded ? commands.map(command => `   ${command}`)
+      : ["   echo line 1", "   echo line 2", "   … +6 more lines"]);
     expect(lines.every(line => visibleWidth(line) <= 40)).toBe(true);
   });
   it("result body carries ✓/exit/lines and the indexed note — but NOT a repeated 🕸 spider header", () => {
@@ -45,7 +45,7 @@ describe("exec renderer", () => {
       expect(output).not.toContain("echo done");
     }
     const call = renderExecCall(details, { theme: id, width: 60, expanded: true });
-    expect(call.slice(1)).toEqual([" └ cd /x", " └ npm test", " └ echo done"]);
+    expect(call.slice(1)).toEqual(["   cd /x", "   npm test", "   echo done"]);
   });
 
   it("a detached result never renders exit 0 / ✓ — it shows detached/exit unknown plus the log and receipt paths", () => {

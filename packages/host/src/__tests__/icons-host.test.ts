@@ -74,20 +74,20 @@ describe("host icon rendering", () => {
     const text = render("text"), nerd = render("nerd");
     expect(text.join("\n")).toContain("→ hello");
     expect(nerd.join("\n")).toContain("\u{F01F0}  hello");
-    expect(nerd.join("\n")).toContain("└  Some snippet");
+    expect(nerd.join("\n")).toContain("    Some snippet");
     expectWidthDelta(text, nerd, "hello", 1);
     expectWidthDelta(text, nerd, "Some snippet", 1);
     expectFits(text, nerd);
   });
 
-  it("uses failure and gutter markers in doctor and configuration results", () => {
+  it("uses failure markers and aligned detail rows in doctor and configuration results", () => {
     const render = (action: string, details: unknown, iconStyle: "text" | "nerd") =>
       renderSpiderResult({ details }, {}, theme, { args: { action: "control", command: action }, iconStyle }).render(100);
     const text = render("doctor", { ok: false, lines: ["- storage: unavailable"] }, "text");
     const nerd = render("doctor", { ok: false, lines: ["- storage: unavailable"] }, "nerd");
     expect(text.join("\n")).toContain("× issues found");
     expect(nerd.join("\n")).toContain("\u{F0156}  issues found");
-    expect(nerd.join("\n")).toContain("└  storage");
+    expect(nerd.join("\n")).toContain("    storage");
     expectWidthDelta(text, nerd, "issues found", 1);
     expectWidthDelta(text, nerd, "storage", 1);
     expectFits(text, nerd);

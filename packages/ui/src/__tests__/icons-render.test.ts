@@ -46,7 +46,7 @@ describe("icon styles in rendered rows", () => {
   it("returns monochrome glyphs with the specified Nerd Font padding", () => {
     const roles: [IconRole, string, string][] = [
       ["agent", "◇", "\u{F167A} "], ["spider", "◆", "\u{F0BCA} "], ["warning", "▲", "\u{F002A} "], ["failure", "×", "\u{F0156} "], ["success", "✓", "\u{F012C} "], ["question", "?", "\u{F02D6} "],
-      ["gutter", "└", "└ "], ["task", "→", "\u{F060D} "], ["result", "↑", "\u{F005C} "],
+      ["task", "→", "\u{F060D} "], ["result", "↑", "\u{F005C} "],
       ["message", "→", "\u{F01F0} "], ["reply", "←", "\u{F0F20} "], ["broadcast", "»", "\u{F0B23} "],
       ["handoff", "→", "\u{F19B0} "], ["pin", "†", "\u{F0931} "], ["modelDefault", "←", "\u{F004D} "],
       ["copy", "□", "\u{F018F} "], ["todoDone", "✓", "\u{F05E1} "], ["todoFailed", "×", "\u{F015A} "], ["todoPending", "○", "\u{F0766} "],
@@ -110,14 +110,14 @@ describe("icon styles in rendered rows", () => {
     expect(formatAgentLine(theme("nerd"), agent, 100, 0, "◆")).toContain("◆ \u{F167A}  scribe");
   });
 
-  it("keeps message warning and output gutter aligned", () => {
+  it("aligns message details in both icon styles", () => {
     const details = { verb: "send" as const, to: "worker", body: "hello", delivered: false, delivery: "queued" as const };
     const text = renderMessageResult(details, { theme: theme("text"), width: 100 });
     const nerd = renderMessageResult(details, { theme: theme("nerd"), width: 100 });
     expect(text.join("\n")).toContain("▲ → worker");
     expect(nerd.join("\n")).toContain("\u{F002A}  \u{F01F0}  worker");
-    expect(text.join("\n")).toContain("└ hello");
-    expect(nerd.join("\n")).toContain("└  hello");
+    expect(text.join("\n")).toContain("   hello");
+    expect(nerd.join("\n")).toContain("    hello");
     expect(visibleWidth(nerd[0])).toBe(visibleWidth(text[0]) + 2);
     expect(visibleWidth(nerd[1])).toBe(visibleWidth(text[1]) + 1);
   });
@@ -266,13 +266,13 @@ describe("icon styles in rendered rows", () => {
     }
   });
 
-  it("uses the matching gutter for expanded command output", () => {
+  it("aligns expanded command output in both icon styles", () => {
     const details = { kind: "exec" as const, commands: ["echo"], ok: true, exitCode: 0, outLines: 1,
       preview: ["hello"], expandedOutput: { rows: [{ text: "hello", stream: "stdout" as const }], hidden: 0 } };
     const text = renderExecResult(details, { theme: theme("text"), width: 80, expanded: true });
     const nerd = renderExecResult(details, { theme: theme("nerd"), width: 80, expanded: true });
-    expect(text.join("\n")).toContain("└ hello");
-    expect(nerd.join("\n")).toContain("└  hello");
+    expect(text.join("\n")).toContain("   hello");
+    expect(nerd.join("\n")).toContain("    hello");
     expect(visibleWidth(nerd[1])).toBe(visibleWidth(text[1]) + 1);
   });
 
@@ -286,29 +286,24 @@ describe("icon styles in rendered rows", () => {
     expect(lines.every(line => visibleWidth(line) <= 1)).toBe(true);
   });
 
-  it("preserves hanging indents for the shared output gutter", () => {
-    const text = fitResultLines(["  └ first second third"], 12, true);
-    expect(text).toEqual(["  └ first", "    second", "    third"]);
+  it("preserves a four-cell detail indent through expanded wrapping", () => {
+    const rows = fitResultLines(["    first second third"], 12, true, 3);
+    expect(rows).toEqual(["    first", "    second", "    third"]);
   });
 
-  it("preserves the Nerd gutter's hanging indent when wrapping", () => {
-    const lines = fitResultLines(["  └  first second third"], 12, true);
-    expect(lines).toEqual(["  └  first", "     second", "     third"]);
-  });
-
-  it("uses matching gutters in kill, index, and insights results", () => {
+  it("indents details in kill, index, and insights cards", () => {
     const render = (style: "text" | "nerd") => {
       const th = theme(style);
       return [
         renderKillResult({ requested: "one", killed: [{ runId: "one", name: "scribe", outcome: "failed", via: "none", lastActivity: "reading" }] }, { theme: th, width: 100 }).join("\n"),
         renderIndexResult({ kind: "fetch", source: "docs", targets: ["one"], chunks: 1, embedded: 1 }, { theme: th, width: 100 }).join("\n"),
-        renderInsights({ nodes: Array.from({ length: 10 }, (_, i) => ({ id: String(i), label: `node${i}`, kind: "test" })), edges: [], stats: { nodes: 10, edges: 0, linkedPct: 0 } } as never, th, 100).join("\n"),
+        renderInsights({ nodes: Array.from({ length: 10 }, (_, i) => ({ id: String(i), label: `node${i}`, kind: "test" })), edges: [], stats: { nodes: 10, edges: 0, linkedPct: 0 } } as never, th, 100, false, true).join("\n"),
       ];
     };
     const text = render("text"), nerd = render("nerd");
-    for (let i = 0; i < text.length; i++) {
-      expect(text[i]).toContain("└");
-      expect(nerd[i]).toContain("└");
+    for (const [i, detail] of ["was: reading", "1 chunks", "… 2 more"].entries()) {
+      expect(text[i].split("\n").find(row => row.includes(detail))).toMatch(/^ {3}\S/u);
+      expect(nerd[i].split("\n").find(row => row.includes(detail))).toMatch(/^ {4}\S/u);
       expect(text[i].split("\n").every(line => visibleWidth(line) <= 100)).toBe(true);
       expect(nerd[i].split("\n").every(line => visibleWidth(line) <= 100)).toBe(true);
     }

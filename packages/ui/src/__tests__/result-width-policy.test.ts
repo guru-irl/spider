@@ -39,7 +39,7 @@ describe("result width policy", () => {
 
   it.each([30, 80])("hangs continuation rows after every leading marker at width %i", (width) => {
     const payload = "x".repeat(180);
-    const prefixes = [" └ ", " ✓ ", " ✗ ", " 12. ◆ ", " • ", " │ ", "    → ", "    ↑ ", "     ", " ● ", " ✗ → ", " - ", " × ", " ▲ ", " × → ", " \u{F002A}  "];
+    const prefixes = ["   ", " ✓ ", " ✗ ", " 12. ◆ ", " • ", " │ ", "    → ", "    ↑ ", "     ", " ● ", " ✗ → ", " - ", " × ", " ▲ ", " × → ", " \u{F002A}  "];
     for (const prefix of prefixes) {
       const rows = fitResultLines([prefix + payload], width, true).map(stripped);
       expect(rows.length, prefix).toBeGreaterThan(1);
@@ -87,12 +87,12 @@ describe("result width policy", () => {
     expect(rows.map((row) => row.slice(marker.length)).join("")).toBe("x".repeat(180));
   });
 
-  it("hangs styled gutter rows without duplicating the colored marker", () => {
-    const prefix = " \x1b[31m└ \x1b[39m";
-    const rows = fitResultLines([prefix + "\x1b[32m" + "x".repeat(180) + "\x1b[39m"], 30, true);
-    expect(stripped(rows[0]).startsWith(" └ x")).toBe(true);
-    expect(rows.slice(1).every((row) => stripped(row).startsWith("   x") && !stripped(row).includes("└"))).toBe(true);
-    expect(rows.map((row) => stripped(row).slice(3)).join("")).toBe("x".repeat(180));
+  it("hangs colored details under the Nerd title column", () => {
+    const prefix = "    ";
+    const rows = fitResultLines([prefix + "\x1b[32m" + "x".repeat(180) + "\x1b[39m"], 30, true, 3);
+    expect(stripped(rows[0]).startsWith("    x")).toBe(true);
+    expect(rows.slice(1).every((row) => stripped(row).startsWith("    x") && row.includes("\x1b[32m"))).toBe(true);
+    expect(rows.map((row) => stripped(row).slice(4)).join("")).toBe("x".repeat(180));
   });
 
   it("carries a dim run-output marker's open colour through every continuation", () => {
@@ -112,7 +112,7 @@ describe("result width policy", () => {
   });
 
   it("does not carry colour that closes before the text", () => {
-    const rows = fitResultLines([`\x1b[2m └ \x1b[22m${"x".repeat(180)}`], 30, true);
+    const rows = fitResultLines([`\x1b[2m    \x1b[22m${"x".repeat(180)}`], 30, true);
     expect(rows.length).toBeGreaterThan(1);
     expect(rows.slice(1).every((row) => !row.includes("\x1b[2m"))).toBe(true);
   });
@@ -120,7 +120,7 @@ describe("result width policy", () => {
   it.each([
     ["256-colour foreground close", " \x1b[38;5;4m✓\x1b[39m "],
     ["truecolor and bold reset", "  \x1b[1;38;2;9;8;7m◆\x1b[0m "],
-    ["dim close", " \x1b[2m└\x1b[22m "],
+    ["dim close", " \x1b[2m↑\x1b[22m "],
   ])("does not carry %s inside the marker onto continuation rows", (_name, marker) => {
     const rows = fitResultLines([marker + "x".repeat(180)], 30, true);
     expect(rows.length).toBeGreaterThan(1);

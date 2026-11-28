@@ -16,11 +16,13 @@ import { mountHerdr } from '../herdr/mount.js';
 import { paths } from '@spider/db-core';
 import { globalConfigForTest } from '../../../db-core/src/__tests__/global-config.testutil.js';
 import { createProductionHerdrCliPorts, type HostHerdrOptions } from '../herdr/ports.js';
+import { installFastCoreTransport } from './herdr-setup-fast-core.js';
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 async function childFixture(mode: 'fake' | 'hc' = 'fake', install = false) {
   const h = await createHerdrHarness(mode);
+  if (mode === 'fake') installFastCoreTransport(h);
   let cache: ReturnType<typeof createMachineCache> | undefined, mount: ReturnType<typeof mountHerdr> | undefined;
   try {
     await h.start();

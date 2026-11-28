@@ -4,6 +4,8 @@ import { readFile } from "node:fs/promises";
 import { clearActions } from "../dispatch";
 import { LOADED_BUILD } from "../build-id";
 import { mountedFixture } from "./herdr-wiring-fixture";
+// Load the mount graph at collection, before either case starts its timer.
+import "../herdr/mount.js";
 
 type FixtureOptions = NonNullable<Parameters<typeof mountedFixture>[11]>;
 type Fixture = Awaited<ReturnType<typeof mountedFixture>>;

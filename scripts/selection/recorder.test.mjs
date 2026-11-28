@@ -641,7 +641,7 @@ test('a kernel trace attributes shell and killed Node reads to the test that spa
   assert.equal(result.status, 0, result.stderr);
   const record = reduceProbe(paths);
   assert.deepEqual(record.reads, ['child.mjs', 'child.txt', 'resume.sh', 'shell.txt', 'thread.mjs', 'worker.txt']);
-  assert.equal(record.incomplete, false);
+  assert.equal(record.incomplete, false, JSON.stringify(record.capture));
   assert.equal(record.unknownCpu, 1);
   assert.equal(record.cpuMs, null);
 });
@@ -703,6 +703,26 @@ for (const [label, ready, exited, complete] of [
     assert.equal(record.incomplete, !complete);
     assert.equal(record.cpuMs, 132);
     if (complete) assert.deepEqual(record.reads, ['src/worker.ts']);
+  });
+}
+
+for (const [label, flags, submissions, complete] of [
+  ['a ring allocated but not used to submit work', 'IORING_SETUP_NO_SQARRAY', 0, true],
+  ['a ring that submits without entering the kernel explicitly', 'IORING_SETUP_SQPOLL', 0, false],
+  ['a ring used to submit work that strace cannot see', 'IORING_SETUP_NO_SQARRAY', 1, false],
+]) {
+  test(`treats io_uring as an input gap only when operations may be submitted: ${label}`, t => {
+    const { records } = fixtureRecords(t, {
+      results: [{ name: id }],
+      snapshots: [{ test: id, worker: true, pid: 3, processId: 'parent', cpuMs: 100, ended: true, paths: [] }],
+      kernelTrace: `1 clone(child_stack=NULL, flags=SIGCHLD) = 3
+3 io_uring_setup(256, {flags=${flags}, sq_thread_cpu=0}) = 10
+3 io_uring_enter(10, ${submissions}, 0, IORING_ENTER_GETEVENTS, NULL, 0) = ${submissions}
+3 +++ exited with 0 +++
+1 +++ exited with 0 +++
+`,
+    });
+    assert.equal(records[id].incomplete, !complete);
   });
 }
 

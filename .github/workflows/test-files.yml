@@ -1,8 +1,5 @@
 name: test files
 
-# Runs named test files on one runner, with the same setup as a CI test
-# shard. Use it to check slow test files without running the whole suite.
-
 on:
   workflow_dispatch:
     inputs:
@@ -11,75 +8,99 @@ on:
         required: true
         type: string
       repeat:
-        description: How many times to run the files (1 to 5)
+        description: How many paired runs to make (1 to 5)
         required: false
         default: '1'
+        type: string
+      order:
+        description: Variant order (forward or reverse)
+        required: false
+        default: forward
         type: string
 
 permissions:
   contents: read
 
 env:
-  # CI never uses onnxruntime's CUDA provider; skip its NuGet download.
   ONNXRUNTIME_NODE_INSTALL: skip
+  BASE_SHA: ab8721a16f0633fa98809b14bdf74e84fc694e4a
 
 jobs:
   run:
-    name: test files
+    name: paired test files
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '26.x'
           cache: npm
-
-      - name: Check inputs
-        env:
-          FILES: ${{ inputs.files }}
-          REPEAT: ${{ inputs.repeat }}
-        run: |
-          case "$REPEAT" in 1|2|3|4|5) ;; *) echo "repeat must be 1 to 5"; exit 1;; esac
-          count=0
-          for f in $FILES; do
-            if ! printf '%s' "$f" | grep -Eq '^packages/[A-Za-z0-9_./-]+\.test\.(ts|mjs|js)$'; then
-              echo "not a test file path: $f"; exit 1
-            fi
-            case "$f" in *..*) echo "path must not contain ..: $f"; exit 1;; esac
-            test -f "$f" || { echo "missing: $f"; exit 1; }
-            count=$((count + 1))
-          done
-          test "$count" -gt 0 || { echo "no files given"; exit 1; }
-
-      - name: Prepare isolated scratch
-        run: mkdir -p "$PWD/.spider/scratch/tmp"
-
       - name: Install SQLite CLI
         run: sudo apt-get update && sudo apt-get install -y sqlite3
-
       - name: Install
         run: npm ci
-
-      # Same as the CI test shards: keep hc sockets inside the tests' own
-      # state homes by removing the runner's runtime directory.
       - name: Remove runner runtime directory
         run: |
           rundir="/run/user/$(id -u)"
           if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
           sudo rm -rf "$rundir"
           test ! -e "$rundir"
-          echo "XDG_RUNTIME_DIR=" >> "$GITHUB_ENV"
-
-      - name: Run test files
+      - name: Measure base and branch on the same runner
+        shell: bash
         env:
           FILES: ${{ inputs.files }}
           REPEAT: ${{ inputs.repeat }}
+          ORDER: ${{ inputs.order }}
         run: |
+          set -uo pipefail
+          case "$REPEAT" in 1|2|3|4|5) ;; *) echo 'repeat must be 1 to 5'; exit 1;; esac
+          mkdir -p .spider/scratch/tmp .spider/scratch/whst-profile
+          output="$PWD/.spider/scratch/whst-profile"
+          head_sha=$(git rev-parse refs/remotes/origin/test/herdr-host-speed-2)
+          git diff --name-only "$BASE_SHA" "$head_sha" | grep -vE '^(packages/host/src/__tests__/|scripts/test-resources\.json$)' > "$output/non-test-paths.txt" || true
+          if test -s "$output/non-test-paths.txt"; then echo 'Refusing to compare changed production sources or dependencies'; exit 1; fi
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          unset XDG_RUNTIME_DIR
+          clock_ticks=$(getconf CLK_TCK)
+          cg=$(awk -F: '$1 == "0" {print $3}' /proc/self/cgroup)
+          cpu_stat="/sys/fs/cgroup${cg%/}/cpu.stat"
           status=0
-          for i in $(seq 1 "$REPEAT"); do
-            echo "::group::run $i of $REPEAT"
-            env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR TMPDIR="$PWD/.spider/scratch/tmp" npx vitest run $FILES --maxWorkers=3 --reporter=verbose || status=1
-            echo "::endgroup::"
+          case "$ORDER" in forward) variants='base head';; reverse) variants='head base';; *) echo 'order must be forward or reverse'; exit 1;; esac
+          for trial in $(seq 1 "$REPEAT"); do
+            for variant in $variants; do
+              sha="$BASE_SHA"
+              if [[ "$variant" == head ]]; then sha="$head_sha"; fi
+              git -c advice.detachedHead=false checkout --detach "$sha"
+              files=()
+              for f in $FILES; do
+                if ! [[ "$f" =~ ^packages/[A-Za-z0-9_./-]+\.test\.(ts|mjs|js)$ ]] || [[ "$f" == *..* ]]; then echo "Invalid test path: $f"; exit 1; fi
+                if [[ -f "$f" ]]; then files+=("$f"); fi
+              done
+              if [[ ${#files[@]} == 0 ]]; then echo "No requested files exist at $sha"; exit 1; fi
+              label="$variant-$trial"
+              printf '%s\n' "${files[@]}" > "$output/$label.files"
+              printf '%s\n' "$sha" > "$output/$label.sha"
+              before=$(awk 'NR == 1 {printf "%.0f", $2+$3+$4+$7+$8}' /proc/stat)
+              cg_before=unavailable
+              if [[ -r "$cpu_stat" ]]; then cg_before=$(awk '$1 == "usage_usec" {print $2}' "$cpu_stat"); fi
+              echo "::group::$label ($sha)"
+              /usr/bin/time -o "$output/$label.time" -f 'wall_seconds=%e user_seconds=%U system_seconds=%S' \
+                env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR \
+                node node_modules/vitest/vitest.mjs run "${files[@]}" --maxWorkers=3 --reporter=default --reporter=json --outputFile.json="$output/$label.json" || status=1
+              after=$(awk 'NR == 1 {printf "%.0f", $2+$3+$4+$7+$8}' /proc/stat)
+              cg_after=unavailable
+              if [[ -r "$cpu_stat" ]]; then cg_after=$(awk '$1 == "usage_usec" {print $2}' "$cpu_stat"); fi
+              printf 'proc_cpu_ticks_before=%s\nproc_cpu_ticks_after=%s\nclock_ticks_per_second=%s\ncgroup_usage_usec_before=%s\ncgroup_usage_usec_after=%s\n' "$before" "$after" "$clock_ticks" "$cg_before" "$cg_after" | tee "$output/$label.cpu"
+              echo '::endgroup::'
+            done
           done
-          exit $status
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: whst-profile
+          path: .spider/scratch/whst-profile/
+          include-hidden-files: true

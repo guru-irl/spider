@@ -249,7 +249,7 @@ test('tail usage is labelled and terminal state remains visible beside long name
   view.addEntries([assistant([{ type: 'text', text: 'answer' }], 27)]);
   view.setState({ status: 'failed', steerable: false, reachable: true, readOnlyReason: 'This run is failed.' });
   const footer = plain(view.footerLines(80));
-  expect(footer).toContain('failed'); expect(footer).toContain('read-only'); expect(footer).toContain('tail totals');
+  expect(footer).toContain('failed'); expect(footer).toContain('read-only'); expect(footer).toContain('partial totals');
   expect(footer.split('\n').every(line => line.length <= 80)).toBe(true);
 });
 
@@ -361,7 +361,7 @@ test('omitting older components does not omit their recorded usage or model sett
     { ...toolResult('older', 'other', 'older result', 60), message: { ...toolResult('older', 'other', 'older result', 60).message, usage: { input: 0, output: 0, cacheRead: 500, cacheWrite: 0 } } },
     ...Array.from({ length: 60 }, (_, n) => user(`newer question ${n}`, 100 + n))]);
   const footer = plain(view.footerLines(100));
-  expect(footer).toContain('R1.5k W0'); expect(footer).toContain('model-one · high'); expect(footer).not.toContain('tail totals');
+  expect(footer).toContain('R1.5k W0'); expect(footer).toContain('model-one · high'); expect(footer).not.toContain('partial totals');
 });
 
 test('hundreds of messages render quickly and keep a bounded number of components', () => {

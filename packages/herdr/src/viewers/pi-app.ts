@@ -355,7 +355,7 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
       if (state.status !== 'running' || state.statusIsStale) parts.push(state.status === 'failed' ? theme.fg('error', status) : theme.fg('dim', status));
       if (!state.reachable && unreachableSince !== null && now() - unreachableSince >= 3000) parts.push(theme.fg('warning', 'owner unreachable'));
       if (!state.steerable && !state.canCompose) parts.push(theme.fg('dim', 'read-only'));
-      if (partialHistory) parts.push(theme.fg('dim', 'tail totals'));
+      if (partialHistory) parts.push(theme.fg('dim', 'partial totals'));
       const statusText = parts.join(sep);
       const identityWidth = Math.max(0, width - visibleWidth(statusText) - (statusText ? 3 : 0));
       const shownIdentity = identityWidth > 0 ? truncateToWidth(identity, identityWidth, '...') : '';
@@ -477,6 +477,7 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
     notice,
     text(text) {
       if (text.trim()) {
+        partialHistory = true;
         if (!fallbackNotice) { add(new Text(theme.fg('dim', 'Saved transcript unavailable. Showing recorded events.'), 1, 0)); fallbackNotice = true; }
         add(new Text(sanitize(text).replace(/\n+$/, ''), 1, 0));
       }

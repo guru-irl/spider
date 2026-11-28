@@ -120,8 +120,11 @@ test('finds transitive type-only importers through the real checkout graph', asy
   execFileSync('git', ['init', '-q'], { cwd: root });
   execFileSync('git', ['add', '--', '.'], { cwd: root });
   const graph = await selector.createGraphResolver(root, [a, b], []);
-  try { assert.deepEqual(await graph.resolveRelated([input]), [a]); }
-  finally { await graph.close(); }
+  try {
+    assert.deepEqual(await graph.resolveRelated([input]), [a]);
+    // Bundle-consumer policy can ask for helper files as static graph targets.
+    assert.deepEqual(await graph.resolveRelated([input], ['packages/one/src/helper.ts']), ['packages/one/src/helper.ts']);
+  } finally { await graph.close(); }
 });
 
 test('runs surviving recorded readers of deleted files but not the deleted test', async () => {

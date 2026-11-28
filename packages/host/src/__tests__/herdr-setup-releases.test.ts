@@ -30,12 +30,14 @@ async function localRelease(version: Release, coreTransport: 'process' | 'socket
   const wrapper = await readFile(binary, 'utf8');
   // These read-only fixture replies are static. Keep the subprocess boundary
   // without starting another Node runtime for each version or layout query.
-  await writeFile(binary, wrapper.replace('#!/bin/sh\n', `#!/bin/sh
+  const patched = wrapper.replace('#!/bin/sh\n', `#!/bin/sh
 case "$1" in
   --version) printf '%s\\n' 'herdr-app ${version}'; exit 0 ;;
   ls|commands) printf '%s\\n' '{"spaces":[]}'; exit 0 ;;
 esac
-`));
+`);
+  expect(patched).not.toBe(wrapper);
+  await writeFile(binary, patched);
   return f;
 }
 const fastRelease = (version: Release) => localRelease(version, 'socket');
@@ -54,7 +56,7 @@ function verifyItem(ports: HerdrCliPorts, item: DoctorItem): SetupParts['verify'
   };
 }
 
-async function nativeKeysFixture(version: Release, coreTransport: 'process' | 'socket' = 'process') {
+async function nativeKeysFixture(version: Release, coreTransport: 'process' | 'socket' = 'process', fullSetup = false) {
   const f = await localRelease(version, coreTransport);
   vi.stubEnv('PI_CODING_AGENT_DIR', f.h.directories.agent);
   const path = join(f.h.directories.app, 'keys.json');
@@ -65,6 +67,7 @@ async function nativeKeysFixture(version: Release, coreTransport: 'process' | 's
     stderr: text => errors.push(text),
     setupParts: async request => {
       const parts = await f.ports.setupParts(request);
+      if (fullSetup) return parts;
       // Keep production release detection, key planning, merge and rollback.
       // The A/B cases below cover publication and verification of the look files.
       const isKeyMap = (file: { path: string }) => file.path === path;
@@ -128,6 +131,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     const before = await readFile(join(home, 'mods/spider-menu/main.js'));
     const off = { ...f.request, config: { ...f.request.config, look: { autoHideTabs: f.request.config.look?.autoHideTabs ?? true, windowBlur: false } } };
     await setupHerdr(off, { ...await f.ports.setupParts(off), verify: verifyItem(f.ports, 'layout-theme') });
+    // Identical-repeat idempotency is covered by the B setup case in herdr-setup-cross-machine.test.ts.
     expect(await readFile(join(home, 'mods/spider-menu/main.js'))).toEqual(before);
     expect(JSON.parse(await readFile(join(home, 'layouts/spider-glass.json'), 'utf8'))).not.toHaveProperty('window_blur');
     expect((await (await f.ports.doctorParts(off)).inspect('layout-theme', off)).failures).toEqual([]);
@@ -214,6 +218,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     await seedUnboundNativeKeys(path);
     expect(await runHerdrCli(['setup', '--merge-native-keys', '--config', configPath], ports), errors.join('')).toBe(0);
     const once = await readFile(path);
+    expect(JSON.parse(once.toString('utf8')).global['cmd-m']).toBe('window.minimize');
     expect(await runHerdrCli(['setup', '--merge-native-keys', '--config', configPath], ports), errors.join('')).toBe(0);
     expect(await readFile(path)).toEqual(once);
     const merged = JSON.parse(once.toString('utf8'));
@@ -252,7 +257,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   });
 
   if (version === '0.1.13') test('accepted native keys are not reoffered or removed by decline', async () => {
-    const { path, out, errors, ports, configPath } = await nativeKeysFixture(version);
+    const { path, out, errors, ports, configPath } = await nativeKeysFixture(version, 'process', true);
     const original = await readFile(path);
     expect(await runHerdrCli(['setup', '--merge-native-keys', '--config', configPath], ports), errors.join('')).toBe(0);
     expect(JSON.parse(await readFile(path, 'utf8')).global['cmd-m']).toBe('window.minimize');

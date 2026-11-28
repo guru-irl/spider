@@ -15,6 +15,7 @@
         "**/vite*.config.*",
         "**/vitest.setup.*",
         "**/vitest.herdr-global-setup.*",
+        "packages/db-core/src/__tests__/global-config.testutil.ts",
         "packages/herdr/e2e/setup.ts",
         "scripts/vitest-sequencer.ts"
       ],

@@ -109,6 +109,8 @@ describe("card background through the right edge", () => {
       checkCard(rows, 30, backgrounds[token]);
     }
     const failed = renderCommandOutput({ details: { args: { action: "unknown" }, result: { isError: true, details: { error: "failure\x1b[0m " + "details ".repeat(20) } } } }, {}, distinct).render(30);
+    expect(failed[0]).toBe(`\x1b[38;5;162m${"▄".repeat(30)}\x1b[39m`);
+    expect(failed.at(-1)).toBe(`\x1b[38;5;162m${"▀".repeat(30)}\x1b[39m`);
     checkCard(failed, 30, backgrounds.toolErrorBg);
     for (const [severity, marker, token] of [
       ["blocked", "× blocked", "toolErrorBg"],

@@ -17,7 +17,7 @@ import { collectCheckpointBlobs, assertSetupNotUndoing, beginRunCheckpoint, fini
 
 import { globalHerdrTemplatePaths } from '../templates/paths.js';
 import { LEGACY_SPIDER_LAYOUT, LEGACY_SPIDER_LAYOUT_KEYS, SPIDER_LAYOUT, SPIDER_LAYOUT_KEYS, layoutSelectionPath, legacySpiderLayoutPath, spiderLayoutPath } from '../look/names.js';
-import { awaitSpiderSelection, hasLegacyLayout, readLayoutSelection, readLayoutTargets } from './layout-rename.js';
+import { awaitSpiderSelection, hasLegacyLayout, readLayoutSelection, readLayoutTargets, readLegacyLayout } from './layout-rename.js';
 
 function runtimeTemplatePaths(request: SetupRequest): string[] {
   const instructions = join(request.config.globalRoot, 'herdr/instructions');
@@ -259,7 +259,7 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
     await assertSetupNotUndoing(request.journalRoot);
     const journal = await readJournal(request.journalRoot);
     const layoutPath = spiderLayoutPath(request.config.app.home), legacyPath = legacySpiderLayoutPath(request.config.app.home);
-    const layoutTargets = await readLayoutTargets(request.config.app.home, journal);
+    const layoutTargets = await readLayoutTargets(request.config.app.home, request.journalRoot, journal, request.replaceChanged);
     if (!request.dryRun) await collectCheckpointBlobs(request.journalRoot);
     let checkpoint: UpgradeCheckpoint | undefined, completed = false, setupError: unknown;
     const recordWrites = async (paths: readonly string[]) => { if (checkpoint) await recordCheckpointWrites(request.journalRoot, checkpoint, paths); };
@@ -664,7 +664,12 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
         selectionFile.expected = current.hash;
         selectionFile.bytes = layoutChoiceBytes(current.values);
       }
-      await prepareBackups(request.journalRoot, files, journal);
+      // Preserve authorized edits in the rollback journal, not just the
+      // upgrade checkpoint (which a full rollback will supersede).
+      const backupFiles = migration && layoutTargets.replaceLegacy
+        ? [...files, { path: legacyPath, bytes: migration.bytes, expected: migration.hash, replaceBaseline: true }]
+        : files;
+      await prepareBackups(request.journalRoot, backupFiles, journal);
       if (checkpoint) await recordCheckpointIntents(request.journalRoot, checkpoint, files, journal);
       for (const { runtime, before } of runtimePlans) await onMachine(runtime.machine, async () => {
         const installed = await readRuntime(parts, runtime);
@@ -748,9 +753,10 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
           await recordCheckpointIntents(request.journalRoot, checkpoint, [{ path: legacyPath, bytes: null, expected: migration.hash }], journal);
           if (!await hasLegacyLayout(request.config.app.home)) throw new HerdrError('concurrent-settings-edit', `Layout name changed after backup: ${legacyPath}`);
           await removeFile(legacyPath, migration.hash!);
+          const oldEntry = journal.entries.find(entry => entry.path === legacyPath)!;
+          oldEntry.after = null;
+          await saveSetupJournal();
           await recordWrites([legacyPath]);
-          const oldEntry = journal.entries.find(entry => entry.path === legacyPath);
-          if (oldEntry) oldEntry.after = null;
           writes.push(legacyPath);
         }
         journal.cutoverFingerprint = cutoverFingerprint;
@@ -804,7 +810,12 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
       throw new HerdrError(code, `${error instanceof Error ? error.message : String(error)}\nRollback: ${command}`, error instanceof HerdrError ? error.details : undefined);
     }
   };
-  return request.dryRun ? work() : withSetupLock(request.journalRoot, recordedWork);
+  if (request.dryRun) return work();
+  // Refuse a legacy collision before creating even the setup lock. Recheck
+  // inside the lock in case another setup changed the journal or layout.
+  if (await hasLegacyLayout(request.config.app.home))
+    await readLegacyLayout(request.config.app.home, request.journalRoot, await readJournal(request.journalRoot), request.replaceChanged);
+  return withSetupLock(request.journalRoot, recordedWork);
 }
 async function releaseRollbackOwners(request: SetupRequest, parts: SetupParts, journal: SetupJournal, options?: { preserve?: CutoverResult; beforeClose?: () => Promise<void> }): Promise<void> {
     if (journal.cutoverPending) {

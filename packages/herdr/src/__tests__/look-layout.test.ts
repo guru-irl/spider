@@ -16,6 +16,15 @@ function nodes(node: any): any[] {
 }
 
 describe('generated glass layout', () => {
+  it('defaults explicit terminal cell backgrounds to 60% opacity', async () => {
+    expect(buildGlassLayout(await source(), { ...names, release: '0.1.18' }).cell_background_opacity).toBe(0.6);
+  });
+
+  it('keeps an explicit cell background opacity of zero', async () => {
+    const layout = { ...await source(), cell_background_opacity: 0 };
+    expect(buildGlassLayout(layout, { ...names, release: '0.1.18' }).cell_background_opacity).toBe(0);
+  });
+
   it('defaults to neutral window blur only for 0.1.16 and retains readable translucent chrome', async () => {
     const input = await source();
     const result = buildGlassLayout(input, { ...names, release: '0.1.16' });

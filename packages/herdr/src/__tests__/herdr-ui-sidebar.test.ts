@@ -389,7 +389,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     const [child] = view.tree([], 'owner');
     const nodes = all(view.subRow(palette, child, null, false));
     expect(child.t.address).toBeNull();
-    expect(nodes.some(node => node.svg?.endsWith('/spinner.svg') && call(node, 'spin'))).toBe(true);
+    expect(nodes.some(node => call(node, 'frames'))).toBe(true);
     const row = nodes.find(node => node.click); expect(row).toBeDefined();
     await row!.click!({}, { spawn: (fn: (cx: unknown) => unknown) => fn({ notify() {} }) });
     expect(requests).toEqual([['node', '/fixture/cli.mjs', 'ipc', '--descriptor', JSON.stringify({ version: 1, sessionId: 'owner-session', generation: 'activation', address: '/fixture/ipc.sock', capabilityFile: '/fixture/capability' }),
@@ -458,7 +458,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     expect(call(cross, 'text_color')).toEqual([palette.ansi1]);
     expect(texts(view.subRow(palette, { t: { key: 'k', kind: 'remote', status: 'error', address: 'x', name: 'build', spider: true, outcome: 'exit 1', action: null }, lines: ['└'] }, null, false))).toContain('exit 1');
 
-    const working = row('subagent', 'working', ['└']).find(node => node.svg === 'mods/workspace-chrome/spinner.svg')!;
+    const working = row('subagent', 'working', ['└']).find(node => call(node, 'frames'))!;
     expect(neutral((call(working, 'text_color') as string[])[0])).toBe(true);
   });
 

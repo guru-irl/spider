@@ -61,7 +61,7 @@ function readRingEvents(file) {
     const [, pid, opcode, polling] = event;
     const entry = events.get(Number(pid)) ?? { count: 0, epollOnly: true };
     entry.count++;
-    entry.epollOnly &&= opcode === 'EPOLL_CTL' && polling === '0';
+    entry.epollOnly &&= (opcode === 'EPOLL' || opcode === 'EPOLL_CTL') && polling === '0';
     events.set(Number(pid), entry);
     count++;
   }

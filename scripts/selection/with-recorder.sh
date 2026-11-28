@@ -30,7 +30,10 @@ if [[ ${SPIDER_SELECTION_KERNEL_TRACE:-} == 1 ]]; then
   trace_setting() { printf '%s\n' "$1" | sudo -n tee "$instance/$2" >/dev/null; }
   if sudo -n mkdir "$instance" 2>/dev/null; then
     trap 'sudo -n rmdir "$instance" || true' EXIT
+    # IORING_OP_EPOLL_CTL is 29. An omitted opcode leaves fewer events
+    # than strace's submission count, so it cannot make a record complete.
     if trace_setting 0 tracing_on && trace_setting 8192 buffer_size_kb &&
+      trace_setting 'opcode == 29 && sq_thread == 0' events/io_uring/io_uring_submit_req/filter &&
       trace_setting 1 events/io_uring/io_uring_submit_req/enable && trace_setting 1 tracing_on; then
       ring=1
     fi

@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { mkdir } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { openDbAt } from '@spider/db-core';
 import { ProcessTerminal } from '@earendil-works/pi-tui';
@@ -13,6 +14,7 @@ it('records pi’s effective agent directory for a Herdr owner', async () => {
   const h = await createHerdrHarness('fake');
   try {
     await h.start();
+    execFileSync('git', ['init', '-q', h.directories.local]);
     const home = join(h.root, 'home'); await mkdir(home);
     for (const [key, value] of Object.entries(h.localEnv)) {
       if (value !== undefined && (key.startsWith('HC_') || key.startsWith('XDG_') || key.startsWith('HERDR_') || key === 'PATH')) vi.stubEnv(key, value);

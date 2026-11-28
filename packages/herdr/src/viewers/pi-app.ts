@@ -16,6 +16,8 @@ import { createBandEditor } from '../../../host/src/input-band/editor.js';
 import { FooterAccumulator } from '../../../host/src/usage/footer-state.js';
 import { createUsageFooter, type FooterInput } from '../../../host/src/usage/footer.js';
 import { calibrationFallback } from '../../../host/src/usage/calibration.js';
+import { storedAccent } from '../../../host/src/accent/palette.js';
+import { copyAccentTheme } from '../../../host/src/accent/theme.js';
 import type { SteerReply, RunViewInfo } from '../contracts.js';
 import type { ViewerState } from './program.js';
 import { TranscriptSanitizer } from './transcript.js';
@@ -45,11 +47,6 @@ const isSpider = (name: unknown) => name === 'spider' || name === 'spider_exec';
 const BandEditor = createBandEditor(CustomEditor);
 // pi keeps its active theme on globalThis so every loader shares one; the root does not export it.
 const THEME_KEY = Symbol.for('@earendil-works/pi-coding-agent:theme');
-const theme = new Proxy({} as Theme, { get: (_target, key) => {
-  const active = (globalThis as Record<symbol, Theme | undefined>)[THEME_KEY];
-  if (!active) throw new Error('pi theme is not initialised');
-  const value = Reflect.get(active, key); return typeof value === 'function' ? value.bind(active) : value;
-} });
 export interface ToolRenderers { renderCall?: unknown; renderResult?: unknown }
 export interface PiRunViewOptions {
   ui: TUI;
@@ -99,6 +96,20 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
   let settings: SettingsManager | undefined;
   try { settings = SettingsManager.create(options.cwd ?? process.cwd()); } catch { /* Defaults stand in for unreadable settings. */ }
   initTheme(options.themeName ?? settings?.getTheme(), false);
+  let baseTheme: Theme | undefined;
+  let accentTheme: Theme | undefined;
+  let accentId: string | undefined;
+  const theme = new Proxy({} as Theme, { get: (_target, key) => {
+    const current = (globalThis as Record<symbol, Theme | undefined>)[THEME_KEY];
+    if (!current) throw new Error('pi theme is not initialised');
+    if (current !== baseTheme) {
+      baseTheme = current;
+      const accent = storedAccent(accentId);
+      accentTheme = accent ? copyAccentTheme(current, accent) : undefined;
+    }
+    const active = accentTheme ?? current;
+    const value = Reflect.get(active, key); return typeof value === 'function' ? value.bind(active) : value;
+  } });
   let hideThinking = settings?.getHideThinkingBlock() ?? false;
   let expanded = false;
   const outputPad = settings?.getOutputPad() ?? 1;
@@ -450,6 +461,11 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
     setRunName(name) { runName = sanitize(name); ui.requestRender(); },
     setRunInfo(info) {
       runInfo = sanitize(info);
+      if (runInfo.accent !== accentId) {
+        accentId = runInfo.accent;
+        baseTheme = undefined;
+        usageFooter.invalidate();
+      }
       if (!model && runInfo.model) {
         const slash = runInfo.model.indexOf('/');
         model = { provider: slash >= 0 ? runInfo.model.slice(0, slash) : '', id: runInfo.model.slice(slash + 1) };

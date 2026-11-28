@@ -49,6 +49,7 @@ export interface RunTranscriptSourceOptions {
   modelName?(model: string): string | undefined;
   iconStyle?: 'text' | 'nerd'; inputBand?: boolean;
   creditFactor?(): number | null;
+  accent?(): string | undefined;
 }
 export interface RunTranscriptSource extends Disposable { subscribe(runId: RunId, cursor: RunCursor | null, emit: (frame: RunViewFrame) => void, options?: { view?: number }): () => void }
 interface Position { version: 1; session: string; generation: string; run: string; binding: string; event: number; offset: number; textOffset: number; suppressProse?: boolean; pendingMessage?: { id: number; offset: number }; file: string | null; anchor: { offset: number; length: number; digest: string } | null }
@@ -293,7 +294,7 @@ export function createRunTranscriptSource(options: RunTranscriptSourceOptions): 
               modelName: row.model ? options.modelName?.(row.model) ?? null : null, thinking: row.thinking,
               contextWindow: row.model ? options.modelContextWindow?.(row.model) ?? null : null,
               iconStyle: options.iconStyle ?? 'text', inputBand: options.inputBand !== false, creditFactor: options.creditFactor?.() ?? null,
-              ...(working === undefined ? {} : { working }) };
+              accent: options.accent?.(), ...(working === undefined ? {} : { working }) };
             const state = JSON.stringify({ run: summary, view: info });
             if (first || state !== lastState) {
               send({ runId, cursor: encode(p), kind: 'snapshot', data: { run: summary, view: info } });

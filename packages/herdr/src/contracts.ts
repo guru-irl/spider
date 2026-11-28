@@ -374,7 +374,11 @@ export interface TranscriptPage {
 /** The run-view protocol this build speaks. Viewers request it; owners answer with the version they serve. */
 export const RUN_VIEW_PROTOCOL = 2;
 /** Present on snapshots only for a viewer that requested a protocol. */
-export interface RunViewInfo { protocol: number; sessionFile?: string | null; model?: string | null; thinking?: string | null; contextWindow?: number | null }
+export interface RunViewInfo {
+  protocol: number; sessionFile?: string | null; model?: string | null; modelName?: string | null;
+  thinking?: string | null; contextWindow?: number | null;
+  iconStyle?: 'text' | 'nerd'; inputBand?: boolean; creditFactor?: number | null; working?: boolean;
+}
 /** Stream frames are at most 256 KiB; overflow ends a subscription for cursor-based reconnect. */
 export type RunViewFrame =
   | { runId: RunId; cursor: RunCursor; kind: 'snapshot'; data: { run: RunSummary; view?: RunViewInfo } }

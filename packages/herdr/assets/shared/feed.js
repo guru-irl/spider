@@ -242,8 +242,12 @@ function ipcPage(value, runId) {
 }
 function ipcView(value) {
   return ipcObject(value) && ipcCount(value.protocol)
-    && ['sessionFile', 'model', 'thinking'].every(key => value[key] === undefined || value[key] === null || ipcString(value[key]))
-    && (value.contextWindow === undefined || value.contextWindow === null || ipcCount(value.contextWindow) && value.contextWindow > 0);
+    && ['sessionFile', 'model', 'modelName', 'thinking'].every(key => value[key] === undefined || value[key] === null || ipcString(value[key]))
+    && (value.contextWindow === undefined || value.contextWindow === null || ipcCount(value.contextWindow) && value.contextWindow > 0)
+    && (value.iconStyle === undefined || ipcOne(value.iconStyle, ['text', 'nerd']))
+    && (value.inputBand === undefined || typeof value.inputBand === 'boolean')
+    && (value.working === undefined || typeof value.working === 'boolean')
+    && (value.creditFactor === undefined || value.creditFactor === null || typeof value.creditFactor === 'number' && Number.isFinite(value.creditFactor) && value.creditFactor >= 0);
 }
 function ipcFrame(value) {
   if (!ipcObject(value) || !ipcString(value.runId) || !ipcCursor(value.cursor) || !ipcObject(value.data)) return false;

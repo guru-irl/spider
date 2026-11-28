@@ -7,13 +7,24 @@ type Listener = (event: Record<string, any>) => void;
 // Symbol.for keeps one hub across a /reload, where the old module's child pipe
 // keeps reporting while the new module's viewers subscribe.
 const HUB = Symbol.for('spider.liveRunEvents.v1');
+const ACTIVITY = Symbol.for('spider.liveRunActivity.v1');
+const MAX_ACTIVITY = 4096;
+function activity(): Map<string, boolean> {
+  const scope = globalThis as Record<symbol, Map<string, boolean> | undefined>;
+  return scope[ACTIVITY] ??= new Map();
+}
+export function liveRunWorking(runId: string): boolean | undefined { return activity().get(runId); }
 function hub(): Map<string, Set<Listener>> {
   const scope = globalThis as Record<symbol, Map<string, Set<Listener>> | undefined>;
   return scope[HUB] ??= new Map();
 }
 /** Event types a viewer can render live. Everything else reaches it through the transcript. */
-export const LIVE_EVENT_TYPES: readonly string[] = ['message_start', 'message_update', 'message_end', 'tool_execution_start', 'tool_execution_update', 'tool_execution_end'];
+export const LIVE_EVENT_TYPES: readonly string[] = ['agent_start', 'agent_end', 'message_start', 'message_update', 'message_end', 'tool_execution_start', 'tool_execution_update', 'tool_execution_end'];
 export function publishLiveRunEvent(runId: string, event: Record<string, any>): void {
+  if (event?.type === 'agent_start' || event?.type === 'agent_end') {
+    const states = activity(); states.delete(runId); states.set(runId, event.type === 'agent_start');
+    if (states.size > MAX_ACTIVITY) states.delete(states.keys().next().value!);
+  }
   const listeners = hub().get(runId); if (!listeners?.size || !LIVE_EVENT_TYPES.includes(event?.type)) return;
   // A viewer can never break the child pipe that reports these events.
   for (const listener of [...listeners]) { try { listener(event); } catch { /* preview only */ } }

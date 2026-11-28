@@ -3,8 +3,10 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
-import { piAgentDir } from "../../../../scripts/pi-agent-dir.mjs";
 
+const { piAgentDir } = await import(/* @vite-ignore */ resolve("scripts/pi-agent-dir.mjs")) as {
+  piAgentDir: () => Promise<string>;
+};
 const original = process.env.PI_CODING_AGENT_DIR;
 const roots: string[] = [];
 afterEach(() => {
@@ -43,7 +45,7 @@ export function getAgentDir() { return 'fallback'; }
 }
 
 function runFixture(root: string, dir: string | undefined, invoke = true) {
-  const env = { ...process.env, HOME: root, USERPROFILE: root, MARKER: join(root, "loaded") };
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: root, USERPROFILE: root, MARKER: join(root, "loaded") };
   if (dir === undefined) delete env.PI_CODING_AGENT_DIR;
   else env.PI_CODING_AGENT_DIR = dir;
   return spawnSync(process.execPath, ["--input-type=module", "-e", invoke

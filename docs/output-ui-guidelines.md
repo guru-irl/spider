@@ -5,11 +5,12 @@
 Draw the editor and sent messages on the theme's `userMessageBg`. In
 `dracula-plus-glass` it is `#060607`, darker than the surrounding Herdr glass.
 Use `▄` and `▀` for the half-row edges, with no background behind the
-unfilled half. Draw a one-cell bar in column zero for the full band height:
-`▄` on the top edge, `█` on text rows, and `▀` on the bottom edge. The bar
-uses `accent` (`#82aaff`) or `bashMode`, regardless of thinking level. The
-remaining edge cells use the strip color. Scrolled edges show a dim hidden-line
-count beside the full-cell bar. Keep Pi's cursor, completion menu, and keys.
+unfilled half. Draw a half-cell bar against the strip in column zero for the
+full band height: `▗` on the top edge, `▐` on text rows, and `▝` on the bottom
+edge. The bar uses `accent` (`#82aaff`) or `bashMode`, regardless of thinking
+level. The remaining edge cells use the strip color. Scrolled edges show a dim
+hidden-line count beside the half-cell bar. Keep Pi's cursor, completion menu,
+and keys.
 
 Sent messages have no bar. Place the accent `❯` before the first text row and
 align wrapped text under that row's text. Keep Pi's Markdown and OSC 133
@@ -159,7 +160,9 @@ With up to three agents, show one row per agent. With four or more, show two
 agent rows and a summary row with status totals and the number of hidden
 agents. In fullscreen mode, the mouse wheel over the footer scrolls its agent
 rows. In `/agents`, the up and down keys move the selection in display order
-and reveal hidden rows. The summary stays visible as the rows scroll.
+and reveal hidden rows. The summary stays visible as the rows scroll. While
+selecting, it shows `↓ view more` on the left and the total number of subagents
+on the right. At the end of the list, the arrow points up.
 The `/agents` views use the same role colors: worker `#82aaff`, reviewer
 `#ffb86c`, scout `#8be9fd`, planner `#c792ea`, watcher `#ff92df`, and all
 other roles `#d6acff`. The role word and running mark use that color; finished

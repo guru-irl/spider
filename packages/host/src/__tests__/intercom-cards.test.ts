@@ -189,9 +189,68 @@ describe.each(["text", "nerd"] as const)("registered intercom cards in %s style"
       "Path: relay ridge.\nsummit: busy.\nFinal reply line.",
     ]) {
       const output = result(tool, { content: [{ type: "text", text: `Reply from Alex:\n${body}` }], details }, "ask");
-      for (const line of body.replaceAll("**", "").split("\n")) expect(output).toContain(`${toolIndent}${line}\n`);
-      expect(output).toContain("asked via ridge");
+      for (const line of body.replaceAll("**", "").split("\n")) expect(output).toContain(`${toolIndent}${line}`);
+      expect(output).not.toContain("asked via ridge");
+      expect(output).not.toContain("summit skipped: busy");
     }
+  });
+
+  it("shows the route once when transcript saving fails", async () => {
+    const h = await fixture(style);
+    const tool = h.tools.find(tool => tool.name === "intercom");
+    const value = {
+      content: [{ type: "text", text: "**Reply from Alex:**\nHello\nPath: relay ridge.\nsummit: busy.\nThe transcript entry could not be saved." }],
+      details: { delivery: "replied", path: "relay ridge", relaySkips: [{ relay: "summit", reason: "busy" }] },
+    };
+    const output = result(tool, value, "ask");
+    expect(output).toContain("The transcript entry could not be saved.");
+    expect((output.match(/ridge/g) ?? [])).toHaveLength(1);
+    expect((output.match(/summit/g) ?? [])).toHaveLength(1);
+  });
+
+  it.each([
+    { action: "send", body: "Sent to Alex (broker accepted the message).", verb: "sent" },
+    { action: "reply", body: "Reply sent to Alex", verb: "replied" },
+  ])("renders the relayed $action route separately from its result", async ({ action, body, verb }) => {
+    const h = await fixture(style);
+    const tool = h.tools.find(tool => tool.name === "intercom");
+    const value = {
+      content: [{ type: "text", text: `${body}\nPath: relay ridge.\nsummit: busy.` }],
+      details: { delivered: true, path: "relay ridge", relaySkips: [{ relay: "summit", reason: "busy" }] },
+    };
+    const before = structuredClone(value);
+    const output = result(tool, value, action, false, false, marked);
+    expect(output).toContain(`<dim>→ ${verb} via ridge</dim>`);
+    expect(output).toContain("<dim>summit skipped: busy</dim>");
+    expect(output).not.toContain("Path: relay ridge.");
+    expect(output).not.toContain("summit: busy.");
+    expect(value).toEqual(before);
+  });
+
+  it("describes a refused relay ask as an attempt, not a queued ask", async () => {
+    const h = await fixture(style);
+    const tool = h.tools.find(tool => tool.name === "intercom");
+    const value = {
+      content: [{ type: "text", text: "Relay busy. Nothing was queued.\nPath: relay ridge.\nsummit: busy." }],
+      details: { error: true, code: "relay-busy", path: "relay ridge", relaySkips: [{ relay: "summit", reason: "busy" }] },
+    };
+    const output = result(tool, value, "ask", false, false, marked);
+    expect(output).toContain("Relay busy. Nothing was queued.");
+    expect(output).toContain("<dim>→ tried via ridge</dim>");
+    expect(output).not.toContain("asked via ridge");
+    expect(output).not.toContain("Path: relay ridge.");
+  });
+
+  it("leaves skips without a path as error lines on a refused ask", async () => {
+    const h = await fixture(style);
+    const tool = h.tools.find(tool => tool.name === "intercom");
+    const value = {
+      content: [{ type: "text", text: "No relay is reachable. Nothing was queued.\nsummit: down." }],
+      details: { error: true, code: "no-relay", relaySkips: [{ relay: "summit", reason: "down" }] },
+    };
+    const output = result(tool, value, "ask", false, false, marked);
+    expect(output).toContain("<error>summit: down.</error>");
+    expect(output).not.toContain("skipped:");
   });
 
   it.each(["local", "direct"])("does not draw a route row for a %s ask", async path => {

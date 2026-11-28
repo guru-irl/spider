@@ -9,6 +9,7 @@ import { expect } from 'vitest';
 import { openDbReadOnly } from '@spider/db-core';
 import { readManifestSafe, readReceiptSafe, type BackgroundManifest, type BackgroundReceipt } from '../../../context/src/background-job.js';
 import type { OwnerGeneration } from '../../../roam/src/relocate/session-stop-types.js';
+import { processStartIdentity } from '../../src/jobs/handoff.js';
 import { inspectIdLock, localBootId } from '../../src/sessions/id-lock.js';
 import { createSessionLeases } from '../../src/sessions/lease.js';
 import type { HcRecord } from '../harness/hc.js';
@@ -25,7 +26,7 @@ export interface CliResult { exitCode: number | null; stdout: string; stderr: st
 type Machine = RelocateFixture['hub'];
 type Home = ReturnType<RelocateFixture['home']>;
 type CheckoutIdentity = { device: string; inode: string; git: Awaited<ReturnType<RelocateFixture['gitState']>> };
-interface ProcessRow { pid: number; parent: number; group: number; startIdentity: string }
+interface ProcessRow { pid: number; parent: number; group: number; ledgerStart: string }
 interface JobEvidence { manifest: BackgroundManifest; receipt: BackgroundReceipt | undefined; live: OwnerGeneration[] }
 interface NativeTerminal { address: string; pid: number; state: 'live'; cwd: string; argv: string[]; labels: Record<string, string> }
 interface SideProof {
@@ -71,14 +72,14 @@ function liveProcesses(): Map<number, ProcessRow> {
   for (const line of output.trimEnd().split('\n')) {
     const fields = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S.*)$/.exec(line);
     if (!fields) throw new Error('Invalid process inventory row');
-    const [, pid, parent, group, state, startIdentity] = fields;
-    if (!state.startsWith('Z')) rows.set(Number(pid), { pid: Number(pid), parent: Number(parent), group: Number(group), startIdentity });
+    const [, pid, parent, group, state, ledgerStart] = fields;
+    if (!state.startsWith('Z')) rows.set(Number(pid), { pid: Number(pid), parent: Number(parent), group: Number(group), ledgerStart });
   }
   return rows;
 }
 
 function liveAt(row: ProcessRow, recordedAt: number): boolean {
-  return Math.floor(recordedAt / 1000) * 1000 >= Date.parse(`${row.startIdentity} UTC`);
+  return Math.floor(recordedAt / 1000) * 1000 >= Date.parse(`${row.ledgerStart} UTC`);
 }
 
 async function labelledTerminals(suite: Suite, machine: Machine, sessionId: string): Promise<NativeTerminal[]> {
@@ -144,15 +145,16 @@ SPIDER_E2E_FIXTURE_ROOT=${shellQuote(suite.root)} SPIDER_E2E_HC_REAL=${shellQuot
     };
 
     const tracked = new Map<string, OwnerGeneration>();
-    const generation = ({ pid, startIdentity }: ProcessRow): OwnerGeneration => ({ pid, startIdentity, bootId });
     const key = ({ pid, startIdentity }: OwnerGeneration) => `${pid}:${startIdentity}`;
-    const track = (row: ProcessRow, label: string, group = false) => {
-      const identity = generation(row);
-      if (!tracked.has(key(identity))) {
+    const track = (row: ProcessRow, label: string, group = false): OwnerGeneration | null => {
+      const startIdentity = processStartIdentity(row.pid);
+      if (!startIdentity) return null;
+      const identity = { pid: row.pid, startIdentity, bootId };
+      if (!tracked.has(key(identity)) || group) {
         suite.ledger.update(ledger => {
-          if (!ledger.processes.some(actor => actor.pid === row.pid && actor.start === row.startIdentity)) {
-            ledger.processes.push({ pid: row.pid, start: row.startIdentity, label, group });
-          }
+          const actor = ledger.processes.find(actor => actor.pid === row.pid && actor.start === row.ledgerStart);
+          if (!actor) ledger.processes.push({ pid: row.pid, start: row.ledgerStart, label, group });
+          else if (group) actor.group = true;
         });
         tracked.set(key(identity), identity);
       }
@@ -180,7 +182,10 @@ SPIDER_E2E_FIXTURE_ROOT=${shellQuote(suite.root)} SPIDER_E2E_HC_REAL=${shellQuot
       try { runs = db.prepare('SELECT id,status,pid FROM runs WHERE session_id=? ORDER BY id').all(sessionId) as typeof runs; }
       finally { db.close(); }
       const owners = new Map<number, OwnerGeneration>();
-      const addOwner = (proc: ProcessRow, label: string) => owners.set(proc.pid, track(proc, label));
+      const addOwner = (proc: ProcessRow, label: string) => {
+        const identity = track(proc, label);
+        if (identity) owners.set(proc.pid, identity);
+      };
       for (const event of events) {
         if (event.type !== 'session_start') continue;
         const proc = processes.get(event.pid);
@@ -191,7 +196,7 @@ SPIDER_E2E_FIXTURE_ROOT=${shellQuote(suite.root)} SPIDER_E2E_HC_REAL=${shellQuot
       }
       for (const [machine, side] of [[hub, hubProof], [box, boxProof]] as const) {
         const found = side.lock && processes.get(side.lock.identity.pid);
-        if (found && side.lock?.bootId === bootId && side.lock.identity.startIdentity === found.startIdentity) addOwner(found, 'stop-lock-owner');
+        if (found && side.lock?.bootId === bootId && side.lock.identity.startIdentity === processStartIdentity(found.pid)) addOwner(found, 'stop-lock-owner');
         for (const terminal of side.terminals) {
           const proc = processes.get(terminal.pid);
           if (!proc) continue;
@@ -223,15 +228,15 @@ SPIDER_E2E_FIXTURE_ROOT=${shellQuote(suite.root)} SPIDER_E2E_HC_REAL=${shellQuot
         const groupOwned = manifest.supervisorPid && (!leader || liveAt(leader, Date.parse(manifest.startedAt) + 1_000));
         const live = [...processes.values()].filter(row =>
           (groupOwned && row.group === manifest.supervisorPid) ||
-          (row.pid === manifest.childPid && (!receipt || !liveAt(row, Date.parse(receipt.endedAt ?? '')))))
+          (row.pid === manifest.childPid && (!receipt?.endedAt || liveAt(row, Date.parse(receipt.endedAt)))))
           .sort((a, b) => a.pid - b.pid)
-          .map(row => track(row, 'stop-detached-job', row.pid === manifest.supervisorPid));
+          .flatMap(row => track(row, 'stop-detached-job', row.pid === manifest.supervisorPid) ?? []);
         jobEvidence.push({ manifest, receipt, live });
       }
       const jobs = jobEvidence.map(({ manifest, receipt, live }) => ({ id: manifest.id,
         exitVerified: live.length === 0 && receipt?.state === 'exited' && receipt.exitCode === 0 && receipt.signal === null &&
           receipt.childPid === manifest.childPid && receipt.supervisorPid === manifest.supervisorPid }));
-      const liveOwned = [...tracked.values()].filter(identity => processes.get(identity.pid)?.startIdentity === identity.startIdentity)
+      const liveOwned = [...tracked.values()].filter(identity => processes.has(identity.pid) && processStartIdentity(identity.pid) === identity.startIdentity)
         .sort((a, b) => a.pid - b.pid);
       let owner: OwnerGeneration | null = null;
       if (owners.size === 1) {

@@ -159,7 +159,7 @@ describe('Spider panel', () => {
   });
   test('a working session shows no status spinner in the panel (the sidebar shows status), with no extra refresh timers', async () => {
     const output=await scene<{spinner: boolean; timers: number[]; deadlines: number[]}>(`const f=JSON.parse(files[0]);f.updatedAt=Date.now();f.status.effective='working';files[0]=JSON.stringify(f);initView(panel,cx);await tasks[0];
-      const spins=el=>Boolean(el?.styles?.spin)||(el?.items||[]).some(spins);
+      const spins=el=>Boolean(el?.styles?.spin||el?.styles?.frames)||(el?.items||[]).some(spins);
       console.log(JSON.stringify({spinner:spins(panel.render(cx)),timers:timers.filter(t=>!t.cancelled).map(t=>t.n),deadlines:timers.filter(t=>t.cancelled).map(t=>t.n)}));`);
     expect(output.spinner).toBe(false);expect(output.timers).toEqual([2000]);expect(output.deadlines).toEqual([10000,5000,5000]);
   });

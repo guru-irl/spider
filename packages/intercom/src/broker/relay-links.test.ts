@@ -144,6 +144,22 @@ describe("held relay polls", () => {
     links.close();
   });
 
+  it("refuses a waiting offer before the result budget expires", async () => {
+    const links = fixture();
+    try {
+      await links.poll(poll("announce", 0));
+      let result: RelayResult | undefined;
+      const send = links.submit(relay.machineId, submission("short-budget"), undefined, 1000)
+        .then(value => { result = value; });
+      await vi.advanceTimersByTimeAsync(749);
+      expect(result).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(result).toMatchObject({ attempted: false, outcome: { kind: "refused" } });
+      expect((await links.poll(poll("after-expiry", 0))).submissions).toEqual([]);
+      await send;
+    } finally { links.close(); }
+  });
+
   it("expires the result wait after hand-off as unknown", async () => {
     const links = fixture();
     await links.poll(poll("announce", 0));

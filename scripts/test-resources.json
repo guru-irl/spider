@@ -278,6 +278,7 @@
       "packages/herdr/src/__tests__/acceptance/f.ts",
       "packages/herdr/src/__tests__/admin-cli.test.ts",
       "packages/herdr/src/__tests__/child-remote-integration.test.ts",
+      "packages/herdr/src/__tests__/child-remote-scenario.ts",
       "packages/herdr/src/__tests__/endpoint-fixture.ts",
       "packages/herdr/src/__tests__/feed-reader-server.test.ts",
       "packages/herdr/src/__tests__/herdr-crashfg-real.test.ts",

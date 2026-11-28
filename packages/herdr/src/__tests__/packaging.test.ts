@@ -46,12 +46,11 @@ const h = {
 };
 
 beforeAll(() => {
-  vi.setConfig({ maxConcurrency: 2 });
   mkdirSync(scratch, { recursive: true });
   mkdirSync(env.TMPDIR!, { recursive: true });
   packedRoot = mkdtempSync(join(scratch, 'pack-'));
 });
-afterAll(() => { vi.resetConfig(); rmSync(packedRoot, { recursive: true, force: true }); });
+afterAll(() => { rmSync(packedRoot, { recursive: true, force: true }); });
 
 const identityArtifacts = new Map<string, string>();
 function packageWithIdentity(sha: string, missingViewer = false): string {
@@ -325,11 +324,11 @@ console.log(JSON.stringify([Object.keys(file).sort(),Object.keys(data).sort()]))
       if (kind === 'invalid runtime syntax') replacePackageFile(join(copy, 'dist/herdr/remote-runtime.mjs'), 'export {\n');
       if (kind === 'frozen built-in mod') {
         mkdirSync(join(copy, 'packages/herdr/assets/mods/agents'), { recursive: true });
-        writeFileSync(join(copy, 'packages/herdr/assets/mods/agents/main.js'), 'export {};\n');
+        replacePackageFile(join(copy, 'packages/herdr/assets/mods/agents/main.js'), 'export {};\n');
       }
       if (kind === 'Node mod API') replacePackageFile(join(copy, 'packages/herdr/assets/mods/spider/data.js'), 'import fs from "node:fs";\nexport const bad = fs;\n');
       if (kind === 'external remote import') replacePackageFile(join(copy, 'dist/herdr/remote-runtime.mjs'), 'import "@spider/context";\n');
-      if (kind === 'extra runtime') writeFileSync(join(copy, 'dist/herdr/metrics-runtime.mjs'), 'export {};\n');
+      if (kind === 'extra runtime') replacePackageFile(join(copy, 'dist/herdr/metrics-runtime.mjs'), 'export {};\n');
       await expect(runAsync(['scripts/assert-bundle.mjs', '--root', copy])).rejects.toThrow(new RegExp(kind.startsWith('Node mod') ? 'Node API' : kind === 'external remote import' ? 'non-builtin' : kind === 'missing asset' ? 'feed.js' : kind === 'missing parent icon' ? 'corner-up-left.svg' : kind === 'missing unreachable icon' ? 'unreachable.svg' : 'Herdr'));
     } finally { rmSync(copy, { recursive: true, force: true }); }
   });

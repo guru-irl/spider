@@ -3,20 +3,16 @@
 import * as fs from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { afterEach, expect, test, vi } from 'vitest';
-import { HerdrError } from '../client/parse.js';
 import { digest, readJournal, saveJournal, snapshot } from '../setup/backup.js';
-import * as installer from '../setup/installer.js';
 import { undoHerdrUpgrade, rollbackHerdr, setupHerdr } from '../setup/installer.js';
-import { runHerdrCli } from '../setup/cli.js';
-import { doctorHerdr } from '../setup/doctor.js';
-import { beginRunCheckpoint, recordCheckpointWrites, readCheckpoint, finishRunCheckpoint } from '../setup/checkpoint.js';
+import { readCheckpoint } from '../setup/checkpoint.js';
 
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof fs>();
   return { ...actual, rename: vi.fn(actual.rename), link: vi.fn(actual.link), unlink: vi.fn(actual.unlink) };
 });
 const real = await vi.importActual<typeof fs>('node:fs/promises');
-import { roots, installedLayout, nativeLayout, put, values, fixture, metadataRepeat } from './setup-checkpoint-fixture.js';
+import { roots, put, values, fixture, metadataRepeat } from './setup-checkpoint-fixture.js';
 afterEach(async () => { vi.mocked(fs.rename).mockImplementation(real.rename); vi.mocked(fs.link).mockImplementation(real.link); vi.mocked(fs.unlink).mockImplementation(real.unlink); for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true }); });
 
 test('N3 layout undo removes new mod references while retaining unrelated layout edits', async () => {

@@ -157,7 +157,12 @@ test.each([['carriage returns', '\\r\\n'], ['terminal controls', '\\u001b[K\\n']
     const saved = make();
     saved.addEntries(entries);
     saved.toggleTools();
-    expect(plain(saved.render(100))).toBe(liveText);
+    // The saved result is already part of context; the live tool-end event is not a saved message yet.
+    const transcript = (view: PiRunView) => {
+      const rows = view.render(100);
+      return plain(rows.slice(0, rows.length - view.footerLines(100).length));
+    };
+    expect(transcript(saved)).toBe(transcript(live));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

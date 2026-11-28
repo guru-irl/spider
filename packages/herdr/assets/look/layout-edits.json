@@ -2,7 +2,16 @@
   "version": 1,
   "spacesA": {
     "0.1.13": { "root": { "terminal_menu": "spider-menu" } },
-    "0.1.16": { "root": { "terminal_menu": "spider-menu", "toast": "spider-toast" } }
+    "0.1.16": { "root": { "terminal_menu": "spider-menu", "toast": "spider-toast" } },
+    "0.1.18": {
+      "root": {
+        "terminal_menu": "spider-menu",
+        "toast": "spider-toast",
+        "background": { "gradient": ["#18181ab3", "#22201eb3"], "angle": 176 }
+      },
+      "colors": { "background": "#00000000", "popover": "#161618" },
+      "paneBackground": "#16161833"
+    }
   },
   "blur": {
     "background": "#16161800",
@@ -16,6 +25,7 @@
     "theme": "spider-glass",
     "ui_font": "Google Sans Flex",
     "terminal_opacity": 0,
+    "cell_background_opacity": 0.6,
     "traffic_lights": [-60, -60],
     "background": { "gradient": ["#18181a", "#22201e"], "angle": 176 },
     "colors": {

@@ -397,7 +397,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     const unreachable = test.view.status(palette, { status: 'unreachable', address: 'away' }, false);
     const node = all(unreachable).find(item => item.svg === 'mods/spider-agents/unreachable.svg')!;
     expect(node).toBeDefined();
-    const spinner = all(test.view.status(palette, { status: 'working', address: 'running' }, false)).find(item => item.svg === 'mods/workspace-chrome/spinner.svg')!;
+    const spinner = all(test.view.status(palette, { status: 'working', address: 'running' }, false)).find(item => call(item, 'frames'))!;
     for (const [name, value] of [['size', 12], ['mx', 1]] as const) {
       expect(call(node, name)).toEqual([value]);
       expect(call(node, name)).toEqual(call(spinner, name));
@@ -780,7 +780,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect(parts[pill].children).toContain('box-4.invalid');
     expect(parts.slice(0, pill).some(node => call(node, 'flex_1'))).toBe(false);
     expect(parts.slice(pill + 1, -1).some(node => call(node, 'flex_1'))).toBe(true);
-    expect(parts.at(-1)!.svg).toBe('mods/workspace-chrome/spinner.svg');
+    expect(call(parts.at(-1)!, 'frames')).toBeDefined();
     expect(call(parts.at(-1)!, 'size')).toEqual([12]);
     expect(row.children.flatMap(all).flatMap(node => node.children)).not.toContain('Console');
     expect(call(row, 'tooltip')).toEqual(['Console on box-4.invalid']);

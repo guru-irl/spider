@@ -25,10 +25,19 @@ const piSnapshot = (view: unknown) => JSON.stringify({ runId: 'run', cursor: 'on
   run: { id: 'run', ownerSessionId: 'owner', name: 'review', status: 'running', childMode: 'rpc', canSteer: true, startedAt: 1, finishedAt: null, viewer: null, result: null },
   view,
 } });
-test('accepts a snapshot with pi model metadata', () => {
+test('accepts old snapshots and the optional viewer presentation metadata', () => {
   expect(parseRunViewFrame(piSnapshot({ protocol: 2, sessionFile: null, model: 'example/model-one', thinking: 'high', contextWindow: 200000 }))).not.toBeNull();
+  expect(parseRunViewFrame(piSnapshot({ protocol: 2, modelName: 'Model One', iconStyle: 'nerd', inputBand: false, creditFactor: 0.5, working: false, accent: 'green' }))).not.toBeNull();
 });
-test.each([{ contextWindow: '200k' }, { contextWindow: -1 }, { contextWindow: 0 }, { model: [] }, { thinking: {} }])('invalid pi footer metadata is rejected, not rendered', invalid => {
+test('a future icon style is ignored while the rest of the snapshot remains usable', () => {
+  const frame = parseRunViewFrame(piSnapshot({ protocol: 2, modelName: 'Model One', iconStyle: 'future-style' }));
+  expect(frame?.kind).toBe('snapshot');
+  if (frame?.kind !== 'snapshot') throw new Error('snapshot rejected');
+  expect(frame.data.view).toMatchObject({ protocol: 2, modelName: 'Model One' });
+  expect(frame.data.view?.iconStyle).toBeUndefined();
+});
+test.each([{ contextWindow: '200k' }, { contextWindow: -1 }, { contextWindow: 0 }, { model: [] }, { thinking: {} },
+  { modelName: [] }, { iconStyle: {} }, { inputBand: 'false' }, { creditFactor: -1 }, { creditFactor: '0.5' }, { working: 'false' }, { accent: {} }])('invalid pi footer metadata is rejected, not rendered', invalid => {
   expect(parseRunViewFrame(piSnapshot({ protocol: 2, ...invalid }))).toBeNull();
 });
 

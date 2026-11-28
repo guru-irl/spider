@@ -14,7 +14,7 @@ import { appendMirror, type MirrorSource } from "./mirrors";
 import { isRevoked, syncHandshake, type SyncHandshake } from "./revocation";
 import { assignInitialHomeIfAbsent, markInitialConflict } from "./homes";
 import { readOnlyOperation, releaseJournalArtifact, type ArtifactJournal } from "./journal";
-import { agentFailureCode, isPeerConnectivityError, isPeerFailureReason, isSyncConnectivityFailure, peerFailureReason, RecoveryArtifactError, RecoveryResponseError } from "./peer-errors";
+import { agentFailureCode, isPeerConnectivityError, isPeerFailureReason, isSyncConnectivityFailure, peerFailureReason, RecoveryArtifactError, RecoveryResponseError, syncArtifactFailureReason } from "./peer-errors";
 import { loadPeerState, receiptMatches, savePeerState, sizedBytes, type PeerState, type PendingBatch } from "./peer-state";
 import { acquireTransferLease, defaultStagingRoot, openOutgoingStaging, openStaging } from "./staging";
 import { removeOutgoing, type StoreAdapter } from "./stores";
@@ -112,7 +112,7 @@ export function createSync(ports: SyncPorts): SyncAdapter {
     if (!object(decoded) || ![0, 1, 2, 3].includes(decoded.code as number) || decoded.operationId !== id) throw new SyncFailure(1, "Invalid peer outcome");
     if (decoded.code !== 0) {
       if (kind === "receipt" && decoded.code === 3 && decoded.reason === "Receipt is pending") return { pending: true };
-      const reason = agentFailureCode(decoded.reason) ?? (typeof decoded.reason === "string" && /^(?:Roaming todo collision between |Roaming row |Mapping fenced replica |Staging full \(quota\) at )/.test(decoded.reason)
+      const reason = agentFailureCode(decoded.reason) ?? (typeof decoded.reason === "string" && (decoded.reason === "roaming-disabled" || /^(?:Roaming todo collision between |Roaming row |Mapping fenced replica |Staging full \(quota\) at )/.test(decoded.reason))
         ? decoded.reason : `peer-${kind}-refused`);
       const cause = safeCauseCode(decoded.causeCode) ?? (reason === "agent-operation-failed" ? causeCode(null, kind) : undefined);
       throw new SyncFailure(decoded.code as 1 | 2 | 3, reason, id, cause, kind);
@@ -218,7 +218,7 @@ export function createSync(ports: SyncPorts): SyncAdapter {
         if (typeof file !== "string") {
           const pulled = await pullArtifact(peer, artifact, { transport, journal, limits: config.limits, root: defaultStagingRoot(), operationId: `pull-${pending.id}` });
           if (pulled.code !== 0 || !pulled.value) throw new SyncFailure(pulled.code || 3,
-            isPeerFailureReason(pulled.reason) ? pulled.reason : "Artifact pull is pending", pulled.operationId);
+            syncArtifactFailureReason(pulled.reason, "Artifact pull is pending"), pulled.operationId);
           file = pulled.value.file;
           record(receiptId, "staged", { file });
         }
@@ -268,7 +268,7 @@ export function createSync(ports: SyncPorts): SyncAdapter {
       const manifest = await stageArtifact(batch.file, "batch", config.limits, { artifactId: pending.id });
       const transfer = await transferArtifact(peer, manifest, { transport, journal, limits: config.limits, root: defaultStagingRoot(), operationId: `send-${pending.id}` });
       if (transfer.code !== 0) throw new SyncFailure(transfer.code,
-        isPeerFailureReason(transfer.reason) ? transfer.reason : "Artifact push is pending", transfer.operationId);
+        syncArtifactFailureReason(transfer.reason, "Artifact push is pending"), transfer.operationId);
       const value = await remote(peer, "import", { storeKey: key, sourceMachine: config.machineId, transferId: `send-${pending.id}`,
         artifactId: manifest.id, sha256: manifest.sha256, header: { ...batch.header } }, `import-${pending.id}`);
       if (!receiptMatches(value, batch.header, manifest.sha256)) throw new SyncFailure(1, "Invalid peer apply receipt");

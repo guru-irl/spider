@@ -7,6 +7,7 @@ import { replaySpacesBRecipe } from './spaces-b-fixture.js';
 import { createUiModules } from './strict-mod-api.mjs';
 import { identityPill } from '../../assets/shared/look.js';
 import { middlePath } from '../../assets/shared/feed.js';
+import { ACTIVITY_FRAMES } from '../../../ui/src/icons.js';
 
 const ui = createUiModules();
 const flat = (root: any): any[] => root && typeof root === 'object' ? [root, ...(root.items ?? []).flatMap(flat)] : [];
@@ -32,7 +33,7 @@ function render(version: SpacesAVersion, options: { p?: any; labels?: any; prese
   const source = replaySpacesBRecipe(version, loadSpacesAFiles(version), patches.versions[version]).pane!['main.js']!;
   const p = { pane: 'pane-1', tab: 'tab-1', terminal: 'proxy-1', title: 'Node attach', cwd: '/mac/wrong', status: null, program: { name: 'node', icon: 'node.svg' }, focused: true, ...options.p };
   const labels = options.labels ?? proxyLabels;
-  const host: any = { panes: () => [p], props: () => ({ pane: 'pane-1' }), terminals: () => [{ address: p.terminal, labels }], theme: () => colors, home: () => '/not-home', run() {}, openOverlay() {}, nextCommand: () => new Promise(() => {}),
+  const host: any = { panes: () => [p], props: () => ({ pane: 'pane-1' }), terminals: () => [{ address: p.terminal, labels }], theme: () => ({ ...colors, ansi2: '#aaddff', ansi4: '#aaddff', ansi5: '#aaddff', ansi6: '#aaddff', ansi12: '#aaddff', ansi13: '#aaddff' }), home: () => '/not-home', run() {}, openOverlay() {}, nextCommand: () => new Promise(() => {}),
     layout: () => ({ content: { tab: 'active', pane: { header: { position: options.bottom ? 'bottom' : 'top' } } } }) };
   const ports: any = { ...ui['gpui-kit'], ...ui['gpui-base'], ...host, herdrApi: host, middlePath, identityPill, ...m, openPickerFromHost() {}, parkFocusedTerminal() {} };
   const code = source.replace(/^(?:(?:\/\* spider-look:[a-z0-9-]+ \*\/)\s*)*import .*;\s*$/gm, '').replace('export default class ', 'class ');
@@ -45,6 +46,17 @@ function render(version: SpacesAVersion, options: { p?: any; labels?: any; prese
 test('0.1.16 pane header is filled only while focused', () => {
   expect(render('0.1.16', { p: { focused: true } }).styles.bg).toEqual(['#ffffff14']);
   expect(render('0.1.16', { p: { focused: false } }).styles.bg).toEqual(['#00000000']);
+});
+
+test.each([true, false])('0.1.18 pane leaves the header fill transparent with focused=%s', focused => {
+  expect(render('0.1.18', { p: { focused } }).styles.bg).toEqual(['#00000000']);
+});
+
+test('0.1.18 pane keeps the coloured session pill and separate machine label', () => {
+  const root = render('0.1.18');
+  expect(texts(root).slice(0, 3)).toEqual(['Planner', 'box-1.invalid', '/home/example/work']);
+  const name = flat(root).find(node => node.styles.tooltip?.[0] === 'Planner');
+  expect(name?.styles).toMatchObject({ rounded: [999], bg: ['#aaddff33'], text_color: ['#aaddff'] });
 });
 
 test('local agent has This computer after its name pill', () => {
@@ -114,7 +126,7 @@ test.each(['working', 'blocked', 'error', 'done'])('remote proxy header uses tar
     expect(visible).not.toContain('Node attach'); expect(visible).not.toContain('/mac/wrong');
     if (status === 'blocked') expect(visible).toContain('Needs you');
     if (status === 'error') expect(visible).toContain('Error');
-    if (status === 'working') expect(flat(root).some(node => node.styles.spin?.[0] === 900)).toBe(true);
+    if (status === 'working') expect(flat(root).some(node => JSON.stringify(node.styles.frames) === JSON.stringify([ACTIVITY_FRAMES.nerd.working, 1000 / 14]))).toBe(true);
     if (status === 'done') expect(flat(root).some(node => node.styles.bg?.[0] === colors.done)).toBe(true);
     expect(byId(root, 'ph-x-pane-1')).toBeDefined();
   }

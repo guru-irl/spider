@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, it, vi } from 'vitest';
 import { chmod, readFile, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { openDbAt } from '@spider/db-core';
@@ -19,6 +20,7 @@ it('settles startup after the first feed even when refreshes outpace app placeme
   const gates = [join(h.root, 'release-1'), join(h.root, 'release-2')];
   try {
     await h.start();
+    execFileSync('git', ['init', '-q', h.directories.local]);
     for (const [key, value] of Object.entries(h.localEnv)) if (value !== undefined) vi.stubEnv(key, value);
     vi.stubEnv('PI_SUBAGENT_CHILD', '0');
     vi.stubEnv('SPIDER_GLOBAL_ROOT', h.directories.global);

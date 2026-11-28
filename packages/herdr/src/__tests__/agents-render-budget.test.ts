@@ -261,6 +261,21 @@ it('can resolve parked owners without projecting their children', () => {
   void h.view.close();
 });
 
+it('0.1.18 sidebar draws the Agents separator and a child branch line', async () => {
+  const h = fixture('0.1.18', 1, 0);
+  const nodes = (node: any): any[] => node && typeof node === 'object' ? [node, ...(node.items ?? []).flatMap(nodes)] : [];
+  try {
+    await h.ready();
+    const root = h.render();
+    expect(root.styles.border_t).toEqual([1]);
+    expect(root.styles.border_color).toEqual(['#2f2f32']);
+    const child = nodes(root).find(node => node.styles.id?.[0] === 'sub-live0');
+    expect(child).toBeDefined();
+    expect(nodes(child).some(node => node.styles.border_l?.[0] === 1 && node.styles.border_b?.[0] === 1
+      && node.styles.border_color?.[0] === '#3a3a3d')).toBe(true);
+  } finally { await h.view.close(); }
+});
+
 for (const version of ['0.1.13', '0.1.16'] as const) {
   it(`${version}: bounds saved expansions and prunes only after a complete feed load`, async () => {
     const h = fixture(version, 1, 0), first = h.state.feeds[0].runs.rows[0];
@@ -828,6 +843,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     });
     const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
     const hasStyle = (node: any, name: string, value: unknown): boolean => node?.styles?.[name]?.[0] === value || Boolean(node?.items?.some((item: any) => hasStyle(item, name, value)));
+    const hasMoon = (node: any): boolean => node?.styles?.frames?.[1] === 1000 / 14 || Boolean(node?.items?.some(hasMoon));
     const render = () => { drawing = true; try { return h.render(); } finally { drawing = false; } };
     try {
       const first = h.text(render());
@@ -847,7 +863,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       expect(h.text(root)).toContain('Owner 0');
       expect(h.text(root)).toContain('Owner 99');
       expect(h.text(root)).toContain('Active 0');
-      expect(hasStyle(find(root, 'sub-run:s0:live0'), 'spin', 900)).toBe(true);
+      expect(hasMoon(find(root, 'sub-run:s0:live0'))).toBe(true);
       expect(h.text(root).filter(value => value === '49 finished')).toHaveLength(100);
       expect(h.text(root)).not.toContain('Finished 0-0');
       expect(h.view.spiderModel.rows.get('t0').filter((row: any) => row.retained)).toHaveLength(0);

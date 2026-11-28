@@ -231,6 +231,7 @@ export async function runHerdrCli(argv: readonly string[], ports?: HerdrCliPorts
       for (const file of result.plan.files) stdout(`${file.action} ${file.path}${file.refusal ? ' (needs --replace-changed)' : ''}\n`);
       for (const action of result.plan.cutover) stdout(`cutover ${action}\n`);
       if (!result.plan.cutover.length) stdout('cutover none\n');
+      for (const machine of result.plan.skippedRuntimes) stdout(`skip runtime on ${machine} (disconnected from the local Herdr core)\n`);
       const refused = result.plan.files.filter(file => file.refusal);
       if (refused.length) { stderr(changedSetupFilesNotice(refused) + '\n'); return 1; }
       stdout('Plan only. No files or sessions changed.\n'); return 0;

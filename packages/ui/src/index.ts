@@ -6,6 +6,9 @@ import { fitResultLines } from "./renderers/types";
 import { icon, type IconStyle } from "./icons.js";
 export type { Component } from "./component";
 export { cachedLines } from "./component";
+export { joinToolCards } from "./tool-card-join.js";
+export { bindHalfBox, bindToolCardShell, edgeInk, halfEdge, isHalfEdge, isImageRow, stripRow } from "./tool-card-edge.js";
+export { foregroundFromBackground, reopenBackground } from "./ansi.js";
 export { ICON_STYLES, ACTIVITY_FRAMES, BAND_GLYPHS, REPLY_FRAME, icon, isIconStyle, type IconStyle, type IconRole } from "./icons.js";
 export { formatRunUsage, formatCompactionCount } from "./agents/usage";
 
@@ -89,15 +92,18 @@ export { AgentStore, projectRow, applyEvent } from "./agents/store";
 export { FrameScheduler } from "./agents/coalesce";
 export { diffLines, hasChanges } from "./agents/diff";
 export { buildFooterModel } from "./agents/footer-model";
-export { AgentFooter, formatDuration, formatAgentLine } from "./agents/footer";
+export { AgentFooter, formatDuration, formatAgentLine, shortModel } from "./agents/footer";
 export { AgentList } from "./agents/agent-list";
 export { renderGridCell } from "./agents/grid-cell";
 export { AgentDetail } from "./agents/agent-detail";
 export type { DetailRead, DetailBackTarget, DetailOptions } from "./agents/agent-detail";
 export { MOON_CYCLE_MS, moonFrame } from "./components/spinner";
 export { renderProgressBar } from "./components/progress-bar";
+export { FULLSCREEN_READER_OVERLAY, TabbedReader, type ReaderDocument, type ReaderTab } from "./components/reader.js";
 export { renderDiffView } from "./components/diff-view";
 export { renderTable } from "./components/table";
+export { StartupHeader, type IntroTheme, type StartupFacts, type StartupResourceCounts, type StartupSessionStats } from "./components/intro-header.js";
+export { renderDocked, type DockedFacts, type DockedUsage } from "./components/docked.js";
 
 // ---- Phase 8: per-action renderers ----
 export type {

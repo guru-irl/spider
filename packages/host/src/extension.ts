@@ -1,7 +1,5 @@
 import { MoveSetupError } from "@spider/roam/setup-failure";
 import { createMoveActivation } from "./roam/move-activation";
-import { registerMoveCommand } from "./roam/move-command";
-import { requestHubControl } from "@spider/roam/control-socket";
 import { readLocalIdentity } from "@spider/roam/runtime";
 import { createV0Intercom, hasV0IntercomConfig } from "@spider/roam/relocate/intercom";
 import { fileURLToPath } from "node:url";
@@ -37,6 +35,7 @@ import { trackReloadActivity } from "./reload-activity.js";
 import { createTimeMath } from "./loop/time-math";
 import { registerUsage } from "./usage/mount.js";
 import { makeRunCostFormatter } from "./run-credits.js";
+import { modelName } from "./model-name.js";
 import { registerUsageDashboardCommand } from "./usage/dashboard-command.js";
 import { dispatch, registerAction as registerGlobalAction, clearActions, type ActionHandler, type ActionCtx, type SpiderArgs } from "./dispatch";
 import { registerSlashCommands } from "./slash";
@@ -45,6 +44,8 @@ import { registerHooks } from "./hooks";
 import { registerCompaction } from "./compaction/index.js";
 import { registerCopyButtons, type CopyButtonsHost } from "./copy-buttons/index.js";
 import { registerInputBand, type InputBandHost } from "./input-band/index.js";
+import { registerCompactionReader } from "./input-band/compaction-reader.js";
+import { registerAccentPicker } from "./accent/index.js";
 import { HostOrganismRuntime } from "./organism-runtime";
 import { HostEmbeddingRuntime } from "./embedding-runtime";
 import { UsageAccounting } from "./usage-accounting";
@@ -92,6 +93,7 @@ import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import * as path from "node:path";
 import { openSessionHistoryDb, openSessionRunDb } from "./session-run-db";
+import { registerIntro } from "./intro/index.js";
 export { openSessionRunDb } from "./session-run-db";
 import { mountAgentsUI } from "./agents/mount";
 import { registerAgentsUI } from "./agents/agents-ui";
@@ -242,16 +244,16 @@ export const SPIDER_PARAMETERS = {
     supersedes: { type: "array", items: { type: "string" }, description: "Remember: active memory UUIDs or unique UUID prefixes in the write scope to replace. Credit their size against the cap and archive atomically with the new entry, including when review is unavailable. Unknown, ambiguous, inactive or cross-scope targets reject without a write. Explicit supersedes is not supported for staged/auto writes." },
     // run / subagents
     agent: { type: "string", description: "SINGLE-mode agent/role for action 'run' (e.g. 'scout','worker','reviewer')." },
-    name: { type: "string", description: "SINGLE-mode display name for the spawned subagent (surfaced in the UI; defaults to a slug of the task); loop/schedule: case-sensitive trigger name (1 to 40 letters, digits, dots, underscores or hyphens; start with a letter or digit). Defaults: loop and wakeup. Replaces only that independent name; also the skill name for action='skill' (op add/view/approve/reject)." },
+    name: { type: "string", description: "SINGLE-mode display name for the spawned subagent (surfaced in the UI; defaults to a slug of the task). Use one or two words that describe the job (e.g. fresh-weights), or a creative name (e.g. spiderman); never cryptic abbreviations (e.g. whst). loop/schedule: case-sensitive trigger name (1 to 40 letters, digits, dots, underscores or hyphens; start with a letter or digit). Defaults: loop and wakeup. Replaces only that independent name; also the skill name for action='skill' (op add/view/approve/reject)." },
     task: { type: "string", description: "SINGLE-mode task text for action 'run'." },
     tasks: {
       type: "array",
-      description: "PARALLEL-mode: subagents to run concurrently. Give each a short descriptive `name`.",
+      description: "PARALLEL-mode: subagents to run concurrently. Give each a `name`. Use one or two words that describe the job (e.g. fresh-weights), or a creative name (e.g. spiderman); never cryptic abbreviations (e.g. whst).",
       items: {
         type: "object",
         properties: {
           agent: { type: "string" },
-          name: { type: "string", description: "Short display name surfaced in the UI." },
+          name: { type: "string", description: "Display name surfaced in the UI. Use one or two words that describe the job (e.g. fresh-weights), or a creative name (e.g. spiderman); never cryptic abbreviations (e.g. whst)." },
           task: { type: "string" },
           count: { type: "integer", minimum: 1 },
           model: { type: "string", description: "Per-item model override for this task." },
@@ -268,7 +270,7 @@ export const SPIDER_PARAMETERS = {
         type: "object",
         properties: {
           agent: { type: "string" },
-          name: { type: "string", description: "Short display name surfaced in the UI." },
+          name: { type: "string", description: "Display name surfaced in the UI. Use one or two words that describe the job (e.g. fresh-weights), or a creative name (e.g. spiderman); never cryptic abbreviations (e.g. whst)." },
           task: { type: "string" },
           model: { type: "string", description: "Per-item model override for this chain step." },
           thinking: { type: "string", enum: THINKING_LEVELS as readonly string[], description: "Per-item reasoning/thinking level for this chain step; overrides the resolved model suffix." },
@@ -934,6 +936,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   const ordinaryWorkAllowed = () => isOrdinaryWorkAllowed(admission.inspect());
   const activity = trackReloadActivity(hostPi as unknown as ExtensionAPI);
   const pi = protectAdmissionApi(activity.pi, admission) as unknown as PiToolAPI;
+  registerCompactionReader(pi as unknown as ExtensionAPI);
   if (ports.inputBand) registerInputBand(pi as unknown as ExtensionAPI, ports.inputBand, cwd => {
     const values = configValues(cwd);
     return { "ui.inputBand": values.config["ui.inputBand"], "ui.icons": values.config["ui.icons"] };
@@ -943,23 +946,18 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
       const values = configValues(cwd);
       return { "copyButtons.enabled": values.config["copyButtons.enabled"], "ui.icons": values.config["ui.icons"] };
     }, ports.copyButtons.copy);
-  let moveEnabled = false, legacyIntercomEnabled = true, hasRoamIdentity = false;
+  let roamingEnabled = false, legacyIntercomEnabled = true, hasRoamIdentity = false;
   try {
     const config = readLocalIdentity(paths.globalRoot);
-    moveEnabled = config.enabled;
+    roamingEnabled = config.enabled;
     legacyIntercomEnabled = config.intercom.enabled;
     hasRoamIdentity = true;
-  } catch { /* Missing or unreadable configuration leaves the command unregistered. */ }
-  if (moveEnabled) registerMoveCommand(activity.pi, async request => {
-    const reply = await requestHubControl(path.join(paths.globalRoot, "roam", "hub.sock"), { op: "move", session: request.sessionId, machine: request.destinationMachine });
-    return { ...reply, operationId: reply.operationId ?? "", home: reply.home ?? null, epoch: reply.epoch ?? null, repairCommand: reply.repairCommand ?? null,
-      value: reply.value as unknown as import("@spider/roam/contracts").MoveResult | null };
-  });
+  } catch { /* Missing or unreadable configuration leaves roaming disabled. */ }
   let intercom: ReturnType<typeof registerIntercomOnce> | undefined;
   try {
     const v0Factory = ports.v0Intercom ?? { hasConfig: hasV0IntercomConfig, create: createV0Intercom };
     const v0Configured = hasRoamIdentity && !legacyIntercomEnabled && v0Factory.hasConfig(paths.globalRoot);
-    const v0Intercom = v0Configured && moveEnabled ? v0Factory.create(paths.globalRoot) : undefined;
+    const v0Intercom = v0Configured && roamingEnabled ? v0Factory.create(paths.globalRoot) : undefined;
     const v0 = v0Intercom ? {
       prepare: v0Intercom.prepare,
       prepareReply: v0Intercom.prepareReply,
@@ -980,6 +978,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
       else process.stderr.write(message + "\n");
     });
   }
+  if (pi.registerCommand) registerAccentPicker(pi as unknown as ExtensionAPI);
   let scheduler: SessionScheduler | undefined;
   const autoReload = registerAutoReload(pi as unknown as ExtensionAPI, loadedBundle, cwd => controlConfig("get", cwd, "reload.auto") !== false, ordinaryWorkAllowed, reloadWouldInterrupt,
     () => activity.busy() || !!intercom?.hasPendingInboundAsks() || !!scheduler?.blocksReload() || organism.blocksReload(), activity);
@@ -1031,8 +1030,9 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   }, () => piLoadedSkills(pi), sessionId => accounting.factory(sessionId), ordinaryWorkAllowed);
   setForHost(organismRuntimes, organism);
   let currentContext: unknown;
-  const iconStyle = () => {
-    try { return controlConfig("get", cwdOf(currentContext) ?? process.cwd(), "ui.icons") === "nerd" ? "nerd" as const : "text" as const; }
+  const displayModel = (ref: string) => modelName((currentContext as ExtensionContext | undefined)?.modelRegistry, ref);
+  const iconStyle = (cwd?: string) => {
+    try { return controlConfig("get", cwd ?? cwdOf(currentContext) ?? process.cwd(), "ui.icons") === "nerd" ? "nerd" as const : "text" as const; }
     catch { return "text" as const; } // A config read failure must not break TUI rendering.
   };
   let currentSessionId = "";
@@ -1298,7 +1298,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
     parameters: SPIDER_PARAMETERS,
     renderCall: (args: any, theme: any, context: any) => flushLeft(renderSpiderCall(args, theme, { ...context, iconStyle: iconStyle() })),
     renderResult: (result: any, options: any, theme: any, context: any) => flushLeft(renderSpiderResult(result, options, theme,
-      { ...context, iconStyle: iconStyle(), formatRunCost: makeRunCostFormatter(() => usageServices.get(pi)?.snapshot()) })),
+      { ...context, iconStyle: iconStyle(), modelName: displayModel, formatRunCost: makeRunCostFormatter(() => usageServices.get(pi)?.snapshot()) })),
     async execute(toolCallId, args, signal, onUpdate, ctx) {
       if (!ordinaryWorkAllowed()) throw new Error("Session ownership is not available; run /spider roam doctor.");
       // Stream partial output the way pi's built-in bash tool does. The FIRST call is an
@@ -1369,13 +1369,13 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
 
   // Expand a completion card to see the full curated output.
   pi.registerMessageRenderer?.("spider.subagent_done", withClickExpansion((message, options, theme) =>
-    renderSubagentDone(message, options, theme, iconStyle()),
+    renderSubagentDone(message, options, theme, iconStyle(), displayModel),
   ));
 
   // Slash commands (/spider, /doctor, /stats, …) emit a spider.command message; render its
   // output lines themed in the transcript instead of an ephemeral toast.
   pi.registerMessageRenderer?.("spider.command", withClickExpansion((message, options, theme) =>
-    renderCommandOutput(message, options, theme, iconStyle()),
+    renderCommandOutput(message, options, theme, iconStyle(), displayModel),
   ));
 
   pi.registerEntryRenderer?.("spider.organism", (entry: unknown, options: any, theme: unknown) =>
@@ -1405,6 +1405,13 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
     registerStructuredTools(pi, spiderTool as AdapterTool, (args, callCtx) =>
       readRoutingConfig(String(args.cwd ?? cwdOf(callCtx) ?? process.cwd())));
     structuredToolsRegistered = true;
+  });
+  // Read the cached visit before the next shutdown hook stops the usage worker.
+  registerIntro(pi as unknown as ExtensionAPI, { admitted: ordinaryWorkAllowed, piVersion: ports.piVersion, iconStyle,
+    readVisitUsage: async (id, from, to) => {
+      const visit = await usageService.readVisit(id, from, to);
+      return visit ? { credits: visit.credits, calls: visit.calls, unpricedCalls: visit.unpricedCalls, ...visit.tokens } : undefined;
+    },
   });
   const usageCommand = registerUsageDashboardCommand(pi as unknown as ExtensionAPI, loadedBundle.url);
   const usageService = registerUsage(pi as unknown as ExtensionAPI, loadedBundle.url, ordinaryWorkAllowed);
@@ -1457,6 +1464,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
         admitted: ordinaryWorkAllowed,
         piVersion: ports.piVersion,
         formatRunCost: makeRunCostFormatter(() => usageServices.get(pi)?.snapshot()),
+        modelName: displayModel,
         dispatch: (action, args) => {
           if (!ordinaryWorkAllowed()) throw new Error("Session ownership is not available; run /spider roam doctor.");
           return dispatch({ action, ...args } as SpiderArgs, buildActionCtx(pi, { action, ...args } as SpiderArgs, sessionId, cwd, undefined, ctx.modelRegistry, undefined, parentModelOf(ctx)), ownedActions);
@@ -1521,6 +1529,11 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
       ...(process.env.PI_SUBAGENT_CHILD === '1' ? { reportError: (error: unknown, notice?: string) => { process.stderr.write((notice ?? herdrErrorNotice(error)) + '\n'); } } : {}),
       packageRoot: herdrPackageRoot,
       admitted: ordinaryWorkAllowed,
+      viewerCreditFactor: () => {
+        const calibration = usageServices.get(pi)?.snapshot()?.calibration;
+        return calibration?.status === 'calibrated' && typeof calibration.factor === 'number'
+          && Number.isFinite(calibration.factor) && calibration.factor >= 0 ? calibration.factor : null;
+      },
       actionContext: ctx => buildActionCtx(pi, { action: "message" }, sessionIdOf(ctx), cwdOf(ctx) ?? process.cwd(), undefined, ctx.modelRegistry, undefined, parentModelOf(ctx)),
       killAction: (ctx, id) => {
         const args: SpiderArgs = { action: "kill", id };

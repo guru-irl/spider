@@ -4,7 +4,8 @@ import { openDashboardReader } from './dashboard-reader.js';
 import { billingPeriod, computePace } from './billing-pace.js';
 import { latestValidCounter } from './latest-valid-counter.js';
 import { readCorrectedTotal, readSessionUsageCube, sumValues, type SessionUsageScope } from './query-redesign-shared.js';
-import { scopeFor, scopedRange } from './query-session.js';
+import { queryVisitUsage, scopeFor, scopedRange } from './query-session.js';
+import type { Value } from './dashboard-v4-contract.js';
 import { readPaceHistoryFromDb } from './pace-history.js';
 import { formatValue } from './web/format.js';
 import { DAY_MS } from './dashboard-selection.js';
@@ -12,6 +13,7 @@ import type { PanelUsage } from './protocol.js';
 
 export type PanelUsageReader = {
   read(now: number, sessionId: string, budget: number | undefined, calibrationMode: 'auto' | 'off'): PanelUsage | null;
+  readVisit(sessionId: string, from: number, to: number, calibrationMode: 'auto' | 'off'): Value | null;
   close(): void;
 };
 
@@ -52,56 +54,58 @@ export function createPanelUsageReader(file: string): PanelUsageReader {
     const previous = reader; reader = undefined; identity = undefined;
     previous?.close();
   }
+  function snapshot<T>(at: number, mode: 'auto' | 'off', query: (ctx: DashboardQueryContext) => T): T | null {
+    if (isMainThread) throw new Error('usage-panel-query-requires-worker');
+    now = at; calibrationMode = mode;
+    try {
+      reader ??= openDashboardReader(file, { instanceId: 'herdr-panel', serverBuild: 'worker', now: () => now, calibrationMode: () => calibrationMode });
+      return reader?.snapshot(query) ?? null;
+    } catch { close(); return null; }
+  }
   return {
     close,
+    readVisit: (sessionId, from, to, mode) => snapshot(to - 1, mode, ctx => queryVisitUsage(ctx, sessionId, from, to)),
     read(at, sessionId, budget, mode) {
-      if (isMainThread) throw new Error('usage-panel-query-requires-worker');
-      now = at; calibrationMode = mode;
-      try {
-        reader ??= openDashboardReader(file, { instanceId: 'herdr-panel', serverBuild: 'worker', now: () => now, calibrationMode: () => calibrationMode });
-        if (!reader) return null;
-        const value = reader.snapshot(ctx => {
-          const period = billingPeriod(now, latestValidCounter(ctx.db, now));
-          let value: ReturnType<typeof sumValues> = { ...sumValues([]), credits: 0 };
-          try {
-            let current = identity?.scope;
-            if (identity?.revision !== ctx.revision || identity.sessionId !== sessionId) {
-              identity = { revision: ctx.revision, sessionId, scope: null };
-              const whole = scopeFor(ctx, sessionId);
-              const compact = compactScope(ctx, whole);
-              // A large derived identity is used for this read only.
-              if (compact) identity.scope = compact;
-              else identity = undefined;
-              current = compact ?? whole;
-            }
-            if (current) {
-              const scope = scopedRange(current, { from: period.start, to: now });
-              const cube = readSessionUsageCube(ctx, { start: period.start, end: now }, scope);
-              if (cube.total.calls) value = cube.total;
-            }
-          } catch (error) {
-            // A brand-new session has no ledger identity yet; it has no month calls.
-            if (!(error instanceof DashboardQueryError) || error.code !== 'not-found') throw error;
+      const value = snapshot(at, mode, ctx => {
+        const period = billingPeriod(now, latestValidCounter(ctx.db, now));
+        let value: ReturnType<typeof sumValues> = { ...sumValues([]), credits: 0 };
+        try {
+          let current = identity?.scope;
+          if (identity?.revision !== ctx.revision || identity.sessionId !== sessionId) {
+            identity = { revision: ctx.revision, sessionId, scope: null };
+            const whole = scopeFor(ctx, sessionId);
+            const compact = compactScope(ctx, whole);
+            // A large derived identity is used for this read only.
+            if (compact) identity.scope = compact;
+            else identity = undefined;
+            current = compact ?? whole;
           }
-          const snapshots = readPaceHistoryFromDb(ctx.db, now);
-          const counterPace = computePace({ now, snapshots, budget, correctedMonth: null, correctedWindow: null });
-          // Counter-backed pace does not consume either corrected total. A missing
-          // rate alone needs only the trailing window, not a second month pass.
-          const correctedMonth = counterPace.used === null ? readCorrectedTotal(ctx, { start: period.start, end: now }) : null;
-          const correctedWindow = counterPace.ratePerDay === null
-            ? readCorrectedTotal(ctx, { start: Math.max(period.start, now - 7 * DAY_MS), end: now }) : null;
-          return { monthCost: { credits: value.credits, label: formatValue(value, 'credits') },
-            pace: counterPace.used !== null && counterPace.ratePerDay !== null ? counterPace
-              : computePace({ now, snapshots, budget, correctedMonth, correctedWindow }), updatedAt: snapshots.at(-1)?.ts ?? null };
-        });
+          if (current) {
+            const scope = scopedRange(current, { from: period.start, to: now });
+            const cube = readSessionUsageCube(ctx, { start: period.start, end: now }, scope);
+            if (cube.total.calls) value = cube.total;
+          }
+        } catch (error) {
+          // A brand-new session has no ledger identity yet; it has no month calls.
+          if (!(error instanceof DashboardQueryError) || error.code !== 'not-found') throw error;
+        }
+        const snapshots = readPaceHistoryFromDb(ctx.db, now);
+        const counterPace = computePace({ now, snapshots, budget, correctedMonth: null, correctedWindow: null });
+        // Counter-backed pace does not consume either corrected total. A missing
+        // rate alone needs only the trailing window, not a second month pass.
+        const correctedMonth = counterPace.used === null ? readCorrectedTotal(ctx, { start: period.start, end: now }) : null;
+        const correctedWindow = counterPace.ratePerDay === null
+          ? readCorrectedTotal(ctx, { start: Math.max(period.start, now - 7 * DAY_MS), end: now }) : null;
+        return { monthCost: { credits: value.credits, label: formatValue(value, 'credits') },
+          pace: counterPace.used !== null && counterPace.ratePerDay !== null ? counterPace
+            : computePace({ now, snapshots, budget, correctedMonth, correctedWindow }), updatedAt: snapshots.at(-1)?.ts ?? null };
+      });
+      if (value) {
         clearTimeout(idle);
         idle = setTimeout(() => { identity = undefined; idle = undefined; }, 60000);
         idle.unref?.();
-        return value;
-      } catch {
-        // Retry with a fresh connection after a failed read.
-        close(); return null;
       }
+      return value;
     },
   };
 }

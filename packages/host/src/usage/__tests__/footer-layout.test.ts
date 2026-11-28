@@ -287,7 +287,10 @@ describe("public usage footer component", () => {
         return stripTerminalSequences(row())[0];
       });
       // Every other of the 28 Weather Icons phases: 14 redraws a second instead of 28 (user, 2026-11-28).
-      expect(frames).toEqual(["\uE3E3", ...Array.from({ length: 13 }, (_, i) => String.fromCodePoint(0xE3C9 + 2 * i))]);
+      expect(frames).toEqual([
+        "\uE3E3", "\uE3E1", "\uE3DF", "\uE3DD", "\uE3DB", "\uE3D9", "\uE3D7",
+        "\uE3D5", "\uE3D3", "\uE3D1", "\uE3CF", "\uE3CD", "\uE3CB", "\uE3C9",
+      ]);
       expect(frames[7]).toBe("\uE3D5");
       vi.advanceTimersByTime(1000 - Date.now());
       expect(renders).toHaveBeenCalledTimes(14); // One redraw per frame; Pi rescans the transcript on each.
@@ -310,6 +313,29 @@ describe("public usage footer component", () => {
         vi.advanceTimersByTime(250);
       }
     } finally { component.dispose(); vi.useRealTimers(); }
+  });
+
+  it.each([[false, 14.6], [false, 75], [false, 91], [true, 14.6], [true, 75], [true, 91]] as const)
+    ("dims every separator in pane mode %s at %s percent", (inPane, percent) => {
+    const variant = input({ inPane, context: { percent, contextWindow: 1000000 } });
+    const component = themed(variant);
+    try {
+      const lines = component.render(200);
+      const separatorIsDim: boolean[] = [];
+      for (const line of lines) {
+        let dim = false;
+        for (const token of line.matchAll(/\x1b\[([\d;]*)m|·/g)) {
+          if (token[1] !== undefined) {
+            for (const code of (token[1] || "0").split(";")) {
+              if (code === "0" || code === "22") dim = false;
+              else if (code === "2") dim = true;
+            }
+          } else separatorIsDim.push(dim);
+        }
+      }
+      expect(lines.map(stripTerminalSequences)).toEqual(renderUsageFooter(variant, 200));
+      expect(separatorIsDim).toEqual([true, true, true, true, true, true]);
+    } finally { component.dispose(); }
   });
 
   it("keeps model and thinking dim after name or model truncation", () => {

@@ -1,0 +1,8 @@
+[
+  {
+    "id": "a-tabs-glass-gutter",
+    "file": "main.js",
+    "anchor": "? Math.max(10, (root.traffic_lights[0] + 64) / settings().zoom - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))\n      : 10;",
+    "replacement": "? Math.max(6.5, (root.traffic_lights[0] + 64) / settings().zoom - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))\n      : 6.5;"
+  }
+]

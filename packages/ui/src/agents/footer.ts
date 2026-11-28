@@ -17,14 +17,17 @@ export function formatDuration(ms: number): string {
 }
 
 /** Short model label (drop provider prefix + redundant 'claude-'). */
-export function shortModel(m?: string | null): string { if (!m) return "—"; return (m.split("/").pop() ?? m).replace(/^claude-/, ""); }
+export function shortModel(m?: string | null, modelName?: ThemeAdapter["modelName"]): string {
+  if (!m) return "—";
+  return modelName?.(m)?.trim() || (m.split("/").pop() ?? m).replace(/^claude-/, "");
+}
 
 /** Shared one-line summary with a single leading activity or status mark. */
 export function formatAgentLine(t: ThemeAdapter, a: AgentSnapshot, width: number, now: number): string {
   const ital = (s: string) => (t.italic ? t.italic(s) : s);
   const elapsedMs = a.startedAt === undefined ? 0 : (a.endedAt ?? now) - a.startedAt;
   const turns = a.stepCount === 1 ? "1 turn" : `${a.stepCount} turns`;
-  const model = shortModel(a.model);
+  const model = shortModel(a.model, t.modelName);
   const sep = t.fg("dim", "·");
   const parts = [
     ital(renderRoleAccent(t, a.role ?? a.agent, a.role ?? a.agent)),
@@ -53,11 +56,27 @@ export class AgentFooter implements Component {
   }
 
   private agentLine(a: AgentSnapshot, width: number, selecting: boolean, selected?: string): string {
-    const cursor = selecting ? (a.runId === selected ? this.theme.fg("accent", `${icon(this.theme.iconStyle, "select")} `) : "  ") : "";
-    const cw = visibleWidth(cursor);
-    const pin = this.store.isPinned(a.runId) ? ` ${icon(this.theme.iconStyle, "pin")}` : "";
-    const line = formatAgentLine(this.theme, a, Math.max(4, width - visibleWidth(pin) - cw), this.now());
-    return cursor + (pin ? line + this.theme.fg("warning", pin) : line);
+    const t = this.theme;
+    const now = this.now();
+    const cursor = selecting ? (a.runId === selected ? t.fg("accent", `${icon(t.iconStyle, "select")} `) : "  ") : "";
+    const role = renderRoleAccent(t, a.role ?? a.agent, a.role ?? a.agent);
+    const pin = this.store.isPinned(a.runId) ? t.fg("warning", ` ${icon(t.iconStyle, "pin")}`) : "";
+    const base = `${cursor}${renderAgentStatus(t, a, now)} ${t.italic ? t.italic(role) : role} ${t.fg("toolTitle", t.bold(a.name))}${pin}`;
+    const sep = t.fg("dim", " · ");
+    const turns = `${sep}${t.fg("dim", a.stepCount === 1 ? "1 turn" : `${a.stepCount} turns`)}`;
+    const elapsed = `${sep}${t.fg("muted", formatDuration(a.startedAt === undefined ? 0 : (a.endedAt ?? now) - a.startedAt))}`;
+    const label = shortModel(a.model, t.modelName);
+    const model = label === "—" ? "" : t.fg("muted", label);
+    const thinking = a.thinking ? (model ? sep : "") + t.fg("dim", a.thinking) : "";
+    let left = base + turns + elapsed;
+    let right = model + thinking;
+    const fits = () => visibleWidth(left) + (right ? 1 + visibleWidth(right) : 0) <= width;
+    if (!fits()) left = base + elapsed;
+    if (!fits()) left = base;
+    if (!fits()) right = model;
+    if (!fits()) right = truncateToWidth(model, Math.max(0, width - visibleWidth(base) - 1), "…");
+    if (!right) return truncateToWidth(left, width, "…");
+    return left + " ".repeat(Math.max(1, width - visibleWidth(left) - visibleWidth(right))) + right;
   }
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
@@ -84,18 +103,19 @@ export class AgentFooter implements Component {
     }
     this.lastSelectedRunId = selected;
     const model = buildFooterModel(agents, visibleCount, this.offset);
-    const lines = model.visible.map((a) => this.agentLine(a, width, this.store.isSelecting(), selected));
-    if (model.overflow) {
-      const o = model.overflow;
-      const seg: string[] = [];
-      if (o.running) seg.push(`${o.running} running`);
-      if (o.queued) seg.push(`${o.queued} queued`);
-      if (o.paused) seg.push(`${o.paused} paused`);
-      if (o.done) seg.push(`${o.done} done`);
-      if (o.failed) seg.push(`${o.failed} failed`);
-      if (o.cancelled) seg.push(`${o.cancelled} cancelled`);
-      seg.push(`+${o.hidden} more`);
-      lines.push(truncateToWidth(this.theme.fg("muted", `${agentGlyph(this.theme)} ${icon(this.theme.iconStyle, "select")} ` + seg.join(" · ")), width, "…"));
+    const selecting = this.store.isSelecting();
+    const lines = model.visible.map((a) => this.agentLine(a, width, selecting, selected));
+    if (model.overflow && selecting) {
+      const direction = this.offset + visibleCount < agents.length ? "arrowDown" : "arrowUp";
+      const index = selected ? orderFooterAgents(agents).findIndex(a => a.runId === selected) : -1;
+      const left = this.theme.fg("muted", `${icon(this.theme.iconStyle, direction)} view more`)
+        + (index < 0 ? "" : this.theme.fg("muted", " ") + this.theme.fg("dim", "·")
+          + this.theme.fg("muted", ` ${index + 1}/${agents.length}`));
+      const right = `${agents.length} subagents`;
+      const padding = " ".repeat(Math.max(1, width - visibleWidth(left) - visibleWidth(right)));
+      lines.push(truncateToWidth(left + this.theme.fg("muted", padding + right), width, "…"));
+    } else if (model.overflow) {
+      lines.push(truncateToWidth(this.theme.fg("muted", `${agentGlyph(this.theme)} +${model.overflow.hidden} more`), width, "…"));
     }
     return lines.map((l) => (visibleWidth(l) > width ? truncateToWidth(l, width, "…") : l));
   }

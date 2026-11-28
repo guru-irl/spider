@@ -46,7 +46,13 @@ export async function stageSpacesAFiles(destination: string, version: SpacesAVer
   await assets('mods/spider', 'mods/spider-panel');
   put('mods/spider-agents/sound.js', await readFile(join(assetRoot, 'mods/spider/sound.js')), 'asset:mods/spider/sound.js');
   await assets('picker', 'mods/spider-picker');
-  if (version === '0.1.16') await assets('toast', 'mods/spider-toast');
+  if (composed['spider-toast']) for (const file of ['NOTICE', 'filter.js', 'main.js', 'mod.json']) {
+    const asset = `toast/${version === '0.1.18' && file === 'main.js' ? 'main-0.1.18.js' : file}`;
+    const bytes = await readFile(join(assetRoot, asset));
+    const expected = composed['spider-toast'][file];
+    if (expected !== undefined && !bytes.equals(Buffer.from(expected))) throw new Error(`unexpected toast asset ${asset}`);
+    put(`mods/spider-toast/${file}`, bytes, `asset:${asset}`);
+  }
   for (const clone of [...Object.values(clones), 'spider-panel', 'spider-picker']) {
     await assets('shared', `mods/${clone}/shared`);
     if (['spider-agents', 'spider-panel', 'spider-picker'].includes(clone)) {

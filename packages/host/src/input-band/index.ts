@@ -1,31 +1,102 @@
-import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { parseSkillBlock, type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { isIconStyle } from "@spider/ui";
 import { createBandEditor } from "./editor.js";
+import { installSelectionHighlight } from "./selection.js";
 import { installTranscriptBands } from "./transcript.js";
+import { installPendingBands } from "./pending.js";
+import { installCompactionCard } from "./compaction-card.js";
+import { compactionBill, compactionModel, openCompactionReader } from "./compaction-reader.js";
+import { installMoonStatus } from "./status.js";
+import { installReloadBand } from "./reload.js";
 
 type Pi = typeof import("@earendil-works/pi-coding-agent");
 type PiTui = typeof import("@earendil-works/pi-tui");
 export type InputBandHost = Pick<Pi, "CustomEditor"> & Partial<Pick<Pi,
-  "UserMessageComponent" | "ToolExecutionComponent" | "CustomMessageComponent" |
+  "InteractiveMode" | "UserMessageComponent" | "AssistantMessageComponent" | "ToolExecutionComponent" | "CustomMessageComponent" |
   "BranchSummaryMessageComponent" | "CompactionSummaryMessageComponent" | "SkillInvocationMessageComponent"> &
-  Pick<PiTui, "Box" | "Text" | "Markdown">>;
+  Pick<PiTui, "Box" | "Text" | "Markdown" | "Spacer" | "TruncatedText">>;
 
 export function registerInputBand(pi: Pick<ExtensionAPI, "on">, host: InputBandHost, readConfig: (cwd: string) => Record<string, unknown>): void {
   const BandEditor = createBandEditor(host.CustomEditor);
   let releaseTranscript: (() => void) | undefined;
   let releaseEditor: (() => void) | undefined;
+  let releasePending: (() => void) | undefined;
+  let releaseCompaction: (() => void) | undefined;
+  let releaseStatus: (() => void) | undefined;
+  let releaseReload: (() => void) | undefined;
+  let releaseSelection: (() => void) | undefined;
+  const live: { pending?: { text: string; timestamp: number } } = {};
+  pi.on("message_start", event => {
+    live.pending = undefined;
+    if (event.message.role !== "user") return;
+    const { content, timestamp } = event.message;
+    const text = typeof content === "string" ? content : content.flatMap(block => block.type === "text" ? [block.text] : []).join("");
+    const skill = parseSkillBlock(text);
+    const displayed = skill ? skill.userMessage : text;
+    if (displayed && Number.isFinite(timestamp)) live.pending = { text: displayed, timestamp };
+  });
+  pi.on("message_end", () => { live.pending = undefined; });
   pi.on("session_start", (event, ctx) => {
     releaseEditor?.();
     releaseEditor = undefined;
+    releaseSelection?.();
+    releaseSelection = undefined;
     releaseTranscript?.();
     releaseTranscript = undefined;
+    releasePending?.();
+    releasePending = undefined;
+    releaseCompaction?.();
+    releaseCompaction = undefined;
+    releaseStatus?.();
+    releaseStatus = undefined;
+    releaseReload?.();
+    releaseReload = undefined;
     if (ctx.mode !== "tui" || !ctx.hasUI) return;
+    if (typeof ctx.ui.setWidget === "function") {
+      ctx.ui.setWidget("spider-selection-highlight", tui => {
+        releaseSelection?.();
+        const release = installSelectionHighlight(tui);
+        releaseSelection = release;
+        return { render: () => [], invalidate: () => {}, dispose: () => {
+          release();
+          if (releaseSelection === release) releaseSelection = undefined;
+        } };
+      });
+    }
     const config = readConfig(ctx.cwd);
     const inputBand = config["ui.inputBand"] !== false;
     const style = config["ui.icons"];
-    releaseTranscript = installTranscriptBands(host, {
-      inputBand, theme: () => ctx.ui.theme, iconStyle: () => isIconStyle(style) ? style : "text",
+    const iconStyle = () => isIconStyle(style) ? style : "text";
+    const theme = () => ctx.ui.theme;
+    const compactionEntry = (id: string | undefined, message: { summary: string; tokensBefore: number }) => {
+      // Live compaction cards do not have a message ID. Pi just placed the
+      // current compaction at the front of the active context.
+      const entry = id ? ctx.sessionManager?.getEntry(id) : ctx.sessionManager?.buildContextEntries()[0];
+      if (entry?.type === "compaction" && entry.summary === message.summary && entry.tokensBefore === message.tokensBefore) return entry;
+    };
+    releaseCompaction = installCompactionCard(host, {
+      theme, iconStyle,
+      model: (id, message) => compactionModel(ctx, compactionEntry(id, message)),
+      open: typeof ctx.ui.custom === "function" ? (id, message, bill) => {
+        const entry = compactionEntry(id, message);
+        void openCompactionReader(ctx.ui, { ...message,
+          timestamp: entry?.timestamp ?? message.timestamp,
+          model: compactionModel(ctx, entry), bill: compactionBill(entry) ?? bill,
+        }).catch(() => ctx.ui.notify("Could not open the compaction summary.", "error"));
+      } : undefined,
     });
+    releaseStatus = installMoonStatus(host, theme, iconStyle);
+    releaseTranscript = installTranscriptBands(host, {
+      inputBand, theme, iconStyle, live,
+      timestamp: id => {
+        const entry = ctx.sessionManager?.getEntry(id);
+        return entry?.type === "message" && entry.message.role === "user" ? entry.message.timestamp : undefined;
+      },
+    });
+    if (inputBand) {
+      releasePending = installPendingBands(host, theme, iconStyle);
+      releaseReload = installReloadBand(host, theme, iconStyle);
+    }
     if (!inputBand || typeof ctx.ui.getEditorComponent !== "function" || ctx.ui.getEditorComponent() !== undefined) return;
     const factory: NonNullable<Parameters<ExtensionUIContext["setEditorComponent"]>[0]> = (tui, theme, keys) => {
       const editor = new BandEditor(tui, theme, keys, () => ctx.ui.theme);
@@ -48,7 +119,13 @@ export function registerInputBand(pi: Pick<ExtensionAPI, "on">, host: InputBandH
     };
   });
   pi.on("session_shutdown", () => {
+    live.pending = undefined;
     releaseEditor?.(); releaseEditor = undefined;
+    releaseSelection?.(); releaseSelection = undefined;
     releaseTranscript?.(); releaseTranscript = undefined;
+    releasePending?.(); releasePending = undefined;
+    releaseCompaction?.(); releaseCompaction = undefined;
+    releaseStatus?.(); releaseStatus = undefined;
+    releaseReload?.(); releaseReload = undefined;
   });
 }

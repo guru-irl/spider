@@ -56,11 +56,12 @@ built-ins:
 - \`spider index\` / \`spider fetch\` — index files/dirs or fetch+index URLs into
   the knowledge base for \`spider search\`.
 - \`spider run\` — dispatch subagents (single / chain / parallel / pipeline,
-  always async). Pass an explicit **provider-qualified** \`model:\` (e.g.
-  \`github-copilot/gpt-6.1-sol\`) scaled to task complexity (cheap for
-  mechanical, capable for architecture/review), plus \`thinking:\`. Subagents run
-  in the background and report back via a \`spider.subagent_done\` message — there
-  is no blocking wait. For multi-phase work use
+  always async). Use one or two words that describe the job (e.g. fresh-weights),
+  or a creative name (e.g. spiderman); never cryptic abbreviations (e.g. whst).
+  Pass an explicit **provider-qualified** \`model:\` (e.g.
+  \`github-copilot/gpt-6.1-sol\`) scaled to task complexity, plus \`thinking:\`.
+  Subagents report via \`spider.subagent_done\`; there is no blocking wait.
+  For multi-phase work use
   \`pipeline:[worker, reviewer], handoff:"intercom"\`. Give review-only children
   \`context:"fresh"\` and tell them not to edit source.
   While a child runs, \`spider exec\` and \`spider batch\` block foreground sleeps,

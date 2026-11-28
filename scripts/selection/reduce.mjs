@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -72,6 +73,23 @@ function fileResult(report) {
 export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsDir, reportFile }) {
   const maps = bundleMaps(root, mapsDir);
   const fixtures = new Map();
+  const trees = new Map();
+  const checkout = resolve(root);
+  let tracked;
+  function treeInputs(url) {
+    const file = fileURLToPath(url);
+    const name = file === checkout ? '' : repoPath(root, file);
+    if (name === null) return [];
+    if (!trees.has(name)) {
+      tracked ??= execFileSync('git', ['ls-files', '-z'], { cwd: checkout, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
+        .split('\0').filter(Boolean);
+      // A copy source may be a file. A listing of the checkout root reads
+      // the entire tracked tree. Do not match siblings with the same prefix.
+      const prefix = name ? `${name}/` : '';
+      trees.set(name, tracked.filter(path => path === name || path.startsWith(prefix)));
+    }
+    return trees.get(name);
+  }
   const outcomes = new Map();
   for (const row of read(reportFile).testResults) {
     const file = repoPath(root, row.name);
@@ -132,7 +150,7 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
       try { script = JSON.parse(line); }
       catch { stats.malformedSnapshots++; continue; }
       if (script?.kind === 'build') { entry.ranBundle = true; continue; }
-      if (!['source', 'bundle', 'fixture'].includes(script?.kind) || typeof script.url !== 'string' || !script.url) {
+      if (!['source', 'bundle', 'fixture', 'tree'].includes(script?.kind) || typeof script.url !== 'string' || !script.url) {
         stats.malformedSnapshots++;
         continue;
       }
@@ -152,6 +170,8 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
           stats.unresolvedBundles++;
           stats.unresolvedGroups[unresolved.group]++;
         }
+      } else if (script.kind === 'tree') {
+        for (const source of treeInputs(script.url)) entry.reads.add(source);
       } else {
         const source = repoPath(root, modulePath(script.url));
         if (source) entry.reads.add(source);

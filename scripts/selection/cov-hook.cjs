@@ -123,21 +123,21 @@ if (dir) {
     } catch (error) { note('append dependency', error); }
   }
 
-  function recordRead(path) {
+  function recordRead(path, kind = 'source') {
     try {
       if (path instanceof URL) path = fileURLToPath(path);
       if (Buffer.isBuffer(path)) path = path.toString();
       if (typeof path !== 'string' || path === '' || path.includes('\0')) return;
       const file = resolve(path);
-      if (isRepoInput(file)) record('source', pathToFileURL(file).href);
+      if (isRepoInput(file) || (kind === 'tree' && file === root)) record(kind, pathToFileURL(file).href);
     } catch { /* Leave invalid arguments for the original fs method to handle. */ }
   }
 
   function captureFsReads() {
-    function wrapRead(api, name, shouldRecord = () => true) {
+    function wrapRead(api, name, shouldRecord = () => true, kind = 'source') {
       api[name] = new Proxy(api[name], {
         apply(target, receiver, args) {
-          if (shouldRecord(args)) recordRead(args[0]);
+          if (shouldRecord(args)) recordRead(args[0], kind);
           return Reflect.apply(target, receiver, args);
         },
       });
@@ -150,6 +150,10 @@ if (dir) {
     for (const name of ['open', 'openSync']) wrapRead(fs, name, readable);
     for (const name of ['readFile', 'copyFile']) wrapRead(fs.promises, name);
     wrapRead(fs.promises, 'open', readable);
+    // Record the path once. The reducer resolves it against Git's tracked
+    // inventory rather than walking directories inside each test worker.
+    for (const name of ['cp', 'cpSync', 'readdir', 'readdirSync', 'opendir', 'opendirSync']) wrapRead(fs, name, undefined, 'tree');
+    for (const name of ['cp', 'readdir', 'opendir']) wrapRead(fs.promises, name, undefined, 'tree');
   }
 
   function classify(file, scriptHash) {

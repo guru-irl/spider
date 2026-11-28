@@ -162,6 +162,22 @@ describe('change-scoped test manifests', () => {
     expect(readFileSync(actions, 'utf8')).toContain('acceptance=true\n');
   });
 
+  it('diffs a PR merge commit from the live base branch, not the base it opened on', async () => {
+    // CI passes origin/<base ref>. The selector's merge base with the tested
+    // merge commit is that commit's first parent, even after the base moves on.
+    const { selectTests } = await api(); const f = fixture(); const opened = f.base;
+    f.git('checkout', '-q', '-b', 'pr'); f.put('packages/roam/src/store.ts', 'export const value = 2;'); f.commit();
+    f.git('checkout', '-q', '-b', 'live', opened); f.put('docs/guide/example.md', 'main moved'); const live = f.commit();
+    f.git('checkout', '-q', '-b', 'merge', live); f.git('merge', '-q', '--no-ff', '--no-edit', 'pr'); const merged = f.git('rev-parse', 'HEAD');
+    f.git('checkout', '-q', 'live'); f.put('docs/guide/later.md', 'after the merge ref'); f.commit(); f.git('checkout', '-q', 'merge');
+    const manifest = await selectTests({ ...f, base: 'live', head: merged, resolveRelated: async () => [a] });
+    expect(manifest.baseSha).toBe(f.git('rev-parse', 'HEAD^1'));
+    expect(manifest.baseSha).toBe(live);
+    expect(manifest.changedPaths).toEqual(['packages/roam/src/store.ts']);
+    const stale = await selectTests({ ...f, base: opened, head: merged, resolveRelated: async () => [a] });
+    expect(stale.changedPaths).toEqual(['docs/guide/example.md', 'packages/roam/src/store.ts']);
+  });
+
   it('unions the Vite graph with source-text guards and records stable provenance', async () => {
     await api(); const f = fixture(); const { selectTests, base } = await selectorWith(f, { [guard]: 30_437 });
     f.put('packages/roam/src/store.ts', 'export const value = 2;'); const head = f.commit();

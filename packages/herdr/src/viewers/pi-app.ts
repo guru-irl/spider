@@ -209,7 +209,7 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
     }
     addContext(message);
   };
-  const compactContext = (entry: Json) => {
+  const invalidateContext = (entry: Json) => {
     const at = entryTime(entry);
     if (earlier(at, contextAnchorAt) || earlier(at, contextFloorAt)) return;
     contextTokens = null; contextAnchorAt = null; contextFloorAt = at;
@@ -267,7 +267,8 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
       case 'session': if (typeof entry.cwd === 'string') cwd = entry.cwd; return;
       case 'model_change': if (!earlier(entryTime(entry), latestAssistantAt) && typeof entry.provider === 'string' && typeof entry.modelId === 'string') model = { provider: entry.provider, id: entry.modelId }; return;
       case 'usage': addUsage(entry); return;
-      case 'compaction': compactContext(entry); addUsage(entry); break;
+      case 'compaction': invalidateContext(entry); addUsage(entry); break;
+      case 'context_edit': invalidateContext(entry); return;
       case 'branch_summary': addUsage(entry); break;
       case 'thinking_level_change': if (!earlier(entryTime(entry), latestAssistantAt) && typeof entry.thinkingLevel === 'string') { thinking = entry.thinkingLevel; refreshEditorBorder(); } return;
     }
@@ -389,7 +390,8 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
           else if (entry?.type === 'model_change' && !earlier(entryTime(entry), latestAssistantAt) && typeof entry.provider === 'string') model = { provider: entry.provider, id: entry.modelId };
           else if (entry?.type === 'thinking_level_change' && !earlier(entryTime(entry), latestAssistantAt)) thinking = entry.thinkingLevel;
           else if (entry?.type === 'usage' || entry?.type === 'branch_summary') addUsage(entry);
-          else if (entry?.type === 'compaction') { compactContext(entry); addUsage(entry); }
+          else if (entry?.type === 'compaction') { invalidateContext(entry); addUsage(entry); }
+          else if (entry?.type === 'context_edit') invalidateContext(entry);
           else if (entry?.type === 'message' && entry.message?.role === 'assistant') { noteAssistant(entry.message, entry); hidden++; }
           else if (entry?.type === 'message') { if (entry.message?.role === 'toolResult') addUsage(entry); addContext(entry.message); hidden++; }
         }

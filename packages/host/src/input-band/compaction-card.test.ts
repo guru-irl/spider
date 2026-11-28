@@ -72,12 +72,21 @@ it("draws a half-box receipt without a logo and keeps the summary out of the col
   expect(rows[0]).toBe("");
   expect(rows[1]).toBe("▄".repeat(width));
   expect(rows[2]).toMatch(/^ ◐ compaction · Terra Demo +ctrl\+o expand$/u);
-  expect(rows[3]).toBe("   91.4k tokens before  →  ~8 in summary");
-  expect(rows[4]).toBe("▀".repeat(width));
+  expect(rows[3]).toBe(`   before   ${"█".repeat(17)}  91.4k tokens`);
+  expect(rows[4]).toBe("   summary  ▏                  ~8 tokens");
+  expect(rows[5]).toBe("▀".repeat(width));
   expect(rows.join("\n")).not.toContain("release notes");
   for (const cols of [18, 30, 52, width]) {
     expect(chat.render(cols).every(row => visibleWidth(row) <= cols)).toBe(true);
   }
+});
+
+it("rounds to the nearest eighth on the shared scale, not to the next whole cell", () => {
+  activate();
+  const { chat, mode } = transcript();
+  // 8 tokens on a scale of 17 cells to 272 tokens is half a cell.
+  mode.addMessageToChat({ ...message, tokensBefore: 272 });
+  expect(plain(chat.render(width))[4]).toMatch(/summary  ▌ +~8 tokens$/u);
 });
 
 it("uses the native configured key hint and only names a matching compaction model", () => {
@@ -122,7 +131,7 @@ it("honors Pi's billing setting and leaves branch billing alone", () => {
   const hidden = transcript(false);
   hidden.mode.addMessageToChat(message);
   hidden.mode.addCompactionCostNotice(billing);
-  expect(render(hidden.chat)).toContain("in summary");
+  expect(render(hidden.chat)).toMatch(/summary  ▏ +~8 tokens/u);
   expect(render(hidden.chat)).not.toContain("tokens billed");
   const branch = transcript();
   branch.mode.addMessageToChat(message);
@@ -166,8 +175,7 @@ it("lets Pi expand on a left click in the receipt but not on the half-row edge",
   });
   expect(click(1)).toBeUndefined();
   expect(click(2, "right")).toBeUndefined();
-  // The new metric row occupies a different place in the expanded Pi box.
-  expect(plain(chat.render(width))[3]).toContain("in summary");
+  expect(plain(chat.render(width))[3]).toContain("before");
   expect(click(3)).toMatchObject({ handled: true });
   expect(render(chat)).toContain("Keep the searchable release notes.");
   expect(click(3)).toMatchObject({ handled: true });

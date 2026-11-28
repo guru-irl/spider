@@ -4,11 +4,12 @@
 
 Draw the editor and sent messages on the theme's `userMessageBg`. In
 `dracula-plus-glass` it is `#060607`, darker than the surrounding Herdr glass.
-Use `▄` and `▀` in the same color across the full width for the half-row
-edges, with no background behind the unfilled half. On text rows, draw a `▌`
-bar in `accent` (`#82aaff`) or `bashMode` on the strip background, regardless
-of thinking level. This keeps the strip flush at both pane edges. Scrolled
-edges show a dim hidden-line count. Keep Pi's cursor, completion menu, and keys.
+Use `▄` and `▀` for the half-row edges, with no background behind the
+unfilled half. Draw a one-cell bar in column zero for the full band height:
+`▄` on the top edge, `█` on text rows, and `▀` on the bottom edge. The bar
+uses `accent` (`#82aaff`) or `bashMode`, regardless of thinking level. The
+remaining edge cells use the strip color. Scrolled edges show a dim hidden-line
+count beside the full-cell bar. Keep Pi's cursor, completion menu, and keys.
 
 Sent messages have no bar. Place the accent `❯` before the first text row and
 align wrapped text under that row's text. Keep Pi's Markdown and OSC 133
@@ -141,7 +142,8 @@ stay the same.
 
 ## Activity marks
 
-The usage footer shows the moon two spaces before context usage. It cycles
+The usage footer labels session credits as `AIC`. It shows the moon two spaces
+before context usage. The moon cycles
 once a second in the accent color while Pi works and rests on a dim new moon
 when idle. The Nerd set uses every other one of the 28 moon phases, so the
 footer redraws 14 times a second: each redraw makes Pi rescan the whole

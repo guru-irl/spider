@@ -41,7 +41,7 @@ async function sources(version: '0.1.12' | SpacesAVersion): Promise<Record<strin
   const result = applyCrossMachinePatches(Object.fromEntries(kinds.map(kind => [kind, staged[kind]!.files])), selectCrossMachinePatches(crossMachine, version));
   return Object.fromEntries(Object.entries(result).map(([kind, files]) => [kind, files['main.js']]));
 }
-function render(source: string, mod: 'agents' | 'tabs' | 'pane', status: string): Element {
+function render(source: string, mod: 'agents' | 'tabs' | 'pane', status: string, tab?: { program: { key?: string; name: string; icon: string }; sidebarWidth: number; trafficLightsX?: number }): Element {
   const ui = createUiModules();
   const working = '#123456';
   const theme = { working, foreground: '#eeeeee', muted: '#aaaaaa', dim: '#777777', hover: '#333333', selected: '#444444', raised: '#555555', chrome: '#161618', border: '#222222', background: '#161618', done: '#888888', blocked: '#ffcc00' };
@@ -53,10 +53,11 @@ function render(source: string, mod: 'agents' | 'tabs' | 'pane', status: string)
     svg: (asset: string) => Object.assign(ui['gpui-kit'].svg(), { asset }),
     image: (asset: string) => Object.assign(ui['gpui-kit'].image(), { asset }),
     props: () => ({ pane: 'p1' }),
-    panes: () => [{ pane: 'p1', terminal: 't1', tab: 'tab', cwd: '/fixture', status }],
+    panes: () => [{ pane: 'p1', terminal: 't1', tab: 'tab', cwd: '/fixture', status, program: tab?.program }],
     spaces: () => [{ id: 's1', active: true, tabs: [{ id: 'tab', name: 'Work', active: false, status }] }],
     terminals: () => [], theme: () => theme, home: () => '/home/fixture',
-    layout: () => ({ id: 'root', children: [] }), window: () => ({}), shared: () => null,
+    layout: () => tab ? { id: 'root', traffic_lights: [tab.trafficLightsX ?? -60, -60], children: [{ id: 'sidebar', size: { px: tab.sidebarWidth } }] } : { id: 'root', children: [] },
+    window: () => tab ? { platform: 'macos', titlebar: 'none', fullscreen: false } : {}, shared: () => null,
     settings: () => ({ zoom: 1 }), run: () => {}, openOverlay: () => {},
     localStorage: { getItem: () => null, setItem: () => {} },
     ScrollHandle: { new: () => ({ scroll_to_item() {} }) }, herdrApi: {},
@@ -70,6 +71,24 @@ function render(source: string, mod: 'agents' | 'tabs' | 'pane', status: string)
   view.init();
   return view.render({ notify() {} });
 }
+
+test('0.1.18 hides Pi icons in tab labels but still shows other program icons', async () => {
+  const source = (await sources('0.1.18')).tabs!;
+  const assets = (program: { key?: string; name: string; icon: string }) => {
+    const row = render(source, 'tabs', 'working', { program, sidebarWidth: 268 });
+    return all(all(row).find(node => node.styles.id?.[0] === 'tab-tab')!).flatMap(node => node.asset ? [node.asset] : []);
+  };
+  expect(assets({ key: 'pi', name: 'Pi', icon: 'pi.svg' })).toEqual([]);
+  expect(assets({ name: 'Pi', icon: 'pi.svg' })).toEqual([]);
+  expect(assets({ key: 'shell', name: 'Shell', icon: 'shell.svg' })).toEqual(['shell.svg']);
+});
+
+test('0.1.18 uses a 6.5px tab gutter but makes more room when the traffic lights need it', async () => {
+  const source = (await sources('0.1.18')).tabs!;
+  const program = { name: 'Shell', icon: 'shell.svg' };
+  expect.soft(render(source, 'tabs', 'idle', { program, sidebarWidth: 268 }).styles.pl).toEqual([6.5]);
+  expect(render(source, 'tabs', 'idle', { program, sidebarWidth: 8, trafficLightsX: -40 }).styles.pl).toEqual([16]);
+});
 
 const flippedMoon = [
   '\uE3E3', '\uE3E1', '\uE3DF', '\uE3DD', '\uE3DB', '\uE3D9', '\uE3D7',

@@ -117,6 +117,32 @@ test('viewer uses owner model metadata for an unqualified child model ID', () =>
   expect(footer).toContain('GPT-6.1 Sol · high');
 });
 
+test('provider response model suffix preserves the requested model display and context', () => {
+  const view = make();
+  view.setRunInfo({ protocol: 2, model: 'github-copilot/gpt-6.1-sol', modelName: 'GPT-6.1 Sol', contextWindow: 200000 });
+  view.live({ type: 'message_end', message: { ...message, responseModel: 'gpt-6.1-sol-20261101' } });
+  const footer = view.footerLines(120).map(stripTerminalSequences).join('\n');
+  expect(footer).toContain('GPT-6.1 Sol');
+  expect(footer).toContain('20.8%/200k');
+});
+
+test('a late live reply already counted in skipped history does not count credits twice', () => {
+  const view = make();
+  view.setRunInfo({ protocol: 2, model: 'github-copilot/gpt-6.1-sol', contextWindow: 200000 });
+  view.addEntries([entry, ...Array.from({ length: 800 }, () => ({ type: 'session' }))]);
+  expect(view.footerLines(120).map(stripTerminalSequences).join('\n')).toContain('1.0 AIC');
+  view.live({ type: 'message_end', message });
+  expect(view.footerLines(120).map(stripTerminalSequences).join('\n')).toContain('1.0 AIC');
+});
+
+test('skipped shell output excluded from context does not inflate context', () => {
+  const view = make();
+  view.setRunInfo({ protocol: 2, model: 'github-copilot/gpt-6.1-sol', contextWindow: 200000 });
+  view.addEntries([entry, { type: 'message', message: { role: 'bashExecution', command: 'echo', output: 'x'.repeat(8000), excludeFromContext: true, timestamp: message.timestamp + 1 } },
+    ...Array.from({ length: 800 }, () => ({ type: 'session' }))]);
+  expect(view.footerLines(120).map(stripTerminalSequences).join('\n')).toContain('20.8%/200k');
+});
+
 test('viewer footer does not claim zero credits or context when usage is unpriced', () => {
   const view = make();
   view.setRunInfo({ protocol: 2, model: 'unknown/model', thinking: 'high' });

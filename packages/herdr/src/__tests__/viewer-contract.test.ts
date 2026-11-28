@@ -29,8 +29,15 @@ test('accepts old snapshots and the optional viewer presentation metadata', () =
   expect(parseRunViewFrame(piSnapshot({ protocol: 2, sessionFile: null, model: 'example/model-one', thinking: 'high', contextWindow: 200000 }))).not.toBeNull();
   expect(parseRunViewFrame(piSnapshot({ protocol: 2, modelName: 'Model One', iconStyle: 'nerd', inputBand: false, creditFactor: 0.5, working: false, accent: 'green' }))).not.toBeNull();
 });
+test('a future icon style is ignored while the rest of the snapshot remains usable', () => {
+  const frame = parseRunViewFrame(piSnapshot({ protocol: 2, modelName: 'Model One', iconStyle: 'future-style' }));
+  expect(frame?.kind).toBe('snapshot');
+  if (frame?.kind !== 'snapshot') throw new Error('snapshot rejected');
+  expect(frame.data.view).toMatchObject({ protocol: 2, modelName: 'Model One' });
+  expect(frame.data.view?.iconStyle).toBeUndefined();
+});
 test.each([{ contextWindow: '200k' }, { contextWindow: -1 }, { contextWindow: 0 }, { model: [] }, { thinking: {} },
-  { modelName: [] }, { iconStyle: 'unknown' }, { inputBand: 'false' }, { creditFactor: -1 }, { creditFactor: '0.5' }, { working: 'false' }, { accent: {} }])('invalid pi footer metadata is rejected, not rendered', invalid => {
+  { modelName: [] }, { iconStyle: {} }, { inputBand: 'false' }, { creditFactor: -1 }, { creditFactor: '0.5' }, { working: 'false' }, { accent: {} }])('invalid pi footer metadata is rejected, not rendered', invalid => {
   expect(parseRunViewFrame(piSnapshot({ protocol: 2, ...invalid }))).toBeNull();
 });
 

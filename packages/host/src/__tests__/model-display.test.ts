@@ -58,6 +58,11 @@ describe("model display names", () => {
     expect(modelContextWindow(registry, "company/gpt-6")).toBe(128000);
     expect(modelContextWindow(registry, "missing")).toBeUndefined();
   });
+  it.each([123.5, Number.MAX_SAFE_INTEGER + 1, 0, -1, Infinity])("does not return invalid catalog context window %s", (contextWindow) => {
+    const model = { provider: "example", id: "model", name: "Model", contextWindow };
+    const registry = { find: () => model, getAll: () => [model], getAvailable: () => [model] } as unknown as ExtensionContext["modelRegistry"];
+    expect(modelContextWindow(registry, "example/model")).toBeUndefined();
+  });
   it.each([72, 120])("aligns agent and usage footer model sides at %i columns", (width) => {
     const source = { listActive: () => [{ id: "r1", session_id: "s", agent: "reviewer", name: "review", status: "running" as const,
       model: agent.model, thinking: "xhigh", step_count: 2, token_count: 0, started_at: 0 }],

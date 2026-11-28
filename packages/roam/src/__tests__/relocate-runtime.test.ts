@@ -8,7 +8,12 @@ import type { CoreIdentity } from "@spider/herdr/contracts";
 import { processStartIdentity } from "@spider/herdr/jobs/handoff";
 import { claimIdLock, type IdLockHandle } from "@spider/herdr/sessions/id-lock";
 import { join } from "node:path";
+import { migrate, openDb, type Db } from "@spider/db-core";
 import { createReplica } from "@spider/db-core/testutil";
+import { applyBatch } from "@spider/db-core/roam/apply";
+import { validateBatch } from "@spider/db-core/roam/codec";
+import { createReplicaEffects } from "@spider/db-core/roam/effects";
+import { exportBatch } from "@spider/db-core/roam/export";
 import { recordLocation } from "@spider/db-core/roam/catalog";
 import * as seedApi from "@spider/db-core/roam/seed";
 import { writeLocal } from "@spider/db-core/roam/local-state";
@@ -17,6 +22,11 @@ import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import { openJournal } from "../journal";
 import { createLocalRuntime, createLocalIO, localLaunchEnvironment, seedLocalPlacement, type LocalIO } from "../relocate/local";
 import { createHomeSupervisor } from "../relocate/supervisor";
+import { createHomeStore } from "../relocate/home";
+import { json } from "../relocate/journal";
+import { beginLocalMove } from "../relocate/transfer";
+import { inspectSession } from "../session-file";
+import { sessionHome } from "../homes";
 import { relocate } from "../relocate/relocate";
 import { handleRelocateAgent } from "../relocate/remote";
 import { assertSafeHistories, destination, ports, request, state } from "./relocate-fakes";
@@ -98,7 +108,126 @@ function localCheckout(f: ReturnType<typeof runtimeFixture>) {
  });
  return {file, placement, moving};
 }
+async function launchGateFixture(mode: "relocated" | "returned" | "new" | "restart" = "relocated") {
+ const f = runtimeFixture();
+ f.home.moveId = mode === "new" ? null : "v0-44444444-4444-4444-8444-444444444444" as RunningHome["moveId"];
+ if (mode === "new") f.home.epoch = 1;
+ const historyMachine = mode === "relocated" ? hub : box;
+ const checkout = join(f.options.root, "checkout"), file = join(checkout, "session.jsonl");
+ const source = createReplica("worktree", hub), global = createReplica("global", hub);
+ fixtures.push(source, global);
+ const sourcePlacement = {...f.placement, machineId:hub, repoKey:"fixture-repo", workspaceId:"fixture-workspace",
+  repository:source.root, cwd:source.root, file:join(source.root,"session.jsonl"), stores:[source.storeKey], historyMachine};
+ const placement = {...sourcePlacement, machineId:box, repository:checkout, cwd:checkout, file};
+ mkdirSync(join(checkout, ".spider"), {recursive:true});
+ const project = openDb(join(checkout, ".spider", "project.db"));
+ fixtures.unshift(project);
+ migrate(project, "worktree", {machineId:box, globalRoot:f.options.root});
+ project.prepare("UPDATE roam_meta SET store_key=?").run(source.storeKey);
+ f.options.globalDb.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES (?, ?, ?)")
+  .run(placement.repoKey, placement.workspaceId, checkout);
+ f.options.homes = createHomeStore({db:f.options.globalDb, hubMachineId:hub, localMachineId:box});
+ const start = f.io.launch;
+ f.io.launch = async request => {
+  // Model the startup upsert. If the row is absent, the real DB assigns the local origin.
+  project.prepare("INSERT INTO sessions(id,started_at) VALUES (?,2) ON CONFLICT(id) DO UPDATE SET ended_at=NULL").run(id);
+  return start(request);
+ };
+ const timestamp = "2000-01-01T00:00:00Z";
+ writeFileSync(file, [
+  {type:"session", version:3, id, cwd:checkout, timestamp},
+  {type:"message", id:"entry", parentId:null, timestamp, message:{role:"user", content:[{type:"text",text:"fixture"}]}},
+ ].map(line=>JSON.stringify(line)).join("\n")+"\n");
+ if (mode === "relocated" || mode === "returned") {
+  const plan = {moveId:f.home.moveId!, source:{...f.home, machineId:hub, epoch:1, moveId:null}, sourcePlacement,
+   destinationPlacement:placement, destinationPrerequisites:[], startedAt:f.home.updatedAt};
+  beginLocalMove(plan,f.options);
+  const session = await inspectSession(file,id,undefined,f.options.limits);
+  f.options.journal.record(plan.moveId,"relocate-installed",json({installed:{placement,session}}));
+ }
+ writeLocal(f.options.globalDb,"relocate-managed",id,placement);
+ global.db.exec("UPDATE roam_meta SET capture_enabled=1");
+ global.db.prepare("INSERT INTO session_homes VALUES (?, ?, ?, ?, ?, 'running', NULL)")
+  .run(id,box,f.home.epoch,f.home.moveId,f.home.updatedAt);
+ const importBatch = async (from: typeof source, to: Db) => {
+  const batch = await exportBatch(from.db,{after:0,targetBytes:16_384,batchId:`fixture-${from.storeKey}`},{encode:(_entity,body)=>body});
+  expect(batch.header.count).toBe(1);
+  const now = Date.now();
+  const valid = await validateBatch(batch,{storeKey:from.storeKey,senderMachine:hub,senderStream:batch.header.senderStream,now});
+  applyBatch(to,valid,{hubMachine:hub,effects:createReplicaEffects(()=>{}),now,sessionHome:key=>sessionHome(f.options.globalDb,key)});
+ };
+ await importBatch(global,f.options.globalDb);
+ const local = createLocalRuntime(f.options,f.io), report = vi.fn();
+ const loop = createHomeSupervisor({...local,machineId:box,clock:f.options.clock,report},()=>{});
+ return {f,local,project,loop,report,async importSession() {
+  source.db.exec("UPDATE roam_meta SET capture_enabled=1");
+  source.db.prepare("INSERT INTO roam_sessions(session_id,epoch,state) VALUES (?,1,'active')").run(id);
+  source.db.prepare("INSERT INTO sessions(id,started_at,origin_machine) VALUES (?,1,?)").run(id,historyMachine);
+  await importBatch(source,project);
+ }, sessionRow:()=>project.prepare("SELECT origin_machine,started_at FROM sessions WHERE id=?").get(id)};
+}
+
 describe("v0 local runtime",()=>{
+ it.each([["relocated",hub],["returned",box]] as const)("waits for the committed worktree row for a %s session",async(mode,origin)=>{
+  const {f,loop,report,sessionRow,importSession} = await launchGateFixture(mode);
+  expect(await f.options.homes.read(id)).toEqual(f.home);
+  // Repeated pending passes must not exhaust retries or require advancing the clock.
+  for (let pass=0; pass<6; pass++) {
+   await loop.tick();
+   expect(f.launches).toHaveLength(0);
+   expect(sessionRow()).toBeUndefined();
+   expect(await f.options.homes.read(id)).toEqual(f.home);
+  }
+  expect(report).toHaveBeenCalledExactlyOnceWith(id,expect.objectContaining({code:"start-pending",message:expect.stringMatching(/session data has not arrived/i)}));
+
+  await importSession();
+  await loop.tick();
+  expect(f.launches).toHaveLength(1);
+  expect(sessionRow()).toEqual({origin_machine:origin,started_at:1});
+ });
+ it("never starts a relocated session with a conflicting origin",async()=>{
+  const {f,project,loop,report,sessionRow} = await launchGateFixture();
+  project.prepare("INSERT INTO sessions(id,started_at) VALUES (?,2)").run(id);
+  for (let pass=0; pass<2; pass++) {
+   await loop.tick();
+   expect(f.launches).toHaveLength(0);
+   expect(sessionRow()).toEqual({origin_machine:box,started_at:2});
+  }
+  expect(report).toHaveBeenCalledExactlyOnceWith(id,expect.objectContaining({code:"home-conflict",message:expect.stringMatching(/different origin/i)}));
+ });
+ it.each(["new","restart"] as const)("starts a %s session without a destination install record on its first pass",async mode=>{
+  const {f,loop,report,sessionRow} = await launchGateFixture(mode);
+  await loop.tick();
+  expect(f.launches).toHaveLength(1);
+  expect(sessionRow()).toEqual({origin_machine:box,started_at:2});
+  expect(report).not.toHaveBeenCalled();
+ });
+ it("keeps direct relocate start pending at the readiness deadline while data is missing",async()=>{
+  const {f,local,loop,sessionRow,importSession} = await launchGateFixture();
+  const p = {...ports(state()), ...local, homes:f.options.homes};
+  p.withSession = async (_id,run)=>run();
+  let enteredConfirm!:()=>void;
+  const confirmed = new Promise<void>(resolve=>{enteredConfirm=resolve;});
+  p.confirmPending = p.confirm = async (home,placement)=>{
+   const result = await local.confirm(home,placement,true);
+   enteredConfirm();
+   return result;
+  };
+  vi.useFakeTimers();
+  try {
+   const pending = relocate({sessionId:id,destinationMachine:box},p,{clock:readyClock,timeoutMs:1_000});
+   await confirmed;
+   await vi.advanceTimersByTimeAsync(1_000);
+   expect(await pending).toMatchObject({ok:false,step:"start-destination",home:f.home,
+    refusal:{code:"start-pending",message:expect.stringMatching(/session data has not arrived/i)}});
+   expect(f.launches).toHaveLength(0);
+   expect(sessionRow()).toBeUndefined();
+  } finally { vi.useRealTimers(); }
+  await importSession();
+  await loop.tick();
+  expect(f.launches).toHaveLength(1);
+  expect(sessionRow()).toEqual({origin_machine:hub,started_at:1});
+ });
  it("stops the admitted ordinary pi and waits for its unlabelled native terminal to exit", async () => {
   const f = runtimeFixture(), {moving} = localCheckout(f);
   f.setLock({identity:{pid:42,startIdentity:"pi-42"},bootId:"boot",pendingOperationId:null,pendingFile:null,pendingCoreId:null,operationId:null});

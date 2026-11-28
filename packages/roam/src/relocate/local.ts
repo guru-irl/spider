@@ -7,6 +7,7 @@ import { mapWorkspace } from "@spider/db-core/roam/repo-map";
 import { discoverOrdinarySource } from "./ordinary-source";
 import { parseLocationStores, recordLocation } from "@spider/db-core/roam/catalog";
 import { localEntries, readLocal, writeLocal } from "@spider/db-core/roam/local-state";
+import { openRoamPathReadOnly } from "@spider/db-core/roam/reads";
 import { inspectSession } from "../session-file";
 import { seedSession, enableMemoryCapture } from "@spider/db-core/roam/seed";
 import { createStorePort } from "../stores";
@@ -484,6 +485,27 @@ export function createLocalRuntime(options: RelocateAdapterOptions, io: LocalIO 
       if (current.kind !== "free") return refusal("start-pending","A session owner or pending terminal is still present.");
       // Reread immediately before the only spawn call.
       if (!await runnable(home,placement)) return refusal("start-pending","The home changed before launch.");
+      const install = home.moveId && options.journal.read(home.moveId).findLast(row=>row.action === "relocate-installed");
+      if (install) {
+        // A move ID alone also covers source rollback and restart. The destination
+        // install records where the session originated, even after multiple moves.
+        const installed = parsePlacement(object(install.result.installed).placement);
+        if (installed.sessionId !== home.sessionId || installed.machineId !== home.machineId ||
+            installed.repoKey !== placement.repoKey || installed.workspaceId !== placement.workspaceId || installed.cwd !== placement.cwd) {
+          return refusal("home-conflict","The launch does not match the installed session checkout.");
+        }
+        const mapped = options.globalDb.prepare("SELECT path FROM roam_workspace_maps WHERE repo_key=? AND workspace_id=?")
+          .get(installed.repoKey,installed.workspaceId) as {path:string}|undefined;
+        if (mapped && !insideDirectory(mapped.path,installed.cwd)) return refusal("home-conflict","The installed session checkout mapping has changed.");
+        // The global home can arrive first. Only the checkout DB counts, not a
+        // pending batch or a replica that has not been merged into the checkout.
+        const db = mapped && openRoamPathReadOnly(join(mapped.path,".spider","project.db"));
+        let row: {origin_machine:string|null}|undefined;
+        try { row = db?.prepare("SELECT origin_machine FROM sessions WHERE id=?").get(home.sessionId) as typeof row; }
+        finally { db?.close(); }
+        if (!row) return refusal("start-pending","The session data has not arrived in the destination checkout yet.","Wait for sync. The destination will check again before starting Pi.");
+        if (row.origin_machine !== installed.historyMachine) return refusal("home-conflict","The session row in the destination checkout has a different origin.","Check the session origin before retrying.");
+      }
       const launched = await io.launch({home,placement});
       return {ok:true,value:launched};
     }); } catch { return refusal("start-pending","The launch reply is pending; retry without starting another copy."); }

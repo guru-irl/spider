@@ -612,8 +612,27 @@ it("does not switch after a lost result", async () => {
   expect(await f.remote.received()).toEqual(["lost"]);
 });
 
-it.each([{ elapsed: 19_999, withinBudget: true }, { elapsed: 20_001, withinBudget: false }])(
-"shares the v0 deadline across relay choices after $elapsed ms", async ({ elapsed, withinBudget }) => {
+it("an unclaimed second offer that meets the route deadline", async () => {
+  const f = await twoRelays();
+  expect((await f.poll(0)).ready.ok).toBe(true);
+  expect((await f.backup.poll(0)).ready.ok).toBe(true);
+  const { from } = await f.roster();
+  const submit: RelaySubmit = { type: "submit", kind: "send", message: marker("late-offer"),
+    from: { machineId: ORIGIN, address: from.address!, name: from.name!, homeEpoch: 1, endpointEpoch: from.endpointEpoch! },
+    target: { machineId: TARGET, selector: { by: "id", value: "remote-recipient" }, homeEpoch: 3 } };
+  const result = await routeV0Relay({ version: 2, agentDir: f.sender.agentDir, sendTo: [], acceptFrom: [target], relays: [RELAY, BACKUP], linkTo: [] },
+    ORIGIN, "target.invalid", submit, AbortSignal.timeout(3_000), performance.now() + 3_000);
+  expect(result).toMatchObject({ kind: "refused", relaySkips: [{ relay: relay.alias }, { relay: backupRelay.alias }] });
+  expect((await f.poll(0)).submissions).toEqual([]);
+  expect((await f.backup.poll(0)).submissions).toEqual([]);
+  expect(await f.remote.received()).toEqual([]);
+});
+
+it.each([
+  { elapsed: 19_500, withinBudget: true },
+  { elapsed: 19_999, withinBudget: false },
+  { elapsed: 20_001, withinBudget: false },
+])("shares the v0 deadline across relay choices after $elapsed ms", async ({ elapsed, withinBudget }) => {
   vi.useFakeTimers({ toFake: ["performance"] });
   vi.spyOn(relayBroker, "listV0RelayLinks").mockResolvedValue([relay, backupRelay].map(carrier => ({
     relay: carrier, reach: [carrier, target], state: "up", linkId: carrier.alias, sinceMs: 1, lastCallMs: 1,

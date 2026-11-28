@@ -3,7 +3,7 @@
 import { expect } from 'vitest';
 import { mkdirSync, writeFileSync, readFileSync, chmodSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { build } from 'vite';
+import { buildViteFixture as build } from '../../../../../scripts/test-fixture-build.js';
 import { fileURLToPath } from 'node:url';
 import { connect, createServer, type Socket } from 'node:net';
 import { createViewerLauncher } from '../../viewers/register.js';

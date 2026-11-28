@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
@@ -11,6 +11,9 @@ type Workflow = { on: Record<string, unknown>; permissions?: Record<string, stri
 const source = (name: string): string => readFileSync(join(process.cwd(), '.github/workflows', `${name}.yml`), 'utf8');
 const workflow = (name: string): Workflow => parse(source(name)) as Workflow;
 const step = (job: Job, name: string): Step => job.steps.find(item => item.name === name)!;
+const gitAt = (cwd: string, ...args: string[]): string => execFileSync('git', [
+  '-c', 'user.name=Workflow Fixture', '-c', 'user.email=workflow@example.invalid', '-c', 'commit.gpgsign=false', ...args,
+], { cwd, encoding: 'utf8' }).trim();
 
 describe('package installation contract', () => {
   it('skips the unbundled GPU runtime download in every workflow that installs packages', () => {
@@ -36,7 +39,7 @@ describe('release installation contract', () => {
   });
 
   it('uploads the checked tarball from CI and downloads that same artifact for release', () => {
-    const checks = workflow('ci').jobs.verify!;
+    const checks = workflow('ci').jobs.compile!;
     const upload = step(checks, 'Save release package');
     expect(upload?.uses).toBe('actions/upload-artifact@v4');
     expect(upload.if).toBe("startsWith(github.ref, 'refs/tags/v')");
@@ -268,7 +271,7 @@ describe('CI acceptance contract', () => {
       const artifacts = job.steps.findIndex(item => item.name === 'Herdr acceptance failure artifacts');
       expect(install).toBeGreaterThan(-1); expect(utilities).toBeGreaterThan(install); expect(subset).toBeGreaterThan(utilities); expect(artifacts).toBeGreaterThan(subset);
       expect(step(job, 'Install').run).toBe('npm ci'); // prepare builds the checkout.
-      const checks = jobs.verify!;
+      const checks = jobs.compile!;
       const typecheck = step(checks, 'Herdr acceptance typecheck');
       expect(typecheck.run).toContain('npm run typecheck:herdr:e2e');
       expect(checks.steps.findIndex(item => item.name === 'Install')).toBeLessThan(checks.steps.indexOf(typecheck));
@@ -281,139 +284,227 @@ describe('CI acceptance contract', () => {
     }
   });
 
-  it('keeps the exact aggregate name once and rejects failed or cancelled selected jobs', () => {
+  it('requires every full CI job except the audit to pass', () => {
     const ci = workflow('ci'), checks = ci.jobs.checks!;
-    expect(source('ci').match(/^    name: typecheck · test · build$/gm)).toHaveLength(1);
+    const required = ['chrome', 'compile', 'herdr-acceptance', 'stories', 'test'];
     expect(checks.name).toBe('typecheck · test · build');
-    expect([...(checks.needs as string[])].sort()).toEqual(['chrome', 'herdr-acceptance', 'pr-test', 'stories', 'test', 'verify']);
+    expect([...(checks.needs as string[])].sort()).toEqual(required);
     expect(checks.if).toBe('always()');
-    const gate = step(checks, 'Require every applicable job to pass');
-    const run = (needs: unknown, event = 'pull_request') => spawnSync('bash', ['-c', gate.run!], { env: { ...process.env, EVENT: event, NEEDS_JSON: JSON.stringify(needs) } }).status;
-    const skipped = { result: 'skipped' }, success = { result: 'success' };
-    const scoped = { verify: success, 'pr-test': { ...success, outputs: { mode: 'scoped' } }, test: skipped, chrome: skipped, 'herdr-acceptance': skipped, stories: skipped };
-    const full = { ...scoped, 'pr-test': { ...success, outputs: { mode: 'full' } }, test: success };
-    expect(run(scoped)).toBe(0); expect(run(full)).not.toBe(0);
-    for (const result of ['failure', 'cancelled', 'skipped']) {
-      expect(run({ ...scoped, 'pr-test': { result } })).not.toBe(0);
-      expect(run({ ...scoped, verify: { result } })).not.toBe(0);
+    const gate = step(checks, 'Require full CI jobs to pass');
+    const run = (needs: unknown) => spawnSync('bash', ['-c', gate.run!], { env: { ...process.env, NEEDS_JSON: JSON.stringify(needs) } }).status;
+    const main = Object.fromEntries(required.map(id => [id, { result: 'success' }]));
+    expect(run(main)).toBe(0);
+    for (const id of required) for (const result of ['failure', 'cancelled', 'skipped']) {
+      expect(run({ ...main, [id]: { result } })).not.toBe(0);
     }
-    const main = { verify: success, 'pr-test': skipped, test: success, chrome: success, 'herdr-acceptance': success, stories: success };
-    expect(run(main, 'push')).toBe(0);
-    for (const key of ['verify', 'test', 'chrome', 'herdr-acceptance', 'stories']) for (const result of ['failure', 'cancelled', 'skipped']) expect(run({ ...main, [key]: { result } }, 'push')).not.toBe(0);
-    expect(step(ci.jobs['pr-test']!, 'Test selected shard').if).toBeUndefined();
-    expect(ci.jobs.test!.needs).toBeUndefined();
-    expect(checks.steps.some(item => item.run?.includes('npm ci'))).toBe(false);
   });
 
-  it('rejects mismatched, tampered, or missing PR manifests without installing packages', () => {
-    const checks = workflow('ci').jobs.checks!;
-    const compare = step(checks, 'Require identical PR selections');
-    const root = mkdtempSync(join(process.cwd(), '.spider/scratch/aggregate-selection-'));
+  it('keeps full pushes, dispatches and reusable calls on the same path', () => {
+    const ci = workflow('ci');
+    expect(Object.keys(ci.on).sort()).toEqual(['push', 'workflow_call', 'workflow_dispatch']);
+    expect(ci.on.workflow_dispatch).toEqual({ inputs: { force_full: {
+      description: 'Run full CI on this ref; the force_full value is ignored',
+      type: 'string',
+      required: false,
+      default: 'true',
+    } } });
+    expect(ci.on.push).toEqual({ branches: ['main'] });
+    expect(ci.jobs.chrome!.strategy!.matrix.include).toHaveLength(4);
+    expect(ci.jobs.stories).toEqual({ uses: './.github/workflows/herdr-stories.yml' });
+    expect(ci.jobs.audit!.name).toBe('selection audit');
+    expect(ci.jobs.audit!.needs).toEqual(['test']);
+    for (const [id, job] of Object.entries(ci.jobs)) {
+      if (id !== 'checks' && id !== 'audit') expect(job.if, id).toBeUndefined();
+      const checkout = (job.steps ?? []).find(item => item.uses === 'actions/checkout@v4');
+      expect(checkout?.with?.ref).toBeUndefined(); // Dispatch checkout must keep the requested ref.
+    }
+  });
+
+  it('runs four PR test groups from a shared selection and keeps the audit upload out of the required check', () => {
+    const pr = workflow('pr');
+    expect(pr.on).toEqual({ pull_request: { branches: ['main'] } });
+    expect(Object.keys(pr.jobs).sort()).toEqual(['checks', 'compile', 'save-selection', 'select', 'tests']);
+    expect(pr.jobs.compile!.name).toBe('compile');
+    expect(step(pr.jobs.compile!, 'Herdr acceptance typecheck')?.run ?? '').toContain('npm run typecheck:herdr:e2e');
+    expect(step(pr.jobs.compile!, 'Check workflow contract')?.run ?? '').toContain('packages/herdr/e2e/controls/ci-contract.test.ts');
+    expect(step(pr.jobs.compile!, 'Check workflow contract')?.run ?? '').toContain('--config packages/herdr/e2e/vitest.config.ts');
+    expect(pr.jobs.tests!.strategy!.matrix.group).toEqual([1, 2, 3, 4]);
+    expect(pr.jobs.tests!.if).toBeUndefined();
+    expect(pr.jobs.tests!.needs).toEqual(['select']);
+    expect(pr.jobs.checks!.name).toBe('typecheck · test · build');
+    expect(pr.jobs.checks!.needs).toEqual(['compile', 'select', 'tests']);
+    expect(pr.jobs.checks!.if).toBe('always()');
+    expect(pr.jobs.checks!.steps).toHaveLength(1);
+    expect(pr.jobs.checks!.steps[0]!.uses).toBeUndefined();
+    expect(pr.jobs['save-selection']!.needs).toEqual(['select', 'tests']);
+    for (const job of Object.values(pr.jobs)) for (const item of job.steps) {
+      expect(item.run ?? '').not.toMatch(/npm run (?:-s )?(?:test:e2e|test:herdr:e2e:ci)/);
+      if (item.name !== 'Check workflow contract') expect(item.run ?? '').not.toContain('--config packages/herdr/e2e/vitest.config.ts');
+    }
+  });
+
+  it('runs the named-input sweep on main pushes and for PR selection or policy changes', () => {
+    const main = step(workflow('ci').jobs.compile!, 'Check named test inputs');
+    expect(main?.run).toBe('node scripts/selection/sweep.mjs');
+    expect(main.if).toBe("github.event_name == 'push' && github.ref == 'refs/heads/main'");
+    const compile = workflow('pr').jobs.compile!;
+    const pr = step(compile, 'Check named test inputs');
+    expect(compile.steps.find(item => item.uses === 'actions/checkout@v4')?.with).toMatchObject({
+      ref: '${{ github.sha }}', 'fetch-depth': 0, 'persist-credentials': false,
+    });
+
+    const scratch = join(process.cwd(), '.spider/scratch');
+    mkdirSync(scratch, { recursive: true });
+    const root = mkdtempSync(join(scratch, 'sweep-contract-'));
     try {
-      const directory = join(root, '.spider/scratch/selections'); mkdirSync(directory, { recursive: true });
-      const sha = 'a'.repeat(40);
-      const manifest = (files: string[], testedSha = sha, selectionMs = 1) => {
-        const payload = { version: 1, testedSha, files, deferred: [] };
-        return { ...payload, selectionHash: createHash('sha256').update(JSON.stringify(payload)).digest('hex'), selectionMs };
+      mkdirSync(join(root, 'scripts/selection'), { recursive: true });
+      writeFileSync(join(root, 'scripts/selection/sweep.mjs'), 'console.log("ran named-input sweep"); process.exitCode = Number(process.env.SWEEP_EXIT);');
+      gitAt(root, 'init', '-q');
+      const commit = (): string => {
+        gitAt(root, 'add', '--', '.');
+        gitAt(root, 'commit', '-qm', 'Fixture change');
+        return gitAt(root, 'rev-parse', 'HEAD');
       };
-      const first = manifest(['one.test.ts']);
-      const run = (second: unknown) => {
-        writeFileSync(join(directory, 'selection-1.json'), JSON.stringify(first));
-        writeFileSync(join(directory, 'selection-2.json'), JSON.stringify(second));
-        return spawnSync('bash', ['-e', '-c', compare.run!], { cwd: root, env: { ...process.env, GITHUB_SHA: sha }, encoding: 'utf8' });
+      const run = (base: string, exit = '0') => {
+        const head = gitAt(root, 'rev-parse', 'HEAD');
+        const merge = gitAt(root, 'commit-tree', `${head}^{tree}`, '-p', base, '-p', head, '-m', 'Tested merge');
+        gitAt(root, 'checkout', '-q', '--detach', merge);
+        try {
+          return spawnSync('bash', ['-e', '-o', 'pipefail', '-c', pr.run!], {
+            cwd: root, env: { ...process.env, BASE_SHA: base, SWEEP_EXIT: exit }, encoding: 'utf8',
+          });
+        } finally { gitAt(root, 'checkout', '-q', '--detach', head); }
       };
-      expect(run(manifest(['one.test.ts'], sha, 999)).status).toBe(0);
-      expect(run(manifest(['other.test.ts'])).status).not.toBe(0);
-      expect(run(manifest(['one.test.ts'], 'b'.repeat(40))).status).not.toBe(0);
-      expect(run({ ...first, files: [] }).status).not.toBe(0);
-      rmSync(join(directory, 'selection-2.json'));
-      expect(spawnSync('bash', ['-e', '-c', compare.run!], { cwd: root, env: { ...process.env, GITHUB_SHA: sha } }).status).not.toBe(0);
-      expect(checks.steps.some(item => item.run?.includes('npm ci') || item.uses === 'actions/checkout@v4')).toBe(false);
+      const initial = commit();
+      writeFileSync(join(root, 'unrelated.txt'), 'unrelated');
+      const product = commit();
+      const unneeded = run(initial);
+      expect(unneeded.status, unneeded.stderr).toBe(0);
+      expect(unneeded.stdout).not.toContain('ran named-input sweep');
+      writeFileSync(join(root, 'scripts/test-resources.json'), '{}');
+      const policy = commit();
+      expect(run(product).stdout).toContain('ran named-input sweep');
+      expect(run(product, '17').status).toBe(17);
+      writeFileSync(join(root, 'scripts/selection/select.mjs'), 'export {};');
+      commit();
+      const selection = run(policy);
+      expect(selection.status, selection.stderr).toBe(0);
+      expect(selection.stdout).toContain('ran named-input sweep');
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it('forces the complete matrix and optional suites on a full dispatch at the requested ref', () => {
-    const ci = workflow('ci');
-    expect(ci.on.workflow_dispatch).toEqual({ inputs: { force_full: {
-      description: 'Run all tests, Chrome, packed acceptance, and headless stories before merge',
-      type: 'boolean', required: true, default: true,
-    } } });
-    // Evaluate the actual job conditions, not a second routing implementation.
-    const applies = (job: Job, event: string, full = false, mode = 'scoped'): boolean => Boolean(Function('github', 'inputs', 'needs', 'always', `return (${(job.if ?? 'true').replaceAll('needs.pr-test', 'needs["pr-test"]')});`)(
-      { event_name: event }, { force_full: full }, { 'pr-test': { outputs: { mode } } }, () => true,
-    ));
-    expect(applies(ci.jobs['pr-test']!, 'workflow_dispatch', true)).toBe(false);
-    for (const id of ['test', 'chrome', 'herdr-acceptance', 'stories', 'verify', 'checks']) expect(applies(ci.jobs[id]!, 'workflow_dispatch', true), id).toBe(true);
-    expect(ci.jobs.test!.strategy!.matrix.shard).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
-    expect(ci.jobs.chrome!.strategy!.matrix.include).toHaveLength(4);
-    expect(ci.jobs.stories!.uses).toBe('./.github/workflows/herdr-stories.yml');
-    expect(ci.jobs.stories!.needs).toBeUndefined();
-    expect(ci.jobs.stories).not.toHaveProperty('with'); // The full gate always uses every default story.
-    expect(step(ci.jobs['herdr-acceptance']!, 'Herdr packed acceptance (no hc, app or SSH)').run).toContain('test:herdr:e2e:ci -- --built');
-    for (const job of Object.values(ci.jobs)) {
-      const checkout = (job.steps ?? []).find(item => item.uses === 'actions/checkout@v4')!;
-      expect(checkout?.with?.ref).toBeUndefined(); // Dispatch checkout must keep the requested ref.
+  it('selects and tests the event merge commit without using the stale event base SHA', () => {
+    const pr = workflow('pr');
+    for (const job of [pr.jobs.select!, pr.jobs.tests!]) {
+      const checkout = job.steps.find(item => item.uses === 'actions/checkout@v4');
+      expect(checkout?.with).toMatchObject({ ref: '${{ github.sha }}', 'fetch-depth': 0, 'persist-credentials': false });
     }
-    const gate = step(ci.jobs.checks!, 'Require every applicable job to pass');
-    const run = (needs: unknown) => spawnSync('bash', ['-c', gate.run!], { env: { ...process.env, EVENT: 'workflow_dispatch', NEEDS_JSON: JSON.stringify(needs) } }).status;
-    const full = { verify: { result: 'success' }, 'pr-test': { result: 'skipped' }, test: { result: 'success' }, chrome: { result: 'success' }, 'herdr-acceptance': { result: 'success' }, stories: { result: 'success' } };
-    expect(run(full)).toBe(0);
-    for (const id of ['verify', 'test', 'chrome', 'herdr-acceptance', 'stories']) for (const result of ['failure', 'cancelled', 'skipped']) expect(run({ ...full, [id]: { result } })).not.toBe(0);
-    expect(applies(ci.jobs['pr-test']!, 'pull_request')).toBe(true);
-    expect(applies(ci.jobs.test!, 'pull_request')).toBe(false);
-    expect(applies(ci.jobs.test!, 'pull_request', false, 'full')).toBe(false);
-    for (const event of ['pull_request', 'push', 'workflow_dispatch', 'workflow_call']) {
-      expect(applies(ci.jobs.verify!, event), event).toBe(true);
-      expect(ci.jobs.verify!.needs).toBeUndefined();
-      if (event === 'pull_request') {
-        const active = Object.entries(ci.jobs).filter(([, job]) => applies(job, event)).map(([id]) => id).sort();
-        expect(active).toEqual(['checks', 'pr-test', 'verify']);
-      }
-    }
-    for (const id of ['test', 'chrome', 'herdr-acceptance', 'stories']) expect(applies(ci.jobs[id]!, 'push'), id).toBe(true);
+    expect(source('pr')).not.toContain('github.event.pull_request.base.sha');
   });
 
-  it('keeps optional suites and selector experiments off PR runners', () => {
-    const ci = workflow('ci');
-    const pr = ci.jobs['pr-test']!, verify = ci.jobs.verify!;
-    expect(pr.strategy!.matrix.shard).toEqual([1, 2]);
-    expect(pr.needs).toBeUndefined();
-    const selection = step(pr, 'Select affected tests');
-    expect(selection.run).toContain('--budget-ms 65000');
-    expect(selection.run).not.toContain('mode=full');
-    // pull_request.base.sha stays at the base tip from when the PR opened, so
-    // a diff from it to the merge commit carries main's later commits in.
-    expect(JSON.stringify(selection)).not.toContain('pull_request.base.sha');
-    expect(selection.env).toEqual({ BASE_REF: '${{ github.event.pull_request.base.ref }}' });
-    expect(selection.run).toContain('--base "origin/$BASE_REF"');
-    expect(step(pr, 'Test selected shard').run).toContain('scripts/run-selected-tests.mjs');
-    expect(pr.outputs).toMatchObject({ acceptance: '${{ steps.selection.outputs.acceptance }}', chrome: '${{ steps.selection.outputs.chrome }}' });
-    for (const job of [pr, verify, ci.jobs.checks!]) {
-      for (const item of job.steps) {
-        expect(item.run ?? '').not.toMatch(/npm run (?:-s )?(?:test:e2e|test:herdr:e2e:ci)/);
-        expect(item.run ?? '').not.toMatch(/(?:check|replay|measure)-test-selection\.mjs/);
-        expect(item.run ?? '').not.toContain('--config packages/herdr/e2e/vitest.config.ts');
-      }
-    }
-    expect(step(verify, 'Herdr acceptance typecheck').if).toBe("github.event_name != 'pull_request'");
+  it('loads the selector from the tested merge first parent or runs the full inventory when it is absent', () => {
+    const select = step(workflow('pr').jobs.select!, 'Select affected tests');
+
+    const scratch = join(process.cwd(), '.spider/scratch');
+    mkdirSync(scratch, { recursive: true });
+    const directory = mkdtempSync(join(scratch, 'base-selector-contract-'));
+    const root = join(directory, 'head'), temp = join(directory, 'runner');
+    mkdirSync(temp, { recursive: true });
+    const output = join(root, '.spider/scratch/test-results/test-selection.json');
+    const firstTest = 'packages/example/src/a.test.ts', newTest = 'packages/example/src/b.test.ts';
+    const write = (file: string, text: string): void => {
+      mkdirSync(join(root, file, '..'), { recursive: true });
+      writeFileSync(join(root, file), text);
+    };
+    try {
+      write('scripts/test-shards.ts', readFileSync(join(process.cwd(), 'scripts/test-shards.ts'), 'utf8'));
+      write('scripts/test-durations.json', JSON.stringify({ [firstTest]: 120 }));
+      write(firstTest, 'export {};');
+      gitAt(root, 'init', '-q');
+      const commit = (): string => {
+        gitAt(root, 'add', '--', 'scripts', 'packages');
+        gitAt(root, 'commit', '-qm', 'Fixture change');
+        return gitAt(root, 'rev-parse', 'HEAD');
+      };
+      const legacy = commit();
+      gitAt(root, 'checkout', '-qb', 'base');
+      write('packages/example/only-in-base.txt', 'Changed on the base branch');
+      write('scripts/test-resources.json', '{"label":"base policy"}');
+      write('scripts/roam-entries.json', '{"label":"base entries"}');
+      write('scripts/selection/sidecar.mjs', 'export const marker = "base selector";');
+      write('scripts/selection/select.mjs', `
+import { execFileSync } from 'node:child_process';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { marker } from './sidecar.mjs';
+const [base, output] = process.argv.slice(2);
+const read = file => JSON.parse(readFileSync(new URL('../' + file, import.meta.url), 'utf8')).label;
+const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+const changes = execFileSync('git', ['diff', '--name-only', base, head], { encoding: 'utf8' }).trim().split('\\n');
+writeFileSync(output, JSON.stringify({ marker, base, head, changes, policy: read('test-resources.json'), entries: read('roam-entries.json') }));
+`);
+      const base = commit();
+      gitAt(root, 'checkout', '-qb', 'topic');
+      write('scripts/selection/select.mjs', `import { writeFileSync } from 'node:fs'; writeFileSync(process.argv[3], '{"marker":"head selector"}');`);
+      write('scripts/test-resources.json', '{"label":"head policy"}');
+      write('scripts/roam-entries.json', '{"label":"head entries"}');
+      write('scripts/test-shards.ts', 'throw new Error("Used head partitioner");');
+      write(newTest, 'export {};');
+      write('packages/example/skip.test.ts', 'export {};');
+      const topic = commit();
+      gitAt(root, 'checkout', '-q', 'base');
+      write('packages/example/after-merge.txt', 'Changed after the tested merge was made');
+      gitAt(root, 'update-ref', 'refs/remotes/origin/main', commit());
+      mkdirSync(join(root, 'node_modules'));
+      mkdirSync(join(root, '.spider/scratch/test-results'), { recursive: true });
+      const run = (firstParent: string): [string, Record<string, unknown>] => {
+        const merge = gitAt(root, 'commit-tree', `${topic}^{tree}`, '-p', firstParent, '-p', topic, '-m', 'Tested merge');
+        gitAt(root, 'checkout', '-q', '--detach', merge);
+        const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', select.run!], { cwd: root,
+          env: { ...process.env, RUNNER_TEMP: temp, BASE_SHA: legacy, GITHUB_OUTPUT: join(directory, 'output'), GITHUB_STEP_SUMMARY: join(directory, 'summary') }, encoding: 'utf8' });
+        expect(result.status, result.stderr).toBe(0);
+        return [merge, JSON.parse(readFileSync(output, 'utf8')) as Record<string, unknown>];
+      };
+      const [head, selected] = run(base);
+      expect(selected).toMatchObject({ marker: 'base selector', base, head, policy: 'base policy', entries: 'base entries',
+        changes: expect.arrayContaining([newTest, 'scripts/selection/select.mjs']) });
+      expect(selected.changes).not.toContain('packages/example/only-in-base.txt');
+      expect(selected.changes).not.toContain('packages/example/after-merge.txt');
+      const [legacyMerge, { selectionHash, ...manifest }] = run(legacy);
+      expect(manifest).toMatchObject({ version: 1, head: legacyMerge, mode: 'full', mapRunId: null, mapCommit: null,
+        fallback: 'base commit has no selector', groups: [[firstTest], [newTest], [], []] });
+      expect(Object.keys(manifest.selected as object)).toEqual([firstTest, newTest]);
+      expect(selectionHash).toBe(createHash('sha256').update(JSON.stringify(manifest)).digest('hex'));
+    } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 
-  it('uses only Node 26 with npm caches and gives every CI job an explicit timeout', () => {
-    for (const name of ['ci', 'release', 'publish']) for (const [id, job] of Object.entries(workflow(name).jobs)) {
-      for (const node of (job.steps ?? []).filter(item => item.uses === 'actions/setup-node@v4')) {
-        const versions = node.with!['node-version'] === '${{ matrix.node }}' ? job.strategy!.matrix.node : [node.with!['node-version']];
-        expect(versions).toEqual(['26.x']); expect(node.with!.cache).toBe('npm');
+  it('sets explicit timeouts for every runner job', () => {
+    for (const name of ['ci', 'pr', 'release', 'publish']) for (const job of Object.values(workflow(name).jobs)) {
+      if (!job.uses) expect(job['timeout-minutes']).toBeGreaterThan(0);
+    }
+    const expected = { ci: { checks: 2, compile: 10, test: 25, 'herdr-acceptance': 10, chrome: 10, audit: 5 },
+      pr: { compile: 10, select: 10, tests: 30, checks: 5, 'save-selection': 5 } };
+    for (const [name, jobs] of Object.entries(expected)) for (const [id, timeout] of Object.entries(jobs)) {
+      expect(workflow(name).jobs[id]!['timeout-minutes'], `${name}:${id}`).toBe(timeout);
+    }
+  });
+
+  it('uses the npm cache in installing jobs and names the required check once per workflow', () => {
+    for (const name of ['ci', 'pr']) {
+      expect(source(name).split('typecheck · test · build')).toHaveLength(2);
+      for (const [id, job] of Object.entries(workflow(name).jobs)) {
+        if (!job.steps?.some(item => /\bnpm ci\b/.test(item.run ?? ''))) continue;
+        const node = job.steps.find(item => item.uses === 'actions/setup-node@v4');
+        expect(node?.with?.cache, `${name}:${id}`).toBe('npm');
       }
-      if (name === 'ci' && !job.uses) expect(job['timeout-minutes']).toBe(id === 'checks' ? 2 : 10);
     }
   });
 
   it('matches the shard matrix to the command and saves JSON timing reports from every shard', () => {
     const job = workflow('ci').jobs.test!;
     const matrix = job.strategy!.matrix;
-    expect(matrix.shard).toEqual(Array.from({ length: 12 }, (_, index) => index + 1));
+    expect(matrix.shard).toEqual(Array.from({ length: 6 }, (_, index) => index + 1));
     const test = step(job, 'Test shard');
-    expect(test.run).toContain('vitest run --shard=${{ matrix.shard }}/12 --maxWorkers=2');
+    expect(test.run).toContain('vitest run --shard=${{ matrix.shard }}/6 --maxWorkers=2');
     expect(test.run).toContain('--reporter=json');
     expect(test.run).toContain('--outputFile=.spider/scratch/test-results/shard-${{ matrix.shard }}.json');
     for (const key of ['PI_SUBAGENT_CHILD', 'PI_SUBAGENT_RUN_ID', 'PI_SPIDER_DB_PATH', 'PI_SPIDER_SESSION_ID', 'SPIDER_HERDR_E2E', 'SPIDER_HERDR_APP_TESTS', 'SPIDER_HERDR_APP_E2E', 'XDG_RUNTIME_DIR']) expect(test.run).toContain(`-u ${key}`);
@@ -424,7 +515,9 @@ describe('CI acceptance contract', () => {
     expect(artifact.if).toBe('always()');
     expect(artifact.uses).toBe('actions/upload-artifact@v4');
     expect(artifact.with!.name).toBe('test-results-${{ matrix.shard }}');
-    expect(artifact.with!.path).toBe('.spider/scratch/test-results/shard-${{ matrix.shard }}.json');
+    expect(artifact.with!.path).toContain('.spider/scratch/test-results/shard-${{ matrix.shard }}.json');
+    expect(artifact.with!.path).toContain('.spider/scratch/test-results/shard-${{ matrix.shard }}.count');
+    expect(step(job, 'Prepare isolated scratch').run).toContain('${{ strategy.job-total }}');
   });
 
   it('keeps the dashboard and acceptance typecheck entry points unchanged', () => {

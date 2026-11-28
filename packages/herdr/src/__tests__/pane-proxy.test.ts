@@ -7,7 +7,7 @@ import { PassThrough } from 'node:stream';
 import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { paths } from '@spider/db-core';
-import { build } from 'vite';
+import { buildViteFixture as build } from '../../../../scripts/test-fixture-build.js';
 import { runPaneProxy, createPaneProxyTty, PROXY_TTY_PROGRAM, PROXY_RESET_MODES, type PaneProxyPorts, type ProxyInputGate } from '../panes/proxy.js';
 import { parsePanePresentation } from '../panes/codec.js';
 import type { PanePresentation, PaneTerminalFacts } from '../panes/types.js';

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { build } from 'vite';
+import { buildViteFixture as build } from '../../../../scripts/test-fixture-build.js';
 import { Script, createContext } from 'node:vm';
 import { realpathSync, lstatSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';

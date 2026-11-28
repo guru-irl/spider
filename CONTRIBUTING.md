@@ -24,7 +24,7 @@ env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID \
   npm test -- packages/host/src/__tests__/config-reader-guard.test.ts
 ```
 
-- Run targeted tests while you work, then run the full gate:
+- Run targeted tests while you work. To run the full gate locally when needed:
 
 ```bash
 npm run check:lockfile
@@ -45,110 +45,97 @@ npm run build
 - Code at the bundle's top level must not open a database or start optional model setup.
 - For changes to interactive rendering, follow [UI testing](docs/dev-ui-testing.md) and the [Output guidelines](docs/output-ui-guidelines.md).
 
-### CI shards and timing data
+### CI checks
 
-Build and test jobs use Node `26.x`. PR CI is a fast, scoped signal, not the
-complete merge gate. Two test runners with three fork workers each start beside
-one typecheck/build runner. A short, install-free aggregate keeps the required
-name `typecheck · test · build`. It rejects failed, cancelled, or unexpectedly
-skipped jobs and requires both test runners to use identical manifests.
+Build and test jobs use Node `26.4.0`. On a pull request, `pr.yml` runs
+`select tests` once beside `compile`. After selection, four test runners receive
+its manifest as a job output. Each runner validates the manifest and runs its
+assigned group with three fork workers. The required `typecheck · test · build`
+check requires successful selection, compile, and all four groups.
 
-Only `ci.yml` runs automatically on PRs. PR runs never start the twelve-shard
-matrix, Chrome, Herdr confidence utilities, packed acceptance, or headless
-stories. Selector probes, historical replays, and measurement cohorts also stay
-off the PR critical path.
+The workflow tests the PR merge commit and uses its first parent as the
+base for `select.mjs`, `run.mjs`, and `manifest.mjs`. Before main has the
+runner scripts, the workflow uses a pinned, reviewed revision instead.
 
-Before **every merge**, dispatch the full CI workflow on the PR head branch:
+The selector finds the newest usable main map whose commit is an ancestor
+of the tested merge's first parent. It reports the PR's changes against that
+parent. Selection also covers changes from the map commit to the tested merge
+so an older map cannot hide affected tests. The selector combines recorded
+reads, static imports, paths named by tests, and the base version of
+`scripts/test-resources.json`. It always runs new, failed, skipped, and
+incompletely recorded tests.
+
+CI runs the full root Vitest suite if the base selector is missing or fails,
+no map is usable, or the PR changes the toolchain or selection infrastructure.
+A selector exit error, including a failed map API request, discards any
+partial selection and gives the fallback reason in the step summary. A fix
+for a broken base selector can pass after running the full suite. A selection
+that is too large for the job output also falls back to the full root suite.
+The workflow runs every selected test, including all matches of `required`
+policy rules. It does not defer tests or cut the list to a time budget.
+
+The `save selection for main audit` job uploads `test-selection.json` from the
+shared job output. An upload failure does not block the required check. The
+artifact records the map run and commit, changed files, selection reasons, four test
+groups, and the selection hash. The longest test files are assigned first;
+files with no recorded time get the median. Without a map, CI uses the checked-in
+main shard weights for the full fallback.
+
+`ci.yml` runs the full root suite in six shards with two fork workers each.
+It also runs Chrome, packed Herdr acceptance, and the default headless stories.
+Main pushes use the same queue as map recording. A new push does not cancel
+an active or queued run. Merging does not require a manual full run.
+The non-required `selection audit` compares main failures with the merged PR's
+selection. On a miss, the audit fails and writes the changed files, failed
+tests, and their records to the job summary and log. Chrome, acceptance, and
+stories are not part of PR selection.
+
+To run full CI on a branch or commit explicitly, dispatch it:
 
 ```bash
 gh workflow run ci.yml --ref <head-branch> -f force_full=true
 ```
 
-Wait for that run's `typecheck · test · build` check to pass on the exact PR head
-commit. Repeat the full run if the head changes. Merge tooling requires this
-successful `ci.yml` dispatch on the exact head, not just a successful PR check.
-It covers every deferred test, twelve complete test shards, all Chrome
-partitions, Herdr confidence utilities, packed acceptance, and the default
-headless story set.
+A dispatch always runs full CI, regardless of the `force_full` value. Reusable
+calls also run full CI.
 
-Pushes to `main` and reusable CI calls also take the full route. Non-PR CI
-dispatches remain full even when `force_full` is false. The root suite keeps
-twelve shards with two workers each. `npm ci` builds each checkout through
-`prepare`; new root tests join the full inventory automatically.
-
-Full CI calls `herdr-stories.yml` as a reusable workflow and requires its result
-in the aggregate. That workflow no longer has a PR trigger. Its standalone
-manual trigger still supports selected stories and a shorter deadline.
-
-`scripts/select-tests.mjs` compares the merge base with the tested checkout SHA.
-Vitest resolves import dependencies, including build entries used as virtual
-specifications. `scripts/test-resources.json` adds filesystem readers, bundle
-consumers, source inventories, and optional-suite inputs. Unknown paths,
-deletes, missing bases, and graph errors make the whole inventory a candidate
-set. PRs still cut that set to the budget; they never hand off to the full
-matrix. Selection never collects test modules or starts test workers.
-
-The PR scheduling budget is 65 seconds per runner, leaving setup and aggregate
-headroom inside the two-minute target. It uses recorded file durations plus a
-700 ms per-file import allowance from CI observations. Tests selected by a
-`required` rule run first and count toward the budget, even if they exceed it.
-Other tests fill the remaining budget in this order:
-
-1. Changed test files and tests that directly import a changed file with a static import.
-2. Tests beside changed production source, including its `__tests__` directory.
-3. Other selected importers and resource consumers.
-
-Type-only imports count as direct imports. Dynamic and transitive imports do
-not. Paths break ties within each priority. A file that cannot fit waits for
-the full run, and smaller later files can use the space left. Every deferred
-file appears in each runner's step summary. Chrome and acceptance selection
-outputs are summary notes, not PR suite triggers.
-
-Each manifest records sorted test paths, selection reasons, base/tested SHAs,
-and hashes of the selector, resource policy, inventory, and timing table.
-Its `budget` records the limit, import allowance, worker loads, and candidate
-mode. Its `deferred` list records each deferred file, duration estimate, deferral
-rule, and original selection reasons. Deferred entries are covered by the
-manifest checksum but are not passed to the scoped test runner.
-`scripts/run-selected-tests.mjs` validates it and passes the exact file list to
-Vitest without a second changed-file filter. Empty partitions skip explicitly.
-
-`scripts/vitest-sequencer.ts` assigns the selected files by longest processing
-time first, using `scripts/test-durations.json`. Ties use repository-relative
-paths. New files get the median recorded duration. To inspect a saved selection:
-
-```bash
-node scripts/list-test-shards.mjs 1/2 --manifest selection.json
-node scripts/test-shard-budget.mjs --manifest selection.json
-```
-
-The budget reports aggregate measured file time and a six-worker scheduling
-estimate that includes the manifest's import allowance. Installation, selection,
-and process startup are additional. Vitest's reported import and test totals
-sum worker time; neither is wall time. Fork isolation stays enabled because
-tests use native SQLite, module mocks, and process-global state.
-
-The unbudgeted selector and `scripts/measure-test-selection.mjs` remain available
-for separate selector investigations. They do not add work to PR CI.
-
-To refresh durations, download the `test-results-*` artifacts from a completed
-CI run:
+To refresh the main shard weights, download `test-results-*` from a completed
+full run:
 
 ```bash
 gh run download RUN_ID --pattern 'test-results-*' --dir .spider/scratch/ci-reports
 node scripts/update-test-durations.mjs .spider/scratch/ci-reports/test-results-*/shard-*.json
 ```
 
-The script includes hooks through file start/end timestamps. It replaces each
-observed weight with the largest supplied observation and retains unobserved
-entries, so a scoped report cannot erase the history. Prefer complete runs from
-one revision when refreshing the checked-in table. To list the full inventory's
-main shard, use `node scripts/list-test-shards.mjs 1/12`.
+The refresh uses file start/end timestamps, including hooks. It takes the
+largest observation for each file and leaves unobserved weights alone. Use
+reports from the same revision. The weights measure file time, not runner wall
+time, which also includes setup and process startup.
 
-For selector safety evidence, `scripts/replay-test-selection.mjs --collect`
-downloads red PR logs and reports without resolving any graphs. Its replay mode
-runs only on GitHub Actions, in isolated historical checkouts at the tested merge
-SHAs. Missing evidence is inconclusive, not successful recall.
+### Selection map
+
+The `selection map` workflow starts after full CI completes for a push to
+`main`. It skips recording if that commit is no longer the tip of `main`.
+It records the root Vitest suite in six shards. Missing records or recorder
+errors prevent publication. To refresh main's map without waiting for another
+push, run `gh workflow run selection-map.yml --ref main`. The dispatch joins
+the main queue and skips recording if main has advanced. You can also dispatch
+on another branch for a canary.
+
+PR selection accepts only successful map runs on `main` in this repository
+whose run SHA matches the map's commit.
+
+GitHub keeps `selection-map.json` in the `selection-map` artifact for 30 days.
+Schema v2 records the test result and duration, source indices, unresolved
+bundle paths, whether the test built or ran a bundle, and whether its record
+is incomplete. Maps without the completeness flag are unusable. When an
+unresolved bundle's inputs cannot be identified, non-doc source changes also
+select its test.
+
+`node scripts/selection/sweep.mjs` checks that changes to a tracked path select
+every test that names it, without relying on a recording. The `compile` job
+runs the sweep on main pushes and on PRs that edit the selector or resource
+policy.
 
 ## Package map and dependency rules
 

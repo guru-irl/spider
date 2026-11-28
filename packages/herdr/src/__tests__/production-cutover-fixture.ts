@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { build } from 'vite';
+import { buildViteFixture as build } from '../../../../scripts/test-fixture-build.js';
 import { createHerdrHarness } from './isolated.js';
 import { writeFixturePaneEndpoint } from './endpoint-fixture.js';
 import { writePrivateJson } from '../sessions/registry.js';

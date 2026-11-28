@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import { fixtureInput } from '../../../../scripts/test-fixture-input.js';
 import { mkdir, writeFile, readFile, access, chmod, rm, stat, unlink, rename } from 'node:fs/promises';
 import { existsSync, readFileSync, realpathSync, openSync, closeSync } from 'node:fs';
 import { connect } from 'node:net';
@@ -124,8 +125,8 @@ export async function createHerdrHarness(mode: AcceptanceMode): Promise<HerdrHar
   const quoted = (v: string) => `'${v.replaceAll("'", "'\\''")}'`;
   const wrapper = async (name: string, content: string) => { const path = join(root, name); await writeFile(path, '#!/bin/sh\n' + content + '\n'); await chmod(path, 0o700); return path; };
   if (mode === 'fake') {
-    hcBinary = await wrapper('hc', `exec ${quoted(process.execPath)} ${quoted(fileURLToPath(new URL('./fake-hc.mjs', import.meta.url)))} "$@"`);
-    appBinary = await wrapper('app', `exec ${quoted(process.execPath)} ${quoted(fileURLToPath(new URL('./fake-app.mjs', import.meta.url)))} "$@"`);
+    hcBinary = await wrapper('hc', `exec ${quoted(process.execPath)} ${quoted(fixtureInput(new URL('./fake-hc.mjs', import.meta.url)))} "$@"`);
+    appBinary = await wrapper('app', `exec ${quoted(process.execPath)} ${quoted(fixtureInput(new URL('./fake-app.mjs', import.meta.url)))} "$@"`);
     for (const [env, dir] of [[localEnv, directories.local], [remoteEnv, directories.remote]] as const) {
       env.HERDR_TEST_ROOT = root; env.HERDR_TEST_OWNER_PID = String(process.pid); env.HERDR_FAKE_ROOT = dir; env.HERDR_FAKE_DAEMON = '1'; env.HERDR_FAKE_SCENARIO = join(dir, 'scenario.json');
       await writeFile(join(dir, 'core.json'), JSON.stringify({ coreId: randomUUID(), terminals: [], machines: [] }));

@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import { builtinModules } from "node:module";
 import entries from "./scripts/roam-entries.json" with { type: "json" };
+import { archiveMaps, sourcemap } from "./scripts/selection/build-maps.mjs";
 
 const builtins = new Set(builtinModules.flatMap(name => [name, `node:${name}`]));
 const native = ["better-sqlite3", "sqlite-vec"];
@@ -16,11 +17,11 @@ export default defineConfig(({ mode }) => {
       resolveId(source, importer) {
         if (source.startsWith("@earendil-works/pi-")) throw new Error(`Roaming cannot import pi packages: ${source} from ${importer}`);
       },
-    }],
+    }, ...archiveMaps('roam')],
     ssr: { target: "node", noExternal: true },
     build: {
       target: "node22", outDir: "dist/roam", emptyOutDir: mode === "cli",
-      minify: false, sourcemap: false, ssr: entry,
+      minify: false, sourcemap, ssr: entry,
       rollupOptions: {
         external: id => builtins.has(id) || native.some(name => id === name || id.startsWith(`${name}/`)) ||
           mode === "cli" && (id === "./cli-main.mjs" || id === "./intercom-helper.mjs"),

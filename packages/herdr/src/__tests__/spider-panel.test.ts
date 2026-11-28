@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, writeFile, rm, symlink, stat } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join, resolve } from 'node:path';
-import { build } from 'vite';
+import { buildViteFixture as build } from '../../../../scripts/test-fixture-build.js';
 import { checkSpiderPanel } from './panel-app-check.mjs';
 import { runPanelScene } from './acceptance/i.js';
 import type { SessionFeed, CoreId, TerminalId, TerminalAddress, SpaceId } from '../contracts.js';

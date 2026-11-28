@@ -2,6 +2,8 @@ import { defineConfig } from "vitest/config";
 import DurationSequencer from "./scripts/vitest-sequencer.js";
 import { fileURLToPath } from "node:url";
 
+const record = process.env.SPIDER_SELECTION === "1";
+
 // Native better-sqlite3 addons segfault in worker_threads during teardown —
 // use forks on all platforms (mirrors context-mode's proven config).
 export default defineConfig({
@@ -14,6 +16,7 @@ export default defineConfig({
   }],
   test: {
     setupFiles: ["./vitest.setup.ts"],
+    ...(record && { runner: "./scripts/selection/vitest-runner.mjs", isolate: true }),
     globalSetup: ["./vitest.herdr-global-setup.ts"],
     include: ["packages/**/src/**/*.test.ts"],
     testTimeout: 30_000,

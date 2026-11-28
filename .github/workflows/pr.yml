@@ -1,0 +1,284 @@
+name: PR
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: pr-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  # CI never uses onnxruntime's CUDA provider; skip its NuGet download.
+  ONNXRUNTIME_NODE_INSTALL: skip
+  # First rollout only: main has no judge yet. Use a reviewed, fixed revision,
+  # not the moving PR head. Remove this once main has the judge modules.
+  SELECTION_BOOTSTRAP_SHA: 9cfb0d8168a5eab16347ddfe1d60d1698c88ab96
+
+jobs:
+  compile:
+    name: compile
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.4.0'
+          cache: npm
+
+      - name: Prepare isolated scratch
+        run: mkdir -p "$PWD/.spider/scratch/tmp" "$PWD/.spider/scratch/packaging"
+
+      - name: Check lockfile registry and Herdr workspace
+        run: |
+          node scripts/check-lockfile-registry.mjs
+          npm ls --package-lock-only @spider/herdr
+
+      # npm ci runs prepare, which builds and checks the bundle.
+      - name: Install
+        run: npm ci
+
+      - name: Check named test inputs
+        run: |
+          base_sha=$(git rev-parse --verify HEAD^1)
+          if ! git diff --quiet "$base_sha" HEAD -- scripts/selection/ scripts/test-resources.json; then
+            node scripts/selection/sweep.mjs
+          fi
+
+      - name: Check generated roaming SQL
+        run: npm run check:roam-sql
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Herdr acceptance typecheck
+        run: TMPDIR="$PWD/.spider/scratch/tmp" npm run typecheck:herdr:e2e
+
+      - name: Check workflow contract
+        run: env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID TMPDIR="$PWD/.spider/scratch/tmp" node node_modules/vitest/vitest.mjs run --config packages/herdr/e2e/vitest.config.ts --maxWorkers=1 packages/herdr/e2e/controls/ci-contract.test.ts
+
+      - name: Verify bundle shape
+        run: node scripts/assert-bundle.mjs
+
+      - name: Verify package contents
+        run: |
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          export npm_config_foreground_scripts=false npm_config_pack_destination="$PWD/.spider/scratch/packaging"
+          npm pack --json --ignore-scripts | node -e "require('./scripts/check-package-files.cjs')"
+          TARBALL=$(node -e "process.stdout.write(JSON.parse(require('node:fs').readFileSync('.spider/scratch/packaging/pack.json', 'utf8'))[0].filename)")
+          node scripts/assert-bundle.mjs --package ".spider/scratch/packaging/$TARBALL" --commit "$(git rev-parse --short HEAD)"
+
+  select:
+    name: select tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      manifest: ${{ steps.selection.outputs.manifest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.4.0'
+          cache: npm
+
+      - name: Check for base selector
+        id: base-selector
+        run: |
+          base_sha=$(git rev-parse --verify HEAD^1)
+          if git cat-file -e "$base_sha:scripts/selection/select.mjs" 2>/dev/null; then
+            echo 'available=yes' >> "$GITHUB_OUTPUT"
+          fi
+
+      # The base selector resolves the head's imports without running tests.
+      - name: Install selection dependencies
+        if: steps.base-selector.outputs.available == 'yes'
+        run: npm ci --ignore-scripts
+
+      - name: Prepare selection directory
+        run: mkdir -p .spider/scratch/test-results
+
+      - name: Select affected tests
+        id: selection
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          # The merge's first parent pins the live base used to build this
+          # checkout, even if the base branch moves before this job runs.
+          base_sha=$(git rev-parse --verify HEAD^1)
+          base_dir=$(mktemp -d "$RUNNER_TEMP/selection-base.XXXXXX")
+          trap 'rm -rf -- "$base_dir"' EXIT
+          output=.spider/scratch/test-results/test-selection.json
+          # Leave room under Linux's per-variable limit when a shard reads
+          # the output. Full selections store one short reason per test.
+          pack_selection() { gzip -c "$output" | base64 | tr -d '\n'; }
+          max_packed_bytes=$((96 * 1024))
+          weights=(scripts/test-shards.ts scripts/test-durations.json)
+          fallback='base commit has no selector'
+          if git cat-file -e "$base_sha:scripts/selection/select.mjs" 2>/dev/null; then
+            # Stage both outputs so a selector that exits nonzero cannot leave
+            # a scoped manifest or summary behind.
+            if git archive "$base_sha" scripts/selection scripts/test-resources.json scripts/roam-entries.json "${weights[@]}" |
+                tar -xf - -C "$base_dir" &&
+              ln -s "$PWD/node_modules" "$base_dir/node_modules" &&
+              GITHUB_STEP_SUMMARY="$base_dir/summary" node "$base_dir/scripts/selection/select.mjs" "$base_sha" "$base_dir/selection.json" &&
+              mv "$base_dir/selection.json" "$output"; then
+              packed=$(pack_selection)
+              if (( ${#packed} <= max_packed_bytes )); then
+                printf 'manifest=%s\n' "$packed" >> "$GITHUB_OUTPUT"
+                if [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -f "$base_dir/summary" ]; then
+                  cat "$base_dir/summary" >> "$GITHUB_STEP_SUMMARY"
+                fi
+                exit 0
+              fi
+              fallback='selection exceeds the job output limit'
+              echo '::warning::Selection exceeds the job output limit. Running the full root test suite.'
+            else
+              fallback='base selector failed'
+              echo '::warning::Base selector failed. Running the full root test suite.'
+            fi
+          fi
+          # Build a full manifest without executing the selector again or
+          # reading policy from the head.
+          mkdir "$base_dir/full"
+          git archive "$base_sha" "${weights[@]}" | tar -xf - -C "$base_dir/full"
+          node --input-type=module - "$base_dir/full" "$output" "$fallback" <<'JS'
+          import { execFileSync } from 'node:child_process';
+          import { createHash } from 'node:crypto';
+          import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          import { pathToFileURL } from 'node:url';
+          const [baseDir, output, fallback] = process.argv.slice(2);
+          const { partitionFiles } = await import(pathToFileURL(join(baseDir, 'scripts/test-shards.ts')));
+          const durations = JSON.parse(readFileSync(join(baseDir, 'scripts/test-durations.json'), 'utf8'));
+          const git = (...args) => execFileSync('git', args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+          const head = git('rev-parse', 'HEAD').trim();
+          const files = git('ls-tree', '-r', '-z', '--name-only', head, '--', 'packages').split('\0')
+            .filter(file => /^packages\/[^/]+\/src\/.+\.test\.ts$/.test(file)).sort();
+          if (!files.length) throw new Error('Empty root test inventory');
+          const selected = Object.fromEntries(files.map(file => [file, [`full fallback: ${fallback}`]]));
+          const groups = partitionFiles(files, durations, 4);
+          const selection = { version: 1, head, mode: 'full', fallback, mapRunId: null, mapCommit: null,
+            changedFiles: [], selected, groups };
+          const selectionHash = createHash('sha256').update(JSON.stringify(selection)).digest('hex');
+          writeFileSync(output, `${JSON.stringify({ ...selection, selectionHash }, null, 2)}\n`);
+          const summary = `Selection: ${files.length} of ${files.length} files (${fallback}).\n\nGroups: ${groups.map(group => group.length).join(', ')}.\n\nHash: ${selectionHash}\n`;
+          console.log(summary);
+          if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
+          JS
+          packed=$(pack_selection)
+          if (( ${#packed} > max_packed_bytes )); then
+            echo '::error::Even the full selection exceeds the job output limit.'
+            exit 1
+          fi
+          printf 'manifest=%s\n' "$packed" >> "$GITHUB_OUTPUT"
+
+  tests:
+    needs: [select]
+    name: tests ${{ matrix.group }}/4
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.4.0'
+          cache: npm
+
+      - name: Prepare isolated scratch
+        run: mkdir -p "$PWD/.spider/scratch/tmp" "$PWD/.spider/scratch/test-results"
+
+      - name: Install SQLite CLI
+        run: command -v sqlite3 || { sudo apt-get update && sudo apt-get install -y sqlite3; }
+
+      - name: Install
+        run: npm ci
+
+      # Tests keep hc sockets inside their own state homes, as on macOS. With
+      # XDG_RUNTIME_DIR empty, hc falls back to /run/user/<uid> when it exists,
+      # so remove the runner's copy for the rest of the job.
+      - name: Remove runner runtime directory
+        run: |
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+          test ! -e "$rundir"
+          echo "XDG_RUNTIME_DIR=" >> "$GITHUB_ENV"
+
+      - &restore_selection
+        name: Restore shared test selection
+        env:
+          SELECTION: ${{ needs.select.outputs.manifest }}
+        shell: bash
+        run: |
+          mkdir -p .spider/scratch/test-results
+          printf '%s' "$SELECTION" | base64 --decode | gzip -d > .spider/scratch/test-results/test-selection.json
+
+      - name: Test selected group
+        run: |
+          set -o pipefail
+          judge=$(git rev-parse --verify HEAD^1)
+          if ! git cat-file -e "$judge:scripts/selection/manifest.mjs" 2>/dev/null; then
+            judge=$SELECTION_BOOTSTRAP_SHA
+          fi
+          judge_dir=$(mktemp -d "$RUNNER_TEMP/selection-judge.XXXXXX")
+          trap 'rm -rf -- "$judge_dir"' EXIT
+          git archive "$judge" scripts/selection | tar -xf - -C "$judge_dir"
+          ln -s "$PWD/node_modules" "$judge_dir/node_modules"
+          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR TMPDIR="$PWD/.spider/scratch/tmp" \
+            node "$judge_dir/scripts/selection/run.mjs" .spider/scratch/test-results/test-selection.json ${{ matrix.group }} \
+            .spider/scratch/test-results/group-${{ matrix.group }}.json .spider/scratch/test-results/hash-${{ matrix.group }}.json
+
+  checks:
+    name: typecheck · test · build
+    needs: [compile, select, tests]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require selection, compile and tests to pass
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          if ! jq -e 'all(.compile, .select, .tests; .result == "success")' <<< "$NEEDS_JSON"; then
+            echo '::error::Selection, compile and every test runner must succeed.'
+            exit 1
+          fi
+
+  save-selection:
+    name: save selection for main audit
+    needs: [select, tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - *restore_selection
+      - name: Save test selection
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-selection
+          path: .spider/scratch/test-results/test-selection.json
+          include-hidden-files: true
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30

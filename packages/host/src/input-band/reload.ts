@@ -20,6 +20,8 @@ type Mode = {
 
 // Check rendered content and layout, not class names, which change in bundled Pi.
 function reloadMessage(child: Component): string | undefined {
+  const children = (child as Component & { children?: unknown }).children;
+  if (!Array.isArray(children) || children.length !== 5) return;
   const rows = child.render(200).map(row => stripTerminalSequences(row).trim());
   if (rows.length !== 5 || !/^─+$/u.test(rows[0]) || rows[1] !== "" ||
       !rows[2].startsWith("Reloading keybindings") || rows[3] !== "" || !/^─+$/u.test(rows[4])) return;

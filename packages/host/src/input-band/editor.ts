@@ -7,7 +7,9 @@ type Edge = { original: string; hidden: number };
 const INSET = 2;
 
 // The shim supplies the running Pi's class, not the native bundle's other copy.
-export function createBandEditor(Base: typeof CustomEditor) {
+export function createBandEditor(Base: typeof CustomEditor): new (
+  tui: TUI, theme: EditorTheme, keys: KeybindingsManager, readTheme: () => Theme,
+) => CustomEditor {
   return class BandEditor extends Base {
     private edges?: { top?: Edge; bottom?: Edge };
     private renderWidth = 0;

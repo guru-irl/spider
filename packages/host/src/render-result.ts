@@ -1,6 +1,6 @@
 // packages/host/src/render-result.ts
 // pi `ToolDefinition.renderResult` for the spider tool. With renderShell:"default"
-// pi paints the standard green/red tool shell and renderCall supplies its title, so
+// pi paints the standard tool shell and renderCall supplies its title, so
 // renderResult renders only the BODY. `options.expanded` reflects the in-chat Ctrl+O toggle;
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth, stripTerminalSequences } from "@earendil-works/pi-tui";
@@ -18,6 +18,7 @@ import type { ModelEntry } from "@spider/models";
 import { renderSkillList, renderSkillView, renderDistill, renderCurateResult, type DrainReport, type SkillRow } from "@spider/organism";
 import { UI_CONFIG_SCHEMA, modelThinkingDisplay } from "./ui-thinking";
 import { createHalfBox } from "./input-band/box.js";
+import { reopenBackground } from "./input-band/ansi.js";
 import { toToolResult } from "./result";
 import { makeRunCostFormatter } from "./run-credits";
 import { restoreExecDetails } from "./exec-session-storage";
@@ -47,22 +48,7 @@ function restoreCardBackground(lines: string[], theme: any, background: string):
   const marker = "\0";
   const sample = mkTheme(theme).bg(background, marker);
   const open = sample.slice(0, sample.indexOf(marker));
-  if (!open) return lines;
-  return lines.map(line => line.replace(/\x1b\[([0-9;]*)m/g, (sequence, parameters: string) => {
-    const codes = parameters.split(";").map(part => Number(part || 0));
-    let restore = false;
-    for (let i = 0; i < codes.length; i++) {
-      const code = codes[i];
-      if (code === 0 || code === 49) restore = true;
-      else if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107)) restore = false;
-      else if (code === 38 || code === 48 || code === 58) {
-        if (code === 48) restore = false;
-        if (codes[i + 1] === 5) i += 2;
-        else if (codes[i + 1] === 2) i += 4;
-      }
-    }
-    return restore ? sequence + open : sequence;
-  }));
+  return open ? lines.map(line => reopenBackground(line, open)) : lines;
 }
 
 function clip(s: string, w: number): string { return visibleWidth(s) > w ? truncateToWidth(s, w, "…") : s; }

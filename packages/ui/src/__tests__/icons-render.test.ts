@@ -48,7 +48,7 @@ describe("icon styles in rendered rows", () => {
       ["task", "→", "\u{F060D} "], ["result", "↑", "\u{F005C} "],
       ["message", "→", "\u{F01F0} "], ["reply", "←", "\u{F0F20} "], ["broadcast", "»", "\u{F0B23} "],
       ["handoff", "→", "\u{F19B0} "], ["pin", "†", "\u{F0931} "], ["modelDefault", "←", "\u{F004D} "],
-      ["copy", "□", "\u{F018F} "], ["todoDone", "✓", "\u{F05E1} "], ["todoFailed", "×", "\u{F015A} "], ["todoPending", "○", "\u{F0766} "],
+      ["prompt", "❯", "❯"], ["copy", "□", "\u{F018F} "], ["todoDone", "✓", "\u{F05E1} "], ["todoFailed", "×", "\u{F015A} "], ["todoPending", "○", "\u{F0766} "],
     ];
     for (const [role, text, nerd] of roles) {
       expect(icon(undefined, role)).toBe(text);

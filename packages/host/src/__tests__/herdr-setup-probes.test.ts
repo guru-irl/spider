@@ -41,14 +41,17 @@ async function replay(f: SetupFixture) {
 }
 
 for (const mode of ['fake', 'hc'] as const) it.skipIf(mode === 'hc' && process.env.SPIDER_HERDR_E2E !== '1')(`unchanged setup launches one live root probe per machine (${mode})`, async () => {
-  const f = await fixture(mode); if (mode === 'hc') await observeCore(f);
+  const f = mode === 'hc' ? await fixture(mode) : await focusedSetupFixture({ coreTransport: 'process' });
+  if (mode === 'hc') await observeCore(f);
   await setupHerdr(f.request, await f.ports.setupParts(f.request));
   expect((await runs(f)).length).toBeGreaterThan(0);
   await replay(f);
 }, 60000);
 
 it.each(['runtime', 'node path', 'root', 'machine', 'missing entry', 'corrupt entry', 'invalid result'])('a changed %s is checked live instead of trusting recorded evidence', async change => {
-  const f = await fastFixture(); await setupHerdr(f.request, await f.ports.setupParts(f.request)); await replay(f);
+  const f = await fastFixture(); await setupHerdr(f.request, await f.ports.setupParts(f.request));
+  // The unchanged-setup case checks replay before any edit. Check it again
+  // below, after this specific change has produced a new verified journal.
   const config = JSON.parse(await readFile(f.request.configPath, 'utf8'));
   if (change === 'runtime') {
     const runtime = join(f.root, 'dist/herdr/remote-runtime.mjs');

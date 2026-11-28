@@ -265,7 +265,7 @@ it("readiness activates the locked exact file at the home epoch", async () => {
 it("only local running v0 home admits", async () => {
   const good = fixture({ kind: "managed", home }); await good.emit("session_start");
   expect(good.gate.inspect()).toEqual({ kind: "ordinary", home, blockers: [] }); expect(good.ports.lock).toHaveBeenCalledWith(id, "/fixture/session.jsonl");
-  expect(good.ports.v0Ready).toHaveBeenCalledWith(id, "/fixture/session.jsonl", home);
+  expect(good.ports.v0Ready).toHaveBeenCalledWith(id, "/fixture/session.jsonl", home, expect.any(Function));
   for (const ports of [good.ports.prepare, good.ports.load, good.ports.ready]) expect(ports).not.toHaveBeenCalled();
   for (const denied of [null, { ...home, machineId: "22222222-2222-4222-8222-222222222222" }, { ...home, state: "stopped" as const }, { ...home, state: "moving" as const, moveId: "v0-move" as never, destination: local }]) {
     const f = fixture({ kind: "managed", home: denied }); await f.emit("session_start");
@@ -292,7 +292,7 @@ it("home changed while claiming a lock refuses", async () => {
 });
 it("v0 readiness admits background sessions without legacy enrollment", async () => {
   const f = fixture({ kind: "managed", home }); await f.emit("session_start"); expect(f.host.ctx.hasUI).toBe(false);
-  expect(f.ports.v0Ready).toHaveBeenCalledWith(id, "/fixture/session.jsonl", home);
+  expect(f.ports.v0Ready).toHaveBeenCalledWith(id, "/fixture/session.jsonl", home, expect.any(Function));
   await f.emit("session_shutdown", { reason: "exit" }); expect(f.close).toHaveBeenCalledOnce(); expect(f.ports.stopped).not.toHaveBeenCalled();
 });
 it("late v0 discovery cannot fall back to ordinary admission", async () => {

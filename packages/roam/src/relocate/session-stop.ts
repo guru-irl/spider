@@ -39,9 +39,15 @@ export function createStopCommand(ports: StopCommandPorts): (request: StopReques
   const { operations, store, homes, clock } = ports;
   // Until commit there is no durable binding. Reserve IDs across all sessions here.
   const flights = new Map<string, Flight>();
+  // Only Stops pinned to this exact turn can share the successor a follower commits.
+  const stoppedByFollower = new WeakMap<MoveTurn, StoppedHome>();
+
+  function statusFor(request: StopRequest, home: RelocateHome | null) {
+    return projectSessionStatus(home, home ? store.current(home.sessionId) : null, request.sessionId, clock.now());
+  }
 
   function reply(request: StopRequest, outcome: SessionOutcome["outcome"], reason: string, home: RelocateHome | null = null): SessionOutcome {
-    return { ...projectSessionStatus(home, null, request.sessionId, clock.now()), operationId: request.operationId, outcome, reason };
+    return { ...statusFor(request, home), operationId: request.operationId, outcome, reason };
   }
 
   function saved(request: StopRequest, binding: OperationBinding): Admission {
@@ -51,7 +57,7 @@ export function createStopCommand(ports: StopCommandPorts): (request: StopReques
   }
 
   function committedStatus(request: StopRequest, home: StoppedHome): SessionOutcome {
-    const status = projectSessionStatus(home, store.current(home.sessionId), home.sessionId, clock.now());
+    const status = statusFor(request, home);
     return { ...status, operationId: request.operationId, outcome: status.status === "stopped" ? "complete" : "pending" };
   }
 
@@ -65,9 +71,11 @@ export function createStopCommand(ports: StopCommandPorts): (request: StopReques
     if (!ports.enabled()) return refuse("roaming-disabled");
     if (!home) return refuse("home-changed");
     if (home.state === "moving") return refuse("Finish or undo the move with `spider roam relocate`, then stop.");
-    const follows = move && result && sameManagedHome(home, result) &&
-      (matchesRequest(move.source, request) || matchesRequest(move.moving, request));
-    if (!matchesRequest(home, request) && !follows) return refuse("home-changed");
+    const pinned = move && (matchesRequest(move.source, request) || matchesRequest(move.moving, request)) ? move : null;
+    const followsResult = pinned && result && sameManagedHome(home, result);
+    const successor = pinned && stoppedByFollower.get(pinned);
+    if (!matchesRequest(home, request) && !followsResult && !(successor && sameManagedHome(home, successor)))
+      return refuse("home-changed");
 
     const committed: StoppedHome = home.state === "stopped" ? home :
       { ...home, state: "stopped", epoch: home.epoch + 1, updatedAt: clock.now() };
@@ -88,6 +96,7 @@ export function createStopCommand(ports: StopCommandPorts): (request: StopReques
       const swap = await homes.compareAndSwap(home, committed, undefined, () => store.write(record, nextBinding));
       // An already-applied row without this binding was not committed by this operation.
       if (swap.kind !== "applied") return { kind: "refused", reply: reply(request, "refused", "home-changed", swap.home) };
+      if (pinned && followsResult) stoppedByFollower.set(pinned, committed);
     }
     return { kind: "committed", home: committed };
   }
@@ -100,13 +109,16 @@ export function createStopCommand(ports: StopCommandPorts): (request: StopReques
       const current = await homes.read(request.sessionId);
       return sameManagedHome(current, home) ? committedStatus(request, home) : reply(request, "refused", "home-superseded", current);
     };
-    const last = await read();
-    if (last.outcome !== "pending" || !ports.enabled()) return last;
+    const beforeRead = flight.snapshot;
+    let last: SessionOutcome | undefined;
     flight.snapshot = () => {
-      // Evidence may be saved before the contact round settles. Do not wait on I/O.
+      // Evidence may be saved before the status read or contact round settles.
+      if (last?.outcome === "refused") return last;
       try { return committedStatus(request, home); }
-      catch { return last; }
+      catch { return last ?? beforeRead(); }
     };
+    last = await read();
+    if (last.outcome !== "pending" || !ports.enabled()) return last;
     // Admission released both the FIFO turn and process lock. Contact must fence its own effects.
     try { await ports.reconcile(home); }
     catch { /* Contact failure cannot undo the saved Stop. Return the cached result. */ }
@@ -135,7 +147,15 @@ export function createStopCommand(ports: StopCommandPorts): (request: StopReques
     const move = binding ? null : operations.activeMove(request.sessionId);
     const admission = binding ? Promise.resolve(saved(request, binding)) :
       operations.enqueue(request.sessionId, () => ports.withSession(request.sessionId, () => commit(request, move)));
-    const flight: Flight = { request, move, snapshot: () => reply(request, "pending", "waiting-for-session-operation"),
+    const flight: Flight = { request, move,
+      snapshot() {
+        // The atomic binding can be visible before the CAS and lock release settle.
+        try {
+          const saved = store.operation(request.operationId);
+          if (saved?.action === "stop" && sameRequest(saved.request, request)) return committedStatus(request, saved.committed);
+        } catch { /* A failed cache read must not escape the deadline callback. */ }
+        return reply(request, "pending", "waiting-for-session-operation");
+      },
       done: admission.then(result => settle(result, flight)).finally(() => flights.delete(request.operationId)) };
     flights.set(request.operationId, flight);
     // The caller can receive a waiting reply before the accepted work settles.

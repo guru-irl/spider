@@ -128,6 +128,20 @@ describe("hub session transition store", () => {
     expect(readerStore.operation("stop-1")).toBeNull();
   });
 
+  it("keeps a standalone Stop write out of the replication log", async () => {
+    const { writer, reader, store } = fixture();
+    expect(await homes(writer).compareAndSwap(running, stopped)).toEqual({ kind: "applied", home: stopped });
+    const changes = reader.prepare("SELECT count(*) AS count FROM roam_changes");
+    const before = changes.get();
+
+    store.write(stop, binding);
+
+    expect(changes.get()).toEqual(before);
+    const readerStore = createSessionStopStore(reader);
+    expect(readerStore.current(id)).toEqual(stop);
+    expect(readerStore.operation(binding.request.operationId)).toEqual(binding);
+  });
+
   it("retains the original binding when the current transition advances", () => {
     const { store, reader } = fixture();
     const readerStore = createSessionStopStore(reader);

@@ -152,6 +152,27 @@ describe("hub Stop order", () => {
     expect(f.effects).toEqual([{ home: afterStop, mode: "graceful" }]);
   });
 
+  it("upgrades the Stop that was queued ahead of Kill now on the same move", async () => {
+    const f = fixture(), move = pausedMove(f, "commit");
+    await move.marked;
+    const stop = { ...input, homeEpoch: 8 };
+    const kill = { ...stop, operationId: "kill-behind-move", mode: "hard" } as const;
+    for (const waiting of await Promise.all([f.stop(stop), f.stop(kill)])) {
+      expect(waiting).toMatchObject({ outcome: "pending", reason: "waiting-for-move", homeEpoch: 8 });
+    }
+
+    move.release();
+    await move.done;
+    for (const accepted of await Promise.all([f.stop(stop), f.stop(kill)])) {
+      expect(accepted).toMatchObject({ outcome: "pending", status: "stop-pending", machineId: movedTo, homeEpoch: 10 });
+    }
+    const stopped = await f.runtime.homes.read(id);
+    expect(stopped).toMatchObject({ machineId: movedTo, state: "stopped", epoch: 10, moveId });
+    expect(f.cache.current(id)).toMatchObject({ action: "stop", mode: "hard", expected: movedHome, committed: stopped });
+    expect(f.cache.operation(stop.operationId)).toEqual({ action: "stop", request: stop, committed: stopped });
+    expect(f.cache.operation(kill.operationId)).toEqual({ action: "stop", request: kill, committed: stopped });
+  });
+
   it("does not follow a force after the pinned move", async () => {
     const f = fixture(), move = pausedMove(f, "commit");
     await move.marked;
@@ -217,6 +238,55 @@ describe("hub Stop order", () => {
 });
 
 describe("hub Stop replay", () => {
+  it("reports confirmed stopped status when refusing a stale Stop", async () => {
+    const f = fixture();
+    const stopped: StoppedHome = { ...running, state: "stopped", epoch: 8, updatedAt: 200 };
+    await f.runtime.homes.compareAndSwap(running, stopped, undefined, () => f.store.write({
+      action: "stop", operationId: "previous-stop", expected: running, committed: stopped, mode: "graceful",
+      displaced: [], contactReason: null, observations: [{ sessionId: id, machineId: source, home: stopped,
+        bootId: "fixture-boot", observedAt: 900, evidence: { kind: "confirmed", owner: null } }],
+    }));
+
+    expect(await f.stop(input)).toEqual({ sessionId: id, machineId: source, homeEpoch: 8, homeState: "stopped",
+      operationId: input.operationId, outcome: "refused", reason: "home-changed", status: "stopped", observedAt: 900 });
+    expect(f.cache.operation(input.operationId)).toBeNull();
+    expect(f.effects).toEqual([]);
+  });
+
+  it("reports verified running status when refusing a new Stop with roaming disabled", async () => {
+    const f = fixture();
+    const stopped: StoppedHome = { ...running, state: "stopped", epoch: 8, updatedAt: 200 };
+    const started: RunningHome = { ...running, epoch: 9, updatedAt: 300 };
+    await checkSwap(f, running, stopped);
+    expect(await f.runtime.homes.compareAndSwap(stopped, started, undefined, () => f.store.write({
+      action: "start", operationId: "previous-start", expected: stopped, committed: started, observedAt: 900, contactReason: null,
+    }))).toEqual({ kind: "applied", home: started });
+    f.config.enabled = false;
+
+    expect(await f.stop({ ...input, homeEpoch: 9 })).toEqual({ sessionId: id, machineId: source, homeEpoch: 9,
+      homeState: "running", operationId: input.operationId, outcome: "refused", reason: "roaming-disabled",
+      status: "running", observedAt: 900 });
+    expect(f.cache.operation(input.operationId)).toBeNull();
+    expect(f.effects).toEqual([]);
+  });
+
+  it("reports verified running status when a saved Stop is superseded", async () => {
+    const f = fixture();
+    await f.stop(input);
+    const stopped = await f.runtime.homes.read(id);
+    if (stopped?.state !== "stopped") throw new Error("expected a stopped home");
+    const started: RunningHome = { ...running, epoch: 9, updatedAt: 300 };
+    expect(await f.runtime.homes.compareAndSwap(stopped, started, undefined, () => f.store.write({
+      action: "start", operationId: "later-start", expected: stopped, committed: started, observedAt: 900, contactReason: null,
+    }))).toEqual({ kind: "applied", home: started });
+    f.effects.length = 0;
+
+    expect(await f.stop(input)).toEqual({ sessionId: id, machineId: source, homeEpoch: 9, homeState: "running",
+      operationId: input.operationId, outcome: "refused", reason: "home-superseded", status: "running", observedAt: 900 });
+    expect(await f.runtime.homes.read(id)).toEqual(started);
+    expect(f.effects).toEqual([]);
+  });
+
   it("replays the original stop without rewriting the epoch", async () => {
     const f = fixture();
     const release = deferred(), contacting = deferred(), finishContact = deferred();
@@ -289,6 +359,24 @@ describe("hub Stop replay", () => {
     const confirmedKillNowEffects = f.effects;
     expect(confirmedKillNowEffects).toEqual([]);
     expect(await f.runtime.homes.read(id)).toEqual(current.committed);
+  });
+
+  it("reports a saved Stop when the deadline fires just after the CAS commits", async () => {
+    const f = fixture();
+    const compareAndSwap = f.runtime.homes.compareAndSwap;
+    vi.spyOn(f.runtime.homes, "compareAndSwap").mockImplementation(async (...args) => {
+      const swap = await compareAndSwap(...args);
+      // A separate connection sees the binding before admission releases its locks.
+      expect(f.cache.operation(input.operationId)?.committed).toEqual(swap.home);
+      f.time.advance(readyMs);
+      return swap;
+    });
+
+    const atDeadline = await f.stop(input);
+    await f.stop(input); // Let the accepted operation finish before fixture teardown.
+    expect(atDeadline).toEqual({ sessionId: id, operationId: input.operationId, machineId: source, homeEpoch: 8,
+      homeState: "stopped", outcome: "pending", status: "stop-pending", reason: "Exit has not been confirmed.", observedAt: null });
+    expect(f.cache.current(id)).toMatchObject({ action: "stop", committed: { epoch: 8 } });
   });
 
   it("returns saved exit proof at the deadline even while contact is unfinished", async () => {

@@ -31,6 +31,7 @@ export function validateInstalledLook(raw: unknown): InstalledLookReport {
   equal(appTheme.foreground, '#f8f8f2', 'terminal foreground');
   equal(appTheme.cursor, '#eceff4', 'terminal cursor');
   equal(appTheme.ansi, ansi, 'ANSI palette');
+  equal(object(appTheme.colors).accent, '#d9d9db', 'app accent');
   equal(layout.theme, 'spider-glass', 'layout theme');
   equal(layout.ui_font, 'Google Sans Flex', 'body font');
   equal(layout.terminal_opacity, 0, 'terminal opacity');

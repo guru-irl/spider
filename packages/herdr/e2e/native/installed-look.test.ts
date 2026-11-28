@@ -5,7 +5,7 @@ import { createNativeAppDriver } from '../harness/app.js';
 function observations(): Record<string, unknown> {
   return {
     appSettings: { theme: 'spider-glass' }, piSettings: { theme: 'dracula-plus-glass' },
-    appTheme: { background: '#161618', foreground: '#f8f8f2', cursor: '#eceff4', ansi: ['#21222c','#ff5555','#50fa7b','#ffcb6b','#82aaff','#c792ea','#8be9fd','#f8f8f2','#545454','#ff6e6e','#69ff94','#ffcb6b','#d6acff','#ff92df','#a4ffff','#f8f8f2'] },
+    appTheme: { colors: { accent: '#d9d9db' }, background: '#161618', foreground: '#f8f8f2', cursor: '#eceff4', ansi: ['#21222c','#ff5555','#50fa7b','#ffcb6b','#82aaff','#c792ea','#8be9fd','#f8f8f2','#545454','#ff6e6e','#69ff94','#ffcb6b','#d6acff','#ff92df','#a4ffff','#f8f8f2'] },
     layout: { theme: 'spider-glass', ui_font: 'Google Sans Flex', terminal_opacity: 0, colors: { chrome: '#00000000', canvas: '#00000000', hover: '#ffffff12', selected: '#ffffff14', raised: '#ffffff1c', border: '#00000000', popover: '#161618f0', surface: '#161618f0' }, children: [{ id: 'work-body', gap: 8, padding: 8, content: { tab: 'active', pane: { gap: 8, radius: 12, background: '#161618f0', border: { width: 1, color: '#38383a' }, focus: { width: 1, color: 'accent' } } }, children: [{ id: 'panel', radius: 12, border: { width: 1, color: '#38383a' }, padding: 5, background: '#161618f0' }] }] },
     piTheme: { name: 'dracula-plus-glass', vars: { base: '#161618', strip: '#060607' }, colors: { text: '', muted: '#a6a6a7', border: '#656567', borderMuted: '#49494b', scrollbarTrack: '#49494b', selectedBg: '#29292a', searchMatchBg: '#303031', userMessageBg: 'strip', customMessageBg: 'strip', toolPendingBg: 'strip', toolSuccessBg: 'strip', toolErrorBg: 'strip', thinkingLow: '#8be9fd' } },
     keys: { terminal: { 'cmd-shift-a': 'send:\u001b[97;6u', 'cmd-shift-o': 'send:\u001b[111;6u', 'cmd-shift-u': 'send:\u001b[117;6u', 'cmd-shift-m': 'send:\u001b[109;6u', 'cmd-shift-k': 'send:\u001b[107;6u', 'ctrl-v': 'original-paste' } },
@@ -45,6 +45,11 @@ describe('installed look observations', () => {
     expect(() => validateInstalledLook(paste)).toThrow(/Ctrl-V/);
     const font = observations(); delete (font.layout as Record<string, unknown>).ui_font;
     expect(() => validateInstalledLook(font)).toThrow(/body font/);
+  });
+  it('rejects a blue accent in the installed app theme', () => {
+    const actual = observations();
+    (actual.appTheme as { colors: { accent: string } }).colors.accent = '#82aaff';
+    expect(() => validateInstalledLook(actual)).toThrow(/app accent/);
   });
   it('rejects wrong pane or panel frames and borders on unrelated chrome', () => {
     const pane = observations();

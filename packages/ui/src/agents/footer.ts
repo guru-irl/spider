@@ -124,7 +124,7 @@ export class AgentFooter implements Component {
       if (o.failed) seg.push(`${o.failed} failed`);
       if (o.cancelled) seg.push(`${o.cancelled} cancelled`);
       seg.push(`+${o.hidden} more`);
-      lines.push(truncateToWidth(this.theme.fg("muted", `${agentGlyph(this.theme)} ${icon(this.theme.iconStyle, "select")} ` + seg.join(" · ")), width, "…"));
+      lines.push(truncateToWidth(this.theme.fg("muted", `${agentGlyph(this.theme)} ` + seg.join(" · ")), width, "…"));
     }
     return lines.map((l) => (visibleWidth(l) > width ? truncateToWidth(l, width, "…") : l));
   }

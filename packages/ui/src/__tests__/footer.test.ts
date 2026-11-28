@@ -69,12 +69,13 @@ describe("AgentFooter", () => {
     const normal = footer.render(72);
     expect(normal[0]).toMatch(/agent-4 † · 3 turns · 5s +model · high$/);
     expect(normal[2]).toContain("4 running · +2 more");
+    expect(stripTerminalSequences(normal[2])).toMatch(/^◇ 4 running · \+2 more$/);
     expect(normal.slice(0, 2).every(line => visibleWidth(line) === 72 && line.endsWith("model · high"))).toBe(true);
     store.beginSelect();
     const selected = footer.render(72);
     expect(selected[0]).toMatch(/^▸ .*agent-4/);
     expect(selected.slice(0, 2).every(line => visibleWidth(line) === 72 && line.endsWith("model · high"))).toBe(true);
-    expect(selected[2]).toMatch(/view more +4 subagents$/);
+    expect(selected[2]).toMatch(/view more · 1\/4 +4 subagents$/);
     store.stop();
   });
   it("hasVisibleChange is false when nothing changed between frames", () => {

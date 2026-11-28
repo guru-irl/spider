@@ -221,6 +221,8 @@ Run the command from a Spider checkout with Python 3.10 or later and
 [`fontTools`](https://pypi.org/project/fonttools/) installed. It modifies only the
 named files and keeps the first copy of each as `FONT.ttf.spider-original`.
 Spider does not distribute patched fonts or change installed fonts on startup.
+If the script reports an occupied code point, reinstall the stock font before
+running the script again.
 
 1. Select the patched CaskaydiaCove Nerd Font in your terminal settings.
 2. Restart Herdr or the terminal so it reloads the font.

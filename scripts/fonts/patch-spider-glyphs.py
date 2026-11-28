@@ -169,8 +169,12 @@ def patch_file(path):
     if not stat.S_ISREG(original.st_mode) or path.suffix.lower() != ".ttf":
         raise ValueError("expected a regular .ttf file, not a symlink")
     backup = path.with_suffix(path.suffix + ".spider-original")
-    with tempfile.TemporaryDirectory(dir=path.parent, prefix=".spider-glyphs-") as temp_dir:
-        staged = Path(temp_dir) / "font.ttf"
+    fonts = (Path.home() / "Library" / "Fonts").resolve()
+    destination_dir = path.parent.resolve()
+    # Stage beside ~/Library/Fonts, not inside a directory macOS may scan.
+    staging_dir = fonts.parent if destination_dir.is_relative_to(fonts) else destination_dir
+    with tempfile.TemporaryDirectory(dir=staging_dir, prefix=".spider-glyphs-") as temp_dir:
+        staged = Path(temp_dir) / "font.tmp"
         with TTFont(path, lazy=True, recalcBBoxes=False, recalcTimestamp=False) as font:
             patch = expected_patch(font)
             if is_patched(font, patch):

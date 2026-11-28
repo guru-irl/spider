@@ -1,10 +1,13 @@
+import importlib.util
 import itertools
+import os
 from pathlib import Path
 import stat
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from fontTools.fontBuilder import FontBuilder
 from fontTools.pens.ttGlyphPen import TTGlyphPen
@@ -104,6 +107,25 @@ class PatchSpiderGlyphs(unittest.TestCase):
             for table in new["cmap"].tables:
                 if table.isUnicode() and table.format == 12:
                     self.assertTrue(all(table.cmap[cp] == cmap[cp] for cp in FRAMES))
+
+    def test_stages_outside_the_macos_font_directory(self):
+        home = self.font.parent
+        fonts = home / "Library" / "Fonts"
+        font = fonts / "Family" / "fixture.ttf"
+        font.parent.mkdir(parents=True)
+        build_font(font)
+        spec = importlib.util.spec_from_file_location("patch_spider_glyphs", SCRIPT)
+        patcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(patcher)
+        with patch.dict(os.environ, HOME=str(home)), patch.object(patcher.os, "replace", wraps=os.replace) as replace:
+            patcher.patch_file(font)
+        replace.assert_called_once()
+        staged, dest = replace.call_args.args
+        self.assertEqual(dest, font)
+        self.assertFalse(staged.is_relative_to(fonts), staged)
+        self.assertEqual(staged.suffix, ".tmp")
+        with TTFont(font) as installed:
+            self.assertTrue(all(cp in installed.getBestCmap() for cp in FRAMES))
 
     def test_second_run_leaves_both_files_alone(self):
         build_font(self.font)

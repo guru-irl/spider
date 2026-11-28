@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { IntroTheme } from "@spider/ui";
 import { testScratchPath } from "./testutil.js";
 
-const intro = import.meta.glob<typeof import("../intro/index.js")>("../intro/index.ts", { eager: true })["../intro/index.ts"];
+import { readIntroStats, registerIntro } from "../intro/index.js";
 const theme: IntroTheme = {
   fg: (_role, text) => text, bold: text => text, style: text => text, getBgAnsi: () => "",
 };
@@ -26,7 +26,6 @@ function addTurn(session: SessionManager, content: string) {
 }
 
 it("counts the current branch and only this session's runs and open todos", () => {
-  expect(intro?.readIntroStats).toBeTypeOf("function");
   const cwd = temporaryCwd(), session = SessionManager.inMemory(cwd);
   const first = addTurn(session, "First question");
   session.appendCompaction("First summary", first, 20);
@@ -45,24 +44,22 @@ it("counts the current branch and only this session's runs and open todos", () =
     run.run("other", other, "running");
     const todo = db.prepare("INSERT INTO todos (session_id, seq, text, done, created_at) VALUES (?, ?, 'task', ?, ?)");
     todo.run(id, 1, 0, now); todo.run(id, 2, 1, now); todo.run(id, 3, 0, now); todo.run(other, 1, 0, now);
-    expect(intro!.readIntroStats(session, now, db)).toEqual({ compactions: 1, turns: 3, ageMs: 6_120_000,
+    expect(readIntroStats(session, now, db)).toEqual({ compactions: 1, turns: 3, ageMs: 6_120_000,
       runs: { total: 5, active: 3 }, todos: 2 });
   } finally { db.close(); }
 });
 
 it("shows zero for a fresh session and unknown DB counts for a resumed session without history", () => {
-  expect(intro?.readIntroStats).toBeTypeOf("function");
   const session = SessionManager.inMemory(temporaryCwd());
   const now = Date.parse(session.getHeader()!.timestamp);
-  expect(intro!.readIntroStats(session, now)).toEqual({ compactions: 0, turns: 0, ageMs: 0,
+  expect(readIntroStats(session, now)).toEqual({ compactions: 0, turns: 0, ageMs: 0,
     runs: { total: 0, active: 0 }, todos: 0 });
   addTurn(session, "Previously started");
-  expect(intro!.readIntroStats(session, now)).toMatchObject({ turns: 1, runs: undefined, todos: undefined });
+  expect(readIntroStats(session, now)).toMatchObject({ turns: 1, runs: undefined, todos: undefined });
 });
 
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 function fixture(options: { cwd?: string; session?: SessionManager; mode?: ExtensionContext["mode"]; admitted?: boolean } = {}) {
-  expect(intro?.registerIntro).toBeTypeOf("function");
   const cwd = options.cwd ?? temporaryCwd();
   const session = options.session ?? SessionManager.inMemory(cwd);
   const handlers = new Map<string, Handler>(), printed: string[] = [];
@@ -81,7 +78,7 @@ function fixture(options: { cwd?: string; session?: SessionManager; mode?: Exten
   const terminal = { restored: false, width: () => 120, isRestored: () => terminal.restored, write: (text: string) => printed.push(text) };
   const readVisitUsage = vi.fn(async () => ({ credits: 1.53, calls: 2, unpricedCalls: 0,
     input: 10, cacheRead: 20, cacheWrite: 30, output: 9, reasoning: null }));
-  intro!.registerIntro(pi, { admitted: () => options.admitted ?? true, piVersion: "1.5.2", terminal, readVisitUsage });
+  registerIntro(pi, { admitted: () => options.admitted ?? true, piVersion: "1.5.2", terminal, readVisitUsage });
   const emit = (type: string, details: object) => handlers.get(type)?.({ type, ...details }, ctx);
   const start = (reason = "startup") => emit("session_start", { reason });
   const shutdown = (reason = "quit") => emit("session_shutdown", { reason });

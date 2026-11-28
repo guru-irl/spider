@@ -295,6 +295,20 @@ it("v0 readiness admits background sessions without legacy enrollment", async ()
   expect(f.ports.v0Ready).toHaveBeenCalledWith(id, "/fixture/session.jsonl", home, expect.any(Function));
   await f.emit("session_shutdown", { reason: "exit" }); expect(f.close).toHaveBeenCalledOnce(); expect(f.ports.stopped).not.toHaveBeenCalled();
 });
+it("withdraws the owner check as soon as its admission starts shutting down", async () => {
+  const f = fixture({ kind: "managed", home });
+  const owner = { pid: 83001, startIdentity: "owner-birth", bootId: "owner-boot" };
+  f.ports.v0Owner = async () => owner;
+  await f.emit("session_start");
+  const admittedOwner = vi.mocked(f.ports.v0Ready!).mock.calls[0][3];
+  expect(await admittedOwner()).toEqual(owner);
+  const inFlight = admittedOwner();
+  const reloading = f.emit("session_shutdown", { reason: "reload" });
+  try { expect(await inFlight).toBeNull(); }
+  finally { await reloading; }
+  expect(await admittedOwner()).toBeNull();
+});
+
 it("late v0 discovery cannot fall back to ordinary admission", async () => {
   const f = fixture({ kind: "unmanaged" }); let version = "1";
   f.ports.captureVersion = () => version;

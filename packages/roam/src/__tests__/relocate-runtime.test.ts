@@ -385,6 +385,28 @@ describe("v0 local runtime",()=>{
   expect(f.signalled).toEqual([42]);
   expect(f.launches).toEqual([]);
  });
+ it("stops the returning box pi with a malformed placement when its home is stopped", async () => {
+  const f = runtimeFixture(), local = createLocalRuntime(f.options,f.io);
+  writeLocal(f.options.globalDb,"relocate-managed",id,{sessionId:id,file:"/old/s.jsonl"});
+  claimFixtureLock(f);
+  f.io.bootId = async () => "boot";
+  f.setTerminals([{terminal:"core:t",state:"live",pid:42,owned:true}]);
+  const signal = f.io.signal;
+  f.io.signal = async (pid, kind) => { await signal(pid, kind); f.setLock(null); f.setProbe({kind:"absent"}); f.setTerminals([]); };
+  const loop = createHomeSupervisor({...local,stopStopped:local.enforceStopped,machineId:box,clock:f.options.clock,report() {}}, () => {});
+  await loop.tick();
+  expect(f.signalled).toEqual([]);
+  const stopped = {...f.home,state:"stopped" as const,epoch:4,moveId:null,updatedAt:2};
+  f.options.globalDb.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,state,destination,move_id,updated_at) VALUES (?,?,?,?,?,?,?)")
+   .run(id,box,stopped.epoch,stopped.state,stopped.destination,stopped.moveId,stopped.updatedAt);
+  f.setHome(stopped);
+  await loop.tick();
+  expect(f.signalled).toEqual([42]);
+  expect(f.launches).toEqual([]);
+  expect(await local.observeStopped(stopped)).toMatchObject({evidence:{kind:"pending",blockers:expect.arrayContaining([
+   {kind:"check",reason:"The local session placement could not be read."},
+  ])}});
+ });
  it.each(["before", "during"] as const)("a generic supervisor tick does not signal if a stopped row arrives %s process inspection", async when => {
   const f = runtimeFixture(), local = createLocalRuntime(f.options,f.io);
   const older = {...f.home,machineId:hub}, stopped = {...f.home,state:"stopped" as const,epoch:4};

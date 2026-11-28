@@ -72,10 +72,19 @@ export async function reapOrphanRuns(deps: ReapDeps): Promise<{ reaped: string[]
   return { reaped };
 }
 
+/** Unlike started_at, the end of a terminal run bounds when its child must already have started. */
+export function birthlessTerminalEnd(row: Readonly<RunRow>): number | null {
+  if (typeof row.pid_start_time === "string" && row.pid_start_time.trim()) return null;
+  if (row.status !== "done" && row.status !== "failed" && row.status !== "cancelled") return null;
+  return row.ended_at !== null && Number.isSafeInteger(row.ended_at) && row.ended_at > 0 ? row.ended_at : null;
+}
+
 function sameRunIdentity(before: Readonly<RunRow>, current: Readonly<RunRow>): boolean {
+  const end = birthlessTerminalEnd(before);
   return before.session_id === current.session_id && before.origin_machine === current.origin_machine &&
     before.host_pid === current.host_pid && before.pid === current.pid && before.pid_start_time === current.pid_start_time &&
-    before.started_at === current.started_at && before.parent_run_id === current.parent_run_id;
+    before.started_at === current.started_at && before.parent_run_id === current.parent_run_id &&
+    (end === null || end === birthlessTerminalEnd(current));
 }
 
 /** Stop owns the session fence and the absence proof. This path never signals. */

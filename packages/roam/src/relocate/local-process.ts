@@ -8,8 +8,10 @@ export interface SessionProcess {
   pid: number;
   startIdentity: string;
   command: string;
+  ancestryVerified?: false;
 }
 export interface SessionProcessTree { descendants: readonly SessionProcess[]; groups: readonly number[] }
+export interface StopTreeCheck { verifyAncestry: true; targetPid?: number }
 interface ProcessRow { pid: number; parent: number; group: number; uid: number; command: string }
 const execute = promisify(execFile);
 const runOptions = { encoding: "utf8" as const, timeout: 3000, maxBuffer: 4 * 1024 * 1024, env: { PATH: "/usr/bin:/bin", LC_ALL: "C" } };
@@ -33,7 +35,7 @@ async function processes(): Promise<ProcessRow[]> {
 }
 
 /** Collect identities before shutdown can reparent the children. Do not assume an entire OS process group belongs to pi. */
-export async function localProcessTree(pid: number): Promise<SessionProcessTree> {
+export async function localProcessTree(pid: number, stop?: StopTreeCheck): Promise<SessionProcessTree> {
   const byParent = new Map<number, ProcessRow[]>(), groups: number[] = [];
   for (const row of await processes()) {
     if (row.pid === pid && row.group === pid) groups.push(pid);
@@ -42,17 +44,32 @@ export async function localProcessTree(pid: number): Promise<SessionProcessTree>
     byParent.set(row.parent, siblings);
   }
   const found: SessionProcess[] = [], seen = new Set([pid]);
+  const ancestry = stop && new Map<number, ProcessRow>();
   const remaining = [pid];
   while (remaining.length) for (const child of byParent.get(remaining.pop()!) ?? []) {
     if (seen.has(child.pid)) continue;
     seen.add(child.pid);
     if (child.uid !== process.getuid?.() || child.pid === process.pid) throw new Error("Local process tree is not owned by this user");
-    const startIdentity = processStartIdentity(child.pid);
-    if (startIdentity !== null) {
-      found.push({pid: child.pid, startIdentity, command: child.command});
-      if (child.group === child.pid) groups.push(child.group);
+    ancestry?.set(child.pid, child);
+    if (stop?.targetPid === undefined || child.pid === stop.targetPid) {
+      const startIdentity = processStartIdentity(child.pid);
+      if (startIdentity !== null) {
+        found.push({pid: child.pid, startIdentity, command: child.command});
+        if (child.group === child.pid) groups.push(child.group);
+      }
     }
     remaining.push(child.pid);
+  }
+  if (ancestry && found.length) {
+    // ps gives parent links, while birth is sampled separately. A PID reused
+    // between those reads must still be under the same ancestry afterwards.
+    const latest = new Map((await processes()).map(row => [row.pid, row]));
+    const verified = new Set([pid]);
+    for (const [memberPid, before] of ancestry) {
+      const after = latest.get(memberPid);
+      if (after?.parent === before.parent && after.uid === before.uid && verified.has(before.parent)) verified.add(memberPid);
+    }
+    for (const member of found) if (!verified.has(member.pid)) member.ancestryVerified = false;
   }
   return {descendants: found.reverse(), groups};
 }

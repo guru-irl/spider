@@ -204,6 +204,9 @@ function admissionFixture() {
       for (const hook of host.hooks.get("session_start") ?? []) await hook({}, host.ctx);
       if (setupError) throw setupError;
     },
+      async reload() {
+        for (const hook of host.hooks.get("session_shutdown") ?? []) await hook({ reason: "reload" }, host.ctx);
+      },
       async status() {
         return { admitted: gate.inspect().kind === "ordinary", shutdowns,
           idLockHeld: !!await inspectIdLock(join(root, "herdr"), sessionId),
@@ -254,6 +257,30 @@ it("late managed launches exit before admission", async () => {
     expect(await attempt(stopped, undefined)).toMatchObject({ admitted: false, shutdowns: 0 });
     expect(await attempt(null, undefined)).toMatchObject({ admitted: true, shutdowns: 0 });
   } finally { f.db.close(); }
+});
+
+it("keeps the same owner epoch across reloads without re-admitting a stale launch", async () => {
+  const f = admissionFixture(); f.setHome(running);
+  const first = f.open(f.marker(9));
+  let resumed: typeof first | undefined, stale: typeof first | undefined;
+  try {
+    await first.start();
+    const lock = await inspectIdLock(join(f.root, "herdr"), sessionId);
+    expect(lock).not.toBeNull();
+    const owner = { ...lock!.identity, bootId: lock!.bootId };
+    const operation: Operation = { id: "inspect-reload", kind: "session-inspect", machineId, expectedEpoch: 9,
+      args: { v0: true, homeState: "running", sessionId, homeMachineId: machineId, owner } };
+    const root = join(f.root, "roam", "s");
+    expect(await raw(root, operation, "inspect")).toMatchObject({ code: 0, epoch: 9, value: { version: 1, sessionId, owner } });
+    expect(process.env[markerKey]).toBeUndefined();
+    await first.reload();
+    resumed = f.open(undefined); await resumed.start();
+    expect(await raw(root, operation, "inspect")).toMatchObject({ code: 0, epoch: 9, value: { version: 1, sessionId, owner } });
+    await resumed.reload();
+    f.setHome({ ...running, epoch: 11, updatedAt: 11 });
+    stale = f.open(undefined); await stale.start();
+    expect(await stale.status()).toMatchObject({ admitted: false, shutdowns: 1 });
+  } finally { await stale?.gate.close(); await resumed?.gate.close(); await first.gate.close(); f.db.close(); }
 });
 
 it("inspects only the exact running admission while both ownership records are held", async () => {

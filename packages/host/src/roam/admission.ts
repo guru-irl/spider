@@ -24,7 +24,7 @@ import { isRevoked } from "@spider/roam/revocation";
 import type { HostIntent, RoamConfig } from "@spider/roam/contracts";
 import type { RunningHome, SessionId } from "@spider/roam/relocate/types";
 import type { OwnerGeneration } from "@spider/roam/relocate/session-stop-types";
-import { consumeManagedLaunch } from "@spider/roam/relocate/launch-environment";
+import { consumeManagedLaunch, type ManagedLaunch } from "@spider/roam/relocate/launch-environment";
 import { createV0Runtime } from "@spider/roam/relocate/runtime";
 import { createLocalSessionMachinePorts } from "@spider/roam/relocate/local";
 import { loadRelocateAdmission, prepareRelocateAdmission, type LocalHomeAdmission } from "./relocate-admission";
@@ -92,14 +92,21 @@ export class AdmissionClosedError extends Error {
   constructor(message: string) { super(message); this.name = "AdmissionClosedError"; }
 }
 
+// A rebuilt extension may load a fresh module instance in the same pi process.
+const RELOAD_LAUNCH = Symbol.for("spider.roam.reload-launch.v1");
+const reloadState = globalThis as typeof globalThis & { [RELOAD_LAUNCH]?: ManagedLaunch };
+
 export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): AdmissionGate {
   let initialLaunch = consumeManagedLaunch();
+  let reloadLaunch = reloadState[RELOAD_LAUNCH];
+  delete reloadState[RELOAD_LAUNCH];
+  let admittedLaunch: ManagedLaunch | undefined;
   let handoffRequired = process.env.SPIDER_HERDR_HANDOFF_FILE !== undefined;
-  if (process.env.PI_SUBAGENT_CHILD === "1" && !handoffRequired && initialLaunch === undefined) {
+  if (process.env.PI_SUBAGENT_CHILD === "1" && !handoffRequired && initialLaunch === undefined && !reloadLaunch) {
     const child: Admission = { kind: "ordinary", home: null, blockers: [] };
     return { inspect: () => child, refreshInitialHome: async () => child, whenSettled: async () => child, close: async () => {}, freeze: async () => { throw new Error(VERIFY); }, unfreeze: async () => { throw new Error(VERIFY); } };
   }
-  let admission: Admission = { kind: initialLaunch === undefined ? "ordinary" : "pending", home: null, blockers: [] };
+  let admission: Admission = { kind: initialLaunch === undefined && !reloadLaunch ? "ordinary" : "pending", home: null, blockers: [] };
   const ordinaryWorkAllowed = () => isOrdinaryWorkAllowed(admission);
   let sessionId = "", sessionFile = "", epoch: number | null = null, participating = false, generation = 0;
   let ownershipVerified = false;
@@ -163,6 +170,8 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
   async function start(ctx: ExtensionContext | undefined, reopening = false, late = false): Promise<void> {
     const id = ctx?.sessionManager?.getSessionId?.() ?? "";
     const file = ctx?.sessionManager?.getSessionFile?.() ?? "";
+    if (initialLaunch === undefined && reloadLaunch?.sessionId === id) initialLaunch = reloadLaunch;
+    reloadLaunch = undefined;
     const ticket = ++generation, launch = initialLaunch;
     let result: Admission | undefined, admitted = false, stage = "eligibility";
     let setupFailure: MoveSetupFailure | undefined;
@@ -254,6 +263,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
                 if (readyHome?.kind !== "managed" || !isDeepStrictEqual(readyHome.home, home)) {
                   await closeV0Control(); await release(); publishResult("blocked", home, v0Message); return;
                 }
+                admittedLaunch = launch;
                 initialLaunch = undefined;
               }
               epoch = home.epoch; participating = true; ownershipVerified = true;
@@ -410,10 +420,14 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
 
   pi.on("session_start", async (_event, ctx) => start(ctx));
   pi.on("session_shutdown", async event => {
+    if (event.reason === "reload" && admittedLaunch?.sessionId === sessionId) reloadState[RELOAD_LAUNCH] = admittedLaunch;
+    // In-flight owner reads must see that this admission is no longer current.
+    const control = v0Control;
+    v0Control = undefined;
     // Pi starts shutdown from its prepended signal listener before other listeners run.
     await Promise.resolve();
     unwatchSignals();
-    if (v0Control) await closeV0Control();
+    if (control) await control.close();
     if (!v0Managed && !signalled && event.reason !== "reload" && participating && ordinaryWorkAllowed()) await ports.stopped?.(sessionId);
   });
   pi.on("input", (_event, ctx) => {

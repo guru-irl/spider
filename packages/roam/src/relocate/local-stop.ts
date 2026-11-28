@@ -7,6 +7,7 @@ import { bootIdChanged, localBootId, type IdLockObservation } from "@spider/herd
 import { createSessionLeases } from "@spider/herdr/sessions/lease";
 import { isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { birthlessTerminalEnd } from "../../../subagents/src/reaper";
 import type { Clock } from "../contracts";
 import { decodeManagedHome, readManagedHome, sameManagedHome } from "./home";
 import { object, parsePlacement } from "./journal";
@@ -17,13 +18,16 @@ import type { RelocateAdapterOptions, RelocateHome, SessionId, StoppedHome } fro
 
 const modeState = "relocate-stop-mode", proofState = "relocate-stop-proof";
 const graceMs = 5_000, probeMs = 100, terminalReadMs = 1_500;
+const processStartResolutionMs = 1_000; // ps lstart reports whole seconds.
 const unavailable = "The local session or its work could not be verified.";
 const expired = "The local stop check ran out of time.";
 type Evidence = StopObservation["evidence"];
 type Signal = Parameters<LocalIO["signal"]>[1];
 type Terminal = Awaited<ReturnType<LocalIO["terminals"]>>[number];
 type Identity = Pick<OwnerGeneration, "pid" | "startIdentity">;
-type Child = Identity & { kind: "run" | "detached" | "unclassified" };
+type Child = Identity & { kind: "verified" | "run" | "detached" | "unclassified" };
+// Earlier proofs marked only verified subagent children as "run".
+const verifiedChild = (child: Child) => child.kind === "verified" || child.kind === "run";
 type Capture = { owner: OwnerGeneration; terminal: string | null; children: Child[] };
 type Proof = { home: StoppedHome; bootId: string; observedAt: number; evidence: Evidence; capture: Capture | null };
 type ModeRecord = { home: StoppedHome; mode: StopMode };
@@ -43,7 +47,9 @@ class WindowEnded extends Error {}
 
 function readProof(db: Db, home: StoppedHome, bootId: string): Proof | null {
   const proof = readLocal<Proof>(db, proofState, home.sessionId);
-  if (!proof || !sameManagedHome(decodeManagedHome(object(proof.home)), home) || proof.bootId !== bootId) return null;
+  if (proof === undefined) return null;
+  if (!proof || !knownText(proof.bootId)) throw new StopCheck(unavailable);
+  if (!sameManagedHome(decodeManagedHome(object(proof.home)), home) || proof.bootId !== bootId) return null;
   const identity = (value: Identity) => safePid(value?.pid) && knownText(value?.startIdentity);
   const owner = (value: OwnerGeneration) => identity(value) && value.bootId === bootId;
   if (!Number.isSafeInteger(proof.observedAt) || proof.observedAt < 0 || !proof.evidence ||
@@ -53,7 +59,7 @@ function readProof(db: Db, home: StoppedHome, bootId: string): Proof | null {
       proof.capture !== null && (!owner(proof.capture.owner) ||
         proof.capture.terminal !== null && !knownText(proof.capture.terminal) || !Array.isArray(proof.capture.children) ||
         !proof.capture.children.every(child => identity(child) && child.pid !== proof.capture!.owner.pid &&
-          ["run", "detached", "unclassified"].includes(child.kind)))) throw new StopCheck(unavailable);
+          ["verified", "run", "detached", "unclassified"].includes(child.kind)))) throw new StopCheck(unavailable);
   return proof;
 }
 
@@ -145,6 +151,7 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
     const time = budget(clock, options.limits.readyMs);
     let home: RelocateHome | null = null, bootId: string | null = null;
     let capture: Capture | null = null;
+    let proofUnreadable = false;
     const observation = (evidence: Evidence, observedAt = clock.now()): StopObservation => ({ sessionId: id, machineId, home, bootId, observedAt, evidence });
     const mismatch = () => new StopCheck(home ? "The local home differs from the requested stopped home." : "The stopped home is missing locally.");
     function requireStoppedHome(): void {
@@ -176,7 +183,12 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
         home = readManagedHome(db, id);
         requireStoppedHome();
         if (!bootId) throw new StopCheck("The local boot identity is unavailable.");
-        writeLocal(db, proofState, id, { home: expected, bootId, observedAt: at, evidence, capture } satisfies Proof);
+        // Keep unreadable survivor evidence unless a fresh owner supplied a
+        // capture. Malformed storage can prevent even that replacement, but
+        // must not prevent enforcement of the exact stopped home.
+        if (proofUnreadable && !capture) return;
+        try { writeLocal(db, proofState, id, { home: expected, bootId, observedAt: at, evidence, capture } satisfies Proof); }
+        catch (error) { if (!proofUnreadable) throw error; }
       }).immediate();
       return observation(evidence, at);
     }
@@ -268,40 +280,30 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
       return { ...result, excluded };
     }
     async function captureTree(owner: Owner, location: Location): Promise<void> {
-      const tree = (await time.read(() => io.tree(owner.generation.pid))).descendants;
+      const tree = (await time.read(() => io.tree(owner.generation.pid, { verifyAncestry: true }))).descendants;
       const children = [...(capture?.children ?? [])];
-      const members = new Map<number, Child>();
+      const members = new Map<number, Child>(), verified = new Set<number>();
       for (const member of tree) {
-        if (!safePid(member.pid) || member.pid === owner.generation.pid || members.has(member.pid)) throw new StopCheck(unavailable);
+        if (!safePid(member.pid) || !knownText(member.startIdentity) || member.pid === owner.generation.pid || members.has(member.pid))
+          throw new StopCheck(unavailable);
         let child = children.find(child => sameProcess(child, member));
         if (!child) {
           child = { pid: member.pid, startIdentity: member.startIdentity, kind: "unclassified" };
           children.push(child);
         }
         members.set(child.pid, child);
+        if (member.ancestryVerified !== false) verified.add(child.pid);
+        else if (child.kind !== "detached") child.kind = "unclassified";
       }
       // Retain sightings even if pi exits during verification. Until the
       // root and tree agree, newly seen processes are blockers, not targets.
       capture = { owner: owner.generation, terminal: owner.terminal ?? capture?.terminal ?? null, children };
-      const { runs, excluded, complete } = tree.length ? await inventory(tree) : { runs: [], excluded: new Set<number>(), complete: true };
-      for (const child of members.values()) if (excluded.has(child.pid)) child.kind = "detached";
+      const { excluded, complete } = tree.length ? await inventory(tree) : { excluded: new Set<number>(), complete: true };
+      for (const child of children) if (excluded.has(child.pid)) child.kind = "detached";
       if (!(await currentOwner(location)).owner || await gone(owner.generation))
         throw new StopCheck("Pi exited while its process tree was being checked.");
-      if (complete) {
-        const byHost = new Map<number, Array<(typeof runs)[number]>>();
-        for (const run of runs) {
-          const children = byHost.get(run.host_pid) ?? [];
-          children.push(run);
-          byHost.set(run.host_pid, children);
-        }
-        const hosts = [owner.generation.pid], verified = new Set(hosts);
-        for (const pid of hosts) for (const run of byHost.get(pid) ?? []) {
-          const child = members.get(run.pid);
-          if (!child || child.kind === "detached" || child.startIdentity !== run.pid_start_time || verified.has(child.pid)) continue;
-          child.kind = "run";
-          verified.add(child.pid);
-          hosts.push(child.pid);
-        }
+      if (complete) for (const child of members.values()) {
+        if (child.kind !== "detached" && verified.has(child.pid)) child.kind = "verified";
       }
       save({ kind: "checking" });
     }
@@ -309,26 +311,39 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
       const { owner } = await currentOwner(location);
       if (owner) await captureTree(owner, location);
     }
-    async function canSignal(target: Identity, owner: boolean, location: Location): Promise<boolean> {
+    async function canSignal(target: Identity | Child, location: Location): Promise<boolean> {
       const current = await currentOwner(location);
-      if (owner ? !current.owner : !current.terminalsKnown || !current.owner && !await gone(capture!.owner)) return false;
+      const child = "kind" in target;
+      if (child ? !current.terminalsKnown || !current.owner && !await gone(capture!.owner) : !current.owner) return false;
+      if (child && current.owner) {
+        const root = current.owner.generation.pid;
+        const tree = await time.read(() => io.tree(root, { verifyAncestry: true, targetPid: target.pid })).catch(() => null);
+        if (!tree?.descendants.some(member => member.ancestryVerified !== false && sameProcess(member, target))) {
+          target.kind = "unclassified";
+          save({ kind: "checking" });
+          return false;
+        }
+        // Catch a replacement owner during the ancestry read. If pi exited,
+        // the verified capture is the ancestry evidence for reparented work.
+        const latest = await currentOwner(location);
+        if (!latest.terminalsKnown || !latest.owner && !await gone(capture!.owner)) return false;
+      }
       const state = await probe(target.pid);
-      if (state.kind !== "live" || state.startIdentity !== target.startIdentity || owner && !state.pi) return false;
+      if (state.kind !== "live" || state.startIdentity !== target.startIdentity || !child && !state.pi) return false;
       await readHome();
       return true;
     }
     async function signalTargets(signal: Signal, location: Location): Promise<boolean> {
       if (!capture) return false;
       let sent = false;
-      const targets = [capture.owner, ...capture.children.filter(child => child.kind === "run")];
+      const targets = [capture.owner, ...capture.children.filter(verifiedChild)];
       for (const target of targets) {
         if (signal === "SIGTERM" && hard()) break;
-        const owner = target === capture.owner;
-        if (!owner) {
+        if ("kind" in target) {
           const { excluded, complete } = await inventory(capture.children);
           if (excluded.has(target.pid) || !complete) continue;
         }
-        if (!await canSignal(target, owner, location)) continue;
+        if (!await canSignal(target, location)) continue;
         if (signal === "SIGTERM" && hard()) break;
         try { await time.read(() => io.signal(target.pid, signal)); }
         catch (error) { if ((error as NodeJS.ErrnoException | null)?.code !== "ESRCH") throw error; }
@@ -351,15 +366,20 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
       } catch (error) { if (!(error instanceof WindowEnded)) throw error; }
       await guard();
     }
-    async function proveAbsence(location: Location): Promise<StopObservation> {
+    async function proveAbsence(location: Location, recordBlockers: readonly StopBlocker[]): Promise<StopObservation> {
       const current = await currentOwner(location);
       if (current.owner || capture && !await gone(capture.owner))
-        return save(pending("The verified pi process has not exited."));
-      const blockers: StopBlocker[] = [];
+        return save(pending("The verified pi process has not exited.", recordBlockers));
+      const blockers = [...recordBlockers];
       if (!current.terminalsKnown) blockers.push(check("The labelled terminals could not be checked."));
       const runs = await time.read(() => work.settleRuns(id, async row => {
-        const p = row.pid === null ? { kind: "absent" } as const : await probe(row.pid);
-        const absent = p.kind === "absent" || p.kind === "live" && !!row.pid_start_time && p.startIdentity !== row.pid_start_time;
+        const pid = row.pid;
+        const birth = knownText(row.pid_start_time) ? row.pid_start_time : null;
+        const endedAt = birthlessTerminalEnd(row);
+        const p = pid === null ? { kind: "absent" } as const : endedAt === null
+          ? await probe(pid) : await time.read(() => io.probe(pid, true));
+        const absent = p.kind === "absent" || p.kind === "live" && (birth !== null ? p.startIdentity !== birth
+          : endedAt !== null && p.startedAt !== undefined && p.startedAt - endedAt > processStartResolutionMs);
         if (!absent || await lockOwner(await inspect())) return false;
         // A lockless labelled pi cannot admit runs. Recheck all labels and
         // leases below before publishing absence, not for each historical row.
@@ -384,15 +404,27 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
       return save({ kind: "confirmed", owner: capture?.owner ?? null });
     }
     async function enforceLocked(): Promise<StopObservation> {
-      let proofReadable = false;
+      const recordBlockers: StopBlocker[] = [];
       try {
         await readInitialState();
-        const prior = readProof(db, expected, bootId!);
-        proofReadable = true;
-        if (prior?.evidence.kind === "confirmed" && await shortCheck().catch(() => false)) return observation(prior.evidence, prior.observedAt);
+        let prior: Proof | null = null;
+        try { prior = readProof(db, expected, bootId!); }
+        catch {
+          proofUnreadable = true;
+          recordBlockers.push(check("The local stop proof could not be read."));
+        }
+        if (prior?.evidence.kind === "confirmed" && await shortCheck().catch(() => false))
+          return observation(prior.evidence, prior.observedAt);
         // A new launch contradicts confirmation. Never reuse that old tree.
         capture = prior?.evidence.kind === "confirmed" ? null : prior?.capture ?? null;
-        const location = locateRecords(options, id, expected.machineId !== machineId);
+        const displaced = expected.machineId !== machineId;
+        let location: Location;
+        try { location = locateRecords(options, id, displaced); }
+        catch (error) {
+          if (displaced) throw error;
+          location = { file: null, cwd: null, local: true };
+          recordBlockers.push(check("The local session placement could not be read."));
+        }
         if (!location.local) throw new StopCheck("No prior local placement or membership is known for this displaced session.");
         await guard();
         save({ kind: "checking" });
@@ -407,7 +439,7 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
           if (capture?.terminal && first.owner.terminal && capture.terminal !== first.owner.terminal)
             throw new StopCheck("The verified owner's terminal labels changed.");
           await captureTree(first.owner, location);
-          if (!hard() && first.owner.admitted && await canSignal(first.owner.generation, true, location) && !hard()) {
+          if (!hard() && first.owner.admitted && await canSignal(first.owner.generation, location) && !hard()) {
             const until = Math.min(time.end, clock.now() + graceMs);
             // The socket timeout covers transport; the independent deadline
             // below covers both a silent peer and an acknowledgement without exit.
@@ -424,7 +456,7 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
           if (waited) await recapture(location);
           save({ kind: "checking" });
           waited = await signalTargets("SIGTERM", location);
-          if (waited) await waitFor([capture.owner, ...capture.children.filter(child => child.kind === "run")], clock.now() + graceMs);
+          if (waited) await waitFor([capture.owner, ...capture.children.filter(verifiedChild)], clock.now() + graceMs);
         }
         if (capture) {
           if (waited) await recapture(location);
@@ -432,10 +464,10 @@ export function createLocalStop(options: RelocateAdapterOptions, io: LocalIO, wi
           save({ kind: "checking" });
           await signalTargets("SIGKILL", location);
         }
-        return await proveAbsence(location);
+        return await proveAbsence(location, recordBlockers);
       } catch (error) {
-        const evidence = pending(error instanceof StopCheck ? error.message : unavailable);
-        if (proofReadable && bootId && sameManagedHome(home, expected)) {
+        const evidence = pending(error instanceof StopCheck ? error.message : unavailable, recordBlockers);
+        if (bootId && sameManagedHome(home, expected)) {
           try { return save(evidence); } catch { /* Do not replace proof for a different home. */ }
         }
         return observation(evidence);

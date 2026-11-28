@@ -30,7 +30,7 @@ import type { StopMode, StopObservation } from "./session-stop-types";
 import { requestSessionControl } from "../session-socket";
 import type { MovingHome, RelocateAdapterOptions, RelocateHome, RunningHome, SessionId, SessionOwner, SessionPlacement, SessionMachinePorts, StoppedHome, SupervisorEntry, V0Result, RelocatePlan } from "./types";
 import { refusal } from "./remote";
-import { insideDirectory, isPiTitle, localProcessTree, localGroupBlockers, locklessPiInCheckout, processName, type SessionProcessTree } from "./local-process";
+import { insideDirectory, isPiTitle, localProcessTree, localGroupBlockers, locklessPiInCheckout, processName, type SessionProcessTree, type StopTreeCheck } from "./local-process";
 import { localWriterBlockers } from "./local-writers";
 import { piLaunchArgv, toolPath } from "./launch-environment";
 
@@ -46,9 +46,9 @@ function finishedTerminal(terminal: string, row: Record<string,unknown>): LocalT
 }
 export interface LocalIO {
   inspect(sessionId: string): Promise<IdLockObservation | null>;
-  probe(pid: number): Promise<{kind:"absent"}|{kind:"unknown"}|{kind:"live";startIdentity:string;pi:boolean}>;
+  probe(pid: number, readStartedAt?: boolean): Promise<{kind:"absent"}|{kind:"unknown"}|{kind:"live";startIdentity:string;pi:boolean;startedAt?:number}>;
   claimFree(sessionId: string): Promise<void>;
-  tree(pid: number): Promise<SessionProcessTree>;
+  tree(pid: number, stop?: StopTreeCheck): Promise<SessionProcessTree>;
   groupBlockers(groups: readonly number[]): Promise<readonly string[]>;
   writerBlockers(sessionId: SessionId, placement?: SessionPlacement, requireCheckout?: boolean): Promise<readonly string[]>;
   signal(pid: number, signal: "SIGTERM" | "SIGKILL"): Promise<void>;
@@ -65,14 +65,24 @@ export function exactHome(a: RelocateHome | null, b: RelocateHome): boolean {
 function sameOwner(a: IdLockObservation | null, b: IdLockObservation): boolean {
   return !!a && a.identity.pid === b.identity.pid && a.identity.startIdentity === b.identity.startIdentity && a.bootId === b.bootId && a.pendingOperationId === b.pendingOperationId;
 }
-export async function probeLocalProcess(pid: number): ReturnType<LocalIO["probe"]> {
+export async function probeLocalProcess(pid: number, readStartedAt = false): ReturnType<LocalIO["probe"]> {
   let startIdentity: string | null;
   try { startIdentity = processStartIdentity(pid); }
   catch { return {kind:"unknown"}; }
   if (startIdentity === null) return {kind:"absent"};
   try {
-    const comm = execFileSync("ps",["-p",String(pid),"-o","comm="],{encoding:"utf8",timeout:1000}).trim();
-    return {kind:"live",startIdentity,pi:isPiTitle(comm)};
+    if (!readStartedAt) {
+      const comm = execFileSync("ps",["-p",String(pid),"-o","comm="],{encoding:"utf8",timeout:1000}).trim();
+      return {kind:"live",startIdentity,pi:isPiTitle(comm)};
+    }
+    const output = execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart=", "-o", "comm="], {
+      encoding: "utf8", timeout: 1000, env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
+    }).trim();
+    const fields = /^(\w{3} \w{3} +\d{1,2} \d{2}:\d{2}:\d{2} \d{4})[ \t]+(.+)$/.exec(output);
+    if (!fields || processStartIdentity(pid) !== startIdentity) return {kind:"unknown"};
+    const startedAt = Date.parse(`${fields[1]} UTC`);
+    if (!Number.isSafeInteger(startedAt)) return {kind:"unknown"};
+    return {kind:"live",startIdentity,pi:isPiTitle(fields[2]),startedAt};
   } catch {
     try { return processStartIdentity(pid) === startIdentity ? {kind:"unknown"} : {kind:"absent"}; }
     catch { return {kind:"unknown"}; }

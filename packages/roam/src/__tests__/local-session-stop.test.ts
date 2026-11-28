@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, rmdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -132,14 +132,16 @@ function fixture(readyMs = 15_000) {
   const runtime = createLocalRuntime(options, io);
   const placement = { sessionId: id, machineId: machine, cwd: checkout, file, stores: ["global", key],
     repoKey: "fixture-repo", workspaceId: "fixture-workspace", repository: checkout, historyMachine: machine } as const;
-  const run = (name: string, pid: number, birth: string, session = id, hostPid = 83001) => project.db.prepare(`INSERT INTO runs(id,agent,session_id,status,pid,pid_start_time,host_pid,origin_machine) VALUES (?,'test',?,'running',?,?,?,?)`)
-    .run(name, session, pid, birth, hostPid, machine);
+  const run = (name: string, pid: number, birth: string | null, session = id, hostPid = 83001,
+    status = "running", endedAt: number | null = null) => project.db.prepare(`INSERT INTO runs(id,agent,session_id,status,pid,pid_start_time,host_pid,origin_machine,ended_at) VALUES (?,'test',?,?,?,?,?,?,?)`)
+    .run(name, session, status, pid, birth, hostPid, machine, endedAt);
   return { runtime, options, io, effects, replicate, owner, exit, add, label, behavior, advance, descendants, placement, run,
     setLease: (value: typeof lease) => { lease = value; }, reboot: () => { boot = bootB; },
     advanceToNextTimer: () => advance(Math.min(...timers.values()) - now),
     fullCheckCount: () => fullCheckCount, clearCwd: () => rmdirSync(checkout),
     membership: (session = id) => project.db.prepare("SELECT state,epoch FROM roam_sessions WHERE session_id=?").get(session),
     runStatus: (name: string) => project.db.prepare("SELECT status FROM runs WHERE id=?").get(name),
+    setRunEnd: (name: string, endedAt: number) => project.db.prepare("UPDATE runs SET ended_at=? WHERE id=?").run(endedAt, name),
   };
 }
 
@@ -195,7 +197,7 @@ it("a wedged shutdown socket costs at most five seconds", async () => {
 
 it("hard stop verifies absence, not signal delivery", async () => {
   const f = fixture(); f.owner(); f.replicate(stopped);
-  f.add(child, "owned-child"); f.add(unclassified, "arbitrary-shell", false);
+  f.add(child, "owned-child"); f.add(unclassified, "tool-shell", false);
   f.run("owned-run", child, "owned-child"); f.run("other-run", otherSessionPid, "other-pi", other, otherSessionPid);
   const jobId = "20261128T000000Z-deadbeef", detachedJobPid = 83007, nestedJobPid = 83008;
   const jobDirectory = join(f.placement.cwd, ".spider", "scratch", "bg", jobId);
@@ -208,15 +210,15 @@ it("hard stop verifies absence, not signal delivery", async () => {
   f.run("detached-child-row", nestedJobPid, "nested-job", id, detachedJobPid);
   f.descendants.set(pid, [child, unclassified, detachedJobPid, nestedJobPid]);
   f.descendants.set(detachedJobPid, [nestedJobPid]);
-  f.behavior.signal = async target => { if (target === pid) f.exit(pid); };
+  f.behavior.signal = async target => { if (target === pid || target === unclassified) f.exit(target); };
   queueStopMode(f.options.globalDb, stopped, "hard");
   queueStopMode(f.options.globalDb, stopped, "graceful");
   const whileChildSurvives = await f.runtime.enforceStopped(stopped);
   expect(whileChildSurvives.evidence.kind).toBe("pending");
-  expect(f.effects).toEqual([[0, "SIGKILL", pid], [0, "SIGKILL", child]]);
+  expect(f.effects).toEqual([[0, "SIGKILL", pid], [0, "SIGKILL", child], [0, "SIGKILL", unclassified]]);
   expect(f.runStatus("owned-run")).toEqual({ status: "running" });
   expect(f.membership()).toEqual({ state: "active", epoch: 7 });
-  f.add(child, "replacement-not-the-run", false); f.exit(unclassified); f.exit(nestedJobPid);
+  f.add(child, "replacement-not-the-run", false); f.exit(nestedJobPid);
   const restartedRuntime = createLocalRuntime(f.options, f.io);
   const whileJobSurvives = await restartedRuntime.enforceStopped(stopped);
   expect(whileJobSurvives.evidence).toMatchObject({ kind: "pending", blockers: [{ kind: "job", id: jobId }] });
@@ -228,7 +230,71 @@ it("hard stop verifies absence, not signal delivery", async () => {
   expect(f.membership()).toEqual({ state: "frozen", epoch: 8 });
   expect(f.membership(other)).toEqual({ state: "active", epoch: 7 });
   expect(f.runStatus("other-run")).toEqual({ status: "running" });
-  expect(f.effects.map(effect => effect[2])).toEqual([pid, child]);
+  expect(f.effects.map(effect => effect[2])).toEqual([pid, child, unclassified]);
+});
+
+it("signals a tool child left behind by graceful pi shutdown and confirms its exit", async () => {
+  const f = fixture(); f.owner(); f.replicate(stopped);
+  f.add(child, "tool-birth", false); f.descendants.set(pid, [child]);
+  f.behavior.shutdown = async () => { f.exit(); return true; };
+  f.behavior.signal = async target => f.exit(target);
+  expect((await f.runtime.enforceStopped(stopped)).evidence.kind).toBe("confirmed");
+  expect(f.effects).toEqual([[0, "shutdown", pid], [0, "SIGTERM", child]]);
+});
+
+it("signals a verified tool child but not one whose identity cannot be rechecked", async () => {
+  const f = fixture(); f.owner(); f.replicate(stopped);
+  f.add(child, "tool-birth", false); f.add(unclassified, "unknown-tool", false);
+  f.descendants.set(pid, [child, unclassified]);
+  queueStopMode(f.options.globalDb, stopped, "hard");
+  const probe = f.io.probe;
+  f.behavior.signal = async target => {
+    f.exit(target);
+    if (target === pid) f.io.probe = pid => pid === unclassified ? Promise.resolve({ kind: "unknown" }) : probe(pid);
+  };
+  expect((await f.runtime.enforceStopped(stopped)).evidence).toMatchObject({ kind: "pending", blockers: [
+    { kind: "check", reason: `A captured process is still present or unverified (PID ${unclassified}).` },
+  ] });
+  expect(f.effects).toEqual([[0, "SIGKILL", pid], [0, "SIGKILL", child]]);
+});
+
+it.each(["during capture", "before the signal"] as const)("keeps a child pending when ancestry fails %s", async when => {
+  const f = fixture(); f.owner(); f.replicate(stopped);
+  f.add(child, "tool-birth", false); f.add(unclassified, "reused-pid-birth", false);
+  f.descendants.set(pid, [child, unclassified]);
+  const tree = f.io.tree;
+  f.io.tree = async root => {
+    const result = await tree(root);
+    if (when === "before the signal" && !f.effects.length) return result;
+    return { ...result, descendants: result.descendants.map(member => member.pid === unclassified
+      ? { ...member, ancestryVerified: false } : member) };
+  };
+  f.behavior.signal = async target => { if (target !== pid) f.exit(target); };
+  queueStopMode(f.options.globalDb, stopped, "hard");
+  expect((await f.runtime.enforceStopped(stopped)).evidence.kind).toBe("pending");
+  expect(f.effects).toEqual([[0, "SIGKILL", pid], [0, "SIGKILL", child]]);
+  f.exit(pid);
+  expect((await f.runtime.enforceStopped(stopped)).evidence).toMatchObject({ kind: "pending", blockers: [
+    { kind: "check", reason: `A captured process is still present or unverified (PID ${unclassified}).` },
+  ] });
+  expect(f.effects).toEqual([[0, "SIGKILL", pid], [0, "SIGKILL", child]]);
+});
+
+it("leaves a tool child untouched until the detached job inventory can be read", async () => {
+  const f = fixture(); f.owner(); f.replicate(stopped);
+  f.add(child, "tool-birth", false); f.descendants.set(pid, [child]);
+  queueStopMode(f.options.globalDb, stopped, "hard");
+  const directory = join(f.placement.cwd, ".spider", "scratch", "bg", "20261128T000000Z-bad00bad");
+  mkdirSync(directory, { mode: 0o700, recursive: true });
+  const manifest = join(directory, "job.json");
+  writeFileSync(manifest, "bad JSON");
+  expect((await f.runtime.enforceStopped(stopped)).evidence.kind).toBe("pending");
+  expect(f.effects).toEqual([[0, "SIGKILL", pid]]);
+  unlinkSync(manifest); rmdirSync(directory);
+  f.behavior.signal = async target => f.exit(target);
+  const result = await f.runtime.enforceStopped(stopped);
+  expect(f.effects).toEqual([[0, "SIGKILL", pid], [0, "SIGKILL", pid], [0, "SIGKILL", child]]);
+  expect(result.evidence.kind).toBe("confirmed");
 });
 
 it("upgrades while shutdown is waiting without renewing a read-only observation", async () => {
@@ -389,6 +455,67 @@ it("does not publish an old confirmation over a concurrently invalidated proof",
   expect(await observing).toMatchObject({ observedAt: 500, evidence: { kind: "pending" } });
 });
 
+it("proves absence by PID reuse only beyond a birthless terminal row's end-time resolution", async () => {
+  const f = fixture(); f.replicate(stopped);
+  const birth = 1_800_000_002_000;
+  const rows = [
+    ["reused", child, "done", birth - 2_000],
+    ["equal", 83010, "done", birth],
+    ["within-resolution", 83011, "done", birth - 500],
+    ["active", 83012, "running", birth - 2_000],
+    ["undated", 83013, "done", null],
+  ] as const;
+  for (const [name, pid, status, endedAt] of rows) {
+    f.add(pid, "replacement-birth", false);
+    f.run(name, pid, null, id, 83001, status, endedAt);
+  }
+  const probe = f.io.probe;
+  f.io.probe = async pid => {
+    const result = await probe(pid);
+    return result.kind === "live" ? { ...result, startedAt: birth } : result;
+  };
+  expect((await f.runtime.enforceStopped(stopped)).evidence).toMatchObject({ kind: "pending", blockers: [
+    { kind: "check", reason: "Subagent run active has no verified absence." },
+    { kind: "check", reason: "Subagent run equal has no verified absence." },
+    { kind: "check", reason: "Subagent run undated has no verified absence." },
+    { kind: "check", reason: "Subagent run within-resolution has no verified absence." },
+  ] });
+  for (const [, pid] of rows.slice(1)) f.exit(pid);
+  expect((await f.runtime.enforceStopped(stopped)).evidence.kind).toBe("confirmed");
+  expect(f.runStatus("reused")).toEqual({ status: "done" });
+  expect(f.effects).toEqual([]);
+});
+
+it("uses the local OS start time to clear a reused PID in a birthless terminal run", async () => {
+  const f = fixture(); f.replicate(stopped);
+  // The current worker PID is outside the stopped session and is newer than
+  // the terminal row by far more than ps's whole-second resolution.
+  const endedAt = Date.now() - (process.uptime() + 60) * 1_000;
+  f.run("old-run", process.pid, null, id, 83001, "done", Math.floor(endedAt));
+  const probe = f.io.probe, local = createLocalIO(f.options);
+  f.io.probe = (pid, ...args) => pid === process.pid ? local.probe(pid, ...args) : probe(pid, ...args);
+  expect((await f.runtime.enforceStopped(stopped)).evidence.kind).toBe("confirmed");
+  expect(f.effects).toEqual([]);
+});
+
+it("does not reuse a birthless absence proof when the terminal row's end time changes during the probe", async () => {
+  const f = fixture(); f.replicate(stopped);
+  const birth = 1_800_000_002_000;
+  f.add(child, "replacement-birth", false);
+  f.run("changing-end", child, null, id, 83001, "done", birth - 2_000);
+  const probe = f.io.probe;
+  f.io.probe = async pid => {
+    const result = await probe(pid);
+    if (pid !== child || result.kind !== "live") return result;
+    f.setRunEnd("changing-end", birth);
+    return { ...result, startedAt: birth };
+  };
+  expect((await f.runtime.enforceStopped(stopped)).evidence).toMatchObject({ kind: "pending", blockers: [
+    { kind: "check", reason: "Subagent run changing-end has no verified absence." },
+  ] });
+  expect(f.effects).toEqual([]);
+});
+
 it("a replacement appearing during a run probe prevents cancellation", async () => {
   const f = fixture(); f.replicate(stopped);
   f.run("unsettled-run", child, "old-child");
@@ -478,10 +605,30 @@ it("a Herdr viewer labelled for the session is not mistaken for pi", async () =>
 });
 
 
+it.each(["invalid capture", "malformed storage"] as const)("stops a verified owner without confirming when its proof has %s", async corruption => {
+  const f = fixture(); f.owner(); f.replicate(stopped);
+  const db = f.options.globalDb, scope = "relocate-stop-proof";
+  if (corruption === "invalid capture") {
+    writeLocal(db, scope, id, { home: stopped, bootId: bootA, observedAt: 0, evidence: { kind: "checking" }, capture: { broken: true } });
+  } else {
+    db.prepare("INSERT INTO roam_cursors(peer_machine,peer_stream,last_seq) VALUES ('',?,0)")
+      .run(`spider-local:${scope}:[${JSON.stringify(id)},`);
+  }
+  queueStopMode(db, stopped, "hard");
+  f.behavior.signal = async target => f.exit(target);
+  const result = await f.runtime.enforceStopped(stopped);
+  expect(f.effects).toEqual([[0, "SIGKILL", pid]]);
+  expect(result.evidence).toMatchObject({ kind: "pending", blockers: [{ kind: "check" }] });
+  expect(f.membership()).toEqual({ epoch: 7, state: "active" });
+  if (corruption === "invalid capture") {
+    expect((await f.runtime.enforceStopped(stopped)).evidence.kind).toBe("confirmed");
+  }
+});
+
 it("does not replace unreadable survivor evidence with an empty proof", async () => {
   const f = fixture(); f.owner(); f.replicate(stopped);
   f.add(unclassified, "still-running", false); f.descendants.set(pid, [unclassified]);
-  f.behavior.signal = async target => f.exit(target);
+  f.behavior.signal = async target => { if (target === pid) f.exit(pid); };
   expect((await f.runtime.enforceStopped(stopped)).evidence.kind).toBe("pending");
   const db = f.options.globalDb, scope = "relocate-stop-proof";
   const [record] = localEntries<{ capture: unknown }>(db, scope);

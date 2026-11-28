@@ -27,13 +27,12 @@ import type { StopBlocker } from "./session-stop-types";
 import type { RelocateAdapterOptions, SessionId } from "./types";
 
 export interface StopWorkPorts {
-  inventory(id: SessionId): Promise<{ runs: readonly StopRunIdentity[]; excludedRoots: readonly number[]; complete: boolean }>;
+  inventory(id: SessionId): Promise<{ excludedRoots: readonly number[]; complete: boolean }>;
   inspect(id: SessionId): Promise<{ blockers: readonly StopBlocker[]; excludedRoots: readonly number[]; complete: boolean }>;
   settleRuns(id: SessionId, proveAbsent: (row: Readonly<RunRow>) => Promise<boolean>): Promise<readonly StopBlocker[]>;
   freezeMembership(id: SessionId, epoch: number, beforeWrite: () => Promise<void>): Promise<void>;
 }
 
-type StopRunIdentity = { pid: number; host_pid: number; pid_start_time: string };
 type JobBlocker = Extract<StopBlocker, { kind: "job" }>;
 const check = (reason: string): StopBlocker => ({ kind: "check", reason });
 const errorCode = (error: unknown) => (error as { code?: string } | null)?.code;
@@ -250,13 +249,12 @@ export function createStopWork(options: RelocateAdapterOptions): StopWorkPorts {
     async inventory(id) {
       const { checkouts, files, blockers } = await sessionWorkLocations(id, options);
       let complete = !blockers.length;
-      const runs: StopRunIdentity[] = [], excludedRoots = new Set<number>();
+      const excludedRoots = new Set<number>();
       for (const [file, store] of files) {
         try {
           const db = await openRunStore(file, store, options);
           if (db) try {
-            runs.push(...db.prepare(`SELECT pid, host_pid, pid_start_time FROM runs r WHERE r.session_id=?
-              AND pid IS NOT NULL AND host_pid IS NOT NULL AND pid_start_time IS NOT NULL AND ${localRunPredicate(db)}`).all(id) as StopRunIdentity[]);
+            db.prepare(`SELECT id FROM runs r WHERE r.session_id=? AND ${localRunPredicate(db)} LIMIT 1`).get(id);
           } finally { db.close(); }
         } catch { complete = false; }
       }
@@ -270,7 +268,7 @@ export function createStopWork(options: RelocateAdapterOptions): StopWorkPorts {
           }
         } catch { complete = false; }
       }
-      return { runs, excludedRoots: [...excludedRoots], complete };
+      return { excludedRoots: [...excludedRoots], complete };
     },
     async inspect(id) {
       const { checkouts, files, blockers } = await sessionWorkLocations(id, options);

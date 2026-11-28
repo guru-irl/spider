@@ -50,6 +50,7 @@ describe("v0 home supervisor", () => {
     expect(vi.mocked(f.ports.stop).mock.calls).toEqual([[id], [id], [id], [id]]);
     expect(f.ports.stopStopped).toHaveBeenCalledExactlyOnceWith(stopped);
     expect(f.ports.start).not.toHaveBeenCalled();
+    expect(f.effects.every(effect => !effect.includes("ordinary-session"))).toBe(true);
   });
   it.each([true, false])("crashed pi restarts within one minute while hub is offline (sync enabled=%s)", async (enabled) => {
     vi.useFakeTimers(); const f = fixture();

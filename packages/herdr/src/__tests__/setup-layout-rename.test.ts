@@ -2,12 +2,13 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { afterEach, expect, test } from 'vitest';
+import { afterEach, expect, test, vi } from 'vitest';
 import { parseHerdrConfig } from '../config.js';
 import type { CoreId } from '../contracts.js';
 import { doctorHerdr, type DoctorParts } from '../setup/doctor.js';
 import { runHerdrCli } from '../setup/cli.js';
 import { applyFiles, prepareBackups, readJournal, saveJournal, snapshot } from '../setup/backup.js';
+import * as setupBackup from '../setup/backup.js';
 import { setupHerdr, type SetupParts, type SetupRequest } from '../setup/installer.js';
 
 const roots: string[] = [];
@@ -205,7 +206,6 @@ test('interrupted migration retains the old file and can be undone if both names
   await expect(setupHerdr(f.request, f.parts)).rejects.toThrow('selection interrupted');
   expect((await readdir(f.layouts)).sort()).toEqual(['Spider.json', 'spider-glass.json']);
   expect(await readFile(f.legacy)).toEqual(oldLook);
-  await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'layout-name-conflict', message: expect.stringContaining('--undo-upgrade') });
   await f.undo();
   expect(await readdir(f.layouts)).toEqual(['spider-glass.json']);
   expect(JSON.parse(await readFile(f.shared, 'utf8')).layout).toBe('spider-glass');
@@ -218,6 +218,36 @@ async function withLegacyKeys(f: Awaited<ReturnType<typeof fixture>>, current: o
     keys: { 'layout:Spider': { 'cmd-shift-e': 'spider-pane.park' } }, collision: 'key' }];
   return path;
 }
+
+test.each(['after writing Spider.json', 'after moving keys'] as const)('resumes a migration interrupted %s, and undo still restores it', async (interruption) => {
+  const f = await fixture(); await f.upgrade('spider-glass');
+  const bindings = { 'cmd-shift-e': 'spider-pane.park', 'cmd-alt-x': 'user.action' };
+  const path = await withLegacyKeys(f, { 'layout:spider-glass': bindings });
+  const select = f.parts.selectApp!;
+  const apply = setupBackup.applyFiles;
+  const abortBatch = interruption === 'after writing Spider.json'
+    ? vi.spyOn(setupBackup, 'applyFiles').mockImplementationOnce(async (root, files, journal, didWrite) => {
+      await apply(root, files.filter(file => file.path === f.spider), journal, didWrite);
+      throw new Error('test interruption');
+    }) : undefined;
+  if (!abortBatch) f.parts.selectApp = async () => { throw new Error('test interruption'); };
+  try { await expect(setupHerdr(f.request, f.parts)).rejects.toThrow('test interruption'); }
+  finally { abortBatch?.mockRestore(); f.parts.selectApp = select; }
+  expect(await readFile(f.spider)).toEqual(newLook);
+  expect(await readFile(f.legacy)).toEqual(oldLook);
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ [abortBatch ? 'layout:spider-glass' : 'layout:Spider']: bindings });
+  expect(JSON.parse(await readFile(f.shared, 'utf8')).layout).toBe('spider-glass');
+
+  await setupHerdr(f.request, f.parts);
+  expect(await readdir(f.layouts)).toEqual(['Spider.json']);
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ 'layout:Spider': bindings });
+  expect(JSON.parse(await readFile(f.shared, 'utf8')).layout).toBe('Spider');
+  expect(await setupHerdr(f.request, f.parts)).toMatchObject({ writes: [], journalChanged: false });
+  await f.undo();
+  expect(await readdir(f.layouts)).toEqual(['spider-glass.json']);
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ 'layout:spider-glass': bindings });
+  expect(JSON.parse(await readFile(f.shared, 'utf8')).layout).toBe('spider-glass');
+});
 
 test('moves layout-scoped keys and restores their old section on upgrade undo', async () => {
   const f = await fixture(); await f.upgrade('spider-glass');

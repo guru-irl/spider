@@ -17,6 +17,8 @@ export function createBandEditor(Base: typeof CustomEditor): new (
     private edges?: { top?: Edge; bottom?: Edge };
     private renderWidth = 0;
     private inset = 0;
+    private requestedPadding = 0;
+    private unsupportedBorders = false;
 
     constructor(tui: TUI, theme: EditorTheme, keys: KeybindingsManager, private readTheme: () => Theme) {
       super(tui, theme, keys, { paddingX: 0 });
@@ -31,8 +33,11 @@ export function createBandEditor(Base: typeof CustomEditor): new (
       if (history.length > 100) history.shift();
     }
 
-    // Pi may set its symmetric editor padding at any time. The band has a fixed left inset.
-    override setPaddingX(_padding: number): void {}
+    // The band has a fixed left inset, but stock layout still uses Pi's setting.
+    override setPaddingX(padding: number): void {
+      this.requestedPadding = Number.isFinite(padding) ? Math.max(0, Math.floor(padding)) : 0;
+      if (!this.inset) super.setPaddingX(this.requestedPadding);
+    }
 
     protected override renderTopBorder(width: number, hidden: number): string {
       const original = super.renderTopBorder(width, hidden);
@@ -54,19 +59,23 @@ export function createBandEditor(Base: typeof CustomEditor): new (
         this.inset = 0;
         // Pi reserves a cursor cell. Give its wrap routine room for a wide grapheme.
         this.renderWidth = Math.max(3, width);
+        super.setPaddingX(Math.min(this.requestedPadding, Math.floor((this.renderWidth - 2) / 2)));
         return super.render(this.renderWidth).map(row => truncateToWidth(row, width, ""));
       };
       const inner = width - INSET;
-      if (!fg || inner < 3) return stock();
+      if (this.unsupportedBorders || !fg || inner < 3) return stock();
+      super.setPaddingX(0);
 
       const edges: NonNullable<BandEditor["edges"]> = {};
       this.edges = edges;
       let rows: string[];
       try { rows = super.render(inner); }
       finally { this.edges = undefined; }
-      if (!edges.top || !edges.bottom || rows[0] !== edges.top.original) return stock();
-      const bottom = rows.indexOf(edges.bottom.original, 2);
-      if (bottom < 2) return stock();
+      const bottom = edges.bottom ? rows.indexOf(edges.bottom.original, 2) : -1;
+      if (!edges.top || !edges.bottom || rows[0] !== edges.top.original || bottom < 2) {
+        this.unsupportedBorders = true;
+        return stock();
+      }
       this.inset = INSET;
       this.renderWidth = inner;
 

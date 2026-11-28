@@ -3,10 +3,10 @@ import {
   type Component, type OverlayOptions, type TuiMouseEvent, type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
 
-export const FULLSCREEN_READER_OVERLAY = {
+export const FULLSCREEN_READER_OVERLAY: { overlay: true; overlayOptions: OverlayOptions } = {
   overlay: true,
-  overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0 } satisfies OverlayOptions,
-} as const;
+  overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0 },
+};
 
 export interface ReaderTab {
   label: string;
@@ -68,7 +68,7 @@ export class TabbedReader implements Component {
     this.content = undefined;
   }
 
-  dispose(): void { this.scroll.hideTransientScrollbar(); }
+  dispose(): void { this.scroll.setScrollbar("hidden"); }
 
   private updateContent(view: Viewport): string[] {
     if (this.content?.width !== view.contentWidth) {
@@ -96,9 +96,9 @@ export class TabbedReader implements Component {
     if (this.tabIndex === index) return;
     this.tabIndex = index;
     this.grabOffset = undefined;
+    // Detach the old extent, clearing its scroll offset and auto-hide timer.
+    this.scroll.updateLayout(0, 0, this.env.requestRender);
     this.scroll.setScrollbarActive(false);
-    this.scroll.scrollToStart();
-    this.scroll.hideTransientScrollbar();
     this.content = undefined;
     if (this.viewport) this.updateContent(this.viewport);
     this.env.requestRender();
@@ -124,6 +124,9 @@ export class TabbedReader implements Component {
     const onTrack = view.height > 0 && this.maxScrollTop > 0 && event.x === view.scrollbarX &&
       event.y >= view.top && event.y < view.top + view.height;
     if (event.type === "move" || event.type === "wheel") {
+      // A buttonless move also ends a gesture if the terminal lost focus and
+      // Pi cleared its capture before it could deliver the release.
+      if (event.type === "move") this.grabOffset = undefined;
       this.scroll.setScrollbarActive(onTrack || this.grabOffset !== undefined);
       if (event.type === "wheel") {
         this.scroll.scrollBy(event.wheelDelta ?? 0);
@@ -146,8 +149,9 @@ export class TabbedReader implements Component {
     const close = this.closeHit && hits(this.closeHit, event);
     if (event.type === "press") {
       this.grabOffset = undefined;
-      this.scroll.setScrollbarActive(onTrack);
-      if (onTrack) {
+      const onVisibleTrack = onTrack && this.scroll.isScrollbarVisible;
+      this.scroll.setScrollbarActive(onVisibleTrack);
+      if (onVisibleTrack) {
         const y = event.y - view.top;
         const { offset, size, travel } = this.thumb();
         const onThumb = y >= offset && y < offset + size;

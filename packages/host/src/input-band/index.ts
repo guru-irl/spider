@@ -4,7 +4,7 @@ import { createBandEditor } from "./editor.js";
 import { installTranscriptBands } from "./transcript.js";
 import { installPendingBands } from "./pending.js";
 import { installCompactionCard } from "./compaction-card.js";
-import { modelName } from "../model-name.js";
+import { compactionBill, compactionModel, openCompactionReader } from "./compaction-reader.js";
 
 type Pi = typeof import("@earendil-works/pi-coding-agent");
 type PiTui = typeof import("@earendil-works/pi-tui");
@@ -45,16 +45,22 @@ export function registerInputBand(pi: Pick<ExtensionAPI, "on">, host: InputBandH
     const style = config["ui.icons"];
     const iconStyle = () => isIconStyle(style) ? style : "text";
     const theme = () => ctx.ui.theme;
+    const compactionEntry = (id: string | undefined, message: { summary: string; tokensBefore: number }) => {
+      // Live compaction cards do not have a message ID. Pi just placed the
+      // current compaction at the front of the active context.
+      const entry = id ? ctx.sessionManager?.getEntry(id) : ctx.sessionManager?.buildContextEntries()[0];
+      if (entry?.type === "compaction" && entry.summary === message.summary && entry.tokensBefore === message.tokensBefore) return entry;
+    };
     releaseCompaction = installCompactionCard(host, {
       theme, iconStyle,
-      model: (id, message) => {
-        // Live compaction cards do not have a message ID. Pi just placed the
-        // current compaction at the front of the active context.
-        const entry = id ? ctx.sessionManager?.getEntry(id) : ctx.sessionManager?.buildContextEntries()[0];
-        if (entry?.type !== "compaction" || entry.summary !== message.summary || entry.tokensBefore !== message.tokensBefore) return;
-        const ref = (entry.details as { summaryModel?: unknown } | undefined)?.summaryModel;
-        return typeof ref === "string" ? modelName(ctx.modelRegistry, ref) : undefined;
-      },
+      model: (id, message) => compactionModel(ctx, compactionEntry(id, message)),
+      open: typeof ctx.ui.custom === "function" ? (id, message, bill) => {
+        const entry = compactionEntry(id, message);
+        void openCompactionReader(ctx.ui, { ...message,
+          timestamp: entry?.timestamp ?? message.timestamp,
+          model: compactionModel(ctx, entry), bill: compactionBill(entry) ?? bill,
+        }).catch(() => ctx.ui.notify("Could not open the compaction summary.", "error"));
+      } : undefined,
     });
     releaseTranscript = installTranscriptBands(host, {
       inputBand, theme, iconStyle, live,

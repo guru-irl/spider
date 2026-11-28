@@ -1,6 +1,11 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 
-function tokenCount(value: number): string {
+export interface CompactionBill {
+  tokens: string;
+  cost?: string;
+}
+
+export function compactionTokenCount(value: number): string {
   if (value >= 1_000_000) return `${Number((value / 1_000_000).toFixed(1))}M`;
   if (value >= 1_000) return `${Number((value / 1_000).toFixed(1))}k`;
   return String(value);
@@ -10,7 +15,7 @@ const PARTIAL_BLOCKS = " ▏▎▍▌▋▊▉";
 
 /** These bars compare the context before compaction with the summary alone. */
 export function renderCompactionBars(before: number, summary: number, width: number, theme: Theme): string[] {
-  const counts = [`${tokenCount(before)} tokens`, `~${tokenCount(summary)} tokens`];
+  const counts = [`${compactionTokenCount(before)} tokens`, `~${compactionTokenCount(summary)} tokens`];
   const cells = Math.min(17, width - 11 - Math.max(counts[0].length, counts[1].length));
   const scale = Math.max(before, summary);
   return [before, summary].map((tokens, i) => {

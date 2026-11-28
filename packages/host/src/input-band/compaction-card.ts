@@ -4,20 +4,26 @@ import {
 } from "@earendil-works/pi-tui";
 import { ACTIVITY_FRAMES, type IconStyle } from "@spider/ui";
 import { bindHalfBox } from "./box.js";
-import { renderCompactionBars } from "./compaction-metrics.js";
+import { renderCompactionBars, type CompactionBill } from "./compaction-metrics.js";
 import type { InputBandHost } from "./index.js";
 
 type CardConstructor = NonNullable<InputBandHost["CompactionSummaryMessageComponent"]>;
 type Card = InstanceType<CardConstructor>;
 type Message = ConstructorParameters<CardConstructor>[0];
-type Options = { theme: () => Theme; iconStyle: () => IconStyle; model: (id: string | undefined, message: Message) => string | undefined };
-type Bill = { tokens: string; cost?: string };
-type Receipt = { before: number; summary: number; expanded: boolean; model?: string; key?: string; bill?: Bill };
+type Options = {
+  theme: () => Theme;
+  iconStyle: () => IconStyle;
+  model: (id: string | undefined, message: Message) => string | undefined;
+  open?: (id: string | undefined, message: Message, bill: CompactionBill | undefined) => void;
+};
+type Receipt = { before: number; summary: number; expanded: boolean; model?: string; key?: string; bill?: CompactionBill };
+const OPEN_LABEL = "open ↗";
+const OPEN_WIDTH = visibleWidth(OPEN_LABEL);
 const PATCH = Symbol.for("spider.transcript.compaction-card");
 type Surface = Pick<Container, "children">;
 type Mode = { chatContainer?: Surface; addCompactionCostNotice: (notice: unknown) => void };
 type Layout = { owner: Options; container: Surface; stock: Component[]; styled: Component[] };
-type State = { layout?: Layout; key?: string; bill?: Bill };
+type State = { layout?: Layout; key?: string; bill?: CompactionBill };
 type Slot = { options?: Options };
 
 function fields(value: unknown): Record<string, unknown> | undefined {
@@ -28,23 +34,32 @@ function moon(style: IconStyle): string {
   return ACTIVITY_FRAMES[style].working[style === "nerd" ? 3 : 0];
 }
 
-function renderReceipt({ before, summary, model, key, expanded, bill }: Receipt, width: number, theme: Theme, style: IconStyle): string[] {
+function renderReceipt({ before, summary, model, key, expanded, bill }: Receipt, width: number, theme: Theme, style: IconStyle, canOpen: boolean) {
   const mark = moon(style);
   const indent = " ".repeat(visibleWidth(mark) + 1);
   const dim = (text: string) => theme.fg("dim", text);
   const title = theme.fg("accent", mark) + " " + theme.bold(theme.fg("customMessageText", "compaction"));
   const hint = key ? `${key} ${expanded ? "collapse" : "expand"}` : "";
   const name = model ? dim(` · ${model}`) : "";
-  const left = title + name;
-  const gap = width - visibleWidth(left) - visibleWidth(hint);
+  const openX = width - OPEN_WIDTH;
+  // Preserve the model and key hint when they fit. On narrow cards the action
+  // keeps its own row rather than turning a clipped word into a hit target.
+  const openY = !canOpen || openX < 0 ? undefined : openX >= visibleWidth(title) + 2 ? 0 : 1;
+  const titleWidth = openY === 0 ? openX - 2 : width;
+  const left = truncateToWidth(title + name, titleWidth, "…");
+  const gap = titleWidth - visibleWidth(left) - visibleWidth(hint);
   const header = hint && gap >= 2 ? left + " ".repeat(gap) + dim(hint) : left;
-  const rows = [header, ...renderCompactionBars(before, summary, width - indent.length, theme).map(row => indent + row)];
+  const action = theme.fg("accent", OPEN_LABEL);
+  const rows = [openY === 0 ? header + " ".repeat(openX - visibleWidth(header)) + action : header];
+  if (openY === 1) rows.push(" ".repeat(openX) + action);
+  rows.push(...renderCompactionBars(before, summary, width - indent.length, theme).map(row => indent + row));
   if (bill) {
-    const line = indent + dim(bill.tokens + (bill.cost ? ` · ${bill.cost}` : ""));
-    if (bill.cost && visibleWidth(line) > width) rows.push(indent + dim(bill.tokens), indent + dim(bill.cost));
+    const tokens = `${bill.tokens} tokens billed`;
+    const line = indent + dim(tokens + (bill.cost ? ` · ${bill.cost}` : ""));
+    if (bill.cost && visibleWidth(line) > width) rows.push(indent + dim(tokens), indent + dim(bill.cost));
     else rows.push(line);
   }
-  return rows.map(row => truncateToWidth(row, width));
+  return { rows: rows.map(row => truncateToWidth(row, width)), openY, openX };
 }
 
 function restore(layout: Layout | undefined): void {
@@ -92,9 +107,24 @@ export function installCompactionCard(host: InputBandHost, options: Options): ()
         if (!(body instanceof Text)) return undefined;
         state.key = /\(([^()]*) to expand\)$/u.exec(stripTerminalSequences(body.render(240).join("")).trim())?.[1];
       }
-      const receipt = { before: current.tokensBefore, summary: estimateTokens(current), expanded, key: state.key,
-        model: opts.model(typeof box.messageId === "string" ? box.messageId : undefined, current) };
-      const header: Component = { render: cols => renderReceipt({ ...receipt, bill: state.bill }, cols, opts.theme(), opts.iconStyle()), invalidate() {} };
+      const id = typeof box.messageId === "string" ? box.messageId : undefined;
+      const receipt = { before: current.tokensBefore, summary: estimateTokens(current), expanded, key: state.key, model: opts.model(id, current) };
+      const open = opts.open;
+      let target: { x: number; y: number; width: number } | undefined;
+      const header: Component = {
+        render(cols) {
+          const { rows, openX, openY } = renderReceipt({ ...receipt, bill: state.bill }, cols, opts.theme(), opts.iconStyle(), !!open);
+          target = openY === undefined ? undefined : { x: openX, y: openY, width: cols };
+          return rows;
+        },
+        handleMouse(event) {
+          if (!open || !target || event.type !== "click" || event.button !== "left" || event.width !== target.width ||
+              event.y !== target.y || event.x < target.x || event.x >= target.x + OPEN_WIDTH) return undefined;
+          open(id, current, state.bill);
+          return { handled: true };
+        },
+        invalidate() { target = undefined; },
+      };
       return { owner: opts, container, stock: container.children, styled: markdown ? [header, blank, markdown] : [header] };
     };
 
@@ -136,7 +166,7 @@ export function installCompactionCard(host: InputBandHost, options: Options): ()
           !children || tail === undefined || children !== this.chatContainer?.children || children.length !== tail + 2) return;
       const [spacer, label] = children.slice(tail);
       if (!(spacer instanceof Spacer) || fields(spacer)?.lines !== 1 || !(label instanceof Text)) return;
-      const match = /^(?:Compaction: )([\d.,]+[kM]? tokens billed)(?: \((~\$[\d.]+)\))?$/u
+      const match = /^(?:Compaction: )([\d.,]+[kM]?) tokens billed(?: \((~\$[\d.]+)\))?$/u
         .exec(stripTerminalSequences(label.render(120).join("")).trim());
       if (!match) return;
       const state = states.get(card) ?? {};

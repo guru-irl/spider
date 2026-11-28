@@ -16,7 +16,7 @@ import { InlineMessageComponent } from "./ui/inline-message.js";
 import { getAskTimeoutMs, loadConfig, type IntercomConfig } from "./config.js";
 import { EXTENSION_BUS_FEATURE } from "./types.js";
 import type { Attachment, BrokerMessage, LocalSessionInfo, Message, MessageControl, MessageReceipt, MessageReceiptStatus, SessionInfo, SessionRegistration } from "./types.js";
-import { v0TextFits, V0_ASK_MAX_MS, V0_TEXT_BYTES, type V0Code, type V0Delivery, type V0ToolOptions } from "./roam-v0.js";
+import { v0TextFits, V0_ASK_MAX_MS, V0_TEXT_BYTES, type V0Code, type V0RouteDetails, type V0RouteResult, type V0ToolOptions } from "./roam-v0.js";
 import {
   INTERCOM_EXTENSION_REGISTER_EVENT,
   INTERCOM_EXTENSION_REGISTRY_READY_EVENT,
@@ -61,6 +61,24 @@ const V0_REFUSAL_TEXT: Record<V0Code, string> = {
   invalid: "The roaming intercom request is invalid.",
   self: "Cannot message the current session.",
 };
+
+function v0RouteText(summary: string, route: V0RouteDetails): string {
+  return [summary, ...(route.path ? [`Path: ${route.path}.`] : []),
+    ...(route.relaySkips ?? []).map(skip => `${skip.relay}: ${skip.reason}.`)].join("\n");
+}
+
+function v0RouteDetails({ path, targetMachine, relaySkips }: V0RouteResult): V0RouteDetails {
+  return { ...(path && { path }), ...(targetMachine && { targetMachine }), ...(relaySkips && { relaySkips }) };
+}
+
+function v0RouteRefusal(result: Extract<V0RouteResult, { kind: "refused" }>) {
+  const { code, targetMachine } = result;
+  const summary = code === "no-relay" ? "No relay is reachable. Nothing was queued."
+    : code === "relay-unreachable" ? `${targetMachine ?? "The target machine"} is not reachable through any relay right now. Nothing was queued.`
+    : code === "relay-busy" ? "Relay busy. Nothing was queued." : V0_REFUSAL_TEXT[code];
+  return { content: [{ type: "text" as const, text: v0RouteText(summary, result) }],
+    details: { error: true, code, ...v0RouteDetails(result) } };
+}
 
 const INTERCOM_TOOL_NAME = "intercom";
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
@@ -2785,25 +2803,24 @@ Usage:
                 }
                 if (_signal?.aborted) return { content: [{ type: "text", text: "Cancelled" }], details: { error: true } };
                 const sent = { id: randomUUID(), timestamp: Date.now(), text: message };
-                let result = await plan.send(sent, _signal).catch(() => ({ kind: "unknown" as const, id: sent.id }));
+                let result: V0RouteResult = await plan.send(sent, _signal).catch(() => ({ kind: "unknown" as const, id: sent.id }));
+                const route = v0RouteDetails(result);
                 if (!getLiveContext(ctx, generation) || v0.homeEpoch(from.address!.sessionId) !== from.v0HomeEpoch) {
-                  result = { kind: "unknown", id: sent.id };
+                  result = { kind: "unknown", id: sent.id, ...route };
                 }
-                if (result.kind === "refused") {
-                  return { content: [{ type: "text", text: V0_REFUSAL_TEXT[result.code] }], details: { error: true, code: result.code } };
-                }
+                if (result.kind === "refused") return v0RouteRefusal(result);
                 if (result.kind === "unknown") {
-                  return { content: [{ type: "text", text: `Delivery could not be confirmed (ID ${result.id}). Check the recipient before sending again.` }],
-                    details: { error: true, delivered: false, delivery: "unknown", messageId: result.id, outcomeKnown: false, retryable: false } };
+                  return { content: [{ type: "text", text: v0RouteText(`Delivery could not be confirmed (ID ${result.id}). Check the recipient before sending again.`, route) }],
+                    details: { error: true, delivered: false, delivery: "unknown", messageId: result.id, outcomeKnown: false, retryable: false, ...route } };
                 }
                 if (result.kind !== "socket_delivered") {
-                  return { content: [{ type: "text", text: "Message was not delivered." }], details: { error: true } };
+                  return { content: [{ type: "text", text: "Message was not delivered." }], details: { error: true, ...route } };
                 }
                 let transcriptWarning = "";
                 try { pi.appendEntry("intercom_sent", { to: plan.label, message: { text: message }, messageId: result.id, timestamp: Date.now() }); }
                 catch { transcriptWarning = V0_TRANSCRIPT_SAVE_FAILURE; }
-                return { content: [{ type: "text", text: `Sent to ${plan.label} (broker accepted the message).${transcriptWarning}` }],
-                  details: { delivered: true, delivery: "socket_delivered", messageId: result.id } };
+                return { content: [{ type: "text", text: v0RouteText(`Sent to ${plan.label} (broker accepted the message).`, route) + transcriptWarning }],
+                  details: { delivered: true, delivery: "socket_delivered", messageId: result.id, ...route } };
               }
             }
             if (confirmSend && cwd && openProjectPaneIfMissing) {
@@ -2870,8 +2887,8 @@ Usage:
             if (!result.delivered) {
               const errorText = result.reason ?? "Session may not exist or has disconnected.";
               return {
-                content: [{ type: "text", text: `Message to "${targetDisplay}" was not delivered: ${errorText}` }],
-                details: deliveryDetails(result),
+                content: [{ type: "text", text: `Message to "${targetDisplay}" was not delivered: ${errorText}${v0Target ? "\nPath: local." : ""}` }],
+                details: { ...deliveryDetails(result), ...(v0Target && { path: "local" }) },
               };
             }
             pi.appendEntry("intercom_sent", {
@@ -2888,10 +2905,11 @@ Usage:
                 type: "text",
                 text: target.projectPane
                   ? `Opened Herdr project pane ${target.projectPane.paneId} for ${target.projectPane.projectRoot} and sent message to ${targetDisplay}`
-                  : inferredAsk ? `Reply sent to ${targetDisplay} (inferred from pending ask)` : `Message sent to ${targetDisplay}`,
+                  : (inferredAsk ? `Reply sent to ${targetDisplay} (inferred from pending ask)` : `Message sent to ${targetDisplay}`) + (v0Target ? "\nPath: local." : ""),
               }],
               details: {
                 ...deliveryDetails(result),
+                ...(v0Target && { path: "local" }),
                 ...(effectiveReplyTo ? { replyTo: effectiveReplyTo } : {}),
                 ...(target.projectPane ? { openedProjectPane: true, paneId: target.projectPane.paneId, projectRoot: target.projectPane.projectRoot } : {}),
               },
@@ -2987,7 +3005,7 @@ Usage:
                 const onAbort = () => abort.abort();
                 _signal?.addEventListener("abort", onAbort, { once: true });
                 v0AskInFlight = { token, abort };
-                let result: V0Delivery;
+                let result: V0RouteResult;
                 try { result = await plan.ask(question, Math.min(askTimeoutMs, V0_ASK_MAX_MS), abort.signal); }
                 catch { result = { kind: "unknown", id: question.id }; }
                 finally {
@@ -2997,9 +3015,7 @@ Usage:
                 if (!getLiveContext(ctx, generation) || v0.homeEpoch(from.address!.sessionId) !== from.v0HomeEpoch) {
                   result = { kind: "unknown", id: question.id };
                 }
-                if (result.kind === "refused") {
-                  return { content: [{ type: "text", text: V0_REFUSAL_TEXT[result.code] }], details: { error: true, code: result.code } };
-                }
+                if (result.kind === "refused") return v0RouteRefusal(result);
                 if (result.kind === "replied") {
                   let transcriptWarning = "";
                   try { pi.appendEntry("intercom_sent", { to: plan.label, message: { text: message }, messageId: question.id, timestamp: question.timestamp }); }

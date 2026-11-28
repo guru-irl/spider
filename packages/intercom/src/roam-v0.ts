@@ -52,13 +52,21 @@ export type V0RelayAgentRequest = {
 export type V0AgentReply = { version: 1; requestId: string; machineId: string } & V0Reply;
 export type V0BrokerRequest = { type: "roam_v0"; requestId: string } & V0BrokerOp;
 export type V0BrokerReply = { type: "roam_v0_result"; requestId: string } & V0Reply;
+export type V0RouteRefusal = V0Code | "no-relay" | "relay-unreachable" | "relay-busy";
+export interface V0RouteDetails {
+  path?: "local" | "direct" | `relay ${string}`;
+  targetMachine?: string;
+  relaySkips?: readonly { relay: string; reason: "down" | "cannot reach the target" | "busy" }[];
+}
+export type V0RouteResult = (Exclude<V0Delivery, V0Refused> | { kind: "refused"; code: V0RouteRefusal }) & V0RouteDetails;
+
 export type V0SendPlan = V0Refused | { kind: "legacy" }
   | { kind: "local"; target: { id: string; endpointEpoch: string } }
   | {
       kind: "remote";
       label: string;
-      send(message: V0Text, signal?: AbortSignal): Promise<V0Delivery>;
-      ask(message: V0Text, timeoutMs: number, signal?: AbortSignal): Promise<V0Delivery>;
+      send(message: V0Text, signal?: AbortSignal): Promise<V0RouteResult>;
+      ask(message: V0Text, timeoutMs: number, signal?: AbortSignal): Promise<V0RouteResult>;
     };
 export type V0Prepare = (input: {
   to: string;

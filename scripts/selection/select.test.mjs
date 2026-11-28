@@ -263,6 +263,17 @@ test('runs surviving recorded readers of deleted files but not the deleted test'
     inventory: inventory.filter(file => file !== a), records: { [b]: row({ reads: [0] }) } }), b);
 });
 
+test('runs tests naming a changed or removed resource even if another test recorded it', async () => {
+  const file = 'packages/one/src/sample.json';
+  for (const status of ['M', 'D']) {
+    const result = await fixture({ changes: [changed(file, status)], files: [file],
+      records: { [a]: row({ reads: [0] }) }, names: { [file]: [b] } });
+    assert.equal(result.mode, 'scoped');
+    assertSelected(result, a, b);
+    assert.ok(result.selected[b].includes(`names ${file}`));
+  }
+});
+
 test('runs doc guards and tests naming or reading a README', async () => {
   const file = 'packages/one/README.md';
   assertSelected(await fixture({ changes: [changed(file)], names: { [file]: [b] },

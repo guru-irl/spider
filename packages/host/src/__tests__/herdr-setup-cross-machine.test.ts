@@ -9,6 +9,7 @@ import type { InstallFile } from '../../../herdr/src/setup/installer.js';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { cleanup, fixture } from './herdr-setup-fixture.js';
 import { releaseFixture } from './herdr-setup-release-fixture.js';
+import { focusedSetupFixture, useStaticSetupApp } from './herdr-setup-focused-fixture.js';
 import * as lookPatches from '@spider/herdr/look/patches';
 
 vi.mock('node:fs/promises', async importOriginal => {
@@ -21,9 +22,13 @@ vi.mock('node:child_process', async importOriginal => {
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); for (const name of ['rename', 'link', 'mkdir'] as const) vi.mocked(fs[name]).mockImplementation(realFs[name] as never); });
-const fastRelease = (version: Parameters<typeof releaseFixture>[0]) => releaseFixture(version, { coreTransport: 'socket' });
+type Release = Parameters<typeof releaseFixture>[0];
+const fastRelease = async (version: Release, localOnly = true) =>
+  useStaticSetupApp(await releaseFixture(version, { coreTransport: 'socket', localOnly }), version);
+const changingAppVersion = async (version: Release, coreTransport: 'process' | 'socket' = 'socket') =>
+  useStaticSetupApp(await releaseFixture(version, { coreTransport, localOnly: true }), null);
 const bareFixture = () => fixture('fake', false, { startCores: false });
-const fastFixture = () => fixture('fake', false, { coreTransport: 'socket' });
+const fastFixture = () => focusedSetupFixture();
 
 async function tree(root: string): Promise<string[]> {
   const rows: string[] = [];
@@ -98,7 +103,7 @@ test('unreadable app version leaves existing picker files and bindings alone', a
 });
 
 test.each(['0.1.13', '0.1.16'] as const)('a lost version after staging installs A without picker files or bindings on %s', async version => {
-  const f = await releaseFixture(version), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
+  const f = await changingAppVersion(version, version === '0.1.13' ? 'process' : 'socket'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
   const stockKeys = JSON.parse(await readFile(join(home, 'keys.json'), 'utf8'));
   const stage = f.parts.stageLook;
   f.parts.stageLook = async (...args) => {
@@ -135,7 +140,7 @@ test.each(['0.1.13', '0.1.16'] as const)('a lost version after staging installs 
 });
 
 test.each(['0.1.13', '0.1.16'] as const)('a lost version after staging preserves an installed picker and its rollback ownership on %s', async version => {
-  const f = await releaseFixture(version), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
+  const f = await changingAppVersion(version, version === '0.1.13' ? 'process' : 'socket'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
   const stockKeys = await readFile(join(home, 'keys.json'));
   await setupHerdr(f.request, f.parts);
   const pickerRoots = ['spider-machine-picker', 'spider-machine-picker-right', 'spider-machine-picker-down', 'spider-pane', 'spider-tabs', 'spider-menu', 'spider-new-menu', 'spider-agents'].map(name => join(home, 'mods', name));
@@ -163,7 +168,7 @@ test.each(['0.1.13', '0.1.16'] as const)('a lost version after staging preserves
 });
 
 test('a lost version updates independent keys without rebinding an installed picker', async () => {
-  const f = await fastRelease('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
+  const f = await changingAppVersion('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
   await setupHerdr(f.request, f.parts);
   const keyPath = join(home, 'keys.json'), before = JSON.parse(await readFile(keyPath, 'utf8'));
   const oldJournal = (await readJournal(f.request.journalRoot)).entries.find(entry => entry.path === keyPath)!;
@@ -187,7 +192,7 @@ test('a lost version updates independent keys without rebinding an installed pic
 });
 
 test.each([false, true])('a lost version updates independent keys without rebinding user-modified picker keys (overwrite=%s)', async overwrite => {
-  const f = await fastRelease('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
+  const f = await changingAppVersion('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
   const stockKeys = JSON.parse(await readFile(join(home, 'keys.json'), 'utf8'));
   await setupHerdr(f.request, f.parts);
   const keyPath = join(home, 'keys.json'), keys = JSON.parse(await readFile(keyPath, 'utf8'));
@@ -225,7 +230,7 @@ test.each([false, true])('a lost version updates independent keys without rebind
 });
 
 test('a lost version preserves a relocated picker binding while updating other keys', async () => {
-  const f = await fastRelease('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
+  const f = await changingAppVersion('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
   await setupHerdr(f.request, f.parts);
   const keyPath = join(home, 'keys.json'), keys = JSON.parse(await readFile(keyPath, 'utf8'));
   keys.terminal['cmd-shift-a'] = { command: 'mod.open', args: { name: 'spider-machine-picker-right' } };
@@ -246,7 +251,7 @@ test('a lost version preserves a relocated picker binding while updating other k
 });
 
 test('a lost version does not recreate a removed picker key section', async () => {
-  const f = await fastRelease('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
+  const f = await changingAppVersion('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
   await setupHerdr(f.request, f.parts);
   const keyPath = join(home, 'keys.json'), before = await readFile(keyPath), journal = await readJournal(f.request.journalRoot);
   const prior = journal.entries.find(entry => entry.path === keyPath)!.keys!;
@@ -271,7 +276,7 @@ test('a lost version does not recreate a removed picker key section', async () =
 });
 
 test('a lost version preserves a lone picker helper and still installs the A pane', async () => {
-  const f = await fastRelease('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
+  const f = await changingAppVersion('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
   const helper = join(home, 'mods/spider-pane/machine.js');
   await mkdir(dirname(helper), { recursive: true }); await writeFile(helper, '// existing picker helper\n');
   const stage = f.parts.stageLook;
@@ -288,7 +293,7 @@ test('a lost version preserves a lone picker helper and still installs the A pan
 });
 
 test.each(['0.1.12', '0.1.99'])('setup refuses a change to %s after staging without writing files', async version => {
-  const f = await fastRelease('0.1.13'), app = join(f.h.root, 'app-selection.mjs');
+  const f = await changingAppVersion('0.1.13'), app = join(f.h.root, 'app-selection.mjs');
   const roots = [f.h.directories.app, f.h.directories.agent], before = await Promise.all(roots.map(tree));
   const stage = f.parts.stageLook;
   f.parts.stageLook = async (...args) => {
@@ -448,7 +453,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   });
 
   test(`${version} rollback removes created mod directories but preserves existing and populated directories`, async () => {
-    const f = await fastRelease(version), mods = join(f.h.directories.app, 'mods');
+    const f = await fastRelease(version, false), mods = join(f.h.directories.app, 'mods');
     const keys = join(f.h.directories.app, 'keys.json');
     const originalKeys = version === '0.1.13' ? await readFile(keys) : undefined;
     if (version === '0.1.13') {

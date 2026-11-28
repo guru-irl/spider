@@ -11,6 +11,7 @@ import { readJournal, saveJournal, digest } from '../../../herdr/src/setup/backu
 import { createJobStore } from '../../../herdr/src/jobs/store.js';
 import { monitorFixture, on, program } from '../../../herdr/src/__tests__/herdr-monitor-fixture.js';
 import { cleanup, fixture } from './herdr-setup-fixture.js';
+import { focusedSetupFixture } from './herdr-setup-focused-fixture.js';
 import { editUnrelated, claimCurrentHash, installedModFiles, startInteractiveShell, installedShells } from './herdr-setup-production-helpers.js';
 
 vi.mock('node:child_process', async importOriginal => {
@@ -18,9 +19,11 @@ vi.mock('node:child_process', async importOriginal => {
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
+const offlineFixture = () => focusedSetupFixture({ startCores: false, localOnly: true });
+const processFixture = () => focusedSetupFixture({ coreTransport: 'process', localOnly: true });
 
 test('doctor shows terminal cleanup diagnostics without treating automatic retries as warnings', async () => {
-  const f = await fixture(), h = await monitorFixture(), jobs = h.monitor();
+  const f = await offlineFixture(), h = await monitorFixture(), jobs = h.monitor();
   await jobs.start(program, h.owner, on, { background: true }); await jobs.shutdown('reload');
   const journal = await createJobStore(h.f.root, h.owner.sessionId).read();
   journal.jobs[0].cleanupFailure = { code: 'machine-unavailable', attempts: 2, firstAt: 1000, lastAt: 31000 };
@@ -38,7 +41,7 @@ test('doctor shows terminal cleanup diagnostics without treating automatic retri
 });
 
 test('doctor reads every job file without changing modes and isolates corrupt journals', async () => {
-  const f = await fixture(), h = await monitorFixture(), jobs = h.monitor();
+  const f = await offlineFixture(), h = await monitorFixture(), jobs = h.monitor();
   await jobs.start(program, h.owner, on, { background: true }); await jobs.shutdown('reload');
   const journal = await createJobStore(h.f.root, h.owner.sessionId).read();
   journal.jobs[0].cleanupFailure = { code: 'machine-unavailable', attempts: 2, firstAt: 1000, lastAt: 31000 };
@@ -61,7 +64,7 @@ test('doctor reads every job file without changing modes and isolates corrupt jo
 });
 
 test('doctor job inspection preserves directory permissions when journals are absent', async () => {
-  const f = await fixture();
+  const f = await offlineFixture();
   const directory = join(f.request.config.globalRoot, 'herdr/jobs/sessions/empty');
   await mkdir(directory, { recursive: true }); await chmod(directory, 0o750);
   const mode = (await stat(directory)).mode;
@@ -93,7 +96,7 @@ test('production CLI plan lists assets without changing files or launching probe
 });
 
 test('production installs each theme where its consumer reads it', async () => {
-  const f = await fixture();
+  const f = await offlineFixture();
   const files = await f.parts.installFiles(f.request, f.context);
   expect(files.find(file => file.path === join(f.h.directories.agent, 'themes/dracula-plus-glass.json'))?.bytes).toEqual(await readFile(join(f.root, 'packages/herdr/assets/themes/dracula-plus-glass.json')));
   expect(files.find(file => file.path === join(f.h.directories.app, 'themes/spider-glass.json'))?.bytes).toEqual(await readFile(join(f.root, 'packages/herdr/assets/themes/spider-glass.json')));
@@ -102,7 +105,7 @@ test('production installs each theme where its consumer reads it', async () => {
 });
 
 test('production layout passes selected font families and retention to the consuming mods', async () => {
-  const f = await fixture();
+  const f = await focusedSetupFixture();
   const fonts = join(f.root, 'packages/herdr/assets/fonts');
   const config = JSON.parse(await readFile(f.request.configPath, 'utf8'));
   config.fonts = {
@@ -132,7 +135,7 @@ test('production refuses an unowned same-named mod before any backup', async () 
 });
 
 test('production carries saved mod state when layout props change', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await focusedSetupFixture(); await setupHerdr(f.request, f.parts);
   const { modStoreFileName } = await import('../../../herdr/src/setup/mod-storage.js');
   const layoutPath = join(f.h.directories.app, 'layouts/spider-glass.json');
   const layout = JSON.parse(await readFile(layoutPath, 'utf8'));
@@ -187,7 +190,7 @@ test('production keeps unrelated edits in all shared settings files', async () =
 });
 
 test.each(['theme', 'notes', 'resume', 'keys'])('production refuses a user edit to the managed %s with repair advice', async kind => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await (kind === 'theme' ? processFixture() : focusedSetupFixture()); await setupHerdr(f.request, f.parts);
   if (kind === 'theme') await writeFile(join(f.h.directories.agent, 'settings.json'), '{"theme":"user-theme"}');
   if (kind === 'notes') await writeFile(f.request.config.core.config, 'notes = true\n');
   if (kind === 'resume') await writeFile(f.request.config.shellRc, (await readFile(f.request.config.shellRc, 'utf8')).replace('. ', '. changed '));
@@ -224,7 +227,7 @@ test('app selections are backed up before commands and restored by rollback', as
 });
 
 test('setup without --config reads the standard file and records no extra path', async () => {
-  const f = await fixture(); const standard = join(f.h.directories.global, 'herdr/config.json');
+  const f = await focusedSetupFixture(); const standard = join(f.h.directories.global, 'herdr/config.json');
   await mkdir(dirname(standard), { recursive: true }); await writeFile(standard, await readFile(f.request.configPath));
   const request = await f.ports.request();
   expect(request.configPath).toBe(standard);
@@ -234,7 +237,7 @@ test('setup without --config reads the standard file and records no extra path',
 });
 
 test('custom configuration paths are backed up as an owned global key without copying', async () => {
-  const f = await fixture(); const global = join(f.h.directories.global, 'config.json');
+  const f = await focusedSetupFixture(); const global = join(f.h.directories.global, 'config.json');
   const original = await readFile(global);
   await setupHerdr(f.request, f.parts);
   expect(JSON.parse(await readFile(global, 'utf8'))['herdr.config']).toBe(f.request.configPath);
@@ -248,7 +251,7 @@ test('custom configuration paths are backed up as an owned global key without co
 });
 
 test('production template planning skips malformed global role values like the normal parser', async () => {
-  const f = await fixture();
+  const f = await offlineFixture();
   await writeFile(join(f.h.directories.global, 'config.json'), JSON.stringify({ 'models.defaults': { worker: 42 } }));
   const files = await f.parts.generateTemplates(f.request, f.context);
   expect(files).toHaveLength(6);
@@ -264,7 +267,7 @@ async function addAuditTerminal(f: Awaited<ReturnType<typeof fixture>>, address:
 }
 
 test('production doctor reads native notification policy and can reject a launch', async () => {
-  const f = await fixture(); await addAuditTerminal(f, 'unsafe', true);
+  const f = await processFixture(); await addAuditTerminal(f, 'unsafe', true);
   try {
     const report = await doctorHerdr(f.request, await f.ports.doctorParts(f.request));
     expect(report.failures).toContainEqual(expect.objectContaining({ item: 'launches', code: 'launch-notify-enabled' }));
@@ -273,7 +276,7 @@ test('production doctor reads native notification policy and can reject a launch
 });
 
 test('doctor verifies quiet launches when the core list omits their labels and notification policy', async () => {
-  const f = await fixture(); await addAuditTerminal(f, 'quiet', false);
+  const f = await processFixture(); await addAuditTerminal(f, 'quiet', false);
   try {
     const report = await doctorHerdr(f.request, await f.ports.doctorParts(f.request));
     expect(report.failures).not.toContainEqual(expect.objectContaining({ item: 'launches' }));
@@ -282,7 +285,7 @@ test('doctor verifies quiet launches when the core list omits their labels and n
 });
 
 test('doctor gives usable advice when a launch has no readable notification policy', async () => {
-  const f = await fixture(); await addAuditTerminal(f, 'unknown', undefined);
+  const f = await processFixture(); await addAuditTerminal(f, 'unknown', undefined);
   try {
     const report = await doctorHerdr(f.request, await f.ports.doctorParts(f.request));
     expect(report.warnings).toContainEqual(expect.objectContaining({ item: 'launches', code: 'inspection-unavailable', repair: expect.stringMatching(/setup[\s\S]*doctor/i) }));
@@ -291,13 +294,13 @@ test('doctor gives usable advice when a launch has no readable notification poli
 });
 
 test('production doctor marks unavailable launch evidence unknown', async () => {
-  const f = await fixture();
+  const f = await processFixture();
   const report = await doctorHerdr(f.request, await f.ports.doctorParts(f.request));
   expect(report.warnings).toContainEqual(expect.objectContaining({ item: 'launches', code: 'inspection-unavailable' }));
 });
 
 test.each(['layout-theme', 'keys', 'patch-version'] as const)('production doctor checks %s content even if its journal hash matches', async item => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await focusedSetupFixture(); await setupHerdr(f.request, f.parts);
   const path = item === 'layout-theme' ? join(f.h.directories.app, 'layouts/spider-glass.json') : item === 'keys' ? join(f.h.directories.app, 'keys.json') : join(f.h.directories.app, 'mods/spider-agents/mod.json');
   const json = JSON.parse(await readFile(path, 'utf8'));
   if (item === 'layout-theme') json.theme = 'wrong';
@@ -308,7 +311,7 @@ test.each(['layout-theme', 'keys', 'patch-version'] as const)('production doctor
 });
 
 test('setup stages the tab strip and doctor accepts its resting size', async () => {
-  const f = await fixture();
+  const f = await focusedSetupFixture();
   await writeFile(join(f.h.directories.app, 'layouts/main.json'), await readFile(resolve('packages/herdr/src/__tests__/fixtures/herdr-0.1.12/layouts/main.json')));
   await setupHerdr(f.request, f.parts);
   const path = join(f.h.directories.app, 'layouts/spider-glass.json');
@@ -319,7 +322,7 @@ test('setup stages the tab strip and doctor accepts its resting size', async () 
 });
 
 test('setup forwards the tab opt-out and doctor rejects the opposite setting', async () => {
-  const f = await fixture();
+  const f = await focusedSetupFixture();
   f.request.config.look = { autoHideTabs: false };
   await writeFile(join(f.h.directories.app, 'layouts/main.json'), await readFile(resolve('packages/herdr/src/__tests__/fixtures/herdr-0.1.12/layouts/main.json')));
   await setupHerdr(f.request, f.parts);
@@ -334,7 +337,7 @@ test('setup forwards the tab opt-out and doctor rejects the opposite setting', a
 });
 
 test('production doctor accepts folded sidebar blocks', async () => {
-  const f = await fixture();
+  const f = await focusedSetupFixture();
   await writeFile(join(f.h.directories.app, 'layouts/main.json'), await readFile(resolve('packages/herdr/src/__tests__/fixtures/herdr-0.1.12/layouts/main.json')));
   await setupHerdr(f.request, f.parts);
   const path = join(f.h.directories.app, 'layouts/spider-glass.json');
@@ -351,7 +354,7 @@ test('production doctor accepts folded sidebar blocks', async () => {
 });
 
 test('production doctor rejects a missing sidebar agent block', async () => {
-  const f = await fixture();
+  const f = await focusedSetupFixture();
   await writeFile(join(f.h.directories.app, 'layouts/main.json'), await readFile(resolve('packages/herdr/src/__tests__/fixtures/herdr-0.1.12/layouts/main.json')));
   await setupHerdr(f.request, f.parts);
   const path = join(f.h.directories.app, 'layouts/spider-glass.json');
@@ -367,13 +370,13 @@ test('production doctor rejects a missing sidebar agent block', async () => {
 });
 
 test('production doctor does not confuse unrelated shared edits with seven broken features', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts); await editUnrelated(f);
+  const f = await focusedSetupFixture(); await setupHerdr(f.request, f.parts); await editUnrelated(f);
   const parts = await f.ports.doctorParts(f.request);
   for (const item of ['mods', 'clones', 'patch-version', 'layout-theme', 'keys', 'roles', 'resume'] as const) expect((await parts.inspect(item, f.request)).failures).toEqual([]);
 });
 
 test('production doctor normalizes pi modifiers and reports tree and editor collisions', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await focusedSetupFixture(); await setupHerdr(f.request, f.parts);
   await writeFile(join(f.h.directories.agent, 'keybindings.json'), JSON.stringify({ 'app.tree.filter.cycleBackward': 'shift+ctrl+o', 'app.session.new': 'shift+ctrl+a' }));
   const report = await (await f.ports.doctorParts(f.request)).inspect('keys', f.request);
   expect(report.warnings).toContainEqual(expect.objectContaining({ code: 'tree-view-key-collision', message: expect.stringContaining('ctrl+shift+o') }));
@@ -383,7 +386,7 @@ test('production doctor normalizes pi modifiers and reports tree and editor coll
 if (process.env.SPIDER_HERDR_E2E !== '1') console.info('SKIP production setup with real isolated cores: require SPIDER_HERDR_E2E=1; no app window is used');
 
 test('upgrades may add owned keys without treating a new key as a user edit', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await focusedSetupFixture(); await setupHerdr(f.request, f.parts);
   const source = join(f.root, 'packages/herdr/assets/keys.json'), keys = JSON.parse(await readFile(source, 'utf8'));
   keys.terminal['ctrl-shift-z'] = 'new.action'; await writeFile(source, JSON.stringify(keys));
   const result = await setupHerdr(f.request, f.parts);
@@ -392,27 +395,27 @@ test('upgrades may add owned keys without treating a new key as a user edit', as
 });
 
 test('damaged managed resume markers explain how to repair them', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await focusedSetupFixture(); await setupHerdr(f.request, f.parts);
   await writeFile(f.request.config.shellRc, (await readFile(f.request.config.shellRc, 'utf8')) + '# spider:resume:start\n');
   await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'managed-artifact-changed', message: expect.stringContaining('Restore') });
 });
 
 test('doctor validates the installed pi theme with the actual pi schema', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await focusedSetupFixture(); await setupHerdr(f.request, f.parts);
   const path = join(f.h.directories.agent, 'themes/dracula-plus-glass.json'), theme = JSON.parse(await readFile(path, 'utf8'));
   delete theme.colors.accent; await writeFile(path, JSON.stringify(theme));
   expect((await (await f.ports.doctorParts(f.request)).inspect('pi-schema-contrast', f.request)).failures).toContainEqual(expect.objectContaining({ code: 'pi-theme-schema' }));
 });
 
 test('doctor never passes unresolved role-template inspection', async () => {
-  const f = await fixture();
+  const f = await offlineFixture();
   await writeFile(join(f.h.directories.global, 'config.json'), JSON.stringify({ 'models.defaults': { worker: 'unavailable', reviewer: 'unavailable', watcher: 'unavailable' } }));
   expect((await (await f.ports.doctorParts(f.request)).inspect('roles', f.request)).failures).toContainEqual(expect.objectContaining({ code: 'role-unresolved', repair: expect.stringContaining('Choose an available configured model') }));
 });
 
 
 test.each([false, true])('replacement re-applies app selections without repeating session setup with running-in-place %s', async runningInPlace => {
-  const f = await fixture('fake', true); await setupHerdr(f.request, f.parts);
+  const f = await (runningInPlace ? focusedSetupFixture(undefined, true) : fixture('fake', true)); await setupHerdr(f.request, f.parts);
   const settings = join(f.h.directories.app, 'settings.json');
   const choice = '{"zoom":1.5,"theme":"nord","layout":"personal"}'; await writeFile(settings, choice);
   const output: string[] = [], errors: string[] = [];
@@ -436,7 +439,7 @@ test.each([false, true])('replacement re-applies app selections without repeatin
 });
 
 test('overwriting a newly managed terminal key backs up and restores the user binding', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const f = await focusedSetupFixture(); await setupHerdr(f.request, f.parts);
   const path = join(f.h.directories.app, 'keys.json'), keys = JSON.parse(await readFile(path, 'utf8'));
   keys.terminal['ctrl-b'] = 'personal.action'; await writeFile(path, JSON.stringify(keys));
   const asset = join(f.root, 'packages/herdr/assets/keys.json'), desired = JSON.parse(await readFile(asset, 'utf8'));

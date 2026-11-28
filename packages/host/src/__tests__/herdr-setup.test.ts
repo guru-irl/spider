@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { setupHerdr, rollbackHerdr } from '../../../herdr/src/setup/installer.js';
 import { readJournal, rootNotesValue } from '../../../herdr/src/setup/backup.js';
 import { cleanup, fixture } from './herdr-setup-fixture.js';
+import { focusedSetupFixture } from './herdr-setup-focused-fixture.js';
 
 // An isolated fixture has no selected pi processes. Do not inventory unrelated host sessions.
 vi.mock('node:child_process', async importOriginal => {
@@ -11,7 +12,7 @@ vi.mock('node:child_process', async importOriginal => {
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
-const fastFixture = () => fixture('fake', false, { coreTransport: 'socket' });
+const fastFixture = () => focusedSetupFixture();
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 const exists = (path: string) => readFile(path).then(() => true, () => false);
@@ -74,7 +75,7 @@ test('user edits survive setup, rollback, setup, rollback in every managed file 
 });
 
 test('setup verification reuses the root probe that bootstrap just ran', async () => {
-  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
+  const f = await focusedSetupFixture({ coreTransport: 'socket' }); await setupHerdr(f.request, f.parts);
   const probes = (await f.h.calls()).filter(call => call.argv[0] === 'run' && call.argv.includes('--probe'));
   expect(probes).toHaveLength(f.request.config.machines.length);
 });

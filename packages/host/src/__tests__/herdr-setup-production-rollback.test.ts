@@ -9,6 +9,7 @@ import { runHerdrCli } from '../../../herdr/src/setup/cli.js';
 import { doctorHerdr } from '../../../herdr/src/setup/doctor.js';
 import { readJournal, saveJournal, digest } from '../../../herdr/src/setup/backup.js';
 import { cleanup, fixture } from './herdr-setup-fixture.js';
+import { focusedSetupFixture } from './herdr-setup-focused-fixture.js';
 import { editUnrelated, claimCurrentHash, installedModFiles, startInteractiveShell, installedShells } from './herdr-setup-production-helpers.js';
 
 vi.mock('node:child_process', async importOriginal => {
@@ -16,7 +17,7 @@ vi.mock('node:child_process', async importOriginal => {
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
-const fastFixture = () => fixture('fake', false, { coreTransport: 'socket' });
+const fastFixture = () => focusedSetupFixture();
 
 test.skipIf(process.env.SPIDER_HERDR_E2E !== '1')('real isolated production setup preserves edits upgrades and repeats doctor probes without an app window', async () => {
   const f = await fixture('hc', true);
@@ -46,7 +47,7 @@ test.skipIf(process.env.SPIDER_HERDR_E2E !== '1')('real isolated production setu
 }, 60_000);
 
 test('doctor rejects an older runtime when the current package requires new bytes', async () => {
-  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
+  const f = await focusedSetupFixture({ coreTransport: 'socket' }); await setupHerdr(f.request, f.parts);
   const path = join(f.root, 'dist/herdr/remote-runtime.mjs'); await writeFile(path, (await readFile(path, 'utf8')) + '\n// new runtime\n');
   expect((await (await f.ports.doctorParts(f.request)).inspect('runtime-digest', f.request)).failures.length).toBeGreaterThan(0);
 });
@@ -74,7 +75,7 @@ test('doctor reports mod loading not verified with fenced headless commands', as
 });
 
 test('unrelated multiline TOML edits survive a complete production rerun', async () => {
-  const f = await fastFixture(); await setupHerdr(f.request, f.parts);
+  const f = await focusedSetupFixture({ coreTransport: 'socket' }); await setupHerdr(f.request, f.parts);
   const current = await readFile(f.request.config.core.config, 'utf8');
   const edited = `description = '''
 notes = true

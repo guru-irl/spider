@@ -89,13 +89,20 @@ test('publishes pre-tree-shake inputs, direct reads, and renamed executable byte
     const { build } = await import(${JSON.stringify(import.meta.resolve('vite'))});
     const { archiveMaps, sourcemap } = await import(${JSON.stringify(new URL('./build-maps.mjs', import.meta.url).href)});
     for (const name of ['main', 'other']) {
-      await build({ logLevel: 'silent', plugins: archiveMaps(), build: {
+      const staged = name === 'other';
+      await build({ logLevel: 'silent', plugins: archiveMaps(staged ? 'intercom' : ''), build: {
+        outDir: staged ? 'dist/.intercom-build-synthetic' : 'dist',
         emptyOutDir: false, ssr: 'packages/one/src/' + name + '.mjs', sourcemap,
         rollupOptions: { output: { entryFileNames: name + '.mjs', codeSplitting: false } },
       } });
-    }`, { SPIDER_BUILD_SOURCEMAP: '1', SPIDER_SELECTION_MAPS: maps, SPIDER_SELECTION_DIR: '' });
+    }
+    const { mkdirSync, renameSync } = await import('node:fs');
+    mkdirSync('dist/intercom');
+    renameSync('dist/.intercom-build-synthetic/other.mjs', 'dist/intercom/other.mjs');
+    `, { SPIDER_BUILD_SOURCEMAP: '1', SPIDER_SELECTION_MAPS: maps, SPIDER_SELECTION_DIR: '' });
   assert.ok(!readFileSync(join(root, 'dist/main.mjs'), 'utf8').includes('unreachable text'));
   assert.ok(existsSync(join(maps, 'main.mjs.artifact.json')), 'the build must archive artifact identity and inputs');
+  assert.ok(existsSync(join(maps, 'intercom/other.mjs.artifact.json')), 'staged builds must retain their shipped artifact identity');
   mkdirSync(raw);
   const keys = execFileSync(process.execPath, [bundleTools('./bundle-keys.mjs')], { cwd: root, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } }).trim();
   const recorded = {
@@ -108,7 +115,7 @@ test('publishes pre-tree-shake inputs, direct reads, and renamed executable byte
     const fs = await import('node:fs');
     fs.readFileSync('dist/main.mjs');
     fs.mkdirSync('.spider/scratch', { recursive: true });
-    fs.copyFileSync('dist/other.mjs', '.spider/scratch/renamed.mjs');`, recorded);
+    fs.copyFileSync('dist/intercom/other.mjs', '.spider/scratch/renamed.mjs');`, recorded);
   run(`
     globalThis[Symbol.for('spider.selection.tag')](${JSON.stringify(aliasTest)});
     await import('./.spider/scratch/renamed.mjs');`, recorded);
@@ -135,23 +142,23 @@ test('publishes pre-tree-shake inputs, direct reads, and renamed executable byte
   assert.equal(ambiguous, false);
   assert.deepEqual(hashes, artifacts.map(artifact => artifact.sha256).sort());
   assert.deepEqual(map.bundleRouting.tests[aliasTest], {
-    ambiguous: false, hashes: [artifacts.find(artifact => artifact.path === 'dist/other.mjs').sha256],
+    ambiguous: false, hashes: [artifacts.find(artifact => artifact.path === 'dist/intercom/other.mjs').sha256],
   });
   assert.deepEqual(map.bundleRouting.tests[inventoryTest], { ambiguous: true, hashes });
 
   const blob = 'b'.repeat(40);
   const options = { head: 'c'.repeat(40), inventory, map, changes: [{ file: removed, status: 'M' }],
-    bundleContracts: new Map([[aliasTest, { outputs: ['dist/other.mjs'], blobs: { [aliasTest]: blob } }]]),
+    bundleContracts: new Map([[aliasTest, { outputs: ['dist/intercom/other.mjs'], blobs: { [aliasTest]: blob } }]]),
     bundleBlobs: () => new Map([[aliasTest, blob]]), artifactDigest: file => bundleDigest(root, file),
   };
   const unchanged = await selectTests(options);
   assert.deepEqual(Object.keys(unchanged.selected), [testFile, inventoryTest]);
-  const other = join(root, 'dist/other.mjs');
+  const other = join(root, 'dist/intercom/other.mjs');
   writeFileSync(other, 'export const marker = "new";');
   const changed = await selectTests(options);
   assert.deepEqual(Object.keys(changed.selected), [aliasTest, testFile, inventoryTest]);
   rmSync(other);
-  symlinkSync('../.spider/scratch/renamed.mjs', other);
+  symlinkSync('../../.spider/scratch/renamed.mjs', other);
   const relocated = await selectTests(options);
   assert.deepEqual(Object.keys(relocated.selected), [aliasTest, testFile, inventoryTest]);
 });

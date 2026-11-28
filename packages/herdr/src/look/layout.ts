@@ -51,7 +51,10 @@ export function buildGlassLayout(currentMain: unknown, names: CloneNames): Glass
       }
     }
   }
-  Object.assign(root, edits.root, { colors: { ...object(root.colors ?? {}), ...edits.root.colors } });
+  Object.assign(root, edits.root, {
+    cell_background_opacity: root.cell_background_opacity ?? edits.root.cell_background_opacity,
+    colors: { ...object(root.colors ?? {}), ...edits.root.colors },
+  });
   delete root.window_blur;
   if (isSpacesALookVersion(names.release)) Object.assign(root, edits.spacesA[names.release].root);
   if (names.menu) root.terminal_menu = names.menu;

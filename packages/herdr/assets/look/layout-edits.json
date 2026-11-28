@@ -17,6 +17,7 @@
     "theme": "spider-glass",
     "ui_font": "Google Sans Flex",
     "terminal_opacity": 0,
+    "cell_background_opacity": 0.6,
     "traffic_lights": [-60, -60],
     "background": { "gradient": ["#18181a", "#22201e"], "angle": 176 },
     "colors": {

@@ -28,12 +28,13 @@ const sourcePath = file => !file.includes('\\') && !/[\x00-\x1f]/.test(file)
   && !file.split('/').some(part => part === '' || part === '.' || part === '..');
 
 function isMap(map, run) {
-  return map?.version === 1 && commitId.test(map.commit) && map.commit === run.head_sha && map.runId === String(run.id)
+  return map?.version === 2 && commitId.test(map.commit) && map.commit === run.head_sha && map.runId === String(run.id)
     && Number.isFinite(Date.parse(map.createdAt)) && strings(map.files) && map.files.every(sourcePath)
     && new Set(map.files).size === map.files.length && map.tests && typeof map.tests === 'object' && !Array.isArray(map.tests)
     && Object.entries(map.tests).every(([file, row]) => safePath(file) && rootTest.test(file)
       && row && knownResult.has(row.result) && Number.isFinite(row.ms) && row.ms >= 0
-      && (row.ranBundle === undefined || typeof row.ranBundle === 'boolean') && strings(row.unresolved)
+      && typeof row.incomplete === 'boolean' && typeof row.ranBundle === 'boolean' && strings(row.unresolved)
+      && (row.ranBundle || !row.unresolved.length)
       && Array.isArray(row.reads) && row.reads.every(index => Number.isSafeInteger(index) && index >= 0 && index < map.files.length));
 }
 
@@ -190,18 +191,18 @@ export async function selectTests({ head, inventory, changes, map, fallback = nu
       } else {
         const readers = new Map(map.files.map(file => [file, []]));
         const unresolved = new Map(), bundleExecutors = [];
-        let blobs, legacyBundleRecords = false;
+        let blobs;
         for (const file of inventory) {
           const record = map.tests[file];
           if (!record) { add(file, 'missing from map'); continue; }
           if (record.result !== 'passed') add(file, `recorded result: ${record.result}`);
+          if (record.incomplete) add(file, 'incomplete recording');
           if (record.unresolved.length) {
             blobs ??= fixtureBlobs(map.commit);
             const scope = fixtureScope(record.unresolved, new Set(record.reads.map(index => map.files[index])), blobs);
             if (scope === null || scope.size) unresolved.set(file, scope);
           }
           if (record.ranBundle || record.unresolved.length) bundleExecutors.push(file);
-          legacyBundleRecords ||= record.ranBundle === undefined;
           for (const index of record.reads) readers.get(map.files[index]).push(file);
         }
         const graphSeeds = new Set(), bundleSeeds = new Set(), fixtureSeeds = new Set();
@@ -242,28 +243,24 @@ export async function selectTests({ head, inventory, changes, map, fallback = nu
             }
           }
         }
-        if (buildChanged && legacyBundleRecords) {
-          fallback = 'build config changed but the map predates bundle-use records';
-        } else {
-          const related = graphSeeds.size ? await resolveRelated(sorted(graphSeeds)) : [];
-          for (const test of related) add(test, 'static import graph');
-          if (buildChanged) for (const test of bundleExecutors) add(test, 'ran a bundle affected by build configuration');
-          const fixtureTargets = sorted([...unresolved.values()].flatMap(scope => scope ? [...scope] : []));
-          if (fixtureSeeds.size && fixtureTargets.length && !buildChanged) {
-            const affected = new Set([...fixtureSeeds, ...await resolveRelated(sorted(fixtureSeeds), fixtureTargets)]);
-            for (const [test, scope] of unresolved) {
-              for (const entry of scope ?? []) {
-                if (affected.has(entry)) add(test, `fixture bundle imports changed source via ${entry}`);
-              }
+        const related = graphSeeds.size ? await resolveRelated(sorted(graphSeeds)) : [];
+        for (const test of related) add(test, 'static import graph');
+        if (buildChanged) for (const test of bundleExecutors) add(test, 'ran a bundle affected by build configuration');
+        const fixtureTargets = sorted([...unresolved.values()].flatMap(scope => scope ? [...scope] : []));
+        if (fixtureSeeds.size && fixtureTargets.length && !buildChanged) {
+          const affected = new Set([...fixtureSeeds, ...await resolveRelated(sorted(fixtureSeeds), fixtureTargets)]);
+          for (const [test, scope] of unresolved) {
+            for (const entry of scope ?? []) {
+              if (affected.has(entry)) add(test, `fixture bundle imports changed source via ${entry}`);
             }
           }
-          const knownSeeds = sorted([...bundleSeeds].filter(file => !graphSeeds.has(file)));
-          const bundleAffected = buildChanged || related.some(file => policy.bundles.entries.includes(file))
-            || (knownSeeds.length && (await resolveRelated(knownSeeds, policy.bundles.entries)).some(file => policy.bundles.entries.includes(file)));
-          if (bundleAffected) {
-            for (const test of policy.bundles.consumers) add(test, 'bundle reader policy');
-            for (const test of await resolveRelated(policy.bundles.consumers)) add(test, 'imports a bundle reader');
-          }
+        }
+        const knownSeeds = sorted([...bundleSeeds].filter(file => !graphSeeds.has(file)));
+        const bundleAffected = buildChanged || related.some(file => policy.bundles.entries.includes(file))
+          || (knownSeeds.length && (await resolveRelated(knownSeeds, policy.bundles.entries)).some(file => policy.bundles.entries.includes(file)));
+        if (bundleAffected) {
+          for (const test of policy.bundles.consumers) add(test, 'bundle reader policy');
+          for (const test of await resolveRelated(policy.bundles.consumers)) add(test, 'imports a bundle reader');
         }
       }
     } catch (error) {

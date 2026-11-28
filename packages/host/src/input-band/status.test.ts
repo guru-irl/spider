@@ -42,6 +42,20 @@ it.each([ ["compaction", "accent"], ["branchSummary", "accent"], ["retry", "warn
   },
 );
 
+it("keeps only the latest session binding and restores Pi's spinner after shutdown", () => {
+  const first = activate();
+  stop = activate("nerd");
+  first();
+  const view = mode(), during = new Indicator("retry");
+  view.showStatusIndicator(during);
+  expect(stripTerminalSequences(view.statusContainer.render(40).join("\n"))).toContain("\uE3E3 Status");
+  stop(); stop = undefined;
+  const after = new Indicator("retry");
+  view.showStatusIndicator(after);
+  expect(stripTerminalSequences(view.statusContainer.render(40).join("\n"))).toContain("⠋ Status");
+  after.dispose();
+});
+
 it("uses Nerd moon frames, while leaving working and unknown shapes alone", () => {
   stop = activate("nerd");
   const view = mode(), working = new Indicator("working");

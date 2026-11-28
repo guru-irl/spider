@@ -89,6 +89,36 @@ describe("AgentFooter", () => {
 import { AgentFooter as _AF } from "../agents/footer";
 import { AgentStore as _Store } from "../agents/store";
 describe("AgentFooter selection cursor", () => {
+  it.each(["text", "nerd"] as const)("shows the view direction and right-aligned total in %s mode", (iconStyle) => {
+    const src = new Src();
+    for (let i = 1; i <= 4; i++) src.rows.set(`r${i}`, row({ id: `r${i}`, name: `agent-${i}`, started_at: i }));
+    const store = new AgentStore(src); store.start();
+    const footer = new AgentFooter(store, { ...id, iconStyle }, { now: () => 5000 });
+    expect(footer.render(40)[2]).toContain("4 running · +2 more");
+    store.beginSelect();
+    expect(footer.render(40)[2]).toBe(`↓ view more${" ".repeat(18)}4 subagents`);
+    store.moveSelect(2);
+    expect(footer.render(40)[2]).toBe(`↓ view more${" ".repeat(18)}4 subagents`);
+    store.moveSelect(1);
+    expect(footer.render(40)[2]).toBe(`↑ view more${" ".repeat(18)}4 subagents`);
+    for (let width = 1; width <= 30; width++) {
+      expect(footer.render(width).every(line => visibleWidth(line) <= width), `${width} columns`).toBe(true);
+    }
+    store.endSelect();
+    expect(footer.render(40)[2]).toContain("4 running · +2 more");
+  });
+
+  it("changes the summary direction when the wheel scrolls the window to the end", () => {
+    const src = new Src();
+    for (let i = 1; i <= 4; i++) src.rows.set(`r${i}`, row({ id: `r${i}`, started_at: i }));
+    const store = new AgentStore(src); store.start(); store.beginSelect();
+    const footer = new AgentFooter(store, id, { now: () => 5000 });
+    expect(footer.render(40)[2]).toMatch(/^↓ view more/);
+    footer.handleMouse({ type: "wheel", wheelDelta: 2, x: 0, y: 2, width: 40, height: 3,
+      screenX: 0, screenY: 2, shift: false, alt: false, ctrl: false });
+    expect(footer.render(40)[2]).toMatch(/^↑ view more +4 subagents$/);
+  });
+
   it("renders a ▸ cursor on the selected row while the store is selecting", () => {
     const rows = [
       { id: "a", session_id: "x", agent: "worker", name: "alpha", status: "running", step_count: 0, token_count: 0, started_at: 0 },

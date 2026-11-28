@@ -42,11 +42,11 @@ describe("exec terminal-state outcome matrix — through the REAL host mapping +
     expect(text).not.toMatch(/detached|retained|unknown/i);
   });
 
-  it("real numeric nonzero exit: ❌, exit 1, a genuine failure never laundered into unknown", async () => {
+  it("real numeric nonzero exit: ×, exit 1, a genuine failure never laundered into unknown", async () => {
     const args = { action: "exec", language: "shell", code: "exit 1" };
     const res = await runExec(args, { cwd: process.cwd() } as any);
     const text = render(res.details, args, res.text);
-    expect(text).toContain("❌");
+    expect(text).toContain("×");
     expect(text).toMatch(/exit 1\b/);
     expect(text).not.toMatch(/unknown/i);
   });
@@ -71,7 +71,7 @@ describe("exec terminal-state outcome matrix — through the REAL host mapping +
       // this stage's own RED evidence — see background-outcome-review.md q-1).
       expect(text).not.toMatch(/detached/i);
       expect(text).not.toMatch(/exit unknown/i);
-      expect(text).toContain("❌"); // a KNOWN signal death remains visibly a failure
+      expect(text).toContain("×"); // a KNOWN signal death remains visibly a failure
       expect(text).toMatch(/signal/i);
       expect(d.outcome).toBe("signal");
       if (d.retained) {
@@ -101,7 +101,7 @@ describe("exec terminal-state outcome matrix — through the REAL host mapping +
     };
     const args = { action: "exec", language: "shell", code: "kill -TERM $$", background: true };
     const text = render(details, args, "");
-    expect(text).toContain("❌");
+    expect(text).toContain("×");
     expect(text).toMatch(/signal/i);
     expect(text).toMatch(/retained/i);
     expect(text).toContain(details.backgroundJob.dir);
@@ -124,7 +124,7 @@ describe("exec terminal-state outcome matrix — through the REAL host mapping +
       expect(d.outcome).toBe("timeout");
       const text = render(d, args, res.text);
       expect(text).not.toContain("✓");
-      expect(text).not.toContain("❌");
+      expect(text).not.toContain("×");
       expect(text).toMatch(/detached/i);
       expect(text).toMatch(/exit unknown/i);
       // m-1: BOTH sinks must word the timeout row's receipt disclosure the SAME
@@ -201,7 +201,7 @@ describe("exec terminal-state outcome matrix — through the REAL host mapping +
       expect(r.exitCode).toBeNull();
       const args = { action: "exec", language: "javascript", code: "console.log(1)", background: true };
       const text = render(r, args, "");
-      expect(text).toContain("❌");
+      expect(text).toContain("×");
       expect(text).not.toMatch(/exit 0/);
       expect(text).toMatch(/spawn error/i);
       if (r.backgroundJob) rmSync(r.backgroundJob.dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -224,7 +224,7 @@ describe("exec terminal-state outcome matrix — through the REAL host mapping +
     };
     const args = { action: "exec", language: "shell", code: "sleep 5", background: true };
     const text = render(details, args, "");
-    expect(text).toContain("❌");
+    expect(text).toContain("×");
     expect(text).toMatch(/aborted/i);
     expect(text).toContain(details.backgroundJob.dir);
     expect(text).not.toMatch(/exit 0/);
@@ -251,13 +251,13 @@ describe("exec terminal-state outcome matrix — through the REAL host mapping +
     });
     it("known failure", () => {
       const text = render([{ stdout: "a", exitCode: 0 }, { stdout: "", exitCode: 1 }], batchArgs, "");
-      expect(text).toContain("❌");
+      expect(text).toContain("×");
       expect(text).toMatch(/exit 1\b/);
       expect(text).not.toMatch(/unknown/i);
     });
-    it("unknown only — neutral, never a fabricated ❌ or exit 0", () => {
+    it("unknown only — neutral, never a fabricated × or exit 0", () => {
       const text = render([{ stdout: "a", exitCode: 0 }, { stdout: "", exitCode: null }], batchArgs, "");
-      expect(text).not.toContain("❌");
+      expect(text).not.toContain("×");
       expect(text).toMatch(/unknown/i);
     });
     it("mixed failure + unknown — discloses BOTH facts, never silently laundered into aggregate exit 1 alone", () => {
@@ -268,10 +268,10 @@ describe("exec terminal-state outcome matrix — through the REAL host mapping +
       expect(text).toMatch(/exit 1\b/);
       expect(text).toMatch(/unknown/i);
     });
-    it("empty batch — neutral/no-results, never the self-contradictory '❌ exit 0'", () => {
+    it("empty batch — neutral/no-results, never the self-contradictory '× exit 0'", () => {
       const text = render([], { action: "batch", commands: [] }, "");
-      expect(text).not.toMatch(/❌.*exit 0/);
-      const hasFalseFailZero = /❌/.test(text) && /exit 0/.test(text);
+      expect(text).not.toMatch(/×.*exit 0/);
+      const hasFalseFailZero = /×/.test(text) && /exit 0/.test(text);
       expect(hasFalseFailZero).toBe(false);
       // m-4: an empty batch is "no commands", not the generic "exit unknown"
       // wording used for a genuinely indeterminate single result.
@@ -283,7 +283,7 @@ describe("exec terminal-state outcome matrix — through the REAL host mapping +
     // T7 is the working repro this is adapted from). `toExecDetails`'s batch branch used to
     // aggregate on `exitCode` alone: a foreground signal death (I-1 gave it `exitCode: null`,
     // never a fabricated number) fell into `anyUnknown` and the card rendered a neutral
-    // "● exit unknown" with no ❌ and no signal named — laundering a KNOWN failure into an
+    // "● exit unknown" with no × and no signal named — laundering a KNOWN failure into an
     // unknown one. This must render as a real, visible failure that names the signal.
     it("F-1: a real batch entry that dies by signal is a KNOWN failure — never laundered into 'exit unknown', the signal is named", async () => {
       const root = makeFixture();
@@ -302,7 +302,7 @@ describe("exec terminal-state outcome matrix — through the REAL host mapping +
         expect(entries[1]!.outcome).toBe("signal");
         expect(entries[1]!.exitCode).toBeNull();
         const text = render(res.details, args, res.text);
-        expect(text).toContain("❌");
+        expect(text).toContain("×");
         expect(text).toMatch(/signal/i);
         expect(text).not.toMatch(/exit unknown/i);
       } finally {
@@ -315,7 +315,7 @@ describe("exec terminal-state outcome matrix — through the REAL host mapping +
         [{ stdout: "a", exitCode: 0, outcome: "exited" }, { stdout: "", exitCode: null, outcome: "unknown" }],
         batchArgs, "",
       );
-      expect(text).not.toContain("❌");
+      expect(text).not.toContain("×");
       expect(text).toMatch(/unknown/i);
     });
 
@@ -332,7 +332,7 @@ describe("exec terminal-state outcome matrix — through the REAL host mapping +
         const res = await runBatch(args as any, { cwd: root } as any);
         const mixed = [...res.details, { stdout: "", stderr: "", exitCode: null, outcome: "unknown" }];
         const text = render(mixed, args, "");
-        expect(text).toContain("❌");
+        expect(text).toContain("×");
         expect(text).toMatch(/signal/i);
         expect(text).toMatch(/unknown/i);
       } finally {

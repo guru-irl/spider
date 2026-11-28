@@ -16,7 +16,7 @@ describe("renderGridCell", () => {
     expect(lines).toHaveLength(5);
     for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(30);
     expect(lines[0]).toContain("worker");
-    expect(lines[0]).toContain("🕸");
+    expect(lines[0]).toContain("◇");
   });
   it("marks a focused cell", () => {
     const lines = renderGridCell(id, { agent, width: 30, height: 4, focused: true, pinned: false, now: 1000, spinner: new Spinner() });
@@ -30,7 +30,7 @@ describe("renderGridCell", () => {
     expect(lines[0]).toContain("worker");        // name is the heading
     expect(joined).toContain("turns");           // type/model/turns meta line
     expect(joined).not.toContain("#r1");         // no useless run-id in the cell
-    expect(joined).toContain("↳");               // truncated instructions marker
+    expect(joined).toContain("→");               // truncated instructions marker
     expect(joined).toContain("read every file"); // task text preview
     for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(44);
   });

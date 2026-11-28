@@ -3,12 +3,12 @@ import { card, kv, statusIcon } from "../renderers/types.js";
 import type { ThemeAdapter } from "../agents/types.js";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
-const id: ThemeAdapter = { fg: (_t, s) => s, bg: (_t, s) => s, bold: (s) => s, glyph: "🕸" };
+const id: ThemeAdapter = { fg: (_t, s) => s, bg: (_t, s) => s, bold: (s) => s, glyph: "◆" };
 
 describe("renderer helpers", () => {
-  it("card frames a title with the 🕸 glyph and keeps every line within width", () => {
+  it("card frames a title with the ◆ glyph and keeps every line within width", () => {
     const lines = card(id, "memory", ["a", "b"], 30);
-    expect(lines[0]).toContain("🕸");
+    expect(lines[0]).toContain("◆");
     expect(lines[0]).toContain("memory");
     for (const l of lines) expect(visibleWidth(l)).toBeLessThanOrEqual(30);
   });
@@ -19,8 +19,8 @@ describe("renderer helpers", () => {
   });
   it("statusIcon maps status to a glyph", () => {
     expect(statusIcon(id, "ok")).toContain("✓");
-    expect(statusIcon(id, "fail")).toContain("❌");
-    expect(statusIcon(id, "warn")).toContain("⚠\uFE0F");
+    expect(statusIcon(id, "fail")).toContain("×");
+    expect(statusIcon(id, "warn")).toContain("▲");
     expect(statusIcon(id, "on")).toContain("●");
     expect(statusIcon(id, "off")).toContain("○");
     expect(statusIcon(id, "paused")).toContain("■");

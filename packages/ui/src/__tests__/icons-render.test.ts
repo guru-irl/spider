@@ -25,55 +25,66 @@ const agent: AgentSnapshot = {
 };
 
 describe("icon styles in rendered rows", () => {
+  it("italicizes the agent role in both grid and detail", () => {
+    const styled: ThemeAdapter = { ...theme("text"), italic: text => `<i>${text}</i>` };
+    const opts = { agent, width: 100, height: 2, focused: false, pinned: false, now: 0, spinner: new Spinner() };
+    expect(renderGridCell(styled, opts).join("\n")).toContain("<i>worker</i>");
+    const detail = new AgentDetail("one", styled, { viewport: () => ({ safeHeight: 15 }), requestRender: () => {} });
+    try {
+      detail.update({ kind: "loaded", run: agent, events: [] });
+      expect(detail.render(100).join("\n")).toContain("<i>worker</i>");
+    } finally { detail.dispose(); }
+  });
   it.each(["text", "nerd"] as const)("keeps copy and copied icons equally wide in %s style", style => {
     expect(() => icon(style, "copied")).not.toThrow();
     const copied = icon(style, "copied");
     expect(visibleWidth(copied)).toBe(visibleWidth(icon(style, "copy")));
-    expect(copied).toBe(style === "text" ? "✓" : "\u{F012C}");
+    expect(copied).toBe(style === "text" ? "✓" : "\u{F012C} ");
   });
 
-  it("returns each role's specified text and Nerd Font glyph with equal cell widths", () => {
+  it("returns monochrome glyphs with the specified Nerd Font padding", () => {
     const roles: [IconRole, string, string][] = [
-      ["agent", "\u{1F916}", "\u{F167A} "], ["spider", "\u{1F578}\uFE0F", "\u{F0BCA} "], ["warning", "\u26A0\uFE0F", "\u{F002A} "], ["failure", "\u274C", "\u{F0156} "],
-      ["gutter", "⎿", "\u{F060D}"], ["task", "↳", "\u{F060D}"], ["result", "⤴", "\u{F005C}"],
-      ["message", "✉", "\u{F01F0}"], ["reply", "↩", "\u{F0F20}"], ["broadcast", "⇉", "\u{F0B23}"],
-      ["handoff", "⇢", "\u{F19B0}"], ["pin", "📌", "\u{F0931} "], ["modelDefault", "⟵", "\u{F004D}"],
-      ["copy", "⧉", "\u{F018F}"],
+      ["agent", "◇", "\u{F167A} "], ["spider", "◆", "\u{F0BCA} "], ["warning", "▲", "\u{F002A} "], ["failure", "×", "\u{F0156} "], ["success", "✓", "\u{F012C} "], ["question", "?", "\u{F02D6} "],
+      ["gutter", "└", "└ "], ["task", "→", "\u{F060D} "], ["result", "↑", "\u{F005C} "],
+      ["message", "→", "\u{F01F0} "], ["reply", "←", "\u{F0F20} "], ["broadcast", "»", "\u{F0B23} "],
+      ["handoff", "→", "\u{F19B0} "], ["pin", "◇", "\u{F0931} "], ["modelDefault", "←", "\u{F004D} "],
+      ["copy", "□", "\u{F018F} "], ["todoDone", "✓", "\u{F05E1} "], ["todoFailed", "×", "\u{F015A} "], ["todoPending", "○", "\u{F0766} "],
     ];
     for (const [role, text, nerd] of roles) {
       expect(icon(undefined, role)).toBe(text);
       expect(icon("text", role)).toBe(text);
       expect(icon("nerd", role)).toBe(nerd);
-      expect(visibleWidth(nerd)).toBe(visibleWidth(text));
+      expect(text).not.toMatch(/\p{Extended_Pictographic}/u);
+      expect(visibleWidth(nerd)).toBe(visibleWidth(text) + Number(nerd.endsWith(" ")));
     }
   });
-  it("preserves a custom agent glyph on an adapter with no icon style", () => {
-    const custom: ThemeAdapter = { ...theme("text"), glyph: "◆", iconStyle: undefined };
-    expect(formatAgentLine(custom, agent, 100, 0, "○")).toContain("○ ◆ scribe");
+  it("uses the text icon for an adapter without an icon style", () => {
+    const custom: ThemeAdapter = { ...theme("text"), glyph: "🕸", iconStyle: undefined };
+    expect(formatAgentLine(custom, agent, 100, 0, "○")).toContain("○ ◇ scribe");
     const opts = { agent, width: 100, height: 2, focused: false, pinned: false, now: 0, spinner: new Spinner() };
-    expect(renderGridCell(custom, opts)[0]).toContain("◆ scribe");
+    expect(renderGridCell(custom, opts)[0]).toContain("◇ scribe");
   });
 
   it("keeps the agent marker and its following spaces aligned", () => {
     const text = formatAgentLine(theme("text"), agent, 100, 0, "◆");
     const nerd = formatAgentLine(theme("nerd"), agent, 100, 0, "◆");
-    expect(text).toContain("◆ \u{1F916} scribe");
+    expect(text).toContain("◆ ◇ scribe");
     expect(nerd).toContain("◆ \u{F167A}  scribe");
-    expect(visibleWidth(nerd)).toBe(visibleWidth(text));
+    expect(visibleWidth(nerd)).toBe(visibleWidth(text) + 1);
   });
 
-  it("renders warning and failure icons without changing their width", () => {
-    expect(statusIcon(theme("text"), "warn")).toBe("\u26A0\uFE0F");
+  it("renders warning and failure icons with Nerd Font padding", () => {
+    expect(statusIcon(theme("text"), "warn")).toBe("▲");
     expect(statusIcon(theme("nerd"), "warn")).toBe("\u{F002A} ");
-    expect(statusIcon(theme("text"), "fail")).toBe("\u274C");
+    expect(statusIcon(theme("text"), "fail")).toBe("×");
     expect(statusIcon(theme("nerd"), "fail")).toBe("\u{F0156} ");
-    expect(visibleWidth(statusIcon(theme("nerd"), "warn"))).toBe(visibleWidth("\u26A0\uFE0F"));
+    expect(visibleWidth(statusIcon(theme("nerd"), "warn"))).toBe(2);
   });
 
   it("uses the spider icon in cards and preserves their width", () => {
     const text = card(theme("text"), "Agents", [], 40)[0];
     const nerd = card(theme("nerd"), "Agents", [], 40)[0];
-    expect(text).toContain("\u{1F578}\uFE0F Agents");
+    expect(text).toContain("◆ Agents");
     expect(nerd).toContain("\u{F0BCA}  Agents");
     expect(nerd).not.toContain("\u{F167A}");
     expect(visibleWidth(nerd)).toBe(visibleWidth(text));
@@ -83,9 +94,9 @@ describe("icon styles in rendered rows", () => {
     const call = { kind: "exec" as const, commands: ["echo"] };
     const text = renderExecCall(call, { theme: theme("text"), width: 80 });
     const nerd = renderExecCall(call, { theme: theme("nerd"), width: 80 });
-    expect(text[0]).toMatch(/^\u{1F578}\u{FE0F} spider · exec/u);
-    expect(nerd[0]).toMatch(/^\u{F0BCA}  spider · exec/u);
-    expect(nerd.map(visibleWidth)).toEqual(text.map(visibleWidth));
+    expect(text[0]).toMatch(/^ ◆ exec/u);
+    expect(nerd[0]).toMatch(/^ \u{F0BCA}  exec/u);
+    expect(visibleWidth(nerd[0])).toBe(visibleWidth(text[0]) + 1);
     expect(formatAgentLine(theme("nerd"), agent, 100, 0, "◆")).toContain("◆ \u{F167A}  scribe");
   });
 
@@ -93,21 +104,22 @@ describe("icon styles in rendered rows", () => {
     const details = { verb: "send" as const, to: "worker", body: "hello", delivered: false, delivery: "queued" as const };
     const text = renderMessageResult(details, { theme: theme("text"), width: 100 });
     const nerd = renderMessageResult(details, { theme: theme("nerd"), width: 100 });
-    expect(text.join("\n")).toContain("\u26A0\uFE0F → worker");
-    expect(nerd.join("\n")).toContain("\u{F002A}  → worker");
-    expect(text.join("\n")).toContain("⎿ hello");
-    expect(nerd.join("\n")).toContain("\u{F060D} hello");
-    expect(nerd.map(visibleWidth)).toEqual(text.map(visibleWidth));
+    expect(text.join("\n")).toContain("▲ → worker");
+    expect(nerd.join("\n")).toContain("\u{F002A}  \u{F01F0}  worker");
+    expect(text.join("\n")).toContain("└ hello");
+    expect(nerd.join("\n")).toContain("└  hello");
+    expect(visibleWidth(nerd[0])).toBe(visibleWidth(text[0]) + 2);
+    expect(visibleWidth(nerd[1])).toBe(visibleWidth(text[1]) + 1);
   });
 
   it("renders reply and broadcast markers with the same widths", () => {
-    for (const [verb, textIcon, nerdIcon] of [["reply", "↩", "\u{F0F20}"], ["broadcast", "⇉", "\u{F0B23}"]] as const) {
+    for (const [verb, textIcon, nerdIcon] of [["reply", "←", "\u{F0F20}"], ["broadcast", "»", "\u{F0B23}"]] as const) {
       const details = { verb, to: "worker", body: "", delivered: true };
       const text = renderMessageResult(details, { theme: theme("text"), width: 100 });
       const nerd = renderMessageResult(details, { theme: theme("nerd"), width: 100 });
       expect(text.join("\n")).toContain(`${textIcon} worker`);
-      expect(nerd.join("\n")).toContain(`${nerdIcon} worker`);
-      expect(nerd.map(visibleWidth)).toEqual(text.map(visibleWidth));
+      expect(nerd.join("\n")).toContain(`${nerdIcon}  worker`);
+      expect(visibleWidth(nerd[0])).toBe(visibleWidth(text[0]) + 2);
     }
   });
 
@@ -116,11 +128,12 @@ describe("icon styles in rendered rows", () => {
       focused: false, pinned: true, now: 0, spinner: new Spinner() };
     const text = renderGridCell(theme("text"), opts);
     const nerd = renderGridCell(theme("nerd"), opts);
-    expect(text[0]).toContain("\u274C \u{1F916} scribe 📌");
+    expect(text[0]).toContain("× ◇ scribe ◇");
     expect(nerd[0]).toContain("\u{F0156}  \u{F167A}  scribe \u{F0931} ");
-    expect(text[2]).toContain("↳ read files");
-    expect(nerd[2]).toContain("\u{F060D} read files");
-    expect(nerd.map(visibleWidth)).toEqual(text.map(visibleWidth));
+    expect(text[2]).toContain("→ read files");
+    expect(nerd[2]).toContain("\u{F060D}  read files");
+    expect(visibleWidth(nerd[0])).toBe(visibleWidth(text[0]) + 3);
+    expect(visibleWidth(nerd[2])).toBe(visibleWidth(text[2]) + 1);
   });
 
   it("styles generated failed-tool summaries but leaves log text untouched", () => {
@@ -129,11 +142,11 @@ describe("icon styles in rendered rows", () => {
     const snapshot = applyEvent(agent, event);
     const text = formatAgentLine(theme("text"), snapshot, 100, 0, "◆");
     const nerd = formatAgentLine(theme("nerd"), snapshot, 100, 0, "◆");
-    expect(text).toContain("\u274C read — failed");
+    expect(text).toContain("× read — failed");
     expect(nerd).toContain("\u{F0156}  read — failed");
     const current = applyEvent(agent, { ...event, summary: "\u274C read — failed" });
     expect(formatAgentLine(theme("nerd"), current, 100, 0, "◆")).toContain("\u{F0156}  read — failed");
-    expect(visibleWidth(nerd)).toBe(visibleWidth(text));
+    expect(visibleWidth(nerd)).toBe(visibleWidth(text) + 2);
     const opts = { agent: snapshot, width: 100, height: 3, focused: false, pinned: false, now: 0, spinner: new Spinner() };
     expect(renderGridCell(theme("nerd"), opts).join("\n")).toContain("\u{F0156}  read — failed");
     const log = applyEvent(agent, { ...event, type: "log", summary: "✗ user text" });
@@ -144,6 +157,21 @@ describe("icon styles in rendered rows", () => {
     finally { detail.dispose(); }
   });
 
+  it("styles generated success markers while preserving ordinary log text", () => {
+    const event = { runId: "one", sessionId: "s", ts: 1, type: "tool_result" as const,
+      summary: "✓ read — done", payload: { isError: false } };
+    const snapshot = applyEvent(agent, event);
+    expect(formatAgentLine(theme("nerd"), snapshot, 100, 0, "◆")).toContain("\u{F012C}  read — done");
+    const opts = { agent: snapshot, width: 100, height: 3, focused: false, pinned: false, now: 0, spinner: new Spinner() };
+    expect(renderGridCell(theme("nerd"), opts).join("\n")).toContain("\u{F012C}  read — done");
+    const detail = new AgentDetail("one", theme("nerd"), { viewport: () => ({ safeHeight: 15 }), requestRender: () => {} });
+    detail.update({ kind: "loaded", run: agent, events: [{ ...event, id: 1 }] });
+    try { expect(detail.render(100).join("\n")).toContain("\u{F012C}  read — done"); }
+    finally { detail.dispose(); }
+    const log = applyEvent(agent, { ...event, type: "log", summary: "✓ user text" });
+    expect(formatAgentLine(theme("nerd"), log, 100, 0, "◆")).toContain("✓ user text");
+  });
+
   it("keeps failed-tool provenance aligned when the activity tail rolls over", () => {
     let snapshot = agent;
     for (let i = 0; i < 21; i++) {
@@ -152,12 +180,12 @@ describe("icon styles in rendered rows", () => {
     snapshot = applyEvent(snapshot, { runId: "one", sessionId: "s", ts: 22, type: "tool_result", summary: "✗ read", payload: { isError: true } });
     expect(snapshot.recentActivity).toHaveLength(20);
     expect(snapshot.recentActivityErrors).toHaveLength(20);
-    expect(snapshot.recentActivityErrors?.slice(0, -1).every(value => value === false)).toBe(true);
+    expect(snapshot.recentActivityErrors?.slice(0, -1).every(value => value === undefined)).toBe(true);
     expect(snapshot.recentActivityErrors?.at(-1)).toBe(true);
     snapshot = applyEvent(snapshot, { runId: "one", sessionId: "s", ts: 23, type: "log", summary: "✗ user text" });
     expect(formatAgentLine(theme("nerd"), snapshot, 100, 0, "◆")).toContain("✗ user text");
     expect(snapshot.recentActivityErrors?.at(-2)).toBe(true);
-    expect(snapshot.recentActivityErrors?.at(-1)).toBe(false);
+    expect(snapshot.recentActivityErrors?.at(-1)).toBeUndefined();
   });
 
   it("renders handoffs and kill warnings in agent detail", () => {
@@ -172,11 +200,11 @@ describe("icon styles in rendered rows", () => {
         detail.handleInput("k");
       }
       const a = text.render(80), b = nerd.render(80);
-      expect(a.join("\n")).toContain("⇢ next");
-      expect(b.join("\n")).toContain("\u{F19B0} next");
-      expect(a.join("\n")).toContain("\u26A0\uFE0F k again to kill");
+      expect(a.join("\n")).toContain("→ next");
+      expect(b.join("\n")).toContain("\u{F19B0}  next");
+      expect(a.join("\n")).toContain("▲ k again to kill");
       expect(b.join("\n")).toContain("\u{F002A}  k again to kill");
-      expect(a[0]).toContain("\u{1F916} scribe");
+      expect(a[0]).toContain("◇ scribe");
       expect(b[0]).toContain("\u{F167A}  scribe");
       expect(b.map(visibleWidth)).toEqual(a.map(visibleWidth));
     } finally { text.dispose(); nerd.dispose(); }
@@ -215,17 +243,19 @@ describe("icon styles in rendered rows", () => {
       preview: ["hello"], expandedOutput: { rows: [{ text: "hello", stream: "stdout" as const }], hidden: 0 } };
     const text = renderExecResult(details, { theme: theme("text"), width: 80, expanded: true });
     const nerd = renderExecResult(details, { theme: theme("nerd"), width: 80, expanded: true });
-    expect(text.join("\n")).toContain("⎿ hello");
-    expect(nerd.join("\n")).toContain("\u{F060D} hello");
-    expect(nerd.map(visibleWidth)).toEqual(text.map(visibleWidth));
+    expect(text.join("\n")).toContain("└ hello");
+    expect(nerd.join("\n")).toContain("└  hello");
+    expect(visibleWidth(nerd[1])).toBe(visibleWidth(text[1]) + 1);
   });
 
-  it("preserves hanging indents for the Nerd Font output marker", () => {
-    const text = fitResultLines(["  ⎿ first second third"], 12, true);
-    const nerd = fitResultLines(["  \u{F060D} first second third"], 12, true);
-    expect(text.length).toBeGreaterThan(1);
-    expect(nerd.map(line => line.replace("\u{F060D}", "⎿"))).toEqual(text);
-    expect(nerd.map(visibleWidth)).toEqual(text.map(visibleWidth));
+  it("preserves the full Nerd Font success marker when wrapping", () => {
+    const lines = fitResultLines([` ${icon("nerd", "success")} first second third`], 13, true);
+    expect(lines).toEqual([` ${icon("nerd", "success")} first`, "    second", "    third"]);
+  });
+
+  it("preserves hanging indents for the shared output gutter", () => {
+    const text = fitResultLines(["  └ first second third"], 12, true);
+    expect(text).toEqual(["  └ first", "    second", "    third"]);
   });
 
   it("uses matching gutters in kill, index, and insights results", () => {
@@ -239,9 +269,10 @@ describe("icon styles in rendered rows", () => {
     };
     const text = render("text"), nerd = render("nerd");
     for (let i = 0; i < text.length; i++) {
-      expect(text[i]).toContain("⎿");
-      expect(nerd[i]).toContain("\u{F060D}");
-      expect(nerd[i].split("\n").map(visibleWidth)).toEqual(text[i].split("\n").map(visibleWidth));
+      expect(text[i]).toContain("└");
+      expect(nerd[i]).toContain("└");
+      expect(text[i].split("\n").every(line => visibleWidth(line) <= 100)).toBe(true);
+      expect(nerd[i].split("\n").every(line => visibleWidth(line) <= 100)).toBe(true);
     }
   });
 
@@ -250,13 +281,14 @@ describe("icon styles in rendered rows", () => {
     const ref = [model.provider, model.id].join("/");
     const a = renderModels([model], { worker: ref }, theme("text"), 100);
     const b = renderModels([model], { worker: ref }, theme("nerd"), 100);
-    expect(a.join("\n")).toContain("⟵ worker");
-    expect(b.join("\n")).toContain("\u{F004D} worker");
-    expect(b.map(visibleWidth)).toEqual(a.map(visibleWidth));
+    expect(a.join("\n")).toContain("← worker");
+    expect(b.join("\n")).toContain("\u{F004D}  worker");
+    expect(visibleWidth(b[1])).toBe(visibleWidth(a[1]) + 1);
     const c = renderConfig({}, theme("text"), 120, true);
     const d = renderConfig({}, theme("nerd"), 120, true);
-    expect(c.join("\n")).toContain("\u26A0\uFE0Frestart");
+    expect(c.join("\n")).toContain("▲restart");
     expect(d.join("\n")).toContain("\u{F002A} restart");
-    expect(d.map(visibleWidth)).toEqual(c.map(visibleWidth));
+    expect(d.every(line => visibleWidth(line) <= 120)).toBe(true);
+    expect(c.every(line => visibleWidth(line) <= 120)).toBe(true);
   });
 });

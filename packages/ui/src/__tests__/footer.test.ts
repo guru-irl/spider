@@ -29,7 +29,7 @@ describe("AgentFooter", () => {
     const f = new AgentFooter(store, id, { now: () => 5000 });
     const lines = f.render(60);
     expect(lines.length).toBeGreaterThanOrEqual(1);
-    expect(lines.join("\n")).toContain("🕸"); // spider glyph leads the footer line
+    expect(lines.join("\n")).toContain("◇"); // the agent marker leads the footer line
     expect(lines.join("\n")).toContain("scribe");
     expect(lines.join("\n")).toContain("3 turns");
     expect(lines.join("\n")).not.toContain("#"); // the useless run-id hash is gone

@@ -3,15 +3,15 @@ import { describe, it, expect } from "vitest";
 import { theme, Panel, SectionRule, StatusLine, LiveWidget } from "../index";
 
 describe("@spider/ui skeleton", () => {
-  it("theme exposes the 🕸 glyph and a token() lookup", () => {
-    expect(theme.glyph).toBe("\u{1F578}\uFE0F");
+  it("theme exposes the monochrome logo and a token() lookup", () => {
+    expect(theme.glyph).toBe("◆");
     expect(typeof theme.token("accent")).toBe("string");
   });
 
   it("SectionRule renders a full-width rule bearing the glyph", () => {
     const lines = SectionRule("Status").render(40);
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain("🕸");
+    expect(lines[0]).toContain("◆");
     expect(lines[0].length).toBeLessThanOrEqual(40);
   });
 

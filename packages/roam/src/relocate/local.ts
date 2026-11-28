@@ -186,7 +186,8 @@ export function createLocalIO(options: RelocateAdapterOptions): LocalIO {
       if (!pi) throw new Error("Pi executable unavailable");
       const core = await observeCoreIdentity(binary,env,{timeoutMs:options.limits.controlMs});
       const launchEnv: NodeJS.ProcessEnv = {...env,HC_SESSION:core.sessionNamespace,HC_SOCKET:core.socket};
-      const request: PiSpawnRequest = {sessionId:home.sessionId as unknown as HerdrSessionId,sessionFile:placement.file,cwd:placement.cwd,environment:{agentDirectory:launchEnv.PI_CODING_AGENT_DIR!,extensionArguments:[]},argv:piLaunchArgv(pi,placement.file,launchEnv),env:launchEnv,terminal:{background:true,noNotify:true,outliveParent:true,parent:null,labels:{"spider.kind":"session","spider.session":home.sessionId,"spider.machine":home.machineId,"spider.roam.epoch":String(home.epoch)}}};
+      const launch = { sessionId: home.sessionId, machineId: home.machineId, homeEpoch: home.epoch };
+      const request: PiSpawnRequest = {sessionId:home.sessionId as unknown as HerdrSessionId,sessionFile:placement.file,cwd:placement.cwd,environment:{agentDirectory:launchEnv.PI_CODING_AGENT_DIR!,extensionArguments:[]},argv:piLaunchArgv(pi,placement.file,launchEnv,launch),env:launchEnv,terminal:{background:true,noNotify:true,outliveParent:true,parent:null,labels:{"spider.kind":"session","spider.session":home.sessionId,"spider.machine":home.machineId,"spider.roam.epoch":String(home.epoch)}}};
       return hc.run(request,{started(){},exited(){}});
     },
   };

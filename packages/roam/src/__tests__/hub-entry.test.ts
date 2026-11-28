@@ -498,10 +498,17 @@ it.each([false, true])("box controls preserve disabled-first and Mac-only guards
     f.env.HOME = box; f.env.SPIDER_GLOBAL_ROOT = box;
     const configFile = join(box, "roam", "config.json");
     writeFileSync(configFile, JSON.stringify({ ...JSON.parse(readFileSync(configFile, "utf8")), enabled }), { mode: 0o600 });
-    // The old-path commands are deleted by roam steps 3D and 4 (old-path inventory row 86).
-    const result = await command(f, ["roam", "memory", "tag", "global", "box-note", "all"]);
-    expect(result.code).toBe(1);
-    expect(result.err).toMatch(enabled ? /Mac hub/i : /roaming-disabled/);
+    // Retired: move, recover, cancel, claim, stop and resume. They are old-path
+    // commands that roam steps 3D and 4 delete (old-path inventory line 145);
+    // cli-package.test.ts still asserts move's "replaced by spider roam relocate".
+    // provision and forget survive the deletion, so their box-side guard stays.
+    for (const args of [["roam", "memory", "tag", "global", "box-note", "all"], ["roam", "provision", "box-1.invalid"],
+      ["roam", "forget", "box-1.invalid", "--confirm", "destroyed box-1.invalid"]]) {
+      const result = await command(f, args);
+      expect(result.code, args.join(" ")).toBe(1);
+      const hubOnlyWhileDisabled = ["provision", "forget"].includes(args[1]);
+      expect(result.err, args.join(" ")).toMatch(enabled || hubOnlyWhileDisabled ? /Mac hub/i : /roaming-disabled/);
+    }
     const inspect = openDb(join(box, "spider.db"));
     try { expect(inspect.prepare("SELECT machine_id FROM global_memory WHERE uuid='box-note'").get()).toEqual({ machine_id: BOX }); }
     finally { inspect.close(); }

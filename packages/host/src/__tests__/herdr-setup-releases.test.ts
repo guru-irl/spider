@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { createHash } from 'node:crypto';
 import { afterEach, expect, test, vi } from 'vitest';
-import { readFile, writeFile, rm } from 'node:fs/promises';
+import { cp, readFile, writeFile, rm } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { createProductionHerdrCliPorts } from '../herdr/ports.js';
 import { runHerdrCli, type HerdrCliPorts } from '../../../herdr/src/setup/cli.js';
@@ -90,6 +90,38 @@ async function seedUnboundNativeKeys(path: string) {
   await writeFile(path, JSON.stringify(keys));
   return keys;
 }
+
+test('0.1.18 upgrades owned 0.1.13 clones and backs up the old tabs bytes', async () => {
+  const f = await fastRelease('0.1.13'), home = f.h.directories.app;
+  const verify = verifyItem(f.ports, 'clones');
+  await setupHerdr(f.request, { ...f.parts, verify });
+  const tabSource = join(home, 'mods/spider-tabs/main.js');
+  const previous = await readFile(tabSource);
+  const checkpointPath = join(f.request.journalRoot, 'checkpoint.json');
+  const before = await readFile(checkpointPath);
+
+  // Simulate an app update: stock files change, but Spider's installed copies do not.
+  await cp(new URL('../../../herdr/src/__tests__/fixtures/herdr-0.1.18/mods/', import.meta.url), join(home, 'mods'), { recursive: true });
+  const binary = f.request.config.app.binary;
+  await writeFile(binary, (await readFile(binary, 'utf8')).replace('herdr-app 0.1.13', 'herdr-app 0.1.18'));
+
+  const preview = { ...f.request, dryRun: true };
+  const plan = await setupHerdr(preview, await f.ports.setupParts(preview));
+  expect(plan.plan?.files).toContainEqual({ path: tabSource, action: 'write' });
+  expect(plan.plan?.files.filter(file => file.refusal)).toEqual([]);
+  expect(plan.writes).toEqual([]);
+  expect(await readFile(tabSource)).toEqual(previous);
+  expect(await readFile(checkpointPath)).toEqual(before);
+
+  await setupHerdr(f.request, { ...await f.ports.setupParts(f.request), verify });
+  expect(JSON.parse(await readFile(join(home, 'mods/spider-tabs/mod.json'), 'utf8')).clonedFrom).toEqual({ name: 'tabs', version: '0.1.18' });
+  expect(await readFile(tabSource)).not.toEqual(previous);
+  const checkpoint = await upgradeCheckpoint.readCheckpoint(f.request.journalRoot);
+  expect(checkpoint?.state).toBe('complete');
+  const saved = upgradeCheckpoint.checkpointBaseline(checkpoint!).find(entry => entry.path === tabSource);
+  expect(saved).toBeDefined();
+  expect(await upgradeCheckpoint.checkpointBytes(f.request.journalRoot, saved!)).toEqual(previous);
+});
 
 for (const version of ['0.1.13', '0.1.16', '0.1.18'] as const) {
   test(`${version} production setup stages the complete A and B result and doctor checks its release`, async () => {

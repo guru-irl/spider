@@ -27,12 +27,12 @@ jobs:
       - name: Checkout baseline
         uses: actions/checkout@v4
         with:
-          ref: ae645c07c842c7c25974440d0aae0f8ef60177ff
+          ref: 1b0c5a908f5c785d9fbd9bc5b591b96297a3d130
           path: before
       - name: Checkout candidate
         uses: actions/checkout@v4
         with:
-          ref: dd6c5c8fbea1acd36ee56dc6b4b4a7e45bc51dec
+          ref: 8197e2d592c92a49b49332d36dc6f15e600550d3
           path: after
       - uses: actions/setup-node@v4
         with:

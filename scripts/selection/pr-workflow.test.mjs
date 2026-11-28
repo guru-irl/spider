@@ -104,3 +104,39 @@ test('PR runner rejects an invalid selection even when the head runner and manif
     assert.match(result.stderr, /Selection belongs to a different checkout/);
   }
 });
+
+for (const [label, body] of [
+  ['before writing', `import './missing-dependency.mjs';`],
+  ['after writing a scoped manifest', `
+    import { execFileSync } from 'node:child_process';
+    import { appendFileSync, writeFileSync } from 'node:fs';
+    import { selectionHash } from './manifest.mjs';
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const scoped = { version: 1, head, mode: 'scoped', fallback: null, mapRunId: '44', mapCommit: process.argv[2],
+      changedFiles: [], selected: { '${tests[0]}': ['fixture'] }, groups: [['${tests[0]}'], [], [], []] };
+    writeFileSync(process.argv[3], JSON.stringify({ ...scoped, selectionHash: selectionHash(scoped) }));
+    appendFileSync(process.env.GITHUB_STEP_SUMMARY, 'Unfinished scoped selection\\n');
+    process.exit(17);
+  `],
+]) {
+  test(`PR uses the full head inventory if the base selector fails ${label}`, t => {
+    const { put, commit, selection, select, summary } = fixture(t);
+    put('scripts/selection/select.mjs', body);
+    const broken = commit();
+    put('scripts/selection/select.mjs', `console.log('HEAD SELECTOR RAN'); process.exit(9);`);
+    put('scripts/test-shards.ts', `throw new Error('HEAD PARTITIONER RAN');`);
+    put(tests[1], 'export {};');
+    commit();
+    const result = select({ BASE_SHA: broken });
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(result.stdout + result.stderr, /HEAD (?:SELECTOR|PARTITIONER) RAN/);
+    const manifest = selection();
+    assert.equal(manifest.mode, 'full');
+    assert.equal(manifest.mapRunId, null);
+    assert.deepEqual(Object.keys(manifest.selected), tests);
+    assert.deepEqual(manifest.groups, [[tests[0]], [tests[1]], [], []]);
+    const notes = readFileSync(summary, 'utf8');
+    assert.match(notes, /Selection: 2 of 2 files \(base selector failed\)/);
+    assert.doesNotMatch(notes, /Unfinished scoped selection/);
+  });
+}

@@ -271,7 +271,7 @@ The file is JSON. Every path must be absolute. Keep the configuration outside an
 | `spaces` | Required | Ordered spaces. See [Spaces](#spaces). |
 | `machines` | Required | Remote machines. See [Machines](#machines). |
 | `look.autoHideTabs` | `true` | Hide the tab bar until you hover over its top strip. Set to `false` to keep the full bar visible. |
-| `look.windowBlur` | `true` | Neutral transparent window blur on verified Herdr 0.1.16 only. Set to `false` to disable blur. Older releases stay alpha-only and never receive `window_blur`. |
+| `look.windowBlur` | `true` | Window blur on verified Herdr 0.1.16 and 0.1.18. Set to `false` to turn off blur without changing the paints. Older releases never receive `window_blur`. |
 | `fonts.body`, `fonts.label`, `fonts.paths` | Bundled body and label fonts, and Herdr's path font | Optional replacement fonts. Each has a `path` and a `license` file. |
 | `limits.auxiliaryPanes` | `2` | Auxiliary pane slots shared by all sessions in a tab, from 1 to 6. |
 | `automaticSubagentPanes` | `false` | Let new subagent viewers open in free auxiliary slots automatically. Otherwise they stay parked until you open them. |
@@ -627,7 +627,6 @@ The panel does not post Herdr toasts for feed notices. There are no budget, suba
 
 Setup installs a layout named `spider-glass` and a pi theme named `dracula-plus-glass`:
 
-- Surfaces are neutral black `#161618`. Text panes, the spider panel, and menus use it at 94 percent opacity.
 - Hover, selected, and raised fills are white at 7, 8, and 11 percent.
 - Panes have a 12-pixel radius, an 8-pixel gap, and a 1-pixel `#38383a` border. The focused pane uses the light grey accent for its border. The panel has the same radius and neutral border.
 - The layout has no bottom status bar, leaving its space for panes.
@@ -637,9 +636,13 @@ Setup installs a layout named `spider-glass` and a pi theme named `dracula-plus-
 
 Herdr 0.1.13 uses an opaque window with a 176-degree gradient from `#18181a` to `#22201e`. Its chrome and sidebar are transparent over that gradient.
 
-Spider enables neutral window blur by default on Herdr 0.1.16 and 0.1.18. The layout root and canvas are transparent neutral black, with alpha rising where text sits. Bare chrome uses about 0.6 alpha, menus about 0.94, and text-heavy surfaces use higher alpha to preserve contrast over bright backdrops. The existing dividers and card edges stay unchanged; blur adds no new edges or shadows. Terminal colors remain Dracula+ over neutral black, never its purple-grey background.
+Herdr 0.1.16 uses a clear root and canvas, 60 percent chrome, and 98 percent pane, sidebar, tab, and panel fills. Its popovers use 94 percent neutral black.
 
-Set `"look": { "windowBlur": false }` to disable blur without changing those surface colors. With blur off, the theme background shows behind the transparent `#16161800` root and canvas. On Herdr 0.1.16 and 0.1.18, the sidebar is `#161618fa`, not transparent. Herdr 0.1.13 never receives `window_blur`.
+Herdr 0.1.18 uses a 176-degree gradient from `#18181ab3` to `#22201eb3`, about 70 percent opacity. The sidebar, chrome, and tab strip are clear over that gradient. The pane and panel frames use `#16161833`, and pane headers are clear even when focused. The focus outline and coloured pills stay. Settings and other framed overlays use opaque `#161618` through the shared popover color. The revealed tab bar uses that same color and keeps its border.
+
+Setup enables window blur by default on Herdr 0.1.16 and 0.1.18. Set `"look": { "windowBlur": false }` to turn off blur without changing the paints.
+
+The layout defaults `cell_background_opacity` to `0.6`. Setup keeps a numeric value from an existing `spider-glass` layout. Patched Herdr builds use the key for explicit terminal cell backgrounds. Stock Herdr 0.1.18 ignores it.
 
 ## Shortcuts
 

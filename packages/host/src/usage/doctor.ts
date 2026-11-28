@@ -1,4 +1,5 @@
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
+import { modelName } from "../model-name.js";
 import type { UsageConfig } from "./config.js";
 import type { UsageRuntime } from "./runtime.js";
 import { COPILOT_RATE_VERSIONS } from "./rates.js";
@@ -48,7 +49,8 @@ function relativeFailureTime(ageMs: number): string {
 }
 
 /** A pure diagnosis: snapshot is the worker's last published view, not a DB query. */
-export function usageDoctorLines(snapshot: ReturnType<UsageRuntime["snapshot"]>, config: UsageConfig, diagnostics?: UsageDoctorDiagnostics): { ok: boolean; lines: readonly string[] } {
+export function usageDoctorLines(snapshot: ReturnType<UsageRuntime["snapshot"]>, config: UsageConfig, diagnostics?: UsageDoctorDiagnostics,
+  registry?: Parameters<typeof modelName>[0]): { ok: boolean; lines: readonly string[] } {
   const { health, counter, reconciliation, progress } = snapshot;
   const lines = [`- usage: footer=${config.footer ? "enabled" : "disabled"} poll=${config.counterPoll ? "enabled" : "disabled"}; alerts not implemented`,
     `- usage backfill=${snapshot.backfill}${progress ? ` progress=${progress.sourcesCompleted}/${progress.sourcesTotal} sources${progress.sourcesUnavailable !== undefined ? ` unavailable=${progress.sourcesUnavailable}` : ""}` : " progress=unavailable"}`];
@@ -67,7 +69,7 @@ export function usageDoctorLines(snapshot: ReturnType<UsageRuntime["snapshot"]>,
     lines.push(`- usage reprice=${reprice?.state ?? "not published yet"}${reprice?.state === "running" ? ` ${reprice.processed}/${reprice.total} calls` : ""}`);
     const unpriced = health.unpricedBillingPeriod;
     lines.push(`- usage unpriced (this billing period): ${!unpriced ? "not published yet" : !unpriced.models.length && !unpriced.withoutModel ? "none"
-      : `${unpriced.models.length} model${unpriced.models.length === 1 ? "" : "s"}, ${unpriced.withoutModel} calls without a model${unpriced.models.length ? `; ${unpriced.models.slice(0, 20).map(label).join(", ")}` : ""}`}`);
+      : `${unpriced.models.length} model${unpriced.models.length === 1 ? "" : "s"}, ${unpriced.withoutModel} calls without a model${unpriced.models.length ? `; ${unpriced.models.slice(0, 20).map(ref => label(modelName(registry, ref) ?? ref)).join(", ")}` : ""}`}`);
   } else lines.push("- usage ledger: not published yet; no main-thread open or creation");
   const sourceErrors = diagnostics?.sourceErrors ?? snapshot.sourceErrorDiagnostics?.rows ?? [];
   for (const row of sourceErrors.slice(0, 20)) lines.push(`- usage source diagnostic: code=${sourceErrorCode(row.code)} count=${number(row.count)} source=${label(sourceErrorLabel(stripTerminalSequences(row.sourceLabel), "Unknown source"))} project=${label(sourceErrorLabel(stripTerminalSequences(row.projectLabel), "Unknown project"))}`);

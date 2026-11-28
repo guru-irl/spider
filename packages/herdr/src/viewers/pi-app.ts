@@ -204,7 +204,7 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
     addUsage(entry ?? { type: 'message', message });
     if (!earlier(at, latestAssistantAt)) {
       if (at !== null) latestAssistantAt = at;
-      if (typeof message.provider === 'string' && typeof (message.responseModel ?? message.model) === 'string') model = { provider: message.provider, id: message.responseModel ?? message.model };
+      if (typeof message.provider === 'string' && typeof message.model === 'string') model = { provider: message.provider, id: message.model };
       if (typeof message.thinkingLevel === 'string') { thinking = message.thinkingLevel; refreshEditorBorder(); }
     }
     if (usage && typeof usage === 'object' && !earlier(at, latestUsageAt)) {
@@ -403,8 +403,16 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
           else if (entry?.type === 'usage' || entry?.type === 'branch_summary') addUsage(entry);
           else if (entry?.type === 'compaction') { invalidateContext(entry); addUsage(entry); }
           else if (entry?.type === 'context_edit') invalidateContext(entry);
-          else if (entry?.type === 'message' && entry.message?.role === 'assistant') { noteAssistant(entry.message, entry); hidden++; }
-          else if (entry?.type === 'message') { if (entry.message?.role === 'toolResult') addUsage(entry); addContext(entry.message); hidden++; }
+          else if (entry?.type === 'message' && entry.message?.role === 'assistant') {
+            const key = messageKey(entry.message);
+            if (!key || !finished.has(key)) { noteAssistant(entry.message, entry); if (key) remember(finished, key); }
+            hidden++;
+          }
+          else if (entry?.type === 'message') {
+            if (entry.message?.role === 'toolResult') addUsage(entry);
+            if (entry.message?.role !== 'bashExecution' || !entry.message.excludeFromContext) addContext(entry.message);
+            hidden++;
+          }
         }
         list = list.slice(-keep);
         hiddenNotice.setText(theme.fg('dim', `Earlier messages are not shown (${hidden} hidden).`));

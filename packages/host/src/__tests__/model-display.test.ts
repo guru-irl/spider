@@ -58,7 +58,12 @@ describe("model display names", () => {
     expect(modelContextWindow(registry, "company/gpt-6")).toBe(128000);
     expect(modelContextWindow(registry, "missing")).toBeUndefined();
   });
-  it.each([123.5, Number.MAX_SAFE_INTEGER + 1, 0, -1, Infinity])("does not return invalid catalog context window %s", (contextWindow) => {
+  it("rounds a fractional catalog context window before sending it to the viewer", () => {
+    const model = { provider: "example", id: "model", name: "Model", contextWindow: 123.5 };
+    const registry = { find: () => model, getAll: () => [model], getAvailable: () => [model] } as unknown as ExtensionContext["modelRegistry"];
+    expect(modelContextWindow(registry, "example/model")).toBe(124);
+  });
+  it.each([Number.MAX_SAFE_INTEGER + 1, 0, -1, Infinity])("does not return invalid catalog context window %s", (contextWindow) => {
     const model = { provider: "example", id: "model", name: "Model", contextWindow };
     const registry = { find: () => model, getAll: () => [model], getAvailable: () => [model] } as unknown as ExtensionContext["modelRegistry"];
     expect(modelContextWindow(registry, "example/model")).toBeUndefined();

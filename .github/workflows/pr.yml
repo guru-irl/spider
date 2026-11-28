@@ -118,7 +118,48 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/selection/select.mjs "$BASE_SHA" .spider/scratch/test-results/test-selection.json
+        run: |
+          set -o pipefail
+          git cat-file -e "$BASE_SHA^{commit}"
+          base_dir=$(mktemp -d "$RUNNER_TEMP/selection-base.XXXXXX")
+          trap 'rm -rf -- "$base_dir"' EXIT
+          output=.spider/scratch/test-results/test-selection.json
+          weights=(scripts/test-shards.ts scripts/test-durations.json)
+          if git cat-file -e "$BASE_SHA:scripts/selection/select.mjs" 2>/dev/null; then
+            git archive "$BASE_SHA" scripts/selection scripts/test-resources.json scripts/roam-entries.json "${weights[@]}" |
+              tar -xf - -C "$base_dir"
+            ln -s "$PWD/node_modules" "$base_dir/node_modules"
+            node "$base_dir/scripts/selection/select.mjs" "$BASE_SHA" "$output"
+          else
+            # The first rollout has no selector in main. Build a full manifest
+            # without executing selection code or reading policy from the head.
+            git archive "$BASE_SHA" "${weights[@]}" | tar -xf - -C "$base_dir"
+            node --input-type=module - "$base_dir" "$output" <<'JS'
+          import { execFileSync } from 'node:child_process';
+          import { createHash } from 'node:crypto';
+          import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          import { pathToFileURL } from 'node:url';
+          const [baseDir, output] = process.argv.slice(2);
+          const { partitionFiles } = await import(pathToFileURL(join(baseDir, 'scripts/test-shards.ts')));
+          const durations = JSON.parse(readFileSync(join(baseDir, 'scripts/test-durations.json'), 'utf8'));
+          const git = (...args) => execFileSync('git', args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+          const head = git('rev-parse', 'HEAD').trim();
+          const files = git('ls-tree', '-r', '-z', '--name-only', head, '--', 'packages').split('\0')
+            .filter(file => /^packages\/[^/]+\/src\/.+\.test\.ts$/.test(file)).sort();
+          if (!files.length) throw new Error('Empty root test inventory');
+          const fallback = 'base commit has no selector';
+          const selected = Object.fromEntries(files.map(file => [file, [`full fallback: ${fallback}`]]));
+          const groups = partitionFiles(files, durations, 4);
+          const selection = { version: 1, head, mode: 'full', fallback, mapRunId: null, mapCommit: null,
+            changedFiles: [], selected, groups };
+          const selectionHash = createHash('sha256').update(JSON.stringify(selection)).digest('hex');
+          writeFileSync(output, `${JSON.stringify({ ...selection, selectionHash }, null, 2)}\n`);
+          const summary = `Selection: ${files.length} of ${files.length} files (${fallback}).\n\nGroups: ${groups.map(group => group.length).join(', ')}.\n\nHash: ${selectionHash}\n`;
+          console.log(summary);
+          if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
+          JS
+          fi
 
       - name: Save test selection
         if: matrix.group == 1

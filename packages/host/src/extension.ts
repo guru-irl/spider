@@ -99,7 +99,7 @@ import { modelReviewer } from "./memory-reviewer";
 import { createAdmissionPorts, protectAdmissionApi, registerAdmission } from "./roam/admission.js";
 import { ordinaryWorkAllowed as isOrdinaryWorkAllowed } from "./roam/activation.js";
 import { createHostIntercomPorts, registerRoamIntercom } from "./roam/intercom.js";
-import type { V0Prepare } from "@spider/intercom/roam-v0";
+import type { V0Prepare, V0PrepareReply } from "@spider/intercom/roam-v0";
 
 export { registerGlobalAction as registerAction };
 
@@ -898,7 +898,7 @@ async function dispatchWithDoctorSnapshot(
   }
 }
 
-type V0IntercomFactory = { hasConfig(root: string): boolean; create(root: string): { prepare: V0Prepare } };
+type V0IntercomFactory = { hasConfig(root: string): boolean; create(root: string): { prepare: V0Prepare; prepareReply?: V0PrepareReply } };
 
 export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBroker?: IntercomBrokerPort; bootId?: () => Promise<string>; copyButtons?: { host: CopyButtonsHost; copy: (text: string) => Promise<void> }; piVersion?: string; v0Intercom?: V0IntercomFactory } = {}): void {
   // Admission must be the first session_start registration, before any producer opens a writer.
@@ -953,8 +953,10 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   try {
     const v0Factory = ports.v0Intercom ?? { hasConfig: hasV0IntercomConfig, create: createV0Intercom };
     const v0Configured = hasRoamIdentity && !legacyIntercomEnabled && v0Factory.hasConfig(paths.globalRoot);
-    const v0 = v0Configured && moveEnabled ? {
-      prepare: v0Factory.create(paths.globalRoot).prepare,
+    const v0Intercom = v0Configured && moveEnabled ? v0Factory.create(paths.globalRoot) : undefined;
+    const v0 = v0Intercom ? {
+      prepare: v0Intercom.prepare,
+      prepareReply: v0Intercom.prepareReply,
       homeEpoch(sessionId: string): number | undefined {
         if (process.env.PI_SUBAGENT_CHILD === "1") return undefined;
         const current = admission.inspect(), home = current.home;

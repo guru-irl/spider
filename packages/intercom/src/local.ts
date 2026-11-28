@@ -15,7 +15,7 @@ import { InlineMessageComponent } from "./ui/inline-message.js";
 import { getAskTimeoutMs, loadConfig, type IntercomConfig } from "./config.js";
 import { EXTENSION_BUS_FEATURE } from "./types.js";
 import type { Attachment, BrokerMessage, LocalSessionInfo, Message, MessageControl, MessageReceipt, MessageReceiptStatus, SessionInfo, SessionRegistration } from "./types.js";
-import { v0TextFits, V0_ASK_MAX_MS, V0_TEXT_BYTES, type V0Code, type V0RouteDetails, type V0RouteResult, type V0ToolOptions } from "./roam-v0.js";
+import { v0TextFits, V0_ASK_MAX_MS, V0_TEXT_BYTES, type V0Code, type V0RouteDetails, type V0RouteResult, type V0Text, type V0ToolOptions } from "./roam-v0.js";
 import {
   INTERCOM_EXTENSION_REGISTER_EVENT,
   INTERCOM_EXTENSION_REGISTRY_READY_EVENT,
@@ -1367,6 +1367,21 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
   function sendIncomingBrokerMessage(entry: InboundMessageEntry, delivery: "trigger" | "steer", generation = runtimeGeneration): void {
     sendIncomingMessage(entry, delivery, generation);
   }
+  async function sendRoutedReply(connectedClient: IntercomClient, ctx: ExtensionContext, generation: number, askId: string,
+    message: V0Text, signal?: AbortSignal): Promise<V0RouteResult> {
+    if (!v0?.prepareReply) return { kind: "refused", code: "unsupported" };
+    const ownSessionId = currentSessionId;
+    const roster = await connectedClient.listSessions();
+    const from = roster.find((session): session is LocalSessionInfo =>
+      !session.remote && session.id === connectedClient.sessionId && session.address?.sessionId === ownSessionId);
+    if (!ownSessionId || !from || from.v0HomeEpoch === undefined) return { kind: "refused", code: "changed" };
+    const current = () => getLiveContext(ctx, generation) && client === connectedClient && connectedClient.isConnected() &&
+      v0.homeEpoch(ownSessionId) === from.v0HomeEpoch;
+    if (!current()) return { kind: "refused", code: "changed" };
+    const unknown = { kind: "unknown" as const, id: message.id };
+    const result = await v0.prepareReply({ from, askId, message, signal }).catch(() => unknown);
+    return current() ? result : { ...unknown, ...v0RouteDetails(result) };
+  }
   function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message): void {
     const messageGeneration = runtimeGeneration;
     const liveContext = getLiveContext(ctx, messageGeneration);
@@ -1430,14 +1445,20 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
           const activeClient = client;
           if (!message.replyTo && activeClient?.isConnected()) {
             try {
-              const result = await activeClient.send(from.id, {
-                text: "This agent is running in non-interactive mode and cannot respond to intercom messages while it is working. It will continue its current task and exit when done.",
-                replyTo: message.id,
-              });
-              if (result.delivered && getLiveContext(liveContext, messageGeneration)) {
+              const text = "This agent is running in non-interactive mode and cannot respond to intercom messages while it is working. It will continue its current task and exit when done.";
+              let replyId: string | undefined;
+              if (message.v0RelayAsk) {
+                const result = await sendRoutedReply(activeClient, liveContext, messageGeneration, message.id,
+                  { id: randomUUID(), timestamp: Date.now(), text });
+                if (result.kind === "socket_delivered") replyId = result.id;
+              } else {
+                const result = await activeClient.send(from.id, { text, replyTo: message.id });
+                if (result.delivered) replyId = result.id;
+              }
+              if (replyId && getLiveContext(liveContext, messageGeneration)) {
                 pendingInbound.delete(message.id);
                 settledInboundAsks.add(message.id);
-                pi.appendEntry("intercom_ask_settled", { askId: message.id, replyId: result.id, reason: "busy-refusal", activationEpoch });
+                pi.appendEntry("intercom_ask_settled", { askId: message.id, replyId, reason: "busy-refusal", activationEpoch });
                 dismissIncomingAsk(message.id);
               }
             } catch {
@@ -3012,25 +3033,26 @@ Usage:
                   if (v0AskInFlight?.token === token) v0AskInFlight = null;
                 }
                 if (!getLiveContext(ctx, generation) || v0.homeEpoch(from.address!.sessionId) !== from.v0HomeEpoch) {
-                  result = { kind: "unknown", id: question.id };
+                  result = { kind: "unknown", id: question.id, ...v0RouteDetails(result) };
                 }
                 if (result.kind === "refused") return v0RouteRefusal(result);
+                const route = v0RouteDetails(result);
                 if (result.kind === "replied") {
                   let transcriptWarning = "";
                   try { pi.appendEntry("intercom_sent", { to: plan.label, message: { text: message }, messageId: question.id, timestamp: question.timestamp }); }
                   catch { transcriptWarning = V0_TRANSCRIPT_SAVE_FAILURE; }
                   try { pi.appendEntry("intercom_received", { from: plan.label, message: { text: result.text }, messageId: result.replyId, timestamp: Date.now() }); }
                   catch { transcriptWarning = V0_TRANSCRIPT_SAVE_FAILURE; }
-                  return { content: [{ type: "text", text: `**Reply from ${plan.label}:**\n${result.text}${transcriptWarning}` }],
-                    details: { delivery: "replied", messageId: question.id, replyId: result.replyId } };
+                  return { content: [{ type: "text", text: v0RouteText(`**Reply from ${plan.label}:**\n${result.text}`, route) + transcriptWarning }],
+                    details: { delivery: "replied", messageId: question.id, replyId: result.replyId, ...route } };
                 }
                 if (result.kind === "no_reply") {
-                  return { content: [{ type: "text", text: `No reply was received (ID ${result.id}).` }],
-                    details: { error: true, delivery: "no_reply", messageId: result.id } };
+                  return { content: [{ type: "text", text: v0RouteText(`No reply was received (ID ${result.id}).`, route) }],
+                    details: { error: true, delivery: "no_reply", messageId: result.id, ...route } };
                 }
                 if (result.kind === "unknown") {
-                  return { content: [{ type: "text", text: `Delivery could not be confirmed (ID ${result.id}). Check the recipient before sending again.` }],
-                    details: { error: true, delivered: false, delivery: "unknown", messageId: result.id, outcomeKnown: false, retryable: false } };
+                  return { content: [{ type: "text", text: v0RouteText(`Delivery could not be confirmed (ID ${result.id}). Check the recipient before sending again.`, route) }],
+                    details: { error: true, delivered: false, delivery: "unknown", messageId: result.id, outcomeKnown: false, retryable: false, ...route } };
                 }
                 return { content: [{ type: "text", text: "No reply was received." }], details: { error: true } };
               }
@@ -3168,6 +3190,26 @@ Usage:
               };
             }
             const generation = runtimeGeneration;
+            if (target.message.v0RelayAsk) {
+              if (!v0TextFits(message)) return v0TextLimitError();
+              const sent = { id: randomUUID(), timestamp: Date.now(), text: message };
+              const askId = target.message.id;
+              const result = await sendRoutedReply(connectedClient, ctx, generation, askId, sent, _signal);
+              if (result.kind === "refused") return v0RouteRefusal(result);
+              const route = v0RouteDetails(result);
+              if (result.kind !== "socket_delivered") {
+                return { content: [{ type: "text", text: v0RouteText("The reply may have arrived. Check with the asker before replying again.", route) }],
+                  details: { error: true, delivered: false, delivery: "unknown", messageId: sent.id, replyTo: askId,
+                    outcomeKnown: false, retryable: false, ...route } };
+              }
+              dismissIncomingAsk(askId);
+              const to = target.from.name || target.from.id;
+              let transcriptWarning = "";
+              try { pi.appendEntry("intercom_sent", { to, message: { text: message, replyTo: askId }, messageId: sent.id, timestamp: sent.timestamp }); }
+              catch { transcriptWarning = V0_TRANSCRIPT_SAVE_FAILURE; }
+              return { content: [{ type: "text", text: v0RouteText(`Reply sent to ${to}`, route) + transcriptWarning }],
+                details: { delivered: true, delivery: "socket_delivered", messageId: sent.id, replyTo: askId, ...route } };
+            }
             let replySource: { sessionId: string; epoch: number } | undefined;
             if (v0 && target.from.remote) {
               const ownSessionId = currentSessionId;

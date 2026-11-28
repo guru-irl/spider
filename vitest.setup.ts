@@ -86,3 +86,12 @@ export function fenceHerdrTestEnvironment(checkout: string, root: string): void 
   }
   process.env.PATH = `${bin}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? ""}`;
 }
+
+// Profiling only on the cutover hunt branch.
+import { appendFileSync as profileWrite } from 'node:fs';
+import { beforeAll as profileBeforeAll, expect as profileExpect } from 'vitest';
+profileBeforeAll(() => {
+  const file = profileExpect.getState().testPath;
+  const log = process.env.CUTOVER_PROFILE_LOG;
+  if (log && file) profileWrite(log, JSON.stringify({ type: 'file', file, worker: process.env.VITEST_WORKER_ID }) + '\n');
+});

@@ -1,0 +1,77 @@
+name: cutover speed hunt
+on:
+  push:
+    branches: [ci/spd-cutover-hunt]
+
+permissions:
+  contents: read
+
+env:
+  # CI never uses onnxruntime's CUDA provider; skip its NuGet download.
+  ONNXRUNTIME_NODE_INSTALL: skip
+
+jobs:
+  run:
+    name: test files
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [rollback, cutover, acceptance, other]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+
+      - name: Prepare isolated scratch
+        run: mkdir -p "$PWD/.spider/scratch/tmp"
+
+      - name: Install SQLite CLI
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+
+      - name: Install
+        run: npm ci
+
+      # Same as the CI test shards: keep hc sockets inside the tests' own
+      # state homes by removing the runner's runtime directory.
+      - name: Remove runner runtime directory
+        run: |
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+          test ! -e "$rundir"
+          echo "XDG_RUNTIME_DIR=" >> "$GITHUB_ENV"
+
+      - name: Run and record three-worker tests
+        env:
+          GROUP: ${{ matrix.group }}
+        run: |
+          set -o pipefail
+          dir="$PWD/.spider/scratch/hunt"
+          mkdir -p "$dir"
+          export CUTOVER_PROFILE_LOG="$dir/children.ndjson"
+          export NODE_OPTIONS="--require=$PWD/scripts/ci-cutover-hunt/start.cjs"
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          unset XDG_RUNTIME_DIR
+          p=packages/herdr/src/__tests__
+          q=packages/host/src/__tests__
+          shopt -s nullglob
+          case "$GROUP" in
+            rollback) files=("$p"/production-cutover-rollback*.test.ts "$q"/herdr-setup-production-install.test.ts "$q"/herdr-setup-closed-feeds.test.ts);;
+            cutover) files=("$p"/production-cutover-{placement,launcher,journal}*.test.ts);;
+            acceptance) files=("$p"/acceptance.test.ts "$p"/acceptance-*.test.ts);;
+            other) files=("$p"/{packaging,spaces-a-install,setup-backup-recovery,agent-consoles}*.test.ts);;
+          esac
+          status=0
+          node node_modules/vitest/vitest.mjs run "${files[@]}" --maxWorkers=3 --reporter=default --reporter=json --outputFile="$dir/vitest.json" | tee "$dir/run.log" || status=$?
+          node scripts/ci-cutover-hunt/summarize.mjs "$dir" | tee "$dir/summary.txt"
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cutover-${{ matrix.group }}
+          path: .spider/scratch/hunt/
+          include-hidden-files: true

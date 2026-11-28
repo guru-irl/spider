@@ -1,0 +1,94 @@
+name: Herdr package paired profile
+
+on:
+  push:
+    branches: [ci/wpkg-pairs-20261128]
+
+permissions:
+  contents: read
+
+env:
+  ONNXRUNTIME_NODE_INSTALL: skip
+
+jobs:
+  pair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        trial: [1, 2, 3, 4, 5]
+    steps:
+      - name: Checkout measurement tools
+        uses: actions/checkout@v4
+        with:
+          path: tools
+      - name: Checkout baseline
+        uses: actions/checkout@v4
+        with:
+          ref: 4a167309d2c4482f80493881e8fac53a6a864c4b
+          path: before
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: 4ac3fa783e08ae77a7e82d0094277939c74b1faf
+          path: after
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+          cache-dependency-path: |
+            before/package-lock.json
+            after/package-lock.json
+      - name: Install SQLite CLI
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - name: Install and build baseline
+        working-directory: before
+        run: npm ci
+      - name: Install and build candidate
+        working-directory: after
+        run: npm ci
+      - name: Remove runner runtime directory
+        run: |
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+          test ! -e "$rundir"
+          echo "XDG_RUNTIME_DIR=" >> "$GITHUB_ENV"
+      - name: Verify the profiling summaries
+        working-directory: tools
+        run: node --test scripts/wpkg-speed/summarize.test.mjs scripts/wpkg-speed/summarize-loaded.test.mjs
+      - name: Measure one alternating pair
+        env:
+          TRIAL: ${{ matrix.trial }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          tools="$GITHUB_WORKSPACE/tools"
+          output="$tools/.spider/scratch/wpkg-pairs"
+          mkdir -p "$output"
+          if (( TRIAL % 2 )); then order=(before after); else order=(after before); fi
+          {
+            echo "trial $TRIAL"
+            echo "order ${order[*]}"
+            echo "node $(node --version)"
+            echo "cores $(nproc)"
+            uname -a
+            df -h "$GITHUB_WORKSPACE"
+          } > "$output/machine.txt"
+          failed=0
+          for side in "${order[@]}"; do
+            if [[ "$side" == before ]]; then expected=19; else expected=40; fi
+            if ! (cd "$GITHUB_WORKSPACE/$side" && bash "$tools/scripts/wpkg-speed/profile-one.sh" "$tools" "$output/$side" "$expected"); then
+              failed=1
+            fi
+          done
+          exit "$failed"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wpkg-pair-${{ matrix.trial }}
+          path: tools/.spider/scratch/wpkg-pairs/
+          include-hidden-files: true
+          if-no-files-found: warn

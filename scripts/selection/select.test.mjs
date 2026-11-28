@@ -216,6 +216,34 @@ test('finds transitive type-only importers through the real checkout graph', asy
   } finally { await graph.close(); }
 });
 
+test('unions recorded readers with lazy importers in the real checkout graph', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'selection-lazy-'));
+  t.after(() => rmSync(root, { force: true, recursive: true }));
+  const file = 'packages/one/src/deferred.ts';
+  const sources = {
+    'vitest.config.mjs': 'export default {};',
+    [a]: `export const reader = 1;`,
+    [b]: `export const maybeRead = enabled => enabled && import('../../one/src/deferred.js');`,
+    [c]: `export const unrelated = 1;`,
+    [file]: `export const value = 2;`,
+  };
+  for (const [path, text] of Object.entries(sources)) {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), text);
+  }
+  execFileSync('git', ['init', '-q'], { cwd: root });
+  execFileSync('git', ['add', '--', '.'], { cwd: root });
+  const graph = await selector.createGraphResolver(root, [a, b, c], []);
+  try {
+    const result = await fixture({ inventory: [a, b, c], changes: [changed(file)], files: [file],
+      records: { [a]: row({ reads: [0] }) }, resolveRelated: graph.resolveRelated });
+    assert.equal(result.mode, 'scoped');
+    assertSelected(result, a, b);
+    assert.ok(result.selected[a].includes(`recorded input: ${file}`));
+    assert.ok(result.selected[b].includes('static import graph'));
+  } finally { await graph.close(); }
+});
+
 test('runs surviving recorded readers of deleted files but not the deleted test', async () => {
   const old = 'packages/one/src/gone.ts';
   assertSelected(await fixture({ changes: [changed(old, 'D'), changed(a, 'D')], files: [old],

@@ -45,7 +45,7 @@ if (dir) {
   let collect;
 
   function note(where, error) {
-    try { appendFileSync(join(dir, 'hook-errors.ndjson'), JSON.stringify({ where, code: error?.code }) + '\n'); }
+    try { appendFileSync(join(dir, 'hook-errors.ndjson'), JSON.stringify({ where, code: error?.code, test, pid: process.pid }) + '\n'); }
     catch { /* The recorder must not change a child exit code or its streams. */ }
   }
 
@@ -56,7 +56,12 @@ if (dir) {
   function withEnv(args, index, childLaunchId) {
     const options = args[index];
     if (options != null && typeof options !== 'function' && (typeof options !== 'object' || Array.isArray(options))) return args;
-    const env = { ...(options?.env ?? process.env) };
+    const explicit = options?.env;
+    // The recorder's own tests launch independent recordings. Do not mix the
+    // two journals or link the inner checkpoint to an outer launch ID.
+    if (explicit?.SPIDER_SELECTION_DIR && explicit.SPIDER_SELECTION_DIR !== dir && explicit.SPIDER_SELECTION_ROOT &&
+      String(explicit.NODE_OPTIONS ?? '').includes(preload)) return args;
+    const env = { ...(explicit ?? process.env) };
     const nodeOptions = String(env.NODE_OPTIONS ?? '');
     if (!nodeOptions.includes(preload)) {
       if (env.NODE_OPTIONS === undefined) delete env[savedOptions];
@@ -237,7 +242,13 @@ if (dir) {
       let captureReady = false;
       const { Session } = require('node:inspector');
       const session = new Session();
-      session.connect();
+      try { session.connect(); }
+      catch (error) {
+        // Node's test supervisor can preload JS without a V8 inspector.
+        // Do not write a ready checkpoint for it. Its launch stays missing.
+        if (error === 'This Environment was initialized without a V8::Inspector' && process.execArgv.includes('--test')) return;
+        throw error;
+      }
       const post = (method, params, accept = () => {}) => session.post(method, params, (error, value) => {
         try { if (error) note(method, error); else accept(value); }
         catch (error) { note(method, error); }

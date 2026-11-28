@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SessionManager, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { stripTerminalSequences, visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { parseColor, stripTerminalSequences, visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { openDb, WORKTREE_SCHEMA } from "@spider/db-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TabbedReader, type IntroTheme } from "@spider/ui";
@@ -9,7 +9,8 @@ import { testScratchPath } from "./testutil.js";
 
 import { readIntroStats, registerIntro } from "../intro/index.js";
 const theme: IntroTheme = {
-  fg: (_role, text) => text, bold: text => text, style: text => text, getBgAnsi: () => "",
+  fg: (_role, text) => text, bold: text => text, style: text => text,
+  colors: { customMessageBg: parseColor("#202022") },
 };
 const dirs: string[] = [];
 afterEach(() => {

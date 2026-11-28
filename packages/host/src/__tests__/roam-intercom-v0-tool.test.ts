@@ -318,6 +318,8 @@ it("wires an injected roaming factory for an admitted running home", async () =>
   });
   const factory = { hasConfig: () => true, create: () => ({ prepare }) };
   const host = createHostSessionFixture({ cwd: root, sessionId, sessionName: "host-alice", sessionManager: manager });
+  const commands: string[] = [];
+  Object.assign(host.pi, { registerCommand(name: string) { commands.push(name); } });
   try {
     spiderExtension(host.pi as never, { v0Intercom: factory, piVersion: "1.2.0" } as never);
     for (const handler of host.hooks.get("session_start") ?? []) {
@@ -334,6 +336,16 @@ it("wires an injected roaming factory for an admitted running home", async () =>
     const tool = (host.pi as any).getAllTools().find((item: any) => item.name === "intercom");
     const result = await tool.execute("host-send", { action: "send", to: "ben", message: "hello" }, new AbortController().signal, undefined, host.ctx);
     expect(result.content[0].text).toBe("Sent to b/ben (broker accepted the message).");
+    const spider = (host.pi as any).getAllTools().find((item: any) => item.name === "spider");
+    expect(spider).toBeDefined();
+    for (const action of ["relocate", "relocation", "move", "roam", "enable", "provision", "claim", "forget", "cancel", "recover"]) {
+      expect(spider.parameters.properties.action.enum).not.toContain(action);
+    }
+    for (const field of ["destinationMachine", "confirmation", "credentials", "consent"]) {
+      expect(spider.parameters.properties).not.toHaveProperty(field);
+    }
+    expect(commands).toContain("spider");
+    expect(commands).not.toContain("move");
   } finally {
     for (const handler of host.hooks.get("session_shutdown") ?? []) await handler({ reason: "quit" }, host.ctx);
     vi.restoreAllMocks();

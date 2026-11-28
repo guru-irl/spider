@@ -127,7 +127,7 @@ async function fixture(options: { direct?: boolean; reached?: readonly RelayPeer
   const local = await register(sender, "local-recipient", "local", 2);
   const remote = await register(receiver, "remote-recipient", "recipient", 3);
 
-  const faults = { lost: false, routeMissing: false, disconnected: false, badPin: false, resolveFailed: false };
+  const faults = { lost: false, lostRoute: false, routeMissing: false, disconnected: false, badPin: false, resolveFailed: false };
   const transport = (): Pick<Transport, "resolve" | "exec"> => ({
     async resolve(p) {
       if (faults.routeMissing) throw new HerdrError("machine-not-found", "fixture has no direct route");
@@ -143,6 +143,7 @@ async function fixture(options: { direct?: boolean; reached?: readonly RelayPeer
       if (!bytes) throw new Error("Missing request");
       const reply = await createV0Intercom(receiver.root).handle(JSON.parse(bytes.toString("utf8")));
       if (faults.lost && request.stdinForTimeout) throw new Error("Fixture lost the delivery acknowledgement");
+      if (faults.lostRoute && request.stdinForTimeout) throw new HerdrError("machine-not-found", "fixture lost the route after delivery");
       return Buffer.from(JSON.stringify(reply));
     },
   });
@@ -215,6 +216,23 @@ it("does not offer a send to the relay after losing the direct result", async ()
   f.abort.abort();
   const pollSubmissionsAfterDirectLoss = (await f.held!).submissions;
   expect(pollSubmissionsAfterDirectLoss).toEqual([]);
+});
+
+it("does not relay after a direct hand-off whose route then disappears", async () => {
+  const f = await fixture({ direct: true });
+  const plan = await f.intercom.prepare({ to: "remote-recipient", ...await f.roster() });
+  if (plan.kind !== "remote") throw new Error("Missing direct delivery plan");
+  f.faults.lostRoute = true;
+  const pending = plan.send({ id: "route-lost", text: "one receipt", timestamp: 1 });
+  const first = await Promise.race([f.held!, pending]);
+  f.faults.lostRoute = false;
+  if ("submissions" in first && first.submissions.length)
+    await f.poll(0, await Promise.all(first.submissions.map(offer => f.forward(offer))));
+  const result = await pending;
+  expect(await f.remote.received()).toEqual(["route-lost"]);
+  expect(result).toMatchObject({ kind: "unknown", id: "route-lost", path: "direct" });
+  f.abort.abort();
+  expect((await f.held!).submissions).toEqual([]);
 });
 
 it.each(["no-enrollment", "missing-route", "disconnected"] as const)("relays an exact home with %s", async cause => {

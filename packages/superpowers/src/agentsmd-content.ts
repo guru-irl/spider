@@ -3,13 +3,13 @@ export const SPIDER_BLOCK_END = "<!-- spider:end -->";
 
 export const SPIDER_BLOCK_BODY = `# spider (managed — do not edit inside the markers)
 
-This block is written and updated by the **spider** pi extension. Edits between
-the markers are overwritten on upgrade. Put your own notes outside the markers.
+The **spider** pi extension rewrites this block on upgrade. Put your own notes
+outside the markers.
 
 **spider is the single unified extension** — subagents, memory, unified search,
 todos, sandboxed exec, and web fetch on one shared SQLite DB. It **replaces** the
-legacy \`pi-subagents\`, \`context-mode\` (\`ctx_*\`), and standalone todo tools —
-do not reach for those; use the \`spider\` verbs below.
+legacy \`pi-subagents\`, \`context-mode\` (\`ctx_*\`), and standalone todo tools;
+use the \`spider\` verbs below.
 
 ## Skills first
 

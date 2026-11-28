@@ -12,7 +12,7 @@ export function registerInputBand(pi: Pick<ExtensionAPI, "on">, host: InputBandH
   const BandEditor = createBandEditor(host.CustomEditor);
   let releaseTranscript: (() => void) | undefined;
   let releaseEditor: (() => void) | undefined;
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", (event, ctx) => {
     releaseEditor?.();
     releaseEditor = undefined;
     releaseTranscript?.();
@@ -25,8 +25,21 @@ export function registerInputBand(pi: Pick<ExtensionAPI, "on">, host: InputBandH
       inputBand, theme: () => ctx.ui.theme, iconStyle: () => isIconStyle(style) ? style : "text",
     });
     if (!inputBand || typeof ctx.ui.getEditorComponent !== "function" || ctx.ui.getEditorComponent() !== undefined) return;
-    const factory: NonNullable<Parameters<ExtensionUIContext["setEditorComponent"]>[0]> = (tui, theme, keys) =>
-      new BandEditor(tui, theme, keys, () => ctx.ui.theme);
+    const factory: NonNullable<Parameters<ExtensionUIContext["setEditorComponent"]>[0]> = (tui, theme, keys) => {
+      const editor = new BandEditor(tui, theme, keys, () => ctx.ui.theme);
+      // On session switches Pi seeds its default editor before extensions bind.
+      // At first startup Pi instead seeds the band itself after binding.
+      if (event.reason === "resume" || event.reason === "fork") {
+        for (const entry of ctx.sessionManager.buildContextEntries()) {
+          if (entry.type !== "message" || entry.message.role !== "user") continue;
+          const { content } = entry.message;
+          const text = typeof content === "string" ? content
+            : content?.flatMap(block => block.type === "text" ? [block.text] : []).join("");
+          if (text) editor.addToHistory(text);
+        }
+      }
+      return editor;
+    };
     ctx.ui.setEditorComponent(factory);
     releaseEditor = () => {
       if (ctx.ui.getEditorComponent() === factory) ctx.ui.setEditorComponent(undefined);

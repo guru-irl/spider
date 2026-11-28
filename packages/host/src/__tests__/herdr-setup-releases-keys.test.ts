@@ -57,7 +57,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     else expect(merged.terminal).not.toHaveProperty('cmd-a');
     expect(merged.global['cmd-m']).toBe('window.minimize');
     expect(merged.terminal['ctrl-v']).toBe(keys.terminal['ctrl-v']);
-    expect(merged['layout:spider-glass']['cmd-shift-e']).toBe('spider-pane.park');
+    expect(merged['layout:Spider']['cmd-shift-e']).toBe('spider-pane.park');
     for (const [key, command] of Object.entries(keys.terminal)) expect(merged.terminal[key]).toEqual(command);
     for (const [key, command] of Object.entries({ 'cmd-shift-a': 'send:\u001b[97;6u', 'cmd-shift-o': 'send:\u001b[111;6u', 'cmd-shift-u': 'send:\u001b[117;6u', 'cmd-shift-m': 'send:\u001b[109;6u', 'cmd-shift-k': 'send:\u001b[107;6u' })) expect(merged.terminal[key]).toBe(command);
   });

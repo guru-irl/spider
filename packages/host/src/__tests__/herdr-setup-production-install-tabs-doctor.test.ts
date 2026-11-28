@@ -23,7 +23,7 @@ test('setup stages the tab strip and doctor accepts its resting size', async () 
   const f = await focusedSetupFixture();
   await writeFile(join(f.h.directories.app, 'layouts/main.json'), await readFile(resolve('packages/herdr/src/__tests__/fixtures/herdr-0.1.12/layouts/main.json')));
   await setupHerdr(f.request, f.parts);
-  const path = join(f.h.directories.app, 'layouts/spider-glass.json');
+  const path = join(f.h.directories.app, 'layouts/Spider.json');
   const layout = JSON.parse(await readFile(path, 'utf8'));
   const nodes = (node: any): any[] => [node, ...(node.children ?? []).flatMap(nodes)];
   expect(nodes(layout).find(node => node.id === 'tabs')).toMatchObject({ size: { px: 6 }, window_drag: true, content: { props: { autoHideTabs: true } } });
@@ -35,7 +35,7 @@ test('setup forwards the tab opt-out and doctor rejects the opposite setting', a
   f.request.config.look = { autoHideTabs: false };
   await writeFile(join(f.h.directories.app, 'layouts/main.json'), await readFile(resolve('packages/herdr/src/__tests__/fixtures/herdr-0.1.12/layouts/main.json')));
   await setupHerdr(f.request, f.parts);
-  const path = join(f.h.directories.app, 'layouts/spider-glass.json');
+  const path = join(f.h.directories.app, 'layouts/Spider.json');
   const layout = JSON.parse(await readFile(path, 'utf8'));
   const nodes = (node: any): any[] => [node, ...(node.children ?? []).flatMap(nodes)];
   expect(nodes(layout).find(node => node.id === 'tabs')).toMatchObject({ size: { px: 42 }, content: { props: { autoHideTabs: false } } });
@@ -49,7 +49,7 @@ test('production doctor rejects a missing sidebar agent block', async () => {
   const f = await focusedSetupFixture();
   await writeFile(join(f.h.directories.app, 'layouts/main.json'), await readFile(resolve('packages/herdr/src/__tests__/fixtures/herdr-0.1.12/layouts/main.json')));
   await setupHerdr(f.request, f.parts);
-  const path = join(f.h.directories.app, 'layouts/spider-glass.json');
+  const path = join(f.h.directories.app, 'layouts/Spider.json');
   const layout = JSON.parse(await readFile(path, 'utf8'));
   const visit = (node: any) => {
     if (!node.children) return;

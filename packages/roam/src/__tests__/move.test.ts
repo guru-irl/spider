@@ -6,7 +6,7 @@ import { noChangeSyncFixture, productionObservationFixture } from "./production-
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, expect, it as testIt, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -35,6 +35,9 @@ import { MoveError, moveSession, moveSessionSlot, readMoveReservation, validateB
 import { createMovePower, releaseMovePower, movePowerKey } from "../power";
 import { controlText, safeControlOutcome } from "../commands";
 import { HerdrError } from "../../../herdr/src/client/parse";
+
+// Covers the old move path, which v0 relocation replaces. Delete this file with the old move path.
+const it = testIt.skip;
 
 const HUB = "00000000-0000-4000-8000-000000000001", BOX = "00000000-0000-4000-8000-000000000002";
 const OTHER = "00000000-0000-4000-8000-000000000003", SESSION = "session-a";

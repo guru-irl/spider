@@ -8,4 +8,5 @@ vi.mock('node:child_process', async importOriginal => {
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
 
+// Keep the dist/ path here so the bundle-reader inventory finds this consumer.
 it.each(['runtime'] as const)('a changed %s is checked live instead of trusting recorded evidence', change => changedProbe(change, 'dist/herdr/remote-runtime.mjs'), 60000);

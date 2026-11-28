@@ -1,21 +1,7 @@
-name: selection map
+name: Replay artifact bytes
 
 on:
-  workflow_run:
-    workflows: [CI]
-    branches: [main]
-    types: [completed]
   workflow_dispatch:
-
-concurrency:
-  # Match CI's main push group. A later push must wait for an active recorder.
-  group: >-
-    ${{ ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_sha == github.sha)) &&
-      'ci-CI-refs/heads/main' || format('selection-map-{0}', github.run_id) }}
-  cancel-in-progress: false
-  # Queue instead of replacing any CI run already waiting for the group.
-  queue: max
 
 permissions:
   contents: read
@@ -24,172 +10,61 @@ env:
   ONNXRUNTIME_NODE_INSTALL: skip
 
 jobs:
-  eligible:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' &&
-       github.event.workflow_run.path == '.github/workflows/ci.yml' &&
-       github.event.workflow_run.head_repository.full_name == github.repository &&
-       github.event.workflow_run.head_sha == github.sha && github.event.workflow_run.conclusion != 'cancelled')
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    outputs:
-      record: ${{ steps.head.outputs.record }}
-    steps:
-      - id: head
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = workflow_run ] || [ "$GITHUB_REF" = refs/heads/main ]; then
-            head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
-            if [ "$head" != "$GITHUB_SHA" ]; then
-              echo 'Main advanced while this run was queued. The next CI completion can record it.'
-              exit 0
-            fi
-          fi
-          echo 'record=true' >> "$GITHUB_OUTPUT"
-
-  record:
-    needs: eligible
-    if: needs.eligible.outputs.record == 'true'
-    name: record ${{ matrix.shard }}/6
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      SELECTION_WORK: ${{ github.workspace }}/.spider/scratch/selection
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '26.4.0'
           cache: npm
-
-      - name: Prepare isolated scratch
-        run: mkdir -p "$PWD/.spider/scratch/tmp" "$SELECTION_WORK/raw" "$SELECTION_WORK/maps" "$SELECTION_WORK/results"
-
-      - name: Install SQLite CLI
-        run: sudo apt-get update && sudo apt-get install -y sqlite3
-
-      - name: Install and build with source maps
-        env:
-          SPIDER_BUILD_SOURCEMAP: '1'
-          SPIDER_SELECTION_MAPS: ${{ env.SELECTION_WORK }}/maps
-        run: npm ci
-
-      # Match CI's hc test environment. hc would otherwise fall back to /run/user/<uid>.
-      - name: Remove runner runtime directory
+      - name: Rebuild historical outputs with their locked dependencies
+        shell: bash
         run: |
-          rundir="/run/user/$(id -u)"
-          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
-          sudo rm -rf "$rundir"
-          test ! -e "$rundir"
-          echo "XDG_RUNTIME_DIR=" >> "$GITHUB_ENV"
-
-      - name: Test recorder and list the full Vitest inventory
-        if: matrix.shard == 1
-        env:
-          TMPDIR: ${{ github.workspace }}/.spider/scratch/tmp
-        run: |
-          set -o pipefail
-          node --test scripts/selection/{recorder,map,map-workflow,test-bundles}.test.mjs
-          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID \
-            -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR \
-            npx vitest list --filesOnly --json |
-            jq -e --arg prefix "$PWD/" 'map(.file | if startswith($prefix) then ltrimstr($prefix) else error("test outside checkout") end)' \
-            > "$SELECTION_WORK/results/inventory.json"
-
-      - name: Record test shard
-        env:
-          TMPDIR: ${{ github.workspace }}/.spider/scratch/tmp
-        run: |
-          code=0
-          bash scripts/selection/with-recorder.sh "$SELECTION_WORK/raw" \
-            npx vitest run --shard=${{ matrix.shard }}/6 --maxWorkers=2 \
-            --reporter=default --reporter=json --outputFile="$SELECTION_WORK/vitest.json" || code=$?
-          if [ "$code" -ne 0 ]; then
-            # A failed test can still leave a usable record. A broken runner cannot.
-            if [ "$code" -ne 1 ] || ! jq -e '.numFailedTestSuites > 0 or .numFailedTests > 0' "$SELECTION_WORK/vitest.json"; then
-              exit "$code"
+          set -euo pipefail
+          : > "$RUNNER_TEMP/replay-output-hashes.ndjson"
+          dir="$RUNNER_TEMP/replay-checkout"
+          git worktree add --detach --no-checkout "$dir" HEAD
+          mkdir -p "$dir/.spider/scratch/tmp"
+          failed=0
+          while IFS= read -r head; do
+            [[ "$head" =~ ^[0-9a-f]{40}$ ]]
+            echo "::group::$head"
+            if ! git cat-file -e "$head^{commit}" && ! git fetch --no-tags origin "$head"; then
+              failed=1
+              echo '::endgroup::'
+              continue
             fi
-          fi
-
-      - name: Reduce process snapshots
-        env:
-          TMPDIR: ${{ github.workspace }}/.spider/scratch/tmp
-        run: |
-          shard="$SELECTION_WORK/results/record-${{ matrix.shard }}.json"
-          node scripts/selection/reduce.mjs "$SELECTION_WORK/raw" "$SELECTION_WORK/maps" "$SELECTION_WORK/vitest.json" "$shard"
-          node scripts/selection/map.mjs --check-shard "$shard"
-          node scripts/selection/bundle-observations.mjs "$SELECTION_WORK/raw" "$SELECTION_WORK/maps" "$shard"
-
-      - name: Save per-test records
+            git -C "$dir" checkout --detach "$head"
+            test ! -e "$dir/dist"
+            test "$(git -C "$dir" rev-parse HEAD)" = "$head"
+            if ! (cd "$dir" && TMPDIR="$dir/.spider/scratch/tmp" npm ci); then
+              failed=1
+              if [ -e "$dir/dist" ]; then mv "$dir/dist" "$RUNNER_TEMP/dist-$head"; fi
+              echo '::endgroup::'
+              continue
+            fi
+            node --input-type=module - "$dir" "$head" <<'JS' >> "$RUNNER_TEMP/replay-output-hashes.ndjson"
+          import { execFileSync } from 'node:child_process';
+          import { bundleDigest } from './scripts/selection/bundle-keys.mjs';
+          const [dir, head] = process.argv.slice(2);
+          const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+          const paths = ['dist/intercom/broker.mjs', 'dist/herdr/feed-reader.mjs', 'dist/herdr/viewer.mjs', 'dist/herdr/viewer-pi.mjs'];
+          console.log(JSON.stringify({ head, lock: git('rev-parse', 'HEAD:package-lock.json'), node: process.version,
+            files: Object.fromEntries(paths.map(file => [file, bundleDigest(dir, file)])) }));
+          JS
+            mv "$dir/dist" "$RUNNER_TEMP/dist-$head"
+            echo "::endgroup::"
+          done < scripts/selection/replay-byte-heads.txt
+          exit "$failed"
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
-          name: selection-records-${{ matrix.shard }}
-          path: ${{ env.SELECTION_WORK }}/results/*.json
-          include-hidden-files: true
+          name: replay-output-hashes
+          path: ${{ runner.temp }}/replay-output-hashes.ndjson
           if-no-files-found: error
           retention-days: 7
-
-      - name: Save raw recorder data
-        if: ${{ !cancelled() }}
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: selection-raw-${{ matrix.shard }}
-          path: ${{ env.SELECTION_WORK }}/raw/
-          include-hidden-files: true
-          retention-days: 7
-
-  selection-map:
-    name: selection map
-    needs: record
-    if: ${{ !cancelled() && needs.record.result != 'skipped' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '26.4.0'
-
-      - name: Download shard records
-        uses: actions/download-artifact@v4
-        with:
-          pattern: selection-records-*
-          path: .spider/scratch/selection/records
-          merge-multiple: true
-
-      - name: Build and verify selection-map.json
-        if: always()
-        env:
-          RECORD_RESULT: ${{ needs.record.result }}
-        run: |
-          records=.spider/scratch/selection/records
-          node scripts/selection/map.mjs selection-map.json "$records/inventory.json" "$records"/record-{1..6}.json
-          test "$RECORD_RESULT" = success
-
-      - name: Publish selection map
-        uses: actions/upload-artifact@v4
-        with:
-          name: selection-map
-          path: selection-map.json
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Build scoreboard
-        continue-on-error: true
-        run: |
-          node scripts/selection/scoreboard.mjs selection-map.json > scoreboard.md
-          cat scoreboard.md >> "$GITHUB_STEP_SUMMARY"

@@ -5,12 +5,13 @@
 Draw the editor and sent messages on the theme's `userMessageBg`. In
 `dracula-plus-glass` it is `#060607`, darker than the surrounding Herdr glass.
 Use `▄` and `▀` for the half-row edges, with no background behind the
-unfilled half. Draw a half-cell bar against the strip in column zero for the
-full band height: `▗` on the top edge, `▐` on text rows, and `▝` on the bottom
-edge. The bar uses `accent` (`#82aaff`) or `bashMode`, regardless of thinking
-level. The remaining edge cells use the strip color. Scrolled edges show a dim
-hidden-line count beside the half-cell bar. Keep Pi's cursor, completion menu,
-and keys.
+unfilled half. Draw the bar in the left half of column zero for the full band
+height: `▖` on the top edge, `▌` on text rows, and `▘` on the bottom edge.
+The rest of column zero uses the default background, leaving a half-cell gap
+before the strip starts in column one. The bar uses `accent` (`#82aaff`) or
+`bashMode`, regardless of thinking level. The remaining edge cells use the strip
+color. Scrolled edges show a dim hidden-line count beside the half-cell bar.
+Keep Pi's cursor, completion menu, and keys.
 
 Sent messages have no bar. Place the accent `❯` before the first text row and
 align wrapped text under that row's text. Keep Pi's Markdown and OSC 133

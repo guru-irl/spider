@@ -45,7 +45,7 @@ for (const kind of ['missing', 'unavailable']) test(`${kind} configured model fa
   const f = setup(); if (kind === 'missing') f.registry.find = () => undefined; else f.registry.getAvailable = () => [sessionModel];
   assert.equal(await f.run(), undefined); assert.equal(summaryCalls.length, 0); assert.equal(f.requests.length, 0);
   assert.equal(f.notices.length, 1); assert.equal(f.notices[0].kind, 'warning');
-  assert.match(f.notices[0].text, /fixture-provider\/summary-model/);
+  assert.match(f.notices[0].text, kind === 'missing' ? /fixture-provider\/summary-model/ : /Summary summary failed/);
   assert.match(f.notices[0].text, kind === 'missing' ? /not found/i : /not available/i);
 });
 // Break: failures/refusals/invalid or truncated text persisted, or warning does not name reason.
@@ -59,7 +59,7 @@ for (const [kind, configure, reason] of [
   const f = setup(); configure(f);
   assert.equal(await f.run(), undefined); assert.equal(summaryCalls.length, 1);
   assert.equal(f.notices.length, 1); assert.equal(f.notices[0].kind, 'warning');
-  assert.match(f.notices[0].text, /fixture-provider\/summary-model/); assert.match(f.notices[0].text, reason);
+  assert.match(f.notices[0].text, /Summary summary failed/); assert.match(f.notices[0].text, reason);
 });
 // Break: return undefined or throw on abort (pi runner swallows throws and invokes default summary).
 for (const kind of ['before', 'during-error', 'late-success', 'response-aborted']) test(`${kind} abort cancels without fallback or warning`, async () => {
@@ -77,7 +77,7 @@ test('parent threshold callback names successful summarizer and preserves fallba
   const end = f.handlers.get('agent_end'); assert.equal(typeof end, 'function');
   await end({}, f.ctx); await end({}, f.ctx); assert.equal(calls.length, 1);
   const result = (await f.run()).compaction; calls[0].onComplete(result);
-  assert.match(f.notices.at(-1).text, /summary by summary-model/);
+  assert.match(f.notices.at(-1).text, /summary by Summary/);
   await end({}, f.ctx); assert.equal(calls.length, 2);
   f.registry.getAvailable = () => []; await f.run(); calls[1].onComplete({ details: {}, summary: 'fallback' });
   assert.equal(f.notices.at(-1).text, 'Compaction complete (session-model)');
@@ -105,7 +105,7 @@ test('headless parent fallback reports reason to stderr without UI', async () =>
   const f = setup(); f.ctx.hasUI = false; f.registry.getAvailable = () => [];
   const oldWrite = process.stderr.write; let log = ''; process.stderr.write = (c: any) => { log += c; return true; };
   try { assert.equal(await f.run(), undefined); } finally { process.stderr.write = oldWrite; }
-  assert.match(log, /fixture-provider\/summary-model/); assert.match(log, /not available/);
+  assert.match(log, /Summary summary failed/); assert.match(log, /not available/);
   assert.match(log, /using default compaction/); assert.deepEqual(f.notices, []);
 });
 // Break: helper refactor routes child through configured model/high or changes its drafts/back-off.

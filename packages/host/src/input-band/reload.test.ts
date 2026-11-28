@@ -41,7 +41,7 @@ function fixture(mismatch = false) {
   const editor = { render: () => ["editor"], invalidate() {} };
   const view = Object.assign(Object.create(InteractiveMode.prototype), {
     runtimeHost: { session }, ui, editor, editorContainer, footerContainer, customFooter: footer, footer: { render: () => ["stock footer"], invalidate() {} }, footerDataProvider: provider,
-    resetExtensionUI() { this.setExtensionFooter(undefined); },
+    resetExtensionUI(this: any) { this.setExtensionFooter(undefined); },
     rebuildChatFromMessages() {},
     keybindings: { reload() {} }, applyRuntimeSettings() {}, themeController: { applyFromSettings() {} }, setupAutocompleteProvider() {},
     setupExtensionShortcuts() {}, showLoadedResources() {}, maybeSaveImplicitProjectTrustAfterReload: () => false, showStatus() {}, showError(e: unknown) { throw e; },
@@ -77,6 +77,7 @@ it("freezes the last rendered Spider footer while Pi replaces the runtime", asyn
   expect(frozen.join("\n")).toContain(theme.fg("dim", "◐"));
   await new Promise(resolve => process.nextTick(resolve));
   complete(); await pending;
+  expect(view.footerContainer.render(100)).toEqual(["stock footer"]);
 });
 
 it("leaves an unrecognized reload box and stock footer alone", async () => {

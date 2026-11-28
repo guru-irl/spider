@@ -5,10 +5,10 @@ on:
   workflow_dispatch:
     inputs:
       force_full:
-        description: Run all tests, Chrome, packed acceptance, and headless stories before merge
-        type: boolean
-        required: true
-        default: true
+        description: Run full CI on this ref; the force_full value is ignored
+        type: string
+        required: false
+        default: 'true'
   push:
     branches: [main]
 
@@ -108,7 +108,9 @@ jobs:
           cache: npm
 
       - name: Prepare isolated scratch
-        run: mkdir -p "$PWD/.spider/scratch/tmp" "$PWD/.spider/scratch/test-results"
+        run: |
+          mkdir -p "$PWD/.spider/scratch/tmp" "$PWD/.spider/scratch/test-results"
+          printf '%s\n' '${{ strategy.job-total }}' > .spider/scratch/test-results/shard-${{ matrix.shard }}.count
 
       - name: Install SQLite CLI
         run: sudo apt-get update && sudo apt-get install -y sqlite3
@@ -137,7 +139,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-results-${{ matrix.shard }}
-          path: .spider/scratch/test-results/shard-${{ matrix.shard }}.json
+          path: |
+            .spider/scratch/test-results/shard-${{ matrix.shard }}.json
+            .spider/scratch/test-results/shard-${{ matrix.shard }}.count
           include-hidden-files: true
           if-no-files-found: warn
 

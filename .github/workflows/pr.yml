@@ -49,6 +49,12 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Herdr acceptance typecheck
+        run: TMPDIR="$PWD/.spider/scratch/tmp" npm run typecheck:herdr:e2e
+
+      - name: Check workflow contract
+        run: env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID TMPDIR="$PWD/.spider/scratch/tmp" node node_modules/vitest/vitest.mjs run --config packages/herdr/e2e/vitest.config.ts --maxWorkers=1 packages/herdr/e2e/controls/ci-contract.test.ts
+
       - name: Verify bundle shape
         run: node scripts/assert-bundle.mjs
 

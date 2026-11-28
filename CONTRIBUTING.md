@@ -24,7 +24,7 @@ env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID \
   npm test -- packages/host/src/__tests__/config-reader-guard.test.ts
 ```
 
-- Run targeted tests while you work, then run the full gate:
+- Run targeted tests while you work. To run the full gate locally when needed:
 
 ```bash
 npm run check:lockfile
@@ -57,8 +57,10 @@ ancestor of the PR merge base. It considers every change from the map commit
 to the PR head, not just files changed by the PR. The selector uses recorded
 reads and bundle execution, static imports, and the filesystem readers in
 `scripts/test-resources.json`. It always runs new, failed, and skipped test
-files. With no usable map or a toolchain change, it runs the full root Vitest
-suite. No selected tests are deferred.
+files. With no usable map, a toolchain change, or a selection infrastructure
+change, it runs the full root Vitest suite. A map API or download error fails
+the runner with the error instead of choosing a different map. No selected
+tests are deferred.
 
 Download `test-selection.json` from the PR run's `test-selection` artifact.
 It records the map run and commit, changed files, selection reasons, four test
@@ -68,18 +70,20 @@ main shard weights for the full fallback.
 
 `ci.yml` runs the full root suite in six shards with two fork workers each.
 It also runs Chrome, packed Herdr acceptance, and the default headless stories.
-A new push to `main` cancels a superseded run. A manual dispatch or reusable
-call still runs full CI. To satisfy merge tooling that requires a full run on
-the PR head, dispatch CI on that branch:
+A new push to `main` cancels a superseded run. Merging does not require a
+manual full run. The non-required `selection audit` compares main failures with
+the merged PR's selection. On a miss, the audit fails and writes the changed
+files, failed tests, and their records to the job summary and log. Chrome,
+acceptance, and stories are not part of PR selection.
+
+To run full CI on a branch or commit explicitly, dispatch it:
 
 ```bash
 gh workflow run ci.yml --ref <head-branch> -f force_full=true
 ```
 
-Wait for `typecheck · test · build` on that exact head. The non-required
-`selection audit` compares main failures with the merged PR's selection. On a
-miss, the audit fails and shows the changed files, failed tests, and their
-records. Chrome, acceptance, and stories are not part of PR selection.
+A dispatch always runs full CI, regardless of the `force_full` value. Reusable
+calls also run full CI.
 
 To refresh the main shard weights, download `test-results-*` from a completed
 full run:
@@ -99,8 +103,8 @@ time, which also includes setup and process startup.
 The `selection map` workflow runs separately on pushes to `main` and on manual
 dispatch. It records the root Vitest suite in six shards and maps loaded bundle
 code back to repository sources. Test failures appear in the run summary.
-Missing records or recorder errors prevent publication. Only successful runs
-on `main` can supply maps to PRs.
+Missing records or recorder errors prevent publication. Only successful push
+runs on `main` in the repository can supply maps to PRs.
 
 GitHub keeps `selection-map.json` in the `selection-map` artifact for 30 days.
 Each test record has a duration, a result, indices into the source path table,
@@ -108,19 +112,6 @@ and unresolved bundle paths. New maps also record whether a test ran a bundle.
 For build configuration changes, a legacy map without that flag triggers the
 full suite. When an unresolved bundle's inputs cannot be identified, non-doc
 source changes also select its test.
-
-### Selection map
-
-The `selection map` workflow runs on pushes to `main` and on manual dispatch.
-It records the root Vitest suite in six shards and maps loaded bundle code back
-to repository sources. Test failures appear in the run summary. Missing test
-records or recorder errors prevent publication. The workflow does not change
-PR checks or the full CI run on `main`.
-
-Download `selection-map.json` from the run's `selection-map` artifact. GitHub
-keeps the artifact for 30 days. The file names the commit and run that produced
-it. Each test file has a duration, a result, and indices into the source file
-list in `files`.
 
 ## Package map and dependency rules
 

@@ -26,7 +26,7 @@ Stop if any command fails. Do not tag a feature branch or a commit that has not 
 Watch the [Release workflow](../.github/workflows/release.yml), then check [GitHub releases](https://github.com/guru-irl/spider/releases).
 
 The tag starts the same verification as [CI](../.github/workflows/ci.yml) through `workflow_call`.
-It includes typechecks, twelve test shards, Herdr acceptance, Chrome checks, the lockfile registry guard, and bundle and package-content checks.
+It includes typechecks, six test shards, Herdr acceptance, Chrome checks, headless stories, the lockfile registry guard, and bundle and package-content checks.
 The release job runs only after every CI job succeeds. It also checks that the tag equals `v` followed by the version in `package.json`.
 
 CI uploads the checked tarball as `release-package`. The release job downloads those bytes rather than building a different package.
@@ -111,5 +111,5 @@ All verification jobs use Node `26.4.0` on Linux. The declared `>=22.19.0` engin
 Real Herdr core, remote, and native-window stories remain opt-in and do not run in CI.
 
 The required branch-protection check is exactly `typecheck · test · build`, with U+00B7 middle dots and no workflow-name prefix.
-Its aggregate job requires success from `checks`, all twelve test shards, Herdr acceptance, and the Chrome jobs, including after a failure or cancellation.
+Its aggregate job requires success from `compile`, all six test shards, Herdr acceptance, Chrome, and headless stories, including after a failure or cancellation.
 Configure that exact check under the branch protection rule for `main`.

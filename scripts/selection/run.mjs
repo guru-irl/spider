@@ -30,4 +30,5 @@ if (files.length) {
 } else {
   console.log(`Group ${group}/${groupCount} is empty, as recorded in the verified selection.`);
 }
-if (!process.exitCode) writeFileSync(hashFile, `${JSON.stringify({ group, selectionHash: selection.selectionHash })}\n`);
+if (!process.exitCode) writeFileSync(hashFile, `${JSON.stringify({ group, selectionHash: selection.selectionHash,
+  mapRunId: selection.mapRunId, fallback: selection.fallback })}\n`);

@@ -20,7 +20,6 @@ permissions:
 
 concurrency:
   group: herdr-stories-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # CI never uses onnxruntime's CUDA provider; skip its NuGet download.

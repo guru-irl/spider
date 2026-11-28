@@ -18,6 +18,10 @@ export function validateSelection(selection, head) {
   if (!sha256.test(selection.selectionHash) || selectionHash(selection) !== selection.selectionHash) {
     throw new Error('Selection hash does not match the manifest');
   }
+  if (!Array.isArray(selection.changedFiles) || selection.changedFiles.some(change =>
+    !change || !safePath(change.file) || !['A', 'M', 'D', 'T'].includes(change.status))) {
+    throw new Error('Invalid changed files in selection');
+  }
   if (!selection.selected || typeof selection.selected !== 'object' || Array.isArray(selection.selected)
       || !Array.isArray(selection.groups) || selection.groups.length !== groupCount || !selection.groups.every(Array.isArray)) {
     throw new Error('Invalid selection groups');
@@ -38,7 +42,9 @@ export function requireAgreement({ needs, hashes, selection, head }) {
   const { selectionHash: expected } = validateSelection(selection, head);
   if (!Array.isArray(hashes) || hashes.length !== groupCount || hashes.some((row, i) =>
     row?.group !== i + 1 || row.selectionHash !== expected)) {
-    throw new Error('Test runners used different selections or a runner did not report its hash');
+    const details = Array.isArray(hashes) ? hashes.map((row, i) =>
+      `group ${i + 1}: hash=${JSON.stringify(row?.selectionHash ?? null)} map=${JSON.stringify(row?.mapRunId ?? null)} fallback=${JSON.stringify(row?.fallback ?? null)}`).join('; ') : 'no runner hashes';
+    throw new Error(`Test runners used different selections or a runner did not report its hash: ${details}`);
   }
   return expected;
 }

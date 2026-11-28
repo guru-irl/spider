@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { github } from './github.mjs';
@@ -53,6 +53,7 @@ export async function mergedSelection(api, commit) {
 
 export function summarizeAudit({ selection, misses, flakes, pr, runId, map, failures = new Map() }) {
   const lines = ['## Selection audit', '', `PR #${pr.number}, PR workflow run ${runId}.`,
+    'Attribution assumes the merged PR was up to date; cancelled runs from a burst are not audited.',
     `Misses: ${misses.length}. Documented flaky files outside selection: ${flakes.length}.`, ''];
   for (const file of flakes) lines.push(`- Documented flake: \`${file}\``);
   if (misses.length) {
@@ -76,17 +77,26 @@ async function main(directory) {
     publish('Selection audit runs only on pushes to main.');
     return;
   }
+  const markers = readdirSync(directory).filter(name => /^shard-\d+\.count$/.test(name));
+  if (!markers.length) throw new Error('Selection audit inconclusive: no shard counts');
+  const counts = markers.map(name => readFileSync(resolve(directory, name), 'utf8').trim());
+  const count = Number(counts[0]);
+  if (!Number.isSafeInteger(count) || count < 1 || counts.some(value => value !== String(count))) {
+    throw new Error('Selection audit inconclusive: invalid or inconsistent shard counts');
+  }
   const reports = [];
-  for (let shard = 1; shard <= 6; shard++) {
-    try { reports.push(read(resolve(directory, `shard-${shard}.json`))); }
-    catch { throw new Error(`Selection audit inconclusive: no readable report for main shard ${shard}/6`); }
+  for (let shard = 1; shard <= count; shard++) {
+    try {
+      if (!markers.includes(`shard-${shard}.count`)) throw new Error('missing shard count');
+      reports.push(read(resolve(directory, `shard-${shard}.json`)));
+    } catch { throw new Error(`Selection audit inconclusive: no readable report for main shard ${shard}/${count}`); }
   }
   const failures = failureRows(reports);
   if (!failures.size) { publish('Selection audit: no failing root test files.'); return; }
   const api = github(repo);
   const evidence = await mergedSelection(api, commit);
   if (!evidence.selection) {
-    publish(`Selection audit inconclusive: ${evidence.unavailable}. Failing files: ${sorted(failures.keys()).join(', ')}.`);
+    publish(`::warning::Selection audit inconclusive: ${evidence.unavailable}. Failing files: ${sorted(failures.keys()).join(', ')}.`);
     return;
   }
   const { selection } = evidence;

@@ -620,7 +620,7 @@
   "packages/host/src/__tests__/run-source.test.ts": 45,
   "packages/host/src/__tests__/scope-rule.test.ts": 7,
   "packages/host/src/__tests__/scratch-cleanup.test.ts": 2948,
-  "packages/host/src/__tests__/selection.test.ts": 4264,
+  "packages/host/src/__tests__/selection.test.ts": 3877.522216796875,
   "packages/host/src/__tests__/slash.test.ts": 26,
   "packages/host/src/__tests__/sleep-guard.test.ts": 1250,
   "packages/host/src/__tests__/sleep-wait.test.ts": 67,

@@ -39,25 +39,17 @@ function isMap(map, run) {
 
 export async function lookupMap({ mergeBase, asOf, listRuns, isAncestor, load }) {
   const unusable = new Set();
-  try {
-    for (const run of await listRuns()) {
-      if (!commitId.test(run.head_sha) || !isAncestor(run.head_sha, mergeBase)) continue;
-      try {
-        const artifact = await load(run.id);
-        if (!artifact) unusable.add('missing');
-        else if (artifact.expired) unusable.add('expired');
-        else if (!(Date.parse(artifact.publishedAt) <= Date.parse(asOf))) unusable.add('published after run start');
-        else {
-          const map = artifact.read ? artifact.read() : artifact.map;
-          if (isMap(map, run)) return { map, fallback: null };
-          unusable.add('invalid');
-        }
-      } catch {
-        unusable.add('unreadable');
-      }
+  for (const run of await listRuns()) {
+    if (!commitId.test(run.head_sha) || !isAncestor(run.head_sha, mergeBase)) continue;
+    const artifact = await load(run.id);
+    if (!artifact) unusable.add('missing');
+    else if (artifact.expired) unusable.add('expired');
+    else if (!(Date.parse(artifact.publishedAt) <= Date.parse(asOf))) unusable.add('published after run start');
+    else {
+      const map = artifact.read ? artifact.read() : artifact.map;
+      if (isMap(map, run)) return { map, fallback: null };
+      unusable.add('invalid');
     }
-  } catch {
-    return { map: null, fallback: 'selection-map lookup failed' };
   }
   return { map: null, fallback: `no usable ancestor selection map${unusable.size ? ` (${sorted(unusable).join(', ')})` : ''}` };
 }
@@ -185,6 +177,9 @@ export async function selectTests({ head, inventory, changes, map, fallback = nu
   };
   const changedFiles = [...changes].sort((a, b) => a.file < b.file ? -1 : a.file > b.file ? 1 : 0);
   if (!map && !fallback) fallback = 'no usable selection map';
+  const selectionChange = changedFiles.find(({ file }) => file.startsWith('scripts/selection/')
+    || file.startsWith('.github/workflows/') || file === 'scripts/test-resources.json' || file === 'scripts/test-shards.ts');
+  if (!fallback && selectionChange) fallback = `selection infrastructure changed: ${selectionChange.file}`;
   if (!fallback) {
     try {
       const policy = readPolicy();
@@ -299,13 +294,14 @@ export async function lookupMainMap({ root, mergeBase, repo, workflowRun, api = 
     const asOf = api.get(`actions/runs/${workflowRun}`).created_at;
     const since = new Date(Date.parse(asOf) - 30 * 24 * 60 * 60 * 1000).toISOString();
     return await lookupMap({ mergeBase, asOf,
-      listRuns: async () => api.pages(`actions/workflows/selection-map.yml/runs?branch=main&status=success&created=${encodeURIComponent(`>=${since}`)}&per_page=100`)
+      listRuns: async () => api.pages(`actions/workflows/selection-map.yml/runs?branch=main&event=push&status=success&created=${encodeURIComponent(`>=${since}`)}&per_page=100`)
         .flatMap(page => page.workflow_runs)
-        .filter(run => Date.parse(run.updated_at) <= Date.parse(asOf)),
+        .filter(run => run.event === 'push' && run.head_repository?.full_name === repo
+          && run.path === '.github/workflows/selection-map.yml' && Date.parse(run.updated_at) <= Date.parse(asOf)),
       isAncestor: (commit, target) => isAncestor(root, commit, target),
       load: id => api.artifact(id, 'selection-map', 'selection-map.json'),
     });
-  } catch { return { map: null, fallback: 'selection-map lookup failed' }; }
+  } catch (error) { throw new Error(`Selection-map lookup failed: ${error.message}`, { cause: error }); }
 }
 
 async function main(base, output) {

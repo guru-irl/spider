@@ -5,6 +5,7 @@ import { DEFAULTS } from "../control.js";
 import { CONFIG_SCHEMA } from "@spider/ui";
 import glass from "../../../herdr/assets/themes/dracula-plus-glass.json" with { type: "json" };
 
+import { createBandEditor } from "./editor.js";
 import { registerInputBand } from "./index.js";
 const colors = Object.fromEntries(Object.entries(glass.colors).map(([role, value]) => [role, glass.vars[value as keyof typeof glass.vars] ?? value]));
 const theme = new Theme(colors as ConstructorParameters<typeof Theme>[0], colors as ConstructorParameters<typeof Theme>[1], "truecolor");
@@ -165,6 +166,44 @@ describe("input band", () => {
     expect(plain(s.editor().render(12))[0]).toBe("─".repeat(12));
     expect(DEFAULTS["ui.inputBand"]).toBe(true);
     expect(CONFIG_SCHEMA.flatMap(group => group.fields).find(field => field.key === "ui.inputBand")).toMatchObject({ type: "boolean", default: true });
+  });
+
+  it("uses the configured padding in the stock fallback but not in the strip", () => {
+    const unpainted = { getBgAnsi: () => "\x1b[49m" } as unknown as Theme;
+    let activeTheme = unpainted;
+    const Band = createBandEditor(CustomEditor);
+    const e = new Band(tui, editorTheme, keys, () => activeTheme);
+    e.setText("hello"); e.setPaddingX(3);
+    expect(plain(e.render(24))[1]).toMatch(/^ {3}hello/u);
+    activeTheme = theme;
+    expect(plain(e.render(24))[1]).toMatch(/^▐ hello/u);
+    activeTheme = unpainted;
+    e.setPaddingX(2);
+    expect(plain(e.render(24))[1]).toMatch(/^ {2}hello/u);
+    e.setText("界");
+    for (let w = 1; w <= 5; w++) expect(e.render(w).every(row => visibleWidth(row) <= w)).toBe(true);
+  });
+
+  it("lays out only once per keystroke after encountering an unknown host border shape", () => {
+    const widths: number[] = [];
+    class HostEditor extends CustomEditor {
+      override render(width: number) {
+        widths.push(width);
+        const rows = super.render(width);
+        rows[0] = "unknown border";
+        return rows;
+      }
+    }
+    const Band = createBandEditor(HostEditor);
+    const e = new Band(tui, editorTheme, keys, () => theme);
+    e.setPaddingX(2);
+    e.render(24); // Probe once; this host's output cannot be decorated.
+    widths.length = 0;
+    e.handleInput("x"); e.render(24);
+    e.handleInput("y");
+    const edited = e.render(30);
+    expect(widths).toEqual([24, 30]);
+    expect(plain(edited)[1]).toMatch(/^ {2}xy/u);
   });
 
   it("keeps Escape wired to Pi's interrupt action", () => {

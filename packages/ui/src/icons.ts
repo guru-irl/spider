@@ -6,6 +6,8 @@ export const REPLY_FRAME = {
   topLeft: "╭", topRight: "╮", bottomLeft: "╰", bottomRight: "╯",
 } as const;
 
+export const BAND_GLYPHS = { top: "▄", bottom: "▀", barTop: "▗", bar: "▐", barBottom: "▝" } as const;
+
 export const SPINNER_FRAMES: Record<IconStyle, readonly string[]> = {
   text: ["|", "/", "-", "\\"],
   nerd: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],

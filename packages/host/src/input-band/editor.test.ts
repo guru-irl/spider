@@ -5,8 +5,7 @@ import { DEFAULTS } from "../control.js";
 import { CONFIG_SCHEMA } from "@spider/ui";
 import glass from "../../../herdr/assets/themes/dracula-plus-glass.json" with { type: "json" };
 
-const adapters = import.meta.glob<typeof import("./index.js")>("./index.ts", { eager: true });
-const register = adapters["./index.ts"]?.registerInputBand;
+import { registerInputBand } from "./index.js";
 const colors = Object.fromEntries(Object.entries(glass.colors).map(([role, value]) => [role, glass.vars[value as keyof typeof glass.vars] ?? value]));
 const theme = new Theme(colors as ConstructorParameters<typeof Theme>[0], colors as ConstructorParameters<typeof Theme>[1], "truecolor");
 const identity = (text: string) => text;
@@ -28,7 +27,7 @@ function session(existing?: typeof stock) {
   const handlers = new Map<string, (evt: unknown, ctx: unknown) => void>();
   const pi = { on: (evt: string, handler: (evt: unknown, ctx: unknown) => void) => handlers.set(evt, handler) } as unknown as ExtensionAPI;
   const ctx = { cwd: "/project", mode: "tui", hasUI: true, ui: { theme, setEditorComponent: (next: Factory) => { factory = next; }, getEditorComponent: () => factory } };
-  register?.(pi, { CustomEditor }, () => config);
+  registerInputBand(pi, { CustomEditor }, () => config);
   return {
     start: () => handlers.get("session_start")?.({}, ctx),
     stop: () => handlers.get("session_shutdown")?.({ reason: "reload" }, ctx),

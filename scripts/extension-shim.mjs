@@ -86,8 +86,13 @@ export default async function spider(pi: unknown): Promise<unknown> {
   const copyButtons = typeof AssistantMessageComponent === "function" && typeof ToolExecutionComponent === "function"
     && typeof Markdown === "function" && typeof Spacer === "function" && typeof copy === "function"
     ? { host: { AssistantMessageComponent, ToolExecutionComponent, Markdown, Spacer }, copy } : undefined;
+  const inputBand = typeof piHost.CustomEditor === "function" ? {
+    CustomEditor: piHost.CustomEditor, UserMessageComponent: piHost.UserMessageComponent,
+    CustomMessageComponent: piHost.CustomMessageComponent, ToolExecutionComponent,
+    Markdown, Box: piTui.Box, Text: piTui.Text,
+  } : undefined;
   const piVersion = typeof piHost.VERSION === "string" ? piHost.VERSION : undefined;
-  return mod.default(pi, { ...(copyButtons ? { copyButtons } : {}), ...(piVersion === undefined ? {} : { piVersion }) });
+  return mod.default(pi, { ...(copyButtons ? { copyButtons } : {}), ...(inputBand ? { inputBand } : {}), ...(piVersion === undefined ? {} : { piVersion }) });
 }
 `;
 }

@@ -358,6 +358,7 @@
       "packages/host/src/copy-buttons/copy-bundled.test.ts",
       "packages/host/src/herdr/__tests__/fixture-process-domain.test.ts",
       "packages/host/src/herdr/__tests__/linux-process-inventory.test.ts",
+      "packages/host/src/input-band/transcript.test.ts",
       "packages/host/src/roam/__tests__/roam-intercom-move.test.ts",
       "packages/host/src/roam/__tests__/roam-remote-pi.test.ts",
       "packages/host/src/roam/__tests__/roam-usage-producer.test.ts",

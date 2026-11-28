@@ -94,7 +94,7 @@ export { AgentList } from "./agents/agent-list";
 export { renderGridCell } from "./agents/grid-cell";
 export { AgentDetail } from "./agents/agent-detail";
 export type { DetailRead, DetailBackTarget, DetailOptions } from "./agents/agent-detail";
-export { Spinner, BRAILLE_FRAMES, MOON_CYCLE_MS, moonFrame } from "./components/spinner";
+export { MOON_CYCLE_MS, moonFrame } from "./components/spinner";
 export { renderProgressBar } from "./components/progress-bar";
 export { renderDiffView } from "./components/diff-view";
 export { renderTable } from "./components/table";

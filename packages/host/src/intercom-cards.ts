@@ -2,7 +2,7 @@ import { hostname } from "node:os";
 import type { ExtensionAPI, MessageRenderer, Theme } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import type { Message, SessionInfo } from "@spider/intercom/types";
-import { fitResultLines, icon, type IconStyle } from "@spider/ui";
+import { cardDetailIndent, fitResultLines, icon, type IconStyle } from "@spider/ui";
 
 export function localMachineLabel(readHostname: () => string = hostname): string {
   return readHostname().split(".")[0] || "(unknown machine)";
@@ -37,9 +37,9 @@ function callCard(
   const preview = previewText(args.message);
   const logo = icon(style, "spider");
   const rows = [` ${theme.fg("toolTitle", logo)} ${theme.fg("toolTitle", theme.bold(command))} · ${theme.fg("muted", details)}`];
-  if (preview) rows.push(` ${theme.fg("dim", icon(style, "gutter"))} ${theme.fg("dim", preview)}`);
-  const indent = visibleWidth(` ${logo} `);
-  return { render: width => fitResultLines(rows, width, true, indent), invalidate() {} };
+  const indent = cardDetailIndent(style);
+  if (preview) rows.push(indent + theme.fg("dim", preview));
+  return { render: width => fitResultLines(rows, width, true, indent.length), invalidate() {} };
 }
 
 interface ResultDetails {
@@ -111,7 +111,7 @@ class IncomingIntercomCard implements Component {
   render(width: number): string[] {
     const { from, message, replyCommand, bodyText } = this.details;
     const logo = icon(this.style, "spider");
-    const prefix = " ".repeat(visibleWidth(` ${logo} `));
+    const prefix = cardDetailIndent(this.style);
     const bodyWidth = Math.max(1, width - prefix.length);
     const sender = from.name || from.id.slice(0, 8);
     const machine = from.remote ? from.machineAlias : this.localMachineName;
@@ -119,7 +119,7 @@ class IncomingIntercomCard implements Component {
     const lines = [truncateToWidth(title, width, "")];
     if (this.collapsed) {
       this.collapsedPreview ??= (bodyText || message.content.text).replace(/\s+/g, " ").trim();
-      lines.push(truncateToWidth(` ${this.theme.fg("dim", icon(this.style, "gutter"))} ${this.theme.fg("text", this.collapsedPreview)}`, width, ""));
+      lines.push(truncateToWidth(prefix + this.theme.fg("text", this.collapsedPreview), width, ""));
       return lines;
     }
     if (this.wrappedBody?.width !== bodyWidth) {

@@ -127,7 +127,7 @@ describe("renderSpiderResult dispatcher", () => {
     expect(c.render(140).join("\n")).toMatch(/next session/i);
   });
 
-  it("control doctor → status line + guttered checks (no raw JSON, heading stripped)", () => {
+  it("control doctor → status line + aligned checks (no raw JSON, heading stripped)", () => {
     const details = {
       ok: true,
       lines: [

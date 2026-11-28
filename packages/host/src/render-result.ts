@@ -5,7 +5,7 @@
 // `context.args` are the call params; `result.details` is the structured payload.
 import { truncateToWidth, visibleWidth, stripTerminalSequences, Box } from "@earendil-works/pi-tui";
 import { icon, type Component, type IconStyle } from "@spider/ui";
-import { isAgentModelRole, cachedLines, formatRunUsage, renderErrorResult, renderExecCall, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, statusIcon, fitResultLines, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
+import { isAgentModelRole, cachedLines, formatRunUsage, renderErrorResult, renderExecCall, renderExecResult, renderIndexResult, renderMessageResult, renderKillResult, renderTodoChecklist, renderStats, renderInsights, renderModels, renderConfig, renderBindResult, renderMigrateResult, renderEscalation, statusIcon, fitResultLines, cardDetailIndent, type ExecDetails, type ExecKind, type IndexDetails, type MessageDetails, type KillDetails, type TodoChecklistDetails, type BindDetails, type MigrateDetails, type StatsSummary, type InsightGraphView, type EscalationDetails, type ThemeAdapter, type RunUsageCosts, type RunCostFormatter } from "@spider/ui";
 import {
   renderRememberResult,
   renderRecallResult,
@@ -174,7 +174,7 @@ function renderSearch(t: T, rows: any, expanded: boolean): Component {
       if (!list.length) return fitResultLines([t.fg("muted", " (no results)")], width, expanded, 3);
       const sep = t.fg("dim", "·");
       const lines = [t.fg("muted", ` ${list.length} result${list.length === 1 ? "" : "s"}`)];
-      const gutter = ` ${t.fg("dim", icon(t.iconStyle, "gutter"))} `;
+      const indent = cardDetailIndent(t.iconStyle);
       for (const [i, hit] of list.entries()) {
         if (i > 0) lines.push("");
         const role = SEARCH_GLYPH[String(hit?.kind) as keyof typeof SEARCH_GLYPH] ?? "bullet";
@@ -184,7 +184,7 @@ function renderSearch(t: T, rows: any, expanded: boolean): Component {
         const source = hit?.source ? ` ${sep} ${t.fg("muted", String(hit.source))}` : "";
         lines.push(` ${t.fg("dim", `${i + 1}.`)} ${glyph} ${title} ${sep} ${kind}${source}`);
         const snippet = nonblankLines(String(hit?.snippet ?? "")).join("\n");
-        if (snippet) lines.push(gutter + t.fg("dim", expanded ? snippet : snippet.replace(/\s+/gu, " ").trim()));
+        if (snippet) lines.push(indent + t.fg("dim", expanded ? snippet : snippet.replace(/\s+/gu, " ").trim()));
       }
       if (!expanded && list.some(hit => hit?.snippet)) lines.push(t.fg("dim", " ctrl+o to expand"));
       return fitResultLines(lines, width, expanded, 3);
@@ -194,7 +194,7 @@ function renderSearch(t: T, rows: any, expanded: boolean): Component {
 }
 
 /** Health-check output for `control doctor`. The call line supplies the title; this
- *  renders the status and checks with a gutter, without markdown headings or bullets. */
+ *  renders the status and checks under the title, without markdown headings or bullets. */
 function renderDoctor(t: T, details: any, expanded: boolean): Component {
   // C-LOW: absence of evidence is neither a passing check nor a failure. Preserve an
   // explicit boolean and render a third, neutral state when malformed/empty input has
@@ -216,9 +216,9 @@ function renderDoctor(t: T, details: any, expanded: boolean): Component {
         if (idx > 0) {
           const label = t.bold(c.slice(0, idx));
           const rest = t.fg("muted", c.slice(idx + 1).trim());
-          out.push(clipDoctor(` ${t.fg("dim", `${icon(t.iconStyle, "gutter")} `)}${label}${t.fg("dim", ":")} ${rest}`, width));
+          out.push(clipDoctor(`${cardDetailIndent(t.iconStyle)}${label}${t.fg("dim", ":")} ${rest}`, width));
         } else {
-          out.push(clipDoctor(` ${t.fg("dim", `${icon(t.iconStyle, "gutter")} `)}${t.fg("muted", c)}`, width));
+          out.push(clipDoctor(`${cardDetailIndent(t.iconStyle)}${t.fg("muted", c)}`, width));
         }
       }
       return fitResultLines(out, width, expanded, 3);
@@ -269,7 +269,7 @@ function renderControlModels(t: T, details: any, expanded: boolean): Component {
 }
 
 function detailRow(t: T, text: string, color = "toolOutput"): string {
-  return ` ${t.fg("dim", icon(t.iconStyle, "gutter"))} ${t.fg(color, text)}`;
+  return `${cardDetailIndent(t.iconStyle)}${t.fg(color, text)}`;
 }
 
 function renderConfigErrors(t: T, details: any): string[] {
@@ -860,7 +860,7 @@ export function renderSubagentDone(message: any, options: NotificationOptions, t
       if (d.chain?.outcome === "complete" || d.chain?.outcome === "stopped") {
         const headline = d.chain.outcome === "complete" ? "chain complete"
           : `chain stopped at step ${d.chain.step} of ${d.chain.total}: ${d.chain.cause}`;
-        lines.push(...cardRow(` ${t.fg("dim", icon(iconStyle, "gutter"))} `, t.fg("toolTitle", headline), width, expanded));
+        lines.push(...cardRow(cardDetailIndent(iconStyle), t.fg("toolTitle", headline), width, expanded));
       }
       return restoreCardBackground(lines, theme, background);
     },
@@ -924,7 +924,7 @@ export function renderOrganismEntry(entry: unknown, options: NotificationOptions
       const marker = icon(iconStyle, failed ? "failure" : state === "partial" ? "warning" : completed ? "success" : "open");
       const color = failed ? "error" : state === "partial" ? "warning" : completed ? "success" : "muted";
       const lines = [` ${t.fg(color, marker)} ${state}`];
-      const detail = (text: string) => ` ${t.fg("dim", icon(iconStyle, "gutter"))} ${t.fg("toolOutput", text)}`;
+      const detail = (text: string) => `${cardDetailIndent(iconStyle)}${t.fg("toolOutput", text)}`;
       if (report) {
         lines.push(detail(`${report.memoryStaged} memories · ${report.skillsQueued === undefined && report.skillsStaged > 0 ? `${report.skillsStaged} skills staged` : `${report.skillsQueued ?? 0} skills queued`} · ${report.todosAdded} todos`));
         if (report.skipReason) lines.push(detail(report.skipReason));

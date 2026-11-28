@@ -149,7 +149,7 @@ Setup backs up every file it replaces before the first write and records each st
 6. Role templates generated from your global model settings.
 7. `notes = false` in the core's `config.toml`. Only the root `notes` key changes.
 8. A marked resume block in your shell rc file.
-9. The remote runtime on each configured machine. Setup checks each machine's Node version with a visible probe.
+9. The remote runtime on each reachable configured machine. Setup checks its Node version with a visible probe.
 10. The spaces and tabs for your sessions.
 11. A private `herdr/sessions` folder under `<globalRoot>`, where each session publishes the state that the panel and the sidebar read. Rollback leaves this folder in place.
 
@@ -157,7 +157,9 @@ On Herdr 0.1.13, 0.1.16, and 0.1.18, setup verifies the release's complete Space
 
 Setup owns only these parts of each file. Edits you make elsewhere in the same files are kept when setup runs again. Setup compares the parts it owns by value, so a file that was saved again with different formatting but the same values is not rewritten. If you change a part that setup owns, such as the pi theme field or the resume block, setup stops with `managed-artifact-changed` and names the recorded value. Restore that value, then run setup again.
 
-A second run with nothing changed writes nothing, makes no backup, changes no focus, and opens no duplicate session. It still checks each machine's runtime directory, and it installs the runtime again if that directory was deleted. If setup stops partway, run it again. It resumes at the first unfinished step. If a target file changed since setup checked it, setup stops instead of overwriting your edit.
+Setup finishes local changes when a remote machine is unreachable. It lists the skipped machines in one warning and installs each pending runtime the next time you run setup while that machine is reachable. `setup --dry-run` lists machines the local core shows as disconnected without probing them. Doctor reports pending or unreachable runtimes as warnings. A configured machine missing from the local core inventory is an error, not a skipped runtime.
+
+A second run with nothing changed writes nothing, makes no backup, changes no focus, and opens no duplicate session. It still checks each reachable machine's runtime directory, and it installs the runtime again if that directory was deleted. If setup stops partway, run it again. It resumes at the first unfinished step. If a target file changed since setup checked it, setup stops instead of overwriting your edit.
 
 ### Upgrade
 
@@ -340,11 +342,11 @@ spider exec language:"shell" on:"build-box" code:"make test"
 
 `build-box` stands for one of your configured machine names. Without `on`, execution is local and unchanged.
 
-The first time setup runs, it installs a small Node runtime on each machine. Every remote command starts through that runtime as its own `hc` job. No pane opens for it, and the command does not wait for free space in the tab. Before the runtime releases the command, spider confirms that the job's labelled terminal exists. If that takes more than 10 seconds, spider removes the job without running it.
+Setup installs a small Node runtime the first time it reaches each machine. Every remote command starts through that runtime as its own `hc` job. No pane opens for it, and the command does not wait for free space in the tab. Before the runtime releases the command, spider confirms that the job's labelled terminal exists. If that takes more than 10 seconds, spider removes the job without running it.
 
 The packaged `dist/herdr/remote-runtime.mjs` executable starts jobs and agent consoles, including when invoked through a symlink. It also exports the runtime library API, including `installRuntimeDirectory` and `runRemoteRuntime`. Importing either the packaged artifact or its source library does not consume command-line arguments or start a remote job.
 
-Before each launch, spider checks that the machine has the runtime that matches this version of spider. If the runtime is missing or outdated, the call fails with `runtime-not-installed` before anything runs. Run setup again to install it.
+Before each launch, spider checks that the machine has the runtime that matches this version of spider. If the runtime is missing or outdated, the call fails with `runtime-not-installed` before anything runs. Run setup again while the machine is reachable to install it.
 
 These rules apply to `on`:
 

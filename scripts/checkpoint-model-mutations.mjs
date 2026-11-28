@@ -20,7 +20,7 @@ const mutations = [
     name: 'setup-owned-role-templates', file: installer,
     change: text => replace(text, '  });\n}\n\nasync function ensureSessionFeedDirectory', "  }).filter(path => path.startsWith(instructions + '/'));\n}\n\nasync function ensureSessionFeedDirectory"),
     tests: [
-      ['packages/herdr/src/__tests__/setup-checkpoint.test.ts', 'role-template'],
+      ['packages/herdr/src/__tests__/setup-checkpoint-part-recovery.test.ts', 'role-template'],
       [model, 'N1 runtime writer'],
     ],
   },

@@ -390,6 +390,11 @@ export async function bootUsageWorker(
       post({ type: "panel-usage", requestId: message.requestId, data: panelReader.read(message.now, message.sessionId, message.budget, calibrationMode) });
       return;
     }
+    if (message?.type === "visit-usage") {
+      const data = message.sessionId === command.sessionId ? panelReader.readVisit(message.sessionId, message.from, message.to, calibrationMode) : null;
+      post({ type: "visit-usage", requestId: message.requestId, data });
+      return;
+    }
     if (message?.type === "refresh") request();
     else if (message?.type === "configure") {
       poll = !command.dashboardMode && message.poll;

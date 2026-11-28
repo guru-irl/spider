@@ -3,13 +3,13 @@ export const SPIDER_BLOCK_END = "<!-- spider:end -->";
 
 export const SPIDER_BLOCK_BODY = `# spider (managed — do not edit inside the markers)
 
-This block is written and updated by the **spider** pi extension. Edits between
-the markers are overwritten on upgrade. Put your own notes outside the markers.
+The **spider** pi extension rewrites this block on upgrade. Put your own notes
+outside the markers.
 
 **spider is the single unified extension** — subagents, memory, unified search,
 todos, sandboxed exec, and web fetch on one shared SQLite DB. It **replaces** the
-legacy \`pi-subagents\`, \`context-mode\` (\`ctx_*\`), and standalone todo tools —
-do not reach for those; use the \`spider\` verbs below.
+legacy \`pi-subagents\`, \`context-mode\` (\`ctx_*\`), and standalone todo tools;
+use the \`spider\` verbs below.
 
 ## Skills first
 
@@ -56,11 +56,12 @@ built-ins:
 - \`spider index\` / \`spider fetch\` — index files/dirs or fetch+index URLs into
   the knowledge base for \`spider search\`.
 - \`spider run\` — dispatch subagents (single / chain / parallel / pipeline,
-  always async). Pass an explicit **provider-qualified** \`model:\` (e.g.
-  \`github-copilot/gpt-6.1-sol\`) scaled to task complexity (cheap for
-  mechanical, capable for architecture/review), plus \`thinking:\`. Subagents run
-  in the background and report back via a \`spider.subagent_done\` message — there
-  is no blocking wait. For multi-phase work use
+  always async). Use one or two words that describe the job (e.g. fresh-weights),
+  or a creative name (e.g. spiderman); never cryptic abbreviations (e.g. whst).
+  Pass an explicit **provider-qualified** \`model:\` (e.g.
+  \`github-copilot/gpt-6.1-sol\`) scaled to task complexity, plus \`thinking:\`.
+  Subagents report via \`spider.subagent_done\`; there is no blocking wait.
+  For multi-phase work use
   \`pipeline:[worker, reviewer], handoff:"intercom"\`. Give review-only children
   \`context:"fresh"\` and tell them not to edit source.
   While a child runs, \`spider exec\` and \`spider batch\` block foreground sleeps,

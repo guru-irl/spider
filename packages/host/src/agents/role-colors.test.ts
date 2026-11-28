@@ -1,13 +1,15 @@
 import { Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
-import { AgentDetail, AgentFooter, AgentList, AgentStore, renderGridCell, type AgentSnapshot, type RunEvent, type RunRow } from "@spider/ui";
+import { AgentDetail, AgentFooter, AgentList, AgentStore, renderAgentStatus, renderGridCell, type AgentSnapshot, type RunEvent, type RunRow } from "@spider/ui";
 import { describe, expect, it } from "vitest";
 import glass from "../../../herdr/assets/themes/dracula-plus-glass.json" with { type: "json" };
 import { piTheme } from "./theme-adapter.js";
 
 const colors = Object.fromEntries(Object.entries(glass.colors).map(([role, value]) => [role, glass.vars[value as keyof typeof glass.vars] ?? value]));
 function theme(mode: "truecolor" | "256color" = "truecolor") {
-  return piTheme(new Theme(colors as ConstructorParameters<typeof Theme>[0], colors as ConstructorParameters<typeof Theme>[1], mode), "nerd", true);
+  const adapter = piTheme(new Theme(colors as ConstructorParameters<typeof Theme>[0], colors as ConstructorParameters<typeof Theme>[1], mode), "nerd", true);
+  // Chalk disables attributes when Vitest has no TTY; color output still uses the real Pi theme.
+  return { ...adapter, bold: (text: string) => `\x1b[1m${text}\x1b[22m`, italic: (text: string) => `\x1b[3m${text}\x1b[23m` };
 }
 function snapshot(role: string, status: AgentSnapshot["status"] = "running"): AgentSnapshot {
   return { runId: "robot-7854", name: "raven", agent: "worker", role, status, model: "vendor/fixture", thinking: "high",
@@ -50,6 +52,7 @@ describe("agent role presentation", () => {
     ["scout", "139;233;253", 117], ["planner", "199;146;234", 176],
     ["watcher", "255;146;223", 212], ["bespoke", "214;172;255", 183],
     ["researcher", "214;172;255", 183], ["oracle", "214;172;255", 183],
+    ["constructor", "214;172;255", 183], ["__proto__", "214;172;255", 183],
   ])("uses the %s accent in footer, list, grid and detail", (role, rgb, index) => {
     const lines = views(snapshot(role));
     const ansi = `\x1b[38;2;${rgb}m`;
@@ -63,6 +66,19 @@ describe("agent role presentation", () => {
       expect(row).toContain(`\x1b[38;5;${index}m`);
       expect(row).not.toContain("\x1b[38;2;");
     }
+  });
+
+  it.each(["text", "nerd"] as const)("pulses the %s fallback marker toward its role color", iconStyle => {
+    const t = { ...theme(), iconStyle, spiderGlyphs: false };
+    const agent = { ...snapshot("reviewer"), runId: "stock-3023" };
+    const start = renderAgentStatus(t, agent, 0);
+    const half = renderAgentStatus(t, agent, 450);
+    const peak = renderAgentStatus(t, agent, 900);
+    expect(start).toContain("\x1b[38;2;155;155;156m");
+    expect(peak).toContain("\x1b[38;2;255;184;108m");
+    expect(half).not.toBe(start);
+    expect(half).not.toBe(peak);
+    if (iconStyle === "text") expect(stripTerminalSequences(peak)).toBe("◇");
   });
 
   it.each([["done", "80;250;123"], ["failed", "255;110;110"], ["cancelled", "255;203;107"]] as const)

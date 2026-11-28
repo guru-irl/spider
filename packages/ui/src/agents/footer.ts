@@ -3,7 +3,7 @@ import { icon } from "../icons.js";
 import type { Component } from "../component";
 import { buildFooterModel } from "./footer-model";
 import { diffLines, hasChanges } from "./diff";
-import { activityText, agentGlyph, renderAgentStatus } from "./types";
+import { agentGlyph, renderAgentStatus, renderRoleAccent } from "./types";
 import type { AgentSnapshot, ThemeAdapter } from "./types";
 import type { AgentStore } from "./store";
 
@@ -27,13 +27,12 @@ export function formatAgentLine(t: ThemeAdapter, a: AgentSnapshot, width: number
   const model = shortModel(a.model);
   const sep = t.fg("dim", "·");
   const parts = [
+    ital(renderRoleAccent(t, a.role ?? a.agent, a.role ?? a.agent)),
     t.fg("toolTitle", t.bold(a.name)),
-    sep, ital(t.fg("accent", a.role ?? a.agent)),
   ];
   if (model !== "—") parts.push(sep, t.fg("muted", model));
   if (a.thinking) parts.push(sep, t.fg("dim", a.thinking));
   parts.push(sep, t.fg("dim", turns), sep, t.fg("muted", formatDuration(elapsedMs)));
-  if (a.activity) parts.push(sep, t.fg("dim", activityText(t, a.activity, a.activityIsError)));
   return truncateToWidth(`${renderAgentStatus(t, a, now)} ${parts.join(" ")}`, width, "…");
 }
 

@@ -32,6 +32,10 @@ jobs:
           sudo rm -rf "$rundir"
           test ! -e "$rundir"
           echo "XDG_RUNTIME_DIR=" >> "$GITHUB_ENV"
+      - name: Typecheck and verify coverage audit
+        run: |
+          npm run typecheck
+          node --test scripts/check-herdr-test-coverage.test.mjs
       - name: Profile tests, one file at a time
         run: |
           dir="$PWD/.spider/scratch/wpkg-profile"
@@ -42,12 +46,14 @@ jobs:
             "$p"/production-cutover-app-shim*.test.ts "$p"/spaces-a-install*.test.ts
             "$p"/setup-backup-recovery*.test.ts "$p"/setup-installation*.test.ts
             "$p"/setup-checkpoint.test.ts "$p"/setup-checkpoint-part*.test.ts "$p"/acceptance.test.ts
-            "$p"/acceptance-setup*.test.ts "$p"/packaging*.test.ts "$p"/child-remote-integration*.test.ts
-            "$p"/spaces.test.ts "$p"/pane-roaming-handoff.test.ts
+            "$p"/acceptance-remote*.test.ts "$p"/acceptance-setup*.test.ts "$p"/packaging*.test.ts
+            "$p"/child-remote-integration*.test.ts "$p"/child-remote-handoff*.test.ts
+            "$p"/spaces.test.ts "$p"/pane-roaming-handoff*.test.ts
             "$p"/agent-consoles*.test.ts "$p"/ssh-core-restart.test.ts "$p"/console-upgrade.test.ts)
           test "${#files[@]}" -gt 0
           for file in "${files[@]}"; do test -f "$file" || { echo "Missing $file"; exit 1; }; done
-          node --test scripts/wpkg-speed/summarize.test.mjs
+          printf '%s\n' "${files[@]}" > "$dir/file-list.txt"
+          node --test scripts/wpkg-speed/summarize.test.mjs scripts/wpkg-speed/summarize-loaded.test.mjs
           export NODE_OPTIONS="--require=$PWD/scripts/wpkg-speed/process.cjs"
           export WPKG_PROFILE_LOG="$dir/instrument-check.ndjson"
           VITEST_WORKER_ID=probe node -e ''
@@ -64,6 +70,23 @@ jobs:
           done
           unset NODE_OPTIONS
           node scripts/wpkg-speed/summarize.mjs "$dir" "${files[@]}"
+          exit "$status"
+      - name: Measure loaded file wall times twice
+        run: |
+          dir="$PWD/.spider/scratch/wpkg-profile"
+          mapfile -t files < "$dir/file-list.txt"
+          export TMPDIR="$PWD/.spider/scratch/tmp" SPIDER_TEST_SEED=182
+          unset XDG_RUNTIME_DIR PI_SUBAGENT_CHILD PI_SUBAGENT_RUN_ID PI_SPIDER_DB_PATH PI_SPIDER_SESSION_ID SPIDER_HERDR_E2E SPIDER_HERDR_APP_TESTS SPIDER_HERDR_APP_E2E
+          status=0
+          for i in 1 2; do
+            echo "Loaded sample $i"
+            if node node_modules/vitest/vitest.mjs run "${files[@]}" --maxWorkers=3 --reporter=json --outputFile="$dir/loaded-$i.json" >"$dir/loaded-$i.log" 2>&1; then
+              node scripts/wpkg-speed/summarize-loaded.mjs "$dir/loaded-$i.json" "$dir/file-list.txt" || status=1
+            else
+              status=1
+              tail -100 "$dir/loaded-$i.log"
+            fi
+          done
           exit "$status"
       - uses: actions/upload-artifact@v4
         if: always()

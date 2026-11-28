@@ -416,6 +416,22 @@ describe("spider extension entry", () => {
     expect(props.tasks.items.required).toEqual(expect.arrayContaining(["agent", "task"]));
   });
 
+  it("guides subagent names in every registered run mode", () => {
+    const pi = fakePi();
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
+    const props = (pi._tools.spider as { parameters: { properties: Record<string, any> } }).parameters.properties;
+    const guidance = "Use one or two words that describe the job (e.g. fresh-weights), or a creative name (e.g. spiderman); never cryptic abbreviations (e.g. whst).";
+    for (const [field, description] of [
+      ["name", props.name.description],
+      ["tasks", props.tasks.description],
+      ["tasks[].name", props.tasks.items.properties.name.description],
+      ["chain[].name", props.chain.items.properties.name.description],
+    ]) {
+      expect(description, field).toContain(guidance);
+    }
+    expect(props.name.description).toContain("loop/schedule: case-sensitive trigger name (1 to 40 letters, digits, dots, underscores or hyphens; start with a letter or digit). Defaults: loop and wakeup. Replaces only that independent name; also the skill name for action='skill' (op add/view/approve/reject).");
+  });
+
   it("advertises accepted thinking levels in the registered spider run schema for every mode", () => {
     const pi = fakePi();
     spiderExtension(withPiEvents(pi as never), hostUnitPorts);

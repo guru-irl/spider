@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { expect, vi } from 'vitest';
 import { openGlobal, setGlobalDbPathForTests } from '@spider/db-core';
 import { createHostHerdrHarness } from './herdr-fixture-inventory.testutil.js';
+import { installFastCoreTransport } from './herdr-setup-fast-core.js';
 import { setupHerdr, standardHerdrConfigPath, type SetupRequest } from '../../../herdr/src/setup/installer.js';
 import { parseHerdrConfig } from '../../../herdr/src/config.js';
 import { createAppClient } from '../../../herdr/src/client/app.js';
@@ -28,9 +29,11 @@ interface MountedViewerFixture {
   close(): Promise<void>;
 }
 
-export async function mountedViewerFixture(mode: 'fake' | 'hc', existingRun = false, automaticSubagentPanes = false): Promise<MountedViewerFixture> {
-  const h = await createHostHerdrHarness(mode); await h.start();
+export async function mountedViewerFixture(mode: 'fake' | 'hc', existingRun = false, automaticSubagentPanes = false, fastCore = false): Promise<MountedViewerFixture> {
+  const h = await createHostHerdrHarness(mode);
+  const restoreTransport = mode === 'fake' && fastCore ? installFastCoreTransport(h) : undefined;
   try {
+    await h.start();
     // Real cores use a recording app double, never an app process or window.
     if (mode === 'hc') {
       const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -76,9 +79,11 @@ export async function mountedViewerFixture(mode: 'fake' | 'hc', existingRun = fa
     const ipc = createSessionIpcClient({ version: 1, sessionId, generation: feed.generation, ...feed.ipc! });
     const app = createAppClient({ binary: h.appBinary, env: h.localEnv });
     return { h, store, activeRun, emit, feed, feedRoot, ipc, app, errors, async close() {
-      ipc.dispose(); await emit('session_shutdown', { reason: 'quit' }); await mount.dispose(); opened.db.close(); global.close();
-      await writeFile(resolve(`.spider/scratch/fx5-layout-${mode}-${basename(h.root)}-diagnostics.json`), JSON.stringify({ errors: errors.map(error => String(error)), calls: await readFile(join(h.directories.local, 'app-calls.jsonl'), 'utf8'), app: await readFile(join(h.directories.local, 'app.json'), 'utf8'), core: await readFile(join(h.directories.local, 'core.json'), 'utf8') }, null, 2));
-      await h.close(); expect(await h.remainingOwnedResources()).toEqual([]);
+      try {
+        ipc.dispose(); await emit('session_shutdown', { reason: 'quit' }); await mount.dispose(); opened.db.close(); global.close();
+        await writeFile(resolve(`.spider/scratch/fx5-layout-${mode}-${basename(h.root)}-diagnostics.json`), JSON.stringify({ errors: errors.map(error => String(error)), calls: await readFile(join(h.directories.local, 'app-calls.jsonl'), 'utf8'), app: await readFile(join(h.directories.local, 'app.json'), 'utf8'), core: await readFile(join(h.directories.local, 'core.json'), 'utf8') }, null, 2));
+        await h.close(); expect(await h.remainingOwnedResources()).toEqual([]);
+      } finally { restoreTransport?.(); }
     } };
-  } catch (error) { await h.close(); throw error; }
+  } catch (error) { try { await h.close(); } finally { restoreTransport?.(); } throw error; }
 }

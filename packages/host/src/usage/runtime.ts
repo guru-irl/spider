@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { calibrationFallback } from "./calibration.js";
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import type { UsageRoots } from "./discovery.js";
+import type { Value } from "./dashboard-v4-contract.js";
 import { PANEL_USAGE_INTERVAL_MS, type PanelUsage, type SourceErrorDiagnostics, type UsageRuntimeSnapshot, type UsageWorkerCommand, type UsageWorkerEvent } from "./protocol.js";
 
 type PanelRead = {
@@ -62,7 +63,8 @@ export class UsageRuntime {
   private terminationFailed = false;
   private stopping: Promise<void> | undefined;
   private stoppedAck: (() => void) | undefined;
-  private nextPanelRequest = 0;
+  private nextReadRequest = 0;
+  private visitRequest?: { id: number; settle(value: Value | null): void };
   private panelRead: PanelRead | undefined;
   private readonly panelRequests = new Map<number, { settle(value: PanelUsage | null): void }>();
   private current: UsageRuntimeSnapshot = { health: null, counter: null, backfill: "pending", reconciliation: null, errorCode: null };
@@ -118,7 +120,7 @@ export class UsageRuntime {
       return previous.promise.then(copyPanel);
     }
     if (this.panelRequests.size >= 8) return Promise.resolve(null);
-    const requestId = ++this.nextPanelRequest;
+    const requestId = ++this.nextReadRequest;
     let resolve!: (value: PanelUsage | null) => void;
     const promise = new Promise<PanelUsage | null>(done => { resolve = done; });
     const reading: PanelRead = { sessionId, budget, at: now, startedAt, month, promise, settled: false, subscribers: 1 };
@@ -134,7 +136,19 @@ export class UsageRuntime {
     this.send({ type: 'panel-usage', requestId, now, sessionId, budget });
     return promise.then(copyPanel);
   }
-  private clearPanelRequests(): void {
+  readVisit(sessionId: string, from: number, to: number): Promise<Value | null> {
+    if (!this.worker || this.stopped || this.workerFailed || this.visitRequest) return Promise.resolve(null);
+    const requestId = ++this.nextReadRequest;
+    return new Promise(resolve => {
+      const settle = (value: Value | null) => { clearTimeout(timer); this.visitRequest = undefined; resolve(value); };
+      // Do not hold the user's shell prompt open for a busy ledger worker.
+      const timer = setTimeout(() => settle(null), 350);
+      this.visitRequest = { id: requestId, settle };
+      this.send({ type: "visit-usage", requestId, sessionId, from, to });
+    });
+  }
+  private clearReadRequests(): void {
+    this.visitRequest?.settle(null);
     this.panelRead = undefined;
     for (const request of this.panelRequests.values()) request.settle(null);
   }
@@ -158,12 +172,16 @@ export class UsageRuntime {
       : this.current.calibration ?? calibrationFallback() });
   }
   private notify(): void { try { this.options.onSnapshot?.(this.snapshot()); } catch { /* UI errors do not escape the lifecycle */ } }
-  private fail(code: string): void { this.clearPanelRequests(); this.refreshPending = false; this.current = { ...this.current, backfill: "failed", errorCode: code }; this.notify(); }
+  private fail(code: string): void { this.clearReadRequests(); this.refreshPending = false; this.current = { ...this.current, backfill: "failed", errorCode: code }; this.notify(); }
   private send(command: UsageWorkerCommand): void { try { this.worker?.postMessage(command); } catch (error) { if (!this.stopped) this.fail(failureCode(error)); } }
   private readonly onMessage = (event: UsageWorkerEvent): void => {
     if (event?.type === "stopped") { this.gracefulStop = event.released !== false; this.stoppedAck?.(); return; }
     if (this.stopped) return;
     if (event?.type === 'panel-usage') { this.panelRequests.get(event.requestId)?.settle(event.data); return; }
+    if (event?.type === 'visit-usage') {
+      if (this.visitRequest?.id === event.requestId) this.visitRequest.settle(event.data);
+      return;
+    }
     if (event?.type === "snapshot") {
       this.refreshPending = false;
       const diagnostics = validSourceDiagnostics(event.sourceErrorDiagnostics) ? event.sourceErrorDiagnostics : undefined;
@@ -191,7 +209,7 @@ export class UsageRuntime {
   }
   stop(): Promise<void> {
     if (this.stopping) return this.stopping;
-    this.stopped = true; this.clearPanelRequests();
+    this.stopped = true; this.clearReadRequests();
     if (this.startup) clearTimeout(this.startup);
     this.startup = undefined;
     const worker = this.worker;

@@ -96,7 +96,7 @@ This package does not do the following, by design:
 
 | File | What it does |
 | --- | --- |
-| `spinner.ts` | `Spinner`/`BRAILLE_FRAMES` is a braille spinner driven by time. `frame(now)` picks the frame from the clock, not from a call counter. |
+| `spinner.ts` | Time-based frames for the footer moon and the running-agent robot. |
 | `progress-bar.ts` | `renderProgressBar` draws a bar of filled and empty characters sized to a value/max ratio. |
 | `diff-view.ts` | `renderDiffView` draws add, remove and context hunks, each with theme-token colors and a prefix character. |
 | `table.ts` | `renderTable` draws a table with aligned columns. To fit a width budget, it shrinks columns from right to left. |
@@ -129,7 +129,7 @@ The exports below come from `packages/ui/src/index.ts`.
 | `AgentList` | The agent selector driven by the arrow keys. |
 | `renderGridCell` | One cell of the live grid of agents. |
 | `AgentDetail` | The detail overlay for one agent. |
-| `Spinner`, `BRAILLE_FRAMES` | The braille spinner that the footer, the list, and the grid show while an agent runs. |
+| `moonFrame`, `MOON_CYCLE_MS` | The activity frame and cycle for the usage footer. |
 | `renderProgressBar` | A progress bar of filled and empty characters. |
 | `renderDiffView` | Colored diff hunks. |
 | `renderTable` | A table with aligned columns that shrink to fit the width (`renderStats` uses it). |

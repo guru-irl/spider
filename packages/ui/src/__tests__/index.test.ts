@@ -6,7 +6,7 @@ describe("@spider/ui Phase 5 surface", () => {
     for (const name of [
       "AgentStore", "AgentFooter", "AgentList", "AgentDetail", "FrameScheduler",
       "diffLines", "hasChanges", "buildFooterModel",
-      "renderGridCell", "renderProgressBar", "renderDiffView", "renderTable", "Spinner",
+      "renderGridCell", "renderProgressBar", "renderDiffView", "renderTable", "moonFrame",
       "STATUS_GLYPH", "statusToken", "formatDuration",
     ]) {
       expect(ui).toHaveProperty(name);
@@ -15,6 +15,11 @@ describe("@spider/ui Phase 5 surface", () => {
     for (const name of ["Panel", "SectionRule", "StatusLine", "LiveWidget", "theme"]) {
       expect(ui).toHaveProperty(name);
     }
+  });
+
+  it("does not export the retired braille spinner", () => {
+    expect(ui).not.toHaveProperty("Spinner");
+    expect(ui).not.toHaveProperty("BRAILLE_FRAMES");
   });
 
   it("no longer exports the removed full-page Grid / layoutGrid", () => {

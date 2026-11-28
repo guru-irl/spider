@@ -8,11 +8,6 @@ export const REPLY_FRAME = {
 
 export const BAND_GLYPHS = { top: "▄", bottom: "▀", barTop: "▗", bar: "▐", barBottom: "▝" } as const;
 
-export const SPINNER_FRAMES: Record<IconStyle, readonly string[]> = {
-  text: ["|", "/", "-", "\\"],
-  nerd: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
-};
-
 const NEW_MOON = "\uE3E3";
 export const ACTIVITY_FRAMES: Readonly<Record<IconStyle, { readonly idle: string; readonly working: readonly string[] }>> = {
   text: { idle: "○", working: ["◐", "◓", "◑", "◒"] },

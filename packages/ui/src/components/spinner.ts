@@ -1,19 +1,5 @@
 // packages/ui/src/components/spinner.ts
-import { ACTIVITY_FRAMES, ROBOT_FRAMES, SPINNER_FRAMES, type IconStyle } from "../icons.js";
-export const BRAILLE_FRAMES: string[] = [...SPINNER_FRAMES.nerd];
-
-export class Spinner {
-  private frames: readonly string[];
-  private intervalMs: number;
-  constructor(opts: { frames?: string[]; intervalMs?: number; iconStyle?: IconStyle } = {}) {
-    this.frames = opts.frames ?? SPINNER_FRAMES[opts.iconStyle ?? "text"];
-    this.intervalMs = opts.intervalMs ?? 100;
-  }
-  frame(now: number = Date.now()): string {
-    const i = Math.floor(now / this.intervalMs) % this.frames.length;
-    return this.frames[i];
-  }
-}
+import { ACTIVITY_FRAMES, ROBOT_FRAMES, type IconStyle } from "../icons.js";
 
 export const MOON_CYCLE_MS = 1000;
 

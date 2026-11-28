@@ -9,7 +9,7 @@ const styles = ["text", "nerd"] as const satisfies readonly IconStyle[];
 type Fixture = ReturnType<typeof cardFixtures>[number];
 
 /** Validate blank rows and markers at their displayed columns. */
-function bodyViolations(body: string[], fixture: Pick<Fixture, "name" | "verb" | "groups" | "callDetails" | "itemBoundary" | "taskStarts">, style: IconStyle): Array<[string, string]> {
+function bodyViolations(body: string[], fixture: Pick<Fixture, "name" | "verb" | "groups" | "callDetails" | "itemBoundary" | "taskStarts" | "notification">, style: IconStyle): Array<[string, string]> {
   const failures: Array<[string, string]> = [];
   const statusGlyphs = (["success", "question", "open", "running", "active", "warning", "failure"] as const)
     .flatMap(role => [icon("text", role), icon(style, role)]).map(glyph => glyph.trimEnd());
@@ -22,7 +22,9 @@ function bodyViolations(body: string[], fixture: Pick<Fixture, "name" | "verb" |
       continue;
     }
     const columns = style === "nerd" ? /^ {1}(?:\S| {2}\S| {3}\S)/u : /^ {1}(?:\S| {2}\S)/u;
-    if (!columns.test(line)) failures.push(["columns", line]);
+    // Raw run headers fill the box's content width; the enclosing box adds their lead cell.
+    const runHeader = fixture.verb === "run" && !fixture.notification && statusGlyphs.some(glyph => line === glyph || line.startsWith(`${glyph} `));
+    if (!columns.test(line) && !runHeader) failures.push(["columns", line]);
     const marker = line.trimStart();
     const taskText = marker.startsWith(icon(style, "task")) ? marker.slice(icon(style, "task").length).trimStart().replace(/…$/u, "").trimEnd() : "";
     const nerdTask = fixture.verb === "run" && style === "nerd" && taskText && fixture.taskStarts?.some(task => task.startsWith(taskText));
@@ -88,8 +90,8 @@ test.each([
   ["exec timeout", "timed out", "exit 1"],
   ["exec signal", "signal SIGTERM", "exec"],
   ["exec stderr", "warning: missing file", "ready"],
-  ["run no name", "failed · worker ·", "↑"],
-  ["run thinking notice", "thinking capped to high", "running"],
+  ["run no name", "× worker ·", "↑"],
+  ["run thinking notice", "thinking capped to high", "tia-3"],
   ["message remote refusal", "→ subagent · refused", "owning database"],
   ["message unavailable", "recipient unavailable", "Recipient is unavailable"],
   ["message no reply yet", "no reply yet, delivery unknown", "tia-3"],

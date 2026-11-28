@@ -53,6 +53,7 @@ it('closes cleanly when a viewer launch is in flight', async () => {
     await new Promise<void>(resolve => setImmediate(resolve));
     gate.release();
     await closed;
+    expect(firstInventory).toBe(false);
     expect(f.h.cleanupProof).toMatchObject({ remaining: [], observed: { localTerminals: [], remoteTerminals: [], machines: [] } });
   } finally { gate.release(); await gate.close(); if (!closing) await f.close(); }
 }, 30000);
@@ -85,6 +86,7 @@ it('closes cleanly when an explicit viewer open is in flight during quit', async
     await new Promise<void>(resolve => setImmediate(resolve));
     gate.release();
     await closed;
+    expect(firstInventory).toBe(false);
     await opening;
     expect(f.h.cleanupProof).toMatchObject({ remaining: [], observed: { localTerminals: [], remoteTerminals: [], machines: [] } });
   } finally { gate.release(); await gate.close(); if (!closing) await f.close(); }

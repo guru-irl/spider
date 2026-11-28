@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import * as nodeModule from 'node:module';
 import { findPiPackageRootFromEntry, PI_CODING_AGENT_PACKAGE } from '../../../subagents/src/pi-spawn.js';
+import { editPresentation } from '../../../host/src/routing/edit-presentation.js';
 
 /** Returns pi's package root: the session's own when it passed one, otherwise the one this module resolves. */
 export function piPackageRoot(explicit?: string): string | null {
@@ -35,7 +36,11 @@ export async function loadBuiltInRenderers(root: string | null): Promise<((name:
   const file = join(root, 'dist/core/tools/renderers/index.js'); if (!existsSync(file)) return null;
   try {
     const module = await import(pathToFileURL(file).href) as { withBuiltInRenderers?: (name: string, definition: unknown) => unknown };
-    const merge = module.withBuiltInRenderers; return merge ? name => merge(name, undefined) as never : null;
+    const merge = module.withBuiltInRenderers;
+    return merge ? name => {
+      const renderer = merge(name, undefined);
+      return (name === 'edit' && renderer ? { ...renderer as object, ...editPresentation } : renderer) as never;
+    } : null;
   } catch { return null; }
 }
 let hooked: string | null = null;

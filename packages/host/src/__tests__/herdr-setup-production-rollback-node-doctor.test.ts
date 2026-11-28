@@ -22,7 +22,7 @@ test.each(['resume', 'mods', 'launcher'] as const)('doctor checks the pinned %s 
   const missing = join(f.h.root, 'removed-node');
   if (source === 'resume') await writeFile(f.request.config.shellRc, (await readFile(f.request.config.shellRc, 'utf8')).split(process.execPath).join(missing));
   else if (source === 'mods') {
-    const path = join(f.h.directories.app, 'layouts/spider-glass.json');
+    const path = join(f.h.directories.app, 'layouts/Spider.json');
     await writeFile(path, (await readFile(path, 'utf8')).split(process.execPath).join(missing));
   } else {
     const path = join(f.request.journalRoot, 'journal.json');

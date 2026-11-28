@@ -21,7 +21,7 @@ const processFixture = () => focusedSetupFixture({ coreTransport: 'process', loc
 
 test.each(['layout-theme', 'keys', 'patch-version'] as const)('production doctor checks %s content even if its journal hash matches', async item => {
   const f = await focusedSetupFixture(); await setupHerdr(f.request, f.parts);
-  const path = item === 'layout-theme' ? join(f.h.directories.app, 'layouts/spider-glass.json') : item === 'keys' ? join(f.h.directories.app, 'keys.json') : join(f.h.directories.app, 'mods/spider-agents/mod.json');
+  const path = item === 'layout-theme' ? join(f.h.directories.app, 'layouts/Spider.json') : item === 'keys' ? join(f.h.directories.app, 'keys.json') : join(f.h.directories.app, 'mods/spider-agents/mod.json');
   const json = JSON.parse(await readFile(path, 'utf8'));
   if (item === 'layout-theme') json.theme = 'wrong';
   if (item === 'keys') json.terminal['cmd-shift-o'] = 'wrong';
@@ -34,7 +34,7 @@ test('production doctor accepts folded sidebar blocks', async () => {
   const f = await focusedSetupFixture();
   await writeFile(join(f.h.directories.app, 'layouts/main.json'), await readFile(resolve('packages/herdr/src/__tests__/fixtures/herdr-0.1.12/layouts/main.json')));
   await setupHerdr(f.request, f.parts);
-  const path = join(f.h.directories.app, 'layouts/spider-glass.json');
+  const path = join(f.h.directories.app, 'layouts/Spider.json');
   const layout = JSON.parse(await readFile(path, 'utf8'));
   const found: string[] = [];
   const visit = (node: any) => {

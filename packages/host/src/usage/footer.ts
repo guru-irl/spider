@@ -199,6 +199,7 @@ export function createUsageFooter(
   theme: Theme,
   footerData: ReadonlyFooterDataProvider,
   requestRender: () => void,
+  onDispose?: () => void,
 ): Component & { refresh(): void; setWorking(since?: number): void; dispose(): void } {
   let disposed = false, pending = false;
   let lastWidth: number | undefined;
@@ -254,6 +255,7 @@ export function createUsageFooter(
       disposed = true;
       clearFrame();
       unsubscribe();
+      onDispose?.();
     },
   };
 }

@@ -6,7 +6,8 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { paths } from '@spider/db-core';
 import type { ExtensionAPI, ExtensionContext, SessionShutdownEvent } from '@earendil-works/pi-coding-agent';
 import type { HcClient, JobHandle, JobId, MachineName, Owner, RunId, TerminalAddress, TerminalSummary } from '../contracts.js';
 import type { AgentConsoleLaunch } from '../remote/console.js';
@@ -22,8 +23,9 @@ afterEach(async () => {
       const extra = (await h.hc.machines()).find(machine => machine.name === 'other.invalid');
       if (extra) await h.cli(['machine', 'rm', 'other.invalid', '--json']);
       await h.close(); expect(await h.remainingOwnedResources()).toEqual([]);
-      await mkdir(resolve('.spider/scratch/agent-consoles'), { recursive: true });
-      await writeFile(resolve(`.spider/scratch/agent-consoles/lifecycle-${h.mode}-cleanup.json`), JSON.stringify(h.cleanupProof, null, 2));
+      const directory = join(paths.scratch('worktree', process.cwd()), 'agent-consoles');
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, `lifecycle-${h.mode}-cleanup.json`), JSON.stringify(h.cleanupProof, null, 2));
     } finally { restore?.(); }
   }
 });

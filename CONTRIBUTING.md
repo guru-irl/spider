@@ -52,16 +52,23 @@ Build and test jobs use Node `26.4.0`. On a pull request, `pr.yml` runs
 `typecheck · test · build` check passes only when compile and all four runners
 pass and the runners agree on the selection hash.
 
-Each runner uses the selector and resource policy from the PR base commit.
-It finds the newest usable main selection map whose commit is an ancestor of
-the PR merge base. It considers every change from the map commit to the PR
-head. The selector combines recorded reads, static imports, literal paths
-named by tests, and `scripts/test-resources.json`. It always runs tests that
-are new, failed, skipped, or incompletely recorded.
+Each job uses the selection scripts from the PR base commit. This includes
+`select.mjs`, `run.mjs`, `aggregate.mjs`, and `manifest.mjs`. Before main has
+the judge scripts, the workflow uses a pinned, reviewed revision of them
+instead of the PR head.
 
-If the base has no selector, no map is usable, or the PR changes the toolchain
-or selection infrastructure, CI runs the full root Vitest suite. A map API or
-download error fails the runner instead of changing its selection. No selected
+The selector finds the newest usable main map whose commit is an ancestor
+of the PR merge base. It considers every change from the map commit to the
+PR head. The selector combines recorded reads, static imports, literal paths
+named by tests, and the base version of `scripts/test-resources.json`. It always
+runs tests that are new, failed, skipped, or incompletely recorded.
+
+CI runs the full root Vitest suite if the base selector is missing or fails,
+no map is usable, or the PR changes the toolchain or selection infrastructure.
+A selector exit error, including a failed map API request, discards any
+partial selection and gives the fallback reason in the step summary. A fix
+for a broken base selector can pass after running the full suite. If runners
+produce different manifests, the required check still fails. No selected
 tests are deferred.
 
 Download `test-selection.json` from the PR run's `test-selection` artifact.

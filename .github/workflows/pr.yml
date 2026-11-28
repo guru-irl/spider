@@ -128,22 +128,34 @@ jobs:
           trap 'rm -rf -- "$base_dir"' EXIT
           output=.spider/scratch/test-results/test-selection.json
           weights=(scripts/test-shards.ts scripts/test-durations.json)
+          fallback='base commit has no selector'
           if git cat-file -e "$BASE_SHA:scripts/selection/select.mjs" 2>/dev/null; then
-            git archive "$BASE_SHA" scripts/selection scripts/test-resources.json scripts/roam-entries.json "${weights[@]}" |
-              tar -xf - -C "$base_dir"
-            ln -s "$PWD/node_modules" "$base_dir/node_modules"
-            node "$base_dir/scripts/selection/select.mjs" "$BASE_SHA" "$output"
-          else
-            # The first rollout has no selector in main. Build a full manifest
-            # without executing selection code or reading policy from the head.
-            git archive "$BASE_SHA" "${weights[@]}" | tar -xf - -C "$base_dir"
-            node --input-type=module - "$base_dir" "$output" <<'JS'
+            # Stage both outputs so a selector that exits nonzero cannot leave
+            # a scoped manifest or summary behind.
+            if git archive "$BASE_SHA" scripts/selection scripts/test-resources.json scripts/roam-entries.json "${weights[@]}" |
+                tar -xf - -C "$base_dir" &&
+              ln -s "$PWD/node_modules" "$base_dir/node_modules" &&
+              GITHUB_STEP_SUMMARY="$base_dir/summary" node "$base_dir/scripts/selection/select.mjs" "$BASE_SHA" "$base_dir/selection.json" &&
+              mv "$base_dir/selection.json" "$output"; then
+              if [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -f "$base_dir/summary" ]; then
+                cat "$base_dir/summary" >> "$GITHUB_STEP_SUMMARY"
+              fi
+              exit 0
+            fi
+            fallback='base selector failed'
+            echo '::warning::Base selector failed. Running the full root test suite.'
+          fi
+          # Build a full manifest without executing the selector again or
+          # reading policy from the head.
+          mkdir "$base_dir/full"
+          git archive "$BASE_SHA" "${weights[@]}" | tar -xf - -C "$base_dir/full"
+          node --input-type=module - "$base_dir/full" "$output" "$fallback" <<'JS'
           import { execFileSync } from 'node:child_process';
           import { createHash } from 'node:crypto';
           import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
           import { join } from 'node:path';
           import { pathToFileURL } from 'node:url';
-          const [baseDir, output] = process.argv.slice(2);
+          const [baseDir, output, fallback] = process.argv.slice(2);
           const { partitionFiles } = await import(pathToFileURL(join(baseDir, 'scripts/test-shards.ts')));
           const durations = JSON.parse(readFileSync(join(baseDir, 'scripts/test-durations.json'), 'utf8'));
           const git = (...args) => execFileSync('git', args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
@@ -151,7 +163,6 @@ jobs:
           const files = git('ls-tree', '-r', '-z', '--name-only', head, '--', 'packages').split('\0')
             .filter(file => /^packages\/[^/]+\/src\/.+\.test\.ts$/.test(file)).sort();
           if (!files.length) throw new Error('Empty root test inventory');
-          const fallback = 'base commit has no selector';
           const selected = Object.fromEntries(files.map(file => [file, [`full fallback: ${fallback}`]]));
           const groups = partitionFiles(files, durations, 4);
           const selection = { version: 1, head, mode: 'full', fallback, mapRunId: null, mapCommit: null,
@@ -162,7 +173,6 @@ jobs:
           console.log(summary);
           if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
           JS
-          fi
 
       - name: Save test selection
         if: matrix.group == 1

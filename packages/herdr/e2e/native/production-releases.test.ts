@@ -81,7 +81,7 @@ for (const [version, sourceBundle] of [['0.1.13', '/Applications/Herdr.app'], ['
       const doctor = await doctorHerdr(request, await ports.doctorParts(request));
       await writeFile(join(root, 'production-doctor.json'), JSON.stringify(doctor, null, 2));
       expect(doctor.failures).toEqual([]);
-      expect(JSON.parse(await readFile(join(owned.appHome, 'layouts/spider-glass.json'), 'utf8')).window_blur).toBe(version === '0.1.16' ? true : undefined);
+      expect(JSON.parse(await readFile(join(owned.appHome, 'layouts/Spider.json'), 'utf8')).window_blur).toBe(version === '0.1.16' ? true : undefined);
       const checks = [];
       for (const mod of ['spider-agents', 'spider-spaces', 'spider-pane', 'spider-tabs', 'spider-chrome', 'spider-menu', 'spider-picker', 'spider-panel', ...(version === '0.1.16' ? ['spider-toast'] : [])]) {
         const checked = await app.check(join(owned.appHome, 'mods', mod)); checks.push({ mod, ...checked });
@@ -92,7 +92,7 @@ for (const [version, sourceBundle] of [['0.1.13', '/Applications/Herdr.app'], ['
       const parts = await ports.setupParts(request), preflight = await parts.preflight(request);
       const context: SetupContext = { labelContract: HerdrLabelContract, installed: {}, retiredTerminals: [], priorCutover: null, recordCutover: async () => {}, modProps: preflight.mods.map(copy => ({ ...copy, props: { modId: copy.directory.split('/').at(-1)!, feedRoot: join(request.config.globalRoot, 'herdr'), cliPath: join(packageRoot, 'dist/herdr/cli.mjs'), nodePath: process.execPath, appBinary: owned.binary, configPath, labelContract: HerdrLabelContract } })) };
       const emitted = [...await parts.stageLook(request, context, 'export'), ...await parts.installFiles(request, context)];
-      for (const file of emitted) if (file.path.startsWith(owned.appHome + '/') && (file.path.includes('/mods/') || file.path.endsWith('/layouts/spider-glass.json'))) {
+      for (const file of emitted) if (file.path.startsWith(owned.appHome + '/') && (file.path.includes('/mods/') || file.path.endsWith('/layouts/Spider.json'))) {
         const target = join(output, file.path.slice(owned.appHome.length + 1));
         await mkdir(dirname(target), { recursive: true }); await writeFile(target, file.bytes);
       }
@@ -117,7 +117,7 @@ for (const [version, sourceBundle] of [['0.1.13', '/Applications/Herdr.app'], ['
         for (const option of version === '0.1.16' ? ['off', 'on'] : ['off']) {
           request.config.look = { autoHideTabs: true, windowBlur: option === 'on' };
           const files = await parts.stageLook(request, context, 'export');
-          const layout = files.find(file => file.path.endsWith('/layouts/spider-glass.json'))!;
+          const layout = files.find(file => file.path.endsWith('/layouts/Spider.json'))!;
           await writeFile(join(owned.appHome, `layouts/spider-blur-${option}.json`), layout.bytes);
           await app.command('layout.switch', { name: `spider-blur-${option}` });
           await app.command('layout.select', { stack: 'panel-body', child: 'spider' });

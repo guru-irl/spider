@@ -216,6 +216,7 @@ it('composed host calls real transcript and command ports without editor input',
   const f = await mountedFixture();
   const { mkdir, writeFile } = await import('node:fs/promises'); const { join } = await import('node:path');
   const { paths } = await import('@spider/db-core');
+  const { emitStatus } = await import('../../../subagents/src/run-events.js');
   const frames: unknown[] = [];
   try {
     expect(f.errors).toEqual([]);
@@ -226,6 +227,20 @@ it('composed host calls real transcript and command ports without editor input',
     await vi.waitFor(() => expect(JSON.stringify(frames)).toContain('observed text'), { timeout: 3000 });
     for (const view of ['agents', 'todos', 'usage', 'memory', 'triggers'] as const) expect(await f.ipc!.openView(view)).toMatchObject({ ok: true, op: 'openView' });
     expect(f.opened).toEqual(['agents', 'todos', 'usage', 'memory', 'triggers']);
+    // Observe the real terminal's status writes so the ping follows the refresh.
+    let terminalStatus = f.terminal.programStatus;
+    let onStatus: ((status: { state: string }) => void) | undefined;
+    Object.defineProperty(f.terminal, 'programStatus', {
+      configurable: true,
+      get: () => terminalStatus,
+      set: status => { terminalStatus = status; onStatus?.(status); },
+    });
+    const statusChanged = (state: string) => new Promise<void>(resolve => {
+      onStatus = status => { if (status?.state === state) { onStatus = undefined; resolve(); } };
+    });
+    const working = statusChanged('working');
+    emitStatus(f.db, { runId: run.id, sessionId: f.owner!.sessionId, status: 'running' });
+    await working;
     f.store.finish(run.id, { status: 'done', result: 'observed result' });
     expect(await f.ipc!.steerRun(run.id as never, 'next case')).toMatchObject({ ok: true, acknowledgement: { delivery: 'refused' } });
     expect(await f.ipc!.ping()).toMatchObject({ ok: true, status: { effective: 'done' } });

@@ -83,7 +83,20 @@ beforeEach(async () => {
       if (command === 'space.select') return {}; throw new Error('Unexpected app command');
     } },
     terminalState: async placement => errors.has(placement.terminal) ? 'finished' : results.has(placement.terminal) && probes.get(results.get(placement.terminal)!.pid)?.kind === 'live' ? 'live' : 'absent',
-    verifyOwner: async (_target, placement) => { const result = results.get(placement.terminal); if (!result) throw errors.get(placement.terminal) ?? new Error('owner unavailable'); return result; },
+    verifyOwner: async (target, placement) => {
+      const launchError = errors.get(placement.terminal);
+      if (launchError) throw launchError;
+      if (await ports.terminalState!(placement) === 'finished') throw new HerdrError('owner-terminal-finished', 'New owner terminal finished before activation');
+      for (const record of await processInventory.presence.list()) {
+        if (record.kind !== 'top-level' || record.hcAddress !== placement.terminal || !record.sessionId || record.sessionId === target.sessionId) continue;
+        const process = await processInventory.probe(record.pid);
+        if (process.kind === 'live' && process.startIdentity === record.startIdentity) throw new HerdrError('owner-session-switched', 'A different session is open');
+      }
+      const result = results.get(placement.terminal);
+      const probe = result && await processInventory.probe(result.pid);
+      if (probe?.kind !== 'live' || probe.startIdentity !== result!.startIdentity) throw new HerdrError('owner-activation-unconfirmed', 'New owner did not activate within 30 seconds');
+      return result!;
+    },
   };
 });
 afterEach(async () => rm(root, { recursive: true, force: true }));
@@ -515,17 +528,13 @@ it('keeps hand-reorganised tabs in a mixed layout across setup runs', async () =
   const before = structuredClone(layout);
   const notices: string[] = []; ports.reportLayout = message => notices.push(message);
   const commands = vi.fn(ports.app.command); ports.app.command = commands;
-  const mutatingProtectedTabs = () => commands.mock.calls.filter(([, args]) => [args.id, args.tab, args.terminal, args.pane].some(value =>
-    before.spaces.slice(0, 3).some(space => space.tabs.some(tab => value === tab.id || tab.terminals?.some(row => value === row.terminal || value === `pane-${row.terminal}`))),
-  ));
-
   const result = await setupSpaces(config, ports);
   expect(result.launched.map(row => row.sessionId)).toEqual([
-    'Tools-0', 'Tools-1', 'Tools-2', 'Tools-3', 'Desk-0', 'Desk-1', 'Desk-2', 'Projects-0', 'Projects-1', 'Notes-0', 'Notes-2',
+    'Tools-0', 'Tools-1', 'Tools-2', 'Tools-3', 'Desk-0', 'Desk-1', 'Desk-2', 'Projects-0', 'Projects-1', 'Notes-2',
   ]);
-  expect(writers.slice(13)).toEqual(['Notes-0']); // Ordinary missing pane, not a closed tab.
-  expect(mutatingProtectedTabs()).toEqual([]);
-  expect(layout.spaces.slice(0, 3)).toEqual(before.spaces.slice(0, 3));
+  expect(writers.slice(13)).toEqual([]);
+  expect(commands).not.toHaveBeenCalled();
+  expect(layout).toEqual(before);
   expect(result.tabs.slice(0, 7).map(row => row.tab)).toEqual([
     tools.tabs[0].id, tools.tabs[0].id, tools.tabs[0].id, tools.tabs[0].id, desk.tabs[0].id, desk.tabs[0].id, desk.tabs[1].id,
   ]);
@@ -535,10 +544,11 @@ it('keeps hand-reorganised tabs in a mixed layout across setup runs', async () =
     'Tab "Toolbox" in space "workshop" was reorganised by hand. Setup kept it as it is.',
   ]);
   expect(notices.filter(message => message.includes('closed by hand')).sort()).toEqual([
-    'Tab "Notes 1" in space "notes" was closed by hand. Setup left it closed.',
-    'Tab "Projects 2" in space "projects" was closed by hand. Setup left it closed.',
+    'Session "Notes 0" was closed by hand, so setup leaves it closed. Remove it from the spaces config or reopen it yourself.',
+    'Session "Notes 1" was closed by hand, so setup leaves it closed. Remove it from the spaces config or reopen it yourself.',
+    'Session "Projects 2" was closed by hand, so setup leaves it closed. Remove it from the spaces config or reopen it yourself.',
   ]);
-  expect((await readCutoverRecovery(ports.journalRoot)).createdTabs).toEqual(expect.arrayContaining(result.tabs.slice(0, 7)));
+  expect((await readCutoverRecovery(ports.journalRoot)).createdTabs).toEqual(result.tabs);
 
   const persisted = await readFile(path, 'utf8');
   await confirmOwners(result);
@@ -546,8 +556,61 @@ it('keeps hand-reorganised tabs in a mixed layout across setup runs', async () =
   expect(await spaceSetup.planSpaceCutover(config, ports)).toEqual([]);
   expect(await setupSpaces(config, ports)).toEqual(result);
   expect(commands).not.toHaveBeenCalled();
-  expect(notices.filter(message => message.includes('by hand'))).toEqual([]);
+  expect(notices.filter(message => message.includes('by hand')).sort()).toEqual([
+    'Session "Notes 0" was closed by hand, so setup leaves it closed. Remove it from the spaces config or reopen it yourself.',
+    'Session "Notes 1" was closed by hand, so setup leaves it closed. Remove it from the spaces config or reopen it yourself.',
+    'Session "Projects 2" was closed by hand, so setup leaves it closed. Remove it from the spaces config or reopen it yourself.',
+  ]);
   expect(await readFile(path, 'utf8')).toBe(persisted);
+});
+
+it('adopts a renamed and merged tab whose pi owners exited, and leaves parked and finished terminals alone', async () => {
+  for (const [id, name] of [['one', 'First'], ['two', 'Second'], ['three', 'Third'], ['four', 'Fourth'], ['five', 'Fifth']]) await addSession(id, name);
+  const initial = await setupSpaces(config, ports);
+  const space = layout.spaces[0], [first, second, third, fourth, fifth] = space.tabs;
+  first.name = 'Combined';
+  first.terminals = [...first.terminals!, ...second.terminals!, ...third.terminals!].map(({ terminal }) => ({ terminal }));
+  space.tabs = [first];
+  const state = ports.terminalState!;
+  ports.terminalState = async placement => [first.terminal, second.terminal, fourth.terminal].includes(placement.terminal) ? 'live'
+    : [third.terminal, fifth.terminal].includes(placement.terminal) ? 'finished' : state(placement);
+  for (const owner of initial.launched) probes.set(owner.pid, { kind: 'absent' });
+  ports.liveSessionFeed = async () => null;
+  const notices: string[] = []; ports.reportLayout = message => notices.push(message);
+  const commands = vi.fn(ports.app.command); ports.app.command = commands;
+  const tabs = initial.tabs.map((placement, index) => index < 3 ? { ...placement, tab: first.id } : placement);
+  const stopped = ['First', 'Second', 'Third', 'Fourth', 'Fifth'].map((label, index) =>
+    `Session "${label}" isn't running in terminal ${initial.tabs[index].terminal}, so setup left it as it is.`);
+
+  expect(await setupSpaces(config, ports)).toEqual({ launched: [], tabs });
+  expect(await spaceSetup.planSpaceCutover(config, ports)).toEqual([]);
+  expect(notices.sort()).toEqual([...stopped, 'Tab "Combined" in space "Space A" was reorganised by hand. Setup kept it as it is.'].sort());
+  const recovery = await readCutoverRecovery(ports.journalRoot);
+  expect(recovery.entries.filter(entry => entry.manuallyMoved).map(entry => entry.target.sessionId)).toEqual(['one', 'two', 'three']);
+  expect(recovery.closedEntries).toBeUndefined();
+  notices.length = 0;
+  expect(await setupSpaces(config, ports)).toEqual({ launched: [], tabs });
+  expect(notices.sort()).toEqual(stopped.sort());
+  expect(commands).not.toHaveBeenCalled();
+  expect(messages).toEqual([]);
+  expect(writers).toEqual(['one', 'two', 'three', 'four', 'five']);
+});
+
+it('refuses a renamed shell if a different session verifiably owns its terminal', async () => {
+  await addSession('one', 'First');
+  const initial = await setupSpaces(config, ports), owner = initial.launched[0], placement = initial.tabs[0];
+  const tab = layout.spaces[0].tabs[0]; tab.name = 'Edited';
+  tab.terminal = placement.terminal; tab.terminals = [{ terminal: placement.terminal }];
+  probes.set(owner.pid, { kind: 'absent' });
+  ports.terminalState = async () => 'live';
+  probes.set(900, { kind: 'live', startIdentity: 'different-owner' });
+  await ports.processInventory.presence.record({ pid: 900, startIdentity: 'different-owner', kind: 'top-level', sessionId: 'other' as SessionId, sessionFile: null, sessionName: 'Other', hcAddress: placement.terminal });
+  const commands = vi.fn(ports.app.command); ports.app.command = commands;
+  const path = join(ports.journalRoot, 'spaces.json'), before = await readFile(path, 'utf8');
+
+  await expect(setupSpaces(config, ports)).rejects.toMatchObject({ code: 'tab-owner-conflict' });
+  expect(commands).not.toHaveBeenCalled();
+  expect(await readFile(path, 'utf8')).toBe(before);
 });
 
 it('keeps placement manual when the installer persists a tab rename without cutover', async () => {
@@ -634,8 +697,10 @@ it('adopts by space id and keeps a renamed space and tab', async () => {
   config.layout = 'panes'; const before = structuredClone(layout);
   const adopted = await setupSpaces(config, ports);
   expect(adopted.launched).toEqual(initial.launched); expect(layout).toEqual(before);
-  expect(notices.filter(message => message.startsWith('Space ') && message.includes('Renamed space'))).toHaveLength(1);
-  expect(notices.join('\n')).toMatch(/Renamed space[\s\S]*kept/i);
+  expect(notices).toEqual([
+    'Space "Space A" is now called "Renamed space". Setup kept that name.',
+    'Tab "Kept tab" in space "Renamed space" was reorganised by hand. Setup kept it as it is.',
+  ]);
 });
 
 it('keeps the app name when the configured space was renamed differently', async () => {
@@ -650,21 +715,26 @@ it('keeps the app name when the configured space was renamed differently', async
   expect(writers).toEqual(['one', 'two']);
 });
 
-it('reopens a missing first pane in its surviving tab using its original file', async () => {
-  config.layout = 'panes'; const file = await addSession('one', 'First'); await addSession('two', 'Second'); await addSession('three', 'Third');
+it('leaves a pane closed by hand in its surviving tab and reports it on every run', async () => {
+  config.layout = 'panes'; await addSession('one', 'First'); await addSession('two', 'Second'); await addSession('three', 'Third');
   const initial = await setupSpaces(config, ports), missing = initial.tabs[0];
   probes.set(initial.launched[0].pid, { kind: 'absent' });
   const space = layout.spaces[0], tab = space.tabs[0];
   tab.terminals = tab.terminals!.filter(row => row.terminal !== missing.terminal);
   tab.terminal = tab.terminals[0].terminal; tab.ownerSessionId = tab.terminals[0].ownerSessionId ?? null;
-  expect((await readCutoverRecovery(ports.journalRoot, await ports.layoutSnapshot())).layoutAdoptionNeeded).toBe(true);
-  const result = await setupSpaces(config, ports);
-  expect(result.launched.map(row => row.sessionId)).toEqual(['one', 'two', 'three']);
-  expect(result.launched[0].sessionFile).toBe(file);
-  expect(result.tabs[0].terminal).not.toBe(missing.terminal);
-  expect(writers).toEqual(['one', 'two', 'three', 'one']);
-  expect(space.tabs).toHaveLength(1);
-  expect(new Set(result.tabs.map(row => row.tab))).toEqual(new Set([missing.tab]));
+  await confirmOwners({ launched: initial.launched.slice(1), tabs: initial.tabs.slice(1) });
+  const before = structuredClone(layout);
+  const notices: string[] = []; ports.reportLayout = message => notices.push(message);
+  const commands = vi.fn(ports.app.command); ports.app.command = commands;
+  const expected = { launched: initial.launched.slice(1), tabs: initial.tabs.slice(1) };
+  expect(await setupSpaces(config, ports)).toEqual(expected);
+  expect(await spaceSetup.planSpaceCutover(config, ports)).toEqual([]);
+  expect(await setupSpaces(config, ports)).toEqual(expected);
+  const notice = 'Session "First" was closed by hand, so setup leaves it closed. Remove it from the spaces config or reopen it yourself.';
+  expect(notices).toEqual([notice, notice]);
+  expect(commands).not.toHaveBeenCalled();
+  expect(writers).toEqual(['one', 'two', 'three']);
+  expect(layout).toEqual(before);
 });
 
 it('persists the closure without another cutover when the last tab and terminal are gone', async () => {
@@ -680,11 +750,27 @@ it('persists the closure without another cutover when the last tab and terminal 
   expect(await readFile(path, 'utf8')).toBe(before);
   expect(notices).toEqual([]);
   expect(await spaceSetup.reconcileSpaceJournal(config, ports)).toEqual({ launched: [], tabs: [] });
-  expect(notices).toEqual(['Tab "First" in space "Space A" was closed by hand. Setup left it closed.']);
+  const notice = 'Session "First" was closed by hand, so setup leaves it closed. Remove it from the spaces config or reopen it yourself.';
+  expect(notices).toEqual([notice]);
   expect(await setupSpaces(config, ports)).toEqual({ launched: [], tabs: [] });
-  expect(notices).toHaveLength(1);
+  expect(notices).toEqual([notice, notice]);
   expect(commands).not.toHaveBeenCalled();
   expect(writers).toEqual(['one']);
+});
+
+it('accepts dropping closed file selectors but still refuses to reorder the survivors', async () => {
+  await addSession('one', 'First'); await addSession('two', 'Second'); await addSession('three', 'Third');
+  const initial = await setupSpaces(config, ports);
+  probes.set(initial.launched[0].pid, { kind: 'absent' });
+  layout.spaces[0].tabs.shift(); config.spaces[0].sessions.shift();
+  await confirmOwners({ launched: initial.launched.slice(1), tabs: initial.tabs.slice(1) });
+  const command = vi.spyOn(ports.app, 'command');
+  expect(await setupSpaces(config, ports)).toEqual({ launched: initial.launched.slice(1), tabs: initial.tabs.slice(1) });
+  expect(await spaceSetup.planSpaceCutover(config, ports)).toEqual([]);
+  config.spaces[0].sessions.reverse();
+  await expect(setupSpaces(config, ports)).rejects.toMatchObject({ code: 'tab-owner-conflict', message: 'Session selection changed since tab allocation' });
+  expect(command).not.toHaveBeenCalled();
+  expect(writers).toEqual(['one', 'two', 'three']);
 });
 
 it('does not allocate another session on the terminal address of a closed tab', async () => {
@@ -706,19 +792,27 @@ it('does not allocate another session on the terminal address of a closed tab', 
   expect(writers).toEqual(['one']);
 });
 
-it('reopens a missing pane without renaming its space or tab', async () => {
+it('reports a closed pane and the renamed surviving tab without changing either', async () => {
   config.layout = 'panes'; await addSession('one', 'First'); await addSession('two', 'Second');
   const initial = await setupSpaces(config, ports), missing = initial.tabs[0], space = layout.spaces[0], tab = space.tabs[0];
   probes.set(initial.launched[0].pid, { kind: 'absent' });
   space.name = 'Renamed space'; tab.name = 'Kept tab';
   tab.terminals = tab.terminals!.filter(row => row.terminal !== missing.terminal); tab.terminal = tab.terminals[0].terminal;
-  const result = await setupSpaces(config, ports);
-  expect(space.name).toBe('Renamed space'); expect(space.tabs.map(row => row.name)).toEqual(['Kept tab']);
-  expect(result.tabs.map(row => row.tab)).toEqual([missing.tab, missing.tab]);
-  expect(writers).toEqual(['one', 'two', 'one']);
+  const before = structuredClone(layout);
+  const notices: string[] = []; ports.reportLayout = message => notices.push(message);
+  const command = vi.spyOn(ports.app, 'command');
+  expect(await setupSpaces(config, ports)).toEqual({ launched: initial.launched.slice(1), tabs: initial.tabs.slice(1) });
+  expect(notices).toEqual([
+    'Space "Space A" is now called "Renamed space". Setup kept that name.',
+    'Session "First" was closed by hand, so setup leaves it closed. Remove it from the spaces config or reopen it yourself.',
+    'Tab "Kept tab" in space "Renamed space" was reorganised by hand. Setup kept it as it is.',
+  ]);
+  expect(command).not.toHaveBeenCalled();
+  expect(layout).toEqual(before);
+  expect(writers).toEqual(['one', 'two']);
 });
 
-it('relaunches a session whose pane is really gone from a mixed merged layout', async () => {
+it('keeps a closed pane out of a mixed merged layout', async () => {
   const replay = JSON.parse(await readFile(new URL('./fixtures/merged-space-replay.json', import.meta.url), 'utf8'));
   config.layout = 'panes'; config.spaces = replay.journal.spaces.map((space: { name: string }) => ({ name: space.name, sessions: [] }));
   const known = new Map<string, LaunchedSession>();
@@ -733,22 +827,27 @@ it('relaunches a session whose pane is really gone from a mixed merged layout', 
   await mkdir(ports.journalRoot, { recursive: true });
   await writeFile(join(ports.journalRoot, 'spaces.json'), JSON.stringify(replay.journal), { mode: 0o600 });
   layout = replay.layout;
-  const previousState = ports.terminalState!, previousVerify = ports.verifyOwner;
-  ports.terminalState = async placement => known.has(placement.terminal) ? replay.missing.includes(placement.terminal) ? 'absent' : 'live' : previousState(placement);
-  ports.verifyOwner = async (target, placement, signal) => known.get(placement.terminal) ?? previousVerify(target, placement, signal);
+  ports.terminalState = async placement => known.has(placement.terminal) && !replay.missing.includes(placement.terminal) ? 'live' : 'absent';
+  ports.verifyOwner = async (_target, placement) => {
+    const owner = known.get(placement.terminal);
+    if (!owner || replay.missing.includes(placement.terminal)) throw new HerdrError('owner-activation-unconfirmed', 'New owner did not activate within 30 seconds');
+    return owner;
+  };
   ports.terminalLabels = async terminal => replay.labels[terminal] ?? {};
   const notices: string[] = []; ports.reportLayout = message => notices.push(message);
   const before = structuredClone(layout);
+  const command = vi.spyOn(ports.app, 'command');
   const result = await setupSpaces(config, ports);
-  expect(result.launched).toHaveLength(13);
-  expect(writers).toEqual(['session-8']);
-  expect(result.launched[7].sessionFile).toBe(join(root, 'session-8.jsonl'));
-  expect(layout.spaces.map(space => [space.name, space.tabs[0].name, space.tabs.length])).toEqual(before.spaces.map(space => [space.name, space.tabs[0].name, 1]));
-  for (let i = 0; i < before.spaces.length; i++) for (const row of before.spaces[i].tabs[0].terminals!) expect(layout.spaces[i].tabs[0].terminals).toContainEqual(row);
+  expect(result.launched.map(owner => owner.sessionId)).toEqual(['session-1', 'session-2', 'session-3', 'session-4', 'session-5', 'session-6', 'session-7', 'session-9', 'session-10', 'session-11', 'session-12', 'session-13']);
+  expect(writers).toEqual([]);
+  expect(command).not.toHaveBeenCalled();
+  expect(layout).toEqual(before);
   expect(new Set(result.tabs.map(tab => tab.tab))).toEqual(new Set(['tab-0', 'tab-4', 'tab-7', 'tab-10']));
   expect(notices.join('\n')).toMatch(/Group 1 renamed[\s\S]*kept/i);
   expect(notices.join('\n')).toMatch(/terminal-14[\s\S]*terminal-15[\s\S]*left\s+\w+\s+alone/i);
-  expect((await readCutoverRecovery(ports.journalRoot)).createdTabs).toHaveLength(13);
+  const recovery = await readCutoverRecovery(ports.journalRoot);
+  expect(recovery.createdTabs).toEqual(result.tabs);
+  expect(recovery.closedEntries?.map(entry => entry.target.sessionId)).toEqual(['session-8']);
 });
 
 it('recovers all spaces from a mixed merged layout with moved and duplicate live owners', async () => {
@@ -910,7 +1009,11 @@ it('reconciles changed live owners and reports duplicate sessions while recoveri
   expect((result as any).conflicts).toEqual([{ sessionId: 'session-2', terminals: ['terminal-1', 'terminal-18'] }]);
   expect(reports.join('\n')).toMatch(/session-2[\s\S]*terminal-1[\s\S]*terminal-18/i);
   expect(reports.join('\n')).not.toMatch(/Close session/);
+  expect(reports.filter(report => report.includes('closed by hand'))).toEqual([
+    'Session "Session 13" was closed by hand, so setup leaves it closed. Remove it from the spaces config or reopen it yourself.',
+  ]);
   const recovered = await readCutoverRecovery(ports.journalRoot);
+  expect(recovered.closedEntries?.map(entry => entry.target.sessionId)).toEqual(['session-13']);
   expect(recovered.entries.find(entry => entry.target.sessionId === 'session-8')?.placement).toMatchObject({ terminal: 'terminal-14', tab: 'tab-7' });
   expect(recovered.entries.find(entry => entry.target.sessionId === 'session-2')?.placement).toMatchObject({ terminal: 'terminal-1', tab: duplicate.placement.tab });
   expect(layout.spaces.map(space => [space.name, space.tabs[0].name, space.tabs.length])).toEqual(before.spaces.map(space => [space.name, space.tabs[0].name, 1]));

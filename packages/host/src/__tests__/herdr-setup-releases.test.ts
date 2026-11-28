@@ -6,7 +6,8 @@ import { basename, join } from 'node:path';
 import { createProductionHerdrCliPorts } from '../herdr/ports.js';
 import { runHerdrCli, type HerdrCliPorts } from '../../../herdr/src/setup/cli.js';
 import * as upgradeCheckpoint from '../../../herdr/src/setup/checkpoint.js';
-import { setupHerdr } from '../../../herdr/src/setup/installer.js';
+import type { DoctorItem } from '../../../herdr/src/setup/doctor.js';
+import { setupHerdr, type SetupParts } from '../../../herdr/src/setup/installer.js';
 import { loadSpacesAFiles } from '../../../herdr/src/__tests__/spaces-a-fixture.js';
 import { replaySpacesBRecipe } from '../../../herdr/src/__tests__/spaces-b-fixture.js';
 import { cleanup } from './herdr-setup-fixture.js';
@@ -46,6 +47,13 @@ function lookRelease(version: Release) {
   return fastRelease(version);
 }
 
+function verifyItem(ports: HerdrCliPorts, item: DoctorItem): SetupParts['verify'] {
+  return async request => {
+    const { failures, warnings = [] } = await (await ports.doctorParts(request)).inspect(item, request);
+    return { failures, warnings, probes: [] };
+  };
+}
+
 async function nativeKeysFixture(version: Release, coreTransport: 'process' | 'socket' = 'process') {
   const f = await localRelease(version, coreTransport);
   vi.stubEnv('PI_CODING_AGENT_DIR', f.h.directories.agent);
@@ -65,10 +73,7 @@ async function nativeKeysFixture(version: Release, coreTransport: 'process' | 's
         finalizeLook: async (request, context, staged) =>
           (await parts.finalizeLook?.(request, context, staged) ?? staged).filter(isKeyMap),
         installFiles: async (request, context) => (await parts.installFiles(request, context)).filter(isKeyMap),
-        verify: async request => {
-          const { failures, warnings = [] } = await (await f.ports.doctorParts(request)).inspect('keys', request);
-          return { failures, warnings, probes: [] };
-        },
+        verify: verifyItem(f.ports, 'keys'),
       };
     },
   };
@@ -92,7 +97,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     const names = (await f.parts.preflight(f.request)).mods.map(copy => basename(copy.directory));
     expect(names.filter(name => name === 'spider-menu')).toHaveLength(1);
     expect(names.filter(name => name === 'spider-new-menu')).toHaveLength(1);
-    await setupHerdr(f.request, f.parts);
+    await setupHerdr(f.request, { ...f.parts, verify: verifyItem(f.ports, 'clones') });
     expect(await readFile(join(home, 'mods/spider-new-menu/main.js'), 'utf8')).toBe(expected['new-menu']!['main.js']);
     for (const mod of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome', 'menu', 'new-menu']) {
       const clone = mod === 'workspace-chrome' ? 'spider-chrome' : `spider-${mod}`;
@@ -122,7 +127,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     await writeFile(join(home, 'layouts/spider-glass.json'), JSON.stringify(layout, null, 2));
     const before = await readFile(join(home, 'mods/spider-menu/main.js'));
     const off = { ...f.request, config: { ...f.request.config, look: { autoHideTabs: f.request.config.look?.autoHideTabs ?? true, windowBlur: false } } };
-    await setupHerdr(off, await f.ports.setupParts(off));
+    await setupHerdr(off, { ...await f.ports.setupParts(off), verify: verifyItem(f.ports, 'layout-theme') });
     expect(await readFile(join(home, 'mods/spider-menu/main.js'))).toEqual(before);
     expect(JSON.parse(await readFile(join(home, 'layouts/spider-glass.json'), 'utf8'))).not.toHaveProperty('window_blur');
     expect((await (await f.ports.doctorParts(off)).inspect('layout-theme', off)).failures).toEqual([]);
@@ -139,7 +144,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     } };
     const ports = createProductionHerdrCliPorts(f.root, { ...f.h.localEnv, SPIDER_GLOBAL_ROOT: f.h.directories.global }, records);
     cleanup.push(() => ports.dispose());
-    const parts = await ports.setupParts(f.request);
+    const parts = { ...await ports.setupParts(f.request), verify: verifyItem(ports, 'clones') };
     const preflight = await parts.preflight(f.request);
     expect(preflight.fingerprint).not.toBe((await f.parts.preflight(f.request)).fingerprint);
     const names = preflight.mods.map(copy => basename(copy.directory));

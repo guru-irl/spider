@@ -215,6 +215,17 @@ describe.each(["text", "nerd"] as const)("registered intercom cards in %s style"
   });
 });
 
+it("draws half edges in the custom-message color without a filled edge row", async () => {
+  const h = await fixture("text");
+  const render = h.renderers.get("intercom_message")!;
+  const theme = { ...plain, bg: (_: string, value: string) => `\x1b[48;2;6;6;7m${value}\x1b[49m` };
+  const rows = render({ details: { from: local, message } }, { expanded: false, outputPad: 1 }, theme).render(42);
+  expect(rows[0]).toBe(`\x1b[38;2;6;6;7m${"▄".repeat(42)}\x1b[39m`);
+  expect(rows[1]).toMatch(/^\x1b\[48;2;6;6;7m ◆ intercom/u);
+  expect(rows[2]).toMatch(/^\x1b\[48;2;6;6;7m {3}First line Second line/u);
+  expect(rows.at(-1)).toBe(`\x1b[38;2;6;6;7m${"▀".repeat(42)}\x1b[39m`);
+});
+
 it("uses the short hostname without changing its case", () => {
   expect(localMachineLabel(() => "Desk-Mac.local")).toBe("Desk-Mac");
   expect(localMachineLabel(() => "box-alpha")).toBe("box-alpha");

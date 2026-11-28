@@ -162,7 +162,8 @@ await import(${JSON.stringify(fake.href)});
       await writeFile(recorded, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(logger)} "$@"\n`);
     } else {
       await writeFile(logger, record);
-      await writeFile(recorded, `#!/bin/sh\n${quote(process.execPath)} ${quote(logger)} "$@"\nexec ${quote(h.hcBinary)} "$@"\n`);
+      const offline = 'if [ "$1" = server ] && [ "$2" = status ]; then printf \'%s\\n\' \'{"error":{"kind":"unavailable","message":"Fixture core is offline"}}\' >&2; exit 2; fi\n';
+      await writeFile(recorded, `#!/bin/sh\n${quote(process.execPath)} ${quote(logger)} "$@"\n${coreAvailable ? '' : offline}exec ${quote(h.hcBinary)} "$@"\n`);
     }
     await chmod(recorded, 0o700); config.core.binary = recorded;
   if (launches || mode === 'hc') {

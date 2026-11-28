@@ -23,7 +23,7 @@ function sessionLabel(g: { session: string; name?: string; current?: boolean }):
   return g.current ? `${base} ${icon("text", "arrowLeft")} current` : base;
 }
 
-/** A subtle full-width `─── Title ────` rule (no 🕸 chrome — this is an overlay, not a tool result). */
+/** A full-width `─── Title ────` rule for the todo overlay. */
 function ruleHeader(fg: Fg, label: string, width: number): string {
   const title = ` ${label} `;
   const left = 3;

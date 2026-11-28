@@ -71,7 +71,8 @@ Cascadia Code. The `nerd` set uses Nerd Font glyphs where listed below.
 Nerd Font private-use icons include one pad cell. A following separator adds a
 second space. The Nerd gutter also includes one pad cell so its text aligns
 with the title. Shared Unicode direction and status symbols do not have a pad
-cell unless shown below.
+cell unless shown below. Copy buttons use the Nerd pad as their separator, so
+those action labels keep one space and their clickable columns do not move.
 
 | Role | Text | Nerd |
 | --- | --- | --- |
@@ -96,7 +97,7 @@ cell unless shown below.
 | reply | ← U+2190 | 󰼠 U+F0F20 |
 | broadcast | » U+00BB | 󰬣 U+F0B23 |
 | handoff | → U+2192 | 󱦰 U+F19B0 |
-| pin | ◇ U+25C7 | 󰤱 U+F0931 |
+| pin | † U+2020 | 󰤱 U+F0931 |
 | modelDefault | ← U+2190 | 󰁍 U+F004D |
 | copy | □ U+25A1 | 󰆏 U+F018F |
 | copied | ✓ U+2713 | 󰄬 U+F012C |

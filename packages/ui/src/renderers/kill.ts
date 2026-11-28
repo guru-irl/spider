@@ -12,7 +12,7 @@ export interface KillResultLine {
 }
 export interface KillDetails { killed: KillResultLine[]; requested: string; error?: string }
 
-/** RESULT body (no header — the spider call line already shows `🕸 spider · kill`). */
+/** RESULT body. The call line supplies the title. */
 export function renderKillResult(details: KillDetails, ctx: RenderCtx): string[] {
   const { theme, width } = ctx;
   const expanded = ctx.expanded === true;

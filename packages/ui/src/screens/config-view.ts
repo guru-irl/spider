@@ -4,9 +4,8 @@ import { icon } from "../icons.js";
 import { buildConfigModel } from "./config-model.js";
 import { sectionRule, statusIcon, fitResultLines, resultTrimmer } from "../renderers/types.js";
 
-/** Pure, BODY-ONLY config render (no 🕸, no card()). For each schema group: a glyph-free
- *  `sectionRule`, then one row per field — ○ default / ● overridden status glyph, the field
- *  label, its current value, and a warning ` ⚠restart` marker. Every line is width-guarded.
+/** Body-only config view. Each group has a section rule and a row per field, with its
+ *  status, value, and restart warning. Every line is width-guarded.
  *  See docs/output-ui-guidelines.md. */
 export function renderConfig(cfg: unknown, theme: ThemeAdapter, width: number, expanded = false, schema: ConfigGroup[] = CONFIG_SCHEMA, transcript = false): string[] {
 	const trim = resultTrimmer(expanded);

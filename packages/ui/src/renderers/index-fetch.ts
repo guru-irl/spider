@@ -2,8 +2,7 @@ import { icon as uiIcon } from "../icons.js";
 import { fitResultLines, resultTrimmer, statusIcon } from "./types.js";
 import type { IndexDetails, RenderCtx } from "./types.js";
 
-/** RESULT body (no header — the spider call line already shows `🕸 spider · <kind>`).
- *  The status starts directly under the title. */
+/** RESULT body. The call line supplies the title; the status starts directly beneath it. */
 export function renderIndexResult(details: IndexDetails, ctx: RenderCtx): string[] {
   const { theme, width } = ctx;
   const expanded = ctx.expanded === true;

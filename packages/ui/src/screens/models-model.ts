@@ -1,10 +1,15 @@
 import type { ModelEntry, Tier } from "@spider/models";
 
-/** Subagent roles that carry a configurable model default (models.defaults.<role>). */
-export const MODEL_ROLES: string[] = [
-  "reviewer", "worker", "scout", "planner", "researcher",
-  "oracle", "digest", "self_name", "upstream_watch", "watcher",
-];
+/** Configurable model defaults include agent roles and internal model uses. */
+const MODEL_ROLE_KIND: Record<string, "agent" | "internal"> = {
+  reviewer: "agent", worker: "agent", scout: "agent", planner: "agent", researcher: "agent",
+  oracle: "agent", digest: "internal", self_name: "internal", upstream_watch: "internal", watcher: "agent",
+};
+export const MODEL_ROLES: string[] = Object.keys(MODEL_ROLE_KIND);
+
+export function isAgentModelRole(role: string): boolean {
+  return MODEL_ROLE_KIND[role] === "agent";
+}
 
 /** Tier render order — light → standard → heavy. */
 const TIER_ORDER: Tier[] = ["light", "standard", "heavy"];

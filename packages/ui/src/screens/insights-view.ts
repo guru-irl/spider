@@ -13,9 +13,8 @@ export interface InsightGraphView {
 const NODE_CAP = 8;
 const EDGE_CAP = 6;
 
-/** Pure: render the learning graph as a body-only insights view (NO 🕸 header — the spider tool
- *  shell already shows `🕸 spider · control`; see docs/output-ui-guidelines.md): a stats line, a
- *  nodes list (skill/memory badge + label), and an edges list (`a → b`). Collapsed caps the lists. */
+/** Render the learning graph as a body-only view: a stats line, nodes, and edges.
+ *  The call line supplies the title. Collapsed mode caps the lists. */
 export function renderInsights(g: InsightGraphView, theme: ThemeAdapter, width: number, expanded = false, transcript = false): string[] {
   const trim = resultTrimmer(expanded);
   const body: string[] = [];

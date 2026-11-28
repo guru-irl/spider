@@ -32,7 +32,7 @@ const ICONS = {
   reply: { text: "←", nerd: "\u{F0F20} " },
   broadcast: { text: "»", nerd: "\u{F0B23} " },
   handoff: { text: "→", nerd: "\u{F19B0} " },
-  pin: { text: "◇", nerd: "\u{F0931} " },
+  pin: { text: "†", nerd: "\u{F0931} " },
   modelDefault: { text: "←", nerd: "\u{F004D} " },
   copy: { text: "□", nerd: "\u{F018F} " },
   copied: { text: "✓", nerd: "\u{F012C} " },

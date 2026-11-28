@@ -11,6 +11,7 @@ jobs:
     timeout-minutes: 30
     env:
       ONNXRUNTIME_NODE_INSTALL: skip
+      TRACE_VIEWER_ONLY: ${{ contains(github.event.head_commit.message, '[viewer]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -33,8 +34,10 @@ jobs:
           unset XDG_RUNTIME_DIR
           trace() {
             local file="$1" name="${1##*/}" rc=0 start elapsed
+            local extra=()
+            if [[ "$TRACE_VIEWER_ONLY" == true ]]; then extra+=(--seccomp-bpf); fi
             start=$(date +%s%3N)
-            strace -f -qq -s 512 -e trace=clone,clone3,fork,vfork,execve -o "$results/$name.trace" \
+            strace "${extra[@]}" -f -qq -s 512 -e trace=clone,clone3,fork,vfork,execve -o "$results/$name.trace" \
               node node_modules/vitest/vitest.mjs run "$file" --maxWorkers=1 --reporter=verbose \
               >"$results/$name.log" 2>&1 || rc=$?
             elapsed=$(( $(date +%s%3N) - start ))
@@ -71,8 +74,12 @@ jobs:
             return "$rc"
           }
           export -f trace
-          printf '%s\n' packages/host/src/__tests__/herdr-{wiring-remote,wiring-mount,wiring-console,wiring-lifecycle,viewer-layout,viewer-reopen,copy,kill-job,child,remote-file,unavailable}.test.ts |
-            xargs -P 3 -n 1 bash -c 'trace "$1"' _
+          if [[ "$TRACE_VIEWER_ONLY" == true ]]; then
+            trace packages/host/src/__tests__/herdr-viewer-reopen.test.ts
+          else
+            printf '%s\n' packages/host/src/__tests__/herdr-{wiring-remote,wiring-mount,wiring-console,wiring-lifecycle,viewer-layout,viewer-reopen,copy,kill-job,child,remote-file,unavailable}.test.ts |
+              xargs -P 3 -n 1 bash -c 'trace "$1"' _
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

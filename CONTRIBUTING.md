@@ -90,8 +90,9 @@ matrix. Selection never collects test modules or starts test workers.
 
 The PR scheduling budget is 65 seconds per runner, leaving setup and aggregate
 headroom inside the two-minute target. It uses recorded file durations plus a
-700 ms per-file import allowance from CI observations. Tests fill that budget
-in this order:
+700 ms per-file import allowance from CI observations. Tests selected by a
+`required` rule run first and count toward the budget, even if they exceed it.
+Other tests fill the remaining budget in this order:
 
 1. Changed test files and tests that directly import a changed file with a static import.
 2. Tests beside changed production source, including its `__tests__` directory.

@@ -1,0 +1,62 @@
+name: Setup speed measurements
+on:
+  push:
+    branches: [ci/spd-setup-hunt]
+permissions:
+  contents: read
+env:
+  ONNXRUNTIME_NODE_INSTALL: skip
+jobs:
+  measure:
+    name: ${{ matrix.file }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        file:
+          - herdr-setup-production-install
+          - herdr-setup-production-rollback
+          - herdr-setup-cross-machine
+          - herdr-setup-probes
+          - herdr-setup-selection
+          - herdr-setup-template-warnings
+          - herdr-setup
+          - herdr-setup-releases
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+      - run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - run: npm ci
+      - name: Isolate runtime directory
+        run: |
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+          test ! -e "$rundir"
+      - name: Measure standalone file
+        env:
+          TEST_FILE: ${{ matrix.file }}
+        run: |
+          mkdir -p .spider/scratch/tmp evidence
+          export SETUP_PROCESS_LOG="$PWD/evidence/processes.tsv"
+          export TMPDIR="$PWD/.spider/scratch/tmp"
+          export NODE_OPTIONS="--require=$PWD/scripts/spd-setup-process.cjs"
+          unset XDG_RUNTIME_DIR
+          for file in packages/host/src/__tests__/"$TEST_FILE".test.ts packages/host/src/__tests__/"$TEST_FILE".part-*.test.ts; do
+            [[ -f "$file" ]] || continue
+            name=$(basename "$file" .test.ts)
+            export SETUP_FILE="$name"
+            printf '%s\t%s\t%s\n' START "$name" "$GITHUB_SHA" | tee -a "$SETUP_PROCESS_LOG"
+            node node_modules/vitest/vitest.mjs run "$file" --maxWorkers=3 --reporter=default --reporter=json --outputFile.json="evidence/$name.json"
+            printf '%s\t%s\n' END "$name" | tee -a "$SETUP_PROCESS_LOG"
+          done
+          grep -q '^END' "$SETUP_PROCESS_LOG"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: setup-${{ matrix.file }}
+          path: evidence/

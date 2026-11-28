@@ -14,6 +14,7 @@ import { controlConfig } from '../control.js';
 import { mountHerdr, type HerdrMount } from '../herdr/mount.js';
 import { isCoreAvailable } from '../../../herdr/src/client/liveness.js';
 import { processStartTime } from '../../../subagents/src/process-identity.js';
+import { installFastCoreTransport } from './herdr-setup-fast-core.js';
 
 const mounts: HerdrMount[] = [];
 afterEach(async () => { for (const m of mounts.splice(0)) await m.dispose(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
@@ -25,6 +26,7 @@ function terminalUi(notices: string[], noticeLevels: string[]) {
 }
 async function fixture(mode: 'fake' | 'hc' = 'fake') {
   const h = await createHerdrHarness(mode);
+  if (mode === 'fake') installFastCoreTransport(h);
   try {
     await h.start();
     execFileSync('git', ['init', '-q', h.directories.local]);

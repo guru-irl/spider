@@ -12,6 +12,7 @@ import { parseHerdrConfig } from '../../../herdr/src/config.js';
 import * as hcModule from '../../../herdr/src/client/hc.js';
 import * as paneModule from '../../../herdr/src/jobs/placement.js';
 import { mountHerdr } from '../herdr/mount.js';
+import { installFastCoreTransport } from './herdr-setup-fast-core.js';
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -21,7 +22,7 @@ afterEach(async () => {
   if (errors.length) throw new AggregateError(errors, 'Cleanup failed');
 });
 it.each(['new', 'resume', 'fork'].flatMap(reason => [{ reason, gated: false }, { reason, gated: true }]))('a cleanup failure still disposes the client and allows $reason reactivation (gated=$gated)', async ({ reason, gated }) => {
-  const h = await createHerdrHarness('fake'); cleanups.push(() => h.close()); await h.start();
+  const h = await createHerdrHarness('fake'); installFastCoreTransport(h); cleanups.push(() => h.close()); await h.start();
   const ownerPid = ((await h.cli(['ls', '--all', '--json'])) as { terminals: { address: string; pid?: number }[] }).terminals.find(t => t.address === h.owner!.terminal.address)?.pid;
   const killOwner = () => { if (ownerPid) { try { process.kill(ownerPid, 'SIGKILL'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; } } };
   cleanups.push(async () => { killOwner(); });

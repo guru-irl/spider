@@ -57,17 +57,19 @@ it("a frozen mounted feed does not publish on rename or shutdown", async ({ sign
 }, 5000);
 
 it("waits for an aborted fixture to close before restoring the environment", async () => {
-  const started = Promise.withResolvers<string>();
-  const release = Promise.withResolvers<void>();
+  let markStarted!: (root: string) => void;
+  let release!: () => void;
+  const started = new Promise<string>(resolve => { markStarted = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
   const abort = new AbortController();
   let bodyRan = false;
   const work = runFixture(abort.signal, {
     fastInactive: true,
     admitted: () => false,
-    beforeStart: async h => { started.resolve(h.root); await release.promise; },
+    beforeStart: async h => { markStarted(h.root); await gate; },
   }, async () => { bodyRan = true; }, false);
   void work.catch(() => {});
-  const root = await started.promise;
+  const root = await started;
   abort.abort(new Error("fixture timed out"));
   let drained = false;
   const drain = drainFixture().then(() => { drained = true; });
@@ -75,8 +77,10 @@ it("waits for an aborted fixture to close before restoring the environment", asy
     await new Promise<void>(resolve => setImmediate(resolve));
     expect(drained).toBe(false);
   } finally {
-    release.resolve();
-    await Promise.allSettled([work, drain]);
+    release();
+    const outcomes = await Promise.allSettled([work, drain]);
+    expect(outcomes[0]).toEqual({ status: "rejected", reason: abort.signal.reason });
+    expect(outcomes[1]).toEqual({ status: "fulfilled", value: undefined });
   }
   expect(bodyRan).toBe(false);
   expect(existsSync(root)).toBe(false);

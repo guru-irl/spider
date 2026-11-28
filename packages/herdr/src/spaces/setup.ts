@@ -29,7 +29,7 @@ export interface SpaceSetupPorts extends SessionDiscoveryPorts {
   reportLive: CutoverPorts['reportLive']; reportBlocked: CutoverPorts['reportBlocked']; notesDisabled(): Promise<boolean>;
   /** Reads the returned terminal's verified owner mapping/feed; does not open a session file. */
   verifyOwner(target: ResolvedSession, placement: SessionTab, signal?: AbortSignal): Promise<LaunchedSession>;
-  terminalState?(placement: SessionTab): Promise<'live' | 'finished' | 'absent'>;
+  terminalState?(placement: SessionTab): Promise<TerminalState>;
   terminalLabels?(terminal: TerminalAddress): Promise<Readonly<Record<string, string>>>;
   observedPresentation?(target: ResolvedSession, execution: SessionTab, snapshot: LayoutSnapshot): Promise<TerminalAddress | null>;
   reportLayout?(message: string): void;
@@ -49,6 +49,28 @@ const hasSettledOwner = (entry: JournalTab): entry is JournalTab & { result: Lau
 function sameSelection(recorded: ResolvedSession, target: SessionSelection): boolean {
   return recorded.file === target.file && recorded.spaceName === target.spaceName && recorded.spaceOrder === target.spaceOrder && recorded.sessionOrder === target.sessionOrder
     && (target.sessionId === null || recorded.sessionId === target.sessionId) && (target.cwd === null || recorded.cwd === target.cwd);
+}
+/** Removing closed file selections may compact the remaining slots, but never reorder them. */
+async function reconcileClosedSelectionOrder(config: HerdrConfig, journal: SpaceJournal): Promise<boolean> {
+  let changed = false;
+  for (const [spaceOrder, space] of config.spaces.entries()) {
+    const entries = journal.tabs.filter(entry => entry.target.spaceName === space.name && entry.target.spaceOrder === spaceOrder);
+    if (!entries.some(entry => entry.manuallyClosed)) continue;
+    const files = await Promise.all(space.sessions.map(selector => 'file' in selector ? canonicalSessionFile(selector.file) : null));
+    if (files.includes(null)) continue;
+    const omitted = entries.filter(entry => entry.manuallyClosed && !files.includes(entry.target.file));
+    if (!omitted.length) continue;
+    const kept = entries.filter(entry => !omitted.includes(entry)).sort((a, b) => a.target.sessionOrder - b.target.sessionOrder);
+    if (new Set(kept.map(entry => entry.target.sessionOrder)).size !== kept.length) continue;
+    if (!kept.every(({ target }, index) => {
+      const shift = target.sessionOrder - index;
+      return files[index] === target.file && shift >= 0 && shift <= omitted.filter(entry => entry.target.sessionOrder < target.sessionOrder).length;
+    })) continue;
+    for (const [index, { target }] of kept.entries()) if (target.sessionOrder !== index) {
+      target.sessionOrder = index; changed = true;
+    }
+  }
+  return changed;
 }
 export interface SpaceSetupOptions { signal?: AbortSignal; /** Repeatable CLI --adopt-existing-space names; authorizes append-only tabs, never adoption of a terminal. */ adoptExistingSpaces?: readonly string[] }
 export interface SpaceSetupResult { launched: LaunchedSession[]; tabs: SessionTab[]; conflicts?: { sessionId: string; terminals: TerminalAddress[] }[] }
@@ -166,12 +188,10 @@ function reconcileLegacyTabs(journal: SpaceJournal, snapshot: LayoutSnapshot, ex
   return changed;
 }
 
+type TerminalState = 'live' | 'finished' | 'absent';
 type PlacementEvidence = Pick<SpaceSetupPorts, 'processInventory' | 'terminalState'>;
 
-/** A closed tab is not a failed allocation. Keep the selection but retire its placement. */
-async function tabOwnerIsGone(entry: JournalTab & { result: LaunchedSession }, config: HerdrConfig, ports: PlacementEvidence): Promise<boolean> {
-  const state = await ports.terminalState?.(entry.placement);
-  if (state !== 'absent' && state !== 'finished') return false;
+async function recordedOwnerHasStopped(entry: JournalTab & { result: LaunchedSession }, config: HerdrConfig, ports: PlacementEvidence): Promise<boolean> {
   const process = await ports.processInventory.probe(entry.result.pid);
   if (process.kind === 'unknown' || process.kind === 'live' && process.startIdentity === entry.result.startIdentity) return false;
   const readOnly = { ...ports.processInventory, presence: { ...ports.processInventory.presence, remove: async () => {} } };
@@ -180,50 +200,94 @@ async function tabOwnerIsGone(entry: JournalTab & { result: LaunchedSession }, c
     && (await recordedSessionLiveness(entry.target.file, inventory, entry.target.sessionId)).kind === 'free';
 }
 
+function closedSessionNotice(entry: JournalTab): string {
+  return `Session ${JSON.stringify(entry.target.name ?? entry.target.sessionId)} was closed by hand, so setup leaves it closed. Remove it from the spaces config or reopen it yourself.`;
+}
+function notRunningNotice(entry: JournalTab): string {
+  return `Session ${JSON.stringify(entry.target.name ?? entry.target.sessionId)} isn't running in terminal ${entry.placement.terminal}, so setup left it as it is.`;
+}
+function ownerActivationFailed(error: unknown): boolean {
+  return error instanceof HerdrError && (error.code === 'owner-activation-unconfirmed' || error.code === 'owner-terminal-finished');
+}
+function ownerConflict(): HerdrError {
+  return new HerdrError('tab-owner-conflict', 'Journalled tab no longer has its recorded owner identity');
+}
+async function refuseDifferentOwner(entry: JournalTab, ports?: PlacementEvidence, row?: { ownerSessionId?: string | null }): Promise<void> {
+  if (row?.ownerSessionId && row.ownerSessionId !== entry.target.sessionId) throw ownerConflict();
+  if (!ports) return;
+  for (const record of await ports.processInventory.presence.list()) {
+    if (record.kind !== 'top-level' || record.hcAddress !== entry.placement.terminal || !record.sessionId || record.sessionId === entry.target.sessionId) continue;
+    const process = await ports.processInventory.probe(record.pid);
+    if (process.kind === 'live' && process.startIdentity === record.startIdentity) throw ownerConflict();
+  }
+}
+async function sessionIsNotRunning(entry: JournalTab & { result: LaunchedSession }, state: TerminalState | undefined, config: HerdrConfig, ports: PlacementEvidence): Promise<boolean> {
+  return state === 'finished' || state === 'live' && await recordedOwnerHasStopped(entry, config, ports);
+}
+
 /** Reconcile only completed placements and only from a unique, proved terminal. */
 async function reconcileUserTabs(journal: SpaceJournal, snapshot: LayoutSnapshot, confirmed: ReadonlyMap<string, LaunchedSession>, excluded: ReadonlySet<string>,
-  evidence?: { config: HerdrConfig; ports: PlacementEvidence; verifyOwner?: SpaceSetupPorts['verifyOwner']; signal?: AbortSignal }): Promise<{ changed: boolean; notices: string[] }> {
-  const notices = new Map<TabId, string>();
+  evidence?: { config: HerdrConfig; ports: PlacementEvidence; verifyOwner?: SpaceSetupPorts['verifyOwner']; signal?: AbortSignal }): Promise<{ changed: boolean; notices: string[]; notRunning: Set<JournalTab> }> {
+  const notices = journal.tabs.filter(entry => entry.manuallyClosed).map(closedSessionNotice);
+  const notRunning = new Set<JournalTab>();
+  const adopted = new Set<LayoutTab>();
   const positions = layoutPanes(snapshot);
   const allocations = new Set([...journal.tabs.flatMap(entry => [entry.label, entry.pane?.label]), ...(journal.intents ?? []).map(intent => intent.label)]);
   const observed = journal.tabs.flatMap(entry => {
     if (entry.manuallyClosed || excluded.has(entry.target.sessionId) || !hasSettledOwner(entry)) return [];
-    const space = snapshot.spaces.find(s => s.id === entry.placement.space), tab = space?.tabs.find(t => t.id === entry.placement.tab);
+    const tab = snapshot.spaces.find(s => s.id === entry.placement.space)?.tabs.find(t => t.id === entry.placement.tab);
     const matches = positions.filter(position => position.row.terminal === layoutTerminal(entry));
     if (matches.length > 1) throw new HerdrError('tab-owner-conflict', 'A session terminal appears in several panes');
     const found = matches[0];
-    return [{ entry, space, tab, found, moved: found && (found.tab !== tab || !recordedNameMatches(entry, found.tab)) }];
+    return [{ entry, tab, found, moved: found && (found.tab !== tab || !recordedNameMatches(entry, found.tab)) }];
   });
   const destinations = new Set(observed.flatMap(({ found, moved }) => found && moved && !allocations.has(found.tab.name) ? [found.tab] : []));
   let changed = false;
-  const adopted = new Set<LayoutTab>();
-  for (const { entry, space, tab, found, moved } of observed) {
+  for (const { entry, tab, found, moved } of observed) {
     const owner = confirmed.get(entry.target.sessionId);
-    if (!found) {
-      if ((!tab || entry.manuallyMoved) && !owner && evidence && await tabOwnerIsGone(entry, evidence.config, evidence.ports)) {
+    const adopt = found && destinations.has(found.tab) && (moved || !entry.manuallyMoved);
+    const verifyStopped = async (state: TerminalState | undefined) => {
+      if (!evidence || !await sessionIsNotRunning(entry, state, evidence.config, evidence.ports)) return false;
+      await refuseDifferentOwner(entry, evidence.ports, found?.row);
+      notRunning.add(entry); notices.push(notRunningNotice(entry));
+      return true;
+    };
+    if (!owner && evidence) {
+      const state = await evidence.ports.terminalState?.(entry.placement);
+      if (!found && state === 'absent' && await recordedOwnerHasStopped(entry, evidence.config, evidence.ports)) {
+        await refuseDifferentOwner(entry, evidence.ports);
         entry.manuallyClosed = true; changed = true;
         if (!journal.retired!.some(placement => placement.terminal === entry.placement.terminal)) journal.retired!.push(entry.placement);
-        const name = JSON.stringify(recordedTabName(entry)), group = JSON.stringify(space?.name ?? entry.target.spaceName);
-        notices.set(entry.placement.tab, tab ? `A session in tab ${name} in space ${group} was closed by hand. Setup left it closed.` : `Tab ${name} in space ${group} was closed by hand. Setup left it closed.`);
+        notices.push(closedSessionNotice(entry));
+        continue;
       }
-      continue;
+      await verifyStopped(state);
     }
-    if (!destinations.has(found.tab) || !moved && entry.manuallyMoved) continue;
-    if (found.row.ownerSessionId && found.row.ownerSessionId !== entry.target.sessionId) throw new HerdrError('tab-owner-conflict', 'Journalled tab no longer has its recorded owner identity');
+    if ((adopt || entry.manuallyMoved) && !notRunning.has(entry)) await refuseDifferentOwner(entry, evidence?.ports, found?.row);
+    if (!found || !adopt) continue;
     const placement = { ...entry.placement, space: found.space.id, tab: found.tab.id };
-    const proof = owner ?? await evidence?.verifyOwner?.(entry.target, placement, evidence.signal);
-    if (!proof) continue; // Read-only recovery cannot verify an owner without a current feed.
-    if (proof.sessionId !== entry.target.sessionId || (!owner && (proof.sessionFile !== entry.target.file || proof.cwd !== entry.target.cwd))) throw new HerdrError('tab-owner-conflict', 'Journalled tab no longer has its recorded owner identity');
+    if (!notRunning.has(entry)) {
+      let proof = owner;
+      try { proof ??= await evidence?.verifyOwner?.(entry.target, placement, evidence.signal); }
+      catch (error) {
+        if (error instanceof HerdrError && error.code === 'owner-session-switched') throw ownerConflict();
+        if (!ownerActivationFailed(error)) throw error;
+        if (!await verifyStopped(await evidence?.ports.terminalState?.(entry.placement))) continue;
+      }
+      if (proof && (proof.sessionId !== entry.target.sessionId || !owner && (proof.sessionFile !== entry.target.file || proof.cwd !== entry.target.cwd))) throw ownerConflict();
+      if (!proof && !notRunning.has(entry)) continue;
+    }
     entry.placement = placement; entry.tabName = found.tab.name; entry.manuallyMoved = true; changed = true;
-    adopted.add(found.tab);
-    notices.set(found.tab.id, `Tab ${JSON.stringify(found.tab.name)} in space ${JSON.stringify(found.space.name)} was reorganised by hand. Setup kept it as it is.`);
+    if (!adopted.has(found.tab)) {
+      adopted.add(found.tab);
+      notices.push(`Tab ${JSON.stringify(found.tab.name)} in space ${JSON.stringify(found.space.name)} was reorganised by hand. Setup kept it as it is.`);
+    }
   }
-  // A missing pane in a surviving tab still follows normal recovery. Its verified
-  // neighbour supplies the name, so re-placement does not rename the user's tab.
+  // A parked session that is still running may need to return to its tab later.
   for (const { entry, tab, found } of observed) if (!found && tab && adopted.has(tab) && !entry.manuallyClosed && !recordedNameMatches(entry, tab)) {
     entry.tabName = tab.name; changed = true;
   }
-  return { changed, notices: [...notices.values()] };
+  return { changed, notices, notRunning };
 }
 async function reconcileRenamedSpaces(config: HerdrConfig, journal: SpaceJournal, snapshot: LayoutSnapshot): Promise<boolean> {
   let changed = false;
@@ -337,13 +401,14 @@ export async function recordSessionMove(journalRoot: string, owner: { sessionId:
   });
 }
 
-export interface CutoverRecovery { closedSessions?: ResolvedSession[]; unplacedSessions?: string[]; layoutAdoptionNeeded?: boolean; conflicts?: NonNullable<SpaceSetupResult['conflicts']>; createdTabs: SessionTab[]; entries: { target: ResolvedSession; placement: SessionTab; result: LaunchedSession | null; label?: string; tabName?: string; manuallyMoved?: boolean; confirmedLive?: boolean; pendingMove?: boolean }[]; pendingIntents?: TabIntent[]; recoveredCutover: SpaceSetupResult | null }
+export interface CutoverRecovery { closedEntries?: { target: ResolvedSession; placement: SessionTab; result: LaunchedSession }[]; layoutNotices?: string[]; unplacedSessions?: string[]; layoutAdoptionNeeded?: boolean; conflicts?: NonNullable<SpaceSetupResult['conflicts']>; createdTabs: SessionTab[]; entries: { target: ResolvedSession; placement: SessionTab; result: LaunchedSession | null; label?: string; tabName?: string; manuallyMoved?: boolean; confirmedLive?: boolean; pendingMove?: boolean; notRunning?: boolean }[]; pendingIntents?: TabIntent[]; recoveredCutover: SpaceSetupResult | null }
 /** Read-only ownership evidence for installer reconciliation and tab-only rollback. */
 export async function readCutoverRecovery(journalRoot: string, snapshot?: LayoutSnapshot, config?: HerdrConfig, ports?: LiveOwnershipPorts): Promise<CutoverRecovery> {
   return recoverCutover(await readJournal(join(journalRoot, 'spaces.json')), snapshot, config, ports);
 }
-async function recoverCutover(journal: SpaceJournal, snapshot?: LayoutSnapshot, config?: HerdrConfig, ports?: LiveOwnershipPorts, layoutNotices?: string[]): Promise<CutoverRecovery> {
+async function recoverCutover(journal: SpaceJournal, snapshot?: LayoutSnapshot, config?: HerdrConfig, ports?: LiveOwnershipPorts): Promise<CutoverRecovery> {
   let layoutAdoptionNeeded = false; let confirmed = new Map<string, LaunchedSession>(); let conflicts: NonNullable<SpaceSetupResult['conflicts']> = []; let unplaced: string[] = [];
+  let manual: Awaited<ReturnType<typeof reconcileUserTabs>> | undefined;
   if (snapshot) {
     const renamed = config ? await reconcileRenamedSpaces(config, journal, snapshot) : false;
     const presented = await reconcilePresentations(journal, snapshot, ports);
@@ -353,25 +418,28 @@ async function recoverCutover(journal: SpaceJournal, snapshot?: LayoutSnapshot, 
     const recovered = reconcileIntents(journal, snapshot), moved = reconcileMoves(journal, snapshot, excluded);
     for (const entry of journal.tabs) if (!excluded.has(entry.target.sessionId) && pendingPresentationMove(entry)) { unplaced.push(entry.target.sessionId); excluded.add(entry.target.sessionId); }
     const legacy = reconcileLegacyTabs(journal, snapshot, excluded);
-    const manual = await reconcileUserTabs(journal, snapshot, confirmed, excluded, config && ports ? { config, ports } : undefined);
-    layoutNotices?.push(...manual.notices);
-    const missing = journal.tabs.some(entry => !entry.manuallyClosed && !entry.manuallyMoved && !snapshot.spaces.find(space => space.id === entry.placement.space)?.tabs.find(tab => tab.id === entry.placement.tab && tabTerminals(tab).some(row => row.terminal === layoutTerminal(entry))));
-    layoutAdoptionNeeded = renamed || presented.changed || live.changed || live.conflicts.length > 0 || unplaced.length > 0 || recovered || moved || legacy || manual.changed || missing || journal.tabs.some(entry => Boolean(entry.pane));
+    manual = await reconcileUserTabs(journal, snapshot, confirmed, excluded, config && ports ? { config, ports } : undefined);
+    const compacted = config ? await reconcileClosedSelectionOrder(config, journal) : false;
+    const { notRunning } = manual;
+    const missing = journal.tabs.some(entry => !entry.manuallyClosed && !entry.manuallyMoved && !notRunning.has(entry) && !snapshot.spaces.find(space => space.id === entry.placement.space)?.tabs.find(tab => tab.id === entry.placement.tab && tabTerminals(tab).some(row => row.terminal === layoutTerminal(entry))));
+    layoutAdoptionNeeded = renamed || presented.changed || live.changed || live.conflicts.length > 0 || unplaced.length > 0 || recovered || moved || legacy || manual.changed || compacted || missing || journal.tabs.some(entry => Boolean(entry.pane));
   }
-  const closedSessions = journal.tabs.filter(entry => entry.manuallyClosed).map(entry => entry.target);
-  const entries = journal.tabs.filter(entry => !entry.manuallyClosed).map(({ target, placement, result, label, tabName, manuallyMoved, pane }) => ({ target, placement, result, ...(label ? { label } : {}), ...(tabName ? { tabName } : {}), ...(manuallyMoved ? { manuallyMoved } : {}), ...(confirmed.has(target.sessionId) && !unplaced.includes(target.sessionId) ? { confirmedLive: true } : {}), ...(pane ? { pendingMove: true } : {}) }));
+  const closedEntries = journal.tabs.flatMap(entry => entry.manuallyClosed && hasSettledOwner(entry) ? [{ target: entry.target, placement: entry.placement, result: entry.result }] : []);
+  const entries = journal.tabs.filter(entry => !entry.manuallyClosed).map(entry => {
+    const { target, placement, result, label, tabName, manuallyMoved, pane } = entry;
+    return { target, placement, result, ...(label ? { label } : {}), ...(tabName ? { tabName } : {}), ...(manuallyMoved ? { manuallyMoved: true } : {}), ...(confirmed.has(target.sessionId) && !unplaced.includes(target.sessionId) ? { confirmedLive: true } : {}), ...(pane ? { pendingMove: true } : {}), ...(manual?.notRunning.has(entry) ? { notRunning: true } : {}) };
+  });
   const createdTabs = entries.map(entry => entry.placement);
-  return { ...(closedSessions.length ? { closedSessions } : {}), ...(unplaced.length ? { unplacedSessions: unplaced } : {}), ...(layoutAdoptionNeeded ? { layoutAdoptionNeeded: true } : {}), ...(conflicts.length ? { conflicts } : {}), createdTabs, entries, ...(journal.intents?.length ? { pendingIntents: journal.intents } : {}), recoveredCutover: journal.tabs.length && entries.every(entry => entry.result !== null) ? { launched: entries.map(entry => entry.result!), tabs: createdTabs } : null };
+  return { ...(closedEntries.length ? { closedEntries } : {}), ...(manual?.notices.length ? { layoutNotices: manual.notices } : {}), ...(unplaced.length ? { unplacedSessions: unplaced } : {}), ...(layoutAdoptionNeeded ? { layoutAdoptionNeeded: true } : {}), ...(conflicts.length ? { conflicts } : {}), createdTabs, entries, ...(journal.intents?.length ? { pendingIntents: journal.intents } : {}), recoveredCutover: journal.tabs.length && entries.every(entry => entry.result !== null) ? { launched: entries.map(entry => entry.result!), tabs: createdTabs } : null };
 }
 /** Refresh both installer and space ownership without issuing any app command. */
 export async function reconcileSpaceJournal(config: HerdrConfig, ports: SpaceSetupPorts): Promise<SpaceSetupResult | null> {
   return withProcessLock(ports.journalRoot, 'setup', async () => {
     const path = join(ports.journalRoot, 'spaces.json'), journal = await readJournal(path), snapshot = await ports.layoutSnapshot();
-    const notices: string[] = [];
-    const recovery = await recoverCutover(journal, snapshot, config, ports, notices);
+    const recovery = await recoverCutover(journal, snapshot, config, ports);
     if ((await planSpaceCutover(config, ports, { snapshot, recovery })).length) throw new HerdrError('cutover-reconciliation-required', 'Session placement changed during setup; run setup again');
     if (recovery.layoutAdoptionNeeded) await saveJournal(path, journal);
-    for (const notice of notices) ports.reportLayout?.(notice);
+    for (const notice of recovery.layoutNotices ?? []) ports.reportLayout?.(notice);
     return recovery.recoveredCutover;
   });
 }
@@ -383,9 +451,10 @@ export async function planSpaceCutover(config: HerdrConfig, ports: SpaceSetupPor
   const manifest = await discoverSessions(config, readOnly);
   const actions: string[] = [];
   for (const target of manifest.sessions) {
-    if (recovery.closedSessions?.some(recorded => sameSelection(recorded, target))) continue;
+    if (recovery.closedEntries?.some(({ target: recorded }) => sameSelection(recorded, target))) continue;
     const matches = recovery.entries.filter(entry => target.sessionId ? entry.target.sessionId === target.sessionId : entry.target.file === target.file);
     const entry = matches.length === 1 ? matches[0] : undefined;
+    if (entry?.notRunning && sameSelection(entry.target, target)) continue;
     if (entry?.confirmedLive && !entry.pendingMove) {
       const address = entry.result?.presentationTerminal ?? entry.placement.terminal;
       if (snapshot.spaces.some(space => space.id === entry.placement.space && space.tabs.some(tab => tab.id === entry.placement.tab && tabTerminals(tab).some(row => row.terminal === address && (!row.ownerSessionId || row.ownerSessionId === entry.target.sessionId))))) continue;
@@ -423,7 +492,7 @@ function reconcileIntents(journal: SpaceJournal, snapshot: LayoutSnapshot): bool
   return changed;
 }
 /** Called only after the owning rollback has closed the tabs and re-read the layout. */
-export async function forgetCutoverTabs(journalRoot: string, placements: readonly SessionTab[], snapshot: LayoutSnapshot, terminalsOnly = false): Promise<void> {
+export async function forgetCutoverTabs(journalRoot: string, placements: readonly SessionTab[], snapshot: LayoutSnapshot, terminalsOnly = false, closedByHand: readonly SessionTab[] = []): Promise<void> {
   await withProcessLock(journalRoot, 'setup', async () => {
     const path = join(journalRoot, 'spaces.json'), journal = await readJournal(path);
     reconcileIntents(journal, snapshot);
@@ -434,10 +503,16 @@ export async function forgetCutoverTabs(journalRoot: string, placements: readonl
         : snapshot.spaces.some(space => space.tabs.some(tab => tab.id === placement.tab));
       if (present) throw new HerdrError('cutover-tab-still-exists', 'A rollback terminal or tab is still present');
     }
-    const removed = new Set(journal.tabs.filter(entry => !entry.manuallyClosed && placements.some(p => p.space === entry.placement.space && p.terminal === entry.placement.terminal)));
+    const closedAddresses = new Set(closedByHand.map(placement => placement.terminal));
+    const visible = new Set(layoutPanes(snapshot).map(({ row }) => row.terminal));
+    if (journal.tabs.some(entry => !entry.manuallyClosed && closedAddresses.has(entry.placement.terminal) && visible.has(layoutTerminal(entry)))) throw new HerdrError('cutover-tab-still-exists', 'A terminal closed by hand is visible again');
+    const removed = new Set(journal.tabs.filter(entry => entry.manuallyClosed || closedAddresses.has(entry.placement.terminal)
+      ? !terminalsOnly : placements.some(p => p.space === entry.placement.space && p.terminal === entry.placement.terminal)));
     const removedSessions = new Set([...removed].map(entry => entry.target.sessionId));
     journal.tabs = journal.tabs.filter(entry => !removed.has(entry));
-    journal.retired = [...(journal.retired ?? []), ...placements];
+    const retired = new Map((journal.retired ?? []).map(placement => [placement.terminal, placement]));
+    for (const placement of [...placements, ...closedByHand]) retired.set(placement.terminal, placement);
+    journal.retired = [...retired.values()];
     if (terminalsOnly) journal.intents = journal.intents?.filter(intent => !removedSessions.has(intent.target.sessionId));
     else { journal.intents = []; journal.focused = false; }
     // Keep an existing empty space under its recorded ownership; forget only spaces that have disappeared.
@@ -493,7 +568,8 @@ export async function setupSpaces(config: HerdrConfig, ports: SpaceSetupPorts, o
     for (const name of unplaced) ports.reportBlocked(runningSessionUnplacedNotice(name));
     const legacy = reconcileLegacyTabs(journal, initialSnapshot, excluded);
     const manual = await reconcileUserTabs(journal, initialSnapshot, confirmed, excluded, { config, ports, verifyOwner: (target, placement, signal) => ports.verifyOwner(target, placement, signal), signal: options.signal });
-    if (renamed || presentations.changed || ownersChanged || recoveredIntents || moved || legacy || manual.changed) await save();
+    const compacted = await reconcileClosedSelectionOrder(config, journal);
+    if (renamed || presentations.changed || ownersChanged || recoveredIntents || moved || legacy || manual.changed || compacted) await save();
     for (const notice of manual.notices) ports.reportLayout?.(notice);
     async function preflight(recordAdoption: boolean): Promise<void> {
       const additions = checkExistingSpaces(config, journal, await ports.layoutSnapshot(), adopt);
@@ -603,7 +679,13 @@ export async function setupSpaces(config: HerdrConfig, ports: SpaceSetupPorts, o
       } catch (error) {
         if (options.signal?.aborted) throw new HerdrError('aborted', 'Cutover aborted');
         const state = await ports.terminalState?.(entry.placement) ?? 'live';
-        if (entry.result !== null && state === 'live' && error instanceof HerdrError && ['owner-activation-unconfirmed', 'owner-terminal-finished'].includes(error.code)) {
+        if (hasSettledOwner(entry) && ownerActivationFailed(error) && await sessionIsNotRunning(entry, state, config, ports)) {
+          await refuseDifferentOwner(entry, ports, row);
+          ports.reportLayout?.(notRunningNotice(entry));
+          excludedFiles.add(entry.target.file); return null;
+        }
+        if (entry.manuallyMoved && error instanceof HerdrError && error.code === 'owner-session-switched') throw ownerConflict();
+        if (entry.result !== null && state === 'live' && ownerActivationFailed(error)) {
           const name = entry.target.name ?? entry.target.sessionId;
           if (!excluded.has(entry.target.sessionId)) { unplaced.push(name); ports.reportBlocked(runningSessionUnplacedNotice(name)); }
           excluded.add(entry.target.sessionId); excludedFiles.add(entry.target.file); return null;
@@ -645,7 +727,7 @@ export async function setupSpaces(config: HerdrConfig, ports: SpaceSetupPorts, o
       async alreadyLaunched(target) {
         const entry = journal.tabs.find(t => t.target.file === target.file); if (!entry || excludedFiles.has(entry.target.file)) return null;
         if (!sameSelection(entry.target, target)) throw new HerdrError('tab-owner-conflict', 'Session selection changed since tab allocation');
-        if (entry.manuallyClosed) { excludedFiles.add(entry.target.file); return null; }
+        if (entry.manuallyClosed || manual.notRunning.has(entry)) { excludedFiles.add(entry.target.file); return null; }
         return checkRecorded(entry);
       },
       async launchLeasedSession(target) {

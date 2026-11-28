@@ -52,7 +52,19 @@ function view(source: string, className: string, ports: any, context: any = cx) 
   const result = new Ctor(); result.init({}, context); return result;
 }
 
-for (const version of ['0.1.13', '0.1.16'] as const) {
+test.each(['{', 'null', '[]'])('0.1.18 tabs render and switch tabs with invalid saved panels %s', saved => {
+  const h = environment();
+  h.ports.localStorage.getItem = (key: string) => key === 'panels' ? saved : null;
+  const output = replaySpacesBRecipe('0.1.18', loadSpacesAFiles('0.1.18'), fragments('0.1.18'));
+  const root = view(output.tabs!['main.js']!, 'Tabs', h.ports, inertCx).render(inertCx);
+  expect(byId(root, 'tab-tab-1')).toBeDefined();
+  const scroll = byId(root, 'tab-scroll');
+  expect(scroll.styles.track_scroll).toBeDefined();
+  root.events.on_scroll_wheel({ delta_lines: { y: -1 } }, cx);
+  expect(h.calls).toContainEqual(['run', 'tab.next']);
+});
+
+for (const version of ['0.1.13', '0.1.16', '0.1.18'] as const) {
   test(`${version}: B replay verifies A, exact anchors and repeated output`, () => {
     const clean = loadSpacesAFiles(version), recipe = loadPublishedSpacesARecipe(version), b = fragments(version);
     const afterA = replaySpacesARecipe(version, clean, recipe.aFragments, recipe);
@@ -76,7 +88,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect(h.calls.filter(c => c[0] === 'overlay').map(c => c[1].mod)).toEqual(['spider-machine-picker']);
     expect(h.calls.find(c => c[0] === 'overlay')[1].props.continuation).toBe('menu');
     expect(h.calls.filter(c => c[0] === 'run' || c[0] === 'oldMenu')).toEqual([]);
-    if (version === '0.1.16') expect(byId(root, 'tab-scroll').styles.track_scroll).toBeDefined();
+    if (version !== '0.1.13') expect(byId(root, 'tab-scroll').styles.track_scroll).toBeDefined();
   });
 
   test(`${version}: header split buttons preserve their clicked anchor`, () => {
@@ -95,8 +107,9 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     const h = environment(); const output = replaySpacesBRecipe(version, loadSpacesAFiles(version), fragments(version));
     h.state.props = { tab: 'pane', target: { pane: 'pane-1', terminal: 't1' }, overlay: 'old' };
     const menu = view(output.menu!['main.js']!, 'Menu', h.ports, inertCx);
-    for (const [index, place] of [[0, 'right'], [1, 'down']] as const) {
-      h.calls.length = 0; byId(menu.render(cx), `mi-${index}`).events.on_click({}, cx);
+    for (const [label, place] of [['Split right', 'right'], ['Split down', 'down']] as const) {
+      h.calls.length = 0;
+      flat(menu.render(cx)).find(node => /^mi-\d+$/.test(node.styles?.id?.[0]) && texts(node).includes(label)).events.on_click({}, cx);
       expect(h.calls.filter(c => c[0] === 'overlay').map(c => c[1].mod)).toEqual(['spider-machine-picker']);
       expect(h.calls.find(c => c[0] === 'overlay')[1].props.intent).toMatchObject({ place, anchor: { pane: 'pane-1' } });
       expect(h.calls.filter(c => c[0] === 'run')).toEqual([]);
@@ -177,6 +190,6 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     const h = environment(); h.state.failAgents = true; h.state.agents = []; h.state.props = { overlay: 'menu' };
     const output = replaySpacesBRecipe(version, loadSpacesAFiles(version), fragments(version));
     const menu = view(output['new-menu']!['main.js']!, 'NewMenu', h.ports);
-    await vi.waitFor(() => expect(texts(menu.render())).toContain(version === '0.1.16' ? 'Could not check installed agents' : 'Could not load agents'));
+    await vi.waitFor(() => expect(texts(menu.render())).toContain(version === '0.1.13' ? 'Could not load agents' : 'Could not check installed agents'));
   });
 }

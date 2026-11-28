@@ -1,5 +1,5 @@
 import { CustomEditor, InteractiveMode, Theme, initTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Container, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { Container, Spacer, TruncatedText, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { registerInputBand } from "./index.js";
 import glass from "../../../herdr/assets/themes/dracula-plus-glass.json" with { type: "json" };
@@ -17,7 +17,7 @@ function activate(config: Record<string, unknown> = {}) {
   const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
   const pi = { on: (event: string, handler: (event: unknown, ctx: unknown) => void) => handlers.set(event, handler) } as unknown as ExtensionAPI;
   const ctx = { cwd: "/project", mode: "tui", hasUI: true, ui: { theme, setEditorComponent() {}, getEditorComponent: () => undefined } };
-  registerInputBand(pi, { CustomEditor, InteractiveMode }, () => config);
+  registerInputBand(pi, { CustomEditor, InteractiveMode, Spacer, TruncatedText }, () => config);
   handlers.get("session_start")?.({ reason: "startup" }, ctx);
   return () => handlers.get("session_shutdown")?.({ reason: "reload" }, ctx);
 }
@@ -80,9 +80,36 @@ it("leaves unknown Pi queue display shapes alone and fits narrow widths", () => 
   for (let width = 3; width <= 12; width++) {
     expect((instance.pendingMessagesContainer.render(width) as string[]).every(row => visibleWidth(row) <= width), `${width} columns`).toBe(true);
   }
-  // An extra component is not a Pi queue row and must never be replaced.
+  // User bash output remains at the front of Pi's pending container.
   const original = new Container();
   instance.pendingBashComponents = [original];
   instance.updatePendingMessagesDisplay();
   expect(instance.pendingMessagesContainer.children[0]).toBe(original);
+});
+
+it("falls back to the untouched stock display when Pi changes the queue shape", () => {
+  const { instance } = mode();
+  const container = instance.pendingMessagesContainer as Container;
+  const add = container.addChild.bind(container);
+  container.addChild = component => {
+    add(component);
+    if (component instanceof TruncatedText && stripTerminalSequences((component as any).text).startsWith("↳ ")) add(new Spacer(1));
+  };
+  instance.updatePendingMessagesDisplay();
+  const stock = container.render(60);
+  stop = activate({ "ui.icons": "nerd" });
+  instance.updatePendingMessagesDisplay();
+  expect(container.render(60)).toEqual(stock);
+});
+
+it("includes compaction messages and keeps the editor opt-out", () => {
+  const { instance } = mode([], []);
+  instance.compactionQueuedMessages = [{ mode: "steer", text: "During compaction" }];
+  stop = activate();
+  instance.updatePendingMessagesDisplay();
+  expect(plain(instance.pendingMessagesContainer.render(60)).join("\n")).toContain("▐ >< During compaction");
+  stop();
+  stop = activate({ "ui.inputBand": false });
+  instance.updatePendingMessagesDisplay();
+  expect(plain(instance.pendingMessagesContainer.render(60)).join("\n")).toContain("Steering: During compaction");
 });

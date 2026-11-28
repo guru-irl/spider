@@ -112,16 +112,17 @@ function renderResources(width: number, theme: IntroTheme, resources: StartupRes
   const counts = [knownCount(context), String(skills), `≥${extensions}`, String(prompts), promptTokens === undefined ? "—" : `~${compactCount(promptTokens)}`];
   const labels = ["Context", "Skills", "Extensions", "Prompts", "System prompt"];
   const abbreviated = ["Ctx", "Skills", "Ext", "Tmpl", "Sys"];
-  const shortest = ["Ctx", "Sk", "Ext", "Tpl", "Sys"];
-  const inventory = (mode: number) => counts.map((n, i) => {
-    const label = (mode === 0 ? labels : mode === 3 ? shortest : abbreviated)[i];
-    const joined = mode === 3 || (mode === 2 && i !== 1 && i !== 4);
-    return `${label}${joined ? "" : " "}${n}${mode === 0 && i === 4 ? " tokens" : ""}`;
-  }).join(mode >= 2 ? " " : " · ");
+  const inventory = (long: boolean, limit = counts.length) => counts.slice(0, limit).map((n, i) =>
+    `${(long ? labels : abbreviated)[i]} ${n}${long && i === 4 ? " tokens" : ""}`).join(" · ");
   const title = "Loaded resources", arrow = icon(iconStyle, "arrowRight"), hotkey = `Alt+O ${arrow}`;
-  const modes = [[0, 2, 2], [1, 2, 2], [1, 1, 1], [2, 1, 1], [2, 1, 0], [3, 1, 0]] as const;
-  const choice = modes.map(([mode, pad, endPad]) => ({ counts: inventory(mode), action: mode >= 2 ? arrow : hotkey, pad, endPad }))
-    .find(({ counts, action, pad, endPad }) => title.length + counts.length + visibleWidth(action) + 2 * pad + endPad + 1 <= inner);
+  const choices = [
+    { counts: inventory(true), action: hotkey, pad: 2, endPad: 2 },
+    { counts: inventory(false), action: hotkey, pad: 2, endPad: 2 },
+    { counts: inventory(false), action: hotkey, pad: 1, endPad: 1 },
+    ...counts.map((_, i) => ({ counts: inventory(false, counts.length - i), action: arrow, pad: 1, endPad: 0 })),
+  ];
+  const choice = choices.find(({ counts, action, pad, endPad }) =>
+    title.length + counts.length + visibleWidth(action) + 2 * pad + endPad + 1 <= inner);
   const fg = theme.fg.bind(theme);
   const { counts: visibleCounts, action, pad, endPad } = choice ?? { counts: "", action: width >= 28 ? hotkey : arrow, pad: 1, endPad: 1 };
   const actionWidth = visibleWidth(action);

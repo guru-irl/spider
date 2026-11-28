@@ -11,7 +11,7 @@ import { createInterface } from 'node:readline';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { build } from 'vite';
+import { buildViteFixture as build } from '../../../../scripts/test-fixture-build.js';
 import { createHerdrHarness, terminal as fixtureTerminal } from './testutil.js';
 import { createJobMonitor, type JobMonitor, type JobNotice } from '../jobs/monitor.js';
 import { createHostHerdrPorts, createProductionHerdrCliPorts } from '../../../host/src/herdr/ports.js';

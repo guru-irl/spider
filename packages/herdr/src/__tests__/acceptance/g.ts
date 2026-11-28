@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import { fixtureInput } from '../../../../../scripts/test-fixture-input.js';
 import assert from 'node:assert/strict';
 import { access, chmod, mkdir, open, readFile, writeFile, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -7,7 +8,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { build } from 'vite';
+import { buildViteFixture as build } from '../../../../../scripts/test-fixture-build.js';
 import type { HerdrHarness } from '../testutil.js';
 import type { CoreIdentity, HerdrConfig, Owner, SessionId, TerminalAddress, TerminalIdentity } from '../../contracts.js';
 import { HERDR_LABELS } from '../../contracts.js';
@@ -72,7 +73,7 @@ if(a[0]==='pi-stub') {
  const terminal=await hc.caller(process.env);
  if(a[0]==='resume-offer') {
   const offer=await offerResume(terminal,{registry,processInventory,coreStartedAt:async()=>proof.startedAt});
-  if(offer)process.stdout.write(resumeOfferShell(offer,{nodePath:process.execPath,cliPath:process.argv[1],configPath:${JSON.stringify(config)},hookPath:${JSON.stringify(fileURLToPath(new URL('../../../assets/shell/resume.sh', import.meta.url)))}}));
+  if(offer)process.stdout.write(resumeOfferShell(offer,{nodePath:process.execPath,cliPath:process.argv[1],configPath:${JSON.stringify(config)},hookPath:${JSON.stringify(fixtureInput(new URL('../../../assets/shell/resume.sh', import.meta.url)))}}));
  } else if(a[0]==='resume') {
   const file=flag('--file'), sessionId=flag('--session-id'), cwd=flag('--cwd'); const prior=await registry.get(terminal);
   let child; let childExit;
@@ -98,7 +99,7 @@ export async function acceptanceResume(h: HerdrHarness): Promise<void> {
   await registry.record({ owner, recordedAt, coreStartedAt: recordedAt - 1, environment: { agentDirectory: h.directories.agent, extensionArguments: [] } });
   const triggerPath = join(f.directory, 'shell.fifo'); execFileSync('mkfifo', [triggerPath]); const trigger = await open(triggerPath, constants.O_RDWR | constants.O_NONBLOCK);
   const script = join(f.directory, 'restored-shell.sh'); const ready = join(f.directory, 'shell-ready'); const returned = join(f.directory, 'shell-returned'); const stopped = join(f.directory, 'shell-stopped');
-  const hook = buildResumeBlock({ nodePath: h.nodeBinary, cliPath: f.cli, configPath: f.config, hookPath: fileURLToPath(new URL('../../../assets/shell/resume.sh', import.meta.url)) });
+  const hook = buildResumeBlock({ nodePath: h.nodeBinary, cliPath: f.cli, configPath: f.config, hookPath: fixtureInput(new URL('../../../assets/shell/resume.sh', import.meta.url)) });
   await writeFile(script, `while read -r action < ${shellQuote(triggerPath)}; do\ncase "$action" in\noffer)\n${hook}\nprintf ready > ${shellQuote(ready)}\n;;\nresume) spider_resume; printf returned > ${shellQuote(returned)} ;;\nstop) printf stopped > ${shellQuote(stopped)}; exit 0 ;;\nesac\ndone\n`);
   const shell = ['/bin/bash', '--noprofile', '--norc', '-i', script];
   // Fence recovery before loss: no user rc or default shell startup file is read.

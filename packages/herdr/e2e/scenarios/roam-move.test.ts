@@ -296,7 +296,7 @@ if (linkFault.offline === machine.id || linkFault.intercomDown === machine.id &&
 }
 `;
   await writeFile(entry, code, { mode: 0o600 });
-  const { build } = await import('vite');
+  const { buildViteFixture: build } = await import('../../../../scripts/test-fixture-build.js');
   const output = suite.ownPath(join(suite.root, 'platform'));
   await build({ configFile: false, logLevel: 'silent', define: { 'import.meta.spiderIntercomBrokerRelative': JSON.stringify(suite.packed.intercomBroker),
     'import.meta.spiderHerdrRuntimeEntry': 'false', 'import.meta.spiderPaneEndpointEntry': 'false' },

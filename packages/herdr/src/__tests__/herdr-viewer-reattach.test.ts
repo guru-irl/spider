@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { spawn, fork, type ChildProcess } from 'node:child_process';
 import { builtinModules } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { build } from 'vite';
+import { buildViteFixture as build } from '../../../../scripts/test-fixture-build.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createClientFixture } from './testutil.js';
 import { runViewer } from '../viewers/program.js';

@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { build } from 'vite';
+import { buildViteFixture as build } from '../../../../scripts/test-fixture-build.js';
 import { paths } from '@spider/db-core';
 import { globalConfigFixture, type GlobalConfigFixture } from '../../../db-core/src/__tests__/global-config.testutil.js';
 import { configValues, controlConfig } from '../control.js';

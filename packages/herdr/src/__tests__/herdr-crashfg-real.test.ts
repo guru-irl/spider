@@ -6,7 +6,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { build } from 'vite';
+import { buildViteFixture as build } from '../../../../scripts/test-fixture-build.js';
 import { createHerdrHarness, proveSocketPaths } from './testutil.js';
 import { createJobMonitor, type JobNotice } from '../jobs/monitor.js';
 import { createHcClient } from '../client/hc.js';

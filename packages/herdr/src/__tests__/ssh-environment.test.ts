@@ -4,7 +4,7 @@ import { afterAll, describe, it, expect } from 'vitest';
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { rolldown } from 'rolldown';
+import { rolldownFixture as rolldown } from '../../../../scripts/test-fixture-build.js';
 import { createBashTool, createLocalBashOperations, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { createHerdrHarness, type HerdrHarness } from './testutil.js';
 import { createMachineCache, type MachineCache } from '../ssh/cache.js';

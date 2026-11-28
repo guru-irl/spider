@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { connect, createServer, Socket } from 'node:net';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { build } from 'vite';
+import { buildViteFixture as build } from '../../../../scripts/test-fixture-build.js';
 import { processStartTime } from '../../../subagents/src/process-identity.js';
 import { mkdir, readFile, rm, symlink, writeFile, stat, readdir, lstat, chmod } from 'node:fs/promises';
 import { resolve, join } from 'node:path';

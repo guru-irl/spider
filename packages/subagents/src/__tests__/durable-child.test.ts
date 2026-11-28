@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { createConnection } from 'node:net';
 import * as adoption from '../durable-adoption';
 import { connectDurableChild } from '../durable-child';
-import { build } from 'vite';
+import { buildViteFixture as build } from '../../../../scripts/test-fixture-build.js';
 import { freshDb, testScratchPath } from './helpers/testutil';
 import { openDbAt } from '@spider/db-core';
 import { RunStore } from '../run-store';

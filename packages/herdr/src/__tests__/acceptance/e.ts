@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { rolldown } from 'rolldown';
+import { rolldownFixture as rolldown } from '../../../../../scripts/test-fixture-build.js';
 import type { HerdrHarness } from '../testutil.js';
 import { createMachineCache } from '../../ssh/cache.js';
 import { createSshPolicy } from '../../ssh/policy.js';

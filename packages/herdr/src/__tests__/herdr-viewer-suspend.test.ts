@@ -6,7 +6,7 @@ import { builtinModules } from 'node:module';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { build } from 'vite';
+import { buildViteFixture as build } from '../../../../scripts/test-fixture-build.js';
 import { createClientFixture } from './testutil.js';
 import { createSessionIpcClient } from '../feed/ipc-client.js';
 import type { IpcDescriptor, Owner, RunCursor, RunId, SessionId } from '../contracts.js';

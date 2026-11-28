@@ -55,7 +55,7 @@ async function expectEditsKept(f: Fixture, notesBefore: boolean | null) {
 const notesValue = async (f: Fixture) => rootNotesValue(await readFile(f.request.config.core.config).catch(() => null));
 
 test('user edits made after setup survive rollback in every managed file kind after an upgrade re-runs setup', async () => {
-  const f = await fixture(); const notesBefore = await notesValue(f);
+  const f = await focusedSetupFixture({ coreTransport: 'process' }); const notesBefore = await notesValue(f);
   await setupHerdr(f.request, f.parts);
   await editEveryKind(f);
   await upgradeMods(f);

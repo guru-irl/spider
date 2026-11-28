@@ -19,30 +19,35 @@ const fastFixture = () => focusedSetupFixture();
 
 
 test.each(['theme', 'layout'])('interrupted setup refuses a foreign %s value before any installation write', async field => {
-  const { f, settings, original } = await interruptSelection('app.theme');
-  const edited = JSON.stringify({ ...JSON.parse((await readFile(settings)).toString()), [field]: 'foreign-selection' });
-  await writeFile(settings, edited);
+  const { f, settings, original, shared, originalShared } = await interruptSelection('app.theme');
+  const path = field === 'layout' ? shared : settings;
+  const edited = JSON.stringify({ ...JSON.parse((await readFile(path)).toString()), [field]: 'foreign-selection' });
+  await writeFile(path, edited);
   const before = await fingerprint(f);
   await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'managed-artifact-changed' });
   expect(await fingerprint(f)).toEqual(before);
-  const backup = (await readJournal(f.request.journalRoot)).entries.find(entry => entry.path === settings)!.backup!;
-  expect(await readFile(backup)).toEqual(original);
+  const backup = (await readJournal(f.request.journalRoot)).entries.find(entry => entry.path === path)!.backup!;
+  expect(await readFile(backup)).toEqual(field === 'layout' ? originalShared : original);
 }, 60_000);
 
 test('unrelated app settings edits survive interrupted setup recovery and rollback', async () => {
-  const { f, settings } = await interruptSelection('app.theme');
+  const { f, settings, shared, originalShared } = await interruptSelection('app.theme');
   await writeFile(settings, JSON.stringify({ ...JSON.parse((await readFile(settings)).toString()), zoom: 2, custom: { keep: true } }));
   const result = await setupHerdr(f.request, f.parts);
   expect(result.doctor.failures).toEqual([]);
-  expect(JSON.parse((await readFile(settings)).toString())).toEqual({ theme: 'spider-glass', layout: 'spider-glass', zoom: 2, custom: { keep: true }, sounds: { enabled: false } });
+  expect(JSON.parse((await readFile(settings)).toString())).toEqual({ theme: 'spider-glass', zoom: 2, custom: { keep: true }, sounds: { enabled: false } });
+  expect(JSON.parse(await readFile(shared, 'utf8')).layout).toBe('Spider');
   await rollbackHerdr(f.request, f.parts);
   expect(JSON.parse((await readFile(settings)).toString())).toEqual({ theme: 'stock', zoom: 2, custom: { keep: true } });
+  expect(await readFile(shared)).toEqual(originalShared);
 }, 60_000);
 
 test('rollback from a partial app selection restores the original settings bytes exactly', async () => {
-  const { f, settings, original } = await interruptSelection('app.theme');
-  expect(JSON.parse((await readFile(settings)).toString())).toEqual({ zoom: 1.25, theme: 'stock', layout: 'spider-glass' });
+  const { f, settings, original, shared, originalShared } = await interruptSelection('app.theme');
+  expect(JSON.parse((await readFile(settings)).toString())).toEqual({ zoom: 1.25, theme: 'stock' });
+  expect(JSON.parse(await readFile(shared, 'utf8')).layout).toBe('Spider');
   await rollbackHerdr(f.request, f.parts);
   expect(await readFile(settings)).toEqual(original);
+  expect(await readFile(shared)).toEqual(originalShared);
   expect((await readJournal(f.request.journalRoot)).entries).toEqual([]);
 }, 60_000);

@@ -142,6 +142,7 @@
     },
     {
       "id": "intercom-policy",
+      "required": true,
       "inputs": [
         "packages/intercom/DIVERGENCE.json",
         "packages/intercom/upstream-assertions.json",
@@ -171,6 +172,7 @@
     },
     {
       "id": "runtime-compiler-smoke",
+      "required": true,
       "inputs": [
         "packages/*/src/**/*.ts",
         "packages/*/src/**/*.tsx",
@@ -234,6 +236,7 @@
     },
     {
       "id": "parity-script",
+      "required": true,
       "inputs": [
         "scripts/check-intercom-parity.mjs"
       ],

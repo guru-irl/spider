@@ -175,15 +175,15 @@ export async function beginRunCheckpoint(root: string, paths: readonly string[],
   return checkpoint;
 }
 /** Persist content-addressed intents once before a batch, so a kill between writes is safe. */
-export async function recordCheckpointIntents(root: string, checkpoint: UpgradeCheckpoint, files: readonly InstallFile[], journal: SetupJournal): Promise<void> {
+export async function recordCheckpointIntents(root: string, checkpoint: UpgradeCheckpoint, files: readonly (Omit<InstallFile, 'bytes'> & { bytes: Buffer | null })[], journal: SetupJournal): Promise<void> {
   const run = checkpoint.runs.at(-1)!;
   const planned = new Map(run.planned.map(file => [file.path, file]));
   for (const file of files) {
     if (file.snapshotOnly || file.updateAfterCutover) continue;
     const before = run.before.find(state => state.path === file.path)!;
-    const hash = digest(file.bytes);
+    const hash = file.bytes === null ? null : digest(file.bytes);
     if (before.hash === hash) continue;
-    await saveBlob(root, file.bytes, hash);
+    if (file.bytes !== null) await saveBlob(root, file.bytes, hash!);
     const requested = file.mode ?? journal.entries.find(entry => entry.path === file.path)?.mode ?? 0o600;
     planned.set(file.path, { path: file.path, hash, mode: before.hash === null ? requested & ~process.umask() : requested });
   }
@@ -283,7 +283,7 @@ export async function undoUpgrade(root: string, options: {
   releaseOwners(baseline: readonly SavedFile[], beforeClose: () => Promise<void>): Promise<void>;
   unpublish(baseline: readonly SavedFile[], expected: readonly SavedFile[], didWrite: () => Promise<void>): Promise<readonly string[]>;
   cleanup(baseline: readonly SavedFile[]): Promise<void>;
-  layoutPath: string;
+  layoutPath?: string;
   runtimeStorePaths: readonly string[];
   removedMods: readonly string[];
   warn(message: string): void;

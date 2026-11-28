@@ -14,6 +14,7 @@ import { createProductionHerdrCliPorts } from '../herdr/ports.js';
 import { writeFixturePaneEndpoint } from '../../../herdr/src/__tests__/endpoint-fixture.js';
 import { controlConfig } from '../control.js';
 import { mountHerdr, type HerdrMount } from '../herdr/mount.js';
+import { installFastCoreTransport } from './herdr-setup-fast-core.js';
 
 async function until(check: () => Promise<boolean>, description: string, timeout = 15000) {
   const end = Date.now() + timeout;
@@ -26,7 +27,9 @@ afterEach(async () => {
 });
 
 async function fixture(mode: 'fake' | 'hc' = 'fake', install = false) {
-  const h = await createHerdrHarness(mode); cleanup.push(() => h.close()); await h.start();
+  const h = await createHerdrHarness(mode); cleanup.push(() => h.close());
+  if (mode === 'fake') installFastCoreTransport(h);
+  await h.start();
   execFileSync('git', ['init', '-q', h.directories.local]);
   await mkdir(join(h.root, 'dist/herdr'), { recursive: true });
   for (const name of ['cli.mjs', 'remote-runtime.mjs']) await copyFile(resolve('dist/herdr', name), join(h.root, 'dist/herdr', name));

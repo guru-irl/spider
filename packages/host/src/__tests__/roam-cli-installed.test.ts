@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, onTestFailed } from "vitest";
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -30,26 +30,35 @@ it.each(["link", "dev-link"])("Mac %s installs the actual shell executable", scr
 }, 5000);
 
 it("the published tarball runs both link commands with their shipped imports", () => {
+  const timings: Array<[string, number]> = [];
+  onTestFailed(() => {
+    for (const [stage, ms] of timings) console.error(`[tarball link] ${stage}: ${ms} ms`);
+  });
+  const timed = <T>(stage: string, run: () => T): T => {
+    const start = performance.now();
+    try { return run(); }
+    finally { timings.push([stage, Math.round(performance.now() - start)]); }
+  };
   const f = fixture();
   const env = { ...f.env, npm_config_cache: join(f.root, "npm-cache"), npm_config_logs_dir: join(f.root, "npm-logs"), npm_config_update_notifier: "false" };
-  const packed = spawnSync("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", f.root], {
+  const packed = timed("npm pack", () => spawnSync("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", f.root], {
     cwd: resolve("."), env, encoding: "utf8", timeout: 4000,
-  });
+  }));
   expect(packed.status, packed.stderr).toBe(0);
   const [packageInfo] = JSON.parse(packed.stdout) as Array<{ filename: string; files: Array<{ path: string }> }>;
   const scripts = ["link.mjs", "dev-link.mjs", "link-roam.mjs", "extension-shim.mjs", "pi-agent-dir.mjs"].map(name => `scripts/${name}`);
   const listed = new Set(packageInfo.files.map(file => file.path));
   expect(scripts.filter(file => !listed.has(file))).toEqual([]);
   const archive = join(f.root, packageInfo.filename);
-  const listing = spawnSync("tar", ["-tzf", archive], { env, encoding: "utf8", timeout: 2000 });
+  const listing = timed("tar list", () => spawnSync("tar", ["-tzf", archive], { env, encoding: "utf8", timeout: 2000 }));
   expect(listing.status, listing.stderr).toBe(0);
   const archiveEntries = new Set(listing.stdout.split("\n"));
   expect(scripts.filter(file => !archiveEntries.has(`package/${file}`))).toEqual([]);
-  const extracted = spawnSync("tar", ["-xzf", archive, "-C", f.root], { env, encoding: "utf8", timeout: 2000 });
+  const extracted = timed("tar extract", () => spawnSync("tar", ["-xzf", archive, "-C", f.root], { env, encoding: "utf8", timeout: 2000 }));
   expect(extracted.status, extracted.stderr).toBe(0);
   const installed = join(f.root, "package");
   for (const [command, shim] of [["link", "spider.ts"], ["dev:link", "spider-dev.ts"]]) {
-    const result = spawnSync("npm", ["run", command], { cwd: installed, env, encoding: "utf8", timeout: 3000 });
+    const result = timed(`npm run ${command}`, () => spawnSync("npm", ["run", command], { cwd: installed, env, encoding: "utf8", timeout: 3000 }));
     expect(result.status, result.stderr).toBe(0);
     expect(existsSync(join(f.agent, "extensions", shim))).toBe(true);
     expect(realpathSync(f.executable)).toBe(realpathSync(join(installed, "dist/roam/cli.mjs")));

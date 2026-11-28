@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { openDbAt } from "@spider/db-core";
 import { IntercomClient } from "@spider/intercom/broker/client";
 import { requestV0Broker } from "@spider/intercom/broker/roam-v0-client";
-import type { RelaySubmit } from "@spider/intercom/relay-protocol";
+import { decodeRelayPollReply, RELAY_PROTOCOL_VERSION, type RelaySubmit } from "@spider/intercom/relay-protocol";
 import type { V0RelayAgentRequest } from "@spider/intercom/roam-v0";
 import { startTestBroker, stopTestBroker, testBrokerEnv, testTmpDir } from "@spider/intercom/test-support";
 import type { Message, SessionInfo } from "@spider/intercom/types";
@@ -327,12 +327,36 @@ describe("roaming v0 relay forwarding", () => {
     expect(await f.received()).toEqual([]);
   });
 
-  it("refuses an ask or a reply without dispatching it as a new send", async () => {
+  it("delivers one routed ask and refuses unmatched replies and malformed threads", async () => {
+    const ask = await forwardingFixture();
+    const messages: Message[] = [];
+    ask.recipient.on("message", (_from, message) => { messages.push(message); });
+    expect(await ask.forward({ ...ask.submit("routed-ask"), kind: "ask", timeoutMs: 20_000 })).toEqual({
+      type: "result", messageId: "routed-ask", attempted: true, outcome: { kind: "socket_delivered", id: "routed-ask" },
+    });
+    expect(await ask.received()).toEqual(receipt("routed-ask"));
+    expect(messages).toMatchObject([{ id: "routed-ask", expectsReply: true, v0RelayAsk: true }]);
+
     const f = await forwardingFixture();
-    const submit = f.submit("unsupported");
-    expect(await f.forward({ ...submit, kind: "ask", timeoutMs: 2000 })).toEqual(refusal("unsupported", "unsupported"));
-    expect(await f.forward({ ...submit, kind: "reply", replyTo: "previous" })).toEqual(refusal("unsupported", "unsupported"));
+    const ready = { type: "ready", version: RELAY_PROTOCOL_VERSION, machineId: ORIGIN, linkId: "link", pollId: "poll", ok: true };
+    async function forwardFrame(frame: unknown) {
+      const { submissions } = decodeRelayPollReply(Buffer.from(`${JSON.stringify(ready)}\n${JSON.stringify(frame)}\n`));
+      return f.forward(submissions[0]);
+    }
+    const submit = f.submit("malformed-thread");
+    for (const invalid of [
+      { ...submit, kind: "ask" },
+      { ...submit, kind: "reply" },
+      { ...submit, kind: "ask", thread: { kind: "reply", replyTo: "previous" } },
+      { ...submit, kind: "reply", thread: { kind: "ask", timeoutMs: 20_000 } },
+    ]) {
+      await expect(forwardFrame(invalid)).rejects.toThrow("Invalid relay poll protocol");
+    }
     expect(f.calls).toEqual([]);
+    expect(await f.received()).toEqual([]);
+
+    expect(await forwardFrame({ ...f.submit("unmatched-reply"), kind: "reply", replyTo: "previous" }))
+      .toEqual(refusal("unmatched-reply", "changed", true));
     expect(await f.received()).toEqual([]);
   });
 

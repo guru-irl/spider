@@ -53,7 +53,6 @@ const message = { id: "msg-id", timestamp: 0, replyTo: "parent-id", provenance: 
 
 describe.each(["text", "nerd"] as const)("registered intercom cards in %s style", style => {
   const logo = style === "nerd" ? "\u{F0BCA}  " : "◆ ";
-  const gutter = style === "nerd" ? "└  " : "└ ";
   const success = style === "nerd" ? "\u{F012C}  " : "✓ ";
   const failure = style === "nerd" ? "\u{F0156}  " : "× ";
   const warning = style === "nerd" ? "\u{F002A}  " : "▲ ";
@@ -63,7 +62,7 @@ describe.each(["text", "nerd"] as const)("registered intercom cards in %s style"
     const h = await fixture(style);
     const tool = h.tools.find(tool => tool.name === "intercom");
     for (const action of ["send", "ask", "reply"]) {
-      expect(call(tool, { action, to: "planner", message: "hello\nthere" })).toBe(` ${logo}intercom · ${action} → planner\n ${gutter}hello there`);
+      expect(call(tool, { action, to: "planner", message: "hello\nthere" })).toBe(` ${logo}intercom · ${action} → planner\n${indent}hello there`);
     }
     expect(call(tool, { action: "list" })).toBe(` ${logo}intercom · list`);
     const title = call(tool, { action: "send", to: "planner" }, marked);
@@ -77,18 +76,19 @@ describe.each(["text", "nerd"] as const)("registered intercom cards in %s style"
     const tool = h.tools.find(tool => tool.name === "intercom");
     const width = 24;
     const title = tool.renderCall({ action: "send", to: "long-target-name", message: "alpha beta gamma delta epsilon zeta eta theta" }, plain, {}).render(width).map((line: string) => line.trimEnd());
-    const gutterRow = title.findIndex((line: string) => line.startsWith(` ${gutter}`));
-    expect(gutterRow).toBeGreaterThan(1);
-    expect(title.slice(1, gutterRow).every((line: string) => line.startsWith(indent))).toBe(true);
-    expect(title.length).toBeGreaterThan(gutterRow + 1);
-    expect(title.slice(gutterRow + 1).every((line: string) => line.startsWith(indent))).toBe(true);
+    const previewRow = title.findIndex((line: string) => line.startsWith(`${indent}alpha`));
+    expect(previewRow).toBeGreaterThan(1);
+    expect(title.slice(1, previewRow).every((line: string) => line.startsWith(indent))).toBe(true);
+    expect(title.length).toBeGreaterThan(previewRow + 1);
+    expect(title.slice(previewRow + 1).every((line: string) => line.startsWith(indent))).toBe(true);
     expect(title.every((line: string) => visibleWidth(line) <= width)).toBe(true);
     const ansi = { fg: (_: string, value: string) => `\x1b[34m${value}\x1b[39m`, bold: (value: string) => `\x1b[1m${value}\x1b[22m` };
     const styled = tool.renderCall({ action: "send", to: "long-target-name", message: "alpha beta gamma delta epsilon zeta eta theta" }, ansi, {}).render(width);
     const plainRows = styled.map((line: string) => stripTerminalSequences(line).trimEnd());
-    const styledGutter = plainRows.findIndex((line: string) => line.startsWith(` ${gutter}`));
-    expect(plainRows.slice(1, styledGutter).every((line: string) => line.startsWith(indent))).toBe(true);
-    expect(plainRows.slice(styledGutter + 1).every((line: string) => line.startsWith(indent))).toBe(true);
+    const styledPreview = plainRows.findIndex((line: string) => line.startsWith(`${indent}alpha`));
+    expect(styledPreview).toBe(previewRow);
+    expect(plainRows.slice(1, styledPreview).every((line: string) => line.startsWith(indent))).toBe(true);
+    expect(plainRows.slice(styledPreview + 1).every((line: string) => line.startsWith(indent))).toBe(true);
     expect(styled.every((line: string) => visibleWidth(line) <= width)).toBe(true);
     const output = tool.renderResult({ content: [{ type: "text", text: "alpha beta gamma delta epsilon zeta\nmore alpha beta gamma delta" }], details: {} },
       { isPartial: false, expanded: true }, plain, { args: { action: "send" }, isError: false, expanded: true }).render(width);
@@ -177,7 +177,7 @@ describe.each(["text", "nerd"] as const)("registered intercom cards in %s style"
   it("renders the supervisor call, warning and multiline reply with aligned rows", async () => {
     const h = await fixture(style);
     const tool = h.tools.find(tool => tool.name === "contact_supervisor");
-    expect(call(tool, { reason: "need_decision", message: "please decide" })).toBe(` ${logo}contact_supervisor · need_decision → planner\n ${gutter}please decide`);
+    expect(call(tool, { reason: "need_decision", message: "please decide" })).toBe(` ${logo}contact_supervisor · need_decision → planner\n${indent}please decide`);
     const warningResult = { content: [{ type: "text", text: "Reply from supervisor:\nUse stable API" }], details: { structuredReplyParseError: "invalid" } };
     expect(result(tool, warningResult, "contact_supervisor")).toBe(` ${warning}Reply from supervisor:\n${indent}Use stable API\n${indent}Structured reply parse issue: invalid`);
     expect(result(tool, warningResult, "contact_supervisor", false, true)).toBe(" Waiting for supervisor...");
@@ -202,7 +202,7 @@ describe.each(["text", "nerd"] as const)("registered intercom cards in %s style"
       const details = { from, message, replyCommand: "intercom reply" };
       const before = structuredClone(details);
       const collapsed = lines(render({ details }, { expanded: false }, plain));
-      expect(collapsed).toEqual([` ${logo}intercom · from ben · ${machine}`, ` ${gutter}First line Second line`]);
+      expect(collapsed).toEqual([` ${logo}intercom · from ben · ${machine}`, `${indent}First line Second line`]);
       const expanded = lines(render({ details }, { expanded: true }, plain));
       expect(expanded[0]).toBe(` ${logo}intercom · from ben · ${machine}`);
       for (const text of ["First line", "Second line", "To reply: intercom reply", "Attachment: note.txt", "Via extension: Notifier", "In reply to a message"]) expect(expanded).toContain(`${indent}${text}`);

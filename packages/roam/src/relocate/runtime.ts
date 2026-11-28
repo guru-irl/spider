@@ -11,10 +11,11 @@ import { createTransport } from "../transport";
 import { createSync } from "../sync";
 import type { Clock, GitPorts, Transport } from "../contracts";
 import { openOutgoingStaging } from "../staging";
-import { createHomeStore } from "./home";
+import { createHomeStore, type HubHomeStore } from "./home";
 import { withV0HomeLifecycle } from "./home-lifecycle";
 import { relocate } from "./relocate";
 import { setHome } from "./set-home";
+import { createSessionOperations, type SessionOperations } from "./session-operations";
 import { createRelocateAdapters } from "./adapters";
 import { createV0SyncTransport, createV0ArtifactTransport, guardV0PeerTransport, handleRelocateAgent } from "./remote";
 import { checkMacSourceWriters, exactHome, localHerdrConnection } from "./local";
@@ -34,7 +35,8 @@ export interface V0RuntimeOverrides {
 export interface V0Runtime {
   options: RelocateAdapterOptions;
   adapters: RelocateAdapters;
-  homes: HomeStore;
+  homes: HubHomeStore;
+  operations: SessionOperations;
   sync: ReturnType<typeof createSync>;
   services: V0HubControlServices;
   close(): Promise<void>;
@@ -80,17 +82,17 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
     };
     stores=createStorePort(config,core.db);
     const homeStore=createHomeStore({db:core.db,hubMachineId:config.hubMachineId,localMachineId:config.machineId});
-    const homes: ReturnType<typeof createHomeStore> = {
+    const homes: HubHomeStore = {
       ...homeStore,
       async initialize(sessionId, source) {
         if (forgotten(source)) throw new Error("Cannot adopt a home on a forgotten peer");
         return homeStore.initialize(sessionId, source);
       },
-      async compareAndSwap(expected, next, checkMacSource) {
+      async compareAndSwap(expected, next, checkMacSource, onApplied) {
         const swap = () => {
           if (forgotten(next.machineId) || next.destination !== null && forgotten(next.destination))
             throw new Error("Cannot assign a home to a forgotten peer");
-          return homeStore.compareAndSwap(expected, next, checkMacSource);
+          return homeStore.compareAndSwap(expected, next, checkMacSource, onApplied);
         };
         if (next.state !== "moving") return swap();
         return withV0HomeLifecycle(root, config.limits.controlMs, async () => {
@@ -142,9 +144,10 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
         return legacy?.epoch ?? 1;
       },
     };
+    const operations = createSessionOperations();
     let closing:Promise<void>|undefined;
     const revokedDestination = { ok: false, refusal: forgottenDestinationRefusal } as const;
-    return {options,adapters,homes,sync,services:{
+    return {options,adapters,homes,operations,sync,services:{
       async sync({ machineId }) {
         if (config.role !== "hub" || config.machineId !== config.hubMachineId) return syncRefusal(1, "mac-hub-required");
         if (!config.enabled) return syncRefusal(1, "roaming-disabled");
@@ -154,16 +157,42 @@ export function createV0Runtime(root: string, overrides: V0RuntimeOverrides = {}
         }
         return summarizeSync(await sync.sync(machineId));
       },
-      async relocate(request) {
-        if (forgotten(request.destinationMachine)) return { ...revokedDestination, step: "check", home: null, moveId: null };
-        if (!config.enabled) return { ok: false, step: "check", home: null, moveId: null, refusal: {
-          code: "replication-disabled", message: "Relocation needs replication enabled.", nextStep: "Run spider roam enable on the Mac, then retry relocation.",
-        } };
-        return relocate(request,relocatePorts,{ clock: localClock, timeoutMs: config.limits.readyMs });
+      relocate(request) {
+        return operations.relocate(request.sessionId, async mark => {
+          if (forgotten(request.destinationMachine)) return { ...revokedDestination, step: "check", home: null, moveId: null };
+          if (!config.enabled) return { ok: false, step: "check", home: null, moveId: null, refusal: {
+            code: "replication-disabled", message: "Relocation needs replication enabled.", nextStep: "Run spider roam enable on the Mac, then retry relocation.",
+          } };
+          let readSource = false;
+          const moveHomes: HomeStore = {
+            ...homes,
+            async read(id) {
+              const home = await homes.read(id);
+              if (!readSource) {
+                readSource = true;
+                if (home) mark(home);
+              }
+              return home;
+            },
+            async initialize(id, source) {
+              const home = await homes.initialize(id, source);
+              mark(home);
+              return home;
+            },
+            async compareAndSwap(expected, next) {
+              const result = await homes.compareAndSwap(expected, next);
+              if (result.kind === "applied" && result.home.state === "moving") mark(result.home);
+              return result;
+            },
+          };
+          return relocate(request, { ...relocatePorts, homes: moveHomes }, { clock: localClock, timeoutMs: config.limits.readyMs });
+        }, () => homes.read(request.sessionId));
       },
-      async setHome(request) {
-        if (forgotten(request.destinationMachine)) return revokedDestination;
-        return setHome(request,setHomePorts,config);
+      setHome(request) {
+        return operations.enqueue(request.sessionId, async () => {
+          if (forgotten(request.destinationMachine)) return revokedDestination;
+          return setHome(request,setHomePorts,config);
+        });
       },
     },
       close() {return closing ??= (async()=>{sync.stop();try {await sync.drain();await adapters.dispose();}finally{closeStores();}})();},

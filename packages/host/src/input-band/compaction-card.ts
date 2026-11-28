@@ -2,8 +2,9 @@ import { estimateTokens, type Theme } from "@earendil-works/pi-coding-agent";
 import {
   stripTerminalSequences, truncateToWidth, visibleWidth, type Component, type Container, type MarkdownOptions, type MarkdownTheme,
 } from "@earendil-works/pi-tui";
-import { ACTIVITY_FRAMES, icon, type IconStyle } from "@spider/ui";
+import { ACTIVITY_FRAMES, type IconStyle } from "@spider/ui";
 import { bindHalfBox } from "./box.js";
+import { renderCompactionBars } from "./compaction-metrics.js";
 import type { InputBandHost } from "./index.js";
 
 type CardConstructor = NonNullable<InputBandHost["CompactionSummaryMessageComponent"]>;
@@ -23,12 +24,6 @@ function fields(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" ? value as Record<string, unknown> : undefined;
 }
 
-function tokenCount(value: number): string {
-  if (value >= 1_000_000) return `${Number((value / 1_000_000).toFixed(1))}M`;
-  if (value >= 1_000) return `${Number((value / 1_000).toFixed(1))}k`;
-  return String(value);
-}
-
 function moon(style: IconStyle): string {
   return ACTIVITY_FRAMES[style].working[style === "nerd" ? 3 : 0];
 }
@@ -43,12 +38,7 @@ function renderReceipt({ before, summary, model, key, expanded, bill }: Receipt,
   const left = title + name;
   const gap = width - visibleWidth(left) - visibleWidth(hint);
   const header = hint && gap >= 2 ? left + " ".repeat(gap) + dim(hint) : left;
-  const number = theme.fg("customMessageText", tokenCount(before));
-  const from = indent + number + dim(" tokens before");
-  const to = theme.fg("accent", `~${tokenCount(summary)}`) + dim(" in summary");
-  const fold = `${from}  ${theme.fg("accent", icon(style, "arrowRight"))}  ${to}`;
-  const beforeRow = visibleWidth(from) <= width ? from : indent + number + dim(" before");
-  const rows = [header, ...(visibleWidth(fold) <= width ? [fold] : [beforeRow, indent + to])];
+  const rows = [header, ...renderCompactionBars(before, summary, width - indent.length, theme).map(row => indent + row)];
   if (bill) {
     const line = indent + dim(bill.tokens + (bill.cost ? ` · ${bill.cost}` : ""));
     if (bill.cost && visibleWidth(line) > width) rows.push(indent + dim(bill.tokens), indent + dim(bill.cost));

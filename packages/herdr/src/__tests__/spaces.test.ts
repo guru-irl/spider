@@ -241,6 +241,25 @@ it('a lost allocation reply reconciles the labelled tab without a second writer'
   await setupSpaces(config, ports);
   expect(layout.spaces[0].tabs).toHaveLength(1); expect(layout.spaces[0].tabs[0]).toMatchObject({ terminal: before, name: 'named' }); expect(writers).toEqual(['s1']);
 });
+it('still refuses a non-unique allocation label after a lost reply', async () => {
+  await addSession('one', 'First');
+  const command = ports.app.command;
+  ports.app.command = async (name, args) => {
+    const reply = await command(name, args);
+    if (name === 'space.new') {
+      const space = layout.spaces[0];
+      space.tabs.push({ ...space.tabs[0], id: 'foreign-tab' as TabId });
+      throw new Error('reply lost');
+    }
+    return reply;
+  };
+  await expect(setupSpaces(config, ports)).rejects.toThrow('reply lost');
+  const before = structuredClone(layout);
+  await expect(setupSpaces(config, ports)).rejects.toMatchObject({ code: 'tab-owner-conflict', message: 'Allocation label is not unique' });
+  expect(writers).toEqual(['one']);
+  expect(layout).toEqual(before);
+});
+
 it('forgetting closed created tabs permits setup again without adopting user tabs', async () => {
   await addSession('s1', 'named'); const first = await setupSpaces(config, ports);
   probes.set(first.launched[0].pid, { kind: 'absent' });
@@ -531,6 +550,27 @@ it('keeps hand-reorganised tabs in a mixed layout across setup runs', async () =
   expect(await readFile(path, 'utf8')).toBe(persisted);
 });
 
+it('keeps placement manual when the installer persists a tab rename without cutover', async () => {
+  await addSession('one', 'First');
+  const initial = await setupSpaces(config, ports);
+  await confirmOwners(initial);
+  layout.spaces[0].tabs[0].name = 'Edited';
+  const notices: string[] = []; ports.reportLayout = message => notices.push(message);
+  const path = join(ports.journalRoot, 'spaces.json'), before = await readFile(path, 'utf8');
+
+  expect(await spaceSetup.planSpaceCutover(config, ports)).toEqual([]);
+  expect(await readFile(path, 'utf8')).toBe(before);
+  expect(await spaceSetup.reconcileSpaceJournal(config, ports)).toEqual(initial);
+  expect(notices).toEqual(['Tab "Edited" in space "Space A" was reorganised by hand. Setup kept it as it is.']);
+
+  await ports.app.command('terminal.park', { terminal: initial.tabs[0].terminal });
+  const commands = vi.fn(ports.app.command); ports.app.command = commands;
+  expect(await spaceSetup.planSpaceCutover(config, ports)).toEqual([]);
+  expect(await setupSpaces(config, ports)).toEqual(initial);
+  expect(commands).not.toHaveBeenCalled();
+  expect(notices).toHaveLength(1);
+});
+
 it.each(['two tabs', 'two panes', 'another owner'] as const)('refuses to adopt a renamed tab with %s for its terminal', async conflict => {
   await addSession('one', 'First'); await addSession('two', 'Second');
   await setupSpaces(config, ports);
@@ -594,7 +634,7 @@ it('adopts by space id and keeps a renamed space and tab', async () => {
   config.layout = 'panes'; const before = structuredClone(layout);
   const adopted = await setupSpaces(config, ports);
   expect(adopted.launched).toEqual(initial.launched); expect(layout).toEqual(before);
-  expect(notices.filter(message => /Renamed space/.test(message))).toHaveLength(1);
+  expect(notices.filter(message => message.startsWith('Space ') && message.includes('Renamed space'))).toHaveLength(1);
   expect(notices.join('\n')).toMatch(/Renamed space[\s\S]*kept/i);
 });
 
@@ -610,24 +650,60 @@ it('keeps the app name when the configured space was renamed differently', async
   expect(writers).toEqual(['one', 'two']);
 });
 
-it.each(['panes', 'tabs'] as const)('reopens a missing first session in %s mode using its original file', async mode => {
-  config.layout = mode; const file = await addSession('one', 'First'); await addSession('two', 'Second'); await addSession('three', 'Third');
+it('reopens a missing first pane in its surviving tab using its original file', async () => {
+  config.layout = 'panes'; const file = await addSession('one', 'First'); await addSession('two', 'Second'); await addSession('three', 'Third');
   const initial = await setupSpaces(config, ports), missing = initial.tabs[0];
   probes.set(initial.launched[0].pid, { kind: 'absent' });
-  const space = layout.spaces[0];
-  if (mode === 'tabs') space.tabs = space.tabs.filter(tab => tab.id !== missing.tab);
-  else {
-    const tab = space.tabs[0]; tab.terminals = tab.terminals!.filter(row => row.terminal !== missing.terminal);
-    tab.terminal = tab.terminals[0].terminal; tab.ownerSessionId = tab.terminals[0].ownerSessionId ?? null;
-  }
+  const space = layout.spaces[0], tab = space.tabs[0];
+  tab.terminals = tab.terminals!.filter(row => row.terminal !== missing.terminal);
+  tab.terminal = tab.terminals[0].terminal; tab.ownerSessionId = tab.terminals[0].ownerSessionId ?? null;
   expect((await readCutoverRecovery(ports.journalRoot, await ports.layoutSnapshot())).layoutAdoptionNeeded).toBe(true);
   const result = await setupSpaces(config, ports);
   expect(result.launched.map(row => row.sessionId)).toEqual(['one', 'two', 'three']);
   expect(result.launched[0].sessionFile).toBe(file);
   expect(result.tabs[0].terminal).not.toBe(missing.terminal);
   expect(writers).toEqual(['one', 'two', 'three', 'one']);
-  expect(space.tabs).toHaveLength(mode === 'panes' ? 1 : 3);
-  if (mode === 'panes') expect(new Set(result.tabs.map(tab => tab.tab))).toEqual(new Set([missing.tab]));
+  expect(space.tabs).toHaveLength(1);
+  expect(new Set(result.tabs.map(row => row.tab))).toEqual(new Set([missing.tab]));
+});
+
+it('persists the closure without another cutover when the last tab and terminal are gone', async () => {
+  await addSession('one', 'First');
+  const initial = await setupSpaces(config, ports);
+  probes.set(initial.launched[0].pid, { kind: 'absent' });
+  layout.spaces[0].tabs = [];
+  const path = join(ports.journalRoot, 'spaces.json'), before = await readFile(path, 'utf8');
+  const notices: string[] = []; ports.reportLayout = message => notices.push(message);
+  const commands = vi.fn(ports.app.command); ports.app.command = commands;
+
+  expect(await spaceSetup.planSpaceCutover(config, ports)).toEqual([]);
+  expect(await readFile(path, 'utf8')).toBe(before);
+  expect(notices).toEqual([]);
+  expect(await spaceSetup.reconcileSpaceJournal(config, ports)).toEqual({ launched: [], tabs: [] });
+  expect(notices).toEqual(['Tab "First" in space "Space A" was closed by hand. Setup left it closed.']);
+  expect(await setupSpaces(config, ports)).toEqual({ launched: [], tabs: [] });
+  expect(notices).toHaveLength(1);
+  expect(commands).not.toHaveBeenCalled();
+  expect(writers).toEqual(['one']);
+});
+
+it('does not allocate another session on the terminal address of a closed tab', async () => {
+  await addSession('one', 'First');
+  const initial = await setupSpaces(config, ports);
+  const [record] = await ports.registry.list();
+  probes.set(initial.launched[0].pid, { kind: 'absent' });
+  layout.spaces[0].tabs = [];
+  await ports.registry.remove(record.owner.terminal, true);
+  await setupSpaces(config, ports);
+
+  await addSession('two', 'Second');
+  const { space, terminal } = initial.tabs[0];
+  ports.app.command = async command => {
+    expect(command).toBe('tab.new');
+    return { space, tab: 'new-tab' as TabId, terminal };
+  };
+  await expect(setupSpaces(config, ports)).rejects.toMatchObject({ code: 'terminal-not-fresh' });
+  expect(writers).toEqual(['one']);
 });
 
 it('reopens a missing pane without renaming its space or tab', async () => {
@@ -828,8 +904,9 @@ it('reconciles changed live owners and reports duplicate sessions while recoveri
   expect(preflight.conflicts).toEqual([{ sessionId: 'session-2', terminals: ['terminal-1', 'terminal-18'] }]);
   expect(await readFile(join(ports.journalRoot, 'spaces.json'), 'utf8')).toBe(journalBefore);
   const result = await setupSpaces(config, ports);
-  expect(writers).toEqual(['session-13']);
-  expect(result.launched.map(row => row.sessionId)).toHaveLength(12);
+  expect(writers).toEqual([]);
+  expect(result.launched).toHaveLength(11);
+  expect(result.launched.map(row => row.sessionId)).not.toContain('session-13');
   expect((result as any).conflicts).toEqual([{ sessionId: 'session-2', terminals: ['terminal-1', 'terminal-18'] }]);
   expect(reports.join('\n')).toMatch(/session-2[\s\S]*terminal-1[\s\S]*terminal-18/i);
   expect(reports.join('\n')).not.toMatch(/Close session/);

@@ -186,7 +186,7 @@ A new tab can briefly show a temporary name until pi starts in it. For pane layo
 
 Setup identifies a live session by its session ID, current feed and heartbeat, and live pi process. It adopts the session's current terminal, even if the core restarted or the terminal changed. If no live terminal holds the session, setup can reopen it. If two terminals hold the same session ID, setup names both panes and leaves them alone. It continues with the other sessions, then reports `duplicate-live-session`.
 
-Setup adopts recorded sessions that you merged into one tab. It keeps the names you chose for the space and tab. Other panes stay in place and are not recorded as owned. Rollback refuses to close a tab containing those panes.
+If you rename a recorded tab or move its sessions into another tab, setup keeps their verified placement. It reports the change once per tab. Setup leaves a closed tab closed when the tab and its session terminal are both gone. A missing pane in a surviving tab that setup still manages can be reopened. Setup refuses to adopt a placement if it cannot identify its owner. Unrelated panes stay in place and are not recorded as owned. Rollback refuses to close a tab containing those panes.
 
 ### Exact roaming sessions
 

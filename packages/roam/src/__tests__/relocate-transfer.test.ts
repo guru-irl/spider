@@ -146,8 +146,10 @@ describe("v0 real transfer",()=>{
    await receiveArtifactLocally(manifest, f.options, f.destination);
   }
   const root = join(f.destination.root, "herdr");
-  const checking = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
-  const waitForInstall = async () => { checking.resolve(); await finish.promise; };
+  let reachedCheck!: () => void, releaseStop!: () => void;
+  const checking = new Promise<void>(resolve => { reachedCheck = resolve; });
+  const finish = new Promise<void>(resolve => { releaseStop = resolve; });
+  const waitForInstall = async () => { reachedCheck(); await finish; };
   const stopIo: LocalIO = {
    ...stopFixture().io,
    inspect: sessionId => inspectIdLock(root, sessionId),
@@ -164,7 +166,7 @@ describe("v0 real transfer",()=>{
   f.destination.workspaceImport.run = async (cwd, argv, options) => {
    if (!stop && argv.join(" ") === "git rev-parse --abbrev-ref HEAD") {
     stop = stopLocalSession(id, null, stopIo, f.destination.clock, 30);
-    await Promise.race([checking.promise, stop]);
+    await Promise.race([checking, stop]);
    }
    return run(cwd, argv, options);
   };
@@ -174,7 +176,7 @@ describe("v0 real transfer",()=>{
    expect(installed, JSON.stringify(diagnostic?.result)).toMatchObject({ok: true});
    expect(readFileSync(f.plan.destinationPlacement.file, "utf8")).toContain("synthetic");
   } finally {
-   finish.resolve();
+   releaseStop();
    await expect(stop).resolves.toEqual({ok: true, value: undefined});
   }
  });

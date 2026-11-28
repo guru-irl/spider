@@ -107,10 +107,19 @@ adds dim details. Reply details do not show message IDs.
 
 ### Compaction cards
 
-Use the moon in place of the spider logo. The first count is Pi's context
-size before compaction. The second is Pi's estimate for the summary text alone,
-not the size of the retained context. Show billing in a dim row when Pi has a
-bill to show. Use Pi's existing click and Ctrl+O behavior to reveal the summary.
+Use the moon in place of the spider logo. Show the context before compaction
+and Pi's estimate for the summary alone as two bars on the same scale. Round to
+an eighth of a cell so a small summary does not fill a whole cell. The summary
+estimate does not include the retained conversation. Show billing in a dim row
+when Pi has a bill to show.
+
+Click `open ↗` in fullscreen mode to read that compaction in tabs. Run
+`/compaction` to open the latest compaction on the current branch. The reader
+shows an overview, one tab per summary section, and the full summary. When the
+summary has no section headings, the reader uses a single Summary tab beside
+the overview. Use Tab to switch sections and Esc to close. When content
+scrolls, the reader shows Pi's auto-hiding track and draggable thumb. Pi still
+owns Ctrl+O and clicks elsewhere on the card.
 
 ### Intercom route results
 

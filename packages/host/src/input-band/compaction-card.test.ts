@@ -14,7 +14,9 @@ const colors = Object.fromEntries(Object.entries(glass.colors).map(([role, value
 const theme = new Theme(colors as ConstructorParameters<typeof Theme>[0], colors as ConstructorParameters<typeof Theme>[1], "truecolor");
 const host = { Box, CompactionSummaryMessageComponent, CustomEditor, InteractiveMode, Markdown, Spacer, Text };
 const summary = "## Goal\n\nSave the release notes."; // 32 characters, eight estimated tokens.
-const message = { role: "compactionSummary", summary, tokensBefore: 91400, timestamp: 0 } as const;
+const message: ConstructorParameters<typeof CompactionSummaryMessageComponent>[0] = {
+  role: "compactionSummary", summary, tokensBefore: 91400, timestamp: 0,
+};
 const usage = {
   input: 24000, output: 712, cacheRead: 800, cacheWrite: 488, totalTokens: 999999,
   cost: { input: 0.19, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.21 },
@@ -47,7 +49,8 @@ function activate(currentEntry = entry, config: Record<string, unknown> = {}, br
   const notices: string[] = [];
   const overlays: { component: Component; options: unknown }[] = [];
   const custom: ExtensionUIContext["custom"] = async (factory, options) => {
-    const component = await factory({ terminal: { rows: 29 }, requestRender() {} } as TUI, theme, getKeybindings(), () => {});
+    const keys = getKeybindings() as Parameters<typeof factory>[2];
+    const component = await factory({ terminal: { rows: 29 }, requestRender() {} } as TUI, theme, keys, () => {});
     overlays.push({ component, options });
     return undefined as never;
   };

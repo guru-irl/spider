@@ -11,7 +11,7 @@ import { createSessionLeases, assessSessionLiveness, type ProcessInventoryPorts,
 import { launchSession, type SessionLaunchPorts } from '../sessions/launcher.js';
 import { registerHerdrSessions } from '../sessions/register.js';
 import { offerResume } from '../sessions/resume.js';
-import { buildViteFixture as build } from '../../../../scripts/test-bundle.js';
+import { buildViteFixture as build } from '../../../../scripts/test-fixture-build.js';
 import { fileURLToPath } from 'node:url';
 import { spawn, execFileSync } from 'node:child_process';
 import { configFixtureCwd } from '../../../host/src/__tests__/herdr-config-fixture.js';

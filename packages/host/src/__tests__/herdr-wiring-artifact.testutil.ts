@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 let artifacts: Promise<ReadonlyMap<string, string | Uint8Array>> | undefined;
 
 async function buildArtifacts(): Promise<ReadonlyMap<string, string | Uint8Array>> {
-  const { buildViteFixture: build } = await import('../../../../scripts/test-bundle.js');
+  const { buildViteFixture: build } = await import('../../../../scripts/test-fixture-build.js');
   const built = await build({
     define: { 'import.meta.spiderHerdrRuntimeEntry': 'false', 'import.meta.spiderPaneEndpointEntry': 'false' },
     configFile: false,

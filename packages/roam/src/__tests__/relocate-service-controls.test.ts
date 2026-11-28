@@ -207,7 +207,7 @@ it("enable sees a legacy move written while waiting for the configuration lock",
       await released;
     });
   `);
-  const { rolldownFixture: rolldown } = await import("../../../../scripts/test-bundle.js");
+  const { rolldownFixture: rolldown } = await import("../../../../scripts/test-fixture-build.js");
   const bundle = await rolldown({ input, platform: "node", external: [/^node:/, "better-sqlite3", "sqlite-vec"] });
   try { await bundle.write({ file: runner, format: "es" }); }
   finally { await bundle.close(); }

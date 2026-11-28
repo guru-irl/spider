@@ -45,7 +45,7 @@ test('keeps failure and skip results with their reported durations', () => {
   });
 });
 
-test('publishes an incomplete recording and the fact that it built a bundle', () => {
+test('publishes partial CPU without turning it into a complete measurement', () => {
   const partial = { ...record([]), incomplete: true, ranBundle: true,
     processes: 3, cpuMs: null, knownCpuMs: 55, unknownCpu: 1, missingCpu: 1 };
   const { map } = build([shard({ [a]: partial })]);

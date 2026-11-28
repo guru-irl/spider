@@ -3,7 +3,7 @@ import { type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { buildViteFixture as build } from "../../../../scripts/test-bundle.js";
+import { buildViteFixture as build } from "../../../../scripts/test-fixture-build.js";
 import { createHash } from "node:crypto";
 import { builtinModules } from "node:module";
 import { IntercomClient } from "./client.js";

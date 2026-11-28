@@ -68,7 +68,7 @@ export function createFakeAppDriver(options: FakeAppDriverOptions): AppDriver {
 }
 export interface StagedFakeApp { module: string; binary: string; socket: string }
 export async function stageFakeAppDaemon(directory: string, ownPath: (path: string) => string): Promise<StagedFakeApp> {
-  const { buildViteFixture: build } = await import('../../../../scripts/test-bundle.js');
+  const { buildViteFixture: build } = await import('../../../../scripts/test-fixture-build.js');
   const module = ownPath(join(directory, 'app-daemon.mjs'));
   const binary = ownPath(join(directory, 'herdr-app'));
   const socket = ownPath(join(directory, 'a.s'));

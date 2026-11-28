@@ -5,12 +5,12 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildViteFixture as build } from '../../../../scripts/test-bundle.js';
 import { createBundledFixture } from './herdr-setup-bundled-writer.js';
 
-vi.mock('../../../../scripts/test-bundle.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../../../../scripts/test-bundle.js')>();
-  return { ...actual, buildViteFixture: vi.fn(actual.buildViteFixture) };
+const build = vi.hoisted(() => vi.fn<typeof import('vite').build>());
+vi.mock('vite', async importOriginal => {
+  const actual = await importOriginal<typeof import('vite')>();
+  return { ...actual, build: build.mockImplementation(actual.build) };
 });
 
 test('builds once and runs the same writer from separate fixture directories', async () => {

@@ -57,12 +57,13 @@ const { rolldown } = require('rolldown');`;
 });
 
 test('all test code and fixtures use recorder-aware bundle helpers', () => {
-  const files = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', 'packages'], { encoding: 'utf8' })
-    .split('\0').filter(file => /(?:\/(?:__tests__|e2e)\/|\.(?:test|spec|testutil)\.)/.test(file) && /\.[cm]?[jt]sx?$/.test(file));
+  const files = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', 'packages', 'scripts'], { encoding: 'utf8' })
+    .split('\0').filter(file => file !== 'scripts/test-fixture-build.ts'
+      && /(?:\/(?:__tests__|e2e)\/|\.(?:test|spec|testutil)\.|^scripts\/test-)/.test(file) && /\.[cm]?[jt]sx?$/.test(file));
   const problems = [];
   for (const file of new Set(files)) {
     const source = readFileSync(file, 'utf8');
     if ([...builders.keys()].some(name => source.includes(name))) problems.push(...rawBuilderImports(file, source));
   }
-  assert.deepEqual(problems, [], 'Import the builder from scripts/test-bundle.ts so its inputs enter the selection map');
+  assert.deepEqual(problems, [], 'Import the builder from scripts/test-fixture-build.ts so its inputs enter the selection map');
 });

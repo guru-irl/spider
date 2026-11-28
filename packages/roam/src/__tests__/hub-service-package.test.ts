@@ -8,7 +8,7 @@ import { assertRoamBundle } from "../../../../scripts/check-roam-bundle.mjs";
 import roamEntries from "../../../../scripts/roam-entries.json" with { type: "json" };
 const entryFiles = Object.keys(roamEntries).map(mode => `${mode}.mjs`);
 import { openDb, migrate } from "@spider/db-core";
-import { buildViteFixture as build } from "../../../../scripts/test-bundle.js";
+import { buildViteFixture as build } from "../../../../scripts/test-fixture-build.js";
 
 let root: string, packageRoot: string;
 beforeAll(async () => {

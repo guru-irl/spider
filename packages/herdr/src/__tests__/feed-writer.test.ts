@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { buildViteFixture as build } from '../../../../scripts/test-bundle.js';
+import { buildViteFixture as build } from '../../../../scripts/test-fixture-build.js';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';

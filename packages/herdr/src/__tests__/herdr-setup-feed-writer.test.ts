@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { buildViteFixture as build } from '../../../../scripts/test-bundle.js';
+import { buildViteFixture as build } from '../../../../scripts/test-fixture-build.js';
 import { ensureFeedWriter, feedWriterLiveness } from '../feed/writer.js';
 import type { SessionId, Generation } from '../contracts.js';
 

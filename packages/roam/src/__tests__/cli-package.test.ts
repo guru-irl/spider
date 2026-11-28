@@ -11,7 +11,7 @@ import { buildFixture } from "../../../../scripts/test-bundle";
 import { herdrPackageAssets } from "../../../../scripts/test-herdr-package-assets.js";
 import * as dbCore from "@spider/db-core";
 import { scratchDbPath } from "@spider/db-core/testutil";
-import { buildViteFixture as build } from "../../../../scripts/test-bundle.js";
+import { buildViteFixture as build } from "../../../../scripts/test-fixture-build.js";
 import { assertRoamBundle } from "../../../../scripts/check-roam-bundle.mjs";
 import roamEntries from "../../../../scripts/roam-entries.json" with { type: "json" };
 import { main } from "../cli";

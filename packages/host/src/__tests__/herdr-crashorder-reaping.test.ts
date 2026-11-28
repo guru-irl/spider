@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
-import { buildViteFixture as build } from '../../../../scripts/test-bundle.js';
+import { buildViteFixture as build } from '../../../../scripts/test-fixture-build.js';
 import { fileURLToPath } from 'node:url';
 import * as hcModule from '@spider/herdr/client/hc';
 import * as monitorModule from '@spider/herdr/jobs/monitor';

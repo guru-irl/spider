@@ -507,7 +507,7 @@ test('records all inputs of an in-memory bundle even when no output script runs'
   writeFileSync(join(root, 'elided.mjs'), 'export const unused = 10;');
   const result = runNode(['--input-type=module', '-e', `
     import assert from 'node:assert/strict';
-    import { buildViteFixture } from './scripts/test-bundle.ts';
+    import { buildViteFixture } from './scripts/test-fixture-build.ts';
     const output = await buildViteFixture({ configFile: false, logLevel: 'silent',
       build: { ssr: ${JSON.stringify(join(root, 'entry.mjs'))}, write: false } });
     assert.match(output.output[0].code, /live = 42/);
@@ -526,7 +526,7 @@ test('resolves a renamed in-memory fixture output run from dist', t => {
   const result = runNode(['--input-type=module', '-e', `
     import assert from 'node:assert/strict';
     import { writeFileSync } from 'node:fs';
-    import { buildViteFixture } from './scripts/test-bundle.ts';
+    import { buildViteFixture } from './scripts/test-fixture-build.ts';
     const output = await buildViteFixture({ configFile: false, logLevel: 'silent',
       build: { ssr: ${JSON.stringify(join(root, 'fixture-source.mjs'))}, write: false } });
     const copied = ${JSON.stringify(join(root, 'dist/renamed.mjs'))};

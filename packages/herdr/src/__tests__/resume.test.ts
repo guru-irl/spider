@@ -7,7 +7,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { buildViteFixture as build } from '../../../../scripts/test-bundle.js';
+import { buildViteFixture as build } from '../../../../scripts/test-fixture-build.js';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { Owner, SessionId, Generation, TerminalIdentity } from '../contracts.js';
 import { createTerminalRegistry, terminalIdentityKey } from '../sessions/registry.js';

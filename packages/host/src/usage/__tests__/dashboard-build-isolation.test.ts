@@ -2,7 +2,7 @@ import { prepareDashboardBuild } from "./fixtures/dashboard-build.js";
 import { createFixtureHerdr, fixtureHerdrBoundary } from "./fixtures/herdr-assets.js";
 import { createFixtureRoam } from "./fixtures/roam-assets.js";
 import { afterEach, expect, it, vi } from "vitest";
-import { buildViteFixture as build } from "../../../../../scripts/test-bundle.js";
+import { buildViteFixture as build } from "../../../../../scripts/test-fixture-build.js";
 import { createServer, resolveConfig } from "vite";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
 import { join, resolve } from "node:path";

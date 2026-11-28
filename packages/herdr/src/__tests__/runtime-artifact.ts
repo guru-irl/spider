@@ -1,5 +1,5 @@
 import { resolve } from 'node:path';
-import { buildViteFixture as build } from '../../../../scripts/test-bundle.js';
+import { buildViteFixture as build } from '../../../../scripts/test-fixture-build.js';
 
 let artifact: Promise<Buffer> | undefined;
 /** Build once per test module graph without writing or replacing packaged files. */

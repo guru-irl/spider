@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, chmod, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { rolldownFixture as rolldown } from '../../../../scripts/test-bundle.js';
+import { rolldownFixture as rolldown } from '../../../../scripts/test-fixture-build.js';
 import { installSshShim, createExecutionEnvironmentPolicy, ordinaryExecutionEnvironment } from '../ssh/shim.js';
 
 let root: string, entry: string, shim: string;

@@ -35,7 +35,7 @@ export async function processFixtures() {
   const built = join(buildRoot, "bundle.mjs");
   async function buildBundle(outDir, buildId) {
   await mkdir(outDir, { recursive: true });
-  const { buildViteFixture: build } = await import("../../../../../../scripts/test-bundle.ts");
+  const { buildViteFixture: build } = await import("../../../../../../scripts/test-fixture-build.ts");
   await build({ configFile: false, logLevel: "silent", define: { __SPIDER_BUILD__: JSON.stringify({ sha: buildId.split("@")[0], builtAt: buildId.split("@")[1], dirty: false, version: "test" }) }, ssr: { noExternal: true }, build: {
     ssr: fileURLToPath(new URL(import.meta.url)), target: "node22", minify: false, outDir, emptyOutDir: false,
     rollupOptions: { external: id => id.startsWith("node:") || ["better-sqlite3", "sqlite-vec", "vite"].includes(id),

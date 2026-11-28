@@ -3,7 +3,7 @@ import { expect, it, vi } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
 import { writeFile, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { rolldownFixture as rolldown } from '../../../../scripts/test-bundle.js';
+import { rolldownFixture as rolldown } from '../../../../scripts/test-fixture-build.js';
 import { openDbAt } from '@spider/db-core';
 import { createHerdrHarness } from './testutil.js';
 import { createMachineCache } from '../ssh/cache.js';

@@ -22,7 +22,7 @@ function fixture() {
     writeFileSync(join(root, file), value);
   }
   for (const file of [a, b, c, guard, 'packages/roam/src/store.ts', 'packages/herdr/assets/templates/role.md', 'docs/guide/example.md']) put(file);
-  for (const file of ['scripts/test-shard-budget.mjs', 'scripts/test-shards.ts']) put(file, readFileSync(file, 'utf8'));
+  for (const file of ['scripts/test-shard-budget.mjs', 'scripts/test-shards.ts', 'scripts/roam-entries.json']) put(file, readFileSync(file, 'utf8'));
   function commit() { git('add', '.'); git('commit', '-qm', 'test: fixture'); return git('rev-parse', 'HEAD'); }
   const base = commit();
   return { root, git, put, commit, base };
@@ -321,7 +321,7 @@ describe('change-scoped test manifests', () => {
     expect(manifest.files).toHaveLength(4);
   });
 
-  it.each(['scripts/test-resources.json', 'scripts/measure-test-selection.mjs'])('requires selector compatibility audits when selection policy changes: %s', async file => {
+  it.each(['scripts/test-resources.json', 'scripts/measure-test-selection.mjs', 'scripts/roam-entries.json'])('requires selector compatibility audits when selection policy changes: %s', async file => {
     const { selectTests } = await api(); const f = fixture(); f.put(file, '{}');
     const result = await selectTests({ ...f, head: f.commit() });
     expect(result.selectionAudit).toBe(true);
@@ -337,6 +337,17 @@ describe('change-scoped test manifests', () => {
     expect(optionalSuites(['packages/intercom/src/protocol.ts']).chrome).toBe(true);
     expect(optionalSuites(['packages/host/src/roam/readiness.ts']).chrome).toBe(true);
     expect(optionalSuites(['unknown.file'], true)).toEqual({ chrome: true, acceptance: true, stories: true });
+  });
+
+  it('selects bundle consumers when the soak entry is affected', async () => {
+    const { selectTests } = await api(); const f = fixture();
+    const soak = 'packages/roam/src/relocate/relay-soak.ts';
+    f.put(soak, 'export const evidence = true;');
+    const manifest = await selectTests({ ...f, head: f.commit(),
+      resolveRelated: async (seeds: string[]) => seeds.includes(soak) ? [soak] : [],
+    });
+    expect(manifest.mode).toBe('scoped');
+    expect(manifest.reasons[b]).toContain('bundle consumer');
   });
 
   it('keeps new literal bundle readers in the explicit consumer inventory', async () => {

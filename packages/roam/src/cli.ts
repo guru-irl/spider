@@ -1,6 +1,9 @@
 import { parseV0Control, runV0Control, readV0Confirmation } from "./relocate/cli";
 import { createV0Intercom } from "./relocate/intercom";
-import { parseV0AgentReply, parseV0AgentRequest, V0_INTERCOM_BYTES, type V0AgentReply } from "@spider/intercom/roam-v0";
+import { runV0LinkOnce } from "./relocate/relay-poll";
+import { startV0Relay } from "./relocate/relay-service";
+import { RELAY_HOLD_MS, RELAY_POLL_MAX_BYTES } from "@spider/intercom/relay-protocol";
+import { parseV0AgentReply, parseV0AgentRequest, parseV0RelayAgentRequest, V0_INTERCOM_BYTES, type V0AgentReply } from "@spider/intercom/roam-v0";
 import { readPeerRevocation } from "./revocation";
 import { skippedProjectDbNotice, v0SessionCatalog } from "./relocate/session-catalog";
 import { requestV0Services, runV0Service } from "./relocate/service";
@@ -158,16 +161,31 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
     try {
       if (argv.length !== 4) throw new Error("Invalid private intercom arguments");
       const input: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await readArtifactInput(V0_INTERCOM_BYTES, options?.stdin)));
-      const request = parseV0AgentRequest(input);
+      const request = parseV0AgentRequest(input) ?? parseV0RelayAgentRequest(input);
       if (!request) throw new Error("Invalid private intercom request");
+      const requestId = request.version === 2 ? request.request.requestId : request.requestId;
       const reply = await (options?.v0?.intercom ?? ((raw, targetRoot) => createV0Intercom(targetRoot).handle(raw)))(request, root);
-      const parsed = parseV0AgentReply(reply);
-      if (!parsed || parsed.requestId !== request.requestId) throw new Error("Invalid private intercom reply");
+      const parsed = parseV0AgentReply(reply, request.version === 2 && request.thread?.kind === "reply");
+      if (!parsed || parsed.requestId !== requestId) throw new Error("Invalid private intercom reply");
       const output = `${JSON.stringify(parsed)}\n`;
       if (Buffer.byteLength(output) > V0_INTERCOM_BYTES) throw new Error("Private intercom reply too large");
       io.out(output);
       return 0;
     } catch { io.err("Invalid or unavailable private intercom request.\n"); return 2; }
+  }
+  if (argv[0] === "roam" && argv[1] === "agent" && argv[2] === "--v0" && argv[3] === "link") {
+    try {
+      const holdMs = argv[5] === "0" ? 0 : argv[5] === String(RELAY_HOLD_MS) ? RELAY_HOLD_MS : null;
+      if (argv.length !== 6 || argv[4] !== "--hold-ms" || holdMs === null) throw new Error("Invalid private link arguments");
+      const input = await readArtifactInput(RELAY_POLL_MAX_BYTES, options?.stdin);
+      io.out((await runV0LinkOnce(root, input, holdMs)).toString("utf8"));
+      return 0;
+    } catch { io.err("Invalid or unavailable private relay poll.\n"); return 2; }
+  }
+  if (argv[0] === "roam" && argv[1] === "agent" && argv[2] === "--v0" && argv[3] === "relay") {
+    if (argv.length !== 4) { io.err("Invalid private relay arguments.\n"); return 2; }
+    try { await runV0Service(() => startV0Relay(root)); return 0; }
+    catch { io.err("The v0 relay could not start. Check its configuration, process lock, and selected Herdr core.\n"); return 1; }
   }
   if (argv[0] === "roam" && argv[1] === "agent" && argv[2] === "--v0") {
     if (argv.length !== 3) { io.out(`${JSON.stringify({ ok: false, refusal: { code: "invalid-arguments", message: "Invalid private v0 request.", nextStep: "Use the private v0 agent protocol." } })}\n`); return 2; }

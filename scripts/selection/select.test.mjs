@@ -11,7 +11,7 @@ import * as manifest from './manifest.mjs';
 const base = '1'.repeat(40), head = '2'.repeat(40), unrelated = '3'.repeat(40);
 const asOf = '2026-11-27T13:00:00Z';
 const map = (files = [], tests = {}, extra = {}) => ({
-  version: 1, commit: base, runId: '44', createdAt: '2026-11-27T11:00:00Z', files, tests, ...extra,
+  version: 2, commit: base, runId: '44', createdAt: '2026-11-27T11:00:00Z', files, tests, ...extra,
 });
 const artifact = selectionMap => ({ map: selectionMap, publishedAt: '2026-11-27T12:00:00Z', expired: false });
 const run = (id, sha) => ({ id, head_sha: sha });
@@ -103,6 +103,25 @@ test('rejects a malformed source index instead of inferring an empty read set', 
   assert.match(result.fallback, /invalid/);
 });
 
+test('rejects a v1 map and maps without a boolean completeness flag', async () => {
+  const { incomplete: _omitted, ...legacyRow } = row();
+  for (const candidate of [map([], { [a]: legacyRow }, { version: 1 }),
+    map([], { [a]: legacyRow }), map([], { [a]: row({ incomplete: 'false' }) })]) {
+    const result = await lookup([run(44, base)], { 44: artifact(candidate) });
+    assert.equal(result.map, null);
+    assert.match(result.fallback, /invalid/);
+    const selection = await fixture(result);
+    assert.equal(selection.mode, 'full');
+    assertSelected(selection, ...inventory);
+  }
+});
+
+test('loads v2 maps with unfinished records', async () => {
+  const selectionMap = map([], { [a]: row({ incomplete: true }) });
+  const result = await lookup([run(44, base)], { 44: artifact(selectionMap) });
+  assert.deepEqual(result, { map: selectionMap, fallback: null });
+});
+
 const a = 'packages/one/src/a.test.ts', b = 'packages/two/src/b.test.ts';
 const c = 'packages/two/src/c.test.ts', d = 'packages/one/src/d.test.ts';
 const docGuard = 'packages/host/src/__tests__/readme.test.ts';
@@ -111,7 +130,7 @@ const selectorTest = 'packages/host/src/__tests__/selection.test.ts';
 const bundleReader = 'packages/host/src/__tests__/build-id.test.ts';
 const bundleEntry = 'packages/host/src/extension.ts';
 const inventory = [a, b, c, d, guard, docGuard, selectorTest, bundleReader];
-const row = (extra = {}) => ({ reads: [], unresolved: [], ms: 10, result: 'passed', ranBundle: false, ...extra });
+const row = (extra = {}) => ({ reads: [], unresolved: [], ms: 10, result: 'passed', ranBundle: false, incomplete: false, ...extra });
 const changed = (file, status = 'M') => ({ file, status });
 const fixture = ({ changes = [], files, records, unmapped, names, ...options } = {}) => selector.selectTests({
   head, inventory, changes,
@@ -354,6 +373,13 @@ test('always runs failed, skipped and unrecorded test files', async () => {
   const result = await fixture({ map: map([], tests) });
   assertSelected(result, b, c, d);
   assert.match(result.selected[d][0], /missing/);
+});
+
+test('always runs a test with an incomplete record even if it passed', async () => {
+  const result = await fixture({ records: { [b]: row({ incomplete: true }) } });
+  assert.equal(result.mode, 'scoped');
+  assertSelected(result, b);
+  assert.ok(result.selected[b].includes('incomplete recording'));
 });
 
 test('falls back to the whole suite with a reason when lookup has no usable map', async () => {

@@ -1,4 +1,4 @@
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import type { ThemeAdapter } from "../agents/types.js";
 import { icon, type IconRole, type IconStyle } from "../icons.js";
 
@@ -40,6 +40,23 @@ const resultPrefix = new RegExp(`^([ \\t]*(?:(?:\\d+\\.[ \\t]+)?(?:[│✓✗⚠
 /** Detail rows start at the title text, after the logo and its separator. */
 export function cardDetailIndent(style: IconStyle | undefined): string {
   return " ".repeat(visibleWidth(` ${icon(style, "spider")} `));
+}
+
+const LEAD = /^((?:\x1b\[[0-9;:]*m)*) /u;
+
+/** Drop the card's lead cell when the enclosing Pi box supplies the padding. */
+export function flushLeft(component: { render(width: number): string[]; invalidate?(): void }): Component {
+  let last: { input: string[]; output: string[] } | undefined;
+  return {
+    render: width => {
+      const input = component.render(width);
+      if (last?.input === input) return last.output;
+      const output = input.map(row => row.replace(LEAD, "$1"));
+      last = { input, output };
+      return output;
+    },
+    invalidate: () => { last = undefined; component.invalidate?.(); },
+  };
 }
 
 /** Fit result rows at the final render boundary, preserving ANSI state across wraps. */

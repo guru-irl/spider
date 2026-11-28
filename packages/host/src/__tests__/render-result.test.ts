@@ -683,12 +683,12 @@ describe("renderSubagentDone transcript renderer (ctrl+o)", () => {
     const msg = { details: { name: "tia-2", agent: "worker", model: "github-copilot/gpt-6.2-sol", thinking: "high", status: "failed", tokenCount: 13616326, costText: "0.0 credits", output: "line one\nline two\nline three" } };
     const rows = renderSubagentDone(msg, {}, theme).render(120).map(line => line.trimEnd());
     expect(rows).toEqual([
-      "", "  ◆ run · tia-2 · worker",
-      "  × failed · gpt-6.2-sol · high · 13.6M tokens · 0.0 credits",
-      "    ↑ line one", "    line two", "    … 1 more line", "  ctrl+o to expand output", "",
+      "", " ◆ run · tia-2 · worker",
+      " × failed · gpt-6.2-sol · high · 13.6M tokens · 0.0 credits",
+      "   ↑ line one", "   line two", "   … 1 more line", " ctrl+o to expand output", "",
     ]);
     const expanded = renderSubagentDone(msg, { expanded: true }, theme).render(120).map(line => line.trimEnd());
-    expect(expanded.slice(3, -1)).toEqual(["    ↑ line one", "    line two", "    line three"]);
+    expect(expanded.slice(3, -1)).toEqual(["   ↑ line one", "   line two", "   line three"]);
   });
   it.each([["done", "toolSuccessBg"], ["failed", "toolErrorBg"], ["cancelled", "toolPendingBg"]])("paints the %s shell", (status, background) => {
     const out = renderSubagentDone({ ...msg, details: { ...msg.details, status } }, {}, th).render(200).join("\n");
@@ -741,7 +741,7 @@ describe("renderCommandOutput (slash-command transcript message)", () => {
     expect(collapsed.join("\n")).toContain("more");
     expect(collapsed.join("\n")).not.toContain("Final line");
     expect(expanded.join("\n")).toContain("Final line");
-    expect(expanded.some(line => /^ {4}\S/.test(line))).toBe(true); // box padding + column 3
+    expect(expanded.some(line => /^ {3}\S/.test(line))).toBe(true); // continuation at column 3
     expect(expanded.every(line => line.length <= 30)).toBe(true);
   });
 

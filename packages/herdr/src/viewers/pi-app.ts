@@ -4,14 +4,15 @@
 // reads like a pi session. This module is bundled separately (viewer-pi.mjs):
 // its pi imports resolve to the host's pi install, never to a copy in spider.
 import {
-  AssistantMessageComponent, BashExecutionComponent, BranchSummaryMessageComponent, CompactionSummaryMessageComponent, CustomMessageComponent,
+  AssistantMessageComponent, BashExecutionComponent, BranchSummaryMessageComponent, CompactionSummaryMessageComponent, CustomEditor, CustomMessageComponent,
   SettingsManager, SkillInvocationMessageComponent, ToolExecutionComponent, UserMessageComponent,
   getMarkdownTheme, getSelectListTheme, initTheme, parseSkillBlock, sessionEntryToContextMessages, type Theme,
 } from '@earendil-works/pi-coding-agent';
-import { Box, Container, Editor, Spacer, Text, TruncatedText, truncateToWidth, visibleWidth, type Component, type TUI } from '@earendil-works/pi-tui';
+import { Box, Container, Editor, Spacer, Text, TruncatedText, getKeybindings, truncateToWidth, visibleWidth, type Component, type TUI } from '@earendil-works/pi-tui';
 import { bindToolCardShell, isHalfEdge, joinToolCards } from '@spider/ui';
 import { renderSpiderCall, renderSpiderResult } from '../../../host/src/render-result.js';
 import { restoreExecDetails } from '../../../host/src/exec-session-storage.js';
+import { createBandEditor } from '../../../host/src/input-band/editor.js';
 import type { SteerReply, RunViewInfo } from '../contracts.js';
 import type { ViewerState } from './program.js';
 import { TranscriptSanitizer } from './transcript.js';
@@ -38,6 +39,7 @@ function restoreForView(result: Json): Json {
   return { ...result, details: Array.isArray(details) ? details.map(consume) : consume(details) };
 }
 const isSpider = (name: unknown) => name === 'spider' || name === 'spider_exec';
+const BandEditor = createBandEditor(CustomEditor);
 // pi keeps its active theme on globalThis so every loader shares one; the root does not export it.
 const THEME_KEY = Symbol.for('@earendil-works/pi-coding-agent:theme');
 const theme = new Proxy({} as Theme, { get: (_target, key) => {
@@ -274,7 +276,8 @@ export function createPiRunView(options: PiRunViewOptions): PiRunView {
   const syncEditor = () => {
     const showEditor = state.steerable || state.canCompose === true;
     if (showEditor && !editor) {
-      editor = parkedEditor ?? new Editor(ui, { borderColor: (text: string) => theme.fg('borderMuted', text), selectList: getSelectListTheme() }, { paddingX: 1 });
+      editor = parkedEditor ?? new BandEditor(ui, { borderColor: (text: string) => theme.fg('borderMuted', text), selectList: getSelectListTheme() },
+        getKeybindings() as unknown as ConstructorParameters<typeof BandEditor>[2], () => theme);
       parkedEditor = null;
       refreshEditorBorder(); editor.onSubmit = submit;
       editorSlot.addChild(editor); (ui as Partial<TUI>).setFocus?.(editor);

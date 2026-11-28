@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { openDbAt } from '@spider/db-core';
 import { createHostHerdrHarness } from './herdr-fixture-inventory.testutil.js';
+import { writeRecordedHc } from './herdr-recorded-hc.testutil.js';
 import { createTerminalRegistry } from '../../../herdr/src/sessions/registry.js';
 import { runtimeInstallPath, standardHerdrConfigPath } from '../../../herdr/src/setup/installer.js';
 import { writeFixturePaneEndpoint } from '../../../herdr/src/__tests__/endpoint-fixture.js';
@@ -20,11 +21,7 @@ async function fixture(kind: 'parent' | 'child', base: 'cwd' | 'home', mode: 'fa
   try {
     h.localEnv.HOME = h.remoteEnv.HOME = h.directories.remote;
     await h.start();
-    const callsFile = join(h.root, 'tracked-calls.jsonl'), trackedHc = join(h.root, 'tracked-hc');
-    await writeFile(callsFile, '');
-    const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-    const log = `require('node:fs').appendFileSync(${JSON.stringify(callsFile)}, JSON.stringify(process.argv.slice(1)) + '\\n')`;
-    await writeFile(trackedHc, `#!/bin/sh\n${quote(process.execPath)} -e ${quote(log)} -- "$@"\nexec ${quote(h.hcBinary)} "$@"\n`, { mode: 0o700 });
+    const { binary: trackedHc, calls } = await writeRecordedHc(h, 'tracked-hc');
     const cwd = base === 'cwd' ? join(h.directories.remote, 'work') : null;
     if (cwd) await mkdir(cwd);
     execFileSync('git', ['init', '-q', h.directories.local]);
@@ -69,7 +66,7 @@ async function fixture(kind: 'parent' | 'child', base: 'cwd' | 'home', mode: 'fa
     };
     const start = async () => { for (const hook of [...hooks.get('session_start') ?? []]) await hook({ reason: 'reload' }, ctx); };
     const shutdown = async () => { for (const hook of [...hooks.get('session_shutdown') ?? []]) await hook({ reason: 'reload' }, ctx); };
-    return { originalHome, cwd, calls: async () => (await readFile(callsFile, 'utf8')).trim().split('\n').filter(Boolean).map(line => ({ argv: JSON.parse(line) as string[] })), h, registry, ctx, hooks, notices, noticeLevels, errors, start, shutdown, mounted, environment, nextSession: () => { session = 'next-session'; }, feed: join(h.directories.global, 'herdr/sessions/owner-session/session.json') };
+    return { originalHome, cwd, calls, h, registry, ctx, hooks, notices, noticeLevels, errors, start, shutdown, mounted, environment, nextSession: () => { session = 'next-session'; }, feed: join(h.directories.global, 'herdr/sessions/owner-session/session.json') };
   } catch (error) { vi.stubEnv('HOME', originalHome); await h.close(); throw error; }
 }
 

@@ -1,7 +1,10 @@
 import net from "node:net";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { V0_INTERCOM_MS } from "../roam-v0.js";
+import {
+  parseV0BrokerReply, parseV0RelayAskBrokerRequest, parseV0RelayReplyAuthorization, V0_ASK_MAX_MS, V0_INTERCOM_MS,
+  type V0Delivery, type V0Endpoint, type V0RelayAskBrokerRequest, type V0RelayAskInput, type V0RelayReplyAuthorization,
+} from "../roam-v0.js";
 import {
   RELAY_BROKER_FEATURE, RELAY_MAX_LINKS, RELAY_MAX_SLOTS, RELAY_POLL_REMOTE_MS, RELAY_PROTOCOL_VERSION,
   correlatesRelayReady, isRelayLinkView, isRelayReady, isRelayResult, isRelaySubmit, parseRelayBrokerRequest,
@@ -14,6 +17,8 @@ import { isPrivateBrokerHealth, privateBroker, samePrivateBroker } from "./roam-
 export type { RelayLinkView } from "../relay-protocol.js";
 
 const HEALTH_MS = 2000;
+const WAITER_RESULT_RESERVE_MS = 250;
+type Request = RelayBrokerRequest | V0RelayAskBrokerRequest;
 type FailureCode = "unreachable" | "unauthorized" | "unsupported" | "invalid";
 type Exchange<T> = { ok: true; value: T } | { ok: false; code: FailureCode; sent: boolean };
 type Frame = Record<string, unknown>;
@@ -21,7 +26,7 @@ const invalid = () => new Error("Invalid private relay broker reply");
 
 /** An operation owns its socket. A failed exchange never starts a broker or retries. */
 async function exchange<T>(agentDir: string, budgetMs: number, signal: AbortSignal | undefined,
-  request: (requestId: string, remainingMs: number) => RelayBrokerRequest, read: (frame: Frame) => T | undefined): Promise<Exchange<T>> {
+  request: (requestId: string, remainingMs: number) => Request, read: (frame: Frame) => T | undefined): Promise<Exchange<T>> {
   const deadline = performance.now() + budgetMs;
   if (signal?.aborted) return { ok: false, code: "unreachable", sent: false };
   let broker: ReturnType<typeof privateBroker>;
@@ -67,7 +72,9 @@ async function exchange<T>(agentDir: string, budgetMs: number, signal: AbortSign
         const remainingMs = Math.floor(deadline - performance.now());
         if (remainingMs <= 0) { fail(); return; }
         const outbound = request(requestId, remainingMs);
-        if (!parseRelayBrokerRequest(outbound)) { finish({ ok: false, code: "invalid", sent }); return; }
+        if (!(outbound.type === "roam_v0_relay_ask" ? parseV0RelayAskBrokerRequest(outbound) : parseRelayBrokerRequest(outbound))) {
+          finish({ ok: false, code: "invalid", sent }); return;
+        }
         clearTimeout(timer);
         timer = arm(remainingMs);
         sent = true;
@@ -124,6 +131,51 @@ export async function listV0RelayLinks(agentDir: string, signal?: AbortSignal): 
   });
   const response = await exchange(agentDir, HEALTH_MS, signal, requestId => ({ type: "roam_v0_relay", requestId, kind: "list" }), read);
   return response.ok ? response.value : [];
+}
+
+export async function beginV0RelayAsk(agentDir: string, input: V0RelayAskInput, signal?: AbortSignal): Promise<{ result: Promise<V0Delivery>; close(): void }> {
+  if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs <= 0) throw invalid();
+  const askMs = Math.min(input.timeoutMs, V0_ASK_MAX_MS);
+  const controller = new AbortController();
+  const close = () => controller.abort();
+  const ready = Promise.withResolvers<void>();
+  let registered = false;
+  const timer = setTimeout(close, Math.min(askMs, HEALTH_MS));
+  timer.unref();
+  const result = exchange<V0Delivery>(agentDir, askMs + WAITER_RESULT_RESERVE_MS,
+    signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
+    (requestId, remainingMs) => ({ type: "roam_v0_relay_ask", requestId, kind: "begin", ...input,
+      timeoutMs: remainingMs - WAITER_RESULT_RESERVE_MS }), frame => {
+      if (frame.type === "roam_v0_relay_ask_ready" && !registered && Object.keys(frame).length === 2) {
+        registered = true;
+        clearTimeout(timer);
+        ready.resolve();
+        return;
+      }
+      const answer = parseV0BrokerReply(frame);
+      if (!answer || answer.kind === "matches" || answer.kind === "socket_delivered" ||
+          answer.kind !== "refused" && (!registered || answer.id !== input.askId)) throw invalid();
+      const { type: _type, requestId: _id, ...delivery } = answer;
+      return delivery;
+    }).then(response => {
+      if (!registered) ready.reject(new Error("The local broker could not register the ask waiter"));
+      return response.ok ? response.value : { kind: "unknown" as const, id: input.askId };
+    }, error => {
+      ready.reject(error);
+      return { kind: "unknown" as const, id: input.askId };
+    }).finally(() => clearTimeout(timer));
+  await ready.promise;
+  return { result, close };
+}
+
+export async function authorizeV0RelayReply(agentDir: string, from: V0Endpoint, askId: string, signal?: AbortSignal): Promise<V0RelayReplyAuthorization> {
+  const response = await exchange(agentDir, HEALTH_MS, signal,
+    requestId => ({ type: "roam_v0_relay_ask", requestId, kind: "authorize", from, askId }), frame => {
+      const authorization = frame.type === "roam_v0_relay_reply_authorization" && parseV0RelayReplyAuthorization(frame.authorization);
+      if (!authorization) throw invalid();
+      return authorization;
+    });
+  return response.ok ? response.value : { kind: "refused", code: response.code };
 }
 
 export async function submitV0Relay(agentDir: string, relayId: string, submit: RelaySubmit, signal?: AbortSignal): Promise<RelayResult> {

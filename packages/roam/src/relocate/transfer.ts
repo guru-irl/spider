@@ -108,9 +108,13 @@ async function initialImportSnapshot(snapshot:CapturedSession["workspace"],bundl
   const manifest=await stageArtifact(file,"workspace",options.limits,{root:stagingRoot(options),artifactId:`${snapshot.bundle.artifactId}-initial`});
   return {snapshot:{...snapshot,stage:"pre",refs:newRefs,bundle:{kind:"ready",artifactId:manifest.id,byteLength:manifest.byteLength}},file};
 }
-const privateDiagnostic = /[\\/~@=%\p{C}]|\b(?:password|passwd|authorization|bearer|cookie|credentials?|tokens?|secrets?|api[ _-]?key|private[ _-]?key)\b|\b(?:github_pat_|gh[pours]_|npm_|sk-|xox[a-z]-|xapp-|ntn_|(?:AKIA|ASIA)[A-Z0-9]{16}\b)/iu;
+function hasPrivateDiagnostic(text: string): boolean {
+  const credentialLabel = /(?:^|[^a-z0-9])(?:passwords?|passwd|auth(?:entication|orization)?|bearer|basic|cookies?|credentials?|tokens?|secrets?|(?:api|access|private)[ _-]?key)(?=$|[^a-z0-9])/iu;
+  const credentialPrefix = /\b(?:github_pat_|gh[pours]_|npm_|sk-|xox[a-z]-|xapp-|ntn_|(?:AKIA|ASIA)[A-Z0-9]{16}\b)/iu;
+  return /[\\/~@=%\p{C}]/u.test(text) || credentialLabel.test(text) || credentialPrefix.test(text);
+}
 function diagnosticAtom(value: unknown): string | null {
-  return typeof value === "string" && /^[a-z0-9_.-]{1,80}$/i.test(value) && !privateDiagnostic.test(value) ? value : null;
+  return typeof value === "string" && /^[a-z0-9_.-]{1,80}$/i.test(value) && !hasPrivateDiagnostic(value) ? value : null;
 }
 function installDiagnostic(error: unknown, lastCompleted: string) {
   const rawCode = error && typeof error === "object" && "code" in error ? error.code : null;
@@ -119,7 +123,7 @@ function installDiagnostic(error: unknown, lastCompleted: string) {
   // Child-process errors can include argv and stderr. Omit those and path-bearing
   // or credential-bearing messages rather than guessing where a private value ends.
   const message = "stdout" in error || "stderr" in error || error.message.length > 4096 ||
-    privateDiagnostic.test(error.message) ? "[private error message omitted]" : error.message.slice(0,512);
+    hasPrivateDiagnostic(error.message) ? "[private error message omitted]" : error.message.slice(0,512);
   return {name: diagnosticAtom(error.name) ?? "Error", code, message, lastCompleted};
 }
 

@@ -61,6 +61,7 @@ function fixtureRecords(t, { snapshots = [], results = [], hookErrors = '', laun
     execFileSync('git', ['init', '-q'], { cwd: root });
     for (const file of trackedInputs) writeFileSync(join(root, file), 'fixture');
     if (trackedInputs.length) execFileSync('git', ['add', '--', ...trackedInputs], { cwd: root });
+    writeFileSync(join(raw, 'kernel-mode'), 'linux-strace-v2\n');
     writeFileSync(`${raw}.linux-trace`, kernelTrace.replaceAll('$ROOT', root));
   }
   if (launches.length) writeFileSync(join(raw, 'launches.ndjson'), launches.map(row => JSON.stringify(row)).join('\n') + '\n');

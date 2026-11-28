@@ -17,8 +17,8 @@ if [[ ${SPIDER_SELECTION_KERNEL_TRACE:-} == 1 ]]; then
   # Follow children and threads, including native commands and shells that
   # clear their environment. Keep the raw trace out of the uploaded raw dir.
   calls=clone,clone3,fork,vfork,execve,execveat,open,openat,openat2,creat,open_by_handle_at,getdents,getdents64
-  calls+=,recvmsg,recvmmsg,io_uring_setup,unshare,setns,chroot,pivot_root,mount,umount2
-  printf '%s\n' linux-strace > "$SPIDER_SELECTION_DIR/kernel-mode"
+  calls+=,recvmsg,recvmmsg,io_uring_setup,io_uring_enter,unshare,setns,chroot,pivot_root,mount,umount2
+  printf '%s\n' linux-strace-v2 > "$SPIDER_SELECTION_DIR/kernel-mode"
   exec strace -f -q -x -y --seccomp-bpf -e "trace=$calls" -o "${SPIDER_SELECTION_DIR}.linux-trace" -- "${run[@]}"
 fi
 exec "${run[@]}"

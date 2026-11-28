@@ -748,6 +748,36 @@ it.each([false, true])("never resends an ask after a lost acknowledgement (reply
   expect(await f.remote.received()).toEqual(["ask-lost"]);
 });
 
+it("confirmed delivery without a reply returns no_reply at the deadline", async () => {
+  const f = await fixture({ fakeTime: true });
+  const ask = await askPlan(f);
+  const pending = ask(marker("ask-quiet"), 540_000);
+  const taken = await takeOffer(f.held!, pending, "ask-quiet", "ask");
+  const result = await f.forward(taken);
+  expect(result).toMatchObject({ attempted: true, outcome: { kind: "socket_delivered", id: "ask-quiet" } });
+  await f.poll(0, [result]);
+  await f.advance(540_000);
+  expect(await pending).toMatchObject({ kind: "no_reply", id: "ask-quiet", path: "relay relay-1.invalid" });
+  expect(await f.remote.received()).toEqual(["ask-quiet"]);
+});
+
+it("the broker refuses an ask submission without its own waiter", async () => {
+  const f = await fixture();
+  const { from } = await f.roster();
+  const source = { machineId: ORIGIN, address: from.address!, name: from.name!, homeEpoch: 1, endpointEpoch: from.endpointEpoch! };
+  const ask = (id: string, value: string): RelaySubmit => ({ type: "submit", kind: "ask", timeoutMs: 60_000, from: source, message: marker(id),
+    target: { machineId: TARGET, selector: { by: "id", value }, homeEpoch: 3 } });
+  expect(await submitV0Relay(f.sender.agentDir, RELAY, ask("no-waiter", "remote-recipient")))
+    .toEqual({ type: "result", messageId: "no-waiter", attempted: false, outcome: { kind: "refused", code: "unauthorized" } });
+  const waiter = await beginV0RelayAsk(f.sender.agentDir, { from: source, askId: "other-target", timeoutMs: 60_000,
+    target: { machineId: TARGET, selector: { by: "id", value: "remote-recipient" }, homeEpoch: 3 } });
+  cleanups.push(async () => { waiter.close(); await waiter.result; });
+  expect(await submitV0Relay(f.sender.agentDir, RELAY, ask("other-target", "someone-else")))
+    .toMatchObject({ attempted: false, outcome: { kind: "refused", code: "unauthorized" } });
+  f.abort.abort();
+  expect((await f.held!).submissions).toEqual([]);
+});
+
 it("uses the routed reply for a busy non-interactive recipient", async () => {
   const f = await fixture();
   await f.remote.client.disconnect();

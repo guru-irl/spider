@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 
 import { reduce } from './reduce.mjs';
+import { selectTests } from './select.mjs';
 
 const hook = fileURLToPath(new URL('./cov-hook.cjs', import.meta.url));
 const id = 'packages/example/src/probe.test.ts';
@@ -535,6 +536,53 @@ test('records non-code file reads through Node fs APIs in a child with a replace
     'promise.css', 'stream.svg', 'sync.yaml']);
   assert.equal(record.incomplete, false);
 });
+
+const trackedInputs = ['inputs/first.txt', 'inputs/nested/second.json'];
+for (const [api, action, expected = trackedInputs] of [
+  ['cpSync directory', `fs.cpSync('inputs', '../copy', { recursive: true })`],
+  ['cpSync file', `fs.cpSync('inputs/first.txt', '../copy')`, [trackedInputs[0]]],
+  ['cp promise with a filter', `await fs.promises.cp(new URL('file://' + process.cwd() + '/inputs'), '../copy', {
+    recursive: true, filter: source => !/(?:nested|untracked\\.txt)$/.test(source),
+  })`],
+  ['readdirSync', `fs.readdirSync(Buffer.from('inputs'))`],
+  ['readdir callback', `await promisify(fs.readdir)('inputs')`],
+  ['readdir promise', `await readdir('inputs')`],
+  ['opendirSync', `const dir = fs.opendirSync('inputs'); dir.readSync(); dir.closeSync()`],
+  ['opendir callback', `const dir = await promisify(fs.opendir)('inputs'); await dir.read(); await dir.close()`],
+  ['opendir promise', `const dir = await opendir('inputs'); await dir.read(); await dir.close()`],
+  ['checkout root listing', `fs.readdirSync('.')`, ['inputs-other/sibling.txt', ...trackedInputs]],
+]) {
+  test(`${api} records tracked files and selects their reader`, async t => {
+    const paths = fixture(t);
+    const { root, raw } = paths;
+    mkdirSync(join(root, 'inputs/nested'), { recursive: true });
+    mkdirSync(join(root, 'inputs-other'));
+    const tracked = [...trackedInputs, 'inputs-other/sibling.txt'];
+    for (const file of [...tracked, 'inputs/untracked.txt']) writeFileSync(join(root, file), 'fixture');
+    execFileSync('git', ['init', '-q'], { cwd: root });
+    execFileSync('git', ['add', '--', ...tracked], { cwd: root });
+    const result = runNode(['--input-type=module', '-e', `
+      import fs from 'node:fs';
+      import { readdir, opendir } from 'node:fs/promises';
+      import { promisify } from 'node:util';
+      ${action};
+    `], { cwd: root, env: recorderEnv(root, raw) });
+    assert.equal(result.status, 0, result.stderr);
+    const record = reduceProbe(paths);
+    assert.equal(record.incomplete, false);
+    const other = 'packages/example/src/unrelated.test.ts';
+    await t.test('selects only the reader on a tracked input edit', async () => {
+      for (const file of expected) {
+        const selection = await selectTests({ head: 'a'.repeat(40), inventory: [id, other], changes: [{ file, status: 'M' }],
+          map: { files: record.reads, tests: { [id]: { ...record, reads: record.reads.map((_, i) => i) },
+            [other]: { ...record, reads: [] } } } });
+        assert.equal(selection.mode, 'scoped');
+        assert.deepEqual(selection.selected, { [id]: [`recorded input: ${file}`] });
+      }
+    });
+    assert.deepEqual(record.reads, expected);
+  });
+}
 
 test('records a declared fixture input even when only a shell reads it', { skip: process.platform === 'win32' }, t => {
   const paths = fixture(t);

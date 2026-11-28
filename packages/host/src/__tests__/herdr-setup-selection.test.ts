@@ -5,17 +5,18 @@ import { readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setupHerdr, rollbackHerdr } from '../../../herdr/src/setup/installer.js';
 import { readJournal, saveJournal } from '../../../herdr/src/setup/backup.js';
-import { cleanup, fixture, type SetupFixture } from './herdr-setup-fixture.js';
+import { cleanup, type SetupFixture } from './herdr-setup-fixture.js';
+import { focusedSetupFixture } from './herdr-setup-focused-fixture.js';
 
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
-const fastFixture = () => fixture('fake', false, { coreTransport: 'socket' });
+const fastFixture = () => focusedSetupFixture();
 
 async function interruptSelection(command: 'layout.switch' | 'app.theme', coreTransport: 'process' | 'socket' = 'socket') {
-  const f = await fixture('fake', false, { coreTransport }), settings = join(f.request.config.app.home, 'settings.json');
+  const f = await focusedSetupFixture({ coreTransport, localOnly: true }), settings = join(f.request.config.app.home, 'settings.json');
   const original = await readFile(settings);
   const script = join(f.h.root, 'app-selection.mjs'), marker = join(f.h.root, 'interrupt-selection');
   const journal = join(f.request.journalRoot, 'journal.json'), interruptedJournal = join(f.h.root, 'interrupted-journal.json');
@@ -131,7 +132,7 @@ test('rollback releases a verified user theme and restores the other owned paths
 }, 60_000);
 
 test('writes native sound after app selection even when the app saves stale settings', async () => {
-  const f = await fixture(), settings = join(f.request.config.app.home, 'settings.json');
+  const f = await focusedSetupFixture({ coreTransport: 'process', localOnly: true }), settings = join(f.request.config.app.home, 'settings.json');
   const original = await readFile(settings), script = join(f.h.root, 'app-selection.mjs'), seen = join(f.h.root, 'selection-sounds');
   await writeFile(script, `import { readFileSync as readSettings, writeFileSync as saveSettings, appendFileSync as recordSettings } from 'node:fs';
 const args = process.argv.slice(2), path = process.env.HERDR_APP_HOME + '/settings.json';

@@ -3,13 +3,14 @@ import { chmod, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setupHerdr } from '../../../herdr/src/setup/installer.js';
 import { cleanup, fixture, type SetupFixture } from './herdr-setup-fixture.js';
+import { focusedSetupFixture } from './herdr-setup-focused-fixture.js';
 
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
-const fastFixture = () => fixture('fake', false, { coreTransport: 'socket' });
+const fastFixture = () => focusedSetupFixture({ coreTransport: 'socket' });
 const runs = async (f: SetupFixture) => {
   const calls: { argv: string[] }[] = f.h.mode === 'hc'
     ? (await readFile(join(f.h.root, 'observed-core-calls.jsonl'), 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line))

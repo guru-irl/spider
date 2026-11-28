@@ -50,6 +50,7 @@ case "$2" in
   *) echo "Unexpected API request: $*" >&2; exit 64 ;;
 esac
 `, 0o700);
+  put('vitest.config.mjs', 'export default {};');
   symlinkSync(resolve('node_modules/vitest'), join(root, 'node_modules/vitest'), 'dir');
   const summary = join(root, 'summary');
   const output = join(root, 'runner-output');
@@ -75,12 +76,24 @@ esac
 }
 
 test('all PR shards and the audit receive one selection without transferring test artifacts', t => {
-  const { put, commit, select, selection, published, restore, run, root, legacy } = fixture(t);
+  const { put, commit, select, selection, published, restore, run, root } = fixture(t);
   const paths = [...tests, 'packages/example/src/c.test.ts', 'packages/example/src/d.test.ts'];
+  put('scripts/selection/select.mjs', `
+    import { execFileSync } from 'node:child_process';
+    import { appendFileSync, writeFileSync } from 'node:fs';
+    import { selectionHash } from './manifest.mjs';
+    const files = ${JSON.stringify(paths)};
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const selection = { version: 1, head, mode: 'scoped', fallback: null, mapRunId: '44', mapCommit: process.argv[2],
+      changedFiles: [], selected: Object.fromEntries(files.map(file => [file, ['fixture']])), groups: files.map(file => [file]) };
+    appendFileSync('selector-calls', 'called\\n');
+    writeFileSync(process.argv[3], JSON.stringify({ ...selection, selectionHash: selectionHash(selection) }));
+  `);
+  const base = commit();
   for (const file of paths) put(file, 'import { it } from "vitest"; it("passes", () => {});');
   commit();
   assert.ok(workflow.jobs.select, 'the PR must compute one selection before starting the matrix');
-  const result = select({ BASE_SHA: legacy });
+  const result = select({ BASE_SHA: base });
   assert.equal(result.status, 0, result.stderr);
   const shared = published();
   assert.deepEqual(JSON.parse(gunzipSync(Buffer.from(shared, 'base64'))), selection());
@@ -95,6 +108,7 @@ test('all PR shards and the audit receive one selection without transferring tes
     assert.equal(workflow.jobs[job].steps.find(step => step.name === 'Restore shared test selection').env.SELECTION,
       '${{ needs.select.outputs.manifest }}');
     assert.notEqual(restore(job, '').status, 0, 'missing output must not run tests');
+    assert.notEqual(restore(job, 'dGVzdA==').status, 0, 'corrupt output must not run tests');
   }
   for (const group of matrix.strategy.matrix.group) {
     put(selectionPath, '{}'); // No local selection from the producer may survive.
@@ -108,6 +122,7 @@ test('all PR shards and the audit receive one selection without transferring tes
   put(selectionPath, '{}');
   assert.equal(restore('save-selection', shared).status, 0);
   assert.deepEqual(selection().groups, paths.map(file => [file]));
+  assert.equal(readFileSync(join(root, 'selector-calls'), 'utf8'), 'called\n');
   const uploads = Object.entries(workflow.jobs).flatMap(([job, { steps }]) => steps
     .filter(step => step.uses?.startsWith('actions/upload-artifact@'))
     .map(step => [job, step.with.name, step.with.path]));
@@ -175,3 +190,26 @@ for (const [label, body] of [
     assert.doesNotMatch(notes, /Unfinished scoped selection/);
   });
 }
+
+
+test('oversized selections fall back to a compact full manifest without rerunning the selector', t => {
+  const { put, commit, selection, select, published, summary } = fixture(t);
+  put('scripts/selection/select.mjs', `
+    import { createHash } from 'node:crypto';
+    import { appendFileSync, writeFileSync } from 'node:fs';
+    const payload = Array.from({ length: 3000 }, (_, i) => createHash('sha256').update(String(i)).digest('hex'));
+    writeFileSync(process.argv[3], JSON.stringify({ reasons: payload }));
+    appendFileSync(process.env.GITHUB_STEP_SUMMARY, 'Oversized scoped selection');
+  `);
+  const base = commit();
+  put(tests[1], 'export {};');
+  commit();
+  const result = select({ BASE_SHA: base });
+  assert.equal(result.status, 0, result.stderr);
+  const manifest = JSON.parse(gunzipSync(Buffer.from(published(), 'base64')));
+  assert.deepEqual(manifest, selection());
+  assert.equal(manifest.mode, 'full');
+  assert.equal(manifest.fallback, 'selection exceeds the job output limit');
+  assert.deepEqual(manifest.groups, [[tests[0]], [tests[1]], [], []]);
+  assert.doesNotMatch(readFileSync(summary, 'utf8'), /Oversized scoped selection/);
+});

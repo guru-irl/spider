@@ -34,17 +34,3 @@ export function validateSelection(selection, head) {
   }
   return selection;
 }
-
-export function requireAgreement({ needs, hashes, selection, head }) {
-  if (needs?.compile?.result !== 'success' || needs?.tests?.result !== 'success') {
-    throw new Error('Compile and every test runner must succeed');
-  }
-  const { selectionHash: expected } = validateSelection(selection, head);
-  if (!Array.isArray(hashes) || hashes.length !== groupCount || hashes.some((row, i) =>
-    row?.group !== i + 1 || row.selectionHash !== expected)) {
-    const details = Array.isArray(hashes) ? hashes.map((row, i) =>
-      `group ${i + 1}: hash=${JSON.stringify(row?.selectionHash ?? null)} map=${JSON.stringify(row?.mapRunId ?? null)} fallback=${JSON.stringify(row?.fallback ?? null)}`).join('; ') : 'no runner hashes';
-    throw new Error(`Test runners used different selections or a runner did not report its hash: ${details}`);
-  }
-  return expected;
-}

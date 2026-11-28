@@ -48,13 +48,13 @@ npm run build
 ### CI checks
 
 Build and test jobs use Node `26.4.0`. On a pull request, `pr.yml` runs
-`compile` beside four test runners with three fork workers each. The required
-`typecheck · test · build` check passes only when compile and all four runners
-pass and the runners agree on the selection hash.
+`select tests` once beside `compile`. After selection, four test runners receive
+its manifest as a job output. Each runner validates the manifest and runs its
+assigned group with three fork workers. The required `typecheck · test · build`
+check requires successful selection, compile, and all four groups.
 
-The test jobs use `select.mjs`, `run.mjs`, and `manifest.mjs` from the PR
-base commit. The required check also uses the base `aggregate.mjs` and
-`manifest.mjs`. Before main has the judge scripts, the workflow uses a
+The workflow uses `select.mjs`, `run.mjs`, and `manifest.mjs` from the PR
+base commit. Before main has the runner scripts, the workflow uses a
 pinned, reviewed revision of them instead of the PR head.
 
 The selector finds the newest usable main map whose commit is an ancestor
@@ -67,12 +67,13 @@ CI runs the full root Vitest suite if the base selector is missing or fails,
 no map is usable, or the PR changes the toolchain or selection infrastructure.
 A selector exit error, including a failed map API request, discards any
 partial selection and gives the fallback reason in the step summary. A fix
-for a broken base selector can pass after running the full suite. If runners
-produce different manifests, the required check still fails. No selected
-tests are deferred.
+for a broken base selector can pass after running the full suite. A selection
+that is too large for the job output also falls back to the full root suite.
+No selected tests are deferred.
 
-Download `test-selection.json` from the PR run's `test-selection` artifact.
-It records the map run and commit, changed files, selection reasons, four test
+The `save selection for main audit` job uploads `test-selection.json` from the
+shared job output. An upload failure does not block the required check. The
+artifact records the map run and commit, changed files, selection reasons, four test
 groups, and the selection hash. The longest test files are assigned first;
 files with no recorded time get the median. Without a map, CI uses the checked-in
 main shard weights for the full fallback.

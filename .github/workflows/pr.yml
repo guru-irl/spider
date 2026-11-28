@@ -15,6 +15,9 @@ permissions:
 env:
   # CI never uses onnxruntime's CUDA provider; skip its NuGet download.
   ONNXRUNTIME_NODE_INSTALL: skip
+  # First rollout only: main has no judge yet. Use a reviewed, fixed revision,
+  # not the moving PR head. Remove this once main has the judge modules.
+  SELECTION_BOOTSTRAP_SHA: 9cfb0d8168a5eab16347ddfe1d60d1698c88ab96
 
 jobs:
   compile:
@@ -173,9 +176,21 @@ jobs:
           retention-days: 30
 
       - name: Test selected group
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          set -o pipefail
+          git cat-file -e "$BASE_SHA^{commit}"
+          judge=$BASE_SHA
+          if ! git cat-file -e "$BASE_SHA:scripts/selection/manifest.mjs" 2>/dev/null; then
+            judge=$SELECTION_BOOTSTRAP_SHA
+          fi
+          judge_dir=$(mktemp -d "$RUNNER_TEMP/selection-judge.XXXXXX")
+          trap 'rm -rf -- "$judge_dir"' EXIT
+          git archive "$judge" scripts/selection/{run,manifest}.mjs | tar -xf - -C "$judge_dir"
+          ln -s "$PWD/node_modules" "$judge_dir/node_modules"
           env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_APP_E2E -u XDG_RUNTIME_DIR TMPDIR="$PWD/.spider/scratch/tmp" \
-            node scripts/selection/run.mjs .spider/scratch/test-results/test-selection.json ${{ matrix.group }} \
+            node "$judge_dir/scripts/selection/run.mjs" .spider/scratch/test-results/test-selection.json ${{ matrix.group }} \
             .spider/scratch/test-results/group-${{ matrix.group }}.json .spider/scratch/test-results/hash-${{ matrix.group }}.json
 
       - name: Attest the completed selection
@@ -198,6 +213,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -210,6 +226,17 @@ jobs:
           merge-multiple: true
       - name: Require identical PR selections
         env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           NEEDS_JSON: ${{ toJSON(needs) }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: node scripts/selection/aggregate.mjs .spider/scratch/selections "$HEAD_SHA"
+        run: |
+          set -o pipefail
+          git cat-file -e "$BASE_SHA^{commit}"
+          judge=$BASE_SHA
+          if ! git cat-file -e "$BASE_SHA:scripts/selection/manifest.mjs" 2>/dev/null; then
+            judge=$SELECTION_BOOTSTRAP_SHA
+          fi
+          judge_dir=$(mktemp -d "$RUNNER_TEMP/selection-judge.XXXXXX")
+          trap 'rm -rf -- "$judge_dir"' EXIT
+          git archive "$judge" scripts/selection/{aggregate,manifest}.mjs | tar -xf - -C "$judge_dir"
+          node "$judge_dir/scripts/selection/aggregate.mjs" .spider/scratch/selections "$HEAD_SHA"

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { closeSync, openSync, readSync } from 'node:fs';
-import { isAbsolute, relative, sep } from 'node:path';
+import { basename, isAbsolute, relative, sep } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
 // The trace can be hundreds of MB. Keep only the paths in the checkout
@@ -51,7 +51,7 @@ export function readKernelTrace(file, { root, tracked, owners }) {
     for (let i = path.lastIndexOf('/'); i >= 0; i = path.lastIndexOf('/', i - 1)) repoDirs.add(path.slice(0, i));
   }
   const task = pid => {
-    if (!tasks.has(pid)) tasks.set(pid, { children: [], reads: new Set(), trees: new Set(), gaps: new Set() });
+    if (!tasks.has(pid)) tasks.set(pid, { children: [], reads: new Set(), trees: new Set(), artifacts: new Set(), gaps: new Set(), nodeStarts: 0 });
     return tasks.get(pid);
   };
   function input(row, path, tree = false) {
@@ -65,6 +65,7 @@ export function readKernelTrace(file, { root, tracked, owners }) {
       if (path.startsWith('.git/objects/')) row.gaps.add('checkout object database');
       if (tree && repoDirs.has(path)) row.trees.add(path);
       if (!tree && repoFiles.has(path)) row.reads.add(path);
+      else if (!tree && path.startsWith('dist/')) row.artifacts.add(path);
     }
   }
   let rootPid;
@@ -110,8 +111,17 @@ export function readKernelTrace(file, { root, tracked, owners }) {
     } else if (directories.has(name)) {
       input(tracee, decoded(/^\d+<(.*)>, /.exec(args)?.[1]), true);
     } else if (exec.has(name)) {
-      const path = /^(?:[^,]*, )?"((?:[^"\\]|\\.)*)"/.exec(args)?.[1];
-      input(tracee, decoded(path || /^\d+<(.*)>, ""/.exec(args)?.[1]));
+      const executable = /^(?:[^,]*, )?"((?:[^"\\]|\\.)*)"(?=, )/.exec(args);
+      const path = decoded(executable?.[1] || /^\d+<(.*)>, ""/.exec(args)?.[1]);
+      input(tracee, path);
+      if (path && /^(node|nodejs)(\.exe)?$/i.test(basename(path))) {
+        // Unlike a guessed launch name, this is the executable named by a
+        // successful kernel exec. Anything except the exact early version
+        // path needs a Node recorder startup, even behind a clean shell.
+        const version = process.versions.node === '26.4.0' && path === process.execPath && executable &&
+          /^, \["(?:[^"\\]|\\.)*", "--version"\], /.test(args.slice(executable[0].length));
+        if (!version) tracee.nodeStarts++;
+      }
     } else if (unsupported.has(name) || (descriptors.has(name) && args.includes('SCM_RIGHTS'))) {
       tracee.gaps.add(name);
     } else if (!descriptors.has(name)) tracee.gaps.add('unrecognized syscall');
@@ -128,7 +138,8 @@ export function readKernelTrace(file, { root, tracked, owners }) {
     const tracee = tasks.get(pid);
     if (++visited > tasks.size) return { error: 'cyclic trace ancestry' };
     if (name) {
-      if (!byTest.has(name)) byTest.set(name, { reads: new Set(), trees: new Set(), exited: new Set(), gaps: new Set() });
+      if (!byTest.has(name)) byTest.set(name, { reads: new Set(), trees: new Set(), artifacts: new Set(),
+        exited: new Set(), gaps: new Set(), nodeStarts: new Map() });
       const test = byTest.get(name);
       if (parent && name !== parent) {
         test.gaps.add('nested test fork');
@@ -136,7 +147,9 @@ export function readKernelTrace(file, { root, tracked, owners }) {
       }
       for (const path of tracee.reads) test.reads.add(path);
       for (const path of tracee.trees) test.trees.add(path);
+      for (const path of tracee.artifacts) test.artifacts.add(path);
       for (const gap of tracee.gaps) test.gaps.add(gap);
+      if (tracee.nodeStarts) test.nodeStarts.set(pid, tracee.nodeStarts);
       if (tracee.exited) test.exited.add(pid);
       else test.gaps.add('unobserved exit');
     }

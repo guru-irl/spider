@@ -105,8 +105,15 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
     unresolvedBundles: 0,
     unresolvedGroups: { checkout: 0, temporary: 0, other: 0 },
   };
+  function unresolvedBundle(entry, url) {
+    const unresolved = unresolvedPath(root, tmpRoot, url);
+    entry.unresolved.add(unresolved.path);
+    stats.unresolvedBundles++;
+    stats.unresolvedGroups[unresolved.group]++;
+  }
   const group = file => {
-    if (!groups.has(file)) groups.set(file, { reads: new Set(), unresolved: new Set(), workerPids: new Set(), ranBundle: false,
+    if (!groups.has(file)) groups.set(file, { reads: new Set(), unresolved: new Set(), bundlePaths: new Set(),
+      workerPids: new Set(), ranBundle: false,
       processes: new Map(), threads: new Set(), observedThreads: new Set(), readyThreads: new Map(), threadExits: new Set(),
       launches: new Set(), observedLaunches: new Set(), versionProbes: new Set(), probeExits: new Set() });
     return groups.get(file);
@@ -168,6 +175,7 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
       }
       if (script.kind === 'bundle' || script.kind === 'fixture') {
         entry.ranBundle = true;
+        entry.bundlePaths.add(modulePath(script.url));
         if (script.sha256 && !maps.has(script.sha256) && !fixtures.has(script.sha256)) {
           const archive = join(rawDir, 'fixture-maps', `${script.sha256}.json`);
           const fixture = existsSync(archive) ? read(archive) : null;
@@ -176,12 +184,7 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
         const sources = maps.get(script.sha256) ?? fixtures.get(script.sha256);
         if (sources) {
           for (const source of sources) entry.reads.add(source);
-        } else {
-          const unresolved = unresolvedPath(root, tmpRoot, script.url);
-          entry.unresolved.add(unresolved.path);
-          stats.unresolvedBundles++;
-          stats.unresolvedGroups[unresolved.group]++;
-        }
+        } else unresolvedBundle(entry, script.url);
       } else if (script.kind === 'tree') {
         const file = fileURLToPath(script.url);
         for (const source of treeInputs(file === checkout ? '' : repoPath(root, file))) entry.reads.add(source);
@@ -198,8 +201,8 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
   if (existsSync(traceFile)) {
     const owners = new Map([...groups].flatMap(([file, entry]) => [...entry.workerPids].map(pid => [pid, file])));
     trace = readKernelTrace(traceFile, { root: checkout, tracked: trackedPaths(), owners });
-    stats.kernelTrace = trace.error ?? 'observed';
-  }
+  } else if (existsSync(join(rawDir, 'kernel-mode'))) trace = { error: 'expected Linux trace missing' };
+  if (trace) stats.kernelTrace = trace.error ?? 'observed';
   const reportedFiles = [...outcomes.keys()].sort();
   const failedFiles = [];
   const records = {};
@@ -222,6 +225,16 @@ export function reduce({ root = process.cwd(), tmpRoot = tmpdir(), rawDir, mapsD
     if (native) {
       for (const read of native.reads) entry.reads.add(read);
       for (const tree of native.trees) for (const read of treeInputs(tree)) entry.reads.add(read);
+      for (const name of native.artifacts) {
+        entry.ranBundle = true;
+        const path = resolve(checkout, name);
+        if (!entry.bundlePaths.has(path)) unresolvedBundle(entry, path);
+      }
+      const starts = new Map();
+      for (const proc of processValues) if (proc.captureReady) starts.set(proc.pid, (starts.get(proc.pid) ?? 0) + 1);
+      for (const [pid, count] of native.nodeStarts) {
+        if ((starts.get(pid) ?? 0) < count) native.gaps.add('Node started without recorder evidence');
+      }
     }
     const kernelGaps = native ? [...native.gaps].sort() : trace ? [trace.error ?? 'unobserved Vitest fork'] : [];
     const confirmedExit = pid => !kernelGaps.length && native?.exited.has(pid);

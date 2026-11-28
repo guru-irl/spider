@@ -19,7 +19,7 @@ afterEach(async () => {
       await h.close(); expect(await h.remainingOwnedResources()).toEqual([]);
       const directory = join(paths.scratch('worktree', process.cwd()), 'h', 'logs');
       await mkdir(directory, { recursive: true });
-      await writeFile(join(directory, `c3-${h.mode}-cleanup.json`), JSON.stringify(h.cleanupProof, null, 2));
+      await writeFile(join(directory, `c3-${process.pid}-${h.mode}-cleanup.json`), JSON.stringify(h.cleanupProof, null, 2));
     } finally { restore?.(); }
   }
 });

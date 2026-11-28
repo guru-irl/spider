@@ -1,16 +1,13 @@
-import { readPlacementRepairs, writePlacementRepair } from '../jobs/placement-repairs.js';
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { createHash } from 'node:crypto';
+import { readPlacementRepairs, writePlacementRepair } from '../jobs/placement-repairs.js';
 import * as fs from 'node:fs/promises';
 import { mkdir, readFile, writeFile, symlink } from 'node:fs/promises';
-import { dirname, isAbsolute, join } from 'node:path';
-import { afterEach, expect, test, vi } from 'vitest';
-import { HERDR_LABELS, HERDR_KINDS, type MachineName, panelIpcArgv, type IpcDescriptor, type SessionIpcRequest } from '../contracts.js';
-import { createHerdrHarness, type HerdrHarness } from './testutil.js';
-import { parseHerdrConfig } from '../config.js';
-import { setupHerdr, rollbackHerdr, type SetupParts, type SetupRequest, type InstallFile, type CutoverResult } from '../setup/installer.js';
-import { DOCTOR_ITEMS, doctorHerdr, type DoctorParts, type DoctorFailure } from '../setup/doctor.js';
+import { isAbsolute, join } from 'node:path';
+import { expect, test, vi } from 'vitest';
+import { type MachineName, panelIpcArgv, type IpcDescriptor, type SessionIpcRequest } from '../contracts.js';
+import { setupHerdr, rollbackHerdr } from '../setup/installer.js';
+import { doctorHerdr } from '../setup/doctor.js';
 import { runHerdrCli, type HerdrCliPorts } from '../setup/cli.js';
 import { readJournal, withSetupLock } from '../setup/backup.js';
 import { fixture as processFixture, hash, realFs, registerSetupCleanup } from './setup-fixture.js';

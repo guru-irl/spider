@@ -19,8 +19,10 @@ it('isolates package mutations while preserving nested files, modes and symlinks
   snapshotPackage(source, first);
   snapshotPackage(source, second);
   replacePackageFile(join(first, 'nested', 'file'), 'mutated');
+  replacePackageFile(join(first, 'new-file'), 'added');
   rmSync(join(first, 'remove'));
   expect(readFileSync(join(first, 'nested', 'file'), 'utf8')).toBe('mutated');
+  expect(readFileSync(join(first, 'new-file'), 'utf8')).toBe('added');
   expect(readFileSync(join(source, 'nested', 'file'), 'utf8')).toBe('original');
   expect(readFileSync(join(second, 'nested', 'file'), 'utf8')).toBe('original');
   expect(readFileSync(join(source, 'remove'), 'utf8')).toBe('keep');

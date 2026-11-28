@@ -1,23 +1,11 @@
 // SPDX-License-Identifier: MIT
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdir, writeFile, readFile, chmod, access, copyFile, symlink } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { spawn, execFileSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { writeFile, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { build } from 'vite';
-import { createHerdrHarness } from './isolated.js';
 import { createProductionHerdrCliPorts } from '../../../host/src/herdr/ports.js';
-import { readJournal, saveJournal } from '../setup/backup.js';
-import { rollbackHerdr } from '../setup/installer.js';
-import { createTerminalRegistry, writePrivateJson } from '../sessions/registry.js';
-import { readCutoverRecovery, setupSpaces } from '../spaces/setup.js';
-import { shellQuote } from '../sessions/resume.js';
-import type { SetupRequest } from '../setup/installer.js';
-import { fixture, until, realCoreAvailable, registerJournalCrashTests } from './production-cutover-fixture.js';
+import { writePrivateJson } from '../sessions/registry.js';
+import { fixture, realCoreAvailable, registerJournalCrashTests } from './production-cutover-fixture.js';
 
 afterEach(() => vi.unstubAllEnvs());
 if (process.env.SPIDER_HERDR_E2E === '1' && !realCoreAvailable) console.warn('Skipping isolated core acceptance: hc is not installed');

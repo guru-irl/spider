@@ -21,11 +21,13 @@ export function snapshotPackage(source: string, destination: string): void {
 }
 
 export function replacePackageFile(path: string, bytes: string | Buffer): void {
-  const mode = lstatSync(path).mode & 0o777;
+  let mode: number | undefined;
+  try { mode = lstatSync(path).mode & 0o777; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   const temporary = `${path}.${randomUUID()}.new`;
   try {
     writeFileSync(temporary, bytes, { mode });
-    chmodSync(temporary, mode);
+    if (mode !== undefined) chmodSync(temporary, mode);
     renameSync(temporary, path);
   } finally { rmSync(temporary, { force: true }); }
 }

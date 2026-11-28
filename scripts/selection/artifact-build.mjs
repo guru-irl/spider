@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { isArtifact } from './artifact-routing.mjs';
+import { artifactPath, isArtifact } from './artifact-routing.mjs';
 import { bundleDigest } from './bundle-keys.mjs';
 import { sorted } from './manifest.mjs';
 
@@ -24,12 +24,14 @@ export function archiveArtifactInputs(bucket, dest, root = process.cwd()) {
       const chunks = Object.values(bundle).filter(output => output.type === 'chunk');
       if (chunks.length !== 1 || !chunks[0].isEntry) return;
       const { fileName, facadeModuleId } = chunks[0];
-      const name = resolve(dir, fileName);
-      const path = relative(root, name).split(sep).join('/');
-      if (path !== ['dist', bucket, fileName].filter(Boolean).join('/')) return;
+      const built = relative(root, resolve(dir, fileName)).split(sep).join('/');
+      if (!artifactPath(built)) return;
+      // Some scripts build in a staging directory and move the file into the
+      // bucket. The shard later verifies the canonical path against these bytes.
+      const path = ['dist', bucket, fileName].filter(Boolean).join('/');
       const entry = repoInput(facadeModuleId);
       const inputs = sorted([...configInputs, ...moduleInputs].map(repoInput).filter(Boolean));
-      const artifact = { path, sha256: bundleDigest(root, path), entry, inputs };
+      const artifact = { path, sha256: bundleDigest(root, built), entry, inputs };
       if (!isArtifact(artifact)) return;
       const archive = join(dest, `${fileName}.artifact.json`);
       mkdirSync(dirname(archive), { recursive: true });

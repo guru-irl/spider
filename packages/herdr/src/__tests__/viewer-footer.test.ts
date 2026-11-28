@@ -42,11 +42,11 @@ test('viewer input uses the shared band and keeps a draft across reconnect', () 
 
 test('viewer respects the owning session input-band preference without losing its draft', () => {
   const view = make();
-  view.setRunInfo({ protocol: 2, inputBand: false } as never);
+  view.setRunInfo({ protocol: 2, inputBand: false });
   view.setState(running);
   view.editor!.setText('Keep this draft');
   expect(view.render(40).map(stripTerminalSequences).some(row => row.startsWith('─'))).toBe(true);
-  view.setRunInfo({ protocol: 2, inputBand: true } as never);
+  view.setRunInfo({ protocol: 2, inputBand: true });
   expect(view.editor!.getText()).toBe('Keep this draft');
   expect(view.render(40).map(stripTerminalSequences).some(row => row.startsWith('▖'))).toBe(true);
 });
@@ -54,7 +54,7 @@ test('viewer respects the owning session input-band preference without losing it
 test('viewer footer shows calibrated run credits, context, cache and the model display name', () => {
   const view = make();
   view.setRunInfo({ protocol: 2, model: 'github-copilot/gpt-6.1-sol', modelName: 'GPT-6.1 Sol',
-    thinking: 'xhigh', contextWindow: 200000, creditFactor: 0.5 } as never);
+    thinking: 'xhigh', contextWindow: 200000, creditFactor: 0.5 });
   view.setState(running);
   view.live({ type: 'message_end', message });
   view.addEntries([entry]); // The persisted copy of the live message must not double count.
@@ -69,7 +69,7 @@ test('viewer footer shows calibrated run credits, context, cache and the model d
   expect(footer).toContain('GPT-6.1 Sol · xhigh');
   expect(footer).not.toMatch(/↑|↓|\$|month|R80k|running/);
   view.setRunInfo({ protocol: 2, model: 'github-copilot/gpt-6.1-sol', modelName: 'GPT-6.1 Sol',
-    thinking: 'xhigh', contextWindow: 200000, creditFactor: 1 } as never);
+    thinking: 'xhigh', contextWindow: 200000, creditFactor: 1 });
   expect(view.footerLines(120).map(stripTerminalSequences).join('\n')).toContain('1.0 AIC');
   for (let width = 1; width <= 160; width++) {
     expect(view.footerLines(width).every(row => visibleWidth(row) <= width), `width ${width}`).toBe(true);
@@ -85,6 +85,33 @@ test('viewer footer does not claim zero credits or context when usage is unprice
   expect(footer).toContain('42k context');
   view.addEntries([{ type: 'compaction', summary: 'Earlier turns', firstKeptEntryId: 'x', tokensBefore: 41540 }]);
   expect(view.footerLines(120).map(stripTerminalSequences).join('\n')).toContain('context unknown');
+});
+
+test('viewer context includes trailing tool and user messages and ignores failed response usage', () => {
+  const view = make();
+  view.setRunInfo({ protocol: 2, model: 'github-copilot/gpt-6.1-sol', contextWindow: 200000 });
+  view.addEntries([entry, { type: 'message', timestamp: '2026-10-02T12:00:01Z', message: {
+    role: 'toolResult', toolCallId: 'tool-1', toolName: 'read', content: [{ type: 'text', text: 'x'.repeat(8000) }],
+    isError: false, timestamp: message.timestamp + 1,
+  } }]);
+  expect(view.footerLines(120).map(stripTerminalSequences).join('\n')).toContain('21.8%/200k');
+  view.addEntries([{ type: 'message', timestamp: '2026-10-02T12:00:02Z', message: {
+    role: 'user', content: 'y'.repeat(4000), timestamp: message.timestamp + 2,
+  } }, { type: 'message', timestamp: '2026-10-02T12:00:03Z', message: {
+    ...message, content: [], stopReason: 'error', timestamp: message.timestamp + 3,
+    usage: { ...message.usage, totalTokens: 1000 },
+  } }]);
+  expect(view.footerLines(120).map(stripTerminalSequences).join('\n')).toContain('22.3%/200k');
+});
+
+test('viewer labels missing transcript history rather than claiming the tail is total run credits', () => {
+  const view = make();
+  view.setRunInfo({ protocol: 2, model: 'github-copilot/gpt-6.1-sol', contextWindow: 200000 });
+  view.addEntries([entry]);
+  view.setHistoryTruncated();
+  const footer = view.footerLines(120).map(stripTerminalSequences).join('\n');
+  expect(footer).toContain('tail totals');
+  expect(footer).toContain('? AIC');
 });
 
 test('viewer moon advances while working and stops on agent end, stale state and disposal', () => {

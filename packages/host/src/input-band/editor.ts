@@ -91,7 +91,7 @@ export function createBandEditor(Base: typeof CustomEditor): new (
       };
       const edge = (top: boolean, hidden: number) => hidden > 0
         ? bandRow(theme.fg("dim", `${icon("text", top ? "arrowUp" : "arrowDown")} ${hidden} more`))
-        : theme.fg(color, top ? BAND_GLYPHS.top : BAND_GLYPHS.bottom)
+        : theme.fg(color, top ? BAND_GLYPHS.barTop : BAND_GLYPHS.barBottom)
           + fg + (top ? BAND_GLYPHS.top : BAND_GLYPHS.bottom).repeat(width - 1) + "\x1b[39m";
       return [edge(true, edges.top.hidden), ...rows.slice(1, bottom).map(bandRow), edge(false, edges.bottom.hidden),
         ...rows.slice(bottom + 1).map(row => truncateToWidth("  " + row, width, ""))];

@@ -7,6 +7,7 @@ import { createV0Intercom, hasV0IntercomConfig } from "@spider/roam/relocate/int
 import { fileURLToPath } from "node:url";
 import { registerIntercomOnce, intercomConflict, type IntercomBrokerPort } from "@spider/intercom";
 import { localMachineLabel, withIntercomCards } from "./intercom-cards.js";
+import { withClickExpansion } from "./message-click-expansion.js";
 import { stripVTControlCharacters } from "node:util";
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
 import { bootUsageWorker } from "./usage/worker-entry.js";
@@ -29,7 +30,7 @@ import { flushLeft, icon, isAbsolutePathList, isToolSelectorList } from "@spider
 // THE single spider pi extension entry. Composes the whole surface:
 // one `spider` tool + control routing + every contract hook. Later phases
 // attach action handlers via registerAction (re-exported below).
-import type { CacheWarmingDecisionEventResult, ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { CacheWarmingDecisionEventResult, ContextEvent, ExtensionAPI, ExtensionContext, MessageRenderer } from "@earendil-works/pi-coding-agent";
 import { registerLoopSchedule, type SessionScheduler, type LoopArgs, type ScheduleArgs } from "./loop/index";
 import { registerAutoReload } from "./auto-reload.js";
 import { trackReloadActivity } from "./reload-activity.js";
@@ -196,7 +197,7 @@ interface PiToolAPI {
     execute(toolCallId: string, params: SpiderArgs, signal: unknown, onUpdate: unknown, ctx: unknown): Promise<unknown>;
   }): void;
   registerCommand?(name: string, def: unknown): void;
-  registerMessageRenderer?(customType: string, renderer: (message: unknown, options: unknown, theme: unknown) => unknown): void;
+  registerMessageRenderer?(customType: string, renderer: MessageRenderer): void;
   registerEntryRenderer?(customType: string, renderer: (entry: unknown, options: unknown, theme: unknown) => unknown): void;
   appendEntry?(customType: string, data?: unknown): void;
   on(name: string, fn: (...args: unknown[]) => unknown): void;
@@ -1364,24 +1365,23 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
     /* best-effort cutover; never break load */
   }
 
-  // The async subagent_done message is expandable in the transcript: collapsed by default,
-  // ctrl+o reveals the COMPLETE curated output. Best-effort — older hosts may lack the API.
-  pi.registerMessageRenderer?.("spider.subagent_done", (message: any, options: any, theme: any) =>
+  // Expand a completion card to see the full curated output.
+  pi.registerMessageRenderer?.("spider.subagent_done", withClickExpansion((message, options, theme) =>
     renderSubagentDone(message, options, theme, iconStyle()),
-  );
+  ));
 
   // Slash commands (/spider, /doctor, /stats, …) emit a spider.command message; render its
   // output lines themed in the transcript instead of an ephemeral toast.
-  pi.registerMessageRenderer?.("spider.command", (message: any, options: any, theme: any) =>
+  pi.registerMessageRenderer?.("spider.command", withClickExpansion((message, options, theme) =>
     renderCommandOutput(message, options, theme, iconStyle()),
-  );
+  ));
 
   pi.registerEntryRenderer?.("spider.organism", (entry: unknown, options: any, theme: unknown) =>
     renderOrganismEntry(entry, options, theme, iconStyle()),
   );
 
-  // Escalation messages from subagents render in the error card style (red background).
-  pi.registerMessageRenderer?.("spider.escalation", (message: any, options: any, theme: any) =>
+  // Escalations always show the full summary, so they don't claim clicks.
+  pi.registerMessageRenderer?.("spider.escalation", (message, options, theme) =>
     renderEscalationMessage(message, options, theme, iconStyle()),
   );
 

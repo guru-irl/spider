@@ -1,8 +1,9 @@
 import { CustomMessageComponent, initTheme, type MessageRenderer } from "@earendil-works/pi-coding-agent";
-import { Container, stripTerminalSequences } from "@earendil-works/pi-tui";
+import { Container, Text, stripTerminalSequences, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
 import spiderExtension from "../extension.js";
 import { withIntercomCards } from "../intercom-cards.js";
+import { withClickExpansion } from "../message-click-expansion.js";
 import { hostUnitPorts, withPiEvents } from "./fixtures/pi-events.js";
 
 const width = 72;
@@ -90,6 +91,23 @@ describe("incoming intercom clicks", () => {
     message.setExpanded(true);
     expect(output(message)).toContain("Attachment: note.txt");
   });
+});
+
+it("lets a child handle its own click without expanding the card", () => {
+  const render = withClickExpansion((_message, { expanded }) => {
+    const child = new Text(expanded ? "Full details" : "[action] Preview", 0, 0);
+    return Object.assign(child, { handleMouse(event: TuiMouseEvent) {
+      if (event.type !== "click" || event.button !== "left" || event.x >= 8) return undefined;
+      child.setText("Action handled");
+      return { handled: true };
+    } });
+  });
+  const message = new CustomMessageComponent({ role: "custom", customType: "fixture", content: "", display: true, timestamp: 0 }, render);
+  expect(click(message, 1, 2)).toMatchObject({ handled: true });
+  expect(output(message)).toContain("Action handled");
+  expect(output(message)).not.toContain("Full details");
+  expect(click(message, 1, 9)).toMatchObject({ handled: true });
+  expect(output(message)).toContain("Full details");
 });
 
 it("does not claim clicks on an escalation, which always shows the full summary", () => {
